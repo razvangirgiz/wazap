@@ -133,7 +133,10 @@ export function readLinkedAccount(dir: string): LinkedAccount | null {
   } catch {
     throw new WazapError("SESSION_CORRUPT", `Stored credentials in ${dir} are unreadable.`, RESET_FIX);
   }
-  if (!creds.registered || !creds.me?.id) return null;
+  // Baileys itself treats an account with `me` as linked (socket.js: `if (!creds.me)`
+  // pairs a device, else logs in). `registered` is only ever set by the
+  // pairing-code flow, so a QR-linked session would look unlinked forever.
+  if (!creds.me?.id) return null;
   const number = creds.me.id.split(":")[0]!.split("@")[0]!;
   return { id: `${number}@s.whatsapp.net`, name: creds.me.name || "", number };
 }

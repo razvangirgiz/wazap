@@ -71,7 +71,7 @@ test("readLinkedAccount reports nothing before a login", async () => {
   const { saveCreds } = await useAtomicAuthState(dir);
   assert.equal(readLinkedAccount(dir), null, "no creds file at all");
   await saveCreds();
-  assert.equal(readLinkedAccount(dir), null, "fresh creds are not registered yet");
+  assert.equal(readLinkedAccount(dir), null, "fresh creds have no account yet");
 });
 
 test("unreadable creds surface as SESSION_CORRUPT with a fix", async () => {
