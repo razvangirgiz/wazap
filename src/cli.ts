@@ -296,7 +296,7 @@ export async function runLogin(config: Config): Promise<void> {
     return;
   }
 
-  say(step(1, 3, "Your number"));
+  say(step(1, 4, "Your number"));
   let phone: string | null = null;
   if (!config.loginQr) {
     phone = config.loginPhone === undefined ? await askPhone() : normalizePhone(config.loginPhone);
@@ -307,7 +307,7 @@ export async function runLogin(config: Config): Promise<void> {
 
   const deadline = Date.now() + LOGIN_TIMEOUT_MS;
   const waiting = new Countdown(deadline);
-  say(step(2, 3, "Link your phone"));
+  say(step(2, 4, "Link your phone"));
 
   let requested = false;
   const onQr = async (qr: string, sock: WASocket): Promise<void> => {
@@ -340,11 +340,55 @@ export async function runLogin(config: Config): Promise<void> {
   }
   waiting.stop(ok(`Linked as ${describeAccount(account)}`));
 
-  say(step(3, 3, "Permissions"));
+  say(step(3, 4, "Sync your chats"));
+  await syncAfterLink(config);
+
+  say(step(4, 4, "Permissions"));
   await offerWrites(config);
   say("");
   say(connectNext());
   process.exit(0);
+}
+
+const HISTORY_WAIT_MS = 90_000;
+const HISTORY_QUIET_MS = 3_000;
+
+/**
+ * WhatsApp sends the chat history exactly once, right after pairing, to the
+ * socket that paired. The link socket has no store, so the real service takes
+ * over here and stays up until the history has landed and gone quiet.
+ */
+async function syncAfterLink(config: Config): Promise<void> {
+  const wa = new WhatsAppService(config);
+  const spin = spinner("Syncing your chats…");
+  try {
+    await wa.start();
+    const deadline = Date.now() + HISTORY_WAIT_MS;
+    let seen = "";
+    let quietSince = Date.now();
+    while (Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 500));
+      const counts = wa.storeCounts();
+      const key = `${counts.chats}/${counts.contacts}/${counts.messages}`;
+      spin.update(`Syncing your chats…  ${counts.chats} chats, ${counts.contacts} contacts, ${counts.messages} messages`);
+      if (!wa.hasHistory()) continue;
+      if (key !== seen) {
+        seen = key;
+        quietSince = Date.now();
+      } else if (Date.now() - quietSince >= HISTORY_QUIET_MS) {
+        break;
+      }
+    }
+  } finally {
+    const counts = wa.storeCounts();
+    const got = wa.hasHistory();
+    await wa.stop();
+    spin.stop(
+      got
+        ? ok(`Synced ${counts.chats} chats, ${counts.contacts} contacts, ${counts.messages} messages`)
+        : warn("No history arrived in 90s. The server keeps listening; if chats stay empty, run `wazap logout` then `wazap login`."),
+    );
+  }
 }
 
 /**

@@ -223,6 +223,7 @@ export class WhatsAppService implements WhatsAppApi {
   private account: StatusInfo["account"] = null;
   private lastInboundAt: number | null = null;
   private initialSyncDone = false;
+  private historyReceived = false;
   private syncDeadline: ReturnType<typeof setTimeout> | null = null;
   private syncWaiters: Array<() => void> = [];
   private historyWaiters: Array<() => void> = [];
@@ -289,6 +290,15 @@ export class WhatsAppService implements WhatsAppApi {
     this.teardownSocket();
   }
 
+  /** True once WhatsApp has delivered at least one history-sync batch. */
+  hasHistory(): boolean {
+    return this.historyReceived;
+  }
+
+  storeCounts(): { chats: number; contacts: number; messages: number } {
+    return { chats: this.store.chats.size, contacts: this.store.contacts.size, messages: this.store.messages.size };
+  }
+
   getStatus(): StatusInfo {
     const info: StatusInfo = {
       status: this.status,
@@ -314,7 +324,7 @@ export class WhatsAppService implements WhatsAppApi {
     return this.guarded(async () => {
       this.ensureConnected();
       await this.waitForSync();
-      const chats = [...this.store.chats.values()]
+      const chats = this.knownChats()
         .filter((chat) => this.matchesChatFilter(chat, filter))
         .sort((a, b) => this.chatActivity(b) - this.chatActivity(a))
         .slice(0, limit)
@@ -834,6 +844,7 @@ export class WhatsAppService implements WhatsAppApi {
       for (const chat of chats) this.ingestChat(chat);
       const stored = this.ingestMessages(messages ?? []);
       void this.appendHistory(stored);
+      this.historyReceived = true;
       this.releaseHistoryWaiters();
       if (isLatest === true || progress === 100) this.markSyncDone();
       this.markStoreDirty();
@@ -1245,8 +1256,23 @@ export class WhatsAppService implements WhatsAppApi {
     return last ?? null;
   }
 
+  /**
+   * Every chat WhatsApp described, plus one for any chat that only ever
+   * arrived as messages: a chat with messages must never be invisible.
+   */
+  private knownChats(): BaileysChat[] {
+    const chats = [...this.store.chats.values()];
+    for (const jid of this.store.byChat.keys()) {
+      if (!this.store.chats.has(jid)) chats.push({ id: jid });
+    }
+    return chats;
+  }
+
   private chatActivity(chat: BaileysChat): number {
-    return protoNumber(chat.conversationTimestamp) ?? 0;
+    const described = protoNumber(chat.conversationTimestamp);
+    if (described !== undefined && described !== null) return described;
+    const last = this.lastMessageOf(this.canonical(chat.id ?? ""));
+    return last ? Math.floor(messageTimestampMs(last) / 1000) : 0;
   }
 
   private matchesChatFilter(chat: BaileysChat, filter: ChatFilter): boolean {
