@@ -1,0 +1,59 @@
+# Changelog
+
+## 0.9.0
+
+First release under the name `wazap`. The project was a developer's MCP server
+for one machine; this turns it into something a stranger can install with
+`npx wazap login`.
+
+### Added
+
+- `wazap` CLI with `login`, `status`, `logout` and `serve`. `login` uses a
+  pairing code by default (`--qr` falls back to a QR code), so linking never
+  needs a screenshot of a terminal.
+- A single data directory, `~/.wazap` by default (`--data-dir` or
+  `WAZAP_DATA_DIR`), holding credentials, media, history and the server lock.
+  Nothing is written next to the installed package any more.
+- Atomic credential writes: every auth file is written to a temp file and
+  renamed into place, so a kill during a write can no longer corrupt the session
+  and force a re-link.
+- A lock file per data directory. A second server on the same directory exits
+  with code 2 naming the pid of the one already running.
+- A structured error model. Every tool returns `{ error, message, fix }` with
+  one of 27 codes instead of a raw exception, and `learn` documents what an
+  agent should do about each.
+- A sync gate: read tools wait up to 10 seconds for the initial history sync and
+  report `sync: "in_progress"` when they answer early.
+- A write rate limiter, 20 calls per minute by default (`WAZAP_RATE_LIMIT`,
+  `0` disables).
+- New tools: `get_message`, `send_poll`, `send_location`, `edit_message`.
+- `send_media` gained `as_voice` for voice notes, `send_message` gained
+  `mention_ids`, `manage_group` gained `revoke_invite_link` and per-participant
+  results, `get_group_info` reports admin status, announcement mode and the
+  invite link.
+
+### Changed
+
+- 22 tools, with schemas describing every field. `get_recent_chats` is now
+  `list_chats`, and `load_older_history` is absorbed into `read_messages`
+  through its `before` argument.
+- Messages have a richer shape: typed `type`, a never-empty `text` with
+  placeholders like `[voice message]` and `[poll] question`, quoted message,
+  reactions, forwarded and edited flags, media metadata, ISO 8601 timestamps
+  with a UTC offset, and a human `age`.
+- Identifiers are canonicalized in one place. Tools always return
+  `<digits>@s.whatsapp.net` or `<id>@g.us`, and accept phone numbers, `@c.us`
+  and `@lid` on input.
+- Read-only mode no longer registers the write tools at all, rather than failing
+  them at call time.
+- Environment variables use the `WAZAP_` prefix. The old `WHATSAPP_*` and `MCP_*`
+  names are gone, with no compatibility layer.
+- Requires Node 20.
+
+### Removed
+
+- The `whatsapp-web.js`-shaped adapter layer and its message hooks, unused since
+  the move to Baileys.
+- The separate message journal. History now comes from the store under the data
+  directory.
+- QR rendering inside the server. Linking is the `login` command's job.

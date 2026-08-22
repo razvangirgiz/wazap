@@ -1,164 +1,186 @@
-# whatsapp-baileys-mcp
+# wazap
 
-A local [MCP](https://modelcontextprotocol.io) server that connects to your WhatsApp account through [Baileys](https://github.com/WhiskeySockets/Baileys), a pure WebSocket client with no browser, and exposes it to any MCP client: Claude Desktop, Claude Code, or anything that speaks stdio or Streamable HTTP.
+**WhatsApp for your AI agent.** An MCP server that puts your WhatsApp account —
+chats, messages, media, contacts, groups — behind 22 tools any MCP client can
+call. Pairing-code login, no browser, no phone-number reseller, ~20 MB of RAM.
 
-- Logs in with a QR code once; the session is saved and reused.
-- 17 tools: chats, messages, full-text search, contacts, media, reactions, chat management, groups.
-- stdio by default. Optional HTTP mode with two bearer tokens, one read-only and one that unlocks sending, so a leaked read token can never message anyone.
-- Optional read-only mode for a personal number: every mutation is refused in code.
-- In-memory store fed by Baileys events, with optional snapshots and per-chat JSONL history so reads survive restarts.
+Built on [Baileys](https://github.com/WhiskeySockets/Baileys), which speaks the
+WhatsApp multi-device protocol over a WebSocket.
 
-> Baileys is an unofficial WhatsApp library. Use it with a number you are comfortable risking; unofficial clients can get an account flagged.
-
-## Install
-
-Node 18 or newer.
+## Get started
 
 ```bash
-git clone https://github.com/razvangirgiz/whatsapp-baileys-mcp
-cd whatsapp-baileys-mcp
-npm install
-npm run build
+npx wazap login                          # link your account with a pairing code
+claude mcp add whatsapp -- npx -y wazap  # tell Claude Code about it
+npx wazap status                         # confirm it is linked
 ```
 
-## First login
+`login` asks for your number in international format, prints an 8-character
+code, and you enter it on your phone under **Settings → Linked devices → Link a
+device → Link with phone number instead**. Prefer a QR code? `npx wazap login --qr`.
 
-```bash
-npm start
-```
-
-A QR code is printed to the terminal and written to `qr.png`. On your phone: WhatsApp → Settings → Linked devices → Link a device, and scan it. You will see:
-
-```
-[whatsapp-mcp] authenticated — session saved, no need to scan again next time.
-[whatsapp-mcp] WhatsApp is ready.
-```
-
-Stop with Ctrl+C. A clean shutdown keeps the saved session valid; `kill -9` mid-write can corrupt it (delete `.baileys_auth/` and scan again if that happens).
-
-All logs and the QR go to stderr. stdout is reserved for MCP traffic, so the same process works standalone and when an MCP client launches it.
-
-## Connect a client
-
-Claude Desktop, in `claude_desktop_config.json`:
+### Claude Desktop
 
 ```json
 {
   "mcpServers": {
     "whatsapp": {
-      "command": "node",
-      "args": ["/absolute/path/to/whatsapp-baileys-mcp/dist/index.js"]
+      "command": "npx",
+      "args": ["-y", "wazap"]
     }
   }
 }
 ```
 
-Claude Code:
-
-```bash
-claude mcp add whatsapp -- node /absolute/path/to/whatsapp-baileys-mcp/dist/index.js
-```
-
-Scan the QR once from a terminal first; after that, the client-launched process starts already authenticated.
-
-## HTTP mode
-
-For a remote client, run over Streamable HTTP behind HTTPS with a bearer token.
-
-```bash
-echo "MCP_AUTH_TOKEN=$(openssl rand -hex 32)" >> .env
-echo "MCP_WRITE_TOKEN=$(openssl rand -hex 32)" >> .env   # only for clients allowed to send
-TRANSPORT=http PORT=8766 npm start
-# http://127.0.0.1:8766/mcp     health: http://127.0.0.1:8766/healthz
-```
-
-A session authenticated with `MCP_AUTH_TOKEN` gets the read tools only. A session authenticated with `MCP_WRITE_TOKEN` gets everything. Without `MCP_AUTH_TOKEN` the endpoint is unauthenticated; the server warns and you should keep it on loopback.
-
-Expose it with any HTTPS tunnel (Cloudflare named tunnel, Tailscale Funnel, ngrok) and point the client at `https://your-host/mcp` with `Authorization: Bearer <token>`.
-
-One process owns the WhatsApp session. Run stdio or HTTP, not both.
+Any MCP client works the same way: the command is `npx -y wazap`, the transport
+is stdio. Tell the agent to call `learn` first — it returns the id formats, the
+workflows and every error code with what to do about it.
 
 ## Tools
 
-`learn` returns a short usage guide (chat id format, workflow, caveats). The other tool descriptions tell the agent to call it first, for clients that ignore server instructions.
+| Tool | Kind | What it does |
+| --- | --- | --- |
+| `learn` | read | The guide to every tool, id format and error code. Call it first. |
+| `get_status` | read | Connection status, sync state, linked account, versions, data dir. |
+| `list_chats` | read | Conversations newest-first; filter `all`/`unread`/`groups`/`individual`/`archived`. |
+| `read_messages` | read | Messages in a chat; `before` pages further back, pulling older history from the phone. |
+| `get_recent_messages` | read | Everything from the last N hours, grouped by chat. The catch-up tool. |
+| `search_messages` | read | Text search across the locally held messages. |
+| `get_message` | read | One message in full, with its quoted message and reactions. |
+| `search_contacts` | read | Find contacts by name or number. |
+| `get_contact` | read | Name, number, about text, profile picture. |
+| `get_group_info` | read | Participants, admins, announcement mode, invite link (when you are admin). |
+| `download_media` | read | Save an attachment to disk; small images also come back inline. |
+| `send_message` | write | Send text, optionally as a reply, with @-mentions. |
+| `send_media` | write | Send an image, video, audio, voice note or document from a path or URL. |
+| `send_poll` | write | Send a poll with 2–12 options. |
+| `send_location` | write | Send a map pin. |
+| `edit_message` | write | Edit your own message, within WhatsApp's 15-minute window. |
+| `react_to_message` | write | Add or remove an emoji reaction. |
+| `forward_message` | write | Forward a message to another chat. |
+| `delete_message` | write | Retract your own message, within WhatsApp's 2-day window. |
+| `manage_chat` | write | Archive, pin, mute (8h by default), mark read/unread. |
+| `create_group` | write | Create a group and add participants. |
+| `manage_group` | write | Add, remove, promote, demote, leave, rename, invite links. |
 
-Read:
+Every message comes back with a non-empty `text`: media and system messages
+carry a placeholder such as `[image] caption`, `[voice message]`, `[deleted]` or
+`[poll] Pizza or pasta?`. Timestamps are ISO 8601 with the machine's UTC offset,
+alongside a human `age` like `2h ago`.
 
-| Tool | What it does |
+## Errors
+
+Every failure is a structured `{ error, message, fix }` rather than a stack
+trace, so an agent can decide whether to retry, ask the user, or stop.
+
+| Code | Meaning |
 | --- | --- |
-| `get_status` | Connection status, linked account, last error |
-| `get_recent_chats` | List chats; `filter`: all / unread / groups / individual / archived |
-| `read_messages` | Recent messages from one chat, with ids and media/reply flags |
-| `search_messages` | Full-text search, globally or within one chat |
-| `search_contacts` | Find contacts by name or number |
-| `get_contact` | About, profile picture, blocked/business flags |
-| `download_media` | Save a message's media to `media/`; small images returned inline |
-| `get_group_info` | Group name, description, owner, participants with admin flags |
+| `NOT_LINKED` | No account linked. Run `npx wazap login`. |
+| `SESSION_EXPIRED` | Unlinked from the phone. Run `npx wazap login`. |
+| `SESSION_CORRUPT` | Credentials unreadable. Run `npx wazap logout` then `login`. |
+| `NOT_CONNECTED` | Still connecting or reconnecting. |
+| `SYNC_IN_PROGRESS` | History sync has not finished; results may be partial. |
+| `INVALID_PHONE` | Number is not in international format. |
+| `INVALID_ID` | Not a WhatsApp chat, contact or group id. |
+| `NOT_ON_WHATSAPP` | That number has no WhatsApp account. |
+| `CHAT_NOT_FOUND` / `MESSAGE_NOT_FOUND` / `CONTACT_NOT_FOUND` / `GROUP_NOT_FOUND` | Unknown id. |
+| `NOT_A_PARTICIPANT` / `NOT_ADMIN` / `GROUP_ANNOUNCEMENT_ONLY` | Group permissions. |
+| `MEDIA_UNAVAILABLE` | WhatsApp expired the file, or it was never synced here. |
+| `FILE_NOT_FOUND` / `FILE_TOO_LARGE` / `URL_FETCH_FAILED` | Outbound media problems. |
+| `TEXT_TOO_LONG` | Over WhatsApp's message limit. |
+| `EDIT_WINDOW_EXPIRED` / `RETRACT_WINDOW_EXPIRED` / `NOT_OWN_MESSAGE` | WhatsApp's own limits on editing and deleting. |
+| `READ_ONLY` | wazap is running read-only. |
+| `RATE_LIMITED` | Too many writes; `fix` says how long to wait. |
+| `TIMEOUT` / `WHATSAPP_ERROR` | WhatsApp did not answer, or rejected the operation. |
 
-Write (require the write token in HTTP mode, always available on stdio unless `WHATSAPP_READONLY=1`):
+## Data directory
 
-| Tool | What it does |
-| --- | --- |
-| `send_message` | Send text; `reply_to` quotes an existing message |
-| `send_media` | Send image/video/audio/document from a local path or URL |
-| `react_to_message` | Add or remove an emoji reaction |
-| `forward_message` | Forward to another chat |
-| `delete_message` | Delete for me, or retract for everyone |
-| `manage_chat` | archive, pin, mute, mark read/unread |
-| `create_group` | Create a group with participants |
-| `manage_group` | add/remove/promote/demote/leave, subject, description, invite link |
+Everything lives in `~/.wazap` (override with `--data-dir` or `WAZAP_DATA_DIR`),
+created `0700` with credentials written `0600`:
 
-`chat_id` accepts a full serialized id from `get_recent_chats` / `search_contacts`, or a bare phone number, treated as `<digits>@c.us`. Message-level tools take the id returned by `read_messages` / `search_messages`. Sends, deletes and group changes are real and have no undo.
+```
+~/.wazap/
+  auth/         WhatsApp credentials — treat this like a password
+  media/        downloads from download_media
+  history/      per-chat message history, so a restart is not amnesia
+  store.json    chat-list snapshot
+  server.lock   pid of the running server
+  .env          optional settings, see .env.example
+```
 
-## Configuration
+Credential writes go to a temp file and are renamed into place, so killing the
+process mid-write cannot leave you re-linking your phone.
 
-Everything is optional; see [`.env.example`](.env.example). Paths resolve relative to the package folder, not the working directory.
+One server per data directory: a second `wazap serve` on the same directory
+exits with code 2 and tells you the pid of the one already running.
+
+## Read-only mode
+
+`WAZAP_READ_ONLY=1` or `wazap serve --read-only` does not register the write
+tools at all. The agent never sees them, so it cannot message anyone from your
+number even by mistake — useful when the linked account is your personal one.
+
+Writes are also rate limited to `WAZAP_RATE_LIMIT` per minute (default 20, `0`
+disables). Sending faster than a human is how accounts get banned.
+
+## HTTP mode
+
+```bash
+WAZAP_READ_TOKEN=$(openssl rand -hex 32) \
+WAZAP_WRITE_TOKEN=$(openssl rand -hex 32) \
+npx wazap serve --http --host 0.0.0.0 --port 8766
+```
+
+Streamable HTTP at `/mcp`, with a health check at `/healthz`. Two bearer tokens:
+the read token gets the read tools, the write token also unlocks the write
+tools, so a leaked read token can never message anyone. wazap refuses to bind a
+non-loopback address without a read token.
+
+## Settings
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
-| `WHATSAPP_AUTH_PATH` | `.baileys_auth` | Session folder |
-| `QR_FILE` | `qr.png` | Where the login QR is written |
-| `WHATSAPP_READONLY` | `0` | Refuse every mutation on this connection |
-| `WHATSAPP_SYNC_FULL_HISTORY` | `0` | Ask for a fuller history sync |
-| `WHATSAPP_STORE_CACHE` | unset | Snapshot file for chats and recent messages |
-| `WHATSAPP_HISTORY_STORE_DIR` | unset | Per-chat JSONL history directory |
-| `WHATSAPP_JOURNAL_DIR` | unset | Append-only message journal directory |
-| `TRANSPORT` | `stdio` | `stdio` or `http` |
-| `HOST` / `PORT` | `127.0.0.1` / `8766` | HTTP bind address |
-| `MCP_AUTH_TOKEN` | unset | Read token for HTTP |
-| `MCP_WRITE_TOKEN` | unset | Write token for HTTP |
+| `WAZAP_DATA_DIR` | `~/.wazap` | Where everything is stored. |
+| `WAZAP_READ_ONLY` | `0` | Do not register the write tools. |
+| `WAZAP_SYNC_FULL_HISTORY` | `0` | Ask WhatsApp for a fuller history sync. |
+| `WAZAP_PERSIST_HISTORY` | `1` | Keep chats and messages across restarts. |
+| `WAZAP_RATE_LIMIT` | `20` | Write tool calls per minute; `0` disables. |
+| `WAZAP_TRANSPORT` | `stdio` | `stdio` or `http`. |
+| `WAZAP_HOST` / `WAZAP_PORT` | `127.0.0.1` / `8766` | HTTP bind address. |
+| `WAZAP_READ_TOKEN` / `WAZAP_WRITE_TOKEN` | unset | HTTP bearer tokens. |
+
+Flags beat environment variables, which beat `<data-dir>/.env`.
+
+## Known limitations
+
+- **Unofficial.** Baileys reverse-engineers the WhatsApp multi-device protocol.
+  This is not the WhatsApp Business API and Meta does not support it.
+- **Ban risk is real.** Automated sending, bulk messaging or anything a human
+  would not plausibly type can get the number banned, and that is not
+  recoverable from here. The rate limit helps; it is not a guarantee.
+- **Media keys expire.** WhatsApp drops old attachments from its servers, so
+  `download_media` on an old message returns `MEDIA_UNAVAILABLE`.
+- **History is what the phone syncs.** wazap sees the history WhatsApp hands the
+  linked device, not your full phone archive. `read_messages` with `before` asks
+  for more, within whatever WhatsApp still keeps.
+- **`@lid` ids.** Newer accounts are addressed by a privacy id rather than a
+  phone number. wazap translates them back to phone numbers when it has learned
+  the mapping, and passes the `@lid` through when it has not.
+- **Your phone must stay reachable.** A linked device stops receiving once the
+  phone has been offline long enough; `get_status` says so in `hint`.
 
 ## Development
 
 ```bash
-npm run dev         # run from source with tsx
+npm install
 npm run typecheck
-npm test            # builds, then runs the reconnect tests
+npm test                       # builds, then runs node --test
+node test/smoke-stdio.mjs      # drives the built binary over MCP stdio
+npm run dev -- status          # run from source with tsx
 ```
 
-The reconnect test covers backoff with jitter, the retry cap and the generation guard that stops a stale socket from reviving a replaced connection.
+`npm test` needs no WhatsApp session. The stdio smoke test spawns the built
+binary against a throwaway data directory and checks that an unlinked install
+still answers `initialize`, `tools/list` and `get_status`.
 
-## Security
-
-- `.baileys_auth/` is your live WhatsApp session. Treat it like a password. It is git-ignored.
-- `.env`, `qr.png`, snapshots and history are git-ignored too.
-- In stdio mode the server opens no network port.
-- In HTTP mode, set both tokens and terminate TLS in front of it.
-
-## Structure
-
-```
-src/
-  index.ts      entry point: config, WhatsApp session, stdio or HTTP transport
-  config.ts     .env loading
-  whatsapp.ts   Baileys wrapper: login, reconnect, store, chat and message ops
-  tools.ts      the 17 MCP tools
-  wa-types.ts   shared types
-  logger.ts     stderr-only logging
-test/
-  reconnect.test.mjs
-```
-
-## License
-
-MIT. Built by [Răzvan Girgiz](https://razvangirgiz.com).
+MIT licensed.
