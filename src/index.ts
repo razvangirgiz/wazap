@@ -30,7 +30,8 @@ Options:
   --dry-run           With connect: print what would be written, and write nothing
   --live              With status: reach WhatsApp for real, then close the connection
   --json              With status: print the whole report as one JSON object on stdout
-  --writes/--no-writes  Answer login's writes question without being asked
+  --writes            Allow the agent to write, without login asking
+  --no-writes         Keep the agent read-only, without login asking
   -y, --yes           Do not ask anything at the end of login
   -h, --help          Show this help
   -v, --version       Show the version

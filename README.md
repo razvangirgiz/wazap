@@ -17,16 +17,46 @@ WhatsApp multi-device protocol over a WebSocket.
 ## Get started
 
 ```bash
-npx wazap login                          # link your account with a pairing code
-claude mcp add whatsapp -- npx -y wazap  # tell Claude Code about it
-npx wazap status                         # confirm it is linked
+npx wazap login                  # link your account with a pairing code
+npx wazap connect claude-code    # write the MCP entry for your agent
 ```
+
+Then ask your agent: *"what did I miss on WhatsApp today?"*
 
 `login` asks for your number in international format, prints an 8-character
 code, and you enter it on your phone under **Settings → Linked devices → Link a
 device → Link with phone number instead**. Prefer a QR code? `npx wazap login --qr`.
+It ends by asking whether the agent may send messages; the answer is no unless
+you say yes, and `npx wazap config writes on` changes it later.
 
-### Claude Desktop
+`npx wazap` on its own is safe to run: it prints where you stand and what to do
+next, and starts no server. When something is off, `npx wazap status` is the
+first thing to run — it checks Node, the data directory, the lock, the
+credentials and whether a newer version is out, and prints the fix next to
+anything broken.
+
+### Connect a client
+
+`wazap connect <client>` writes the entry for you, keeping whatever else is in
+the file and backing it up once before the first change. `--dry-run` shows what
+it would write.
+
+| Client | What `connect` writes |
+| --- | --- |
+| `claude-code` | runs `claude mcp add whatsapp` for you |
+| `claude-desktop` | `claude_desktop_config.json` in the Claude application directory |
+| `cursor` | `~/.cursor/mcp.json` |
+| `codex` | `[mcp_servers.whatsapp]` in `~/.codex/config.toml` |
+| `vscode` | `./.vscode/mcp.json`, for the current workspace |
+| `gemini` | `~/.gemini/settings.json` |
+| anything remote | client's MCP URL field: `https://your-host/mcp` with header `Authorization: Bearer <token>` (see [Self-host](#self-host)) |
+
+Any MCP client works the same way: the command is `npx -y wazap`, the transport
+is stdio. Tell the agent to call `learn` first — it returns the id formats, the
+workflows and every error code with what to do about it.
+
+<details>
+<summary>The raw entries, for editing by hand</summary>
 
 ```json
 {
@@ -39,21 +69,16 @@ device → Link with phone number instead**. Prefer a QR code? `npx wazap login 
 }
 ```
 
-Any MCP client works the same way: the command is `npx -y wazap`, the transport
-is stdio. Tell the agent to call `learn` first — it returns the id formats, the
-workflows and every error code with what to do about it.
+Claude Desktop, Cursor and Gemini CLI take exactly that. VS Code nests it under
+`servers` and wants a `"type": "stdio"` alongside `command`. Codex CLI is TOML:
 
-### Other MCP clients
+```toml
+[mcp_servers.whatsapp]
+command = "npx"
+args = ["-y", "wazap"]
+```
 
-wazap speaks plain MCP; nothing in it is specific to one agent. Same command everywhere, only the config file differs.
-
-| Client | File | Entry |
-| --- | --- | --- |
-| Cursor | `~/.cursor/mcp.json` | `{"mcpServers":{"whatsapp":{"command":"npx","args":["-y","wazap"]}}}` |
-| Codex CLI | `~/.codex/config.toml` | `[mcp_servers.whatsapp]`<br>`command = "npx"`<br>`args = ["-y", "wazap"]` |
-| VS Code | `.vscode/mcp.json` | `{"servers":{"whatsapp":{"type":"stdio","command":"npx","args":["-y","wazap"]}}}` |
-| Gemini CLI | `~/.gemini/settings.json` | `{"mcpServers":{"whatsapp":{"command":"npx","args":["-y","wazap"]}}}` |
-| Anything remote | client's MCP URL field | `https://your-host/mcp` with header `Authorization: Bearer <token>` (see [Self-host](#self-host)) |
+</details>
 
 The `skills/` folder follows the [Agent Skills](https://agentskills.io) format, so Codex, Cursor and other skill-aware agents can load the same five skills.
 
@@ -95,7 +120,7 @@ wazap ships five [Agent Skills](https://agentskills.io) that teach an agent the 
 
 | Skill | What the agent does |
 | --- | --- |
-| `wazap-setup` | Diagnose with `wazap status`, link by pairing code, connect Claude Desktop or Claude Code, repair an expired session |
+| `wazap-setup` | Diagnose with `wazap status`, link by pairing code, connect a client with `wazap connect`, repair an expired session |
 | `whatsapp-inbox` | "What did I miss?" Triage into *needs you / FYI / noise*, ranked, plus forgotten replies. Read-only |
 | `whatsapp-recall` | "Find the invoice Dan sent." Search with query variants, page back in time, download and read the file. Read-only |
 | `whatsapp-groups` | Catch up on a 300-message group: decisions, dates, what is asked of you. Read-only |
@@ -157,6 +182,10 @@ One server per data directory: a second `wazap serve` on the same directory
 exits with code 2 and tells you the pid of the one already running.
 
 ## Read-only mode
+
+Writes are opt-in. `login` asks once and stores the answer in
+`<data-dir>/.env`; `wazap config writes on|off` changes it, and `wazap config`
+alone prints every effective setting with where it came from.
 
 `WAZAP_READ_ONLY=1` or `wazap serve --read-only` does not register the write
 tools at all. The agent never sees them, so it cannot message anyone from your
@@ -227,6 +256,7 @@ Claude Code, Claude Desktop, Cursor, Codex, VS Code and any client with an "MCP 
 | `WAZAP_TRANSPORT` | `stdio` | `stdio` or `http`. |
 | `WAZAP_HOST` / `WAZAP_PORT` | `127.0.0.1` / `8766` | HTTP bind address. |
 | `WAZAP_READ_TOKEN` / `WAZAP_WRITE_TOKEN` | unset | HTTP bearer tokens. |
+| `WAZAP_NO_UPDATE_CHECK` | `0` | `1` stops `status` asking npm for a newer version. |
 
 Flags beat environment variables, which beat `<data-dir>/.env`.
 

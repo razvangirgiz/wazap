@@ -93,6 +93,13 @@ test("status --json prints one parseable object carrying the same checks", async
   assert.equal(report.checks.find((check) => check.name === "writes").detail, "on (default)");
 });
 
+test("status --live on an unlinked data dir reports that, without waiting out the deadline", async () => {
+  const started = Date.now();
+  const { stderr } = await status(dataDir(), ["--live"]);
+  assert.match(stderr, /live: no connection \(not_linked\)/);
+  assert.ok(Date.now() - started < 12_000, "it must not sit through the 15s live deadline");
+});
+
 test("status --live refuses to touch the session a running server owns", async () => {
   const dir = dataDir();
   writeFileSync(join(dir, "server.lock"), `${process.pid}\n`);

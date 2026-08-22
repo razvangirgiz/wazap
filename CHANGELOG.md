@@ -27,6 +27,25 @@ for one machine; this turns it into something a stranger can install with
 - A write rate limiter, 20 calls per minute by default (`WAZAP_RATE_LIMIT`,
   `0` disables).
 - New tools: `get_message`, `send_poll`, `send_location`, `edit_message`.
+- `wazap connect <client>` for `claude-code`, `claude-desktop`, `cursor`,
+  `codex`, `vscode` and `gemini`. It writes the MCP entry itself, keeps the rest
+  of the file, backs it up once before the first change, refuses a config file
+  it cannot parse rather than clobbering it, and is a no-op on a second run.
+  `--dry-run` prints what it would write.
+- Writes are opt-in. `login` asks once and stores the answer as
+  `WAZAP_READ_ONLY` in `<data-dir>/.env`; `wazap config writes on|off` changes
+  it later, and `wazap config` prints every effective setting together with
+  where it came from (flag, environment, `.env` or default).
+- Bare `wazap` at a terminal prints the banner, the status and the one command
+  to run next instead of starting a silent MCP server on stdin. Explicit
+  `wazap serve` always serves.
+- `wazap status` became a doctor: it checks the Node version, the data
+  directory's existence, mode and writability, the lock (none, held, or stale),
+  the credentials, the writes setting, and whether npm has a newer version, and
+  prints the fix beside anything broken. `--live` reaches WhatsApp for real and
+  reports the phone, the chat count and the last message; `--json` prints the
+  whole report as one object for scripts. `WAZAP_NO_UPDATE_CHECK=1` turns the
+  registry call off.
 - `Dockerfile`, `docker-compose.yml`, a systemd unit and a Caddyfile under
   `deploy/`, with a Self-host section in the README; a "Works with" table for
   Cursor, Codex, VS Code and Gemini CLI.
