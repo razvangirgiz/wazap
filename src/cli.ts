@@ -14,7 +14,7 @@ import { banner } from "./banner.js";
 import { runBridge } from "./bridge.js";
 import { BAILEYS_VERSION, WAZAP_VERSION, paths, type Config } from "./config.js";
 import { connectNext } from "./connect.js";
-import { decideRole, removeDaemon, writeDaemon } from "./daemon.js";
+import { decideRole, readDaemon, removeDaemon, writeDaemon } from "./daemon.js";
 import { checkLine, checkLines, runChecks, type Check } from "./doctor.js";
 import { RELINK_FIX, WazapError, asWazapError } from "./errors.js";
 import { normalizePhone } from "./ids.js";
@@ -87,6 +87,7 @@ interface StatusReport {
   wazap_version: string;
   baileys_version: string;
   server_pid: number | null;
+  daemon: { pid: number; port: number } | null;
   checks: Check[];
   live?: LiveReport;
 }
@@ -102,6 +103,12 @@ export async function runStatus(config: Config): Promise<StatusReport> {
     unreadable = true;
   }
 
+  // A sidecar outliving the process that wrote it is stale, so only the lock
+  // holder's own record counts as a session being shared.
+  const serverPid = lockHolder(p.lockFile);
+  const daemon = readDaemon(p.daemonFile);
+  const sharing = daemon !== null && daemon.pid === serverPid ? { pid: daemon.pid, port: daemon.port } : null;
+
   const report: StatusReport = {
     data_dir: config.dataDir,
     linked: account !== null,
@@ -109,7 +116,8 @@ export async function runStatus(config: Config): Promise<StatusReport> {
     account,
     wazap_version: WAZAP_VERSION,
     baileys_version: BAILEYS_VERSION,
-    server_pid: lockHolder(p.lockFile),
+    server_pid: serverPid,
+    daemon: sharing,
     checks: await runChecks(config),
   };
   if (config.live) report.live = await runLiveProbe(config);
@@ -143,12 +151,19 @@ function plainStatus(report: StatusReport): string[] {
   lines.push(
     `wazap: ${report.wazap_version}`,
     `baileys: ${report.baileys_version}`,
-    report.server_pid === null ? "server: not running" : `server: running (pid ${report.server_pid})`,
+    `server: ${serverState(report)}`,
     "",
     "checks:",
     ...report.checks.map(checkLine),
   );
   return lines;
+}
+
+/** The one place the sidecar becomes words, so the two renderers cannot drift. */
+function serverState(report: StatusReport): string {
+  if (report.server_pid === null) return "not running";
+  const shared = report.daemon === null ? "" : `, sharing on 127.0.0.1:${report.daemon.port}`;
+  return `running (pid ${report.server_pid}${shared})`;
 }
 
 const LABEL_WIDTH = 8;
@@ -167,7 +182,7 @@ function richStatus(report: StatusReport): string[] {
     `${bold(`wazap ${report.wazap_version}`)}${dim(` · baileys ${report.baileys_version}`)}`,
     row("data dir", tilde(report.data_dir)),
     row("account", account),
-    row("server", report.server_pid === null ? "not running" : `running (pid ${report.server_pid})`),
+    row("server", serverState(report)),
     "",
     ...report.checks.flatMap(checkLines),
   ];
@@ -205,7 +220,7 @@ async function runLiveProbe(config: Config): Promise<LiveReport> {
     throw new WazapError(
       "WHATSAPP_ERROR",
       `A server (pid ${running}) already owns this session.`,
-      "Ask it through your MCP client instead: call get_status",
+      "use get_status through your client, or wazap status",
     );
   }
 

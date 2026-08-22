@@ -186,14 +186,32 @@ created `0700` with credentials written `0600`:
   history/      per-chat message history, so a restart is not amnesia
   store.json    chat-list snapshot
   server.lock   pid of the running server
+  daemon.json   loopback endpoint a second wazap bridges to
   .env          optional settings, see .env.example
 ```
 
 Credential writes go to a temp file and are renamed into place, so killing the
 process mid-write cannot leave you re-linking your phone.
 
-One server per data directory: a second `wazap serve` on the same directory
-exits with code 2 and tells you the pid of the one already running.
+## Several clients at once
+
+Claude Desktop, Claude Code and Cursor each launch their own `wazap`. WhatsApp
+allows one socket per linked device, so they share one session instead of
+fighting over it. The first `wazap` on a data directory owns the session and
+opens an MCP endpoint on `127.0.0.1`; every later one bridges to it over that
+endpoint. There is nothing to configure, and no client can tell the difference.
+The owner publishes `<data-dir>/daemon.json` (`0600`) with its pid, its port
+and the token a bridge authenticates with.
+
+A bridge serves whatever the owner exposes, so an owner started `--read-only`
+makes every client read-only, whatever flags that client was launched with.
+
+When the owner exits, the bridges exit with it, and the next `wazap` a client
+starts becomes the new owner.
+
+`WAZAP_NO_SHARE=1` opts out: a second `wazap` on the same directory exits with
+code 2 naming the pid of the one already running. An explicit `--http` is a
+server of its own rather than a bridge, and is refused the same way.
 
 ## Read-only mode
 

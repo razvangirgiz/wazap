@@ -1,5 +1,26 @@
 # Changelog
 
+## 0.9.3
+### Added
+
+- One session, many clients. The first `wazap serve` on a data directory owns
+  the WhatsApp session and shares it over a loopback MCP endpoint; every later
+  `wazap` on the same directory becomes a bridge onto it instead of exiting 2.
+  Claude Desktop, Claude Code and Cursor can run at the same time, with nothing
+  to configure. `WAZAP_NO_SHARE=1` keeps the old one-at-a-time behaviour, and so
+  does an explicit `--http`.
+- `<data-dir>/daemon.json` (`0600`), the record a bridge reads to find the owner:
+  its pid, its loopback port, a per-run token and the version. It goes when the
+  lock goes.
+
+### Changed
+
+- `wazap status` names the endpoint a shared session is reachable on, as
+  `server: running (pid N, sharing on 127.0.0.1:PORT)`, and `--json` carries the
+  same as a `daemon` object with the pid and the port. The token stays out of
+  both, and out of every log line.
+
+
 ## 0.9.2
 ### Added
 

@@ -5,13 +5,15 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { execFile } from "node:child_process";
 import { createServer } from "node:net";
 import { existsSync, mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { promisify } from "node:util";
 
 import { daemonHealthy, readDaemon, removeDaemon, writeDaemon } from "../dist/daemon.js";
-import { mcpClient, spawnWazap, waitFor } from "./helpers.mjs";
+import { BINARY, mcpClient, spawnWazap, waitFor } from "./helpers.mjs";
 
 const CHILD_ENV = { WAZAP_READ_TOKEN: "", WAZAP_WRITE_TOKEN: "", WAZAP_NO_UPDATE_CHECK: "1" };
 const SAMPLE = { pid: 4242, port: 51515, token: "deadbeef", version: "9.9.9" };
@@ -22,6 +24,15 @@ function tempDir() {
 
 function mode(file) {
   return statSync(file).mode & 0o777;
+}
+
+const run = promisify(execFile);
+
+/** The binary's own `status` against a data dir: human lines on stderr, `--json` on stdout. */
+function status(dataDir, args = []) {
+  return run(process.execPath, [BINARY, "status", "--data-dir", dataDir, ...args], {
+    env: { ...process.env, WAZAP_NO_UPDATE_CHECK: "1" },
+  });
 }
 
 /** Run `fn` against a live `wazap serve` child, then make sure it is gone. */
@@ -242,6 +253,35 @@ test("closing the client's stdin ends the daemon rather than leaving it listenin
     await waitFor(hasExited, 3_000, "the daemon to exit");
     assert.equal(existsSync(daemonFile), false, "daemon.json outlived the daemon");
     assert.equal(existsSync(lockFile), false, "server.lock outlived the daemon");
+  });
+});
+
+test("status names the endpoint a served session is shared on, and never its token", async () => {
+  await withDaemon({}, async ({ child, dataDir, daemonFile }) => {
+    const info = await waitFor(() => readDaemon(daemonFile), 10_000, "daemon.json to appear");
+
+    const human = await status(dataDir);
+    assert.equal(
+      human.stderr.split("\n").find((line) => line.startsWith("server:")),
+      `server: running (pid ${child.pid}, sharing on 127.0.0.1:${info.port})`,
+    );
+
+    const { stdout } = await status(dataDir, ["--json"]);
+    const report = JSON.parse(stdout);
+    assert.equal(report.daemon.pid, child.pid);
+    assert.equal(report.daemon.port, info.port);
+    assert.ok(!stdout.includes(info.token), "the token must never reach the report");
+  });
+});
+
+test("status leaves the sharing suffix off a session that is not shared", async () => {
+  await withDaemon({ WAZAP_NO_SHARE: "1" }, async ({ child, dataDir, lockFile }) => {
+    await waitFor(() => existsSync(lockFile), 10_000, "server.lock to appear");
+    const { stderr } = await status(dataDir);
+    assert.equal(
+      stderr.split("\n").find((line) => line.startsWith("server:")),
+      `server: running (pid ${child.pid})`,
+    );
   });
 });
 
