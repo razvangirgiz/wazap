@@ -202,6 +202,13 @@ class Store {
   }
 }
 
+/**
+ * The browser identity sent at handshake. WhatsApp closes the socket with 428
+ * before offering a QR for Browsers.macOS("Desktop") (verified 2026-08-22 on
+ * baileys 7.0.0-rc14); "Chrome" is accepted.
+ */
+export const WA_BROWSER = Browsers.macOS("Chrome");
+
 export class WhatsAppService implements WhatsAppApi {
   private sockClient: WASocket | null = null;
   private saveCreds: (() => Promise<void>) | null = null;
@@ -257,7 +264,7 @@ export class WhatsAppService implements WhatsAppApi {
       const sock = makeWASocket({
         auth: state,
         logger: silentLogger,
-        browser: Browsers.macOS("Desktop"),
+        browser: WA_BROWSER,
         syncFullHistory: this.config.syncFullHistory,
         markOnlineOnConnect: false,
         generateHighQualityLinkPreview: false,

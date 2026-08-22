@@ -8,13 +8,24 @@
     "type": "git",
     "url": "https://github.com/razvangirgiz/wazap"
   },
-  "keywords": ["mcp", "model-context-protocol", "whatsapp", "baileys", "claude", "agent"],
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "whatsapp",
+    "baileys",
+    "claude",
+    "agent"
+  ],
   "type": "module",
   "main": "dist/index.js",
   "bin": {
     "wazap": "dist/index.js"
   },
-  "files": ["dist", "README.md", "LICENSE"],
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "start": "node dist/index.js",
@@ -27,7 +38,7 @@
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.12.0",
-    "baileys": "7.0.0-rc13",
+    "baileys": "7.0.0-rc14",
     "dotenv": "^16.4.5",
     "express": "^4.22.2",
     "qrcode": "^1.5.4",

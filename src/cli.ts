@@ -2,7 +2,6 @@ import { mkdirSync, rmSync } from "node:fs";
 import { createInterface } from "node:readline/promises";
 import { setTimeout as sleep } from "node:timers/promises";
 import makeWASocket, {
-  Browsers,
   DisconnectReason,
   type UserFacingSocketConfig,
   type WASocket,
@@ -16,7 +15,7 @@ import { normalizePhone } from "./ids.js";
 import { lockHolder, releaseLock, writeLock } from "./lock.js";
 import { log, logError, say } from "./logger.js";
 import { runHttp, runStdio } from "./server.js";
-import { WhatsAppService } from "./whatsapp.js";
+import { WA_BROWSER, WhatsAppService } from "./whatsapp.js";
 
 const LOGIN_TIMEOUT_MS = 120_000;
 const LOGOUT_TIMEOUT_MS = 10_000;
@@ -220,7 +219,7 @@ async function linkSession(authDir: string, opts: LinkOptions): Promise<WASocket
       const { state, saveCreds } = await useAtomicAuthState(authDir);
       const sock = makeWASocket({
         auth: state,
-        browser: Browsers.macOS("Desktop"),
+        browser: WA_BROWSER,
         markOnlineOnConnect: false,
         logger: SILENT_LOGGER,
       });
