@@ -3,6 +3,7 @@ import { BANNER } from "./banner.js";
 import { runGreet, runLogin, runLogout, runServe, runStatus } from "./cli.js";
 import { WAZAP_VERSION, parseCli, pickDefaultAction } from "./config.js";
 import { CLIENT_NAMES, runConnect } from "./connect.js";
+import { runSetup } from "./setup.js";
 import { runConfig } from "./settings.js";
 import { WazapError } from "./errors.js";
 import { say } from "./logger.js";
@@ -13,6 +14,7 @@ const USAGE = `${BANNER}
 Usage:
   wazap [serve] [--http] [--host <host>] [--port <port>]   Run the MCP server (default: stdio)
   wazap login [--phone +15550100] [--code]              Link a WhatsApp account (QR by default)
+  wazap setup [--client <name>]                            Link, connect your client and finish, in one command
   wazap connect <client> [--dry-run]                       Register wazap with an MCP client
   wazap config [writes on|off]                             Show the effective settings, or allow/refuse writes
   wazap status [--live] [--json]                           Check the install, the session and the server
@@ -28,6 +30,7 @@ Options:
   --port <port>       HTTP port (default 8766)
   --code              Log in with an 8-character pairing code instead of the QR
   --phone <number>    Your number in international format; implies --code
+  --client <name>     With setup: connect this client instead of the detected ones (repeatable)
   --dry-run           With connect: print what would be written, and write nothing
   --live              With status: reach WhatsApp for real, then close the connection
   --json              With status: print the whole report as one JSON object on stdout
@@ -64,6 +67,9 @@ async function main(): Promise<void> {
       return;
     case "login":
       await runLogin(config);
+      return;
+    case "setup":
+      await runSetup(config);
       return;
     case "connect":
       runConnect(config);

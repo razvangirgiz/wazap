@@ -282,7 +282,7 @@ export async function runServe(config: Config): Promise<void> {
   else await runStdio(wa, config);
 }
 
-function stepper(total: number): (title: string) => void {
+export function stepper(total: number): (title: string) => void {
   let n = 0;
   return (title) => say(step(++n, total, title));
 }

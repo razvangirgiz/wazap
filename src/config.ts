@@ -12,7 +12,7 @@ export const BAILEYS_VERSION: string = (require("baileys/package.json") as { ver
 /** Where an effective setting came from, in precedence order. */
 export type Source = "flag" | "env" | ".env" | "default";
 
-export type Command = "serve" | "login" | "status" | "logout" | "connect" | "config";
+export type Command = "serve" | "login" | "setup" | "status" | "logout" | "connect" | "config";
 
 export interface Config {
   dataDir: string;
@@ -42,6 +42,8 @@ export interface Config {
   loginCode: boolean;
   /** `login` asks about writes unless a flag already answered. */
   writesAnswer: boolean | null;
+  /** `setup` only, repeatable, overrides detection. */
+  clients: string[];
   assumeYes: boolean;
 }
 
@@ -75,6 +77,7 @@ export type CliInvocation = { kind: "help" } | { kind: "version" } | { kind: "ru
 const COMMAND_ARGS: Record<Command, readonly number[]> = {
   serve: [0],
   login: [0],
+  setup: [0],
   status: [0],
   logout: [0],
   connect: [1],
@@ -133,6 +136,7 @@ export function parseCli(argv: string[] = process.argv.slice(2)): CliInvocation 
         json: { type: "boolean" },
         writes: { type: "boolean" },
         "no-writes": { type: "boolean" },
+        client: { type: "string", multiple: true },
         yes: { type: "boolean", short: "y" },
         help: { type: "boolean", short: "h" },
         version: { type: "boolean", short: "v" },
@@ -198,6 +202,7 @@ export function parseCli(argv: string[] = process.argv.slice(2)): CliInvocation 
       loginPhone: values.phone,
       loginCode: values.code === true || values.phone !== undefined,
       writesAnswer: values.writes === true ? true : values["no-writes"] === true ? false : null,
+      clients: values.client ?? [],
       assumeYes: values.yes === true,
     },
   };

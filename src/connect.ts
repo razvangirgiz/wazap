@@ -15,7 +15,12 @@ export interface McpEntry {
 /** `command` shells out to the client's own CLI; the other two edit a config file. */
 type Format = "command" | "json" | "toml";
 
-interface ClientSpec {
+export interface Probes {
+  exists: (path: string) => boolean;
+  onPath: (command: string) => boolean;
+}
+
+export interface ClientSpec {
   name: string;
   describe: string;
   file: () => string | null;
@@ -24,6 +29,8 @@ interface ClientSpec {
   /** Fields the client wants alongside command and args. */
   extra?: Record<string, string>;
   next: string;
+  /** Whether this client looks installed. Required: a client `setup` cannot look for is not one it can offer. */
+  detect: (probe: Probes) => boolean;
 }
 
 function claudeDesktopFile(): string {
@@ -44,6 +51,7 @@ export const CLIENTS: readonly ClientSpec[] = [
     format: "command",
     keyPath: [],
     next: "Run `claude mcp list` to confirm.",
+    detect: (probe) => probe.onPath("claude"),
   },
   {
     name: "claude-desktop",
@@ -52,6 +60,7 @@ export const CLIENTS: readonly ClientSpec[] = [
     format: "json",
     keyPath: ["mcpServers", "whatsapp"],
     next: "Restart Claude Desktop.",
+    detect: (probe) => probe.exists(dirname(claudeDesktopFile())),
   },
   {
     name: "cursor",
@@ -60,6 +69,7 @@ export const CLIENTS: readonly ClientSpec[] = [
     format: "json",
     keyPath: ["mcpServers", "whatsapp"],
     next: "Reload the Cursor window.",
+    detect: (probe) => probe.exists(join(homedir(), ".cursor")),
   },
   {
     name: "codex",
@@ -68,6 +78,7 @@ export const CLIENTS: readonly ClientSpec[] = [
     format: "toml",
     keyPath: ["mcp_servers", "whatsapp"],
     next: "Restart Codex.",
+    detect: (probe) => probe.exists(join(homedir(), ".codex")),
   },
   {
     name: "vscode",
@@ -77,6 +88,7 @@ export const CLIENTS: readonly ClientSpec[] = [
     keyPath: ["servers", "whatsapp"],
     extra: { type: "stdio" },
     next: "Written to ./.vscode/mcp.json for this workspace. Reload the VS Code window.",
+    detect: (probe) => probe.onPath("code"),
   },
   {
     name: "gemini",
@@ -85,6 +97,7 @@ export const CLIENTS: readonly ClientSpec[] = [
     format: "json",
     keyPath: ["mcpServers", "whatsapp"],
     next: "Restart the Gemini CLI.",
+    detect: (probe) => probe.exists(join(homedir(), ".gemini")),
   },
 ];
 
@@ -102,13 +115,24 @@ export function isNpxPath(binPath: string): boolean {
   return /[\\/]_npx[\\/]/.test(binPath);
 }
 
-const PATH_NAMES = process.platform === "win32" ? ["wazap.cmd", "wazap"] : ["wazap"];
+const PATH_EXTENSIONS = process.platform === "win32" ? [".cmd", ".exe", ""] : [""];
 
-export function onPath(pathEnv: string, exists: (p: string) => boolean = existsSync): boolean {
+export function commandOnPath(
+  name: string,
+  pathEnv: string = process.env.PATH ?? "",
+  exists: (p: string) => boolean = existsSync,
+): boolean {
   return pathEnv
     .split(delimiter)
     .filter(Boolean)
-    .some((dir) => PATH_NAMES.some((name) => exists(join(dir, name))));
+    .some((dir) => PATH_EXTENSIONS.some((ext) => exists(join(dir, `${name}${ext}`))));
+}
+
+export const REAL_PROBES: Probes = { exists: existsSync, onPath: (command) => commandOnPath(command) };
+
+/** The installed clients, in table order. */
+export function detectClients(probe: Probes = REAL_PROBES): ClientSpec[] {
+  return CLIENTS.filter((client) => client.detect(probe));
 }
 
 /**
@@ -119,7 +143,7 @@ export function onPath(pathEnv: string, exists: (p: string) => boolean = existsS
  */
 export function launcher(binPath: string, pathEnv: string, exists?: (p: string) => boolean): McpEntry {
   if (isNpxPath(binPath)) return { command: "npx", args: ["-y", "wazap-mcp"] };
-  if (onPath(pathEnv, exists)) return { command: "wazap", args: [] };
+  if (commandOnPath("wazap", pathEnv, exists)) return { command: "wazap", args: [] };
   return { command: "node", args: [resolve(binPath)] };
 }
 
@@ -138,13 +162,22 @@ const WRITERS: Record<Format, Writer> = {
   toml: writeTomlEntry,
 };
 
-export function runConnect(config: Config): void {
-  const name = config.args[0] ?? "";
+export function findClient(name: string): ClientSpec {
   const spec = CLIENTS.find((client) => client.name === name);
   if (!spec) {
     throw new WazapError("INVALID_ID", `Unknown client "${name}".`, `Pick one of: ${CLIENT_NAMES}`);
   }
+  return spec;
+}
+
+export function connectClient(spec: ClientSpec, config: Config): void {
   WRITERS[spec.format](spec, mcpEntry(config), config.dryRun);
+}
+
+export function runConnect(config: Config): void {
+  const spec = findClient(config.args[0] ?? "");
+  connectClient(spec, config);
+  say(nextHint(spec.next));
 }
 
 /** Null only when the file is absent; an unreadable file must never be overwritten. */
@@ -230,12 +263,10 @@ function apply(
   if (dryRun) {
     say(info(`${spec.describe} \u00b7 would write ${where}`));
     for (const line of entry) say(line);
-    say(nextHint(spec.next));
     return;
   }
   if (content === current) {
     say(ok(`${spec.describe} \u00b7 ${where} already has this entry`));
-    say(nextHint(spec.next));
     return;
   }
 
@@ -248,7 +279,6 @@ function apply(
   writeFileSync(file, content);
   say(ok(`${spec.describe} \u00b7 wrote ${where}${backup}`));
   for (const line of entry) say(line);
-  say(nextHint(spec.next));
 }
 
 function runClientCommand(spec: ClientSpec, entry: McpEntry, dryRun: boolean): void {
@@ -257,7 +287,6 @@ function runClientCommand(spec: ClientSpec, entry: McpEntry, dryRun: boolean): v
   if (dryRun) {
     say(info(`${spec.describe} \u00b7 would run`));
     say(`  ${dim(shown)}`);
-    say(nextHint(spec.next));
     return;
   }
 
@@ -269,5 +298,4 @@ function runClientCommand(spec: ClientSpec, entry: McpEntry, dryRun: boolean): v
   }
   if (result.status !== 0) process.exit(result.status ?? 1);
   say(ok(`${spec.describe} \u00b7 registered via claude mcp add`));
-  say(nextHint(spec.next));
 }
