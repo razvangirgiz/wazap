@@ -40,7 +40,7 @@ refuses while a server holds the lock, because one process owns the session.
 
 1. Run `npx wazap-mcp login` in a terminal the user can see. It prints a QR code and waits.
 2. Tell the user: WhatsApp → Settings → Linked devices → Link a device → scan the QR. The command then syncs the chat history (a counter runs for up to 90 s) and asks whether the agent may send messages.
-3. No camera, a terminal that garbles the QR, or a server reached over SSH: `npx wazap-mcp login --phone +40722123456` prints an 8-character code for *Link with phone number instead*.
+3. No camera, a terminal that garbles the QR, or a server reached over SSH: `npx wazap-mcp login --phone +15550100` prints an 8-character code for *Link with phone number instead*.
 4. Done when `npx wazap-mcp status` prints `linked: yes` and the checks show chats synced.
 
 `SESSION_EXPIRED` means the phone removed the device: run `npx wazap-mcp login` again. `SESSION_CORRUPT` means unreadable credentials: `npx wazap-mcp logout` then `npx wazap-mcp login`.

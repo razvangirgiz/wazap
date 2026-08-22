@@ -316,7 +316,7 @@ export async function runLogin(config: Config): Promise<void> {
       say(
         `  Scan it with WhatsApp → Settings → Linked devices → Link a device (also saved to ${shortPath(p.qrFile)})`,
       );
-      say(dim("  Prefer typing a code? Press Ctrl+C and run `wazap login --phone +40722123456`."));
+      say(dim("  Prefer typing a code? Press Ctrl+C and run `wazap login --phone +15550100`."));
       say("");
       waiting.start();
       return;
@@ -503,12 +503,12 @@ const PHONE_ATTEMPTS = 3;
 /** A typo costs another prompt, not the whole login. */
 async function askPhone(): Promise<string> {
   for (let attempt = 1; ; attempt++) {
-    const answer = await ask(`${brand("?")} WhatsApp number, international format (e.g. +40722123456): `);
+    const answer = await ask(`${brand("?")} WhatsApp number, international format (e.g. +15550100): `);
     try {
       return normalizePhone(answer);
     } catch (err) {
       if (attempt === PHONE_ATTEMPTS) throw err;
-      say(fail("Use international format, e.g. +40722123456"));
+      say(fail("Use international format, e.g. +15550100"));
     }
   }
 }

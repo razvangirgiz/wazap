@@ -1,6 +1,6 @@
 import { WazapError } from "./errors.js";
 
-const PHONE_EXAMPLE = "Use international format, e.g. +40722123456";
+const PHONE_EXAMPLE = "Use international format, e.g. +15550100";
 
 /** Digits of a phone number in international format, or INVALID_PHONE. */
 export function normalizePhone(input: string): string {

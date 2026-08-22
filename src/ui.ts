@@ -63,8 +63,12 @@ export function cmd(text: string): string {
   return paint("\x1b[36m", text);
 }
 
+export function green(text: string): string {
+  return paint("\x1b[32m", text);
+}
+
 export function ok(text: string): string {
-  return `${paint("\x1b[32m", "✓")} ${text}`;
+  return `${green("✓")} ${text}`;
 }
 
 export function fail(text: string): string {

@@ -49,7 +49,7 @@ export const ERROR_GUIDE: Record<ErrorCode, string> = {
   SESSION_CORRUPT: "Stored credentials are unreadable. Tell the user to run `npx wazap-mcp logout` then `npx wazap-mcp login`.",
   NOT_CONNECTED: "The socket is still connecting or reconnecting. Call get_status, wait, retry once.",
   SYNC_IN_PROGRESS: "History sync has not finished. Retry in a few seconds; earlier messages may be missing until then.",
-  INVALID_PHONE: "The number is not in international format. Ask the user for a number with a country code, e.g. +40722123456.",
+  INVALID_PHONE: "The number is not in international format. Ask the user for a number with a country code, e.g. +15550100.",
   INVALID_ID: "The id is not a WhatsApp chat, contact or group id. Use an id exactly as returned by another tool.",
   NOT_ON_WHATSAPP: "That number has no WhatsApp account. Do not retry; confirm the number with the user.",
   CHAT_NOT_FOUND: "No such chat is known. Call list_chats or search_contacts to get a valid chat_id.",

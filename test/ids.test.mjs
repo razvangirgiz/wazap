@@ -3,17 +3,17 @@ import assert from "node:assert/strict";
 
 import { normalizePhone, resolveChatId, isGroupId } from "../dist/ids.js";
 
-const lidToPn = (lid) => (lid === "99887766@lid" ? "40722123456" : undefined);
+const lidToPn = (lid) => (lid === "99887766@lid" ? "15550100" : undefined);
 
 const CANONICAL = [
-  ["40722123456", "40722123456@s.whatsapp.net"],
-  ["+40722123456", "40722123456@s.whatsapp.net"],
-  ["+40 722 123-456", "40722123456@s.whatsapp.net"],
-  ["40722123456@s.whatsapp.net", "40722123456@s.whatsapp.net"],
-  ["40722123456@c.us", "40722123456@s.whatsapp.net"],
-  ["40722123456:12@s.whatsapp.net", "40722123456@s.whatsapp.net"],
+  ["15550100", "15550100@s.whatsapp.net"],
+  ["+15550100", "15550100@s.whatsapp.net"],
+  ["+1 555-0100", "15550100@s.whatsapp.net"],
+  ["15550100@s.whatsapp.net", "15550100@s.whatsapp.net"],
+  ["15550100@c.us", "15550100@s.whatsapp.net"],
+  ["15550100:12@s.whatsapp.net", "15550100@s.whatsapp.net"],
   ["120363000000000000@g.us", "120363000000000000@g.us"],
-  ["99887766@lid", "40722123456@s.whatsapp.net"],
+  ["99887766@lid", "15550100@s.whatsapp.net"],
   ["11112222@lid", "11112222@lid"],
 ];
 
@@ -37,7 +37,7 @@ test("a number without a country code is INVALID_PHONE with an example", () => {
       () => resolveChatId(input, lidToPn),
       (err) => {
         assert.equal(err.code, "INVALID_PHONE", `${input} should be INVALID_PHONE, got ${err.code}`);
-        assert.match(err.fix, /\+40722123456/);
+        assert.match(err.fix, /\+15550100/);
         return true;
       },
       `resolveChatId(${JSON.stringify(input)})`,
@@ -61,12 +61,12 @@ test("anything else is INVALID_ID", () => {
 });
 
 test("normalizePhone returns bare digits for E.164 input", () => {
-  assert.equal(normalizePhone("+40 722 123 456"), "40722123456");
-  assert.equal(normalizePhone("40722123456"), "40722123456");
+  assert.equal(normalizePhone("+1 555 0100"), "15550100");
+  assert.equal(normalizePhone("15550100"), "15550100");
   assert.throws(() => normalizePhone("0722123456"), { code: "INVALID_PHONE" });
 });
 
 test("isGroupId only accepts group jids", () => {
   assert.equal(isGroupId("120363000000000000@g.us"), true);
-  assert.equal(isGroupId("40722123456@s.whatsapp.net"), false);
+  assert.equal(isGroupId("15550100@s.whatsapp.net"), false);
 });

@@ -147,6 +147,6 @@ test("tilde replaces the home directory only as a prefix", () => {
 });
 
 test("maskNumber keeps the first three digits and groups the rest", () => {
-  assert.equal(maskNumber("40722123456"), "+40 7xx xxx xxx");
+  assert.equal(maskNumber("15550100"), "+15 5xx xxx");
   assert.equal(maskNumber("447700900123"), "+44 7xx xxx xxx x");
 });

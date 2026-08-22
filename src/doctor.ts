@@ -3,7 +3,7 @@ import { readLinkedAccount } from "./auth-state.js";
 import { WAZAP_VERSION, paths, type Config } from "./config.js";
 import { WazapError } from "./errors.js";
 import { lockHolder, lockPid } from "./lock.js";
-import { fail, fix, info, ok } from "./ui.js";
+import { dim, fail, fix, green, info, ok, red } from "./ui.js";
 
 export type CheckState = "ok" | "fail" | "info";
 
@@ -18,6 +18,8 @@ export const MARK: Record<CheckState, string> = { ok: "✓", fail: "✗", info: 
 
 const GLYPH: Record<CheckState, (text: string) => string> = { ok, fail, info };
 
+const TINT: Record<CheckState, (text: string) => string> = { ok: green, fail: red, info: dim };
+
 const UPDATE_TIMEOUT_MS = 2_000;
 const MIN_NODE_MAJOR = 20;
 
@@ -31,9 +33,14 @@ export async function runChecks(config: Config): Promise<Check[]> {
   return checks;
 }
 
-/** One line, everything on it. What pipes, logs and captured output get. */
+/**
+ * One line, everything on it. What pipes, logs and captured output get. Colour
+ * wraps the whole line rather than just the glyph: an escape landing between
+ * the mark and the name would split phrases that callers grep for.
+ */
 export function checkLine(check: Check): string {
-  return GLYPH[check.state](`${check.name}: ${check.detail}${check.fix ? ` — ${check.fix}` : ""}`);
+  const body = `${MARK[check.state]} ${check.name}: ${check.detail}${check.fix ? ` — ${check.fix}` : ""}`;
+  return TINT[check.state](body);
 }
 
 /** The same check for a human: no colon, and the repair on its own line. */

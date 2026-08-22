@@ -78,7 +78,7 @@ contacts and groups. Call get_status first if anything looks wrong.
 
 ## Identifiers
 - chat_id — individual: \`<digits>@s.whatsapp.net\`; group: \`<id>@g.us\`. A phone
-  number in international format (+40722123456 or 40722123456) also works. Pass
+  number in international format (+15550100 or 15550100) also works. Pass
   ids back exactly as a tool returned them.
 - message_id — the full id from read_messages / search_messages. Needed for
   get_message, download_media, react_to_message, edit_message, forward_message,

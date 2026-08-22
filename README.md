@@ -26,7 +26,7 @@ npx wazap-mcp connect claude-code    # write the MCP entry for your agent
 Then ask your agent: *"what did I miss on WhatsApp today?"*
 
 `login` shows a QR code; scan it from **Settings → Linked devices → Link a
-device**. No camera handy, or linking over SSH? `npx wazap-mcp login --phone +40722123456`
+device**. No camera handy, or linking over SSH? `npx wazap-mcp login --phone +15550100`
 prints an 8-character code you type under *Link with phone number instead*.
 It ends by asking whether the agent may send messages; the answer is no unless
 you say yes, and `npx wazap-mcp config writes on` changes it later.
@@ -218,7 +218,7 @@ Run wazap on a server of your own when the agent is not on your laptop: another 
 ```bash
 npm install -g wazap-mcp
 sudo useradd --system --home /var/lib/wazap --create-home wazap
-sudo -u wazap WAZAP_DATA_DIR=/var/lib/wazap wazap login --phone +40722123456   # pairing code works over SSH
+sudo -u wazap WAZAP_DATA_DIR=/var/lib/wazap wazap login --phone +15550100   # pairing code works over SSH
 sudo -u wazap tee /var/lib/wazap/.env >/dev/null <<END
 WAZAP_READ_TOKEN=$(openssl rand -hex 32)
 WAZAP_WRITE_TOKEN=$(openssl rand -hex 32)
@@ -235,7 +235,7 @@ The unit binds loopback only. Put TLS in front with the two-line [`deploy/Caddyf
 ```bash
 git clone https://github.com/razvangirgiz/wazap && cd wazap
 printf 'WAZAP_READ_TOKEN=%s\nWAZAP_WRITE_TOKEN=%s\n' $(openssl rand -hex 32) $(openssl rand -hex 32) > .env
-docker compose run --rm wazap login --phone +40722123456   # once; the session lands in the wazap-data volume
+docker compose run --rm wazap login --phone +15550100   # once; the session lands in the wazap-data volume
 docker compose up -d
 curl -s http://127.0.0.1:8766/healthz
 ```

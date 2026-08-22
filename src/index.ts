@@ -12,7 +12,7 @@ const USAGE = `${BANNER}
 
 Usage:
   wazap [serve] [--http] [--host <host>] [--port <port>]   Run the MCP server (default: stdio)
-  wazap login [--phone +40722123456] [--code]              Link a WhatsApp account (QR by default)
+  wazap login [--phone +15550100] [--code]              Link a WhatsApp account (QR by default)
   wazap connect <client> [--dry-run]                       Register wazap with an MCP client
   wazap config [writes on|off]                             Show the effective settings, or allow/refuse writes
   wazap status [--live] [--json]                           Check the install, the session and the server
