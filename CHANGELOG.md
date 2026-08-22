@@ -27,6 +27,9 @@ for one machine; this turns it into something a stranger can install with
 - A write rate limiter, 20 calls per minute by default (`WAZAP_RATE_LIMIT`,
   `0` disables).
 - New tools: `get_message`, `send_poll`, `send_location`, `edit_message`.
+- `Dockerfile`, `docker-compose.yml`, a systemd unit and a Caddyfile under
+  `deploy/`, with a Self-host section in the README; a "Works with" table for
+  Cursor, Codex, VS Code and Gemini CLI.
 - Five Agent Skills under `skills/` (`wazap-setup`, `whatsapp-inbox`,
   `whatsapp-recall`, `whatsapp-groups`, `whatsapp-send`) and a Claude Code
   plugin manifest that installs them together with the MCP server.

@@ -1,0 +1,22 @@
+[Unit]
+Description=wazap MCP server (WhatsApp for your AI agent)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=wazap
+Group=wazap
+Environment=WAZAP_DATA_DIR=/var/lib/wazap
+ExecStart=/usr/bin/env wazap serve --http
+Restart=always
+RestartSec=5
+KillSignal=SIGTERM
+TimeoutStopSec=15
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/wazap
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

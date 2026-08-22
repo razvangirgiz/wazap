@@ -136,8 +136,10 @@ export async function runHttp(wa: WhatsAppApi, config: Config): Promise<void> {
   app.get("/mcp", requireAuth, handleMcp);
   app.delete("/mcp", requireAuth, handleMcp);
 
+  // Unauthenticated, so it carries liveness only; the account and data dir
+  // stay behind the token in get_status.
   app.get("/healthz", (_req, res) => {
-    res.json({ ok: true, whatsapp: wa.getStatus() });
+    res.json({ ok: true, status: wa.getStatus().status });
   });
 
   await new Promise<void>((resolve) => {

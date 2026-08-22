@@ -1,0 +1,14 @@
+services:
+  wazap:
+    build: .
+    image: wazap
+    restart: unless-stopped
+    env_file: .env
+    ports:
+      - "127.0.0.1:8766:8766"
+    volumes:
+      - wazap-data:/data
+    stop_grace_period: 15s
+
+volumes:
+  wazap-data:

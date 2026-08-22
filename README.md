@@ -36,6 +36,20 @@ Any MCP client works the same way: the command is `npx -y wazap`, the transport
 is stdio. Tell the agent to call `learn` first — it returns the id formats, the
 workflows and every error code with what to do about it.
 
+### Other MCP clients
+
+wazap speaks plain MCP; nothing in it is specific to one agent. Same command everywhere, only the config file differs.
+
+| Client | File | Entry |
+| --- | --- | --- |
+| Cursor | `~/.cursor/mcp.json` | `{"mcpServers":{"whatsapp":{"command":"npx","args":["-y","wazap"]}}}` |
+| Codex CLI | `~/.codex/config.toml` | `[mcp_servers.whatsapp]`<br>`command = "npx"`<br>`args = ["-y", "wazap"]` |
+| VS Code | `.vscode/mcp.json` | `{"servers":{"whatsapp":{"type":"stdio","command":"npx","args":["-y","wazap"]}}}` |
+| Gemini CLI | `~/.gemini/settings.json` | `{"mcpServers":{"whatsapp":{"command":"npx","args":["-y","wazap"]}}}` |
+| Anything remote | client's MCP URL field | `https://your-host/mcp` with header `Authorization: Bearer <token>` (see [Self-host](#self-host)) |
+
+The `skills/` folder follows the [Agent Skills](https://agentskills.io) format, so Codex, Cursor and other skill-aware agents can load the same five skills.
+
 ## Tools
 
 | Tool | Kind | What it does |
@@ -156,6 +170,43 @@ Streamable HTTP at `/mcp`, with a health check at `/healthz`. Two bearer tokens:
 the read token gets the read tools, the write token also unlocks the write
 tools, so a leaked read token can never message anyone. wazap refuses to bind a
 non-loopback address without a read token.
+
+## Self-host
+
+Run wazap on a server of your own when the agent is not on your laptop: another machine, a VPS, a client's infrastructure. The session stays on that server; nothing goes through a third party.
+
+### With systemd
+
+```bash
+npm install -g wazap
+sudo useradd --system --home /var/lib/wazap --create-home wazap
+sudo -u wazap WAZAP_DATA_DIR=/var/lib/wazap wazap login --phone +40722123456   # pairing code works over SSH
+sudo -u wazap tee /var/lib/wazap/.env >/dev/null <<END
+WAZAP_READ_TOKEN=$(openssl rand -hex 32)
+WAZAP_WRITE_TOKEN=$(openssl rand -hex 32)
+END
+sudo curl -fsSL https://raw.githubusercontent.com/razvangirgiz/wazap/main/deploy/wazap.service -o /etc/systemd/system/wazap.service
+sudo systemctl enable --now wazap
+curl -s http://127.0.0.1:8766/healthz
+```
+
+The unit binds loopback only. Put TLS in front with the two-line [`deploy/Caddyfile`](deploy/Caddyfile) (`caddy run --config deploy/Caddyfile` after editing the hostname) or any reverse proxy, then point the client at `https://your-host/mcp` with `Authorization: Bearer <read or write token>`.
+
+### With Docker
+
+```bash
+git clone https://github.com/razvangirgiz/wazap && cd wazap
+printf 'WAZAP_READ_TOKEN=%s\nWAZAP_WRITE_TOKEN=%s\n' $(openssl rand -hex 32) $(openssl rand -hex 32) > .env
+docker compose run --rm wazap login --phone +40722123456   # once; the session lands in the wazap-data volume
+docker compose up -d
+curl -s http://127.0.0.1:8766/healthz
+```
+
+The container publishes `8766` on loopback only; add the same TLS proxy in front. Upgrading is `git pull && docker compose up -d --build`; the volume keeps the session.
+
+### Which clients can reach it
+
+Claude Code, Claude Desktop, Cursor, Codex, VS Code and any client with an "MCP URL + header" field connect with the bearer token. claude.ai Connectors require OAuth rather than a static token, so they cannot use a self-hosted wazap yet. Keep the read token in clients that only need to read; hand out the write token deliberately.
 
 ## Settings
 
