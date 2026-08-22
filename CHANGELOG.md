@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.9.1
+
+### Changed
+
+- The CLI draws for a human at a terminal: a brand-coloured banner, numbered
+  steps through `login` with the pairing code in a box and a spinner counting it
+  down, an aligned `status` block, and one `Next` line telling you the single
+  command to run. Failures render as `✗ what happened` with `→ the repair`
+  under them. Colour is on only when stderr is a terminal and `NO_COLOR` is
+  unset; `FORCE_COLOR` decides either way, and piped output keeps the same
+  words it had before.
+- The linked account's number is masked wherever it is printed, so a `status`
+  screenshot no longer carries it.
+
 ## 0.9.0
 
 First release under the name `wazap`. The project was a developer's MCP server
