@@ -520,6 +520,7 @@ export class WhatsAppService implements WhatsAppApi {
 
   sendMessage(chatId: string, text: string, replyTo?: string, mentionIds?: string[]): Promise<SentMessage> {
     return this.guarded(async () => {
+      this.beginWrite();
       if (text.length > MAX_TEXT_CHARS) {
         throw new WazapError("TEXT_TOO_LONG", `The text is ${text.length} characters; WhatsApp allows ${MAX_TEXT_CHARS}.`);
       }
@@ -573,6 +574,7 @@ export class WhatsAppService implements WhatsAppApi {
 
   editMessage(messageId: string, text: string): Promise<SentMessage> {
     return this.guarded(async () => {
+      this.beginWrite();
       if (text.length > MAX_TEXT_CHARS) {
         throw new WazapError("TEXT_TOO_LONG", `The text is ${text.length} characters; WhatsApp allows ${MAX_TEXT_CHARS}.`);
       }
@@ -592,6 +594,7 @@ export class WhatsAppService implements WhatsAppApi {
 
   reactToMessage(messageId: string, emoji: string): Promise<{ message_id: string; emoji: string }> {
     return this.guarded(async () => {
+      this.beginWrite();
       const raw = this.messageOrThrow(messageId);
       const { sock, jid } = await this.prepareSend(this.chatOfOrThrow(messageId));
       await sock.sendMessage(jid, { react: { text: emoji, key: raw.key } });
@@ -601,6 +604,7 @@ export class WhatsAppService implements WhatsAppApi {
 
   forwardMessage(messageId: string, toChatId: string): Promise<SentMessage> {
     return this.guarded(async () => {
+      this.beginWrite();
       const raw = this.messageOrThrow(messageId);
       const { sock, jid } = await this.prepareSend(toChatId);
       const sent = await sock.sendMessage(jid, { forward: raw });
@@ -610,6 +614,7 @@ export class WhatsAppService implements WhatsAppApi {
 
   deleteMessage(messageId: string, forEveryone: boolean): Promise<{ message_id: string; for_everyone: boolean }> {
     return this.guarded(async () => {
+      this.beginWrite();
       const raw = this.messageOrThrow(messageId);
       if (!forEveryone) {
         throw new WazapError(
@@ -632,8 +637,7 @@ export class WhatsAppService implements WhatsAppApi {
 
   manageChat(chatId: string, action: ChatAction, muteHours?: number): Promise<ChatActionResult> {
     return this.guarded(async () => {
-      this.assertWritable();
-      const sock = this.ensureConnected();
+      const sock = this.beginWrite();
       const jid = this.resolveId(chatId);
       const last = this.lastMessageOf(jid);
       const lastMessages = last ? [last] : [];
@@ -668,8 +672,7 @@ export class WhatsAppService implements WhatsAppApi {
 
   createGroup(name: string, participantIds: string[]): Promise<{ chat_id: string; participants: ParticipantResult[] }> {
     return this.guarded(async () => {
-      this.assertWritable();
-      const sock = this.ensureConnected();
+      const sock = this.beginWrite();
       const ids = participantIds.map((id) => this.resolveId(id));
       const meta = await sock.groupCreate(name, ids);
       this.groupCache.set(this.canonical(meta.id), meta);
@@ -692,8 +695,7 @@ export class WhatsAppService implements WhatsAppApi {
     value?: string,
   ): Promise<GroupActionResult> {
     return this.guarded(async () => {
-      this.assertWritable();
-      const sock = this.ensureConnected();
+      const sock = this.beginWrite();
       const jid = this.resolveId(groupId);
       if (!isGroupId(jid)) {
         throw new WazapError("GROUP_NOT_FOUND", `"${groupId}" is not a group id.`, "Group ids end in @g.us");
@@ -752,8 +754,6 @@ export class WhatsAppService implements WhatsAppApi {
       }
     });
   }
-
-  // ---- connection ------------------------------------------------------------
 
   /** Close the current socket and mute it, so a socket we are replacing can no
    * longer emit a close event and trigger a reconnect of its own. */
@@ -986,8 +986,6 @@ export class WhatsAppService implements WhatsAppApi {
     return lid !== undefined && jidNormalizedUser(lid) === jidNormalizedUser(jid);
   }
 
-  // ---- sync ------------------------------------------------------------------
-
   private armSyncDeadline(): void {
     if (this.syncDeadline) clearTimeout(this.syncDeadline);
     this.syncDeadline = setTimeout(() => this.markSyncDone(), SYNC_WAIT_MS);
@@ -1040,8 +1038,6 @@ export class WhatsAppService implements WhatsAppApi {
     return { data, sync: this.syncState() };
   }
 
-  // ---- guards ----------------------------------------------------------------
-
   /** Every public method funnels through here, so no raw Baileys error escapes. */
   private async guarded<T>(work: () => Promise<T>): Promise<T> {
     try {
@@ -1071,16 +1067,17 @@ export class WhatsAppService implements WhatsAppApi {
     }
   }
 
-  private assertWritable(): void {
+  /** First statement of every write, so a broken link is reported before anything else. */
+  private beginWrite(): WASocket {
     if (this.config.readOnly) {
       throw new WazapError("READ_ONLY", "wazap runs read-only, so this write is refused.");
     }
+    return this.ensureConnected();
   }
 
   /** The single gate every send path passes: writability, addressability, announce-only. */
   private async prepareSend(chatId: string): Promise<{ sock: WASocket; jid: string }> {
-    this.assertWritable();
-    const sock = this.ensureConnected();
+    const sock = this.beginWrite();
     const jid = this.resolveId(chatId);
 
     if (isGroupId(jid)) {
@@ -1100,8 +1097,6 @@ export class WhatsAppService implements WhatsAppApi {
     }
     return { sock, jid };
   }
-
-  // ---- groups ----------------------------------------------------------------
 
   private async groupMeta(jid: string, fresh = false): Promise<GroupMetadata> {
     const cached = this.groupCache.get(jid);
@@ -1148,8 +1143,6 @@ export class WhatsAppService implements WhatsAppApi {
     }
     return { id, status: "failed", reason: entry.status };
   }
-
-  // ---- store views -----------------------------------------------------------
 
   private resolveId(input: string): string {
     return resolveChatId(input, (lid) => this.lidToPn.get(lid));
@@ -1312,8 +1305,6 @@ export class WhatsAppService implements WhatsAppApi {
     return { message_id: sid, chat_id: jid, text, timestamp: isoWithOffset(messageTimestampMs(sent)) };
   }
 
-  // ---- ingest ----------------------------------------------------------------
-
   private ingestChat(chat: BaileysChat): void {
     if (!chat.id) return;
     if (chat.lidJid && chat.pnJid) this.learnLid(chat.lidJid, chat.pnJid);
@@ -1341,8 +1332,6 @@ export class WhatsAppService implements WhatsAppApi {
     }
     return stored;
   }
-
-  // ---- persistence -----------------------------------------------------------
 
   private async loadPersisted(): Promise<void> {
     if (!this.config.persistHistory || this.persistedLoaded) return;
@@ -1462,8 +1451,6 @@ export class WhatsAppService implements WhatsAppApi {
     }
   }
 }
-
-// ---- module helpers ----------------------------------------------------------
 
 const ADMIN_ACTIONS = new Set<GroupAction>([
   "add",
