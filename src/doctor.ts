@@ -119,7 +119,9 @@ async function checkUpdate(): Promise<Check> {
     const response = await fetch("https://registry.npmjs.org/wazap/latest", {
       signal: AbortSignal.timeout(UPDATE_TIMEOUT_MS),
     });
-    if (!response.ok) throw new Error(String(response.status));
+    if (!response.ok) {
+      return { name: "update", state: "info", detail: `update check skipped (registry answered ${response.status})` };
+    }
     const { version } = (await response.json()) as { version: string };
     return isNewer(version, WAZAP_VERSION)
       ? { name: "update", state: "info", detail: `${version} is out (running ${WAZAP_VERSION})`, fix: "run `npx wazap@latest`" }

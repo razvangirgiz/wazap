@@ -3,11 +3,11 @@ import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { delimiter, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 
-import { isNpxPath } from "../dist/connect.js";
+import { isNpxPath, launcher } from "../dist/connect.js";
 
 const run = promisify(execFile);
 const binary = join(dirname(fileURLToPath(import.meta.url)), "..", "dist", "index.js");
@@ -15,13 +15,22 @@ const binary = join(dirname(fileURLToPath(import.meta.url)), "..", "dist", "inde
 function sandbox() {
   const home = mkdtempSync(join(tmpdir(), "wazap-home-"));
   const cwd = mkdtempSync(join(tmpdir(), "wazap-cwd-"));
-  return { home, cwd };
+  const bin = join(home, "bin");
+  mkdirSync(bin);
+  writeFileSync(join(bin, "wazap"), "", { mode: 0o755 });
+  return { home, cwd, bin };
 }
 
 function connect(box, ...args) {
   return run(process.execPath, [binary, "connect", ...args], {
     cwd: box.cwd,
-    env: { ...process.env, HOME: box.home, USERPROFILE: box.home, APPDATA: join(box.home, "AppData", "Roaming") },
+    env: {
+      ...process.env,
+      HOME: box.home,
+      USERPROFILE: box.home,
+      APPDATA: join(box.home, "AppData", "Roaming"),
+      PATH: `${box.bin}${delimiter}${process.env.PATH ?? ""}`,
+    },
   });
 }
 
@@ -140,6 +149,18 @@ const BIN_PATHS = [
 for (const [binPath, expected] of BIN_PATHS) {
   test(`isNpxPath ${binPath || "(empty)"} is ${expected}`, () => {
     assert.equal(isNpxPath(binPath), expected);
+  });
+}
+
+const LAUNCHERS = [
+  ["/Users/x/.npm/_npx/8a1b/node_modules/wazap/dist/index.js", "/usr/bin", [], { command: "npx", args: ["-y", "wazap"] }],
+  ["/usr/local/lib/node_modules/wazap/dist/index.js", "/usr/local/bin:/usr/bin", ["/usr/local/bin/wazap"], { command: "wazap", args: [] }],
+  ["/Users/x/Projects/wazap/dist/index.js", "/usr/local/bin:/usr/bin", [], { command: "node", args: ["/Users/x/Projects/wazap/dist/index.js"] }],
+];
+
+for (const [binPath, pathEnv, present, expected] of LAUNCHERS) {
+  test(`launcher for ${binPath} is ${expected.command}`, () => {
+    assert.deepEqual(launcher(binPath, pathEnv, (p) => present.includes(p)), expected);
   });
 }
 

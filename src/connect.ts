@@ -1,7 +1,7 @@
 import { spawnSync } from "node:child_process";
 import { copyFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { dirname, join } from "node:path";
+import { delimiter, dirname, join, resolve } from "node:path";
 import { defaultDataDir, type Config } from "./config.js";
 import { WazapError } from "./errors.js";
 import { say } from "./logger.js";
@@ -97,14 +97,29 @@ export function isNpxPath(binPath: string): boolean {
   return /[\\/]_npx[\\/]/.test(binPath);
 }
 
+const PATH_NAMES = process.platform === "win32" ? ["wazap.cmd", "wazap"] : ["wazap"];
+
+export function onPath(pathEnv: string, exists: (p: string) => boolean = existsSync): boolean {
+  return pathEnv
+    .split(delimiter)
+    .filter(Boolean)
+    .some((dir) => PATH_NAMES.some((name) => exists(join(dir, name))));
+}
+
 /**
- * What the client should run. A global install is reused directly; anything
- * else goes through npx, which is how the package is normally reached.
+ * How the client should launch wazap, from how it was launched now: through
+ * npx, as a global binary on PATH, or straight from a checkout that is on
+ * neither. A checkout written as `wazap` would point the client at a command
+ * that does not exist.
  */
+export function launcher(binPath: string, pathEnv: string, exists?: (p: string) => boolean): McpEntry {
+  if (isNpxPath(binPath)) return { command: "npx", args: ["-y", "wazap"] };
+  if (onPath(pathEnv, exists)) return { command: "wazap", args: [] };
+  return { command: "node", args: [resolve(binPath)] };
+}
+
 export function mcpEntry(config: Config): McpEntry {
-  const entry: McpEntry = isNpxPath(process.argv[1] ?? "")
-    ? { command: "npx", args: ["-y", "wazap"] }
-    : { command: "wazap", args: [] };
+  const entry = launcher(process.argv[1] ?? "", process.env.PATH ?? "");
   if (config.dataDir !== defaultDataDir()) entry.args.push("--data-dir", config.dataDir);
   if (config.readOnly) entry.args.push("--read-only");
   return entry;
