@@ -1,18 +1,13 @@
 #!/usr/bin/env node
-import { runLogin, runLogout, runServe, runStatus } from "./cli.js";
-import { WAZAP_VERSION, parseCli } from "./config.js";
+import { BANNER } from "./banner.js";
+import { runGreet, runLogin, runLogout, runServe, runStatus } from "./cli.js";
+import { WAZAP_VERSION, parseCli, pickDefaultAction } from "./config.js";
 import { CLIENT_NAMES, runConnect } from "./connect.js";
 import { runConfig } from "./settings.js";
 import { WazapError } from "./errors.js";
 import { say } from "./logger.js";
 
-const USAGE = `██╗    ██╗ █████╗ ███████╗ █████╗ ██████╗
-██║    ██║██╔══██╗╚══███╔╝██╔══██╗██╔══██╗
-██║ █╗ ██║███████║  ███╔╝ ███████║██████╔╝
-██║███╗██║██╔══██║ ███╔╝  ██╔══██║██╔═══╝
-╚███╔███╔╝██║  ██║███████╗██║  ██║██║
- ╚══╝╚══╝ ╚═╝  ╚═╝╚══════╝╚═╝  ╚═╝╚═╝
-WhatsApp for your AI agent.
+const USAGE = `${BANNER}
 
 Usage:
   wazap [serve] [--http] [--host <host>] [--port <port>]   Run the MCP server (default: stdio)
@@ -56,6 +51,10 @@ async function main(): Promise<void> {
   const { config } = invocation;
   switch (config.command) {
     case "serve":
+      if (pickDefaultAction(config, process.stdin.isTTY === true, process.stderr.isTTY === true) === "greet") {
+        runGreet(config);
+        return;
+      }
       await runServe(config);
       return;
     case "login":

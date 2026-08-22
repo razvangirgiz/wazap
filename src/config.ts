@@ -29,6 +29,8 @@ export interface Config {
   rateLimitPerMinute: number;
   sources: Record<"dataDir" | "readOnly" | "transport" | "rateLimit", Source>;
   command: Command;
+  /** The command was named on the command line rather than defaulted to serve. */
+  explicitCommand: boolean;
   /** Positionals after the command: the client for `connect`, the setting for `config`. */
   args: string[];
   dryRun: boolean;
@@ -89,6 +91,22 @@ function asBool(value: string | undefined, fallback: boolean): boolean {
 function asInt(value: string | undefined, fallback: number): number {
   const n = Number.parseInt((value ?? "").trim(), 10);
   return Number.isFinite(n) ? n : fallback;
+}
+
+export type DefaultAction = "serve" | "greet";
+
+/**
+ * A human at a terminal running bare `wazap` wants to see where they stand, not
+ * a silent MCP server on stdin. Everything else serves, including `wazap serve`.
+ */
+export function pickDefaultAction(
+  config: Pick<Config, "command" | "explicitCommand" | "transport">,
+  stdinTTY: boolean,
+  stderrTTY: boolean,
+): DefaultAction {
+  const human =
+    config.command === "serve" && !config.explicitCommand && config.transport === "stdio" && stdinTTY && stderrTTY;
+  return human ? "greet" : "serve";
 }
 
 export function parseCli(argv: string[] = process.argv.slice(2)): CliInvocation {
@@ -165,6 +183,7 @@ export function parseCli(argv: string[] = process.argv.slice(2)): CliInvocation 
         rateLimit: sourceOf("WAZAP_RATE_LIMIT", false),
       },
       command,
+      explicitCommand: first !== undefined,
       args,
       dryRun: values["dry-run"] === true,
       loginPhone: values.phone,

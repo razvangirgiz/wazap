@@ -16,11 +16,19 @@ import assert from "node:assert/strict";
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
 const EXPECTED_TOOL_COUNT = 22;
 
-export async function runSmoke({ binary = join(repoRoot, "dist", "index.js"), log = () => {} } = {}) {
-  const dataDir = mkdtempSync(join(tmpdir(), "wazap-smoke-"));
-  const child = spawn(process.execPath, [binary, "--data-dir", dataDir], {
+export async function runSmoke({
+  binary = join(repoRoot, "dist", "index.js"),
+  log = () => {},
+  args = [],
+  env = {},
+  dataDir = mkdtempSync(join(tmpdir(), "wazap-smoke-")),
+  keepDataDir = false,
+  expectedTools = EXPECTED_TOOL_COUNT,
+  expectReadOnly = false,
+} = {}) {
+  const child = spawn(process.execPath, [binary, ...args, "--data-dir", dataDir], {
     stdio: ["pipe", "pipe", "pipe"],
-    env: { ...process.env, WAZAP_READ_TOKEN: "", WAZAP_WRITE_TOKEN: "" },
+    env: { ...process.env, WAZAP_READ_TOKEN: "", WAZAP_WRITE_TOKEN: "", ...env },
   });
 
   const stderr = [];
@@ -72,14 +80,14 @@ export async function runSmoke({ binary = join(repoRoot, "dist", "index.js"), lo
     const list = await request("tools/list", {});
     assert.equal(list.error, undefined, `tools/list failed: ${JSON.stringify(list.error)}`);
     const names = list.result.tools.map((t) => t.name).sort();
-    assert.equal(names.length, EXPECTED_TOOL_COUNT, `expected ${EXPECTED_TOOL_COUNT} tools, got ${names.length}: ${names}`);
+    assert.equal(names.length, expectedTools, `expected ${expectedTools} tools, got ${names.length}: ${names}`);
     log(`tools/list ok — ${names.length} tools`);
 
     const status = await request("tools/call", { name: "get_status", arguments: {} });
     assert.equal(status.error, undefined, `get_status failed: ${JSON.stringify(status.error)}`);
     const structured = status.result.structuredContent;
     assert.equal(structured.status, "not_linked", `expected not_linked, got ${structured.status}`);
-    assert.equal(structured.read_only, false);
+    assert.equal(structured.read_only, expectReadOnly);
     assert.equal(structured.data_dir, dataDir);
     log(`get_status ok — status=${structured.status} data_dir=${structured.data_dir}`);
 
@@ -90,7 +98,7 @@ export async function runSmoke({ binary = join(repoRoot, "dist", "index.js"), lo
   } finally {
     child.kill("SIGTERM");
     await new Promise((resolve) => child.once("exit", resolve));
-    rmSync(dataDir, { recursive: true, force: true });
+    if (!keepDataDir) rmSync(dataDir, { recursive: true, force: true });
   }
 }
 

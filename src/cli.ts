@@ -8,6 +8,7 @@ import makeWASocket, {
 } from "baileys";
 import qrcode from "qrcode";
 import qrcodeTerminal from "qrcode-terminal";
+import { BANNER } from "./banner.js";
 import { clearAuth, readLinkedAccount, useAtomicAuthState, type LinkedAccount } from "./auth-state.js";
 import { BAILEYS_VERSION, WAZAP_VERSION, paths, type Config } from "./config.js";
 import { CONNECT_HINT } from "./connect.js";
@@ -61,6 +62,32 @@ export function runStatus(config: Config): void {
 
   const pid = lockHolder(p.lockFile);
   say(pid === null ? "server: not running" : `server: running (pid ${pid})`);
+}
+
+/** Bare `wazap` at a terminal: where you stand, and the one command to run next. */
+export function runGreet(config: Config): void {
+  say(BANNER);
+  say("");
+  runStatus(config);
+  say("");
+
+  const p = paths(config.dataDir);
+  const running = lockHolder(p.lockFile);
+  if (running !== null) {
+    say(`A server is already running (pid ${running}).`);
+    return;
+  }
+  let linked = false;
+  try {
+    linked = readLinkedAccount(p.authDir) !== null;
+  } catch {
+    linked = false;
+  }
+  say(
+    linked
+      ? 'Next: wazap connect claude-code   (then ask your agent: "what did I miss on WhatsApp today?")'
+      : "Next: wazap login",
+  );
 }
 
 export async function runServe(config: Config): Promise<void> {
