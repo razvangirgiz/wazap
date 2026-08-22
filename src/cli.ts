@@ -11,6 +11,7 @@ import qrcodeTerminal from "qrcode-terminal";
 import { clearAuth, readLinkedAccount, useAtomicAuthState, type LinkedAccount } from "./auth-state.js";
 import { BAILEYS_VERSION, WAZAP_VERSION, paths, type Config } from "./config.js";
 import { CONNECT_HINT } from "./connect.js";
+import { applyWrites, writesLine } from "./settings.js";
 import { RELINK_FIX, WazapError, asWazapError } from "./errors.js";
 import { normalizePhone } from "./ids.js";
 import { lockHolder, releaseLock, writeLock } from "./lock.js";
@@ -54,6 +55,7 @@ export function runStatus(config: Config): void {
     say("linked: no");
   }
 
+  say(writesLine(config));
   say(`wazap: ${WAZAP_VERSION}`);
   say(`baileys: ${BAILEYS_VERSION}`);
 
@@ -129,8 +131,9 @@ export async function runLogin(config: Config): Promise<void> {
   const sock = await linkSession(p.authDir, { deadline: Date.now() + LOGIN_TIMEOUT_MS, onQr });
   const account = await settledAccount(sock, p.authDir);
   say(`Linked ✅ as ${describeAccount(account)}`);
-  say(CONNECT_HINT);
   await sock.end(undefined);
+  await offerWrites(config);
+  say(CONNECT_HINT);
   process.exit(0);
 }
 
@@ -177,13 +180,31 @@ function describeAccount(account: LinkedAccount): string {
   return account.name ? `${account.name} (${account.number})` : account.number;
 }
 
-async function askPhone(): Promise<string> {
+/**
+ * Writes stay off unless the user says otherwise, so a fresh link cannot message
+ * anyone. A non-interactive login leaves the setting alone rather than guessing.
+ */
+async function offerWrites(config: Config): Promise<void> {
+  if (config.writesAnswer !== null) {
+    applyWrites(config, config.writesAnswer);
+    return;
+  }
+  if (config.assumeYes || !process.stdin.isTTY) return;
+  const answer = await ask("Allow the agent to send messages, react and manage chats? [y/N] ");
+  applyWrites(config, /^y(es)?$/i.test(answer.trim()));
+}
+
+async function ask(question: string): Promise<string> {
   const rl = createInterface({ input: process.stdin, output: process.stderr });
   try {
-    return await rl.question("Phone number in international format (e.g. +40722123456): ");
+    return await rl.question(question);
   } finally {
     rl.close();
   }
+}
+
+function askPhone(): Promise<string> {
+  return ask("Phone number in international format (e.g. +40722123456): ");
 }
 
 type Attempt =

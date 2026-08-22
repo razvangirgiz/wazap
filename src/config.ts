@@ -9,6 +9,9 @@ const require = createRequire(import.meta.url);
 export const WAZAP_VERSION: string = (require("../package.json") as { version: string }).version;
 export const BAILEYS_VERSION: string = (require("baileys/package.json") as { version: string }).version;
 
+/** Where an effective setting came from, in precedence order. */
+export type Source = "flag" | "env" | ".env" | "default";
+
 export type Command = "serve" | "login" | "status" | "logout" | "connect" | "config";
 
 export interface Config {
@@ -24,12 +27,16 @@ export interface Config {
   writeToken: string | null;
   /** Write-tool token bucket, per minute. 0 disables the limit. */
   rateLimitPerMinute: number;
+  sources: Record<"dataDir" | "readOnly" | "transport" | "rateLimit", Source>;
   command: Command;
   /** Positionals after the command: the client for `connect`, the setting for `config`. */
   args: string[];
   dryRun: boolean;
   loginPhone?: string;
   loginQr: boolean;
+  /** `login` asks about writes unless a flag already answered. */
+  writesAnswer: boolean | null;
+  assumeYes: boolean;
 }
 
 export interface Paths {
@@ -99,6 +106,9 @@ export function parseCli(argv: string[] = process.argv.slice(2)): CliInvocation 
         phone: { type: "string" },
         qr: { type: "boolean" },
         "dry-run": { type: "boolean" },
+        writes: { type: "boolean" },
+        "no-writes": { type: "boolean" },
+        yes: { type: "boolean", short: "y" },
         help: { type: "boolean", short: "h" },
         version: { type: "boolean", short: "v" },
       },
@@ -121,7 +131,16 @@ export function parseCli(argv: string[] = process.argv.slice(2)): CliInvocation 
   }
 
   const dataDir = resolve(values["data-dir"] ?? process.env.WAZAP_DATA_DIR ?? defaultDataDir());
+
+  // Snapshot before dotenv, which fills process.env from the data dir's .env
+  // without overriding what the real environment already set.
+  const shell = new Set(Object.keys(process.env).filter((key) => key.startsWith("WAZAP_")));
   dotenv.config({ path: paths(dataDir).envFile, quiet: true });
+  const sourceOf = (key: string, flagged: boolean): Source => {
+    if (flagged) return "flag";
+    if (shell.has(key)) return "env";
+    return process.env[key] === undefined ? "default" : ".env";
+  };
 
   const httpFromEnv = process.env.WAZAP_TRANSPORT?.trim().toLowerCase() === "http";
 
@@ -138,11 +157,20 @@ export function parseCli(argv: string[] = process.argv.slice(2)): CliInvocation 
       readToken: (process.env.WAZAP_READ_TOKEN ?? "").trim() || null,
       writeToken: (process.env.WAZAP_WRITE_TOKEN ?? "").trim() || null,
       rateLimitPerMinute: asInt(process.env.WAZAP_RATE_LIMIT, 20),
+      sources: {
+        // Resolved before dotenv runs, so the data dir's own .env cannot name it.
+        dataDir: values["data-dir"] !== undefined ? "flag" : shell.has("WAZAP_DATA_DIR") ? "env" : "default",
+        readOnly: sourceOf("WAZAP_READ_ONLY", values["read-only"] === true),
+        transport: sourceOf("WAZAP_TRANSPORT", values.http === true),
+        rateLimit: sourceOf("WAZAP_RATE_LIMIT", false),
+      },
       command,
       args,
       dryRun: values["dry-run"] === true,
       loginPhone: values.phone,
       loginQr: values.qr === true,
+      writesAnswer: values.writes === true ? true : values["no-writes"] === true ? false : null,
+      assumeYes: values.yes === true,
     },
   };
 }

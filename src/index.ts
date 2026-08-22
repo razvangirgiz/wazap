@@ -2,6 +2,7 @@
 import { runLogin, runLogout, runServe, runStatus } from "./cli.js";
 import { WAZAP_VERSION, parseCli } from "./config.js";
 import { CLIENT_NAMES, runConnect } from "./connect.js";
+import { runConfig } from "./settings.js";
 import { WazapError } from "./errors.js";
 import { say } from "./logger.js";
 
@@ -17,6 +18,7 @@ Usage:
   wazap [serve] [--http] [--host <host>] [--port <port>]   Run the MCP server (default: stdio)
   wazap login [--phone +40722123456] [--qr]                Link a WhatsApp account
   wazap connect <client> [--dry-run]                       Register wazap with an MCP client
+  wazap config [writes on|off]                             Show the effective settings, or allow/refuse writes
   wazap status                                             Show what is linked and whether a server is running
   wazap logout                                             Unlink and delete local credentials
 
@@ -31,6 +33,8 @@ Options:
   --phone <number>    Phone number in international format, for login
   --qr                Log in by QR code instead of a pairing code
   --dry-run           With connect: print what would be written, and write nothing
+  --writes/--no-writes  Answer login's writes question without being asked
+  -y, --yes           Do not ask anything at the end of login
   -h, --help          Show this help
   -v, --version       Show the version
 
@@ -59,6 +63,9 @@ async function main(): Promise<void> {
       return;
     case "connect":
       runConnect(config);
+      return;
+    case "config":
+      runConfig(config);
       return;
     case "status":
       runStatus(config);
