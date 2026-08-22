@@ -92,6 +92,7 @@ const CHOICES = [
   ["1 3", ["claude-code", "cursor"]],
   ["9", null],
   ["x", null],
+  ["1 1", ["claude-code"]],
 ];
 
 for (const [answer, expected] of CHOICES) {

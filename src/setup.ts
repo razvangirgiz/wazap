@@ -18,7 +18,7 @@ export async function runSetup(config: Config): Promise<void> {
   announce("Connect");
   const chosen = await chooseClients(config);
   if (chosen.length === 0) {
-    say(info("No MCP client detected."));
+    say(info("No client connected yet."));
     say(connectNext());
   }
   for (const spec of chosen) connectClient(spec, config);
@@ -66,11 +66,11 @@ export function parseChoice(answer: string, detected: readonly ClientSpec[]): Cl
   if (/^all$/i.test(text)) return [...CLIENTS];
   if (/^none$/i.test(text)) return [];
 
-  const picked: ClientSpec[] = [];
+  const picked = new Set<ClientSpec>();
   for (const token of text.split(/[\s,]+/)) {
     const n = Number(token);
     if (!Number.isInteger(n) || n < 1 || n > CLIENTS.length) return null;
-    picked.push(CLIENTS[n - 1]!);
+    picked.add(CLIENTS[n - 1]!);
   }
-  return picked;
+  return [...picked];
 }
