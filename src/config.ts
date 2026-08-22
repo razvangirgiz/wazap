@@ -9,7 +9,7 @@ const require = createRequire(import.meta.url);
 export const WAZAP_VERSION: string = (require("../package.json") as { version: string }).version;
 export const BAILEYS_VERSION: string = (require("baileys/package.json") as { version: string }).version;
 
-export type Command = "serve" | "login" | "status" | "logout";
+export type Command = "serve" | "login" | "status" | "logout" | "connect" | "config";
 
 export interface Config {
   dataDir: string;
@@ -25,6 +25,9 @@ export interface Config {
   /** Write-tool token bucket, per minute. 0 disables the limit. */
   rateLimitPerMinute: number;
   command: Command;
+  /** Positionals after the command: the client for `connect`, the setting for `config`. */
+  args: string[];
+  dryRun: boolean;
   loginPhone?: string;
   loginQr: boolean;
 }
@@ -55,7 +58,21 @@ export function paths(dataDir: string): Paths {
 
 export type CliInvocation = { kind: "help" } | { kind: "version" } | { kind: "run"; config: Config };
 
-const COMMANDS: readonly Command[] = ["serve", "login", "status", "logout"];
+/** How many positionals each command takes after its own name. */
+const COMMAND_ARGS: Record<Command, readonly number[]> = {
+  serve: [0],
+  login: [0],
+  status: [0],
+  logout: [0],
+  connect: [1],
+  config: [0, 2],
+};
+
+const COMMANDS = Object.keys(COMMAND_ARGS) as readonly Command[];
+
+export function defaultDataDir(): string {
+  return resolve(join(homedir(), ".wazap"));
+}
 
 function asBool(value: string | undefined, fallback: boolean): boolean {
   if (value === undefined) return fallback;
@@ -81,6 +98,7 @@ export function parseCli(argv: string[] = process.argv.slice(2)): CliInvocation 
         port: { type: "string" },
         phone: { type: "string" },
         qr: { type: "boolean" },
+        "dry-run": { type: "boolean" },
         help: { type: "boolean", short: "h" },
         version: { type: "boolean", short: "v" },
       },
@@ -93,16 +111,16 @@ export function parseCli(argv: string[] = process.argv.slice(2)): CliInvocation 
   if (values.help) return { kind: "help" };
   if (values.version) return { kind: "version" };
 
-  const [first, ...rest] = positionals;
-  if (rest.length > 0) {
-    throw new WazapError("INVALID_ID", `Unexpected argument "${rest[0]}".`, "Run `wazap --help`");
-  }
+  const [first, ...args] = positionals;
   if (first !== undefined && !COMMANDS.includes(first as Command)) {
     throw new WazapError("INVALID_ID", `Unknown command "${first}".`, "Run `wazap --help`");
   }
   const command = (first as Command | undefined) ?? "serve";
+  if (!COMMAND_ARGS[command].includes(args.length)) {
+    throw new WazapError("INVALID_ID", `Wrong arguments for \`wazap ${command}\`.`, "Run `wazap --help`");
+  }
 
-  const dataDir = resolve(values["data-dir"] ?? process.env.WAZAP_DATA_DIR ?? join(homedir(), ".wazap"));
+  const dataDir = resolve(values["data-dir"] ?? process.env.WAZAP_DATA_DIR ?? defaultDataDir());
   dotenv.config({ path: paths(dataDir).envFile, quiet: true });
 
   const httpFromEnv = process.env.WAZAP_TRANSPORT?.trim().toLowerCase() === "http";
@@ -121,6 +139,8 @@ export function parseCli(argv: string[] = process.argv.slice(2)): CliInvocation 
       writeToken: (process.env.WAZAP_WRITE_TOKEN ?? "").trim() || null,
       rateLimitPerMinute: asInt(process.env.WAZAP_RATE_LIMIT, 20),
       command,
+      args,
+      dryRun: values["dry-run"] === true,
       loginPhone: values.phone,
       loginQr: values.qr === true,
     },

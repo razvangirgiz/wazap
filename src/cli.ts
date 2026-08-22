@@ -10,6 +10,7 @@ import qrcode from "qrcode";
 import qrcodeTerminal from "qrcode-terminal";
 import { clearAuth, readLinkedAccount, useAtomicAuthState, type LinkedAccount } from "./auth-state.js";
 import { BAILEYS_VERSION, WAZAP_VERSION, paths, type Config } from "./config.js";
+import { CONNECT_HINT } from "./connect.js";
 import { RELINK_FIX, WazapError, asWazapError } from "./errors.js";
 import { normalizePhone } from "./ids.js";
 import { lockHolder, releaseLock, writeLock } from "./lock.js";
@@ -128,6 +129,7 @@ export async function runLogin(config: Config): Promise<void> {
   const sock = await linkSession(p.authDir, { deadline: Date.now() + LOGIN_TIMEOUT_MS, onQr });
   const account = await settledAccount(sock, p.authDir);
   say(`Linked ✅ as ${describeAccount(account)}`);
+  say(CONNECT_HINT);
   await sock.end(undefined);
   process.exit(0);
 }

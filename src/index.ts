@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { runLogin, runLogout, runServe, runStatus } from "./cli.js";
 import { WAZAP_VERSION, parseCli } from "./config.js";
+import { CLIENT_NAMES, runConnect } from "./connect.js";
 import { WazapError } from "./errors.js";
 import { say } from "./logger.js";
 
@@ -15,8 +16,11 @@ WhatsApp for your AI agent.
 Usage:
   wazap [serve] [--http] [--host <host>] [--port <port>]   Run the MCP server (default: stdio)
   wazap login [--phone +40722123456] [--qr]                Link a WhatsApp account
+  wazap connect <client> [--dry-run]                       Register wazap with an MCP client
   wazap status                                             Show what is linked and whether a server is running
   wazap logout                                             Unlink and delete local credentials
+
+Clients for wazap connect: ${CLIENT_NAMES}.
 
 Options:
   --data-dir <path>   Where wazap keeps its data (default ~/.wazap, or $WAZAP_DATA_DIR)
@@ -26,6 +30,7 @@ Options:
   --port <port>       HTTP port (default 8766)
   --phone <number>    Phone number in international format, for login
   --qr                Log in by QR code instead of a pairing code
+  --dry-run           With connect: print what would be written, and write nothing
   -h, --help          Show this help
   -v, --version       Show the version
 
@@ -51,6 +56,9 @@ async function main(): Promise<void> {
       return;
     case "login":
       await runLogin(config);
+      return;
+    case "connect":
+      runConnect(config);
       return;
     case "status":
       runStatus(config);
