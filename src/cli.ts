@@ -24,7 +24,7 @@ import {
   bold,
   box,
   brand,
-  colorEnabled,
+  humanLayout,
   dim,
   fail,
   info,
@@ -114,7 +114,7 @@ export async function runStatus(config: Config): Promise<StatusReport> {
     return report;
   }
 
-  for (const line of colorEnabled() ? richStatus(report) : plainStatus(report)) say(line);
+  for (const line of humanLayout() ? richStatus(report) : plainStatus(report)) say(line);
 
   if (report.live) {
     say("");
@@ -296,18 +296,17 @@ export async function runLogin(config: Config): Promise<void> {
     return;
   }
 
-  say(step(1, 4, "Your number"));
+  const total = config.loginCode ? 4 : 3;
   let phone: string | null = null;
-  if (!config.loginQr) {
+  if (config.loginCode) {
+    say(step(1, total, "Your number"));
     phone = config.loginPhone === undefined ? await askPhone() : normalizePhone(config.loginPhone);
     say(ok(maskNumber(phone)));
-  } else {
-    say(info("Linking by QR code."));
   }
 
   const deadline = Date.now() + LOGIN_TIMEOUT_MS;
   const waiting = new Countdown(deadline);
-  say(step(2, 4, "Link your phone"));
+  say(step(total - 2, total, "Link your phone"));
 
   let requested = false;
   const onQr = async (qr: string, sock: WASocket): Promise<void> => {
@@ -317,6 +316,9 @@ export async function runLogin(config: Config): Promise<void> {
       say(
         `  Scan it with WhatsApp → Settings → Linked devices → Link a device (also saved to ${shortPath(p.qrFile)})`,
       );
+      say(dim("  Prefer typing a code? Press Ctrl+C and run `wazap login --phone +40722123456`."));
+      say("");
+      waiting.start();
       return;
     }
     if (requested) return;
@@ -340,10 +342,10 @@ export async function runLogin(config: Config): Promise<void> {
   }
   waiting.stop(ok(`Linked as ${describeAccount(account)}`));
 
-  say(step(3, 4, "Sync your chats"));
+  say(step(total - 1, total, "Sync your chats"));
   await syncAfterLink(config);
 
-  say(step(4, 4, "Permissions"));
+  say(step(total, total, "Permissions"));
   await offerWrites(config);
   say("");
   say(connectNext());
@@ -398,16 +400,20 @@ async function syncAfterLink(config: Config): Promise<void> {
 class Countdown {
   #spinner: Spinner | null = null;
   #ticker: NodeJS.Timeout | null = null;
+  #stopped = false;
 
   constructor(private readonly deadline: number) {}
 
+  /** No-op once stopped: the socket can settle while the code request is still in flight. */
   start(): void {
+    if (this.#stopped) return;
     this.#spinner = spinner(this.#line());
     this.#ticker = setInterval(() => this.#spinner?.update(this.#line()), 1_000);
     this.#ticker.unref();
   }
 
   stop(final?: string): void {
+    this.#stopped = true;
     if (this.#ticker !== null) clearInterval(this.#ticker);
     this.#ticker = null;
     if (this.#spinner === null) {
@@ -420,7 +426,7 @@ class Countdown {
 
   #line(): string {
     const left = Math.max(0, Math.round((this.deadline - Date.now()) / 1_000));
-    return `Waiting for your phone…  (code expires in ${Math.floor(left / 60)}:${String(left % 60).padStart(2, "0")})`;
+    return `Waiting for your phone…  (expires in ${Math.floor(left / 60)}:${String(left % 60).padStart(2, "0")})`;
   }
 }
 

@@ -38,7 +38,8 @@ export interface Config {
   live: boolean;
   json: boolean;
   loginPhone?: string;
-  loginQr: boolean;
+  /** Pair with an 8-character code instead of the QR; implied by --phone. */
+  loginCode: boolean;
   /** `login` asks about writes unless a flag already answered. */
   writesAnswer: boolean | null;
   assumeYes: boolean;
@@ -126,6 +127,7 @@ export function parseCli(argv: string[] = process.argv.slice(2)): CliInvocation 
         port: { type: "string" },
         phone: { type: "string" },
         qr: { type: "boolean" },
+        code: { type: "boolean" },
         "dry-run": { type: "boolean" },
         live: { type: "boolean" },
         json: { type: "boolean" },
@@ -194,7 +196,7 @@ export function parseCli(argv: string[] = process.argv.slice(2)): CliInvocation 
       live: values.live === true,
       json: values.json === true,
       loginPhone: values.phone,
-      loginQr: values.qr === true,
+      loginCode: values.code === true || values.phone !== undefined,
       writesAnswer: values.writes === true ? true : values["no-writes"] === true ? false : null,
       assumeYes: values.yes === true,
     },

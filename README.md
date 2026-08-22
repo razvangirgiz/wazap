@@ -19,15 +19,15 @@ WhatsApp multi-device protocol over a WebSocket.
 The npm package is `wazap-mcp`; the command it installs is `wazap`.
 
 ```bash
-npx wazap-mcp login                  # link your account with a pairing code
+npx wazap-mcp login                  # scan the QR with your phone
 npx wazap-mcp connect claude-code    # write the MCP entry for your agent
 ```
 
 Then ask your agent: *"what did I miss on WhatsApp today?"*
 
-`login` asks for your number in international format, prints an 8-character
-code, and you enter it on your phone under **Settings → Linked devices → Link a
-device → Link with phone number instead**. Prefer a QR code? `npx wazap-mcp login --qr`.
+`login` shows a QR code; scan it from **Settings → Linked devices → Link a
+device**. No camera handy, or linking over SSH? `npx wazap-mcp login --phone +40722123456`
+prints an 8-character code you type under *Link with phone number instead*.
 It ends by asking whether the agent may send messages; the answer is no unless
 you say yes, and `npx wazap-mcp config writes on` changes it later.
 
@@ -122,7 +122,7 @@ wazap ships five [Agent Skills](https://agentskills.io) that teach an agent the 
 
 | Skill | What the agent does |
 | --- | --- |
-| `wazap-setup` | Diagnose with `wazap status`, link by pairing code, connect a client with `wazap connect`, repair an expired session |
+| `wazap-setup` | Diagnose with `wazap status`, link by QR or pairing code, connect a client with `wazap connect`, repair an expired session |
 | `whatsapp-inbox` | "What did I miss?" Triage into *needs you / FYI / noise*, ranked, plus forgotten replies. Read-only |
 | `whatsapp-recall` | "Find the invoice Dan sent." Search with query variants, page back in time, download and read the file. Read-only |
 | `whatsapp-groups` | Catch up on a 300-message group: decisions, dates, what is asked of you. Read-only |

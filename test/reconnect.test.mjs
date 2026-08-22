@@ -35,7 +35,7 @@ function config() {
     writeToken: null,
     rateLimitPerMinute: 20,
     command: "serve",
-    loginQr: false,
+    loginCode: false,
   };
 }
 

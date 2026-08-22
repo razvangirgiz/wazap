@@ -12,7 +12,7 @@ const USAGE = `${BANNER}
 
 Usage:
   wazap [serve] [--http] [--host <host>] [--port <port>]   Run the MCP server (default: stdio)
-  wazap login [--phone +40722123456] [--qr]                Link a WhatsApp account
+  wazap login [--phone +40722123456] [--code]              Link a WhatsApp account (QR by default)
   wazap connect <client> [--dry-run]                       Register wazap with an MCP client
   wazap config [writes on|off]                             Show the effective settings, or allow/refuse writes
   wazap status [--live] [--json]                           Check the install, the session and the server
@@ -26,8 +26,8 @@ Options:
   --http              Serve Streamable HTTP instead of stdio
   --host <host>       HTTP bind address (default 127.0.0.1)
   --port <port>       HTTP port (default 8766)
-  --phone <number>    Phone number in international format, for login
-  --qr                Log in by QR code instead of a pairing code
+  --code              Log in with an 8-character pairing code instead of the QR
+  --phone <number>    Your number in international format; implies --code
   --dry-run           With connect: print what would be written, and write nothing
   --live              With status: reach WhatsApp for real, then close the connection
   --json              With status: print the whole report as one JSON object on stdout

@@ -94,9 +94,10 @@ function checkCredentials(config: Config): Check {
   const authDir = paths(config.dataDir).authDir;
   try {
     const account = readLinkedAccount(authDir);
+    // The number is deliberately absent: status is the thing people screenshot.
     return account === null
       ? { name: "credentials", state: "info", detail: "no account linked yet" }
-      : { name: "credentials", state: "ok", detail: `readable (${account.number})` };
+      : { name: "credentials", state: "ok", detail: "readable" };
   } catch (err) {
     const wazap = err as WazapError;
     return { name: "credentials", state: "fail", detail: wazap.message, fix: wazap.fix };

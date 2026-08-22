@@ -14,7 +14,17 @@ const FRAME_MS = 80;
 export function colorEnabled(): boolean {
   const forced = process.env.FORCE_COLOR;
   if (forced !== undefined) return forced !== "0";
-  if (process.env.NO_COLOR !== undefined) return false;
+  const disabled = process.env.NO_COLOR;
+  if (disabled !== undefined && disabled !== "") return false;
+  return process.stderr.isTTY === true;
+}
+
+/**
+ * Whether to draw for a person rather than for a pipe. Deliberately not
+ * colorEnabled(): NO_COLOR at a terminal still wants the roomy layout, and
+ * FORCE_COLOR in a pipe must not reshape output something else is parsing.
+ */
+export function humanLayout(): boolean {
   return process.stderr.isTTY === true;
 }
 
@@ -23,7 +33,9 @@ function paint(code: string, text: string): string {
 }
 
 function brandCode(): string {
-  return (process.env.TERM ?? "").includes("256color") ? "\x1b[38;5;42m" : "\x1b[32m";
+  const rich =
+    (process.env.TERM ?? "").includes("256color") || /truecolor|24bit/i.test(process.env.COLORTERM ?? "");
+  return rich ? "\x1b[38;5;42m" : "\x1b[32m";
 }
 
 export function brand(text: string): string {
@@ -102,9 +114,18 @@ export function box(text: string): string {
   return [`  ╭${rule}╮`, `  │ ${text} │`, `  ╰${rule}╯`].join("\n");
 }
 
+function nextLine(action: string, tail: string): string {
+  return humanLayout() ? `Next  ${action}${tail}` : `Next: ${action}${tail}`;
+}
+
+/** A command to type. */
 export function next(command: string, note?: string): string {
-  const tail = note === undefined ? "" : `   ${dim(note)}`;
-  return colorEnabled() ? `Next  ${cmd(command)}${tail}` : `Next: ${command}${tail}`;
+  return nextLine(cmd(command), note === undefined ? "" : `   ${dim(note)}`);
+}
+
+/** An instruction to follow. Not cyan: cyan means "type this". */
+export function nextHint(instruction: string): string {
+  return nextLine(bold(instruction), "");
 }
 
 export function tilde(path: string): string {
@@ -116,7 +137,7 @@ export function tilde(path: string): string {
 
 /** Home-relative for a human; pipes and tests get the path they can act on. */
 export function shortPath(path: string): string {
-  return colorEnabled() ? tilde(path) : path;
+  return humanLayout() ? tilde(path) : path;
 }
 
 /** All but the first three digits, so a screenshot cannot leak the number. */
@@ -125,6 +146,21 @@ export function maskNumber(digits: string): string {
   const body = kept + "x".repeat(Math.max(0, digits.length - kept.length));
   const groups = (body.slice(2).match(/.{1,3}/g) ?? []).join(" ");
   return `+${body.slice(0, 2)}${groups === "" ? "" : ` ${groups}`}`;
+}
+
+/** A wrapped line would outlive the erase, which clears one physical line. */
+function clamp(text: string): string {
+  const room = (process.stderr.columns ?? 80) - 2;
+  if (width(text) <= room) return text;
+  let out = "";
+  let used = 0;
+  for (const char of text) {
+    const size = charWidth(char.codePointAt(0)!);
+    if (used + size > room - 1) break;
+    out += char;
+    used += size;
+  }
+  return `${out}…`;
 }
 
 export interface Spinner {
@@ -150,7 +186,7 @@ export function spinner(text: string): Spinner {
   let current = text;
   let frame = 0;
   const render = (): void => {
-    process.stderr.write(`${CLEAR_LINE}${brand(FRAMES[frame % FRAMES.length]!)} ${current}`);
+    process.stderr.write(`${CLEAR_LINE}${brand(FRAMES[frame % FRAMES.length]!)} ${clamp(current)}`);
   };
   render();
   const timer = setInterval(() => {

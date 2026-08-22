@@ -1,9 +1,11 @@
 # Changelog
 
 ## 0.9.1
-
 ### Changed
 
+- `login` shows a QR code by default; `--phone` or `--code` switches to the 8-character pairing code.
+- `login` now stays up after linking until WhatsApp has delivered the chat history, so a fresh account no longer comes up with zero chats.
+- `list_chats` lists any chat that has messages, even before WhatsApp describes it.
 - The CLI draws for a human at a terminal: a brand-coloured banner, numbered
   steps through `login` with the pairing code in a box and a spinner counting it
   down, an aligned `status` block, and one `Next` line telling you the single
@@ -13,6 +15,7 @@
   words it had before.
 - The linked account's number is masked wherever it is printed, so a `status`
   screenshot no longer carries it.
+
 
 ## 0.9.0
 

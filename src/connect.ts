@@ -5,7 +5,7 @@ import { basename, delimiter, dirname, join, resolve } from "node:path";
 import { defaultDataDir, type Config } from "./config.js";
 import { WazapError } from "./errors.js";
 import { say } from "./logger.js";
-import { dim, fail, fix, info, next, ok, shortPath } from "./ui.js";
+import { dim, fail, fix, info, next, nextHint, ok, shortPath } from "./ui.js";
 
 export interface McpEntry {
   command: string;
@@ -230,12 +230,12 @@ function apply(
   if (dryRun) {
     say(info(`${spec.describe} \u00b7 would write ${where}`));
     for (const line of entry) say(line);
-    say(next(spec.next));
+    say(nextHint(spec.next));
     return;
   }
   if (content === current) {
     say(ok(`${spec.describe} \u00b7 ${where} already has this entry`));
-    say(next(spec.next));
+    say(nextHint(spec.next));
     return;
   }
 
@@ -248,7 +248,7 @@ function apply(
   writeFileSync(file, content);
   say(ok(`${spec.describe} \u00b7 wrote ${where}${backup}`));
   for (const line of entry) say(line);
-  say(next(spec.next));
+  say(nextHint(spec.next));
 }
 
 function runClientCommand(spec: ClientSpec, entry: McpEntry, dryRun: boolean): void {
@@ -257,7 +257,7 @@ function runClientCommand(spec: ClientSpec, entry: McpEntry, dryRun: boolean): v
   if (dryRun) {
     say(info(`${spec.describe} \u00b7 would run`));
     say(`  ${dim(shown)}`);
-    say(next(spec.next));
+    say(nextHint(spec.next));
     return;
   }
 
@@ -269,5 +269,5 @@ function runClientCommand(spec: ClientSpec, entry: McpEntry, dryRun: boolean): v
   }
   if (result.status !== 0) process.exit(result.status ?? 1);
   say(ok(`${spec.describe} \u00b7 registered via claude mcp add`));
-  say(next(spec.next));
+  say(nextHint(spec.next));
 }
