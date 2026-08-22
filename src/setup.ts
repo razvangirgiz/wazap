@@ -8,9 +8,9 @@ import { say } from "./logger.js";
 import { brand, fail, info, ok } from "./ui.js";
 
 export async function runSetup(config: Config): Promise<void> {
-  // The only stdout write in the CLI: here the whole output is the document, and
-  // this command never serves, so stdout is not the MCP channel. The URL resolves
-  // from dist/setup.js to the package root, where `files` publishes AGENT.md.
+  // The whole output is the document and this command never serves, so stdout is
+  // the right channel. AGENT.md sits at the package root, which is what `files`
+  // publishes.
   if (config.agent) {
     process.stdout.write(readFileSync(new URL("../AGENT.md", import.meta.url), "utf8"));
     return;

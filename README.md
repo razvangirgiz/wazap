@@ -19,17 +19,29 @@ WhatsApp multi-device protocol over a WebSocket.
 The npm package is `wazap-mcp`; the command it installs is `wazap`.
 
 ```bash
-npx wazap-mcp login                  # scan the QR with your phone
-npx wazap-mcp connect claude-code    # write the MCP entry for your agent
+npx wazap-mcp setup
 ```
+
+That is the whole install. It links your account, finds the MCP clients
+installed on this machine, writes their config and tells you what to restart.
+
+Or have your agent do it. Paste this:
+
+*Set up WhatsApp for me: run `npx wazap-mcp setup --agent` and follow what it prints.*
 
 Then ask your agent: *"what did I miss on WhatsApp today?"*
 
-`login` shows a QR code; scan it from **Settings → Linked devices → Link a
-device**. No camera handy, or linking over SSH? `npx wazap-mcp login --phone +15550100`
+Below are the steps `setup` runs for you. Each is still its own command when you
+want to run it by hand.
+
+`npx wazap-mcp login` shows a QR code; scan it from **Settings → Linked devices
+→ Link a device**. No camera handy, or linking over SSH? `npx wazap-mcp login --phone +15550100`
 prints an 8-character code you type under *Link with phone number instead*.
 It ends by asking whether the agent may send messages; the answer is no unless
 you say yes, and `npx wazap-mcp config writes on` changes it later.
+
+`npx wazap-mcp connect claude-code` writes the MCP entry for one client. The
+table under **Connect a client** has the rest.
 
 `npx wazap-mcp` on its own is safe to run: it prints where you stand and what to do
 next, and starts no server. When something is off, `npx wazap-mcp status` is the

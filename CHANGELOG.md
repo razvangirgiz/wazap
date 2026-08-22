@@ -1,5 +1,29 @@
 # Changelog
 
+## 0.9.2
+### Added
+
+- `wazap setup`: the one command from nothing to a working agent. It links the
+  account, detects which MCP clients are installed on this machine over the same
+  client table `connect` writes from, writes their entries and prints what to
+  restart. `--client <name>` overrides the detection; `-y` takes the detected
+  set without asking.
+- `wazap setup --agent` prints the procedure an AI agent follows to set wazap up
+  for its user. That text is `AGENT.md`, and the command reads the file, so the
+  document and the command cannot drift.
+- `login` prints a `pairing code: XXXX-XXXX` line whenever its output is not a
+  terminal, so an agent running `login` in the background can read the code and
+  hand it to the user.
+
+### Changed
+
+- `login` and `setup` hold the session lock while they link. A server started
+  meanwhile is refused instead of racing them for the credentials, and a killed
+  `login` leaves no stale lock behind.
+- `logout` says WhatsApp had already unlinked this device, instead of surfacing
+  the pairing-code error that WhatsApp's 401 means at login time.
+
+
 ## 0.9.1
 ### Changed
 
