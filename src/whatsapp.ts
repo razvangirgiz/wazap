@@ -783,7 +783,7 @@ export class WhatsAppService implements WhatsAppApi {
       this.status = "auth_failure";
       this.lastError =
         `${reason} — gave up after ${RECONNECT_MAX_ATTEMPTS} attempts. ` +
-        "WhatsApp keeps rejecting this session: re-link the device with `npx wazap login`.";
+        "WhatsApp keeps rejecting this session: re-link the device with `npx wazap-mcp login`.";
       logError("reconnect", this.lastError);
       return;
     }
@@ -959,7 +959,7 @@ export class WhatsAppService implements WhatsAppApi {
       this.status = "not_linked";
       this.account = null;
       this.lastError = null;
-      log("no WhatsApp account is linked; run `npx wazap login`");
+      log("no WhatsApp account is linked; run `npx wazap-mcp login`");
       return null;
     }
     return { id: linked.id, name: linked.name, number: linked.number };

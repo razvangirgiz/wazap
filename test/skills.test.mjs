@@ -32,5 +32,5 @@ test("plugin manifest lists the skills directory and the MCP server", () => {
   const plugin = JSON.parse(readFileSync(join(root, ".claude-plugin/plugin.json"), "utf8"));
   assert.equal(plugin.name, "wazap");
   assert.equal(plugin.skills, "./skills/");
-  assert.deepEqual(plugin.mcpServers.whatsapp.args, ["-y", "wazap"]);
+  assert.deepEqual(plugin.mcpServers.whatsapp.args, ["-y", "wazap-mcp"]);
 });

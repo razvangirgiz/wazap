@@ -4,7 +4,7 @@
 
 First release under the name `wazap`. The project was a developer's MCP server
 for one machine; this turns it into something a stranger can install with
-`npx wazap login`.
+`npx wazap-mcp login`.
 
 ### Added
 

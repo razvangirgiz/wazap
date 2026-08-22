@@ -39,14 +39,14 @@ export class WazapError extends Error {
   }
 }
 
-export const RELINK_FIX = "Run `npx wazap login`";
-export const RESET_FIX = "Run `npx wazap logout` then `npx wazap login`";
+export const RELINK_FIX = "Run `npx wazap-mcp login`";
+export const RESET_FIX = "Run `npx wazap-mcp logout` then `npx wazap-mcp login`";
 
 /** What an agent should do about each code. Rendered by the `learn` tool. */
 export const ERROR_GUIDE: Record<ErrorCode, string> = {
-  NOT_LINKED: "No WhatsApp account is linked. Tell the user to run `npx wazap login`; do not retry.",
-  SESSION_EXPIRED: "The account was unlinked from the phone. Tell the user to run `npx wazap login`; do not retry.",
-  SESSION_CORRUPT: "Stored credentials are unreadable. Tell the user to run `npx wazap logout` then `npx wazap login`.",
+  NOT_LINKED: "No WhatsApp account is linked. Tell the user to run `npx wazap-mcp login`; do not retry.",
+  SESSION_EXPIRED: "The account was unlinked from the phone. Tell the user to run `npx wazap-mcp login`; do not retry.",
+  SESSION_CORRUPT: "Stored credentials are unreadable. Tell the user to run `npx wazap-mcp logout` then `npx wazap-mcp login`.",
   NOT_CONNECTED: "The socket is still connecting or reconnecting. Call get_status, wait, retry once.",
   SYNC_IN_PROGRESS: "History sync has not finished. Retry in a few seconds; earlier messages may be missing until then.",
   INVALID_PHONE: "The number is not in international format. Ask the user for a number with a country code, e.g. +40722123456.",

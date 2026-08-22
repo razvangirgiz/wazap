@@ -113,7 +113,7 @@ export function onPath(pathEnv: string, exists: (p: string) => boolean = existsS
  * that does not exist.
  */
 export function launcher(binPath: string, pathEnv: string, exists?: (p: string) => boolean): McpEntry {
-  if (isNpxPath(binPath)) return { command: "npx", args: ["-y", "wazap"] };
+  if (isNpxPath(binPath)) return { command: "npx", args: ["-y", "wazap-mcp"] };
   if (onPath(pathEnv, exists)) return { command: "wazap", args: [] };
   return { command: "node", args: [resolve(binPath)] };
 }

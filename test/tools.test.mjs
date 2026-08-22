@@ -67,12 +67,12 @@ test("every tool declares a description and an input schema", () => {
 });
 
 test("a WazapError becomes an MCP error result carrying code, message and fix", () => {
-  const result = toolError(new WazapError("NOT_LINKED", "No account is linked.", "Run `npx wazap login`"));
+  const result = toolError(new WazapError("NOT_LINKED", "No account is linked.", "Run `npx wazap-mcp login`"));
   assert.equal(result.isError, true);
   assert.deepEqual(result.structuredContent, {
     error: "NOT_LINKED",
     message: "No account is linked.",
-    fix: "Run `npx wazap login`",
+    fix: "Run `npx wazap-mcp login`",
   });
   assert.deepEqual(JSON.parse(result.content[0].text), result.structuredContent);
 });

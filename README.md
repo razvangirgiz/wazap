@@ -16,21 +16,23 @@ WhatsApp multi-device protocol over a WebSocket.
 
 ## Get started
 
+The npm package is `wazap-mcp`; the command it installs is `wazap`.
+
 ```bash
-npx wazap login                  # link your account with a pairing code
-npx wazap connect claude-code    # write the MCP entry for your agent
+npx wazap-mcp login                  # link your account with a pairing code
+npx wazap-mcp connect claude-code    # write the MCP entry for your agent
 ```
 
 Then ask your agent: *"what did I miss on WhatsApp today?"*
 
 `login` asks for your number in international format, prints an 8-character
 code, and you enter it on your phone under **Settings → Linked devices → Link a
-device → Link with phone number instead**. Prefer a QR code? `npx wazap login --qr`.
+device → Link with phone number instead**. Prefer a QR code? `npx wazap-mcp login --qr`.
 It ends by asking whether the agent may send messages; the answer is no unless
-you say yes, and `npx wazap config writes on` changes it later.
+you say yes, and `npx wazap-mcp config writes on` changes it later.
 
-`npx wazap` on its own is safe to run: it prints where you stand and what to do
-next, and starts no server. When something is off, `npx wazap status` is the
+`npx wazap-mcp` on its own is safe to run: it prints where you stand and what to do
+next, and starts no server. When something is off, `npx wazap-mcp status` is the
 first thing to run — it checks Node, the data directory, the lock, the
 credentials and whether a newer version is out, and prints the fix next to
 anything broken.
@@ -51,7 +53,7 @@ it would write.
 | `gemini` | `~/.gemini/settings.json` |
 | anything remote | client's MCP URL field: `https://your-host/mcp` with header `Authorization: Bearer <token>` (see [Self-host](#self-host)) |
 
-Any MCP client works the same way: the command is `npx -y wazap`, the transport
+Any MCP client works the same way: the command is `npx -y wazap-mcp`, the transport
 is stdio. Tell the agent to call `learn` first — it returns the id formats, the
 workflows and every error code with what to do about it.
 
@@ -63,7 +65,7 @@ workflows and every error code with what to do about it.
   "mcpServers": {
     "whatsapp": {
       "command": "npx",
-      "args": ["-y", "wazap"]
+      "args": ["-y", "wazap-mcp"]
     }
   }
 }
@@ -75,7 +77,7 @@ Claude Desktop, Cursor and Gemini CLI take exactly that. VS Code nests it under
 ```toml
 [mcp_servers.whatsapp]
 command = "npx"
-args = ["-y", "wazap"]
+args = ["-y", "wazap-mcp"]
 ```
 
 </details>
@@ -142,9 +144,9 @@ trace, so an agent can decide whether to retry, ask the user, or stop.
 
 | Code | Meaning |
 | --- | --- |
-| `NOT_LINKED` | No account linked. Run `npx wazap login`. |
-| `SESSION_EXPIRED` | Unlinked from the phone. Run `npx wazap login`. |
-| `SESSION_CORRUPT` | Credentials unreadable. Run `npx wazap logout` then `login`. |
+| `NOT_LINKED` | No account linked. Run `npx wazap-mcp login`. |
+| `SESSION_EXPIRED` | Unlinked from the phone. Run `npx wazap-mcp login`. |
+| `SESSION_CORRUPT` | Credentials unreadable. Run `npx wazap-mcp logout` then `login`. |
 | `NOT_CONNECTED` | Still connecting or reconnecting. |
 | `SYNC_IN_PROGRESS` | History sync has not finished; results may be partial. |
 | `INVALID_PHONE` | Number is not in international format. |
@@ -199,7 +201,7 @@ disables). Sending faster than a human is how accounts get banned.
 ```bash
 WAZAP_READ_TOKEN=$(openssl rand -hex 32) \
 WAZAP_WRITE_TOKEN=$(openssl rand -hex 32) \
-npx wazap serve --http --host 0.0.0.0 --port 8766
+npx wazap-mcp serve --http --host 0.0.0.0 --port 8766
 ```
 
 Streamable HTTP at `/mcp`, with a health check at `/healthz`. Two bearer tokens:
@@ -214,7 +216,7 @@ Run wazap on a server of your own when the agent is not on your laptop: another 
 ### With systemd
 
 ```bash
-npm install -g wazap
+npm install -g wazap-mcp
 sudo useradd --system --home /var/lib/wazap --create-home wazap
 sudo -u wazap WAZAP_DATA_DIR=/var/lib/wazap wazap login --phone +40722123456   # pairing code works over SSH
 sudo -u wazap tee /var/lib/wazap/.env >/dev/null <<END

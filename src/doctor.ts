@@ -116,7 +116,7 @@ async function checkUpdate(): Promise<Check> {
     return { name: "update", state: "info", detail: "update check skipped (WAZAP_NO_UPDATE_CHECK=1)" };
   }
   try {
-    const response = await fetch("https://registry.npmjs.org/wazap/latest", {
+    const response = await fetch("https://registry.npmjs.org/wazap-mcp/latest", {
       signal: AbortSignal.timeout(UPDATE_TIMEOUT_MS),
     });
     if (!response.ok) {
@@ -124,7 +124,7 @@ async function checkUpdate(): Promise<Check> {
     }
     const { version } = (await response.json()) as { version: string };
     return isNewer(version, WAZAP_VERSION)
-      ? { name: "update", state: "info", detail: `${version} is out (running ${WAZAP_VERSION})`, fix: "run `npx wazap@latest`" }
+      ? { name: "update", state: "info", detail: `${version} is out (running ${WAZAP_VERSION})`, fix: "run `npx wazap-mcp@latest`" }
       : { name: "update", state: "ok", detail: `${WAZAP_VERSION} is current` };
   } catch {
     return { name: "update", state: "info", detail: "update check skipped (offline)" };

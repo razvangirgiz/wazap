@@ -122,7 +122,7 @@ code with what to do about it. Takes no arguments and never touches WhatsApp.`,
     name: "get_status",
     title: "Get the WhatsApp connection status",
     description: `Check the session: connection status ("connected" means the tools work,
-"not_linked" means the user must run \`npx wazap login\`), whether the initial
+"not_linked" means the user must run \`npx wazap-mcp login\`), whether the initial
 history sync has finished, which account is linked, when a message last arrived,
 and the versions and data directory in use.
 

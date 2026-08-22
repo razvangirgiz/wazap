@@ -10,7 +10,7 @@
   "mcpServers": {
     "whatsapp": {
       "command": "npx",
-      "args": ["-y", "wazap"]
+      "args": ["-y", "wazap-mcp"]
     }
   }
 }

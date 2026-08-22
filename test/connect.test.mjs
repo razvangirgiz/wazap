@@ -153,7 +153,7 @@ for (const [binPath, expected] of BIN_PATHS) {
 }
 
 const LAUNCHERS = [
-  ["/Users/x/.npm/_npx/8a1b/node_modules/wazap/dist/index.js", "/usr/bin", [], { command: "npx", args: ["-y", "wazap"] }],
+  ["/Users/x/.npm/_npx/8a1b/node_modules/wazap/dist/index.js", "/usr/bin", [], { command: "npx", args: ["-y", "wazap-mcp"] }],
   ["/usr/local/lib/node_modules/wazap/dist/index.js", "/usr/local/bin:/usr/bin", ["/usr/local/bin/wazap"], { command: "wazap", args: [] }],
   ["/Users/x/Projects/wazap/dist/index.js", "/usr/local/bin:/usr/bin", [], { command: "node", args: ["/Users/x/Projects/wazap/dist/index.js"] }],
 ];
