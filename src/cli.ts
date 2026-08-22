@@ -20,7 +20,7 @@ import { log, logError, say } from "./logger.js";
 import { formatAge } from "./messages.js";
 import { runHttp, runStdio } from "./server.js";
 import { applyWrites } from "./settings.js";
-import type { ChatSummary, ConnectionStatus } from "./wa-types.js";
+import type { ConnectionStatus } from "./wa-types.js";
 import { WA_BROWSER, WhatsAppService } from "./whatsapp.js";
 
 const LOGIN_TIMEOUT_MS = 120_000;
@@ -58,6 +58,7 @@ interface LiveReport {
 interface StatusReport {
   data_dir: string;
   linked: boolean;
+  credentials_readable: boolean;
   account: LinkedAccount | null;
   wazap_version: string;
   baileys_version: string;
@@ -66,7 +67,7 @@ interface StatusReport {
   live?: LiveReport;
 }
 
-export async function runStatus(config: Config): Promise<void> {
+export async function runStatus(config: Config): Promise<StatusReport> {
   const p = paths(config.dataDir);
 
   let account: LinkedAccount | null = null;
@@ -80,6 +81,7 @@ export async function runStatus(config: Config): Promise<void> {
   const report: StatusReport = {
     data_dir: config.dataDir,
     linked: account !== null,
+    credentials_readable: !unreadable,
     account,
     wazap_version: WAZAP_VERSION,
     baileys_version: BAILEYS_VERSION,
@@ -91,7 +93,7 @@ export async function runStatus(config: Config): Promise<void> {
   if (config.json) {
     process.stdout.write(`${JSON.stringify(report, null, 2)}\n`);
     if (config.live) process.exit(0);
-    return;
+    return report;
   }
 
   say(`data dir: ${report.data_dir}`);
@@ -116,6 +118,7 @@ export async function runStatus(config: Config): Promise<void> {
     for (const line of liveLines(report.live)) say(line);
     process.exit(0);
   }
+  return report;
 }
 
 function liveLines(live: LiveReport): string[] {
@@ -139,6 +142,8 @@ async function runLiveProbe(config: Config): Promise<LiveReport> {
     );
   }
 
+  // The probe owns the session for as long as it runs, exactly like the server.
+  writeLock(p.lockFile);
   const wa = new WhatsAppService(config);
   const deadline = Date.now() + LIVE_TIMEOUT_MS;
   try {
@@ -152,12 +157,11 @@ async function runLiveProbe(config: Config): Promise<LiveReport> {
       return { reachable: false, chats: null, last_message_age: null, reason: info.last_error ?? info.status };
     }
 
-    let chats: ChatSummary[] | null = null;
-    try {
-      chats = (await wa.listChats("all", 100_000)).data;
-    } catch {
-      /* the history sync did not finish inside the deadline */
-    }
+    // listChats waits on its own sync gate, which would outlast the deadline.
+    const chats = await Promise.race([
+      wa.listChats("all", 100_000).then((synced) => synced.data),
+      sleep(Math.max(0, deadline - Date.now()), null, { ref: false }),
+    ]).catch(() => null);
     const newest = (chats ?? [])
       .map((chat) => (chat.last_message === null ? 0 : Date.parse(chat.last_message.timestamp)))
       .reduce((a, b) => Math.max(a, b), 0);
@@ -169,6 +173,7 @@ async function runLiveProbe(config: Config): Promise<LiveReport> {
     };
   } finally {
     await wa.stop();
+    releaseLock(p.lockFile);
   }
 }
 
@@ -176,23 +181,19 @@ async function runLiveProbe(config: Config): Promise<LiveReport> {
 export async function runGreet(config: Config): Promise<void> {
   say(BANNER);
   say("");
-  await runStatus(config);
+  const report = await runStatus(config);
   say("");
 
-  const p = paths(config.dataDir);
-  const running = lockHolder(p.lockFile);
-  if (running !== null) {
-    say(`A server is already running (pid ${running}).`);
+  if (report.server_pid !== null) {
+    say(`A server is already running (pid ${report.server_pid}).`);
     return;
   }
-  let linked = false;
-  try {
-    linked = readLinkedAccount(p.authDir) !== null;
-  } catch {
-    linked = false;
+  if (!report.credentials_readable) {
+    say("Next: wazap logout   (then wazap login)");
+    return;
   }
   say(
-    linked
+    report.linked
       ? 'Next: wazap connect claude-code   (then ask your agent: "what did I miss on WhatsApp today?")'
       : "Next: wazap login",
   );
@@ -319,7 +320,7 @@ function describeAccount(account: LinkedAccount): string {
  * Writes stay off unless the user says otherwise, so a fresh link cannot message
  * anyone. A non-interactive login leaves the setting alone rather than guessing.
  */
-async function offerWrites(config: Config): Promise<void> {
+export async function offerWrites(config: Config): Promise<void> {
   if (config.writesAnswer !== null) {
     applyWrites(config, config.writesAnswer);
     return;

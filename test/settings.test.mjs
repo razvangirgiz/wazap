@@ -1,12 +1,13 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 
+import { offerWrites } from "../dist/cli.js";
 import { setEnvSetting } from "../dist/settings.js";
 
 const run = promisify(execFile);
@@ -44,11 +45,33 @@ test("setEnvSetting matches a line however it was spaced, instead of adding a se
   assert.equal(readFileSync(envFile, "utf8"), "A=1\nWAZAP_READ_ONLY=0\nB=2\n");
 });
 
+test("setEnvSetting removes every duplicate, because dotenv lets the last one win", () => {
+  const envFile = join(dataDir(), ".env");
+  writeFileSync(envFile, "WAZAP_READ_ONLY=0\nWAZAP_HOST=1.2.3.4\nexport WAZAP_READ_ONLY=0\n");
+  setEnvSetting(envFile, "WAZAP_READ_ONLY", "1");
+  assert.equal(readFileSync(envFile, "utf8"), "WAZAP_READ_ONLY=1\nWAZAP_HOST=1.2.3.4\n");
+});
+
 test("setEnvSetting creates the file when the data dir has no .env yet", () => {
   const envFile = join(dataDir(), ".env");
   setEnvSetting(envFile, "WAZAP_READ_ONLY", "1");
   assert.equal(readFileSync(envFile, "utf8"), "WAZAP_READ_ONLY=1\n");
 });
+
+const ANSWERS = [
+  ["--writes", { writesAnswer: true, assumeYes: false }, "WAZAP_READ_ONLY=0\n"],
+  ["--no-writes", { writesAnswer: false, assumeYes: false }, "WAZAP_READ_ONLY=1\n"],
+  ["--yes", { writesAnswer: null, assumeYes: true }, null],
+  ["no TTY and no flag", { writesAnswer: null, assumeYes: false }, null],
+];
+
+for (const [name, flags, expected] of ANSWERS) {
+  test(`login with ${name} does not prompt, and ${expected === null ? "leaves .env alone" : "persists the answer"}`, async () => {
+    const dir = dataDir();
+    await offerWrites({ dataDir: dir, ...flags });
+    assert.equal(existsSync(join(dir, ".env")) ? readFileSync(join(dir, ".env"), "utf8") : null, expected);
+  });
+}
 
 test("config writes off persists the setting, and config reads it back from .env", async () => {
   const dir = dataDir();

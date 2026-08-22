@@ -1,11 +1,13 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
+
+import { isNpxPath } from "../dist/connect.js";
 
 const run = promisify(execFile);
 const binary = join(dirname(fileURLToPath(import.meta.url)), "..", "dist", "index.js");
@@ -125,6 +127,59 @@ test("connect codex replaces an existing whatsapp table without touching its nei
   const text = readFileSync(target, "utf8");
   assert.equal(text, '[mcp_servers.whatsapp]\ncommand = "wazap"\nargs = []\n\n[mcp_servers.other]\ncommand = "other"\n');
   assert.ok(existsSync(`${target}.bak`));
+});
+
+const BIN_PATHS = [
+  ["/Users/x/.npm/_npx/8a1b/node_modules/wazap/dist/index.js", true],
+  ["C:\\Users\\x\\AppData\\npm-cache\\_npx\\8a1b\\node_modules\\wazap\\dist\\index.js", true],
+  ["/usr/local/lib/node_modules/wazap/dist/index.js", false],
+  ["/Users/x/Projects/wazap/dist/index.js", false],
+  ["", false],
+];
+
+for (const [binPath, expected] of BIN_PATHS) {
+  test(`isNpxPath ${binPath || "(empty)"} is ${expected}`, () => {
+    assert.equal(isNpxPath(binPath), expected);
+  });
+}
+
+test("connect codex leaves the comments that introduce the next table alone", async () => {
+  const box = sandbox();
+  const target = join(box.home, ".codex", "config.toml");
+  mkdirSync(dirname(target), { recursive: true });
+  const rest = '\n# notes about the other server\n# second line\n[mcp_servers.other]\ncommand = "other"\n';
+  writeFileSync(target, `[mcp_servers.whatsapp]\ncommand = "stale"\n${rest}`);
+
+  await connect(box, "codex");
+  assert.equal(readFileSync(target, "utf8"), `[mcp_servers.whatsapp]\ncommand = "wazap"\nargs = []\n${rest}`);
+});
+
+test("connect codex --dry-run leaves the TOML file untouched", async () => {
+  const box = sandbox();
+  const target = join(box.home, ".codex", "config.toml");
+  mkdirSync(dirname(target), { recursive: true });
+  writeFileSync(target, 'model = "gpt-5"\n');
+  const { stderr } = await connect(box, "codex", "--dry-run");
+  assert.match(stderr, /\[mcp_servers\.whatsapp\]/);
+  assert.equal(readFileSync(target, "utf8"), 'model = "gpt-5"\n');
+});
+
+test("connect refuses a config file it cannot read rather than replacing it", { skip: process.getuid?.() === 0 }, async () => {
+  const box = sandbox();
+  const target = join(box.home, ".cursor", "mcp.json");
+  mkdirSync(dirname(target), { recursive: true });
+  writeFileSync(target, '{"mcpServers":{"other":{"command":"o"}}}');
+  chmodSync(target, 0o200);
+  try {
+    await assert.rejects(connect(box, "cursor"), (err) => {
+      assert.equal(err.code, 1);
+      assert.match(err.stderr, /cannot be read/);
+      return true;
+    });
+  } finally {
+    chmodSync(target, 0o600);
+  }
+  assert.equal(readFileSync(target, "utf8"), '{"mcpServers":{"other":{"command":"o"}}}');
 });
 
 test("connect --dry-run prints the entry and touches nothing", async () => {

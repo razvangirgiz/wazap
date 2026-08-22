@@ -93,13 +93,18 @@ export const CONNECT_HINT: string = `Next: wazap connect claude-code   (or ${CLI
   .map((client) => client.name)
   .join(", ")})`;
 
+export function isNpxPath(binPath: string): boolean {
+  return /[\\/]_npx[\\/]/.test(binPath);
+}
+
 /**
  * What the client should run. A global install is reused directly; anything
  * else goes through npx, which is how the package is normally reached.
  */
 export function mcpEntry(config: Config): McpEntry {
-  const viaNpx = /[\\/]_npx[\\/]/.test(process.argv[1] ?? "");
-  const entry: McpEntry = viaNpx ? { command: "npx", args: ["-y", "wazap"] } : { command: "wazap", args: [] };
+  const entry: McpEntry = isNpxPath(process.argv[1] ?? "")
+    ? { command: "npx", args: ["-y", "wazap"] }
+    : { command: "wazap", args: [] };
   if (config.dataDir !== defaultDataDir()) entry.args.push("--data-dir", config.dataDir);
   if (config.readOnly) entry.args.push("--read-only");
   return entry;
@@ -122,11 +127,13 @@ export function runConnect(config: Config): void {
   WRITERS[spec.format](spec, mcpEntry(config), config.dryRun);
 }
 
+/** Null only when the file is absent; an unreadable file must never be overwritten. */
 function readTextOrNull(file: string): string | null {
   try {
     return readFileSync(file, "utf8");
-  } catch {
-    return null;
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") return null;
+    throw new WazapError("INVALID_ID", `${file} cannot be read.`, "Fix its permissions or move the file aside, then run this again.");
   }
 }
 
@@ -181,7 +188,8 @@ function spliceTomlTable(text: string, header: string, block: string): string {
   }
   let end = start + 1;
   while (end < lines.length && !lines[end]!.trimStart().startsWith("[")) end++;
-  while (end > start + 1 && lines[end - 1]!.trim() === "") end--;
+  // Blank lines and comments just above the next header introduce that table.
+  while (end > start + 1 && /^\s*(#|$)/.test(lines[end - 1]!)) end--;
   const merged = [...lines.slice(0, start), ...block.trimEnd().split("\n"), ...lines.slice(end)].join("\n");
   return merged.endsWith("\n") ? merged : `${merged}\n`;
 }

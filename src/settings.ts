@@ -16,24 +16,21 @@ export function setEnvSetting(envFile: string, key: string, value: string): void
 
   const line = `${key}=${value}`;
   const lines = text === "" ? [] : text.split("\n");
-  // dotenv trims around `=`, so `KEY = 1` is the same setting as `KEY=1`.
+  // dotenv trims around `=` and applies last-wins, so every spelling of the key
+  // has to go: leaving a later duplicate behind would silently outrank the edit.
   const assignment = new RegExp(`^\\s*(export\\s+)?${key}\\s*=`);
-  const index = lines.findIndex((existing) => assignment.test(existing));
-  if (index === -1) {
+  const hits = lines.flatMap((existing, index) => (assignment.test(existing) ? [index] : []));
+  if (hits.length === 0) {
     const body = text.trimEnd();
     text = body === "" ? `${line}\n` : `${body}\n${line}\n`;
   } else {
-    lines[index] = line;
-    text = lines.join("\n");
+    lines[hits[0]!] = line;
+    text = lines.filter((_, index) => index === hits[0] || !hits.includes(index)).join("\n");
     if (!text.endsWith("\n")) text += "\n";
   }
 
   mkdirSync(dirname(envFile), { recursive: true, mode: 0o700 });
   writeFileSync(envFile, text, { mode: 0o600 });
-}
-
-export function writesLine(config: Config): string {
-  return `writes: ${config.readOnly ? "off" : "on"} (${config.sources.readOnly})`;
 }
 
 interface SettingRow {
