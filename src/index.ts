@@ -6,6 +6,7 @@ import { CLIENT_NAMES, runConnect } from "./connect.js";
 import { runConfig } from "./settings.js";
 import { WazapError } from "./errors.js";
 import { say } from "./logger.js";
+import { fail, fix } from "./ui.js";
 
 const USAGE = `${BANNER}
 
@@ -80,11 +81,7 @@ async function main(): Promise<void> {
 }
 
 main().catch((err: unknown) => {
-  if (err instanceof WazapError) {
-    say(err.message);
-    if (err.fix) say(err.fix);
-  } else {
-    say(err instanceof Error ? err.message : String(err));
-  }
+  say(fail(err instanceof Error ? err.message : String(err)));
+  if (err instanceof WazapError && err.fix) say(fix(err.fix));
   process.exit(1);
 });

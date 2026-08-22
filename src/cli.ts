@@ -35,6 +35,7 @@ import {
   spinner,
   step,
   tilde,
+  warn,
   type Spinner,
 } from "./ui.js";
 import type { ConnectionStatus } from "./wa-types.js";
@@ -384,7 +385,7 @@ export async function runLogout(config: Config): Promise<void> {
 
   const running = lockHolder(p.lockFile);
   if (running !== null) {
-    say(`wazap is running (pid ${running}). Stop it first, then run \`wazap logout\`.`);
+    say(fail(`wazap is running (pid ${running}). Stop it first.`));
     process.exit(1);
   }
 
@@ -397,7 +398,7 @@ export async function runLogout(config: Config): Promise<void> {
     unreadable = true;
   }
   if (!linked && !unreadable) {
-    say("Not linked.");
+    say(info("Not linked."));
     return;
   }
 
@@ -408,13 +409,13 @@ export async function runLogout(config: Config): Promise<void> {
       await withDeadline(sock.logout(), deadline, "WhatsApp did not confirm the unlink in time.");
     } catch (err: unknown) {
       logError("unlink from WhatsApp", err);
-      say("Could not tell WhatsApp to unlink; remove this device from your phone if it is still listed.");
+      say(warn("Could not tell WhatsApp to unlink; remove this device from your phone if it is still listed."));
     }
   }
 
   clearAuth(p.authDir);
   rmSync(p.storeFile, { force: true });
-  say("Logged out. Local credentials deleted.");
+  say(ok("Logged out. Local credentials deleted."));
   process.exit(0);
 }
 
