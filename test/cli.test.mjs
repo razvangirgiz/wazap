@@ -14,7 +14,7 @@ const binary = join(dirname(fileURLToPath(import.meta.url)), "..", "dist", "inde
 
 /** The CLI writes to stderr, because stdout belongs to the MCP protocol. */
 function wazap(...args) {
-  return run(process.execPath, [binary, ...args]);
+  return run(process.execPath, [binary, ...args], { env: { ...process.env, WAZAP_NO_UPDATE_CHECK: "1" } });
 }
 
 test("--help explains every command and exits 0", async () => {

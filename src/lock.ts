@@ -1,15 +1,21 @@
 import { mkdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 
-/** Pid of the live process holding the lock, or null if free (missing or stale). */
-export function lockHolder(lockFile: string): number | null {
+/** Pid recorded in the lock file, whether or not that process is still alive. */
+export function lockPid(lockFile: string): number | null {
   let pid: number;
   try {
     pid = Number.parseInt(readFileSync(lockFile, "utf8").trim(), 10);
   } catch {
     return null;
   }
-  if (!Number.isInteger(pid) || pid <= 0) return null;
+  return Number.isInteger(pid) && pid > 0 ? pid : null;
+}
+
+/** Pid of the live process holding the lock, or null if free (missing or stale). */
+export function lockHolder(lockFile: string): number | null {
+  const pid = lockPid(lockFile);
+  if (pid === null) return null;
   try {
     process.kill(pid, 0);
     return pid;

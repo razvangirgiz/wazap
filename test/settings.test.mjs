@@ -13,7 +13,9 @@ const run = promisify(execFile);
 const binary = join(dirname(fileURLToPath(import.meta.url)), "..", "dist", "index.js");
 
 function wazap(dataDir, args, env = {}) {
-  return run(process.execPath, [binary, ...args, "--data-dir", dataDir], { env: { ...process.env, ...env } });
+  return run(process.execPath, [binary, ...args, "--data-dir", dataDir], {
+    env: { ...process.env, WAZAP_NO_UPDATE_CHECK: "1", ...env },
+  });
 }
 
 function dataDir() {

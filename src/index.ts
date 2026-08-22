@@ -14,7 +14,7 @@ Usage:
   wazap login [--phone +40722123456] [--qr]                Link a WhatsApp account
   wazap connect <client> [--dry-run]                       Register wazap with an MCP client
   wazap config [writes on|off]                             Show the effective settings, or allow/refuse writes
-  wazap status                                             Show what is linked and whether a server is running
+  wazap status [--live] [--json]                           Check the install, the session and the server
   wazap logout                                             Unlink and delete local credentials
 
 Clients for wazap connect: ${CLIENT_NAMES}.
@@ -28,13 +28,16 @@ Options:
   --phone <number>    Phone number in international format, for login
   --qr                Log in by QR code instead of a pairing code
   --dry-run           With connect: print what would be written, and write nothing
+  --live              With status: reach WhatsApp for real, then close the connection
+  --json              With status: print the whole report as one JSON object on stdout
   --writes/--no-writes  Answer login's writes question without being asked
   -y, --yes           Do not ask anything at the end of login
   -h, --help          Show this help
   -v, --version       Show the version
 
 Environment: WAZAP_DATA_DIR, WAZAP_READ_ONLY, WAZAP_SYNC_FULL_HISTORY, WAZAP_PERSIST_HISTORY,
-WAZAP_TRANSPORT, WAZAP_HOST, WAZAP_PORT, WAZAP_READ_TOKEN, WAZAP_WRITE_TOKEN, WAZAP_RATE_LIMIT.
+WAZAP_TRANSPORT, WAZAP_HOST, WAZAP_PORT, WAZAP_READ_TOKEN, WAZAP_WRITE_TOKEN, WAZAP_RATE_LIMIT,
+WAZAP_NO_UPDATE_CHECK.
 An optional <data-dir>/.env is loaded if present.`;
 
 async function main(): Promise<void> {
@@ -52,7 +55,7 @@ async function main(): Promise<void> {
   switch (config.command) {
     case "serve":
       if (pickDefaultAction(config, process.stdin.isTTY === true, process.stderr.isTTY === true) === "greet") {
-        runGreet(config);
+        await runGreet(config);
         return;
       }
       await runServe(config);
@@ -67,7 +70,7 @@ async function main(): Promise<void> {
       runConfig(config);
       return;
     case "status":
-      runStatus(config);
+      await runStatus(config);
       return;
     case "logout":
       await runLogout(config);

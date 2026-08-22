@@ -1,0 +1,105 @@
+import { test } from "node:test";
+import assert from "node:assert/strict";
+import { execFile } from "node:child_process";
+import { chmodSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+import { promisify } from "node:util";
+
+import { isNewer } from "../dist/doctor.js";
+
+const run = promisify(execFile);
+const binary = join(dirname(fileURLToPath(import.meta.url)), "..", "dist", "index.js");
+
+/** No test may reach the npm registry, so the update check is off by default. */
+function status(dataDir, args = [], env = {}) {
+  return run(process.execPath, [binary, "status", "--data-dir", dataDir, ...args], {
+    env: { ...process.env, WAZAP_NO_UPDATE_CHECK: "1", ...env },
+  });
+}
+
+function dataDir() {
+  return mkdtempSync(join(tmpdir(), "wazap-doctor-"), { mode: 0o700 });
+}
+
+const VERSIONS = [
+  ["0.9.1", "0.9.0", true],
+  ["0.10.0", "0.9.9", true],
+  ["1.0.0", "0.99.99", true],
+  ["0.9.0", "0.9.0", false],
+  ["0.8.9", "0.9.0", false],
+  ["0.9.0", "0.9.0-rc1", false],
+];
+
+for (const [candidate, current, expected] of VERSIONS) {
+  test(`isNewer ${candidate} over ${current} is ${expected}`, () => {
+    assert.equal(isNewer(candidate, current), expected);
+  });
+}
+
+test("a healthy data dir passes every check it can", async () => {
+  const dir = dataDir();
+  chmodSync(dir, 0o700);
+  const { stderr } = await status(dir);
+  assert.match(stderr, /checks:/);
+  assert.match(stderr, new RegExp(`✓ node: ${process.versions.node.replace(/\\./g, "\\.")}`));
+  assert.match(stderr, /✓ data dir: .* \(0700, writable\)/);
+  assert.match(stderr, /– lock: none/);
+  assert.match(stderr, /– credentials: no account linked yet/);
+  assert.match(stderr, /✓ writes: on \(default\)/);
+});
+
+test("a data dir with the wrong mode fails with the chmod that fixes it", async () => {
+  const dir = dataDir();
+  chmodSync(dir, 0o755);
+  const { stderr } = await status(dir);
+  assert.match(stderr, /✗ data dir: .* is mode 0755, not 0700 — run `chmod 700 /);
+});
+
+test("a lock left by a dead process reads as stale, not as a running server", async () => {
+  const dir = dataDir();
+  writeFileSync(join(dir, "server.lock"), "999999\n");
+  const { stderr } = await status(dir);
+  assert.match(stderr, /– lock: stale \(pid 999999 is gone\); the next start reclaims it/);
+  assert.match(stderr, /server: not running/);
+});
+
+test("unreadable credentials fail the check and carry the repair", async () => {
+  const dir = dataDir();
+  mkdirSync(join(dir, "auth"), { recursive: true });
+  writeFileSync(join(dir, "auth", "creds.json"), "{ truncated");
+  const { stderr } = await status(dir);
+  assert.match(stderr, /✗ credentials: Stored credentials in .* are unreadable/);
+  assert.match(stderr, /wazap logout/);
+});
+
+test("WAZAP_NO_UPDATE_CHECK=1 skips the registry call and says so", async () => {
+  const { stderr } = await status(dataDir());
+  assert.match(stderr, /– update: update check skipped \(WAZAP_NO_UPDATE_CHECK=1\)/);
+});
+
+test("status --json prints one parseable object carrying the same checks", async () => {
+  const dir = dataDir();
+  const { stdout } = await status(dir, ["--json"]);
+  const report = JSON.parse(stdout);
+  assert.equal(report.data_dir, dir);
+  assert.equal(report.linked, false);
+  assert.equal(report.server_pid, null);
+  assert.deepEqual(
+    report.checks.map((check) => check.name),
+    ["node", "data dir", "lock", "credentials", "writes", "update"],
+  );
+  assert.equal(report.checks.find((check) => check.name === "writes").detail, "on (default)");
+});
+
+test("status --live refuses to touch the session a running server owns", async () => {
+  const dir = dataDir();
+  writeFileSync(join(dir, "server.lock"), `${process.pid}\n`);
+  await assert.rejects(status(dir, ["--live"]), (err) => {
+    assert.equal(err.code, 1);
+    assert.match(err.stderr, new RegExp(`A server \\(pid ${process.pid}\\) already owns this session`));
+    assert.match(err.stderr, /get_status/);
+    return true;
+  });
+});

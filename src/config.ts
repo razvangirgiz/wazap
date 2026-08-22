@@ -34,6 +34,9 @@ export interface Config {
   /** Positionals after the command: the client for `connect`, the setting for `config`. */
   args: string[];
   dryRun: boolean;
+  /** `status` only: probe WhatsApp, and print the report as JSON. */
+  live: boolean;
+  json: boolean;
   loginPhone?: string;
   loginQr: boolean;
   /** `login` asks about writes unless a flag already answered. */
@@ -124,6 +127,8 @@ export function parseCli(argv: string[] = process.argv.slice(2)): CliInvocation 
         phone: { type: "string" },
         qr: { type: "boolean" },
         "dry-run": { type: "boolean" },
+        live: { type: "boolean" },
+        json: { type: "boolean" },
         writes: { type: "boolean" },
         "no-writes": { type: "boolean" },
         yes: { type: "boolean", short: "y" },
@@ -186,6 +191,8 @@ export function parseCli(argv: string[] = process.argv.slice(2)): CliInvocation 
       explicitCommand: first !== undefined,
       args,
       dryRun: values["dry-run"] === true,
+      live: values.live === true,
+      json: values.json === true,
       loginPhone: values.phone,
       loginQr: values.qr === true,
       writesAnswer: values.writes === true ? true : values["no-writes"] === true ? false : null,

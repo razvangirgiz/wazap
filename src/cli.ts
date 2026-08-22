@@ -8,19 +8,31 @@ import makeWASocket, {
 } from "baileys";
 import qrcode from "qrcode";
 import qrcodeTerminal from "qrcode-terminal";
-import { BANNER } from "./banner.js";
 import { clearAuth, readLinkedAccount, useAtomicAuthState, type LinkedAccount } from "./auth-state.js";
+import { BANNER } from "./banner.js";
 import { BAILEYS_VERSION, WAZAP_VERSION, paths, type Config } from "./config.js";
 import { CONNECT_HINT } from "./connect.js";
-import { applyWrites, writesLine } from "./settings.js";
+import { checkLine, runChecks, type Check } from "./doctor.js";
 import { RELINK_FIX, WazapError, asWazapError } from "./errors.js";
 import { normalizePhone } from "./ids.js";
 import { lockHolder, releaseLock, writeLock } from "./lock.js";
 import { log, logError, say } from "./logger.js";
+import { formatAge } from "./messages.js";
 import { runHttp, runStdio } from "./server.js";
+import { applyWrites } from "./settings.js";
+import type { ChatSummary, ConnectionStatus } from "./wa-types.js";
 import { WA_BROWSER, WhatsAppService } from "./whatsapp.js";
 
 const LOGIN_TIMEOUT_MS = 120_000;
+const LIVE_TIMEOUT_MS = 15_000;
+/** Connection states the probe stops waiting on. */
+const SETTLED_STATUSES: readonly ConnectionStatus[] = [
+  "connected",
+  "not_linked",
+  "logged_out",
+  "session_corrupt",
+  "auth_failure",
+];
 const LOGOUT_TIMEOUT_MS = 10_000;
 const LOOPBACK_HOSTS = ["127.0.0.1", "::1", "localhost"];
 
@@ -36,9 +48,26 @@ const SILENT_LOGGER: SocketLogger = {
   error: () => {},
 };
 
-export function runStatus(config: Config): void {
+interface LiveReport {
+  reachable: boolean;
+  chats: number | null;
+  last_message_age: string | null;
+  reason: string | null;
+}
+
+interface StatusReport {
+  data_dir: string;
+  linked: boolean;
+  account: LinkedAccount | null;
+  wazap_version: string;
+  baileys_version: string;
+  server_pid: number | null;
+  checks: Check[];
+  live?: LiveReport;
+}
+
+export async function runStatus(config: Config): Promise<void> {
   const p = paths(config.dataDir);
-  say(`data dir: ${config.dataDir}`);
 
   let account: LinkedAccount | null = null;
   let unreadable = false;
@@ -47,6 +76,25 @@ export function runStatus(config: Config): void {
   } catch {
     unreadable = true;
   }
+
+  const report: StatusReport = {
+    data_dir: config.dataDir,
+    linked: account !== null,
+    account,
+    wazap_version: WAZAP_VERSION,
+    baileys_version: BAILEYS_VERSION,
+    server_pid: lockHolder(p.lockFile),
+    checks: await runChecks(config),
+  };
+  if (config.live) report.live = await runLiveProbe(config);
+
+  if (config.json) {
+    process.stdout.write(`${JSON.stringify(report, null, 2)}\n`);
+    if (config.live) process.exit(0);
+    return;
+  }
+
+  say(`data dir: ${report.data_dir}`);
   if (unreadable) {
     say("linked: no (credentials unreadable — run `wazap logout` then `wazap login`)");
   } else if (account) {
@@ -55,20 +103,80 @@ export function runStatus(config: Config): void {
   } else {
     say("linked: no");
   }
+  say(`wazap: ${report.wazap_version}`);
+  say(`baileys: ${report.baileys_version}`);
+  say(report.server_pid === null ? "server: not running" : `server: running (pid ${report.server_pid})`);
 
-  say(writesLine(config));
-  say(`wazap: ${WAZAP_VERSION}`);
-  say(`baileys: ${BAILEYS_VERSION}`);
+  say("");
+  say("checks:");
+  for (const check of report.checks) say(checkLine(check));
 
-  const pid = lockHolder(p.lockFile);
-  say(pid === null ? "server: not running" : `server: running (pid ${pid})`);
+  if (report.live) {
+    say("");
+    for (const line of liveLines(report.live)) say(line);
+    process.exit(0);
+  }
+}
+
+function liveLines(live: LiveReport): string[] {
+  if (!live.reachable) return [`live: no connection (${live.reason ?? "unknown"})`];
+  return [
+    "live: phone reachable",
+    `live: ${live.chats === null ? "chats not synced in time" : `${live.chats} chats synced`}`,
+    `live: last message ${live.last_message_age ?? "unknown"}`,
+  ];
+}
+
+/** One process owns the session, so a probe only runs when no server holds the lock. */
+async function runLiveProbe(config: Config): Promise<LiveReport> {
+  const p = paths(config.dataDir);
+  const running = lockHolder(p.lockFile);
+  if (running !== null) {
+    throw new WazapError(
+      "WHATSAPP_ERROR",
+      `A server (pid ${running}) already owns this session.`,
+      "Ask it through your MCP client instead: call get_status",
+    );
+  }
+
+  const wa = new WhatsAppService(config);
+  const deadline = Date.now() + LIVE_TIMEOUT_MS;
+  try {
+    await wa.start();
+    let info = wa.getStatus();
+    while (!SETTLED_STATUSES.includes(info.status) && Date.now() < deadline) {
+      await sleep(250);
+      info = wa.getStatus();
+    }
+    if (info.status !== "connected") {
+      return { reachable: false, chats: null, last_message_age: null, reason: info.last_error ?? info.status };
+    }
+
+    let chats: ChatSummary[] | null = null;
+    try {
+      chats = (await wa.listChats("all", 100_000)).data;
+    } catch {
+      /* the history sync did not finish inside the deadline */
+    }
+    const newest = (chats ?? [])
+      .map((chat) => (chat.last_message === null ? 0 : Date.parse(chat.last_message.timestamp)))
+      .reduce((a, b) => Math.max(a, b), 0);
+    return {
+      reachable: true,
+      chats: chats === null ? null : chats.length,
+      last_message_age: newest === 0 ? null : formatAge(newest),
+      reason: null,
+    };
+  } finally {
+    await wa.stop();
+  }
 }
 
 /** Bare `wazap` at a terminal: where you stand, and the one command to run next. */
-export function runGreet(config: Config): void {
+export async function runGreet(config: Config): Promise<void> {
   say(BANNER);
   say("");
-  runStatus(config);
+  await runStatus(config);
   say("");
 
   const p = paths(config.dataDir);
