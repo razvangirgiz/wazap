@@ -1,28 +1,17 @@
-/**
- * MCP tool registration — full WhatsApp coverage.
- *
- * Read:  learn, get_status, get_recent_chats, search_contacts, get_contact,
- *        search_messages, read_messages, download_media, get_group_info
- * Write: send_message, send_media, react_to_message, forward_message,
- *        delete_message, manage_chat, create_group, manage_group
- *
- * Every tool returns a human-readable Markdown summary in `content` plus the
- * full structured data in `structuredContent` for programmatic clients.
- */
-
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
+import { asWazapError, ERROR_GUIDE, type WazapError } from "./errors.js";
+import type { RateLimiter } from "./ratelimit.js";
 import type {
-  WhatsAppService,
   ChatSummary,
   ContactSummary,
-  MessageSummary,
+  MessageView,
   RecentConversation,
-} from "./whatsapp.js";
+  Synced,
+  WhatsAppApi,
+} from "./wa-types.js";
 
-type ContentBlock =
-  | { type: "text"; text: string }
-  | { type: "image"; data: string; mimeType: string };
+type ContentBlock = { type: "text"; text: string } | { type: "image"; data: string; mimeType: string };
 
 interface ToolResult {
   content: ContentBlock[];
@@ -31,723 +20,627 @@ interface ToolResult {
   [key: string]: unknown;
 }
 
+type ToolArgs = Record<string, unknown>;
+
+interface ToolDef {
+  name: string;
+  title: string;
+  description: string;
+  schema: z.ZodRawShape;
+  write: boolean;
+  destructive?: boolean;
+  handler: (args: ToolArgs, wa: WhatsAppApi) => Promise<ToolResult>;
+}
+
+function tool<S extends z.ZodRawShape>(def: {
+  name: string;
+  title: string;
+  description: string;
+  schema: S;
+  write: boolean;
+  destructive?: boolean;
+  handler: (args: z.infer<z.ZodObject<S>>, wa: WhatsAppApi) => Promise<ToolResult>;
+}): ToolDef {
+  return { ...def, handler: def.handler as (args: ToolArgs, wa: WhatsAppApi) => Promise<ToolResult> };
+}
+
 function ok(text: string, structured: Record<string, unknown>, extra: ContentBlock[] = []): ToolResult {
   return { content: [{ type: "text", text }, ...extra], structuredContent: structured };
 }
 
-function fail(message: string): ToolResult {
-  return { content: [{ type: "text", text: `Error: ${message}` }], isError: true };
+function synced<T>(result: Synced<T>, rest: Record<string, unknown>): Record<string, unknown> {
+  return { ...rest, sync: result.sync };
 }
 
-function errorMessage(err: unknown): string {
-  return err instanceof Error ? err.message : String(err);
+export function toolError(err: WazapError): ToolResult {
+  const payload: Record<string, unknown> = { error: err.code, message: err.message };
+  if (err.fix) payload.fix = err.fix;
+  return { content: [{ type: "text", text: JSON.stringify(payload) }], structuredContent: payload, isError: true };
 }
 
-/** Wrap a tool handler so thrown errors become clean MCP error results. */
-function guarded<A extends unknown[]>(fn: (...args: A) => Promise<ToolResult>) {
-  return async (...args: A): Promise<ToolResult> => {
-    try {
-      return await fn(...args);
-    } catch (err) {
-      return fail(errorMessage(err));
-    }
-  };
-}
+const READ_ONLY_HINTS = { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true } as const;
+const WRITE_HINTS = { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true } as const;
 
-const READ_ONLY = {
-  readOnlyHint: true,
-  destructiveHint: false,
-  idempotentHint: true,
-  openWorldHint: true,
-} as const;
-
-const WRITES = {
-  readOnlyHint: false,
-  destructiveHint: false,
-  idempotentHint: false,
-  openWorldHint: true,
-} as const;
-
-const chatIdSchema = z
+const chatId = z
   .string()
   .min(1)
-  .describe('Chat id, e.g. "1234567890@c.us", "...@g.us", "...@lid", or a bare phone number');
+  .describe('Chat id as returned by another tool ("<digits>@s.whatsapp.net" or "<id>@g.us"), or a phone number in international format');
 
-const messageIdSchema = z
+const messageId = z
   .string()
   .min(5)
-  .describe('Full message id from read_messages / search_messages, e.g. "true_123...@c.us_3EB0..."');
+  .describe('Message id from read_messages / search_messages / get_message, e.g. "false_4072...@s.whatsapp.net_3EB0..."');
 
-/** Usage guide returned by the `learn` tool (the docs agents read before acting). */
-const GUIDE = `# WhatsApp integration — how to use these tools
+const GUIDE = `# wazap — WhatsApp for your AI agent
 
-Full read/write access to the user's linked WhatsApp account: chats, contacts,
-message search, media, reactions, chat management, and groups.
+Read/write access to the user's linked WhatsApp account: chats, messages, media,
+contacts and groups. Call get_status first if anything looks wrong.
 
-## ID formats (important)
-- chat_id — individual: \`<number>@c.us\`; group: \`<id>@g.us\`; newer accounts may
-  show \`<id>@lid\` — always pass ids back exactly as returned. A bare phone
-  number in international format (e.g. "40712345678") is also accepted.
-- message_id — the full serialized id returned by read_messages /
-  search_messages (looks like \`true_40...@c.us_3EB0...\`). Needed for
-  download_media, react_to_message, forward_message, delete_message and the
-  reply_to option of send_message.
+## Identifiers
+- chat_id — individual: \`<digits>@s.whatsapp.net\`; group: \`<id>@g.us\`. A phone
+  number in international format (+40722123456 or 40722123456) also works. Pass
+  ids back exactly as a tool returned them.
+- message_id — the full id from read_messages / search_messages. Needed for
+  get_message, download_media, react_to_message, edit_message, forward_message,
+  delete_message, and the reply_to of send_message.
 
-## Recommended workflows
-- Read a conversation: get_recent_chats → read_messages(chat_id)
-- Find a person: search_contacts("name or number") → get_contact for details
-- Find something said: search_messages("query"[, chat_id])
-- Send: send_message(chat_id, message[, reply_to]) — confirm recipient + wording
-  with the user before sending anything sensitive. No undo.
-- Media: read_messages shows has_media=true → download_media(message_id);
-  send_media accepts a local file path or a URL, optional caption.
-- Tidy up: manage_chat(chat_id, action) for archive/pin/mute/mark_read etc.
-- Groups: get_group_info, create_group, manage_group (add/remove/promote/
-  demote/leave/set_subject/set_description/get_invite_link).
+## Workflows
+- Catch up: get_recent_messages(hours) for everything, or list_chats(filter:"unread")
+  then read_messages(chat_id).
+- Go back further: read_messages(chat_id, before: <oldest message_id you have>).
+- Find a person: search_contacts → get_contact.
+- Find something said: search_messages(query[, chat_id]).
+- Send: send_message / send_media / send_poll / send_location. These are REAL
+  messages from the user's own account and there is no undo. Confirm the
+  recipient and the wording with the user before sending anything sensitive.
+- Media: a message with has_media=true → download_media(message_id).
+- Groups: get_group_info before manage_group; most actions need admin rights.
 
-## Notes
-- Timestamps are ISO 8601 (UTC).
-- Media-only messages show their body as "[image]", "[audio]", etc.
-- delete_message with for_everyone=true and manage_group remove/leave are
-  destructive — double-check with the user first.
-- If a tool says "WhatsApp is not ready", the session is still connecting;
-  call get_status, wait a few seconds, retry.
+## Message shape
+Every message has non-empty \`text\`: media and system messages carry a
+placeholder like "[image] caption", "[voice message]", "[deleted]", "[poll] question".
+\`timestamp\` is ISO 8601 with the machine's UTC offset, \`age\` is human-readable.
+
+## Errors
+Every failure returns \`{ error, message, fix }\`. What to do per code:
+${(Object.keys(ERROR_GUIDE) as Array<keyof typeof ERROR_GUIDE>).map((code) => `- **${code}** — ${ERROR_GUIDE[code]}`).join("\n")}
 `;
 
-export function registerTools(server: McpServer, wa: WhatsAppService, allowWrite = true): void {
-  // Mutating tools are gated by the caller's token: a read-only-token session
-  // gets a clear error instead of being able to message or modify anything.
-  const writeGuarded = <A extends unknown[]>(fn: (...args: A) => Promise<ToolResult>) =>
-    allowWrite
-      ? guarded(fn)
-      : guarded(async (): Promise<ToolResult> => {
-          throw new Error(
-            "This bearer token is read-only — sending and mutations require the write token (held by the write-token client).",
-          );
-        });
+const TOOLS: readonly ToolDef[] = [
+  tool({
+    name: "learn",
+    title: "Learn how to use the WhatsApp tools",
+    description: `Read this FIRST, before any other WhatsApp tool. Returns the guide to the tools,
+the id formats, the recommended workflows, the message shape and every error
+code with what to do about it. Takes no arguments and never touches WhatsApp.`,
+    schema: {},
+    write: false,
+    handler: async () => ok(GUIDE, { guide: GUIDE }),
+  }),
 
-  // ---- Docs & status ----------------------------------------------------------
+  tool({
+    name: "get_status",
+    title: "Get the WhatsApp connection status",
+    description: `Check the session: connection status ("connected" means the tools work,
+"not_linked" means the user must run \`npx wazap login\`), whether the initial
+history sync has finished, which account is linked, when a message last arrived,
+and the versions and data directory in use.
 
-  server.registerTool(
-    "learn",
-    {
-      title: "Learn how to use the WhatsApp tools",
-      description: `Read this FIRST, before using any other WhatsApp tool.
-
-Returns a short guide explaining all available WhatsApp tools, the id formats
-(chat_id vs message_id), recommended workflows, and safety caveats. It takes no
-arguments and never touches WhatsApp.`,
-      inputSchema: {},
-      annotations: { ...READ_ONLY, openWorldHint: false },
-    },
-    async () => ok(GUIDE, { guide: GUIDE }),
-  );
-
-  server.registerTool(
-    "get_status",
-    {
-      title: "Get WhatsApp connection status",
-      description: `Check the WhatsApp session: connection status ("ready" means all tools work),
-the linked account (id/name/platform), and the last error if any.
-
-Call this when another tool reports "not ready", or to identify which account
-is linked before sending.`,
-      inputSchema: {},
-      annotations: { ...READ_ONLY, openWorldHint: false },
-    },
-    guarded(async () => {
-      const status = wa.getStatus();
-      const account = status.account
-        ? `${status.account.name || "(no name)"} <${status.account.id}> on ${status.account.platform}`
-        : "unknown (not ready yet)";
+Call this whenever another tool reports NOT_CONNECTED, NOT_LINKED or
+SYNC_IN_PROGRESS, or to confirm which account you are about to send from.`,
+    schema: {},
+    write: false,
+    handler: async (_args, wa) => {
+      const s = wa.getStatus();
+      const account = s.account ? `${s.account.name || "(no name)"} (${s.account.number})` : "none";
       const text = [
-        `# WhatsApp status: ${status.status}`,
+        `# WhatsApp: ${s.status} (sync: ${s.sync})`,
         `- **account**: ${account}`,
-        status.lastError ? `- **last error**: ${status.lastError}` : null,
+        `- **last message received**: ${s.last_message_received_at ?? "never"}`,
+        `- **data dir**: ${s.data_dir} · **read-only**: ${s.read_only} · **rate limit**: ${s.rate_limit}/min`,
+        `- **versions**: wazap ${s.wazap_version}, baileys ${s.baileys_version}`,
+        s.last_error ? `- **last error**: ${s.last_error}` : null,
+        s.hint ? `- **hint**: ${s.hint}` : null,
       ]
-        .filter(Boolean)
+        .filter((line): line is string => line !== null)
         .join("\n");
-      return ok(text, status as unknown as Record<string, unknown>);
-    }),
-  );
-
-  // ---- Chats & messages (read) --------------------------------------------------
-
-  server.registerTool(
-    "get_recent_chats",
-    {
-      title: "Get recent WhatsApp chats",
-      description: `List WhatsApp conversations, most-recently-active first. Use this to discover
-the chat_id values other tools need.
-
-Args:
-  - limit (number): max chats to return, 1-100 (default 20)
-  - filter (string): "all" (default, excludes archived), "unread", "groups",
-      "individual", or "archived"
-
-Each chat includes: chat_id, name, is_group, unread_count, archived, pinned,
-muted, last_activity (ISO 8601), last_message.`,
-      inputSchema: {
-        limit: z.number().int().min(1).max(100).default(20).describe("Maximum number of chats (1-100)"),
-        filter: z
-          .enum(["all", "unread", "groups", "individual", "archived"])
-          .default("all")
-          .describe('Which chats to list (default "all" = everything except archived)'),
-      },
-      annotations: READ_ONLY,
+      return ok(text, s as unknown as Record<string, unknown>);
     },
-    guarded(async ({ limit, filter }: { limit: number; filter: "all" | "unread" | "groups" | "individual" | "archived" }) => {
-      const chats = await wa.getRecentChats(limit, filter);
-      return ok(renderChats(chats, filter), { count: chats.length, filter, chats });
-    }),
-  );
+  }),
 
-  server.registerTool(
-    "read_messages",
-    {
-      title: "Read WhatsApp messages",
-      description: `Read the most recent messages from one WhatsApp chat, oldest-to-newest.
+  tool({
+    name: "list_chats",
+    title: "List WhatsApp chats",
+    description: `List conversations, most recently active first. Use it to discover the chat_id
+values the other tools need.
 
-Args:
-  - chat_id (string): chat to read (from get_recent_chats / search_contacts)
-  - limit (number): max messages, 1-100 (default 20)
-
-Each message includes: id (use it for reactions/replies/forward/delete/
-download_media), chat_id, from_me, sender, body ("[image]" etc. for media),
-type, has_media, has_quoted, timestamp (ISO 8601).`,
-      inputSchema: {
-        chat_id: chatIdSchema,
-        limit: z.number().int().min(1).max(1000).default(20).describe("Maximum number of messages (1-1000; large values load older history and are slower)"),
-      },
-      annotations: READ_ONLY,
+Each chat has: chat_id, name, type, unread_count, last_message {text, timestamp,
+from_me}, archived, pinned, muted_until, and left (groups you are no longer in).`,
+    schema: {
+      filter: z
+        .enum(["all", "unread", "groups", "individual", "archived"])
+        .default("all")
+        .describe('Which chats to list; "all" (default) excludes archived ones'),
+      limit: z.number().int().min(1).max(100).default(20).describe("Maximum number of chats (1-100)"),
     },
-    guarded(async ({ chat_id, limit }: { chat_id: string; limit: number }) => {
-      const messages = await wa.readMessages(chat_id, limit);
-      return ok(renderMessages(`Messages in ${chat_id}`, messages), {
-        chat_id,
-        count: messages.length,
-        messages,
-      });
-    }),
-  );
-
-  server.registerTool(
-    "get_recent_messages",
-    {
-      title: "Get recent WhatsApp conversations (durable)",
-      description: `All WhatsApp conversations active in the last N hours, grouped by chat, read
-from a durable on-disk journal rather than volatile memory — so the result is
-complete even right after the server restarted. This is the tool the nightly
-read-only consumers should use.
-
-Args:
-  - hours (number): how far back to look, 1-168 (default 24)
-
-Each conversation has: chat_id, chat_name, is_group, last_activity (ISO 8601),
-and messages[] (timestamp, sender, from_me, body), oldest-to-newest.`,
-      inputSchema: {
-        hours: z.number().int().min(1).max(168).default(24).describe("Look-back window in hours (1-168)"),
-      },
-      annotations: READ_ONLY,
+    write: false,
+    handler: async ({ filter, limit }, wa) => {
+      const result = await wa.listChats(filter, limit);
+      return ok(renderChats(result.data, filter), synced(result, { filter, count: result.data.length, chats: result.data }));
     },
-    guarded(async ({ hours }: { hours: number }) => {
-      const conversations = await wa.getRecentMessages(hours);
-      const messageCount = conversations.reduce((n, c) => n + c.messages.length, 0);
-      return ok(renderConversations(conversations, hours), {
-        hours,
-        conversation_count: conversations.length,
-        message_count: messageCount,
-        conversations,
-      });
-    }),
-  );
+  }),
 
-  server.registerTool(
-    "load_older_history",
-    {
-      title: "Load older WhatsApp history for a chat",
-      description: `Pull messages OLDER than what's currently loaded for a chat, by asking WhatsApp
-for more history (beyond the initial sync). Use when read_messages doesn't reach
-far enough back. Read the chat first so there is an anchor message.
+  tool({
+    name: "read_messages",
+    title: "Read messages from a WhatsApp chat",
+    description: `Read messages from one chat, oldest to newest.
 
-The requested older messages arrive a few seconds later and then become visible
-to read_messages / search_messages. Bounded by what WhatsApp still keeps on its
-servers and by the per-chat cap — it cannot reach the user's full phone archive.
-
-Args:
-  - chat_id (string): the chat to deepen
-  - count (number): how many older messages to request, 1-200 (default 50)
-
-Returns how many messages the chat had before/after and the new oldest timestamp.`,
-      inputSchema: {
-        chat_id: chatIdSchema,
-        count: z.number().int().min(1).max(200).default(50).describe("Older messages to request (1-200)"),
-      },
-      annotations: READ_ONLY,
+Without \`before\` you get the most recent messages. Pass \`before\` (the oldest
+message_id you already have) to page further back; wazap asks the phone for
+older history when the local store runs out, which takes a few seconds.`,
+    schema: {
+      chat_id: chatId,
+      limit: z.number().int().min(1).max(200).default(20).describe("Maximum number of messages (1-200)"),
+      before: messageId.optional().describe("Return the messages immediately older than this message_id"),
     },
-    guarded(async ({ chat_id, count }: { chat_id: string; count: number }) => {
-      const r = await wa.fetchOlderHistory(chat_id, count);
-      const text =
-        r.gained > 0
-          ? `Loaded ${r.gained} older message(s) in ${r.chat_id} (${r.had} → ${r.now}). Oldest now: ${r.oldest}.`
-          : `No older messages came back for ${r.chat_id} (still ${r.now}). WhatsApp may have no more, or they are still arriving — retry read_messages shortly.`;
-      return ok(text, r as unknown as Record<string, unknown>);
-    }),
-  );
-
-  server.registerTool(
-    "search_messages",
-    {
-      title: "Search WhatsApp messages",
-      description: `Full-text search across WhatsApp messages — all chats, or one chat.
-
-Args:
-  - query (string): text to search for
-  - chat_id (string, optional): restrict the search to this chat
-  - limit (number): max results, 1-50 (default 20)
-
-Returns the same message shape as read_messages (each result includes its
-chat_id and message id).`,
-      inputSchema: {
-        query: z.string().min(1).describe("Text to search for"),
-        chat_id: chatIdSchema.optional(),
-        limit: z.number().int().min(1).max(50).default(20).describe("Maximum number of results (1-50)"),
-      },
-      annotations: READ_ONLY,
+    write: false,
+    handler: async ({ chat_id, limit, before }, wa) => {
+      const result = await wa.readMessages(chat_id, limit, before);
+      return ok(
+        renderMessages(`Messages in ${chat_id}`, result.data),
+        synced(result, { chat_id, count: result.data.length, messages: result.data }),
+      );
     },
-    guarded(async ({ query, chat_id, limit }: { query: string; chat_id?: string; limit: number }) => {
-      const messages = await wa.searchMessages(query, chat_id, limit);
-      return ok(renderMessages(`Search results for "${query}"`, messages), {
-        query,
-        chat_id: chat_id ?? null,
-        count: messages.length,
-        messages,
-      });
-    }),
-  );
+  }),
 
-  // ---- Contacts -----------------------------------------------------------------
-
-  server.registerTool(
-    "search_contacts",
-    {
-      title: "Search WhatsApp contacts",
-      description: `Find WhatsApp contacts by name or phone number (case-insensitive substring
-match; numbers match on digits, minimum 5).
-
-Args:
-  - query (string): name fragment or phone number
-  - limit (number): max results, 1-50 (default 10)
-
-Returns contact_id (usable as chat_id for send_message/read_messages), name,
-number, is_my_contact, is_business.`,
-      inputSchema: {
-        query: z.string().min(2).describe("Name fragment or phone number to search for"),
-        limit: z.number().int().min(1).max(50).default(10).describe("Maximum number of results (1-50)"),
-      },
-      annotations: READ_ONLY,
+  tool({
+    name: "get_recent_messages",
+    title: "Get every WhatsApp conversation from the last N hours",
+    description: `Everything that happened recently, grouped by chat. This is the catch-up tool:
+one call instead of list_chats plus a read_messages per chat.`,
+    schema: {
+      hours: z.number().int().min(1).max(168).default(24).describe("Look-back window in hours (1-168)"),
+      filter: z
+        .enum(["all", "unread", "groups", "individual"])
+        .default("all")
+        .describe("Restrict to unread chats, groups, or one-to-one chats"),
     },
-    guarded(async ({ query, limit }: { query: string; limit: number }) => {
+    write: false,
+    handler: async ({ hours, filter }, wa) => {
+      const result = await wa.getRecentMessages(hours, filter);
+      const messageCount = result.data.reduce((n, c) => n + c.messages.length, 0);
+      return ok(
+        renderConversations(result.data, hours),
+        synced(result, {
+          hours,
+          filter,
+          conversation_count: result.data.length,
+          message_count: messageCount,
+          conversations: result.data,
+        }),
+      );
+    },
+  }),
+
+  tool({
+    name: "search_messages",
+    title: "Search WhatsApp messages",
+    description: `Case-insensitive text search over the messages wazap holds locally — all chats,
+or one chat. It cannot reach messages the phone never synced to this device.`,
+    schema: {
+      query: z.string().min(1).describe("Text to search for"),
+      chat_id: chatId.optional().describe("Restrict the search to this chat"),
+      limit: z.number().int().min(1).max(50).default(20).describe("Maximum number of results (1-50)"),
+    },
+    write: false,
+    handler: async ({ query, chat_id, limit }, wa) => {
+      const result = await wa.searchMessages(query, chat_id, limit);
+      return ok(
+        renderMessages(`Search results for "${query}"`, result.data),
+        synced(result, { query, chat_id: chat_id ?? null, count: result.data.length, messages: result.data }),
+      );
+    },
+  }),
+
+  tool({
+    name: "get_message",
+    title: "Get one WhatsApp message in full",
+    description: `The complete message behind a message_id, including the quoted message it
+replies to, its reactions, and its media metadata. Use it after search_messages
+or read_messages when you need the context around a single message.`,
+    schema: { message_id: messageId },
+    write: false,
+    handler: async ({ message_id }, wa) => {
+      const message = await wa.getMessage(message_id);
+      return ok(renderMessages("Message", [message]), message as unknown as Record<string, unknown>);
+    },
+  }),
+
+  tool({
+    name: "search_contacts",
+    title: "Search WhatsApp contacts",
+    description: `Find contacts by name or phone number (substring match on the name, digit match
+on the number). Returns contact_id values usable as chat_id.`,
+    schema: {
+      query: z.string().min(2).describe("Name fragment or phone number (at least 2 characters)"),
+      limit: z.number().int().min(1).max(50).default(10).describe("Maximum number of results (1-50)"),
+    },
+    write: false,
+    handler: async ({ query, limit }, wa) => {
       const contacts = await wa.searchContacts(query, limit);
       return ok(renderContacts(query, contacts), { query, count: contacts.length, contacts });
-    }),
-  );
-
-  server.registerTool(
-    "get_contact",
-    {
-      title: "Get WhatsApp contact details",
-      description: `Full details for one contact: name, number, about/status text, profile picture
-URL, is_blocked, is_business.
-
-Args:
-  - contact_id (string): from search_contacts / get_recent_chats, or a bare
-      phone number in international format.`,
-      inputSchema: {
-        contact_id: z
-          .string()
-          .min(1)
-          .describe('Contact id, e.g. "40712345678@c.us", or a bare phone number'),
-      },
-      annotations: READ_ONLY,
     },
-    guarded(async ({ contact_id }: { contact_id: string }) => {
+  }),
+
+  tool({
+    name: "get_contact",
+    title: "Get WhatsApp contact details",
+    description: `Full details for one contact: name, number, about text, profile picture URL,
+whether they are a saved contact, a business, or blocked.`,
+    schema: {
+      contact_id: chatId.describe('Contact id from search_contacts / list_chats, or a phone number'),
+    },
+    write: false,
+    handler: async ({ contact_id }, wa) => {
       const c = await wa.getContact(contact_id);
-      const lines = [
+      const text = [
         `# ${c.name}`,
         `- **contact_id**: \`${c.contact_id}\``,
         c.number ? `- **number**: ${c.number}` : null,
         c.about ? `- **about**: ${c.about}` : null,
         c.profile_pic_url ? `- **profile picture**: ${c.profile_pic_url}` : null,
-        `- **my contact**: ${c.is_my_contact} · **business**: ${c.is_business} · **blocked**: ${c.is_blocked}`,
-      ].filter(Boolean);
-      return ok(lines.join("\n"), c as unknown as Record<string, unknown>);
-    }),
-  );
-
-  // ---- Media ---------------------------------------------------------------------
-
-  server.registerTool(
-    "download_media",
-    {
-      title: "Download media from a WhatsApp message",
-      description: `Download the photo/video/audio/document attached to a message and save it on
-disk. Small images (≤1 MB) are also returned inline so you can view them.
-
-Args:
-  - message_id (string): a message with has_media=true (from read_messages /
-      search_messages)
-
-Returns: path (absolute, on the server machine), filename, mimetype, size_bytes.
-Fails if the media expired on WhatsApp's servers.`,
-      inputSchema: { message_id: messageIdSchema },
-      annotations: READ_ONLY,
+        `- **saved**: ${c.is_my_contact} · **business**: ${c.is_business} · **blocked**: ${c.is_blocked}`,
+      ]
+        .filter((line): line is string => line !== null)
+        .join("\n");
+      return ok(text, c as unknown as Record<string, unknown>);
     },
-    guarded(async ({ message_id }: { message_id: string }) => {
-      const media = await wa.downloadMedia(message_id);
-      const { base64, ...structured } = media;
-      const extra: ContentBlock[] = base64
-        ? [{ type: "image", data: base64, mimeType: media.mimetype }]
-        : [];
-      const text =
-        `Saved ${media.mimetype} (${Math.round(media.size_bytes / 1024)} KB) to:\n${media.path}` +
-        (base64 ? "\n(image attached inline)" : "");
-      return ok(text, structured as unknown as Record<string, unknown>, extra);
-    }),
-  );
+  }),
 
-  server.registerTool(
-    "send_media",
-    {
-      title: "Send a WhatsApp media message",
-      description: `Send an image/video/audio/document to a chat, from a local file path (on the
-server machine) or a public URL. Optional caption. There is no undo.
+  tool({
+    name: "get_group_info",
+    title: "Get WhatsApp group info",
+    description: `Details of a group: name, description, owner, creation date, whether only admins
+may post, whether the linked account is an admin, and the participant list (up
+to 500; participant_count is always the true total). The invite link is included
+only when the linked account is an admin.
 
-Args:
-  - chat_id (string): recipient chat
-  - file_path (string, optional): absolute path of a local file
-  - url (string, optional): public http(s) URL to fetch and send
-  - caption (string, optional): text shown under the media
-  - as_document (boolean): send as a plain document instead of rendered media
-      (default false)
-
-Exactly one of file_path / url is required.`,
-      inputSchema: {
-        chat_id: chatIdSchema,
-        file_path: z.string().min(1).optional().describe("Absolute path of a local file to send"),
-        url: z.string().url().optional().describe("Public http(s) URL of the media to send"),
-        caption: z.string().max(1024).optional().describe("Optional caption"),
-        as_document: z.boolean().default(false).describe("Send as document instead of rendered media"),
-      },
-      annotations: WRITES,
-    },
-    writeGuarded(
-      async ({
-        chat_id,
-        file_path,
-        url,
-        caption,
-        as_document,
-      }: {
-        chat_id: string;
-        file_path?: string;
-        url?: string;
-        caption?: string;
-        as_document: boolean;
-      }) => {
-        if (Boolean(file_path) === Boolean(url)) {
-          return fail("Provide exactly one of file_path or url.");
-        }
-        const sent = await wa.sendMedia(chat_id, { file_path, url }, caption, as_document);
-        return ok(
-          `Media sent to ${sent.to} at ${sent.timestamp} (message id: ${sent.id})`,
-          sent as unknown as Record<string, unknown>,
-        );
-      },
-    ),
-  );
-
-  // ---- Sending & message actions --------------------------------------------------
-
-  server.registerTool(
-    "send_message",
-    {
-      title: "Send a WhatsApp message",
-      description: `Send a text message to a WhatsApp chat. This sends a REAL message from the
-user's account — there is no undo. Confirm recipient and wording with the user
-before sending anything sensitive.
-
-Args:
-  - chat_id (string): recipient chat (from get_recent_chats / search_contacts,
-      or a bare phone number)
-  - message (string): text to send (1-4096 chars)
-  - reply_to (string, optional): message_id to quote-reply to
-
-Returns the sent message's id, normalized chat_id, body and timestamp.`,
-      inputSchema: {
-        chat_id: chatIdSchema,
-        message: z
-          .string()
-          .min(1, "Message cannot be empty")
-          .max(4096, "Message must not exceed 4096 characters")
-          .describe("The text message to send"),
-        reply_to: messageIdSchema.optional(),
-      },
-      annotations: WRITES,
-    },
-    writeGuarded(async ({ chat_id, message, reply_to }: { chat_id: string; message: string; reply_to?: string }) => {
-      const sent = await wa.sendMessage(chat_id, message, reply_to);
-      return ok(
-        `Sent to ${sent.to} at ${sent.timestamp} (message id: ${sent.id}):\n> ${sent.body}`,
-        sent as unknown as Record<string, unknown>,
-      );
-    }),
-  );
-
-  server.registerTool(
-    "react_to_message",
-    {
-      title: "React to a WhatsApp message",
-      description: `Add an emoji reaction to a message, or remove your existing reaction.
-
-Args:
-  - message_id (string): from read_messages / search_messages
-  - emoji (string): a single emoji like "👍"; pass "" (empty) to remove your reaction`,
-      inputSchema: {
-        message_id: messageIdSchema,
-        emoji: z.string().max(8).describe('Emoji to react with, or "" to remove the reaction'),
-      },
-      annotations: WRITES,
-    },
-    writeGuarded(async ({ message_id, emoji }: { message_id: string; emoji: string }) => {
-      const result = await wa.reactToMessage(message_id, emoji);
-      return ok(result, { message_id, emoji });
-    }),
-  );
-
-  server.registerTool(
-    "forward_message",
-    {
-      title: "Forward a WhatsApp message",
-      description: `Forward an existing message to another chat. The recipient sees it as forwarded.
-
-Args:
-  - message_id (string): the message to forward
-  - to_chat_id (string): destination chat`,
-      inputSchema: {
-        message_id: messageIdSchema,
-        to_chat_id: chatIdSchema,
-      },
-      annotations: WRITES,
-    },
-    writeGuarded(async ({ message_id, to_chat_id }: { message_id: string; to_chat_id: string }) => {
-      const result = await wa.forwardMessage(message_id, to_chat_id);
-      return ok(result, { message_id, to_chat_id });
-    }),
-  );
-
-  server.registerTool(
-    "delete_message",
-    {
-      title: "Delete a WhatsApp message",
-      description: `Delete a message. DESTRUCTIVE — confirm with the user first.
-
-Args:
-  - message_id (string): the message to delete
-  - for_everyone (boolean): true = retract for all participants (only works on
-      recent messages you sent); false (default) = delete only on this account`,
-      inputSchema: {
-        message_id: messageIdSchema,
-        for_everyone: z.boolean().default(false).describe("Retract for everyone (true) or delete locally (false)"),
-      },
-      annotations: { ...WRITES, destructiveHint: true },
-    },
-    writeGuarded(async ({ message_id, for_everyone }: { message_id: string; for_everyone: boolean }) => {
-      const result = await wa.deleteMessage(message_id, for_everyone);
-      return ok(result, { message_id, for_everyone });
-    }),
-  );
-
-  // ---- Chat management -------------------------------------------------------------
-
-  server.registerTool(
-    "manage_chat",
-    {
-      title: "Manage a WhatsApp chat",
-      description: `Change the state of a chat. Actions:
-  - "archive" / "unarchive"
-  - "pin" / "unpin"
-  - "mute" / "unmute" — mute takes optional mute_hours (omit = mute indefinitely)
-  - "mark_read" — send read receipts for the chat
-  - "mark_unread" — flag the chat as unread
-
-Args:
-  - chat_id (string)
-  - action (string): one of the above
-  - mute_hours (number, optional): only for "mute", 1-720`,
-      inputSchema: {
-        chat_id: chatIdSchema,
-        action: z
-          .enum(["archive", "unarchive", "pin", "unpin", "mute", "unmute", "mark_read", "mark_unread"])
-          .describe("What to do with the chat"),
-        mute_hours: z.number().int().min(1).max(720).optional().describe('Hours to mute (only for "mute")'),
-      },
-      annotations: WRITES,
-    },
-    writeGuarded(
-      async ({
-        chat_id,
-        action,
-        mute_hours,
-      }: {
-        chat_id: string;
-        action: "archive" | "unarchive" | "pin" | "unpin" | "mute" | "unmute" | "mark_read" | "mark_unread";
-        mute_hours?: number;
-      }) => {
-        const result = await wa.manageChat(chat_id, action, mute_hours);
-        return ok(result, { chat_id, action, mute_hours: mute_hours ?? null });
-      },
-    ),
-  );
-
-  // ---- Groups -----------------------------------------------------------------------
-
-  server.registerTool(
-    "get_group_info",
-    {
-      title: "Get WhatsApp group info",
-      description: `Details of a group chat: name, description, owner, creation date, and the
-participant list (contact_id, name, is_admin; first 100 participants).
-
-Args:
-  - chat_id (string): a group chat id ("...@g.us")`,
-      inputSchema: { chat_id: chatIdSchema },
-      annotations: READ_ONLY,
-    },
-    guarded(async ({ chat_id }: { chat_id: string }) => {
-      const info = await wa.getGroupInfo(chat_id);
-      const lines = [
+Call this before manage_group: most group actions need admin rights.`,
+    schema: { group_id: chatId.describe('Group chat id ("<id>@g.us")') },
+    write: false,
+    handler: async ({ group_id }, wa) => {
+      const info = await wa.getGroupInfo(group_id);
+      const text = [
         `# ${info.name} (${info.participant_count} participants)`,
         `- **chat_id**: \`${info.chat_id}\``,
         info.description ? `- **description**: ${info.description}` : null,
         info.owner ? `- **owner**: ${info.owner}` : null,
         info.created_at ? `- **created**: ${info.created_at}` : null,
+        `- **admins only can post**: ${info.announcement_only} · **you are admin**: ${info.i_am_admin}`,
+        info.invite_link ? `- **invite link**: ${info.invite_link}` : null,
         "",
         "## Participants",
-        ...info.participants.map(
-          (p) => `- ${p.name}${p.is_admin ? " (admin)" : ""} — \`${p.contact_id}\``,
-        ),
-      ].filter((l): l is string => l !== null);
-      return ok(lines.join("\n"), info as unknown as Record<string, unknown>);
-    }),
-  );
-
-  server.registerTool(
-    "create_group",
-    {
-      title: "Create a WhatsApp group",
-      description: `Create a new WhatsApp group with the given name and participants. The user's
-account becomes the group owner.
-
-Args:
-  - name (string): group subject (1-100 chars)
-  - participant_ids (string[]): contact ids or bare phone numbers to add (1-50)
-
-Returns the new group's chat_id and any participants that could not be added.`,
-      inputSchema: {
-        name: z.string().min(1).max(100).describe("Group name/subject"),
-        participant_ids: z
-          .array(z.string().min(5))
-          .min(1)
-          .max(50)
-          .describe("Contact ids or phone numbers to add"),
-      },
-      annotations: WRITES,
+        ...info.participants.map((p) => `- ${p.name}${p.is_admin ? " (admin)" : ""} — \`${p.contact_id}\``),
+      ]
+        .filter((line): line is string => line !== null)
+        .join("\n");
+      return ok(text, info as unknown as Record<string, unknown>);
     },
-    writeGuarded(async ({ name, participant_ids }: { name: string; participant_ids: string[] }) => {
-      const result = await wa.createGroup(name, participant_ids);
+  }),
+
+  tool({
+    name: "download_media",
+    title: "Download media from a WhatsApp message",
+    description: `Download the photo/video/audio/document attached to a message and save it to
+disk on the machine running wazap. Images of 1 MB or less are also returned
+inline so you can look at them.
+
+Fails with MEDIA_UNAVAILABLE when WhatsApp has expired the file.`,
+    schema: {
+      message_id: messageId.describe("A message with has_media=true"),
+      save_to: z.string().min(1).optional().describe("Absolute directory to save into (default: <data-dir>/media)"),
+    },
+    write: false,
+    handler: async ({ message_id, save_to }, wa) => {
+      const media = await wa.downloadMedia(message_id, save_to);
+      const { inline_base64, ...structured } = media;
+      const extra: ContentBlock[] = inline_base64
+        ? [{ type: "image", data: inline_base64, mimeType: media.mime }]
+        : [];
       const text =
-        `Group "${name}" created: ${result.chat_id}` +
-        (result.missing.length ? `\nCould not add: ${result.missing.join(", ")}` : "");
-      return ok(text, { name, ...result });
-    }),
-  );
-
-  server.registerTool(
-    "manage_group",
-    {
-      title: "Manage a WhatsApp group",
-      description: `Administer a group chat (most actions require the linked account to be a group
-admin). Actions:
-  - "add" / "remove" / "promote" / "demote" — require participant_ids
-  - "leave" — leave the group (DESTRUCTIVE: rejoining needs an invite)
-  - "set_subject" / "set_description" — require value
-  - "get_invite_link" — returns the group's invite link
-
-Args:
-  - chat_id (string): group chat id ("...@g.us")
-  - action (string): one of the above
-  - participant_ids (string[], optional)
-  - value (string, optional): new subject/description`,
-      inputSchema: {
-        chat_id: chatIdSchema,
-        action: z
-          .enum(["add", "remove", "promote", "demote", "leave", "set_subject", "set_description", "get_invite_link"])
-          .describe("Group action to perform"),
-        participant_ids: z.array(z.string().min(5)).max(50).optional().describe("Targets for add/remove/promote/demote"),
-        value: z.string().max(2048).optional().describe("New subject or description"),
-      },
-      annotations: { ...WRITES, destructiveHint: true },
+        `Saved ${media.mime} (${Math.round(media.size / 1024)} KB) to:\n${media.path}` +
+        (inline_base64 ? "\n(image attached inline)" : "");
+      return ok(text, structured as unknown as Record<string, unknown>, extra);
     },
-    writeGuarded(
-      async ({
-        chat_id,
-        action,
-        participant_ids,
-        value,
-      }: {
-        chat_id: string;
-        action: "add" | "remove" | "promote" | "demote" | "leave" | "set_subject" | "set_description" | "get_invite_link";
-        participant_ids?: string[];
-        value?: string;
-      }) => {
-        const result = await wa.manageGroup(chat_id, action, participant_ids, value);
-        return ok(result, { chat_id, action, participant_ids: participant_ids ?? null, value: value ?? null });
-      },
-    ),
-  );
+  }),
+
+  tool({
+    name: "send_message",
+    title: "Send a WhatsApp text message",
+    description: `Send a text message. This is a REAL message from the user's own account and
+there is no undo — confirm the recipient and the wording with the user before
+sending anything sensitive.`,
+    schema: {
+      chat_id: chatId,
+      text: z.string().min(1).max(65536).describe("The message text"),
+      reply_to: messageId.optional().describe("Quote-reply to this message"),
+      mention_ids: z
+        .array(z.string().min(1))
+        .max(50)
+        .optional()
+        .describe("Chat ids to @-mention; include their names in the text yourself"),
+    },
+    write: true,
+    handler: async ({ chat_id, text, reply_to, mention_ids }, wa) => {
+      const sent = await wa.sendMessage(chat_id, text, reply_to, mention_ids);
+      return ok(`Sent to ${sent.chat_id} at ${sent.timestamp} (message_id: ${sent.message_id}):\n> ${sent.text}`, sent as unknown as Record<string, unknown>);
+    },
+  }),
+
+  tool({
+    name: "send_media",
+    title: "Send a WhatsApp media message",
+    description: `Send an image, video, audio file or document, from a local path on the machine
+running wazap or from a public URL. Exactly one of file_path / url. Maximum
+100 MB.`,
+    schema: {
+      chat_id: chatId,
+      file_path: z.string().min(1).optional().describe("Absolute path of a local file to send"),
+      url: z.string().url().optional().describe("Public http(s) URL to fetch and send"),
+      caption: z.string().max(1024).optional().describe("Text shown under the media"),
+      as_document: z.boolean().default(false).describe("Send as a plain document instead of rendered media"),
+      as_voice: z.boolean().default(false).describe("Send an audio file as a voice note (push-to-talk)"),
+    },
+    write: true,
+    handler: async ({ chat_id, file_path, url, caption, as_document, as_voice }, wa) => {
+      const sent = await wa.sendMedia(chat_id, { file_path, url }, { caption, asDocument: as_document, asVoice: as_voice });
+      return ok(`Media sent to ${sent.chat_id} at ${sent.timestamp} (message_id: ${sent.message_id})`, sent as unknown as Record<string, unknown>);
+    },
+  }),
+
+  tool({
+    name: "send_poll",
+    title: "Send a WhatsApp poll",
+    description: `Send a poll to a chat. Participants vote in WhatsApp; wazap cannot read the
+votes back, so ask the user to report the outcome.`,
+    schema: {
+      chat_id: chatId,
+      question: z.string().min(1).max(255).describe("The poll question"),
+      options: z.array(z.string().min(1).max(100)).min(2).max(12).describe("Answer options (2-12)"),
+      multi_select: z.boolean().default(false).describe("Allow voters to pick more than one option"),
+    },
+    write: true,
+    handler: async ({ chat_id, question, options, multi_select }, wa) => {
+      const sent = await wa.sendPoll(chat_id, question, options, multi_select);
+      return ok(`Poll sent to ${sent.chat_id} (message_id: ${sent.message_id}):\n> ${question}`, sent as unknown as Record<string, unknown>);
+    },
+  }),
+
+  tool({
+    name: "send_location",
+    title: "Send a WhatsApp location",
+    description: "Send a map pin to a chat, optionally labelled with a place name and address.",
+    schema: {
+      chat_id: chatId,
+      latitude: z.number().min(-90).max(90).describe("Latitude in decimal degrees"),
+      longitude: z.number().min(-180).max(180).describe("Longitude in decimal degrees"),
+      name: z.string().max(255).optional().describe("Place name shown on the pin"),
+      address: z.string().max(500).optional().describe("Street address shown under the name"),
+    },
+    write: true,
+    handler: async ({ chat_id, latitude, longitude, name, address }, wa) => {
+      const sent = await wa.sendLocation(chat_id, latitude, longitude, name, address);
+      return ok(`Location sent to ${sent.chat_id} (message_id: ${sent.message_id})`, sent as unknown as Record<string, unknown>);
+    },
+  }),
+
+  tool({
+    name: "edit_message",
+    title: "Edit a WhatsApp message you sent",
+    description: `Replace the text of a message the linked account sent. WhatsApp only allows
+this within 15 minutes of sending; after that send a correction instead.`,
+    schema: {
+      message_id: messageId.describe("A message the linked account sent"),
+      text: z.string().min(1).max(65536).describe("The replacement text"),
+    },
+    write: true,
+    handler: async ({ message_id, text }, wa) => {
+      const sent = await wa.editMessage(message_id, text);
+      return ok(`Edited ${message_id}:\n> ${sent.text}`, sent as unknown as Record<string, unknown>);
+    },
+  }),
+
+  tool({
+    name: "react_to_message",
+    title: "React to a WhatsApp message",
+    description: 'Add an emoji reaction to a message, or pass an empty string to remove your reaction.',
+    schema: {
+      message_id: messageId,
+      emoji: z.string().max(8).describe('A single emoji such as "👍", or "" to remove your reaction'),
+    },
+    write: true,
+    handler: async ({ message_id, emoji }, wa) => {
+      const result = await wa.reactToMessage(message_id, emoji);
+      const text = emoji ? `Reacted ${emoji} to ${message_id}` : `Removed the reaction from ${message_id}`;
+      return ok(text, result as unknown as Record<string, unknown>);
+    },
+  }),
+
+  tool({
+    name: "forward_message",
+    title: "Forward a WhatsApp message",
+    description: "Forward an existing message to another chat. The recipient sees it marked as forwarded.",
+    schema: { message_id: messageId, to_chat_id: chatId.describe("Destination chat") },
+    write: true,
+    handler: async ({ message_id, to_chat_id }, wa) => {
+      const sent = await wa.forwardMessage(message_id, to_chat_id);
+      return ok(`Forwarded ${message_id} to ${sent.chat_id} (message_id: ${sent.message_id})`, sent as unknown as Record<string, unknown>);
+    },
+  }),
+
+  tool({
+    name: "delete_message",
+    title: "Delete a WhatsApp message",
+    description: `Retract a message. DESTRUCTIVE and visible to everyone in the chat — confirm
+with the user first. Only works on messages the linked account sent, and only
+within 2 days of sending.`,
+    schema: {
+      message_id: messageId,
+      for_everyone: z.boolean().default(false).describe("Retract for all participants (WhatsApp supports no other kind of delete here)"),
+    },
+    write: true,
+    destructive: true,
+    handler: async ({ message_id, for_everyone }, wa) => {
+      const result = await wa.deleteMessage(message_id, for_everyone);
+      return ok(`Deleted ${message_id} for everyone`, result as unknown as Record<string, unknown>);
+    },
+  }),
+
+  tool({
+    name: "manage_chat",
+    title: "Manage a WhatsApp chat",
+    description: `Change the state of a chat: archive/unarchive, pin/unpin, mute/unmute
+(mute_hours defaults to 8), mark_read (sends read receipts) or mark_unread.`,
+    schema: {
+      chat_id: chatId,
+      action: z
+        .enum(["archive", "unarchive", "pin", "unpin", "mute", "unmute", "mark_read", "mark_unread"])
+        .describe("What to do with the chat"),
+      mute_hours: z.number().int().min(1).max(720).optional().describe('Hours to mute, default 8; only used by "mute"'),
+    },
+    write: true,
+    handler: async ({ chat_id, action, mute_hours }, wa) => {
+      const result = await wa.manageChat(chat_id, action, mute_hours);
+      return ok(result.applied, result as unknown as Record<string, unknown>);
+    },
+  }),
+
+  tool({
+    name: "create_group",
+    title: "Create a WhatsApp group",
+    description: `Create a group with the given name and participants; the linked account becomes
+the owner. Each participant comes back with a status: ok, invite_needed (their
+privacy settings require an invite link) or failed.`,
+    schema: {
+      name: z.string().min(1).max(100).describe("Group name"),
+      participant_ids: z.array(z.string().min(1)).min(1).max(256).describe("Chat ids or phone numbers to add (1-256)"),
+    },
+    write: true,
+    handler: async ({ name, participant_ids }, wa) => {
+      const result = await wa.createGroup(name, participant_ids);
+      const text = [`Group "${name}" created: ${result.chat_id}`, ...renderParticipants(result.participants)].join("\n");
+      return ok(text, { name, ...result });
+    },
+  }),
+
+  tool({
+    name: "manage_group",
+    title: "Manage a WhatsApp group",
+    description: `Administer a group. Actions:
+  - add / remove / promote / demote — need participant_ids; each participant
+    comes back with status ok, invite_needed or failed
+  - leave — DESTRUCTIVE, rejoining needs an invite
+  - set_subject / set_description — need value
+  - get_invite_link / revoke_invite_link
+
+Everything except leave requires the linked account to be a group admin; call
+get_group_info first to check.`,
+    schema: {
+      group_id: chatId.describe('Group chat id ("<id>@g.us")'),
+      action: z
+        .enum([
+          "add",
+          "remove",
+          "promote",
+          "demote",
+          "leave",
+          "set_subject",
+          "set_description",
+          "get_invite_link",
+          "revoke_invite_link",
+        ])
+        .describe("Group action to perform"),
+      participant_ids: z.array(z.string().min(1)).max(256).optional().describe("Targets of add/remove/promote/demote"),
+      value: z.string().max(2048).optional().describe("New subject or description"),
+    },
+    write: true,
+    destructive: true,
+    handler: async ({ group_id, action, participant_ids, value }, wa) => {
+      const result = await wa.manageGroup(group_id, action, participant_ids, value);
+      const text = [result.applied, ...renderParticipants(result.participants ?? [])].join("\n");
+      return ok(text, result as unknown as Record<string, unknown>);
+    },
+  }),
+];
+
+export const TOOL_NAMES: readonly string[] = TOOLS.map((t) => t.name);
+
+export interface RegisterOpts {
+  allowWrite: boolean;
+  limiter: RateLimiter;
 }
 
-// ---- Markdown rendering -----------------------------------------------------
+export function registerTools(server: McpServer, wa: WhatsAppApi, opts: RegisterOpts): void {
+  for (const def of TOOLS) {
+    if (def.write && !opts.allowWrite) continue;
+    server.registerTool(
+      def.name,
+      {
+        title: def.title,
+        description: def.description,
+        inputSchema: def.schema,
+        annotations: def.write
+          ? { ...WRITE_HINTS, destructiveHint: def.destructive === true }
+          : { ...READ_ONLY_HINTS, openWorldHint: def.name !== "learn" },
+      },
+      async (args: unknown): Promise<ToolResult> => {
+        try {
+          if (def.write) opts.limiter.take();
+          return await def.handler(args as ToolArgs, wa);
+        } catch (err) {
+          return toolError(asWazapError(err));
+        }
+      },
+    );
+  }
+}
 
 function renderChats(chats: ChatSummary[], filter: string): string {
   if (chats.length === 0) return `No chats found (filter: ${filter}).`;
   const lines = [`# WhatsApp chats — ${filter} (${chats.length})`, ""];
   for (const c of chats) {
     const flags = [
-      c.is_group ? "group" : null,
+      c.type === "group" ? "group" : null,
       c.unread_count > 0 ? `${c.unread_count} unread` : null,
       c.pinned ? "pinned" : null,
-      c.muted ? "muted" : null,
+      c.muted_until ? "muted" : null,
       c.archived ? "archived" : null,
+      c.left ? "left" : null,
     ].filter(Boolean);
     lines.push(`## ${c.name}${flags.length ? ` [${flags.join(", ")}]` : ""}`);
     lines.push(`- **chat_id**: \`${c.chat_id}\``);
-    if (c.last_activity) lines.push(`- **last activity**: ${c.last_activity}`);
-    if (c.last_message) lines.push(`- **last message**: ${truncate(c.last_message, 160)}`);
+    if (c.last_message) {
+      lines.push(`- **last**: ${c.last_message.from_me ? "me: " : ""}${truncate(c.last_message.text, 160)} (${c.last_message.timestamp})`);
+    }
     lines.push("");
   }
   return lines.join("\n");
 }
 
-function renderMessages(title: string, messages: MessageSummary[]): string {
+function renderMessages(title: string, messages: MessageView[]): string {
   if (messages.length === 0) return `${title}: no messages found.`;
   const lines = [`# ${title} (${messages.length})`, ""];
   for (const m of messages) {
-    const who = m.from_me ? "me" : m.sender;
-    const tags = [m.has_media ? "media" : null, m.has_quoted ? "reply" : null].filter(Boolean);
-    lines.push(`- **${who}** · ${m.timestamp}${tags.length ? ` [${tags.join(", ")}]` : ""} · id: \`${m.id}\``);
-    lines.push(`  ${truncate(m.body, 500)}`);
+    const tags = [
+      m.type !== "text" ? m.type : null,
+      m.forwarded ? "forwarded" : null,
+      m.edited ? "edited" : null,
+      m.quoted ? "reply" : null,
+      m.reactions?.length ? m.reactions.map((r) => r.emoji).join("") : null,
+    ].filter(Boolean);
+    lines.push(`- **${m.from_me ? "me" : m.sender.name}** · ${m.age}${tags.length ? ` [${tags.join(", ")}]` : ""} · id: \`${m.message_id}\``);
+    if (m.quoted) lines.push(`  > ${truncate(m.quoted.text, 160)}`);
+    lines.push(`  ${truncate(m.text, 500)}`);
   }
   return lines.join("\n");
 }
@@ -755,14 +648,11 @@ function renderMessages(title: string, messages: MessageSummary[]): string {
 function renderConversations(conversations: RecentConversation[], hours: number): string {
   if (conversations.length === 0) return `No WhatsApp conversations in the last ${hours}h.`;
   const total = conversations.reduce((n, c) => n + c.messages.length, 0);
-  const lines = [
-    `# WhatsApp conversations · last ${hours}h (${conversations.length} chats, ${total} messages)`,
-    "",
-  ];
+  const lines = [`# WhatsApp · last ${hours}h (${conversations.length} chats, ${total} messages)`, ""];
   for (const c of conversations) {
-    lines.push(`## ${c.chat_name}${c.is_group ? " [group]" : ""} — \`${c.chat_id}\``);
+    lines.push(`## ${c.chat_name}${c.type === "group" ? " [group]" : ""} — \`${c.chat_id}\``);
     for (const m of c.messages) {
-      lines.push(`- [${m.timestamp}] ${m.from_me ? "me" : m.sender}: ${truncate(m.body, 500)}`);
+      lines.push(`- [${m.timestamp}] ${m.from_me ? "me" : m.sender.name}: ${truncate(m.text, 500)}`);
     }
     lines.push("");
   }
@@ -774,11 +664,13 @@ function renderContacts(query: string, contacts: ContactSummary[]): string {
   const lines = [`# Contacts matching "${query}" (${contacts.length})`, ""];
   for (const c of contacts) {
     const flags = [c.is_my_contact ? "saved" : null, c.is_business ? "business" : null].filter(Boolean);
-    lines.push(
-      `- **${c.name}**${flags.length ? ` [${flags.join(", ")}]` : ""} — \`${c.contact_id}\`${c.number ? ` (${c.number})` : ""}`,
-    );
+    lines.push(`- **${c.name}**${flags.length ? ` [${flags.join(", ")}]` : ""} — \`${c.contact_id}\`${c.number ? ` (${c.number})` : ""}`);
   }
   return lines.join("\n");
+}
+
+function renderParticipants(participants: Array<{ id: string; status: string; reason?: string }>): string[] {
+  return participants.map((p) => `- ${p.id}: ${p.status}${p.reason ? ` (${p.reason})` : ""}`);
 }
 
 function truncate(text: string, max: number): string {

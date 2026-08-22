@@ -2,15 +2,3 @@ node_modules/
 dist/
 .env
 *.log
-
-# QR written on first login
-qr.png
-
-# Baileys session: contains your WhatsApp login, never commit
-.baileys_auth/
-
-# Persistence (conversations), never commit
-.store-cache*.json
-history/
-journal/
-media/

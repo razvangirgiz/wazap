@@ -1,95 +1,128 @@
-/**
- * Configuration loading.
- *
- * The .env file, the WhatsApp session folder and the QR image live next to the
- * package root (resolved from this file's location), not the current working
- * directory, so the session survives no matter where an MCP client launches
- * the process from.
- */
-
-import { fileURLToPath } from "node:url";
-import { dirname, resolve } from "node:path";
+import { createRequire } from "node:module";
+import { homedir } from "node:os";
+import { join, resolve } from "node:path";
+import { parseArgs } from "node:util";
 import dotenv from "dotenv";
+import { WazapError } from "./errors.js";
+
+const require = createRequire(import.meta.url);
+export const WAZAP_VERSION: string = (require("../package.json") as { version: string }).version;
+export const BAILEYS_VERSION: string = (require("baileys/package.json") as { version: string }).version;
+
+export type Command = "serve" | "login" | "status" | "logout";
 
 export interface Config {
-  /** Absolute path to the Baileys session/auth folder. */
-  authPath: string;
-  /** Absolute path to the QR PNG written on first login. */
-  qrFile: string;
-  /**
-   * Make the connection read-only: every send/mutation is refused, so an
-   * accidental MCP call can never message anyone from this account. Default false.
-   */
+  dataDir: string;
   readOnly: boolean;
-  /** Ask WhatsApp to sync fuller history on connect. Default false. */
   syncFullHistory: boolean;
-  /**
-   * Directory (relative to package root) for a durable message journal.
-   * null = journaling off.
-   */
-  journalDir: string | null;
-  /**
-   * File (relative to package root) for the store snapshot, so the chat list
-   * and recent messages survive restarts. null = no persistence.
-   */
-  storeCacheFile: string | null;
-  /**
-   * Directory (relative to package root) for the per-chat history store. When
-   * set, messages from history sync and live traffic are persisted as per-chat
-   * JSONL files. null = disabled.
-   */
-  historyStoreDir: string | null;
-  /** MCP transport: "stdio" (default, for Claude Desktop/Code) or "http". */
+  /** Persist chats and messages under the data dir so they survive a restart. */
+  persistHistory: boolean;
   transport: "stdio" | "http";
-  /** Host to bind in http mode (default 127.0.0.1). */
   httpHost: string;
-  /** Port to bind in http mode (default 8766). */
   httpPort: number;
-  /**
-   * Bearer token required on the http /mcp endpoint. null = no auth, which is
-   * only acceptable on loopback. Never expose an unauthenticated server.
-   */
-  authToken: string | null;
-  /**
-   * Write token: requests authenticated with it get the mutating tools
-   * (send/media/react/forward/delete/manage). Keep it separate from the read
-   * token so a leaked read token cannot message anyone. null = no write access
-   * over HTTP.
-   */
+  readToken: string | null;
   writeToken: string | null;
-  /** Absolute package root. */
-  pkgRoot: string;
+  /** Write-tool token bucket, per minute. 0 disables the limit. */
+  rateLimitPerMinute: number;
+  command: Command;
+  loginPhone?: string;
+  loginQr: boolean;
 }
 
-/** Package root: this file is at <root>/dist/config.js or <root>/src/config.ts. */
-function packageRoot(): string {
-  return resolve(dirname(fileURLToPath(import.meta.url)), "..");
+export interface Paths {
+  dataDir: string;
+  authDir: string;
+  mediaDir: string;
+  historyDir: string;
+  storeFile: string;
+  lockFile: string;
+  envFile: string;
+  qrFile: string;
 }
+
+export function paths(dataDir: string): Paths {
+  return {
+    dataDir,
+    authDir: join(dataDir, "auth"),
+    mediaDir: join(dataDir, "media"),
+    historyDir: join(dataDir, "history"),
+    storeFile: join(dataDir, "store.json"),
+    lockFile: join(dataDir, "server.lock"),
+    envFile: join(dataDir, ".env"),
+    qrFile: join(dataDir, "qr.png"),
+  };
+}
+
+export type CliInvocation = { kind: "help" } | { kind: "version" } | { kind: "run"; config: Config };
+
+const COMMANDS: readonly Command[] = ["serve", "login", "status", "logout"];
 
 function asBool(value: string | undefined, fallback: boolean): boolean {
   if (value === undefined) return fallback;
   return ["1", "true", "yes", "on"].includes(value.trim().toLowerCase());
 }
 
-export function loadConfig(): Config {
-  const pkgRoot = packageRoot();
-  dotenv.config({ path: resolve(pkgRoot, ".env") });
+function asInt(value: string | undefined, fallback: number): number {
+  const n = Number.parseInt((value ?? "").trim(), 10);
+  return Number.isFinite(n) ? n : fallback;
+}
+
+export function parseCli(argv: string[] = process.argv.slice(2)): CliInvocation {
+  let parsed;
+  try {
+    parsed = parseArgs({
+      args: argv,
+      allowPositionals: true,
+      options: {
+        "data-dir": { type: "string" },
+        "read-only": { type: "boolean" },
+        http: { type: "boolean" },
+        host: { type: "string" },
+        port: { type: "string" },
+        phone: { type: "string" },
+        qr: { type: "boolean" },
+        help: { type: "boolean", short: "h" },
+        version: { type: "boolean", short: "v" },
+      },
+    });
+  } catch (err) {
+    throw new WazapError("INVALID_ID", err instanceof Error ? err.message : String(err), "Run `wazap --help`");
+  }
+
+  const { values, positionals } = parsed;
+  if (values.help) return { kind: "help" };
+  if (values.version) return { kind: "version" };
+
+  const [first, ...rest] = positionals;
+  if (rest.length > 0) {
+    throw new WazapError("INVALID_ID", `Unexpected argument "${rest[0]}".`, "Run `wazap --help`");
+  }
+  if (first !== undefined && !COMMANDS.includes(first as Command)) {
+    throw new WazapError("INVALID_ID", `Unknown command "${first}".`, "Run `wazap --help`");
+  }
+  const command = (first as Command | undefined) ?? "serve";
+
+  const dataDir = resolve(values["data-dir"] ?? process.env.WAZAP_DATA_DIR ?? join(homedir(), ".wazap"));
+  dotenv.config({ path: paths(dataDir).envFile, quiet: true });
+
+  const httpFromEnv = process.env.WAZAP_TRANSPORT?.trim().toLowerCase() === "http";
 
   return {
-    authPath: process.env.WHATSAPP_AUTH_PATH
-      ? resolve(pkgRoot, process.env.WHATSAPP_AUTH_PATH)
-      : resolve(pkgRoot, ".baileys_auth"),
-    qrFile: process.env.QR_FILE ? resolve(pkgRoot, process.env.QR_FILE) : resolve(pkgRoot, "qr.png"),
-    readOnly: asBool(process.env.WHATSAPP_READONLY, false),
-    syncFullHistory: asBool(process.env.WHATSAPP_SYNC_FULL_HISTORY, false),
-    journalDir: (process.env.WHATSAPP_JOURNAL_DIR ?? "").trim() || null,
-    storeCacheFile: (process.env.WHATSAPP_STORE_CACHE ?? "").trim() || null,
-    historyStoreDir: (process.env.WHATSAPP_HISTORY_STORE_DIR ?? "").trim() || null,
-    transport: process.env.TRANSPORT?.trim().toLowerCase() === "http" ? "http" : "stdio",
-    httpHost: process.env.HOST?.trim() || "127.0.0.1",
-    httpPort: Number.parseInt(process.env.PORT ?? "", 10) || 8766,
-    authToken: (process.env.MCP_AUTH_TOKEN ?? "").trim() || null,
-    writeToken: (process.env.MCP_WRITE_TOKEN ?? "").trim() || null,
-    pkgRoot,
+    kind: "run",
+    config: {
+      dataDir,
+      readOnly: values["read-only"] === true || asBool(process.env.WAZAP_READ_ONLY, false),
+      syncFullHistory: asBool(process.env.WAZAP_SYNC_FULL_HISTORY, false),
+      persistHistory: asBool(process.env.WAZAP_PERSIST_HISTORY, true),
+      transport: values.http === true || httpFromEnv ? "http" : "stdio",
+      httpHost: values.host ?? (process.env.WAZAP_HOST?.trim() || "127.0.0.1"),
+      httpPort: values.port ? asInt(values.port, 8766) : asInt(process.env.WAZAP_PORT, 8766),
+      readToken: (process.env.WAZAP_READ_TOKEN ?? "").trim() || null,
+      writeToken: (process.env.WAZAP_WRITE_TOKEN ?? "").trim() || null,
+      rateLimitPerMinute: asInt(process.env.WAZAP_RATE_LIMIT, 20),
+      command,
+      loginPhone: values.phone,
+      loginQr: values.qr === true,
+    },
   };
 }

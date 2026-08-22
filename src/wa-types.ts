@@ -1,49 +1,95 @@
-/**
- * Public types for the WhatsApp wrapper. Kept separate so other modules
- * (agent.ts, inbox.ts, config.ts, tools.ts) import these instead of
- * whatsapp-web.js, decoupling the rest of the codebase from the transport.
- *
- * The `WaMessage` interface is the adapter contract: the Baileys-backed
- * service emits objects shaped like the whatsapp-web.js Message the rest of
- * the code already consumes, so agent.ts stays unchanged.
- */
+/** Public shapes of the WhatsApp service: what the MCP tools and the CLI consume. */
 
-export type WhatsAppStatus =
-  | "starting"
-  | "qr"
-  | "authenticated"
-  | "ready"
+export type ConnectionStatus =
+  | "not_linked"
+  | "connecting"
+  | "connected"
   | "disconnected"
+  | "logged_out"
+  | "session_corrupt"
   | "auth_failure";
 
+export type SyncState = "in_progress" | "done";
+
+export type ChatType = "individual" | "group";
+
+export type ChatFilter = "all" | "unread" | "groups" | "individual" | "archived";
+
+export type MessageType =
+  | "text"
+  | "image"
+  | "video"
+  | "audio"
+  | "voice"
+  | "document"
+  | "sticker"
+  | "location"
+  | "contact"
+  | "poll"
+  | "reaction"
+  | "deleted"
+  | "view_once"
+  | "system"
+  | "unknown";
+
 export interface StatusInfo {
-  status: WhatsAppStatus;
-  lastError: string | null;
-  account: { id: string; name: string; platform: string } | null;
+  status: ConnectionStatus;
+  sync: SyncState;
+  account: { id: string; name: string; number: string } | null;
+  last_message_received_at: string | null;
+  reconnect_attempts: number;
+  wazap_version: string;
+  baileys_version: string;
+  data_dir: string;
+  read_only: boolean;
+  rate_limit: number;
+  last_error: string | null;
+  hint?: string;
 }
 
 export interface ChatSummary {
   chat_id: string;
   name: string;
-  is_group: boolean;
+  type: ChatType;
   unread_count: number;
+  last_message: { text: string; timestamp: string; from_me: boolean } | null;
   archived: boolean;
   pinned: boolean;
-  muted: boolean;
-  last_activity: string | null;
-  last_message: string | null;
+  muted_until: string | null;
+  /** Groups only: we are no longer a participant. */
+  left?: boolean;
 }
 
-export interface MessageSummary {
+export interface MessageSender {
   id: string;
+  name: string;
+  phone?: string;
+}
+
+export interface MessageView {
+  message_id: string;
   chat_id: string;
   from_me: boolean;
-  sender: string;
-  body: string;
-  type: string;
-  has_media: boolean;
-  has_quoted: boolean;
+  sender: MessageSender;
+  type: MessageType;
+  /** Never empty: media and system messages get a placeholder like "[sticker]". */
+  text: string;
   timestamp: string;
+  age: string;
+  has_media: boolean;
+  media?: { mime: string; size?: number; filename?: string };
+  quoted?: { message_id: string; text: string; sender: string };
+  forwarded: boolean;
+  reactions?: Array<{ emoji: string; sender: string }>;
+  edited: boolean;
+}
+
+export interface RecentConversation {
+  chat_id: string;
+  chat_name: string;
+  type: ChatType;
+  last_activity: string;
+  messages: MessageView[];
 }
 
 export interface ContactSummary {
@@ -60,21 +106,6 @@ export interface ContactDetails extends ContactSummary {
   is_blocked: boolean;
 }
 
-export interface SentMessage {
-  id: string;
-  to: string;
-  body: string;
-  timestamp: string;
-}
-
-export interface MediaResult {
-  path: string;
-  filename: string;
-  mimetype: string;
-  size_bytes: number;
-  base64: string | null;
-}
-
 export interface GroupParticipantInfo {
   contact_id: string;
   name: string;
@@ -89,6 +120,31 @@ export interface GroupInfo {
   created_at: string | null;
   participant_count: number;
   participants: GroupParticipantInfo[];
+  announcement_only: boolean;
+  i_am_admin: boolean;
+  invite_link?: string;
+}
+
+export interface ParticipantResult {
+  id: string;
+  status: "ok" | "invite_needed" | "failed";
+  reason?: string;
+}
+
+export interface SentMessage {
+  message_id: string;
+  chat_id: string;
+  text: string;
+  timestamp: string;
+}
+
+export interface MediaResult {
+  path: string;
+  mime: string;
+  size: number;
+  filename: string;
+  /** Base64 of images small enough to inline in the tool result. */
+  inline_base64: string | null;
 }
 
 export type ChatAction =
@@ -109,106 +165,73 @@ export type GroupAction =
   | "leave"
   | "set_subject"
   | "set_description"
-  | "get_invite_link";
+  | "get_invite_link"
+  | "revoke_invite_link";
 
-export interface WhatsAppServiceOpts {
-  authPath?: string;
-  qrFile?: string;
-  label?: string;
-  /**
-   * Read-only connection: all message-sending and state mutations throw. Used
-   * for a personal account so an accidental MCP call can never send
-   * a message from the owner's personal number. Default false.
-   */
-  readOnly?: boolean;
-  /**
-   * Ask WhatsApp to sync fuller history on connect (and reconnect), so the
-   * a nightly consumer's 24h window is robust even right after a restart that
-   * empties the in-memory store. Default false.
-   */
-  syncFullHistory?: boolean;
-  /**
-   * Directory for the durable message journal. When set, every live content
-   * message (incoming and own) is appended to a daily JSONL file, so the
-   * read-only consumer's window survives restarts that wipe the in-memory store.
-   * null/undefined = journaling off.
-   */
-  journalDir?: string;
-  /**
-   * File for the on-disk store snapshot (chat list + recent messages). When set,
-   * the store survives restarts instead of starting empty. null = no persistence.
-   */
-  storeCacheFile?: string;
-  /**
-   * Directory for the per-chat history store. When set, messages received from
-   * Baileys history sync (messaging-history.set) and live traffic (messages.upsert)
-   * are appended to per-chat JSONL files and reloaded on the next startup, so
-   * conversation history survives process restarts. null/undefined = disabled.
-   */
-  historyStoreDir?: string;
-}
-
-/** One chat's messages within a recent-window pull, read from the journal. */
-export interface RecentConversation {
+export interface ChatActionResult {
   chat_id: string;
-  chat_name: string;
-  is_group: boolean;
-  last_activity: string;
-  messages: Array<{
-    timestamp: string;
-    sender: string;
-    from_me: boolean;
-    body: string;
-  }>;
+  action: ChatAction;
+  applied: string;
 }
 
-/** Serialized id, whatsapp-web.js-compatible shape: `id._serialized` + `id.remote`. */
-export interface WaMessageId {
-  _serialized: string;
-  remote: string;
-  id: string;
-  fromMe: boolean;
+export interface GroupActionResult {
+  group_id: string;
+  action: GroupAction;
+  applied: string;
+  participants?: ParticipantResult[];
+  invite_link?: string;
 }
 
-/** Minimal media payload, matching what `msg.downloadMedia()` used to return. */
-export interface WaMedia {
-  data: string; // base64
-  mimetype: string;
-  filename: string | null;
+export interface MediaSource {
+  file_path?: string;
+  url?: string;
+}
+
+/** Read results carry the sync state, so an agent knows the data may be partial. */
+export interface Synced<T> {
+  data: T;
+  sync: SyncState;
 }
 
 /**
- * Adapter shape consumed by agent.ts / whatsapp.ts internals. Mirrors the
- * subset of the whatsapp-web.js Message the codebase actually reads.
+ * The surface the MCP tools and the CLI use. Declared here so tools.ts compiles
+ * against the contract rather than the implementation.
  */
-export interface WaMessage {
-  id: WaMessageId;
-  from: string;
-  to: string;
-  author?: string;
-  fromMe: boolean;
-  body: string;
-  type: string;
-  timestamp: number;
-  hasMedia: boolean;
-  hasQuotedMsg: boolean;
-  getChat(): Promise<WaChat>;
-  downloadMedia(): Promise<WaMedia | undefined>;
-  react(emoji: string): Promise<void>;
-  forward(chat: WaChat): Promise<void>;
-  delete(forEveryone: boolean): Promise<void>;
-}
-
-/** Adapter shape for a chat, mirroring the whatsapp-web.js Chat subset used. */
-export interface WaChat {
-  id: { _serialized: string; user: string };
-  name: string;
-  isGroup: boolean;
-  getContact(): Promise<WaContact>;
-}
-
-/** Adapter shape for a contact, mirroring the whatsapp-web.js Contact subset used. */
-export interface WaContact {
-  id: { _serialized: string };
-  isMe: boolean;
+export interface WhatsAppApi {
+  getStatus(): StatusInfo;
+  listChats(filter: ChatFilter, limit: number): Promise<Synced<ChatSummary[]>>;
+  readMessages(chatId: string, limit: number, before?: string): Promise<Synced<MessageView[]>>;
+  getRecentMessages(hours: number, filter: Exclude<ChatFilter, "archived">): Promise<Synced<RecentConversation[]>>;
+  searchMessages(query: string, chatId: string | undefined, limit: number): Promise<Synced<MessageView[]>>;
+  getMessage(messageId: string): Promise<MessageView>;
+  searchContacts(query: string, limit: number): Promise<ContactSummary[]>;
+  getContact(contactId: string): Promise<ContactDetails>;
+  getGroupInfo(groupId: string): Promise<GroupInfo>;
+  downloadMedia(messageId: string, saveTo?: string): Promise<MediaResult>;
+  sendMessage(chatId: string, text: string, replyTo?: string, mentionIds?: string[]): Promise<SentMessage>;
+  sendMedia(
+    chatId: string,
+    source: MediaSource,
+    opts: { caption?: string; asDocument: boolean; asVoice: boolean },
+  ): Promise<SentMessage>;
+  sendPoll(chatId: string, question: string, options: string[], multiSelect: boolean): Promise<SentMessage>;
+  sendLocation(
+    chatId: string,
+    latitude: number,
+    longitude: number,
+    name?: string,
+    address?: string,
+  ): Promise<SentMessage>;
+  editMessage(messageId: string, text: string): Promise<SentMessage>;
+  reactToMessage(messageId: string, emoji: string): Promise<{ message_id: string; emoji: string }>;
+  forwardMessage(messageId: string, toChatId: string): Promise<SentMessage>;
+  deleteMessage(messageId: string, forEveryone: boolean): Promise<{ message_id: string; for_everyone: boolean }>;
+  manageChat(chatId: string, action: ChatAction, muteHours?: number): Promise<ChatActionResult>;
+  createGroup(name: string, participantIds: string[]): Promise<{ chat_id: string; participants: ParticipantResult[] }>;
+  manageGroup(
+    groupId: string,
+    action: GroupAction,
+    participantIds?: string[],
+    value?: string,
+  ): Promise<GroupActionResult>;
 }

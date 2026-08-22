@@ -11,6 +11,9 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 import { WhatsAppService } from "../dist/whatsapp.js";
 
@@ -19,9 +22,26 @@ const RECONNECT_MAX_ATTEMPTS = 10;
 const CONNECTION_CLOSED = 428;
 const LOGGED_OUT = 401;
 
+function config() {
+  return {
+    dataDir: mkdtempSync(join(tmpdir(), "wazap-reconnect-")),
+    readOnly: false,
+    syncFullHistory: false,
+    persistHistory: false,
+    transport: "stdio",
+    httpHost: "127.0.0.1",
+    httpPort: 8766,
+    readToken: null,
+    writeToken: null,
+    rateLimitPerMinute: 20,
+    command: "serve",
+    loginQr: false,
+  };
+}
+
 /** A service whose start() never touches the network, so we observe only pacing. */
 function makeService() {
-  const svc = new WhatsAppService({ authPath: "/tmp/nonexistent-auth", qrFile: "/tmp/nonexistent-qr" }, {});
+  const svc = new WhatsAppService(config());
   const starts = [];
   svc.start = async () => {
     starts.push(true);
@@ -94,7 +114,7 @@ test("gives up after the cap instead of hammering forever", (t) => {
 
   assert.equal(starts.length, RECONNECT_MAX_ATTEMPTS, "stops retrying once the cap is reached");
   assert.equal(svc.getStatus().status, "auth_failure", "surfaces a terminal state a human can act on");
-  assert.match(svc.getStatus().lastError ?? "", /re-link the device/i, "tells the operator what to do");
+  assert.match(svc.getStatus().last_error ?? "", /re-link the device/i, "tells the operator what to do");
 });
 
 test("a burst of closes cannot fan out into parallel reconnects", (t) => {
@@ -148,7 +168,7 @@ test("a healthy connection resets the retry budget", (t) => {
   attach(svc, sock);
   // The `open` handler is what clears the counter.
   sock.ev.emit("connection.update", { connection: "open" });
-  assert.equal(svc.getStatus().status, "ready");
+  assert.equal(svc.getStatus().status, "connected");
 
   // Back to the start of the schedule, not to a 5-minute wait.
   svc.scheduleReconnect("Connection Terminated");
@@ -169,5 +189,5 @@ test("an explicit logout stops instead of retrying", (t) => {
   t.mock.timers.tick(10 * 60_000);
 
   assert.equal(starts.length, 0, "a logged-out session must never be retried");
-  assert.equal(svc.getStatus().status, "auth_failure");
+  assert.equal(svc.getStatus().status, "logged_out");
 });

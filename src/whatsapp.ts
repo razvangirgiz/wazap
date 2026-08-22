@@ -1,234 +1,66 @@
 /**
- * WhatsApp connection wrapper around Baileys (socket-based, no browser).
- *
- * Migrated from whatsapp-web.js: Baileys speaks the WhatsApp multi-device
- * protocol directly over a WebSocket, which is far more robust to WhatsApp Web
- * frontend changes, handles `@lid` addressing natively (the bug that broke
- * sending), and drops memory from ~500MB (Chromium) to ~20MB.
- *
- * Baileys gives raw events, not a queryable store. We keep a small in-memory
- * store (chats, contacts, recent messages by id) fed from those events so the
- * MCP read tools keep working. History before this process started is only
- * available to the extent WhatsApp syncs it on connect.
+ * WhatsApp service over Baileys. Baileys emits raw events rather than exposing
+ * a queryable store, so this keeps a small in-memory store (chats, contacts,
+ * messages by id) fed from those events, optionally persisted under the data
+ * dir so a restart does not start blind.
  */
 
-import { mkdir, writeFile, appendFile, readFile, readdir, rename } from "node:fs/promises";
-import { resolve, join } from "node:path";
 import { randomUUID } from "node:crypto";
-import { readFileSync } from "node:fs";
+import { appendFile, mkdir, readdir, readFile, rename, stat, writeFile } from "node:fs/promises";
+import { isAbsolute, join } from "node:path";
 import makeWASocket, {
-  proto,
-  useMultiFileAuthState,
+  Browsers,
+  DisconnectReason,
   downloadMediaMessage,
   jidNormalizedUser,
-  jidDecode,
-  isJidGroup,
-  getContentType,
-  DisconnectReason,
-  Browsers,
-  type WASocket,
-  type WAMessage,
-  type WAMessageContent,
+  proto,
+  type AnyMessageContent,
   type Chat as BaileysChat,
   type Contact as BaileysContact,
   type GroupMetadata,
+  type GroupParticipant,
+  type WAMessage,
+  type WAMessageKey,
+  type WASocket,
 } from "baileys";
-import qrcodeTerminal from "qrcode-terminal";
-import QRCode from "qrcode";
-import type { Config } from "./config.js";
+import type { ILogger } from "baileys/lib/Utils/logger.js";
+import { readLinkedAccount, useAtomicAuthState } from "./auth-state.js";
+import { BAILEYS_VERSION, paths, WAZAP_VERSION, type Config, type Paths } from "./config.js";
+import { asWazapError, RELINK_FIX, RESET_FIX, WazapError } from "./errors.js";
+import { isGroupId, resolveChatId } from "./ids.js";
 import { log, logError } from "./logger.js";
+import {
+  buildMessageView,
+  formatAge,
+  isoWithOffset,
+  mediaInfo,
+  messageIdFor,
+  messageText,
+  messageTimestampMs,
+  protoNumber,
+} from "./messages.js";
 import type {
   ChatAction,
+  ChatActionResult,
+  ChatFilter,
   ChatSummary,
+  ConnectionStatus,
   ContactDetails,
   ContactSummary,
   GroupAction,
+  GroupActionResult,
   GroupInfo,
   MediaResult,
-  MessageSummary,
+  MediaSource,
+  MessageView,
+  ParticipantResult,
   RecentConversation,
   SentMessage,
   StatusInfo,
-  WaChat,
-  WaContact,
-  WaMedia,
-  WaMessage,
-  WhatsAppServiceOpts,
-  WhatsAppStatus,
+  SyncState,
+  Synced,
+  WhatsAppApi,
 } from "./wa-types.js";
-
-export type {
-  ChatAction,
-  ChatSummary,
-  ContactDetails,
-  ContactSummary,
-  GroupAction,
-  GroupInfo,
-  GroupParticipantInfo,
-  MediaResult,
-  MessageSummary,
-  RecentConversation,
-  SentMessage,
-  StatusInfo,
-  WaChat,
-  WaContact,
-  WaMessage,
-  WhatsAppServiceOpts,
-  WhatsAppStatus,
-} from "./wa-types.js";
-
-/** Baileys content types that aren't real conversational messages. */
-const NON_CONTENT_TYPES = new Set<string>([
-  "protocolMessage",
-  "senderKeyDistributionMessage",
-  "reactionMessage",
-  "pollUpdateMessage",
-  "messageContextInfo",
-]);
-
-const INLINE_IMAGE_MAX_BYTES = 1_000_000;
-/** Cap the per-chat raw-message ring so memory stays bounded. Generous so
- *  on-demand older-history fetch (fetchOlderHistory) has room to deepen a chat. */
-const MAX_MESSAGES_PER_CHAT = 1000;
-/** Per-chat messages written to the on-disk snapshot (keeps the file lean while
- *  the in-memory ring can hold more within a session). */
-const PERSIST_MESSAGES_PER_CHAT = 120;
-/** Debounce store snapshots: save this long after the last change. */
-const STORE_SAVE_DEBOUNCE_MS = 20_000;
-/** Max messages kept per chat in the persistent history store (compacted on load). */
-const HISTORY_STORE_CAP_PER_CHAT = 2_000;
-
-/** One line in a per-chat history JSONL file. */
-interface HistoryRecord {
-  sid: string;
-  ts: number;
-  raw: string; // base64 protobuf WAMessage
-}
-
-/** Sanitize a JID to a safe filename (strips path-separator chars). */
-function safeJidFilename(jid: string): string {
-  return jid.replace(/[/\\:*?"<>|]/g, "_");
-}
-
-/** On-disk store snapshot. Messages/chats are base64 protobuf (faithful to
- *  Baileys' own wire types); contacts/byChat are plain JSON. */
-interface StoreSnapshot {
-  v: 1;
-  chats: Record<string, string>;
-  contacts: Record<string, BaileysContact>;
-  messages: Record<string, string>;
-  byChat: Record<string, string[]>;
-}
-
-type Deps = {
-  sock: () => WASocket;
-  ownJid: () => string;
-  store: Store;
-};
-
-/** One line of the durable message journal (compact, JSON-serializable). */
-interface RecentJournalRecord {
-  timestamp: string;
-  chat_id: string;
-  chat_name: string;
-  is_group: boolean;
-  sender: string;
-  from_me: boolean;
-  body: string;
-}
-
-/** In-memory state fed from Baileys events; the read tools query this. */
-class Store {
-  readonly chats = new Map<string, BaileysChat>();
-  readonly contacts = new Map<string, BaileysContact>();
-  /** serializedId -> raw message, for media/react/forward/delete + lookups. */
-  readonly messages = new Map<string, WAMessage>();
-  /** chatJid -> ordered serialized ids (oldest..newest), capped. */
-  readonly byChat = new Map<string, string[]>();
-
-  private msgSeconds(serialized: string): number {
-    return toSeconds(this.messages.get(serialized)?.messageTimestamp);
-  }
-
-  putMessage(serialized: string, chatJid: string, raw: WAMessage): void {
-    const isUpdate = this.messages.has(serialized);
-    this.messages.set(serialized, raw);
-    let ring = this.byChat.get(chatJid);
-    if (!ring) {
-      ring = [];
-      this.byChat.set(chatJid, ring);
-    }
-    if (isUpdate && ring.includes(serialized)) return; // refresh raw in place, keep order
-    // Live messages arrive newest-last (append, no sort). Older messages from a
-    // history sync / fetchOlderHistory arrive out of order — re-sort only then.
-    const ts = toSeconds(raw.messageTimestamp);
-    const lastTs = ring.length ? this.msgSeconds(ring[ring.length - 1]) : -Infinity;
-    ring.push(serialized);
-    if (ts < lastTs) ring.sort((a, b) => this.msgSeconds(a) - this.msgSeconds(b));
-    while (ring.length > MAX_MESSAGES_PER_CHAT) {
-      const dropped = ring.shift();
-      if (dropped) this.messages.delete(dropped);
-    }
-  }
-
-  /** Snapshot the store for disk: protobuf for chats/messages, JSON for the rest.
-   *  Only the most recent `persistCap` messages per chat are kept, lean. */
-  serialize(persistCap: number): StoreSnapshot {
-    const snap: StoreSnapshot = { v: 1, chats: {}, contacts: {}, messages: {}, byChat: {} };
-    for (const [jid, chat] of this.chats) {
-      try {
-        snap.chats[jid] = Buffer.from(proto.Conversation.encode(chat).finish()).toString("base64");
-      } catch {
-        /* skip a chat that won't encode */
-      }
-    }
-    for (const [jid, contact] of this.contacts) snap.contacts[jid] = contact;
-    const keep = new Set<string>();
-    for (const [jid, ring] of this.byChat) {
-      const capped = ring.slice(-persistCap);
-      snap.byChat[jid] = capped;
-      for (const sid of capped) keep.add(sid);
-    }
-    for (const sid of keep) {
-      const raw = this.messages.get(sid);
-      if (!raw) continue;
-      try {
-        snap.messages[sid] = Buffer.from(proto.WebMessageInfo.encode(raw).finish()).toString("base64");
-      } catch {
-        /* skip a message that won't encode */
-      }
-    }
-    return snap;
-  }
-
-  /** Load a snapshot from disk back into the store. Returns counts loaded. */
-  hydrate(snap: StoreSnapshot): { chats: number; messages: number } {
-    if (!snap || snap.v !== 1) return { chats: 0, messages: 0 };
-    let chats = 0;
-    let messages = 0;
-    for (const [jid, b64] of Object.entries(snap.chats ?? {})) {
-      try {
-        this.chats.set(jid, proto.Conversation.decode(Buffer.from(b64, "base64")) as unknown as BaileysChat);
-        chats++;
-      } catch {
-        /* skip */
-      }
-    }
-    for (const [jid, contact] of Object.entries(snap.contacts ?? {})) this.contacts.set(jid, contact);
-    for (const [sid, b64] of Object.entries(snap.messages ?? {})) {
-      try {
-        this.messages.set(sid, proto.WebMessageInfo.decode(Buffer.from(b64, "base64")) as unknown as WAMessage);
-        messages++;
-      } catch {
-        /* skip */
-      }
-    }
-    for (const [jid, ring] of Object.entries(snap.byChat ?? {})) {
-      this.byChat.set(jid, ring.filter((sid) => this.messages.has(sid)));
-    }
-    return { chats, messages };
-  }
-}
 
 /** Reconnect pacing. A closed socket used to be retried instantly, which turns
  * any persistent rejection into a login storm — WhatsApp answers that by
@@ -239,90 +71,194 @@ const RECONNECT_BASE_MS = 2_000;
 const RECONNECT_MAX_MS = 5 * 60_000;
 const RECONNECT_MAX_ATTEMPTS = 10;
 
-export class WhatsAppService {
+const SYNC_WAIT_MS = 10_000;
+const HISTORY_FETCH_WAIT_MS = 5_000;
+const INLINE_IMAGE_MAX_BYTES = 1_000_000;
+const MAX_TEXT_CHARS = 65_536;
+const MAX_MEDIA_BYTES = 100 * 1024 * 1024;
+const EDIT_WINDOW_MS = 15 * 60_000;
+const RETRACT_WINDOW_MS = 2 * 24 * 3_600_000;
+const MAX_GROUP_PARTICIPANTS = 500;
+const STALE_INBOUND_MS = 24 * 3_600_000;
+const MAX_MESSAGES_PER_CHAT = 1_000;
+const PERSIST_MESSAGES_PER_CHAT = 120;
+const STORE_SAVE_DEBOUNCE_MS = 20_000;
+const HISTORY_STORE_CAP_PER_CHAT = 2_000;
+const DIR_MODE = 0o700;
+const FILE_MODE = 0o600;
+
+/** Baileys logs at info level to stdout by default, which corrupts the MCP
+ * JSON-RPC stream on stdio. */
+const silentLogger: ILogger = {
+  level: "silent",
+  child: () => silentLogger,
+  trace: () => {},
+  debug: () => {},
+  info: () => {},
+  warn: () => {},
+  error: () => {},
+};
+
+interface HistoryRecord {
+  sid: string;
+  ts: number;
+  raw: string;
+}
+
+interface StoreSnapshot {
+  v: 1;
+  chats: Record<string, string>;
+  contacts: Record<string, BaileysContact>;
+  messages: Record<string, string>;
+  byChat: Record<string, string[]>;
+}
+
+/** In-memory state fed from Baileys events, keyed by canonical jid. */
+class Store {
+  readonly chats = new Map<string, BaileysChat>();
+  readonly contacts = new Map<string, BaileysContact>();
+  readonly messages = new Map<string, WAMessage>();
+  readonly chatOf = new Map<string, string>();
+  readonly byChat = new Map<string, string[]>();
+  readonly edited = new Set<string>();
+  readonly reactions = new Map<string, Map<string, string>>();
+
+  private seconds(sid: string): number {
+    const raw = this.messages.get(sid);
+    return raw ? messageTimestampMs(raw) / 1000 : 0;
+  }
+
+  putMessage(sid: string, chatJid: string, raw: WAMessage): void {
+    const known = this.messages.has(sid);
+    this.messages.set(sid, raw);
+    this.chatOf.set(sid, chatJid);
+    let ring = this.byChat.get(chatJid);
+    if (!ring) {
+      ring = [];
+      this.byChat.set(chatJid, ring);
+    }
+    if (known && ring.includes(sid)) return;
+    // Live messages arrive newest-last, so appending is enough; a history sync
+    // delivers older ones out of order and only then is a re-sort needed.
+    const ts = messageTimestampMs(raw) / 1000;
+    const last = ring.length > 0 ? this.seconds(ring[ring.length - 1]!) : Number.NEGATIVE_INFINITY;
+    ring.push(sid);
+    if (ts < last) ring.sort((a, b) => this.seconds(a) - this.seconds(b));
+    while (ring.length > MAX_MESSAGES_PER_CHAT) {
+      const dropped = ring.shift();
+      if (dropped) {
+        this.messages.delete(dropped);
+        this.chatOf.delete(dropped);
+        this.edited.delete(dropped);
+        this.reactions.delete(dropped);
+      }
+    }
+  }
+
+  reactionsFor(sid: string): Array<{ emoji: string; sender: string }> {
+    const map = this.reactions.get(sid);
+    if (!map) return [];
+    return [...map].map(([sender, emoji]) => ({ emoji, sender }));
+  }
+
+  serialize(): StoreSnapshot {
+    const snapshot: StoreSnapshot = { v: 1, chats: {}, contacts: {}, messages: {}, byChat: {} };
+    for (const [jid, chat] of this.chats) {
+      const encoded = encode(() => proto.Conversation.encode(chat).finish());
+      if (encoded) snapshot.chats[jid] = encoded;
+    }
+    for (const [jid, contact] of this.contacts) snapshot.contacts[jid] = contact;
+    const keep = new Set<string>();
+    for (const [jid, ring] of this.byChat) {
+      const capped = ring.slice(-PERSIST_MESSAGES_PER_CHAT);
+      snapshot.byChat[jid] = capped;
+      for (const sid of capped) keep.add(sid);
+    }
+    for (const sid of keep) {
+      const raw = this.messages.get(sid);
+      if (!raw) continue;
+      const encoded = encode(() => proto.WebMessageInfo.encode(raw).finish());
+      if (encoded) snapshot.messages[sid] = encoded;
+    }
+    return snapshot;
+  }
+
+  hydrate(snapshot: StoreSnapshot): void {
+    if (snapshot?.v !== 1) return;
+    for (const [jid, b64] of Object.entries(snapshot.chats ?? {})) {
+      const chat = decodeChat(b64);
+      if (chat) this.chats.set(jid, chat);
+    }
+    for (const [jid, contact] of Object.entries(snapshot.contacts ?? {})) this.contacts.set(jid, contact);
+    for (const [sid, b64] of Object.entries(snapshot.messages ?? {})) {
+      const raw = decodeMessage(b64);
+      if (raw) this.messages.set(sid, raw);
+    }
+    for (const [jid, ring] of Object.entries(snapshot.byChat ?? {})) {
+      const present = ring.filter((sid) => this.messages.has(sid));
+      this.byChat.set(jid, present);
+      for (const sid of present) this.chatOf.set(sid, jid);
+    }
+  }
+}
+
+export class WhatsAppService implements WhatsAppApi {
   private sockClient: WASocket | null = null;
   private saveCreds: (() => Promise<void>) | null = null;
   private reconnectAttempts = 0;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private starting = false;
+  private stopped = false;
   /** Bumped per socket, so events from a superseded socket are ignored. */
   private generation = 0;
-  private readonly authPath: string;
-  private readonly qrFile: string;
-  private readonly label: string;
-  private readonly readOnly: boolean;
-  private readonly syncHistory: boolean;
-  private readonly journalDir: string | null;
-  private readonly storeCacheFile: string | null;
-  private readonly historyStoreDir: string | null;
-  private storeSaveTimer: ReturnType<typeof setTimeout> | null = null;
-  private storeDirty = false;
-  private status: WhatsAppStatus = "starting";
+  private status: ConnectionStatus = "connecting";
   private lastError: string | null = null;
-  private readyAt = 0;
   private account: StatusInfo["account"] = null;
-  private stopped = false;
+  private lastInboundAt: number | null = null;
+  private initialSyncDone = false;
+  private syncDeadline: ReturnType<typeof setTimeout> | null = null;
+  private syncWaiters: Array<() => void> = [];
+  private historyWaiters: Array<() => void> = [];
+  private storeDirty = false;
+  private storeSaveTimer: ReturnType<typeof setTimeout> | null = null;
+  private persistedLoaded = false;
+  private readonly blocked = new Set<string>();
+  private readonly groupCache = new Map<string, GroupMetadata>();
+  /** `<user>@lid` to the phone-number jid, so ids we hand out stay canonical. */
+  private readonly lidToPn = new Map<string, string>();
   private readonly store = new Store();
-  private readonly messageHooks: Array<(msg: WaMessage) => void> = [];
-  private readonly lidPnHooks: Array<(lid: string, pn: string) => void> = [];
+  private readonly paths: Paths;
 
-  constructor(
-    private readonly config: Config,
-    opts: WhatsAppServiceOpts = {},
-  ) {
-    this.authPath = opts.authPath ?? config.authPath;
-    this.qrFile = opts.qrFile ?? config.qrFile;
-    this.label = opts.label ?? "main";
-    this.readOnly = opts.readOnly ?? false;
-    this.syncHistory = opts.syncFullHistory ?? false;
-    this.journalDir = opts.journalDir ? resolve(config.pkgRoot, opts.journalDir) : null;
-    this.storeCacheFile = opts.storeCacheFile ? resolve(config.pkgRoot, opts.storeCacheFile) : null;
-    this.historyStoreDir = opts.historyStoreDir ? resolve(config.pkgRoot, opts.historyStoreDir) : null;
-  }
-
-  onMessage(hook: (msg: WaMessage) => void): void {
-    this.messageHooks.push(hook);
-  }
-
-  /** Register a callback that receives (lid, pn) pairs as Baileys learns them. */
-  onLidPnPair(hook: (lid: string, pn: string) => void): void {
-    this.lidPnHooks.push(hook);
-  }
-
-  /** Guard every mutation: a read-only connection (read-only account)
-   * must never send a message or change state. */
-  private assertWritable(): void {
-    if (this.readOnly) {
-      throw new Error(
-        `[${this.label}] this WhatsApp connection is read-only (read-only account); ` +
-          "sending and mutations are disabled. Route writes through the agent account.",
-      );
-    }
-  }
-
-  getStatus(): StatusInfo {
-    return {
-      status: this.status,
-      lastError: this.lastError,
-      account: this.account,
-    };
+  constructor(private readonly config: Config) {
+    this.paths = paths(config.dataDir);
   }
 
   async start(): Promise<void> {
     if (this.stopped || this.starting) return;
     this.starting = true;
     try {
-      log(`[${this.label}] starting WhatsApp client (Baileys)… (first run shows a QR code to scan)`);
-      await this.loadHistoryStore();
-      await this.loadStoreCache();
-      const { state, saveCreds } = await useMultiFileAuthState(this.authPath);
-      this.saveCreds = saveCreds;
+      const linked = this.readAccount();
+      if (linked === "corrupt" || linked === null) return;
+      this.account = linked;
+      await this.loadPersisted();
+
+      let state;
+      try {
+        ({ state, saveCreds: this.saveCreds } = await useAtomicAuthState(this.paths.authDir));
+      } catch (err) {
+        this.markCorrupt(err);
+        return;
+      }
+
       this.teardownSocket();
+      this.initialSyncDone = false;
+      this.status = "connecting";
       const generation = ++this.generation;
       const sock = makeWASocket({
         auth: state,
+        logger: silentLogger,
         browser: Browsers.macOS("Desktop"),
-        syncFullHistory: this.syncHistory,
+        syncFullHistory: this.config.syncFullHistory,
         markOnlineOnConnect: false,
         generateHighQualityLinkPreview: false,
       });
@@ -333,6 +269,492 @@ export class WhatsAppService {
     }
   }
 
+  async stop(): Promise<void> {
+    this.stopped = true;
+    for (const timer of [this.storeSaveTimer, this.reconnectTimer, this.syncDeadline]) {
+      if (timer) clearTimeout(timer);
+    }
+    this.storeSaveTimer = null;
+    this.reconnectTimer = null;
+    this.syncDeadline = null;
+    this.releaseWaiters();
+    await this.flushStore();
+    this.teardownSocket();
+  }
+
+  getStatus(): StatusInfo {
+    const info: StatusInfo = {
+      status: this.status,
+      sync: this.syncState(),
+      account: this.account,
+      last_message_received_at: this.lastInboundAt === null ? null : isoWithOffset(this.lastInboundAt),
+      reconnect_attempts: this.reconnectAttempts,
+      wazap_version: WAZAP_VERSION,
+      baileys_version: BAILEYS_VERSION,
+      data_dir: this.config.dataDir,
+      read_only: this.config.readOnly,
+      rate_limit: this.config.rateLimitPerMinute,
+      last_error: this.lastError,
+    };
+    const stale = this.lastInboundAt !== null && Date.now() - this.lastInboundAt > STALE_INBOUND_MS;
+    if (this.status === "connected" && stale) {
+      info.hint = "No messages received for 24h; the phone may be offline.";
+    }
+    return info;
+  }
+
+  listChats(filter: ChatFilter, limit: number): Promise<Synced<ChatSummary[]>> {
+    return this.guarded(async () => {
+      this.ensureConnected();
+      await this.waitForSync();
+      const chats = [...this.store.chats.values()]
+        .filter((chat) => this.matchesChatFilter(chat, filter))
+        .sort((a, b) => this.chatActivity(b) - this.chatActivity(a))
+        .slice(0, limit)
+        .map((chat) => this.chatSummary(chat));
+      return this.synced(chats);
+    });
+  }
+
+  readMessages(chatId: string, limit: number, before?: string): Promise<Synced<MessageView[]>> {
+    return this.guarded(async () => {
+      const sock = this.ensureConnected();
+      const jid = this.resolveId(chatId);
+      await this.waitForSync();
+
+      if (before === undefined) {
+        const ring = this.store.byChat.get(jid) ?? [];
+        return this.synced(this.viewsFor(ring.slice(-limit), jid));
+      }
+
+      const anchor = this.messageOrThrow(before);
+      let older = this.olderThan(jid, before, limit);
+      if (older.length === 0) {
+        await this.fetchOlder(sock, anchor, limit);
+        older = this.olderThan(jid, before, limit);
+      }
+      return this.synced(this.viewsFor(older, jid));
+    });
+  }
+
+  getRecentMessages(hours: number, filter: Exclude<ChatFilter, "archived">): Promise<Synced<RecentConversation[]>> {
+    return this.guarded(async () => {
+      this.ensureConnected();
+      await this.waitForSync();
+      const cutoff = Date.now() - hours * 3_600_000;
+      const conversations: RecentConversation[] = [];
+
+      for (const [jid, ring] of this.store.byChat) {
+        const chat = this.store.chats.get(jid);
+        if (chat && !this.matchesChatFilter(chat, filter)) continue;
+        if (!chat && (filter === "unread" || filter === (isGroupId(jid) ? "individual" : "groups"))) continue;
+
+        const recent = ring.filter((sid) => {
+          const raw = this.store.messages.get(sid);
+          return raw !== undefined && messageTimestampMs(raw) >= cutoff;
+        });
+        if (recent.length === 0) continue;
+
+        const messages = this.viewsFor(recent, jid);
+        const last = messages[messages.length - 1];
+        conversations.push({
+          chat_id: jid,
+          chat_name: this.nameFor(jid),
+          type: isGroupId(jid) ? "group" : "individual",
+          last_activity: last ? last.timestamp : isoWithOffset(cutoff),
+          messages,
+        });
+      }
+
+      conversations.sort((a, b) => b.last_activity.localeCompare(a.last_activity));
+      return this.synced(conversations);
+    });
+  }
+
+  searchMessages(query: string, chatId: string | undefined, limit: number): Promise<Synced<MessageView[]>> {
+    return this.guarded(async () => {
+      this.ensureConnected();
+      await this.waitForSync();
+      const needle = query.trim().toLowerCase();
+      const scope = chatId === undefined ? undefined : this.resolveId(chatId);
+      const hits: Array<{ sid: string; jid: string; at: number }> = [];
+
+      for (const [sid, raw] of this.store.messages) {
+        const jid = this.store.chatOf.get(sid);
+        if (!jid || (scope !== undefined && jid !== scope)) continue;
+        if (needle && !messageText(raw).toLowerCase().includes(needle)) continue;
+        hits.push({ sid, jid, at: messageTimestampMs(raw) });
+      }
+
+      hits.sort((a, b) => b.at - a.at);
+      return this.synced(hits.slice(0, limit).map((hit) => this.viewOf(hit.sid, hit.jid)));
+    });
+  }
+
+  getMessage(messageId: string): Promise<MessageView> {
+    return this.guarded(async () => {
+      this.ensureConnected();
+      this.messageOrThrow(messageId);
+      return this.viewOf(messageId, this.store.chatOf.get(messageId) ?? "");
+    });
+  }
+
+  searchContacts(query: string, limit: number): Promise<ContactSummary[]> {
+    return this.guarded(async () => {
+      this.ensureConnected();
+      await this.waitForSync();
+      const needle = query.trim().toLowerCase();
+      const digits = needle.replace(/\D/g, "");
+      const matches: ContactSummary[] = [];
+
+      for (const [jid, contact] of this.store.contacts) {
+        const name = (contact.name ?? "").toLowerCase();
+        const notify = (contact.notify ?? "").toLowerCase();
+        const number = jid.split("@")[0] ?? "";
+        const hit =
+          needle === "" ||
+          name.includes(needle) ||
+          notify.includes(needle) ||
+          (digits.length >= 5 && number.includes(digits));
+        if (!hit) continue;
+        matches.push(this.contactSummary(jid, contact));
+        if (matches.length >= limit) break;
+      }
+      return matches;
+    });
+  }
+
+  getContact(contactId: string): Promise<ContactDetails> {
+    return this.guarded(async () => {
+      const sock = this.ensureConnected();
+      const jid = this.resolveId(contactId);
+      const contact = this.store.contacts.get(jid);
+      const [about, picture] = await Promise.all([
+        sock
+          .fetchStatus(jid)
+          .then((entries) => statusTextOf(entries?.[0]))
+          .catch(() => null),
+        sock.profilePictureUrl(jid, "image").catch(() => null),
+      ]);
+      return {
+        ...this.contactSummary(jid, contact),
+        about,
+        profile_pic_url: picture ?? null,
+        is_blocked: this.blocked.has(jid),
+      };
+    });
+  }
+
+  getGroupInfo(groupId: string): Promise<GroupInfo> {
+    return this.guarded(async () => {
+      this.ensureConnected();
+      const jid = this.resolveId(groupId);
+      if (!isGroupId(jid)) {
+        throw new WazapError("GROUP_NOT_FOUND", `"${groupId}" is not a group id.`, "Group ids end in @g.us");
+      }
+      const meta = await this.groupMeta(jid, true);
+      const mine = this.myParticipation(meta);
+      if (!mine) {
+        throw new WazapError("NOT_A_PARTICIPANT", `The linked account is not a participant of ${jid}.`);
+      }
+      const iAmAdmin = isAdmin(mine);
+
+      const info: GroupInfo = {
+        chat_id: jid,
+        name: meta.subject,
+        description: meta.desc ?? null,
+        owner: meta.owner ? this.canonical(meta.owner) : null,
+        created_at: meta.creation ? isoWithOffset(meta.creation * 1000) : null,
+        participant_count: meta.participants.length,
+        participants: meta.participants.slice(0, MAX_GROUP_PARTICIPANTS).map((p) => {
+          const id = this.canonical(p.id);
+          return { contact_id: id, name: this.nameFor(id), is_admin: isAdmin(p) };
+        }),
+        announcement_only: Boolean(meta.announce),
+        i_am_admin: iAmAdmin,
+      };
+
+      if (iAmAdmin) {
+        const link = await this.inviteLink(jid).catch(() => null);
+        if (link) info.invite_link = link;
+      }
+      return info;
+    });
+  }
+
+  downloadMedia(messageId: string, saveTo?: string): Promise<MediaResult> {
+    return this.guarded(async () => {
+      const sock = this.ensureConnected();
+      const raw = this.messageOrThrow(messageId);
+      const info = mediaInfo(raw);
+      if (!info) throw new WazapError("MEDIA_UNAVAILABLE", `Message ${messageId} carries no media.`);
+
+      let buffer: Buffer;
+      try {
+        buffer = await downloadMediaMessage(raw, "buffer", {}, {
+          logger: silentLogger,
+          reuploadRequest: sock.updateMediaMessage,
+        });
+      } catch (err) {
+        throw new WazapError(
+          "MEDIA_UNAVAILABLE",
+          `Could not download the media of ${messageId}: ${describe(err)}`,
+          "Ask the sender to resend it",
+        );
+      }
+
+      const dir = saveTo ?? this.paths.mediaDir;
+      if (!isAbsolute(dir)) {
+        throw new WazapError("FILE_NOT_FOUND", `"${dir}" is not an absolute directory path.`);
+      }
+      await mkdir(dir, { recursive: true, mode: DIR_MODE });
+      const filename = mediaFilename(info);
+      const path = join(dir, filename);
+      await writeFile(path, buffer, { mode: FILE_MODE });
+
+      const inline =
+        info.mime.startsWith("image/") && buffer.length <= INLINE_IMAGE_MAX_BYTES ? buffer.toString("base64") : null;
+      return { path, mime: info.mime, size: buffer.length, filename, inline_base64: inline };
+    });
+  }
+
+  sendMessage(chatId: string, text: string, replyTo?: string, mentionIds?: string[]): Promise<SentMessage> {
+    return this.guarded(async () => {
+      if (text.length > MAX_TEXT_CHARS) {
+        throw new WazapError("TEXT_TOO_LONG", `The text is ${text.length} characters; WhatsApp allows ${MAX_TEXT_CHARS}.`);
+      }
+      const { sock, jid } = await this.prepareSend(chatId);
+      const mentions = (mentionIds ?? []).map((id) => this.resolveId(id));
+      const quoted = replyTo === undefined ? undefined : this.messageOrThrow(replyTo);
+      const sent = await sock.sendMessage(jid, mentions.length > 0 ? { text, mentions } : { text }, quoted ? { quoted } : {});
+      return this.sentResult(sent, jid, text);
+    });
+  }
+
+  sendMedia(
+    chatId: string,
+    source: MediaSource,
+    opts: { caption?: string; asDocument: boolean; asVoice: boolean },
+  ): Promise<SentMessage> {
+    return this.guarded(async () => {
+      const { sock, jid } = await this.prepareSend(chatId);
+      const media = await loadMedia(source);
+      const content = mediaContent(media, opts);
+      const sent = await sock.sendMessage(jid, content);
+      return this.sentResult(sent, jid, opts.caption ?? `[${media.mimetype}]`);
+    });
+  }
+
+  sendPoll(chatId: string, question: string, options: string[], multiSelect: boolean): Promise<SentMessage> {
+    return this.guarded(async () => {
+      const { sock, jid } = await this.prepareSend(chatId);
+      const sent = await sock.sendMessage(jid, {
+        poll: { name: question, values: options, selectableCount: multiSelect ? options.length : 1 },
+      });
+      return this.sentResult(sent, jid, `[poll] ${question}`);
+    });
+  }
+
+  sendLocation(
+    chatId: string,
+    latitude: number,
+    longitude: number,
+    name?: string,
+    address?: string,
+  ): Promise<SentMessage> {
+    return this.guarded(async () => {
+      const { sock, jid } = await this.prepareSend(chatId);
+      const sent = await sock.sendMessage(jid, {
+        location: { degreesLatitude: latitude, degreesLongitude: longitude, name, address },
+      });
+      return this.sentResult(sent, jid, `[location] ${name ?? `${latitude}, ${longitude}`}`);
+    });
+  }
+
+  editMessage(messageId: string, text: string): Promise<SentMessage> {
+    return this.guarded(async () => {
+      if (text.length > MAX_TEXT_CHARS) {
+        throw new WazapError("TEXT_TOO_LONG", `The text is ${text.length} characters; WhatsApp allows ${MAX_TEXT_CHARS}.`);
+      }
+      const raw = this.messageOrThrow(messageId);
+      if (!raw.key.fromMe) {
+        throw new WazapError("NOT_OWN_MESSAGE", `Message ${messageId} was not sent by the linked account.`);
+      }
+      const age = Date.now() - messageTimestampMs(raw);
+      if (age > EDIT_WINDOW_MS) {
+        throw new WazapError("EDIT_WINDOW_EXPIRED", `Message ${messageId} is older than 15 minutes.`);
+      }
+      const { sock, jid } = await this.prepareSend(this.chatOfOrThrow(messageId));
+      await sock.sendMessage(jid, { text, edit: raw.key });
+      return { message_id: messageId, chat_id: jid, text, timestamp: isoWithOffset(Date.now()) };
+    });
+  }
+
+  reactToMessage(messageId: string, emoji: string): Promise<{ message_id: string; emoji: string }> {
+    return this.guarded(async () => {
+      const raw = this.messageOrThrow(messageId);
+      const { sock, jid } = await this.prepareSend(this.chatOfOrThrow(messageId));
+      await sock.sendMessage(jid, { react: { text: emoji, key: raw.key } });
+      return { message_id: messageId, emoji };
+    });
+  }
+
+  forwardMessage(messageId: string, toChatId: string): Promise<SentMessage> {
+    return this.guarded(async () => {
+      const raw = this.messageOrThrow(messageId);
+      const { sock, jid } = await this.prepareSend(toChatId);
+      const sent = await sock.sendMessage(jid, { forward: raw });
+      return this.sentResult(sent, jid, messageText(raw));
+    });
+  }
+
+  deleteMessage(messageId: string, forEveryone: boolean): Promise<{ message_id: string; for_everyone: boolean }> {
+    return this.guarded(async () => {
+      const raw = this.messageOrThrow(messageId);
+      if (!forEveryone) {
+        throw new WazapError(
+          "WHATSAPP_ERROR",
+          "WhatsApp only supports delete-for-everyone from a linked device; deleting for yourself alone is not available.",
+          "Call delete_message again with for_everyone=true",
+        );
+      }
+      if (!raw.key.fromMe) {
+        throw new WazapError("NOT_OWN_MESSAGE", `Message ${messageId} was not sent by the linked account.`);
+      }
+      if (Date.now() - messageTimestampMs(raw) > RETRACT_WINDOW_MS) {
+        throw new WazapError("RETRACT_WINDOW_EXPIRED", `Message ${messageId} is older than 2 days.`);
+      }
+      const { sock, jid } = await this.prepareSend(this.chatOfOrThrow(messageId));
+      await sock.sendMessage(jid, { delete: raw.key });
+      return { message_id: messageId, for_everyone: true };
+    });
+  }
+
+  manageChat(chatId: string, action: ChatAction, muteHours?: number): Promise<ChatActionResult> {
+    return this.guarded(async () => {
+      this.assertWritable();
+      const sock = this.ensureConnected();
+      const jid = this.resolveId(chatId);
+      const last = this.lastMessageOf(jid);
+      const lastMessages = last ? [last] : [];
+
+      switch (action) {
+        case "archive":
+        case "unarchive":
+          await sock.chatModify({ archive: action === "archive", lastMessages }, jid);
+          break;
+        case "pin":
+        case "unpin":
+          await sock.chatModify({ pin: action === "pin" }, jid);
+          break;
+        case "mute":
+          await sock.chatModify({ mute: (muteHours ?? 8) * 3_600_000 }, jid);
+          break;
+        case "unmute":
+          await sock.chatModify({ mute: null }, jid);
+          break;
+        case "mark_read":
+          if (last) await sock.readMessages([last.key]);
+          break;
+        case "mark_unread":
+          await sock.chatModify({ markRead: false, lastMessages }, jid);
+          break;
+      }
+
+      const detail = action === "mute" ? ` for ${muteHours ?? 8}h` : "";
+      return { chat_id: jid, action, applied: `${action}${detail}` };
+    });
+  }
+
+  createGroup(name: string, participantIds: string[]): Promise<{ chat_id: string; participants: ParticipantResult[] }> {
+    return this.guarded(async () => {
+      this.assertWritable();
+      const sock = this.ensureConnected();
+      const ids = participantIds.map((id) => this.resolveId(id));
+      const meta = await sock.groupCreate(name, ids);
+      this.groupCache.set(this.canonical(meta.id), meta);
+      const present = new Set(meta.participants.map((p) => this.canonical(p.id)));
+      return {
+        chat_id: this.canonical(meta.id),
+        participants: ids.map((id) =>
+          present.has(id)
+            ? { id, status: "ok" as const }
+            : { id, status: "failed" as const, reason: "WhatsApp did not add this participant" },
+        ),
+      };
+    });
+  }
+
+  manageGroup(
+    groupId: string,
+    action: GroupAction,
+    participantIds?: string[],
+    value?: string,
+  ): Promise<GroupActionResult> {
+    return this.guarded(async () => {
+      this.assertWritable();
+      const sock = this.ensureConnected();
+      const jid = this.resolveId(groupId);
+      if (!isGroupId(jid)) {
+        throw new WazapError("GROUP_NOT_FOUND", `"${groupId}" is not a group id.`, "Group ids end in @g.us");
+      }
+
+      if (ADMIN_ACTIONS.has(action)) await this.assertGroupAdmin(jid, action);
+      const ids = (participantIds ?? []).map((id) => this.resolveId(id));
+      if (PARTICIPANT_ACTIONS.has(action) && ids.length === 0) {
+        throw new WazapError("INVALID_ID", `The "${action}" action needs at least one participant id.`);
+      }
+
+      switch (action) {
+        case "add":
+        case "remove":
+        case "promote":
+        case "demote": {
+          const results = await sock.groupParticipantsUpdate(jid, ids, action);
+          this.groupCache.delete(jid);
+          return {
+            group_id: jid,
+            action,
+            applied: `${action} ${ids.length} participant(s)`,
+            participants: results.map((entry, index) => this.participantResult(entry, ids[index])),
+          };
+        }
+        case "leave":
+          await sock.groupLeave(jid);
+          this.groupCache.delete(jid);
+          return { group_id: jid, action, applied: "left the group" };
+        case "set_subject": {
+          const subject = requireValue(value, "set_subject", "the new group name");
+          await sock.groupUpdateSubject(jid, subject);
+          this.groupCache.delete(jid);
+          return { group_id: jid, action, applied: `subject set to "${subject}"` };
+        }
+        case "set_description": {
+          const description = requireValue(value, "set_description", "the new description");
+          await sock.groupUpdateDescription(jid, description);
+          this.groupCache.delete(jid);
+          return { group_id: jid, action, applied: "description updated" };
+        }
+        case "get_invite_link": {
+          const link = await this.inviteLink(jid);
+          return { group_id: jid, action, applied: "invite link fetched", invite_link: link };
+        }
+        case "revoke_invite_link": {
+          const code = await sock.groupRevokeInvite(jid);
+          const link = code ? `https://chat.whatsapp.com/${code}` : undefined;
+          return {
+            group_id: jid,
+            action,
+            applied: "invite link revoked",
+            ...(link ? { invite_link: link } : {}),
+          };
+        }
+      }
+    });
+  }
+
+  // ---- connection ------------------------------------------------------------
+
   /** Close the current socket and mute it, so a socket we are replacing can no
    * longer emit a close event and trigger a reconnect of its own. */
   private teardownSocket(): void {
@@ -341,7 +763,7 @@ export class WhatsAppService {
     this.sockClient = null;
     try {
       sock.ev.removeAllListeners("connection.update");
-      sock.end(undefined);
+      void sock.end(undefined);
     } catch (err) {
       logError("teardown", err);
     }
@@ -354,16 +776,14 @@ export class WhatsAppService {
       this.status = "auth_failure";
       this.lastError =
         `${reason} — gave up after ${RECONNECT_MAX_ATTEMPTS} attempts. ` +
-        `WhatsApp keeps rejecting this session: re-link the device (delete ${this.authPath} and re-scan the QR).`;
+        "WhatsApp keeps rejecting this session: re-link the device with `npx wazap login`.";
       logError("reconnect", this.lastError);
       return;
     }
     const attempt = this.reconnectAttempts++;
     const backoff = Math.min(RECONNECT_BASE_MS * 2 ** attempt, RECONNECT_MAX_MS);
     const delay = Math.round(backoff * (0.5 + Math.random()));
-    log(
-      `[${this.label}] disconnected (${reason}); retry ${attempt + 1}/${RECONNECT_MAX_ATTEMPTS} in ${Math.round(delay / 1000)}s`,
-    );
+    log(`disconnected (${reason}); retry ${attempt + 1}/${RECONNECT_MAX_ATTEMPTS} in ${Math.round(delay / 1000)}s`);
     this.reconnectTimer = setTimeout(() => {
       this.reconnectTimer = null;
       this.start().catch((err) => {
@@ -373,605 +793,24 @@ export class WhatsAppService {
     }, delay);
   }
 
-  async stop(): Promise<void> {
-    this.stopped = true;
-    if (this.storeSaveTimer) {
-      clearTimeout(this.storeSaveTimer);
-      this.storeSaveTimer = null;
-    }
-    if (this.reconnectTimer) {
-      clearTimeout(this.reconnectTimer);
-      this.reconnectTimer = null;
-    }
-    await this.flushStoreCache();
-    try {
-      this.teardownSocket();
-    } catch (err) {
-      logError("shutdown", err);
-    }
-  }
-
-  // ---- Store persistence (A) -----------------------------------------------------
-
-  private storeLoaded = false;
-
-  private async loadStoreCache(): Promise<void> {
-    if (!this.storeCacheFile || this.storeLoaded) return;
-    this.storeLoaded = true;
-    try {
-      const text = await readFile(this.storeCacheFile, "utf8");
-      const counts = this.store.hydrate(JSON.parse(text) as StoreSnapshot);
-      log(`[${this.label}] store cache loaded: ${counts.chats} chats, ${counts.messages} messages`);
-    } catch (err) {
-      if ((err as NodeJS.ErrnoException)?.code !== "ENOENT") logError("store cache load", err);
-    }
-  }
-
-  /** Mark the store dirty; a debounced timer flushes it to disk. */
-  private markStoreDirty(): void {
-    if (!this.storeCacheFile) return;
-    this.storeDirty = true;
-    if (this.storeSaveTimer) return;
-    this.storeSaveTimer = setTimeout(() => {
-      this.storeSaveTimer = null;
-      void this.flushStoreCache();
-    }, STORE_SAVE_DEBOUNCE_MS);
-  }
-
-  private async flushStoreCache(): Promise<void> {
-    if (!this.storeCacheFile || !this.storeDirty) return;
-    this.storeDirty = false;
-    try {
-      const snap = this.store.serialize(PERSIST_MESSAGES_PER_CHAT);
-      await mkdir(resolve(this.storeCacheFile, ".."), { recursive: true });
-      const tmp = `${this.storeCacheFile}.tmp`;
-      await writeFile(tmp, JSON.stringify(snap), { mode: 0o600 });
-      await rename(tmp, this.storeCacheFile);
-    } catch (err) {
-      logError("store cache save", err);
-    }
-  }
-
-  // ---- Per-chat history store (B) ---------------------------------------------
-
-  private historyLoaded = false;
-
-  private async loadHistoryStore(): Promise<void> {
-    if (!this.historyStoreDir || this.historyLoaded) return;
-    this.historyLoaded = true;
-    try {
-      await mkdir(this.historyStoreDir, { recursive: true });
-      const entries = await readdir(this.historyStoreDir);
-      let totalMsgs = 0;
-      for (const entry of entries) {
-        if (!entry.endsWith(".jsonl")) continue;
-        const filePath = join(this.historyStoreDir, entry);
-        try {
-          const text = await readFile(filePath, "utf8");
-          const lines = text.split("\n").filter((l) => l.trim());
-          const seen = new Map<string, HistoryRecord>();
-          for (const line of lines) {
-            try {
-              const rec = JSON.parse(line) as HistoryRecord;
-              if (rec.sid && rec.raw) seen.set(rec.sid, rec);
-            } catch { /* skip corrupt line */ }
-          }
-          const sorted = [...seen.values()].sort((a, b) => a.ts - b.ts);
-          const capped = sorted.slice(-HISTORY_STORE_CAP_PER_CHAT);
-          // Compact the file atomically so it stays bounded across restarts.
-          const compacted = capped.map((r) => JSON.stringify(r)).join("\n") + (capped.length ? "\n" : "");
-          const tmp = `${filePath}.tmp`;
-          await writeFile(tmp, compacted, { mode: 0o600 });
-          await rename(tmp, filePath);
-          for (const rec of capped) {
-            try {
-              const raw = proto.WebMessageInfo.decode(Buffer.from(rec.raw, "base64")) as unknown as WAMessage;
-              if (raw.message && raw.key?.remoteJid) {
-                this.store.putMessage(rec.sid, raw.key.remoteJid, raw);
-                totalMsgs++;
-              }
-            } catch { /* skip corrupt record */ }
-          }
-        } catch (err) {
-          if ((err as NodeJS.ErrnoException)?.code !== "ENOENT") logError("history store load file", err);
-        }
-      }
-      if (totalMsgs > 0) log(`[${this.label}] history store loaded: ${totalMsgs} messages`);
-    } catch (err) {
-      logError("history store load", err);
-    }
-  }
-
-  private async appendToHistoryStore(messages: WAMessage[]): Promise<void> {
-    if (!this.historyStoreDir) return;
-    // Group by chatJid to minimise file-open round-trips.
-    const byChat = new Map<string, string[]>();
-    for (const raw of messages) {
-      if (!raw.message || !raw.key?.remoteJid) continue;
-      const jid = raw.key.remoteJid;
-      try {
-        const sid = serializeKey(raw.key);
-        const ts = toSeconds(raw.messageTimestamp);
-        const rawB64 = Buffer.from(proto.WebMessageInfo.encode(raw).finish()).toString("base64");
-        const line = JSON.stringify({ sid, ts, raw: rawB64 } satisfies HistoryRecord);
-        let lines = byChat.get(jid);
-        if (!lines) { lines = []; byChat.set(jid, lines); }
-        lines.push(line);
-      } catch { /* skip unencodable message */ }
-    }
-    for (const [jid, lines] of byChat) {
-      const filePath = join(this.historyStoreDir, `${safeJidFilename(jid)}.jsonl`);
-      try {
-        await appendFile(filePath, lines.join("\n") + "\n", { mode: 0o600 });
-      } catch (err) {
-        logError("history store append", err);
-      }
-    }
-  }
-
-  // ---- Chats ------------------------------------------------------------------
-
-  async getRecentChats(
-    limit: number,
-    filter: "all" | "unread" | "groups" | "individual" | "archived" = "all",
-  ): Promise<ChatSummary[]> {
-    this.ensureReady();
-    let chats = [...this.store.chats.values()];
-    chats = chats.filter((chat) => {
-      const isGroup = isJidGroup(chat.id ?? "") ?? false;
-      const archived = Boolean(chat.archived);
-      switch (filter) {
-        case "unread":
-          return !archived && (chat.unreadCount ?? 0) > 0;
-        case "groups":
-          return !archived && isGroup;
-        case "individual":
-          return !archived && !isGroup;
-        case "archived":
-          return archived;
-        default:
-          return !archived;
-      }
-    });
-    chats.sort((a, b) => chatTime(b) - chatTime(a));
-    return chats.slice(0, limit).map((chat) => this.toChatSummary(chat));
-  }
-
-  async readMessages(chatId: string, limit: number): Promise<MessageSummary[]> {
-    this.ensureReady();
-    const jid = this.normalizeChatId(chatId);
-    const ring = this.store.byChat.get(jid) ?? [];
-    const ids = ring.slice(-limit);
-    return Promise.all(
-      ids
-        .map((sid) => this.store.messages.get(sid))
-        .filter((m): m is WAMessage => Boolean(m))
-        .map((raw) => this.toMessageSummary(raw)),
-    );
-  }
-
-  /**
-   * Conversations active in the last `hours`, read from the durable journal
-   * (not the volatile in-memory store), so a read-only consumer's window survives a
-   * restart. Returns [] when journaling is off. Does not require the socket to
-   * be ready — it reads files.
-   */
-  async getRecentMessages(hours = 24): Promise<RecentConversation[]> {
-    if (!this.journalDir) return [];
-    const cutoff = Date.now() - hours * 3_600_000;
-    let files: string[];
-    try {
-      files = (await readdir(this.journalDir)).filter((f) => f.endsWith(".jsonl")).sort();
-    } catch {
-      return [];
-    }
-    // The window spans at most ceil(hours/24)+1 daily files; reading the tail is
-    // cheap and avoids parsing the whole archive.
-    const wanted = files.slice(-Math.max(2, Math.ceil(hours / 24) + 1));
-    const byChat = new Map<string, RecentConversation>();
-    for (const file of wanted) {
-      let text: string;
-      try {
-        text = await readFile(resolve(this.journalDir, file), "utf8");
-      } catch {
-        continue;
-      }
-      for (const line of text.split("\n")) {
-        if (!line.trim()) continue;
-        let rec: RecentJournalRecord;
-        try {
-          rec = JSON.parse(line) as RecentJournalRecord;
-        } catch {
-          continue;
-        }
-        if (!rec.timestamp || Date.parse(rec.timestamp) < cutoff) continue;
-        let conv = byChat.get(rec.chat_id);
-        if (!conv) {
-          conv = {
-            chat_id: rec.chat_id,
-            chat_name: rec.chat_name,
-            is_group: rec.is_group,
-            last_activity: rec.timestamp,
-            messages: [],
-          };
-          byChat.set(rec.chat_id, conv);
-        }
-        if (rec.chat_name) conv.chat_name = rec.chat_name;
-        conv.messages.push({
-          timestamp: rec.timestamp,
-          sender: rec.sender,
-          from_me: rec.from_me,
-          body: rec.body,
-        });
-        if (rec.timestamp > conv.last_activity) conv.last_activity = rec.timestamp;
-      }
-    }
-    const out = [...byChat.values()];
-    // ISO-8601 UTC strings sort lexicographically, so string compare is correct.
-    for (const c of out) c.messages.sort((a, b) => a.timestamp.localeCompare(b.timestamp));
-    out.sort((a, b) => b.last_activity.localeCompare(a.last_activity));
-    return out;
-  }
-
-  /**
-   * On-demand deeper history (B): ask WhatsApp for messages OLDER than the
-   * oldest one we hold for this chat. They arrive asynchronously via
-   * messaging-history.set and land in the store; we wait briefly, then report
-   * the new depth. Bounded by what WhatsApp still has + the per-chat ring cap.
-   */
-  async fetchOlderHistory(
-    chatId: string,
-    count: number,
-  ): Promise<{ chat_id: string; requested: number; had: number; now: number; gained: number; oldest: string | null }> {
-    this.ensureReady();
-    const jid = this.normalizeChatId(chatId);
-    const ring = this.store.byChat.get(jid) ?? [];
-    const anchor = ring.length ? this.store.messages.get(ring[0]) : undefined;
-    if (!anchor?.key) {
-      throw new Error(
-        "No anchor message for this chat yet — call read_messages on it first, then fetch older.",
-      );
-    }
-    const had = ring.length;
-    await this.sock().fetchMessageHistory(count, anchor.key, toSeconds(anchor.messageTimestamp));
-    // Results arrive asynchronously on messaging-history.set; give them a moment.
-    await new Promise((resolve) => setTimeout(resolve, 5000));
-    const after = this.store.byChat.get(jid) ?? [];
-    const oldestRaw = after.length ? this.store.messages.get(after[0]) : undefined;
-    return {
-      chat_id: jid,
-      requested: count,
-      had,
-      now: after.length,
-      gained: Math.max(0, after.length - had),
-      oldest: oldestRaw ? new Date(toMillis(oldestRaw.messageTimestamp)).toISOString() : null,
-    };
-  }
-
-  async searchMessages(query: string, chatId: string | undefined, limit: number): Promise<MessageSummary[]> {
-    this.ensureReady();
-    const needle = query.trim().toLowerCase();
-    const scope = chatId ? this.normalizeChatId(chatId) : null;
-    const out: MessageSummary[] = [];
-    for (const raw of this.store.messages.values()) {
-      if (scope && raw.key.remoteJid !== scope) continue;
-      const body = extractBody(raw).toLowerCase();
-      if (needle && !body.includes(needle)) continue;
-      out.push(await this.toMessageSummary(raw));
-      if (out.length >= limit) break;
-    }
-    return out;
-  }
-
-  async manageChat(chatId: string, action: ChatAction, muteHours?: number): Promise<string> {
-    this.assertWritable();
-    this.ensureReady();
-    const jid = this.normalizeChatId(chatId);
-    const sock = this.sock();
-    const last = this.lastMessage(jid);
-    switch (action) {
-      case "archive":
-      case "unarchive":
-        await sock.chatModify({ archive: action === "archive", lastMessages: last ? [last] : [] }, jid);
-        break;
-      case "pin":
-      case "unpin":
-        await sock.chatModify({ pin: action === "pin" }, jid);
-        break;
-      case "mute":
-        await sock.chatModify({ mute: muteHours ? muteHours * 3_600_000 : 8 * 3_600_000 }, jid);
-        break;
-      case "unmute":
-        await sock.chatModify({ mute: null }, jid);
-        break;
-      case "mark_read":
-        if (last) await sock.readMessages([last.key]);
-        break;
-      case "mark_unread":
-        await sock.chatModify({ markRead: false, lastMessages: last ? [last] : [] }, jid);
-        break;
-    }
-    const detail = action === "mute" ? (muteHours ? ` for ${muteHours}h` : " indefinitely") : "";
-    return `${action}${detail} applied to ${jid}`;
-  }
-
-  // ---- Contacts -----------------------------------------------------------------
-
-  async searchContacts(query: string, limit: number): Promise<ContactSummary[]> {
-    this.ensureReady();
-    const needle = query.trim().toLowerCase();
-    const digits = needle.replace(/[^\d]/g, "");
-    const matches: ContactSummary[] = [];
-    for (const contact of this.store.contacts.values()) {
-      const name = (contact.name ?? "").toLowerCase();
-      const pushname = (contact.notify ?? "").toLowerCase();
-      const number = jidDecode(contact.id)?.user ?? "";
-      const hit =
-        (needle && (name.includes(needle) || pushname.includes(needle))) ||
-        (digits.length >= 5 && number.replace(/[^\d]/g, "").includes(digits));
-      if (!hit) continue;
-      matches.push(this.toContactSummary(contact));
-      if (matches.length >= limit) break;
-    }
-    return matches;
-  }
-
-  async getContact(contactId: string): Promise<ContactDetails> {
-    this.ensureReady();
-    const jid = this.normalizeChatId(contactId);
-    const contact = this.store.contacts.get(jid);
-    const sock = this.sock();
-    const [about, profilePic] = await Promise.all([
-      sock.fetchStatus(jid).then((s) => statusText(s)).catch(() => null),
-      sock.profilePictureUrl(jid, "image").catch(() => null),
-    ]);
-    const summary: ContactSummary = contact
-      ? this.toContactSummary(contact)
-      : {
-          contact_id: jid,
-          name: jidDecode(jid)?.user ?? jid,
-          number: jidDecode(jid)?.user ?? null,
-          is_my_contact: false,
-          is_business: false,
-        };
-    return { ...summary, about: about ?? null, profile_pic_url: profilePic ?? null, is_blocked: false };
-  }
-
-  // ---- Messages: send / react / forward / delete ---------------------------------
-
-  async sendMessage(chatId: string, content: string, replyToMessageId?: string): Promise<SentMessage> {
-    this.assertWritable();
-    this.ensureReady();
-    const jid = this.normalizeChatId(chatId);
-    const quoted = replyToMessageId ? this.store.messages.get(replyToMessageId) : undefined;
-    const sent = await this.sock().sendMessage(jid, { text: content }, quoted ? { quoted } : {});
-    return this.sentResult(sent, jid, content);
-  }
-
-  async sendMedia(
-    chatId: string,
-    source: { file_path?: string; url?: string },
-    caption?: string,
-    asDocument?: boolean,
-  ): Promise<SentMessage> {
-    this.assertWritable();
-    this.ensureReady();
-    const jid = this.normalizeChatId(chatId);
-    const { buffer, mimetype, filename } = await loadMedia(source);
-    const content = mediaSendContent(buffer, mimetype, filename, caption, Boolean(asDocument));
-    const sent = await this.sock().sendMessage(jid, content);
-    return this.sentResult(sent, jid, caption ?? `[${mimetype}]`);
-  }
-
-  async downloadMedia(messageId: string): Promise<MediaResult> {
-    this.ensureReady();
-    const raw = this.getRawOrThrow(messageId);
-    const media = await this.rawDownload(raw);
-    if (!media) {
-      throw new Error(
-        "Media could not be downloaded — it may have expired on WhatsApp's servers or not be synced to this device.",
-      );
-    }
-    const dir = resolve(this.config.pkgRoot, "media");
-    await mkdir(dir, { recursive: true });
-    const filename = mediaFilename(media);
-    const path = resolve(dir, filename);
-    const buffer = Buffer.from(media.data, "base64");
-    await writeFile(path, buffer, { mode: 0o600 });
-    const inline =
-      media.mimetype.startsWith("image/") && buffer.length <= INLINE_IMAGE_MAX_BYTES ? media.data : null;
-    return { path, filename, mimetype: media.mimetype, size_bytes: buffer.length, base64: inline };
-  }
-
-  async reactToMessage(messageId: string, emoji: string): Promise<string> {
-    this.assertWritable();
-    this.ensureReady();
-    const raw = this.getRawOrThrow(messageId);
-    await this.sock().sendMessage(raw.key.remoteJid!, { react: { text: emoji, key: raw.key } });
-    return emoji ? `Reacted with ${emoji} to message ${messageId}` : `Removed reaction from message ${messageId}`;
-  }
-
-  async forwardMessage(messageId: string, toChatId: string): Promise<string> {
-    this.assertWritable();
-    this.ensureReady();
-    const raw = this.getRawOrThrow(messageId);
-    const jid = this.normalizeChatId(toChatId);
-    await this.sock().sendMessage(jid, { forward: raw });
-    return `Forwarded message ${messageId} to ${jid}`;
-  }
-
-  async deleteMessage(messageId: string, forEveryone: boolean): Promise<string> {
-    this.assertWritable();
-    this.ensureReady();
-    const raw = this.getRawOrThrow(messageId);
-    if (forEveryone) {
-      await this.sock().sendMessage(raw.key.remoteJid!, { delete: raw.key });
-      return `Deleted message ${messageId} for everyone`;
-    }
-    // Baileys retracts for everyone; it has no per-message local-only delete.
-    return `Baileys supports only delete-for-everyone — re-run with for_everyone=true to retract message ${messageId}.`;
-  }
-
-  // ---- Groups ---------------------------------------------------------------------
-
-  async createGroup(name: string, participantIds: string[]): Promise<{ chat_id: string; missing: string[] }> {
-    this.assertWritable();
-    this.ensureReady();
-    const ids = participantIds.map((p) => this.normalizeChatId(p));
-    const result = await this.sock().groupCreate(name, ids);
-    const present = new Set((result.participants ?? []).map((p) => p.id));
-    const missing = ids.filter((id) => !present.has(id));
-    return { chat_id: result.id, missing };
-  }
-
-  async getGroupInfo(chatId: string): Promise<GroupInfo> {
-    this.ensureReady();
-    const jid = this.normalizeChatId(chatId);
-    if (!isJidGroup(jid)) throw new Error(`${jid} is not a group chat.`);
-    const meta = await this.sock().groupMetadata(jid);
-    const participants = meta.participants.slice(0, 100).map((p) => ({
-      contact_id: p.id,
-      name: this.resolveName(p.id),
-      is_admin: p.admin === "admin" || p.admin === "superadmin",
-    }));
-    return {
-      chat_id: meta.id,
-      name: meta.subject,
-      description: meta.desc ?? null,
-      owner: meta.owner ?? null,
-      created_at: meta.creation ? new Date(meta.creation * 1000).toISOString() : null,
-      participant_count: meta.participants.length,
-      participants,
-    };
-  }
-
-  async manageGroup(
-    chatId: string,
-    action: GroupAction,
-    participantIds?: string[],
-    value?: string,
-  ): Promise<string> {
-    this.assertWritable();
-    this.ensureReady();
-    const jid = this.normalizeChatId(chatId);
-    if (!isJidGroup(jid)) throw new Error(`${jid} is not a group chat.`);
-    const sock = this.sock();
-    const ids = (participantIds ?? []).map((p) => this.normalizeChatId(p));
-    const needIds = ["add", "remove", "promote", "demote"].includes(action);
-    if (needIds && ids.length === 0) throw new Error(`Action "${action}" requires participant_ids.`);
-    switch (action) {
-      case "add":
-      case "remove":
-      case "promote":
-      case "demote":
-        await sock.groupParticipantsUpdate(jid, ids, action);
-        break;
-      case "leave":
-        await sock.groupLeave(jid);
-        break;
-      case "set_subject":
-        if (!value) throw new Error('Action "set_subject" requires value (the new name).');
-        await sock.groupUpdateSubject(jid, value);
-        break;
-      case "set_description":
-        if (!value) throw new Error('Action "set_description" requires value.');
-        await sock.groupUpdateDescription(jid, value);
-        break;
-      case "get_invite_link": {
-        const code = await sock.groupInviteCode(jid);
-        return `https://chat.whatsapp.com/${code}`;
-      }
-    }
-    return `${action} done on ${jid}${ids.length ? ` (${ids.join(", ")})` : ""}`;
-  }
-
-  // ---- Internals ------------------------------------------------------------
-
-  private sock(): WASocket {
-    if (!this.sockClient) throw new Error("WhatsApp socket not started.");
-    return this.sockClient;
-  }
-
-  private ownJid(): string {
-    const id = this.sockClient?.user?.id;
-    return id ? jidNormalizedUser(id) : "";
-  }
-
-  private deps(): Deps {
-    return { sock: () => this.sock(), ownJid: () => this.ownJid(), store: this.store };
-  }
-
-  private sentResult(sent: WAMessage | undefined, jid: string, body: string): SentMessage {
-    const serialized = sent ? serializeKey(sent.key) : `${randomUUID()}`;
-    if (sent) this.store.putMessage(serialized, jid, sent);
-    return {
-      id: serialized,
-      to: jid,
-      body,
-      timestamp: sent?.messageTimestamp ? new Date(toMillis(sent.messageTimestamp)).toISOString() : new Date().toISOString(),
-    };
-  }
-
-  private getRawOrThrow(messageId: string): WAMessage {
-    const raw = this.store.messages.get(messageId);
-    if (raw) return raw;
-    throw new Error(
-      `Message "${messageId}" not found in the live store. Baileys only retains messages seen since startup; ` +
-        `use an id from read_messages / search_messages.`,
-    );
-  }
-
-  private lastMessage(jid: string): WAMessage | null {
-    const ring = this.store.byChat.get(jid);
-    const last = ring && ring.length ? this.store.messages.get(ring[ring.length - 1]) : undefined;
-    return last ?? null;
-  }
-
-  private resolveName(jid: string): string {
-    const c = this.store.contacts.get(jidNormalizedUser(jid));
-    return c?.name || c?.notify || jidDecode(jid)?.user || jid;
-  }
-
-  private markReady(via: string): void {
-    if (this.status === "ready") return;
-    this.status = "ready";
-    this.lastError = null;
-    this.readyAt = Math.floor(Date.now() / 1000);
-    const u = this.sockClient?.user;
-    this.account = u ? { id: jidNormalizedUser(u.id), name: u.name ?? "", platform: "baileys" } : null;
-    log(`[${this.label}] WhatsApp is ready (${via}).`);
-  }
-
-  private ensureReady(): void {
-    if (this.status === "ready") return;
-    const hint =
-      this.status === "qr"
-        ? `Scan the QR code (printed above in the terminal, or open "${this.qrFile}") with WhatsApp on your phone.`
-        : this.status === "auth_failure"
-          ? "Authentication failed — delete the session folder and re-scan the QR."
-          : "The client is still connecting; try again in a few seconds.";
-    throw new Error(`WhatsApp is not ready (status: ${this.status}). ${hint}`);
-  }
-
   private wireEvents(sock: WASocket, generation: number): void {
     sock.ev.on("creds.update", () => void this.saveCreds?.());
 
-    sock.ev.on("connection.update", (u) => {
+    sock.ev.on("connection.update", (update) => {
       if (generation !== this.generation) return;
-      const { connection, lastDisconnect, qr } = u;
-      if (qr) {
-        this.status = "qr";
-        void this.renderQr(qr);
-      }
+      const { connection, lastDisconnect } = update;
       if (connection === "open") {
         this.reconnectAttempts = 0;
-        this.markReady("connection.open");
+        this.status = "connected";
+        this.lastError = null;
+        this.adoptSocketAccount();
+        this.armSyncDeadline();
+        log("connected to WhatsApp");
       } else if (connection === "close") {
-        const code = (lastDisconnect?.error as { output?: { statusCode?: number } } | undefined)?.output
-          ?.statusCode;
+        const code = statusCodeOf(lastDisconnect?.error);
         if (code === DisconnectReason.loggedOut) {
-          this.status = "auth_failure";
-          this.lastError = "logged out — delete the session folder and re-scan the QR.";
+          this.status = "logged_out";
+          this.lastError = "The account was unlinked from the phone.";
           logError("auth", this.lastError);
           this.teardownSocket();
         } else if (!this.stopped) {
@@ -982,400 +821,819 @@ export class WhatsAppService {
       }
     });
 
-    // Store hydration. messaging-history.set carries the on-connect history sync
-    // AND the results of fetchOlderHistory — it includes `messages`, which the
-    // read tools need (older history, not just the chat list).
-    sock.ev.on("messaging-history.set", ({ chats, contacts, messages }) => {
-      for (const c of chats) if (c.id) this.store.chats.set(c.id, c);
-      for (const c of contacts) this.store.contacts.set(c.id, c);
-      for (const raw of messages ?? []) {
-        if (raw.message && raw.key?.remoteJid) {
-          this.store.putMessage(serializeKey(raw.key), raw.key.remoteJid, raw);
-        }
-      }
-      if (this.historyStoreDir) void this.appendToHistoryStore(messages ?? []);
+    sock.ev.on("messaging-history.set", ({ chats, contacts, messages, lidPnMappings, isLatest, progress }) => {
+      for (const mapping of lidPnMappings ?? []) this.learnLid(mapping.lid, mapping.pn);
+      for (const contact of contacts) this.ingestContact(contact);
+      for (const chat of chats) this.ingestChat(chat);
+      const stored = this.ingestMessages(messages ?? []);
+      void this.appendHistory(stored);
+      this.releaseHistoryWaiters();
+      if (isLatest === true || progress === 100) this.markSyncDone();
       this.markStoreDirty();
     });
+
+    sock.ev.on("lid-mapping.update", (mapping) => this.learnLid(mapping.lid, mapping.pn));
+
     sock.ev.on("chats.upsert", (chats) => {
-      for (const c of chats) if (c.id) this.store.chats.set(c.id, c);
+      for (const chat of chats) this.ingestChat(chat);
       this.markStoreDirty();
     });
+
     sock.ev.on("chats.update", (updates) => {
-      for (const up of updates) {
-        if (!up.id) continue;
-        const prev = this.store.chats.get(up.id);
-        this.store.chats.set(up.id, { ...(prev ?? { id: up.id }), ...up } as BaileysChat);
+      for (const update of updates) {
+        if (!update.id) continue;
+        const jid = this.canonical(update.id);
+        const previous = this.store.chats.get(jid);
+        this.store.chats.set(jid, { ...(previous ?? {}), ...update, id: jid });
       }
       this.markStoreDirty();
     });
+
     sock.ev.on("chats.delete", (ids) => {
-      for (const id of ids) this.store.chats.delete(id);
+      for (const id of ids) this.store.chats.delete(this.canonical(id));
     });
+
     sock.ev.on("contacts.upsert", (contacts) => {
-      for (const c of contacts) {
-        this.store.contacts.set(c.id, c);
-        this.emitLidPnPair(c);
-      }
+      for (const contact of contacts) this.ingestContact(contact);
       this.markStoreDirty();
     });
+
     sock.ev.on("contacts.update", (updates) => {
-      for (const up of updates) {
-        if (!up.id) continue;
-        const prev = this.store.contacts.get(up.id);
-        const merged = { ...(prev ?? { id: up.id }), ...up } as BaileysContact;
-        this.store.contacts.set(up.id, merged);
-        this.emitLidPnPair(merged);
+      for (const update of updates) {
+        if (!update.id) continue;
+        const previous = this.store.contacts.get(this.canonical(update.id));
+        this.ingestContact({ ...(previous ?? {}), ...update, id: update.id });
       }
     });
 
     sock.ev.on("messages.upsert", ({ messages, type }) => {
-      const toAppendToHistory: WAMessage[] = [];
-      for (const raw of messages) {
-        if (!raw.message || !raw.key?.remoteJid) continue;
-        const serialized = serializeKey(raw.key);
-        this.store.putMessage(serialized, raw.key.remoteJid, raw);
-        toAppendToHistory.push(raw);
-        if (type !== "notify") continue;
-        if (this.journalDir) void this.appendToJournal(raw);
-        const adapted = this.makeWaMessage(raw);
-        for (const hook of this.messageHooks) {
-          try {
-            hook(adapted);
-          } catch (err) {
-            logError("message hook", err);
-          }
+      const stored = this.ingestMessages(messages);
+      if (type === "notify") {
+        for (const raw of messages) {
+          if (raw.key.fromMe) continue;
+          this.lastInboundAt = Math.max(this.lastInboundAt ?? 0, messageTimestampMs(raw));
         }
       }
-      if (this.historyStoreDir && toAppendToHistory.length) void this.appendToHistoryStore(toAppendToHistory);
+      void this.appendHistory(stored);
       this.markStoreDirty();
     });
-  }
 
-  private async renderQr(qr: string): Promise<void> {
-    log("Scan this QR code with WhatsApp (Settings → Linked devices → Link a device):");
-    qrcodeTerminal.generate(qr, { small: true }, (rendered: string) => {
-      process.stderr.write("\n" + rendered + "\n");
+    sock.ev.on("messages.update", (updates) => {
+      for (const { key, update } of updates) {
+        const jid = key.remoteJid ? this.canonical(key.remoteJid) : undefined;
+        if (!jid) continue;
+        const sid = messageIdFor(key, jid);
+        const raw = this.store.messages.get(sid);
+        if (!raw) continue;
+        const edited = update.message?.editedMessage?.message;
+        if (edited) {
+          this.store.edited.add(sid);
+          raw.message = edited;
+        }
+        if (update.messageTimestamp) raw.messageTimestamp = update.messageTimestamp;
+        this.markStoreDirty();
+      }
     });
+
+    sock.ev.on("messages.reaction", (items) => {
+      for (const { key, reaction } of items) {
+        const jid = key.remoteJid ? this.canonical(key.remoteJid) : undefined;
+        if (!jid) continue;
+        const target = messageIdFor(key, jid);
+        const author = reaction.key?.fromMe
+          ? this.ownJid()
+          : this.canonical(reaction.key?.participant ?? reaction.key?.remoteJid ?? "");
+        if (!author) continue;
+        const map = this.store.reactions.get(target) ?? new Map<string, string>();
+        if (reaction.text) map.set(author, reaction.text);
+        else map.delete(author);
+        if (map.size > 0) this.store.reactions.set(target, map);
+        else this.store.reactions.delete(target);
+      }
+    });
+
+    sock.ev.on("groups.upsert", (groups) => {
+      for (const meta of groups) this.groupCache.set(this.canonical(meta.id), meta);
+    });
+
+    sock.ev.on("groups.update", (updates) => {
+      for (const update of updates) {
+        if (!update.id) continue;
+        const jid = this.canonical(update.id);
+        const previous = this.groupCache.get(jid);
+        if (previous) this.groupCache.set(jid, { ...previous, ...update });
+      }
+    });
+
+    sock.ev.on("group-participants.update", ({ id }) => this.groupCache.delete(this.canonical(id)));
+
+    sock.ev.on("blocklist.set", ({ blocklist }) => {
+      this.blocked.clear();
+      for (const jid of blocklist) this.blocked.add(this.canonical(jid));
+    });
+
+    sock.ev.on("blocklist.update", ({ blocklist, type }) => {
+      for (const jid of blocklist) {
+        if (type === "add") this.blocked.add(this.canonical(jid));
+        else this.blocked.delete(this.canonical(jid));
+      }
+    });
+  }
+
+  private readAccount(): StatusInfo["account"] | "corrupt" {
+    let linked;
     try {
-      await QRCode.toFile(this.qrFile, qr, { width: 400, margin: 2 });
-      log(`[${this.label}] QR code also saved to ${this.qrFile}`);
+      linked = readLinkedAccount(this.paths.authDir);
     } catch (err) {
-      logError("save qr", err);
+      this.markCorrupt(err);
+      return "corrupt";
     }
-  }
-
-
-  /** Append one live content message to the durable per-day journal. */
-  private async appendToJournal(raw: WAMessage): Promise<void> {
-    if (!this.journalDir) return;
-    try {
-      const ct = raw.message ? getContentType(raw.message) : undefined;
-      if (!ct || NON_CONTENT_TYPES.has(ct)) return;
-      const remoteJid = raw.key.remoteJid ?? "";
-      if (!remoteJid || remoteJid === "status@broadcast") return;
-      const iso = new Date(toMillis(raw.messageTimestamp)).toISOString();
-      const fromMe = Boolean(raw.key.fromMe);
-      const rec: RecentJournalRecord = {
-        timestamp: iso,
-        chat_id: remoteJid,
-        chat_name: this.store.chats.get(remoteJid)?.name || this.resolveName(remoteJid),
-        is_group: isJidGroup(remoteJid) ?? false,
-        sender: fromMe ? "me" : this.resolveName(raw.key.participant || remoteJid),
-        from_me: fromMe,
-        body: extractBody(raw) || `[${contentType(raw)}]`,
-      };
-      await mkdir(this.journalDir, { recursive: true });
-      await appendFile(resolve(this.journalDir, `${iso.slice(0, 10)}.jsonl`), JSON.stringify(rec) + "\n", "utf8");
-    } catch (err) {
-      logError("journal append", err);
-    }
-  }
-
-  private async toMessageSummary(raw: WAMessage): Promise<MessageSummary> {
-    const fromMe = Boolean(raw.key.fromMe);
-    const sender = fromMe ? "me" : this.resolveName(raw.key.participant || raw.key.remoteJid || "");
-    return {
-      id: serializeKey(raw.key),
-      chat_id: raw.key.remoteJid ?? "",
-      from_me: fromMe,
-      sender,
-      body: extractBody(raw) || `[${contentType(raw)}]`,
-      type: contentType(raw),
-      has_media: hasMedia(raw),
-      has_quoted: hasQuoted(raw),
-      timestamp: new Date(toMillis(raw.messageTimestamp)).toISOString(),
-    };
-  }
-
-  private toChatSummary(chat: BaileysChat): ChatSummary {
-    const id = chat.id ?? "";
-    const isGroup = isJidGroup(id) ?? false;
-    const ring = this.store.byChat.get(id);
-    const lastRaw = ring && ring.length ? this.store.messages.get(ring[ring.length - 1]) : undefined;
-    return {
-      chat_id: id,
-      name: chat.name || this.resolveName(id),
-      is_group: isGroup,
-      unread_count: chat.unreadCount ?? 0,
-      archived: Boolean(chat.archived),
-      pinned: Boolean(chat.pinned),
-      muted: Boolean(chat.muteEndTime),
-      last_activity: chatTime(chat) ? new Date(chatTime(chat) * 1000).toISOString() : null,
-      last_message: lastRaw ? extractBody(lastRaw) : null,
-    };
-  }
-
-  private toContactSummary(contact: BaileysContact): ContactSummary {
-    const number = jidDecode(contact.id)?.user ?? null;
-    return {
-      contact_id: contact.id,
-      name: contact.name || contact.notify || number || contact.id,
-      number,
-      is_my_contact: Boolean(contact.name),
-      is_business: false,
-    };
-  }
-
-  private async rawDownload(raw: WAMessage): Promise<WaMedia | null> {
-    try {
-      const buffer = (await downloadMediaMessage(
-        raw,
-        "buffer",
-        {},
-        { logger: silentLogger, reuploadRequest: this.sock().updateMediaMessage },
-      )) as Buffer;
-      const content = raw.message?.[contentType(raw) as keyof WAMessageContent] as
-        | { mimetype?: string; fileName?: string }
-        | undefined;
-      return {
-        data: buffer.toString("base64"),
-        mimetype: content?.mimetype ?? "application/octet-stream",
-        filename: content?.fileName ?? null,
-      };
-    } catch (err) {
-      logError("download media", err);
+    if (!linked) {
+      this.status = "not_linked";
+      this.account = null;
+      this.lastError = null;
+      log("no WhatsApp account is linked; run `npx wazap login`");
       return null;
     }
+    return { id: linked.id, name: linked.name, number: linked.number };
   }
 
-  /** Build a whatsapp-web.js-shaped adapter object from a raw Baileys message. */
-  private makeWaMessage(raw: WAMessage): WaMessage {
-    const remoteJid = raw.key.remoteJid ?? "";
-    const isGroup = isJidGroup(remoteJid) ?? false;
-    const fromMe = Boolean(raw.key.fromMe);
+  private markCorrupt(err: unknown): void {
+    this.status = "session_corrupt";
+    this.lastError = describe(err);
+    logError("auth state", err);
+  }
+
+  private adoptSocketAccount(): void {
+    const user = this.sockClient?.user;
+    if (!user?.id) return;
+    const id = this.canonical(user.id);
+    this.account = { id, name: user.name ?? this.account?.name ?? "", number: id.split("@")[0] ?? "" };
+    if (user.lid) this.learnLid(user.lid, id);
+  }
+
+  private ownJid(): string {
+    const id = this.sockClient?.user?.id;
+    if (id) return this.canonical(id);
+    return this.account?.id ?? "";
+  }
+
+  private isMe(jid: string): boolean {
     const own = this.ownJid();
-    const participant = raw.key.participant ?? undefined;
-    const from = fromMe ? own : remoteJid;
-    const to = fromMe ? remoteJid : own;
-    const serialized = serializeKey(raw.key);
-    const self = this;
-    return {
-      id: { _serialized: serialized, remote: remoteJid, id: raw.key.id ?? "", fromMe },
-      from,
-      to,
-      author: isGroup ? participant : undefined,
-      fromMe,
-      body: extractBody(raw),
-      type: contentType(raw),
-      timestamp: toSeconds(raw.messageTimestamp),
-      hasMedia: hasMedia(raw),
-      hasQuotedMsg: hasQuoted(raw),
-      async getChat(): Promise<WaChat> {
-        const chat = self.store.chats.get(remoteJid);
-        let name = chat?.name ?? "";
-        if (isGroup && !name) {
-          name = await self.sock().groupMetadata(remoteJid).then((m) => m.subject).catch(() => "");
-        }
-        if (!name) name = self.resolveName(remoteJid);
-        return {
-          id: { _serialized: remoteJid, user: jidDecode(remoteJid)?.user ?? remoteJid },
-          name,
-          isGroup,
-          async getContact(): Promise<WaContact> {
-            const isMe = !isGroup && jidDecode(remoteJid)?.user === jidDecode(own)?.user;
-            return { id: { _serialized: remoteJid }, isMe };
-          },
-        };
-      },
-      async downloadMedia(): Promise<WaMedia | undefined> {
-        return (await self.rawDownload(raw)) ?? undefined;
-      },
-      async react(emoji: string): Promise<void> {
-        await self.sock().sendMessage(remoteJid, { react: { text: emoji, key: raw.key } });
-      },
-      async forward(chat: WaChat): Promise<void> {
-        await self.sock().sendMessage(chat.id._serialized, { forward: raw });
-      },
-      async delete(forEveryone: boolean): Promise<void> {
-        if (forEveryone) await self.sock().sendMessage(remoteJid, { delete: raw.key });
-      },
-    };
+    if (!own) return false;
+    if (this.canonical(jid) === own) return true;
+    const lid = this.sockClient?.user?.lid;
+    return lid !== undefined && jidNormalizedUser(lid) === jidNormalizedUser(jid);
   }
 
-  /** Emit a (lid, pn) pair to all registered hooks when a contact carries both. */
-  private emitLidPnPair(c: BaileysContact): void {
-    if (!this.lidPnHooks.length) return;
-    const lid = c.lid ?? (c.id.endsWith("@lid") ? c.id : undefined);
-    const pn = c.phoneNumber ?? (!c.id.endsWith("@lid") ? c.id : undefined);
-    if (!lid || !pn) return;
-    for (const hook of this.lidPnHooks) {
-      try {
-        hook(lid, pn);
-      } catch (err) {
-        logError("lid-pn hook", err);
+  // ---- sync ------------------------------------------------------------------
+
+  private armSyncDeadline(): void {
+    if (this.syncDeadline) clearTimeout(this.syncDeadline);
+    this.syncDeadline = setTimeout(() => this.markSyncDone(), SYNC_WAIT_MS);
+  }
+
+  private markSyncDone(): void {
+    if (this.syncDeadline) {
+      clearTimeout(this.syncDeadline);
+      this.syncDeadline = null;
+    }
+    if (this.initialSyncDone) return;
+    this.initialSyncDone = true;
+    this.releaseWaiters();
+  }
+
+  private releaseWaiters(): void {
+    const waiters = this.syncWaiters;
+    this.syncWaiters = [];
+    for (const waiter of waiters) waiter();
+    this.releaseHistoryWaiters();
+  }
+
+  private releaseHistoryWaiters(): void {
+    const waiters = this.historyWaiters;
+    this.historyWaiters = [];
+    for (const waiter of waiters) waiter();
+  }
+
+  /** Resolves as soon as the initial sync lands, and in any case within 10s. */
+  private waitForSync(): Promise<void> {
+    if (this.initialSyncDone) return Promise.resolve();
+    return new Promise<void>((done) => {
+      const timer = setTimeout(() => {
+        this.syncWaiters = this.syncWaiters.filter((entry) => entry !== waiter);
+        done();
+      }, SYNC_WAIT_MS);
+      const waiter = (): void => {
+        clearTimeout(timer);
+        done();
+      };
+      this.syncWaiters.push(waiter);
+    });
+  }
+
+  private syncState(): SyncState {
+    return this.initialSyncDone ? "done" : "in_progress";
+  }
+
+  private synced<T>(data: T): Synced<T> {
+    return { data, sync: this.syncState() };
+  }
+
+  // ---- guards ----------------------------------------------------------------
+
+  /** Every public method funnels through here, so no raw Baileys error escapes. */
+  private async guarded<T>(work: () => Promise<T>): Promise<T> {
+    try {
+      return await work();
+    } catch (err) {
+      throw asWazapError(err);
+    }
+  }
+
+  private ensureConnected(): WASocket {
+    switch (this.status) {
+      case "not_linked":
+        throw new WazapError("NOT_LINKED", "No WhatsApp account is linked.", RELINK_FIX);
+      case "session_corrupt":
+        throw new WazapError("SESSION_CORRUPT", this.lastError ?? "Stored credentials are unreadable.", RESET_FIX);
+      case "logged_out":
+        throw new WazapError("SESSION_EXPIRED", this.lastError ?? "The account was unlinked.", RELINK_FIX);
+      case "auth_failure":
+        throw new WazapError("NOT_CONNECTED", this.lastError ?? "WhatsApp refused this session.");
+      case "connecting":
+      case "disconnected":
+        throw new WazapError("NOT_CONNECTED", `The WhatsApp socket is ${this.status}.`, "Call get_status, wait, retry");
+      case "connected": {
+        if (!this.sockClient) throw new WazapError("NOT_CONNECTED", "The WhatsApp socket is gone.");
+        return this.sockClient;
       }
     }
   }
 
-  /** Normalize a bare number / @c.us id to Baileys' @s.whatsapp.net form. */
-  private normalizeChatId(input: string): string {
-    const trimmed = input.trim();
-    if (isJidGroup(trimmed) || trimmed.endsWith("@g.us")) return trimmed;
-    if (trimmed.endsWith("@lid") || trimmed.endsWith("@s.whatsapp.net")) return jidNormalizedUser(trimmed);
-    if (trimmed.endsWith("@c.us")) return `${trimmed.split("@")[0]}@s.whatsapp.net`;
-    if (trimmed.includes("@")) return trimmed;
-    const digits = trimmed.replace(/[^\d]/g, "");
-    return `${digits}@s.whatsapp.net`;
+  private assertWritable(): void {
+    if (this.config.readOnly) {
+      throw new WazapError("READ_ONLY", "wazap runs read-only, so this write is refused.");
+    }
+  }
+
+  /** The single gate every send path passes: writability, addressability, announce-only. */
+  private async prepareSend(chatId: string): Promise<{ sock: WASocket; jid: string }> {
+    this.assertWritable();
+    const sock = this.ensureConnected();
+    const jid = this.resolveId(chatId);
+
+    if (isGroupId(jid)) {
+      const meta = await this.groupMeta(jid);
+      const mine = this.myParticipation(meta);
+      if (meta.announce && !(mine && isAdmin(mine))) {
+        throw new WazapError("GROUP_ANNOUNCEMENT_ONLY", `Only admins may post in "${meta.subject}".`);
+      }
+      return { sock, jid };
+    }
+
+    if (!this.store.chats.has(jid) && !this.store.contacts.has(jid)) {
+      const found = await sock.onWhatsApp(jid).catch(() => undefined);
+      if (!found?.some((entry) => entry.exists)) {
+        throw new WazapError("NOT_ON_WHATSAPP", `${jid} has no WhatsApp account.`);
+      }
+    }
+    return { sock, jid };
+  }
+
+  // ---- groups ----------------------------------------------------------------
+
+  private async groupMeta(jid: string, fresh = false): Promise<GroupMetadata> {
+    const cached = this.groupCache.get(jid);
+    if (cached && !fresh) return cached;
+    const sock = this.ensureConnected();
+    let meta: GroupMetadata;
+    try {
+      meta = await sock.groupMetadata(jid);
+    } catch (err) {
+      const code = statusCodeOf(err);
+      if (code === 403) throw new WazapError("NOT_A_PARTICIPANT", `The linked account is not in ${jid}.`);
+      if (code === 404) throw new WazapError("GROUP_NOT_FOUND", `WhatsApp does not know the group ${jid}.`);
+      throw new WazapError("GROUP_NOT_FOUND", `Could not read ${jid}: ${describe(err)}`);
+    }
+    this.groupCache.set(jid, meta);
+    return meta;
+  }
+
+  private myParticipation(meta: GroupMetadata): GroupParticipant | undefined {
+    return meta.participants.find((p) => this.isMe(p.id) || (p.phoneNumber && this.isMe(p.phoneNumber)));
+  }
+
+  private async assertGroupAdmin(jid: string, action: GroupAction): Promise<void> {
+    const meta = await this.groupMeta(jid);
+    const mine = this.myParticipation(meta);
+    if (!mine) throw new WazapError("NOT_A_PARTICIPANT", `The linked account is not in ${jid}.`);
+    if (!isAdmin(mine)) {
+      throw new WazapError("NOT_ADMIN", `"${action}" needs admin rights in "${meta.subject}".`);
+    }
+  }
+
+  private async inviteLink(jid: string): Promise<string> {
+    const sock = this.ensureConnected();
+    const code = await sock.groupInviteCode(jid);
+    if (!code) throw new WazapError("WHATSAPP_ERROR", `WhatsApp returned no invite code for ${jid}.`);
+    return `https://chat.whatsapp.com/${code}`;
+  }
+
+  private participantResult(entry: { status: string; jid: string | undefined }, fallback?: string): ParticipantResult {
+    const id = entry.jid ? this.canonical(entry.jid) : (fallback ?? "");
+    if (entry.status === "200") return { id, status: "ok" };
+    if (INVITE_NEEDED_CODES.has(entry.status)) {
+      return { id, status: "invite_needed", reason: entry.status };
+    }
+    return { id, status: "failed", reason: entry.status };
+  }
+
+  // ---- store views -----------------------------------------------------------
+
+  private resolveId(input: string): string {
+    return resolveChatId(input, (lid) => this.lidToPn.get(lid));
+  }
+
+  /** Canonical form, or the input unchanged for jids wazap does not address
+   * (status broadcasts, newsletters). */
+  private canonical(jid: string): string {
+    if (!jid) return "";
+    try {
+      return resolveChatId(jid, (lid) => this.lidToPn.get(lid));
+    } catch {
+      return jid;
+    }
+  }
+
+  private learnLid(lid: string, pn: string): void {
+    if (!lid || !pn) return;
+    const key = `${jidNormalizedUser(lid).split("@")[0]}@lid`;
+    this.lidToPn.set(key, pn);
+  }
+
+  private nameFor(jid: string): string {
+    if (this.isMe(jid)) return this.account?.name || "You";
+    const chat = this.store.chats.get(jid);
+    if (chat?.name) return chat.name;
+    const contact = this.store.contacts.get(jid);
+    if (contact?.name || contact?.notify) return contact.name || contact.notify || "";
+    if (isGroupId(jid)) return this.groupCache.get(jid)?.subject ?? jid;
+    return jid.split("@")[0] ?? jid;
+  }
+
+  private messageOrThrow(messageId: string): WAMessage {
+    const raw = this.store.messages.get(messageId);
+    if (!raw) {
+      throw new WazapError(
+        "MESSAGE_NOT_FOUND",
+        `No message "${messageId}" is loaded.`,
+        "Use a message_id from read_messages or search_messages",
+      );
+    }
+    return raw;
+  }
+
+  private chatOfOrThrow(messageId: string): string {
+    const jid = this.store.chatOf.get(messageId);
+    if (!jid) throw new WazapError("MESSAGE_NOT_FOUND", `No message "${messageId}" is loaded.`);
+    return jid;
+  }
+
+  private viewOf(sid: string, chatJid: string): MessageView {
+    const raw = this.messageOrThrow(sid);
+    return buildMessageView(raw, {
+      canonical: (jid) => this.canonical(jid),
+      nameFor: (jid) => this.nameFor(jid),
+      ownId: this.ownJid(),
+      chatId: chatJid,
+      edited: this.store.edited.has(sid),
+      reactions: this.store.reactionsFor(sid),
+    });
+  }
+
+  private viewsFor(sids: string[], chatJid: string): MessageView[] {
+    return sids.filter((sid) => this.store.messages.has(sid)).map((sid) => this.viewOf(sid, chatJid));
+  }
+
+  private olderThan(chatJid: string, before: string, limit: number): string[] {
+    const ring = this.store.byChat.get(chatJid) ?? [];
+    const at = ring.indexOf(before);
+    if (at <= 0) return [];
+    return ring.slice(Math.max(0, at - limit), at);
+  }
+
+  private async fetchOlder(sock: WASocket, anchor: WAMessage, limit: number): Promise<void> {
+    const seconds = Math.floor(messageTimestampMs(anchor) / 1000);
+    await sock.fetchMessageHistory(limit, anchor.key, seconds);
+    await new Promise<void>((done) => {
+      const timer = setTimeout(() => {
+        this.historyWaiters = this.historyWaiters.filter((entry) => entry !== waiter);
+        done();
+      }, HISTORY_FETCH_WAIT_MS);
+      const waiter = (): void => {
+        clearTimeout(timer);
+        done();
+      };
+      this.historyWaiters.push(waiter);
+    });
+  }
+
+  private lastMessageOf(chatJid: string): WAMessage | null {
+    const ring = this.store.byChat.get(chatJid);
+    const last = ring && ring.length > 0 ? this.store.messages.get(ring[ring.length - 1]!) : undefined;
+    return last ?? null;
+  }
+
+  private chatActivity(chat: BaileysChat): number {
+    return protoNumber(chat.conversationTimestamp) ?? 0;
+  }
+
+  private matchesChatFilter(chat: BaileysChat, filter: ChatFilter): boolean {
+    const archived = Boolean(chat.archived);
+    const group = isGroupId(chat.id ?? "");
+    switch (filter) {
+      case "unread":
+        return !archived && (chat.unreadCount ?? 0) > 0;
+      case "groups":
+        return !archived && group;
+      case "individual":
+        return !archived && !group;
+      case "archived":
+        return archived;
+      case "all":
+        return !archived;
+    }
+  }
+
+  private chatSummary(chat: BaileysChat): ChatSummary {
+    const jid = this.canonical(chat.id ?? "");
+    const last = this.lastMessageOf(jid);
+    const muteEnd = protoNumber(chat.muteEndTime) ?? 0;
+    const summary: ChatSummary = {
+      chat_id: jid,
+      name: chat.name || this.nameFor(jid),
+      type: isGroupId(jid) ? "group" : "individual",
+      unread_count: Math.max(0, chat.unreadCount ?? 0),
+      last_message: last
+        ? {
+            text: messageText(last),
+            timestamp: isoWithOffset(messageTimestampMs(last)),
+            from_me: Boolean(last.key.fromMe),
+          }
+        : null,
+      archived: Boolean(chat.archived),
+      pinned: Boolean(chat.pinned),
+      muted_until: muteEnd > Date.now() ? isoWithOffset(muteEnd) : null,
+    };
+    // A group we left is delivered as read-only; individual chats never are.
+    if (isGroupId(jid) && chat.readOnly) summary.left = true;
+    return summary;
+  }
+
+  private contactSummary(jid: string, contact?: BaileysContact): ContactSummary {
+    const number = jid.endsWith("@s.whatsapp.net") ? (jid.split("@")[0] ?? null) : null;
+    return {
+      contact_id: jid,
+      name: contact?.name || contact?.notify || number || jid,
+      number,
+      is_my_contact: Boolean(contact?.name),
+      is_business: Boolean(contact?.verifiedName),
+    };
+  }
+
+  private sentResult(sent: WAMessage | undefined, jid: string, text: string): SentMessage {
+    if (!sent) {
+      return { message_id: `unknown_${jid}_${randomUUID()}`, chat_id: jid, text, timestamp: isoWithOffset(Date.now()) };
+    }
+    const sid = messageIdFor(sent.key, jid);
+    this.store.putMessage(sid, jid, sent);
+    this.markStoreDirty();
+    return { message_id: sid, chat_id: jid, text, timestamp: isoWithOffset(messageTimestampMs(sent)) };
+  }
+
+  // ---- ingest ----------------------------------------------------------------
+
+  private ingestChat(chat: BaileysChat): void {
+    if (!chat.id) return;
+    if (chat.lidJid && chat.pnJid) this.learnLid(chat.lidJid, chat.pnJid);
+    const jid = this.canonical(chat.id);
+    const previous = this.store.chats.get(jid);
+    this.store.chats.set(jid, { ...(previous ?? {}), ...chat, id: jid });
+  }
+
+  private ingestContact(contact: BaileysContact): void {
+    if (!contact.id) return;
+    if (contact.lid && contact.phoneNumber) this.learnLid(contact.lid, contact.phoneNumber);
+    const jid = this.canonical(contact.id);
+    const previous = this.store.contacts.get(jid);
+    this.store.contacts.set(jid, { ...(previous ?? {}), ...contact, id: jid });
+  }
+
+  private ingestMessages(messages: WAMessage[]): WAMessage[] {
+    const stored: WAMessage[] = [];
+    for (const raw of messages) {
+      if (!raw.message || !raw.key?.remoteJid) continue;
+      const jid = this.canonical(raw.key.remoteJid);
+      if (jid === "status@broadcast") continue;
+      this.store.putMessage(messageIdFor(raw.key, jid), jid, raw);
+      stored.push(raw);
+    }
+    return stored;
+  }
+
+  // ---- persistence -----------------------------------------------------------
+
+  private async loadPersisted(): Promise<void> {
+    if (!this.config.persistHistory || this.persistedLoaded) return;
+    this.persistedLoaded = true;
+    await this.loadHistoryStore();
+    await this.loadStoreSnapshot();
+  }
+
+  private async loadStoreSnapshot(): Promise<void> {
+    try {
+      const text = await readFile(this.paths.storeFile, "utf8");
+      this.store.hydrate(JSON.parse(text) as StoreSnapshot);
+      log(`store loaded: ${this.store.chats.size} chats, ${this.store.messages.size} messages`);
+    } catch (err) {
+      if (!isMissing(err)) logError("store load", err);
+    }
+  }
+
+  private markStoreDirty(): void {
+    if (!this.config.persistHistory) return;
+    this.storeDirty = true;
+    if (this.storeSaveTimer) return;
+    this.storeSaveTimer = setTimeout(() => {
+      this.storeSaveTimer = null;
+      void this.flushStore();
+    }, STORE_SAVE_DEBOUNCE_MS);
+  }
+
+  private async flushStore(): Promise<void> {
+    if (!this.config.persistHistory || !this.storeDirty) return;
+    this.storeDirty = false;
+    try {
+      await mkdir(this.paths.dataDir, { recursive: true, mode: DIR_MODE });
+      const tmp = `${this.paths.storeFile}.tmp`;
+      await writeFile(tmp, JSON.stringify(this.store.serialize()), { mode: FILE_MODE });
+      await rename(tmp, this.paths.storeFile);
+    } catch (err) {
+      logError("store save", err);
+    }
+  }
+
+  private async loadHistoryStore(): Promise<void> {
+    try {
+      await mkdir(this.paths.historyDir, { recursive: true, mode: DIR_MODE });
+      const files = (await readdir(this.paths.historyDir)).filter((name) => name.endsWith(".jsonl"));
+      let loaded = 0;
+      for (const name of files) loaded += await this.loadHistoryFile(join(this.paths.historyDir, name));
+      if (loaded > 0) log(`history store loaded: ${loaded} messages`);
+    } catch (err) {
+      logError("history load", err);
+    }
+  }
+
+  private async loadHistoryFile(path: string): Promise<number> {
+    let text: string;
+    try {
+      text = await readFile(path, "utf8");
+    } catch (err) {
+      if (!isMissing(err)) logError("history load", err);
+      return 0;
+    }
+
+    const newest = new Map<string, HistoryRecord>();
+    for (const line of text.split("\n")) {
+      if (!line.trim()) continue;
+      try {
+        const record = JSON.parse(line) as HistoryRecord;
+        if (record.sid && record.raw) newest.set(record.sid, record);
+      } catch {
+        continue;
+      }
+    }
+    const kept = [...newest.values()].sort((a, b) => a.ts - b.ts).slice(-HISTORY_STORE_CAP_PER_CHAT);
+
+    // Rewrite compacted, so the file stays bounded across restarts.
+    const compacted = kept.map((record) => JSON.stringify(record)).join("\n");
+    const tmp = `${path}.tmp`;
+    await writeFile(tmp, kept.length > 0 ? `${compacted}\n` : "", { mode: FILE_MODE });
+    await rename(tmp, path);
+
+    let loaded = 0;
+    for (const record of kept) {
+      const raw = decodeMessage(record.raw);
+      if (!raw?.message || !raw.key?.remoteJid) continue;
+      this.store.putMessage(record.sid, this.canonical(raw.key.remoteJid), raw);
+      loaded++;
+    }
+    return loaded;
+  }
+
+  private async appendHistory(messages: WAMessage[]): Promise<void> {
+    if (!this.config.persistHistory || messages.length === 0) return;
+    const lines = new Map<string, string[]>();
+    for (const raw of messages) {
+      if (!raw.message || !raw.key?.remoteJid) continue;
+      const encoded = encode(() => proto.WebMessageInfo.encode(raw).finish());
+      if (!encoded) continue;
+      const jid = this.canonical(raw.key.remoteJid);
+      const record: HistoryRecord = {
+        sid: messageIdFor(raw.key, jid),
+        ts: Math.floor(messageTimestampMs(raw) / 1000),
+        raw: encoded,
+      };
+      const bucket = lines.get(jid) ?? [];
+      bucket.push(JSON.stringify(record));
+      lines.set(jid, bucket);
+    }
+
+    try {
+      await mkdir(this.paths.historyDir, { recursive: true, mode: DIR_MODE });
+      for (const [jid, bucket] of lines) {
+        const path = join(this.paths.historyDir, `${safeFilename(jid)}.jsonl`);
+        await appendFile(path, `${bucket.join("\n")}\n`, { mode: FILE_MODE });
+      }
+    } catch (err) {
+      logError("history append", err);
+    }
   }
 }
 
-// ---- Pure helpers -----------------------------------------------------------
+// ---- module helpers ----------------------------------------------------------
 
-const silentLogger = {
-  level: "silent",
-  child: () => silentLogger,
-  trace() {},
-  debug() {},
-  info() {},
-  warn() {},
-  error() {},
-  fatal() {},
-} as const;
+const ADMIN_ACTIONS = new Set<GroupAction>([
+  "add",
+  "remove",
+  "promote",
+  "demote",
+  "set_subject",
+  "set_description",
+  "get_invite_link",
+  "revoke_invite_link",
+]);
 
-function serializeKey(key: WAMessage["key"]): string {
-  return `${key.fromMe ? "true" : "false"}_${key.remoteJid ?? ""}_${key.id ?? ""}`;
+const PARTICIPANT_ACTIONS = new Set<GroupAction>(["add", "remove", "promote", "demote"]);
+
+/** WhatsApp answers "cannot add, invite them instead" with these codes. */
+const INVITE_NEEDED_CODES = new Set(["403", "409"]);
+
+function isAdmin(participant: GroupParticipant): boolean {
+  return participant.admin === "admin" || participant.admin === "superadmin";
 }
 
-function toMillis(ts: WAMessage["messageTimestamp"]): number {
-  return toSeconds(ts) * 1000;
+function requireValue(value: string | undefined, action: GroupAction, what: string): string {
+  const trimmed = (value ?? "").trim();
+  if (!trimmed) throw new WazapError("INVALID_ID", `The "${action}" action needs a value: ${what}.`);
+  return trimmed;
 }
 
-function toSeconds(ts: WAMessage["messageTimestamp"]): number {
-  if (!ts) return Math.floor(Date.now() / 1000);
-  if (typeof ts === "number") return ts;
-  return typeof ts.toNumber === "function" ? ts.toNumber() : Number(ts);
+function describe(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
 }
 
-function chatTime(chat: BaileysChat): number {
-  const t = chat.conversationTimestamp;
-  if (!t) return 0;
-  return typeof t === "number" ? t : typeof t.toNumber === "function" ? t.toNumber() : Number(t);
+function isMissing(err: unknown): boolean {
+  return (err as NodeJS.ErrnoException | undefined)?.code === "ENOENT";
 }
 
-function contentType(raw: WAMessage): string {
-  const ct = raw.message ? getContentType(raw.message) : undefined;
-  switch (ct) {
-    case "conversation":
-    case "extendedTextMessage":
-      return "chat";
-    case "imageMessage":
-      return "image";
-    case "videoMessage":
-      return "video";
-    case "audioMessage":
-      return raw.message?.audioMessage?.ptt ? "ptt" : "audio";
-    case "documentMessage":
-      return "document";
-    case "stickerMessage":
-      return "sticker";
-    default:
-      return ct ?? "unknown";
+function statusCodeOf(err: unknown): number | undefined {
+  return (err as { output?: { statusCode?: number } } | undefined)?.output?.statusCode;
+}
+
+function statusTextOf(entry: { [protocol: string]: unknown } | undefined): string | null {
+  const status = entry?.status;
+  if (status && typeof status === "object" && "status" in status) {
+    return (status as { status?: string | null }).status ?? null;
+  }
+  return typeof status === "string" ? status : null;
+}
+
+function encode(run: () => Uint8Array): string | null {
+  try {
+    return Buffer.from(run()).toString("base64");
+  } catch {
+    return null;
   }
 }
 
-function extractBody(raw: WAMessage): string {
-  const m = raw.message;
-  if (!m) return "";
-  return (
-    m.conversation ??
-    m.extendedTextMessage?.text ??
-    m.imageMessage?.caption ??
-    m.videoMessage?.caption ??
-    m.documentMessage?.caption ??
-    ""
-  );
+function decodeMessage(b64: string): WAMessage | null {
+  try {
+    return proto.WebMessageInfo.decode(Buffer.from(b64, "base64")) as unknown as WAMessage;
+  } catch {
+    return null;
+  }
 }
 
-function hasMedia(raw: WAMessage): boolean {
-  return ["image", "video", "audio", "ptt", "document", "sticker"].includes(contentType(raw));
+function decodeChat(b64: string): BaileysChat | null {
+  try {
+    return proto.Conversation.decode(Buffer.from(b64, "base64")) as unknown as BaileysChat;
+  } catch {
+    return null;
+  }
 }
 
-function hasQuoted(raw: WAMessage): boolean {
-  const m = raw.message;
-  const ct = m ? getContentType(m) : undefined;
-  const node = ct ? (m?.[ct as keyof WAMessageContent] as { contextInfo?: { quotedMessage?: unknown } } | undefined) : undefined;
-  return Boolean(node?.contextInfo?.quotedMessage);
+function safeFilename(jid: string): string {
+  return jid.replace(/[/\\:*?"<>|]/g, "_");
 }
 
-function statusText(s: unknown): string | null {
-  if (s && typeof s === "object" && "status" in s) return (s as { status?: string }).status ?? null;
-  return null;
+function mediaFilename(info: { mime: string; filename?: string }): string {
+  const original = (info.filename ?? "").replace(/[^\w.-]/g, "_");
+  const fromName = original.includes(".") ? original.slice(original.lastIndexOf(".")) : "";
+  const subtype = info.mime.split("/")[1]?.split(";")[0] ?? "bin";
+  return `${Date.now()}-${randomUUID().slice(0, 8)}${fromName || `.${subtype}`}`;
 }
 
-function mediaFilename(media: WaMedia): string {
-  const original = (media.filename ?? "").replace(/[^\w.\-]/g, "_");
-  const extFromName = original.includes(".") ? original.slice(original.lastIndexOf(".")) : "";
-  const subtype = media.mimetype.split("/")[1]?.split(";")[0] ?? "bin";
-  const ext = extFromName || `.${subtype}`;
-  return `${Date.now()}-${randomUUID().slice(0, 8)}${ext}`;
-}
-
-async function loadMedia(source: { file_path?: string; url?: string }): Promise<{
+interface LoadedMedia {
   buffer: Buffer;
   mimetype: string;
   filename: string;
-}> {
-  if (source.file_path) {
-    const path = resolve(source.file_path);
-    const buffer = readFileSync(path);
-    return { buffer, mimetype: guessMime(path), filename: path.split("/").pop() ?? "file" };
-  }
-  if (source.url) {
-    const res = await fetch(source.url);
-    if (!res.ok) throw new Error(`Failed to fetch media: ${res.status}`);
-    const buffer = Buffer.from(await res.arrayBuffer());
-    const mimetype = res.headers.get("content-type")?.split(";")[0] ?? "application/octet-stream";
-    return { buffer, mimetype, filename: source.url.split("/").pop()?.split("?")[0] ?? "file" };
-  }
-  throw new Error("Provide either file_path or url.");
 }
 
-function mediaSendContent(
-  buffer: Buffer,
-  mimetype: string,
-  filename: string,
-  caption: string | undefined,
-  asDocument: boolean,
-): Parameters<WASocket["sendMessage"]>[1] {
-  if (asDocument) return { document: buffer, mimetype, fileName: filename, caption };
-  if (mimetype.startsWith("image/")) return { image: buffer, caption };
-  if (mimetype.startsWith("video/")) return { video: buffer, caption };
-  if (mimetype.startsWith("audio/")) return { audio: buffer, mimetype };
-  return { document: buffer, mimetype, fileName: filename, caption };
+async function loadMedia(source: MediaSource): Promise<LoadedMedia> {
+  const hasPath = Boolean(source.file_path);
+  const hasUrl = Boolean(source.url);
+  if (hasPath === hasUrl) {
+    throw new WazapError("FILE_NOT_FOUND", "Provide exactly one of file_path or url.");
+  }
+
+  if (source.file_path) {
+    const path = source.file_path;
+    let size: number;
+    try {
+      size = (await stat(path)).size;
+    } catch {
+      throw new WazapError("FILE_NOT_FOUND", `No file at "${path}" on the machine running wazap.`);
+    }
+    assertMediaSize(size);
+    return { buffer: await readFile(path), mimetype: guessMime(path), filename: basename(path) };
+  }
+
+  const url = source.url!;
+  let response: Response;
+  try {
+    response = await fetch(url);
+  } catch (err) {
+    throw new WazapError("URL_FETCH_FAILED", `Could not fetch ${url}: ${describe(err)}`);
+  }
+  if (!response.ok) {
+    throw new WazapError("URL_FETCH_FAILED", `Fetching ${url} returned HTTP ${response.status}.`);
+  }
+  const declared = Number.parseInt(response.headers.get("content-length") ?? "", 10);
+  if (Number.isFinite(declared)) assertMediaSize(declared);
+  const buffer = Buffer.from(await response.arrayBuffer());
+  assertMediaSize(buffer.length);
+  return {
+    buffer,
+    mimetype: response.headers.get("content-type")?.split(";")[0] ?? guessMime(url),
+    filename: basename(url.split("?")[0] ?? url),
+  };
 }
+
+function assertMediaSize(size: number): void {
+  if (size > MAX_MEDIA_BYTES) {
+    throw new WazapError("FILE_TOO_LARGE", `The file is ${Math.round(size / 1_048_576)} MB; WhatsApp allows 100 MB.`);
+  }
+}
+
+function basename(path: string): string {
+  return path.split(/[/\\]/).pop() || "file";
+}
+
+function mediaContent(
+  media: LoadedMedia,
+  opts: { caption?: string; asDocument: boolean; asVoice: boolean },
+): AnyMessageContent {
+  const { buffer, mimetype, filename } = media;
+  if (opts.asVoice) return { audio: buffer, mimetype: "audio/ogg; codecs=opus", ptt: true };
+  if (opts.asDocument) return { document: buffer, mimetype, fileName: filename, caption: opts.caption };
+  if (mimetype.startsWith("image/")) return { image: buffer, caption: opts.caption };
+  if (mimetype.startsWith("video/")) return { video: buffer, caption: opts.caption };
+  if (mimetype.startsWith("audio/")) return { audio: buffer, mimetype };
+  return { document: buffer, mimetype, fileName: filename, caption: opts.caption };
+}
+
+const MIME_BY_EXTENSION: Record<string, string> = {
+  jpg: "image/jpeg",
+  jpeg: "image/jpeg",
+  png: "image/png",
+  gif: "image/gif",
+  webp: "image/webp",
+  mp4: "video/mp4",
+  mov: "video/quicktime",
+  mp3: "audio/mpeg",
+  m4a: "audio/mp4",
+  ogg: "audio/ogg",
+  opus: "audio/ogg",
+  pdf: "application/pdf",
+  txt: "text/plain",
+  csv: "text/csv",
+  zip: "application/zip",
+};
 
 function guessMime(path: string): string {
   const ext = path.slice(path.lastIndexOf(".") + 1).toLowerCase();
-  const map: Record<string, string> = {
-    jpg: "image/jpeg",
-    jpeg: "image/jpeg",
-    png: "image/png",
-    gif: "image/gif",
-    webp: "image/webp",
-    mp4: "video/mp4",
-    mp3: "audio/mpeg",
-    ogg: "audio/ogg",
-    pdf: "application/pdf",
-  };
-  return map[ext] ?? "application/octet-stream";
+  return MIME_BY_EXTENSION[ext] ?? "application/octet-stream";
 }

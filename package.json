@@ -1,20 +1,20 @@
 {
-  "name": "whatsapp-baileys-mcp",
-  "version": "1.0.0",
-  "description": "MCP server for WhatsApp over Baileys: QR login, 17 chat/message/contact/group tools, stdio or bearer-protected HTTP.",
+  "name": "wazap",
+  "version": "0.9.0",
+  "description": "WhatsApp for your AI agent. MCP server over Baileys: pairing-code login, 22 tools, stdio or token-protected HTTP.",
   "license": "MIT",
   "author": "Răzvan Girgiz",
   "repository": {
     "type": "git",
-    "url": "https://github.com/razvangirgiz/whatsapp-baileys-mcp"
+    "url": "https://github.com/razvangirgiz/wazap"
   },
-  "keywords": ["mcp", "model-context-protocol", "whatsapp", "baileys", "claude"],
+  "keywords": ["mcp", "model-context-protocol", "whatsapp", "baileys", "claude", "agent"],
   "type": "module",
   "main": "dist/index.js",
   "bin": {
-    "whatsapp-baileys-mcp": "dist/index.js"
+    "wazap": "dist/index.js"
   },
-  "files": ["dist", "README.md", "LICENSE", ".env.example"],
+  "files": ["dist", "README.md", "LICENSE"],
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "start": "node dist/index.js",
@@ -23,7 +23,7 @@
     "test": "npm run build && node --test test/*.test.mjs"
   },
   "engines": {
-    "node": ">=18"
+    "node": ">=20"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.12.0",
