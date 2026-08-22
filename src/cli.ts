@@ -503,8 +503,12 @@ export async function runLogout(config: Config): Promise<void> {
       const sock = await linkSession(p.authDir, { deadline });
       await withDeadline(sock.logout(), deadline, "WhatsApp did not confirm the unlink in time.");
     } catch (err: unknown) {
-      logError("unlink from WhatsApp", err);
-      say(warn("Could not tell WhatsApp to unlink; remove this device from your phone if it is still listed."));
+      if (alreadyUnlinked(err)) {
+        say(info("WhatsApp had already unlinked this device."));
+      } else {
+        logError("unlink from WhatsApp", err);
+        say(warn("Could not tell WhatsApp to unlink; remove this device from your phone if it is still listed."));
+      }
     }
   }
 
@@ -512,6 +516,16 @@ export async function runLogout(config: Config): Promise<void> {
   rmSync(p.storeFile, { force: true });
   say(ok("Logged out. Local credentials deleted."));
   process.exit(0);
+}
+
+/**
+ * WhatsApp answers 401 both when a pairing code was wrong and when the phone has
+ * already removed this device. At logout the second reading is the true one, so
+ * the pairing-time wording must not surface as an error here.
+ */
+export function alreadyUnlinked(err: unknown): boolean {
+  if (err instanceof WazapError) return err.code === "SESSION_EXPIRED";
+  return (err as { output?: { statusCode?: number } } | null)?.output?.statusCode === DisconnectReason.loggedOut;
 }
 
 /** The number is masked: a status screenshot should not carry it. */

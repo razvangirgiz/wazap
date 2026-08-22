@@ -156,3 +156,13 @@ test("setup refuses to link while another process owns the session", async () =>
     return true;
   });
 });
+
+test("a 401 at logout means the phone already removed the device, not a bad pairing code", async () => {
+  const { alreadyUnlinked } = await import("../dist/cli.js");
+  const { WazapError } = await import("../dist/errors.js");
+  assert.equal(alreadyUnlinked(new WazapError("SESSION_EXPIRED", "WhatsApp rejected the link.")), true);
+  assert.equal(alreadyUnlinked({ output: { statusCode: 401 } }), true);
+  assert.equal(alreadyUnlinked(new WazapError("TIMEOUT", "WhatsApp did not answer in time.")), false);
+  assert.equal(alreadyUnlinked(new Error("socket hang up")), false);
+  assert.equal(alreadyUnlinked(undefined), false);
+});
