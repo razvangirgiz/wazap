@@ -34,9 +34,25 @@ export async function runStdio(wa: WhatsAppApi, config: Config): Promise<void> {
   log("MCP server ready on stdio.");
 }
 
-export async function runHttp(wa: WhatsAppApi, config: Config): Promise<void> {
-  // One bucket for the whole process. A per-session bucket would let an HTTP
-  // client bypass the write limit by reconnecting.
+/** One bearer token and what it unlocks. */
+export interface Credential {
+  token: string;
+  write: boolean;
+}
+
+/** A Streamable HTTP listener: where it binds and who may talk to it. */
+export interface Endpoint {
+  host: string;
+  port: number;
+  credentials: Credential[];
+  /** No read token configured, so an unauthenticated request gets the read tools. */
+  openRead: boolean;
+}
+
+/** Serve /mcp and /healthz on one address. Resolves with the bound port, so port 0 works. */
+export async function startHttpEndpoint(wa: WhatsAppApi, config: Config, endpoint: Endpoint): Promise<number> {
+  // One bucket for the endpoint. A per-session bucket would let an HTTP client
+  // bypass the write limit by reconnecting.
   const limiter = new RateLimiter(config.rateLimitPerMinute);
 
   const app = express();
@@ -57,22 +73,20 @@ export async function runHttp(wa: WhatsAppApi, config: Config): Promise<void> {
     next();
   });
 
-  if (!config.readToken) {
+  if (endpoint.openRead) {
     log(
       "WARNING: no WAZAP_READ_TOKEN set, the /mcp endpoint is UNAUTHENTICATED. " +
         "Set WAZAP_READ_TOKEN before exposing this server beyond localhost.",
     );
   }
 
-  // Two tokens: the read token (WAZAP_READ_TOKEN) and the write token
-  // (WAZAP_WRITE_TOKEN). A write-token request also unlocks the mutating tools,
+  // The first credential the bearer token matches decides the session's tools,
   // so a leaked read token can never message anyone.
   const requireAuth = (req: Request, res: Response, next: NextFunction): void => {
     const auth = req.headers.authorization;
-    const writeOk = config.writeToken ? isAuthorized(auth, config.writeToken) : false;
-    const readOk = !config.readToken || isAuthorized(auth, config.readToken);
-    if (readOk || writeOk) {
-      (req as AuthedRequest).mcpWrite = writeOk;
+    const credential = endpoint.credentials.find((entry) => isAuthorized(auth, entry.token));
+    if (credential || endpoint.openRead) {
+      (req as AuthedRequest).mcpWrite = credential?.write === true;
       next();
       return;
     }
@@ -142,10 +156,39 @@ export async function runHttp(wa: WhatsAppApi, config: Config): Promise<void> {
     res.json({ ok: true, status: wa.getStatus().status });
   });
 
-  await new Promise<void>((resolve) => {
-    app.listen(config.httpPort, config.httpHost, () => {
-      log(`MCP server (Streamable HTTP) on http://${config.httpHost}:${config.httpPort}/mcp`);
-      resolve();
+  return await new Promise<number>((resolve) => {
+    const server = app.listen(endpoint.port, endpoint.host, () => {
+      const bound = server.address();
+      resolve(typeof bound === "object" && bound !== null ? bound.port : endpoint.port);
     });
   });
+}
+
+/** The endpoint the user asked for: WAZAP_HOST/WAZAP_PORT and the two configured tokens. */
+export async function runHttp(wa: WhatsAppApi, config: Config, extra?: Credential): Promise<number> {
+  const credentials: Credential[] = [];
+  if (config.readToken) credentials.push({ token: config.readToken, write: false });
+  if (config.writeToken) credentials.push({ token: config.writeToken, write: true });
+  if (extra) credentials.push(extra);
+
+  const port = await startHttpEndpoint(wa, config, {
+    host: config.httpHost,
+    port: config.httpPort,
+    credentials,
+    openRead: !config.readToken,
+  });
+  log(`MCP server (Streamable HTTP) on http://${config.httpHost}:${port}/mcp`);
+  return port;
+}
+
+/** A private endpoint on an ephemeral loopback port, reachable only with the token. */
+export async function startLoopbackEndpoint(wa: WhatsAppApi, config: Config, token: string): Promise<number> {
+  const port = await startHttpEndpoint(wa, config, {
+    host: "127.0.0.1",
+    port: 0,
+    credentials: [{ token, write: true }],
+    openRead: false,
+  });
+  log(`sharing this session on 127.0.0.1:${port}`);
+  return port;
 }

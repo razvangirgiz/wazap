@@ -1,3 +1,4 @@
+import { randomBytes } from "node:crypto";
 import { mkdirSync, rmSync } from "node:fs";
 import { createInterface } from "node:readline/promises";
 import { setTimeout as sleep } from "node:timers/promises";
@@ -12,13 +13,14 @@ import { clearAuth, readLinkedAccount, useAtomicAuthState, type LinkedAccount } 
 import { banner } from "./banner.js";
 import { BAILEYS_VERSION, WAZAP_VERSION, paths, type Config } from "./config.js";
 import { connectNext } from "./connect.js";
+import { removeDaemon, writeDaemon } from "./daemon.js";
 import { checkLine, checkLines, runChecks, type Check } from "./doctor.js";
 import { RELINK_FIX, WazapError, asWazapError } from "./errors.js";
 import { normalizePhone } from "./ids.js";
 import { lockHolder, releaseLock, writeLock } from "./lock.js";
 import { log, logError, say } from "./logger.js";
 import { formatAge } from "./messages.js";
-import { runHttp, runStdio } from "./server.js";
+import { runHttp, runStdio, startLoopbackEndpoint } from "./server.js";
 import { applyWrites } from "./settings.js";
 import {
   bold,
@@ -53,6 +55,8 @@ const SETTLED_STATUSES: readonly ConnectionStatus[] = [
 ];
 const LOGOUT_TIMEOUT_MS = 10_000;
 const LOOPBACK_HOSTS = ["127.0.0.1", "::1", "localhost"];
+/** Bind addresses a loopback bridge can still reach; the wildcards include 127.0.0.1. */
+const SHAREABLE_HOSTS = [...LOOPBACK_HOSTS, "0.0.0.0", "::"];
 
 /** Baileys' default logger is a pino instance writing JSON to stdout. */
 type SocketLogger = NonNullable<UserFacingSocketConfig["logger"]>;
@@ -262,11 +266,17 @@ export async function runServe(config: Config): Promise<void> {
 
   mkdirSync(config.dataDir, { recursive: true, mode: 0o700 });
   writeLock(p.lockFile);
-  process.on("exit", () => releaseLock(p.lockFile));
+  process.on("exit", () => {
+    removeDaemon(p.daemonFile);
+    releaseLock(p.lockFile);
+  });
 
   const wa = new WhatsAppService(config);
-  const shutdown = (signal: string): void => {
-    log(`received ${signal}, shutting down`);
+  let stopping = false;
+  const shutdown = (reason: string): void => {
+    if (stopping) return;
+    stopping = true;
+    log(`received ${reason}, shutting down`);
     // A wedged socket must not cost the user a kill -9; the lock goes on "exit".
     setTimeout(() => process.exit(0), 3_000).unref();
     void wa.stop().finally(() => process.exit(0));
@@ -278,8 +288,30 @@ export async function runServe(config: Config): Promise<void> {
   // tools answer NOT_LINKED until a session exists.
   wa.start().catch((err: unknown) => logError("whatsapp start", err));
 
-  if (config.transport === "http") await runHttp(wa, config);
-  else await runStdio(wa, config);
+  const token = config.share ? randomBytes(32).toString("hex") : null;
+
+  if (config.transport === "http") {
+    const port = await runHttp(wa, config, token === null ? undefined : { token, write: true });
+    // Off-loopback binds get no sidecar: a bridge on this machine could not reach them.
+    if (token !== null && SHAREABLE_HOSTS.includes(config.httpHost)) {
+      writeDaemon(p.daemonFile, { pid: process.pid, port, token, version: WAZAP_VERSION });
+    }
+    return;
+  }
+
+  if (token !== null) {
+    const port = await startLoopbackEndpoint(wa, config, token);
+    writeDaemon(p.daemonFile, { pid: process.pid, port, token, version: WAZAP_VERSION });
+  }
+  await runStdio(wa, config);
+  if (token === null) return;
+
+  // The loopback endpoint keeps the event loop alive, so stdin EOF no longer ends
+  // the process on its own. When the daemon's own client goes away the daemon goes
+  // with it, rather than lingering for bridges. Registered after runStdio, so the
+  // transport is already reading and "end" fires.
+  process.stdin.on("end", () => shutdown("stdin end"));
+  process.stdin.on("close", () => shutdown("stdin close"));
 }
 
 export function stepper(total: number): (title: string) => void {

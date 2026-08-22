@@ -6,18 +6,18 @@
  *
  * Rerun on its own with:  node test/smoke-stdio.mjs
  */
-import { spawn } from "node:child_process";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
-import { fileURLToPath, pathToFileURL } from "node:url";
+import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 import assert from "node:assert/strict";
 
-const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
+import { BINARY, mcpClient, spawnWazap } from "./helpers.mjs";
+
 const EXPECTED_TOOL_COUNT = 22;
 
 export async function runSmoke({
-  binary = join(repoRoot, "dist", "index.js"),
+  binary = BINARY,
   log = () => {},
   args = [],
   env = {},
@@ -26,44 +26,8 @@ export async function runSmoke({
   expectedTools = EXPECTED_TOOL_COUNT,
   expectReadOnly = false,
 } = {}) {
-  const child = spawn(process.execPath, [binary, ...args, "--data-dir", dataDir], {
-    stdio: ["pipe", "pipe", "pipe"],
-    env: { ...process.env, WAZAP_READ_TOKEN: "", WAZAP_WRITE_TOKEN: "", ...env },
-  });
-
-  const stderr = [];
-  child.stderr.on("data", (chunk) => stderr.push(chunk.toString()));
-
-  const pending = new Map();
-  let buffer = "";
-  child.stdout.on("data", (chunk) => {
-    buffer += chunk.toString();
-    let newline;
-    while ((newline = buffer.indexOf("\n")) !== -1) {
-      const line = buffer.slice(0, newline).trim();
-      buffer = buffer.slice(newline + 1);
-      if (!line) continue;
-      const message = JSON.parse(line);
-      const resolve = pending.get(message.id);
-      if (resolve) {
-        pending.delete(message.id);
-        resolve(message);
-      }
-    }
-  });
-
-  let nextId = 1;
-  const request = (method, params) =>
-    new Promise((resolve, reject) => {
-      const id = nextId++;
-      const timer = setTimeout(() => reject(new Error(`timed out waiting for ${method}`)), 20_000);
-      pending.set(id, (message) => {
-        clearTimeout(timer);
-        resolve(message);
-      });
-      child.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", id, method, params })}\n`);
-    });
-  const notify = (method, params) => child.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", method, params })}\n`);
+  const { child, stderr } = spawnWazap({ dataDir, args, env, binary });
+  const { request, notify } = mcpClient(child);
 
   try {
     const init = await request("initialize", {
