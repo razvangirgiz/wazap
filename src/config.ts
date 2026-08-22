@@ -42,6 +42,8 @@ export interface Config {
   loginCode: boolean;
   /** `login` asks about writes unless a flag already answered. */
   writesAnswer: boolean | null;
+  /** `setup` only: print the agent procedure and exit. */
+  agent: boolean;
   /** `setup` only, repeatable, overrides detection. */
   clients: string[];
   assumeYes: boolean;
@@ -136,6 +138,7 @@ export function parseCli(argv: string[] = process.argv.slice(2)): CliInvocation 
         json: { type: "boolean" },
         writes: { type: "boolean" },
         "no-writes": { type: "boolean" },
+        agent: { type: "boolean" },
         client: { type: "string", multiple: true },
         yes: { type: "boolean", short: "y" },
         help: { type: "boolean", short: "h" },
@@ -202,6 +205,7 @@ export function parseCli(argv: string[] = process.argv.slice(2)): CliInvocation 
       loginPhone: values.phone,
       loginCode: values.code === true || values.phone !== undefined,
       writesAnswer: values.writes === true ? true : values["no-writes"] === true ? false : null,
+      agent: values.agent === true,
       clients: values.client ?? [],
       assumeYes: values.yes === true,
     },

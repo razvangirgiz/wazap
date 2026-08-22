@@ -32,6 +32,11 @@ test("no console.log in src: stdout is the MCP JSON-RPC channel", () => {
   assert.deepEqual(offenders, [], "these files would corrupt the stdio protocol stream");
 });
 
+test("AGENT.md ships, because `setup --agent` reads it out of the package root", () => {
+  const pkg = JSON.parse(readFileSync(join(root, "package.json"), "utf8"));
+  assert.ok(pkg.files.includes("AGENT.md"), `files: ${pkg.files.join(", ")}`);
+});
+
 test("no leftover names from the pre-wazap fork", () => {
   // WHATSAPP_ERROR is a wazap error code; the ban is on the old env var prefix.
   const banned = [/pkgRoot/, /WHATSAPP_(?!ERROR\b)/, /MCP_AUTH_TOKEN/, /whatsapp-baileys-mcp/, /load_older_history/, /get_recent_chats/];

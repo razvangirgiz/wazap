@@ -123,6 +123,19 @@ function setup(box, ...args) {
   });
 }
 
+test("setup --agent is AGENT.md on stdout, nothing on stderr", async () => {
+  const document = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "..", "AGENT.md"), "utf8");
+  // A non-zero exit rejects, so reaching the assertions is the exit-0 check.
+  const { stdout, stderr } = await run(process.execPath, [binary, "setup", "--agent", "--data-dir", dataDir("wazap-agent-")], {
+    env: childEnv(),
+  });
+
+  assert.equal(stdout, document, "the command and the file must be the same document");
+  assert.equal(stderr, "");
+  assert.match(stdout, /pairing code:/);
+  assert.match(stdout, /connect/);
+});
+
 /** Enough of a creds.json for readLinkedAccount to call the session linked. */
 function linkedDataDir() {
   const dir = dataDir("wazap-setup-");

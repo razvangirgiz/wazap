@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { readLinkedAccount } from "./auth-state.js";
 import { banner } from "./banner.js";
 import { ask, describeAccount, linkAndSync, stepper } from "./cli.js";
@@ -7,6 +8,14 @@ import { say } from "./logger.js";
 import { brand, fail, info, ok } from "./ui.js";
 
 export async function runSetup(config: Config): Promise<void> {
+  // The only stdout write in the CLI: here the whole output is the document, and
+  // this command never serves, so stdout is not the MCP channel. The URL resolves
+  // from dist/setup.js to the package root, where `files` publishes AGENT.md.
+  if (config.agent) {
+    process.stdout.write(readFileSync(new URL("../AGENT.md", import.meta.url), "utf8"));
+    return;
+  }
+
   say(banner());
   const announce = stepper(3);
 
