@@ -1,5 +1,8 @@
 import { chmodSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
+import { setTimeout as sleep } from "node:timers/promises";
+import type { Config, Paths } from "./config.js";
+import { lockHolder } from "./lock.js";
 
 /** How a bridge finds the running server: the loopback port and the token that opens it. */
 export interface DaemonInfo {
@@ -64,5 +67,48 @@ export async function daemonHealthy(port: number, timeoutMs: number): Promise<bo
     return false;
   } finally {
     clearTimeout(timer);
+  }
+}
+
+/** What a `serve` invocation should do about the session another process may already own. */
+export type ServeRole =
+  | { kind: "daemon" }
+  | { kind: "bridge"; daemon: DaemonInfo }
+  | { kind: "refuse"; message: string };
+
+const ROLE_TIMEOUT_MS = 3_000;
+const ROLE_POLL_MS = 100;
+
+/**
+ * Who we are for this data dir: the process that owns the session, a bridge onto
+ * the one that already does, or neither. The lock is re-read every pass because
+ * the winner of a simultaneous start needs a moment to bind its port and publish
+ * the sidecar, and because a winner that crashes frees the lock mid-loop.
+ */
+export async function decideRole(config: Config, p: Paths): Promise<ServeRole> {
+  const deadline = Date.now() + ROLE_TIMEOUT_MS;
+  for (;;) {
+    const running = lockHolder(p.lockFile);
+    if (running === null) return { kind: "daemon" };
+
+    // An explicit --http asks for an HTTP server of its own, not a stdio bridge.
+    if (config.share === false || config.transport === "http") {
+      return {
+        kind: "refuse",
+        message: `wazap is already running (pid ${running}) using ${config.dataDir}. Stop it first or use --data-dir.`,
+      };
+    }
+
+    const info = readDaemon(p.daemonFile);
+    if (info !== null && info.pid === running && (await daemonHealthy(info.port, 2_000))) {
+      return { kind: "bridge", daemon: info };
+    }
+    if (Date.now() >= deadline) {
+      return {
+        kind: "refuse",
+        message: `wazap is running (pid ${running}) but is not sharing its session (older version?). Stop it and start again.`,
+      };
+    }
+    await sleep(ROLE_POLL_MS);
   }
 }

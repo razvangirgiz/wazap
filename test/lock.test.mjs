@@ -48,3 +48,22 @@ test("release leaves another process's lock alone", () => {
   releaseLock(file);
   assert.equal(existsSync(file), true, "we must never delete a lock we do not hold");
 });
+
+test("a fresh lock is taken", () => {
+  assert.equal(writeLock(lockPath()), true);
+});
+
+test("a lock held by a live process is never taken from it", () => {
+  const file = lockPath();
+  // The parent of the test runner: another pid, and certainly alive.
+  writeFileSync(file, `${process.ppid}\n`);
+  assert.equal(writeLock(file), false);
+  assert.equal(readFileSync(file, "utf8").trim(), String(process.ppid), "the holder's lock was overwritten");
+});
+
+test("a stale lock is taken", () => {
+  const file = lockPath();
+  writeFileSync(file, "2147483646\n");
+  assert.equal(writeLock(file), true);
+  assert.equal(readFileSync(file, "utf8").trim(), String(process.pid));
+});

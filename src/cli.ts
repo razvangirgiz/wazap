@@ -11,9 +11,10 @@ import qrcode from "qrcode";
 import qrcodeTerminal from "qrcode-terminal";
 import { clearAuth, readLinkedAccount, useAtomicAuthState, type LinkedAccount } from "./auth-state.js";
 import { banner } from "./banner.js";
+import { runBridge } from "./bridge.js";
 import { BAILEYS_VERSION, WAZAP_VERSION, paths, type Config } from "./config.js";
 import { connectNext } from "./connect.js";
-import { removeDaemon, writeDaemon } from "./daemon.js";
+import { decideRole, removeDaemon, writeDaemon } from "./daemon.js";
 import { checkLine, checkLines, runChecks, type Check } from "./doctor.js";
 import { RELINK_FIX, WazapError, asWazapError } from "./errors.js";
 import { normalizePhone } from "./ids.js";
@@ -181,10 +182,25 @@ function liveLines(live: LiveReport): string[] {
   ];
 }
 
+/**
+ * Hold the session for a one-shot command: null once the lock is ours, otherwise
+ * the pid that owns it. The claim only fails while the file exists, so a lost
+ * race is looked up again rather than reported as a missing pid.
+ */
+function takeSessionLock(lockFile: string): number | null {
+  for (let attempt = 0; attempt < 5; attempt++) {
+    const running = lockHolder(lockFile);
+    if (running !== null) return running;
+    if (writeLock(lockFile)) return null;
+  }
+  throw new WazapError("WHATSAPP_ERROR", `Could not take the session lock in ${lockFile}.`, "Run the command again");
+}
+
 /** One process owns the session, so a probe only runs when no server holds the lock. */
 async function runLiveProbe(config: Config): Promise<LiveReport> {
   const p = paths(config.dataDir);
-  const running = lockHolder(p.lockFile);
+  // The probe owns the session for as long as it runs, exactly like the server.
+  const running = takeSessionLock(p.lockFile);
   if (running !== null) {
     throw new WazapError(
       "WHATSAPP_ERROR",
@@ -193,8 +209,6 @@ async function runLiveProbe(config: Config): Promise<LiveReport> {
     );
   }
 
-  // The probe owns the session for as long as it runs, exactly like the server.
-  writeLock(p.lockFile);
   const wa = new WhatsAppService(config);
   const deadline = Date.now() + LIVE_TIMEOUT_MS;
   try {
@@ -253,20 +267,37 @@ export async function runGreet(config: Config): Promise<void> {
 export async function runServe(config: Config): Promise<void> {
   const p = paths(config.dataDir);
 
-  const running = lockHolder(p.lockFile);
-  if (running !== null) {
-    say(fail(`wazap is already running (pid ${running}) using ${config.dataDir}. Stop it first or use --data-dir.`));
+  // Losing the atomic claim means another `serve` won it, and the next pass finds
+  // its sidecar and becomes a bridge onto it.
+  let claimed = false;
+  for (let attempt = 0; attempt < 5; attempt++) {
+    const role = await decideRole(config, p);
+    if (role.kind === "refuse") {
+      say(fail(role.message));
+      process.exit(2);
+    }
+    if (role.kind === "bridge") {
+      await runBridge(role.daemon, p.daemonFile);
+      return;
+    }
+
+    // Loopback with no token only gets runHttp's warning; off-loopback is refused.
+    if (config.transport === "http" && !config.readToken && !LOOPBACK_HOSTS.includes(config.httpHost)) {
+      say(fail(`Refusing to serve ${config.httpHost} without a token. Set WAZAP_READ_TOKEN, or bind 127.0.0.1.`));
+      process.exit(1);
+    }
+
+    mkdirSync(config.dataDir, { recursive: true, mode: 0o700 });
+    if (writeLock(p.lockFile)) {
+      claimed = true;
+      break;
+    }
+  }
+  if (!claimed) {
+    say(fail(`Another wazap keeps taking ${config.dataDir} as this one starts. Run it again.`));
     process.exit(2);
   }
 
-  // Loopback with no token only gets runHttp's warning; off-loopback is refused.
-  if (config.transport === "http" && !config.readToken && !LOOPBACK_HOSTS.includes(config.httpHost)) {
-    say(fail(`Refusing to serve ${config.httpHost} without a token. Set WAZAP_READ_TOKEN, or bind 127.0.0.1.`));
-    process.exit(1);
-  }
-
-  mkdirSync(config.dataDir, { recursive: true, mode: 0o700 });
-  writeLock(p.lockFile);
   process.on("exit", () => {
     removeDaemon(p.daemonFile);
     releaseLock(p.lockFile);
@@ -351,14 +382,12 @@ export async function runLogin(config: Config): Promise<void> {
 export async function linkAndSync(config: Config, announce: (title: string) => void = () => {}): Promise<void> {
   const p = paths(config.dataDir);
 
-  const running = lockHolder(p.lockFile);
+  const running = takeSessionLock(p.lockFile);
   if (running !== null) {
     say(fail(`wazap is running (pid ${running}). Stop it first (or quit the client that launched it), then run this again.`));
     process.exit(1);
   }
 
-  mkdirSync(config.dataDir, { recursive: true, mode: 0o700 });
-  writeLock(p.lockFile);
   const release = (): void => releaseLock(p.lockFile);
   const onInterrupt = (): void => {
     release();

@@ -25,9 +25,28 @@ export function lockHolder(lockFile: string): number | null {
   }
 }
 
-export function writeLock(lockFile: string): void {
+/** Create the lock file, or false if it already existed. */
+function claim(lockFile: string): boolean {
+  try {
+    writeFileSync(lockFile, `${process.pid}\n`, { mode: 0o600, flag: "wx" });
+    return true;
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === "EEXIST") return false;
+    throw err;
+  }
+}
+
+/** Take the lock, or false if another live process holds it. */
+export function writeLock(lockFile: string): boolean {
   mkdirSync(dirname(lockFile), { recursive: true, mode: 0o700 });
-  writeFileSync(lockFile, `${process.pid}\n`, { mode: 0o600 });
+  if (claim(lockFile)) return true;
+  if (lockHolder(lockFile) !== null) return false;
+  try {
+    unlinkSync(lockFile);
+  } catch {
+    /* someone else cleared the stale lock first */
+  }
+  return claim(lockFile);
 }
 
 /** Remove the lock, but only if it is still ours. */
