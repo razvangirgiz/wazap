@@ -9,9 +9,9 @@ import makeWASocket, {
 import qrcode from "qrcode";
 import qrcodeTerminal from "qrcode-terminal";
 import { clearAuth, readLinkedAccount, useAtomicAuthState, type LinkedAccount } from "./auth-state.js";
-import { BANNER } from "./banner.js";
+import { BANNER, banner } from "./banner.js";
 import { BAILEYS_VERSION, WAZAP_VERSION, paths, type Config } from "./config.js";
-import { CONNECT_HINT } from "./connect.js";
+import { connectNext } from "./connect.js";
 import { checkLine, runChecks, type Check } from "./doctor.js";
 import { RELINK_FIX, WazapError, asWazapError } from "./errors.js";
 import { normalizePhone } from "./ids.js";
@@ -20,6 +20,7 @@ import { log, logError, say } from "./logger.js";
 import { formatAge } from "./messages.js";
 import { runHttp, runStdio } from "./server.js";
 import { applyWrites } from "./settings.js";
+import { box, brand, fail, info, maskNumber, ok, shortPath, spinner, step, type Spinner } from "./ui.js";
 import type { ConnectionStatus } from "./wa-types.js";
 import { WA_BROWSER, WhatsAppService } from "./whatsapp.js";
 
@@ -238,39 +239,100 @@ export async function runServe(config: Config): Promise<void> {
 
 export async function runLogin(config: Config): Promise<void> {
   const p = paths(config.dataDir);
+  say(banner());
+
   const linked = readLinkedAccount(p.authDir);
   if (linked) {
-    say(`Already linked as ${describeAccount(linked)}. Run \`wazap logout\` to relink.`);
+    say("");
+    say(ok(`Already linked as ${describeAccount(linked)}`));
+    say(info("Run `wazap logout` to relink."));
+    say("");
+    say(connectNext());
     return;
   }
 
-  const phone = config.loginQr ? null : normalizePhone(config.loginPhone ?? (await askPhone()));
+  say(step(1, 3, "Your number"));
+  let phone: string | null = null;
+  if (!config.loginQr) {
+    phone = config.loginPhone === undefined ? await askPhone() : normalizePhone(config.loginPhone);
+    say(ok(maskNumber(phone)));
+  } else {
+    say(info("Linking by QR code."));
+  }
+
+  const deadline = Date.now() + LOGIN_TIMEOUT_MS;
+  const waiting = new Countdown(deadline);
+  say(step(2, 3, "Link your phone"));
 
   let requested = false;
   const onQr = async (qr: string, sock: WASocket): Promise<void> => {
     if (phone === null) {
       qrcodeTerminal.generate(qr, { small: true }, (art: string) => say(art));
       await qrcode.toFile(p.qrFile, qr);
-      say(`WhatsApp → Settings → Linked devices → Link a device, then scan the code above (also saved to ${p.qrFile}).`);
+      say(
+        `  Scan it with WhatsApp → Settings → Linked devices → Link a device (also saved to ${shortPath(p.qrFile)})`,
+      );
       return;
     }
     if (requested) return;
     requested = true;
     const code = await sock.requestPairingCode(phone);
+    say("  On your phone: WhatsApp → Settings → Linked devices → Link a device → Link with phone number instead");
     say("");
-    say("WhatsApp → Settings → Linked devices → Link a device → Link with phone number instead");
+    say(box(`${code.slice(0, 4)}-${code.slice(4)}`));
     say("");
-    say(`    ${code.slice(0, 4)}-${code.slice(4)}`);
-    say("");
+    waiting.start();
   };
 
-  const sock = await linkSession(p.authDir, { deadline: Date.now() + LOGIN_TIMEOUT_MS, onQr });
-  const account = await settledAccount(sock, p.authDir);
-  say(`Linked ✅ as ${describeAccount(account)}`);
-  await sock.end(undefined);
+  let account: LinkedAccount;
+  try {
+    const sock = await linkSession(p.authDir, { deadline, onQr });
+    account = await settledAccount(sock, p.authDir);
+    await sock.end(undefined);
+  } catch (err) {
+    waiting.stop();
+    throw err;
+  }
+  waiting.stop(ok(`Linked as ${describeAccount(account)}`));
+
+  say(step(3, 3, "Permissions"));
   await offerWrites(config);
-  say(CONNECT_HINT);
+  say("");
+  say(connectNext());
   process.exit(0);
+}
+
+/**
+ * The spinner shown while WhatsApp is asked to accept the code, counting the
+ * pairing code down to the deadline it expires on.
+ */
+class Countdown {
+  #spinner: Spinner | null = null;
+  #ticker: NodeJS.Timeout | null = null;
+
+  constructor(private readonly deadline: number) {}
+
+  start(): void {
+    this.#spinner = spinner(this.#line());
+    this.#ticker = setInterval(() => this.#spinner?.update(this.#line()), 1_000);
+    this.#ticker.unref();
+  }
+
+  stop(final?: string): void {
+    if (this.#ticker !== null) clearInterval(this.#ticker);
+    this.#ticker = null;
+    if (this.#spinner === null) {
+      if (final !== undefined) say(final);
+      return;
+    }
+    this.#spinner.stop(final);
+    this.#spinner = null;
+  }
+
+  #line(): string {
+    const left = Math.max(0, Math.round((this.deadline - Date.now()) / 1_000));
+    return `Waiting for your phone…  (code expires in ${Math.floor(left / 60)}:${String(left % 60).padStart(2, "0")})`;
+  }
 }
 
 export async function runLogout(config: Config): Promise<void> {
@@ -326,7 +388,7 @@ export async function offerWrites(config: Config): Promise<void> {
     return;
   }
   if (config.assumeYes || !process.stdin.isTTY) return;
-  const answer = await ask("Allow the agent to send messages, react and manage chats? [y/N] ");
+  const answer = await ask(`${brand("?")} Allow the agent to send messages, react and manage chats? [y/N] `);
   applyWrites(config, /^y(es)?$/i.test(answer.trim()));
 }
 
@@ -339,8 +401,19 @@ async function ask(question: string): Promise<string> {
   }
 }
 
-function askPhone(): Promise<string> {
-  return ask("Phone number in international format (e.g. +40722123456): ");
+const PHONE_ATTEMPTS = 3;
+
+/** A typo costs another prompt, not the whole login. */
+async function askPhone(): Promise<string> {
+  for (let attempt = 1; ; attempt++) {
+    const answer = await ask(`${brand("?")} WhatsApp number, international format (e.g. +40722123456): `);
+    try {
+      return normalizePhone(answer);
+    } catch (err) {
+      if (attempt === PHONE_ATTEMPTS) throw err;
+      say(fail("Use international format, e.g. +40722123456"));
+    }
+  }
 }
 
 type Attempt =

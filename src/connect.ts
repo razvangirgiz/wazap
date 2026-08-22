@@ -5,6 +5,7 @@ import { delimiter, dirname, join, resolve } from "node:path";
 import { defaultDataDir, type Config } from "./config.js";
 import { WazapError } from "./errors.js";
 import { say } from "./logger.js";
+import { next } from "./ui.js";
 
 export interface McpEntry {
   command: string;
@@ -89,9 +90,13 @@ export const CLIENTS: readonly ClientSpec[] = [
 
 export const CLIENT_NAMES: string = CLIENTS.map((client) => client.name).join(", ");
 
-export const CONNECT_HINT: string = `Next: wazap connect claude-code   (or ${CLIENTS.slice(1)
+const OTHER_CLIENTS: string = CLIENTS.slice(1)
   .map((client) => client.name)
-  .join(", ")})`;
+  .join(", ");
+
+export function connectNext(): string {
+  return next("wazap connect claude-code", `(or ${OTHER_CLIENTS})`);
+}
 
 export function isNpxPath(binPath: string): boolean {
   return /[\\/]_npx[\\/]/.test(binPath);
