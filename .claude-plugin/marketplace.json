@@ -1,0 +1,11 @@
+{
+  "name": "wazap",
+  "owner": { "name": "Răzvan Girgiz" },
+  "plugins": [
+    {
+      "name": "wazap",
+      "source": "./",
+      "description": "WhatsApp for your AI agent: MCP server plus skills for inbox triage, recall, group catch-up and safe sending."
+    }
+  ]
+}

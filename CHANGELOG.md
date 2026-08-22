@@ -27,6 +27,9 @@ for one machine; this turns it into something a stranger can install with
 - A write rate limiter, 20 calls per minute by default (`WAZAP_RATE_LIMIT`,
   `0` disables).
 - New tools: `get_message`, `send_poll`, `send_location`, `edit_message`.
+- Five Agent Skills under `skills/` (`wazap-setup`, `whatsapp-inbox`,
+  `whatsapp-recall`, `whatsapp-groups`, `whatsapp-send`) and a Claude Code
+  plugin manifest that installs them together with the MCP server.
 - `send_media` gained `as_voice` for voice notes, `send_message` gained
   `mention_ids`, `manage_group` gained `revoke_invite_link` and per-participant
   results, `get_group_info` reports admin status, announcement mode and the

@@ -68,6 +68,27 @@ carry a placeholder such as `[image] caption`, `[voice message]`, `[deleted]` or
 `[poll] Pizza or pasta?`. Timestamps are ISO 8601 with the machine's UTC offset,
 alongside a human `age` like `2h ago`.
 
+## Skills
+
+wazap ships five [Agent Skills](https://agentskills.io) that teach an agent the workflows behind the tools, not just the tools:
+
+| Skill | What the agent does |
+| --- | --- |
+| `wazap-setup` | Diagnose with `wazap status`, link by pairing code, connect Claude Desktop or Claude Code, repair an expired session |
+| `whatsapp-inbox` | "What did I miss?" Triage into *needs you / FYI / noise*, ranked, plus forgotten replies. Read-only |
+| `whatsapp-recall` | "Find the invoice Dan sent." Search with query variants, page back in time, download and read the file. Read-only |
+| `whatsapp-groups` | Catch up on a 300-message group: decisions, dates, what is asked of you. Read-only |
+| `whatsapp-send` | Draft in the chat's own register, show recipient and text, send only after the user says yes |
+
+Install everything (server and skills) as a Claude Code plugin:
+
+```
+/plugin marketplace add razvangirgiz/wazap
+/plugin install wazap@wazap
+```
+
+Or copy `skills/<name>/` into any skills directory your agent reads.
+
 ## Errors
 
 Every failure is a structured `{ error, message, fix }` rather than a stack
