@@ -12,11 +12,14 @@ import {
   dim,
   fail,
   fix,
+  humanLayout,
   info,
   maskNumber,
   next,
+  nextHint,
   ok,
   red,
+  shortPath,
   step,
   tilde,
   warn,
@@ -95,10 +98,28 @@ test("next keeps the colon form off-TTY, so `Next: ` assertions still match", ()
   );
 });
 
-test("next drops the colon when colour is on, and paints the command", () => {
+test("colour paints the Next line without reshaping it", () => {
   const painted = withColor(true, () => next("wazap connect claude-code", "(or cursor)"));
-  assert.ok(painted.includes("\x1b["));
-  assert.equal(strip(painted), "Next  wazap connect claude-code   (or cursor)");
+  assert.ok(painted.includes("\x1b["), "the command should be painted");
+  assert.equal(
+    strip(painted),
+    withColor(false, () => next("wazap connect claude-code", "(or cursor)")),
+    "FORCE_COLOR must not change the shape of the line, only its colour",
+  );
+});
+
+test("nextHint is not cyan, because cyan means type this", () => {
+  assert.equal(withColor(false, () => nextHint("Reload the Cursor window.")), "Next: Reload the Cursor window.");
+  const painted = withColor(true, () => nextHint("Reload the Cursor window."));
+  assert.ok(!painted.includes("\x1b[36m"), "prose must not be painted as a command");
+  assert.equal(strip(painted), "Next: Reload the Cursor window.");
+});
+
+test("shortPath and the status layout follow the terminal, not FORCE_COLOR", () => {
+  assert.equal(humanLayout(), false, "test stderr is piped");
+  const home = homedir();
+  assert.equal(withColor(true, () => shortPath(join(home, ".cursor", "mcp.json"))), join(home, ".cursor", "mcp.json"));
+  assert.equal(withColor(false, () => shortPath(join(home, ".cursor", "mcp.json"))), join(home, ".cursor", "mcp.json"));
 });
 
 test("box wraps an ASCII code in a rule two wider than the text", () => {

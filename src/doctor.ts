@@ -33,7 +33,7 @@ export async function runChecks(config: Config): Promise<Check[]> {
 
 /** One line, everything on it. What pipes, logs and captured output get. */
 export function checkLine(check: Check): string {
-  return `${MARK[check.state]} ${check.name}: ${check.detail}${check.fix ? ` — ${check.fix}` : ""}`;
+  return GLYPH[check.state](`${check.name}: ${check.detail}${check.fix ? ` — ${check.fix}` : ""}`);
 }
 
 /** The same check for a human: no colon, and the repair on its own line. */
