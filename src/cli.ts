@@ -9,10 +9,10 @@ import makeWASocket, {
 import qrcode from "qrcode";
 import qrcodeTerminal from "qrcode-terminal";
 import { clearAuth, readLinkedAccount, useAtomicAuthState, type LinkedAccount } from "./auth-state.js";
-import { BANNER, banner } from "./banner.js";
+import { banner } from "./banner.js";
 import { BAILEYS_VERSION, WAZAP_VERSION, paths, type Config } from "./config.js";
 import { connectNext } from "./connect.js";
-import { checkLine, runChecks, type Check } from "./doctor.js";
+import { checkLine, checkLines, runChecks, type Check } from "./doctor.js";
 import { RELINK_FIX, WazapError, asWazapError } from "./errors.js";
 import { normalizePhone } from "./ids.js";
 import { lockHolder, releaseLock, writeLock } from "./lock.js";
@@ -20,7 +20,23 @@ import { log, logError, say } from "./logger.js";
 import { formatAge } from "./messages.js";
 import { runHttp, runStdio } from "./server.js";
 import { applyWrites } from "./settings.js";
-import { box, brand, fail, info, maskNumber, ok, shortPath, spinner, step, type Spinner } from "./ui.js";
+import {
+  bold,
+  box,
+  brand,
+  colorEnabled,
+  dim,
+  fail,
+  info,
+  maskNumber,
+  next,
+  ok,
+  shortPath,
+  spinner,
+  step,
+  tilde,
+  type Spinner,
+} from "./ui.js";
 import type { ConnectionStatus } from "./wa-types.js";
 import { WA_BROWSER, WhatsAppService } from "./whatsapp.js";
 
@@ -97,22 +113,7 @@ export async function runStatus(config: Config): Promise<StatusReport> {
     return report;
   }
 
-  say(`data dir: ${report.data_dir}`);
-  if (unreadable) {
-    say("linked: no (credentials unreadable — run `wazap logout` then `wazap login`)");
-  } else if (account) {
-    say("linked: yes");
-    say(`account: ${describeAccount(account)}`);
-  } else {
-    say("linked: no");
-  }
-  say(`wazap: ${report.wazap_version}`);
-  say(`baileys: ${report.baileys_version}`);
-  say(report.server_pid === null ? "server: not running" : `server: running (pid ${report.server_pid})`);
-
-  say("");
-  say("checks:");
-  for (const check of report.checks) say(checkLine(check));
+  for (const line of colorEnabled() ? richStatus(report) : plainStatus(report)) say(line);
 
   if (report.live) {
     say("");
@@ -120,6 +121,49 @@ export async function runStatus(config: Config): Promise<StatusReport> {
     process.exit(0);
   }
   return report;
+}
+
+/** Today's phrasing, kept verbatim so pipes and log captures keep parsing. */
+function plainStatus(report: StatusReport): string[] {
+  const lines = [`data dir: ${report.data_dir}`];
+  if (!report.credentials_readable) {
+    lines.push("linked: no (credentials unreadable — run `wazap logout` then `wazap login`)");
+  } else if (report.account) {
+    lines.push("linked: yes", `account: ${describeAccount(report.account)}`);
+  } else {
+    lines.push("linked: no");
+  }
+  lines.push(
+    `wazap: ${report.wazap_version}`,
+    `baileys: ${report.baileys_version}`,
+    report.server_pid === null ? "server: not running" : `server: running (pid ${report.server_pid})`,
+    "",
+    "checks:",
+    ...report.checks.map(checkLine),
+  );
+  return lines;
+}
+
+const LABEL_WIDTH = 8;
+
+function row(label: string, value: string): string {
+  return `${dim(label.padEnd(LABEL_WIDTH))}  ${value}`;
+}
+
+function richStatus(report: StatusReport): string[] {
+  const account = !report.credentials_readable
+    ? "credentials unreadable"
+    : report.account
+      ? describeAccount(report.account)
+      : "not linked";
+  return [
+    `${bold(`wazap ${report.wazap_version}`)}${dim(` · baileys ${report.baileys_version}`)}`,
+    row("data dir", tilde(report.data_dir)),
+    row("account", account),
+    row("server", report.server_pid === null ? "not running" : `running (pid ${report.server_pid})`),
+    "",
+    ...report.checks.flatMap(checkLines),
+  ];
 }
 
 function liveLines(live: LiveReport): string[] {
@@ -149,13 +193,13 @@ async function runLiveProbe(config: Config): Promise<LiveReport> {
   const deadline = Date.now() + LIVE_TIMEOUT_MS;
   try {
     await wa.start();
-    let info = wa.getStatus();
-    while (!SETTLED_STATUSES.includes(info.status) && Date.now() < deadline) {
+    let probe = wa.getStatus();
+    while (!SETTLED_STATUSES.includes(probe.status) && Date.now() < deadline) {
       await sleep(250);
-      info = wa.getStatus();
+      probe = wa.getStatus();
     }
-    if (info.status !== "connected") {
-      return { reachable: false, chats: null, last_message_age: null, reason: info.last_error ?? info.status };
+    if (probe.status !== "connected") {
+      return { reachable: false, chats: null, last_message_age: null, reason: probe.last_error ?? probe.status };
     }
 
     // listChats waits on its own sync gate, which would outlast the deadline.
@@ -180,23 +224,23 @@ async function runLiveProbe(config: Config): Promise<LiveReport> {
 
 /** Bare `wazap` at a terminal: where you stand, and the one command to run next. */
 export async function runGreet(config: Config): Promise<void> {
-  say(BANNER);
+  say(banner());
   say("");
   const report = await runStatus(config);
   say("");
 
   if (report.server_pid !== null) {
-    say(`A server is already running (pid ${report.server_pid}).`);
+    say(info(`A server is already running (pid ${report.server_pid}).`));
     return;
   }
   if (!report.credentials_readable) {
-    say("Next: wazap logout   (then wazap login)");
+    say(next("wazap logout", "(then wazap login)"));
     return;
   }
   say(
     report.linked
-      ? 'Next: wazap connect claude-code   (then ask your agent: "what did I miss on WhatsApp today?")'
-      : "Next: wazap login",
+      ? next("wazap connect claude-code", '(then ask your agent: "what did I miss on WhatsApp today?")')
+      : next("wazap login"),
   );
 }
 
@@ -205,13 +249,13 @@ export async function runServe(config: Config): Promise<void> {
 
   const running = lockHolder(p.lockFile);
   if (running !== null) {
-    say(`wazap is already running (pid ${running}) using ${config.dataDir}. Stop it first or use --data-dir.`);
+    say(fail(`wazap is already running (pid ${running}) using ${config.dataDir}. Stop it first or use --data-dir.`));
     process.exit(2);
   }
 
   // Loopback with no token only gets runHttp's warning; off-loopback is refused.
   if (config.transport === "http" && !config.readToken && !LOOPBACK_HOSTS.includes(config.httpHost)) {
-    say(`Refusing to serve ${config.httpHost} without a token. Set WAZAP_READ_TOKEN, or bind 127.0.0.1.`);
+    say(fail(`Refusing to serve ${config.httpHost} without a token. Set WAZAP_READ_TOKEN, or bind 127.0.0.1.`));
     process.exit(1);
   }
 
@@ -374,8 +418,10 @@ export async function runLogout(config: Config): Promise<void> {
   process.exit(0);
 }
 
+/** The number is masked: a status screenshot should not carry it. */
 function describeAccount(account: LinkedAccount): string {
-  return account.name ? `${account.name} (${account.number})` : account.number;
+  const number = maskNumber(account.number);
+  return account.name ? `${account.name} (${number})` : number;
 }
 
 /**

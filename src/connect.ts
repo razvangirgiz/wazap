@@ -1,11 +1,11 @@
 import { spawnSync } from "node:child_process";
 import { copyFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { delimiter, dirname, join, resolve } from "node:path";
+import { basename, delimiter, dirname, join, resolve } from "node:path";
 import { defaultDataDir, type Config } from "./config.js";
 import { WazapError } from "./errors.js";
 import { say } from "./logger.js";
-import { next } from "./ui.js";
+import { dim, fail, fix, info, next, ok, shortPath } from "./ui.js";
 
 export interface McpEntry {
   command: string;
@@ -186,7 +186,9 @@ function writeJsonEntry(spec: ClientSpec, entry: McpEntry, dryRun: boolean): voi
 
   const value = { ...spec.extra, command: entry.command, args: entry.args };
   setIn(doc, spec.keyPath, value);
-  apply(spec, file, `${JSON.stringify(doc, null, 2)}\n`, current, dryRun, JSON.stringify(value, null, 2));
+  // Indent 1 collapsed to one line: short enough to read, still spaced like JSON.
+  const shown = JSON.stringify(value, null, 1).replace(/\n\s*/g, " ");
+  apply(spec, file, `${JSON.stringify(doc, null, 2)}\n`, current, dryRun, shown);
 }
 
 function writeTomlEntry(spec: ClientSpec, entry: McpEntry, dryRun: boolean): void {
@@ -217,47 +219,55 @@ function spliceTomlTable(text: string, header: string, block: string): string {
 function apply(
   spec: ClientSpec,
   file: string,
-  next: string,
+  content: string,
   current: string | null,
   dryRun: boolean,
   shown: string,
 ): void {
+  const where = shortPath(file);
+  const entry = shown.split("\n").map((line) => `  ${dim(line)}`);
+
   if (dryRun) {
-    say(`${spec.describe}: would write ${file}`);
-    say(shown);
-    say(`Next: ${spec.next}`);
+    say(info(`${spec.describe} \u00b7 would write ${where}`));
+    for (const line of entry) say(line);
+    say(next(spec.next));
     return;
   }
-  if (next === current) {
-    say(`${spec.describe}: ${file} already has this entry.`);
-    say(`Next: ${spec.next}`);
+  if (content === current) {
+    say(ok(`${spec.describe} \u00b7 ${where} already has this entry`));
+    say(next(spec.next));
     return;
   }
+
   mkdirSync(dirname(file), { recursive: true });
-  if (current !== null && !existsSync(`${file}.bak`)) copyFileSync(file, `${file}.bak`);
-  writeFileSync(file, next);
-  say(`${spec.describe}: wrote ${file}`);
-  say(shown);
-  say(`Next: ${spec.next}`);
+  let backup = "";
+  if (current !== null && !existsSync(`${file}.bak`)) {
+    copyFileSync(file, `${file}.bak`);
+    backup = `  (backup: ${basename(file)}.bak)`;
+  }
+  writeFileSync(file, content);
+  say(ok(`${spec.describe} \u00b7 wrote ${where}${backup}`));
+  for (const line of entry) say(line);
+  say(next(spec.next));
 }
 
 function runClientCommand(spec: ClientSpec, entry: McpEntry, dryRun: boolean): void {
   const argv = ["mcp", "add", "whatsapp", "--", entry.command, ...entry.args];
   const shown = `claude ${argv.join(" ")}`;
   if (dryRun) {
-    say(`${spec.describe}: would run`);
-    say(shown);
-    say(`Next: ${spec.next}`);
+    say(info(`${spec.describe} \u00b7 would run`));
+    say(`  ${dim(shown)}`);
+    say(next(spec.next));
     return;
   }
 
   const result = spawnSync("claude", argv, { stdio: "inherit" });
   if (result.error !== undefined) {
-    say("`claude` is not on PATH. Run this yourself where Claude Code is installed:");
-    say(shown);
+    say(fail("`claude` is not on PATH."));
+    say(fix(`Run this where Claude Code is installed: ${shown}`));
     process.exit(1);
   }
   if (result.status !== 0) process.exit(result.status ?? 1);
-  say(`${spec.describe}: registered the whatsapp MCP server.`);
-  say(`Next: ${spec.next}`);
+  say(ok(`${spec.describe} \u00b7 registered via claude mcp add`));
+  say(next(spec.next));
 }
