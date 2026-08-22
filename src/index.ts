@@ -4,7 +4,13 @@ import { WAZAP_VERSION, parseCli } from "./config.js";
 import { WazapError } from "./errors.js";
 import { say } from "./logger.js";
 
-const USAGE = `wazap — WhatsApp for your AI agent.
+const USAGE = `██╗    ██╗ █████╗ ███████╗ █████╗ ██████╗
+██║    ██║██╔══██╗╚══███╔╝██╔══██╗██╔══██╗
+██║ █╗ ██║███████║  ███╔╝ ███████║██████╔╝
+██║███╗██║██╔══██║ ███╔╝  ██╔══██║██╔═══╝
+╚███╔███╔╝██║  ██║███████╗██║  ██║██║
+ ╚══╝╚══╝ ╚═╝  ╚═╝╚══════╝╚═╝  ╚═╝╚═╝
+WhatsApp for your AI agent.
 
 Usage:
   wazap [serve] [--http] [--host <host>] [--port <port>]   Run the MCP server (default: stdio)

@@ -1,4 +1,11 @@
-# wazap
+```
+██╗    ██╗ █████╗ ███████╗ █████╗ ██████╗
+██║    ██║██╔══██╗╚══███╔╝██╔══██╗██╔══██╗
+██║ █╗ ██║███████║  ███╔╝ ███████║██████╔╝
+██║███╗██║██╔══██║ ███╔╝  ██╔══██║██╔═══╝
+╚███╔███╔╝██║  ██║███████╗██║  ██║██║
+ ╚══╝╚══╝ ╚═╝  ╚═╝╚══════╝╚═╝  ╚═╝╚═╝
+```
 
 **WhatsApp for your AI agent.** An MCP server that puts your WhatsApp account —
 chats, messages, media, contacts, groups — behind 22 tools any MCP client can
