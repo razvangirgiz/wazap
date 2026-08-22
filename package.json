@@ -6,7 +6,7 @@
   "author": "Răzvan Girgiz",
   "repository": {
     "type": "git",
-    "url": "https://github.com/razvangirgiz/wazap"
+    "url": "git+https://github.com/razvangirgiz/wazap.git"
   },
   "keywords": [
     "mcp",
