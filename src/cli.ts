@@ -282,6 +282,11 @@ export async function runServe(config: Config): Promise<void> {
   else await runStdio(wa, config);
 }
 
+function stepper(total: number): (title: string) => void {
+  let n = 0;
+  return (title) => say(step(++n, total, title));
+}
+
 export async function runLogin(config: Config): Promise<void> {
   const p = paths(config.dataDir);
   say(banner());
@@ -296,60 +301,100 @@ export async function runLogin(config: Config): Promise<void> {
     return;
   }
 
-  const total = config.loginCode ? 4 : 3;
-  let phone: string | null = null;
-  if (config.loginCode) {
-    say(step(1, total, "Your number"));
-    phone = config.loginPhone === undefined ? await askPhone() : normalizePhone(config.loginPhone);
-    say(ok(maskNumber(phone)));
-  }
-
-  const deadline = Date.now() + LOGIN_TIMEOUT_MS;
-  const waiting = new Countdown(deadline);
-  say(step(total - 2, total, "Link your phone"));
-
-  let requested = false;
-  const onQr = async (qr: string, sock: WASocket): Promise<void> => {
-    if (phone === null) {
-      qrcodeTerminal.generate(qr, { small: true }, (art: string) => say(art));
-      await qrcode.toFile(p.qrFile, qr);
-      say(
-        `  Scan it with WhatsApp → Settings → Linked devices → Link a device (also saved to ${shortPath(p.qrFile)})`,
-      );
-      say(dim("  Prefer typing a code? Press Ctrl+C and run `wazap login --phone +15550100`."));
-      say("");
-      waiting.start();
-      return;
-    }
-    if (requested) return;
-    requested = true;
-    const code = await sock.requestPairingCode(phone);
-    say("  On your phone: WhatsApp → Settings → Linked devices → Link a device → Link with phone number instead");
-    say("");
-    say(box(`${code.slice(0, 4)}-${code.slice(4)}`));
-    say("");
-    waiting.start();
-  };
-
-  let account: LinkedAccount;
-  try {
-    const sock = await linkSession(p.authDir, { deadline, onQr });
-    account = await settledAccount(sock, p.authDir);
-    await sock.end(undefined);
-  } catch (err) {
-    waiting.stop();
-    throw err;
-  }
-  waiting.stop(ok(`Linked as ${describeAccount(account)}`));
-
-  say(step(total - 1, total, "Sync your chats"));
-  await syncAfterLink(config);
-
-  say(step(total, total, "Permissions"));
-  await offerWrites(config);
+  await linkAndSync(config, stepper(config.loginCode ? 4 : 3));
   say("");
   say(connectNext());
   process.exit(0);
+}
+
+/**
+ * Pairing owns the session the way the server does, so the lock is held from
+ * here until the history has landed. Writes are offered after it is released:
+ * that question edits .env, not the session, and it waits on a human.
+ */
+export async function linkAndSync(config: Config, announce: (title: string) => void = () => {}): Promise<void> {
+  const p = paths(config.dataDir);
+
+  const running = lockHolder(p.lockFile);
+  if (running !== null) {
+    say(fail(`wazap is running (pid ${running}). Stop it first (or quit the client that launched it), then run this again.`));
+    process.exit(1);
+  }
+
+  mkdirSync(config.dataDir, { recursive: true, mode: 0o700 });
+  writeLock(p.lockFile);
+  const release = (): void => releaseLock(p.lockFile);
+  const onInterrupt = (): void => {
+    release();
+    process.exit(130);
+  };
+  const onTerminate = (): void => {
+    release();
+    process.exit(143);
+  };
+  process.on("exit", release);
+  process.on("SIGINT", onInterrupt);
+  process.on("SIGTERM", onTerminate);
+
+  try {
+    let phone: string | null = null;
+    if (config.loginCode) {
+      announce("Your number");
+      phone = config.loginPhone === undefined ? await askPhone() : normalizePhone(config.loginPhone);
+      say(ok(maskNumber(phone)));
+    }
+
+    const deadline = Date.now() + LOGIN_TIMEOUT_MS;
+    const waiting = new Countdown(deadline);
+    announce("Link your phone");
+
+    let requested = false;
+    const onQr = async (qr: string, sock: WASocket): Promise<void> => {
+      if (phone === null) {
+        qrcodeTerminal.generate(qr, { small: true }, (art: string) => say(art));
+        await qrcode.toFile(p.qrFile, qr);
+        say(
+          `  Scan it with WhatsApp → Settings → Linked devices → Link a device (also saved to ${shortPath(p.qrFile)})`,
+        );
+        say(dim("  Prefer typing a code? Press Ctrl+C and run `wazap login --phone +15550100`."));
+        say("");
+        waiting.start();
+        return;
+      }
+      if (requested) return;
+      requested = true;
+      const code = await sock.requestPairingCode(phone);
+      const pretty = `${code.slice(0, 4)}-${code.slice(4)}`;
+      if (!humanLayout()) say(`pairing code: ${pretty}`);
+      say("  On your phone: WhatsApp → Settings → Linked devices → Link a device → Link with phone number instead");
+      say("");
+      say(box(pretty));
+      say("");
+      waiting.start();
+    };
+
+    let account: LinkedAccount;
+    try {
+      const sock = await linkSession(p.authDir, { deadline, onQr });
+      account = await settledAccount(sock, p.authDir);
+      await sock.end(undefined);
+    } catch (err) {
+      waiting.stop();
+      throw err;
+    }
+    waiting.stop(ok(`Linked as ${describeAccount(account)}`));
+
+    announce("Sync your chats");
+    await syncAfterLink(config);
+  } finally {
+    release();
+    process.off("exit", release);
+    process.off("SIGINT", onInterrupt);
+    process.off("SIGTERM", onTerminate);
+  }
+
+  announce("Permissions");
+  await offerWrites(config);
 }
 
 const HISTORY_WAIT_MS = 90_000;
@@ -470,7 +515,7 @@ export async function runLogout(config: Config): Promise<void> {
 }
 
 /** The number is masked: a status screenshot should not carry it. */
-function describeAccount(account: LinkedAccount): string {
+export function describeAccount(account: LinkedAccount): string {
   const number = maskNumber(account.number);
   return account.name ? `${account.name} (${number})` : number;
 }
@@ -489,7 +534,7 @@ export async function offerWrites(config: Config): Promise<void> {
   applyWrites(config, /^y(es)?$/i.test(answer.trim()));
 }
 
-async function ask(question: string): Promise<string> {
+export async function ask(question: string): Promise<string> {
   const rl = createInterface({ input: process.stdin, output: process.stderr });
   try {
     return await rl.question(question);
