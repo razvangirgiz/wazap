@@ -20,6 +20,7 @@ import { normalizePhone } from "./ids.js";
 import { lockHolder, releaseLock, writeLock } from "./lock.js";
 import { log, logError, say } from "./logger.js";
 import { formatAge } from "./messages.js";
+import { RateLimiter } from "./ratelimit.js";
 import { runHttp, runStdio, startLoopbackEndpoint } from "./server.js";
 import { applyWrites } from "./settings.js";
 import {
@@ -289,9 +290,12 @@ export async function runServe(config: Config): Promise<void> {
   wa.start().catch((err: unknown) => logError("whatsapp start", err));
 
   const token = config.share ? randomBytes(32).toString("hex") : null;
+  // One bucket for the process, not per endpoint: a bridge writing through the
+  // loopback endpoint spends from the same allowance as the daemon's own client.
+  const limiter = new RateLimiter(config.rateLimitPerMinute);
 
   if (config.transport === "http") {
-    const port = await runHttp(wa, config, token === null ? undefined : { token, write: true });
+    const port = await runHttp(wa, config, limiter, token === null ? undefined : { token, write: true });
     // Off-loopback binds get no sidecar: a bridge on this machine could not reach them.
     if (token !== null && SHAREABLE_HOSTS.includes(config.httpHost)) {
       writeDaemon(p.daemonFile, { pid: process.pid, port, token, version: WAZAP_VERSION });
@@ -300,10 +304,10 @@ export async function runServe(config: Config): Promise<void> {
   }
 
   if (token !== null) {
-    const port = await startLoopbackEndpoint(wa, config, token);
+    const port = await startLoopbackEndpoint(wa, config, token, limiter);
     writeDaemon(p.daemonFile, { pid: process.pid, port, token, version: WAZAP_VERSION });
   }
-  await runStdio(wa, config);
+  await runStdio(wa, config, limiter);
   if (token === null) return;
 
   // The loopback endpoint keeps the event loop alive, so stdin EOF no longer ends

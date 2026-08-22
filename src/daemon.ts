@@ -1,4 +1,4 @@
-import { chmodSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 
 /** How a bridge finds the running server: the loopback port and the token that opens it. */
@@ -31,10 +31,14 @@ export function readDaemon(file: string): DaemonInfo | null {
 
 export function writeDaemon(file: string, info: DaemonInfo): void {
   mkdirSync(dirname(file), { recursive: true, mode: 0o700 });
-  writeFileSync(file, `${JSON.stringify(info, null, 2)}\n`, { mode: 0o600 });
-  // mode only applies when the file is created, so a looser file left by an
-  // earlier run would keep its permissions and expose the token.
-  chmodSync(file, 0o600);
+  // Written aside and renamed in: a bridge polling for the sidecar reads either
+  // the old record or the new one, never half a token. The mode argument only
+  // applies when a file is created, so the chmod covers a leftover temp file
+  // from an earlier run keeping looser permissions.
+  const temp = `${file}.${process.pid}.tmp`;
+  writeFileSync(temp, `${JSON.stringify(info, null, 2)}\n`, { mode: 0o600 });
+  chmodSync(temp, 0o600);
+  renameSync(temp, file);
 }
 
 /** Remove the sidecar, but only if it is still ours. */
