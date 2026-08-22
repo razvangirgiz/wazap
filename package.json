@@ -1,0 +1,45 @@
+{
+  "name": "whatsapp-baileys-mcp",
+  "version": "1.0.0",
+  "description": "MCP server for WhatsApp over Baileys: QR login, 17 chat/message/contact/group tools, stdio or bearer-protected HTTP.",
+  "license": "MIT",
+  "author": "Răzvan Girgiz",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/razvangirgiz/whatsapp-baileys-mcp"
+  },
+  "keywords": ["mcp", "model-context-protocol", "whatsapp", "baileys", "claude"],
+  "type": "module",
+  "main": "dist/index.js",
+  "bin": {
+    "whatsapp-baileys-mcp": "dist/index.js"
+  },
+  "files": ["dist", "README.md", "LICENSE", ".env.example"],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "start": "node dist/index.js",
+    "dev": "tsx src/index.ts",
+    "typecheck": "tsc --noEmit",
+    "test": "npm run build && node --test test/*.test.mjs"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.12.0",
+    "baileys": "7.0.0-rc13",
+    "dotenv": "^16.4.5",
+    "express": "^4.22.2",
+    "qrcode": "^1.5.4",
+    "qrcode-terminal": "^0.12.0",
+    "zod": "^3.24.1"
+  },
+  "devDependencies": {
+    "@types/express": "^4.17.25",
+    "@types/node": "^22.10.0",
+    "@types/qrcode": "^1.5.5",
+    "@types/qrcode-terminal": "^0.12.2",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2"
+  }
+}
