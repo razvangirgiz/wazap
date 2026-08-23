@@ -27,13 +27,16 @@ import makeWASocket, {
 } from "baileys";
 import type { ILogger } from "baileys/lib/Utils/logger.js";
 import { readLinkedAccount, useAtomicAuthState } from "./auth-state.js";
+import { CallTracker, callMessage, type CallEntry } from "./calls.js";
 import { BAILEYS_VERSION, paths, WAZAP_VERSION, type Config, type Paths } from "./config.js";
 import { asWazapError, RELINK_FIX, RESET_FIX, WazapError } from "./errors.js";
 import { isGroupId, isNoiseJid, resolveChatId } from "./ids.js";
 import { log, logError } from "./logger.js";
 import {
   buildMessageView,
+  callInfo,
   formatAge,
+  isCallPlaceholder,
   isControlMessage,
   isStubEvent,
   isoWithOffset,
@@ -44,6 +47,7 @@ import {
   protoNumber,
 } from "./messages.js";
 import type {
+  CallInfo,
   ChatAction,
   ChatActionResult,
   ChatFilter,
@@ -88,6 +92,10 @@ const STALE_INBOUND_MS = 24 * 3_600_000;
 const MAX_MESSAGES_PER_CHAT = 1_000;
 const PERSIST_MESSAGES_PER_CHAT = 120;
 const STORE_SAVE_DEBOUNCE_MS = 20_000;
+const CALL_SWEEP_MS = 30_000;
+/** The same call reaches the store up to three ways; only nearness in time tells them apart. */
+const CALL_DEDUPE_WINDOW_MS = 60_000;
+const CALL_DEDUPE_SCAN = 20;
 const HISTORY_STORE_CAP_PER_CHAT = 2_000;
 const DIR_MODE = 0o700;
 const FILE_MODE = 0o600;
@@ -208,13 +216,35 @@ class Store {
     if (ts < last) ring.sort((a, b) => this.seconds(a) - this.seconds(b));
     while (ring.length > MAX_MESSAGES_PER_CHAT) {
       const dropped = ring.shift();
-      if (dropped) {
-        this.messages.delete(dropped);
-        this.chatOf.delete(dropped);
-        this.edited.delete(dropped);
-        this.reactions.delete(dropped);
-      }
+      if (dropped) this.forget(dropped);
     }
+  }
+
+  /** The tail of a chat, newest first. */
+  recent(chatJid: string, count: number): Array<{ sid: string; raw: WAMessage }> {
+    const ring = this.byChat.get(chatJid) ?? [];
+    const tail: Array<{ sid: string; raw: WAMessage }> = [];
+    for (let i = ring.length - 1; i >= 0 && tail.length < count; i--) {
+      const sid = ring[i];
+      const raw = this.messages.get(sid);
+      if (raw) tail.push({ sid, raw });
+    }
+    return tail;
+  }
+
+  /** Forget one message entirely, its place in the chat included. */
+  dropMessage(sid: string): void {
+    const ring = this.byChat.get(this.chatOf.get(sid) ?? "");
+    const at = ring?.indexOf(sid) ?? -1;
+    if (ring && at !== -1) ring.splice(at, 1);
+    this.forget(sid);
+  }
+
+  private forget(sid: string): void {
+    this.messages.delete(sid);
+    this.chatOf.delete(sid);
+    this.edited.delete(sid);
+    this.reactions.delete(sid);
   }
 
   reactionsFor(sid: string): Array<{ emoji: string; sender: string }> {
@@ -304,6 +334,7 @@ export class WhatsAppService implements WhatsAppApi {
   private historyWaiters: Array<() => void> = [];
   private storeDirty = false;
   private storeSaveTimer: ReturnType<typeof setTimeout> | null = null;
+  private callSweepTimer: ReturnType<typeof setInterval> | null = null;
   private persistedLoaded = false;
   private contactResyncTried = false;
   private readonly blocked = new Set<string>();
@@ -315,6 +346,7 @@ export class WhatsAppService implements WhatsAppApi {
   /** The same, for naming only, and it holds more. See `learnLidPhone`. */
   private readonly lidPhones = new Map<string, string>();
   private readonly store = new Store();
+  private readonly calls = new CallTracker();
   private readonly paths: Paths;
 
   constructor(private readonly config: Config) {
@@ -365,6 +397,7 @@ export class WhatsAppService implements WhatsAppApi {
     this.storeSaveTimer = null;
     this.reconnectTimer = null;
     this.syncDeadline = null;
+    this.stopCallSweep();
     this.releaseWaiters();
     await this.flushStore();
     this.teardownSocket();
@@ -967,6 +1000,13 @@ export class WhatsAppService implements WhatsAppApi {
       this.releaseHistoryWaiters();
       if (isLatest === true || progress === 100) this.markSyncDone();
       this.markStoreDirty();
+    });
+
+    sock.ev.on("call", ([call]) => {
+      if (generation !== this.generation || !call) return;
+      const entry = this.calls.observe(call, this.ownJid(), Date.now());
+      if (entry) this.storeCall(entry);
+      this.armCallSweep();
     });
 
     sock.ev.on("lid-mapping.update", (mapping) => this.learnLid(mapping.lid, mapping.pn));
@@ -1629,10 +1669,63 @@ export class WhatsAppService implements WhatsAppApi {
       const jid = this.canonical(raw.key.remoteJid);
       if (isNoiseJid(jid) || isControlMessage(raw)) continue;
       this.learnPushName(raw, jid);
-      this.store.putMessage(messageIdFor(raw.key, jid), jid, raw);
+      const sid = messageIdFor(raw.key, jid);
+      if (!this.keepOverEarlierCall(raw, jid, sid)) continue;
+      this.store.putMessage(sid, jid, raw);
       stored.push(raw);
     }
     return stored;
+  }
+
+  /**
+   * One call can reach the store three ways: wazap's own tracker, the stub
+   * baileys synthesises on a timeout, and WhatsApp's later call-log message.
+   * Each carries a different id, so only nearness in time pairs them up, and
+   * whichever says more about the call is the one worth keeping. The history
+   * reload runs it too: the JSONL still holds the line the loser wrote before
+   * it was dropped, and a restart would otherwise bring the pair back.
+   */
+  private keepOverEarlierCall(raw: WAMessage, chatJid: string, sid: string): boolean {
+    const info = callInfo(raw);
+    if (!info) return true;
+    const at = messageTimestampMs(raw);
+    for (const known of this.store.recent(chatJid, CALL_DEDUPE_SCAN)) {
+      if (known.sid === sid) continue;
+      const other = callInfo(known.raw);
+      if (!other) continue;
+      if (Math.abs(messageTimestampMs(known.raw) - at) > CALL_DEDUPE_WINDOW_MS) continue;
+      if (callDetail(raw, info) <= callDetail(known.raw, other)) return false;
+      this.store.dropMessage(known.sid);
+      return true;
+    }
+    return true;
+  }
+
+  /** A live call goes in the way any message does, so everything downstream carries it. */
+  private storeCall(entry: CallEntry): void {
+    const stored = this.ingestMessages([callMessage(entry)]);
+    if (stored.length === 0) return;
+    void this.appendHistory(stored);
+    this.markStoreDirty();
+  }
+
+  /**
+   * Only while a call is in flight: a call whose terminal event never arrives
+   * would otherwise sit pending forever, and a timer with nothing to do would
+   * otherwise keep ticking for the life of the process.
+   */
+  private armCallSweep(): void {
+    if (this.callSweepTimer || this.calls.pending === 0) return;
+    this.callSweepTimer = setInterval(() => {
+      for (const entry of this.calls.expire(Date.now())) this.storeCall(entry);
+      if (this.calls.pending === 0) this.stopCallSweep();
+    }, CALL_SWEEP_MS);
+    this.callSweepTimer.unref();
+  }
+
+  private stopCallSweep(): void {
+    if (this.callSweepTimer) clearInterval(this.callSweepTimer);
+    this.callSweepTimer = null;
   }
 
   private learnPushName(raw: WAMessage, chatJid: string): void {
@@ -1743,6 +1836,7 @@ export class WhatsAppService implements WhatsAppApi {
       if (!raw?.key?.remoteJid || (!raw.message && !isStubEvent(raw))) continue;
       const jid = this.canonical(raw.key.remoteJid);
       if (isNoiseJid(jid) || isControlMessage(raw)) continue;
+      if (!this.keepOverEarlierCall(raw, jid, record.sid)) continue;
       this.store.putMessage(record.sid, jid, raw);
       loaded++;
     }
@@ -1794,6 +1888,12 @@ const PARTICIPANT_ACTIONS = new Set<GroupAction>(["add", "remove", "promote", "d
 
 /** WhatsApp answers "cannot add, invite them instead" with these codes. */
 const INVITE_NEEDED_CODES = new Set(["403", "409"]);
+
+/** How much a call message says. A duration is the most it can carry. */
+function callDetail(raw: WAMessage, info: CallInfo): number {
+  if (info.duration_seconds !== undefined) return 2;
+  return isCallPlaceholder(raw) ? 0 : 1;
+}
 
 function lidKey(lid: string): string {
   return `${jidNormalizedUser(lid).split("@")[0]}@lid`;

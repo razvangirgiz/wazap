@@ -262,6 +262,15 @@ export function callInfo(raw: WAMessage): CallInfo | undefined {
   return undefined;
 }
 
+/**
+ * Baileys' own stand-in for a group call offer. It says a call happened and
+ * nothing else, so anything that names an outcome outranks it.
+ */
+export function isCallPlaceholder(raw: WAMessage): boolean {
+  const content = unwrapEnvelopes(raw.message);
+  return content?.call != null && content.callLogMesssage == null;
+}
+
 function durationLabel(seconds: number): string {
   if (seconds < 60) return `${seconds}s`;
   const minutes = Math.round(seconds / 60);
