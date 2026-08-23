@@ -29,6 +29,7 @@ const READ_TOOLS = [
   "get_contact",
   "get_group_info",
   "download_media",
+  "transcribe_audio",
 ];
 
 const WRITE_TOOLS = [
@@ -45,9 +46,9 @@ const WRITE_TOOLS = [
   "manage_group",
 ];
 
-test("the registry is exactly the 23 documented tools", () => {
+test("the registry is exactly the 24 documented tools", () => {
   assert.deepEqual([...TOOL_NAMES].sort(), [...READ_TOOLS, ...WRITE_TOOLS].sort());
-  assert.equal(TOOL_NAMES.length, 23);
+  assert.equal(TOOL_NAMES.length, 24);
 });
 
 test("read-only registration exposes no write tool at all", () => {
@@ -59,7 +60,7 @@ test("read-only registration exposes no write tool at all", () => {
 test("every tool declares a description and an input schema", () => {
   const server = fakeServer();
   registerTools(server, {}, { allowWrite: true, limiter: new RateLimiter(20) });
-  assert.equal(server.tools.size, 23);
+  assert.equal(server.tools.size, 24);
   for (const [name, { meta }] of server.tools) {
     assert.ok(meta.description?.length > 40, `${name} needs a description an agent can act on`);
     assert.ok(meta.inputSchema, `${name} needs an input schema`);

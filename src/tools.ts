@@ -1,7 +1,8 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { asWazapError, ERROR_GUIDE, type WazapError } from "./errors.js";
-import type { RateLimiter } from "./ratelimit.js";
+import { clockLabel } from "./messages.js";
+import { RateLimiter } from "./ratelimit.js";
 import { MESSAGE_TYPES } from "./wa-types.js";
 import type {
   ChatSummary,
@@ -30,6 +31,8 @@ interface ToolDef {
   schema: z.ZodRawShape;
   write: boolean;
   destructive?: boolean;
+  /** Calls a minute allowed to this tool alone, on top of the shared write bucket. */
+  rate?: number;
   handler: (args: ToolArgs, wa: WhatsAppApi) => Promise<ToolResult>;
 }
 
@@ -40,6 +43,7 @@ function tool<S extends z.ZodRawShape>(def: {
   schema: S;
   write: boolean;
   destructive?: boolean;
+  rate?: number;
   handler: (args: z.infer<z.ZodObject<S>>, wa: WhatsAppApi) => Promise<ToolResult>;
 }): ToolDef {
   return { ...def, handler: def.handler as (args: ToolArgs, wa: WhatsAppApi) => Promise<ToolResult> };
@@ -115,6 +119,9 @@ which look like a phone number and are not one.
 WhatsApp's own notices (device linking, group membership, encryption) have
 \`type: "system"\` and are left out of get_recent_messages unless you pass
 include_system: true.
+A voice note reads as "[voice message · 0:42]"; once transcribed, what was said
+follows the placeholder in quotes and is carried bare in \`transcript\`.
+Call transcribe_audio(message_id) on a voice note that has no transcript yet.
 A WhatsApp call is a message with \`type: "call"\` carrying
 \`call: {kind, direction, outcome, duration_seconds}\`, reading as
 "[voice call · 6 min]" or "[missed voice call]".
@@ -413,6 +420,40 @@ Fails with MEDIA_UNAVAILABLE when WhatsApp has expired the file.`,
   }),
 
   tool({
+    name: "transcribe_audio",
+    title: "Transcribe a WhatsApp voice message",
+    description: `Turn a voice note or an audio message into text. The transcript is cached, so a
+second call on the same message costs nothing, and from then on the message reads
+as [voice message · 0:42] "what was said" in read_messages, get_recent_messages
+and get_message, and its words become searchable through search_messages.
+
+What it costs depends on how the user set transcription up: the local provider
+(whisper.cpp) is free and the audio never leaves the machine, while the API
+provider uploads the audio to a third-party service and is billed per minute.
+Either way this is capped at 10 calls a minute.
+
+TRANSCRIBE_UNAVAILABLE means transcription is off or unfinished on this machine;
+the fix names the command the user has to run. Do not retry it.`,
+    schema: {
+      message_id: messageId.describe("A message whose type is voice or audio"),
+      language: z
+        .string()
+        .min(2)
+        .max(16)
+        .optional()
+        .describe('ISO 639-1 code of what is spoken, e.g. "ro"; "auto" detects it. Omit to use the configured default.'),
+    },
+    write: false,
+    rate: 10,
+    handler: async ({ message_id, language }, wa) => {
+      const result = await wa.transcribeAudio(message_id, language);
+      const clock = result.duration_seconds === undefined ? "" : ` ${clockLabel(result.duration_seconds)}`;
+      const facts = [result.language, result.provider, result.cached ? "cached" : null].filter(Boolean).join(", ");
+      return ok(`Transcribed${clock} (${facts}): "${result.text}"`, result as unknown as Record<string, unknown>);
+    },
+  }),
+
+  tool({
     name: "send_message",
     title: "Send a WhatsApp text message",
     description: `Send a text message. This is a REAL message from the user's own account and
@@ -638,9 +679,28 @@ export interface RegisterOpts {
   limiter: RateLimiter;
 }
 
+/** Derived, so a second rated tool cannot inherit a message naming the wrong budget. */
+function rateLabel(name: string): string {
+  const verb = name.split("_")[0] ?? name;
+  return verb.charAt(0).toUpperCase() + verb.slice(1);
+}
+
+/**
+ * One bucket per rated tool for the whole process, like the write bucket: an
+ * HTTP client re-initializing gets a new McpServer on every session, and a cap
+ * that resets with it would be no cap at all.
+ */
+const RATE_BUCKETS = new Map<string, RateLimiter>(
+  TOOLS.flatMap((def) =>
+    def.rate === undefined ? [] : [[def.name, new RateLimiter(def.rate, undefined, rateLabel(def.name))] as const],
+  ),
+);
+
 export function registerTools(server: McpServer, wa: WhatsAppApi, opts: RegisterOpts): void {
   for (const def of TOOLS) {
     if (def.write && !opts.allowWrite) continue;
+    // Spent alongside the shared write bucket rather than out of it.
+    const own = RATE_BUCKETS.get(def.name);
     server.registerTool(
       def.name,
       {
@@ -654,6 +714,7 @@ export function registerTools(server: McpServer, wa: WhatsAppApi, opts: Register
       async (args: unknown): Promise<ToolResult> => {
         try {
           if (def.write) opts.limiter.take();
+          own?.take();
           return await def.handler(args as ToolArgs, wa);
         } catch (err) {
           return toolError(asWazapError(err));

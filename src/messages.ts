@@ -4,6 +4,7 @@
  */
 
 import { getContentType, proto, type WAMessage, type WAMessageContent, type WAMessageKey } from "baileys";
+import type { TranscriptRecord } from "./transcribe/index.js";
 import type { CallDirection, CallInfo, CallKind, CallOutcome, MessageType, MessageView } from "./wa-types.js";
 
 /** protobuf 64-bit fields arrive as a number or a Long. */
@@ -119,7 +120,13 @@ const RULES: Partial<Record<keyof WAMessageContent, Rule>> = {
   ptvMessage: { type: "video", tag: "[video]", caption: (m) => m.ptvMessage?.caption },
   audioMessage: {
     type: (m) => (m.audioMessage?.ptt ? "voice" : "audio"),
-    tag: (m) => (m.audioMessage?.ptt ? "[voice message]" : "[audio]"),
+    // The duration goes inside the brackets, the way a call's does: everything
+    // after the tag is caption territory, and this is not a caption.
+    tag: (m) => {
+      const kind = m.audioMessage?.ptt ? "voice message" : "audio";
+      const seconds = audioSeconds(m);
+      return seconds === undefined ? `[${kind}]` : `[${kind} · ${clockLabel(seconds)}]`;
+    },
   },
   documentMessage: {
     type: "document",
@@ -271,6 +278,28 @@ export function isCallPlaceholder(raw: WAMessage): boolean {
   return content?.call != null && content.callLogMesssage == null;
 }
 
+/** A duration WhatsApp attached to a recording. Zero means it said nothing. */
+function audioSeconds(content: WAMessageContent): number | undefined {
+  const seconds = protoNumber(content.audioMessage?.seconds);
+  return seconds === undefined || seconds <= 0 ? undefined : seconds;
+}
+
+/** How long a voice note or audio message runs, when WhatsApp said so. */
+export function voiceSeconds(raw: WAMessage): number | undefined {
+  const content = unwrapEnvelopes(raw.message);
+  return content === undefined ? undefined : audioSeconds(content);
+}
+
+/** 0:06, 3:05, 1:02:03 — a recording reads as a clock, unlike a call's "6 min". */
+export function clockLabel(seconds: number): string {
+  const total = Math.max(0, Math.round(seconds));
+  const pad = (value: number): string => String(value).padStart(2, "0");
+  const minutes = Math.floor(total / 60) % 60;
+  const hours = Math.floor(total / 3600);
+  const rest = pad(total % 60);
+  return hours > 0 ? `${hours}:${pad(minutes)}:${rest}` : `${minutes}:${rest}`;
+}
+
 function durationLabel(seconds: number): string {
   if (seconds < 60) return `${seconds}s`;
   const minutes = Math.round(seconds / 60);
@@ -355,6 +384,23 @@ export function messageText(raw: WAMessage): string {
   return detail ? `${tag} ${detail}` : tag;
 }
 
+/** A transcript belongs to a recording and to nothing else. */
+function spokenTranscript(raw: WAMessage, transcript: TranscriptRecord | undefined): string | undefined {
+  if (!transcript?.text) return undefined;
+  const type = messageType(raw);
+  return type === "voice" || type === "audio" ? transcript.text : undefined;
+}
+
+/**
+ * What a reader sees. searchMessages matches on this rather than on the bare
+ * placeholder, so a transcript is findable by the words it puts on the screen.
+ */
+export function viewText(raw: WAMessage, transcript?: TranscriptRecord): string {
+  const text = messageText(raw);
+  const spoken = spokenTranscript(raw, transcript);
+  return spoken === undefined ? text : `${text} "${spoken}"`;
+}
+
 export function mediaInfo(raw: WAMessage): { mime: string; size?: number; filename?: string } | undefined {
   const outer = unwrapEnvelopes(raw.message);
   const content = outer ? (viewOnceInner(outer) ?? outer) : undefined;
@@ -414,6 +460,7 @@ export interface MessageViewContext {
   chatId: string;
   edited: boolean;
   reactions: Array<{ emoji: string; sender: string }>;
+  transcript?: TranscriptRecord;
   now?: number;
 }
 
@@ -446,7 +493,7 @@ export function buildMessageView(raw: WAMessage, ctx: MessageViewContext): Messa
       ...(phoneOf(sender) ? { phone: phoneOf(sender) } : {}),
     },
     type: messageType(raw),
-    text: messageText(raw),
+    text: viewText(raw, ctx.transcript),
     timestamp: isoWithOffset(timestamp),
     age: formatAge(timestamp, ctx.now),
     has_media: media !== undefined,
@@ -455,6 +502,8 @@ export function buildMessageView(raw: WAMessage, ctx: MessageViewContext): Messa
   };
   if (media) view.media = media;
   if (quoted) view.quoted = quoted;
+  const spoken = spokenTranscript(raw, ctx.transcript);
+  if (spoken !== undefined) view.transcript = spoken;
   if (call) {
     view.call = call.participants
       ? { ...call, participants: call.participants.map((jid) => ctx.canonical(jid)) }

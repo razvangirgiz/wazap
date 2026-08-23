@@ -75,7 +75,7 @@ export async function waitFor(predicate, timeoutMs, label) {
 }
 
 /** Config for a service that talks to nobody and writes nothing. */
-export function offlineConfig(prefix) {
+export function offlineConfig(prefix, overrides = {}) {
   return {
     dataDir: mkdtempSync(join(tmpdir(), prefix)),
     readOnly: true,
@@ -89,6 +89,7 @@ export function offlineConfig(prefix) {
     rateLimitPerMinute: 20,
     command: "serve",
     loginCode: false,
+    ...overrides,
   };
 }
 
@@ -112,8 +113,8 @@ export function fakeSocket() {
 }
 
 /** A connected service fed only by events, so no socket and no disk are involved. */
-export function connectedService(WhatsAppService, { prefix, id, name }) {
-  const svc = new WhatsAppService(offlineConfig(prefix));
+export function connectedService(WhatsAppService, { prefix, id, name, config = {} }) {
+  const svc = new WhatsAppService(offlineConfig(prefix, config));
   const sock = fakeSocket();
   svc.sockClient = sock;
   svc.wireEvents(sock, ++svc.generation);

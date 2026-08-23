@@ -6,7 +6,8 @@
  */
 
 import { randomUUID } from "node:crypto";
-import { appendFile, mkdir, readdir, readFile, rename, stat, writeFile } from "node:fs/promises";
+import { appendFile, mkdir, mkdtemp, readdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { isAbsolute, join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import makeWASocket, {
@@ -46,7 +47,18 @@ import {
   messageTimestampMs,
   messageType,
   protoNumber,
+  viewText,
+  voiceSeconds,
 } from "./messages.js";
+import {
+  readTranscribeSettings,
+  transcribeFile,
+  TranscribeQueue,
+  transcribeReady,
+  type Transcript,
+  type TranscribeSettings,
+  type TranscriptRecord,
+} from "./transcribe/index.js";
 import type {
   CallInfo,
   ChatAction,
@@ -70,6 +82,7 @@ import type {
   StatusInfo,
   SyncState,
   Synced,
+  TranscribeResult,
   WhatsAppApi,
 } from "./wa-types.js";
 
@@ -99,6 +112,8 @@ const CALL_SWEEP_MS = 30_000;
 const CALL_DEDUPE_WINDOW_MS = 60_000;
 const CALL_DEDUPE_SCAN = 20;
 const HISTORY_STORE_CAP_PER_CHAT = 2_000;
+/** Ten minutes of speech. Past that, auto-transcribing is a bill nobody asked for. */
+const AUTO_TRANSCRIBE_MAX_SECONDS = 600;
 const DIR_MODE = 0o700;
 const FILE_MODE = 0o600;
 
@@ -162,6 +177,8 @@ interface HistoryRecord {
   sid: string;
   ts: number;
   raw: string;
+  /** Added in 0.9.8. The transcript held for this message when the line was written. */
+  tr?: TranscriptRecord;
 }
 
 interface StoreSnapshot {
@@ -174,6 +191,8 @@ interface StoreSnapshot {
   pushNames?: Record<string, string>;
   /** Added in 0.9.5. When wazap last asked WhatsApp for the whole address book. */
   contactsResyncedAt?: number;
+  /** Added in 0.9.8. Transcripts of the messages this snapshot keeps, by message id. */
+  transcripts?: Record<string, TranscriptRecord>;
 }
 
 /** In-memory state fed from Baileys events, keyed by canonical jid. */
@@ -191,6 +210,8 @@ class Store {
    * saved, and it never arrives through the contact list.
    */
   readonly pushNames = new Map<string, string>();
+  /** What a voice note said, keyed by message id. Transcribing is slow and can cost money. */
+  readonly transcripts = new Map<string, TranscriptRecord>();
 
   /** See `needsContactResync`: it keeps a full resync from repeating forever. */
   contactsResyncedAt: number | null = null;
@@ -247,6 +268,7 @@ class Store {
     this.chatOf.delete(sid);
     this.edited.delete(sid);
     this.reactions.delete(sid);
+    this.transcripts.delete(sid);
   }
 
   reactionsFor(sid: string): Array<{ emoji: string; sender: string }> {
@@ -276,12 +298,16 @@ class Store {
       snapshot.byChat[jid] = capped;
       for (const sid of capped) keep.add(sid);
     }
+    const transcripts: Record<string, TranscriptRecord> = {};
     for (const sid of keep) {
       const raw = this.messages.get(sid);
       if (!raw) continue;
       const encoded = encode(() => proto.WebMessageInfo.encode(raw).finish());
       if (encoded) snapshot.messages[sid] = encoded;
+      const transcript = this.transcripts.get(sid);
+      if (transcript) transcripts[sid] = transcript;
     }
+    snapshot.transcripts = transcripts;
     return snapshot;
   }
 
@@ -299,6 +325,10 @@ class Store {
     for (const [sid, b64] of Object.entries(snapshot.messages ?? {})) {
       const raw = decodeMessage(b64);
       if (raw && !isControlMessage(raw)) this.messages.set(sid, raw);
+    }
+    // A transcript of a message the snapshot no longer carries is a leak, not a cache.
+    for (const [sid, transcript] of Object.entries(snapshot.transcripts ?? {})) {
+      if (this.messages.has(sid)) this.transcripts.set(sid, transcript);
     }
     for (const [jid, ring] of Object.entries(snapshot.byChat ?? {})) {
       if (isNoiseJid(jid)) continue;
@@ -350,9 +380,28 @@ export class WhatsAppService implements WhatsAppApi {
   private readonly store = new Store();
   private readonly calls = new CallTracker();
   private readonly paths: Paths;
+  /** The transcription environment, or the complaint about it. See `readTranscribeConfig`. */
+  private readonly transcribe: TranscribeSettings | WazapError;
+  /** Null unless a provider is configured and auto mode is on. */
+  private readonly transcribeQueue: TranscribeQueue | null;
+  /** The seam the tests replace; production always runs the real providers. */
+  private transcriber = transcribeFile;
+  /** Transcriptions under way, so one recording is never uploaded twice at once. */
+  private readonly transcribing = new Map<string, Promise<TranscribeResult>>();
 
   constructor(private readonly config: Config) {
     this.paths = paths(config.dataDir);
+    this.transcribe = readTranscribeConfig(config.dataDir);
+    const settings = this.transcribe;
+    this.transcribeQueue =
+      settings instanceof WazapError || settings.provider === null || !settings.auto
+        ? null
+        : new TranscribeQueue(async (sid) => {
+            // Whatever is still queued when the service stops is dropped rather
+            // than run against a socket that is already gone.
+            if (this.stopped) return;
+            await this.transcribeAudio(sid);
+          });
   }
 
   async start(): Promise<void> {
@@ -555,7 +604,9 @@ export class WhatsAppService implements WhatsAppApi {
       for (const [sid, raw] of this.store.messages) {
         const jid = this.store.chatOf.get(sid);
         if (!jid || (scope !== undefined && jid !== scope)) continue;
-        if (needle && !messageText(raw).toLowerCase().includes(needle)) continue;
+        // The rendered text, not the bare placeholder, so a transcript is findable
+        // by the words a reader can see.
+        if (needle && !viewText(raw, this.store.transcripts.get(sid)).toLowerCase().includes(needle)) continue;
         hits.push({ sid, jid, at: messageTimestampMs(raw) });
       }
 
@@ -661,20 +712,7 @@ export class WhatsAppService implements WhatsAppApi {
       const raw = this.messageOrThrow(messageId);
       const info = mediaInfo(raw);
       if (!info) throw new WazapError("MEDIA_UNAVAILABLE", `Message ${messageId} carries no media.`);
-
-      let buffer: Buffer;
-      try {
-        buffer = await downloadMediaMessage(raw, "buffer", {}, {
-          logger: silentLogger,
-          reuploadRequest: sock.updateMediaMessage,
-        });
-      } catch (err) {
-        throw new WazapError(
-          "MEDIA_UNAVAILABLE",
-          `Could not download the media of ${messageId}: ${describe(err)}`,
-          "Ask the sender to resend it",
-        );
-      }
+      const buffer = await this.mediaBuffer(sock, messageId, raw);
 
       const dir = saveTo ?? this.paths.mediaDir;
       if (!isAbsolute(dir)) {
@@ -689,6 +727,104 @@ export class WhatsAppService implements WhatsAppApi {
         info.mime.startsWith("image/") && buffer.length <= INLINE_IMAGE_MAX_BYTES ? buffer.toString("base64") : null;
       return { path, mime: info.mime, size: buffer.length, filename, inline_base64: inline };
     });
+  }
+
+  /**
+   * Speech into text, once per message: a transcript already on hand is returned
+   * as it is, because the local provider is slow and the API one is billed.
+   */
+  transcribeAudio(messageId: string, language?: string): Promise<TranscribeResult> {
+    return this.guarded(async () => {
+      const raw = this.messageOrThrow(messageId);
+      const known = this.store.transcripts.get(messageId);
+      if (known) return transcribeResult(known, true);
+
+      const type = messageType(raw);
+      const info = mediaInfo(raw);
+      if (info === undefined || (type !== "voice" && type !== "audio")) {
+        throw new WazapError(
+          "MEDIA_UNAVAILABLE",
+          `Message ${messageId} is not a voice note or an audio message.`,
+          "Pass a message whose type is voice or audio",
+        );
+      }
+
+      const settings = this.transcribeSettings();
+      // Read-only has always meant no side effect anyone outside can see. The
+      // local provider keeps that promise; uploading the user's audio to a
+      // third party and spending their money does not.
+      if (this.config.readOnly && settings.provider === "openai") {
+        throw new WazapError(
+          "READ_ONLY",
+          "wazap runs read-only, so it will not upload audio to the transcription API.",
+          "Restart without WAZAP_READ_ONLY, or run `wazap config transcribe local`",
+        );
+      }
+      const readiness = await transcribeReady(settings);
+      if (!readiness.ok) throw new WazapError("TRANSCRIBE_UNAVAILABLE", readiness.detail, readiness.fix);
+
+      // The cache is only written once a provider has run and been paid, so the
+      // auto queue and a tool call asking for the same message at the same
+      // moment would otherwise upload it twice. They share the first run.
+      const running = this.transcribing.get(messageId);
+      if (running) return await running;
+      const work = this.runTranscribe(messageId, raw, info, settings, language);
+      this.transcribing.set(messageId, work);
+      try {
+        return await work;
+      } finally {
+        this.transcribing.delete(messageId);
+      }
+    });
+  }
+
+  private async runTranscribe(
+    messageId: string,
+    raw: WAMessage,
+    info: { mime: string; size?: number; filename?: string },
+    settings: TranscribeSettings,
+    language?: string,
+  ): Promise<TranscribeResult> {
+    // Readiness is never ok while no provider is configured.
+    const provider = settings.provider!;
+    const sock = this.ensureConnected();
+    const buffer = await this.mediaBuffer(sock, messageId, raw);
+    // Its own temp dir, deleted straight after: nobody asked to keep this file,
+    // and the media dir is where the files the user did ask for live.
+    const dir = await mkdtemp(join(tmpdir(), "wazap-audio-"));
+    let transcript: Transcript;
+    try {
+      const file = join(dir, mediaFilename(info));
+      await writeFile(file, buffer, { mode: FILE_MODE });
+      transcript = await this.transcriber(settings, file, language === undefined ? {} : { language });
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+
+    // An API provider answers without a duration, and WhatsApp already said
+    // how long the recording runs.
+    const seconds = transcript.duration_seconds ?? voiceSeconds(raw);
+    const record: TranscriptRecord = {
+      ...transcript,
+      ...(seconds === undefined ? {} : { duration_seconds: seconds }),
+      provider,
+      at: Date.now(),
+    };
+    this.store.transcripts.set(messageId, record);
+    this.markStoreDirty();
+    // The newest line for a sid wins on reload, so re-appending is what makes
+    // the transcript outlive the process.
+    await this.appendHistory([raw]);
+    return transcribeResult(record, false);
+  }
+
+  /**
+   * Resolves when the background queue has nothing left to transcribe. Off the
+   * WhatsAppApi on purpose: an agent has no business waiting on it, and a test
+   * needs it so it can wait on the queue instead of sleeping.
+   */
+  transcribeIdle(): Promise<void> {
+    return this.transcribeQueue?.idle() ?? Promise.resolve();
   }
 
   sendMessage(chatId: string, text: string, replyTo?: string, mentionIds?: string[]): Promise<SentMessage> {
@@ -1061,6 +1197,7 @@ export class WhatsAppService implements WhatsAppApi {
           if (raw.key.fromMe) continue;
           this.lastInboundAt = Math.max(this.lastInboundAt ?? 0, messageTimestampMs(raw));
         }
+        this.queueTranscripts(stored);
       }
       void this.appendHistory(stored);
       this.markStoreDirty();
@@ -1508,6 +1645,51 @@ export class WhatsAppService implements WhatsAppApi {
     return jid.endsWith("@lid") ? `unknown (lid …${digits.slice(-4)})` : jid;
   }
 
+  /** The bytes behind a message's media. Saving them and transcribing them share it. */
+  private async mediaBuffer(sock: WASocket, messageId: string, raw: WAMessage): Promise<Buffer> {
+    try {
+      return await downloadMediaMessage(raw, "buffer", {}, {
+        logger: silentLogger,
+        reuploadRequest: sock.updateMediaMessage,
+      });
+    } catch (err) {
+      throw new WazapError(
+        "MEDIA_UNAVAILABLE",
+        `Could not download the media of ${messageId}: ${describe(err)}`,
+        "Ask the sender to resend it",
+      );
+    }
+  }
+
+  /** The parsed environment, or the reason it could not be parsed, as a refusal. */
+  private transcribeSettings(): TranscribeSettings {
+    if (this.transcribe instanceof WazapError) {
+      throw new WazapError("TRANSCRIBE_UNAVAILABLE", this.transcribe.message, this.transcribe.fix);
+    }
+    return this.transcribe;
+  }
+
+  /**
+   * Only what genuinely arrived, which is why this hangs off the notify branch
+   * rather than off ingestMessages: a history sync replays a backlog, and
+   * transcribing all of it is a bill nobody asked for. Incoming voice notes
+   * only, and only ones whose length WhatsApp stated and kept short, since an
+   * audio file is something the sender chose to attach and a recording of
+   * unknown length is unbounded. Anything skipped here is still one
+   * transcribe_audio call away. A service on its way out starts nothing.
+   */
+  private queueTranscripts(arrived: readonly WAMessage[]): void {
+    if (this.stopped || this.transcribeQueue === null) return;
+    for (const raw of arrived) {
+      if (raw.key.fromMe || messageType(raw) !== "voice") continue;
+      const seconds = voiceSeconds(raw);
+      if (seconds === undefined || seconds > AUTO_TRANSCRIBE_MAX_SECONDS) continue;
+      const sid = messageIdFor(raw.key, this.canonical(raw.key.remoteJid ?? ""));
+      if (this.store.transcripts.has(sid)) continue;
+      this.transcribeQueue.enqueue(sid);
+    }
+  }
+
   private messageOrThrow(messageId: string): WAMessage {
     const raw = this.store.messages.get(messageId);
     if (!raw) {
@@ -1535,6 +1717,7 @@ export class WhatsAppService implements WhatsAppApi {
       chatId: chatJid,
       edited: this.store.edited.has(sid),
       reactions: this.store.reactionsFor(sid),
+      transcript: this.store.transcripts.get(sid),
     });
   }
 
@@ -1794,7 +1977,9 @@ export class WhatsAppService implements WhatsAppApi {
   }
 
   private markStoreDirty(): void {
-    if (!this.config.persistHistory) return;
+    // A stopped service has already flushed, so arming another save would only
+    // hold the process open for the length of the debounce.
+    if (!this.config.persistHistory || this.stopped) return;
     this.storeDirty = true;
     if (this.storeSaveTimer) return;
     this.storeSaveTimer = setTimeout(() => {
@@ -1863,6 +2048,7 @@ export class WhatsAppService implements WhatsAppApi {
       if (isNoiseJid(jid) || isControlMessage(raw)) continue;
       if (!this.keepOverEarlierCall(raw, jid, record.sid)) continue;
       this.store.putMessage(record.sid, jid, raw);
+      if (record.tr) this.store.transcripts.set(record.sid, record.tr);
       loaded++;
     }
     return loaded;
@@ -1876,10 +2062,13 @@ export class WhatsAppService implements WhatsAppApi {
       const encoded = encode(() => proto.WebMessageInfo.encode(raw).finish());
       if (!encoded) continue;
       const jid = this.canonical(raw.key.remoteJid);
+      const sid = messageIdFor(raw.key, jid);
+      const transcript = this.store.transcripts.get(sid);
       const record: HistoryRecord = {
-        sid: messageIdFor(raw.key, jid),
+        sid,
         ts: Math.floor(messageTimestampMs(raw) / 1000),
         raw: encoded,
+        ...(transcript === undefined ? {} : { tr: transcript }),
       };
       const bucket = lines.get(jid) ?? [];
       bucket.push(JSON.stringify(record));
@@ -1913,6 +2102,32 @@ const PARTICIPANT_ACTIONS = new Set<GroupAction>(["add", "remove", "promote", "d
 
 /** WhatsApp answers "cannot add, invite them instead" with these codes. */
 const INVITE_NEEDED_CODES = new Set(["403", "409"]);
+
+/**
+ * A wrong WAZAP_TRANSCRIBE_* value must not take a running server down with it.
+ * Everything else still works, so the complaint is logged once and kept, and the
+ * tool that needs it reports it instead of transcribing.
+ */
+function readTranscribeConfig(dataDir: string): TranscribeSettings | WazapError {
+  try {
+    return readTranscribeSettings(process.env, dataDir);
+  } catch (err) {
+    const fault = asWazapError(err);
+    logError("transcribe settings", fault);
+    return fault;
+  }
+}
+
+/** Field by field, because `at` is the cache's bookkeeping and not the caller's business. */
+function transcribeResult(record: TranscriptRecord, cached: boolean): TranscribeResult {
+  return {
+    text: record.text,
+    ...(record.language === undefined ? {} : { language: record.language }),
+    ...(record.duration_seconds === undefined ? {} : { duration_seconds: record.duration_seconds }),
+    provider: record.provider,
+    cached,
+  };
+}
 
 /** How much a call message says. A duration is the most it can carry. */
 function callDetail(raw: WAMessage, info: CallInfo): number {

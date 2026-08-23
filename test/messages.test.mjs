@@ -15,6 +15,8 @@ const CASES = [
   ["video", { videoMessage: { mimetype: "video/mp4" } }, "video", "[video]"],
   ["audio file", { audioMessage: { mimetype: "audio/mpeg", ptt: false } }, "audio", "[audio]"],
   ["voice note", { audioMessage: { mimetype: "audio/ogg", ptt: true } }, "voice", "[voice message]"],
+  ["voice note with a length", { audioMessage: { mimetype: "audio/ogg", ptt: true, seconds: 42 } }, "voice", "[voice message · 0:42]"],
+  ["audio file with a length", { audioMessage: { mimetype: "audio/mpeg", ptt: false, seconds: 185 } }, "audio", "[audio · 3:05]"],
   ["document", { documentMessage: { fileName: "report.pdf" } }, "document", "[document] report.pdf"],
   ["sticker", { stickerMessage: { mimetype: "image/webp" } }, "sticker", "[sticker]"],
   ["named location", { locationMessage: { degreesLatitude: 46.77, degreesLongitude: 23.6, name: "Cluj" } }, "location", "[location] Cluj"],

@@ -1,5 +1,7 @@
 /** Public shapes of the WhatsApp service: what the MCP tools and the CLI consume. */
 
+import type { ProviderName } from "./transcribe/index.js";
+
 export type ConnectionStatus =
   | "not_linked"
   | "connecting"
@@ -102,6 +104,8 @@ export interface MessageView {
   media?: { mime: string; size?: number; filename?: string };
   quoted?: { message_id: string; text: string; sender: string };
   call?: CallInfo;
+  /** What a voice note or audio message says, once it has been transcribed. */
+  transcript?: string;
   forwarded: boolean;
   reactions?: Array<{ emoji: string; sender: string }>;
   edited: boolean;
@@ -168,6 +172,15 @@ export interface MediaResult {
   filename: string;
   /** Base64 of images small enough to inline in the tool result. */
   inline_base64: string | null;
+}
+
+export interface TranscribeResult {
+  text: string;
+  language?: string;
+  duration_seconds?: number;
+  provider: ProviderName;
+  /** The transcript was already on hand, so no provider ran and nothing was billed. */
+  cached: boolean;
 }
 
 export type ChatAction =
@@ -243,6 +256,7 @@ export interface WhatsAppApi {
   syncContacts(): Promise<ContactSyncResult>;
   getGroupInfo(groupId: string): Promise<GroupInfo>;
   downloadMedia(messageId: string, saveTo?: string): Promise<MediaResult>;
+  transcribeAudio(messageId: string, language?: string): Promise<TranscribeResult>;
   sendMessage(chatId: string, text: string, replyTo?: string, mentionIds?: string[]): Promise<SentMessage>;
   sendMedia(
     chatId: string,
