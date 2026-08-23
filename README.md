@@ -450,6 +450,19 @@ curl -s http://127.0.0.1:8766/healthz
 
 The container publishes `8766` on loopback only; add the same TLS proxy in front. Upgrading is `git pull && docker compose up -d --build`; the volume keeps the session.
 
+### From a machine without a public address
+
+A laptop or a box behind NAT can still serve hosted agents through a tunnel, with no port opened and TLS done at the edge. With [Cloudflare Tunnel](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/) and a domain on Cloudflare:
+
+```bash
+cloudflared tunnel login
+cloudflared tunnel create wazap
+cloudflared tunnel route dns wazap wazap.example.com
+cloudflared tunnel run --url http://127.0.0.1:8766 wazap
+```
+
+wazap keeps binding loopback; only the tunnel reaches it. Set `WAZAP_PUBLIC_URL=https://wazap.example.com` for OAuth and keep `cloudflared` running the way you keep wazap running (a systemd unit, a launchd agent). Tailscale Funnel or ngrok work the same way: whatever ends at `https://your-host` with `/mcp` behind it.
+
 ### Which clients can reach it
 
 Claude Code, Claude Desktop, Cursor, Codex, VS Code, Poke and any client with an "MCP URL + header" field connect with the bearer token. Keep the read token in clients that only need to read; hand out the write token deliberately.
