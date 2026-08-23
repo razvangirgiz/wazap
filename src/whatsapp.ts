@@ -257,13 +257,7 @@ export class WhatsAppService implements WhatsAppApi {
   private readonly unreadableGroups = new Set<string>();
   /** `<user>@lid` to the phone-number jid, so ids we hand out stay canonical. */
   private readonly lidToPn = new Map<string, string>();
-  /**
-   * The same thing for naming only, and it holds more: Baileys keeps the
-   * LID↔number table the account has synced, which covers LIDs WhatsApp never
-   * asserted on a chat or a contact. Those do not go into `lidToPn`, because a
-   * chat whose history is filed under a LID would split in two the moment its
-   * id started canonicalising to the number instead.
-   */
+  /** The same, for naming only, and it holds more. See `learnLidPhone`. */
   private readonly lidPhones = new Map<string, string>();
   private readonly store = new Store();
   private readonly paths: Paths;
@@ -1273,8 +1267,8 @@ export class WhatsAppService implements WhatsAppApi {
 
   /**
    * Ask Baileys for the numbers behind the LIDs we are about to name. It answers
-   * from the table the account already synced, so this is a lookup rather than a
-   * fetch, and it is the difference between naming someone and shrugging at them.
+   * from the table the account has already synced, so this is a lookup and not a
+   * fetch, and it covers LIDs no chat, contact or group ever paired.
    */
   private async learnLidPhones(jids: Iterable<string>): Promise<void> {
     const missing = [...new Set(jids)].filter((jid) => jid.endsWith("@lid") && !this.lidPhones.has(jid));
@@ -1503,9 +1497,9 @@ export class WhatsAppService implements WhatsAppApi {
   }
 
   /**
-   * Group metadata is the only place WhatsApp says which LID belongs to which
-   * phone number, so one fetch teaches every later message in that group who
-   * its participants are.
+   * One fetch teaches every later message in that group who its participants
+   * are, which matters most for a group whose members are strangers to the
+   * address book.
    */
   private learnGroup(meta: GroupMetadata): void {
     for (const p of meta.participants) {
