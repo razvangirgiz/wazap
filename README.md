@@ -23,7 +23,8 @@ npx wazap-mcp setup
 ```
 
 That is the whole install. It links your account, finds the MCP clients
-installed on this machine, writes their config and tells you what to restart.
+installed on this machine, writes their config, copies the five skills where
+that client reads them, and tells you what to restart.
 
 ### Or the path your harness prefers
 
@@ -300,22 +301,25 @@ wazap ships five [Agent Skills](https://agentskills.io) that teach an agent the 
 | `whatsapp-groups` | Catch up on a 300-message group: decisions, dates, what is asked of you. Read-only |
 | `whatsapp-send` | Draft in the chat's own register, show recipient and text, send only after the user says yes |
 
-Install everything (server and skills) as a Claude Code plugin:
+`wazap setup` copies them into every client it connects, so there is usually
+nothing to run. The command behind it, for a harness `setup` never offered or
+for a checkout you want to install by hand:
+
+```bash
+npx wazap-mcp skills install codex     # or claude-code, cursor, opencode, agents
+```
+
+With no harness named it installs into every client it finds on this machine.
+For Claude Code the other route is the plugin, which carries the server as well:
 
 ```
 /plugin marketplace add razvangirgiz/wazap
 /plugin install wazap@wazap
 ```
 
-Every other harness gets them with one command:
-
-```bash
-npx wazap-mcp skills install codex     # or cursor, opencode, agents
-```
-
 | Harness | Where the five directories land |
 | --- | --- |
-| `claude-code` | nowhere — the plugin above already carries them |
+| `claude-code` | `~/.claude/skills/` |
 | `codex` | `~/.agents/skills/`, the directory Codex documents for user skills. Cursor and OpenCode read it too |
 | `cursor` | `~/.cursor/skills/` |
 | `opencode` | `~/.config/opencode/skills/` |
@@ -323,6 +327,13 @@ npx wazap-mcp skills install codex     # or cursor, opencode, agents
 
 Re-running overwrites, so an upgrade is the same command. `--dry-run` lists
 what it would copy.
+
+A client with no skills directory is not left out. The server registers each of
+the five as an MCP prompt of the same name, and sends a short `instructions`
+block that names all five and says when each applies, so an agent that never saw
+the skill files still follows them. That is how Claude Desktop, VS Code and
+Windsurf get the workflows. A bridged session and a self-hosted HTTP server
+carry them the same way.
 
 ## Errors
 

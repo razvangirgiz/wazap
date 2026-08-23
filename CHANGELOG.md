@@ -1,5 +1,24 @@
 # Changelog
 
+## Unreleased
+### Added
+
+- **The workflows reach every client, with no second command.** `wazap setup`
+  now copies the five skills into each client it connects, and the server
+  carries them as well: it sends a short `instructions` block naming all five
+  and registers each one as an MCP prompt of the same name. Claude Desktop, VS
+  Code, Gemini and Windsurf keep no skills directory, so this is how they get
+  the workflows. A bridged client sees the same prompts as the session holder,
+  and the Claude Desktop bundle now ships `skills/` so it can serve them.
+- **`wazap skills install` with no harness** installs into every client it finds
+  on this machine.
+
+### Changed
+
+- `wazap skills install claude-code` copies into `~/.claude/skills/` instead of
+  printing the plugin command. The plugin is still the other route, and the
+  README says so.
+
 ## 0.10.0
 ### Added
 

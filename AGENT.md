@@ -10,7 +10,7 @@ wazap keeps stdout for the MCP protocol and writes every human-readable line to 
    `npx wazap-mcp login --phone <number> --no-writes --yes 2>&1` (or `--writes`).
    Within ~10 s the output contains a line `pairing code: XXXX-XXXX`.
 4. Show the person exactly: "On your phone: WhatsApp → Settings → Linked devices → Link a device → Link with phone number instead → enter XXXX-XXXX". Keep reading the output until `Linked as …` and then `Synced N chats …` appear (up to 3 minutes). If the output says the code expired, run step 3 again.
-5. Register wazap with the client you are running in: `npx wazap-mcp connect <client>` where <client> is claude-code, claude-desktop, cursor, codex, vscode or gemini. Tell the person what the command printed as `Next`.
+5. Register wazap with the client you are running in: `npx wazap-mcp connect <client>` where <client> is claude-code, claude-desktop, cursor, codex, vscode or gemini. Tell the person what the command printed as `Next`. Then, for claude-code, codex, cursor and opencode, run `npx wazap-mcp skills install <client>`, which copies the five workflow skills where that client reads them. The other clients need no such step, because the server hands them the same five workflows as MCP prompts.
 6. Verify: `npx wazap-mcp status --json` must show `linked: true` and no failing check. If the client needs a restart, say so; otherwise call the `get_status` tool and then `learn`.
 7. Done when `get_status` returns `connected`. Then offer: "what did I miss on WhatsApp today?"
 
