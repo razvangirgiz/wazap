@@ -195,16 +195,16 @@ export interface Synced<T> {
   sync: SyncState;
 }
 
-/**
- * The surface the MCP tools and the CLI use. Declared here so tools.ts compiles
- * against the contract rather than the implementation.
- */
 export interface ContactSyncResult {
   requested: boolean;
   named_before: number;
   named_after: number;
 }
 
+/**
+ * The surface the MCP tools and the CLI use. Declared here so tools.ts compiles
+ * against the contract rather than the implementation.
+ */
 export interface WhatsAppApi {
   getStatus(): StatusInfo;
   listChats(filter: ChatFilter, limit: number): Promise<Synced<ChatSummary[]>>;

@@ -371,6 +371,10 @@ export class WhatsAppService implements WhatsAppApi {
   }
 
   /** True once WhatsApp has delivered at least one history-sync batch. */
+  hasHistory(): boolean {
+    return this.historyReceived;
+  }
+
   /**
    * The same full resync the self-heal runs, on demand. Nothing about the
    * account changes: this asks WhatsApp to send the address book again.
@@ -383,10 +387,6 @@ export class WhatsAppService implements WhatsAppApi {
       const after = await this.waitForNames(before, Date.now() + CONTACT_SETTLE_MS);
       return { requested: true, named_before: before, named_after: after };
     });
-  }
-
-  hasHistory(): boolean {
-    return this.historyReceived;
   }
 
   storeCounts(): { chats: number; contacts: number; messages: number } {

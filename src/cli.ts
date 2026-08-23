@@ -303,7 +303,9 @@ export async function runContacts(config: Config): Promise<void> {
           : warn("WhatsApp sent no names at all. The phone has no saved contacts for these people."),
     );
   } catch (err) {
-    spin.stop(fail(asWazapError(err).message));
+    const failure = asWazapError(err);
+    spin.stop(fail(failure.message));
+    if (failure.fix) say(fix(failure.fix));
     process.exitCode = 1;
   } finally {
     await wa.stop();
