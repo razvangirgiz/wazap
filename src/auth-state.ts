@@ -9,6 +9,7 @@ import {
   type AuthenticationState,
   type SignalDataTypeMap,
 } from "baileys";
+import type { Paths } from "./config.js";
 import { RESET_FIX, WazapError } from "./errors.js";
 
 export interface LinkedAccount {
@@ -143,6 +144,12 @@ export function readLinkedAccount(dir: string): LinkedAccount | null {
 
 export function clearAuth(dir: string): void {
   rmSync(dir, { recursive: true, force: true });
+}
+
+/** Everything a logout deletes: the credentials, and the store they decrypt. */
+export function clearSession(p: Paths): void {
+  clearAuth(p.authDir);
+  rmSync(p.storeFile, { force: true });
 }
 
 const APP_STATE_SYNC_VERSION = "app-state-sync-version";

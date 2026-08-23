@@ -26,11 +26,11 @@ import makeWASocket, {
   type WASocket,
 } from "baileys";
 import type { ILogger } from "baileys/lib/Utils/logger.js";
-import { readLinkedAccount, useAtomicAuthState } from "./auth-state.js";
+import { clearSession, readLinkedAccount, useAtomicAuthState, type LinkedAccount } from "./auth-state.js";
 import { CallTracker, callMessage, isTrackedCall, type CallEntry } from "./calls.js";
 import { BAILEYS_VERSION, paths, WAZAP_VERSION, type Config, type Paths } from "./config.js";
 import { asWazapError, RELINK_FIX, RESET_FIX, WazapError } from "./errors.js";
-import { isGroupId, isNoiseJid, resolveChatId } from "./ids.js";
+import { isGroupId, isNoiseJid, normalizePhone, resolveChatId } from "./ids.js";
 import { log, logError } from "./logger.js";
 import {
   buildMessageView,
@@ -49,7 +49,7 @@ import {
   viewText,
   voiceSeconds,
 } from "./messages.js";
-import { WA_BROWSER } from "./pairing.js";
+import { PAIRING_TIMEOUT_MS, WA_BROWSER, prettyCode, startPairing } from "./pairing.js";
 import {
   readTranscribeSettings,
   transcribeFile,
@@ -59,6 +59,7 @@ import {
   type TranscribeSettings,
   type TranscriptRecord,
 } from "./transcribe/index.js";
+import { maskNumber } from "./ui.js";
 import type {
   CallInfo,
   ChatAction,
@@ -76,6 +77,7 @@ import type {
   MediaSource,
   MessageType,
   MessageView,
+  PairingInfo,
   ParticipantResult,
   RecentConversation,
   SentMessage,
@@ -357,6 +359,9 @@ export class WhatsAppService implements WhatsAppApi {
    */
   onGiveUp: (() => void) | null = null;
   private account: StatusInfo["account"] = null;
+  /** The pairing in flight, from the first `link` call until it settles either way. */
+  private linking: Promise<PairingInfo> | null = null;
+  private pairing: PairingInfo | null = null;
   private lastInboundAt: number | null = null;
   private initialSyncDone = false;
   private historyReceived = false;
@@ -453,6 +458,75 @@ export class WhatsAppService implements WhatsAppApi {
     this.teardownSocket();
   }
 
+  /**
+   * Pair this install from inside the agent, so linking needs no terminal. One
+   * pairing runs at a time: a second call while one is in flight hands back the
+   * same code rather than opening a second socket on the same session.
+   */
+  link(phone: string): Promise<PairingInfo> {
+    return this.guarded(async () => {
+      if (this.linking) return this.linking;
+      const number = normalizePhone(phone);
+      this.requireUnlinked();
+      if (this.status !== "not_linked") clearSession(this.paths);
+      this.linking = this.pair(number);
+      return this.linking;
+    });
+  }
+
+  private requireUnlinked(): void {
+    switch (this.status) {
+      case "not_linked":
+      case "logged_out":
+      case "session_corrupt":
+      case "auth_failure":
+        return;
+      default:
+        throw new WazapError("ALREADY_LINKED", `The account is ${this.status}.`, "Call get_status");
+    }
+  }
+
+  private async pair(phone: string): Promise<PairingInfo> {
+    let pairing;
+    try {
+      pairing = await startPairing(this.paths.authDir, phone, PAIRING_TIMEOUT_MS);
+    } catch (err) {
+      this.abandonLink(err);
+      throw err;
+    }
+    this.pairing = {
+      code: prettyCode(pairing.code),
+      phone_masked: maskNumber(phone),
+      expires_at: isoWithOffset(pairing.expiresAt),
+    };
+    this.setStatus("linking");
+    void pairing.done.then(
+      (account) => this.adoptLink(account),
+      (err: unknown) => this.abandonLink(err),
+    );
+    return this.pairing;
+  }
+
+  /**
+   * The pairing socket is already ended by the time `done` resolves, so this can
+   * open the real one: it is the same reason the CLI syncs through the service.
+   */
+  private async adoptLink(account: LinkedAccount): Promise<void> {
+    this.linking = null;
+    this.pairing = null;
+    this.account = account;
+    this.lastError = null;
+    await this.start();
+  }
+
+  private abandonLink(err: unknown): void {
+    this.linking = null;
+    this.pairing = null;
+    this.setStatus("not_linked");
+    this.lastError = describe(err);
+    logError("link", err);
+  }
+
   /** True once WhatsApp has delivered at least one history-sync batch. */
   hasHistory(): boolean {
     return this.historyReceived;
@@ -513,6 +587,10 @@ export class WhatsAppService implements WhatsAppApi {
       rate_limit: this.config.rateLimitPerMinute,
       last_error: this.lastError,
     };
+    if (this.status === "linking" && this.pairing) {
+      info.pairing = this.pairing;
+      info.hint = "Enter the code on the phone; call get_status again in 10 s";
+    }
     const stale = this.lastInboundAt !== null && Date.now() - this.lastInboundAt > STALE_INBOUND_MS;
     if (this.status === "connected" && stale) {
       info.hint = "No messages received for 24h; the phone may be offline.";
@@ -1443,6 +1521,8 @@ export class WhatsAppService implements WhatsAppApi {
     switch (this.status) {
       case "not_linked":
         throw new WazapError("NOT_LINKED", "No WhatsApp account is linked.", RELINK_FIX);
+      case "linking":
+        throw new WazapError("NOT_CONNECTED", "Pairing is in progress.", "Enter the code on the phone, then call get_status");
       case "session_corrupt":
         throw new WazapError("SESSION_CORRUPT", this.lastError ?? "Stored credentials are unreadable.", RESET_FIX);
       case "logged_out":

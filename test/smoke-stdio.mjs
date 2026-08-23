@@ -14,7 +14,7 @@ import assert from "node:assert/strict";
 
 import { BINARY, mcpClient, spawnWazap } from "./helpers.mjs";
 
-const EXPECTED_TOOL_COUNT = 24;
+const EXPECTED_TOOL_COUNT = 25;
 const skillsDir = join(dirname(fileURLToPath(import.meta.url)), "..", "skills");
 const SKILL_NAMES = readdirSync(skillsDir, { withFileTypes: true })
   .filter((entry) => entry.isDirectory())

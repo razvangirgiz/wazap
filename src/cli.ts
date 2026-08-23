@@ -1,15 +1,15 @@
 import { randomBytes } from "node:crypto";
 import { once } from "node:events";
-import { mkdirSync, rmSync } from "node:fs";
+import { mkdirSync } from "node:fs";
 import { createInterface } from "node:readline/promises";
 import { setTimeout as sleep } from "node:timers/promises";
-import { DisconnectReason, type WASocket } from "baileys";
+import { DisconnectReason } from "baileys";
 import qrcode from "qrcode";
 import qrcodeTerminal from "qrcode-terminal";
-import { clearAuth, readLinkedAccount, type LinkedAccount } from "./auth-state.js";
+import { clearSession, readLinkedAccount, type LinkedAccount } from "./auth-state.js";
 import { banner } from "./banner.js";
 import { runBridge } from "./bridge.js";
-import { BAILEYS_VERSION, WAZAP_VERSION, paths, type Config } from "./config.js";
+import { BAILEYS_VERSION, WAZAP_VERSION, paths, type Config, type Paths } from "./config.js";
 import { connectNext, whereInstalled, type Install } from "./connect.js";
 import { decideRole, readDaemon, removeDaemon, writeDaemon } from "./daemon.js";
 import { checkLine, checkLines, runChecks, type Check } from "./doctor.js";
@@ -20,7 +20,7 @@ import { log, logError, say } from "./logger.js";
 import { clockLabel, formatAge } from "./messages.js";
 import { RateLimiter } from "./ratelimit.js";
 import { oauthProblem } from "./oauth.js";
-import { linkSession, settledAccount } from "./pairing.js";
+import { PAIRING_TIMEOUT_MS, linkSession, prettyCode, settledAccount, startPairing } from "./pairing.js";
 import { runHttp, runStdio, startLoopbackEndpoint } from "./server.js";
 import { fetchHealth, serviceHolding } from "./service.js";
 import { applyWrites } from "./settings.js";
@@ -59,7 +59,6 @@ import {
 import type { ConnectionStatus } from "./wa-types.js";
 import { WhatsAppService } from "./whatsapp.js";
 
-const LOGIN_TIMEOUT_MS = 120_000;
 const LIVE_TIMEOUT_MS = 15_000;
 /** Connection states the probe stops waiting on. */
 const SETTLED_STATUSES: readonly ConnectionStatus[] = [
@@ -607,40 +606,12 @@ export async function linkAndSync(config: Config, announce: (title: string) => v
       say(ok(maskNumber(phone)));
     }
 
-    const deadline = Date.now() + LOGIN_TIMEOUT_MS;
-    const waiting = new Countdown(deadline);
+    const waiting = new Countdown(Date.now() + PAIRING_TIMEOUT_MS);
     announce("Link your phone");
-
-    let requested = false;
-    const onQr = async (qr: string, sock: WASocket): Promise<void> => {
-      if (phone === null) {
-        qrcodeTerminal.generate(qr, { small: true }, (art: string) => say(art));
-        await qrcode.toFile(p.qrFile, qr);
-        say(
-          `  Scan it with WhatsApp → Settings → Linked devices → Link a device (also saved to ${shortPath(p.qrFile)})`,
-        );
-        say(dim("  Prefer typing a code? Press Ctrl+C and run `wazap login --phone +15550100`."));
-        say("");
-        waiting.start();
-        return;
-      }
-      if (requested) return;
-      requested = true;
-      const code = await sock.requestPairingCode(phone);
-      const pretty = `${code.slice(0, 4)}-${code.slice(4)}`;
-      if (!humanLayout()) say(`pairing code: ${pretty}`);
-      say("  On your phone: WhatsApp → Settings → Linked devices → Link a device → Link with phone number instead");
-      say("");
-      say(box(pretty));
-      say("");
-      waiting.start();
-    };
 
     let account: LinkedAccount;
     try {
-      const sock = await linkSession(p.authDir, { deadline, onQr });
-      account = await settledAccount(sock, p.authDir);
-      await sock.end(undefined);
+      account = phone === null ? await linkByQr(p, waiting) : await linkByCode(p.authDir, phone, waiting);
     } catch (err) {
       waiting.stop();
       throw err;
@@ -664,6 +635,36 @@ export async function linkAndSync(config: Config, announce: (title: string) => v
     await offerWrites(config);
   } finally {
     resumeService();
+  }
+}
+
+/** The same pairing the `link_account` tool runs, with the code shown in a box. */
+async function linkByCode(authDir: string, phone: string, waiting: Countdown): Promise<LinkedAccount> {
+  const pairing = await startPairing(authDir, phone, PAIRING_TIMEOUT_MS);
+  const pretty = prettyCode(pairing.code);
+  if (!humanLayout()) say(`pairing code: ${pretty}`);
+  say("  On your phone: WhatsApp → Settings → Linked devices → Link a device → Link with phone number instead");
+  say("");
+  say(box(pretty));
+  say("");
+  waiting.start();
+  return pairing.done;
+}
+
+async function linkByQr(p: Paths, waiting: Countdown): Promise<LinkedAccount> {
+  const onQr = async (qr: string): Promise<void> => {
+    qrcodeTerminal.generate(qr, { small: true }, (art: string) => say(art));
+    await qrcode.toFile(p.qrFile, qr);
+    say(`  Scan it with WhatsApp → Settings → Linked devices → Link a device (also saved to ${shortPath(p.qrFile)})`);
+    say(dim("  Prefer typing a code? Press Ctrl+C and run `wazap login --phone +15550100`."));
+    say("");
+    waiting.start();
+  };
+  const sock = await linkSession(p.authDir, { deadline: Date.now() + PAIRING_TIMEOUT_MS, onQr });
+  try {
+    return await settledAccount(sock, p.authDir);
+  } finally {
+    await sock.end(undefined);
   }
 }
 
@@ -818,8 +819,7 @@ export async function runLogout(config: Config): Promise<void> {
     }
   }
 
-  clearAuth(p.authDir);
-  rmSync(p.storeFile, { force: true });
+  clearSession(p);
   say(ok("Logged out. Local credentials deleted."));
   process.exit(0);
 }

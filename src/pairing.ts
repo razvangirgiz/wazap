@@ -34,6 +34,14 @@ const SILENT_LOGGER: SocketLogger = {
   error: () => {},
 };
 
+/** The seam the tests replace; production always opens a real WhatsApp socket. */
+export const socketFactory = { open: makeWASocket };
+
+/** How long a pairing code stays good for, and how long a link attempt runs. */
+export const PAIRING_TIMEOUT_MS = 120_000;
+/** How long WhatsApp gets to hand back the code before the attempt is abandoned. */
+const CODE_TIMEOUT_MS = 10_000;
+
 type Attempt =
   | { kind: "open" }
   | { kind: "restart" }
@@ -42,6 +50,8 @@ type Attempt =
 
 export interface LinkOptions {
   deadline: number;
+  /** Ends the session early, the way the deadline does. */
+  abort?: AbortSignal;
   /** Every QR the server offers. Absent when the caller only reuses stored credentials. */
   onQr?: (qr: string, sock: WASocket) => Promise<void>;
 }
@@ -53,13 +63,12 @@ export interface LinkOptions {
 export async function linkSession(authDir: string, opts: LinkOptions): Promise<WASocket> {
   let current: WASocket | null = null;
   let expired = false;
-  const timer = setTimeout(
-    () => {
-      expired = true;
-      void current?.end(undefined);
-    },
-    Math.max(0, opts.deadline - Date.now()),
-  );
+  const giveUp = (): void => {
+    expired = true;
+    void current?.end(undefined);
+  };
+  const timer = setTimeout(giveUp, Math.max(0, opts.deadline - Date.now()));
+  opts.abort?.addEventListener("abort", giveUp, { once: true });
 
   try {
     for (;;) {
@@ -72,7 +81,7 @@ export async function linkSession(authDir: string, opts: LinkOptions): Promise<W
       // book once. Refusing the history keeps it out of Baileys' sync state
       // machine, which is what would otherwise bump `accountSyncCounter` and
       // leave the service permanently past its own first sync.
-      const sock = makeWASocket({
+      const sock = socketFactory.open({
         auth: withoutAppStateSync(state),
         browser: WA_BROWSER,
         markOnlineOnConnect: false,
@@ -113,6 +122,7 @@ export async function linkSession(authDir: string, opts: LinkOptions): Promise<W
     }
   } finally {
     clearTimeout(timer);
+    opts.abort?.removeEventListener("abort", giveUp);
   }
 }
 
@@ -127,4 +137,61 @@ export async function settledAccount(sock: WASocket, authDir: string): Promise<L
   if (fromSocket.name) return fromSocket;
   await sleep(750);
   return readLinkedAccount(authDir) ?? fromSocket;
+}
+
+/** The 8 characters WhatsApp issues, grouped the way the phone shows them. */
+export function prettyCode(code: string): string {
+  return `${code.slice(0, 4)}-${code.slice(4)}`;
+}
+
+export interface Pairing {
+  code: string;
+  expiresAt: number;
+  /** Resolves once the socket opens and the account has settled; rejects on expiry or rejection. */
+  done: Promise<LinkedAccount>;
+}
+
+/**
+ * A pairing code, handed back as soon as WhatsApp issues it; the link itself
+ * runs on in `done`. That socket is ended before `done` resolves, so the caller
+ * can open the real one without ever holding two on the same session.
+ */
+export async function startPairing(authDir: string, phone: string, deadlineMs: number): Promise<Pairing> {
+  const deadline = Date.now() + deadlineMs;
+  const abort = new AbortController();
+  let issue!: (code: string) => void;
+  let refuse!: (err: unknown) => void;
+  const issued = new Promise<string>((resolve, reject) => {
+    issue = resolve;
+    refuse = reject;
+  });
+
+  let requested = false;
+  const done = (async () => {
+    const sock = await linkSession(authDir, {
+      deadline,
+      abort: abort.signal,
+      onQr: async (_qr, socket) => {
+        if (requested) return;
+        requested = true;
+        issue(await socket.requestPairingCode(phone));
+      },
+    });
+    try {
+      return await settledAccount(sock, authDir);
+    } finally {
+      await sock.end(undefined);
+    }
+  })();
+  done.catch(refuse);
+
+  const codeTimer = setTimeout(() => refuse(timedOut()), Math.min(CODE_TIMEOUT_MS, deadlineMs));
+  try {
+    return { code: await issued, expiresAt: deadline, done };
+  } catch (err) {
+    abort.abort();
+    throw err;
+  } finally {
+    clearTimeout(codeTimer);
+  }
 }

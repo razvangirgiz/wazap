@@ -1,5 +1,6 @@
 export type ErrorCode =
   | "NOT_LINKED"
+  | "ALREADY_LINKED"
   | "SESSION_EXPIRED"
   | "SESSION_CORRUPT"
   | "NOT_CONNECTED"
@@ -48,6 +49,7 @@ export const RESET_FIX = "Run `npx wazap-mcp logout` then `npx wazap-mcp login`"
 /** What an agent should do about each code. Rendered by the `learn` tool. */
 export const ERROR_GUIDE: Record<ErrorCode, string> = {
   NOT_LINKED: "No WhatsApp account is linked. Tell the user to run `npx wazap-mcp login`; do not retry.",
+  ALREADY_LINKED: "The account is linked; call get_status.",
   SESSION_EXPIRED: "The account was unlinked from the phone. Tell the user to run `npx wazap-mcp login`; do not retry.",
   SESSION_CORRUPT: "Stored credentials are unreadable. Tell the user to run `npx wazap-mcp logout` then `npx wazap-mcp login`.",
   NOT_CONNECTED: "The socket is still connecting or reconnecting. Call get_status, wait, retry once.",

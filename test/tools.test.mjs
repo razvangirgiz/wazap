@@ -19,6 +19,7 @@ function fakeServer() {
 const READ_TOOLS = [
   "learn",
   "get_status",
+  "link_account",
   "list_chats",
   "read_messages",
   "get_recent_messages",
@@ -46,9 +47,9 @@ const WRITE_TOOLS = [
   "manage_group",
 ];
 
-test("the registry is exactly the 24 documented tools", () => {
+test("the registry is exactly the 25 documented tools", () => {
   assert.deepEqual([...TOOL_NAMES].sort(), [...READ_TOOLS, ...WRITE_TOOLS].sort());
-  assert.equal(TOOL_NAMES.length, 24);
+  assert.equal(TOOL_NAMES.length, 25);
 });
 
 test("read-only registration exposes no write tool at all", () => {
@@ -60,7 +61,7 @@ test("read-only registration exposes no write tool at all", () => {
 test("every tool declares a description and an input schema", () => {
   const server = fakeServer();
   registerTools(server, {}, { allowWrite: true, limiter: new RateLimiter(20) });
-  assert.equal(server.tools.size, 24);
+  assert.equal(server.tools.size, 25);
   for (const [name, { meta }] of server.tools) {
     assert.ok(meta.description?.length > 40, `${name} needs a description an agent can act on`);
     assert.ok(meta.inputSchema, `${name} needs an input schema`);
@@ -152,6 +153,45 @@ test("get_recent_messages passes types through to the service and echoes it back
     .handler({ hours: 24, filter: "all", include_system: false, types: ["call", "voice"] });
   assert.deepEqual(calls[0], [24, "all", false, ["call", "voice"]]);
   assert.deepEqual(result.structuredContent.types, ["call", "voice"]);
+});
+
+/**
+ * link_account carries its own bucket of 2/minute, so this file may call it
+ * twice. The service-level cases live in link.test.mjs, in their own process.
+ */
+test("link_account hands back the code and the steps that go with it", async () => {
+  const server = fakeServer();
+  const asked = [];
+  const wa = {
+    link: async (phone) => {
+      asked.push(phone);
+      return { code: "ABCD-1234", phone_masked: "+15 5xx xxx", expires_at: "2026-08-23T12:00:00+03:00" };
+    },
+  };
+  registerTools(server, wa, { allowWrite: false, limiter: new RateLimiter(20) });
+
+  const result = await server.tools.get("link_account").handler({ phone: "+15550100" });
+  assert.deepEqual(asked, ["+15550100"]);
+  assert.equal(result.structuredContent.code, "ABCD-1234");
+  assert.match(result.content[0].text, /ABCD-1234/);
+  assert.match(result.content[0].text, /Linked devices/);
+  assert.match(result.structuredContent.next, /get_status/);
+});
+
+test("link_account on a linked account reports ALREADY_LINKED instead of pairing again", async () => {
+  const server = fakeServer();
+  const wa = {
+    getStatus: () => ({ status: "connected" }),
+    link: async () => {
+      throw new WazapError("ALREADY_LINKED", "The account is connected.", "Call get_status");
+    },
+  };
+  registerTools(server, wa, { allowWrite: true, limiter: new RateLimiter(20) });
+
+  const result = await server.tools.get("link_account").handler({ phone: "+15550100" });
+  assert.equal(result.isError, true);
+  assert.equal(result.structuredContent.error, "ALREADY_LINKED");
+  assert.equal(wa.getStatus().status, "connected", "the tool must not have touched the session");
 });
 
 test("learn documents every error code an agent can receive", async () => {
