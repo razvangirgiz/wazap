@@ -34,6 +34,18 @@ A call after someone's ask is evidence the user dealt with it. For every *Needs 
 
 Missed, rejected and unanswered calls are evidence of nothing, and those items stay in *Needs you*.
 
+### Voice notes
+
+A voice note carrying a `transcript` is text: triage it on what was said and quote
+the transcript, not the placeholder. One whose text is still `[voice message · 0:42]`
+was never transcribed, so you do not know what is in it and must not infer it from
+who sent it. `transcribe_audio(message_id)` reads one on demand. If that answers
+`TRANSCRIBE_UNAVAILABLE`, gather every such note into one closing line:
+
+*3 voice notes not transcribed (Ana 0:42, Dan 1:15, Bloc 12 0:08). Turn it on with `wazap config transcribe`.*
+
+One line for all of them, never one per item, and never a repeat of the offer.
+
 ## Report
 
 ```

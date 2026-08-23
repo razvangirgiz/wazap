@@ -1,8 +1,8 @@
 {
   "name": "wazap-mcp",
-  "version": "0.9.7",
+  "version": "0.9.8",
   "mcpName": "io.github.razvangirgiz/wazap",
-  "description": "WhatsApp for your AI agent. MCP server over Baileys: pairing-code login, 22 tools, stdio or token-protected HTTP.",
+  "description": "WhatsApp for your AI agent. MCP server over Baileys: pairing-code login, 24 tools, stdio or token-protected HTTP.",
   "license": "MIT",
   "author": "Răzvan Girgiz",
   "repository": {

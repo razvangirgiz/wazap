@@ -189,6 +189,7 @@ manifest, the icon and a fresh production `node_modules`, then packs them with
 | `get_contact` | read | Name, number, about text, profile picture. |
 | `get_group_info` | read | Participants, admins, announcement mode, invite link (when you are admin). |
 | `download_media` | read | Save an attachment to disk; small images also come back inline. |
+| `transcribe_audio` | read | Turn a voice note or audio message into text, with the local or the API provider. |
 | `send_message` | write | Send text, optionally as a reply, with @-mentions. |
 | `send_media` | write | Send an image, video, audio, voice note or document from a path or URL. |
 | `send_poll` | write | Send a poll with 2–12 options. |
@@ -202,9 +203,90 @@ manifest, the icon and a fresh production `node_modules`, then packs them with
 | `manage_group` | write | Add, remove, promote, demote, leave, rename, invite links. |
 
 Every message comes back with a non-empty `text`: media and system messages
-carry a placeholder such as `[image] caption`, `[voice message]`, `[deleted]` or
+carry a placeholder such as `[image] caption`, `[voice message · 0:42]`, `[deleted]` or
 `[poll] Pizza or pasta?`. Timestamps are ISO 8601 with the machine's UTC offset,
 alongside a human `age` like `2h ago`.
+
+## Voice messages
+
+A voice note is the one message an agent cannot read. Switch transcription on and
+it becomes text: `[voice message · 0:42] "sunt la notar, ajung în 20 de minute"`,
+with the bare words also in a `transcript` field. `get_recent_messages` and
+`search_messages` see that text, so a voice note becomes findable by what was
+said in it.
+
+Pick a provider once, in `wazap setup` or later:
+
+```bash
+wazap config transcribe local     # free and private, one 574 MB model on disk
+wazap config transcribe openai    # cheap and fast, the audio leaves this machine
+wazap config transcribe off
+```
+
+| | `local` | `openai` |
+| --- | --- | --- |
+| Runs | whisper.cpp, here | any OpenAI-compatible `/audio/transcriptions` |
+| Costs | nothing | per minute of audio, on your key |
+| Privacy | the audio never leaves this machine | **the audio leaves this machine** |
+| Needs | `whisper-cpp` and `ffmpeg`, plus a model | an API key |
+
+### Local, with whisper.cpp
+
+```bash
+brew install whisper-cpp ffmpeg      # macOS; elsewhere build whisper.cpp, install ffmpeg from your package manager
+wazap transcribe download            # fetch and verify the model
+wazap transcribe test recording.ogg  # prove it before you trust it
+```
+
+Models land in `<data-dir>/models/` and are checked against a SHA-256 pinned in
+the source; an interrupted download resumes where it stopped.
+
+| `WAZAP_WHISPER_MODEL` | File | Size |
+| --- | --- | --- |
+| `turbo` (default) | `ggml-large-v3-turbo-q5_0.bin` | 574 MB |
+| `large-v3` | `ggml-large-v3-q5_0.bin` | 1.08 GB |
+| `medium` | `ggml-medium-q5_0.bin` | 539 MB |
+
+`turbo` is the default because it is the smallest model that still gets Romanian
+right. `medium` and below drop diacritics and mangle names, which is worse than
+no transcript at all: a missing transcript is a question, a wrong name is a wrong
+answer. `large-v3` is the same accuracy for several times the wait.
+
+### An API, OpenAI-compatible
+
+`wazap config transcribe openai` asks for the key without echoing it and stores
+it in `<data-dir>/.env`. The default endpoint is OpenAI; Groq works unchanged:
+
+```bash
+WAZAP_TRANSCRIBE_URL=https://api.groq.com/openai/v1
+WAZAP_TRANSCRIBE_MODEL=whisper-large-v3-turbo
+```
+
+**With this provider the audio leaves your machine.** Every voice note wazap
+transcribes is uploaded to that endpoint. If that is not acceptable, use `local`,
+which uploads nothing.
+
+The key is treated as a secret rather than as a setting:
+
+- It is never accepted as a command-line argument, because an argument lands in
+  your shell history and in `ps`.
+- The prompt echoes nothing, not even asterisks.
+- It is stored only in `<data-dir>/.env`, mode `0600`.
+- `status`, `status --json`, `config` and `get_status` show at most
+  `api key: set (…abcd)`.
+- A provider's own error message has the key stripped out of it before wazap
+  prints it.
+- A plain-`http` `WAZAP_TRANSCRIBE_URL` is refused unless it points back at this
+  machine.
+
+### Without being asked
+
+With a provider configured, incoming voice notes of up to ten minutes are
+transcribed in the background as they arrive, one at a time, never holding up a
+message. The transcript is cached by message id and persisted, so a voice note is
+transcribed once and not again after a restart. Audio *files* are left alone,
+since one can be an hour long; call `transcribe_audio(message_id)` for those.
+`WAZAP_TRANSCRIBE_AUTO=0` keeps the tool and stops the background work.
 
 ## Skills
 
@@ -277,6 +359,7 @@ created `0700` with credentials written `0600`:
   auth/         WhatsApp credentials — treat this like a password
   media/        downloads from download_media
   history/      per-chat message history, so a restart is not amnesia
+  models/       whisper.cpp models, when transcription runs locally
   store.json    chat-list snapshot
   server.lock   pid of the running server
   daemon.json   loopback endpoint a second wazap bridges to
@@ -382,6 +465,14 @@ Claude Code, Claude Desktop, Cursor, Codex, VS Code and any client with an "MCP 
 | `WAZAP_HOST` / `WAZAP_PORT` | `127.0.0.1` / `8766` | HTTP bind address. |
 | `WAZAP_READ_TOKEN` / `WAZAP_WRITE_TOKEN` | unset | HTTP bearer tokens. |
 | `WAZAP_NO_UPDATE_CHECK` | `0` | `1` stops `status` asking npm for a newer version. |
+| `WAZAP_TRANSCRIBE` | `off` | `local`, `openai` or `off`. |
+| `WAZAP_TRANSCRIBE_AUTO` | `1` | Transcribe incoming voice notes in the background. |
+| `WAZAP_TRANSCRIBE_LANGUAGE` | `auto` | Spoken language, e.g. `ro`. |
+| `WAZAP_WHISPER_MODEL` | `turbo` | `turbo`, `large-v3` or `medium`. |
+| `WAZAP_WHISPER_BIN` | unset | Path to a whisper.cpp binary that is not on `PATH`. |
+| `WAZAP_TRANSCRIBE_API_KEY` | unset | API key; `OPENAI_API_KEY` is the fallback. Never a flag. |
+| `WAZAP_TRANSCRIBE_URL` | `https://api.openai.com/v1` | OpenAI-compatible base URL. |
+| `WAZAP_TRANSCRIBE_MODEL` | `gpt-4o-mini-transcribe` | Model at that URL. |
 
 Flags beat environment variables, which beat `<data-dir>/.env`.
 

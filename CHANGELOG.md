@@ -1,5 +1,64 @@
 # Changelog
 
+## 0.9.8
+### Added
+
+- **Voice messages become text.** A voice note is the one message an agent could
+  not read. With transcription on it reads as
+  `[voice message · 0:42] "sunt la notar, ajung în 20 de minute"`, carries the
+  bare words in a `transcript` field, and is findable by them:
+  `search_messages` matches the rendered text, so a recording is searchable by
+  what was said in it. A note nobody has transcribed still says how long it runs.
+- **Two providers, both opt-in.** `wazap config transcribe local` runs
+  whisper.cpp on this machine, free, and the audio never leaves. `wazap config
+  transcribe openai` posts to any OpenAI-compatible `/audio/transcriptions`,
+  which is fast and costs money and sends the audio away; Groq works unchanged.
+  `wazap setup` asks the question between Link and Connect, defaulting to
+  neither.
+- **`transcribe_audio(message_id, language?)`.** One recording on demand, capped
+  at ten calls a minute so a loop cannot run up a bill. The transcript is cached
+  by message id and persisted in the snapshot and the chat's own JSONL, so a
+  recording reaches a provider once and survives a restart, and two callers
+  wanting the same one join a single upload instead of paying twice.
+- **Transcribed as they arrive.** With a provider configured, incoming voice
+  notes are transcribed in the background, one at a time, never holding up
+  ingestion. "As they arrive" is meant strictly: a history sync replays a
+  backlog and transcribing all of it is a bill nobody asked for, so the hook
+  hangs off live delivery only. Notes the user recorded, audio files, anything
+  past ten minutes and anything WhatsApp stated no length for are left for the
+  tool to do deliberately. `WAZAP_TRANSCRIBE_AUTO=0` keeps the tool and stops
+  the background work.
+- **`wazap transcribe download` and `wazap transcribe test <file>`.** The model
+  is fetched into `<data-dir>/models/` behind one progress line, resumes from
+  its `.part` if you interrupt it, and is renamed into place only once its
+  SHA-256 matches the digest pinned in the source. `transcribe test` runs the
+  configured provider on a recording of your own, which is how you check a
+  language before trusting it with your WhatsApp. `status` reports the provider,
+  the binaries, the model and its size.
+- **`turbo` is the default model** (`ggml-large-v3-turbo-q5_0.bin`, 574 MB),
+  because it is the smallest one that still gets Romanian right. `medium` and
+  below drop diacritics and mangle names, which is worse than no transcript at
+  all: a missing transcript is a question, a wrong name is a wrong answer.
+  `WAZAP_WHISPER_MODEL` picks `large-v3` or `medium` instead.
+- **`whatsapp-inbox` and `whatsapp-recall` read voice notes.** A transcribed
+  note is triaged and quoted as the text it is. Notes nobody transcribed are
+  counted in one closing line, once, rather than an offer repeated per item.
+
+### Security
+
+- **The API key is never a command-line argument**, and typing it as one is
+  refused with the reason: an argument is kept in your shell history and
+  readable in `ps` by anyone on the machine. It is asked for at a prompt that
+  echoes nothing, not even asterisks, and stored only in `<data-dir>/.env` at
+  mode 0600. `status`, `status --json`, `config`, `get_status` and any error a
+  provider hands back show at most `api key: set (…abcd)`.
+- **Read-only keeps its meaning.** It has always promised no side effect anyone
+  outside this machine can see, so it refuses the API provider, which uploads
+  the user's audio and spends their money, and leaves whisper.cpp alone, which
+  does neither.
+- **A plain-`http` `WAZAP_TRANSCRIBE_URL` is refused** unless it points back at
+  this machine.
+
 ## 0.9.7
 ### Added
 
