@@ -63,6 +63,8 @@ it would write.
 | `codex` | `[mcp_servers.whatsapp]` in `~/.codex/config.toml` |
 | `vscode` | `./.vscode/mcp.json`, for the current workspace |
 | `gemini` | `~/.gemini/settings.json` |
+| `windsurf` | `~/.codeium/windsurf/mcp_config.json` |
+| `opencode` | `mcp.whatsapp` in `~/.config/opencode/opencode.json` |
 | anything remote | client's MCP URL field: `https://your-host/mcp` with header `Authorization: Bearer <token>` (see [Self-host](#self-host)) |
 
 Any MCP client works the same way: the command is `npx -y wazap-mcp`, the transport
@@ -83,13 +85,24 @@ workflows and every error code with what to do about it.
 }
 ```
 
-Claude Desktop, Cursor and Gemini CLI take exactly that. VS Code nests it under
-`servers` and wants a `"type": "stdio"` alongside `command`. Codex CLI is TOML:
+Claude Desktop, Cursor, Gemini CLI and Windsurf take exactly that. VS Code nests
+it under `servers` and wants a `"type": "stdio"` alongside `command`. Codex CLI
+is TOML:
 
 ```toml
 [mcp_servers.whatsapp]
 command = "npx"
 args = ["-y", "wazap-mcp"]
+```
+
+OpenCode takes the command and its arguments as one array, under `mcp`:
+
+```json
+{
+  "mcp": {
+    "whatsapp": { "type": "local", "command": ["npx", "-y", "wazap-mcp"] }
+  }
+}
 ```
 
 </details>

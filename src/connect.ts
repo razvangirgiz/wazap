@@ -26,8 +26,8 @@ export interface ClientSpec {
   file: () => string | null;
   format: Format;
   keyPath: readonly string[];
-  /** Fields the client wants alongside command and args. */
-  extra?: Record<string, string>;
+  /** The object this client wants under keyPath. Clients disagree on more than the path. */
+  value?: (entry: McpEntry) => Record<string, unknown>;
   next: string;
   /** Whether this client looks installed. Required: a client `setup` cannot look for is not one it can offer. */
   detect: (probe: Probes) => boolean;
@@ -86,7 +86,7 @@ export const CLIENTS: readonly ClientSpec[] = [
     file: () => join(process.cwd(), ".vscode", "mcp.json"),
     format: "json",
     keyPath: ["servers", "whatsapp"],
-    extra: { type: "stdio" },
+    value: (entry) => ({ type: "stdio", ...entry }),
     next: "Written to ./.vscode/mcp.json for this workspace. Reload the VS Code window.",
     detect: (probe) => probe.onPath("code"),
   },
@@ -98,6 +98,27 @@ export const CLIENTS: readonly ClientSpec[] = [
     keyPath: ["mcpServers", "whatsapp"],
     next: "Restart the Gemini CLI.",
     detect: (probe) => probe.exists(join(homedir(), ".gemini")),
+  },
+  {
+    name: "windsurf",
+    describe: "Windsurf",
+    file: () => join(homedir(), ".codeium", "windsurf", "mcp_config.json"),
+    format: "json",
+    keyPath: ["mcpServers", "whatsapp"],
+    next: "Refresh the MCP servers in Windsurf's Cascade panel.",
+    detect: (probe) => probe.exists(join(homedir(), ".codeium", "windsurf")),
+  },
+  {
+    name: "opencode",
+    describe: "OpenCode",
+    file: () => join(homedir(), ".config", "opencode", "opencode.json"),
+    format: "json",
+    keyPath: ["mcp", "whatsapp"],
+    // OpenCode takes one array where the others take a command and its args,
+    // and its schema refuses anything else under the key.
+    value: (entry) => ({ type: "local", command: [entry.command, ...entry.args] }),
+    next: "Restart OpenCode.",
+    detect: (probe) => probe.exists(join(homedir(), ".config", "opencode")),
   },
 ];
 
@@ -217,7 +238,7 @@ function writeJsonEntry(spec: ClientSpec, entry: McpEntry, dryRun: boolean): voi
     doc = parsed as Record<string, unknown>;
   }
 
-  const value = { ...spec.extra, command: entry.command, args: entry.args };
+  const value = spec.value?.(entry) ?? { command: entry.command, args: entry.args };
   setIn(doc, spec.keyPath, value);
   // Indent 1 collapsed to one line: short enough to read, still spaced like JSON.
   const shown = JSON.stringify(value, null, 1).replace(/\n\s*/g, " ");
