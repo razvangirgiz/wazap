@@ -9,9 +9,12 @@ import { rateLimit } from "express-rate-limit";
 import { WAZAP_VERSION, paths, type Config } from "./config.js";
 import { APPROVE_PATH, OAUTH_SCOPES, WazapOAuthProvider } from "./oauth.js";
 import { RateLimiter } from "./ratelimit.js";
+import { loadSkills, registerSkillPrompts, skillInstructions } from "./skills.js";
 import { registerTools } from "./tools.js";
 import { log, logError } from "./logger.js";
 import type { WhatsAppApi } from "./wa-types.js";
+
+const UNHEALTHY_AFTER_MS = 2 * 60 * 1000;
 
 function isAuthorized(header: string | undefined, expected: string): boolean {
   const prefix = "Bearer ";
@@ -21,9 +24,15 @@ function isAuthorized(header: string | undefined, expected: string): boolean {
   return got.length === want.length && timingSafeEqual(got, want);
 }
 
+/**
+ * The one place a session is built, so the workflows reach stdio and HTTP alike:
+ * a client that never installed the skill files still gets them here.
+ */
 function buildMcpServer(wa: WhatsAppApi, config: Config, allowWrite: boolean, limiter: RateLimiter): McpServer {
-  const server = new McpServer({ name: "wazap", version: WAZAP_VERSION });
+  const skills = loadSkills();
+  const server = new McpServer({ name: "wazap", version: WAZAP_VERSION }, { instructions: skillInstructions(skills) });
   registerTools(server, wa, { allowWrite: allowWrite && !config.readOnly, limiter });
+  registerSkillPrompts(server, skills);
   return server;
 }
 
@@ -211,9 +220,14 @@ export async function startHttpEndpoint(
   app.delete("/mcp", authed, handleMcp);
 
   // Unauthenticated, so it carries liveness only; the account and data dir
-  // stay behind the token in get_status.
+  // stay behind the token in get_status. A socket that has been anything but
+  // connected for two minutes is a real outage, and a 503 is what a tunnel or a
+  // monitor can act on; a reconnect in progress is not.
   app.get("/healthz", (_req, res) => {
-    res.json({ ok: true, status: wa.getStatus().status });
+    const { status, status_since } = wa.getStatus();
+    const stalled = Date.now() - Date.parse(status_since) > UNHEALTHY_AFTER_MS;
+    const ok = status === "connected" || !stalled;
+    res.status(ok ? 200 : 503).json({ ok, status, since: status_since });
   });
 
   return await new Promise<number>((resolve) => {

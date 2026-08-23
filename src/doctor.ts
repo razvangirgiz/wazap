@@ -4,6 +4,8 @@ import { WAZAP_VERSION, paths, type Config } from "./config.js";
 import { WazapError, asWazapError } from "./errors.js";
 import { lockHolder, lockPid } from "./lock.js";
 import { oauthProblem, readGrants } from "./oauth.js";
+import { installedService } from "./service.js";
+import { detectedTargets, skillState } from "./skills.js";
 import {
   MODELS,
   findWhisper,
@@ -42,8 +44,10 @@ const CHECKS: readonly CheckFn[] = [
   checkNode,
   checkDataDir,
   checkLock,
+  checkService,
   checkCredentials,
   checkWrites,
+  checkSkills,
   checkOAuth,
   checkTranscribe,
   checkUpdate,
@@ -119,6 +123,28 @@ function checkLock(config: Config): Check {
   return { name: "lock", state: "info", detail: "none" };
 }
 
+/** Whether the background service is installed, alive, and running this build. */
+function checkService(config: Config): Check {
+  const found = installedService(config.dataDir);
+  if (found === null) {
+    return { name: "service", state: "info", detail: "not installed", fix: "run `wazap service install`" };
+  }
+  const { supervisor, record } = found;
+  const pid = supervisor.pid(record);
+  if (pid === null) {
+    return { name: "service", state: "fail", detail: "installed but not running", fix: "run `wazap service start`" };
+  }
+  if (record.installedVersion !== WAZAP_VERSION) {
+    return {
+      name: "service",
+      state: "info",
+      detail: `runs ${record.installedVersion}, ${WAZAP_VERSION} is installed`,
+      fix: "run `wazap service restart`",
+    };
+  }
+  return { name: "service", state: "ok", detail: `running (pid ${pid}, ${supervisor.name})` };
+}
+
 function checkCredentials(config: Config): Check {
   const authDir = paths(config.dataDir).authDir;
   try {
@@ -138,6 +164,26 @@ function checkWrites(config: Config): Check {
     name: "writes",
     state: "ok",
     detail: `${config.readOnly ? "off" : "on"} (${config.sources.readOnly})`,
+  };
+}
+
+/**
+ * Whether each detected harness holds the workflows this build ships. A global
+ * upgrade leaves the copies behind, and nothing else would ever say so.
+ */
+function checkSkills(): Check {
+  const targets = detectedTargets();
+  if (targets.length === 0) return { name: "skills", state: "info", detail: "no skill-aware client detected" };
+
+  const states = targets.map((target) => ({ name: target.name, state: skillState(target) }));
+  if (states.every((target) => target.state === "installed")) {
+    return { name: "skills", state: "ok", detail: `installed for ${states.map((t) => t.name).join(", ")}` };
+  }
+  return {
+    name: "skills",
+    state: "info",
+    detail: states.map((target) => `${target.state} for ${target.name}`).join("; "),
+    fix: "run `wazap skills install`",
   };
 }
 
@@ -233,22 +279,28 @@ export function isNewer(candidate: string, current: string): boolean {
   return false;
 }
 
-async function checkUpdate(): Promise<Check> {
-  if (process.env.WAZAP_NO_UPDATE_CHECK === "1") {
-    return { name: "update", state: "info", detail: "update check skipped (WAZAP_NO_UPDATE_CHECK=1)" };
-  }
+/** What the registry calls latest, or null when it will not say. */
+export async function latestVersion(): Promise<string | null> {
+  if (process.env.WAZAP_NO_UPDATE_CHECK === "1") return null;
   try {
     const response = await fetch("https://registry.npmjs.org/wazap-mcp/latest", {
       signal: AbortSignal.timeout(UPDATE_TIMEOUT_MS),
     });
-    if (!response.ok) {
-      return { name: "update", state: "info", detail: `update check skipped (registry answered ${response.status})` };
-    }
+    if (!response.ok) return null;
     const { version } = (await response.json()) as { version: string };
-    return isNewer(version, WAZAP_VERSION)
-      ? { name: "update", state: "info", detail: `${version} is out (running ${WAZAP_VERSION})`, fix: "run `npx wazap-mcp@latest`" }
-      : { name: "update", state: "ok", detail: `${WAZAP_VERSION} is current` };
+    return typeof version === "string" && version !== "" ? version : null;
   } catch {
-    return { name: "update", state: "info", detail: "update check skipped (offline)" };
+    return null;
   }
+}
+
+async function checkUpdate(): Promise<Check> {
+  if (process.env.WAZAP_NO_UPDATE_CHECK === "1") {
+    return { name: "update", state: "info", detail: "update check skipped (WAZAP_NO_UPDATE_CHECK=1)" };
+  }
+  const latest = await latestVersion();
+  if (latest === null) return { name: "update", state: "info", detail: "update check skipped (no answer)" };
+  return isNewer(latest, WAZAP_VERSION)
+    ? { name: "update", state: "info", detail: `${latest} is out (running ${WAZAP_VERSION})`, fix: "run `wazap update`" }
+    : { name: "update", state: "ok", detail: `${WAZAP_VERSION} is current` };
 }

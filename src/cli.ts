@@ -1,27 +1,18 @@
 import { randomBytes } from "node:crypto";
 import { once } from "node:events";
-import { mkdirSync, rmSync } from "node:fs";
+import { mkdirSync } from "node:fs";
 import { createInterface } from "node:readline/promises";
 import { setTimeout as sleep } from "node:timers/promises";
-import makeWASocket, {
-  DisconnectReason,
-  type UserFacingSocketConfig,
-  type WASocket,
-} from "baileys";
+import { DisconnectReason } from "baileys";
 import qrcode from "qrcode";
 import qrcodeTerminal from "qrcode-terminal";
-import {
-  clearAuth,
-  readLinkedAccount,
-  useAtomicAuthState,
-  withoutAppStateSync,
-  type LinkedAccount,
-} from "./auth-state.js";
+import { clearSession, readLinkedAccount, type LinkedAccount } from "./auth-state.js";
 import { banner } from "./banner.js";
 import { runBridge } from "./bridge.js";
-import { BAILEYS_VERSION, WAZAP_VERSION, paths, type Config } from "./config.js";
-import { connectNext } from "./connect.js";
+import { BAILEYS_VERSION, WAZAP_VERSION, paths, type Config, type Paths } from "./config.js";
+import { connectNext, whereInstalled, type Install } from "./connect.js";
 import { decideRole, readDaemon, removeDaemon, writeDaemon } from "./daemon.js";
+import { DEPS, ensureDeps } from "./deps.js";
 import { checkLine, checkLines, runChecks, type Check } from "./doctor.js";
 import { RELINK_FIX, WazapError, asWazapError } from "./errors.js";
 import { normalizePhone } from "./ids.js";
@@ -30,7 +21,9 @@ import { log, logError, say } from "./logger.js";
 import { clockLabel, formatAge } from "./messages.js";
 import { RateLimiter } from "./ratelimit.js";
 import { oauthProblem } from "./oauth.js";
+import { PAIRING_TIMEOUT_MS, linkSession, prettyCode, settledAccount, startPairing } from "./pairing.js";
 import { runHttp, runStdio, startLoopbackEndpoint } from "./server.js";
+import { fetchHealth, serviceHolding } from "./service.js";
 import { applyWrites } from "./settings.js";
 import {
   MODELS,
@@ -65,10 +58,10 @@ import {
   type Spinner,
 } from "./ui.js";
 import type { ConnectionStatus } from "./wa-types.js";
-import { WA_BROWSER, WhatsAppService } from "./whatsapp.js";
+import { WhatsAppService } from "./whatsapp.js";
 
-const LOGIN_TIMEOUT_MS = 120_000;
-const LIVE_TIMEOUT_MS = 15_000;
+/** How long a probe waits for the socket to settle; tests shorten it through the environment. */
+const LIVE_TIMEOUT_MS = Number.parseInt(process.env.WAZAP_LIVE_TIMEOUT_MS ?? "", 10) || 15_000;
 /** Connection states the probe stops waiting on. */
 const SETTLED_STATUSES: readonly ConnectionStatus[] = [
   "connected",
@@ -78,23 +71,13 @@ const SETTLED_STATUSES: readonly ConnectionStatus[] = [
   "auth_failure",
 ];
 const LOGOUT_TIMEOUT_MS = 10_000;
+/** What `serve` exits with when WhatsApp keeps refusing the socket. */
+export const GAVE_UP_EXIT = 3;
 const LOOPBACK_HOSTS = ["127.0.0.1", "::1", "localhost"];
 /** Bind addresses a loopback bridge can still reach; the wildcards include 127.0.0.1. */
 const SHAREABLE_HOSTS = [...LOOPBACK_HOSTS, "0.0.0.0", "::"];
 
-/** Baileys' default logger is a pino instance writing JSON to stdout. */
-type SocketLogger = NonNullable<UserFacingSocketConfig["logger"]>;
-const SILENT_LOGGER: SocketLogger = {
-  level: "silent",
-  child: () => SILENT_LOGGER,
-  trace: () => {},
-  debug: () => {},
-  info: () => {},
-  warn: () => {},
-  error: () => {},
-};
-
-interface LiveReport {
+export interface LiveReport {
   reachable: boolean;
   chats: number | null;
   last_message_age: string | null;
@@ -108,6 +91,7 @@ interface StatusReport {
   account: LinkedAccount | null;
   wazap_version: string;
   baileys_version: string;
+  install: Install;
   server_pid: number | null;
   daemon: { pid: number; port: number } | null;
   checks: Check[];
@@ -138,6 +122,7 @@ export async function runStatus(config: Config): Promise<StatusReport> {
     account,
     wazap_version: WAZAP_VERSION,
     baileys_version: BAILEYS_VERSION,
+    install: whereInstalled(),
     server_pid: serverPid,
     daemon: sharing,
     checks: await runChecks(config),
@@ -173,6 +158,7 @@ function plainStatus(report: StatusReport): string[] {
   lines.push(
     `wazap: ${report.wazap_version}`,
     `baileys: ${report.baileys_version}`,
+    `install: ${describeInstall(report.install)}`,
     `server: ${serverState(report)}`,
     "",
     "checks:",
@@ -194,6 +180,11 @@ function row(label: string, value: string): string {
   return `${dim(label.padEnd(LABEL_WIDTH))}  ${value}`;
 }
 
+/** `global (/usr/local/bin/wazap)`: the kind is what decides an upgrade, the path is the proof. */
+function describeInstall(install: Install): string {
+  return install.script === "" ? install.kind : `${install.kind} (${shortPath(install.script)})`;
+}
+
 function richStatus(report: StatusReport): string[] {
   const account = !report.credentials_readable
     ? "credentials unreadable"
@@ -203,6 +194,7 @@ function richStatus(report: StatusReport): string[] {
   return [
     `${bold(`wazap ${report.wazap_version}`)}${dim(` · baileys ${report.baileys_version}`)}`,
     row("data dir", tilde(report.data_dir)),
+    row("install", describeInstall(report.install)),
     row("account", account),
     row("server", serverState(report)),
     "",
@@ -233,12 +225,35 @@ function takeSessionLock(lockFile: string): number | null {
   throw new WazapError("WHATSAPP_ERROR", `Could not take the session lock in ${lockFile}.`, "Run the command again");
 }
 
+const SERVICE_HEALTH_TIMEOUT_MS = 5_000;
+
+/**
+ * What the installed service says about itself, for the callers that would
+ * otherwise have to refuse: it holds the session, so nobody else may open it.
+ */
+export async function serviceLive(config: Config, pid: number): Promise<LiveReport | null> {
+  const held = serviceHolding(config.dataDir, pid);
+  if (held === null) return null;
+  const health = await fetchHealth(held.record.port, SERVICE_HEALTH_TIMEOUT_MS);
+  if (health === null) {
+    return { reachable: false, chats: null, last_message_age: null, reason: "the service is not answering /healthz" };
+  }
+  return {
+    reachable: health.status === "connected",
+    chats: null,
+    last_message_age: null,
+    reason: health.status === "connected" ? null : health.status,
+  };
+}
+
 /** One process owns the session, so a probe only runs when no server holds the lock. */
-async function runLiveProbe(config: Config): Promise<LiveReport> {
+export async function runLiveProbe(config: Config): Promise<LiveReport> {
   const p = paths(config.dataDir);
   // The probe owns the session for as long as it runs, exactly like the server.
   const running = takeSessionLock(p.lockFile);
   if (running !== null) {
+    const live = await serviceLive(config, running);
+    if (live !== null) return live;
     throw new WazapError(
       "WHATSAPP_ERROR",
       `A server (pid ${running}) already owns this session.`,
@@ -339,6 +354,7 @@ export async function runTranscribe(config: Config): Promise<void> {
   const [verb, file] = config.args;
   const settings = readTranscribeSettings(process.env, config.dataDir);
   if (verb === "download" && file === undefined) {
+    await ensureDeps([DEPS.whisper, DEPS.ffmpeg], config);
     await downloadTranscribeModel(settings, modelSpec(config.modelName ?? settings.model));
     return;
   }
@@ -489,6 +505,16 @@ export async function runServe(config: Config): Promise<void> {
   process.on("SIGINT", () => shutdown("SIGINT"));
   process.on("SIGTERM", () => shutdown("SIGTERM"));
 
+  // A socket WhatsApp keeps refusing is not something this process can fix, and
+  // a live MCP server answering NOT_CONNECTED forever is worse than a dead one:
+  // exiting hands the problem to whoever started us, which is a supervisor that
+  // restarts it, or a client that shows the error. An unlinked device is the
+  // exception and stays up in auth_failure, because no restart brings it back.
+  wa.onGiveUp = () => {
+    logError("whatsapp", "reconnects exhausted; exiting so the supervisor can restart wazap");
+    process.exit(GAVE_UP_EXIT);
+  };
+
   // Connecting in the background: MCP startup never waits on WhatsApp, and the
   // tools answer NOT_LINKED until a session exists.
   wa.start().catch((err: unknown) => logError("whatsapp start", err));
@@ -555,22 +581,23 @@ export async function runLogin(config: Config): Promise<void> {
 export async function linkAndSync(config: Config, announce: (title: string) => void = () => {}): Promise<void> {
   const p = paths(config.dataDir);
 
-  const running = takeSessionLock(p.lockFile);
-  if (running !== null) {
-    say(fail(`wazap is running (pid ${running}). Stop it first (or quit the client that launched it), then run this again.`));
-    process.exit(1);
-  }
-
+  const resumeService = await yieldSession(config, p.lockFile);
+  // The lock goes the moment pairing is over; the service waits until the
+  // writes answer is on disk, so it starts with the setting it should run under.
   const release = (): void => releaseLock(p.lockFile);
-  const onInterrupt = (): void => {
+  const bail = (): void => {
     release();
+    resumeService();
+  };
+  const onInterrupt = (): void => {
+    bail();
     process.exit(130);
   };
   const onTerminate = (): void => {
-    release();
+    bail();
     process.exit(143);
   };
-  process.on("exit", release);
+  process.on("exit", bail);
   process.on("SIGINT", onInterrupt);
   process.on("SIGTERM", onTerminate);
 
@@ -582,40 +609,12 @@ export async function linkAndSync(config: Config, announce: (title: string) => v
       say(ok(maskNumber(phone)));
     }
 
-    const deadline = Date.now() + LOGIN_TIMEOUT_MS;
-    const waiting = new Countdown(deadline);
+    const waiting = new Countdown(Date.now() + PAIRING_TIMEOUT_MS);
     announce("Link your phone");
-
-    let requested = false;
-    const onQr = async (qr: string, sock: WASocket): Promise<void> => {
-      if (phone === null) {
-        qrcodeTerminal.generate(qr, { small: true }, (art: string) => say(art));
-        await qrcode.toFile(p.qrFile, qr);
-        say(
-          `  Scan it with WhatsApp → Settings → Linked devices → Link a device (also saved to ${shortPath(p.qrFile)})`,
-        );
-        say(dim("  Prefer typing a code? Press Ctrl+C and run `wazap login --phone +15550100`."));
-        say("");
-        waiting.start();
-        return;
-      }
-      if (requested) return;
-      requested = true;
-      const code = await sock.requestPairingCode(phone);
-      const pretty = `${code.slice(0, 4)}-${code.slice(4)}`;
-      if (!humanLayout()) say(`pairing code: ${pretty}`);
-      say("  On your phone: WhatsApp → Settings → Linked devices → Link a device → Link with phone number instead");
-      say("");
-      say(box(pretty));
-      say("");
-      waiting.start();
-    };
 
     let account: LinkedAccount;
     try {
-      const sock = await linkSession(p.authDir, { deadline, onQr });
-      account = await settledAccount(sock, p.authDir);
-      await sock.end(undefined);
+      account = phone === null ? await linkByQr(p, waiting) : await linkByCode(p.authDir, phone, waiting);
     } catch (err) {
       waiting.stop();
       throw err;
@@ -624,15 +623,88 @@ export async function linkAndSync(config: Config, announce: (title: string) => v
 
     announce("Sync your chats");
     await syncAfterLink(config);
+  } catch (err) {
+    resumeService();
+    throw err;
   } finally {
     release();
-    process.off("exit", release);
+    process.off("exit", bail);
     process.off("SIGINT", onInterrupt);
     process.off("SIGTERM", onTerminate);
   }
 
   announce("Permissions");
-  await offerWrites(config);
+  try {
+    await offerWrites(config);
+  } finally {
+    resumeService();
+  }
+}
+
+/** The same pairing the `link_account` tool runs, with the code shown in a box. */
+async function linkByCode(authDir: string, phone: string, waiting: Countdown): Promise<LinkedAccount> {
+  const pairing = await startPairing(authDir, phone, PAIRING_TIMEOUT_MS);
+  const pretty = prettyCode(pairing.code);
+  if (!humanLayout()) say(`pairing code: ${pretty}`);
+  say("  On your phone: WhatsApp → Settings → Linked devices → Link a device → Link with phone number instead");
+  say("");
+  say(box(pretty));
+  say("");
+  waiting.start();
+  return pairing.done;
+}
+
+async function linkByQr(p: Paths, waiting: Countdown): Promise<LinkedAccount> {
+  const onQr = async (qr: string): Promise<void> => {
+    qrcodeTerminal.generate(qr, { small: true }, (art: string) => say(art));
+    await qrcode.toFile(p.qrFile, qr);
+    say(`  Scan it with WhatsApp → Settings → Linked devices → Link a device (also saved to ${shortPath(p.qrFile)})`);
+    say(dim("  Prefer typing a code? Press Ctrl+C and run `wazap login --phone +15550100`."));
+    say("");
+    waiting.start();
+  };
+  const sock = await linkSession(p.authDir, { deadline: Date.now() + PAIRING_TIMEOUT_MS, onQr });
+  try {
+    return await settledAccount(sock, p.authDir);
+  } finally {
+    await sock.end(undefined);
+  }
+}
+
+const SERVICE_STOP_MS = 10_000;
+
+/**
+ * The session lock, held for pairing. A client's own server is the user's to
+ * quit; the background service is ours to stop, which is why the returned
+ * function starts it again. What `~/.wazap/link.sh` did by hand.
+ */
+export async function yieldSession(config: Config, lockFile: string): Promise<() => void> {
+  const running = takeSessionLock(lockFile);
+  if (running === null) return () => {};
+
+  const held = serviceHolding(config.dataDir, running);
+  if (held === null) {
+    say(fail(`wazap is running (pid ${running}). Stop it first (or quit the client that launched it), then run this again.`));
+    process.exit(1);
+  }
+
+  say(info("Stopping the wazap service for pairing"));
+  held.supervisor.stop(held.record);
+  let resumed = false;
+  const resume = (): void => {
+    if (resumed) return;
+    resumed = true;
+    held.supervisor.start(held.record);
+  };
+
+  const deadline = Date.now() + SERVICE_STOP_MS;
+  while (Date.now() < deadline) {
+    if (takeSessionLock(lockFile) === null) return resume;
+    await sleep(200);
+  }
+  resume();
+  say(fail(`The wazap service (pid ${running}) did not let go of the session.`));
+  process.exit(1);
 }
 
 const HISTORY_WAIT_MS = 90_000;
@@ -750,8 +822,7 @@ export async function runLogout(config: Config): Promise<void> {
     }
   }
 
-  clearAuth(p.authDir);
-  rmSync(p.storeFile, { force: true });
+  clearSession(p);
   say(ok("Logged out. Local credentials deleted."));
   process.exit(0);
 }
@@ -831,105 +902,10 @@ async function askPhone(): Promise<string> {
   }
 }
 
-type Attempt =
-  | { kind: "open" }
-  | { kind: "restart" }
-  | { kind: "closed"; statusCode?: number }
-  | { kind: "failed"; error: unknown };
-
-interface LinkOptions {
-  deadline: number;
-  /** Every QR the server offers. Absent when the caller only reuses stored credentials. */
-  onQr?: (qr: string, sock: WASocket) => Promise<void>;
-}
-
-/**
- * A socket run until it is open, retrying across the restart WhatsApp demands
- * right after a successful pairing. The returned socket is the caller's to end.
- */
-async function linkSession(authDir: string, opts: LinkOptions): Promise<WASocket> {
-  let current: WASocket | null = null;
-  let expired = false;
-  const timer = setTimeout(
-    () => {
-      expired = true;
-      void current?.end(undefined);
-    },
-    Math.max(0, opts.deadline - Date.now()),
-  );
-
-  try {
-    for (;;) {
-      // Also checked here: a restart landing just before the deadline would
-      // otherwise open a socket the timer can no longer reach.
-      if (expired) throw timedOut();
-      const { state, saveCreds } = await useAtomicAuthState(authDir);
-      // This socket pairs and nothing else. It has no store, so anything it
-      // syncs is thrown away — and WhatsApp sends the history and the address
-      // book once. Refusing the history keeps it out of Baileys' sync state
-      // machine, which is what would otherwise bump `accountSyncCounter` and
-      // leave the service permanently past its own first sync.
-      const sock = makeWASocket({
-        auth: withoutAppStateSync(state),
-        browser: WA_BROWSER,
-        markOnlineOnConnect: false,
-        shouldSyncHistoryMessage: () => false,
-        logger: SILENT_LOGGER,
-      });
-      current = sock;
-      sock.ev.on("creds.update", () => void saveCreds());
-
-      const attempt = await new Promise<Attempt>((resolve) => {
-        sock.ev.on("connection.update", (update) => {
-          if (update.qr && opts.onQr) {
-            void opts.onQr(update.qr, sock).catch((error: unknown) => resolve({ kind: "failed", error }));
-          }
-          if (update.connection === "open") resolve({ kind: "open" });
-          if (update.connection === "close") {
-            const statusCode = (update.lastDisconnect?.error as { output?: { statusCode?: number } } | undefined)
-              ?.output?.statusCode;
-            resolve(statusCode === DisconnectReason.restartRequired ? { kind: "restart" } : { kind: "closed", statusCode });
-          }
-        });
-      });
-
-      if (attempt.kind === "open") return sock;
-      await sock.end(undefined);
-      current = null;
-      if (attempt.kind === "restart") continue;
-      if (expired) throw timedOut();
-      if (attempt.kind === "failed") throw asWazapError(attempt.error);
-      if (attempt.statusCode === DisconnectReason.loggedOut) {
-        throw new WazapError(
-          "SESSION_EXPIRED",
-          "WhatsApp rejected the link. The code may have expired or been entered wrong.",
-          RELINK_FIX,
-        );
-      }
-      throw new WazapError("WHATSAPP_ERROR", `WhatsApp closed the connection (code ${attempt.statusCode ?? "unknown"}).`);
-    }
-  } finally {
-    clearTimeout(timer);
-  }
-}
-
-function timedOut(): WazapError {
-  return new WazapError("TIMEOUT", "WhatsApp did not answer in time.", "Check your connection and try again");
-}
-
 function withDeadline<T>(work: Promise<T>, deadline: number, message: string): Promise<T> {
   let timer: NodeJS.Timeout | undefined;
   const guard = new Promise<never>((_resolve, reject) => {
     timer = setTimeout(() => reject(new WazapError("TIMEOUT", message)), Math.max(0, deadline - Date.now()));
   });
   return Promise.race([work, guard]).finally(() => clearTimeout(timer));
-}
-
-/** The freshly linked account. `creds.update` can land a beat after the connection opens. */
-async function settledAccount(sock: WASocket, authDir: string): Promise<LinkedAccount> {
-  const number = (sock.user?.id ?? "").split(":")[0]!.split("@")[0]!;
-  const fromSocket: LinkedAccount = { id: `${number}@s.whatsapp.net`, name: sock.user?.name ?? "", number };
-  if (fromSocket.name) return fromSocket;
-  await sleep(750);
-  return readLinkedAccount(authDir) ?? fromSocket;
 }

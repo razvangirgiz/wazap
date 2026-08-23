@@ -1,5 +1,98 @@
 # Changelog
 
+## Unreleased
+### Added
+
+- **`setup` installs the binaries it needs, and restarts Claude Desktop for
+  you.** Local transcription used to stop at "run `wazap transcribe download`
+  once whisper-cpp and ffmpeg are installed" and `expose` at "tailscale is not
+  installed". Both now offer one `brew install` for the whole missing set and
+  carry on in the same run; Tailscale still needs `tailscale up`, which setup
+  prints as the next step rather than running. The keep-running menu offers a
+  public URL when Homebrew could install a tunnel, not only when one is already
+  there. Connecting Claude Desktop offers to quit and reopen it, so the last
+  manual step of a macOS setup is gone. `--yes` accepts the install and
+  `--no-brew` declines it; the restart takes a person at the prompt or
+  `--relaunch`, because an agent running setup from inside Claude Desktop
+  would otherwise quit itself.
+- **`link_account` pairs WhatsApp from inside the chat**, so linking no longer
+  needs a terminal. The server is already running and idle when nothing is
+  linked, so it pairs itself: the tool takes a phone number, returns an
+  8-character code and the steps to type it into the phone, and `get_status`
+  reports `linking` with that code until WhatsApp accepts it. It stays
+  registered in read-only mode, because read-only is there to stop the agent
+  messaging people, and relinking a dead session messages nobody. `ALREADY_LINKED`
+  is the new error for calling it on a live session. The pairing socket and the
+  CLI's `login --phone` now run the same code, in `src/pairing.ts`.
+- **`wazap update` is the whole upgrade.** It reads the registry, then does what
+  this install needs: `npm i -g wazap-mcp@<latest>` when wazap is global, a
+  restart of the background service so it runs the new code, and a fresh copy of
+  the skills for every harness that keeps them, taken from the package it just
+  installed rather than from the running one. A checkout is told to pull and
+  build; an npx run is told to rerun `setup` through the new version.
+  `--dry-run` prints the numbered plan and stops there. `status` now sends you
+  here instead of to `npx wazap-mcp@latest`.
+- **`wazap setup` installs wazap globally when npx is how it started.** The npx
+  cache is a copy npm clears, so Claude Desktop could not launch what setup had
+  just connected, and `service install` refused outright. Setup now asks once,
+  before it connects anything, and `npm i -g wazap-mcp@<this version>` gives the
+  rest of the run a path that lasts. `--yes` accepts, `--no-global` declines and
+  setup carries on. `status` reports where this wazap lives, as
+  `install: global|checkout|npx` with the script behind it.
+- **`wazap service` keeps the session up without a client.**
+  `wazap service install|status|start|stop|restart|logs|uninstall` writes a
+  launchd agent or a systemd user unit, starts it and waits for `/healthz`.
+  The unit runs
+  `serve --http` on loopback with the absolute path of this Node and this
+  install, so it survives a reboot and a logout, and `status` says when it still
+  runs an older build than the one installed. `wazap login` needs the session to
+  itself, so it now stops the service, pairs, and starts it again. `wazap status`
+  gained a service check. A wazap running out of the npx cache refuses to install
+  one, because npm clears that path.
+- **`wazap expose` gives the service a public URL** for agents that are not on
+  this machine. It uses Tailscale Funnel or Cloudflare Tunnel, whichever is
+  installed, writes `WAZAP_PUBLIC_URL` and a fresh `WAZAP_OAUTH_PASSWORD`,
+  restarts the service and checks the URL from here, then prints the MCP URL and
+  the consent password once. `wazap expose off` takes the tunnel down and keeps
+  the password.
+- **`wazap setup` asks whether to keep wazap running**, as a fifth step: only
+  while a client has it open, always on this machine, or always and reachable by
+  cloud agents. `--service` and `--expose` answer it for `setup --yes`.
+- **The workflows reach every client, with no second command.** `wazap setup`
+  now copies the five skills into each client it connects, and the server
+  carries them as well: it sends a short `instructions` block naming all five
+  and registers each one as an MCP prompt of the same name. Claude Desktop, VS
+  Code, Gemini and Windsurf keep no skills directory, so this is how they get
+  the workflows. A bridged client sees the same prompts as the session holder,
+  and the Claude Desktop bundle now ships `skills/` so it can serve them.
+- **`wazap skills install` with no harness** installs into every client it finds
+  on this machine.
+- **`wazap setup` proves the install works before it says so.** The Finish step
+  now connects the session once and reports the chat count, and checks that each
+  client it connected can actually launch wazap. Claude Desktop starts its MCP
+  servers with launchd's PATH, where neither `wazap` nor `npx` is found, so
+  `connect claude-desktop` now writes the absolute `node` path and the script
+  behind the global bin. A failing check exits 1 instead of printing "Setup
+  complete".
+- **`wazap status` reports the skills**, per detected harness, as installed,
+  stale or missing. A global upgrade leaves the copies in `~/.cursor/skills` and
+  the others behind, and until now nothing said so. Bare `wazap` and
+  `status --json` carry the check too.
+
+### Changed
+
+- **`serve` exits 3 when WhatsApp keeps refusing the socket.** Ten failed
+  reconnects used to leave a live MCP server answering NOT_CONNECTED forever.
+  Now it logs and exits, so a supervisor restarts it and a client shows the
+  error. An account unlinked from the phone is the exception and stays up in
+  `auth_failure`: no restart brings that back.
+- **`/healthz` answers 503 on a real outage**, with `{ ok, status, since }`. A
+  socket that has been anything but connected for two minutes is down; a
+  reconnect in progress is not.
+- `wazap skills install claude-code` copies into `~/.claude/skills/` instead of
+  printing the plugin command. The plugin is still the other route, and the
+  README says so.
+
 ## 0.10.0
 ### Added
 

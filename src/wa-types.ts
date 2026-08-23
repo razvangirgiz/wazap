@@ -4,6 +4,8 @@ import type { ProviderName } from "./transcribe/index.js";
 
 export type ConnectionStatus =
   | "not_linked"
+  /** A pairing code has been issued and WhatsApp is waiting for it on the phone. */
+  | "linking"
   | "connecting"
   | "connected"
   | "disconnected"
@@ -54,8 +56,17 @@ export interface CallInfo {
   participants?: string[];
 }
 
+/** The code the user types into their phone, and how long it stays good for. */
+export interface PairingInfo {
+  code: string;
+  phone_masked: string;
+  expires_at: string;
+}
+
 export interface StatusInfo {
   status: ConnectionStatus;
+  /** When the socket entered `status`. What /healthz calls a stall on. */
+  status_since: string;
   sync: SyncState;
   account: { id: string; name: string; number: string } | null;
   last_message_received_at: string | null;
@@ -68,6 +79,8 @@ export interface StatusInfo {
   read_only: boolean;
   rate_limit: number;
   last_error: string | null;
+  /** Present only while `status` is "linking". */
+  pairing?: PairingInfo;
   hint?: string;
 }
 
@@ -241,6 +254,7 @@ export interface ContactSyncResult {
  */
 export interface WhatsAppApi {
   getStatus(): StatusInfo;
+  link(phone: string): Promise<PairingInfo>;
   listChats(filter: ChatFilter, limit: number): Promise<Synced<ChatSummary[]>>;
   readMessages(chatId: string, limit: number, before?: string, types?: MessageType[]): Promise<Synced<MessageView[]>>;
   getRecentMessages(

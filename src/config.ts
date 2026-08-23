@@ -22,7 +22,10 @@ export type Command =
   | "config"
   | "contacts"
   | "skills"
-  | "transcribe";
+  | "service"
+  | "expose"
+  | "transcribe"
+  | "update";
 
 export interface Config {
   dataDir: string;
@@ -61,11 +64,19 @@ export interface Config {
   agent: boolean;
   /** `setup` only, repeatable, overrides detection. */
   clients: string[];
+  /** `setup` only: refuse the global install an npx run would otherwise offer. */
+  noGlobal: boolean;
+  /** Answer no to the `brew install` a missing dependency would otherwise offer. */
+  noBrew: boolean;
+  /** `setup` only: refuse the Claude Desktop restart it would otherwise offer. */
+  relaunch: boolean;
   assumeYes: boolean;
   /** `transcribe download` only: the whisper model alias from --model. */
   modelName?: string;
   /** `setup` only: the answer to the transcription question, from --transcribe. */
   transcribeChoice?: string;
+  /** `setup` only: the answer to the "keep running" question, from --service / --expose. */
+  keepRunning: KeepRunning | null;
 }
 
 export interface Paths {
@@ -76,6 +87,7 @@ export interface Paths {
   storeFile: string;
   lockFile: string;
   daemonFile: string;
+  serviceFile: string;
   oauthFile: string;
   envFile: string;
   qrFile: string;
@@ -90,11 +102,15 @@ export function paths(dataDir: string): Paths {
     storeFile: join(dataDir, "store.json"),
     lockFile: join(dataDir, "server.lock"),
     daemonFile: join(dataDir, "daemon.json"),
+    serviceFile: join(dataDir, "service.json"),
     oauthFile: join(dataDir, "oauth.json"),
     envFile: join(dataDir, ".env"),
     qrFile: join(dataDir, "qr.png"),
   };
 }
+
+/** The answer to `setup`'s "keep running" question. */
+export type KeepRunning = "client" | "service" | "expose";
 
 export type CliInvocation = { kind: "help" } | { kind: "version" } | { kind: "run"; config: Config };
 
@@ -111,8 +127,13 @@ const COMMAND_ARGS: Record<Command, readonly number[]> = {
   // with the reason, rather than with a generic arity complaint.
   config: [0, 2, 3],
   contacts: [1],
-  skills: [2],
+  // One positional is `skills install`, which finds the harnesses itself.
+  skills: [1, 2],
+  service: [1],
+  // No positional means the first available provider; `off` takes the tunnel down.
+  expose: [0, 1],
   transcribe: [1, 2],
+  update: [0],
 };
 
 const COMMANDS = Object.keys(COMMAND_ARGS) as readonly Command[];
@@ -180,8 +201,13 @@ export function parseCli(argv: string[] = process.argv.slice(2)): CliInvocation 
         "no-writes": { type: "boolean" },
         agent: { type: "boolean" },
         client: { type: "string", multiple: true },
+        "no-global": { type: "boolean" },
+        "no-brew": { type: "boolean" },
+        relaunch: { type: "boolean" },
         model: { type: "string" },
         transcribe: { type: "string" },
+        service: { type: "boolean" },
+        expose: { type: "boolean" },
         yes: { type: "boolean", short: "y" },
         help: { type: "boolean", short: "h" },
         version: { type: "boolean", short: "v" },
@@ -255,9 +281,13 @@ export function parseCli(argv: string[] = process.argv.slice(2)): CliInvocation 
       writesAnswer: values.writes === true ? true : values["no-writes"] === true ? false : null,
       agent: values.agent === true,
       clients: values.client ?? [],
+      noGlobal: values["no-global"] === true,
+      noBrew: values["no-brew"] === true,
+      relaunch: values.relaunch === true,
       assumeYes: values.yes === true,
       modelName: values.model,
       transcribeChoice: values.transcribe,
+      keepRunning: values.expose === true ? "expose" : values.service === true ? "service" : null,
     },
   };
 }

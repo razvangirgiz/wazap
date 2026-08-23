@@ -86,7 +86,8 @@ const messageTypes = z
 const GUIDE = `# wazap — WhatsApp for your AI agent
 
 Read/write access to the user's linked WhatsApp account: chats, messages, media,
-contacts and groups. Call get_status first if anything looks wrong.
+contacts and groups. Call get_status first if anything looks wrong, and
+link_account when it says no account is linked yet.
 
 ## Identifiers
 - chat_id — individual: \`<digits>@s.whatsapp.net\`; group: \`<id>@g.us\`. A phone
@@ -97,6 +98,9 @@ contacts and groups. Call get_status first if anything looks wrong.
   delete_message, and the reply_to of send_message.
 
 ## Workflows
+- Not linked: get_status says not_linked, logged_out, session_corrupt or
+  auth_failure → link_account(phone), show the user the code, then poll
+  get_status every 10 s until it says connected.
 - Catch up: get_recent_messages(hours) for everything, or list_chats(filter:"unread")
   then read_messages(chat_id).
 - Go back further: read_messages(chat_id, before: <oldest message_id you have>).
@@ -156,7 +160,9 @@ the versions and data directory in use, and how many contacts carry a name from
 the phone's address book (contacts_named: 0 means it never arrived).
 
 Call this whenever another tool reports NOT_CONNECTED, NOT_LINKED or
-SYNC_IN_PROGRESS, or to confirm which account you are about to send from.`,
+SYNC_IN_PROGRESS, or to confirm which account you are about to send from.
+While a link is in progress the status is "linking" and \`pairing\` carries the
+code the user still has to type into their phone.`,
     schema: {},
     write: false,
     handler: async (_args, wa) => {
@@ -169,12 +175,42 @@ SYNC_IN_PROGRESS, or to confirm which account you are about to send from.`,
         `- **contacts named**: ${s.contacts_named}`,
         `- **data dir**: ${s.data_dir} · **read-only**: ${s.read_only} · **rate limit**: ${s.rate_limit}/min`,
         `- **versions**: wazap ${s.wazap_version}, baileys ${s.baileys_version}`,
+        s.pairing ? `- **pairing code**: ${s.pairing.code} for ${s.pairing.phone_masked}, until ${s.pairing.expires_at}` : null,
         s.last_error ? `- **last error**: ${s.last_error}` : null,
         s.hint ? `- **hint**: ${s.hint}` : null,
       ]
         .filter((line): line is string => line !== null)
         .join("\n");
       return ok(text, s as unknown as Record<string, unknown>);
+    },
+  }),
+
+  tool({
+    name: "link_account",
+    title: "Link a WhatsApp account",
+    description: `Pair this wazap with the user's WhatsApp when get_status says not_linked, logged_out,
+session_corrupt or auth_failure. Ask the user for their phone number in international format,
+call this, and show them the code it returns with these exact steps:
+WhatsApp → Settings → Linked devices → Link a device → Link with phone number instead → enter the code.
+Then call get_status every 10 seconds until it says connected (up to 3 minutes). The code expires;
+call this again for a fresh one if get_status goes back to not_linked with an error.
+Never call this when the account is already linked.`,
+    schema: { phone: z.string().describe("International format, e.g. +15550100") },
+    write: false,
+    rate: 2,
+    handler: async ({ phone }, wa) => {
+      const pairing = await wa.link(phone);
+      const next =
+        "Show the user the code and the steps, then call get_status every 10 seconds until it says connected.";
+      const text = [
+        `# Pairing code: ${pairing.code}`,
+        `- **number**: ${pairing.phone_masked}`,
+        `- **expires**: ${pairing.expires_at}`,
+        "",
+        "On their phone: WhatsApp → Settings → Linked devices → Link a device → Link with phone number instead → enter the code.",
+        next,
+      ].join("\n");
+      return ok(text, { ...pairing, next });
     },
   }),
 

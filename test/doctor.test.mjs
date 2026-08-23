@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { chmodSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { delimiter, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 
@@ -50,6 +50,7 @@ test("a healthy data dir passes every check it can", async () => {
   assert.match(stderr, new RegExp(`✓ node: ${process.versions.node.replace(/\\./g, "\\.")}`));
   assert.match(stderr, /✓ data dir: .* \(0700, writable\)/);
   assert.match(stderr, /– lock: none/);
+  assert.match(stderr, /– service: not installed — run `wazap service install`/);
   assert.match(stderr, /– credentials: no account linked yet/);
   assert.match(stderr, /✓ writes: on \(default\)/);
 });
@@ -92,9 +93,11 @@ test("status --json prints one parseable object carrying the same checks", async
   assert.equal(report.server_pid, null);
   assert.deepEqual(
     report.checks.map((check) => check.name),
-    ["node", "data dir", "lock", "credentials", "writes", "transcribe", "update"],
+    ["node", "data dir", "lock", "service", "credentials", "writes", "skills", "transcribe", "update"],
   );
   assert.equal(report.checks.find((check) => check.name === "writes").detail, "on (default)");
+  assert.ok(["global", "checkout", "npx"].includes(report.install.kind), `install: ${JSON.stringify(report.install)}`);
+  assert.match(report.install.script, /index\.js$/);
 });
 
 test("status --live on an unlinked data dir reports that, without waiting out the deadline", async () => {
@@ -113,4 +116,46 @@ test("status --live refuses to touch the session a running server owns", async (
     assert.match(err.stderr, /get_status/);
     return true;
   });
+});
+
+/**
+ * A HOME and a PATH of their own, so the skills check sees only the harnesses a
+ * case sets up. `~/.cursor` is what makes Cursor detected; the skills land in
+ * `~/.cursor/skills`.
+ */
+function skillsBox() {
+  const home = mkdtempSync(join(tmpdir(), "wazap-doctor-home-"));
+  return { home, env: { HOME: home, USERPROFILE: home, PATH: join(home, "bin") } };
+}
+
+function skillsLine(stderr) {
+  return /^[^\n]*skills: .*$/m.exec(stderr)?.[0];
+}
+
+test("the skills check stays quiet when no skill-aware client is installed", async () => {
+  const box = skillsBox();
+  const { stderr } = await status(dataDir(), [], box.env);
+  assert.match(skillsLine(stderr), /– skills: no skill-aware client detected/);
+});
+
+test("the skills check names the harness that never got them", async () => {
+  const box = skillsBox();
+  mkdirSync(join(box.home, ".cursor"), { recursive: true });
+  const { stderr } = await status(dataDir(), [], box.env);
+  assert.match(skillsLine(stderr), /– skills: missing for cursor — run `wazap skills install`/);
+});
+
+test("the skills check passes once they are installed, and calls an edited copy stale", async () => {
+  const box = skillsBox();
+  mkdirSync(join(box.home, ".cursor"), { recursive: true });
+  await run(process.execPath, [binary, "skills", "install", "cursor"], {
+    env: { ...process.env, ...box.env, PATH: `${box.env.PATH}${delimiter}${process.env.PATH ?? ""}` },
+  });
+
+  const installed = await status(dataDir(), [], box.env);
+  assert.match(skillsLine(installed.stderr), /✓ skills: installed for cursor/);
+
+  writeFileSync(join(box.home, ".cursor", "skills", "whatsapp-send", "SKILL.md"), "what an older wazap shipped\n");
+  const stale = await status(dataDir(), [], box.env);
+  assert.match(skillsLine(stale.stderr), /– skills: stale for cursor — run `wazap skills install`/);
 });

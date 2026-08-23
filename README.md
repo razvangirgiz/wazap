@@ -8,7 +8,7 @@
 ```
 
 **WhatsApp for your AI agent.** An MCP server that puts your WhatsApp account —
-chats, messages, media, contacts, groups — behind 24 tools any MCP client can
+chats, messages, media, contacts, groups — behind 25 tools any MCP client can
 call. Pairing-code login, no browser, no phone-number reseller, ~20 MB of RAM.
 
 Built on [Baileys](https://github.com/WhiskeySockets/Baileys), which speaks the
@@ -23,7 +23,12 @@ npx wazap-mcp setup
 ```
 
 That is the whole install. It links your account, finds the MCP clients
-installed on this machine, writes their config and tells you what to restart.
+installed on this machine, writes their config, copies the five skills where
+that client reads them, and tells you what to restart. When you started through
+`npx`, `setup` offers to install wazap globally so Claude Desktop and the
+background service have a path that does not change. It also offers to
+`brew install` whisper-cpp, ffmpeg or Tailscale when a step needs one and it is
+missing, and to restart Claude Desktop itself once it has connected it.
 
 ### Or the path your harness prefers
 
@@ -159,19 +164,85 @@ Download `wazap-<version>.mcpb` from [Releases](https://github.com/razvangirgiz/
 and double-click it. Claude Desktop installs the server, its Node dependencies
 and the icon, and shows two settings: **Read-only**, ticked, and **Data
 directory**, empty. `wazap connect claude-desktop` does the same job by editing
-`claude_desktop_config.json`, and needs `npx` at launch; the bundle does not.
+`claude_desktop_config.json`. Claude Desktop starts its servers without your
+shell PATH, so that entry is the absolute path to `node` when wazap is installed
+globally, and `npx` otherwise; `wazap setup` checks that the entry it wrote is
+one Claude Desktop can actually launch.
 
-Linking the account still needs a terminal once: `npx wazap-mcp login`. The
-bundle reads the session that login writes to `~/.wazap`.
+Then ask Claude to link your WhatsApp. It calls `link_account` with your number,
+hands back an 8-character code, and you type that code into **WhatsApp →
+Settings → Linked devices → Link a device → Link with phone number instead**.
+No terminal at any point. `npx wazap-mcp login` does the same job from a shell
+when you have one.
 
 Untick **Read-only** to let Claude send. It ships ticked because a bundle that
 can message people from your number before you have said so is the wrong
 default, and because the setting cannot be left unanswered: the manifest format
 has no way to omit an argument, so the box you see is the answer the server gets.
+`link_account` is registered either way. Read-only exists to stop Claude
+messaging people from your number, and relinking your own dead session messages
+nobody.
 
 Build it yourself with `npm run bundle:mcpb`, which stages `dist/`, the
 manifest, the icon and a fresh production `node_modules`, then packs them with
 [`@anthropic-ai/mcpb`](https://github.com/modelcontextprotocol/mcpb).
+
+### Keep it running
+
+A wazap started by a client lives as long as that client does. Quit Claude Code
+and the session is gone until you open it again. Two commands change that.
+Staying up and being reachable are separate choices.
+
+```bash
+npx wazap-mcp service install
+```
+
+That writes a launchd agent on macOS (`~/Library/LaunchAgents/com.wazap.server.plist`)
+or a systemd user unit on Linux (`~/.config/systemd/user/wazap.service`), starts
+it, and waits for `/healthz` to answer. The unit runs `serve --http` on
+`127.0.0.1:8766` with the absolute path of this Node and this install, so it
+survives a reboot and a logout. Point any client at
+`http://127.0.0.1:8766/mcp`, or keep using the stdio entry. A second wazap on
+the same data directory becomes a bridge onto the session this one holds.
+
+`service status` prints the pid, the health check and whether the unit still
+runs the version you have installed. `service logs` tails it. `service restart`
+picks up an upgrade; `service uninstall` removes the unit and leaves your
+session and credentials alone. `wazap login` needs the session to itself, so it
+stops the service, pairs, and starts it again on its own.
+
+A sleeping Mac is an offline wazap. System Settings → Lock Screen, or Battery →
+Options, has the switch that keeps it awake on power.
+
+```bash
+npx wazap-mcp expose
+```
+
+That gives the running service a public `https` URL, for agents that are not on
+this machine: a cloud agent, claude.ai, ChatGPT. It uses Tailscale Funnel if
+`tailscale` is installed, Cloudflare Tunnel if `cloudflared` is, opens the
+tunnel, writes `WAZAP_PUBLIC_URL` and a fresh `WAZAP_OAUTH_PASSWORD` into
+`<data-dir>/.env`, restarts the service and checks the URL from here. It then
+prints the MCP URL and the password once.
+
+Give an agent the URL only. It signs in on a consent page on your own host with
+that password and picks read or read-and-send there; `wazap status` lists who
+holds a grant. See [Hosted agents (OAuth)](#hosted-agents-oauth) for what that
+page does. `npx wazap-mcp expose off` takes the tunnel down and keeps the
+password, so the next `expose` hands agents the same one.
+
+`npx wazap-mcp setup` asks all of this once, as its fourth step.
+
+### Upgrade
+
+```bash
+npx wazap-mcp update
+```
+
+One command for what used to be three. It compares this install against the
+registry, installs the new package when wazap is global, restarts the service so
+it runs the new code, and copies the new skills into every harness that keeps
+them. `--dry-run` prints the plan and touches nothing.
 
 ## Tools
 
@@ -179,6 +250,7 @@ manifest, the icon and a fresh production `node_modules`, then packs them with
 | --- | --- | --- |
 | `learn` | read | The guide to every tool, id format and error code. Call it first. |
 | `get_status` | read | Connection status, sync state, linked account, named-contact count, versions, data dir. |
+| `link_account` | read | Pair the account without a terminal: returns the code to type into the phone. Registered in read-only mode too. |
 | `list_chats` | read | Conversations newest-first; filter `all`/`unread`/`groups`/`individual`/`archived`. |
 | `read_messages` | read | Messages in a chat; `before` pages further back, pulling older history from the phone; `types` narrows to one or more message types, e.g. `["call"]`. |
 | `get_recent_messages` | read | Everything from the last N hours, grouped by chat. The catch-up tool. `include_system` adds WhatsApp's own notices, `types` narrows to one or more message types. |
@@ -237,6 +309,10 @@ brew install whisper-cpp ffmpeg      # macOS; elsewhere build whisper.cpp, insta
 wazap transcribe download            # fetch and verify the model
 wazap transcribe test recording.ogg  # prove it before you trust it
 ```
+
+`wazap setup` and `wazap transcribe download` offer that `brew install`
+themselves when either binary is missing, and go straight on to the model in the
+same run. `--no-brew` turns the offer off everywhere.
 
 Models land in `<data-dir>/models/` and are checked against a SHA-256 pinned in
 the source; an interrupted download resumes where it stopped.
@@ -300,22 +376,25 @@ wazap ships five [Agent Skills](https://agentskills.io) that teach an agent the 
 | `whatsapp-groups` | Catch up on a 300-message group: decisions, dates, what is asked of you. Read-only |
 | `whatsapp-send` | Draft in the chat's own register, show recipient and text, send only after the user says yes |
 
-Install everything (server and skills) as a Claude Code plugin:
+`wazap setup` copies them into every client it connects, so there is usually
+nothing to run. The command behind it, for a harness `setup` never offered or
+for a checkout you want to install by hand:
+
+```bash
+npx wazap-mcp skills install codex     # or claude-code, cursor, opencode, agents
+```
+
+With no harness named it installs into every client it finds on this machine.
+For Claude Code the other route is the plugin, which carries the server as well:
 
 ```
 /plugin marketplace add razvangirgiz/wazap
 /plugin install wazap@wazap
 ```
 
-Every other harness gets them with one command:
-
-```bash
-npx wazap-mcp skills install codex     # or cursor, opencode, agents
-```
-
 | Harness | Where the five directories land |
 | --- | --- |
-| `claude-code` | nowhere — the plugin above already carries them |
+| `claude-code` | `~/.claude/skills/` |
 | `codex` | `~/.agents/skills/`, the directory Codex documents for user skills. Cursor and OpenCode read it too |
 | `cursor` | `~/.cursor/skills/` |
 | `opencode` | `~/.config/opencode/skills/` |
@@ -324,6 +403,13 @@ npx wazap-mcp skills install codex     # or cursor, opencode, agents
 Re-running overwrites, so an upgrade is the same command. `--dry-run` lists
 what it would copy.
 
+A client with no skills directory is not left out. The server registers each of
+the five as an MCP prompt of the same name, and sends a short `instructions`
+block that names all five and says when each applies, so an agent that never saw
+the skill files still follows them. That is how Claude Desktop, VS Code and
+Windsurf get the workflows. A bridged session and a self-hosted HTTP server
+carry them the same way.
+
 ## Errors
 
 Every failure is a structured `{ error, message, fix }` rather than a stack
@@ -331,7 +417,8 @@ trace, so an agent can decide whether to retry, ask the user, or stop.
 
 | Code | Meaning |
 | --- | --- |
-| `NOT_LINKED` | No account linked. Run `npx wazap-mcp login`. |
+| `NOT_LINKED` | No account linked. Call `link_account`, or run `npx wazap-mcp login`. |
+| `ALREADY_LINKED` | `link_account` was called on a session that is already linked. Call `get_status`. |
 | `SESSION_EXPIRED` | Unlinked from the phone. Run `npx wazap-mcp login`. |
 | `SESSION_CORRUPT` | Credentials unreadable. Run `npx wazap-mcp logout` then `login`. |
 | `NOT_CONNECTED` | Still connecting or reconnecting. |
@@ -411,7 +498,10 @@ WAZAP_WRITE_TOKEN=$(openssl rand -hex 32) \
 npx wazap-mcp serve --http --host 0.0.0.0 --port 8766
 ```
 
-Streamable HTTP at `/mcp`, with a health check at `/healthz`. Two bearer tokens:
+Streamable HTTP at `/mcp`, with a health check at `/healthz`. That check answers
+`{ ok, status, since }`. It turns 503 once the socket has been anything but
+connected for two minutes, so a tunnel or a monitor sees a real outage rather
+than a reconnect in progress. Two bearer tokens:
 the read token gets the read tools, the write token also unlocks the write
 tools, so a leaked read token can never message anyone. wazap refuses to bind a
 non-loopback address without a read token. Agents that cannot carry a header
@@ -452,7 +542,12 @@ The container publishes `8766` on loopback only; add the same TLS proxy in front
 
 ### From a machine without a public address
 
-A laptop or a box behind NAT can still serve hosted agents through a tunnel, with no port opened and TLS done at the edge. With [Cloudflare Tunnel](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/) and a domain on Cloudflare:
+A laptop or a box behind NAT can still serve hosted agents through a tunnel, with no port opened and TLS done at the edge. `npx wazap-mcp expose` does the whole thing with Tailscale Funnel or Cloudflare Tunnel, whichever is installed. See [Keep it running](#keep-it-running).
+
+wazap keeps binding loopback either way; only the tunnel reaches it.
+
+<details>
+<summary>By hand, with Cloudflare Tunnel and a domain on Cloudflare</summary>
 
 ```bash
 cloudflared tunnel login
@@ -461,7 +556,9 @@ cloudflared tunnel route dns wazap wazap.example.com
 cloudflared tunnel run --url http://127.0.0.1:8766 wazap
 ```
 
-wazap keeps binding loopback; only the tunnel reaches it. Set `WAZAP_PUBLIC_URL=https://wazap.example.com` for OAuth and keep `cloudflared` running the way you keep wazap running (a systemd unit, a launchd agent). Tailscale Funnel or ngrok work the same way: whatever ends at `https://your-host` with `/mcp` behind it.
+Set `WAZAP_PUBLIC_URL=https://wazap.example.com` for OAuth and keep `cloudflared` running the way you keep wazap running (a systemd unit, a launchd agent). Tailscale Funnel or ngrok work the same way: whatever ends at `https://your-host` with `/mcp` behind it.
+
+</details>
 
 ### Which clients can reach it
 

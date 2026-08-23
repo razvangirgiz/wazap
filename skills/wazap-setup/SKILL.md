@@ -27,7 +27,7 @@ fixes it; run that command rather than improvising.
 | `✗ data dir` | Missing, not a directory, mode other than 0700, or not writable. The line names the `chmod` to run. |
 | `– lock: stale` | A previous server died without cleaning up. Harmless; the next start reclaims it. |
 | `✓ lock: held` | A server is running. Do not run `logout` or `status --live`; ask through the client with `get_status`. |
-| `✗ credentials` | Unreadable. `npx wazap-mcp logout` then `npx wazap-mcp login`. |
+| `✗ credentials` | Unreadable. Call `link_account`, or `npx wazap-mcp logout` then `npx wazap-mcp login`. |
 | `writes: off` | Write tools are not registered. Enabling them is **Allow writes**. |
 | `– update` | A newer wazap exists, or the check could not reach npm. Never blocking. |
 
@@ -38,13 +38,25 @@ refuses while a server holds the lock, because one process owns the session.
 
 ## Link
 
-Run `npx wazap-mcp setup --agent` and follow what it prints.
+Inside an MCP client that already has the `whatsapp` tools, call `link_account`
+with the user's number in international format. No terminal is involved. It
+returns an 8-character code, and `get_status` reports `linking` with that code
+until the phone accepts it. Tell the user: WhatsApp → Settings → Linked devices
+→ Link a device → Link with phone number instead, then type the code. Poll
+`get_status` every 10 seconds until it says `connected`, for up to 3 minutes.
+Codes expire, so call `link_account` again for a fresh one if the status falls
+back to `not_linked`.
 
+Without those tools, run `npx wazap-mcp setup --agent` and follow what it prints.
 That procedure starts `login` in the background and reads the
 `pairing code: XXXX-XXXX` line out of its output, so the user is left with the
 one part of linking a machine cannot do, typing the code into the phone.
 
-`SESSION_EXPIRED` means the phone removed the device: run `npx wazap-mcp login` again. `SESSION_CORRUPT` means unreadable credentials: `npx wazap-mcp logout` then `npx wazap-mcp login`.
+`SESSION_EXPIRED` means the phone removed the device, and `NOT_LINKED` that
+nothing was ever linked. Both are `link_account`, or `npx wazap-mcp login` where
+the tool is unavailable. `SESSION_CORRUPT` means unreadable credentials, which
+`link_account` clears before it pairs; from a terminal that is
+`npx wazap-mcp logout` then `npx wazap-mcp login`.
 
 ## Connect a client
 

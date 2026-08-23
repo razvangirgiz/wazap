@@ -113,9 +113,12 @@ export function width(text: string): number {
   return total;
 }
 
-export function box(text: string): string {
-  const rule = "─".repeat(width(text) + 2);
-  return [`  ╭${rule}╮`, `  │ ${text} │`, `  ╰${rule}╯`].join("\n");
+/** Every line padded to the widest, so a two-line box is still a rectangle. */
+export function box(...lines: string[]): string {
+  const inner = Math.max(...lines.map(width));
+  const rule = "─".repeat(inner + 2);
+  const body = lines.map((line) => `  │ ${line}${" ".repeat(inner - width(line))} │`);
+  return [`  ╭${rule}╮`, ...body, `  ╰${rule}╯`].join("\n");
 }
 
 function nextLine(action: string, tail: string): string {

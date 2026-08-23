@@ -67,6 +67,11 @@ async function toolShape(mcp) {
   return list.result.tools.map((tool) => ({ name: tool.name, inputSchema: tool.inputSchema }));
 }
 
+async function promptShape(mcp) {
+  const list = await mcp.request("prompts/list", {});
+  return list.result.prompts.map((prompt) => ({ name: prompt.name, description: prompt.description }));
+}
+
 function stderrLines(wazap) {
   return wazap.stderr
     .join("")
@@ -86,6 +91,9 @@ test("a second serve answers out of the session the first one holds", async () =
     const bridge = await session(b.child);
     assert.equal(bridge.info.name, "wazap");
     assert.deepEqual(await toolShape(bridge), await toolShape(daemon), "the bridge must offer the daemon's own tools");
+    const prompts = await promptShape(bridge);
+    assert.deepEqual(prompts, await promptShape(daemon), "the bridge must offer the daemon's own prompts");
+    assert.equal(prompts.length, 5, "the five workflows reach a bridged client too");
 
     const status = await bridge.request("tools/call", { name: "get_status", arguments: {} });
     assert.equal(status.result.structuredContent.status, "not_linked");
@@ -213,7 +221,7 @@ test("a bridge serves what the owner exposes, so --read-only reaches every clien
     const b = s.start();
     const mcp = await session(b.child);
     const names = (await toolShape(mcp)).map((tool) => tool.name);
-    assert.equal(names.length, 13);
+    assert.equal(names.length, 14);
     assert.ok(!names.includes("send_message"), names.join(", "));
 
     const status = await mcp.request("tools/call", { name: "get_status", arguments: {} });

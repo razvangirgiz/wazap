@@ -12,7 +12,6 @@ import { isAbsolute, join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import makeWASocket, {
   ALL_WA_PATCH_NAMES,
-  Browsers,
   DisconnectReason,
   downloadMediaMessage,
   jidNormalizedUser,
@@ -27,11 +26,11 @@ import makeWASocket, {
   type WASocket,
 } from "baileys";
 import type { ILogger } from "baileys/lib/Utils/logger.js";
-import { readLinkedAccount, useAtomicAuthState } from "./auth-state.js";
+import { clearSession, readLinkedAccount, useAtomicAuthState, type LinkedAccount } from "./auth-state.js";
 import { CallTracker, callMessage, isTrackedCall, type CallEntry } from "./calls.js";
 import { BAILEYS_VERSION, paths, WAZAP_VERSION, type Config, type Paths } from "./config.js";
 import { asWazapError, RELINK_FIX, RESET_FIX, WazapError } from "./errors.js";
-import { isGroupId, isNoiseJid, resolveChatId } from "./ids.js";
+import { isGroupId, isNoiseJid, normalizePhone, resolveChatId } from "./ids.js";
 import { log, logError } from "./logger.js";
 import {
   buildMessageView,
@@ -50,6 +49,7 @@ import {
   viewText,
   voiceSeconds,
 } from "./messages.js";
+import { PAIRING_TIMEOUT_MS, WA_BROWSER, prettyCode, startPairing } from "./pairing.js";
 import {
   readTranscribeSettings,
   transcribeFile,
@@ -59,6 +59,7 @@ import {
   type TranscribeSettings,
   type TranscriptRecord,
 } from "./transcribe/index.js";
+import { maskNumber } from "./ui.js";
 import type {
   CallInfo,
   ChatAction,
@@ -76,6 +77,7 @@ import type {
   MediaSource,
   MessageType,
   MessageView,
+  PairingInfo,
   ParticipantResult,
   RecentConversation,
   SentMessage,
@@ -339,13 +341,6 @@ class Store {
   }
 }
 
-/**
- * The browser identity sent at handshake. WhatsApp closes the socket with 428
- * before offering a QR for Browsers.macOS("Desktop") (verified 2026-08-22 on
- * baileys 7.0.0-rc14); "Chrome" is accepted.
- */
-export const WA_BROWSER = Browsers.macOS("Chrome");
-
 export class WhatsAppService implements WhatsAppApi {
   private sockClient: WASocket | null = null;
   private saveCreds: (() => Promise<void>) | null = null;
@@ -356,8 +351,17 @@ export class WhatsAppService implements WhatsAppApi {
   /** Bumped per socket, so events from a superseded socket are ignored. */
   private generation = 0;
   private status: ConnectionStatus = "connecting";
+  private statusSince = Date.now();
   private lastError: string | null = null;
+  /**
+   * Called once when the reconnect budget runs out on something a restart could
+   * fix. The CLI turns it into an exit code, so a supervisor gets its turn.
+   */
+  onGiveUp: (() => void) | null = null;
   private account: StatusInfo["account"] = null;
+  /** The pairing in flight, from the first `link` call until it settles either way. */
+  private linking: Promise<PairingInfo> | null = null;
+  private pairing: PairingInfo | null = null;
   private lastInboundAt: number | null = null;
   private initialSyncDone = false;
   private historyReceived = false;
@@ -423,7 +427,7 @@ export class WhatsAppService implements WhatsAppApi {
 
       this.teardownSocket();
       this.initialSyncDone = false;
-      this.status = "connecting";
+      this.setStatus("connecting");
       const generation = ++this.generation;
       const sock = makeWASocket({
         auth: state,
@@ -452,6 +456,76 @@ export class WhatsAppService implements WhatsAppApi {
     this.releaseWaiters();
     await this.flushStore();
     this.teardownSocket();
+  }
+
+  /**
+   * Pair this install from inside the agent, so linking needs no terminal. One
+   * pairing runs at a time: a second call while one is in flight hands back the
+   * same code rather than opening a second socket on the same session.
+   */
+  link(phone: string): Promise<PairingInfo> {
+    return this.guarded(async () => {
+      if (this.linking) return this.linking;
+      const number = normalizePhone(phone);
+      this.requireUnlinked();
+      if (this.status !== "not_linked") clearSession(this.paths);
+      this.linking = this.pair(number);
+      return this.linking;
+    });
+  }
+
+  private requireUnlinked(): void {
+    switch (this.status) {
+      case "not_linked":
+      case "logged_out":
+      case "session_corrupt":
+      case "auth_failure":
+        return;
+      default:
+        throw new WazapError("ALREADY_LINKED", `The account is ${this.status}.`, "Call get_status");
+    }
+  }
+
+  private async pair(phone: string): Promise<PairingInfo> {
+    let pairing;
+    try {
+      pairing = await startPairing(this.paths.authDir, phone, PAIRING_TIMEOUT_MS);
+    } catch (err) {
+      this.abandonLink(err);
+      throw err;
+    }
+    this.pairing = {
+      code: prettyCode(pairing.code),
+      phone_masked: maskNumber(phone),
+      expires_at: isoWithOffset(pairing.expiresAt),
+    };
+    this.setStatus("linking");
+    void pairing.done.then(
+      (account) => this.adoptLink(account),
+      (err: unknown) => this.abandonLink(err),
+    );
+    return this.pairing;
+  }
+
+  /**
+   * The pairing socket is already ended by the time `done` resolves, so this one
+   * is safe to open. It has to be this process's socket, because WhatsApp sends
+   * the history once and only the store here can catch it.
+   */
+  private async adoptLink(account: LinkedAccount): Promise<void> {
+    this.linking = null;
+    this.pairing = null;
+    this.account = account;
+    this.lastError = null;
+    await this.start();
+  }
+
+  private abandonLink(err: unknown): void {
+    this.linking = null;
+    this.pairing = null;
+    this.setStatus("not_linked");
+    this.lastError = describe(err);
+    logError("link", err);
   }
 
   /** True once WhatsApp has delivered at least one history-sync batch. */
@@ -491,9 +565,17 @@ export class WhatsAppService implements WhatsAppApi {
     return named;
   }
 
+  /** The one writer of `status`, so `status_since` can never drift from it. */
+  private setStatus(next: ConnectionStatus): void {
+    if (this.status === next) return;
+    this.status = next;
+    this.statusSince = Date.now();
+  }
+
   getStatus(): StatusInfo {
     const info: StatusInfo = {
       status: this.status,
+      status_since: isoWithOffset(this.statusSince),
       sync: this.syncState(),
       account: this.account,
       last_message_received_at: this.lastInboundAt === null ? null : isoWithOffset(this.lastInboundAt),
@@ -506,6 +588,10 @@ export class WhatsAppService implements WhatsAppApi {
       rate_limit: this.config.rateLimitPerMinute,
       last_error: this.lastError,
     };
+    if (this.status === "linking" && this.pairing) {
+      info.pairing = this.pairing;
+      info.hint = "Enter the code on the phone; call get_status again in 10 s";
+    }
     const stale = this.lastInboundAt !== null && Date.now() - this.lastInboundAt > STALE_INBOUND_MS;
     if (this.status === "connected" && stale) {
       info.hint = "No messages received for 24h; the phone may be offline.";
@@ -1082,11 +1168,12 @@ export class WhatsAppService implements WhatsAppApi {
     if (this.stopped || this.reconnectTimer) return;
     this.teardownSocket();
     if (this.reconnectAttempts >= RECONNECT_MAX_ATTEMPTS) {
-      this.status = "auth_failure";
+      this.setStatus("auth_failure");
       this.lastError =
         `${reason} — gave up after ${RECONNECT_MAX_ATTEMPTS} attempts. ` +
         "WhatsApp keeps rejecting this session: re-link the device with `npx wazap-mcp login`.";
       logError("reconnect", this.lastError);
+      this.onGiveUp?.();
       return;
     }
     const attempt = this.reconnectAttempts++;
@@ -1110,7 +1197,7 @@ export class WhatsAppService implements WhatsAppApi {
       const { connection, lastDisconnect } = update;
       if (connection === "open") {
         this.reconnectAttempts = 0;
-        this.status = "connected";
+        this.setStatus("connected");
         this.lastError = null;
         this.adoptSocketAccount();
         this.armSyncDeadline();
@@ -1119,12 +1206,12 @@ export class WhatsAppService implements WhatsAppApi {
       } else if (connection === "close") {
         const code = statusCodeOf(lastDisconnect?.error);
         if (code === DisconnectReason.loggedOut) {
-          this.status = "logged_out";
+          this.setStatus("logged_out");
           this.lastError = "The account was unlinked from the phone.";
           logError("auth", this.lastError);
           this.teardownSocket();
         } else if (!this.stopped) {
-          this.status = "disconnected";
+          this.setStatus("disconnected");
           this.lastError = lastDisconnect?.error?.message ?? "connection closed";
           this.scheduleReconnect(this.lastError);
         }
@@ -1274,7 +1361,7 @@ export class WhatsAppService implements WhatsAppApi {
       return "corrupt";
     }
     if (!linked) {
-      this.status = "not_linked";
+      this.setStatus("not_linked");
       this.account = null;
       this.lastError = null;
       log("no WhatsApp account is linked; run `npx wazap-mcp login`");
@@ -1284,7 +1371,7 @@ export class WhatsAppService implements WhatsAppApi {
   }
 
   private markCorrupt(err: unknown): void {
-    this.status = "session_corrupt";
+    this.setStatus("session_corrupt");
     this.lastError = describe(err);
     logError("auth state", err);
   }
@@ -1435,6 +1522,8 @@ export class WhatsAppService implements WhatsAppApi {
     switch (this.status) {
       case "not_linked":
         throw new WazapError("NOT_LINKED", "No WhatsApp account is linked.", RELINK_FIX);
+      case "linking":
+        throw new WazapError("NOT_CONNECTED", "Pairing is in progress.", "Enter the code on the phone, then call get_status");
       case "session_corrupt":
         throw new WazapError("SESSION_CORRUPT", this.lastError ?? "Stored credentials are unreadable.", RESET_FIX);
       case "logged_out":

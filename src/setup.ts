@@ -1,12 +1,36 @@
 import { readFileSync } from "node:fs";
 import { readLinkedAccount } from "./auth-state.js";
 import { banner } from "./banner.js";
-import { ask, describeAccount, downloadTranscribeModel, linkAndSync, stepper } from "./cli.js";
-import { paths, type Config } from "./config.js";
-import { CLIENTS, connectClient, connectNext, detectClients, findClient, type ClientSpec } from "./connect.js";
+import { ask, describeAccount, downloadTranscribeModel, linkAndSync, runLiveProbe, serviceLive, stepper } from "./cli.js";
+import { paths, type Config, type KeepRunning } from "./config.js";
+import {
+  CLIENTS,
+  REAL_PROBES,
+  appRunning,
+  commandPath,
+  connectClient,
+  connectNext,
+  detectClients,
+  findClient,
+  globalBinDir,
+  installGlobally,
+  launchCheck,
+  mcpEntry,
+  relaunch,
+  whereInstalled,
+  type ClientSpec,
+  type Install,
+  type Probes,
+} from "./connect.js";
+import { DEPS, ensureDeps } from "./deps.js";
+import { checkLines } from "./doctor.js";
 import { WazapError } from "./errors.js";
+import { PROVIDERS, runExpose, type TunnelProvider } from "./expose.js";
+import { INSTALL_WAIT_MS, installService, pickSupervisor } from "./service.js";
+import { lockHolder } from "./lock.js";
 import { say } from "./logger.js";
 import { applyTranscribe } from "./settings.js";
+import { installSkills, skillTargetFor } from "./skills.js";
 import { MODELS, findWhisper, localProvider, readTranscribeSettings, which } from "./transcribe/index.js";
 import { brand, fail, fix, info, ok, warn } from "./ui.js";
 
@@ -20,7 +44,8 @@ export async function runSetup(config: Config): Promise<void> {
   }
 
   say(banner());
-  const announce = stepper(4);
+  let install = whereInstalled();
+  const announce = stepper(install.kind === "npx" ? 6 : 5);
 
   announce("Link");
   const account = readLinkedAccount(paths(config.dataDir).authDir);
@@ -32,22 +57,178 @@ export async function runSetup(config: Config): Promise<void> {
   announce("Transcribe");
   await chooseTranscribe(config);
 
+  if (install.kind === "npx") {
+    announce("Install");
+    install = await offerGlobalInstall(config, install);
+  }
+
   announce("Connect");
   const chosen = await chooseClients(config);
   if (chosen.length === 0) {
     say(info("No client connected yet."));
     say(connectNext());
   }
-  for (const spec of chosen) connectClient(spec, config);
+  // The client choice is the answer to where the skills go, so setup never asks
+  // a second question about them.
+  const restarted = new Set<ClientSpec>();
+  for (const spec of chosen) {
+    connectClient(spec, config, install);
+    const target = skillTargetFor(spec.name);
+    if (target) installSkills(target, config.dryRun);
+    else say(info(`${spec.describe} gets the workflows from the server itself, as MCP prompts.`));
+    if (await offerRelaunch(spec, config)) restarted.add(spec);
+  }
+
+  announce("Keep running");
+  const keep = await chooseKeepRunning(config);
+  if (keep !== "client") await installService(config, pickSupervisor(), INSTALL_WAIT_MS, install);
+  if (keep === "expose" && !config.dryRun) await runExpose(config);
 
   announce("Finish");
-  say(ok("Setup complete"));
-  for (const spec of chosen) say(info(spec.next));
+  let failing = !(await proveSession(config));
+  for (const spec of chosen) {
+    const check = launchCheck(spec, mcpEntry(config, spec, install));
+    if (check.state === "fail") failing = true;
+    for (const line of checkLines(check)) say(line);
+  }
+
+  for (const spec of chosen) say(restarted.has(spec) ? ok(`${spec.describe} restarted`) : info(spec.next));
+  say(failing ? warn("Setup finished with a failing check") : ok("Setup complete"));
   say("");
   say('Ask your agent: "what did I miss on WhatsApp today?"');
+  if (failing) process.exit(1);
+}
+
+const NO_GLOBAL_NOTE = "Claude Desktop and `wazap service install` need a global install; run `npm i -g wazap-mcp` before either.";
+
+/**
+ * npx keeps no stable copy on disk, so Claude Desktop and the background service
+ * have nothing to point at. Installing here is what lets the rest of this run
+ * behave as a global install.
+ */
+async function offerGlobalInstall(config: Config, install: Install): Promise<Install> {
+  say("wazap was started through npx, which keeps no stable copy on disk.");
+  if (!(await askGlobal(config))) {
+    say(info(NO_GLOBAL_NOTE));
+    return install;
+  }
+
+  const check = installGlobally();
+  for (const line of checkLines(check)) say(line);
+  if (check.state !== "ok") return install;
+
+  const bin = commandPath("wazap");
+  if (bin !== null) return whereInstalled(bin);
+  const dir = globalBinDir();
+  say(warn(`wazap-mcp is installed, but \`wazap\` is not on your PATH${dir === null ? "" : `; add ${dir}`}.`));
+  return install;
+}
+
+/**
+ * The one client whose "Restart X" setup can carry out itself. Asked only when
+ * the app is already running, because restarting nothing answers nothing.
+ */
+/**
+ * `--yes` is not a yes here: an agent running setup from inside Claude Desktop
+ * would quit itself. A person at the prompt, or `--relaunch`, is the answer.
+ */
+async function offerRelaunch(spec: ClientSpec, config: Config): Promise<boolean> {
+  const app = spec.relaunch?.app;
+  if (app === undefined || config.dryRun) return false;
+  if (!appRunning(app)) return false;
+  if (!config.relaunch) {
+    if (process.stdin.isTTY !== true || config.assumeYes) return false;
+    const answer = await ask(`${brand("?")} Restart ${spec.describe} now so it picks up wazap? [Y/n] `);
+    if (/^n/i.test(answer.trim())) return false;
+  }
+  return relaunch(app);
+}
+
+/** Writing to the npm prefix takes a person or `--yes`; a pipe gets no install. */
+async function askGlobal(config: Config): Promise<boolean> {
+  if (config.noGlobal) return false;
+  if (config.assumeYes) return true;
+  if (process.stdin.isTTY !== true) return false;
+  const answer = await ask(
+    `${brand("?")} Install it globally so Claude Desktop and the background service can find it? [Y/n] `,
+  );
+  return !/^n/i.test(answer.trim());
+}
+
+/**
+ * Whether the session really connects, which is the failure `setup` used to
+ * leave for the first tool call inside a client. False only when the probe ran
+ * and could not reach WhatsApp.
+ */
+async function proveSession(config: Config): Promise<boolean> {
+  const p = paths(config.dataDir);
+  if (config.dryRun || readLinkedAccount(p.authDir) === null) return true;
+
+  // The service holds the session, so nothing else may open it. Its /healthz is
+  // the only honest answer left, and it is the one the tunnel sees too.
+  const running = lockHolder(p.lockFile);
+  if (running !== null) {
+    const served = await serviceLive(config, running);
+    if (served === null) {
+      say(info(`A server already holds the session (pid ${running}); skipping the live check.`));
+      return true;
+    }
+    if (served.reachable) {
+      say(ok("Connected · the wazap service holds the session"));
+      return true;
+    }
+    say(fail(`the service reports ${served.reason ?? "no connection"}`));
+    say(fix("run `wazap service logs`"));
+    return false;
+  }
+
+  const live = await runLiveProbe(config);
+  if (live.reachable) {
+    say(ok(live.chats === null ? "Connected" : `Connected · ${live.chats} chats`));
+    return true;
+  }
+  say(fail(live.reason ?? "no connection"));
+  say(fix("run `wazap status --live` after fixing it"));
+  return false;
 }
 
 const CHOICE_ATTEMPTS = 3;
+
+const KEEP_OPTIONS: readonly { choice: KeepRunning; describe: string }[] = [
+  { choice: "client", describe: "Only while a client has it open" },
+  { choice: "service", describe: "Always, on this machine            (wazap service install)" },
+  { choice: "expose", describe: "Always, and reachable by cloud agents   (also wazap expose)" },
+];
+
+/**
+ * Offering a public URL with nothing to tunnel through would be a dead end, and
+ * Homebrew is one prompt away from a tunnel, so it counts as something.
+ */
+export function keepRunningOptions(
+  providers: readonly TunnelProvider[] = PROVIDERS,
+  probes: Probes = REAL_PROBES,
+): typeof KEEP_OPTIONS {
+  const reachable = providers.some((provider) => provider.available()) || probes.onPath("brew");
+  return reachable ? KEEP_OPTIONS : KEEP_OPTIONS.slice(0, 2);
+}
+
+/** Only while a client has it open, unless a flag or a person says otherwise. */
+async function chooseKeepRunning(config: Config): Promise<KeepRunning> {
+  if (config.keepRunning !== null) return config.keepRunning;
+  if (config.assumeYes || process.stdin.isTTY !== true) return "client";
+
+  const options = keepRunningOptions();
+  say("Keep wazap running?");
+  options.forEach((option, index) => say(`  ${index + 1}. ${option.describe}`));
+  for (let attempt = 1; ; attempt++) {
+    const answer = (await ask(`${brand("?")} Choose: [1] (enter to accept) `)).trim();
+    if (answer === "") return "client";
+    const picked = Number(answer);
+    if (Number.isInteger(picked) && picked >= 1 && picked <= options.length) return options[picked - 1]!.choice;
+    if (attempt === CHOICE_ATTEMPTS) return "client";
+    say(fail(`Type a number from 1 to ${options.length}.`));
+  }
+}
 
 const TRANSCRIBE_OPTIONS: readonly { choice: string; describe: string }[] = [
   {
@@ -99,6 +280,7 @@ async function askTranscribe(config: Config): Promise<string | null> {
 /** The model is 574 MB and unusable without the binaries, so those come first. */
 async function installModel(config: Config): Promise<void> {
   const settings = readTranscribeSettings({ ...process.env, WAZAP_TRANSCRIBE: "local" }, config.dataDir);
+  await ensureDeps([DEPS.whisper, DEPS.ffmpeg], config);
   if (findWhisper(settings) === null || which("ffmpeg") === null) {
     const readiness = await localProvider.ready(settings);
     say(warn(readiness.detail));

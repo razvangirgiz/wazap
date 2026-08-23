@@ -93,10 +93,18 @@ export function offlineConfig(prefix, overrides = {}) {
   };
 }
 
-/** Minimal stand-in for a Baileys socket: just the event surface wireEvents uses. */
-export function fakeSocket() {
+/**
+ * Minimal stand-in for a Baileys socket: the event surface wireEvents and
+ * linkSession use, plus the pairing code and the user a link settles on. `end`
+ * announces the close the way the real socket does, so a caller waiting on
+ * `connection.update` is not left hanging.
+ */
+export function fakeSocket({ pairingCode = "ABCD1234", user } = {}) {
   const listeners = new Map();
-  return {
+  const sock = {
+    user,
+    ended: false,
+    requestPairingCode: async () => pairingCode,
     ev: {
       on(event, fn) {
         listeners.set(event, [...(listeners.get(event) ?? []), fn]);
@@ -108,8 +116,28 @@ export function fakeSocket() {
         for (const fn of listeners.get(event) ?? []) fn(arg);
       },
     },
-    end() {},
+    end() {
+      sock.ended = true;
+      sock.ev.emit("connection.update", { connection: "close" });
+    },
   };
+  return sock;
+}
+
+/**
+ * Hand `sockets` to pairing.ts in order, in place of the real Baileys factory.
+ * `opened` grows as each one is taken, which is what a test waits on before it
+ * starts emitting events at it.
+ */
+export function stubSockets(socketFactory, sockets) {
+  const original = socketFactory.open;
+  const opened = [];
+  socketFactory.open = () => {
+    const sock = sockets[opened.length] ?? sockets.at(-1);
+    opened.push(sock);
+    return sock;
+  };
+  return { opened, restore: () => (socketFactory.open = original) };
 }
 
 /** A connected service fed only by events, so no socket and no disk are involved. */

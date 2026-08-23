@@ -178,6 +178,42 @@ test("a healthy connection resets the retry budget", (t) => {
   assert.equal(starts.length, 4, "next retry is a fresh 2s, not the old backoff");
 });
 
+test("giving up asks the caller to exit, so a supervisor gets its turn", (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  t.mock.method(Math, "random", () => 0.5);
+
+  const { svc } = makeService();
+  let gaveUp = 0;
+  svc.onGiveUp = () => gaveUp++;
+
+  for (let i = 0; i < RECONNECT_MAX_ATTEMPTS; i++) {
+    svc.scheduleReconnect("Connection Terminated");
+    t.mock.timers.tick(10 * 60_000);
+  }
+  assert.equal(gaveUp, 0, "the signal must not fire while retries are left");
+
+  svc.scheduleReconnect("Connection Terminated");
+  assert.equal(gaveUp, 1, "the give-up signal fires once the budget is spent");
+});
+
+test("a 401 never asks the caller to exit: a restart cannot undo an unlink", (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+
+  const { svc } = makeService();
+  let gaveUp = 0;
+  svc.onGiveUp = () => gaveUp++;
+  const sock = makeFakeSocket();
+  attach(svc, sock);
+
+  for (let i = 0; i < RECONNECT_MAX_ATTEMPTS + 5; i++) {
+    sock.ev.emit("connection.update", close(LOGGED_OUT));
+    t.mock.timers.tick(10 * 60_000);
+  }
+
+  assert.equal(gaveUp, 0, "a logged-out session must keep answering SESSION_EXPIRED, not exit");
+  assert.equal(svc.getStatus().status, "logged_out");
+});
+
 test("an explicit logout stops instead of retrying", (t) => {
   t.mock.timers.enable({ apis: ["setTimeout"] });
 

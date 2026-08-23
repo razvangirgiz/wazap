@@ -7,7 +7,7 @@ import { delimiter, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 
-import { isNpxPath, launcher } from "../dist/connect.js";
+import { GUI_PATH, findClient, isNpxPath, launchCheck, launcher, relaunch, whereInstalled } from "../dist/connect.js";
 
 const run = promisify(execFile);
 const binary = join(dirname(fileURLToPath(import.meta.url)), "..", "dist", "index.js");
@@ -48,7 +48,6 @@ const desktopFile = (home) =>
 const FILES = [
   { client: "cursor", file: (home) => join(home, ".cursor", "mcp.json"), key: "mcpServers" },
   { client: "gemini", file: (home) => join(home, ".gemini", "settings.json"), key: "mcpServers" },
-  { client: "claude-desktop", file: desktopFile, key: "mcpServers" },
   { client: "windsurf", file: (home) => join(home, ".codeium", "windsurf", "mcp_config.json"), key: "mcpServers" },
 ];
 
@@ -63,6 +62,19 @@ for (const { client, file, key } of FILES) {
     assert.ok(!existsSync(`${target}.bak`), "nothing to back up for a new file");
   });
 }
+
+test("connect claude-desktop writes an absolute node path, which launchd's PATH can still find", async () => {
+  const box = sandbox();
+  const target = desktopFile(box.home);
+  await connect(box, "claude-desktop");
+  const entry = readJson(target).mcpServers.whatsapp;
+
+  assert.equal(entry.command, process.execPath, "`wazap` is not on the PATH Claude Desktop starts with");
+  assert.equal(entry.args.length, 1);
+  assert.ok(existsSync(entry.args[0]), `${entry.args[0]} does not exist`);
+  assert.match(entry.args[0], /^\/.*index\.js$/);
+  assert.equal(launchCheck(findClient("claude-desktop"), entry, GUI_PATH, () => false, "darwin").state, "ok");
+});
 
 test("connect opencode writes the one-array command its schema demands", async () => {
   const box = sandbox();
@@ -172,6 +184,23 @@ for (const [binPath, pathEnv, present, expected] of LAUNCHERS) {
   });
 }
 
+const INSTALLS = [
+  ["/Users/x/.npm/_npx/8a1b/node_modules/wazap/dist/index.js", "/usr/bin", [], "npx"],
+  ["/usr/local/lib/node_modules/wazap/dist/index.js", "/usr/local/bin:/usr/bin", ["/usr/local/bin/wazap"], "global"],
+  ["/Users/x/Projects/wazap/dist/index.js", "/usr/local/bin:/usr/bin", [], "checkout"],
+];
+
+for (const [binPath, pathEnv, present, kind] of INSTALLS) {
+  test(`whereInstalled calls ${binPath} a ${kind} install`, () => {
+    assert.deepEqual(whereInstalled(binPath, pathEnv, (p) => present.includes(p)), { kind, script: binPath });
+  });
+}
+
+test("the npx cache wins over a wazap on PATH: this process is still the throwaway copy", () => {
+  const npx = "/Users/x/.npm/_npx/8a1b/node_modules/wazap/dist/index.js";
+  assert.equal(whereInstalled(npx, "/usr/local/bin", () => true).kind, "npx");
+});
+
 test("connect codex leaves the comments that introduce the next table alone", async () => {
   const box = sandbox();
   const target = join(box.home, ".codex", "config.toml");
@@ -238,6 +267,33 @@ test("--read-only carries through into the entry args", async () => {
   assert.deepEqual(readJson(join(box.home, ".cursor", "mcp.json")).mcpServers.whatsapp.args, ["--read-only"]);
 });
 
+const NPX_ENTRY = { command: "npx", args: ["-y", "wazap-mcp"] };
+const LAUNCH_CHECKS = [
+  ["a shell client trusts the shell PATH", "cursor", { command: "wazap", args: [] }, "darwin", "ok", /Cursor runs `wazap` from your shell PATH/],
+  ["a GUI client cannot reach npx", "claude-desktop", NPX_ENTRY, "darwin", "fail", /cannot find `npx`/],
+  ["only darwin strips the PATH", "claude-desktop", NPX_ENTRY, "win32", "info", /not checked on this platform/],
+];
+
+for (const [title, client, entry, platform, state, detail] of LAUNCH_CHECKS) {
+  test(`launchCheck: ${title}`, () => {
+    const check = launchCheck(findClient(client), entry, GUI_PATH, () => false, platform);
+    assert.equal(check.state, state);
+    assert.match(check.detail, detail);
+    assert.equal(check.name, "launch");
+  });
+}
+
+test("launchCheck sends a GUI client with no npx to a global install", () => {
+  const check = launchCheck(findClient("claude-desktop"), NPX_ENTRY, GUI_PATH, () => false, "darwin");
+  assert.equal(check.fix, "run `npm i -g wazap-mcp`, then `wazap connect claude-desktop` again");
+});
+
+test("launchCheck passes a GUI client whose command is on launchd's own PATH", () => {
+  const entry = { command: "npx", args: ["-y", "wazap-mcp"] };
+  const check = launchCheck(findClient("claude-desktop"), entry, GUI_PATH, (p) => p === "/usr/local/bin/npx", "darwin");
+  assert.equal(check.state, "ok");
+});
+
 test("an unknown client names the ones that exist", async () => {
   const box = sandbox();
   await assert.rejects(connect(box, "emacs"), (err) => {
@@ -245,4 +301,44 @@ test("an unknown client names the ones that exist", async () => {
     assert.match(err.stderr, /claude-code, claude-desktop, cursor, codex, vscode, gemini, windsurf, opencode/);
     return true;
   });
+});
+
+/** A `spawnSync` that answers from `running` and records every argv it is handed. */
+function recorder(running) {
+  const calls = [];
+  const run = (command, args) => {
+    calls.push([command, ...args].join(" "));
+    if (command !== "pgrep") return { status: 0 };
+    return { status: running() ? 0 : 1 };
+  };
+  return { calls, run };
+}
+
+test("relaunch quits the app, waits for it to go, then reopens it", () => {
+  let alive = true;
+  const { calls, run } = recorder(() => alive);
+  const quitting = (command, args, options) => {
+    if (command === "osascript") alive = false;
+    return run(command, args, options);
+  };
+
+  assert.equal(relaunch("Claude", "darwin", quitting), true);
+  assert.deepEqual(calls, [
+    "pgrep -x Claude",
+    'osascript -e tell application "Claude" to quit',
+    "pgrep -x Claude",
+    "open -a Claude",
+  ]);
+});
+
+test("relaunch leaves an app that is not running alone", () => {
+  const { calls, run } = recorder(() => false);
+  assert.equal(relaunch("Claude", "darwin", run), false);
+  assert.deepEqual(calls, ["pgrep -x Claude"], "nothing to quit means nothing to reopen");
+});
+
+test("relaunch is a macOS answer, and says no anywhere else", () => {
+  const { calls, run } = recorder(() => true);
+  assert.equal(relaunch("Claude", "linux", run), false);
+  assert.deepEqual(calls, [], "no process is looked for off macOS");
 });
