@@ -96,6 +96,26 @@ args = ["-y", "wazap-mcp"]
 
 The `skills/` folder follows the [Agent Skills](https://agentskills.io) format, so Codex, Cursor and other skill-aware agents can load the same five skills.
 
+### Claude Desktop, without a terminal
+
+Download `wazap-<version>.mcpb` from [Releases](https://github.com/razvangirgiz/wazap/releases)
+and double-click it. Claude Desktop installs the server, its Node dependencies
+and the icon, and shows two settings: **Read-only**, ticked, and **Data
+directory**, empty. `wazap connect claude-desktop` does the same job by editing
+`claude_desktop_config.json`, and needs `npx` at launch; the bundle does not.
+
+Linking the account still needs a terminal once: `npx wazap-mcp login`. The
+bundle reads the session that login writes to `~/.wazap`.
+
+Untick **Read-only** to let Claude send. It ships ticked because a bundle that
+can message people from your number before you have said so is the wrong
+default, and because the setting cannot be left unanswered: the manifest format
+has no way to omit an argument, so the box you see is the answer the server gets.
+
+Build it yourself with `npm run bundle:mcpb`, which stages `dist/`, the
+manifest, the icon and a fresh production `node_modules`, then packs them with
+[`@anthropic-ai/mcpb`](https://github.com/modelcontextprotocol/mcpb).
+
 ## Tools
 
 | Tool | Kind | What it does |

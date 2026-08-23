@@ -107,6 +107,17 @@ function asInt(value: string | undefined, fallback: number): number {
   return Number.isFinite(n) ? n : fallback;
 }
 
+/**
+ * A user_config slot the person never filled in reaches us as the literal
+ * `${user_config.data_dir}`: the Claude Desktop bundle substitutes what it has
+ * and leaves the rest alone. An unanswered question is not a data directory.
+ */
+function dropUnfilledTemplates(): void {
+  for (const [key, value] of Object.entries(process.env)) {
+    if (key.startsWith("WAZAP_") && /^\$\{[^}]*\}$/.test(value ?? "")) delete process.env[key];
+  }
+}
+
 export type DefaultAction = "serve" | "greet";
 
 /**
@@ -157,6 +168,8 @@ export function parseCli(argv: string[] = process.argv.slice(2)): CliInvocation 
   const { values, positionals } = parsed;
   if (values.help) return { kind: "help" };
   if (values.version) return { kind: "version" };
+
+  dropUnfilledTemplates();
 
   const [first, ...args] = positionals;
   if (first !== undefined && !COMMANDS.includes(first as Command)) {

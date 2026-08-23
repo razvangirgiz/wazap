@@ -1,0 +1,57 @@
+{
+  "$schema": "https://raw.githubusercontent.com/modelcontextprotocol/mcpb/main/schemas/mcpb-manifest-v0.3.schema.json",
+  "manifest_version": "0.3",
+  "name": "wazap",
+  "display_name": "wazap · WhatsApp",
+  "version": "0.9.6",
+  "description": "WhatsApp for your agent: chats, messages, media, contacts and groups behind MCP tools.",
+  "long_description": "Links your own WhatsApp account as a linked device and exposes it to Claude: read the inbox, catch up on a group, find the invoice someone sent, and send a message once you have approved it. Built on Baileys, over the WhatsApp multi-device protocol. Link the account once from a terminal with `npx wazap-mcp login`; this bundle then talks to that session.",
+  "author": {
+    "name": "Răzvan Girgiz",
+    "url": "https://github.com/razvangirgiz"
+  },
+  "homepage": "https://github.com/razvangirgiz/wazap",
+  "documentation": "https://github.com/razvangirgiz/wazap#readme",
+  "support": "https://github.com/razvangirgiz/wazap/issues",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/razvangirgiz/wazap"
+  },
+  "license": "MIT",
+  "keywords": ["whatsapp", "mcp", "baileys", "messaging"],
+  "icon": "icon.png",
+  "server": {
+    "type": "node",
+    "entry_point": "dist/index.js",
+    "mcp_config": {
+      "command": "node",
+      "args": ["${__dirname}/dist/index.js"],
+      "env": {
+        "WAZAP_READ_ONLY": "${user_config.read_only}",
+        "WAZAP_DATA_DIR": "${user_config.data_dir}"
+      }
+    }
+  },
+  "user_config": {
+    "read_only": {
+      "type": "boolean",
+      "title": "Read-only",
+      "description": "Refuse every write. The tools that send, edit, delete or change a group are not registered at all, so Claude cannot message anyone from your number. Untick to let it send after you approve.",
+      "required": false,
+      "default": true
+    },
+    "data_dir": {
+      "type": "directory",
+      "title": "Data directory",
+      "description": "Where wazap keeps credentials, history and media. Leave this alone unless you linked with a WAZAP_DATA_DIR of your own; empty means ~/.wazap.",
+      "required": false
+    }
+  },
+  "compatibility": {
+    "claude_desktop": ">=0.10.0",
+    "platforms": ["darwin", "win32", "linux"],
+    "runtimes": {
+      "node": ">=20.0.0"
+    }
+  }
+}
