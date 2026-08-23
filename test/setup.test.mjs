@@ -154,7 +154,8 @@ function setup(box, ...args) {
       HOME: box.home,
       USERPROFILE: box.home,
       APPDATA: join(box.home, "AppData", "Roaming"),
-      PATH: box.path ?? `${box.bin}${delimiter}${process.env.PATH ?? ""}`,
+      PATH: box.path ?? box.bin,
+      WAZAP_LIVE_TIMEOUT_MS: "1000",
       ...box.env,
     }),
   });
@@ -272,13 +273,10 @@ function stubRelaunch(box) {
 
 const DARWIN_ONLY = process.platform === "darwin" ? false : "relaunch is a macOS answer";
 
-test("setup --yes restarts Claude Desktop for the user, and says so instead of asking", { skip: DARWIN_ONLY }, async () => {
+test("setup --relaunch restarts Claude Desktop for the user, and says so instead of asking", { skip: DARWIN_ONLY }, async () => {
   const box = sandbox();
-  // Nothing but the sandbox on PATH: the real pgrep, osascript and open are out
-  // of reach, so this can never touch the machine's own Claude.
-  box.path = box.bin;
   const calls = stubRelaunch(box);
-  const stderr = await failingSetup(box, "--yes", "--client", "claude-desktop", "--data-dir", linkedDataDir());
+  const stderr = await failingSetup(box, "--yes", "--relaunch", "--client", "claude-desktop", "--data-dir", linkedDataDir());
 
   assert.deepEqual(calls(), [
     "pgrep -x Claude",
@@ -291,13 +289,12 @@ test("setup --yes restarts Claude Desktop for the user, and says so instead of a
   assert.ok(!stderr.includes("– Restart Claude Desktop."), "the restarted client keeps no leftover instruction");
 });
 
-test("setup --no-relaunch leaves Claude Desktop alone and tells the user to restart it", { skip: DARWIN_ONLY }, async () => {
+test("setup --yes alone leaves Claude Desktop alone: an agent inside it must not quit itself", { skip: DARWIN_ONLY }, async () => {
   const box = sandbox();
-  box.path = box.bin;
   const calls = stubRelaunch(box);
-  const stderr = await failingSetup(box, "--yes", "--no-relaunch", "--client", "claude-desktop", "--data-dir", linkedDataDir());
+  const stderr = await failingSetup(box, "--yes", "--client", "claude-desktop", "--data-dir", linkedDataDir());
 
-  assert.deepEqual(calls(), [], "not even the running check may run");
+  assert.deepEqual(calls(), ["pgrep -x Claude"], "the running check is all that may run");
   assert.match(stderr, /Restart Claude Desktop\./);
 });
 
@@ -428,6 +425,10 @@ test(
   { skip: SUPERVISOR_STUB === undefined ? `no launchd or systemd on ${process.platform}` : false },
   async () => {
     const box = sandbox();
+    // The supervisor stub is a shell script that needs sed, env and kill. The
+    // system directories also hold osascript, which this run never reaches:
+    // the client is Cursor and there is no --relaunch.
+    box.path = `${box.bin}${delimiter}/usr/bin${delimiter}/bin`;
     const dir = linkedDataDir();
     const port = 43_311;
     const kill = stubSupervisor(box);

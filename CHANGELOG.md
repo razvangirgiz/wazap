@@ -11,8 +11,10 @@
   prints as the next step rather than running. The keep-running menu offers a
   public URL when Homebrew could install a tunnel, not only when one is already
   there. Connecting Claude Desktop offers to quit and reopen it, so the last
-  manual step of a macOS setup is gone. `--yes` accepts both, `--no-brew` and
-  `--no-relaunch` decline them.
+  manual step of a macOS setup is gone. `--yes` accepts the install and
+  `--no-brew` declines it; the restart takes a person at the prompt or
+  `--relaunch`, because an agent running setup from inside Claude Desktop
+  would otherwise quit itself.
 - **`link_account` pairs WhatsApp from inside the chat**, so linking no longer
   needs a terminal. The server is already running and idle when nothing is
   linked, so it pairs itself: the tool takes a phone number, returns an

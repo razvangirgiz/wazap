@@ -128,12 +128,16 @@ async function offerGlobalInstall(config: Config, install: Install): Promise<Ins
  * The one client whose "Restart X" setup can carry out itself. Asked only when
  * the app is already running, because restarting nothing answers nothing.
  */
+/**
+ * `--yes` is not a yes here: an agent running setup from inside Claude Desktop
+ * would quit itself. A person at the prompt, or `--relaunch`, is the answer.
+ */
 async function offerRelaunch(spec: ClientSpec, config: Config): Promise<boolean> {
   const app = spec.relaunch?.app;
-  if (app === undefined || config.dryRun || config.noRelaunch) return false;
+  if (app === undefined || config.dryRun) return false;
   if (!appRunning(app)) return false;
-  if (!config.assumeYes) {
-    if (process.stdin.isTTY !== true) return false;
+  if (!config.relaunch) {
+    if (process.stdin.isTTY !== true || config.assumeYes) return false;
     const answer = await ask(`${brand("?")} Restart ${spec.describe} now so it picks up wazap? [Y/n] `);
     if (/^n/i.test(answer.trim())) return false;
   }

@@ -60,7 +60,8 @@ import {
 import type { ConnectionStatus } from "./wa-types.js";
 import { WhatsAppService } from "./whatsapp.js";
 
-const LIVE_TIMEOUT_MS = 15_000;
+/** How long a probe waits for the socket to settle; tests shorten it through the environment. */
+const LIVE_TIMEOUT_MS = Number.parseInt(process.env.WAZAP_LIVE_TIMEOUT_MS ?? "", 10) || 15_000;
 /** Connection states the probe stops waiting on. */
 const SETTLED_STATUSES: readonly ConnectionStatus[] = [
   "connected",

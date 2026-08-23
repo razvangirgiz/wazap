@@ -69,7 +69,7 @@ export interface Config {
   /** Answer no to the `brew install` a missing dependency would otherwise offer. */
   noBrew: boolean;
   /** `setup` only: refuse the Claude Desktop restart it would otherwise offer. */
-  noRelaunch: boolean;
+  relaunch: boolean;
   assumeYes: boolean;
   /** `transcribe download` only: the whisper model alias from --model. */
   modelName?: string;
@@ -203,7 +203,7 @@ export function parseCli(argv: string[] = process.argv.slice(2)): CliInvocation 
         client: { type: "string", multiple: true },
         "no-global": { type: "boolean" },
         "no-brew": { type: "boolean" },
-        "no-relaunch": { type: "boolean" },
+        relaunch: { type: "boolean" },
         model: { type: "string" },
         transcribe: { type: "string" },
         service: { type: "boolean" },
@@ -283,7 +283,7 @@ export function parseCli(argv: string[] = process.argv.slice(2)): CliInvocation 
       clients: values.client ?? [],
       noGlobal: values["no-global"] === true,
       noBrew: values["no-brew"] === true,
-      noRelaunch: values["no-relaunch"] === true,
+      relaunch: values.relaunch === true,
       assumeYes: values.yes === true,
       modelName: values.model,
       transcribeChoice: values.transcribe,
