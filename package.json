@@ -1,6 +1,7 @@
 {
   "name": "wazap-mcp",
-  "version": "0.9.5",
+  "version": "0.9.6",
+  "mcpName": "io.github.razvangirgiz/wazap",
   "description": "WhatsApp for your AI agent. MCP server over Baileys: pairing-code login, 22 tools, stdio or token-protected HTTP.",
   "license": "MIT",
   "author": "Răzvan Girgiz",
@@ -36,7 +37,8 @@
     "dev": "tsx src/index.ts",
     "typecheck": "tsc --noEmit",
     "test": "npm run build && node --test test/*.test.mjs",
-    "prepublishOnly": "npm run build && npm test"
+    "prepublishOnly": "npm run build && npm test",
+    "registry:validate": "node scripts/validate-server-json.mjs"
   },
   "engines": {
     "node": ">=20"

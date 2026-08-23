@@ -1,0 +1,45 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.razvangirgiz/wazap",
+  "description": "WhatsApp for your agent: chats, messages, media, contacts and groups behind MCP tools.",
+  "version": "0.9.6",
+  "repository": {
+    "url": "https://github.com/razvangirgiz/wazap",
+    "source": "github"
+  },
+  "packages": [
+    {
+      "registryType": "npm",
+      "registryBaseUrl": "https://registry.npmjs.org",
+      "identifier": "wazap-mcp",
+      "version": "0.9.6",
+      "transport": {
+        "type": "stdio"
+      },
+      "runtimeHint": "npx",
+      "runtimeArguments": [
+        {
+          "type": "positional",
+          "value": "-y"
+        }
+      ],
+      "environmentVariables": [
+        {
+          "name": "WAZAP_READ_ONLY",
+          "description": "Refuse every write. The write tools are not registered at all.",
+          "format": "boolean",
+          "isRequired": false,
+          "isSecret": false,
+          "default": "false"
+        },
+        {
+          "name": "WAZAP_DATA_DIR",
+          "description": "Where wazap keeps credentials, history and media. Defaults to ~/.wazap.",
+          "format": "filepath",
+          "isRequired": false,
+          "isSecret": false
+        }
+      ]
+    }
+  ]
+}
