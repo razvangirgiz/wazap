@@ -144,3 +144,31 @@ export function readLinkedAccount(dir: string): LinkedAccount | null {
 export function clearAuth(dir: string): void {
   rmSync(dir, { recursive: true, force: true });
 }
+
+const APP_STATE_SYNC_VERSION = "app-state-sync-version";
+
+/**
+ * The same auth state with the app state sync journal held at zero: reads of it
+ * find nothing and writes to it are dropped, every other key type untouched.
+ *
+ * WhatsApp delivers the phone's address book to a companion as `contactAction`
+ * mutations in the app state sync, once per stored collection version. Whichever
+ * socket saves those versions consumes that one delivery; every later connection
+ * resyncs from the version it left behind and receives nothing. The login socket
+ * has no store to put contacts in, so it must leave the journal for the service
+ * that follows.
+ */
+export function withoutAppStateSync(state: AuthenticationState): AuthenticationState {
+  return {
+    creds: state.creds,
+    keys: {
+      get: async <T extends keyof SignalDataTypeMap>(type: T, ids: string[]) =>
+        type === APP_STATE_SYNC_VERSION ? {} : state.keys.get(type, ids),
+      set: async (data) => {
+        const rest = { ...data };
+        delete rest[APP_STATE_SYNC_VERSION];
+        await state.keys.set(rest);
+      },
+    },
+  };
+}

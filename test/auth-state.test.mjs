@@ -9,7 +9,7 @@ import { mkdtempSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { useAtomicAuthState, readLinkedAccount, clearAuth } from "../dist/auth-state.js";
+import { useAtomicAuthState, readLinkedAccount, clearAuth, withoutAppStateSync } from "../dist/auth-state.js";
 
 function authDir() {
   return join(mkdtempSync(join(tmpdir(), "wazap-auth-")), "auth");
@@ -96,4 +96,46 @@ test("clearAuth removes the whole directory and is idempotent", async () => {
   clearAuth(dir);
   assert.throws(() => statSync(dir));
   clearAuth(dir);
+});
+
+/**
+ * WhatsApp hands over the address book once per stored app state collection
+ * version. A socket with no store that saves those versions eats that delivery
+ * for every socket after it, so the login socket runs on a wrapped state.
+ */
+test("withoutAppStateSync drops app-state-sync-version writes and reads", async () => {
+  const dir = authDir();
+  const { state } = await useAtomicAuthState(dir);
+  const version = { version: 21, hash: Buffer.alloc(128), indexValueMap: {} };
+  await state.keys.set({ "app-state-sync-version": { critical_unblock_low: version } });
+
+  const guarded = withoutAppStateSync(state);
+  await guarded.keys.set({ "app-state-sync-version": { regular: version } });
+  assert.equal(readdirSync(dir).includes("app-state-sync-version-regular.json"), false);
+  assert.deepEqual(await guarded.keys.get("app-state-sync-version", ["critical_unblock_low"]), {});
+  assert.ok(
+    readdirSync(dir).includes("app-state-sync-version-critical_unblock_low.json"),
+    "a version the real service saved is left alone",
+  );
+});
+
+test("withoutAppStateSync passes every other key type straight through", async () => {
+  const dir = authDir();
+  const { state } = await useAtomicAuthState(dir);
+  const guarded = withoutAppStateSync(state);
+  const key = { public: Buffer.from("aa"), private: Buffer.from("bb") };
+
+  await guarded.keys.set({ "pre-key": { 7: key }, "app-state-sync-version": { regular: { version: 1 } } });
+  assert.deepEqual((await guarded.keys.get("pre-key", ["7"]))["7"], key);
+  assert.deepEqual((await state.keys.get("pre-key", ["7"]))["7"], key, "and it reached the real store");
+  assert.equal(readdirSync(dir).includes("app-state-sync-version-regular.json"), false);
+});
+
+test("withoutAppStateSync shares the creds object, so saveCreds still writes them", async () => {
+  const dir = authDir();
+  const { state, saveCreds } = await useAtomicAuthState(dir);
+  const guarded = withoutAppStateSync(state);
+  guarded.creds.accountSyncCounter = 3;
+  await saveCreds();
+  assert.equal(JSON.parse(readFileSync(join(dir, "creds.json"), "utf8")).accountSyncCounter, 3);
 });

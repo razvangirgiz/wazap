@@ -9,7 +9,13 @@ import makeWASocket, {
 } from "baileys";
 import qrcode from "qrcode";
 import qrcodeTerminal from "qrcode-terminal";
-import { clearAuth, readLinkedAccount, useAtomicAuthState, type LinkedAccount } from "./auth-state.js";
+import {
+  clearAuth,
+  readLinkedAccount,
+  useAtomicAuthState,
+  withoutAppStateSync,
+  type LinkedAccount,
+} from "./auth-state.js";
 import { banner } from "./banner.js";
 import { runBridge } from "./bridge.js";
 import { BAILEYS_VERSION, WAZAP_VERSION, paths, type Config } from "./config.js";
@@ -685,10 +691,16 @@ async function linkSession(authDir: string, opts: LinkOptions): Promise<WASocket
       // otherwise open a socket the timer can no longer reach.
       if (expired) throw timedOut();
       const { state, saveCreds } = await useAtomicAuthState(authDir);
+      // This socket pairs and nothing else. It has no store, so anything it
+      // syncs is thrown away — and WhatsApp sends the history and the address
+      // book once. Refusing the history keeps it out of Baileys' sync state
+      // machine, which is what would otherwise bump `accountSyncCounter` and
+      // leave the service permanently past its own first sync.
       const sock = makeWASocket({
-        auth: state,
+        auth: withoutAppStateSync(state),
         browser: WA_BROWSER,
         markOnlineOnConnect: false,
+        shouldSyncHistoryMessage: () => false,
         logger: SILENT_LOGGER,
       });
       current = sock;
