@@ -56,7 +56,10 @@ const SETTINGS: readonly SettingRow[] = [
   {
     label: "transport",
     source: "transport",
-    value: (config) => (config.transport === "http" ? `http ${config.httpHost}:${config.httpPort}` : "stdio"),
+    value: (config) =>
+      config.transport === "http"
+        ? `http ${config.httpHost}:${config.httpPort}${config.publicUrl && config.oauthPassword ? ` · oauth at ${config.publicUrl}` : ""}`
+        : "stdio",
   },
   {
     label: "rate limit",

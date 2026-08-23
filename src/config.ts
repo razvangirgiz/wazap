@@ -35,6 +35,9 @@ export interface Config {
   httpPort: number;
   readToken: string | null;
   writeToken: string | null;
+  /** Where clients reach the HTTP endpoint from outside; with the password, turns OAuth on. */
+  publicUrl: string | null;
+  oauthPassword: string | null;
   /** Publish a loopback endpoint and a daemon.json sidecar so a bridge can reach this session. */
   share: boolean;
   /** Write-tool token bucket, per minute. 0 disables the limit. */
@@ -73,6 +76,7 @@ export interface Paths {
   storeFile: string;
   lockFile: string;
   daemonFile: string;
+  oauthFile: string;
   envFile: string;
   qrFile: string;
 }
@@ -86,6 +90,7 @@ export function paths(dataDir: string): Paths {
     storeFile: join(dataDir, "store.json"),
     lockFile: join(dataDir, "server.lock"),
     daemonFile: join(dataDir, "daemon.json"),
+    oauthFile: join(dataDir, "oauth.json"),
     envFile: join(dataDir, ".env"),
     qrFile: join(dataDir, "qr.png"),
   };
@@ -227,6 +232,8 @@ export function parseCli(argv: string[] = process.argv.slice(2)): CliInvocation 
       httpPort: values.port ? asInt(values.port, 8766) : asInt(process.env.WAZAP_PORT, 8766),
       readToken: (process.env.WAZAP_READ_TOKEN ?? "").trim() || null,
       writeToken: (process.env.WAZAP_WRITE_TOKEN ?? "").trim() || null,
+      publicUrl: (process.env.WAZAP_PUBLIC_URL ?? "").trim().replace(/\/+$/, "") || null,
+      oauthPassword: process.env.WAZAP_OAUTH_PASSWORD || null,
       share: !asBool(process.env.WAZAP_NO_SHARE, false),
       rateLimitPerMinute: asInt(process.env.WAZAP_RATE_LIMIT, 20),
       sources: {

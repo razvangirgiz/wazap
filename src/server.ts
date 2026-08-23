@@ -1,10 +1,12 @@
 import { randomUUID, timingSafeEqual } from "node:crypto";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { mcpAuthRouter, getOAuthProtectedResourceMetadataUrl } from "@modelcontextprotocol/sdk/server/auth/router.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { isInitializeRequest } from "@modelcontextprotocol/sdk/types.js";
 import express, { type Request, type Response, type NextFunction } from "express";
-import { WAZAP_VERSION, type Config } from "./config.js";
+import { WAZAP_VERSION, paths, type Config } from "./config.js";
+import { APPROVE_PATH, OAUTH_SCOPES, WazapOAuthProvider } from "./oauth.js";
 import { RateLimiter } from "./ratelimit.js";
 import { registerTools } from "./tools.js";
 import { log, logError } from "./logger.js";
@@ -46,6 +48,10 @@ export interface Endpoint {
   credentials: Credential[];
   /** No read token configured, so an unauthenticated request gets the read tools. */
   openRead: boolean;
+  /** Hosted agents sign in here instead of carrying a token. */
+  oauth?: WazapOAuthProvider;
+  /** Aborting it closes the listener and every session on it. */
+  signal?: AbortSignal;
 }
 
 /** Serve /mcp and /healthz on one address. Resolves with the bound port, so port 0 works. */
@@ -63,11 +69,11 @@ export async function startHttpEndpoint(
     const rpc = (req.body && typeof req.body === "object" ? (req.body as { method?: string }).method : undefined) ?? "-";
     const hasAuth = req.headers.authorization ? "auth" : "noauth";
     res.on("finish", () => {
-      log(`HTTP ${req.method} ${req.url} rpc=${rpc} ${hasAuth} accept="${req.headers.accept ?? ""}" -> ${res.statusCode} (${Date.now() - start}ms)`);
+      log(`HTTP ${req.method} ${req.originalUrl} rpc=${rpc} ${hasAuth} accept="${req.headers.accept ?? ""}" -> ${res.statusCode} (${Date.now() - start}ms)`);
     });
     res.on("close", () => {
       if (!res.writableEnded) {
-        log(`HTTP ${req.method} ${req.url} rpc=${rpc} -> client closed before response (${Date.now() - start}ms)`);
+        log(`HTTP ${req.method} ${req.originalUrl} rpc=${rpc} -> client closed before response (${Date.now() - start}ms)`);
       }
     });
     next();
@@ -80,15 +86,49 @@ export async function startHttpEndpoint(
     );
   }
 
+  const oauth = endpoint.oauth;
+  if (oauth) {
+    // Reached through a TLS proxy on this machine, so the proxy's idea of the
+    // caller is the one the password lockout should count.
+    app.set("trust proxy", "loopback");
+    app.use(
+      mcpAuthRouter({
+        provider: oauth,
+        issuerUrl: oauth.issuerUrl,
+        resourceServerUrl: oauth.resourceUrl,
+        resourceName: "wazap",
+        scopesSupported: [...OAUTH_SCOPES],
+        serviceDocumentationUrl: new URL("https://github.com/razvangirgiz/wazap#self-host"),
+      }),
+    );
+    app.post(APPROVE_PATH, express.urlencoded({ extended: false }), oauth.approve);
+    log(`OAuth on: agents sign in at ${oauth.issuerUrl.href}`);
+  }
+  const resourceMetadataUrl = oauth ? getOAuthProtectedResourceMetadataUrl(oauth.resourceUrl) : null;
+
   // The first credential the bearer token matches decides the session's tools,
-  // so a leaked read token can never message anyone.
-  const requireAuth = (req: Request, res: Response, next: NextFunction): void => {
+  // so a leaked read token can never message anyone. An OAuth token carries
+  // the scope the person picked on the consent page.
+  const requireAuth = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
     const auth = req.headers.authorization;
     const credential = endpoint.credentials.find((entry) => isAuthorized(auth, entry.token));
     if (credential || endpoint.openRead) {
       (req as AuthedRequest).mcpWrite = credential?.write === true;
       next();
       return;
+    }
+    if (oauth && auth?.startsWith("Bearer ")) {
+      try {
+        const info = await oauth.verifyAccessToken(auth.slice("Bearer ".length).trim());
+        (req as AuthedRequest).mcpWrite = info.scopes.includes("write");
+        next();
+        return;
+      } catch {
+        // Falls through to the 401 below, which tells the client how to sign in.
+      }
+    }
+    if (resourceMetadataUrl) {
+      res.setHeader("WWW-Authenticate", `Bearer resource_metadata="${resourceMetadataUrl}"`);
     }
     res.status(401).json({
       jsonrpc: "2.0",
@@ -146,9 +186,12 @@ export async function startHttpEndpoint(
     }
   };
 
-  app.post("/mcp", requireAuth, handleMcp);
-  app.get("/mcp", requireAuth, handleMcp);
-  app.delete("/mcp", requireAuth, handleMcp);
+  const authed = (req: Request, res: Response, next: NextFunction): void => {
+    requireAuth(req, res, next).catch(next);
+  };
+  app.post("/mcp", authed, handleMcp);
+  app.get("/mcp", authed, handleMcp);
+  app.delete("/mcp", authed, handleMcp);
 
   // Unauthenticated, so it carries liveness only; the account and data dir
   // stay behind the token in get_status.
@@ -160,6 +203,11 @@ export async function startHttpEndpoint(
     const server = app.listen(endpoint.port, endpoint.host, () => {
       const bound = server.address();
       resolve(typeof bound === "object" && bound !== null ? bound.port : endpoint.port);
+    });
+    endpoint.signal?.addEventListener("abort", () => {
+      for (const transport of transports.values()) void transport.close();
+      server.closeAllConnections();
+      server.close();
     });
   });
 }
@@ -176,10 +224,19 @@ export async function runHttp(
   if (config.writeToken) credentials.push({ token: config.writeToken, write: true });
   if (extra) credentials.push(extra);
 
+  const oauth =
+    config.publicUrl && config.oauthPassword
+      ? new WazapOAuthProvider({
+          publicUrl: new URL(config.publicUrl),
+          password: config.oauthPassword,
+          stateFile: paths(config.dataDir).oauthFile,
+        })
+      : undefined;
+
   const port = await startHttpEndpoint(
     wa,
     config,
-    { host: config.httpHost, port: config.httpPort, credentials, openRead: !config.readToken },
+    { host: config.httpHost, port: config.httpPort, credentials, openRead: !config.readToken, oauth },
     limiter,
   );
   log(`MCP server (Streamable HTTP) on http://${config.httpHost}:${port}/mcp`);

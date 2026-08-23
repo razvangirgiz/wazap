@@ -3,6 +3,7 @@ import { readLinkedAccount } from "./auth-state.js";
 import { WAZAP_VERSION, paths, type Config } from "./config.js";
 import { WazapError, asWazapError } from "./errors.js";
 import { lockHolder, lockPid } from "./lock.js";
+import { readGrants } from "./oauth.js";
 import {
   MODELS,
   findWhisper,
@@ -43,6 +44,7 @@ const CHECKS: readonly CheckFn[] = [
   checkLock,
   checkCredentials,
   checkWrites,
+  checkOAuth,
   checkTranscribe,
   checkUpdate,
 ];
@@ -137,6 +139,17 @@ function checkWrites(config: Config): Check {
     state: "ok",
     detail: `${config.readOnly ? "off" : "on"} (${config.sources.readOnly})`,
   };
+}
+
+/** Only when OAuth is configured: who is signed in. A missing file is silence, not a fault. */
+function checkOAuth(config: Config): Check[] {
+  if (!config.publicUrl || !config.oauthPassword) return [];
+  const grants = readGrants(paths(config.dataDir).oauthFile);
+  if (grants.length === 0) {
+    return [{ name: "oauth", state: "info", detail: `on at ${config.publicUrl}, no agent signed in yet` }];
+  }
+  const who = grants.map((g) => `${g.client} (${g.scopes.join("+")})`).join(", ");
+  return [{ name: "oauth", state: "ok", detail: `on at ${config.publicUrl}; signed in: ${who}` }];
 }
 
 const TRANSCRIBE_OFF_FIX = "run `wazap config transcribe local` to transcribe voice messages";

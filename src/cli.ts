@@ -429,6 +429,25 @@ export async function runGreet(config: Config): Promise<void> {
   );
 }
 
+/** OAuth needs both halves, and an issuer the SDK will accept: https, or a loopback name for testing. */
+export function oauthProblem(config: Pick<Config, "publicUrl" | "oauthPassword">): string | null {
+  if (!config.publicUrl && !config.oauthPassword) return null;
+  if (!config.publicUrl) return "WAZAP_OAUTH_PASSWORD is set but WAZAP_PUBLIC_URL is not. Set both, or neither.";
+  if (!config.oauthPassword) return "WAZAP_PUBLIC_URL is set but WAZAP_OAUTH_PASSWORD is not. Set both, or neither.";
+  let url: URL;
+  try {
+    url = new URL(config.publicUrl);
+  } catch {
+    return `WAZAP_PUBLIC_URL is not a URL: ${config.publicUrl}`;
+  }
+  if (url.search || url.hash) return "WAZAP_PUBLIC_URL must not carry a query or a fragment.";
+  if (url.protocol !== "https:" && !LOOPBACK_HOSTS.includes(url.hostname)) {
+    return "WAZAP_PUBLIC_URL must be https, since agents will send a password to it.";
+  }
+  if (config.oauthPassword.length < 8) return "WAZAP_OAUTH_PASSWORD is shorter than 8 characters.";
+  return null;
+}
+
 export async function runServe(config: Config): Promise<void> {
   const p = paths(config.dataDir);
 
@@ -450,6 +469,13 @@ export async function runServe(config: Config): Promise<void> {
     if (config.transport === "http" && !config.readToken && !LOOPBACK_HOSTS.includes(config.httpHost)) {
       say(fail(`Refusing to serve ${config.httpHost} without a token. Set WAZAP_READ_TOKEN, or bind 127.0.0.1.`));
       process.exit(1);
+    }
+    if (config.transport === "http") {
+      const problem = oauthProblem(config);
+      if (problem) {
+        say(fail(problem));
+        process.exit(1);
+      }
     }
 
     mkdirSync(config.dataDir, { recursive: true, mode: 0o700 });

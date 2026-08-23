@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.10.0
+### Added
+
+- **OAuth for hosted agents.** claude.ai Connectors, ChatGPT and Poke's OAuth
+  mode would not take a static bearer token, so a self-hosted wazap was out of
+  their reach. `WAZAP_PUBLIC_URL` plus `WAZAP_OAUTH_PASSWORD` now make wazap
+  its own OAuth 2.1 server: discovery at `/.well-known`, dynamic client
+  registration, S256 PKCE, `/token` with refresh, `/revoke`. An agent gets the
+  `/mcp` URL and nothing else; the person lands on a consent page on their own
+  host, types the password, and picks read or read-and-send for that agent.
+  Grants live hashed in `<data-dir>/oauth.json`; deleting it signs everyone
+  out. The bearer tokens still work next to it.
+- **`wazap status` lists OAuth grants**, by agent name and scope.
+
+### Changed
+
+- A 401 from `/mcp` now carries `WWW-Authenticate` with the resource metadata
+  URL when OAuth is on, which is how a client learns to start the flow.
+- HTTP request logs show the full path again for routes mounted under a router.
+
 ## 0.9.8
 ### Added
 

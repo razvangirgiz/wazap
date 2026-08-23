@@ -82,7 +82,7 @@ it would write.
 | `gemini` | `~/.gemini/settings.json` |
 | `windsurf` | `~/.codeium/windsurf/mcp_config.json` |
 | `opencode` | `mcp.whatsapp` in `~/.config/opencode/opencode.json` |
-| anything remote | client's MCP URL field: `https://your-host/mcp` with header `Authorization: Bearer <token>` (see [Self-host](#self-host)) |
+| anything remote | client's MCP URL field: `https://your-host/mcp` with header `Authorization: Bearer <token>`, or just the URL once [OAuth](#hosted-agents-oauth) is on (see [Self-host](#self-host)) |
 
 ### Other MCP clients
 
@@ -363,6 +363,7 @@ created `0700` with credentials written `0600`:
   store.json    chat-list snapshot
   server.lock   pid of the running server
   daemon.json   loopback endpoint a second wazap bridges to
+  oauth.json    registered agents and hashed OAuth grants, when OAuth is on
   .env          optional settings, see .env.example
 ```
 
@@ -413,7 +414,8 @@ npx wazap-mcp serve --http --host 0.0.0.0 --port 8766
 Streamable HTTP at `/mcp`, with a health check at `/healthz`. Two bearer tokens:
 the read token gets the read tools, the write token also unlocks the write
 tools, so a leaked read token can never message anyone. wazap refuses to bind a
-non-loopback address without a read token.
+non-loopback address without a read token. Agents that cannot carry a header
+sign in with [OAuth](#hosted-agents-oauth) instead.
 
 ## Self-host
 
@@ -450,7 +452,41 @@ The container publishes `8766` on loopback only; add the same TLS proxy in front
 
 ### Which clients can reach it
 
-Claude Code, Claude Desktop, Cursor, Codex, VS Code and any client with an "MCP URL + header" field connect with the bearer token. claude.ai Connectors require OAuth rather than a static token, so they cannot use a self-hosted wazap yet. Keep the read token in clients that only need to read; hand out the write token deliberately.
+Claude Code, Claude Desktop, Cursor, Codex, VS Code, Poke and any client with an "MCP URL + header" field connect with the bearer token. Keep the read token in clients that only need to read; hand out the write token deliberately.
+
+claude.ai Connectors, ChatGPT and some hosted agents will not take a static header. They want OAuth, which is the next section.
+
+### Hosted agents (OAuth)
+
+Two more lines in the same `.env` turn wazap into its own OAuth 2.1 server:
+
+```bash
+WAZAP_PUBLIC_URL=https://wazap.example.com
+WAZAP_OAUTH_PASSWORD=$(openssl rand -base64 18)
+```
+
+Then give an agent nothing but `https://wazap.example.com/mcp`. It finds the
+authorization server at `/.well-known/oauth-protected-resource/mcp`, registers
+itself (RFC 7591, so there is no client id to paste anywhere), and sends you to
+a page on your own host that asks two things: the password above, and whether
+this agent may only read or also send. A refresh token keeps the agent signed
+in until you revoke it; access tokens rotate every 24 hours on their own.
+
+Tested against the flow claude.ai, ChatGPT and Poke use: S256 PKCE, public
+clients, `/token` with refresh, `/revoke`. The bearer tokens keep working next
+to it, so a laptop client on a header and a hosted agent on OAuth share one
+server.
+
+What to know before exposing it:
+
+- `WAZAP_PUBLIC_URL` must be `https`. The password travels to it.
+- The password is the whole identity layer. Five wrong guesses lock that
+  address out for fifteen minutes, and the authorize endpoint takes a hundred
+  requests per fifteen minutes in total. Use a long one.
+- Grants live in `<data-dir>/oauth.json` as hashes. Delete the file to sign
+  every agent out at once; `wazap status` lists who holds one.
+- A read grant never sees a write tool, whatever scope the agent requested.
+  The radio button on the consent page is the only thing that decides.
 
 ## Settings
 
@@ -464,6 +500,8 @@ Claude Code, Claude Desktop, Cursor, Codex, VS Code and any client with an "MCP 
 | `WAZAP_TRANSPORT` | `stdio` | `stdio` or `http`. |
 | `WAZAP_HOST` / `WAZAP_PORT` | `127.0.0.1` / `8766` | HTTP bind address. |
 | `WAZAP_READ_TOKEN` / `WAZAP_WRITE_TOKEN` | unset | HTTP bearer tokens. |
+| `WAZAP_PUBLIC_URL` | unset | The `https` address agents reach the server at. With the password, turns OAuth on. |
+| `WAZAP_OAUTH_PASSWORD` | unset | What the consent page asks for. At least 8 characters. |
 | `WAZAP_NO_UPDATE_CHECK` | `0` | `1` stops `status` asking npm for a newer version. |
 | `WAZAP_TRANSCRIBE` | `off` | `local`, `openai` or `off`. |
 | `WAZAP_TRANSCRIBE_AUTO` | `1` | Transcribe incoming voice notes in the background. |
