@@ -16,7 +16,7 @@ export interface SkillTarget {
 }
 
 /**
- * Every path here is the one that harness's own docs name today. Codex is the
+ * Each path is the one that harness's own docs name today. Codex is the
  * one that moved: `~/.codex/skills` still loads, but its docs call that
  * location deprecated and put user skills in `~/.agents/skills`, which Cursor
  * and OpenCode read too.
@@ -76,7 +76,7 @@ function skillNames(): string[] {
   }
 }
 
-export function findSkillTarget(name: string): SkillTarget {
+function findSkillTarget(name: string): SkillTarget {
   const target = SKILL_TARGETS.find((candidate) => candidate.name === name);
   if (!target) {
     throw new WazapError("INVALID_ID", `Unknown harness "${name}".`, `Pick one of: ${SKILL_TARGET_NAMES}`);

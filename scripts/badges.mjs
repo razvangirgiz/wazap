@@ -24,8 +24,8 @@ export function cursorLink() {
 }
 
 /** VS Code takes the whole server object with its name folded in, URL-encoded. */
-export function vscodeLink(scheme = "vscode") {
-  return `${scheme}:mcp/install?${encodeURIComponent(JSON.stringify({ name: NAME, ...ENTRY }))}`;
+export function vscodeLink() {
+  return `vscode:mcp/install?${encodeURIComponent(JSON.stringify({ name: NAME, ...ENTRY }))}`;
 }
 
 /** The https form, for the many places a custom scheme is stripped before it can be clicked. */

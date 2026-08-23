@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /**
  * icon.png for the Claude Desktop bundle: the banner green with a white W, at
- * the 512×512 mcpb's own validator recommends. Written byte by byte rather
+ * the 512×512 that mcpb's own validator recommends. Written byte by byte rather
  * than pulled from an image library, because one icon is not worth a
  * dependency in a package people npx.
  */

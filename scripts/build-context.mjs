@@ -54,4 +54,4 @@ if (process.argv.includes("--check")) {
 }
 
 writeFileSync(target, wanted);
-console.log(`wrote GEMINI.md (${wanted.length} bytes)`);
+console.log(`wrote GEMINI.md (${Buffer.byteLength(wanted)} bytes)`);
