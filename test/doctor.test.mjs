@@ -50,6 +50,7 @@ test("a healthy data dir passes every check it can", async () => {
   assert.match(stderr, new RegExp(`✓ node: ${process.versions.node.replace(/\\./g, "\\.")}`));
   assert.match(stderr, /✓ data dir: .* \(0700, writable\)/);
   assert.match(stderr, /– lock: none/);
+  assert.match(stderr, /– service: not installed — run `wazap service install`/);
   assert.match(stderr, /– credentials: no account linked yet/);
   assert.match(stderr, /✓ writes: on \(default\)/);
 });
@@ -92,7 +93,7 @@ test("status --json prints one parseable object carrying the same checks", async
   assert.equal(report.server_pid, null);
   assert.deepEqual(
     report.checks.map((check) => check.name),
-    ["node", "data dir", "lock", "credentials", "writes", "skills", "transcribe", "update"],
+    ["node", "data dir", "lock", "service", "credentials", "writes", "skills", "transcribe", "update"],
   );
   assert.equal(report.checks.find((check) => check.name === "writes").detail, "on (default)");
 });

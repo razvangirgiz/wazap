@@ -4,6 +4,7 @@ import { WAZAP_VERSION, paths, type Config } from "./config.js";
 import { WazapError, asWazapError } from "./errors.js";
 import { lockHolder, lockPid } from "./lock.js";
 import { oauthProblem, readGrants } from "./oauth.js";
+import { installedService } from "./service.js";
 import { detectedTargets, skillState } from "./skills.js";
 import {
   MODELS,
@@ -43,6 +44,7 @@ const CHECKS: readonly CheckFn[] = [
   checkNode,
   checkDataDir,
   checkLock,
+  checkService,
   checkCredentials,
   checkWrites,
   checkSkills,
@@ -119,6 +121,28 @@ function checkLock(config: Config): Check {
     return { name: "lock", state: "info", detail: `stale (pid ${recorded} is gone); the next start reclaims it` };
   }
   return { name: "lock", state: "info", detail: "none" };
+}
+
+/** Whether the background service is installed, alive, and running this build. */
+function checkService(config: Config): Check {
+  const found = installedService(config.dataDir);
+  if (found === null) {
+    return { name: "service", state: "info", detail: "not installed", fix: "run `wazap service install`" };
+  }
+  const { supervisor, record } = found;
+  const pid = supervisor.pid(record);
+  if (pid === null) {
+    return { name: "service", state: "fail", detail: "installed but not running", fix: "run `wazap service start`" };
+  }
+  if (record.installedVersion !== WAZAP_VERSION) {
+    return {
+      name: "service",
+      state: "info",
+      detail: `runs ${record.installedVersion}, ${WAZAP_VERSION} is installed`,
+      fix: "run `wazap service restart`",
+    };
+  }
+  return { name: "service", state: "ok", detail: `running (pid ${pid}, ${supervisor.name})` };
 }
 
 function checkCredentials(config: Config): Check {

@@ -27,6 +27,7 @@ export type ErrorCode =
   | "TRANSCRIBE_UNAVAILABLE"
   | "TRANSCRIBE_FAILED"
   | "TIMEOUT"
+  | "SERVICE_ERROR"
   | "WHATSAPP_ERROR";
 
 export class WazapError extends Error {
@@ -75,6 +76,8 @@ export const ERROR_GUIDE: Record<ErrorCode, string> = {
     "Transcription is off, or its binaries or model are missing. Tell the user to run the command in the fix; do not retry.",
   TRANSCRIBE_FAILED: "The transcription provider ran and failed. Read the message; retry once at most.",
   TIMEOUT: "WhatsApp did not answer in time. Retry once; if it fails again, call get_status.",
+  SERVICE_ERROR:
+    "wazap's own background service could not be managed. This is a machine problem, not a WhatsApp one: read the fix and tell the user.",
   WHATSAPP_ERROR: "WhatsApp rejected the operation. Read the message; do not blindly retry.",
 };
 

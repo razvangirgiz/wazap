@@ -22,6 +22,7 @@ export type Command =
   | "config"
   | "contacts"
   | "skills"
+  | "service"
   | "transcribe";
 
 export interface Config {
@@ -76,6 +77,7 @@ export interface Paths {
   storeFile: string;
   lockFile: string;
   daemonFile: string;
+  serviceFile: string;
   oauthFile: string;
   envFile: string;
   qrFile: string;
@@ -90,6 +92,7 @@ export function paths(dataDir: string): Paths {
     storeFile: join(dataDir, "store.json"),
     lockFile: join(dataDir, "server.lock"),
     daemonFile: join(dataDir, "daemon.json"),
+    serviceFile: join(dataDir, "service.json"),
     oauthFile: join(dataDir, "oauth.json"),
     envFile: join(dataDir, ".env"),
     qrFile: join(dataDir, "qr.png"),
@@ -113,6 +116,7 @@ const COMMAND_ARGS: Record<Command, readonly number[]> = {
   contacts: [1],
   // One positional is `skills install`, which finds the harnesses itself.
   skills: [1, 2],
+  service: [1],
   transcribe: [1, 2],
 };
 

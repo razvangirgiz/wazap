@@ -31,6 +31,7 @@ import { clockLabel, formatAge } from "./messages.js";
 import { RateLimiter } from "./ratelimit.js";
 import { oauthProblem } from "./oauth.js";
 import { runHttp, runStdio, startLoopbackEndpoint } from "./server.js";
+import { fetchHealth, serviceHolding } from "./service.js";
 import { applyWrites } from "./settings.js";
 import {
   MODELS,
@@ -233,12 +234,35 @@ function takeSessionLock(lockFile: string): number | null {
   throw new WazapError("WHATSAPP_ERROR", `Could not take the session lock in ${lockFile}.`, "Run the command again");
 }
 
+const SERVICE_HEALTH_TIMEOUT_MS = 5_000;
+
+/**
+ * What the installed service says about itself, for the callers that would
+ * otherwise have to refuse: it holds the session, so nobody else may open it.
+ */
+export async function serviceLive(config: Config, pid: number): Promise<LiveReport | null> {
+  const held = serviceHolding(config.dataDir, pid);
+  if (held === null) return null;
+  const health = await fetchHealth(held.record.port, SERVICE_HEALTH_TIMEOUT_MS);
+  if (health === null) {
+    return { reachable: false, chats: null, last_message_age: null, reason: "the service is not answering /healthz" };
+  }
+  return {
+    reachable: health.status === "connected",
+    chats: null,
+    last_message_age: null,
+    reason: health.status === "connected" ? null : health.status,
+  };
+}
+
 /** One process owns the session, so a probe only runs when no server holds the lock. */
 export async function runLiveProbe(config: Config): Promise<LiveReport> {
   const p = paths(config.dataDir);
   // The probe owns the session for as long as it runs, exactly like the server.
   const running = takeSessionLock(p.lockFile);
   if (running !== null) {
+    const live = await serviceLive(config, running);
+    if (live !== null) return live;
     throw new WazapError(
       "WHATSAPP_ERROR",
       `A server (pid ${running}) already owns this session.`,
@@ -555,13 +579,11 @@ export async function runLogin(config: Config): Promise<void> {
 export async function linkAndSync(config: Config, announce: (title: string) => void = () => {}): Promise<void> {
   const p = paths(config.dataDir);
 
-  const running = takeSessionLock(p.lockFile);
-  if (running !== null) {
-    say(fail(`wazap is running (pid ${running}). Stop it first (or quit the client that launched it), then run this again.`));
-    process.exit(1);
-  }
-
-  const release = (): void => releaseLock(p.lockFile);
+  const resumeService = await yieldSession(config, p.lockFile);
+  const release = (): void => {
+    releaseLock(p.lockFile);
+    resumeService();
+  };
   const onInterrupt = (): void => {
     release();
     process.exit(130);
@@ -633,6 +655,42 @@ export async function linkAndSync(config: Config, announce: (title: string) => v
 
   announce("Permissions");
   await offerWrites(config);
+}
+
+const SERVICE_STOP_MS = 10_000;
+
+/**
+ * The session lock, held for pairing. A client's own server is the user's to
+ * quit; the background service is ours to stop, which is why the returned
+ * function starts it again. What `~/.wazap/link.sh` did by hand.
+ */
+export async function yieldSession(config: Config, lockFile: string): Promise<() => void> {
+  const running = takeSessionLock(lockFile);
+  if (running === null) return () => {};
+
+  const held = serviceHolding(config.dataDir, running);
+  if (held === null) {
+    say(fail(`wazap is running (pid ${running}). Stop it first (or quit the client that launched it), then run this again.`));
+    process.exit(1);
+  }
+
+  say(info("Stopping the wazap service for pairing"));
+  held.supervisor.stop(held.record);
+  let resumed = false;
+  const resume = (): void => {
+    if (resumed) return;
+    resumed = true;
+    held.supervisor.start(held.record);
+  };
+
+  const deadline = Date.now() + SERVICE_STOP_MS;
+  while (Date.now() < deadline) {
+    if (takeSessionLock(lockFile) === null) return resume;
+    await sleep(200);
+  }
+  resume();
+  say(fail(`The wazap service (pid ${running}) did not let go of the session.`));
+  process.exit(1);
 }
 
 const HISTORY_WAIT_MS = 90_000;

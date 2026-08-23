@@ -4,6 +4,7 @@ import { runContacts, runGreet, runLogin, runLogout, runServe, runStatus, runTra
 import { WAZAP_VERSION, parseCli, pickDefaultAction } from "./config.js";
 import { CLIENT_NAMES, runConnect } from "./connect.js";
 import { SKILL_TARGET_NAMES, runSkills } from "./skills.js";
+import { SERVICE_VERBS, runService } from "./service.js";
 import { runSetup } from "./setup.js";
 import { runConfig } from "./settings.js";
 import { WazapError } from "./errors.js";
@@ -18,6 +19,8 @@ Usage:
   wazap setup [--agent] [--client <name>]                  Link, connect your client and finish, in one command
   wazap connect <client> [--dry-run]                       Register wazap with an MCP client
   wazap skills install [<harness>] [--dry-run]              Copy the five skills into a harness, or into every one found
+  wazap service ${SERVICE_VERBS}
+                                                           Keep the server running in the background, under launchd or systemd
   wazap config [writes on|off] [transcribe local|openai|off]
                                                            Show the effective settings, or change one
   wazap transcribe download [--model <alias>]              Fetch the whisper.cpp model into the data dir
@@ -41,7 +44,7 @@ Options:
   --client <name>     With setup: connect this client instead of the detected ones (repeatable)
   --transcribe <how>  With setup: answer the transcription question (local, openai or off)
   --model <alias>     With transcribe download: turbo (default), large-v3 or medium
-  --dry-run           With connect or skills install: print what would be written, and write nothing
+  --dry-run           With connect, skills install or service install: print what would be written, and write nothing
   --live              With status: reach WhatsApp for real, then close the connection
   --json              With status: print the whole report as one JSON object on stdout
   --writes            Allow the agent to write, without login asking
@@ -89,6 +92,9 @@ async function main(): Promise<void> {
       return;
     case "skills":
       runSkills(config);
+      return;
+    case "service":
+      await runService(config);
       return;
     case "config":
       await runConfig(config);
