@@ -13,7 +13,9 @@ import { join } from "node:path";
 import { promisify } from "node:util";
 
 import { daemonHealthy, readDaemon, removeDaemon, writeDaemon } from "../dist/daemon.js";
-import { BINARY, mcpClient, spawnWazap, waitFor } from "./helpers.mjs";
+import { RateLimiter } from "../dist/ratelimit.js";
+import { startHttpEndpoint } from "../dist/server.js";
+import { BINARY, mcpClient, offlineConfig, spawnWazap, waitFor } from "./helpers.mjs";
 
 const CHILD_ENV = { WAZAP_READ_TOKEN: "", WAZAP_WRITE_TOKEN: "", WAZAP_NO_UPDATE_CHECK: "1" };
 const SAMPLE = { pid: 4242, port: 51515, token: "deadbeef", version: "9.9.9" };
@@ -297,4 +299,48 @@ test("WAZAP_NO_SHARE serves stdio with no sidecar at all", async () => {
     assert.equal(init.error, undefined, `initialize failed: ${JSON.stringify(init.error)}`);
     assert.equal(existsSync(daemonFile), false, "sharing was off, so nothing may be published");
   });
+});
+
+/** A server whose only job is to answer /healthz from a status we dictate. */
+async function healthOf(status, sinceMsAgo) {
+  const port = await closedPort();
+  const stop = new AbortController();
+  const wa = {
+    getStatus: () => ({ status, status_since: new Date(Date.now() - sinceMsAgo).toISOString() }),
+  };
+  await startHttpEndpoint(
+    wa,
+    offlineConfig("wazap-health-"),
+    { host: "127.0.0.1", port, credentials: [], openRead: false, signal: stop.signal },
+    new RateLimiter(0),
+  );
+  try {
+    const res = await fetch(`http://127.0.0.1:${port}/healthz`, { signal: AbortSignal.timeout(5_000) });
+    return { code: res.status, body: await res.json() };
+  } finally {
+    stop.abort();
+  }
+}
+
+const MINUTE = 60_000;
+
+test("a connected socket is healthy however long it has been connected", async () => {
+  const { code, body } = await healthOf("connected", 30 * MINUTE);
+  assert.equal(code, 200);
+  assert.equal(body.ok, true);
+  assert.equal(body.status, "connected");
+});
+
+test("a reconnect in progress is not yet an outage", async () => {
+  const { code, body } = await healthOf("disconnected", MINUTE);
+  assert.equal(code, 200, "a monitor must not page on a socket that is coming back");
+  assert.equal(body.ok, true);
+});
+
+test("two minutes off the air answers 503, with the status and since a monitor can read", async () => {
+  const { code, body } = await healthOf("disconnected", 3 * MINUTE);
+  assert.equal(code, 503);
+  assert.equal(body.ok, false);
+  assert.equal(body.status, "disconnected");
+  assert.ok(Date.now() - Date.parse(body.since) >= 3 * MINUTE, `since: ${body.since}`);
 });

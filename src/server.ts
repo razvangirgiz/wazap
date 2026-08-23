@@ -14,6 +14,8 @@ import { registerTools } from "./tools.js";
 import { log, logError } from "./logger.js";
 import type { WhatsAppApi } from "./wa-types.js";
 
+const UNHEALTHY_AFTER_MS = 2 * 60 * 1000;
+
 function isAuthorized(header: string | undefined, expected: string): boolean {
   const prefix = "Bearer ";
   if (!header || !header.startsWith(prefix)) return false;
@@ -218,9 +220,14 @@ export async function startHttpEndpoint(
   app.delete("/mcp", authed, handleMcp);
 
   // Unauthenticated, so it carries liveness only; the account and data dir
-  // stay behind the token in get_status.
+  // stay behind the token in get_status. A socket that has been anything but
+  // connected for two minutes is a real outage, and a 503 is what a tunnel or a
+  // monitor can act on; a reconnect in progress is not.
   app.get("/healthz", (_req, res) => {
-    res.json({ ok: true, status: wa.getStatus().status });
+    const { status, status_since } = wa.getStatus();
+    const stalled = Date.now() - Date.parse(status_since) > UNHEALTHY_AFTER_MS;
+    const ok = status === "connected" || !stalled;
+    res.status(ok ? 200 : 503).json({ ok, status, since: status_since });
   });
 
   return await new Promise<number>((resolve) => {

@@ -356,7 +356,13 @@ export class WhatsAppService implements WhatsAppApi {
   /** Bumped per socket, so events from a superseded socket are ignored. */
   private generation = 0;
   private status: ConnectionStatus = "connecting";
+  private statusSince = Date.now();
   private lastError: string | null = null;
+  /**
+   * Called once when the reconnect budget runs out on something a restart could
+   * fix. The CLI turns it into an exit code, so a supervisor gets its turn.
+   */
+  onGiveUp: (() => void) | null = null;
   private account: StatusInfo["account"] = null;
   private lastInboundAt: number | null = null;
   private initialSyncDone = false;
@@ -423,7 +429,7 @@ export class WhatsAppService implements WhatsAppApi {
 
       this.teardownSocket();
       this.initialSyncDone = false;
-      this.status = "connecting";
+      this.setStatus("connecting");
       const generation = ++this.generation;
       const sock = makeWASocket({
         auth: state,
@@ -491,9 +497,17 @@ export class WhatsAppService implements WhatsAppApi {
     return named;
   }
 
+  /** The one writer of `status`, so `status_since` can never drift from it. */
+  private setStatus(next: ConnectionStatus): void {
+    if (this.status === next) return;
+    this.status = next;
+    this.statusSince = Date.now();
+  }
+
   getStatus(): StatusInfo {
     const info: StatusInfo = {
       status: this.status,
+      status_since: isoWithOffset(this.statusSince),
       sync: this.syncState(),
       account: this.account,
       last_message_received_at: this.lastInboundAt === null ? null : isoWithOffset(this.lastInboundAt),
@@ -1082,11 +1096,12 @@ export class WhatsAppService implements WhatsAppApi {
     if (this.stopped || this.reconnectTimer) return;
     this.teardownSocket();
     if (this.reconnectAttempts >= RECONNECT_MAX_ATTEMPTS) {
-      this.status = "auth_failure";
+      this.setStatus("auth_failure");
       this.lastError =
         `${reason} — gave up after ${RECONNECT_MAX_ATTEMPTS} attempts. ` +
         "WhatsApp keeps rejecting this session: re-link the device with `npx wazap-mcp login`.";
       logError("reconnect", this.lastError);
+      this.onGiveUp?.();
       return;
     }
     const attempt = this.reconnectAttempts++;
@@ -1110,7 +1125,7 @@ export class WhatsAppService implements WhatsAppApi {
       const { connection, lastDisconnect } = update;
       if (connection === "open") {
         this.reconnectAttempts = 0;
-        this.status = "connected";
+        this.setStatus("connected");
         this.lastError = null;
         this.adoptSocketAccount();
         this.armSyncDeadline();
@@ -1119,12 +1134,12 @@ export class WhatsAppService implements WhatsAppApi {
       } else if (connection === "close") {
         const code = statusCodeOf(lastDisconnect?.error);
         if (code === DisconnectReason.loggedOut) {
-          this.status = "logged_out";
+          this.setStatus("logged_out");
           this.lastError = "The account was unlinked from the phone.";
           logError("auth", this.lastError);
           this.teardownSocket();
         } else if (!this.stopped) {
-          this.status = "disconnected";
+          this.setStatus("disconnected");
           this.lastError = lastDisconnect?.error?.message ?? "connection closed";
           this.scheduleReconnect(this.lastError);
         }
@@ -1274,7 +1289,7 @@ export class WhatsAppService implements WhatsAppApi {
       return "corrupt";
     }
     if (!linked) {
-      this.status = "not_linked";
+      this.setStatus("not_linked");
       this.account = null;
       this.lastError = null;
       log("no WhatsApp account is linked; run `npx wazap-mcp login`");
@@ -1284,7 +1299,7 @@ export class WhatsAppService implements WhatsAppApi {
   }
 
   private markCorrupt(err: unknown): void {
-    this.status = "session_corrupt";
+    this.setStatus("session_corrupt");
     this.lastError = describe(err);
     logError("auth state", err);
   }

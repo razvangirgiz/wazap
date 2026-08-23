@@ -56,6 +56,8 @@ export interface CallInfo {
 
 export interface StatusInfo {
   status: ConnectionStatus;
+  /** When the socket entered `status`. What /healthz calls a stall on. */
+  status_since: string;
   sync: SyncState;
   account: { id: string; name: string; number: string } | null;
   last_message_received_at: string | null;

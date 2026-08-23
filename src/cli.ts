@@ -79,6 +79,8 @@ const SETTLED_STATUSES: readonly ConnectionStatus[] = [
   "auth_failure",
 ];
 const LOGOUT_TIMEOUT_MS = 10_000;
+/** What `serve` exits with when WhatsApp keeps refusing the socket. */
+export const GAVE_UP_EXIT = 3;
 const LOOPBACK_HOSTS = ["127.0.0.1", "::1", "localhost"];
 /** Bind addresses a loopback bridge can still reach; the wildcards include 127.0.0.1. */
 const SHAREABLE_HOSTS = [...LOOPBACK_HOSTS, "0.0.0.0", "::"];
@@ -512,6 +514,16 @@ export async function runServe(config: Config): Promise<void> {
   };
   process.on("SIGINT", () => shutdown("SIGINT"));
   process.on("SIGTERM", () => shutdown("SIGTERM"));
+
+  // A socket WhatsApp keeps refusing is not something this process can fix, and
+  // a live MCP server answering NOT_CONNECTED forever is worse than a dead one:
+  // exiting hands the problem to whoever started us, which is a supervisor that
+  // restarts it, or a client that shows the error. An unlinked device is the
+  // exception and stays up in auth_failure, because no restart brings it back.
+  wa.onGiveUp = () => {
+    logError("whatsapp", "reconnects exhausted; exiting so the supervisor can restart wazap");
+    process.exit(GAVE_UP_EXIT);
+  };
 
   // Connecting in the background: MCP startup never waits on WhatsApp, and the
   // tools answer NOT_LINKED until a session exists.
