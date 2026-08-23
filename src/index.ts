@@ -4,6 +4,7 @@ import { runContacts, runGreet, runLogin, runLogout, runServe, runStatus, runTra
 import { WAZAP_VERSION, parseCli, pickDefaultAction } from "./config.js";
 import { CLIENT_NAMES, runConnect } from "./connect.js";
 import { SKILL_TARGET_NAMES, runSkills } from "./skills.js";
+import { PROVIDER_NAMES, runExpose } from "./expose.js";
 import { SERVICE_VERBS, runService } from "./service.js";
 import { runSetup } from "./setup.js";
 import { runConfig } from "./settings.js";
@@ -21,6 +22,7 @@ Usage:
   wazap skills install [<harness>] [--dry-run]              Copy the five skills into a harness, or into every one found
   wazap service ${SERVICE_VERBS}
                                                            Keep the server running in the background, under launchd or systemd
+  wazap expose [tailscale|cloudflare|off]                  Give the running service a public https URL cloud agents can reach
   wazap config [writes on|off] [transcribe local|openai|off]
                                                            Show the effective settings, or change one
   wazap transcribe download [--model <alias>]              Fetch the whisper.cpp model into the data dir
@@ -31,6 +33,7 @@ Usage:
 
 Clients for wazap connect: ${CLIENT_NAMES}.
 Harnesses for wazap skills install: ${SKILL_TARGET_NAMES}. wazap setup does this for the clients it connects.
+Tunnel providers for wazap expose: ${PROVIDER_NAMES}.
 
 Options:
   --data-dir <path>   Where wazap keeps its data (default ~/.wazap, or $WAZAP_DATA_DIR)
@@ -95,6 +98,9 @@ async function main(): Promise<void> {
       return;
     case "service":
       await runService(config);
+      return;
+    case "expose":
+      await runExpose(config);
       return;
     case "config":
       await runConfig(config);

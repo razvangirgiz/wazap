@@ -23,6 +23,7 @@ export type Command =
   | "contacts"
   | "skills"
   | "service"
+  | "expose"
   | "transcribe";
 
 export interface Config {
@@ -117,6 +118,8 @@ const COMMAND_ARGS: Record<Command, readonly number[]> = {
   // One positional is `skills install`, which finds the harnesses itself.
   skills: [1, 2],
   service: [1],
+  // No positional means the first available provider; `off` takes the tunnel down.
+  expose: [0, 1],
   transcribe: [1, 2],
 };
 
