@@ -180,8 +180,8 @@ manifest, the icon and a fresh production `node_modules`, then packs them with
 | `learn` | read | The guide to every tool, id format and error code. Call it first. |
 | `get_status` | read | Connection status, sync state, linked account, named-contact count, versions, data dir. |
 | `list_chats` | read | Conversations newest-first; filter `all`/`unread`/`groups`/`individual`/`archived`. |
-| `read_messages` | read | Messages in a chat; `before` pages further back, pulling older history from the phone. |
-| `get_recent_messages` | read | Everything from the last N hours, grouped by chat. The catch-up tool. `include_system` adds WhatsApp's own notices. |
+| `read_messages` | read | Messages in a chat; `before` pages further back, pulling older history from the phone; `types` narrows to one or more message types, e.g. `["call"]`. |
+| `get_recent_messages` | read | Everything from the last N hours, grouped by chat. The catch-up tool. `include_system` adds WhatsApp's own notices, `types` narrows to one or more message types. |
 | `search_messages` | read | Text search across the locally held messages. |
 | `get_message` | read | One message in full, with its quoted message and reactions. |
 | `search_contacts` | read | Find contacts by name or number. |
@@ -404,6 +404,12 @@ Flags beat environment variables, which beat `<data-dir>/.env`.
   state sync, and only to a connection asking for it from scratch. If contacts
   read as phone numbers and `get_status` shows `contacts_named: 0`, ask for it
   again with the `sync_contacts` tool or `wazap contacts resync`.
+- **Calls are WhatsApp calls only.** A call shows up as a message with
+  `type: "call"`, carrying its kind, direction, outcome and duration. WhatsApp's
+  own call log and the missed-call notices arrive on their own; a call that
+  starts and ends while wazap is running is recorded live, so calls placed or
+  received while it is stopped can be missing entirely. A cellular call from the
+  phone's dialler is never visible, on any device.
 - **Your phone must stay reachable.** A linked device stops receiving once the
   phone has been offline long enough; `get_status` says so in `hint`.
 

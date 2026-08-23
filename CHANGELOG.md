@@ -1,5 +1,35 @@
 # Changelog
 
+## 0.9.7
+### Added
+
+- **A call is a message.** A WhatsApp call now has `type: "call"` and a `call`
+  field carrying kind, direction, outcome and, when someone picked up, the
+  duration. It reads as `[voice call · 6 min]` or `[missed voice call]` where it
+  used to read "[system message]" or "[unsupported]". Three shapes say the same
+  thing and collapse into one: WhatsApp's own call log, the four CALL_MISSED_*
+  notices, and the placeholder baileys writes for a group call offer.
+  `getContentType` is blind to the proto field — WhatsApp spells it
+  `callLogMesssage`, with three s's — so the check runs ahead of the table that
+  types every other message.
+- **Calls that happen while wazap runs.** Baileys reports a call as a stream of
+  status events and never as a message, so wazap folds that stream into one
+  entry per call and stores it the way any message is stored: snapshot, history
+  file, digest, `list_chats.last_message`. A call whose closing event never
+  arrives is settled two minutes after the last one; an answered call is not,
+  because that would record a conversation still going on as two minutes long.
+  The same call reaching the store from two directions is reconciled to
+  whichever account of it says more.
+- **`types` on `read_messages` and `get_recent_messages`.** Narrow a read to a
+  subset of message types; `types: ["call"]` is the call log of a chat and
+  nothing else. `limit` counts messages that matched, and paging with `before`
+  is unaffected by the filter.
+- **Triage reads calls as answers.** A question the user answered by calling
+  back is no longer reported as unanswered: `whatsapp-inbox` moves it to
+  *Probably handled by call* with the time and duration, and asks at the end
+  about calls placed outside WhatsApp, which nothing on a linked device can see.
+  `whatsapp-groups` treats an answered group call the same way.
+
 ## 0.9.6
 ### Added
 

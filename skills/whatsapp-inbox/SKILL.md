@@ -20,10 +20,19 @@ Done collecting when every chat with unread messages appears in exactly one buck
 Sort each chat into one bucket:
 
 - **Needs you**: a direct question to the user, a request, a mention of the user in a group (`sender` is not the user and the text addresses them or quotes one of their messages), or money/dates/decisions awaiting them.
+- **Probably handled by call**: a *Needs you* candidate the user has since called. See *Calls* below.
 - **FYI**: information with no ask. Shipping updates, "ok thanks", group chatter that reached a conclusion.
 - **Noise**: promotions, broadcast lists, groups the user is muted in (`muted_until` in the future), forwards without a question.
 
 Rank *Needs you* by: people over groups, older unanswered over newer, money and deadlines first.
+
+### Calls
+
+A call after someone's ask is evidence the user dealt with it. For every *Needs you* candidate from an individual chat, look for a `call` message in that chat newer than the ask: the calls already in the window, or `read_messages` on that chat with `types: ["call"]`. A call whose `call.outcome` is `answered` moves the item to *Probably handled by call*, carrying when it was and how long it ran, and ending in a question, because the call may have been about something else:
+
+`Ana — asked about Thursday 10:00; you spoke for 6 min on Tue 14:10. Confirm?`
+
+Missed, rejected and unanswered calls are evidence of nothing, and those items stay in *Needs you*.
 
 ## Report
 
@@ -33,8 +42,13 @@ Needs you (3)
 2. Bloc 12 group — Mihai needs your vote on the roof quote by Friday. 1d ago.
 3. Dan — sent the contract PDF, waiting for your comments. 2d ago.
 
+Probably handled by call (1)
+1. Ana — asked about Thursday 10:00; you spoke for 6 min on Tue 14:10. Confirm?
+
 FYI: Curier (delivered), Mama (photos), Team (retro moved to Tuesday).
 Noise: 4 promo chats.
 ```
+
+End the report with: *Handled any of these by phone outside WhatsApp? Tell me and I will drop them.* wazap sees WhatsApp calls and never cellular ones, so a call from the phone's own dialler leaves no trace here. Whatever the user answers is authoritative for the rest of the session: drop what they name and do not raise it again.
 
 One line per item: who, what they want, how old. Include the `chat_id` only if the user is likely to act through another tool next. Offer to draft replies only for *Needs you* items; drafting and sending belong to the `whatsapp-send` skill.

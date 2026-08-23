@@ -1,6 +1,6 @@
 {
   "name": "wazap",
-  "version": "0.9.6",
+  "version": "0.9.7",
   "description": "WhatsApp for your agent: chats, messages, media, contacts and groups behind MCP tools.",
   "mcpServers": {
     "whatsapp": {

@@ -19,7 +19,7 @@ Work through the messages once and collect:
 
 - **Decisions**: something agreed or announced by an admin or by the people it concerns ("ok, Saturday at 10 then").
 - **Dates and deadlines**: any concrete day, time, or "by Friday", with what it is for.
-- **Asks of the user**: every mention or reply to them, plus open questions nobody answered that fall on the user.
+- **Asks of the user**: every mention or reply to them, plus open questions nobody answered that fall on the user. A `call` message in the group after one of these, with `call.outcome` `answered`, means the user was on that group call: say so and treat the ask as probably handled, the way `whatsapp-inbox` does.
 - **Open threads**: questions still without an answer, for anyone.
 - **Polls**: the question and options (`[poll] …`); wazap cannot read votes, so say that if the user asks who voted.
 
