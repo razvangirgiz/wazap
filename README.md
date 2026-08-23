@@ -8,7 +8,7 @@
 ```
 
 **WhatsApp for your AI agent.** An MCP server that puts your WhatsApp account —
-chats, messages, media, contacts, groups — behind 23 tools any MCP client can
+chats, messages, media, contacts, groups — behind 24 tools any MCP client can
 call. Pairing-code login, no browser, no phone-number reseller, ~20 MB of RAM.
 
 Built on [Baileys](https://github.com/WhiskeySockets/Baileys), which speaks the
