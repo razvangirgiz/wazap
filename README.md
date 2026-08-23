@@ -24,7 +24,9 @@ npx wazap-mcp setup
 
 That is the whole install. It links your account, finds the MCP clients
 installed on this machine, writes their config, copies the five skills where
-that client reads them, and tells you what to restart.
+that client reads them, and tells you what to restart. When you started through
+`npx`, `setup` offers to install wazap globally so Claude Desktop and the
+background service have a path that does not change.
 
 ### Or the path your harness prefers
 
@@ -222,6 +224,17 @@ page does. `npx wazap-mcp expose off` takes the tunnel down and keeps the
 password, so the next `expose` hands agents the same one.
 
 `npx wazap-mcp setup` asks all of this once, as its fourth step.
+
+### Upgrade
+
+```bash
+npx wazap-mcp update
+```
+
+One command for what used to be three. It compares this install against the
+registry, installs the new package when wazap is global, restarts the service so
+it runs the new code, and copies the new skills into every harness that keeps
+them. `--dry-run` prints the plan and touches nothing.
 
 ## Tools
 

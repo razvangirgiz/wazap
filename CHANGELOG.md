@@ -3,6 +3,21 @@
 ## Unreleased
 ### Added
 
+- **`wazap update` is the whole upgrade.** It reads the registry, then does what
+  this install needs: `npm i -g wazap-mcp@<latest>` when wazap is global, a
+  restart of the background service so it runs the new code, and a fresh copy of
+  the skills for every harness that keeps them, taken from the package it just
+  installed rather than from the running one. A checkout is told to pull and
+  build; an npx run is told to rerun `setup` through the new version.
+  `--dry-run` prints the numbered plan and stops there. `status` now sends you
+  here instead of to `npx wazap-mcp@latest`.
+- **`wazap setup` installs wazap globally when npx is how it started.** The npx
+  cache is a copy npm clears, so Claude Desktop could not launch what setup had
+  just connected, and `service install` refused outright. Setup now asks once,
+  before it connects anything, and `npm i -g wazap-mcp@<this version>` gives the
+  rest of the run a path that lasts. `--yes` accepts, `--no-global` declines and
+  setup carries on. `status` reports where this wazap lives, as
+  `install: global|checkout|npx` with the script behind it.
 - **`wazap service` keeps the session up without a client.**
   `wazap service install|status|start|stop|restart|logs|uninstall` writes a
   launchd agent or a systemd user unit, starts it and waits for `/healthz`.
