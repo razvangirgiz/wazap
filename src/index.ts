@@ -17,7 +17,7 @@ Usage:
   wazap login [--phone +15550100] [--code]              Link a WhatsApp account (QR by default)
   wazap setup [--agent] [--client <name>]                  Link, connect your client and finish, in one command
   wazap connect <client> [--dry-run]                       Register wazap with an MCP client
-  wazap skills install <harness> [--dry-run]               Copy the five skills into a harness
+  wazap skills install [<harness>] [--dry-run]              Copy the five skills into a harness, or into every one found
   wazap config [writes on|off] [transcribe local|openai|off]
                                                            Show the effective settings, or change one
   wazap transcribe download [--model <alias>]              Fetch the whisper.cpp model into the data dir
@@ -27,7 +27,7 @@ Usage:
   wazap logout                                             Unlink and delete local credentials
 
 Clients for wazap connect: ${CLIENT_NAMES}.
-Harnesses for wazap skills install: ${SKILL_TARGET_NAMES}.
+Harnesses for wazap skills install: ${SKILL_TARGET_NAMES}. wazap setup does this for the clients it connects.
 
 Options:
   --data-dir <path>   Where wazap keeps its data (default ~/.wazap, or $WAZAP_DATA_DIR)
