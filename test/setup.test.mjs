@@ -151,13 +151,28 @@ function linkedDataDir() {
   return dir;
 }
 
-test("setup on a linked session connects the named client and finishes", async () => {
+/**
+ * The credentials above are a stub, so the live probe never reaches `connected`
+ * and setup exits 1. Every case that owns a linked dir goes through here.
+ */
+async function failingSetup(box, ...args) {
+  const err = await setup(box, ...args).then(
+    () => assert.fail("a failing live check must exit non-zero"),
+    (rejected) => rejected,
+  );
+  assert.equal(err.code, 1);
+  assert.match(err.stderr, /→ run `wazap status --live` after fixing it/);
+  assert.match(err.stderr, /Setup finished with a failing check/);
+  return err.stderr;
+}
+
+test("setup on a linked session connects the named client and reports the session it could not reach", async () => {
   const box = sandbox();
   const dir = linkedDataDir();
-  const { stderr } = await setup(box, "--yes", "--client", "cursor", "--data-dir", dir);
+  const stderr = await failingSetup(box, "--yes", "--client", "cursor", "--data-dir", dir);
 
   assert.match(stderr, /Already linked as/);
-  assert.match(stderr, /Setup complete/);
+  assert.match(stderr, /✓ launch Cursor runs `wazap` from your shell PATH/);
   assert.match(stderr, /Reload the Cursor window\./);
   const written = JSON.parse(readFileSync(join(box.home, ".cursor", "mcp.json"), "utf8"));
   assert.deepEqual(written.mcpServers.whatsapp, { command: "wazap", args: ["--data-dir", dir] });
@@ -168,9 +183,19 @@ test("setup on a linked session connects the named client and finishes", async (
   }
 });
 
+test("setup skips the live check while another process holds the session", async () => {
+  const box = sandbox();
+  const dir = linkedDataDir();
+  writeFileSync(join(dir, "server.lock"), `${process.pid}\n`);
+  const { stderr } = await setup(box, "--yes", "--client", "cursor", "--data-dir", dir);
+
+  assert.match(stderr, new RegExp(`A server already holds the session \\(pid ${process.pid}\\); skipping the live check\\.`));
+  assert.match(stderr, /Setup complete/);
+});
+
 test("setup tells a client with no skills directory that the server carries the workflows", async () => {
   const box = sandbox();
-  const { stderr } = await setup(box, "--yes", "--client", "claude-desktop", "--data-dir", linkedDataDir());
+  const stderr = await failingSetup(box, "--yes", "--client", "claude-desktop", "--data-dir", linkedDataDir());
 
   assert.match(stderr, /Claude Desktop gets the workflows from the server itself, as MCP prompts\./);
   assert.ok(!existsSync(join(box.home, ".claude", "skills")), "Claude Desktop reads no skills directory");

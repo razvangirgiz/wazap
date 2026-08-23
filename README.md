@@ -160,7 +160,10 @@ Download `wazap-<version>.mcpb` from [Releases](https://github.com/razvangirgiz/
 and double-click it. Claude Desktop installs the server, its Node dependencies
 and the icon, and shows two settings: **Read-only**, ticked, and **Data
 directory**, empty. `wazap connect claude-desktop` does the same job by editing
-`claude_desktop_config.json`, and needs `npx` at launch; the bundle does not.
+`claude_desktop_config.json`. Claude Desktop starts its servers without your
+shell PATH, so that entry is the absolute path to `node` when wazap is installed
+globally, and `npx` otherwise; `wazap setup` checks that the entry it wrote is
+one Claude Desktop can actually launch.
 
 Linking the account still needs a terminal once: `npx wazap-mcp login`. The
 bundle reads the session that login writes to `~/.wazap`.

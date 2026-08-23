@@ -1,8 +1,10 @@
 import { spawnSync } from "node:child_process";
-import { copyFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { basename, delimiter, dirname, join, resolve } from "node:path";
+import { basename, delimiter, dirname, isAbsolute, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { defaultDataDir, type Config } from "./config.js";
+import type { Check } from "./doctor.js";
 import { WazapError } from "./errors.js";
 import { say } from "./logger.js";
 import { dim, fail, fix, info, next, nextHint, ok, shortPath } from "./ui.js";
@@ -31,6 +33,8 @@ export interface ClientSpec {
   next: string;
   /** Whether this client looks installed. Required: a client `setup` cannot look for is not one it can offer. */
   detect: (probe: Probes) => boolean;
+  /** A desktop app launched by the window manager, so it inherits GUI_PATH rather than the shell PATH. */
+  gui: boolean;
 }
 
 function claudeDesktopFile(): string {
@@ -52,6 +56,7 @@ export const CLIENTS: readonly ClientSpec[] = [
     keyPath: [],
     next: "Run `claude mcp list` to confirm.",
     detect: (probe) => probe.onPath("claude"),
+    gui: false,
   },
   {
     name: "claude-desktop",
@@ -61,6 +66,7 @@ export const CLIENTS: readonly ClientSpec[] = [
     keyPath: ["mcpServers", "whatsapp"],
     next: "Restart Claude Desktop.",
     detect: (probe) => probe.exists(dirname(claudeDesktopFile())),
+    gui: true,
   },
   {
     name: "cursor",
@@ -70,6 +76,7 @@ export const CLIENTS: readonly ClientSpec[] = [
     keyPath: ["mcpServers", "whatsapp"],
     next: "Reload the Cursor window.",
     detect: (probe) => probe.exists(join(homedir(), ".cursor")),
+    gui: false,
   },
   {
     name: "codex",
@@ -79,6 +86,7 @@ export const CLIENTS: readonly ClientSpec[] = [
     keyPath: ["mcp_servers", "whatsapp"],
     next: "Restart Codex.",
     detect: (probe) => probe.exists(join(homedir(), ".codex")),
+    gui: false,
   },
   {
     name: "vscode",
@@ -89,6 +97,7 @@ export const CLIENTS: readonly ClientSpec[] = [
     value: (entry) => ({ type: "stdio", ...entry }),
     next: "Written to ./.vscode/mcp.json for this workspace. Reload the VS Code window.",
     detect: (probe) => probe.onPath("code"),
+    gui: false,
   },
   {
     name: "gemini",
@@ -98,6 +107,7 @@ export const CLIENTS: readonly ClientSpec[] = [
     keyPath: ["mcpServers", "whatsapp"],
     next: "Restart the Gemini CLI.",
     detect: (probe) => probe.exists(join(homedir(), ".gemini")),
+    gui: false,
   },
   {
     name: "windsurf",
@@ -107,6 +117,7 @@ export const CLIENTS: readonly ClientSpec[] = [
     keyPath: ["mcpServers", "whatsapp"],
     next: "Refresh the MCP servers in Windsurf's Cascade panel.",
     detect: (probe) => probe.exists(join(homedir(), ".codeium", "windsurf")),
+    gui: false,
   },
   {
     name: "opencode",
@@ -119,6 +130,7 @@ export const CLIENTS: readonly ClientSpec[] = [
     value: (entry) => ({ type: "local", command: [entry.command, ...entry.args] }),
     next: "Restart OpenCode.",
     detect: (probe) => probe.exists(join(homedir(), ".config", "opencode")),
+    gui: false,
   },
 ];
 
@@ -168,11 +180,48 @@ export function launcher(binPath: string, pathEnv: string, exists?: (p: string) 
   return { command: "node", args: [resolve(binPath)] };
 }
 
-export function mcpEntry(config: Config): McpEntry {
+/** The PATH a GUI app gets from launchd, which is not the user's shell PATH. */
+export const GUI_PATH = "/usr/bin:/bin:/usr/sbin:/sbin:/usr/local/bin";
+
+/** The global `wazap` bin is a symlink into the package, so the script behind it is the real path. */
+function scriptPath(): string {
+  return realpathSync(fileURLToPath(new URL("../dist/index.js", import.meta.url)));
+}
+
+export function mcpEntry(config: Config, spec: ClientSpec): McpEntry {
   const entry = launcher(process.argv[1] ?? "", process.env.PATH ?? "");
+  if (spec.gui && entry.command === "wazap") {
+    entry.command = process.execPath;
+    entry.args = [scriptPath()];
+  }
   if (config.dataDir !== defaultDataDir()) entry.args.push("--data-dir", config.dataDir);
   if (config.readOnly) entry.args.push("--read-only");
   return entry;
+}
+
+const GLOBAL_INSTALL_FIX = "run `npm i -g wazap-mcp`, then `wazap connect claude-desktop` again";
+
+/** Whether the client can still find the command once it is launched without a shell. */
+export function launchCheck(
+  spec: ClientSpec,
+  entry: McpEntry,
+  pathEnv: string = GUI_PATH,
+  exists?: (p: string) => boolean,
+  platform: NodeJS.Platform = process.platform,
+): Check {
+  if (!spec.gui) {
+    return { name: "launch", state: "ok", detail: `${spec.describe} runs \`${entry.command}\` from your shell PATH` };
+  }
+  if (platform !== "darwin") return { name: "launch", state: "info", detail: "not checked on this platform" };
+  if (isAbsolute(entry.command) || commandOnPath(entry.command, pathEnv, exists)) {
+    return { name: "launch", state: "ok", detail: `${spec.describe} can start \`${entry.command}\` without your shell PATH` };
+  }
+  return {
+    name: "launch",
+    state: "fail",
+    detail: `${spec.describe} starts without your shell PATH and cannot find \`${entry.command}\``,
+    fix: GLOBAL_INSTALL_FIX,
+  };
 }
 
 type Writer = (spec: ClientSpec, entry: McpEntry, dryRun: boolean) => void;
@@ -192,7 +241,7 @@ export function findClient(name: string): ClientSpec {
 }
 
 export function connectClient(spec: ClientSpec, config: Config): void {
-  WRITERS[spec.format](spec, mcpEntry(config), config.dryRun);
+  WRITERS[spec.format](spec, mcpEntry(config, spec), config.dryRun);
 }
 
 export function runConnect(config: Config): void {

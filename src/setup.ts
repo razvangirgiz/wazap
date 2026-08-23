@@ -1,10 +1,21 @@
 import { readFileSync } from "node:fs";
 import { readLinkedAccount } from "./auth-state.js";
 import { banner } from "./banner.js";
-import { ask, describeAccount, downloadTranscribeModel, linkAndSync, stepper } from "./cli.js";
+import { ask, describeAccount, downloadTranscribeModel, linkAndSync, runLiveProbe, stepper } from "./cli.js";
 import { paths, type Config } from "./config.js";
-import { CLIENTS, connectClient, connectNext, detectClients, findClient, type ClientSpec } from "./connect.js";
+import {
+  CLIENTS,
+  connectClient,
+  connectNext,
+  detectClients,
+  findClient,
+  launchCheck,
+  mcpEntry,
+  type ClientSpec,
+} from "./connect.js";
+import { checkLines } from "./doctor.js";
 import { WazapError } from "./errors.js";
+import { lockHolder } from "./lock.js";
 import { say } from "./logger.js";
 import { applyTranscribe } from "./settings.js";
 import { installSkills, skillTargetFor } from "./skills.js";
@@ -49,10 +60,43 @@ export async function runSetup(config: Config): Promise<void> {
   }
 
   announce("Finish");
-  say(ok("Setup complete"));
+  let failing = !(await proveSession(config));
+  for (const spec of chosen) {
+    const check = launchCheck(spec, mcpEntry(config, spec));
+    if (check.state === "fail") failing = true;
+    for (const line of checkLines(check)) say(line);
+  }
+
   for (const spec of chosen) say(info(spec.next));
+  say(failing ? warn("Setup finished with a failing check") : ok("Setup complete"));
   say("");
   say('Ask your agent: "what did I miss on WhatsApp today?"');
+  if (failing) process.exit(1);
+}
+
+/**
+ * Whether the session really connects, which is the failure `setup` used to
+ * leave for the first tool call inside a client. False only when the probe ran
+ * and could not reach WhatsApp.
+ */
+async function proveSession(config: Config): Promise<boolean> {
+  const p = paths(config.dataDir);
+  if (config.dryRun || readLinkedAccount(p.authDir) === null) return true;
+
+  const running = lockHolder(p.lockFile);
+  if (running !== null) {
+    say(info(`A server already holds the session (pid ${running}); skipping the live check.`));
+    return true;
+  }
+
+  const live = await runLiveProbe(config);
+  if (live.reachable) {
+    say(ok(live.chats === null ? "Connected" : `Connected · ${live.chats} chats`));
+    return true;
+  }
+  say(fail(live.reason ?? "no connection"));
+  say(fix("run `wazap status --live` after fixing it"));
+  return false;
 }
 
 const CHOICE_ATTEMPTS = 3;

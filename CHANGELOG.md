@@ -12,6 +12,13 @@
   and the Claude Desktop bundle now ships `skills/` so it can serve them.
 - **`wazap skills install` with no harness** installs into every client it finds
   on this machine.
+- **`wazap setup` proves the install works before it says so.** The Finish step
+  now connects the session once and reports the chat count, and checks that each
+  client it connected can actually launch wazap. Claude Desktop starts its MCP
+  servers with launchd's PATH, where neither `wazap` nor `npx` is found, so
+  `connect claude-desktop` now writes the absolute `node` path and the script
+  behind the global bin. A failing check exits 1 instead of printing "Setup
+  complete".
 
 ### Changed
 

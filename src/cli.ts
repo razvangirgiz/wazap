@@ -94,7 +94,7 @@ const SILENT_LOGGER: SocketLogger = {
   error: () => {},
 };
 
-interface LiveReport {
+export interface LiveReport {
   reachable: boolean;
   chats: number | null;
   last_message_age: string | null;
@@ -234,7 +234,7 @@ function takeSessionLock(lockFile: string): number | null {
 }
 
 /** One process owns the session, so a probe only runs when no server holds the lock. */
-async function runLiveProbe(config: Config): Promise<LiveReport> {
+export async function runLiveProbe(config: Config): Promise<LiveReport> {
   const p = paths(config.dataDir);
   // The probe owns the session for as long as it runs, exactly like the server.
   const running = takeSessionLock(p.lockFile);
