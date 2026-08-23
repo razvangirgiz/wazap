@@ -452,13 +452,13 @@ export class WhatsAppService implements WhatsAppApi {
       const matches: ContactSummary[] = [];
 
       for (const [jid, contact] of this.store.contacts) {
-        const name = (contact.name ?? "").toLowerCase();
-        const notify = (contact.notify ?? "").toLowerCase();
+        // Every name we might show, or someone the chat list calls "Carmen"
+        // would not be findable by that name here.
+        const known = [contact.name, contact.verifiedName, contact.notify, this.store.pushNames.get(jid)];
         const number = jid.split("@")[0] ?? "";
         const hit =
           needle === "" ||
-          name.includes(needle) ||
-          notify.includes(needle) ||
+          known.some((name) => name?.toLowerCase().includes(needle)) ||
           (digits.length >= 5 && number.includes(digits));
         if (!hit) continue;
         matches.push(this.contactSummary(jid, contact));

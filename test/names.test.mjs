@@ -152,3 +152,16 @@ test("pushNames survive a store round trip, so a restart does not forget who wro
   revived.store.hydrate(JSON.parse(JSON.stringify(svc.store.serialize())));
   assert.equal(revived.store.pushNames.get("40700000011@s.whatsapp.net"), "Horia");
 });
+
+test("search_contacts finds someone by the name the chat list shows them under", async () => {
+  const { svc, sock } = makeService();
+  sock.ev.emit("contacts.upsert", [{ id: "40700000012@s.whatsapp.net" }]);
+  sock.ev.emit("messages.upsert", {
+    type: "notify",
+    messages: [message("40700000012@s.whatsapp.net", { pushName: "Ioana" })],
+  });
+
+  assert.equal(svc.displayName("40700000012@s.whatsapp.net"), "Ioana");
+  const found = await svc.searchContacts("ioana", 10);
+  assert.deepEqual(found.map((c) => c.name), ["Ioana"]);
+});
