@@ -5,7 +5,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { setTimeout as sleep } from "node:timers/promises";
 import { WAZAP_VERSION, paths, type Config } from "./config.js";
-import { commandOnPath, isNpxPath } from "./connect.js";
+import { commandOnPath, whereInstalled, type Install } from "./connect.js";
 import { WazapError } from "./errors.js";
 import { lockHolder } from "./lock.js";
 import { say } from "./logger.js";
@@ -352,16 +352,15 @@ async function waitForHealth(port: number, waitMs: number): Promise<Health | nul
 const NPX_FIX = "run `npm i -g wazap-mcp`, then `wazap service install` again";
 
 /** The absolute script a supervisor can launch for years. The npx cache is not one. */
-export function serviceScript(): string {
-  const script = fileURLToPath(new URL("../dist/index.js", import.meta.url));
-  if (isNpxPath(script) || isNpxPath(process.argv[1] ?? "")) {
+export function serviceScript(install: Install = whereInstalled()): string {
+  if (install.kind === "npx") {
     throw new WazapError(
       "SERVICE_ERROR",
       "wazap is running out of the npx cache, which npm clears; a service cannot point at it.",
       NPX_FIX,
     );
   }
-  return realpathSync(script);
+  return realpathSync(fileURLToPath(new URL("../dist/index.js", import.meta.url)));
 }
 
 /** whisper and ffmpeg live in these, and a launchd job inherits none of your shell PATH. */
@@ -410,8 +409,9 @@ export async function installService(
   config: Config,
   supervisor: Supervisor = pickSupervisor(),
   waitMs: number = INSTALL_WAIT_MS,
+  install: Install = whereInstalled(),
 ): Promise<void> {
-  const script = serviceScript();
+  const script = serviceScript(install);
   const p = paths(config.dataDir);
   const existing = readService(config.dataDir);
   const label = SERVER_LABELS[supervisor.name];

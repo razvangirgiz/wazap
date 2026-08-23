@@ -5,18 +5,23 @@ import { ask, describeAccount, downloadTranscribeModel, linkAndSync, runLiveProb
 import { paths, type Config, type KeepRunning } from "./config.js";
 import {
   CLIENTS,
+  commandPath,
   connectClient,
   connectNext,
   detectClients,
   findClient,
+  globalBinDir,
+  installGlobally,
   launchCheck,
   mcpEntry,
+  whereInstalled,
   type ClientSpec,
+  type Install,
 } from "./connect.js";
 import { checkLines } from "./doctor.js";
 import { WazapError } from "./errors.js";
 import { PROVIDERS, runExpose, type TunnelProvider } from "./expose.js";
-import { installService } from "./service.js";
+import { INSTALL_WAIT_MS, installService, pickSupervisor } from "./service.js";
 import { lockHolder } from "./lock.js";
 import { say } from "./logger.js";
 import { applyTranscribe } from "./settings.js";
@@ -34,7 +39,8 @@ export async function runSetup(config: Config): Promise<void> {
   }
 
   say(banner());
-  const announce = stepper(5);
+  let install = whereInstalled();
+  const announce = stepper(install.kind === "npx" ? 6 : 5);
 
   announce("Link");
   const account = readLinkedAccount(paths(config.dataDir).authDir);
@@ -46,6 +52,11 @@ export async function runSetup(config: Config): Promise<void> {
   announce("Transcribe");
   await chooseTranscribe(config);
 
+  if (install.kind === "npx") {
+    announce("Install");
+    install = await offerGlobalInstall(config, install);
+  }
+
   announce("Connect");
   const chosen = await chooseClients(config);
   if (chosen.length === 0) {
@@ -55,7 +66,7 @@ export async function runSetup(config: Config): Promise<void> {
   // The client choice is the answer to where the skills go, so setup never asks
   // a second question about them.
   for (const spec of chosen) {
-    connectClient(spec, config);
+    connectClient(spec, config, install);
     const target = skillTargetFor(spec.name);
     if (target) installSkills(target, config.dryRun);
     else say(info(`${spec.describe} gets the workflows from the server itself, as MCP prompts.`));
@@ -63,13 +74,13 @@ export async function runSetup(config: Config): Promise<void> {
 
   announce("Keep running");
   const keep = await chooseKeepRunning(config);
-  if (keep !== "client") await installService(config);
+  if (keep !== "client") await installService(config, pickSupervisor(), INSTALL_WAIT_MS, install);
   if (keep === "expose" && !config.dryRun) await runExpose(config);
 
   announce("Finish");
   let failing = !(await proveSession(config));
   for (const spec of chosen) {
-    const check = launchCheck(spec, mcpEntry(config, spec));
+    const check = launchCheck(spec, mcpEntry(config, spec, install));
     if (check.state === "fail") failing = true;
     for (const line of checkLines(check)) say(line);
   }
@@ -79,6 +90,41 @@ export async function runSetup(config: Config): Promise<void> {
   say("");
   say('Ask your agent: "what did I miss on WhatsApp today?"');
   if (failing) process.exit(1);
+}
+
+const NO_GLOBAL_NOTE = "Claude Desktop and `wazap service install` need a global install; run `npm i -g wazap-mcp` before either.";
+
+/**
+ * npx keeps no stable copy on disk, so Claude Desktop and the background service
+ * have nothing to point at. Installing here is what lets the rest of this run
+ * behave as a global install.
+ */
+async function offerGlobalInstall(config: Config, install: Install): Promise<Install> {
+  say("wazap was started through npx, which keeps no stable copy on disk.");
+  if (!(await askGlobal(config))) {
+    say(info(NO_GLOBAL_NOTE));
+    return install;
+  }
+
+  const check = installGlobally();
+  for (const line of checkLines(check)) say(line);
+  if (check.state !== "ok") return install;
+
+  const bin = commandPath("wazap");
+  if (bin !== null) return whereInstalled(bin);
+  const dir = globalBinDir();
+  say(warn(`wazap-mcp is installed, but \`wazap\` is not on your PATH${dir === null ? "" : `; add ${dir}`}.`));
+  return install;
+}
+
+/** The question defaults to yes, and so does anything that cannot be asked. */
+async function askGlobal(config: Config): Promise<boolean> {
+  if (config.noGlobal) return false;
+  if (config.assumeYes || process.stdin.isTTY !== true) return true;
+  const answer = await ask(
+    `${brand("?")} Install it globally so Claude Desktop and the background service can find it? [Y/n] `,
+  );
+  return !/^n/i.test(answer.trim());
 }
 
 /**

@@ -7,7 +7,7 @@ import { delimiter, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 
-import { GUI_PATH, findClient, isNpxPath, launchCheck, launcher } from "../dist/connect.js";
+import { GUI_PATH, findClient, isNpxPath, launchCheck, launcher, whereInstalled } from "../dist/connect.js";
 
 const run = promisify(execFile);
 const binary = join(dirname(fileURLToPath(import.meta.url)), "..", "dist", "index.js");
@@ -183,6 +183,23 @@ for (const [binPath, pathEnv, present, expected] of LAUNCHERS) {
     assert.deepEqual(launcher(binPath, pathEnv, (p) => present.includes(p)), expected);
   });
 }
+
+const INSTALLS = [
+  ["/Users/x/.npm/_npx/8a1b/node_modules/wazap/dist/index.js", "/usr/bin", [], "npx"],
+  ["/usr/local/lib/node_modules/wazap/dist/index.js", "/usr/local/bin:/usr/bin", ["/usr/local/bin/wazap"], "global"],
+  ["/Users/x/Projects/wazap/dist/index.js", "/usr/local/bin:/usr/bin", [], "checkout"],
+];
+
+for (const [binPath, pathEnv, present, kind] of INSTALLS) {
+  test(`whereInstalled calls ${binPath} a ${kind} install`, () => {
+    assert.deepEqual(whereInstalled(binPath, pathEnv, (p) => present.includes(p)), { kind, script: binPath });
+  });
+}
+
+test("the npx cache wins over a wazap on PATH: this process is still the throwaway copy", () => {
+  const npx = "/Users/x/.npm/_npx/8a1b/node_modules/wazap/dist/index.js";
+  assert.equal(whereInstalled(npx, "/usr/local/bin", () => true).kind, "npx");
+});
 
 test("connect codex leaves the comments that introduce the next table alone", async () => {
   const box = sandbox();

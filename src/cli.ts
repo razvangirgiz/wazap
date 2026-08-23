@@ -20,7 +20,7 @@ import {
 import { banner } from "./banner.js";
 import { runBridge } from "./bridge.js";
 import { BAILEYS_VERSION, WAZAP_VERSION, paths, type Config } from "./config.js";
-import { connectNext } from "./connect.js";
+import { connectNext, whereInstalled, type Install } from "./connect.js";
 import { decideRole, readDaemon, removeDaemon, writeDaemon } from "./daemon.js";
 import { checkLine, checkLines, runChecks, type Check } from "./doctor.js";
 import { RELINK_FIX, WazapError, asWazapError } from "./errors.js";
@@ -111,6 +111,7 @@ interface StatusReport {
   account: LinkedAccount | null;
   wazap_version: string;
   baileys_version: string;
+  install: Install;
   server_pid: number | null;
   daemon: { pid: number; port: number } | null;
   checks: Check[];
@@ -141,6 +142,7 @@ export async function runStatus(config: Config): Promise<StatusReport> {
     account,
     wazap_version: WAZAP_VERSION,
     baileys_version: BAILEYS_VERSION,
+    install: whereInstalled(),
     server_pid: serverPid,
     daemon: sharing,
     checks: await runChecks(config),
@@ -176,6 +178,7 @@ function plainStatus(report: StatusReport): string[] {
   lines.push(
     `wazap: ${report.wazap_version}`,
     `baileys: ${report.baileys_version}`,
+    `install: ${describeInstall(report.install)}`,
     `server: ${serverState(report)}`,
     "",
     "checks:",
@@ -197,6 +200,11 @@ function row(label: string, value: string): string {
   return `${dim(label.padEnd(LABEL_WIDTH))}  ${value}`;
 }
 
+/** `global (/usr/local/bin/wazap)`: the kind is what decides an upgrade, the path is the proof. */
+function describeInstall(install: Install): string {
+  return install.script === "" ? install.kind : `${install.kind} (${shortPath(install.script)})`;
+}
+
 function richStatus(report: StatusReport): string[] {
   const account = !report.credentials_readable
     ? "credentials unreadable"
@@ -206,6 +214,7 @@ function richStatus(report: StatusReport): string[] {
   return [
     `${bold(`wazap ${report.wazap_version}`)}${dim(` · baileys ${report.baileys_version}`)}`,
     row("data dir", tilde(report.data_dir)),
+    row("install", describeInstall(report.install)),
     row("account", account),
     row("server", serverState(report)),
     "",

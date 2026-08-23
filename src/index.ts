@@ -45,6 +45,7 @@ Options:
   --phone <number>    Your number in international format; implies --code
   --agent             With setup: print the procedure for an AI agent on stdout, then exit
   --client <name>     With setup: connect this client instead of the detected ones (repeatable)
+  --no-global         With setup: keep running from the npx cache instead of installing globally
   --transcribe <how>  With setup: answer the transcription question (local, openai or off)
   --service           With setup: keep wazap running on this machine, without asking
   --expose            With setup: also give it a public URL cloud agents can reach

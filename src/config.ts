@@ -24,7 +24,8 @@ export type Command =
   | "skills"
   | "service"
   | "expose"
-  | "transcribe";
+  | "transcribe"
+  | "update";
 
 export interface Config {
   dataDir: string;
@@ -63,6 +64,8 @@ export interface Config {
   agent: boolean;
   /** `setup` only, repeatable, overrides detection. */
   clients: string[];
+  /** `setup` only: refuse the global install an npx run would otherwise offer. */
+  noGlobal: boolean;
   assumeYes: boolean;
   /** `transcribe download` only: the whisper model alias from --model. */
   modelName?: string;
@@ -126,6 +129,7 @@ const COMMAND_ARGS: Record<Command, readonly number[]> = {
   // No positional means the first available provider; `off` takes the tunnel down.
   expose: [0, 1],
   transcribe: [1, 2],
+  update: [0],
 };
 
 const COMMANDS = Object.keys(COMMAND_ARGS) as readonly Command[];
@@ -193,6 +197,7 @@ export function parseCli(argv: string[] = process.argv.slice(2)): CliInvocation 
         "no-writes": { type: "boolean" },
         agent: { type: "boolean" },
         client: { type: "string", multiple: true },
+        "no-global": { type: "boolean" },
         model: { type: "string" },
         transcribe: { type: "string" },
         service: { type: "boolean" },
@@ -270,6 +275,7 @@ export function parseCli(argv: string[] = process.argv.slice(2)): CliInvocation 
       writesAnswer: values.writes === true ? true : values["no-writes"] === true ? false : null,
       agent: values.agent === true,
       clients: values.client ?? [],
+      noGlobal: values["no-global"] === true,
       assumeYes: values.yes === true,
       modelName: values.model,
       transcribeChoice: values.transcribe,

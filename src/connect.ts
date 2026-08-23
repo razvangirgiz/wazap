@@ -2,8 +2,7 @@ import { spawnSync } from "node:child_process";
 import { copyFileSync, existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, delimiter, dirname, isAbsolute, join, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
-import { defaultDataDir, type Config } from "./config.js";
+import { WAZAP_VERSION, defaultDataDir, type Config } from "./config.js";
 import type { Check } from "./doctor.js";
 import { WazapError } from "./errors.js";
 import { say } from "./logger.js";
@@ -150,15 +149,65 @@ export function isNpxPath(binPath: string): boolean {
 
 const PATH_EXTENSIONS = process.platform === "win32" ? [".cmd", ".exe", ""] : [""];
 
+/** The first `name` on `pathEnv`, or null. */
+export function commandPath(
+  name: string,
+  pathEnv: string = process.env.PATH ?? "",
+  exists: (p: string) => boolean = existsSync,
+): string | null {
+  for (const dir of pathEnv.split(delimiter).filter(Boolean)) {
+    for (const ext of PATH_EXTENSIONS) {
+      const candidate = join(dir, `${name}${ext}`);
+      if (exists(candidate)) return candidate;
+    }
+  }
+  return null;
+}
+
 export function commandOnPath(
   name: string,
   pathEnv: string = process.env.PATH ?? "",
   exists: (p: string) => boolean = existsSync,
 ): boolean {
-  return pathEnv
-    .split(delimiter)
-    .filter(Boolean)
-    .some((dir) => PATH_EXTENSIONS.some((ext) => exists(join(dir, `${name}${ext}`))));
+  return commandPath(name, pathEnv, exists) !== null;
+}
+
+/** Where this wazap lives: a stable global install, a checkout, or the npx cache. */
+export type Install = { kind: "global" | "checkout" | "npx"; script: string };
+
+/**
+ * The npx cache is a throwaway copy, so nothing that has to survive a reboot may
+ * point at it. Everything that used to re-derive this asks here instead.
+ */
+export function whereInstalled(
+  binPath: string = process.argv[1] ?? "",
+  pathEnv: string = process.env.PATH ?? "",
+  exists?: (p: string) => boolean,
+): Install {
+  const script = binPath === "" ? "" : resolve(binPath);
+  if (isNpxPath(binPath)) return { kind: "npx", script };
+  if (commandOnPath("wazap", pathEnv, exists)) return { kind: "global", script };
+  return { kind: "checkout", script };
+}
+
+const GLOBAL_FIX = "run `npm i -g wazap-mcp` yourself (sudo on some Linux installs), then `wazap setup` again";
+
+/** `npm i -g wazap-mcp@<this version>`, so setup and the global install agree. */
+export function installGlobally(version: string = WAZAP_VERSION, npm = "npm"): Check {
+  const result = spawnSync(npm, ["install", "-g", `wazap-mcp@${version}`], { stdio: "inherit" });
+  if (result.error !== undefined || result.status !== 0) {
+    const detail = result.error === undefined ? `exit ${result.status ?? -1}` : result.error.message;
+    return { name: "install", state: "fail", detail: `npm install -g wazap-mcp@${version} failed (${detail})`, fix: GLOBAL_FIX };
+  }
+  return { name: "install", state: "ok", detail: `wazap-mcp@${version} installed globally` };
+}
+
+/** Where a global install puts its bins. `npm bin -g` printed this until npm 9 dropped it. */
+export function globalBinDir(npm = "npm"): string | null {
+  const result = spawnSync(npm, ["prefix", "-g"], { encoding: "utf8" });
+  const prefix = result.status === 0 ? (result.stdout ?? "").trim() : "";
+  if (prefix === "") return null;
+  return process.platform === "win32" ? prefix : join(prefix, "bin");
 }
 
 export const REAL_PROBES: Probes = { exists: existsSync, onPath: (command) => commandOnPath(command) };
@@ -169,30 +218,29 @@ export function detectClients(probe: Probes = REAL_PROBES): ClientSpec[] {
 }
 
 /**
- * How the client should launch wazap, from how it was launched now: through
- * npx, as a global binary on PATH, or straight from a checkout that is on
- * neither. A checkout written as `wazap` would point the client at a command
- * that does not exist.
+ * How the client should launch wazap. A checkout written as `wazap` would point
+ * the client at a command that does not exist.
  */
+export function entryFor(install: Install): McpEntry {
+  if (install.kind === "npx") return { command: "npx", args: ["-y", "wazap-mcp"] };
+  if (install.kind === "global") return { command: "wazap", args: [] };
+  return { command: "node", args: [install.script] };
+}
+
 export function launcher(binPath: string, pathEnv: string, exists?: (p: string) => boolean): McpEntry {
-  if (isNpxPath(binPath)) return { command: "npx", args: ["-y", "wazap-mcp"] };
-  if (commandOnPath("wazap", pathEnv, exists)) return { command: "wazap", args: [] };
-  return { command: "node", args: [resolve(binPath)] };
+  return entryFor(whereInstalled(binPath, pathEnv, exists));
 }
 
 /** The PATH a GUI app gets from launchd, which is not the user's shell PATH. */
 export const GUI_PATH = "/usr/bin:/bin:/usr/sbin:/sbin:/usr/local/bin";
 
-/** The global `wazap` bin is a symlink into the package, so the script behind it is the real path. */
-function scriptPath(): string {
-  return realpathSync(fileURLToPath(new URL("../dist/index.js", import.meta.url)));
-}
-
-export function mcpEntry(config: Config, spec: ClientSpec): McpEntry {
-  const entry = launcher(process.argv[1] ?? "", process.env.PATH ?? "");
+export function mcpEntry(config: Config, spec: ClientSpec, install: Install = whereInstalled()): McpEntry {
+  const entry = entryFor(install);
+  // The global `wazap` bin is a symlink into the package, and launchd's PATH has
+  // neither it nor npx, so a GUI client gets this Node and the script behind it.
   if (spec.gui && entry.command === "wazap") {
     entry.command = process.execPath;
-    entry.args = [scriptPath()];
+    entry.args = [realpathSync(install.script)];
   }
   if (config.dataDir !== defaultDataDir()) entry.args.push("--data-dir", config.dataDir);
   if (config.readOnly) entry.args.push("--read-only");
@@ -240,8 +288,8 @@ export function findClient(name: string): ClientSpec {
   return spec;
 }
 
-export function connectClient(spec: ClientSpec, config: Config): void {
-  WRITERS[spec.format](spec, mcpEntry(config, spec), config.dryRun);
+export function connectClient(spec: ClientSpec, config: Config, install?: Install): void {
+  WRITERS[spec.format](spec, mcpEntry(config, spec, install), config.dryRun);
 }
 
 export function runConnect(config: Config): void {

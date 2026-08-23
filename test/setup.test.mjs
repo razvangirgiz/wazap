@@ -1,13 +1,14 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFile, spawn } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 
 import { CLIENTS, detectClients } from "../dist/connect.js";
+import { WAZAP_VERSION } from "../dist/config.js";
 import { readService } from "../dist/service.js";
 import { keepRunningOptions, parseChoice } from "../dist/setup.js";
 
@@ -107,17 +108,47 @@ for (const [answer, expected] of CHOICES) {
   });
 }
 
-function sandbox() {
+function sandbox({ wazap = true } = {}) {
   const home = mkdtempSync(join(tmpdir(), "wazap-home-"));
   const cwd = mkdtempSync(join(tmpdir(), "wazap-cwd-"));
   const bin = join(home, "bin");
   mkdirSync(bin);
-  writeFileSync(join(bin, "wazap"), "", { mode: 0o755 });
+  if (wazap) writeFileSync(join(bin, "wazap"), "", { mode: 0o755 });
   return { home, cwd, bin };
 }
 
+/**
+ * `isNpxPath` only reads the path, so a symlink under a `_npx` directory is a
+ * wazap started through npx as far as everything downstream is concerned.
+ */
+function npxBinary() {
+  const dir = join(mkdtempSync(join(tmpdir(), "wazap-npx-")), "_npx", "a1b2", "node_modules", "wazap-mcp", "dist");
+  mkdirSync(dir, { recursive: true });
+  const link = join(dir, "index.js");
+  symlinkSync(binary, link);
+  return link;
+}
+
+/** An `npm` that records its argv, and writes the `wazap` a global install would put on PATH. */
+function stubNpm(box, { status = 0 } = {}) {
+  const log = join(box.home, "npm.log");
+  writeFileSync(
+    join(box.bin, "npm"),
+    `#!/bin/sh
+echo "$@" >> ${log}
+[ "$1" = "prefix" ] && { echo ${box.home}/prefix; exit 0; }
+[ ${status} -eq 0 ] || exit ${status}
+printf '#!/bin/sh\nexit 0\n' > ${join(box.bin, "wazap")}
+chmod +x ${join(box.bin, "wazap")}
+exit 0
+`,
+    { mode: 0o755 },
+  );
+  return () => (existsSync(log) ? readFileSync(log, "utf8").trim().split("\n") : []);
+}
+
 function setup(box, ...args) {
-  return run(process.execPath, [binary, "setup", ...args], {
+  return run(process.execPath, [box.binary ?? binary, "setup", ...args], {
     cwd: box.cwd,
     env: childEnv({
       HOME: box.home,
@@ -320,4 +351,40 @@ test("setup with no answer keeps wazap running only while a client has it open",
   const stderr = await failingSetup(box, "--yes", "--client", "cursor", "--data-dir", dir);
   assert.match(stderr, /Step 4 of 5 · Keep running/);
   assert.equal(readService(dir), null, "the default must install nothing");
+});
+
+test("setup through npx installs wazap globally, then connects the client to that install", async () => {
+  const box = { ...sandbox({ wazap: false }), binary: npxBinary() };
+  const calls = stubNpm(box);
+  const stderr = await failingSetup(box, "--yes", "--client", "cursor", "--data-dir", linkedDataDir());
+
+  assert.match(stderr, /Step 3 of 6 · Install/);
+  assert.match(stderr, /wazap was started through npx/);
+  assert.deepEqual(calls(), [`install -g wazap-mcp@${WAZAP_VERSION}`], "exactly one global install");
+  assert.match(stderr, new RegExp(`wazap-mcp@${WAZAP_VERSION.replace(/\./g, "\\.")} installed globally`));
+
+  const written = JSON.parse(readFileSync(join(box.home, ".cursor", "mcp.json"), "utf8"));
+  assert.equal(written.mcpServers.whatsapp.command, "wazap", "the rest of setup must behave as the global install");
+});
+
+test("setup --no-global never calls npm and leaves the clients on the npx entry", async () => {
+  const box = { ...sandbox({ wazap: false }), binary: npxBinary() };
+  const calls = stubNpm(box);
+  const stderr = await failingSetup(box, "--yes", "--no-global", "--client", "cursor", "--data-dir", linkedDataDir());
+
+  assert.deepEqual(calls(), [], "npm must not be called");
+  assert.match(stderr, /need a global install; run `npm i -g wazap-mcp` before either/);
+  const written = JSON.parse(readFileSync(join(box.home, ".cursor", "mcp.json"), "utf8"));
+  assert.deepEqual(written.mcpServers.whatsapp.command, "npx");
+});
+
+test("a failing npm prints the repair and setup carries on to Connect", async () => {
+  const box = { ...sandbox({ wazap: false }), binary: npxBinary() };
+  stubNpm(box, { status: 1 });
+  const stderr = await failingSetup(box, "--yes", "--client", "cursor", "--data-dir", linkedDataDir());
+
+  assert.match(stderr, /✗ install npm install -g wazap-mcp@.* failed \(exit 1\)/);
+  assert.match(stderr, /→ run `npm i -g wazap-mcp` yourself \(sudo on some Linux installs\), then `wazap setup` again/);
+  assert.match(stderr, /Step 4 of 6 · Connect/);
+  assert.equal(existsSync(join(box.home, ".cursor", "mcp.json")), true, "Connect must still run");
 });

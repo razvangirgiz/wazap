@@ -96,6 +96,8 @@ test("status --json prints one parseable object carrying the same checks", async
     ["node", "data dir", "lock", "service", "credentials", "writes", "skills", "transcribe", "update"],
   );
   assert.equal(report.checks.find((check) => check.name === "writes").detail, "on (default)");
+  assert.ok(["global", "checkout", "npx"].includes(report.install.kind), `install: ${JSON.stringify(report.install)}`);
+  assert.match(report.install.script, /index\.js$/);
 });
 
 test("status --live on an unlinked data dir reports that, without waiting out the deadline", async () => {
