@@ -1,16 +1,26 @@
 {
   "name": "wazap",
-  "version": "0.9.0",
+  "version": "0.9.6",
   "description": "WhatsApp for your AI agent: the wazap MCP server plus skills for inbox triage, recall, group catch-up and safe sending.",
-  "author": { "name": "Răzvan Girgiz" },
+  "author": {
+    "name": "Răzvan Girgiz"
+  },
   "repository": "https://github.com/razvangirgiz/wazap",
   "license": "MIT",
-  "keywords": ["whatsapp", "mcp", "baileys", "messaging"],
+  "keywords": [
+    "whatsapp",
+    "mcp",
+    "baileys",
+    "messaging"
+  ],
   "skills": "./skills/",
   "mcpServers": {
     "whatsapp": {
       "command": "npx",
-      "args": ["-y", "wazap-mcp"]
+      "args": [
+        "-y",
+        "wazap-mcp"
+      ]
     }
   }
 }
