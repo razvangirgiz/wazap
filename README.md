@@ -8,7 +8,7 @@
 ```
 
 **WhatsApp for your AI agent.** An MCP server that puts your WhatsApp account —
-chats, messages, media, contacts, groups — behind 22 tools any MCP client can
+chats, messages, media, contacts, groups — behind 23 tools any MCP client can
 call. Pairing-code login, no browser, no phone-number reseller, ~20 MB of RAM.
 
 Built on [Baileys](https://github.com/WhiskeySockets/Baileys), which speaks the
@@ -101,13 +101,14 @@ The `skills/` folder follows the [Agent Skills](https://agentskills.io) format, 
 | Tool | Kind | What it does |
 | --- | --- | --- |
 | `learn` | read | The guide to every tool, id format and error code. Call it first. |
-| `get_status` | read | Connection status, sync state, linked account, versions, data dir. |
+| `get_status` | read | Connection status, sync state, linked account, named-contact count, versions, data dir. |
 | `list_chats` | read | Conversations newest-first; filter `all`/`unread`/`groups`/`individual`/`archived`. |
 | `read_messages` | read | Messages in a chat; `before` pages further back, pulling older history from the phone. |
 | `get_recent_messages` | read | Everything from the last N hours, grouped by chat. The catch-up tool. `include_system` adds WhatsApp's own notices. |
 | `search_messages` | read | Text search across the locally held messages. |
 | `get_message` | read | One message in full, with its quoted message and reactions. |
 | `search_contacts` | read | Find contacts by name or number. |
+| `sync_contacts` | read | Fetch the phone's address book from WhatsApp again, when names are missing. |
 | `get_contact` | read | Name, number, about text, profile picture. |
 | `get_group_info` | read | Participants, admins, announcement mode, invite link (when you are admin). |
 | `download_media` | read | Save an attachment to disk; small images also come back inline. |
@@ -307,6 +308,10 @@ Flags beat environment variables, which beat `<data-dir>/.env`.
 - **`@lid` ids.** Newer accounts are addressed by a privacy id rather than a
   phone number. wazap translates them back to phone numbers when it has learned
   the mapping, and passes the `@lid` through when it has not.
+- **Names come from the phone's address book.** WhatsApp delivers it as an app
+  state sync, and only to a connection asking for it from scratch. If contacts
+  read as phone numbers and `get_status` shows `contacts_named: 0`, ask for it
+  again with the `sync_contacts` tool or `wazap contacts resync`.
 - **Your phone must stay reachable.** A linked device stops receiving once the
   phone has been offline long enough; `get_status` says so in `hint`.
 

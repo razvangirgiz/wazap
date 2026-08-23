@@ -1,5 +1,44 @@
 # Changelog
 
+## 0.9.5
+### Fixed
+
+- Contact names never arrived. WhatsApp hands a companion the phone's address
+  book inside the app state sync, and it sends each collection's snapshot only
+  to a connection asking from version zero. The socket that pairs has no store,
+  so whatever it synced was thrown away — and by saving the versions it left
+  every later connection resyncing from a point with nothing more to send.
+  Contacts stayed bare phone numbers for the life of the session. That socket
+  now runs on an auth state whose app-state-sync journal reads empty and refuses
+  writes, and declines the history sync outright, so it can neither consume the
+  delivery nor bump the counter that makes later connections skip their own sync.
+- Sessions already linked heal themselves. A connection that settles with no
+  address-book name in hand, while stored versions prove one was delivered
+  somewhere, forgets those versions and resyncs all five collections. Once per
+  process, and at most once a week per account, so a phone with genuinely no
+  saved contacts is not asked again on every start. On the account this was
+  found on: 0 named contacts before, 217 within three seconds.
+- A name made only of digits and masking is no longer treated as a name.
+  WhatsApp fills a contact it will not identify with the masked number
+  `+40∙∙∙∙∙∙∙98`; `search_contacts`, `is_my_contact` and every sender line were
+  taking that at face value and showing dots where the plain number belongs.
+
+### Added
+
+- `sync_contacts` — a read tool that asks WhatsApp for the address book and
+  waits up to 15 seconds, returning `named_before` and `named_after`.
+- `wazap contacts resync` — the same from a terminal. It refuses while a server
+  owns the session and points at the tool instead.
+- `get_status` reports `contacts_named`: contacts carrying a name from the phone,
+  which is `0` exactly when the address book has not arrived.
+
+### Changed
+
+- "Synced N chats, N contacts, N messages" counts contacts from the address book
+  rather than everyone the store has ever seen, which included every stranger in
+  a group and every group itself. Login waits for those names before it calls the
+  sync finished.
+
 ## 0.9.4
 ### Fixed
 
