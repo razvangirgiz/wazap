@@ -592,19 +592,22 @@ export async function linkAndSync(config: Config, announce: (title: string) => v
   const p = paths(config.dataDir);
 
   const resumeService = await yieldSession(config, p.lockFile);
-  const release = (): void => {
-    releaseLock(p.lockFile);
+  // The lock goes the moment pairing is over; the service waits until the
+  // writes answer is on disk, so it starts with the setting it should run under.
+  const release = (): void => releaseLock(p.lockFile);
+  const bail = (): void => {
+    release();
     resumeService();
   };
   const onInterrupt = (): void => {
-    release();
+    bail();
     process.exit(130);
   };
   const onTerminate = (): void => {
-    release();
+    bail();
     process.exit(143);
   };
-  process.on("exit", release);
+  process.on("exit", bail);
   process.on("SIGINT", onInterrupt);
   process.on("SIGTERM", onTerminate);
 
@@ -658,15 +661,22 @@ export async function linkAndSync(config: Config, announce: (title: string) => v
 
     announce("Sync your chats");
     await syncAfterLink(config);
+  } catch (err) {
+    resumeService();
+    throw err;
   } finally {
     release();
-    process.off("exit", release);
+    process.off("exit", bail);
     process.off("SIGINT", onInterrupt);
     process.off("SIGTERM", onTerminate);
   }
 
   announce("Permissions");
-  await offerWrites(config);
+  try {
+    await offerWrites(config);
+  } finally {
+    resumeService();
+  }
 }
 
 const SERVICE_STOP_MS = 10_000;
