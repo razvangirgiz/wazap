@@ -18,8 +18,15 @@ const RING_TIMEOUT_MS = 2 * 60_000;
  */
 const ANSWERED_CAP_MS = 6 * 3_600_000;
 
-/** Ids of calls already stored, so a repeated terminal event stores nothing twice. */
+/**
+ * How many settled call ids to remember. They are what makes a repeated
+ * terminal event store nothing twice, and the process is long-lived, so the set
+ * has to forget its oldest eventually rather than grow for the whole session.
+ */
 const SETTLED_MEMORY = 500;
+
+/** Marks a stored message as one wazap tracked itself. See `isTrackedCall`. */
+const TRACKED_ID_PREFIX = "call_";
 
 export interface CallEntry {
   callId: string;
@@ -148,6 +155,15 @@ export class CallTracker {
 }
 
 /**
+ * True for a message this tracker built. The tracker emits one entry per call
+ * id, so two of these are always two different calls however close together
+ * they fall, which is the one thing a dedupe by timestamp cannot know.
+ */
+export function isTrackedCall(raw: WAMessage): boolean {
+  return (raw.key?.id ?? "").startsWith(TRACKED_ID_PREFIX);
+}
+
+/**
  * The entry as WhatsApp would have logged it, so snapshot, history JSONL, views
  * and list_chats all carry a live call with no machinery of their own. The
  * fields have to survive an encode/decode round trip, because that is what
@@ -158,7 +174,7 @@ export function callMessage(entry: CallEntry): WAMessage {
     key: {
       remoteJid: entry.chatId,
       fromMe: entry.direction === "outgoing",
-      id: `call_${entry.callId}`,
+      id: `${TRACKED_ID_PREFIX}${entry.callId}`,
     },
     messageTimestamp: Math.floor(entry.at / 1000),
     message: {

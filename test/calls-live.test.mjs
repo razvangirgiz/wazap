@@ -138,3 +138,39 @@ test("an ordinary message near a call is left alone", async () => {
   );
   await svc.stop();
 });
+
+test("a redial is a second call, not a duplicate of the first", async () => {
+  const { svc, sock } = makeService();
+  const first = Date.now() - 90_000;
+  sock.ev.emit("call", [callEvent("offer", { id: "C1", at: first })]);
+  sock.ev.emit("call", [callEvent("timeout", { id: "C1", at: first })]);
+
+  const second = first + 40_000;
+  sock.ev.emit("call", [callEvent("offer", { id: "C2", at: second })]);
+  sock.ev.emit("call", [callEvent("reject", { id: "C2", at: second })]);
+
+  const messages = (await svc.readMessages(PEER, 10)).data;
+  assert.deepEqual(
+    messages.map((m) => m.text),
+    ["[missed voice call]", "[rejected voice call]"],
+    "calling back forty seconds later must not eat the call before it",
+  );
+  await svc.stop();
+});
+
+test("a call the user placed from a LID-addressed device is outgoing", async () => {
+  const { svc, sock } = makeService();
+  const MY_LID = "273520764416235@lid";
+  sock.ev.emit("lid-mapping.update", { lid: MY_LID, pn: ME });
+
+  const at = Date.now() - 30_000;
+  const mine = { from: MY_LID, chatId: PEER, at };
+  sock.ev.emit("call", [callEvent("offer", mine)]);
+  sock.ev.emit("call", [callEvent("timeout", mine)]);
+
+  const messages = (await svc.readMessages(PEER, 10)).data;
+  assert.equal(messages.length, 1, "and it lands in the peer's chat, not the user's own");
+  assert.equal(messages[0].text, "[outgoing voice call · unanswered]");
+  assert.equal(messages[0].from_me, true);
+  await svc.stop();
+});

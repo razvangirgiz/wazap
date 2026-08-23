@@ -27,7 +27,7 @@ import makeWASocket, {
 } from "baileys";
 import type { ILogger } from "baileys/lib/Utils/logger.js";
 import { readLinkedAccount, useAtomicAuthState } from "./auth-state.js";
-import { CallTracker, callMessage, type CallEntry } from "./calls.js";
+import { CallTracker, callMessage, isTrackedCall, type CallEntry } from "./calls.js";
 import { BAILEYS_VERSION, paths, WAZAP_VERSION, type Config, type Paths } from "./config.js";
 import { asWazapError, RELINK_FIX, RESET_FIX, WazapError } from "./errors.js";
 import { isGroupId, isNoiseJid, resolveChatId } from "./ids.js";
@@ -1004,7 +1004,11 @@ export class WhatsAppService implements WhatsAppApi {
 
     sock.ev.on("call", ([call]) => {
       if (generation !== this.generation || !call) return;
-      const entry = this.calls.observe(call, this.ownJid(), Date.now());
+      // WhatsApp addresses a call node by LID as often as by number, and ownJid
+      // is only ever the number, so an outgoing call reads as incoming unless
+      // the two are brought into the same form first.
+      const from = this.canonical(call.from);
+      const entry = this.calls.observe({ ...call, from }, this.ownJid(), Date.now());
       if (entry) this.storeCall(entry);
       this.armCallSweep();
     });
@@ -1693,6 +1697,8 @@ export class WhatsAppService implements WhatsAppApi {
       if (known.sid === sid) continue;
       const other = callInfo(known.raw);
       if (!other) continue;
+      // A redial inside the window is two calls, and wazap knows it built both.
+      if (isTrackedCall(raw) && isTrackedCall(known.raw)) continue;
       if (Math.abs(messageTimestampMs(known.raw) - at) > CALL_DEDUPE_WINDOW_MS) continue;
       if (callDetail(raw, info) <= callDetail(known.raw, other)) return false;
       this.store.dropMessage(known.sid);
