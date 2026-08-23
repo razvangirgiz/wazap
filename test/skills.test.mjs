@@ -3,6 +3,8 @@ import assert from "node:assert/strict";
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 
+import { loadSkills } from "../dist/skills.js";
+
 const root = new URL("..", import.meta.url).pathname;
 const toolNames = new Set([...readFileSync(join(root, "src/tools.ts"), "utf8").matchAll(/^\s+name: "([a-z_]+)",$/gm)].map((m) => m[1]));
 const skillDirs = readdirSync(join(root, "skills"));
@@ -39,4 +41,15 @@ test("plugin manifest version matches package.json", () => {
   const plugin = JSON.parse(readFileSync(join(root, ".claude-plugin/plugin.json"), "utf8"));
   const pkg = JSON.parse(readFileSync(join(root, "package.json"), "utf8"));
   assert.equal(plugin.version, pkg.version);
+});
+
+test("loadSkills reads the packaged skills into one registry", () => {
+  const skills = loadSkills();
+  assert.equal(skills.length, 5);
+  assert.deepEqual(skills.map((skill) => skill.name), [...skills.map((skill) => skill.name)].sort());
+  for (const skill of skills) {
+    assert.ok(skillDirs.includes(skill.name), `${skill.name} has no directory`);
+    assert.ok(skill.description.length > 0, `${skill.name}: empty description`);
+    assert.ok(skill.body.startsWith("# "), `${skill.name}: body must start at the title, not the frontmatter`);
+  }
 });

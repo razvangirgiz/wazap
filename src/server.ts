@@ -9,6 +9,7 @@ import { rateLimit } from "express-rate-limit";
 import { WAZAP_VERSION, paths, type Config } from "./config.js";
 import { APPROVE_PATH, OAUTH_SCOPES, WazapOAuthProvider } from "./oauth.js";
 import { RateLimiter } from "./ratelimit.js";
+import { loadSkills, registerSkillPrompts, skillInstructions } from "./skills.js";
 import { registerTools } from "./tools.js";
 import { log, logError } from "./logger.js";
 import type { WhatsAppApi } from "./wa-types.js";
@@ -21,9 +22,15 @@ function isAuthorized(header: string | undefined, expected: string): boolean {
   return got.length === want.length && timingSafeEqual(got, want);
 }
 
+/**
+ * The one place a session is built, so the workflows reach stdio and HTTP alike:
+ * a client that never installed the skill files still gets them here.
+ */
 function buildMcpServer(wa: WhatsAppApi, config: Config, allowWrite: boolean, limiter: RateLimiter): McpServer {
-  const server = new McpServer({ name: "wazap", version: WAZAP_VERSION });
+  const skills = loadSkills();
+  const server = new McpServer({ name: "wazap", version: WAZAP_VERSION }, { instructions: skillInstructions(skills) });
   registerTools(server, wa, { allowWrite: allowWrite && !config.readOnly, limiter });
+  registerSkillPrompts(server, skills);
   return server;
 }
 

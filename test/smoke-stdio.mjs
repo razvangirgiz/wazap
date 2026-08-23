@@ -6,15 +6,25 @@
  *
  * Rerun on its own with:  node test/smoke-stdio.mjs
  */
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { pathToFileURL } from "node:url";
+import { dirname, join } from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import assert from "node:assert/strict";
 
 import { BINARY, mcpClient, spawnWazap } from "./helpers.mjs";
 
 const EXPECTED_TOOL_COUNT = 24;
+const skillsDir = join(dirname(fileURLToPath(import.meta.url)), "..", "skills");
+const SKILL_NAMES = readdirSync(skillsDir, { withFileTypes: true })
+  .filter((entry) => entry.isDirectory())
+  .map((entry) => entry.name)
+  .sort();
+
+/** The markdown a prompt has to hand back: the SKILL.md minus its frontmatter. */
+function skillBody(name) {
+  return readFileSync(join(skillsDir, name, "SKILL.md"), "utf8").replace(/^---\n[\s\S]*?\n---\n/, "").trim();
+}
 
 export async function runSmoke({
   binary = BINARY,
@@ -37,7 +47,12 @@ export async function runSmoke({
     });
     assert.equal(init.error, undefined, `initialize failed: ${JSON.stringify(init.error)}`);
     assert.equal(init.result.serverInfo.name, "wazap");
-    log(`initialize ok — ${init.result.serverInfo.name} ${init.result.serverInfo.version}`);
+    const instructions = init.result.instructions ?? "";
+    assert.match(instructions, /learn/, "the instructions must send the agent to `learn` first");
+    for (const name of SKILL_NAMES) {
+      assert.ok(instructions.includes(name), `the instructions never name ${name}: ${instructions}`);
+    }
+    log(`initialize ok — ${init.result.serverInfo.name} ${init.result.serverInfo.version}, ${instructions.length} chars of instructions`);
 
     notify("notifications/initialized", {});
 
@@ -46,6 +61,17 @@ export async function runSmoke({
     const names = list.result.tools.map((t) => t.name).sort();
     assert.equal(names.length, expectedTools, `expected ${expectedTools} tools, got ${names.length}: ${names}`);
     log(`tools/list ok — ${names.length} tools`);
+
+    const prompts = await request("prompts/list", {});
+    assert.equal(prompts.error, undefined, `prompts/list failed: ${JSON.stringify(prompts.error)}`);
+    assert.deepEqual(prompts.result.prompts.map((p) => p.name).sort(), SKILL_NAMES);
+    log(`prompts/list ok — ${SKILL_NAMES.length} workflows`);
+
+    const inbox = await request("prompts/get", { name: "whatsapp-inbox", arguments: {} });
+    assert.equal(inbox.error, undefined, `prompts/get failed: ${JSON.stringify(inbox.error)}`);
+    assert.equal(inbox.result.messages.length, 1);
+    assert.equal(inbox.result.messages[0].content.text, skillBody("whatsapp-inbox"));
+    log("prompts/get ok — whatsapp-inbox carries its SKILL.md body");
 
     const status = await request("tools/call", { name: "get_status", arguments: {} });
     assert.equal(status.error, undefined, `get_status failed: ${JSON.stringify(status.error)}`);
