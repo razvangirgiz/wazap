@@ -194,3 +194,44 @@ test("a name learned before the lid pairing is still found after it", () => {
   assert.equal(svc.displayName(phone), "Sanda", "get_group_info asks by number and must get the same answer");
   assert.equal(svc.displayName(lid), "Sanda");
 });
+
+/**
+ * WhatsApp names a contact it will not identify with the masked number
+ * "+40∙∙∙∙∙∙∙98". Treating that as a name once hid the plain number behind
+ * dots, and made a session with no address book at all look like it had one.
+ */
+test("a masked number is not a name, at any rung of the ladder", () => {
+  const { svc, sock } = makeService();
+  sock.ev.emit("contacts.upsert", [
+    { id: "40700000021@s.whatsapp.net", name: "+40∙∙∙∙∙∙∙21" },
+    { id: "40700000022@s.whatsapp.net", name: "+40∙∙∙∙∙∙∙22", notify: "Vlad" },
+    { id: "40700000023@s.whatsapp.net", name: "0721 234 567" },
+  ]);
+  assert.equal(svc.displayName("40700000021@s.whatsapp.net"), "40700000021", "the plain number beats dots");
+  assert.equal(svc.displayName("40700000022@s.whatsapp.net"), "Vlad", "a real name below it still wins");
+  assert.equal(svc.displayName("40700000023@s.whatsapp.net"), "40700000023", "a number saved as a name is a number");
+});
+
+test("namedContacts counts the address book, not the store", () => {
+  const { svc, sock } = makeService();
+  sock.ev.emit("contacts.upsert", [
+    { id: "40700000031@s.whatsapp.net", name: "Ionut" },
+    { id: "40700000032@s.whatsapp.net", notify: "seen in a group" },
+    { id: "40700000033@s.whatsapp.net", name: "+40∙∙∙∙∙∙∙33" },
+    { id: "120363000000000031@g.us", name: "Familia" },
+  ]);
+  assert.equal(svc.storeCounts().contacts, 1);
+  assert.equal(svc.namedContacts(), 1);
+  assert.equal(svc.getStatus().contacts_named, 1);
+});
+
+test("search_contacts still finds a masked contact by number, and never by dots", async () => {
+  const { svc, sock } = makeService();
+  sock.ev.emit("contacts.upsert", [{ id: "40700000041@s.whatsapp.net", name: "+40∙∙∙∙∙∙∙41" }]);
+  assert.equal((await svc.searchContacts("∙∙", 10)).length, 0);
+  const byNumber = await svc.searchContacts("40700000041", 10);
+  assert.deepEqual(
+    byNumber.map((c) => [c.name, c.is_my_contact]),
+    [["40700000041", false]],
+  );
+});

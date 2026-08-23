@@ -89,6 +89,21 @@ const HISTORY_STORE_CAP_PER_CHAT = 2_000;
 const DIR_MODE = 0o700;
 const FILE_MODE = 0o600;
 
+/**
+ * A contact WhatsApp will not name for us still arrives with a `name`: the
+ * masked number "+40∙∙∙∙∙∙∙98". Counting those as address-book entries would
+ * make wazap believe the address book had landed, and showing one hides the
+ * plain number the reader can actually dial. Anything made only of digits and
+ * masking is not a name.
+ */
+const NOT_A_NAME = /^[+\d\s()\-.·•∙…*]+$/u;
+
+/** The name a human wrote, or "" for a placeholder and for nothing at all. */
+export function realName(value: string | null | undefined): string {
+  const name = value?.trim() ?? "";
+  return name === "" || NOT_A_NAME.test(name) ? "" : name;
+}
+
 /** Baileys logs at info level to stdout by default, which corrupts the MCP
  * JSON-RPC stream on stdio. */
 const silentLogger: ILogger = {
@@ -321,7 +336,21 @@ export class WhatsAppService implements WhatsAppApi {
   }
 
   storeCounts(): { chats: number; contacts: number; messages: number } {
-    return { chats: this.store.chats.size, contacts: this.store.contacts.size, messages: this.store.messages.size };
+    return { chats: this.store.chats.size, contacts: this.namedContacts(), messages: this.store.messages.size };
+  }
+
+  /**
+   * People from the phone's address book: the only contact count worth
+   * reporting. The store also holds everyone who ever appeared in a group and
+   * every group itself, so its raw size says nothing about whether the address
+   * book ever arrived.
+   */
+  namedContacts(): number {
+    let named = 0;
+    for (const [jid, contact] of this.store.contacts) {
+      if (!isGroupId(jid) && realName(contact.name)) named++;
+    }
+    return named;
   }
 
   getStatus(): StatusInfo {
@@ -333,6 +362,7 @@ export class WhatsAppService implements WhatsAppApi {
       reconnect_attempts: this.reconnectAttempts,
       wazap_version: WAZAP_VERSION,
       baileys_version: BAILEYS_VERSION,
+      contacts_named: this.namedContacts(),
       data_dir: this.config.dataDir,
       read_only: this.config.readOnly,
       rate_limit: this.config.rateLimitPerMinute,
@@ -461,7 +491,7 @@ export class WhatsAppService implements WhatsAppApi {
       for (const [jid, contact] of this.store.contacts) {
         // Every name we might show, or someone the chat list calls "Carmen"
         // would not be findable by that name here.
-        const known = [contact.name, contact.verifiedName, contact.notify, this.store.pushNames.get(jid)];
+        const known = [contact.name, contact.verifiedName, contact.notify, this.store.pushNames.get(jid)].map(realName);
         const number = jid.split("@")[0] ?? "";
         const hit =
           needle === "" ||
@@ -1299,14 +1329,15 @@ export class WhatsAppService implements WhatsAppApi {
     for (const known of phoneJid ? [jid, phoneJid] : [jid]) {
       const contact = this.store.contacts.get(known);
       const name =
-        contact?.name ||
-        contact?.verifiedName ||
-        contact?.notify ||
-        this.store.pushNames.get(known) ||
-        this.store.chats.get(known)?.name;
+        realName(contact?.name) ||
+        realName(contact?.verifiedName) ||
+        realName(contact?.notify) ||
+        realName(this.store.pushNames.get(known)) ||
+        realName(this.store.chats.get(known)?.name);
       if (name) return name;
     }
-    if (hint) return hint;
+    const hinted = realName(hint);
+    if (hinted) return hinted;
 
     const digits = (phoneJid ?? jid).split("@")[0] ?? "";
     if ((phoneJid ?? jid).endsWith("@s.whatsapp.net")) return digits;
@@ -1444,7 +1475,7 @@ export class WhatsAppService implements WhatsAppApi {
       contact_id: jid,
       name: this.displayName(jid),
       number,
-      is_my_contact: Boolean(contact?.name),
+      is_my_contact: realName(contact?.name) !== "",
       is_business: Boolean(contact?.verifiedName),
     };
   }

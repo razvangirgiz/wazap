@@ -38,6 +38,8 @@ export interface StatusInfo {
   account: { id: string; name: string; number: string } | null;
   last_message_received_at: string | null;
   reconnect_attempts: number;
+  /** Contacts carrying a name from the phone's address book. Zero means it never arrived. */
+  contacts_named: number;
   wazap_version: string;
   baileys_version: string;
   data_dir: string;
