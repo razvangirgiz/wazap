@@ -14,7 +14,7 @@ import assert from "node:assert/strict";
 
 import { BINARY, mcpClient, spawnWazap } from "./helpers.mjs";
 
-const EXPECTED_TOOL_COUNT = 22;
+const EXPECTED_TOOL_COUNT = 23;
 
 export async function runSmoke({
   binary = BINARY,

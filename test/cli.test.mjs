@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { mkdtempSync } from "node:fs";
+import { existsSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -50,6 +50,35 @@ test("an unknown command fails with a pointer to --help", async () => {
 
 test("the built server answers MCP over stdio with no WhatsApp session", async () => {
   const { toolNames, status } = await runSmoke();
-  assert.equal(toolNames.length, 22);
+  assert.equal(toolNames.length, 23);
   assert.equal(status.status, "not_linked");
+});
+
+test("`contacts resync` on an unlinked data dir stops at NOT_LINKED, and frees the lock", async () => {
+  const dataDir = mkdtempSync(join(tmpdir(), "wazap-contacts-"));
+  await assert.rejects(wazap("contacts", "resync", "--data-dir", dataDir), (err) => {
+    assert.match(err.stderr, /No WhatsApp account is linked/);
+    return true;
+  });
+  assert.equal(existsSync(join(dataDir, "server.lock")), false, "a refused command must not leave the session held");
+});
+
+test("`contacts` with no verb, or the wrong one, points at the one that exists", async () => {
+  const dataDir = mkdtempSync(join(tmpdir(), "wazap-contacts-"));
+  for (const args of [["contacts"], ["contacts", "refresh"]]) {
+    await assert.rejects(wazap(...args, "--data-dir", dataDir), (err) => {
+      assert.match(err.stderr, /wazap contacts resync|--help/);
+      return true;
+    });
+  }
+});
+
+test("`contacts resync` refuses while a server owns the session", async () => {
+  const dataDir = mkdtempSync(join(tmpdir(), "wazap-contacts-"));
+  writeFileSync(join(dataDir, "server.lock"), String(process.pid), { mode: 0o600 });
+  await assert.rejects(wazap("contacts", "resync", "--data-dir", dataDir), (err) => {
+    assert.match(err.stderr, new RegExp(`wazap is running \\(pid ${process.pid}\\)`));
+    assert.match(err.stderr, /sync_contacts/);
+    return true;
+  });
 });

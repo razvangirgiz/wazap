@@ -12,7 +12,7 @@ export const BAILEYS_VERSION: string = (require("baileys/package.json") as { ver
 /** Where an effective setting came from, in precedence order. */
 export type Source = "flag" | "env" | ".env" | "default";
 
-export type Command = "serve" | "login" | "setup" | "status" | "logout" | "connect" | "config";
+export type Command = "serve" | "login" | "setup" | "status" | "logout" | "connect" | "config" | "contacts";
 
 export interface Config {
   dataDir: string;
@@ -88,6 +88,7 @@ const COMMAND_ARGS: Record<Command, readonly number[]> = {
   logout: [0],
   connect: [1],
   config: [0, 2],
+  contacts: [1],
 };
 
 const COMMANDS = Object.keys(COMMAND_ARGS) as readonly Command[];

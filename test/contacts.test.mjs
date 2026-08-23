@@ -9,6 +9,19 @@ import assert from "node:assert/strict";
 
 import { WhatsAppService, needsContactResync } from "../dist/whatsapp.js";
 import { connectedService } from "./helpers.mjs";
+import { registerTools } from "../dist/tools.js";
+import { RateLimiter } from "../dist/ratelimit.js";
+
+/** Stand-in for McpServer: records what got registered and lets us call it. */
+function fakeServer() {
+  const tools = new Map();
+  return {
+    tools,
+    registerTool(name, meta, handler) {
+      tools.set(name, { meta, handler });
+    },
+  };
+}
 
 const ME = "40700000001@s.whatsapp.net";
 const COLLECTIONS = ["critical_block", "critical_unblock_low", "regular_high", "regular_low", "regular"];
@@ -127,4 +140,41 @@ test("names arriving on either contact event reach the disk", () => {
   assert.equal(svc.storeDirty, true, "contacts.update");
   assert.equal(svc.displayName("40700000051@s.whatsapp.net"), "Ionut Fox");
   if (svc.storeSaveTimer) clearTimeout(svc.storeSaveTimer);
+});
+
+test("sync_contacts reports what the resync changed, and never counts as a write", async () => {
+  const server = fakeServer();
+  registerTools(server, { syncContacts: async () => ({ requested: true, named_before: 0, named_after: 217 }) }, {
+    allowWrite: false,
+    limiter: new RateLimiter(20),
+  });
+  const tool = server.tools.get("sync_contacts");
+  assert.equal(tool.meta.annotations.readOnlyHint, true, "it changes nothing on WhatsApp");
+
+  const result = await tool.handler({});
+  assert.deepEqual(result.structuredContent, { requested: true, named_before: 0, named_after: 217 });
+  assert.match(result.content[0].text, /217 named contacts \(was 0\)/);
+});
+
+test("sync_contacts tells an empty address book apart from one already in hand", async () => {
+  const say = async (named_before, named_after) => {
+    const server = fakeServer();
+    registerTools(server, { syncContacts: async () => ({ requested: true, named_before, named_after }) }, {
+      allowWrite: true,
+      limiter: new RateLimiter(20),
+    });
+    return (await server.tools.get("sync_contacts").handler({})).content[0].text;
+  };
+  assert.match(await say(0, 0), /no names at all/);
+  assert.match(await say(217, 217), /already current: 217/);
+});
+
+test("sync_contacts on a session that is not connected reports the code, not a crash", async () => {
+  const { svc } = makeService();
+  svc.status = "connecting";
+  const server = fakeServer();
+  registerTools(server, svc, { allowWrite: true, limiter: new RateLimiter(20) });
+  const result = await server.tools.get("sync_contacts").handler({});
+  assert.equal(result.isError, true);
+  assert.equal(result.structuredContent.error, "NOT_CONNECTED");
 });

@@ -50,6 +50,7 @@ import type {
   ChatSummary,
   ConnectionStatus,
   ContactDetails,
+  ContactSyncResult,
   ContactSummary,
   GroupAction,
   GroupActionResult,
@@ -370,6 +371,20 @@ export class WhatsAppService implements WhatsAppApi {
   }
 
   /** True once WhatsApp has delivered at least one history-sync batch. */
+  /**
+   * The same full resync the self-heal runs, on demand. Nothing about the
+   * account changes: this asks WhatsApp to send the address book again.
+   */
+  syncContacts(): Promise<ContactSyncResult> {
+    return this.guarded(async () => {
+      const sock = this.ensureConnected();
+      const before = this.namedContacts();
+      await this.resyncContacts(sock);
+      const after = await this.waitForNames(before, Date.now() + CONTACT_SETTLE_MS);
+      return { requested: true, named_before: before, named_after: after };
+    });
+  }
+
   hasHistory(): boolean {
     return this.historyReceived;
   }
@@ -1168,7 +1183,7 @@ export class WhatsAppService implements WhatsAppApi {
     this.contactResyncTried = true;
     try {
       await this.waitForSync();
-      const named = await this.waitForNames(Date.now() + CONTACT_SETTLE_MS);
+      const named = await this.waitForNames(0, Date.now() + CONTACT_SETTLE_MS);
       if (generation !== this.generation || this.stopped) return;
       const decision = {
         named,
@@ -1185,10 +1200,10 @@ export class WhatsAppService implements WhatsAppApi {
   }
 
   /** Names still arriving mean the sync is working; only silence means it is not coming. */
-  private async waitForNames(deadline: number): Promise<number> {
+  private async waitForNames(floor: number, deadline: number): Promise<number> {
     for (;;) {
       const named = this.namedContacts();
-      if (named > 0 || this.stopped || Date.now() >= deadline) return named;
+      if (named > floor || this.stopped || Date.now() >= deadline) return named;
       await sleep(500);
     }
   }

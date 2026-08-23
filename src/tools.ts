@@ -88,7 +88,9 @@ contacts and groups. Call get_status first if anything looks wrong.
 - Catch up: get_recent_messages(hours) for everything, or list_chats(filter:"unread")
   then read_messages(chat_id).
 - Go back further: read_messages(chat_id, before: <oldest message_id you have>).
-- Find a person: search_contacts → get_contact.
+- Find a person: search_contacts → get_contact. Names come from the phone's own
+  address book; if they are missing (get_status shows contacts_named: 0), call
+  sync_contacts once.
 - Find something said: search_messages(query[, chat_id]).
 - Send: send_message / send_media / send_poll / send_location. These are REAL
   messages from the user's own account and there is no undo. Confirm the
@@ -284,6 +286,31 @@ on the number). Returns contact_id values usable as chat_id.`,
     handler: async ({ query, limit }, wa) => {
       const contacts = await wa.searchContacts(query, limit);
       return ok(renderContacts(query, contacts), { query, count: contacts.length, contacts });
+    },
+  }),
+
+  tool({
+    name: "sync_contacts",
+    title: "Fetch the phone's address book again",
+    description: `Ask WhatsApp to send the linked phone's address book from scratch, and wait up
+to 15 seconds for it. Nothing on WhatsApp changes: this only refills wazap's
+own contact list.
+
+Use it when get_status reports contacts_named: 0, or when senders in a group
+read as phone numbers for people you know are saved on the phone. Returns
+named_before and named_after so you can tell whether it helped; if both are 0
+the phone has no saved contacts for these people.`,
+    schema: {},
+    write: false,
+    handler: async (_args, wa) => {
+      const result = await wa.syncContacts();
+      const text =
+        result.named_after > result.named_before
+          ? `Address book synced: ${result.named_after} named contacts (was ${result.named_before}).`
+          : result.named_after > 0
+            ? `Address book already current: ${result.named_after} named contacts.`
+            : "WhatsApp sent no names at all; the phone has no saved contacts for these people.";
+      return ok(text, result as unknown as Record<string, unknown>);
     },
   }),
 

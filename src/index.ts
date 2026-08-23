@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { BANNER } from "./banner.js";
-import { runGreet, runLogin, runLogout, runServe, runStatus } from "./cli.js";
+import { runContacts, runGreet, runLogin, runLogout, runServe, runStatus } from "./cli.js";
 import { WAZAP_VERSION, parseCli, pickDefaultAction } from "./config.js";
 import { CLIENT_NAMES, runConnect } from "./connect.js";
 import { runSetup } from "./setup.js";
@@ -17,6 +17,7 @@ Usage:
   wazap setup [--agent] [--client <name>]                  Link, connect your client and finish, in one command
   wazap connect <client> [--dry-run]                       Register wazap with an MCP client
   wazap config [writes on|off]                             Show the effective settings, or allow/refuse writes
+  wazap contacts resync                                    Fetch the phone's address book from WhatsApp again
   wazap status [--live] [--json]                           Check the install, the session and the server
   wazap logout                                             Unlink and delete local credentials
 
@@ -77,6 +78,9 @@ async function main(): Promise<void> {
       return;
     case "config":
       runConfig(config);
+      return;
+    case "contacts":
+      await runContacts(config);
       return;
     case "status":
       await runStatus(config);

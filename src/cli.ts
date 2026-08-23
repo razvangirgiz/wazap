@@ -37,6 +37,7 @@ import {
   humanLayout,
   dim,
   fail,
+  fix,
   info,
   maskNumber,
   next,
@@ -257,6 +258,53 @@ async function runLiveProbe(config: Config): Promise<LiveReport> {
       last_message_age: newest === 0 ? null : formatAge(newest),
       reason: null,
     };
+  } finally {
+    await wa.stop();
+    releaseLock(p.lockFile);
+  }
+}
+
+/**
+ * `wazap contacts resync`. One process owns the session, so this refuses while a
+ * server holds it rather than fighting for the socket: that server has the
+ * sync_contacts tool, which does the same thing.
+ */
+export async function runContacts(config: Config): Promise<void> {
+  if (config.args[0] !== "resync") {
+    say(fail(`Unknown contacts command "${config.args[0]}".`));
+    say(fix("Run `wazap contacts resync`"));
+    process.exit(2);
+  }
+
+  const p = paths(config.dataDir);
+  const running = takeSessionLock(p.lockFile);
+  if (running !== null) {
+    say(fail(`wazap is running (pid ${running}).`));
+    say(fix("ask your agent for the sync_contacts tool, or stop the server and run this again"));
+    process.exit(1);
+  }
+
+  const wa = new WhatsAppService(config);
+  const spin = spinner("Asking WhatsApp for your address book…");
+  try {
+    await wa.start();
+    const deadline = Date.now() + LIVE_TIMEOUT_MS;
+    let probe = wa.getStatus();
+    while (!SETTLED_STATUSES.includes(probe.status) && Date.now() < deadline) {
+      await sleep(250);
+      probe = wa.getStatus();
+    }
+    const result = await wa.syncContacts();
+    spin.stop(
+      result.named_after > result.named_before
+        ? ok(`${result.named_after} contacts have a name (was ${result.named_before})`)
+        : result.named_after > 0
+          ? ok(`Already up to date: ${result.named_after} contacts have a name`)
+          : warn("WhatsApp sent no names at all. The phone has no saved contacts for these people."),
+    );
+  } catch (err) {
+    spin.stop(fail(asWazapError(err).message));
+    process.exitCode = 1;
   } finally {
     await wa.stop();
     releaseLock(p.lockFile);
