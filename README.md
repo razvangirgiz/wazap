@@ -104,7 +104,7 @@ The `skills/` folder follows the [Agent Skills](https://agentskills.io) format, 
 | `get_status` | read | Connection status, sync state, linked account, versions, data dir. |
 | `list_chats` | read | Conversations newest-first; filter `all`/`unread`/`groups`/`individual`/`archived`. |
 | `read_messages` | read | Messages in a chat; `before` pages further back, pulling older history from the phone. |
-| `get_recent_messages` | read | Everything from the last N hours, grouped by chat. The catch-up tool. |
+| `get_recent_messages` | read | Everything from the last N hours, grouped by chat. The catch-up tool. `include_system` adds WhatsApp's own notices. |
 | `search_messages` | read | Text search across the locally held messages. |
 | `get_message` | read | One message in full, with its quoted message and reactions. |
 | `search_contacts` | read | Find contacts by name or number. |
