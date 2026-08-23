@@ -3,20 +3,10 @@ import { once } from "node:events";
 import { mkdirSync, rmSync } from "node:fs";
 import { createInterface } from "node:readline/promises";
 import { setTimeout as sleep } from "node:timers/promises";
-import makeWASocket, {
-  DisconnectReason,
-  type UserFacingSocketConfig,
-  type WASocket,
-} from "baileys";
+import { DisconnectReason, type WASocket } from "baileys";
 import qrcode from "qrcode";
 import qrcodeTerminal from "qrcode-terminal";
-import {
-  clearAuth,
-  readLinkedAccount,
-  useAtomicAuthState,
-  withoutAppStateSync,
-  type LinkedAccount,
-} from "./auth-state.js";
+import { clearAuth, readLinkedAccount, type LinkedAccount } from "./auth-state.js";
 import { banner } from "./banner.js";
 import { runBridge } from "./bridge.js";
 import { BAILEYS_VERSION, WAZAP_VERSION, paths, type Config } from "./config.js";
@@ -30,6 +20,7 @@ import { log, logError, say } from "./logger.js";
 import { clockLabel, formatAge } from "./messages.js";
 import { RateLimiter } from "./ratelimit.js";
 import { oauthProblem } from "./oauth.js";
+import { linkSession, settledAccount } from "./pairing.js";
 import { runHttp, runStdio, startLoopbackEndpoint } from "./server.js";
 import { fetchHealth, serviceHolding } from "./service.js";
 import { applyWrites } from "./settings.js";
@@ -66,7 +57,7 @@ import {
   type Spinner,
 } from "./ui.js";
 import type { ConnectionStatus } from "./wa-types.js";
-import { WA_BROWSER, WhatsAppService } from "./whatsapp.js";
+import { WhatsAppService } from "./whatsapp.js";
 
 const LOGIN_TIMEOUT_MS = 120_000;
 const LIVE_TIMEOUT_MS = 15_000;
@@ -84,18 +75,6 @@ export const GAVE_UP_EXIT = 3;
 const LOOPBACK_HOSTS = ["127.0.0.1", "::1", "localhost"];
 /** Bind addresses a loopback bridge can still reach; the wildcards include 127.0.0.1. */
 const SHAREABLE_HOSTS = [...LOOPBACK_HOSTS, "0.0.0.0", "::"];
-
-/** Baileys' default logger is a pino instance writing JSON to stdout. */
-type SocketLogger = NonNullable<UserFacingSocketConfig["logger"]>;
-const SILENT_LOGGER: SocketLogger = {
-  level: "silent",
-  child: () => SILENT_LOGGER,
-  trace: () => {},
-  debug: () => {},
-  info: () => {},
-  warn: () => {},
-  error: () => {},
-};
 
 export interface LiveReport {
   reachable: boolean;
@@ -920,105 +899,10 @@ async function askPhone(): Promise<string> {
   }
 }
 
-type Attempt =
-  | { kind: "open" }
-  | { kind: "restart" }
-  | { kind: "closed"; statusCode?: number }
-  | { kind: "failed"; error: unknown };
-
-interface LinkOptions {
-  deadline: number;
-  /** Every QR the server offers. Absent when the caller only reuses stored credentials. */
-  onQr?: (qr: string, sock: WASocket) => Promise<void>;
-}
-
-/**
- * A socket run until it is open, retrying across the restart WhatsApp demands
- * right after a successful pairing. The returned socket is the caller's to end.
- */
-async function linkSession(authDir: string, opts: LinkOptions): Promise<WASocket> {
-  let current: WASocket | null = null;
-  let expired = false;
-  const timer = setTimeout(
-    () => {
-      expired = true;
-      void current?.end(undefined);
-    },
-    Math.max(0, opts.deadline - Date.now()),
-  );
-
-  try {
-    for (;;) {
-      // Also checked here: a restart landing just before the deadline would
-      // otherwise open a socket the timer can no longer reach.
-      if (expired) throw timedOut();
-      const { state, saveCreds } = await useAtomicAuthState(authDir);
-      // This socket pairs and nothing else. It has no store, so anything it
-      // syncs is thrown away — and WhatsApp sends the history and the address
-      // book once. Refusing the history keeps it out of Baileys' sync state
-      // machine, which is what would otherwise bump `accountSyncCounter` and
-      // leave the service permanently past its own first sync.
-      const sock = makeWASocket({
-        auth: withoutAppStateSync(state),
-        browser: WA_BROWSER,
-        markOnlineOnConnect: false,
-        shouldSyncHistoryMessage: () => false,
-        logger: SILENT_LOGGER,
-      });
-      current = sock;
-      sock.ev.on("creds.update", () => void saveCreds());
-
-      const attempt = await new Promise<Attempt>((resolve) => {
-        sock.ev.on("connection.update", (update) => {
-          if (update.qr && opts.onQr) {
-            void opts.onQr(update.qr, sock).catch((error: unknown) => resolve({ kind: "failed", error }));
-          }
-          if (update.connection === "open") resolve({ kind: "open" });
-          if (update.connection === "close") {
-            const statusCode = (update.lastDisconnect?.error as { output?: { statusCode?: number } } | undefined)
-              ?.output?.statusCode;
-            resolve(statusCode === DisconnectReason.restartRequired ? { kind: "restart" } : { kind: "closed", statusCode });
-          }
-        });
-      });
-
-      if (attempt.kind === "open") return sock;
-      await sock.end(undefined);
-      current = null;
-      if (attempt.kind === "restart") continue;
-      if (expired) throw timedOut();
-      if (attempt.kind === "failed") throw asWazapError(attempt.error);
-      if (attempt.statusCode === DisconnectReason.loggedOut) {
-        throw new WazapError(
-          "SESSION_EXPIRED",
-          "WhatsApp rejected the link. The code may have expired or been entered wrong.",
-          RELINK_FIX,
-        );
-      }
-      throw new WazapError("WHATSAPP_ERROR", `WhatsApp closed the connection (code ${attempt.statusCode ?? "unknown"}).`);
-    }
-  } finally {
-    clearTimeout(timer);
-  }
-}
-
-function timedOut(): WazapError {
-  return new WazapError("TIMEOUT", "WhatsApp did not answer in time.", "Check your connection and try again");
-}
-
 function withDeadline<T>(work: Promise<T>, deadline: number, message: string): Promise<T> {
   let timer: NodeJS.Timeout | undefined;
   const guard = new Promise<never>((_resolve, reject) => {
     timer = setTimeout(() => reject(new WazapError("TIMEOUT", message)), Math.max(0, deadline - Date.now()));
   });
   return Promise.race([work, guard]).finally(() => clearTimeout(timer));
-}
-
-/** The freshly linked account. `creds.update` can land a beat after the connection opens. */
-async function settledAccount(sock: WASocket, authDir: string): Promise<LinkedAccount> {
-  const number = (sock.user?.id ?? "").split(":")[0]!.split("@")[0]!;
-  const fromSocket: LinkedAccount = { id: `${number}@s.whatsapp.net`, name: sock.user?.name ?? "", number };
-  if (fromSocket.name) return fromSocket;
-  await sleep(750);
-  return readLinkedAccount(authDir) ?? fromSocket;
 }

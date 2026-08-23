@@ -12,7 +12,6 @@ import { isAbsolute, join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import makeWASocket, {
   ALL_WA_PATCH_NAMES,
-  Browsers,
   DisconnectReason,
   downloadMediaMessage,
   jidNormalizedUser,
@@ -50,6 +49,7 @@ import {
   viewText,
   voiceSeconds,
 } from "./messages.js";
+import { WA_BROWSER } from "./pairing.js";
 import {
   readTranscribeSettings,
   transcribeFile,
@@ -338,13 +338,6 @@ class Store {
     }
   }
 }
-
-/**
- * The browser identity sent at handshake. WhatsApp closes the socket with 428
- * before offering a QR for Browsers.macOS("Desktop") (verified 2026-08-22 on
- * baileys 7.0.0-rc14); "Chrome" is accepted.
- */
-export const WA_BROWSER = Browsers.macOS("Chrome");
 
 export class WhatsAppService implements WhatsAppApi {
   private sockClient: WASocket | null = null;
