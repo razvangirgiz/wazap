@@ -1,4 +1,5 @@
 import { randomBytes } from "node:crypto";
+import { once } from "node:events";
 import { mkdirSync, rmSync } from "node:fs";
 import { createInterface } from "node:readline/promises";
 import { setTimeout as sleep } from "node:timers/promises";
@@ -26,10 +27,23 @@ import { RELINK_FIX, WazapError, asWazapError } from "./errors.js";
 import { normalizePhone } from "./ids.js";
 import { lockHolder, releaseLock, writeLock } from "./lock.js";
 import { log, logError, say } from "./logger.js";
-import { formatAge } from "./messages.js";
+import { clockLabel, formatAge } from "./messages.js";
 import { RateLimiter } from "./ratelimit.js";
 import { runHttp, runStdio, startLoopbackEndpoint } from "./server.js";
 import { applyWrites } from "./settings.js";
+import {
+  MODELS,
+  downloadModel,
+  maskKey,
+  modelSpec,
+  readTranscribeSettings,
+  stripPasted,
+  transcribeFile,
+  transcribeReady,
+  type ModelSpec,
+  type ProviderName,
+  type TranscribeSettings,
+} from "./transcribe/index.js";
 import {
   bold,
   box,
@@ -311,6 +325,86 @@ export async function runContacts(config: Config): Promise<void> {
     await wa.stop();
     releaseLock(p.lockFile);
   }
+}
+
+const MIB = 1024 * 1024;
+
+function mib(bytes: number): number {
+  return Math.round(bytes / MIB);
+}
+
+/** `wazap transcribe download` and `wazap transcribe test <audio file>`. */
+export async function runTranscribe(config: Config): Promise<void> {
+  const [verb, file] = config.args;
+  const settings = readTranscribeSettings(process.env, config.dataDir);
+  if (verb === "download" && file === undefined) {
+    await downloadTranscribeModel(settings, modelSpec(config.modelName ?? settings.model));
+    return;
+  }
+  if (verb === "test" && file !== undefined) {
+    await testTranscribe(settings, file);
+    return;
+  }
+  throw new WazapError(
+    "INVALID_ID",
+    `Cannot run \`wazap transcribe ${config.args.join(" ")}\`.`,
+    "Run `wazap transcribe download` or `wazap transcribe test <audio file>`",
+  );
+}
+
+/**
+ * Also `setup`'s download step. A model already on disk is re-hashed rather than
+ * trusted, which is why the line starts as a check and only then becomes a fetch.
+ */
+export async function downloadTranscribeModel(settings: TranscribeSettings, spec: ModelSpec): Promise<void> {
+  const spin = spinner(`Checking ${spec.file}…`);
+  try {
+    const result = await downloadModel(settings.modelsDir, spec, (progress) => {
+      const percent = Math.floor((progress.received / progress.total) * 100);
+      spin.update(`Downloading ${spec.file} — ${mib(progress.received)} / ${mib(progress.total)} MiB (${percent}%)`);
+    });
+    spin.stop(ok(`${spec.file} (${mib(spec.bytes)} MiB) ${result.alreadyPresent ? "already present" : "verified"}`));
+  } catch (err) {
+    spin.stop();
+    throw err;
+  }
+}
+
+/** What identifies each provider on screen. Keyed like PROVIDERS, never branched on. */
+const PROVIDER_ROWS: Record<ProviderName, (settings: TranscribeSettings) => [string, string][]> = {
+  local: (settings) => [
+    ["provider", "local (whisper.cpp)"],
+    ["model", MODELS[settings.model].file],
+  ],
+  openai: (settings) => [
+    ["provider", `openai (${new URL(settings.baseUrl).host})`],
+    ["model", settings.apiModel],
+    ["key", maskKey(settings.apiKey)],
+  ],
+};
+
+async function testTranscribe(settings: TranscribeSettings, file: string): Promise<void> {
+  const readiness = await transcribeReady(settings);
+  const provider = settings.provider;
+  if (provider === null || !readiness.ok) {
+    throw new WazapError("TRANSCRIBE_UNAVAILABLE", readiness.detail, readiness.fix);
+  }
+
+  for (const [label, value] of PROVIDER_ROWS[provider](settings)) say(row(label, value));
+  say(row("language", settings.language));
+  say("");
+
+  const started = Date.now();
+  const spin = spinner(`Transcribing ${shortPath(file)}…`);
+  const transcript = await transcribeFile(settings, file).finally(() => spin.stop());
+
+  const facts = [
+    `transcribed in ${((Date.now() - started) / 1000).toFixed(1)}s`,
+    transcript.language,
+    transcript.duration_seconds === undefined ? undefined : clockLabel(transcript.duration_seconds),
+  ];
+  say(ok(facts.filter((fact) => fact !== undefined).join(" · ")));
+  say(`"${transcript.text}"`);
 }
 
 /** Bare `wazap` at a terminal: where you stand, and the one command to run next. */
@@ -690,6 +784,27 @@ export async function ask(question: string): Promise<string> {
     return await rl.question(question);
   } finally {
     rl.close();
+  }
+}
+
+/**
+ * A secret typed at the prompt, echoed nowhere: not as characters, not as stars.
+ * readline is given no output stream at all, which is the only mute that holds
+ * on current Node — overriding `_writeToOutput` no longer reaches the interface's
+ * own writer. `terminal` still follows the real stdin, so a TTY goes into raw
+ * mode (the kernel stops echoing too) and a pipe reads one line for a script.
+ */
+export async function askSecret(question: string): Promise<string> {
+  const rl = createInterface({ input: process.stdin, output: undefined, terminal: process.stdin.isTTY === true });
+  process.stderr.write(question);
+  try {
+    // End of input answers nothing rather than hanging the command, and the
+    // caller refuses an empty secret.
+    const answered = rl.question("").catch(() => "");
+    return stripPasted(await Promise.race([answered, once(rl, "close").then(() => "")]));
+  } finally {
+    rl.close();
+    process.stderr.write("\n");
   }
 }
 

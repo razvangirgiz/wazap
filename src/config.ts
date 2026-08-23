@@ -12,7 +12,17 @@ export const BAILEYS_VERSION: string = (require("baileys/package.json") as { ver
 /** Where an effective setting came from, in precedence order. */
 export type Source = "flag" | "env" | ".env" | "default";
 
-export type Command = "serve" | "login" | "setup" | "status" | "logout" | "connect" | "config" | "contacts" | "skills";
+export type Command =
+  | "serve"
+  | "login"
+  | "setup"
+  | "status"
+  | "logout"
+  | "connect"
+  | "config"
+  | "contacts"
+  | "skills"
+  | "transcribe";
 
 export interface Config {
   dataDir: string;
@@ -29,7 +39,7 @@ export interface Config {
   share: boolean;
   /** Write-tool token bucket, per minute. 0 disables the limit. */
   rateLimitPerMinute: number;
-  sources: Record<"dataDir" | "readOnly" | "transport" | "rateLimit", Source>;
+  sources: Record<"dataDir" | "readOnly" | "transport" | "rateLimit" | "transcribe", Source>;
   command: Command;
   /** The command was named on the command line rather than defaulted to serve. */
   explicitCommand: boolean;
@@ -49,6 +59,10 @@ export interface Config {
   /** `setup` only, repeatable, overrides detection. */
   clients: string[];
   assumeYes: boolean;
+  /** `transcribe download` only: the whisper model alias from --model. */
+  modelName?: string;
+  /** `setup` only: the answer to the transcription question, from --transcribe. */
+  transcribeChoice?: string;
 }
 
 export interface Paths {
@@ -87,9 +101,13 @@ const COMMAND_ARGS: Record<Command, readonly number[]> = {
   status: [0],
   logout: [0],
   connect: [1],
-  config: [0, 2],
+  // A third positional is only ever someone typing the API key after
+  // `config transcribe openai`. It is accepted here so runConfig can refuse it
+  // with the reason, rather than with a generic arity complaint.
+  config: [0, 2, 3],
   contacts: [1],
   skills: [2],
+  transcribe: [1, 2],
 };
 
 const COMMANDS = Object.keys(COMMAND_ARGS) as readonly Command[];
@@ -157,6 +175,8 @@ export function parseCli(argv: string[] = process.argv.slice(2)): CliInvocation 
         "no-writes": { type: "boolean" },
         agent: { type: "boolean" },
         client: { type: "string", multiple: true },
+        model: { type: "string" },
+        transcribe: { type: "string" },
         yes: { type: "boolean", short: "y" },
         help: { type: "boolean", short: "h" },
         version: { type: "boolean", short: "v" },
@@ -215,6 +235,7 @@ export function parseCli(argv: string[] = process.argv.slice(2)): CliInvocation 
         readOnly: sourceOf("WAZAP_READ_ONLY", values["read-only"] === true),
         transport: sourceOf("WAZAP_TRANSPORT", values.http === true),
         rateLimit: sourceOf("WAZAP_RATE_LIMIT", false),
+        transcribe: sourceOf("WAZAP_TRANSCRIBE", false),
       },
       command,
       explicitCommand: first !== undefined,
@@ -228,6 +249,8 @@ export function parseCli(argv: string[] = process.argv.slice(2)): CliInvocation 
       agent: values.agent === true,
       clients: values.client ?? [],
       assumeYes: values.yes === true,
+      modelName: values.model,
+      transcribeChoice: values.transcribe,
     },
   };
 }

@@ -30,7 +30,7 @@ export async function transcribeReady(settings: TranscribeSettings): Promise<Rea
   return PROVIDERS[settings.provider].ready(settings);
 }
 
-export { localProvider } from "./local.js";
+export { findWhisper, localProvider, which } from "./local.js";
 export { openaiProvider } from "./openai.js";
 export { TranscribeQueue } from "./queue.js";
 export {

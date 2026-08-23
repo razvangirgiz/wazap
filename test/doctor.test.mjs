@@ -12,10 +12,14 @@ import { isNewer } from "../dist/doctor.js";
 const run = promisify(execFile);
 const binary = join(dirname(fileURLToPath(import.meta.url)), "..", "dist", "index.js");
 
-/** No test may reach the npm registry, so the update check is off by default. */
+/**
+ * No test may reach the npm registry, so the update check is off by default, and
+ * the transcription checks are pinned off so a configured machine cannot change
+ * how many checks these tests see.
+ */
 function status(dataDir, args = [], env = {}) {
   return run(process.execPath, [binary, "status", "--data-dir", dataDir, ...args], {
-    env: { ...process.env, WAZAP_NO_UPDATE_CHECK: "1", ...env },
+    env: { ...process.env, WAZAP_NO_UPDATE_CHECK: "1", WAZAP_TRANSCRIBE: "off", ...env },
   });
 }
 
@@ -88,7 +92,7 @@ test("status --json prints one parseable object carrying the same checks", async
   assert.equal(report.server_pid, null);
   assert.deepEqual(
     report.checks.map((check) => check.name),
-    ["node", "data dir", "lock", "credentials", "writes", "update"],
+    ["node", "data dir", "lock", "credentials", "writes", "transcribe", "update"],
   );
   assert.equal(report.checks.find((check) => check.name === "writes").detail, "on (default)");
 });

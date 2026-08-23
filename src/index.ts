@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { BANNER } from "./banner.js";
-import { runContacts, runGreet, runLogin, runLogout, runServe, runStatus } from "./cli.js";
+import { runContacts, runGreet, runLogin, runLogout, runServe, runStatus, runTranscribe } from "./cli.js";
 import { WAZAP_VERSION, parseCli, pickDefaultAction } from "./config.js";
 import { CLIENT_NAMES, runConnect } from "./connect.js";
 import { SKILL_TARGET_NAMES, runSkills } from "./skills.js";
@@ -18,7 +18,10 @@ Usage:
   wazap setup [--agent] [--client <name>]                  Link, connect your client and finish, in one command
   wazap connect <client> [--dry-run]                       Register wazap with an MCP client
   wazap skills install <harness> [--dry-run]               Copy the five skills into a harness
-  wazap config [writes on|off]                             Show the effective settings, or allow/refuse writes
+  wazap config [writes on|off] [transcribe local|openai|off]
+                                                           Show the effective settings, or change one
+  wazap transcribe download [--model <alias>]              Fetch the whisper.cpp model into the data dir
+  wazap transcribe test <audio file>                       Transcribe a local file with the configured provider
   wazap contacts resync                                    Fetch the phone's address book from WhatsApp again
   wazap status [--live] [--json]                           Check the install, the session and the server
   wazap logout                                             Unlink and delete local credentials
@@ -36,6 +39,8 @@ Options:
   --phone <number>    Your number in international format; implies --code
   --agent             With setup: print the procedure for an AI agent on stdout, then exit
   --client <name>     With setup: connect this client instead of the detected ones (repeatable)
+  --transcribe <how>  With setup: answer the transcription question (local, openai or off)
+  --model <alias>     With transcribe download: turbo (default), large-v3 or medium
   --dry-run           With connect or skills install: print what would be written, and write nothing
   --live              With status: reach WhatsApp for real, then close the connection
   --json              With status: print the whole report as one JSON object on stdout
@@ -47,7 +52,9 @@ Options:
 
 Environment: WAZAP_DATA_DIR, WAZAP_READ_ONLY, WAZAP_SYNC_FULL_HISTORY, WAZAP_PERSIST_HISTORY,
 WAZAP_TRANSPORT, WAZAP_HOST, WAZAP_PORT, WAZAP_READ_TOKEN, WAZAP_WRITE_TOKEN, WAZAP_RATE_LIMIT,
-WAZAP_NO_SHARE, WAZAP_NO_UPDATE_CHECK.
+WAZAP_NO_SHARE, WAZAP_NO_UPDATE_CHECK, WAZAP_TRANSCRIBE, WAZAP_TRANSCRIBE_AUTO,
+WAZAP_TRANSCRIBE_LANGUAGE, WAZAP_TRANSCRIBE_API_KEY, WAZAP_TRANSCRIBE_URL, WAZAP_TRANSCRIBE_MODEL,
+WAZAP_WHISPER_MODEL, WAZAP_WHISPER_BIN.
 An optional <data-dir>/.env is loaded if present.`;
 
 async function main(): Promise<void> {
@@ -83,7 +90,10 @@ async function main(): Promise<void> {
       runSkills(config);
       return;
     case "config":
-      runConfig(config);
+      await runConfig(config);
+      return;
+    case "transcribe":
+      await runTranscribe(config);
       return;
     case "contacts":
       await runContacts(config);

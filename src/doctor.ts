@@ -1,8 +1,19 @@
 import { accessSync, constants, statSync } from "node:fs";
 import { readLinkedAccount } from "./auth-state.js";
 import { WAZAP_VERSION, paths, type Config } from "./config.js";
-import { WazapError } from "./errors.js";
+import { WazapError, asWazapError } from "./errors.js";
 import { lockHolder, lockPid } from "./lock.js";
+import {
+  MODELS,
+  findWhisper,
+  localProvider,
+  maskKey,
+  modelPath,
+  readTranscribeSettings,
+  which,
+  type ProviderName,
+  type TranscribeSettings,
+} from "./transcribe/index.js";
 import { dim, fail, fix, green, info, ok, red } from "./ui.js";
 
 export type CheckState = "ok" | "fail" | "info";
@@ -23,13 +34,22 @@ const TINT: Record<CheckState, (text: string) => string> = { ok: green, fail: re
 const UPDATE_TIMEOUT_MS = 2_000;
 const MIN_NODE_MAJOR = 20;
 
-type CheckFn = (config: Config) => Check | Promise<Check>;
+/** A check function may answer with a group, the way transcription does. */
+type CheckFn = (config: Config) => Check | Check[] | Promise<Check | Check[]>;
 
-const CHECKS: readonly CheckFn[] = [checkNode, checkDataDir, checkLock, checkCredentials, checkWrites, checkUpdate];
+const CHECKS: readonly CheckFn[] = [
+  checkNode,
+  checkDataDir,
+  checkLock,
+  checkCredentials,
+  checkWrites,
+  checkTranscribe,
+  checkUpdate,
+];
 
 export async function runChecks(config: Config): Promise<Check[]> {
   const checks: Check[] = [];
-  for (const check of CHECKS) checks.push(await check(config));
+  for (const check of CHECKS) checks.push(...[await check(config)].flat());
   return checks;
 }
 
@@ -117,6 +137,72 @@ function checkWrites(config: Config): Check {
     state: "ok",
     detail: `${config.readOnly ? "off" : "on"} (${config.sources.readOnly})`,
   };
+}
+
+const TRANSCRIBE_OFF_FIX = "run `wazap config transcribe local` to transcribe voice messages";
+const DOWNLOAD_FIX = "run `wazap transcribe download`";
+const KEY_FIX = "run `wazap config transcribe openai`";
+const MIB = 1024 * 1024;
+
+/** What each provider needs before it can run. Keyed like PROVIDERS. */
+const TRANSCRIBE_CHECKS: Record<ProviderName, (settings: TranscribeSettings) => Check[] | Promise<Check[]>> = {
+  local: localChecks,
+  openai: openaiChecks,
+};
+
+async function checkTranscribe(config: Config): Promise<Check | Check[]> {
+  let settings: TranscribeSettings;
+  try {
+    settings = readTranscribeSettings(process.env, config.dataDir);
+  } catch (err) {
+    // A stale WAZAP_TRANSCRIBE_URL or provider name in someone's .env is exactly
+    // what status is for, so the refusal is reported rather than thrown.
+    const failure = asWazapError(err);
+    return { name: "transcribe", state: "fail", detail: failure.message, fix: failure.fix };
+  }
+  if (settings.provider === null) return { name: "transcribe", state: "info", detail: "off", fix: TRANSCRIBE_OFF_FIX };
+  return TRANSCRIBE_CHECKS[settings.provider](settings);
+}
+
+function fileSize(path: string): number | null {
+  try {
+    return statSync(path).size;
+  } catch {
+    return null;
+  }
+}
+
+async function localChecks(settings: TranscribeSettings): Promise<Check[]> {
+  const whisper = findWhisper(settings);
+  const ffmpeg = which("ffmpeg");
+  const spec = MODELS[settings.model];
+  const size = fileSize(modelPath(settings.modelsDir, spec));
+  // ready() reports only the first problem and looks at the binaries before the
+  // model, so its fix is the platform's install hint whenever one is missing.
+  const install = (await localProvider.ready(settings)).fix;
+
+  return [
+    { name: "transcribe", state: "ok", detail: "local (whisper.cpp)" },
+    whisper === null
+      ? { name: "whisper", state: "fail", detail: "not found", fix: install }
+      : { name: "whisper", state: "ok", detail: whisper },
+    ffmpeg === null
+      ? { name: "ffmpeg", state: "fail", detail: "not found", fix: install }
+      : { name: "ffmpeg", state: "ok", detail: "found" },
+    size === null
+      ? { name: "model", state: "fail", detail: `${spec.file} is not downloaded`, fix: DOWNLOAD_FIX }
+      : { name: "model", state: "ok", detail: `${spec.file} (${Math.round(size / MIB)} MiB)` },
+  ];
+}
+
+/** maskKey is the only thing that ever renders the key, here and everywhere else. */
+function openaiChecks(settings: TranscribeSettings): Check[] {
+  return [
+    { name: "transcribe", state: "ok", detail: `openai (${settings.apiModel} at ${new URL(settings.baseUrl).host})` },
+    settings.apiKey === null
+      ? { name: "api key", state: "fail", detail: maskKey(null), fix: KEY_FIX }
+      : { name: "api key", state: "ok", detail: maskKey(settings.apiKey) },
+  ];
 }
 
 /** Version comparison over the numeric release fields; prereleases sort as their release. */
