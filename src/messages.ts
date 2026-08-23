@@ -260,7 +260,7 @@ export function isoWithOffset(ms: number): string {
 export interface MessageViewContext {
   /** Canonical form of a jid: `<digits>@s.whatsapp.net` or `<id>@g.us`. */
   canonical: (jid: string) => string;
-  /** Display name for a canonical jid; "" when nothing is known. */
+  /** Display name for a canonical jid; never empty. */
   nameFor: (jid: string) => string;
   /** Our own canonical jid. */
   ownId: string;
@@ -295,7 +295,7 @@ export function buildMessageView(raw: WAMessage, ctx: MessageViewContext): Messa
     from_me: Boolean(raw.key.fromMe),
     sender: {
       id: sender,
-      name: ctx.nameFor(sender) || raw.pushName || phoneOf(sender) || sender,
+      name: ctx.nameFor(sender) || sender,
       ...(phoneOf(sender) ? { phone: phoneOf(sender) } : {}),
     },
     type: messageType(raw),

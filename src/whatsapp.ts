@@ -111,6 +111,8 @@ interface StoreSnapshot {
   contacts: Record<string, BaileysContact>;
   messages: Record<string, string>;
   byChat: Record<string, string[]>;
+  /** Added in 0.9.4; absent in snapshots older wazap versions wrote. */
+  pushNames?: Record<string, string>;
 }
 
 /** In-memory state fed from Baileys events, keyed by canonical jid. */
@@ -122,6 +124,12 @@ class Store {
   readonly byChat = new Map<string, string[]>();
   readonly edited = new Set<string>();
   readonly reactions = new Map<string, Map<string, string>>();
+  /**
+   * The name a sender publishes on their own profile, as WhatsApp attaches it
+   * to their messages. It is the only name we get for someone the user has not
+   * saved, and it never arrives through the contact list.
+   */
+  readonly pushNames = new Map<string, string>();
 
   private seconds(sid: string): number {
     const raw = this.messages.get(sid);
@@ -162,7 +170,14 @@ class Store {
   }
 
   serialize(): StoreSnapshot {
-    const snapshot: StoreSnapshot = { v: 1, chats: {}, contacts: {}, messages: {}, byChat: {} };
+    const snapshot: StoreSnapshot = {
+      v: 1,
+      chats: {},
+      contacts: {},
+      messages: {},
+      byChat: {},
+      pushNames: Object.fromEntries(this.pushNames),
+    };
     for (const [jid, chat] of this.chats) {
       const encoded = encode(() => proto.Conversation.encode(chat).finish());
       if (encoded) snapshot.chats[jid] = encoded;
@@ -190,6 +205,7 @@ class Store {
       if (chat) this.chats.set(jid, chat);
     }
     for (const [jid, contact] of Object.entries(snapshot.contacts ?? {})) this.contacts.set(jid, contact);
+    for (const [jid, name] of Object.entries(snapshot.pushNames ?? {})) this.pushNames.set(jid, name);
     for (const [sid, b64] of Object.entries(snapshot.messages ?? {})) {
       const raw = decodeMessage(b64);
       if (raw) this.messages.set(sid, raw);
@@ -338,6 +354,7 @@ export class WhatsAppService implements WhatsAppApi {
       const sock = this.ensureConnected();
       const jid = this.resolveId(chatId);
       await this.waitForSync();
+      await this.learnParticipants(jid);
 
       if (before === undefined) {
         const ring = this.store.byChat.get(jid) ?? [];
@@ -376,7 +393,7 @@ export class WhatsAppService implements WhatsAppApi {
         const last = messages[messages.length - 1];
         conversations.push({
           chat_id: jid,
-          chat_name: this.nameFor(jid),
+          chat_name: this.displayName(jid),
           type: isGroupId(jid) ? "group" : "individual",
           last_activity: last ? last.timestamp : isoWithOffset(cutoff),
           messages,
@@ -485,7 +502,7 @@ export class WhatsAppService implements WhatsAppApi {
         participant_count: meta.participants.length,
         participants: meta.participants.slice(0, MAX_GROUP_PARTICIPANTS).map((p) => {
           const id = this.canonical(p.id);
-          return { contact_id: id, name: this.nameFor(id), is_admin: isAdmin(p) };
+          return { contact_id: id, name: this.displayName(id), is_admin: isAdmin(p) };
         }),
         announcement_only: Boolean(meta.announce),
         i_am_admin: iAmAdmin,
@@ -692,7 +709,7 @@ export class WhatsAppService implements WhatsAppApi {
       const sock = this.beginWrite();
       const ids = participantIds.map((id) => this.resolveId(id));
       const meta = await sock.groupCreate(name, ids);
-      this.groupCache.set(this.canonical(meta.id), meta);
+      this.cacheGroup(this.canonical(meta.id), meta);
       const present = new Set(meta.participants.map((p) => this.canonical(p.id)));
       return {
         chat_id: this.canonical(meta.id),
@@ -931,7 +948,7 @@ export class WhatsAppService implements WhatsAppApi {
     });
 
     sock.ev.on("groups.upsert", (groups) => {
-      for (const meta of groups) this.groupCache.set(this.canonical(meta.id), meta);
+      for (const meta of groups) this.cacheGroup(this.canonical(meta.id), meta);
     });
 
     sock.ev.on("groups.update", (updates) => {
@@ -1129,8 +1146,23 @@ export class WhatsAppService implements WhatsAppApi {
       if (code === 404) throw new WazapError("GROUP_NOT_FOUND", `WhatsApp does not know the group ${jid}.`);
       throw new WazapError("GROUP_NOT_FOUND", `Could not read ${jid}: ${describe(err)}`);
     }
-    this.groupCache.set(jid, meta);
+    this.cacheGroup(jid, meta);
     return meta;
+  }
+
+  private cacheGroup(jid: string, meta: GroupMetadata): void {
+    this.groupCache.set(jid, meta);
+    this.learnGroup(meta);
+  }
+
+  /**
+   * Reading a group for the first time costs one metadata fetch, after which
+   * its senders resolve from cache. A group we cannot read (left, deleted) is
+   * not worth failing the read over.
+   */
+  private async learnParticipants(jid: string): Promise<void> {
+    if (!isGroupId(jid) || this.groupCache.has(jid)) return;
+    await this.groupMeta(jid).catch(() => undefined);
   }
 
   private myParticipation(meta: GroupMetadata): GroupParticipant | undefined {
@@ -1183,14 +1215,39 @@ export class WhatsAppService implements WhatsAppApi {
     this.lidToPn.set(key, pn);
   }
 
-  private nameFor(jid: string): string {
+  /**
+   * The one place a jid becomes a name, so a sender, a chat header, a digest
+   * title and a participant list can never disagree. The ladder runs from the
+   * name the user chose to the least wrong thing we can say, and it stops short
+   * of printing a raw LID: a LID is 15 digits that look exactly like a phone
+   * number and are not one, so an unresolved one says so.
+   *
+   * `hint` is the pushName riding on the message being rendered, for a sender
+   * whose name has not been ingested yet.
+   */
+  private displayName(jid: string, hint?: string): string {
+    if (!jid) return "unknown";
     if (this.isMe(jid)) return this.account?.name || "You";
-    const chat = this.store.chats.get(jid);
-    if (chat?.name) return chat.name;
-    const contact = this.store.contacts.get(jid);
-    if (contact?.name || contact?.notify) return contact.name || contact.notify || "";
-    if (isGroupId(jid)) return this.groupCache.get(jid)?.subject ?? jid;
-    return jid.split("@")[0] ?? jid;
+    if (isGroupId(jid)) {
+      return this.store.chats.get(jid)?.name || this.groupCache.get(jid)?.subject || jid;
+    }
+
+    const phoneJid = jid.endsWith("@lid") ? this.lidToPn.get(jid) : undefined;
+    for (const known of phoneJid ? [jid, phoneJid] : [jid]) {
+      const contact = this.store.contacts.get(known);
+      const name =
+        contact?.name ||
+        contact?.verifiedName ||
+        contact?.notify ||
+        this.store.pushNames.get(known) ||
+        this.store.chats.get(known)?.name;
+      if (name) return name;
+    }
+    if (hint) return hint;
+
+    const digits = (phoneJid ?? jid).split("@")[0] ?? "";
+    if ((phoneJid ?? jid).endsWith("@s.whatsapp.net")) return digits;
+    return jid.endsWith("@lid") ? `unknown (lid …${digits.slice(-4)})` : jid;
   }
 
   private messageOrThrow(messageId: string): WAMessage {
@@ -1215,7 +1272,7 @@ export class WhatsAppService implements WhatsAppApi {
     const raw = this.messageOrThrow(sid);
     return buildMessageView(raw, {
       canonical: (jid) => this.canonical(jid),
-      nameFor: (jid) => this.nameFor(jid),
+      nameFor: (jid) => this.displayName(jid, raw.pushName ?? undefined),
       ownId: this.ownJid(),
       chatId: chatJid,
       edited: this.store.edited.has(sid),
@@ -1298,7 +1355,7 @@ export class WhatsAppService implements WhatsAppApi {
     const muteEnd = protoNumber(chat.muteEndTime) ?? 0;
     const summary: ChatSummary = {
       chat_id: jid,
-      name: chat.name || this.nameFor(jid),
+      name: this.displayName(jid),
       type: isGroupId(jid) ? "group" : "individual",
       unread_count: Math.max(0, chat.unreadCount ?? 0),
       last_message: last
@@ -1318,10 +1375,11 @@ export class WhatsAppService implements WhatsAppApi {
   }
 
   private contactSummary(jid: string, contact?: BaileysContact): ContactSummary {
-    const number = jid.endsWith("@s.whatsapp.net") ? (jid.split("@")[0] ?? null) : null;
+    const phoneJid = jid.endsWith("@lid") ? (this.lidToPn.get(jid) ?? jid) : jid;
+    const number = phoneJid.endsWith("@s.whatsapp.net") ? (phoneJid.split("@")[0] ?? null) : null;
     return {
       contact_id: jid,
-      name: contact?.name || contact?.notify || number || jid,
+      name: this.displayName(jid),
       number,
       is_my_contact: Boolean(contact?.name),
       is_business: Boolean(contact?.verifiedName),
@@ -1348,7 +1406,10 @@ export class WhatsAppService implements WhatsAppApi {
 
   private ingestContact(contact: BaileysContact): void {
     if (!contact.id) return;
-    if (contact.lid && contact.phoneNumber) this.learnLid(contact.lid, contact.phoneNumber);
+    // WhatsApp usually keys the contact by its phone jid and names the LID on
+    // the side, so `phoneNumber` is empty and `id` is the phone number.
+    const phone = contact.phoneNumber ?? (contact.id.endsWith("@s.whatsapp.net") ? contact.id : undefined);
+    if (contact.lid && phone) this.learnLid(contact.lid, phone);
     const jid = this.canonical(contact.id);
     const previous = this.store.contacts.get(jid);
     this.store.contacts.set(jid, { ...(previous ?? {}), ...contact, id: jid });
@@ -1360,10 +1421,37 @@ export class WhatsAppService implements WhatsAppApi {
       if (!raw.message || !raw.key?.remoteJid) continue;
       const jid = this.canonical(raw.key.remoteJid);
       if (jid === "status@broadcast") continue;
+      this.learnPushName(raw, jid);
       this.store.putMessage(messageIdFor(raw.key, jid), jid, raw);
       stored.push(raw);
     }
     return stored;
+  }
+
+  /** The sender's own profile name, which arrives on the message and nowhere else. */
+  private learnPushName(raw: WAMessage, chatJid: string): void {
+    const name = raw.pushName?.trim();
+    if (!name || raw.key.fromMe) return;
+    const sender = this.canonical(raw.key.participant ?? raw.participant ?? chatJid);
+    if (sender && !this.isMe(sender)) this.store.pushNames.set(sender, name);
+  }
+
+  /**
+   * Group metadata is the only place WhatsApp says which LID belongs to which
+   * phone number, so one fetch teaches every later message in that group who
+   * its participants are.
+   */
+  private learnGroup(meta: GroupMetadata): void {
+    for (const p of meta.participants) {
+      const lid = p.lid ?? (p.id.endsWith("@lid") ? p.id : undefined);
+      const phone = p.phoneNumber ?? (p.id.endsWith("@s.whatsapp.net") ? p.id : undefined);
+      if (lid && phone) this.learnLid(lid, phone);
+      const contact: BaileysContact = { id: phone ?? p.id };
+      if (lid) contact.lid = lid;
+      if (p.name) contact.name = p.name;
+      if (p.notify) contact.notify = p.notify;
+      this.ingestContact(contact);
+    }
   }
 
   private async loadPersisted(): Promise<void> {

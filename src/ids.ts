@@ -16,6 +16,23 @@ export function isGroupId(jid: string): boolean {
 }
 
 /**
+ * True for the jids wazap talks to: a person by phone number, a person by LID,
+ * or a group. Everything else — status broadcasts, newsletters, the
+ * `0@s.whatsapp.net` pseudo-chat WhatsApp files its own notices under — is
+ * noise that must never reach a chat list, a digest or the store.
+ */
+export function isAddressableJid(jid: string): boolean {
+  const at = jid.lastIndexOf("@");
+  if (at === -1) return false;
+  const user = jid.slice(0, at);
+  const domain = jid.slice(at + 1).toLowerCase();
+  if (domain === "g.us") return /^[\w.@-]+$/.test(user);
+  if (domain === "lid") return /^\d+$/.test(user);
+  if (domain !== "s.whatsapp.net") return false;
+  return /^\d+$/.test(user) && !/^0+$/.test(user);
+}
+
+/**
  * Canonicalize anything a caller may pass as a chat id.
  * Individuals become `<digits>@s.whatsapp.net`, groups stay `<id>@g.us`.
  * A `@lid` is translated through `lidToPn` when the mapping is known; without
