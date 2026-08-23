@@ -8,7 +8,9 @@
 import { randomUUID } from "node:crypto";
 import { appendFile, mkdir, readdir, readFile, rename, stat, writeFile } from "node:fs/promises";
 import { isAbsolute, join } from "node:path";
+import { setTimeout as sleep } from "node:timers/promises";
 import makeWASocket, {
+  ALL_WA_PATCH_NAMES,
   Browsers,
   DisconnectReason,
   downloadMediaMessage,
@@ -104,6 +106,35 @@ export function realName(value: string | null | undefined): string {
   return name === "" || NOT_A_NAME.test(name) ? "" : name;
 }
 
+/** A resync asks WhatsApp for the whole address book, so it is not free. */
+const CONTACT_RESYNC_COOLDOWN_MS = 7 * 24 * 3_600_000;
+/** How long past the initial sync a slow app state sync still gets to deliver. */
+const CONTACT_SETTLE_MS = 15_000;
+
+export interface ContactResyncInput {
+  /** Contacts carrying an address-book name right now. */
+  named: number;
+  /** WhatsApp has already told us a version for at least one collection. */
+  storedVersions: boolean;
+  /** When wazap last asked for the whole address book, from the store. */
+  resyncedAt: number | null;
+  now: number;
+}
+
+/**
+ * Whether this session should ask WhatsApp for the address book from scratch.
+ *
+ * Names arrive only in an app state sync that starts from version zero. With no
+ * stored version there is nothing to heal: the connection is already doing that
+ * sync. With versions stored and no names in hand, the delivery went somewhere
+ * that threw it away, and only a resync gets it back. An account whose address
+ * book is genuinely empty looks identical, which is what the cooldown is for.
+ */
+export function needsContactResync({ named, storedVersions, resyncedAt, now }: ContactResyncInput): boolean {
+  if (named > 0 || !storedVersions) return false;
+  return resyncedAt === null || now - resyncedAt >= CONTACT_RESYNC_COOLDOWN_MS;
+}
+
 /** Baileys logs at info level to stdout by default, which corrupts the MCP
  * JSON-RPC stream on stdio. */
 const silentLogger: ILogger = {
@@ -130,6 +161,8 @@ interface StoreSnapshot {
   byChat: Record<string, string[]>;
   /** Added in 0.9.4; absent in snapshots older wazap versions wrote. */
   pushNames?: Record<string, string>;
+  /** Added in 0.9.5. When wazap last asked WhatsApp for the whole address book. */
+  contactsResyncedAt?: number;
 }
 
 /** In-memory state fed from Baileys events, keyed by canonical jid. */
@@ -147,6 +180,9 @@ class Store {
    * saved, and it never arrives through the contact list.
    */
   readonly pushNames = new Map<string, string>();
+
+  /** See `needsContactResync`: it keeps a full resync from repeating forever. */
+  contactsResyncedAt: number | null = null;
 
   private seconds(sid: string): number {
     const raw = this.messages.get(sid);
@@ -194,6 +230,7 @@ class Store {
       messages: {},
       byChat: {},
       pushNames: Object.fromEntries(this.pushNames),
+      ...(this.contactsResyncedAt === null ? {} : { contactsResyncedAt: this.contactsResyncedAt }),
     };
     for (const [jid, chat] of this.chats) {
       const encoded = encode(() => proto.Conversation.encode(chat).finish());
@@ -225,6 +262,7 @@ class Store {
     }
     for (const [jid, contact] of Object.entries(snapshot.contacts ?? {})) this.contacts.set(jid, contact);
     for (const [jid, name] of Object.entries(snapshot.pushNames ?? {})) this.pushNames.set(jid, name);
+    this.contactsResyncedAt = snapshot.contactsResyncedAt ?? null;
     for (const [sid, b64] of Object.entries(snapshot.messages ?? {})) {
       const raw = decodeMessage(b64);
       if (raw && !isControlMessage(raw)) this.messages.set(sid, raw);
@@ -266,6 +304,7 @@ export class WhatsAppService implements WhatsAppApi {
   private storeDirty = false;
   private storeSaveTimer: ReturnType<typeof setTimeout> | null = null;
   private persistedLoaded = false;
+  private contactResyncTried = false;
   private readonly blocked = new Set<string>();
   private readonly groupCache = new Map<string, GroupMetadata>();
   /** Groups whose metadata WhatsApp refused, so we stop asking on every read. */
@@ -887,6 +926,7 @@ export class WhatsAppService implements WhatsAppApi {
         this.adoptSocketAccount();
         this.armSyncDeadline();
         log("connected to WhatsApp");
+        void this.healContacts(sock, generation);
       } else if (connection === "close") {
         const code = statusCodeOf(lastDisconnect?.error);
         if (code === DisconnectReason.loggedOut) {
@@ -947,6 +987,7 @@ export class WhatsAppService implements WhatsAppApi {
         const previous = this.store.contacts.get(this.canonical(update.id));
         this.ingestContact({ ...(previous ?? {}), ...update, id: update.id });
       }
+      this.markStoreDirty();
     });
 
     sock.ev.on("messages.upsert", ({ messages, type }) => {
@@ -1111,6 +1152,65 @@ export class WhatsAppService implements WhatsAppApi {
       };
       this.syncWaiters.push(waiter);
     });
+  }
+
+  /**
+   * The address book, once, for a session that connected without it.
+   *
+   * Names reach a companion through the app state sync, and WhatsApp sends each
+   * collection's snapshot only to a connection asking from version zero. A
+   * socket that saved those versions and dropped the contacts leaves every later
+   * connection resyncing from a version with nothing left to send, so the only
+   * way back is to forget the versions and ask again.
+   */
+  private async healContacts(sock: WASocket, generation: number): Promise<void> {
+    if (this.contactResyncTried) return;
+    this.contactResyncTried = true;
+    try {
+      await this.waitForSync();
+      const named = await this.waitForNames(Date.now() + CONTACT_SETTLE_MS);
+      if (generation !== this.generation || this.stopped) return;
+      const decision = {
+        named,
+        storedVersions: await this.hasAppStateVersions(sock),
+        resyncedAt: this.store.contactsResyncedAt,
+        now: Date.now(),
+      };
+      if (!needsContactResync(decision)) return;
+      log("address book missing; requesting a full contact sync");
+      await this.resyncContacts(sock);
+    } catch (err) {
+      logError("contact sync", err);
+    }
+  }
+
+  /** Names still arriving mean the sync is working; only silence means it is not coming. */
+  private async waitForNames(deadline: number): Promise<number> {
+    for (;;) {
+      const named = this.namedContacts();
+      if (named > 0 || this.stopped || Date.now() >= deadline) return named;
+      await sleep(500);
+    }
+  }
+
+  private async hasAppStateVersions(sock: WASocket): Promise<boolean> {
+    const stored = await sock.authState.keys.get("app-state-sync-version", [...ALL_WA_PATCH_NAMES]);
+    return Object.values(stored).some((state) => state);
+  }
+
+  /**
+   * Forget every stored app state version, then resync. The order is the whole
+   * point: Baileys asks for a snapshot only when it has no version to resume
+   * from, and the snapshot is what carries the contacts. The timestamp is
+   * written before the request, so a resync interrupted halfway is not retried
+   * on every start.
+   */
+  private async resyncContacts(sock: WASocket): Promise<void> {
+    const forgotten = Object.fromEntries(ALL_WA_PATCH_NAMES.map((name) => [name, null]));
+    await sock.authState.keys.set({ "app-state-sync-version": forgotten });
+    this.store.contactsResyncedAt = Date.now();
+    this.markStoreDirty();
+    await sock.resyncAppState(ALL_WA_PATCH_NAMES, true);
   }
 
   private syncState(): SyncState {
