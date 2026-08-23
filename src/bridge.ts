@@ -5,6 +5,10 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import {
   CallToolRequestSchema,
   CallToolResultSchema,
+  GetPromptRequestSchema,
+  GetPromptResultSchema,
+  ListPromptsRequestSchema,
+  ListPromptsResultSchema,
   ListToolsRequestSchema,
   ListToolsResultSchema,
 } from "@modelcontextprotocol/sdk/types.js";
@@ -41,9 +45,10 @@ export async function runBridge(daemon: DaemonInfo, daemonFile: string): Promise
 
   const caps = client.getServerCapabilities() ?? {};
   const server = new Server(client.getServerVersion() ?? { name: "wazap", version: daemon.version }, {
-    // Only what we forward: the daemon has no resources or prompts, and we have
-    // no handler for them.
-    capabilities: { tools: caps.tools ?? {} },
+    // Only what we forward: the daemon has no resources, and we have no handler
+    // for them. The SDK refuses a handler for a capability we did not declare,
+    // so the prompts pair is registered under the same condition.
+    capabilities: { tools: caps.tools ?? {}, ...(caps.prompts ? { prompts: caps.prompts } : {}) },
     instructions: client.getInstructions(),
   });
   server.setRequestHandler(ListToolsRequestSchema, (req) =>
@@ -52,6 +57,14 @@ export async function runBridge(daemon: DaemonInfo, daemonFile: string): Promise
   server.setRequestHandler(CallToolRequestSchema, (req) =>
     client.request({ method: "tools/call", params: req.params }, CallToolResultSchema),
   );
+  if (caps.prompts) {
+    server.setRequestHandler(ListPromptsRequestSchema, (req) =>
+      client.request({ method: "prompts/list", params: req.params }, ListPromptsResultSchema),
+    );
+    server.setRequestHandler(GetPromptRequestSchema, (req) =>
+      client.request({ method: "prompts/get", params: req.params }, GetPromptResultSchema),
+    );
+  }
 
   client.onclose = () => leave(`the session holder (pid ${daemon.pid}) closed the connection`);
   client.onerror = () => leave(`lost the connection to the session holder (pid ${daemon.pid})`);
