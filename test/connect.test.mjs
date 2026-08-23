@@ -7,7 +7,7 @@ import { delimiter, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 
-import { GUI_PATH, findClient, isNpxPath, launchCheck, launcher, whereInstalled } from "../dist/connect.js";
+import { GUI_PATH, findClient, isNpxPath, launchCheck, launcher, relaunch, whereInstalled } from "../dist/connect.js";
 
 const run = promisify(execFile);
 const binary = join(dirname(fileURLToPath(import.meta.url)), "..", "dist", "index.js");
@@ -301,4 +301,44 @@ test("an unknown client names the ones that exist", async () => {
     assert.match(err.stderr, /claude-code, claude-desktop, cursor, codex, vscode, gemini, windsurf, opencode/);
     return true;
   });
+});
+
+/** A `spawnSync` that answers from `running` and records every argv it is handed. */
+function recorder(running) {
+  const calls = [];
+  const run = (command, args) => {
+    calls.push([command, ...args].join(" "));
+    if (command !== "pgrep") return { status: 0 };
+    return { status: running() ? 0 : 1 };
+  };
+  return { calls, run };
+}
+
+test("relaunch quits the app, waits for it to go, then reopens it", () => {
+  let alive = true;
+  const { calls, run } = recorder(() => alive);
+  const quitting = (command, args, options) => {
+    if (command === "osascript") alive = false;
+    return run(command, args, options);
+  };
+
+  assert.equal(relaunch("Claude", "darwin", quitting), true);
+  assert.deepEqual(calls, [
+    "pgrep -x Claude",
+    'osascript -e tell application "Claude" to quit',
+    "pgrep -x Claude",
+    "open -a Claude",
+  ]);
+});
+
+test("relaunch leaves an app that is not running alone", () => {
+  const { calls, run } = recorder(() => false);
+  assert.equal(relaunch("Claude", "darwin", run), false);
+  assert.deepEqual(calls, ["pgrep -x Claude"], "nothing to quit means nothing to reopen");
+});
+
+test("relaunch is a macOS answer, and says no anywhere else", () => {
+  const { calls, run } = recorder(() => true);
+  assert.equal(relaunch("Claude", "linux", run), false);
+  assert.deepEqual(calls, [], "no process is looked for off macOS");
 });

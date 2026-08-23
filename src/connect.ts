@@ -30,6 +30,8 @@ export interface ClientSpec {
   /** The object this client wants under keyPath. Clients disagree on more than the path. */
   value?: (entry: McpEntry) => Record<string, unknown>;
   next: string;
+  /** A macOS app `setup` can restart itself, instead of leaving `next` to the user. */
+  relaunch?: { app: string };
   /** Whether this client looks installed. Required: a client `setup` cannot look for is not one it can offer. */
   detect: (probe: Probes) => boolean;
   /** A desktop app launched by the window manager, so it inherits GUI_PATH rather than the shell PATH. */
@@ -64,6 +66,7 @@ export const CLIENTS: readonly ClientSpec[] = [
     format: "json",
     keyPath: ["mcpServers", "whatsapp"],
     next: "Restart Claude Desktop.",
+    relaunch: { app: "Claude" },
     detect: (probe) => probe.exists(dirname(claudeDesktopFile())),
     gui: true,
   },
@@ -211,6 +214,30 @@ export function globalBinDir(npm = "npm"): string | null {
 }
 
 export const REAL_PROBES: Probes = { exists: existsSync, onPath: (command) => commandOnPath(command) };
+
+/** Enough of `spawnSync` for the three commands a relaunch runs, so a test can record them. */
+type Runner = (command: string, args: readonly string[], options: { encoding: "utf8" }) => { status: number | null };
+
+const QUIT_WAIT_MS = 10_000;
+const QUIT_POLL_MS = 250;
+
+/** Whether a macOS app of this name has a process right now. */
+export function appRunning(app: string, platform: NodeJS.Platform = process.platform, run: Runner = spawnSync): boolean {
+  if (platform !== "darwin") return false;
+  return run("pgrep", ["-x", app], { encoding: "utf8" }).status === 0;
+}
+
+/** Quit and reopen a macOS app. Returns false when the app was not running, so nothing to do. */
+export function relaunch(app: string, platform: NodeJS.Platform = process.platform, run: Runner = spawnSync): boolean {
+  if (!appRunning(app, platform, run)) return false;
+  run("osascript", ["-e", `tell application "${app}" to quit`], { encoding: "utf8" });
+  // Reopening an app that is still tearing down gets the dying instance back.
+  for (let waited = 0; waited < QUIT_WAIT_MS && appRunning(app, platform, run); waited += QUIT_POLL_MS) {
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, QUIT_POLL_MS);
+  }
+  run("open", ["-a", app], { encoding: "utf8" });
+  return true;
+}
 
 /** The installed clients, in table order. */
 export function detectClients(probe: Probes = REAL_PROBES): ClientSpec[] {

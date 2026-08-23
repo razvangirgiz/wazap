@@ -254,6 +254,53 @@ test("setup tells a client with no skills directory that the server carries the 
   assert.ok(!existsSync(join(box.home, ".claude", "skills")), "Claude Desktop reads no skills directory");
 });
 
+/** A `pgrep`, `osascript` and `open` that log their argv; quitting clears the running marker. */
+function stubRelaunch(box) {
+  const log = join(box.home, "relaunch.log");
+  const running = join(box.home, "running");
+  writeFileSync(running, "");
+  const scripts = {
+    pgrep: `[ -f ${running} ] || exit 1`,
+    osascript: `/bin/rm -f ${running}`,
+    open: "",
+  };
+  for (const [name, body] of Object.entries(scripts)) {
+    writeFileSync(join(box.bin, name), `#!/bin/sh\necho "${name} $@" >> ${log}\n${body}\nexit 0\n`, { mode: 0o755 });
+  }
+  return () => (existsSync(log) ? readFileSync(log, "utf8").trim().split("\n") : []);
+}
+
+const DARWIN_ONLY = process.platform === "darwin" ? false : "relaunch is a macOS answer";
+
+test("setup --yes restarts Claude Desktop for the user, and says so instead of asking", { skip: DARWIN_ONLY }, async () => {
+  const box = sandbox();
+  // Nothing but the sandbox on PATH: the real pgrep, osascript and open are out
+  // of reach, so this can never touch the machine's own Claude.
+  box.path = box.bin;
+  const calls = stubRelaunch(box);
+  const stderr = await failingSetup(box, "--yes", "--client", "claude-desktop", "--data-dir", linkedDataDir());
+
+  assert.deepEqual(calls(), [
+    "pgrep -x Claude",
+    "pgrep -x Claude",
+    'osascript -e tell application "Claude" to quit',
+    "pgrep -x Claude",
+    "open -a Claude",
+  ]);
+  assert.match(stderr, /✓ Claude Desktop restarted/);
+  assert.ok(!stderr.includes("– Restart Claude Desktop."), "the restarted client keeps no leftover instruction");
+});
+
+test("setup --no-relaunch leaves Claude Desktop alone and tells the user to restart it", { skip: DARWIN_ONLY }, async () => {
+  const box = sandbox();
+  box.path = box.bin;
+  const calls = stubRelaunch(box);
+  const stderr = await failingSetup(box, "--yes", "--no-relaunch", "--client", "claude-desktop", "--data-dir", linkedDataDir());
+
+  assert.deepEqual(calls(), [], "not even the running check may run");
+  assert.match(stderr, /Restart Claude Desktop\./);
+});
+
 test("setup refuses to link while another process owns the session", async () => {
   const box = sandbox();
   const dir = dataDir("wazap-setup-locked-");

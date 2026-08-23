@@ -6,6 +6,7 @@ import { paths, type Config, type KeepRunning } from "./config.js";
 import {
   CLIENTS,
   REAL_PROBES,
+  appRunning,
   commandPath,
   connectClient,
   connectNext,
@@ -15,6 +16,7 @@ import {
   installGlobally,
   launchCheck,
   mcpEntry,
+  relaunch,
   whereInstalled,
   type ClientSpec,
   type Install,
@@ -68,11 +70,13 @@ export async function runSetup(config: Config): Promise<void> {
   }
   // The client choice is the answer to where the skills go, so setup never asks
   // a second question about them.
+  const restarted = new Set<ClientSpec>();
   for (const spec of chosen) {
     connectClient(spec, config, install);
     const target = skillTargetFor(spec.name);
     if (target) installSkills(target, config.dryRun);
     else say(info(`${spec.describe} gets the workflows from the server itself, as MCP prompts.`));
+    if (await offerRelaunch(spec, config)) restarted.add(spec);
   }
 
   announce("Keep running");
@@ -88,7 +92,7 @@ export async function runSetup(config: Config): Promise<void> {
     for (const line of checkLines(check)) say(line);
   }
 
-  for (const spec of chosen) say(info(spec.next));
+  for (const spec of chosen) say(restarted.has(spec) ? ok(`${spec.describe} restarted`) : info(spec.next));
   say(failing ? warn("Setup finished with a failing check") : ok("Setup complete"));
   say("");
   say('Ask your agent: "what did I miss on WhatsApp today?"');
@@ -118,6 +122,22 @@ async function offerGlobalInstall(config: Config, install: Install): Promise<Ins
   const dir = globalBinDir();
   say(warn(`wazap-mcp is installed, but \`wazap\` is not on your PATH${dir === null ? "" : `; add ${dir}`}.`));
   return install;
+}
+
+/**
+ * The one client whose "Restart X" setup can carry out itself. Asked only when
+ * the app is already running, because restarting nothing answers nothing.
+ */
+async function offerRelaunch(spec: ClientSpec, config: Config): Promise<boolean> {
+  const app = spec.relaunch?.app;
+  if (app === undefined || config.dryRun || config.noRelaunch) return false;
+  if (!appRunning(app)) return false;
+  if (!config.assumeYes) {
+    if (process.stdin.isTTY !== true) return false;
+    const answer = await ask(`${brand("?")} Restart ${spec.describe} now so it picks up wazap? [Y/n] `);
+    if (/^n/i.test(answer.trim())) return false;
+  }
+  return relaunch(app);
 }
 
 /** Writing to the npm prefix takes a person or `--yes`; a pipe gets no install. */
