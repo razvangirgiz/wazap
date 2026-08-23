@@ -80,7 +80,18 @@ const PROTOCOL: Rule = {
 };
 
 const SYSTEM: Rule = { type: "system", tag: SYSTEM_TEXT };
-const UNKNOWN: Rule = { type: "unknown", tag: "[unsupported message]" };
+
+/** Naming the payload turns a shrug into an actionable bug report. */
+const UNKNOWN: Rule = {
+  type: "unknown",
+  tag: (m) => {
+    const key = getContentType(m) ?? Object.keys(m).find((name) => m[name as keyof WAMessageContent] != null);
+    return key ? `[unsupported: ${key}]` : "[unsupported message]";
+  },
+};
+
+/** Payloads WhatsApp exchanges with its own clients; no person ever sent one. */
+const CONTROL_KEYS: ReadonlyArray<keyof WAMessageContent> = ["messageContextInfo", "senderKeyDistributionMessage"];
 
 /**
  * One table drives both messageType and messageText, so the reported type and
@@ -179,6 +190,24 @@ function stubKind(raw: WAMessage): MessageType | undefined {
 
 function resolve<T>(value: T | ((m: WAMessageContent) => T), content: WAMessageContent): T {
   return typeof value === "function" ? (value as (m: WAMessageContent) => T)(content) : value;
+}
+
+/**
+ * True for the machinery WhatsApp runs between devices: history-sync notices,
+ * app-state and peer-data responses, sender-key distribution, bare context
+ * info. They carry nothing a person wrote, so they are dropped rather than
+ * shown as "[unsupported message]" — which is what they used to look like in
+ * the user's own self-chat right after linking a device.
+ */
+export function isControlMessage(raw: WAMessage): boolean {
+  if (stubKind(raw) !== undefined) return false;
+  const content = unwrapEnvelopes(raw.message);
+  if (!content) return true;
+  const key = getContentType(content);
+  if (key === "protocolMessage") return !isRevoke(content);
+  if (key !== undefined) return CONTROL_KEYS.includes(key);
+  const present = Object.keys(content).filter((name) => content[name as keyof WAMessageContent] != null);
+  return present.length === 0 || present.every((name) => CONTROL_KEYS.includes(name as keyof WAMessageContent));
 }
 
 export function messageType(raw: WAMessage): MessageType {

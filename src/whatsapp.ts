@@ -27,11 +27,12 @@ import type { ILogger } from "baileys/lib/Utils/logger.js";
 import { readLinkedAccount, useAtomicAuthState } from "./auth-state.js";
 import { BAILEYS_VERSION, paths, WAZAP_VERSION, type Config, type Paths } from "./config.js";
 import { asWazapError, RELINK_FIX, RESET_FIX, WazapError } from "./errors.js";
-import { isGroupId, resolveChatId } from "./ids.js";
+import { isAddressableJid, isGroupId, resolveChatId } from "./ids.js";
 import { log, logError } from "./logger.js";
 import {
   buildMessageView,
   formatAge,
+  isControlMessage,
   isoWithOffset,
   mediaInfo,
   messageIdFor,
@@ -198,9 +199,11 @@ class Store {
     return snapshot;
   }
 
+  /** A snapshot an older wazap wrote can still hold noise it used to keep. */
   hydrate(snapshot: StoreSnapshot): void {
     if (snapshot?.v !== 1) return;
     for (const [jid, b64] of Object.entries(snapshot.chats ?? {})) {
+      if (!isAddressableJid(jid)) continue;
       const chat = decodeChat(b64);
       if (chat) this.chats.set(jid, chat);
     }
@@ -208,9 +211,10 @@ class Store {
     for (const [jid, name] of Object.entries(snapshot.pushNames ?? {})) this.pushNames.set(jid, name);
     for (const [sid, b64] of Object.entries(snapshot.messages ?? {})) {
       const raw = decodeMessage(b64);
-      if (raw) this.messages.set(sid, raw);
+      if (raw && !isControlMessage(raw)) this.messages.set(sid, raw);
     }
     for (const [jid, ring] of Object.entries(snapshot.byChat ?? {})) {
+      if (!isAddressableJid(jid)) continue;
       const present = ring.filter((sid) => this.messages.has(sid));
       this.byChat.set(jid, present);
       for (const sid of present) this.chatOf.set(sid, jid);
@@ -379,6 +383,7 @@ export class WhatsAppService implements WhatsAppApi {
       const conversations: RecentConversation[] = [];
 
       for (const [jid, ring] of this.store.byChat) {
+        if (!isAddressableJid(jid)) continue;
         const chat = this.store.chats.get(jid);
         if (chat && !this.matchesChatFilter(chat, filter)) continue;
         if (!chat && (filter === "unread" || filter === (isGroupId(jid) ? "individual" : "groups"))) continue;
@@ -878,6 +883,7 @@ export class WhatsAppService implements WhatsAppApi {
       for (const update of updates) {
         if (!update.id) continue;
         const jid = this.canonical(update.id);
+        if (!isAddressableJid(jid)) continue;
         const previous = this.store.chats.get(jid);
         this.store.chats.set(jid, { ...(previous ?? {}), ...update, id: jid });
       }
@@ -1320,7 +1326,7 @@ export class WhatsAppService implements WhatsAppApi {
   private knownChats(): BaileysChat[] {
     const chats = [...this.store.chats.values()];
     for (const jid of this.store.byChat.keys()) {
-      if (!this.store.chats.has(jid)) chats.push({ id: jid });
+      if (!this.store.chats.has(jid) && isAddressableJid(jid)) chats.push({ id: jid });
     }
     return chats;
   }
@@ -1400,6 +1406,7 @@ export class WhatsAppService implements WhatsAppApi {
     if (!chat.id) return;
     if (chat.lidJid && chat.pnJid) this.learnLid(chat.lidJid, chat.pnJid);
     const jid = this.canonical(chat.id);
+    if (!isAddressableJid(jid)) return;
     const previous = this.store.chats.get(jid);
     this.store.chats.set(jid, { ...(previous ?? {}), ...chat, id: jid });
   }
@@ -1420,7 +1427,7 @@ export class WhatsAppService implements WhatsAppApi {
     for (const raw of messages) {
       if (!raw.message || !raw.key?.remoteJid) continue;
       const jid = this.canonical(raw.key.remoteJid);
-      if (jid === "status@broadcast") continue;
+      if (!isAddressableJid(jid) || isControlMessage(raw)) continue;
       this.learnPushName(raw, jid);
       this.store.putMessage(messageIdFor(raw.key, jid), jid, raw);
       stored.push(raw);
@@ -1537,7 +1544,9 @@ export class WhatsAppService implements WhatsAppApi {
     for (const record of kept) {
       const raw = decodeMessage(record.raw);
       if (!raw?.message || !raw.key?.remoteJid) continue;
-      this.store.putMessage(record.sid, this.canonical(raw.key.remoteJid), raw);
+      const jid = this.canonical(raw.key.remoteJid);
+      if (!isAddressableJid(jid) || isControlMessage(raw)) continue;
+      this.store.putMessage(record.sid, jid, raw);
       loaded++;
     }
     return loaded;
