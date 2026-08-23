@@ -508,8 +508,9 @@ export class WhatsAppService implements WhatsAppApi {
   }
 
   /**
-   * The pairing socket is already ended by the time `done` resolves, so this can
-   * open the real one: it is the same reason the CLI syncs through the service.
+   * The pairing socket is already ended by the time `done` resolves, so this one
+   * is safe to open. It has to be this process's socket, because WhatsApp sends
+   * the history once and only the store here can catch it.
    */
   private async adoptLink(account: LinkedAccount): Promise<void> {
     this.linking = null;

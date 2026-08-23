@@ -3,6 +3,15 @@
 ## Unreleased
 ### Added
 
+- **`link_account` pairs WhatsApp from inside the chat**, so linking no longer
+  needs a terminal. The server is already running and idle when nothing is
+  linked, so it pairs itself: the tool takes a phone number, returns an
+  8-character code and the steps to type it into the phone, and `get_status`
+  reports `linking` with that code until WhatsApp accepts it. It stays
+  registered in read-only mode, because read-only is there to stop the agent
+  messaging people, and relinking a dead session messages nobody. `ALREADY_LINKED`
+  is the new error for calling it on a live session. The pairing socket and the
+  CLI's `login --phone` now run the same code, in `src/pairing.ts`.
 - **`wazap update` is the whole upgrade.** It reads the registry, then does what
   this install needs: `npm i -g wazap-mcp@<latest>` when wazap is global, a
   restart of the background service so it runs the new code, and a fresh copy of

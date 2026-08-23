@@ -8,7 +8,7 @@
 ```
 
 **WhatsApp for your AI agent.** An MCP server that puts your WhatsApp account —
-chats, messages, media, contacts, groups — behind 24 tools any MCP client can
+chats, messages, media, contacts, groups — behind 25 tools any MCP client can
 call. Pairing-code login, no browser, no phone-number reseller, ~20 MB of RAM.
 
 Built on [Baileys](https://github.com/WhiskeySockets/Baileys), which speaks the
@@ -167,13 +167,19 @@ shell PATH, so that entry is the absolute path to `node` when wazap is installed
 globally, and `npx` otherwise; `wazap setup` checks that the entry it wrote is
 one Claude Desktop can actually launch.
 
-Linking the account still needs a terminal once: `npx wazap-mcp login`. The
-bundle reads the session that login writes to `~/.wazap`.
+Then ask Claude to link your WhatsApp. It calls `link_account` with your number,
+hands back an 8-character code, and you type that code into **WhatsApp →
+Settings → Linked devices → Link a device → Link with phone number instead**.
+No terminal at any point. `npx wazap-mcp login` does the same job from a shell
+when you have one.
 
 Untick **Read-only** to let Claude send. It ships ticked because a bundle that
 can message people from your number before you have said so is the wrong
 default, and because the setting cannot be left unanswered: the manifest format
 has no way to omit an argument, so the box you see is the answer the server gets.
+`link_account` is registered either way. Read-only exists to stop Claude
+messaging people from your number, and relinking your own dead session messages
+nobody.
 
 Build it yourself with `npm run bundle:mcpb`, which stages `dist/`, the
 manifest, the icon and a fresh production `node_modules`, then packs them with
@@ -242,6 +248,7 @@ them. `--dry-run` prints the plan and touches nothing.
 | --- | --- | --- |
 | `learn` | read | The guide to every tool, id format and error code. Call it first. |
 | `get_status` | read | Connection status, sync state, linked account, named-contact count, versions, data dir. |
+| `link_account` | read | Pair the account without a terminal: returns the code to type into the phone. Registered in read-only mode too. |
 | `list_chats` | read | Conversations newest-first; filter `all`/`unread`/`groups`/`individual`/`archived`. |
 | `read_messages` | read | Messages in a chat; `before` pages further back, pulling older history from the phone; `types` narrows to one or more message types, e.g. `["call"]`. |
 | `get_recent_messages` | read | Everything from the last N hours, grouped by chat. The catch-up tool. `include_system` adds WhatsApp's own notices, `types` narrows to one or more message types. |
@@ -404,7 +411,8 @@ trace, so an agent can decide whether to retry, ask the user, or stop.
 
 | Code | Meaning |
 | --- | --- |
-| `NOT_LINKED` | No account linked. Run `npx wazap-mcp login`. |
+| `NOT_LINKED` | No account linked. Call `link_account`, or run `npx wazap-mcp login`. |
+| `ALREADY_LINKED` | `link_account` was called on a session that is already linked. Call `get_status`. |
 | `SESSION_EXPIRED` | Unlinked from the phone. Run `npx wazap-mcp login`. |
 | `SESSION_CORRUPT` | Credentials unreadable. Run `npx wazap-mcp logout` then `login`. |
 | `NOT_CONNECTED` | Still connecting or reconnecting. |

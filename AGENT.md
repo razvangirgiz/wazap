@@ -6,10 +6,10 @@ wazap keeps stdout for the MCP protocol and writes every human-readable line to 
 
 1. Run `npx wazap-mcp status --json`. If `linked` is true, skip to step 5.
 2. Ask the person for their WhatsApp number in international format (e.g. +15550100) and whether the agent may send messages (default: no).
-3. Start the link IN THE BACKGROUND and keep reading its output:
+3. If you already have the `whatsapp` tools (the Claude Desktop bundle, or any client wazap is connected to), call `link_account` with the number. It returns the code within ~10 s and needs no terminal. Otherwise start the link IN THE BACKGROUND and keep reading its output:
    `npx wazap-mcp login --phone <number> --no-writes --yes 2>&1` (or `--writes`).
    Within ~10 s the output contains a line `pairing code: XXXX-XXXX`.
-4. Show the person exactly: "On your phone: WhatsApp → Settings → Linked devices → Link a device → Link with phone number instead → enter XXXX-XXXX". Keep reading the output until `Linked as …` and then `Synced N chats …` appear (up to 3 minutes). If the output says the code expired, run step 3 again.
+4. Show the person exactly: "On your phone: WhatsApp → Settings → Linked devices → Link a device → Link with phone number instead → enter XXXX-XXXX". After `link_account`, call `get_status` every 10 seconds until it says `connected` (up to 3 minutes); after the command, keep reading the output until `Linked as …` and then `Synced N chats …` appear. If the code expired, run step 3 again.
 5. If step 1 reported `install.kind: "npx"`, run `npm i -g wazap-mcp` first: Claude Desktop and the background service cannot launch from the npx cache, which npm clears. Register wazap with the client you are running in: `npx wazap-mcp connect <client>` where <client> is claude-code, claude-desktop, cursor, codex, vscode or gemini. Tell the person what the command printed as `Next`. Then, for claude-code, codex, cursor and opencode, run `npx wazap-mcp skills install <client>`, which copies the five workflow skills where that client reads them. The other clients need no such step, because the server hands them the same five workflows as MCP prompts.
 6. Verify: `npx wazap-mcp status --json` must show `linked: true` and no failing check. If the client needs a restart, say so; otherwise call the `get_status` tool and then `learn`.
 7. Done when `get_status` returns `connected`. Then offer: "what did I miss on WhatsApp today?"
