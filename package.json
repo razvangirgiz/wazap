@@ -40,7 +40,8 @@
     "prepublishOnly": "npm run build && npm test",
     "registry:validate": "node scripts/validate-server-json.mjs",
     "bundle:mcpb": "node scripts/bundle-mcpb.mjs",
-    "icon": "node scripts/make-icon.mjs"
+    "icon": "node scripts/make-icon.mjs",
+    "context:build": "node scripts/build-context.mjs"
   },
   "engines": {
     "node": ">=20"

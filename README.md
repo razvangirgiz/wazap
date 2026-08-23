@@ -109,6 +109,21 @@ OpenCode takes the command and its arguments as one array, under `mcp`:
 
 The `skills/` folder follows the [Agent Skills](https://agentskills.io) format, so Codex, Cursor and other skill-aware agents can load the same five skills.
 
+### Gemini CLI
+
+```bash
+gemini extensions install https://github.com/razvangirgiz/wazap
+```
+
+That reads `gemini-extension.json` at the repo root, so it registers the MCP
+server and loads `GEMINI.md` — the five skills below, concatenated, because the
+Gemini CLI takes one context file per extension rather than a skills directory.
+`wazap connect gemini` writes the server alone, without the context.
+
+`GEMINI.md` is generated: `npm run context:build` rebuilds it from
+`skills/*/SKILL.md`, and a test fails if the two have drifted, so a workflow is
+only ever edited in its skill.
+
 ### Claude Desktop, without a terminal
 
 Download `wazap-<version>.mcpb` from [Releases](https://github.com/razvangirgiz/wazap/releases)
