@@ -12,6 +12,7 @@ import { runBridge } from "./bridge.js";
 import { BAILEYS_VERSION, WAZAP_VERSION, paths, type Config, type Paths } from "./config.js";
 import { connectNext, whereInstalled, type Install } from "./connect.js";
 import { decideRole, readDaemon, removeDaemon, writeDaemon } from "./daemon.js";
+import { DEPS, ensureDeps } from "./deps.js";
 import { checkLine, checkLines, runChecks, type Check } from "./doctor.js";
 import { RELINK_FIX, WazapError, asWazapError } from "./errors.js";
 import { normalizePhone } from "./ids.js";
@@ -352,6 +353,7 @@ export async function runTranscribe(config: Config): Promise<void> {
   const [verb, file] = config.args;
   const settings = readTranscribeSettings(process.env, config.dataDir);
   if (verb === "download" && file === undefined) {
+    await ensureDeps([DEPS.whisper, DEPS.ffmpeg], config);
     await downloadTranscribeModel(settings, modelSpec(config.modelName ?? settings.model));
     return;
   }

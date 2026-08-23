@@ -154,9 +154,30 @@ function setup(box, ...args) {
       HOME: box.home,
       USERPROFILE: box.home,
       APPDATA: join(box.home, "AppData", "Roaming"),
-      PATH: `${box.bin}${delimiter}${process.env.PATH ?? ""}`,
+      PATH: box.path ?? `${box.bin}${delimiter}${process.env.PATH ?? ""}`,
+      ...box.env,
     }),
   });
+}
+
+/** A `brew` that records its argv and drops in the binaries the real one installs. */
+function stubBrew(box) {
+  const log = join(box.home, "brew.log");
+  writeFileSync(
+    join(box.bin, "brew"),
+    `#!/bin/sh
+echo "$@" >> ${log}
+shift
+for formula in "$@"; do
+  [ "$formula" = whisper-cpp ] && formula=whisper-cli
+  : > ${box.bin}/$formula
+  /bin/chmod +x ${box.bin}/$formula
+done
+exit 0
+`,
+    { mode: 0o755 },
+  );
+  return () => (existsSync(log) ? readFileSync(log, "utf8").trim().split("\n") : []);
 }
 
 test("setup --agent is AGENT.md on stdout, nothing on stderr", async () => {
@@ -255,11 +276,53 @@ test("a 401 at logout means the phone already removed the device, not a bad pair
 });
 
 test("the keep-running menu offers a public URL only when something can tunnel", () => {
-  const none = keepRunningOptions([{ available: () => false }]);
+  const noBrew = { onPath: () => false };
+  const none = keepRunningOptions([{ available: () => false }], noBrew);
   assert.deepEqual(none.map((option) => option.choice), ["client", "service"]);
 
-  const some = keepRunningOptions([{ available: () => false }, { available: () => true }]);
+  const some = keepRunningOptions([{ available: () => false }, { available: () => true }], noBrew);
   assert.deepEqual(some.map((option) => option.choice), ["client", "service", "expose"]);
+
+  const brewable = keepRunningOptions([{ available: () => false }], { onPath: (command) => command === "brew" });
+  assert.deepEqual(brewable.map((option) => option.choice), ["client", "service", "expose"], "brew can install one");
+});
+
+test("setup --transcribe local brews the binaries, then goes straight on to the model", async () => {
+  const box = sandbox();
+  // Nothing but the sandbox on PATH, so the stub brew is the only brew in reach
+  // and a real ffmpeg on this machine cannot answer for the one being installed.
+  box.path = box.bin;
+  box.env = { WAZAP_WHISPER_MODEL: "turbo" };
+  const calls = stubBrew(box);
+  const dir = linkedDataDir();
+  // The model is 574 MB from Hugging Face. A file where its directory belongs
+  // stops the download at its first mkdir, before anything is fetched.
+  writeFileSync(join(dir, "models"), "");
+
+  const err = await setup(box, "--yes", "--transcribe", "local", "--client", "cursor", "--data-dir", dir).then(
+    () => assert.fail("a blocked models directory must fail the run"),
+    (rejected) => rejected,
+  );
+
+  assert.deepEqual(calls(), ["install whisper-cpp ffmpeg"], "one brew call for the whole set");
+  assert.match(err.stderr, /whisper-cli is not installed; it transcribes voice messages locally\./);
+  assert.match(err.stderr, /Checking ggml-large-v3-turbo-q5_0\.bin…/, "the same run must reach the download");
+  assert.ok(
+    !err.stderr.includes("once they are installed"),
+    "setup must not send the user off to `transcribe download` after installing the binaries",
+  );
+});
+
+test("setup --transcribe local --no-brew leaves the fix line standing and installs nothing", async () => {
+  const box = sandbox();
+  box.path = box.bin;
+  const calls = stubBrew(box);
+  const stderr = await failingSetup(box, "--yes", "--no-brew", "--transcribe", "local", "--client", "cursor", "--data-dir", linkedDataDir());
+
+  assert.deepEqual(calls(), [], "brew must not be called");
+  assert.match(stderr, /whisper\.cpp not found/);
+  assert.match(stderr, /→ Run `brew install whisper-cpp ffmpeg`/);
+  assert.match(stderr, /Run `wazap transcribe download` once they are installed\./);
 });
 
 /**

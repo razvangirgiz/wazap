@@ -5,7 +5,8 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { ask } from "./cli.js";
 import { paths, type Config } from "./config.js";
-import { commandOnPath } from "./connect.js";
+import { REAL_PROBES, commandOnPath, type Probes } from "./connect.js";
+import { DEPS, ensureDeps } from "./deps.js";
 import { WazapError } from "./errors.js";
 import { say } from "./logger.js";
 import {
@@ -21,7 +22,7 @@ import {
 } from "./service.js";
 import { setEnvSetting } from "./settings.js";
 import { maskKey, which } from "./transcribe/index.js";
-import { box, brand, dim, info, ok, shortPath, warn } from "./ui.js";
+import { box, brand, dim, info, next, ok, shortPath, warn } from "./ui.js";
 
 export type Readiness = { ok: true } | { ok: false; fix: string };
 
@@ -276,6 +277,7 @@ export async function runExpose(
   config: Config,
   providers: readonly TunnelProvider[] = PROVIDERS,
   registry: readonly Supervisor[] = SUPERVISORS,
+  probes: Probes = REAL_PROBES,
 ): Promise<void> {
   const installed = requireService(config, registry);
   const named = config.args[0];
@@ -284,6 +286,13 @@ export async function runExpose(
   if (named !== undefined) return exposeOn(config, findProvider(named, providers), installed);
   const first = providers.find((provider) => provider.available());
   if (first === undefined) {
+    // Cloudflare needs a domain and a login, so only Tailscale is worth offering
+    // here; it still needs `tailscale up`, which only its owner can answer for.
+    if (await ensureDeps([DEPS.tailscale], config, probes)) {
+      say(ok("Tailscale is installed."));
+      say(next("tailscale up", "then run `wazap expose` again"));
+      return;
+    }
     throw new WazapError(
       "SERVICE_ERROR",
       "No tunnel provider is installed.",

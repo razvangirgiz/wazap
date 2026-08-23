@@ -5,6 +5,7 @@ import { ask, describeAccount, downloadTranscribeModel, linkAndSync, runLiveProb
 import { paths, type Config, type KeepRunning } from "./config.js";
 import {
   CLIENTS,
+  REAL_PROBES,
   commandPath,
   connectClient,
   connectNext,
@@ -17,7 +18,9 @@ import {
   whereInstalled,
   type ClientSpec,
   type Install,
+  type Probes,
 } from "./connect.js";
+import { DEPS, ensureDeps } from "./deps.js";
 import { checkLines } from "./doctor.js";
 import { WazapError } from "./errors.js";
 import { PROVIDERS, runExpose, type TunnelProvider } from "./expose.js";
@@ -173,9 +176,16 @@ const KEEP_OPTIONS: readonly { choice: KeepRunning; describe: string }[] = [
   { choice: "expose", describe: "Always, and reachable by cloud agents   (also wazap expose)" },
 ];
 
-/** Offering a public URL with nothing to tunnel through would be a dead end. */
-export function keepRunningOptions(providers: readonly TunnelProvider[] = PROVIDERS): typeof KEEP_OPTIONS {
-  return providers.some((provider) => provider.available()) ? KEEP_OPTIONS : KEEP_OPTIONS.slice(0, 2);
+/**
+ * Offering a public URL with nothing to tunnel through would be a dead end, and
+ * Homebrew is one prompt away from a tunnel, so it counts as something.
+ */
+export function keepRunningOptions(
+  providers: readonly TunnelProvider[] = PROVIDERS,
+  probes: Probes = REAL_PROBES,
+): typeof KEEP_OPTIONS {
+  const reachable = providers.some((provider) => provider.available()) || probes.onPath("brew");
+  return reachable ? KEEP_OPTIONS : KEEP_OPTIONS.slice(0, 2);
 }
 
 /** Only while a client has it open, unless a flag or a person says otherwise. */
@@ -246,6 +256,7 @@ async function askTranscribe(config: Config): Promise<string | null> {
 /** The model is 574 MB and unusable without the binaries, so those come first. */
 async function installModel(config: Config): Promise<void> {
   const settings = readTranscribeSettings({ ...process.env, WAZAP_TRANSCRIBE: "local" }, config.dataDir);
+  await ensureDeps([DEPS.whisper, DEPS.ffmpeg], config);
   if (findWhisper(settings) === null || which("ffmpeg") === null) {
     const readiness = await localProvider.ready(settings);
     say(warn(readiness.detail));

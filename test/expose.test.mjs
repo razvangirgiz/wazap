@@ -183,6 +183,31 @@ test("expose with no argument takes the first provider that is installed", async
   assert.equal(readService(dir).tunnel.provider, "tailscale");
 });
 
+test("expose with nothing installed offers Tailscale, then stops at `tailscale up`", async () => {
+  const { dir, supervisor } = await exposable();
+  // The binary is on PATH while the provider still says no: the state a fresh
+  // `brew install tailscale` leaves, with nothing for ensureDeps left to do.
+  const probes = { exists: () => false, onPath: (command) => command === "tailscale" };
+  const output = await captured(() => runExpose(config(dir), [fakeProvider({ available: false })], [supervisor], probes));
+
+  assert.match(output, /Tailscale is installed\./);
+  assert.match(output, /tailscale up/);
+  assert.equal(readService(dir).tunnel, undefined, "the tunnel waits for `tailscale up`");
+});
+
+test("expose with nothing installed and no Homebrew keeps its own repair", async () => {
+  const { dir, supervisor } = await exposable();
+  const probes = { exists: () => false, onPath: () => false };
+  await assert.rejects(
+    runExpose(config(dir), [fakeProvider({ available: false })], [supervisor], probes),
+    (err) => {
+      assert.match(err.message, /No tunnel provider is installed\./);
+      assert.match(err.fix, /install Tailscale or cloudflared/);
+      return true;
+    },
+  );
+});
+
 test("the real providers are a registry of two, each naming its own binary", () => {
   assert.deepEqual(
     PROVIDERS.map((provider) => provider.name),
