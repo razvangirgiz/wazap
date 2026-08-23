@@ -335,7 +335,9 @@ export function messageType(raw: WAMessage): MessageType {
 /** Never empty: media and system messages get a placeholder like "[sticker]". */
 export function messageText(raw: WAMessage): string {
   const call = callInfo(raw);
-  if (call) return callText(call);
+  // The placeholder only says a group call was offered, so naming an outcome
+  // ("missed") would claim something the payload never carried.
+  if (call) return isCallPlaceholder(raw) ? "[group call]" : callText(call);
   const content = unwrapEnvelopes(raw.message);
   const { rule, content: node } = ruleFor(content);
   if (rule === UNKNOWN) {

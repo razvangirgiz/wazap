@@ -116,6 +116,43 @@ test("write tools are rate limited and read tools are not", async () => {
   assert.equal(status.isError, undefined, "reads must not consume the write budget");
 });
 
+test("read_messages passes types through to the service and echoes it back", async () => {
+  const server = fakeServer();
+  const calls = [];
+  const wa = {
+    readMessages: async (...args) => {
+      calls.push(args);
+      return { data: [], sync: "done" };
+    },
+  };
+  registerTools(server, wa, { allowWrite: true, limiter: new RateLimiter(20) });
+
+  const result = await server.tools.get("read_messages").handler({ chat_id: "4072@s.whatsapp.net", limit: 20, types: ["call"] });
+  assert.deepEqual(calls[0], ["4072@s.whatsapp.net", 20, undefined, ["call"]]);
+  assert.deepEqual(result.structuredContent.types, ["call"]);
+
+  await server.tools.get("read_messages").handler({ chat_id: "4072@s.whatsapp.net", limit: 20 });
+  assert.deepEqual(calls[1], ["4072@s.whatsapp.net", 20, undefined, undefined], "no types means every type");
+});
+
+test("get_recent_messages passes types through to the service and echoes it back", async () => {
+  const server = fakeServer();
+  const calls = [];
+  const wa = {
+    getRecentMessages: async (...args) => {
+      calls.push(args);
+      return { data: [], sync: "done" };
+    },
+  };
+  registerTools(server, wa, { allowWrite: true, limiter: new RateLimiter(20) });
+
+  const result = await server.tools
+    .get("get_recent_messages")
+    .handler({ hours: 24, filter: "all", include_system: false, types: ["call", "voice"] });
+  assert.deepEqual(calls[0], [24, "all", false, ["call", "voice"]]);
+  assert.deepEqual(result.structuredContent.types, ["call", "voice"]);
+});
+
 test("learn documents every error code an agent can receive", async () => {
   const server = fakeServer();
   registerTools(server, {}, { allowWrite: true, limiter: new RateLimiter(20) });

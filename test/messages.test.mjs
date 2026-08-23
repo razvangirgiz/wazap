@@ -122,7 +122,7 @@ const CALL_CASES = [
   ["missed video stub", callStub(StubType.CALL_MISSED_VIDEO), "[missed video call]"],
   ["missed group voice stub", callStub(StubType.CALL_MISSED_GROUP_VOICE), "[missed voice call]"],
   ["missed group video stub", callStub(StubType.CALL_MISSED_GROUP_VIDEO), "[missed video call]"],
-  ["baileys' group offer placeholder", wrap({ call: { callKey: new Uint8Array([7]) } }), "[missed voice call]"],
+  ["baileys' group offer placeholder", wrap({ call: { callKey: new Uint8Array([7]) } }), "[group call]"],
 ];
 
 test("a call is a type of its own, whatever shape it arrives in", () => {

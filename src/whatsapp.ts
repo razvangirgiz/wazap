@@ -44,6 +44,7 @@ import {
   messageIdFor,
   messageText,
   messageTimestampMs,
+  messageType,
   protoNumber,
 } from "./messages.js";
 import type {
@@ -61,6 +62,7 @@ import type {
   GroupInfo,
   MediaResult,
   MediaSource,
+  MessageType,
   MessageView,
   ParticipantResult,
   RecentConversation,
@@ -476,7 +478,7 @@ export class WhatsAppService implements WhatsAppApi {
     });
   }
 
-  readMessages(chatId: string, limit: number, before?: string): Promise<Synced<MessageView[]>> {
+  readMessages(chatId: string, limit: number, before?: string, types?: MessageType[]): Promise<Synced<MessageView[]>> {
     return this.guarded(async () => {
       const sock = this.ensureConnected();
       const jid = this.resolveId(chatId);
@@ -485,15 +487,15 @@ export class WhatsAppService implements WhatsAppApi {
       await this.learnLidPhones([jid]);
 
       if (before === undefined) {
-        const ring = this.store.byChat.get(jid) ?? [];
+        const ring = this.ofTypes(this.store.byChat.get(jid) ?? [], types);
         return this.synced(this.viewsFor(ring.slice(-limit), jid));
       }
 
       const anchor = this.messageOrThrow(before);
-      let older = this.olderThan(jid, before, limit);
+      let older = this.olderThan(jid, before, limit, types);
       if (older.length === 0) {
         await this.fetchOlder(sock, anchor, limit);
-        older = this.olderThan(jid, before, limit);
+        older = this.olderThan(jid, before, limit, types);
       }
       return this.synced(this.viewsFor(older, jid));
     });
@@ -503,6 +505,7 @@ export class WhatsAppService implements WhatsAppApi {
     hours: number,
     filter: Exclude<ChatFilter, "archived">,
     includeSystem = false,
+    types?: MessageType[],
   ): Promise<Synced<RecentConversation[]>> {
     return this.guarded(async () => {
       this.ensureConnected();
@@ -523,7 +526,9 @@ export class WhatsAppService implements WhatsAppApi {
         });
         if (recent.length === 0) continue;
 
-        const messages = this.viewsFor(recent, jid).filter((view) => includeSystem || view.type !== "system");
+        const messages = this.viewsFor(this.ofTypes(recent, types), jid).filter(
+          (view) => includeSystem || view.type !== "system",
+        );
         if (messages.length === 0) continue;
         conversations.push({
           chat_id: jid,
@@ -1537,11 +1542,25 @@ export class WhatsAppService implements WhatsAppApi {
     return sids.filter((sid) => this.store.messages.has(sid)).map((sid) => this.viewOf(sid, chatJid));
   }
 
-  private olderThan(chatJid: string, before: string, limit: number): string[] {
+  /** Absent and empty both mean every type: narrowing is opt-in, never a default. */
+  private ofTypes(sids: string[], types?: MessageType[]): string[] {
+    if (types === undefined || types.length === 0) return sids;
+    return sids.filter((sid) => {
+      const raw = this.store.messages.get(sid);
+      return raw !== undefined && types.includes(messageType(raw));
+    });
+  }
+
+  /**
+   * The anchor is found in the unfiltered ring, so paging never depends on the
+   * filter, and `limit` then counts messages the caller asked for rather than
+   * messages we are about to throw away.
+   */
+  private olderThan(chatJid: string, before: string, limit: number, types?: MessageType[]): string[] {
     const ring = this.store.byChat.get(chatJid) ?? [];
     const at = ring.indexOf(before);
     if (at <= 0) return [];
-    return ring.slice(Math.max(0, at - limit), at);
+    return this.ofTypes(ring.slice(0, at), types).slice(-limit);
   }
 
   private async fetchOlder(sock: WASocket, anchor: WAMessage, limit: number): Promise<void> {

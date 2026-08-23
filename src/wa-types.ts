@@ -15,23 +15,27 @@ export type ChatType = "individual" | "group";
 
 export type ChatFilter = "all" | "unread" | "groups" | "individual" | "archived";
 
-export type MessageType =
-  | "text"
-  | "image"
-  | "video"
-  | "audio"
-  | "voice"
-  | "document"
-  | "sticker"
-  | "location"
-  | "contact"
-  | "poll"
-  | "reaction"
-  | "deleted"
-  | "view_once"
-  | "call"
-  | "system"
-  | "unknown";
+/** The zod enum the tools expose derives from this, so the two cannot drift. */
+export const MESSAGE_TYPES = [
+  "text",
+  "image",
+  "video",
+  "audio",
+  "voice",
+  "document",
+  "sticker",
+  "location",
+  "contact",
+  "poll",
+  "reaction",
+  "deleted",
+  "view_once",
+  "call",
+  "system",
+  "unknown",
+] as const;
+
+export type MessageType = (typeof MESSAGE_TYPES)[number];
 
 export type CallKind = "voice" | "video";
 
@@ -225,11 +229,12 @@ export interface ContactSyncResult {
 export interface WhatsAppApi {
   getStatus(): StatusInfo;
   listChats(filter: ChatFilter, limit: number): Promise<Synced<ChatSummary[]>>;
-  readMessages(chatId: string, limit: number, before?: string): Promise<Synced<MessageView[]>>;
+  readMessages(chatId: string, limit: number, before?: string, types?: MessageType[]): Promise<Synced<MessageView[]>>;
   getRecentMessages(
     hours: number,
     filter: Exclude<ChatFilter, "archived">,
     includeSystem?: boolean,
+    types?: MessageType[],
   ): Promise<Synced<RecentConversation[]>>;
   searchMessages(query: string, chatId: string | undefined, limit: number): Promise<Synced<MessageView[]>>;
   getMessage(messageId: string): Promise<MessageView>;

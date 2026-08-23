@@ -2,6 +2,7 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { asWazapError, ERROR_GUIDE, type WazapError } from "./errors.js";
 import type { RateLimiter } from "./ratelimit.js";
+import { MESSAGE_TYPES } from "./wa-types.js";
 import type {
   ChatSummary,
   ContactSummary,
@@ -71,6 +72,13 @@ const messageId = z
   .min(5)
   .describe('Message id from read_messages / search_messages / get_message, e.g. "false_4072...@s.whatsapp.net_3EB0..."');
 
+const messageTypes = z
+  .array(z.enum([...MESSAGE_TYPES]))
+  .optional()
+  .describe(
+    'Keep only these message types; omit for every type. The limit counts matching messages, so ["call"] returns that many calls, not that many messages of which some are calls.',
+  );
+
 const GUIDE = `# wazap — WhatsApp for your AI agent
 
 Read/write access to the user's linked WhatsApp account: chats, messages, media,
@@ -107,6 +115,11 @@ which look like a phone number and are not one.
 WhatsApp's own notices (device linking, group membership, encryption) have
 \`type: "system"\` and are left out of get_recent_messages unless you pass
 include_system: true.
+A WhatsApp call is a message with \`type: "call"\` carrying
+\`call: {kind, direction, outcome, duration_seconds}\`, reading as
+"[voice call · 6 min]" or "[missed voice call]".
+read_messages and get_recent_messages take \`types\` to narrow to a subset of
+these types, e.g. \`types: ["call"]\` for the call log of a chat.
 \`timestamp\` is ISO 8601 with the machine's UTC offset, \`age\` is human-readable.
 
 ## Errors
@@ -192,13 +205,14 @@ older history when the local store runs out, which takes a few seconds.`,
       chat_id: chatId,
       limit: z.number().int().min(1).max(200).default(20).describe("Maximum number of messages (1-200)"),
       before: messageId.optional().describe("Return the messages immediately older than this message_id"),
+      types: messageTypes,
     },
     write: false,
-    handler: async ({ chat_id, limit, before }, wa) => {
-      const result = await wa.readMessages(chat_id, limit, before);
+    handler: async ({ chat_id, limit, before, types }, wa) => {
+      const result = await wa.readMessages(chat_id, limit, before, types);
       return ok(
         renderMessages(`Messages in ${chat_id}`, result.data),
-        synced(result, { chat_id, count: result.data.length, messages: result.data }),
+        synced(result, { chat_id, types, count: result.data.length, messages: result.data }),
       );
     },
   }),
@@ -220,10 +234,11 @@ out so the counts are conversation; pass include_system to see them.`,
         .boolean()
         .default(false)
         .describe("Include WhatsApp's own system notices, which are excluded from the bodies and the counts by default"),
+      types: messageTypes,
     },
     write: false,
-    handler: async ({ hours, filter, include_system }, wa) => {
-      const result = await wa.getRecentMessages(hours, filter, include_system);
+    handler: async ({ hours, filter, include_system, types }, wa) => {
+      const result = await wa.getRecentMessages(hours, filter, include_system, types);
       const messageCount = result.data.reduce((n, c) => n + c.messages.length, 0);
       return ok(
         renderConversations(result.data, hours),
@@ -231,6 +246,7 @@ out so the counts are conversation; pass include_system to see them.`,
           hours,
           filter,
           include_system,
+          types,
           conversation_count: result.data.length,
           message_count: messageCount,
           conversations: result.data,

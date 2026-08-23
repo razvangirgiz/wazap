@@ -174,3 +174,48 @@ test("a call the user placed from a LID-addressed device is outgoing", async () 
   assert.equal(messages[0].from_me, true);
   await svc.stop();
 });
+
+test("types narrows a read to calls, and the limit counts the calls it kept", async () => {
+  const { svc, sock } = makeService();
+  const t0 = Date.now() - 600_000;
+  const text = (id, at, body) => ({
+    key: { remoteJid: PEER, fromMe: false, id },
+    messageTimestamp: Math.floor(at / 1000),
+    message: { conversation: body },
+  });
+  const call = (id, at) => ({
+    key: { remoteJid: PEER, fromMe: false, id },
+    messageTimestamp: Math.floor(at / 1000),
+    messageStubType: proto.WebMessageInfo.StubType.CALL_MISSED_VOICE,
+  });
+
+  sock.ev.emit("messages.upsert", {
+    type: "notify",
+    messages: [
+      text("T1", t0, "before"),
+      // Well over CALL_DEDUPE_WINDOW_MS apart, or the second call would eat the first.
+      call("CALL_A", t0 + 60_000),
+      text("T2", t0 + 120_000, "between"),
+      call("CALL_B", t0 + 300_000),
+      text("T3", t0 + 360_000, "after"),
+    ],
+  });
+
+  const all = (await svc.readMessages(PEER, 10)).data;
+  assert.deepEqual(
+    all.map((m) => m.type),
+    ["text", "call", "text", "call", "text"],
+    "the unfiltered read keeps the interleaving",
+  );
+
+  const calls = (await svc.readMessages(PEER, 10, undefined, ["call"])).data;
+  assert.deepEqual(
+    calls.map((m) => m.type),
+    ["call", "call"],
+  );
+
+  const capped = (await svc.readMessages(PEER, 2, undefined, ["call"])).data;
+  assert.equal(capped.length, 2, "limit 2 must mean two calls, not two messages of which one is a call");
+
+  await svc.stop();
+});
