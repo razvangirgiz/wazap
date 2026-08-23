@@ -177,6 +177,52 @@ Build it yourself with `npm run bundle:mcpb`, which stages `dist/`, the
 manifest, the icon and a fresh production `node_modules`, then packs them with
 [`@anthropic-ai/mcpb`](https://github.com/modelcontextprotocol/mcpb).
 
+### Keep it running
+
+A wazap started by a client lives as long as that client does. Quit Claude Code
+and the session is gone until you open it again. Two commands change that.
+Staying up and being reachable are separate choices.
+
+```bash
+npx wazap-mcp service install
+```
+
+That writes a launchd agent on macOS (`~/Library/LaunchAgents/com.wazap.server.plist`)
+or a systemd user unit on Linux (`~/.config/systemd/user/wazap.service`), starts
+it, and waits for `/healthz` to answer. The unit runs `serve --http` on
+`127.0.0.1:8766` with the absolute path of this Node and this install, so it
+survives a reboot and a logout. Point any client at
+`http://127.0.0.1:8766/mcp`, or keep using the stdio entry. A second wazap on
+the same data directory becomes a bridge onto the session this one holds.
+
+`service status` prints the pid, the health check and whether the unit still
+runs the version you have installed. `service logs` tails it. `service restart`
+picks up an upgrade; `service uninstall` removes the unit and leaves your
+session and credentials alone. `wazap login` needs the session to itself, so it
+stops the service, pairs, and starts it again on its own.
+
+A sleeping Mac is an offline wazap. System Settings → Lock Screen, or Battery →
+Options, has the switch that keeps it awake on power.
+
+```bash
+npx wazap-mcp expose
+```
+
+That gives the running service a public `https` URL, for agents that are not on
+this machine: a cloud agent, claude.ai, ChatGPT. It uses Tailscale Funnel if
+`tailscale` is installed, Cloudflare Tunnel if `cloudflared` is, opens the
+tunnel, writes `WAZAP_PUBLIC_URL` and a fresh `WAZAP_OAUTH_PASSWORD` into
+`<data-dir>/.env`, restarts the service and checks the URL from here. It then
+prints the MCP URL and the password once.
+
+Give an agent the URL only. It signs in on a consent page on your own host with
+that password and picks read or read-and-send there; `wazap status` lists who
+holds a grant. See [Hosted agents (OAuth)](#hosted-agents-oauth) for what that
+page does. `npx wazap-mcp expose off` takes the tunnel down and keeps the
+password, so the next `expose` hands agents the same one.
+
+`npx wazap-mcp setup` asks all of this once, as its fourth step.
+
 ## Tools
 
 | Tool | Kind | What it does |
@@ -425,7 +471,10 @@ WAZAP_WRITE_TOKEN=$(openssl rand -hex 32) \
 npx wazap-mcp serve --http --host 0.0.0.0 --port 8766
 ```
 
-Streamable HTTP at `/mcp`, with a health check at `/healthz`. Two bearer tokens:
+Streamable HTTP at `/mcp`, with a health check at `/healthz`. That check answers
+`{ ok, status, since }`. It turns 503 once the socket has been anything but
+connected for two minutes, so a tunnel or a monitor sees a real outage rather
+than a reconnect in progress. Two bearer tokens:
 the read token gets the read tools, the write token also unlocks the write
 tools, so a leaked read token can never message anyone. wazap refuses to bind a
 non-loopback address without a read token. Agents that cannot carry a header
@@ -466,7 +515,12 @@ The container publishes `8766` on loopback only; add the same TLS proxy in front
 
 ### From a machine without a public address
 
-A laptop or a box behind NAT can still serve hosted agents through a tunnel, with no port opened and TLS done at the edge. With [Cloudflare Tunnel](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/) and a domain on Cloudflare:
+A laptop or a box behind NAT can still serve hosted agents through a tunnel, with no port opened and TLS done at the edge. `npx wazap-mcp expose` does the whole thing with Tailscale Funnel or Cloudflare Tunnel, whichever is installed. See [Keep it running](#keep-it-running).
+
+wazap keeps binding loopback either way; only the tunnel reaches it.
+
+<details>
+<summary>By hand, with Cloudflare Tunnel and a domain on Cloudflare</summary>
 
 ```bash
 cloudflared tunnel login
@@ -475,7 +529,9 @@ cloudflared tunnel route dns wazap wazap.example.com
 cloudflared tunnel run --url http://127.0.0.1:8766 wazap
 ```
 
-wazap keeps binding loopback; only the tunnel reaches it. Set `WAZAP_PUBLIC_URL=https://wazap.example.com` for OAuth and keep `cloudflared` running the way you keep wazap running (a systemd unit, a launchd agent). Tailscale Funnel or ngrok work the same way: whatever ends at `https://your-host` with `/mcp` behind it.
+Set `WAZAP_PUBLIC_URL=https://wazap.example.com` for OAuth and keep `cloudflared` running the way you keep wazap running (a systemd unit, a launchd agent). Tailscale Funnel or ngrok work the same way: whatever ends at `https://your-host` with `/mcp` behind it.
+
+</details>
 
 ### Which clients can reach it
 

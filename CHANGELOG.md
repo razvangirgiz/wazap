@@ -3,6 +3,25 @@
 ## Unreleased
 ### Added
 
+- **`wazap service` keeps the session up without a client.**
+  `wazap service install|status|start|stop|restart|logs|uninstall` writes a
+  launchd agent or a systemd user unit, starts it and waits for `/healthz`.
+  The unit runs
+  `serve --http` on loopback with the absolute path of this Node and this
+  install, so it survives a reboot and a logout, and `status` says when it still
+  runs an older build than the one installed. `wazap login` needs the session to
+  itself, so it now stops the service, pairs, and starts it again. `wazap status`
+  gained a service check. A wazap running out of the npx cache refuses to install
+  one, because npm clears that path.
+- **`wazap expose` gives the service a public URL** for agents that are not on
+  this machine. It uses Tailscale Funnel or Cloudflare Tunnel, whichever is
+  installed, writes `WAZAP_PUBLIC_URL` and a fresh `WAZAP_OAUTH_PASSWORD`,
+  restarts the service and checks the URL from here, then prints the MCP URL and
+  the consent password once. `wazap expose off` takes the tunnel down and keeps
+  the password.
+- **`wazap setup` asks whether to keep wazap running**, as a fifth step: only
+  while a client has it open, always on this machine, or always and reachable by
+  cloud agents. `--service` and `--expose` answer it for `setup --yes`.
 - **The workflows reach every client, with no second command.** `wazap setup`
   now copies the five skills into each client it connects, and the server
   carries them as well: it sends a short `instructions` block naming all five
@@ -26,6 +45,14 @@
 
 ### Changed
 
+- **`serve` exits 3 when WhatsApp keeps refusing the socket.** Ten failed
+  reconnects used to leave a live MCP server answering NOT_CONNECTED forever.
+  Now it logs and exits, so a supervisor restarts it and a client shows the
+  error. An account unlinked from the phone is the exception and stays up in
+  `auth_failure`: no restart brings that back.
+- **`/healthz` answers 503 on a real outage**, with `{ ok, status, since }`. A
+  socket that has been anything but connected for two minutes is down; a
+  reconnect in progress is not.
 - `wazap skills install claude-code` copies into `~/.claude/skills/` instead of
   printing the plugin command. The plugin is still the other route, and the
   README says so.
