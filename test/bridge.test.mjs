@@ -202,3 +202,23 @@ test("--http asks for an HTTP server, not a bridge, so it is refused", async () 
     await s.close();
   }
 });
+
+test("a bridge serves what the owner exposes, so --read-only reaches every client", async () => {
+  const s = scene();
+  try {
+    s.start(["serve", "--read-only"]);
+    await waitFor(() => readDaemon(s.daemonFile), 15_000, "daemon.json to appear");
+
+    // Started without --read-only of its own: the owner's setting is the one that counts.
+    const b = s.start();
+    const mcp = await session(b.child);
+    const names = (await toolShape(mcp)).map((tool) => tool.name);
+    assert.equal(names.length, 11);
+    assert.ok(!names.includes("send_message"), names.join(", "));
+
+    const status = await mcp.request("tools/call", { name: "get_status", arguments: {} });
+    assert.equal(status.result.structuredContent.read_only, true);
+  } finally {
+    await s.close();
+  }
+});
