@@ -25,6 +25,23 @@ npx wazap-mcp setup
 That is the whole install. It links your account, finds the MCP clients
 installed on this machine, writes their config and tells you what to restart.
 
+### Or the path your harness prefers
+
+| Harness | Fastest path |
+| --- | --- |
+| Claude Code | `/plugin marketplace add razvangirgiz/wazap`, then `/plugin install wazap@wazap` |
+| Claude Desktop | download `wazap-<version>.mcpb` from [Releases](https://github.com/razvangirgiz/wazap/releases) and double-click it |
+| Gemini CLI | `gemini extensions install https://github.com/razvangirgiz/wazap` |
+| Cursor | the [Install in Cursor](#other-mcp-clients) badge, then `npx wazap-mcp skills install cursor` |
+| VS Code | the [Install in VS Code](#other-mcp-clients) badge |
+| Codex CLI | `npx wazap-mcp connect codex`, then `npx wazap-mcp skills install codex` |
+| OpenCode | `npx wazap-mcp connect opencode`, then `npx wazap-mcp skills install opencode` |
+| Windsurf | `npx wazap-mcp connect windsurf` |
+| Anything else | the MCP entry `npx -y wazap-mcp` over stdio, or a [self-hosted](#self-host) URL |
+
+Each of those registers the server. Linking the WhatsApp account is a separate,
+one-time step in every one of them: `npx wazap-mcp login`.
+
 Or have your agent do it. Paste this:
 
 *Set up WhatsApp for me: run `npx wazap-mcp setup --agent` and follow what it prints.*
