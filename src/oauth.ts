@@ -11,7 +11,7 @@
  * asks read or write the way `wazap login` does.
  */
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import type { Request, Response } from "express";
 import type { OAuthServerProvider, AuthorizationParams } from "@modelcontextprotocol/sdk/server/auth/provider.js";
@@ -35,15 +35,55 @@ export const APPROVE_PATH = "/oauth/approve";
 const ACCESS_TOKEN_TTL_MS = 24 * 60 * 60 * 1000;
 const CODE_TTL_MS = 10 * 60 * 1000;
 const PENDING_TTL_MS = 10 * 60 * 1000;
+/** A refresh token nobody has used in this long is a forgotten one. */
+const REFRESH_IDLE_MS = 90 * 24 * 60 * 60 * 1000;
+/** A client that registered and never finished consent. */
+const CLIENT_ORPHAN_MS = 60 * 60 * 1000;
 const LOCKOUT_AFTER = 5;
 const LOCKOUT_MS = 15 * 60 * 1000;
+/** Wrong passwords from everywhere, together, before the page closes for a while. */
+const GLOBAL_LOCKOUT_AFTER = 20;
+/** Wrong passwords one consent page takes before it is thrown away. */
+const PENDING_MISSES = 3;
+
+const LOOPBACK_HOSTS = ["127.0.0.1", "[::1]", "localhost"];
+
+/**
+ * OAuth needs both halves and an issuer the SDK and a browser will accept:
+ * https (or loopback, for tests), no path, since every endpoint is mounted at
+ * the root of whatever host this is.
+ */
+export function oauthProblem(config: { publicUrl: string | null; oauthPassword: string | null }): string | null {
+  if (!config.publicUrl && !config.oauthPassword) return null;
+  if (!config.publicUrl) return "WAZAP_OAUTH_PASSWORD is set but WAZAP_PUBLIC_URL is not. Set both, or neither.";
+  if (!config.oauthPassword) return "WAZAP_PUBLIC_URL is set but WAZAP_OAUTH_PASSWORD is not. Set both, or neither.";
+  let url: URL;
+  try {
+    url = new URL(config.publicUrl);
+  } catch {
+    return `WAZAP_PUBLIC_URL is not a URL: ${config.publicUrl}`;
+  }
+  if (url.search || url.hash) return "WAZAP_PUBLIC_URL must not carry a query or a fragment.";
+  if (url.pathname !== "/") {
+    return "WAZAP_PUBLIC_URL must be a bare origin: the OAuth endpoints live at its root, not under a path.";
+  }
+  if (url.protocol !== "https:" && !LOOPBACK_HOSTS.includes(url.hostname)) {
+    return "WAZAP_PUBLIC_URL must be https, since agents will send a password to it.";
+  }
+  if (config.oauthPassword.length < 8) return "WAZAP_OAUTH_PASSWORD is shorter than 8 characters.";
+  return null;
+}
 
 interface StoredToken {
   clientId: string;
   scopes: string[];
   issuedAt: number;
-  /** Access tokens expire; a refresh token lives until revoked. */
+  /** Access tokens expire; a refresh token lives until revoked or forgotten. */
   expiresAt?: number;
+  /** Access only: the hash of the refresh token that minted it, so revoking one ends the other. */
+  refresh?: string;
+  /** Refresh only: the last time it minted an access token. */
+  lastUsedAt?: number;
 }
 
 interface OAuthState {
@@ -57,6 +97,7 @@ interface PendingAuthorization {
   client: OAuthClientInformationFull;
   params: AuthorizationParams;
   createdAt: number;
+  misses: number;
 }
 
 interface IssuedCode {
@@ -117,42 +158,62 @@ function loadState(file: string): OAuthState {
 
 function saveState(file: string, state: OAuthState): void {
   mkdirSync(dirname(file), { recursive: true, mode: 0o700 });
+  // The mode argument only applies on creation; the chmod covers a leftover temp file.
   const tmp = `${file}.${process.pid}.tmp`;
   writeFileSync(tmp, JSON.stringify(state, null, 2), { mode: 0o600 });
+  chmodSync(tmp, 0o600);
   renameSync(tmp, file);
 }
 
 /**
- * Failed passwords per caller. Five misses lock that caller out for fifteen
- * minutes; the SDK's own limiter caps the authorize endpoint at a hundred hits
- * in the same window, so a password cannot be brute-forced from one address
- * and a pool of addresses still gets nowhere fast.
+ * Failed passwords, per caller and in total. Five misses lock that caller out
+ * for fifteen minutes; twenty misses from anywhere lock the page for everyone,
+ * so rotating addresses buys an attacker nothing. A consent page itself takes
+ * three wrong passwords and is then gone, which makes every further guess cost
+ * a fresh /authorize, an endpoint the SDK rate-limits.
  */
 class Lockout {
-  private readonly misses = new Map<string, { count: number; until: number }>();
+  private readonly misses = new Map<string, { count: number; at: number; until: number }>();
+  private global = { count: 0, at: 0, until: 0 };
 
   constructor(private readonly now: () => number) {}
 
   locked(key: string): boolean {
+    const now = this.now();
+    if (this.global.until > now) return true;
     const entry = this.misses.get(key);
-    if (!entry) return false;
-    if (entry.until && entry.until > this.now()) return true;
-    if (entry.until) this.misses.delete(key);
-    return false;
+    return entry !== undefined && entry.until > now;
   }
 
   miss(key: string): void {
-    const entry = this.misses.get(key) ?? { count: 0, until: 0 };
+    const now = this.now();
+    const entry = this.misses.get(key) ?? { count: 0, at: now, until: 0 };
     entry.count += 1;
+    entry.at = now;
     if (entry.count >= LOCKOUT_AFTER) {
-      entry.until = this.now() + LOCKOUT_MS;
+      entry.until = now + LOCKOUT_MS;
       entry.count = 0;
     }
     this.misses.set(key, entry);
+
+    if (now - this.global.at > LOCKOUT_MS) this.global = { count: 0, at: now, until: 0 };
+    this.global.count += 1;
+    if (this.global.count >= GLOBAL_LOCKOUT_AFTER) {
+      this.global = { count: 0, at: now, until: now + LOCKOUT_MS };
+      log("oauth: too many wrong passwords from everywhere, consent closed for fifteen minutes");
+    }
   }
 
   clear(key: string): void {
     this.misses.delete(key);
+  }
+
+  /** Forget callers whose misses are older than the window. */
+  prune(): void {
+    const now = this.now();
+    for (const [key, entry] of this.misses) {
+      if (entry.until <= now && now - entry.at > LOCKOUT_MS) this.misses.delete(key);
+    }
   }
 }
 
@@ -216,14 +277,49 @@ export class WazapOAuthProvider implements OAuthServerProvider {
     saveState(this.options.stateFile, this.state);
   }
 
+  /** Deleting oauth.json is the documented way to sign everyone out; honour it while running. */
+  private sync(): void {
+    const populated =
+      Object.keys(this.state.clients).length + Object.keys(this.state.access).length + Object.keys(this.state.refresh).length > 0;
+    if (populated && !existsSync(this.options.stateFile)) {
+      log("oauth: oauth.json is gone, every grant is revoked");
+      this.state.clients = {};
+      this.state.access = {};
+      this.state.refresh = {};
+      this.codes.clear();
+    }
+  }
+
   private sweep(): void {
+    this.sync();
+    this.lockout.prune();
     const now = this.now();
     for (const [id, entry] of this.pending) if (now - entry.createdAt > PENDING_TTL_MS) this.pending.delete(id);
     for (const [code, entry] of this.codes) if (now - entry.createdAt > CODE_TTL_MS) this.codes.delete(code);
+
     let dirty = false;
     for (const [hash, entry] of Object.entries(this.state.access)) {
       if (entry.expiresAt !== undefined && entry.expiresAt < now) {
         delete this.state.access[hash];
+        dirty = true;
+      }
+    }
+    for (const [hash, entry] of Object.entries(this.state.refresh)) {
+      if (now - (entry.lastUsedAt ?? entry.issuedAt) > REFRESH_IDLE_MS) {
+        delete this.state.refresh[hash];
+        dirty = true;
+      }
+    }
+    // A client with no grant and nothing in flight is a registration nobody finished.
+    const holding = new Set<string>();
+    for (const entry of Object.values(this.state.refresh)) holding.add(entry.clientId);
+    for (const entry of Object.values(this.state.access)) holding.add(entry.clientId);
+    for (const entry of this.pending.values()) holding.add(entry.client.client_id);
+    for (const entry of this.codes.values()) holding.add(entry.clientId);
+    for (const [id, client] of Object.entries(this.state.clients)) {
+      const issuedAt = (client.client_id_issued_at ?? 0) * 1000;
+      if (!holding.has(id) && now - issuedAt > CLIENT_ORPHAN_MS) {
+        delete this.state.clients[id];
         dirty = true;
       }
     }
@@ -236,7 +332,7 @@ export class WazapOAuthProvider implements OAuthServerProvider {
   async authorize(client: OAuthClientInformationFull, params: AuthorizationParams, res: Response): Promise<void> {
     this.sweep();
     const id = randomBytes(24).toString("hex");
-    this.pending.set(id, { client, params, createdAt: this.now() });
+    this.pending.set(id, { client, params, createdAt: this.now(), misses: 0 });
     res.setHeader("Cache-Control", "no-store");
     res.status(200).type("html").send(this.consentPage(id, client, params));
   }
@@ -275,7 +371,13 @@ export class WazapOAuthProvider implements OAuthServerProvider {
     const password = typeof body.password === "string" ? body.password : "";
     if (!sameSecret(password, this.options.password)) {
       this.lockout.miss(caller);
+      entry.misses += 1;
       log(`oauth: wrong password from ${caller}`);
+      if (entry.misses >= PENDING_MISSES) {
+        this.pending.delete(id);
+        res.status(401).type("html").send(this.messagePage("Wrong password, three times. Go back to the agent and connect again."));
+        return;
+      }
       res.status(401).type("html").send(this.consentPage(id, client, params, "Wrong password."));
       return;
     }
@@ -336,13 +438,22 @@ export class WazapOAuthProvider implements OAuthServerProvider {
 
   private issue(clientId: string, scopes: string[], existingRefresh?: string): OAuthTokens {
     const now = this.now();
-    const accessToken = randomBytes(32).toString("hex");
-    this.state.access[sha256(accessToken)] = { clientId, scopes, issuedAt: now, expiresAt: now + ACCESS_TOKEN_TTL_MS };
     let refreshToken = existingRefresh;
     if (!refreshToken) {
       refreshToken = randomBytes(32).toString("hex");
-      this.state.refresh[sha256(refreshToken)] = { clientId, scopes, issuedAt: now };
+      this.state.refresh[sha256(refreshToken)] = { clientId, scopes, issuedAt: now, lastUsedAt: now };
+    } else {
+      const refresh = this.state.refresh[sha256(refreshToken)];
+      if (refresh) refresh.lastUsedAt = now;
     }
+    const accessToken = randomBytes(32).toString("hex");
+    this.state.access[sha256(accessToken)] = {
+      clientId,
+      scopes,
+      issuedAt: now,
+      expiresAt: now + ACCESS_TOKEN_TTL_MS,
+      refresh: sha256(refreshToken),
+    };
     this.persist();
     return {
       access_token: accessToken,
@@ -354,6 +465,7 @@ export class WazapOAuthProvider implements OAuthServerProvider {
   }
 
   async verifyAccessToken(token: string): Promise<AuthInfo> {
+    this.sync();
     const entry = this.state.access[sha256(token)];
     if (!entry) throw new InvalidTokenError("Unknown access token");
     if (entry.expiresAt !== undefined && entry.expiresAt < this.now()) throw new InvalidTokenError("Access token expired");
@@ -366,32 +478,45 @@ export class WazapOAuthProvider implements OAuthServerProvider {
     };
   }
 
-  /** Look the token up as either kind; the caller may not say which. */
+  /**
+   * Look the token up as either kind; the caller may not say which. Revoking a
+   * refresh token also ends every access token it minted, so "disconnect" in
+   * an agent's settings means disconnected now, not in up to a day.
+   */
   async revokeToken(client: OAuthClientInformationFull, request: OAuthTokenRevocationRequest): Promise<void> {
+    this.sync();
     const hash = sha256(request.token);
     let dirty = false;
-    for (const bucket of [this.state.access, this.state.refresh]) {
-      const entry = bucket[hash];
-      if (entry && entry.clientId === client.client_id) {
-        delete bucket[hash];
-        dirty = true;
+    const access = this.state.access[hash];
+    if (access && access.clientId === client.client_id) {
+      delete this.state.access[hash];
+      dirty = true;
+    }
+    const refresh = this.state.refresh[hash];
+    if (refresh && refresh.clientId === client.client_id) {
+      delete this.state.refresh[hash];
+      for (const [accessHash, entry] of Object.entries(this.state.access)) {
+        if (entry.refresh === hash) delete this.state.access[accessHash];
       }
+      dirty = true;
     }
     if (dirty) this.persist();
   }
 
   /** Every grant, for `wazap status` and the like. */
   grants(): Grant[] {
+    this.sync();
     return grantsOf(this.state);
   }
 
   // --- pages ---------------------------------------------------------------
 
   private consentPage(id: string, client: OAuthClientInformationFull, params: AuthorizationParams, error?: string): string {
-    const name = escapeHtml(client.client_name ?? new URL(params.redirectUri).hostname);
+    const rawName = client.client_name ?? new URL(params.redirectUri).hostname;
+    const name = escapeHtml(rawName);
     const wantsWrite = normalizeScopes(params.scopes).includes("write");
     return page(
-      `Connect ${name}`,
+      `Connect ${rawName}`,
       `
 <h1>Connect <strong>${name}</strong> to WhatsApp?</h1>
 <p>This agent wants to use the WhatsApp account behind this wazap.</p>

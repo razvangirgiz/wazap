@@ -11,7 +11,7 @@ import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { startHttpEndpoint } from "../dist/server.js";
-import { WazapOAuthProvider } from "../dist/oauth.js";
+import { WazapOAuthProvider, oauthProblem } from "../dist/oauth.js";
 import { RateLimiter } from "../dist/ratelimit.js";
 import { offlineConfig } from "./helpers.mjs";
 
@@ -45,7 +45,7 @@ function form(fields) {
 }
 
 /** One server, one provider, torn down by the caller. */
-async function boot(t, { password = PASSWORD } = {}) {
+async function boot(t, { password = PASSWORD, credentials = [{ token: "static-read", write: false }] } = {}) {
   const dataDir = mkdtempSync(join(tmpdir(), "wazap-oauth-"));
   const port = await freePort();
   const publicUrl = new URL(`http://127.0.0.1:${port}`);
@@ -55,7 +55,7 @@ async function boot(t, { password = PASSWORD } = {}) {
   await startHttpEndpoint(
     stubWa,
     config,
-    { host: "127.0.0.1", port, credentials: [{ token: "static-read", write: false }], openRead: false, oauth, signal: stop.signal },
+    { host: "127.0.0.1", port, credentials, openRead: credentials.length === 0, oauth, signal: stop.signal },
     new RateLimiter(0),
   );
   t.after(() => {
@@ -71,12 +71,12 @@ async function boot(t, { password = PASSWORD } = {}) {
 }
 
 /** Register a public client and open the consent page, approving nothing yet. */
-async function begin(ctx, { scope } = {}) {
+async function begin(ctx, { scope, clientName = "Poke", authMethod = "none" } = {}) {
   const redirectUri = "https://agent.example/callback";
   const { body: client } = await ctx.fetchJson("/register", {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ redirect_uris: [redirectUri], client_name: "Poke", token_endpoint_auth_method: "none" }),
+    body: JSON.stringify({ redirect_uris: [redirectUri], client_name: clientName, token_endpoint_auth_method: authMethod }),
   });
   assert.ok(client.client_id, "registration returns a client_id");
 
@@ -106,8 +106,8 @@ function approve(ctx, request, fields) {
 }
 
 /** The whole consent step: what the redirect back to the agent carried. */
-async function grant(ctx, { access = "write", password = PASSWORD, scope } = {}) {
-  const started = await begin(ctx, { scope });
+async function grant(ctx, { access = "write", password = PASSWORD, ...rest } = {}) {
+  const started = await begin(ctx, rest);
   const { res: redirect } = await approve(ctx, started.request, { password, access, decision: "allow" });
   return { ...started, redirect };
 }
@@ -116,8 +116,23 @@ async function exchange(ctx, { client, redirectUri, verifier, code }) {
   return ctx.fetchJson("/token", {
     method: "POST",
     headers: { "content-type": "application/x-www-form-urlencoded" },
-    body: form({ grant_type: "authorization_code", code, code_verifier: verifier, client_id: client.client_id, redirect_uri: redirectUri }),
+    body: form({
+      grant_type: "authorization_code",
+      code,
+      code_verifier: verifier,
+      client_id: client.client_id,
+      ...(client.client_secret ? { client_secret: client.client_secret } : {}),
+      redirect_uri: redirectUri,
+    }),
   });
+}
+
+/** Register, consent and exchange in one go. */
+async function signIn(ctx, options) {
+  const g = await grant(ctx, options);
+  const code = new URL(g.redirect.headers.get("location")).searchParams.get("code");
+  const { body: tokens } = await exchange(ctx, { ...g, code });
+  return { ...g, tokens };
 }
 
 async function listTools(ctx, token) {
@@ -213,14 +228,23 @@ test("the consent page preselects what the client asked for", async (t) => {
   assert.match(asksNothing.html, /value="read" checked/);
 });
 
-test("a wrong password stays on the page, and five of them lock the caller out", async (t) => {
+test("a wrong password stays on the page twice, the third throws the page away, five lock the caller out", async (t) => {
   const ctx = await boot(t);
   const g = await grant(ctx, { password: "nope" });
   assert.equal(g.redirect.status, 401);
 
-  const again = () => approve(ctx, g.request, { password: "nope", access: "read", decision: "allow" });
-  for (let i = 0; i < 4; i++) assert.equal((await again()).res.status, 401);
-  assert.equal((await again()).res.status, 429);
+  const again = (request) => approve(ctx, request, { password: "nope", access: "read", decision: "allow" });
+  assert.equal((await again(g.request)).res.status, 401);
+  const third = await again(g.request);
+  assert.equal(third.res.status, 401);
+  assert.match(third.body, /three times/);
+  // The page is gone: the right password on it goes nowhere.
+  assert.equal((await approve(ctx, g.request, { password: PASSWORD, access: "read", decision: "allow" })).res.status, 400);
+
+  const fresh = await begin(ctx);
+  assert.equal((await again(fresh.request)).res.status, 401);
+  assert.equal((await again(fresh.request)).res.status, 401);
+  assert.equal((await again((await begin(ctx)).request)).res.status, 429);
 });
 
 test("cancel sends the agent back with access_denied and no code", async (t) => {
@@ -290,4 +314,98 @@ test("an expired access token is refused and swept", async (t) => {
   const onDisk = JSON.parse(readFileSync(join(dataDir, "oauth.json"), "utf8"));
   assert.deepEqual(onDisk.access, {});
   assert.equal(Object.keys(onDisk.refresh).length, 1);
+});
+
+test("with no static token and OAuth on, nobody gets in without signing in", async (t) => {
+  const ctx = await boot(t, { credentials: [] });
+  const { res } = await ctx.fetchJson("/mcp", { method: "POST", headers: { "content-type": "application/json" }, body: "{}" });
+  assert.equal(res.status, 401);
+  assert.equal((await listTools(ctx, "anything")).status, 401);
+
+  const { tokens } = await signIn(ctx, { access: "write" });
+  const { names } = await listTools(ctx, tokens.access_token);
+  assert.ok(names.includes("send_message"), "a write grant is not downgraded by the missing read token");
+});
+
+test("revoking the refresh token ends the access tokens it minted", async (t) => {
+  const ctx = await boot(t);
+  const { client, tokens } = await signIn(ctx);
+  assert.equal((await listTools(ctx, tokens.access_token)).status, 200);
+  const { res } = await ctx.fetchJson("/revoke", {
+    method: "POST",
+    headers: { "content-type": "application/x-www-form-urlencoded" },
+    body: form({ token: tokens.refresh_token, client_id: client.client_id }),
+  });
+  assert.equal(res.status, 200);
+  assert.equal((await listTools(ctx, tokens.access_token)).status, 401);
+  assert.equal(ctx.oauth.grants().length, 0);
+});
+
+test("deleting oauth.json signs everyone out of a running server", async (t) => {
+  const ctx = await boot(t);
+  const { tokens } = await signIn(ctx);
+  assert.equal((await listTools(ctx, tokens.access_token)).status, 200);
+  rmSync(join(ctx.dataDir, "oauth.json"));
+  assert.equal((await listTools(ctx, tokens.access_token)).status, 401);
+  assert.equal(ctx.oauth.grants().length, 0);
+  // The next write must not resurrect the old grants.
+  const second = await signIn(ctx);
+  assert.equal(ctx.oauth.grants().length, 1);
+  assert.equal((await listTools(ctx, second.tokens.access_token)).status, 200);
+  assert.equal((await listTools(ctx, tokens.access_token)).status, 401);
+});
+
+test("a confidential client keeps its secret for good", async (t) => {
+  const ctx = await boot(t);
+  const { client, tokens } = await signIn(ctx, { authMethod: "client_secret_post" });
+  assert.ok(client.client_secret);
+  assert.equal(client.client_secret_expires_at, 0);
+  assert.equal(tokens.scope, "read write");
+});
+
+test("a client name with markup is shown, not run, and escaped once", async (t) => {
+  const ctx = await boot(t);
+  const { html } = await begin(ctx, { clientName: "Poke & <Co>" });
+  assert.match(html, /<title>Connect Poke &amp; &lt;Co&gt; · wazap<\/title>/);
+  assert.match(html, /<strong>Poke &amp; &lt;Co&gt;<\/strong>/);
+  assert.ok(!html.includes("<Co>"));
+});
+
+test("a forgotten refresh token and an orphaned registration are swept", async (t) => {
+  let now = Date.now();
+  const dataDir = mkdtempSync(join(tmpdir(), "wazap-oauth-sweep-"));
+  t.after(() => rmSync(dataDir, { recursive: true, force: true }));
+  const provider = new WazapOAuthProvider({
+    publicUrl: new URL("https://wazap.example"),
+    password: PASSWORD,
+    stateFile: join(dataDir, "oauth.json"),
+    now: () => now,
+  });
+  const used = await provider.clientsStore.registerClient({ redirect_uris: ["https://a.example/cb"], client_name: "used" });
+  await provider.clientsStore.registerClient({ redirect_uris: ["https://b.example/cb"], client_name: "orphan" });
+  provider["issue"](used.client_id, ["read"]);
+  assert.equal(provider.grants().length, 1);
+
+  now += 2 * 60 * 60 * 1000;
+  provider["sweep"]();
+  let onDisk = JSON.parse(readFileSync(join(dataDir, "oauth.json"), "utf8"));
+  assert.deepEqual(Object.values(onDisk.clients).map((c) => c.client_name), ["used"]);
+  assert.equal(Object.keys(onDisk.refresh).length, 1);
+
+  now += 91 * 24 * 60 * 60 * 1000;
+  provider["sweep"]();
+  onDisk = JSON.parse(readFileSync(join(dataDir, "oauth.json"), "utf8"));
+  assert.deepEqual(onDisk.refresh, {});
+  assert.deepEqual(onDisk.clients, {});
+});
+
+test("oauthProblem names what is missing or wrong", () => {
+  assert.equal(oauthProblem({ publicUrl: null, oauthPassword: null }), null);
+  assert.match(oauthProblem({ publicUrl: null, oauthPassword: "x".repeat(12) }), /WAZAP_PUBLIC_URL is not/);
+  assert.match(oauthProblem({ publicUrl: "https://h.example", oauthPassword: null }), /WAZAP_OAUTH_PASSWORD is not/);
+  assert.match(oauthProblem({ publicUrl: "http://h.example", oauthPassword: "x".repeat(12) }), /https/);
+  assert.match(oauthProblem({ publicUrl: "https://h.example/wazap", oauthPassword: "x".repeat(12) }), /bare origin/);
+  assert.match(oauthProblem({ publicUrl: "https://h.example", oauthPassword: "short" }), /shorter/);
+  assert.equal(oauthProblem({ publicUrl: "https://h.example", oauthPassword: "x".repeat(12) }), null);
+  assert.equal(oauthProblem({ publicUrl: "http://127.0.0.1:8766", oauthPassword: "x".repeat(12) }), null);
 });

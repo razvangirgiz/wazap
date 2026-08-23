@@ -29,6 +29,7 @@ import { lockHolder, releaseLock, writeLock } from "./lock.js";
 import { log, logError, say } from "./logger.js";
 import { clockLabel, formatAge } from "./messages.js";
 import { RateLimiter } from "./ratelimit.js";
+import { oauthProblem } from "./oauth.js";
 import { runHttp, runStdio, startLoopbackEndpoint } from "./server.js";
 import { applyWrites } from "./settings.js";
 import {
@@ -427,25 +428,6 @@ export async function runGreet(config: Config): Promise<void> {
       ? next("wazap connect claude-code", '(then ask your agent: "what did I miss on WhatsApp today?")')
       : next("wazap login"),
   );
-}
-
-/** OAuth needs both halves, and an issuer the SDK will accept: https, or a loopback name for testing. */
-export function oauthProblem(config: Pick<Config, "publicUrl" | "oauthPassword">): string | null {
-  if (!config.publicUrl && !config.oauthPassword) return null;
-  if (!config.publicUrl) return "WAZAP_OAUTH_PASSWORD is set but WAZAP_PUBLIC_URL is not. Set both, or neither.";
-  if (!config.oauthPassword) return "WAZAP_PUBLIC_URL is set but WAZAP_OAUTH_PASSWORD is not. Set both, or neither.";
-  let url: URL;
-  try {
-    url = new URL(config.publicUrl);
-  } catch {
-    return `WAZAP_PUBLIC_URL is not a URL: ${config.publicUrl}`;
-  }
-  if (url.search || url.hash) return "WAZAP_PUBLIC_URL must not carry a query or a fragment.";
-  if (url.protocol !== "https:" && !LOOPBACK_HOSTS.includes(url.hostname)) {
-    return "WAZAP_PUBLIC_URL must be https, since agents will send a password to it.";
-  }
-  if (config.oauthPassword.length < 8) return "WAZAP_OAUTH_PASSWORD is shorter than 8 characters.";
-  return null;
 }
 
 export async function runServe(config: Config): Promise<void> {

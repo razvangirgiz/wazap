@@ -5,6 +5,7 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { isInitializeRequest } from "@modelcontextprotocol/sdk/types.js";
 import express, { type Request, type Response, type NextFunction } from "express";
+import { rateLimit } from "express-rate-limit";
 import { WAZAP_VERSION, paths, type Config } from "./config.js";
 import { APPROVE_PATH, OAUTH_SCOPES, WazapOAuthProvider } from "./oauth.js";
 import { RateLimiter } from "./ratelimit.js";
@@ -46,7 +47,7 @@ export interface Endpoint {
   host: string;
   port: number;
   credentials: Credential[];
-  /** No read token configured, so an unauthenticated request gets the read tools. */
+  /** No read token configured, so an unauthenticated request gets the read tools. Never with OAuth on. */
   openRead: boolean;
   /** Hosted agents sign in here instead of carrying a token. */
   oauth?: WazapOAuthProvider;
@@ -79,7 +80,7 @@ export async function startHttpEndpoint(
     next();
   });
 
-  if (endpoint.openRead) {
+  if (endpoint.openRead && !endpoint.oauth) {
     log(
       "WARNING: no WAZAP_READ_TOKEN set, the /mcp endpoint is UNAUTHENTICATED. " +
         "Set WAZAP_READ_TOKEN before exposing this server beyond localhost.",
@@ -87,10 +88,13 @@ export async function startHttpEndpoint(
   }
 
   const oauth = endpoint.oauth;
+  // A server that advertises sign-in must not also answer strangers.
+  const openRead = endpoint.openRead && !oauth;
   if (oauth) {
-    // Reached through a TLS proxy on this machine, so the proxy's idea of the
-    // caller is the one the password lockout should count.
-    app.set("trust proxy", "loopback");
+    // Reached through a TLS proxy: on this machine, or the Docker bridge when
+    // the container binds 0.0.0.0. The proxy's idea of the caller is the one
+    // the password lockout and the SDK's limiters should count.
+    app.set("trust proxy", "loopback, linklocal, uniquelocal");
     app.use(
       mcpAuthRouter({
         provider: oauth,
@@ -99,9 +103,17 @@ export async function startHttpEndpoint(
         resourceName: "wazap",
         scopesSupported: [...OAUTH_SCOPES],
         serviceDocumentationUrl: new URL("https://github.com/razvangirgiz/wazap#self-host"),
+        // A confidential client's secret would otherwise expire after thirty
+        // days and its refresh token with it, which is a monthly password.
+        clientRegistrationOptions: { clientSecretExpirySeconds: 0 },
       }),
     );
-    app.post(APPROVE_PATH, express.urlencoded({ extended: false }), oauth.approve);
+    app.post(
+      APPROVE_PATH,
+      rateLimit({ windowMs: 15 * 60 * 1000, limit: 30, standardHeaders: true, legacyHeaders: false }),
+      express.urlencoded({ extended: false }),
+      oauth.approve,
+    );
     log(`OAuth on: agents sign in at ${oauth.issuerUrl.href}`);
   }
   const resourceMetadataUrl = oauth ? getOAuthProtectedResourceMetadataUrl(oauth.resourceUrl) : null;
@@ -112,8 +124,8 @@ export async function startHttpEndpoint(
   const requireAuth = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
     const auth = req.headers.authorization;
     const credential = endpoint.credentials.find((entry) => isAuthorized(auth, entry.token));
-    if (credential || endpoint.openRead) {
-      (req as AuthedRequest).mcpWrite = credential?.write === true;
+    if (credential) {
+      (req as AuthedRequest).mcpWrite = credential.write;
       next();
       return;
     }
@@ -126,6 +138,11 @@ export async function startHttpEndpoint(
       } catch {
         // Falls through to the 401 below, which tells the client how to sign in.
       }
+    }
+    if (openRead) {
+      (req as AuthedRequest).mcpWrite = false;
+      next();
+      return;
     }
     if (resourceMetadataUrl) {
       res.setHeader("WWW-Authenticate", `Bearer resource_metadata="${resourceMetadataUrl}"`);

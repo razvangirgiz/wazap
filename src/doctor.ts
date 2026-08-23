@@ -3,7 +3,7 @@ import { readLinkedAccount } from "./auth-state.js";
 import { WAZAP_VERSION, paths, type Config } from "./config.js";
 import { WazapError, asWazapError } from "./errors.js";
 import { lockHolder, lockPid } from "./lock.js";
-import { readGrants } from "./oauth.js";
+import { oauthProblem, readGrants } from "./oauth.js";
 import {
   MODELS,
   findWhisper,
@@ -141,9 +141,14 @@ function checkWrites(config: Config): Check {
   };
 }
 
-/** Only when OAuth is configured: who is signed in. A missing file is silence, not a fault. */
+/** Only when OAuth is configured: whether it can start, and who is signed in. */
 function checkOAuth(config: Config): Check[] {
-  if (!config.publicUrl || !config.oauthPassword) return [];
+  if (!config.publicUrl && !config.oauthPassword) return [];
+  const problem = oauthProblem(config);
+  if (problem) return [{ name: "oauth", state: "fail", detail: problem, fix: "edit <data-dir>/.env" }];
+  if (config.transport !== "http") {
+    return [{ name: "oauth", state: "info", detail: "configured, but only served with WAZAP_TRANSPORT=http" }];
+  }
   const grants = readGrants(paths(config.dataDir).oauthFile);
   if (grants.length === 0) {
     return [{ name: "oauth", state: "info", detail: `on at ${config.publicUrl}, no agent signed in yet` }];

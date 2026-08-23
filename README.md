@@ -492,12 +492,19 @@ server.
 
 What to know before exposing it:
 
-- `WAZAP_PUBLIC_URL` must be `https`. The password travels to it.
-- The password is the whole identity layer. Five wrong guesses lock that
-  address out for fifteen minutes, and the authorize endpoint takes a hundred
-  requests per fifteen minutes in total. Use a long one.
+- `WAZAP_PUBLIC_URL` must be `https` and a bare origin, no path: the
+  endpoints live at its root. The password travels to it.
+- The password is the whole identity layer. Use a long one. A consent page
+  takes three wrong guesses and is gone; five from one address lock that
+  address out for fifteen minutes; twenty from anywhere close the page for
+  everyone for fifteen minutes.
+- With OAuth on, `/mcp` never answers an unauthenticated request, whether or
+  not a read token is set.
 - Grants live in `<data-dir>/oauth.json` as hashes. Delete the file to sign
-  every agent out at once; `wazap status` lists who holds one.
+  every agent out at once, running server included; `wazap status` lists who
+  holds one. Disconnecting an agent on its side revokes its refresh token and
+  every access token it minted. A refresh token unused for ninety days is
+  dropped.
 - A read grant never sees a write tool, whatever scope the agent requested.
   The radio button on the consent page is the only thing that decides.
 
