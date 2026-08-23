@@ -117,10 +117,11 @@ async function offerGlobalInstall(config: Config, install: Install): Promise<Ins
   return install;
 }
 
-/** The question defaults to yes, and so does anything that cannot be asked. */
+/** Writing to the npm prefix takes a person or `--yes`; a pipe gets no install. */
 async function askGlobal(config: Config): Promise<boolean> {
   if (config.noGlobal) return false;
-  if (config.assumeYes || process.stdin.isTTY !== true) return true;
+  if (config.assumeYes) return true;
+  if (process.stdin.isTTY !== true) return false;
   const answer = await ask(
     `${brand("?")} Install it globally so Claude Desktop and the background service can find it? [Y/n] `,
   );
