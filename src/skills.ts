@@ -3,16 +3,17 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { detectClients } from "./connect.js";
 import type { Config } from "./config.js";
 import { WazapError } from "./errors.js";
 import { log, say } from "./logger.js";
-import { info, next, nextHint, ok, shortPath } from "./ui.js";
+import { info, nextHint, ok, shortPath } from "./ui.js";
 
 export interface SkillTarget {
   name: string;
   describe: string;
-  /** Where the five directories go, or null when this harness takes them another way. */
-  dir: (() => string) | null;
+  /** Where the five directories go. */
+  dir: () => string;
   next: string;
 }
 
@@ -26,8 +27,8 @@ export const SKILL_TARGETS: readonly SkillTarget[] = [
   {
     name: "claude-code",
     describe: "Claude Code",
-    dir: null,
-    next: "/plugin marketplace add razvangirgiz/wazap",
+    dir: () => join(homedir(), ".claude", "skills"),
+    next: "Restart Claude Code.",
   },
   {
     name: "codex",
@@ -143,26 +144,20 @@ export function registerSkillPrompts(server: McpServer, skills: readonly Skill[]
   }
 }
 
+/** The target for a `connect` client, or undefined when that client reads the workflows off the server. */
+export function skillTargetFor(client: string): SkillTarget | undefined {
+  return SKILL_TARGETS.find((target) => target.name === client);
+}
+
 function findSkillTarget(name: string): SkillTarget {
-  const target = SKILL_TARGETS.find((candidate) => candidate.name === name);
+  const target = skillTargetFor(name);
   if (!target) {
     throw new WazapError("INVALID_ID", `Unknown harness "${name}".`, `Pick one of: ${SKILL_TARGET_NAMES}`);
   }
   return target;
 }
 
-export function runSkills(config: Config): void {
-  if (config.args[0] !== "install") {
-    throw new WazapError("INVALID_ID", `Unknown skills command "${config.args[0]}".`, "Run `wazap skills install <harness>`");
-  }
-
-  const target = findSkillTarget(config.args[1] ?? "");
-  if (target.dir === null) {
-    say(info(`${target.describe} loads these skills from the wazap plugin, along with the MCP server.`));
-    say(next(target.next));
-    return;
-  }
-
+export function installSkills(target: SkillTarget, dryRun: boolean): void {
   const skills = loadSkills();
   if (skills.length === 0) {
     throw new WazapError(
@@ -173,13 +168,39 @@ export function runSkills(config: Config): void {
   }
 
   const dir = target.dir();
-  say(info(`${target.describe} · ${config.dryRun ? "would copy into" : "copying into"} ${shortPath(dir)}`));
+  say(info(`${target.describe} · ${dryRun ? "would copy into" : "copying into"} ${shortPath(dir)}`));
   for (const skill of skills) {
     // Overwriting is the point: this is how an upgrade reaches an already
     // installed harness, and re-running it must land in the same place.
-    if (!config.dryRun) cpSync(join(packagedSkills(), skill.name), join(dir, skill.name), { recursive: true, force: true });
+    if (!dryRun) cpSync(join(packagedSkills(), skill.name), join(dir, skill.name), { recursive: true, force: true });
     say(`  ${ok(skill.name)}`);
   }
+}
 
-  say(nextHint(target.next));
+export function runSkills(config: Config): void {
+  if (config.args[0] !== "install") {
+    throw new WazapError("INVALID_ID", `Unknown skills command "${config.args[0]}".`, "Run `wazap skills install <harness>`");
+  }
+
+  const named = config.args[1];
+  const targets = named === undefined ? detectedTargets() : [findSkillTarget(named)];
+  if (targets.length === 0) {
+    throw new WazapError(
+      "INVALID_ID",
+      "No skill-aware harness found on this machine.",
+      `Pick one of: ${SKILL_TARGET_NAMES}`,
+    );
+  }
+
+  for (const target of targets) {
+    installSkills(target, config.dryRun);
+    say(nextHint(target.next));
+  }
+}
+
+/** The installed clients that keep skills on disk, in table order. */
+function detectedTargets(): SkillTarget[] {
+  return detectClients()
+    .map((client) => skillTargetFor(client.name))
+    .filter((target): target is SkillTarget => target !== undefined);
 }

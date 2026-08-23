@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFile, spawn } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -11,7 +11,11 @@ import { CLIENTS, detectClients } from "../dist/connect.js";
 import { parseChoice } from "../dist/setup.js";
 
 const run = promisify(execFile);
-const binary = join(dirname(fileURLToPath(import.meta.url)), "..", "dist", "index.js");
+const root = join(dirname(fileURLToPath(import.meta.url)), "..");
+const binary = join(root, "dist", "index.js");
+const SKILLS = readdirSync(join(root, "skills"), { withFileTypes: true })
+  .filter((entry) => entry.isDirectory())
+  .map((entry) => entry.name);
 
 function childEnv(extra) {
   return { ...process.env, WAZAP_NO_UPDATE_CHECK: "1", ...extra };
@@ -124,7 +128,7 @@ function setup(box, ...args) {
 }
 
 test("setup --agent is AGENT.md on stdout, nothing on stderr", async () => {
-  const document = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "..", "AGENT.md"), "utf8");
+  const document = readFileSync(join(root, "AGENT.md"), "utf8");
   // A non-zero exit rejects, so reaching the assertions is the exit-0 check.
   const { stdout, stderr } = await run(process.execPath, [binary, "setup", "--agent", "--data-dir", dataDir("wazap-agent-")], {
     env: childEnv(),
@@ -157,6 +161,19 @@ test("setup on a linked session connects the named client and finishes", async (
   assert.match(stderr, /Reload the Cursor window\./);
   const written = JSON.parse(readFileSync(join(box.home, ".cursor", "mcp.json"), "utf8"));
   assert.deepEqual(written.mcpServers.whatsapp, { command: "wazap", args: ["--data-dir", dir] });
+
+  // Connecting a client is also where its skills land: no second command.
+  for (const name of SKILLS) {
+    assert.ok(existsSync(join(box.home, ".cursor", "skills", name, "SKILL.md")), `${name} never reached Cursor`);
+  }
+});
+
+test("setup tells a client with no skills directory that the server carries the workflows", async () => {
+  const box = sandbox();
+  const { stderr } = await setup(box, "--yes", "--client", "claude-desktop", "--data-dir", linkedDataDir());
+
+  assert.match(stderr, /Claude Desktop gets the workflows from the server itself, as MCP prompts\./);
+  assert.ok(!existsSync(join(box.home, ".claude", "skills")), "Claude Desktop reads no skills directory");
 });
 
 test("setup refuses to link while another process owns the session", async () => {

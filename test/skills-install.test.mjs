@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -15,19 +15,24 @@ const SKILLS = readdirSync(join(root, "skills"), { withFileTypes: true })
   .map((entry) => entry.name)
   .sort();
 
-/** A HOME and a working directory of their own, so no real skills directory is ever touched. */
+/**
+ * A HOME, a working directory and a PATH of their own, so no real skills
+ * directory is ever touched and client detection sees only what a case sets up.
+ */
 function sandbox() {
-  return { home: mkdtempSync(join(tmpdir(), "wazap-skills-home-")), cwd: mkdtempSync(join(tmpdir(), "wazap-skills-cwd-")) };
+  const home = mkdtempSync(join(tmpdir(), "wazap-skills-home-"));
+  return { home, cwd: mkdtempSync(join(tmpdir(), "wazap-skills-cwd-")), bin: join(home, "bin") };
 }
 
 function install(box, ...args) {
   return run(process.execPath, [binary, "skills", "install", ...args], {
     cwd: box.cwd,
-    env: { ...process.env, HOME: box.home, USERPROFILE: box.home },
+    env: { ...process.env, HOME: box.home, USERPROFILE: box.home, PATH: box.bin },
   });
 }
 
 const TARGETS = [
+  { harness: "claude-code", dir: (box) => join(box.home, ".claude", "skills") },
   { harness: "codex", dir: (box) => join(box.home, ".agents", "skills") },
   { harness: "cursor", dir: (box) => join(box.home, ".cursor", "skills") },
   { harness: "opencode", dir: (box) => join(box.home, ".config", "opencode", "skills") },
@@ -66,11 +71,26 @@ test("--dry-run lists the five skills and writes nothing", async () => {
   assert.ok(!existsSync(join(box.home, ".agents")), "dry run must not create the directory");
 });
 
-test("claude-code is told to use the plugin instead of a copy", async () => {
+test("install with no harness lands the skills in every client it finds", async () => {
   const box = sandbox();
-  const { stderr } = await install(box, "claude-code");
-  assert.match(stderr, /plugin marketplace add razvangirgiz\/wazap/);
-  assert.ok(!existsSync(join(box.home, ".claude")), "nothing is copied for Claude Code");
+  mkdirSync(join(box.home, ".cursor"), { recursive: true });
+  mkdirSync(join(box.home, ".codex"), { recursive: true });
+
+  const { stderr } = await install(box);
+  for (const dir of [join(box.home, ".cursor", "skills"), join(box.home, ".agents", "skills")]) {
+    for (const name of SKILLS) assert.ok(existsSync(join(dir, name, "SKILL.md")), `${dir}: ${name} missing`);
+  }
+  assert.match(stderr, /Reload the Cursor window\./);
+  assert.match(stderr, /Restart Codex\./);
+});
+
+test("install with no harness and nothing installed names the harnesses that exist", async () => {
+  const box = sandbox();
+  await assert.rejects(install(box), (err) => {
+    assert.equal(err.code, 1);
+    assert.match(err.stderr, /claude-code, codex, cursor, opencode, agents/);
+    return true;
+  });
 });
 
 test("an unknown harness names the ones that exist", async () => {

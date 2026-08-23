@@ -7,6 +7,7 @@ import { CLIENTS, connectClient, connectNext, detectClients, findClient, type Cl
 import { WazapError } from "./errors.js";
 import { say } from "./logger.js";
 import { applyTranscribe } from "./settings.js";
+import { installSkills, skillTargetFor } from "./skills.js";
 import { MODELS, findWhisper, localProvider, readTranscribeSettings, which } from "./transcribe/index.js";
 import { brand, fail, fix, info, ok, warn } from "./ui.js";
 
@@ -38,7 +39,14 @@ export async function runSetup(config: Config): Promise<void> {
     say(info("No client connected yet."));
     say(connectNext());
   }
-  for (const spec of chosen) connectClient(spec, config);
+  // The client choice is the answer to where the skills go, so setup never asks
+  // a second question about them.
+  for (const spec of chosen) {
+    connectClient(spec, config);
+    const target = skillTargetFor(spec.name);
+    if (target) installSkills(target, config.dryRun);
+    else say(info(`${spec.describe} gets the workflows from the server itself, as MCP prompts.`));
+  }
 
   announce("Finish");
   say(ok("Setup complete"));

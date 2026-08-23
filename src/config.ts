@@ -111,7 +111,8 @@ const COMMAND_ARGS: Record<Command, readonly number[]> = {
   // with the reason, rather than with a generic arity complaint.
   config: [0, 2, 3],
   contacts: [1],
-  skills: [2],
+  // One positional is `skills install`, which finds the harnesses itself.
+  skills: [1, 2],
   transcribe: [1, 2],
 };
 
