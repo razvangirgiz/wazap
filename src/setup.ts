@@ -1,8 +1,8 @@
 import { readFileSync } from "node:fs";
 import { readLinkedAccount } from "./auth-state.js";
 import { banner } from "./banner.js";
-import { ask, describeAccount, downloadTranscribeModel, linkAndSync, runLiveProbe, stepper } from "./cli.js";
-import { paths, type Config } from "./config.js";
+import { ask, describeAccount, downloadTranscribeModel, linkAndSync, runLiveProbe, serviceLive, stepper } from "./cli.js";
+import { paths, type Config, type KeepRunning } from "./config.js";
 import {
   CLIENTS,
   connectClient,
@@ -15,6 +15,8 @@ import {
 } from "./connect.js";
 import { checkLines } from "./doctor.js";
 import { WazapError } from "./errors.js";
+import { PROVIDERS, runExpose, type TunnelProvider } from "./expose.js";
+import { installService } from "./service.js";
 import { lockHolder } from "./lock.js";
 import { say } from "./logger.js";
 import { applyTranscribe } from "./settings.js";
@@ -32,7 +34,7 @@ export async function runSetup(config: Config): Promise<void> {
   }
 
   say(banner());
-  const announce = stepper(4);
+  const announce = stepper(5);
 
   announce("Link");
   const account = readLinkedAccount(paths(config.dataDir).authDir);
@@ -59,6 +61,11 @@ export async function runSetup(config: Config): Promise<void> {
     else say(info(`${spec.describe} gets the workflows from the server itself, as MCP prompts.`));
   }
 
+  announce("Keep running");
+  const keep = await chooseKeepRunning(config);
+  if (keep !== "client") await installService(config);
+  if (keep === "expose" && !config.dryRun) await runExpose(config);
+
   announce("Finish");
   let failing = !(await proveSession(config));
   for (const spec of chosen) {
@@ -83,10 +90,22 @@ async function proveSession(config: Config): Promise<boolean> {
   const p = paths(config.dataDir);
   if (config.dryRun || readLinkedAccount(p.authDir) === null) return true;
 
+  // The service holds the session, so nothing else may open it. Its /healthz is
+  // the only honest answer left, and it is the one the tunnel sees too.
   const running = lockHolder(p.lockFile);
   if (running !== null) {
-    say(info(`A server already holds the session (pid ${running}); skipping the live check.`));
-    return true;
+    const served = await serviceLive(config, running);
+    if (served === null) {
+      say(info(`A server already holds the session (pid ${running}); skipping the live check.`));
+      return true;
+    }
+    if (served.reachable) {
+      say(ok("Connected · the wazap service holds the session"));
+      return true;
+    }
+    say(fail(`the service reports ${served.reason ?? "no connection"}`));
+    say(fix("run `wazap service logs`"));
+    return false;
   }
 
   const live = await runLiveProbe(config);
@@ -100,6 +119,35 @@ async function proveSession(config: Config): Promise<boolean> {
 }
 
 const CHOICE_ATTEMPTS = 3;
+
+const KEEP_OPTIONS: readonly { choice: KeepRunning; describe: string }[] = [
+  { choice: "client", describe: "Only while a client has it open" },
+  { choice: "service", describe: "Always, on this machine            (wazap service install)" },
+  { choice: "expose", describe: "Always, and reachable by cloud agents   (also wazap expose)" },
+];
+
+/** Offering a public URL with nothing to tunnel through would be a dead end. */
+export function keepRunningOptions(providers: readonly TunnelProvider[] = PROVIDERS): typeof KEEP_OPTIONS {
+  return providers.some((provider) => provider.available()) ? KEEP_OPTIONS : KEEP_OPTIONS.slice(0, 2);
+}
+
+/** Only while a client has it open, unless a flag or a person says otherwise. */
+async function chooseKeepRunning(config: Config): Promise<KeepRunning> {
+  if (config.keepRunning !== null) return config.keepRunning;
+  if (config.assumeYes || process.stdin.isTTY !== true) return "client";
+
+  const options = keepRunningOptions();
+  say("Keep wazap running?");
+  options.forEach((option, index) => say(`  ${index + 1}. ${option.describe}`));
+  for (let attempt = 1; ; attempt++) {
+    const answer = (await ask(`${brand("?")} Choose: [1] (enter to accept) `)).trim();
+    if (answer === "") return "client";
+    const picked = Number(answer);
+    if (Number.isInteger(picked) && picked >= 1 && picked <= options.length) return options[picked - 1]!.choice;
+    if (attempt === CHOICE_ATTEMPTS) return "client";
+    say(fail(`Type a number from 1 to ${options.length}.`));
+  }
+}
 
 const TRANSCRIBE_OPTIONS: readonly { choice: string; describe: string }[] = [
   {

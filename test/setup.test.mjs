@@ -8,7 +8,8 @@ import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 
 import { CLIENTS, detectClients } from "../dist/connect.js";
-import { parseChoice } from "../dist/setup.js";
+import { readService } from "../dist/service.js";
+import { keepRunningOptions, parseChoice } from "../dist/setup.js";
 
 const run = promisify(execFile);
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
@@ -220,4 +221,103 @@ test("a 401 at logout means the phone already removed the device, not a bad pair
   assert.equal(alreadyUnlinked(new WazapError("TIMEOUT", "WhatsApp did not answer in time.")), false);
   assert.equal(alreadyUnlinked(new Error("socket hang up")), false);
   assert.equal(alreadyUnlinked(undefined), false);
+});
+
+test("the keep-running menu offers a public URL only when something can tunnel", () => {
+  const none = keepRunningOptions([{ available: () => false }]);
+  assert.deepEqual(none.map((option) => option.choice), ["client", "service"]);
+
+  const some = keepRunningOptions([{ available: () => false }, { available: () => true }]);
+  assert.deepEqual(some.map((option) => option.choice), ["client", "service", "expose"]);
+});
+
+/**
+ * A `launchctl`/`systemctl` of our own: it reads the unit wazap just wrote and
+ * starts exactly that command, so the install, the lock and /healthz are the
+ * real ones. The user's own launchd is never reached.
+ */
+const SUPERVISOR_STUB = {
+  darwin: ["launchctl"],
+  linux: ["systemctl", "loginctl", "journalctl"],
+}[process.platform];
+
+function stubSupervisor(box) {
+  const state = join(box.home, "loaded");
+  // The unit is the only source of truth here: the same environment and the
+  // same argv the real supervisor would launch, data dir included.
+  const reader =
+    process.platform === "darwin"
+      ? `/usr/bin/python3 -c "import plistlib,sys;d=plistlib.load(open(sys.argv[1],'rb'));print(' '.join([k+'='+v for k,v in d['EnvironmentVariables'].items()]+d['ProgramArguments']))" "$UNIT"`
+      : `{ sed -n 's/^Environment=//p' "$UNIT" | tr '\\n' ' '; sed -n 's/^ExecStart=//p' "$UNIT"; }`;
+  const unit =
+    process.platform === "darwin"
+      ? `${join(box.home, "Library", "LaunchAgents")}/com.wazap.server.plist`
+      : `${join(box.home, ".config", "systemd", "user")}/wazap.service`;
+  const script = `#!/bin/sh
+UNIT=${unit}
+case "$*" in
+  *print*|*MainPID*)
+    if [ -f ${state} ] && kill -0 $(cat ${state}) 2>/dev/null; then
+      printf '\tpid = %s\n' "$(cat ${state})"
+      cat ${state}
+      exit 0
+    fi
+    echo 0; exit 113 ;;
+  *bootout*|*"--user stop"*) [ -f ${state} ] && kill $(cat ${state}) 2>/dev/null; rm -f ${state}; exit 0 ;;
+esac
+[ -f "$UNIT" ] || exit 0
+LINE=$(${reader})
+env $LINE >/dev/null 2>&1 &
+echo $! > ${state}
+exit 0
+`;
+  for (const binary of SUPERVISOR_STUB) writeFileSync(join(box.bin, binary), script, { mode: 0o755 });
+  return () => {
+    if (!existsSync(state)) return;
+    try {
+      process.kill(Number(readFileSync(state, "utf8").trim()), "SIGKILL");
+    } catch {
+      /* already gone */
+    }
+  };
+}
+
+test(
+  "setup --service installs the service, and Finish reports its health instead of opening the session",
+  { skip: SUPERVISOR_STUB === undefined ? `no launchd or systemd on ${process.platform}` : false },
+  async () => {
+    const box = sandbox();
+    const dir = linkedDataDir();
+    const port = 43_311;
+    const kill = stubSupervisor(box);
+    try {
+      // The stub credentials never reach `connected`, so Finish fails; what this
+      // pins is that it failed on the service's own /healthz.
+      const err = await setup(box, "--yes", "--service", "--client", "cursor", "--port", String(port), "--data-dir", dir).then(
+        () => assert.fail("stub credentials cannot reach connected"),
+        (rejected) => rejected,
+      );
+
+      assert.match(err.stderr, /Step 4 of 5 · Keep running/);
+      assert.match(err.stderr, new RegExp(`Running · pid \\d+ · http://127\\.0\\.0\\.1:${port}/mcp`));
+      assert.match(err.stderr, /the service reports \w+/);
+      assert.match(err.stderr, /→ run `wazap service logs`/);
+      assert.ok(!err.stderr.includes("already owns this session"), "Finish must not fight the service for the socket");
+
+      const record = readService(dir);
+      assert.equal(record.port, port);
+      assert.equal(existsSync(record.unitFile), true, "the unit landed in the sandbox HOME");
+      assert.ok(record.unitFile.startsWith(box.home), `the unit must stay in the sandbox: ${record.unitFile}`);
+    } finally {
+      kill();
+    }
+  },
+);
+
+test("setup with no answer keeps wazap running only while a client has it open", async () => {
+  const box = sandbox();
+  const dir = linkedDataDir();
+  const stderr = await failingSetup(box, "--yes", "--client", "cursor", "--data-dir", dir);
+  assert.match(stderr, /Step 4 of 5 · Keep running/);
+  assert.equal(readService(dir), null, "the default must install nothing");
 });

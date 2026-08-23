@@ -46,6 +46,8 @@ Options:
   --agent             With setup: print the procedure for an AI agent on stdout, then exit
   --client <name>     With setup: connect this client instead of the detected ones (repeatable)
   --transcribe <how>  With setup: answer the transcription question (local, openai or off)
+  --service           With setup: keep wazap running on this machine, without asking
+  --expose            With setup: also give it a public URL cloud agents can reach
   --model <alias>     With transcribe download: turbo (default), large-v3 or medium
   --dry-run           With connect, skills install or service install: print what would be written, and write nothing
   --live              With status: reach WhatsApp for real, then close the connection

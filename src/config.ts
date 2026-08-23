@@ -68,6 +68,8 @@ export interface Config {
   modelName?: string;
   /** `setup` only: the answer to the transcription question, from --transcribe. */
   transcribeChoice?: string;
+  /** `setup` only: the answer to the "keep running" question, from --service / --expose. */
+  keepRunning: KeepRunning | null;
 }
 
 export interface Paths {
@@ -99,6 +101,9 @@ export function paths(dataDir: string): Paths {
     qrFile: join(dataDir, "qr.png"),
   };
 }
+
+/** The answer to `setup`'s "keep running" question. */
+export type KeepRunning = "client" | "service" | "expose";
 
 export type CliInvocation = { kind: "help" } | { kind: "version" } | { kind: "run"; config: Config };
 
@@ -190,6 +195,8 @@ export function parseCli(argv: string[] = process.argv.slice(2)): CliInvocation 
         client: { type: "string", multiple: true },
         model: { type: "string" },
         transcribe: { type: "string" },
+        service: { type: "boolean" },
+        expose: { type: "boolean" },
         yes: { type: "boolean", short: "y" },
         help: { type: "boolean", short: "h" },
         version: { type: "boolean", short: "v" },
@@ -266,6 +273,7 @@ export function parseCli(argv: string[] = process.argv.slice(2)): CliInvocation 
       assumeYes: values.yes === true,
       modelName: values.model,
       transcribeChoice: values.transcribe,
+      keepRunning: values.expose === true ? "expose" : values.service === true ? "service" : null,
     },
   };
 }
