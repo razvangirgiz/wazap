@@ -7,6 +7,8 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 
+import { launcher } from "../dist/connect.js";
+
 const run = promisify(execFile);
 
 const root = fileURLToPath(new URL("..", import.meta.url));
@@ -102,6 +104,26 @@ test("the Gemini extension launches the same server under the same name", () => 
 /** One source for the workflows: the skills. GEMINI.md is only their concatenation. */
 test("GEMINI.md still matches skills/", async () => {
   await run(process.execPath, [join(root, "scripts", "build-context.mjs"), "--check"]);
+});
+
+test("both install links carry the entry connect would have written", async () => {
+  const { NAME, ENTRY, cursorLink, vscodeLink } = await import("../scripts/badges.mjs");
+  assert.deepEqual(ENTRY, launcher("/Users/x/.npm/_npx/8a1b/node_modules/wazap/dist/index.js", "/usr/bin"));
+
+  const cursor = new URL(cursorLink());
+  assert.equal(cursor.searchParams.get("name"), NAME);
+  assert.deepEqual(JSON.parse(Buffer.from(cursor.searchParams.get("config"), "base64").toString()), ENTRY);
+
+  const vscode = decodeURIComponent(vscodeLink().slice("vscode:mcp/install?".length));
+  assert.deepEqual(JSON.parse(vscode), { name: NAME, ...ENTRY });
+});
+
+test("the README carries the links the generator prints", async () => {
+  const { markdown } = await import("../scripts/badges.mjs");
+  const readme = readFileSync(join(root, "README.md"), "utf8");
+  for (const line of markdown().split("\n")) {
+    assert.ok(readme.includes(line), `README is missing ${line.slice(0, 60)}…`);
+  }
 });
 
 test("the icon is a PNG the bundle can point at", () => {

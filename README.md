@@ -67,9 +67,21 @@ it would write.
 | `opencode` | `mcp.whatsapp` in `~/.config/opencode/opencode.json` |
 | anything remote | client's MCP URL field: `https://your-host/mcp` with header `Authorization: Bearer <token>` (see [Self-host](#self-host)) |
 
-Any MCP client works the same way: the command is `npx -y wazap-mcp`, the transport
-is stdio. Tell the agent to call `learn` first — it returns the id formats, the
-workflows and every error code with what to do about it.
+### Other MCP clients
+
+Cursor and VS Code install from a link:
+
+[![Install in Cursor](https://cursor.com/deeplink/mcp-install-dark.png)](cursor://anysphere.cursor-deeplink/mcp/install?name=whatsapp&config=eyJjb21tYW5kIjoibnB4IiwiYXJncyI6WyIteSIsIndhemFwLW1jcCJdfQ)
+[![Install in VS Code](https://img.shields.io/badge/VS_Code-Install_Server-0098FF?style=flat-square&logo=visualstudiocode&logoColor=white)](vscode:mcp/install?%7B%22name%22%3A%22whatsapp%22%2C%22command%22%3A%22npx%22%2C%22args%22%3A%5B%22-y%22%2C%22wazap-mcp%22%5D%7D)
+
+Both carry the same entry `connect` writes. Where a custom scheme is stripped
+before you can click it, VS Code also takes
+[the https form](https://insiders.vscode.dev/redirect/mcp/install?name=whatsapp&config=%7B%22command%22%3A%22npx%22%2C%22args%22%3A%5B%22-y%22%2C%22wazap-mcp%22%5D%7D).
+`node scripts/badges.mjs` reprints all three.
+
+Any other MCP client works the same way: the command is `npx -y wazap-mcp`, the
+transport is stdio. Tell the agent to call `learn` first — it returns the id
+formats, the workflows and every error code with what to do about it.
 
 <details>
 <summary>The raw entries, for editing by hand</summary>
