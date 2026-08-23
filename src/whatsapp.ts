@@ -375,7 +375,11 @@ export class WhatsAppService implements WhatsAppApi {
     });
   }
 
-  getRecentMessages(hours: number, filter: Exclude<ChatFilter, "archived">): Promise<Synced<RecentConversation[]>> {
+  getRecentMessages(
+    hours: number,
+    filter: Exclude<ChatFilter, "archived">,
+    includeSystem = false,
+  ): Promise<Synced<RecentConversation[]>> {
     return this.guarded(async () => {
       this.ensureConnected();
       await this.waitForSync();
@@ -394,7 +398,8 @@ export class WhatsAppService implements WhatsAppApi {
         });
         if (recent.length === 0) continue;
 
-        const messages = this.viewsFor(recent, jid);
+        const messages = this.viewsFor(recent, jid).filter((view) => includeSystem || view.type !== "system");
+        if (messages.length === 0) continue;
         const last = messages[messages.length - 1];
         conversations.push({
           chat_id: jid,

@@ -99,6 +99,12 @@ contacts and groups. Call get_status first if anything looks wrong.
 ## Message shape
 Every message has non-empty \`text\`: media and system messages carry a
 placeholder like "[image] caption", "[voice message]", "[deleted]", "[poll] question".
+A sender whose name WhatsApp has never given us reads as their phone number, or
+as "unknown (lid …1234)" when even that is unknown — never as raw LID digits,
+which look like a phone number and are not one.
+WhatsApp's own notices (device linking, group membership, encryption) have
+\`type: "system"\` and are left out of get_recent_messages unless you pass
+include_system: true.
 \`timestamp\` is ISO 8601 with the machine's UTC offset, \`age\` is human-readable.
 
 ## Errors
@@ -197,23 +203,30 @@ older history when the local store runs out, which takes a few seconds.`,
     name: "get_recent_messages",
     title: "Get every WhatsApp conversation from the last N hours",
     description: `Everything that happened recently, grouped by chat. This is the catch-up tool:
-one call instead of list_chats plus a read_messages per chat.`,
+one call instead of list_chats plus a read_messages per chat. WhatsApp's own
+notices — device linking, group membership changes, encryption notices — are left
+out so the counts are conversation; pass include_system to see them.`,
     schema: {
       hours: z.number().int().min(1).max(168).default(24).describe("Look-back window in hours (1-168)"),
       filter: z
         .enum(["all", "unread", "groups", "individual"])
         .default("all")
         .describe("Restrict to unread chats, groups, or one-to-one chats"),
+      include_system: z
+        .boolean()
+        .default(false)
+        .describe("Include WhatsApp's own system notices, which are excluded from the bodies and the counts by default"),
     },
     write: false,
-    handler: async ({ hours, filter }, wa) => {
-      const result = await wa.getRecentMessages(hours, filter);
+    handler: async ({ hours, filter, include_system }, wa) => {
+      const result = await wa.getRecentMessages(hours, filter, include_system);
       const messageCount = result.data.reduce((n, c) => n + c.messages.length, 0);
       return ok(
         renderConversations(result.data, hours),
         synced(result, {
           hours,
           filter,
+          include_system,
           conversation_count: result.data.length,
           message_count: messageCount,
           conversations: result.data,

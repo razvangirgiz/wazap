@@ -201,7 +201,11 @@ export interface WhatsAppApi {
   getStatus(): StatusInfo;
   listChats(filter: ChatFilter, limit: number): Promise<Synced<ChatSummary[]>>;
   readMessages(chatId: string, limit: number, before?: string): Promise<Synced<MessageView[]>>;
-  getRecentMessages(hours: number, filter: Exclude<ChatFilter, "archived">): Promise<Synced<RecentConversation[]>>;
+  getRecentMessages(
+    hours: number,
+    filter: Exclude<ChatFilter, "archived">,
+    includeSystem?: boolean,
+  ): Promise<Synced<RecentConversation[]>>;
   searchMessages(query: string, chatId: string | undefined, limit: number): Promise<Synced<MessageView[]>>;
   getMessage(messageId: string): Promise<MessageView>;
   searchContacts(query: string, limit: number): Promise<ContactSummary[]>;

@@ -151,3 +151,36 @@ test("a snapshot an older wazap wrote is cleaned on the way in", () => {
   assert.equal(revived.store.byChat.has("0@s.whatsapp.net"), false);
   assert.deepEqual([...revived.store.byChat.keys()], [REAL]);
 });
+
+test("system notices are typed, excluded from the digest, and returned on request", async () => {
+  const { svc, sock } = makeService();
+  const group = "120363000000000003@g.us";
+  sock.ev.emit("messages.upsert", {
+    type: "notify",
+    messages: [
+      { ...message(group, {}, { id: "G1" }), messageStubType: proto.WebMessageInfo.StubType.GROUP_PARTICIPANT_ADD },
+      message(group, { conversation: "salut" }, { id: "G2" }),
+    ],
+  });
+
+  const read = (await svc.readMessages(group, 20)).data;
+  assert.deepEqual(read.map((m) => m.type), ["system", "text"], "read_messages shows the whole chat");
+
+  const quiet = (await svc.getRecentMessages(24, "all")).data;
+  assert.deepEqual(quiet[0].messages.map((m) => m.text), ["salut"]);
+
+  const loud = (await svc.getRecentMessages(24, "all", true)).data;
+  assert.deepEqual(loud[0].messages.map((m) => m.type), ["system", "text"]);
+});
+
+test("a chat with nothing but system notices drops out of the digest entirely", async () => {
+  const { svc, sock } = makeService();
+  const group = "120363000000000004@g.us";
+  sock.ev.emit("messages.upsert", {
+    type: "notify",
+    messages: [{ ...message(group, {}, { id: "H1" }), messageStubType: proto.WebMessageInfo.StubType.E2E_ENCRYPTED }],
+  });
+
+  assert.deepEqual((await svc.getRecentMessages(24, "all")).data, []);
+  assert.equal((await svc.getRecentMessages(24, "all", true)).data.length, 1);
+});
