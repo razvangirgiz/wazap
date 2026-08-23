@@ -1,4 +1,4 @@
-import { cpSync, readFileSync, readdirSync } from "node:fs";
+import { cpSync, existsSync, readFileSync, readdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -177,6 +177,24 @@ export function installSkills(target: SkillTarget, dryRun: boolean): void {
   }
 }
 
+export type SkillState = "installed" | "stale" | "missing";
+
+/**
+ * Compared by content, because an upgrade that rewrote a skill leaves a copy
+ * that exists and is wrong. Absent beats different: install fixes both.
+ */
+export function skillState(target: SkillTarget): SkillState {
+  const dir = target.dir();
+  const packaged = packagedSkills();
+  let state: SkillState = "installed";
+  for (const skill of loadSkills()) {
+    const installed = join(dir, skill.name, "SKILL.md");
+    if (!existsSync(installed)) return "missing";
+    if (readFileSync(installed, "utf8") !== readFileSync(join(packaged, skill.name, "SKILL.md"), "utf8")) state = "stale";
+  }
+  return state;
+}
+
 export function runSkills(config: Config): void {
   if (config.args[0] !== "install") {
     throw new WazapError("INVALID_ID", `Unknown skills command "${config.args[0]}".`, "Run `wazap skills install <harness>`");
@@ -199,7 +217,7 @@ export function runSkills(config: Config): void {
 }
 
 /** The installed clients that keep skills on disk, in table order. */
-function detectedTargets(): SkillTarget[] {
+export function detectedTargets(): SkillTarget[] {
   return detectClients()
     .map((client) => skillTargetFor(client.name))
     .filter((target): target is SkillTarget => target !== undefined);

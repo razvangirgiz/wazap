@@ -19,6 +19,10 @@
   `connect claude-desktop` now writes the absolute `node` path and the script
   behind the global bin. A failing check exits 1 instead of printing "Setup
   complete".
+- **`wazap status` reports the skills**, per detected harness, as installed,
+  stale or missing. A global upgrade leaves the copies in `~/.cursor/skills` and
+  the others behind, and until now nothing said so. Bare `wazap` and
+  `status --json` carry the check too.
 
 ### Changed
 

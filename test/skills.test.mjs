@@ -1,9 +1,10 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { readdirSync, readFileSync } from "node:fs";
+import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { loadSkills } from "../dist/skills.js";
+import { installSkills, loadSkills, skillState } from "../dist/skills.js";
 
 const root = new URL("..", import.meta.url).pathname;
 const toolNames = new Set([...readFileSync(join(root, "src/tools.ts"), "utf8").matchAll(/^\s+name: "([a-z_]+)",$/gm)].map((m) => m[1]));
@@ -52,4 +53,25 @@ test("loadSkills reads the packaged skills into one registry", () => {
     assert.ok(skill.description.length > 0, `${skill.name}: empty description`);
     assert.ok(skill.body.startsWith("# "), `${skill.name}: body must start at the title, not the frontmatter`);
   }
+});
+
+test("skillState reads missing, then installed, then stale as the packaged copies change", () => {
+  const dir = mkdtempSync(join(tmpdir(), "wazap-skillstate-"));
+  const target = { name: "temp", describe: "A throwaway harness", dir: () => dir, next: "" };
+  assert.equal(skillState(target), "missing");
+
+  installSkills(target, false);
+  assert.equal(skillState(target), "installed");
+
+  writeFileSync(join(dir, skillDirs[0], "SKILL.md"), "what an older wazap shipped\n");
+  assert.equal(skillState(target), "stale");
+});
+
+test("skillState calls a harness missing one skill missing, not stale", () => {
+  const dir = mkdtempSync(join(tmpdir(), "wazap-skillstate-gap-"));
+  const target = { name: "temp", describe: "A throwaway harness", dir: () => dir, next: "" };
+  installSkills(target, false);
+  writeFileSync(join(dir, skillDirs[0], "SKILL.md"), "stale");
+  rmSync(join(dir, skillDirs[1]), { recursive: true });
+  assert.equal(skillState(target), "missing");
 });

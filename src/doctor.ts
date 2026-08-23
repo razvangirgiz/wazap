@@ -4,6 +4,7 @@ import { WAZAP_VERSION, paths, type Config } from "./config.js";
 import { WazapError, asWazapError } from "./errors.js";
 import { lockHolder, lockPid } from "./lock.js";
 import { oauthProblem, readGrants } from "./oauth.js";
+import { detectedTargets, skillState } from "./skills.js";
 import {
   MODELS,
   findWhisper,
@@ -44,6 +45,7 @@ const CHECKS: readonly CheckFn[] = [
   checkLock,
   checkCredentials,
   checkWrites,
+  checkSkills,
   checkOAuth,
   checkTranscribe,
   checkUpdate,
@@ -138,6 +140,26 @@ function checkWrites(config: Config): Check {
     name: "writes",
     state: "ok",
     detail: `${config.readOnly ? "off" : "on"} (${config.sources.readOnly})`,
+  };
+}
+
+/**
+ * Whether each detected harness holds the workflows this build ships. A global
+ * upgrade leaves the copies behind, and nothing else would ever say so.
+ */
+function checkSkills(): Check {
+  const targets = detectedTargets();
+  if (targets.length === 0) return { name: "skills", state: "info", detail: "no skill-aware client detected" };
+
+  const states = targets.map((target) => ({ name: target.name, state: skillState(target) }));
+  if (states.every((target) => target.state === "installed")) {
+    return { name: "skills", state: "ok", detail: `installed for ${states.map((t) => t.name).join(", ")}` };
+  }
+  return {
+    name: "skills",
+    state: "info",
+    detail: states.map((target) => `${target.state} for ${target.name}`).join("; "),
+    fix: "run `wazap skills install`",
   };
 }
 
