@@ -279,22 +279,28 @@ export function isNewer(candidate: string, current: string): boolean {
   return false;
 }
 
-async function checkUpdate(): Promise<Check> {
-  if (process.env.WAZAP_NO_UPDATE_CHECK === "1") {
-    return { name: "update", state: "info", detail: "update check skipped (WAZAP_NO_UPDATE_CHECK=1)" };
-  }
+/** What the registry calls latest, or null when it will not say. */
+export async function latestVersion(): Promise<string | null> {
+  if (process.env.WAZAP_NO_UPDATE_CHECK === "1") return null;
   try {
     const response = await fetch("https://registry.npmjs.org/wazap-mcp/latest", {
       signal: AbortSignal.timeout(UPDATE_TIMEOUT_MS),
     });
-    if (!response.ok) {
-      return { name: "update", state: "info", detail: `update check skipped (registry answered ${response.status})` };
-    }
+    if (!response.ok) return null;
     const { version } = (await response.json()) as { version: string };
-    return isNewer(version, WAZAP_VERSION)
-      ? { name: "update", state: "info", detail: `${version} is out (running ${WAZAP_VERSION})`, fix: "run `npx wazap-mcp@latest`" }
-      : { name: "update", state: "ok", detail: `${WAZAP_VERSION} is current` };
+    return typeof version === "string" && version !== "" ? version : null;
   } catch {
-    return { name: "update", state: "info", detail: "update check skipped (offline)" };
+    return null;
   }
+}
+
+async function checkUpdate(): Promise<Check> {
+  if (process.env.WAZAP_NO_UPDATE_CHECK === "1") {
+    return { name: "update", state: "info", detail: "update check skipped (WAZAP_NO_UPDATE_CHECK=1)" };
+  }
+  const latest = await latestVersion();
+  if (latest === null) return { name: "update", state: "info", detail: "update check skipped (no answer)" };
+  return isNewer(latest, WAZAP_VERSION)
+    ? { name: "update", state: "info", detail: `${latest} is out (running ${WAZAP_VERSION})`, fix: "run `wazap update`" }
+    : { name: "update", state: "ok", detail: `${WAZAP_VERSION} is current` };
 }

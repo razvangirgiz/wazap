@@ -7,6 +7,7 @@ import { SKILL_TARGET_NAMES, runSkills } from "./skills.js";
 import { PROVIDER_NAMES, runExpose } from "./expose.js";
 import { SERVICE_VERBS, runService } from "./service.js";
 import { runSetup } from "./setup.js";
+import { runUpdate } from "./update.js";
 import { runConfig } from "./settings.js";
 import { WazapError } from "./errors.js";
 import { say } from "./logger.js";
@@ -28,6 +29,7 @@ Usage:
   wazap transcribe download [--model <alias>]              Fetch the whisper.cpp model into the data dir
   wazap transcribe test <audio file>                       Transcribe a local file with the configured provider
   wazap contacts resync                                    Fetch the phone's address book from WhatsApp again
+  wazap update [--dry-run]                                 Upgrade wazap, then the service and the skills that follow it
   wazap status [--live] [--json]                           Check the install, the session and the server
   wazap logout                                             Unlink and delete local credentials
 
@@ -50,7 +52,7 @@ Options:
   --service           With setup: keep wazap running on this machine, without asking
   --expose            With setup: also give it a public URL cloud agents can reach
   --model <alias>     With transcribe download: turbo (default), large-v3 or medium
-  --dry-run           With connect, skills install or service install: print what would be written, and write nothing
+  --dry-run           With connect, skills install, service install or update: print what would happen, and do nothing
   --live              With status: reach WhatsApp for real, then close the connection
   --json              With status: print the whole report as one JSON object on stdout
   --writes            Allow the agent to write, without login asking
@@ -113,6 +115,9 @@ async function main(): Promise<void> {
       return;
     case "contacts":
       await runContacts(config);
+      return;
+    case "update":
+      await runUpdate(config);
       return;
     case "status":
       await runStatus(config);

@@ -86,9 +86,8 @@ function parseSkill(text: string): Skill | null {
 }
 
 /** Every packaged workflow, by name. Empty rather than fatal: the server serves tools either way. */
-export function loadSkills(): Skill[] {
+export function loadSkills(dir: string = packagedSkills()): Skill[] {
   try {
-    const dir = packagedSkills();
     return readdirSync(dir, { withFileTypes: true })
       .filter((entry) => entry.isDirectory())
       .map((entry) => parseSkill(readFileSync(join(dir, entry.name, "SKILL.md"), "utf8")))
@@ -157,8 +156,9 @@ function findSkillTarget(name: string): SkillTarget {
   return target;
 }
 
-export function installSkills(target: SkillTarget, dryRun: boolean): void {
-  const skills = loadSkills();
+/** `source` is the packaged skills of another install, which is how `update` copies from the new one. */
+export function installSkills(target: SkillTarget, dryRun: boolean, source: string = packagedSkills()): void {
+  const skills = loadSkills(source);
   if (skills.length === 0) {
     throw new WazapError(
       "FILE_NOT_FOUND",
@@ -172,7 +172,7 @@ export function installSkills(target: SkillTarget, dryRun: boolean): void {
   for (const skill of skills) {
     // Overwriting is the point: this is how an upgrade reaches an already
     // installed harness, and re-running it must land in the same place.
-    if (!dryRun) cpSync(join(packagedSkills(), skill.name), join(dir, skill.name), { recursive: true, force: true });
+    if (!dryRun) cpSync(join(source, skill.name), join(dir, skill.name), { recursive: true, force: true });
     say(`  ${ok(skill.name)}`);
   }
 }
