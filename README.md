@@ -208,7 +208,22 @@ Install everything (server and skills) as a Claude Code plugin:
 /plugin install wazap@wazap
 ```
 
-Or copy `skills/<name>/` into any skills directory your agent reads.
+Every other harness gets them with one command:
+
+```bash
+npx wazap-mcp skills install codex     # or cursor, opencode, agents
+```
+
+| Harness | Where the five directories land |
+| --- | --- |
+| `claude-code` | nowhere — the plugin above already carries them |
+| `codex` | `~/.agents/skills/`, the directory Codex documents for user skills. Cursor and OpenCode read it too |
+| `cursor` | `~/.cursor/skills/` |
+| `opencode` | `~/.config/opencode/skills/` |
+| `agents` | `./.agents/skills/`, in the current project, for anything that reads the cross-tool convention |
+
+Re-running overwrites, so an upgrade is the same command. `--dry-run` lists
+what it would copy.
 
 ## Errors
 

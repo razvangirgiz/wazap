@@ -3,6 +3,7 @@ import { BANNER } from "./banner.js";
 import { runContacts, runGreet, runLogin, runLogout, runServe, runStatus } from "./cli.js";
 import { WAZAP_VERSION, parseCli, pickDefaultAction } from "./config.js";
 import { CLIENT_NAMES, runConnect } from "./connect.js";
+import { SKILL_TARGET_NAMES, runSkills } from "./skills.js";
 import { runSetup } from "./setup.js";
 import { runConfig } from "./settings.js";
 import { WazapError } from "./errors.js";
@@ -16,12 +17,14 @@ Usage:
   wazap login [--phone +15550100] [--code]              Link a WhatsApp account (QR by default)
   wazap setup [--agent] [--client <name>]                  Link, connect your client and finish, in one command
   wazap connect <client> [--dry-run]                       Register wazap with an MCP client
+  wazap skills install <harness> [--dry-run]               Copy the five skills into a harness
   wazap config [writes on|off]                             Show the effective settings, or allow/refuse writes
   wazap contacts resync                                    Fetch the phone's address book from WhatsApp again
   wazap status [--live] [--json]                           Check the install, the session and the server
   wazap logout                                             Unlink and delete local credentials
 
 Clients for wazap connect: ${CLIENT_NAMES}.
+Harnesses for wazap skills install: ${SKILL_TARGET_NAMES}.
 
 Options:
   --data-dir <path>   Where wazap keeps its data (default ~/.wazap, or $WAZAP_DATA_DIR)
@@ -33,7 +36,7 @@ Options:
   --phone <number>    Your number in international format; implies --code
   --agent             With setup: print the procedure for an AI agent on stdout, then exit
   --client <name>     With setup: connect this client instead of the detected ones (repeatable)
-  --dry-run           With connect: print what would be written, and write nothing
+  --dry-run           With connect or skills install: print what would be written, and write nothing
   --live              With status: reach WhatsApp for real, then close the connection
   --json              With status: print the whole report as one JSON object on stdout
   --writes            Allow the agent to write, without login asking
@@ -75,6 +78,9 @@ async function main(): Promise<void> {
       return;
     case "connect":
       runConnect(config);
+      return;
+    case "skills":
+      runSkills(config);
       return;
     case "config":
       runConfig(config);
