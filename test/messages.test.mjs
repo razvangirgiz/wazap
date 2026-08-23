@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { proto } from "baileys";
 
-import { formatAge, isControlMessage, isoWithOffset, messageText, messageType, mediaInfo } from "../dist/messages.js";
+import { callInfo, formatAge, isControlMessage, isStubEvent, isoWithOffset, messageText, messageType, mediaInfo } from "../dist/messages.js";
 
 const wrap = (message) => ({ key: { fromMe: false, remoteJid: "4072@s.whatsapp.net", id: "X" }, message });
 
@@ -93,4 +93,78 @@ test("a stub message is an event to report, not machinery to drop", () => {
   const stub = { ...wrap({}), messageStubType: proto.WebMessageInfo.StubType.GROUP_PARTICIPANT_ADD };
   assert.equal(isControlMessage(stub), false);
   assert.equal(messageType(stub), "system");
+});
+
+const StubType = proto.WebMessageInfo.StubType;
+const Outcome = proto.Message.CallLogMessage.CallOutcome;
+
+const callLog = (log, { fromMe = false, extra = {} } = {}) => ({
+  key: { fromMe, remoteJid: "4072@s.whatsapp.net", id: "C" },
+  message: { callLogMesssage: log, ...extra },
+});
+
+const callStub = (messageStubType) => ({ ...wrap(undefined), messageStubType });
+
+/** [label, whole message, expected text]. Every one of these must type as "call". */
+const CALL_CASES = [
+  ["incoming answered", callLog({ callOutcome: Outcome.CONNECTED, durationSecs: 360 }), "[voice call · 6 min]"],
+  ["incoming answered, no duration", callLog({ callOutcome: Outcome.CONNECTED }), "[voice call]"],
+  ["incoming missed video", callLog({ isVideo: true, callOutcome: Outcome.MISSED }), "[missed video call]"],
+  ["incoming rejected", callLog({ callOutcome: Outcome.REJECTED }), "[rejected voice call]"],
+  ["outgoing nobody picked up", callLog({ callOutcome: Outcome.MISSED }, { fromMe: true }), "[outgoing voice call · unanswered]"],
+  ["outgoing rejected", callLog({ isVideo: true, callOutcome: Outcome.REJECTED }, { fromMe: true }), "[outgoing video call · rejected]"],
+  ["outgoing answered, seconds", callLog({ callOutcome: Outcome.CONNECTED, durationSecs: 45 }, { fromMe: true }), "[outgoing voice call · 45s]"],
+  ["an hour and change", callLog({ callOutcome: Outcome.CONNECTED, durationSecs: 3900 }), "[voice call · 1h 5 min]"],
+  ["silenced by do not disturb", callLog({ callOutcome: Outcome.SILENCED_BY_DND }), "[missed voice call]"],
+  // getContentType is blind to callLogMesssage, so without the call check first this would read "[system message]".
+  ["alongside context info", callLog({ callOutcome: Outcome.CONNECTED, durationSecs: 90 }, { extra: { messageContextInfo: { deviceListMetadataVersion: 2 } } }), "[voice call · 2 min]"],
+  ["missed voice stub", callStub(StubType.CALL_MISSED_VOICE), "[missed voice call]"],
+  ["missed video stub", callStub(StubType.CALL_MISSED_VIDEO), "[missed video call]"],
+  ["missed group voice stub", callStub(StubType.CALL_MISSED_GROUP_VOICE), "[missed voice call]"],
+  ["missed group video stub", callStub(StubType.CALL_MISSED_GROUP_VIDEO), "[missed video call]"],
+  ["baileys' group offer placeholder", wrap({ call: { callKey: new Uint8Array([7]) } }), "[missed voice call]"],
+];
+
+test("a call is a type of its own, whatever shape it arrives in", () => {
+  for (const [label, raw, text] of CALL_CASES) {
+    assert.equal(messageType(raw), "call", `${label}: type`);
+    assert.equal(messageText(raw), text, `${label}: text`);
+  }
+});
+
+test("callInfo reports kind, direction, outcome and duration", () => {
+  assert.deepEqual(callInfo(callLog({ callOutcome: Outcome.CONNECTED, durationSecs: 360 })), {
+    kind: "voice",
+    direction: "incoming",
+    outcome: "answered",
+    duration_seconds: 360,
+  });
+  assert.deepEqual(callInfo(callLog({ isVideo: true, callOutcome: Outcome.MISSED }, { fromMe: true })), {
+    kind: "video",
+    direction: "outgoing",
+    outcome: "unanswered",
+  });
+  assert.deepEqual(callInfo(callStub(StubType.CALL_MISSED_GROUP_VIDEO)), {
+    kind: "video",
+    direction: "incoming",
+    outcome: "missed",
+  });
+  assert.deepEqual(callInfo(callLog({ callOutcome: Outcome.CONNECTED, durationSecs: 12, participants: [{ jid: "4073@s.whatsapp.net" }, {}] })), {
+    kind: "voice",
+    direction: "incoming",
+    outcome: "answered",
+    duration_seconds: 12,
+    participants: ["4073@s.whatsapp.net"],
+  });
+  assert.equal(callInfo(wrap({ conversation: "hi" })), undefined, "an ordinary message is not a call");
+  assert.equal(callInfo(callLog({ callOutcome: Outcome.MISSED }))?.duration_seconds, undefined, "a call nobody took has no duration");
+});
+
+test("a missed-call stub is an event to report, not machinery to drop", () => {
+  for (const stub of [StubType.CALL_MISSED_VOICE, StubType.CALL_MISSED_VIDEO, StubType.CALL_MISSED_GROUP_VOICE, StubType.CALL_MISSED_GROUP_VIDEO]) {
+    assert.equal(isStubEvent(callStub(stub)), true, `stub ${stub}`);
+    assert.equal(isControlMessage(callStub(stub)), false, `stub ${stub}`);
+  }
+  assert.equal(isControlMessage(wrap({ call: { callKey: new Uint8Array([7]) } })), false);
+  assert.equal(isControlMessage(callLog({ callOutcome: Outcome.CONNECTED })), false);
 });

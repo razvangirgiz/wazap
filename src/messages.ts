@@ -4,7 +4,7 @@
  */
 
 import { getContentType, proto, type WAMessage, type WAMessageContent, type WAMessageKey } from "baileys";
-import type { MessageType, MessageView } from "./wa-types.js";
+import type { CallDirection, CallInfo, CallKind, CallOutcome, MessageType, MessageView } from "./wa-types.js";
 
 /** protobuf 64-bit fields arrive as a number or a Long. */
 type ProtoLong = number | { toNumber?: () => number } | null | undefined;
@@ -208,6 +208,79 @@ function stubKind(raw: WAMessage): MessageType | undefined {
   return stub === proto.WebMessageInfo.StubType.UNKNOWN ? undefined : "system";
 }
 
+/** Nobody picked up. Which word that is depends on which end of the call you were. */
+type Unanswered = "no answer";
+
+const CALL_OUTCOMES: Partial<Record<number, CallOutcome | Unanswered>> = {
+  [proto.Message.CallLogMessage.CallOutcome.CONNECTED]: "answered",
+  [proto.Message.CallLogMessage.CallOutcome.ACCEPTED_ELSEWHERE]: "answered",
+  [proto.Message.CallLogMessage.CallOutcome.ONGOING]: "answered",
+  [proto.Message.CallLogMessage.CallOutcome.REJECTED]: "rejected",
+  [proto.Message.CallLogMessage.CallOutcome.MISSED]: "no answer",
+  [proto.Message.CallLogMessage.CallOutcome.FAILED]: "no answer",
+  [proto.Message.CallLogMessage.CallOutcome.SILENCED_BY_DND]: "no answer",
+  [proto.Message.CallLogMessage.CallOutcome.SILENCED_UNKNOWN_CALLER]: "no answer",
+};
+
+const CALL_STUB_KINDS: Partial<Record<number, CallKind>> = {
+  [proto.WebMessageInfo.StubType.CALL_MISSED_VOICE]: "voice",
+  [proto.WebMessageInfo.StubType.CALL_MISSED_VIDEO]: "video",
+  [proto.WebMessageInfo.StubType.CALL_MISSED_GROUP_VOICE]: "voice",
+  [proto.WebMessageInfo.StubType.CALL_MISSED_GROUP_VIDEO]: "video",
+};
+
+function settle(outcome: CallOutcome | Unanswered, direction: CallDirection): CallOutcome {
+  if (outcome !== "no answer") return outcome;
+  return direction === "outgoing" ? "unanswered" : "missed";
+}
+
+/**
+ * Calls never reach the RULES table: `getContentType` looks for a key
+ * containing "Message" and the proto field is spelled `callLogMesssage`, so it
+ * reports undefined and a call arriving next to messageContextInfo would render
+ * as "[system message]". Hence this runs before the table, not inside it.
+ */
+export function callInfo(raw: WAMessage): CallInfo | undefined {
+  const direction: CallDirection = raw.key?.fromMe ? "outgoing" : "incoming";
+  const content = unwrapEnvelopes(raw.message);
+  const logged = content?.callLogMesssage;
+  if (logged) {
+    const outcome = settle(CALL_OUTCOMES[logged.callOutcome ?? -1] ?? "no answer", direction);
+    const seconds = protoNumber(logged.durationSecs);
+    const participants = (logged.participants ?? []).flatMap((one) => (one.jid ? [one.jid] : []));
+    return {
+      kind: logged.isVideo ? "video" : "voice",
+      direction,
+      outcome,
+      ...(outcome === "answered" && seconds !== undefined && seconds > 0 ? { duration_seconds: seconds } : {}),
+      ...(participants.length > 0 ? { participants } : {}),
+    };
+  }
+  const stub = CALL_STUB_KINDS[raw.messageStubType ?? -1];
+  if (stub) return { kind: stub, direction, outcome: settle("no answer", direction) };
+  if (content?.call != null) return { kind: "voice", direction, outcome: settle("no answer", direction) };
+  return undefined;
+}
+
+function durationLabel(seconds: number): string {
+  if (seconds < 60) return `${seconds}s`;
+  const minutes = Math.round(seconds / 60);
+  if (minutes < 60) return `${minutes} min`;
+  const hours = Math.floor(minutes / 60);
+  const rest = minutes % 60;
+  return rest === 0 ? `${hours}h` : `${hours}h ${rest} min`;
+}
+
+/** An outcome you caused reads as a suffix; one that happened to you is an adjective. */
+export function callText(info: CallInfo): string {
+  const duration = info.duration_seconds === undefined ? "" : ` · ${durationLabel(info.duration_seconds)}`;
+  if (info.direction === "outgoing") {
+    return `[outgoing ${info.kind} call${info.outcome === "answered" ? duration : ` · ${info.outcome}`}]`;
+  }
+  const adjective = info.outcome === "answered" ? "" : `${info.outcome} `;
+  return `[${adjective}${info.kind} call${duration}]`;
+}
+
 function resolve<T>(value: T | ((m: WAMessageContent) => T), content: WAMessageContent): T {
   return typeof value === "function" ? (value as (m: WAMessageContent) => T)(content) : value;
 }
@@ -241,6 +314,7 @@ export function isStubEvent(raw: WAMessage): boolean {
 }
 
 export function messageType(raw: WAMessage): MessageType {
+  if (callInfo(raw)) return "call";
   const stub = stubKind(raw);
   if (stub === "deleted") return "deleted";
   const content = unwrapEnvelopes(raw.message);
@@ -251,6 +325,8 @@ export function messageType(raw: WAMessage): MessageType {
 
 /** Never empty: media and system messages get a placeholder like "[sticker]". */
 export function messageText(raw: WAMessage): string {
+  const call = callInfo(raw);
+  if (call) return callText(call);
   const content = unwrapEnvelopes(raw.message);
   const { rule, content: node } = ruleFor(content);
   if (rule === UNKNOWN) {
@@ -347,6 +423,7 @@ export function buildMessageView(raw: WAMessage, ctx: MessageViewContext): Messa
   const media = mediaInfo(raw);
   const context = contextInfo(raw);
   const quoted = context?.quotedMessage ? quotedView(context, ctx) : undefined;
+  const call = callInfo(raw);
 
   const view: MessageView = {
     message_id: messageIdFor(raw.key, ctx.chatId),
@@ -367,6 +444,11 @@ export function buildMessageView(raw: WAMessage, ctx: MessageViewContext): Messa
   };
   if (media) view.media = media;
   if (quoted) view.quoted = quoted;
+  if (call) {
+    view.call = call.participants
+      ? { ...call, participants: call.participants.map((jid) => ctx.canonical(jid)) }
+      : call;
+  }
   if (ctx.reactions.length > 0) view.reactions = ctx.reactions;
   return view;
 }

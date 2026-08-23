@@ -29,8 +29,24 @@ export type MessageType =
   | "reaction"
   | "deleted"
   | "view_once"
+  | "call"
   | "system"
   | "unknown";
+
+export type CallKind = "voice" | "video";
+
+export type CallDirection = "incoming" | "outgoing";
+
+/** "unanswered" is the outgoing side of "missed": nobody picked up either way. */
+export type CallOutcome = "answered" | "missed" | "rejected" | "unanswered";
+
+export interface CallInfo {
+  kind: CallKind;
+  direction: CallDirection;
+  outcome: CallOutcome;
+  duration_seconds?: number;
+  participants?: string[];
+}
 
 export interface StatusInfo {
   status: ConnectionStatus;
@@ -81,6 +97,7 @@ export interface MessageView {
   has_media: boolean;
   media?: { mime: string; size?: number; filename?: string };
   quoted?: { message_id: string; text: string; sender: string };
+  call?: CallInfo;
   forwarded: boolean;
   reactions?: Array<{ emoji: string; sender: string }>;
   edited: boolean;
