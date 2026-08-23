@@ -26,7 +26,9 @@ That is the whole install. It links your account, finds the MCP clients
 installed on this machine, writes their config, copies the five skills where
 that client reads them, and tells you what to restart. When you started through
 `npx`, `setup` offers to install wazap globally so Claude Desktop and the
-background service have a path that does not change.
+background service have a path that does not change. It also offers to
+`brew install` whisper-cpp, ffmpeg or Tailscale when a step needs one and it is
+missing, and to restart Claude Desktop itself once it has connected it.
 
 ### Or the path your harness prefers
 
@@ -307,6 +309,10 @@ brew install whisper-cpp ffmpeg      # macOS; elsewhere build whisper.cpp, insta
 wazap transcribe download            # fetch and verify the model
 wazap transcribe test recording.ogg  # prove it before you trust it
 ```
+
+`wazap setup` and `wazap transcribe download` offer that `brew install`
+themselves when either binary is missing, and go straight on to the model in the
+same run. `--no-brew` turns the offer off everywhere.
 
 Models land in `<data-dir>/models/` and are checked against a SHA-256 pinned in
 the source; an interrupted download resumes where it stopped.

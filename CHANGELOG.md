@@ -3,6 +3,16 @@
 ## Unreleased
 ### Added
 
+- **`setup` installs the binaries it needs, and restarts Claude Desktop for
+  you.** Local transcription used to stop at "run `wazap transcribe download`
+  once whisper-cpp and ffmpeg are installed" and `expose` at "tailscale is not
+  installed". Both now offer one `brew install` for the whole missing set and
+  carry on in the same run; Tailscale still needs `tailscale up`, which setup
+  prints as the next step rather than running. The keep-running menu offers a
+  public URL when Homebrew could install a tunnel, not only when one is already
+  there. Connecting Claude Desktop offers to quit and reopen it, so the last
+  manual step of a macOS setup is gone. `--yes` accepts both, `--no-brew` and
+  `--no-relaunch` decline them.
 - **`link_account` pairs WhatsApp from inside the chat**, so linking no longer
   needs a terminal. The server is already running and idle when nothing is
   linked, so it pairs itself: the tool takes a phone number, returns an
