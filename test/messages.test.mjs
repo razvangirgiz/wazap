@@ -76,6 +76,9 @@ const CONTROL_CASES = [
   ["bare context info", { messageContextInfo: { deviceListMetadataVersion: 2 } }, true],
   ["nothing at all", {}, true],
   ["a retraction is a real event", { protocolMessage: { type: proto.Message.ProtocolMessage.Type.REVOKE } }, false],
+  ["so is someone turning on disappearing messages", { protocolMessage: { type: proto.Message.ProtocolMessage.Type.EPHEMERAL_SETTING } }, false],
+  ["so is a group member label change", { protocolMessage: { type: proto.Message.ProtocolMessage.Type.GROUP_MEMBER_LABEL_CHANGE } }, false],
+  ["an edit is applied to the message it edits, not shown twice", { protocolMessage: { type: proto.Message.ProtocolMessage.Type.MESSAGE_EDIT } }, true],
   ["text", { conversation: "hello" }, false],
   ["an unknown future type is not machinery", { someFutureMessage: {} }, false],
 ];

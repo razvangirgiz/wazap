@@ -16,20 +16,22 @@ export function isGroupId(jid: string): boolean {
 }
 
 /**
- * True for the jids wazap talks to: a person by phone number, a person by LID,
- * or a group. Everything else — status broadcasts, newsletters, the
- * `0@s.whatsapp.net` pseudo-chat WhatsApp files its own notices under — is
- * noise that must never reach a chat list, a digest or the store.
+ * Jids that address nobody: the status feed, the `0@s.whatsapp.net` pseudo-chat
+ * WhatsApp files its own notices under, and anything malformed. They must never
+ * reach a chat list, a digest or the store.
+ *
+ * Stated as what to refuse rather than what to keep, so a jid kind wazap has
+ * not met yet — a broadcast list, a channel — still reaches the user instead of
+ * being silently swallowed, and a stored one is never purged.
  */
-export function isAddressableJid(jid: string): boolean {
+export function isNoiseJid(jid: string): boolean {
   const at = jid.lastIndexOf("@");
-  if (at === -1) return false;
+  if (at === -1) return true;
   const user = jid.slice(0, at);
   const domain = jid.slice(at + 1).toLowerCase();
-  if (domain === "g.us") return /^[\w.@-]+$/.test(user);
-  if (domain === "lid") return /^\d+$/.test(user);
-  if (domain !== "s.whatsapp.net") return false;
-  return /^\d+$/.test(user) && !/^0+$/.test(user);
+  if (domain === "broadcast") return user.toLowerCase() === "status";
+  if (domain === "s.whatsapp.net" || domain === "c.us") return /^0+$/.test(user) || !/^\d+$/.test(user);
+  return user === "";
 }
 
 /**

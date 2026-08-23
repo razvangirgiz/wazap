@@ -1,67 +1,17 @@
 /**
  * Name resolution. A group sender used to render as a bare LID — fifteen digits
- * that look exactly like a phone number and are not one — and a stranger with a
- * pushName rendered as their phone number. These pin the ladder that fixed it.
- *
- * Run: npm test  (requires npm run build first — these drive dist/)
+ * that read as a phone number and are not one — and a stranger with a pushName
+ * rendered as their phone number. These pin the ladder that fixed it.
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 
 import { WhatsAppService } from "../dist/whatsapp.js";
+import { connectedService } from "./helpers.mjs";
 
 const ME = "40700000001@s.whatsapp.net";
 
-function config() {
-  return {
-    dataDir: mkdtempSync(join(tmpdir(), "wazap-names-")),
-    readOnly: true,
-    syncFullHistory: false,
-    persistHistory: false,
-    transport: "stdio",
-    httpHost: "127.0.0.1",
-    httpPort: 8766,
-    readToken: null,
-    writeToken: null,
-    rateLimitPerMinute: 20,
-    command: "serve",
-    loginCode: false,
-  };
-}
-
-/** Minimal stand-in for a Baileys socket: just the event surface wireEvents uses. */
-function makeFakeSocket() {
-  const listeners = new Map();
-  return {
-    ev: {
-      on(event, fn) {
-        listeners.set(event, [...(listeners.get(event) ?? []), fn]);
-      },
-      removeAllListeners(event) {
-        listeners.delete(event);
-      },
-      emit(event, arg) {
-        for (const fn of listeners.get(event) ?? []) fn(arg);
-      },
-    },
-    end() {},
-  };
-}
-
-/** A connected service fed only by events, so no socket and no disk are involved. */
-function makeService() {
-  const svc = new WhatsAppService(config());
-  const sock = makeFakeSocket();
-  svc.sockClient = sock;
-  svc.wireEvents(sock, ++svc.generation);
-  svc.account = { id: ME, name: "Răzvan", number: "40700000001" };
-  svc.status = "connected";
-  svc.initialSyncDone = true;
-  return { svc, sock };
-}
+const makeService = () => connectedService(WhatsAppService, { prefix: "wazap-names-", id: ME, name: "Răzvan" });
 
 const message = (chat, { participant, pushName, text = "hi", id = "M1", fromMe = false } = {}) => ({
   key: { remoteJid: chat, fromMe, id, ...(participant ? { participant } : {}) },
@@ -108,7 +58,7 @@ test("a group learns its participants' names and numbers from its metadata", () 
       subject: "Familia",
       participants: [
         { id: "999888777666555@lid", phoneNumber: "40700000007@s.whatsapp.net" },
-        { id: "555666777888999@lid", phoneNumber: "40700000008@s.whatsapp.net", notify: "Florin" },
+        { id: "555666777888999@lid", phoneNumber: "40700000008@s.whatsapp.net", username: "Florin" },
       ],
     },
   ]);
@@ -116,7 +66,8 @@ test("a group learns its participants' names and numbers from its metadata", () 
   assert.equal(svc.displayName(group), "Familia");
   assert.equal(svc.displayName("999888777666555@lid"), "Elena", "the saved contact behind the lid");
   assert.equal(svc.displayName("555666777888999@lid"), "Florin", "the name the metadata carried");
-  assert.equal(svc.lidToPn.get("999888777666555@lid"), "40700000007@s.whatsapp.net");
+  assert.equal(svc.lidPhones.get("999888777666555@lid"), "40700000007@s.whatsapp.net");
+  assert.equal(svc.lidToPn.has("999888777666555@lid"), false, "naming a participant must not rename their chat");
 });
 
 test("a group message renders its sender as a name, not as a LID", async () => {
@@ -137,8 +88,7 @@ test("a group message renders its sender as a name, not as a LID", async () => {
   const { data } = await svc.readMessages(group, 10);
   assert.equal(data.length, 1);
   assert.equal(data[0].sender.name, "Gigi");
-  assert.equal(data[0].sender.id, "40700000010@s.whatsapp.net", "the lid is resolved to the phone jid");
-  assert.equal(data[0].sender.phone, "40700000010");
+  assert.equal(data[0].sender.id, "123123123123123@lid", "the id stays the one the chat's history is filed under");
 });
 
 test("pushNames survive a store round trip, so a restart does not forget who wrote", () => {
@@ -148,7 +98,7 @@ test("pushNames survive a store round trip, so a restart does not forget who wro
     messages: [message("40700000011@s.whatsapp.net", { pushName: "Horia" })],
   });
 
-  const revived = new WhatsAppService(config());
+  const { svc: revived } = makeService();
   revived.store.hydrate(JSON.parse(JSON.stringify(svc.store.serialize())));
   assert.equal(revived.store.pushNames.get("40700000011@s.whatsapp.net"), "Horia");
 });
@@ -164,4 +114,83 @@ test("search_contacts finds someone by the name the chat list shows them under",
   assert.equal(svc.displayName("40700000012@s.whatsapp.net"), "Ioana");
   const found = await svc.searchContacts("ioana", 10);
   assert.deepEqual(found.map((c) => c.name), ["Ioana"]);
+});
+
+test("a lid WhatsApp never paired on a chat is still named from Baileys' own table", async () => {
+  const { svc, sock } = makeService();
+  const lid = "273520764416235@lid";
+  sock.ev.emit("contacts.upsert", [{ id: "447535707769@s.whatsapp.net", name: "Vlad" }]);
+  sock.ev.emit("messages.upsert", { type: "notify", messages: [message(lid, { text: "salut" })] });
+  assert.equal(svc.displayName(lid), "unknown (lid …6235)", "nothing to go on before the lookup");
+
+  const asked = [];
+  svc.sockClient.signalRepository = {
+    lidMapping: {
+      getPNsForLIDs: async (lids) => {
+        asked.push(...lids);
+        return [{ lid, pn: "447535707769:0@s.whatsapp.net" }];
+      },
+    },
+  };
+
+  const chats = (await svc.listChats("all", 10)).data;
+  assert.deepEqual(asked, [lid]);
+  assert.equal(chats[0].name, "Vlad");
+  assert.equal(chats[0].chat_id, lid, "the chat keeps the id its history is filed under");
+});
+
+test("a sender's own name is used even when only this message carries it", () => {
+  const { svc } = makeService();
+  const jid = "40700000013@s.whatsapp.net";
+  assert.equal(svc.displayName(jid), "40700000013", "nothing is known about them");
+  assert.equal(svc.displayName(jid, "Radu"), "Radu", "the name riding on the message being rendered");
+});
+
+test("reading a group fetches its metadata once and then stops asking", async () => {
+  const { svc, sock } = makeService();
+  const group = "120363000000000009@g.us";
+  let fetches = 0;
+  svc.sockClient.groupMetadata = async (id) => {
+    fetches++;
+    return { id, subject: "Munte", participants: [{ id: "321321321321321@lid", phoneNumber: "40700000014@s.whatsapp.net" }] };
+  };
+  sock.ev.emit("messages.upsert", {
+    type: "notify",
+    messages: [message(group, { participant: "321321321321321@lid", text: "gata" })],
+  });
+
+  await svc.readMessages(group, 10);
+  await svc.readMessages(group, 10);
+  assert.equal(fetches, 1, "the second read must come out of the cache");
+  assert.equal(svc.displayName("321321321321321@lid"), "40700000014");
+});
+
+test("a group we cannot read is not re-fetched on every message page", async () => {
+  const { svc } = makeService();
+  const group = "120363000000000010@g.us";
+  let fetches = 0;
+  svc.sockClient.groupMetadata = async () => {
+    fetches++;
+    throw new Error("not a participant");
+  };
+  await svc.readMessages(group, 10);
+  await svc.readMessages(group, 10);
+  assert.equal(fetches, 1);
+});
+
+test("a name learned before the lid pairing is still found after it", () => {
+  const { svc, sock } = makeService();
+  const group = "120363000000000011@g.us";
+  const lid = "444555666777888@lid";
+  const phone = "40700000015@s.whatsapp.net";
+  sock.ev.emit("messages.upsert", {
+    type: "notify",
+    messages: [message(group, { participant: lid, pushName: "Sanda", text: "aici" })],
+  });
+  assert.equal(svc.displayName(lid), "Sanda");
+  assert.equal(svc.displayName(phone), "40700000015", "nothing links them yet");
+
+  sock.ev.emit("groups.upsert", [{ id: group, subject: "Tura", participants: [{ id: lid, phoneNumber: phone }] }]);
+  assert.equal(svc.displayName(phone), "Sanda", "get_group_info asks by number and must get the same answer");
+  assert.equal(svc.displayName(lid), "Sanda");
 });

@@ -3,35 +3,38 @@
 ## 0.9.4
 ### Fixed
 
-- Senders in a group rendered as a bare LID — fifteen digits that look exactly
-  like a phone number and are not one. One `displayName` ladder now names every
-  sender, chat, contact and group participant: the saved contact, then the
-  business name, then the name the sender publishes on their own profile, then
-  the chat title, then the phone number. A LID resolves through the number it
-  belongs to, and one that resolves to nothing reads as `unknown (lid …7515)`
-  instead of posing as a number.
+- Senders in a group rendered as a bare LID — fifteen digits that read as a
+  phone number and are not one. One `displayName` ladder now names every sender,
+  chat, contact and group participant: the saved contact, the business name, the
+  name the sender publishes on their own profile, the chat title, the phone
+  number, and only then `unknown (lid …7515)`. A LID is resolved to its number
+  first, from the contact list, from group metadata, and from the table Baileys
+  already holds and wazap never asked. Naming someone never renames their chat,
+  so a chat id and the message ids under it stay what they were.
 - The name a sender publishes arrives on their messages and nowhere else, and
   was being thrown away. It is kept per sender and persisted, so someone who is
-  not in the address book still has a name, and still has it after a restart.
-- A contact's LID pairing was only learned when WhatsApp filled in a field it
-  usually leaves empty, so almost none were. Group metadata, the one place
-  WhatsApp states which LID belongs to which number, was never read for this at
-  all; reading a group now learns its participants once.
+  not in the address book still has a name after a restart, and
+  `search_contacts` finds them by it.
 - `0@s.whatsapp.net`, the pseudo-chat WhatsApp files its own notices under, sat
-  at the top of `list_chats` and in the digest. It, `status@broadcast` and
-  anything else that is not a person or a group is now refused at ingest, on
-  load of a store an older version wrote, and where chats are listed.
+  at the top of `list_chats` and in the digest. It and the status feed are now
+  refused at ingest, on load of a store an older version wrote, and where chats
+  are listed.
 - Linking a device left history-sync and peer-data payloads in the user's
   self-chat, shown as four `[system message]` rows and counted as conversation
-  in the 24h digest. Control payloads are dropped; a retraction and a group
-  membership change, which are real events, stay.
+  in the 24h digest. Payloads devices exchange with each other are dropped;
+  everything a person did — a retraction, a disappearing-messages toggle, a
+  group membership change — stays.
+- An edited message no longer also appears as a `[system message]` row of its
+  own. The edit is applied to the message it edits, as before.
 
-### Added
+### Changed
 
-- `get_recent_messages(include_system: true)` returns WhatsApp's own notices,
-  which the digest otherwise leaves out of its bodies and its counts.
-- An unsupported payload names itself: `[unsupported: <key>]` instead of
-  `[unsupported message]`, so a bug report says what to add.
+- `get_recent_messages` leaves WhatsApp's own notices out of its bodies and its
+  counts, and takes `include_system: true` to put them back.
+- An unsupported payload names itself, `[unsupported: <key>]` rather than
+  `[unsupported message]`, so a bug report says which one to add. A payload
+  wazap does not model yet is reported this way instead of being flattened into
+  `[system message]`, which used to hide events, albums and orders.
 
 
 ## 0.9.3

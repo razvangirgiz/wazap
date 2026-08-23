@@ -4,6 +4,8 @@
  * condition instead of sleeping.
  */
 import { spawn } from "node:child_process";
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { setTimeout as sleep } from "node:timers/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -70,4 +72,53 @@ export async function waitFor(predicate, timeoutMs, label) {
     if (Date.now() >= deadline) throw new Error(`timed out waiting for ${label}`);
     await sleep(50);
   }
+}
+
+/** Config for a service that talks to nobody and writes nothing. */
+export function offlineConfig(prefix) {
+  return {
+    dataDir: mkdtempSync(join(tmpdir(), prefix)),
+    readOnly: true,
+    syncFullHistory: false,
+    persistHistory: false,
+    transport: "stdio",
+    httpHost: "127.0.0.1",
+    httpPort: 8766,
+    readToken: null,
+    writeToken: null,
+    rateLimitPerMinute: 20,
+    command: "serve",
+    loginCode: false,
+  };
+}
+
+/** Minimal stand-in for a Baileys socket: just the event surface wireEvents uses. */
+export function fakeSocket() {
+  const listeners = new Map();
+  return {
+    ev: {
+      on(event, fn) {
+        listeners.set(event, [...(listeners.get(event) ?? []), fn]);
+      },
+      removeAllListeners(event) {
+        listeners.delete(event);
+      },
+      emit(event, arg) {
+        for (const fn of listeners.get(event) ?? []) fn(arg);
+      },
+    },
+    end() {},
+  };
+}
+
+/** A connected service fed only by events, so no socket and no disk are involved. */
+export function connectedService(WhatsAppService, { prefix, id, name }) {
+  const svc = new WhatsAppService(offlineConfig(prefix));
+  const sock = fakeSocket();
+  svc.sockClient = sock;
+  svc.wireEvents(sock, ++svc.generation);
+  svc.account = { id, name, number: id.split("@")[0] };
+  svc.status = "connected";
+  svc.initialSyncDone = true;
+  return { svc, sock };
 }

@@ -3,67 +3,19 @@
  * own template notices under sat at the top of list_chats, and four
  * "[system message]" rows from linking a device were counted as conversation in
  * the 24h digest. Both were noise the store should never have kept.
- *
- * Run: npm test  (requires npm run build first — these drive dist/)
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import { proto } from "baileys";
 
 import { WhatsAppService } from "../dist/whatsapp.js";
-import { isAddressableJid } from "../dist/ids.js";
+import { isNoiseJid } from "../dist/ids.js";
+import { connectedService } from "./helpers.mjs";
 
 const ME = "40700000001@s.whatsapp.net";
 const REAL = "40700000002@s.whatsapp.net";
 
-function config() {
-  return {
-    dataDir: mkdtempSync(join(tmpdir(), "wazap-noise-")),
-    readOnly: true,
-    syncFullHistory: false,
-    persistHistory: false,
-    transport: "stdio",
-    httpHost: "127.0.0.1",
-    httpPort: 8766,
-    readToken: null,
-    writeToken: null,
-    rateLimitPerMinute: 20,
-    command: "serve",
-    loginCode: false,
-  };
-}
-
-function makeFakeSocket() {
-  const listeners = new Map();
-  return {
-    ev: {
-      on(event, fn) {
-        listeners.set(event, [...(listeners.get(event) ?? []), fn]);
-      },
-      removeAllListeners(event) {
-        listeners.delete(event);
-      },
-      emit(event, arg) {
-        for (const fn of listeners.get(event) ?? []) fn(arg);
-      },
-    },
-    end() {},
-  };
-}
-
-function makeService() {
-  const svc = new WhatsAppService(config());
-  const sock = makeFakeSocket();
-  svc.sockClient = sock;
-  svc.wireEvents(sock, ++svc.generation);
-  svc.account = { id: ME, name: "Răzvan", number: "40700000001" };
-  svc.status = "connected";
-  svc.initialSyncDone = true;
-  return { svc, sock };
-}
+const makeService = () => connectedService(WhatsAppService, { prefix: "wazap-noise-", id: ME, name: "Răzvan" });
 
 const at = (secondsAgo) => Math.floor(Date.now() / 1000) - secondsAgo;
 
@@ -73,11 +25,17 @@ const message = (chat, message, { id = "M", fromMe = false, seconds = at(60) } =
   messageTimestamp: seconds,
 });
 
-test("only user and group jids are addressable", () => {
-  const addressable = ["40700000002@s.whatsapp.net", "273520764416235@lid", "447851830860-1443638182@g.us"];
-  const noise = ["0@s.whatsapp.net", "status@broadcast", "1234@newsletter", "@s.whatsapp.net", "40700000002", ""];
-  for (const jid of addressable) assert.equal(isAddressableJid(jid), true, jid);
-  for (const jid of noise) assert.equal(isAddressableJid(jid), false, jid);
+test("noise jids are named exactly, so nothing else gets swallowed", () => {
+  const real = [
+    "40700000002@s.whatsapp.net",
+    "273520764416235@lid",
+    "447851830860-1443638182@g.us",
+    "1234567890@broadcast",
+    "1234@newsletter",
+  ];
+  const noise = ["0@s.whatsapp.net", "00@s.whatsapp.net", "status@broadcast", "@s.whatsapp.net", "40700000002", ""];
+  for (const jid of real) assert.equal(isNoiseJid(jid), false, jid);
+  for (const jid of noise) assert.equal(isNoiseJid(jid), true, jid);
 });
 
 test("noise chats never reach the chat list, the digest or the store", async () => {
@@ -146,10 +104,21 @@ test("a snapshot an older wazap wrote is cleaned on the way in", () => {
   snapshot.messages["false_0@s.whatsapp.net_N1"] = Buffer.from(noisy).toString("base64");
   snapshot.byChat["0@s.whatsapp.net"] = ["false_0@s.whatsapp.net_N1"];
 
-  const revived = new WhatsAppService(config());
+  snapshot.chats["0@s.whatsapp.net"] = snapshot.chats[REAL];
+  const noisyControl = proto.WebMessageInfo.encode({
+    key: { remoteJid: REAL, fromMe: true, id: "N2" },
+    message: { protocolMessage: { type: proto.Message.ProtocolMessage.Type.HISTORY_SYNC_NOTIFICATION } },
+    messageTimestamp: at(10),
+  }).finish();
+  snapshot.messages[`true_${REAL}_N2`] = Buffer.from(noisyControl).toString("base64");
+  snapshot.byChat[REAL].push(`true_${REAL}_N2`);
+
+  const { svc: revived } = makeService();
   revived.store.hydrate(snapshot);
   assert.equal(revived.store.byChat.has("0@s.whatsapp.net"), false);
+  assert.equal(revived.store.chats.has("0@s.whatsapp.net"), false);
   assert.deepEqual([...revived.store.byChat.keys()], [REAL]);
+  assert.deepEqual(revived.store.byChat.get(REAL), [`false_${REAL}_K1`], "the control payload is left behind too");
 });
 
 test("system notices are typed, excluded from the digest, and returned on request", async () => {
@@ -158,7 +127,7 @@ test("system notices are typed, excluded from the digest, and returned on reques
   sock.ev.emit("messages.upsert", {
     type: "notify",
     messages: [
-      { ...message(group, {}, { id: "G1" }), messageStubType: proto.WebMessageInfo.StubType.GROUP_PARTICIPANT_ADD },
+      { ...message(group, undefined, { id: "G1" }), messageStubType: proto.WebMessageInfo.StubType.GROUP_PARTICIPANT_ADD },
       message(group, { conversation: "salut" }, { id: "G2" }),
     ],
   });
@@ -178,9 +147,21 @@ test("a chat with nothing but system notices drops out of the digest entirely", 
   const group = "120363000000000004@g.us";
   sock.ev.emit("messages.upsert", {
     type: "notify",
-    messages: [{ ...message(group, {}, { id: "H1" }), messageStubType: proto.WebMessageInfo.StubType.E2E_ENCRYPTED }],
+    messages: [{ ...message(group, undefined, { id: "H1" }), messageStubType: proto.WebMessageInfo.StubType.E2E_ENCRYPTED }],
   });
 
   assert.deepEqual((await svc.getRecentMessages(24, "all")).data, []);
   assert.equal((await svc.getRecentMessages(24, "all", true)).data.length, 1);
+});
+
+test("a payload wazap does not model yet stays visible instead of hiding as system", async () => {
+  const { svc, sock } = makeService();
+  sock.ev.emit("messages.upsert", {
+    type: "notify",
+    messages: [message(REAL, { eventMessage: { name: "Botez" }, messageContextInfo: {} }, { id: "E1" })],
+  });
+
+  const digest = (await svc.getRecentMessages(24, "all")).data;
+  assert.equal(digest.length, 1, "an unmodelled payload must not drop out of the catch-up tool");
+  assert.deepEqual(digest[0].messages.map((m) => [m.type, m.text]), [["unknown", "[unsupported: eventMessage]"]]);
 });

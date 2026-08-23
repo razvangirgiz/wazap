@@ -27,12 +27,13 @@ import type { ILogger } from "baileys/lib/Utils/logger.js";
 import { readLinkedAccount, useAtomicAuthState } from "./auth-state.js";
 import { BAILEYS_VERSION, paths, WAZAP_VERSION, type Config, type Paths } from "./config.js";
 import { asWazapError, RELINK_FIX, RESET_FIX, WazapError } from "./errors.js";
-import { isAddressableJid, isGroupId, resolveChatId } from "./ids.js";
+import { isGroupId, isNoiseJid, resolveChatId } from "./ids.js";
 import { log, logError } from "./logger.js";
 import {
   buildMessageView,
   formatAge,
   isControlMessage,
+  isStubEvent,
   isoWithOffset,
   mediaInfo,
   messageIdFor,
@@ -203,7 +204,7 @@ class Store {
   hydrate(snapshot: StoreSnapshot): void {
     if (snapshot?.v !== 1) return;
     for (const [jid, b64] of Object.entries(snapshot.chats ?? {})) {
-      if (!isAddressableJid(jid)) continue;
+      if (isNoiseJid(jid)) continue;
       const chat = decodeChat(b64);
       if (chat) this.chats.set(jid, chat);
     }
@@ -214,7 +215,7 @@ class Store {
       if (raw && !isControlMessage(raw)) this.messages.set(sid, raw);
     }
     for (const [jid, ring] of Object.entries(snapshot.byChat ?? {})) {
-      if (!isAddressableJid(jid)) continue;
+      if (isNoiseJid(jid)) continue;
       const present = ring.filter((sid) => this.messages.has(sid));
       this.byChat.set(jid, present);
       for (const sid of present) this.chatOf.set(sid, jid);
@@ -252,8 +253,18 @@ export class WhatsAppService implements WhatsAppApi {
   private persistedLoaded = false;
   private readonly blocked = new Set<string>();
   private readonly groupCache = new Map<string, GroupMetadata>();
+  /** Groups whose metadata WhatsApp refused, so we stop asking on every read. */
+  private readonly unreadableGroups = new Set<string>();
   /** `<user>@lid` to the phone-number jid, so ids we hand out stay canonical. */
   private readonly lidToPn = new Map<string, string>();
+  /**
+   * The same thing for naming only, and it holds more: Baileys keeps the
+   * LID↔number table the account has synced, which covers LIDs WhatsApp never
+   * asserted on a chat or a contact. Those do not go into `lidToPn`, because a
+   * chat whose history is filed under a LID would split in two the moment its
+   * id started canonicalising to the number instead.
+   */
+  private readonly lidPhones = new Map<string, string>();
   private readonly store = new Store();
   private readonly paths: Paths;
 
@@ -344,11 +355,12 @@ export class WhatsAppService implements WhatsAppApi {
     return this.guarded(async () => {
       this.ensureConnected();
       await this.waitForSync();
-      const chats = this.knownChats()
+      const shown = this.knownChats()
         .filter((chat) => this.matchesChatFilter(chat, filter))
         .sort((a, b) => this.chatActivity(b) - this.chatActivity(a))
-        .slice(0, limit)
-        .map((chat) => this.chatSummary(chat));
+        .slice(0, limit);
+      await this.learnLidPhones(shown.map((chat) => this.canonical(chat.id ?? "")));
+      const chats = shown.map((chat) => this.chatSummary(chat));
       return this.synced(chats);
     });
   }
@@ -359,6 +371,7 @@ export class WhatsAppService implements WhatsAppApi {
       const jid = this.resolveId(chatId);
       await this.waitForSync();
       await this.learnParticipants(jid);
+      await this.learnLidPhones([jid]);
 
       if (before === undefined) {
         const ring = this.store.byChat.get(jid) ?? [];
@@ -385,9 +398,10 @@ export class WhatsAppService implements WhatsAppApi {
       await this.waitForSync();
       const cutoff = Date.now() - hours * 3_600_000;
       const conversations: RecentConversation[] = [];
+      await this.learnLidPhones(this.store.byChat.keys());
 
       for (const [jid, ring] of this.store.byChat) {
-        if (!isAddressableJid(jid)) continue;
+        if (isNoiseJid(jid)) continue;
         const chat = this.store.chats.get(jid);
         if (chat && !this.matchesChatFilter(chat, filter)) continue;
         if (!chat && (filter === "unread" || filter === (isGroupId(jid) ? "individual" : "groups"))) continue;
@@ -400,12 +414,11 @@ export class WhatsAppService implements WhatsAppApi {
 
         const messages = this.viewsFor(recent, jid).filter((view) => includeSystem || view.type !== "system");
         if (messages.length === 0) continue;
-        const last = messages[messages.length - 1];
         conversations.push({
           chat_id: jid,
           chat_name: this.displayName(jid),
           type: isGroupId(jid) ? "group" : "individual",
-          last_activity: last ? last.timestamp : isoWithOffset(cutoff),
+          last_activity: messages[messages.length - 1]!.timestamp,
           messages,
         });
       }
@@ -888,7 +901,7 @@ export class WhatsAppService implements WhatsAppApi {
       for (const update of updates) {
         if (!update.id) continue;
         const jid = this.canonical(update.id);
-        if (!isAddressableJid(jid)) continue;
+        if (isNoiseJid(jid)) continue;
         const previous = this.store.chats.get(jid);
         this.store.chats.set(jid, { ...(previous ?? {}), ...update, id: jid });
       }
@@ -1164,16 +1177,18 @@ export class WhatsAppService implements WhatsAppApi {
   private cacheGroup(jid: string, meta: GroupMetadata): void {
     this.groupCache.set(jid, meta);
     this.learnGroup(meta);
+    this.markStoreDirty();
   }
 
   /**
-   * Reading a group for the first time costs one metadata fetch, after which
-   * its senders resolve from cache. A group we cannot read (left, deleted) is
-   * not worth failing the read over.
+   * Reading a group for the first time costs one metadata fetch, after which its
+   * senders resolve from cache. A group we cannot read — left, deleted — is not
+   * worth failing the read over, and asking again on every read would cost a
+   * round trip per message page forever.
    */
   private async learnParticipants(jid: string): Promise<void> {
-    if (!isGroupId(jid) || this.groupCache.has(jid)) return;
-    await this.groupMeta(jid).catch(() => undefined);
+    if (!isGroupId(jid) || this.groupCache.has(jid) || this.unreadableGroups.has(jid)) return;
+    await this.groupMeta(jid).catch(() => this.unreadableGroups.add(jid));
   }
 
   private myParticipation(meta: GroupMetadata): GroupParticipant | undefined {
@@ -1220,21 +1235,64 @@ export class WhatsAppService implements WhatsAppApi {
     }
   }
 
+  /**
+   * WhatsApp usually keys a contact by its phone jid and names the LID on the
+   * side, leaving `phoneNumber` empty, so the pairing has to be read off `id`.
+   * A hydrated store is full of these, which is why loading one relearns them.
+   */
+  private relearnLid(contact: BaileysContact): void {
+    if (!contact.lid) return;
+    if (contact.phoneNumber) this.learnLid(contact.lid, contact.phoneNumber);
+    else if (contact.id?.endsWith("@s.whatsapp.net")) this.learnLidPhone(contact.lid, contact.id);
+  }
+
+  /** A pairing WhatsApp stated in a field meant for it, so ids may follow it. */
   private learnLid(lid: string, pn: string): void {
     if (!lid || !pn) return;
-    const key = `${jidNormalizedUser(lid).split("@")[0]}@lid`;
-    this.lidToPn.set(key, pn);
+    this.lidToPn.set(lidKey(lid), jidNormalizedUser(pn));
+    this.learnLidPhone(lid, pn);
+  }
+
+  /**
+   * A pairing wazap inferred or looked up. It names people and never renames a
+   * chat: a chat whose history is filed under a LID would split in two the
+   * moment its id started canonicalising to the number instead, and the older
+   * half would stop being reachable by any id at all.
+   */
+  private learnLidPhone(lid: string, pn: string): void {
+    if (!lid || !pn) return;
+    const key = lidKey(lid);
+    const phone = jidNormalizedUser(pn);
+    this.lidPhones.set(key, phone);
+    const pushed = this.store.pushNames.get(key) ?? this.store.pushNames.get(phone);
+    if (pushed) {
+      this.store.pushNames.set(key, pushed);
+      this.store.pushNames.set(phone, pushed);
+    }
+  }
+
+  /**
+   * Ask Baileys for the numbers behind the LIDs we are about to name. It answers
+   * from the table the account already synced, so this is a lookup rather than a
+   * fetch, and it is the difference between naming someone and shrugging at them.
+   */
+  private async learnLidPhones(jids: Iterable<string>): Promise<void> {
+    const missing = [...new Set(jids)].filter((jid) => jid.endsWith("@lid") && !this.lidPhones.has(jid));
+    if (missing.length === 0) return;
+    const mappings = await this.sockClient?.signalRepository.lidMapping
+      .getPNsForLIDs(missing)
+      .catch(() => null);
+    for (const { lid, pn } of mappings ?? []) this.learnLidPhone(lid, pn);
   }
 
   /**
    * The one place a jid becomes a name, so a sender, a chat header, a digest
-   * title and a participant list can never disagree. The ladder runs from the
-   * name the user chose to the least wrong thing we can say, and it stops short
-   * of printing a raw LID: a LID is 15 digits that look exactly like a phone
-   * number and are not one, so an unresolved one says so.
+   * title and a participant list can never disagree. The last rung is never a
+   * raw LID: a LID is fifteen digits that read as a phone number and are not
+   * one, so an unresolved one says it is unknown instead.
    *
-   * `hint` is the pushName riding on the message being rendered, for a sender
-   * whose name has not been ingested yet.
+   * `hint` is the pushName on the message being rendered, for a sender whose
+   * name has not been ingested yet.
    */
   private displayName(jid: string, hint?: string): string {
     if (!jid) return "unknown";
@@ -1243,7 +1301,7 @@ export class WhatsAppService implements WhatsAppApi {
       return this.store.chats.get(jid)?.name || this.groupCache.get(jid)?.subject || jid;
     }
 
-    const phoneJid = jid.endsWith("@lid") ? this.lidToPn.get(jid) : undefined;
+    const phoneJid = jid.endsWith("@lid") ? this.lidPhones.get(jid) : undefined;
     for (const known of phoneJid ? [jid, phoneJid] : [jid]) {
       const contact = this.store.contacts.get(known);
       const name =
@@ -1331,7 +1389,7 @@ export class WhatsAppService implements WhatsAppApi {
   private knownChats(): BaileysChat[] {
     const chats = [...this.store.chats.values()];
     for (const jid of this.store.byChat.keys()) {
-      if (!this.store.chats.has(jid) && isAddressableJid(jid)) chats.push({ id: jid });
+      if (!this.store.chats.has(jid) && !isNoiseJid(jid)) chats.push({ id: jid });
     }
     return chats;
   }
@@ -1386,7 +1444,7 @@ export class WhatsAppService implements WhatsAppApi {
   }
 
   private contactSummary(jid: string, contact?: BaileysContact): ContactSummary {
-    const phoneJid = jid.endsWith("@lid") ? (this.lidToPn.get(jid) ?? jid) : jid;
+    const phoneJid = jid.endsWith("@lid") ? (this.lidPhones.get(jid) ?? jid) : jid;
     const number = phoneJid.endsWith("@s.whatsapp.net") ? (phoneJid.split("@")[0] ?? null) : null;
     return {
       contact_id: jid,
@@ -1411,17 +1469,14 @@ export class WhatsAppService implements WhatsAppApi {
     if (!chat.id) return;
     if (chat.lidJid && chat.pnJid) this.learnLid(chat.lidJid, chat.pnJid);
     const jid = this.canonical(chat.id);
-    if (!isAddressableJid(jid)) return;
+    if (isNoiseJid(jid)) return;
     const previous = this.store.chats.get(jid);
     this.store.chats.set(jid, { ...(previous ?? {}), ...chat, id: jid });
   }
 
   private ingestContact(contact: BaileysContact): void {
     if (!contact.id) return;
-    // WhatsApp usually keys the contact by its phone jid and names the LID on
-    // the side, so `phoneNumber` is empty and `id` is the phone number.
-    const phone = contact.phoneNumber ?? (contact.id.endsWith("@s.whatsapp.net") ? contact.id : undefined);
-    if (contact.lid && phone) this.learnLid(contact.lid, phone);
+    this.relearnLid(contact);
     const jid = this.canonical(contact.id);
     const previous = this.store.contacts.get(jid);
     this.store.contacts.set(jid, { ...(previous ?? {}), ...contact, id: jid });
@@ -1430,9 +1485,9 @@ export class WhatsAppService implements WhatsAppApi {
   private ingestMessages(messages: WAMessage[]): WAMessage[] {
     const stored: WAMessage[] = [];
     for (const raw of messages) {
-      if (!raw.message || !raw.key?.remoteJid) continue;
+      if (!raw.key?.remoteJid || (!raw.message && !isStubEvent(raw))) continue;
       const jid = this.canonical(raw.key.remoteJid);
-      if (!isAddressableJid(jid) || isControlMessage(raw)) continue;
+      if (isNoiseJid(jid) || isControlMessage(raw)) continue;
       this.learnPushName(raw, jid);
       this.store.putMessage(messageIdFor(raw.key, jid), jid, raw);
       stored.push(raw);
@@ -1440,7 +1495,6 @@ export class WhatsAppService implements WhatsAppApi {
     return stored;
   }
 
-  /** The sender's own profile name, which arrives on the message and nowhere else. */
   private learnPushName(raw: WAMessage, chatJid: string): void {
     const name = raw.pushName?.trim();
     if (!name || raw.key.fromMe) return;
@@ -1457,12 +1511,9 @@ export class WhatsAppService implements WhatsAppApi {
     for (const p of meta.participants) {
       const lid = p.lid ?? (p.id.endsWith("@lid") ? p.id : undefined);
       const phone = p.phoneNumber ?? (p.id.endsWith("@s.whatsapp.net") ? p.id : undefined);
-      if (lid && phone) this.learnLid(lid, phone);
-      const contact: BaileysContact = { id: phone ?? p.id };
-      if (lid) contact.lid = lid;
-      if (p.name) contact.name = p.name;
-      if (p.notify) contact.notify = p.notify;
-      this.ingestContact(contact);
+      if (lid && phone) this.learnLidPhone(lid, phone);
+      const name = p.name ?? p.notify ?? p.username;
+      if (name) this.ingestContact({ id: phone ?? p.id, ...(lid ? { lid } : {}), notify: name });
     }
   }
 
@@ -1477,6 +1528,7 @@ export class WhatsAppService implements WhatsAppApi {
     try {
       const text = await readFile(this.paths.storeFile, "utf8");
       this.store.hydrate(JSON.parse(text) as StoreSnapshot);
+      for (const contact of this.store.contacts.values()) this.relearnLid(contact);
       log(`store loaded: ${this.store.chats.size} chats, ${this.store.messages.size} messages`);
     } catch (err) {
       if (!isMissing(err)) logError("store load", err);
@@ -1548,9 +1600,9 @@ export class WhatsAppService implements WhatsAppApi {
     let loaded = 0;
     for (const record of kept) {
       const raw = decodeMessage(record.raw);
-      if (!raw?.message || !raw.key?.remoteJid) continue;
+      if (!raw?.key?.remoteJid || (!raw.message && !isStubEvent(raw))) continue;
       const jid = this.canonical(raw.key.remoteJid);
-      if (!isAddressableJid(jid) || isControlMessage(raw)) continue;
+      if (isNoiseJid(jid) || isControlMessage(raw)) continue;
       this.store.putMessage(record.sid, jid, raw);
       loaded++;
     }
@@ -1561,7 +1613,7 @@ export class WhatsAppService implements WhatsAppApi {
     if (!this.config.persistHistory || messages.length === 0) return;
     const lines = new Map<string, string[]>();
     for (const raw of messages) {
-      if (!raw.message || !raw.key?.remoteJid) continue;
+      if (!raw.key?.remoteJid) continue;
       const encoded = encode(() => proto.WebMessageInfo.encode(raw).finish());
       if (!encoded) continue;
       const jid = this.canonical(raw.key.remoteJid);
@@ -1602,6 +1654,10 @@ const PARTICIPANT_ACTIONS = new Set<GroupAction>(["add", "remove", "promote", "d
 
 /** WhatsApp answers "cannot add, invite them instead" with these codes. */
 const INVITE_NEEDED_CODES = new Set(["403", "409"]);
+
+function lidKey(lid: string): string {
+  return `${jidNormalizedUser(lid).split("@")[0]}@lid`;
+}
 
 function isAdmin(participant: GroupParticipant): boolean {
   return participant.admin === "admin" || participant.admin === "superadmin";

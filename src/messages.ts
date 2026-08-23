@@ -20,7 +20,8 @@ export function messageTimestampMs(raw: WAMessage): number {
   return seconds === undefined ? Date.now() : seconds * 1000;
 }
 
-/** Stable across restarts, and stable under lid→pn remapping of the chat. */
+/** Stable across restarts. Not stable if the chat's own jid is later remapped
+ * from a LID to a phone number, which is why wazap does not remap chat jids. */
 export function messageIdFor(key: WAMessageKey, chatId: string): string {
   return `${key.fromMe ? "true" : "false"}_${chatId}_${key.id ?? ""}`;
 }
@@ -81,7 +82,7 @@ const PROTOCOL: Rule = {
 
 const SYSTEM: Rule = { type: "system", tag: SYSTEM_TEXT };
 
-/** Naming the payload turns a shrug into an actionable bug report. */
+/** Names the payload, so a bug report says which one to add. */
 const UNKNOWN: Rule = {
   type: "unknown",
   tag: (m) => {
@@ -92,6 +93,19 @@ const UNKNOWN: Rule = {
 
 /** Payloads WhatsApp exchanges with its own clients; no person ever sent one. */
 const CONTROL_KEYS: ReadonlyArray<keyof WAMessageContent> = ["messageContextInfo", "senderKeyDistributionMessage"];
+
+/**
+ * The protocol messages that report something a person did. Baileys enumerates
+ * exactly these as cross-user in Utils/process-message.js — every other type is
+ * one device talking to another. MESSAGE_EDIT is cross-user too, but wazap
+ * applies the edit to the message it edits, so its envelope is not a second
+ * message to show.
+ */
+const REPORTABLE_PROTOCOL_TYPES: ReadonlySet<number> = new Set([
+  proto.Message.ProtocolMessage.Type.REVOKE,
+  proto.Message.ProtocolMessage.Type.EPHEMERAL_SETTING,
+  proto.Message.ProtocolMessage.Type.GROUP_MEMBER_LABEL_CHANGE,
+]);
 
 /**
  * One table drives both messageType and messageText, so the reported type and
@@ -177,7 +191,13 @@ function ruleFor(content: WAMessageContent | undefined): { rule: Rule; content: 
   const key = getContentType(content);
   const rule = key ? RULES[key] : undefined;
   if (rule) return { rule, content };
-  if (content.messageContextInfo || content.senderKeyDistributionMessage) return { rule: SYSTEM, content };
+  // Only when the control keys are all there is. A payload wazap does not model
+  // yet usually carries messageContextInfo alongside it, and calling that a
+  // system message would hide someone's event, album or order behind
+  // "[system message]" and then out of the digest.
+  if (key === undefined && (content.messageContextInfo || content.senderKeyDistributionMessage)) {
+    return { rule: SYSTEM, content };
+  }
   return { rule: UNKNOWN, content };
 }
 
@@ -195,19 +215,29 @@ function resolve<T>(value: T | ((m: WAMessageContent) => T), content: WAMessageC
 /**
  * True for the machinery WhatsApp runs between devices: history-sync notices,
  * app-state and peer-data responses, sender-key distribution, bare context
- * info. They carry nothing a person wrote, so they are dropped rather than
- * shown as "[unsupported message]" — which is what they used to look like in
- * the user's own self-chat right after linking a device.
+ * info. They carry nothing a person did, so they are dropped rather than shown.
  */
 export function isControlMessage(raw: WAMessage): boolean {
-  if (stubKind(raw) !== undefined) return false;
+  if (isStubEvent(raw)) return false;
   const content = unwrapEnvelopes(raw.message);
   if (!content) return true;
   const key = getContentType(content);
-  if (key === "protocolMessage") return !isRevoke(content);
-  if (key !== undefined) return CONTROL_KEYS.includes(key);
+  if (key === "protocolMessage") return !REPORTABLE_PROTOCOL_TYPES.has(content.protocolMessage?.type ?? -1);
+  if (key !== undefined) return false;
+  // getContentType ignores the control keys, so reaching here means the payload
+  // is either nothing at all or nothing but control keys.
   const present = Object.keys(content).filter((name) => content[name as keyof WAMessageContent] != null);
   return present.length === 0 || present.every((name) => CONTROL_KEYS.includes(name as keyof WAMessageContent));
+}
+
+/**
+ * A message whose whole content is a stub type: WhatsApp's own notices about
+ * device linking, group membership and encryption. Baileys builds these with no
+ * `message` field at all, so they have to be recognised before the usual
+ * "no content, nothing to store" guard throws them away.
+ */
+export function isStubEvent(raw: WAMessage): boolean {
+  return stubKind(raw) !== undefined;
 }
 
 export function messageType(raw: WAMessage): MessageType {
@@ -324,7 +354,7 @@ export function buildMessageView(raw: WAMessage, ctx: MessageViewContext): Messa
     from_me: Boolean(raw.key.fromMe),
     sender: {
       id: sender,
-      name: ctx.nameFor(sender) || sender,
+      name: ctx.nameFor(sender),
       ...(phoneOf(sender) ? { phone: phoneOf(sender) } : {}),
     },
     type: messageType(raw),
