@@ -37,7 +37,7 @@
     "start": "node dist/index.js",
     "dev": "tsx src/index.ts",
     "typecheck": "tsc --noEmit",
-    "test": "npm run build && node --test test/*.test.mjs",
+    "test": "npm run build && node --test --import ./test/no-color.mjs test/*.test.mjs",
     "prepublishOnly": "npm run build && npm test",
     "registry:validate": "node scripts/validate-server-json.mjs",
     "bundle:mcpb": "node scripts/bundle-mcpb.mjs",
