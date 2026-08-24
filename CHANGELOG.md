@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.11.0
 ### Added
 
 - **`setup` installs the binaries it needs, and restarts Claude Desktop for
