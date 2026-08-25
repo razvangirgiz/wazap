@@ -50,13 +50,23 @@ import {
   maskNumber,
   next,
   ok,
+  openScreen,
   shortPath,
   spinner,
-  step,
   tilde,
   warn,
   type Spinner,
 } from "./ui.js";
+import {
+  loginWizardSteps,
+  maybeWizard,
+  wizDim,
+  wizFail,
+  wizInfo,
+  wizOk,
+  wizWarn,
+  type Wizard,
+} from "./wizard.js";
 import type { ConnectionStatus } from "./wa-types.js";
 import { WhatsAppService } from "./whatsapp.js";
 
@@ -548,28 +558,55 @@ export async function runServe(config: Config): Promise<void> {
   process.stdin.on("close", () => shutdown("stdin close"));
 }
 
-export function stepper(total: number): (title: string) => void {
+export interface Stepper {
+  (title: string): void;
+  /** Consume a step without painting it. TTY link screens replace "Link". */
+  skip(): void;
+}
+
+export function stepper(total: number): Stepper {
   let n = 0;
-  return (title) => say(step(++n, total, title));
+  const announce = ((title: string) => openScreen(++n, total, title)) as Stepper;
+  announce.skip = () => {
+    n += 1;
+  };
+  return announce;
 }
 
 export async function runLogin(config: Config): Promise<void> {
   const p = paths(config.dataDir);
-  say(banner());
-
   const linked = readLinkedAccount(p.authDir);
-  if (linked) {
-    say("");
-    say(ok(`Already linked as ${describeAccount(linked)}`));
-    say(info("Run `wazap logout` to relink."));
-    say("");
-    say(connectNext());
-    return;
-  }
+  const askWrites = config.writesAnswer === null && !config.assumeYes && process.stdin.isTTY === true;
+  const w = maybeWizard(linked ? 1 : loginWizardSteps(Boolean(config.loginCode), askWrites));
+  try {
+    if (!w) say(banner());
 
-  await linkAndSync(config, stepper(config.loginCode ? 4 : 3));
-  say("");
-  say(connectNext());
+    if (linked) {
+      if (w) {
+        await w.next("Already linked", [
+          wizOk(`Already linked as ${describeAccount(linked)}`),
+          wizInfo("Run `wazap logout` to relink."),
+          "",
+          connectNext(),
+        ]);
+      } else {
+        say("");
+        say(ok(`Already linked as ${describeAccount(linked)}`));
+        say(info("Run `wazap logout` to relink."));
+        say("");
+        say(connectNext());
+      }
+      return;
+    }
+
+    await linkAndSync(config, w ? () => {} : stepper(config.loginCode ? 4 : 3), w);
+    if (!w) {
+      say("");
+      say(connectNext());
+    }
+  } finally {
+    w?.close();
+  }
   process.exit(0);
 }
 
@@ -578,7 +615,11 @@ export async function runLogin(config: Config): Promise<void> {
  * here until the history has landed. Writes are offered after it is released:
  * that question edits .env, not the session, and it waits on a human.
  */
-export async function linkAndSync(config: Config, announce: (title: string) => void = () => {}): Promise<void> {
+export async function linkAndSync(
+  config: Config,
+  announce: (title: string) => void = () => {},
+  w: Wizard | null = null,
+): Promise<void> {
   const p = paths(config.dataDir);
 
   const resumeService = await yieldSession(config, p.lockFile);
@@ -604,25 +645,29 @@ export async function linkAndSync(config: Config, announce: (title: string) => v
   try {
     let phone: string | null = null;
     if (config.loginCode) {
-      announce("Your number");
-      phone = config.loginPhone === undefined ? await askPhone() : normalizePhone(config.loginPhone);
-      say(ok(maskNumber(phone)));
+      if (w) await w.next("Your number");
+      else announce("Your number");
+      phone = config.loginPhone === undefined ? await askPhone(w) : normalizePhone(config.loginPhone);
+      if (w) await w.paint([wizOk(maskNumber(phone))]);
+      else say(ok(maskNumber(phone)));
     }
 
     const waiting = new Countdown(Date.now() + PAIRING_TIMEOUT_MS);
-    announce("Link your phone");
+    if (!w) announce("Link your phone");
 
     let account: LinkedAccount;
     try {
-      account = phone === null ? await linkByQr(p, waiting) : await linkByCode(p.authDir, phone, waiting);
+      account = phone === null ? await linkByQr(p, waiting, w) : await linkByCode(p.authDir, phone, waiting, w);
     } catch (err) {
       waiting.stop();
       throw err;
     }
-    waiting.stop(ok(`Linked as ${describeAccount(account)}`));
+    if (w) waiting.stop();
+    else waiting.stop(ok(`Linked as ${describeAccount(account)}`));
 
-    announce("Sync your chats");
-    await syncAfterLink(config);
+    if (w) await w.next("Syncing your chats", [wizOk(`Linked as ${describeAccount(account)}`)]);
+    else announce("Sync your chats");
+    await syncAfterLink(config, w);
   } catch (err) {
     resumeService();
     throw err;
@@ -633,34 +678,73 @@ export async function linkAndSync(config: Config, announce: (title: string) => v
     process.off("SIGTERM", onTerminate);
   }
 
-  announce("Permissions");
+  const askWrites = config.writesAnswer === null && !config.assumeYes && process.stdin.isTTY === true;
+  if (w) {
+    if (askWrites) {
+      await w.next("Sending messages", [
+        "Off unless you say yes. The agent can then send, reply, react and manage chats.",
+      ]);
+    }
+  } else {
+    announce("Permissions");
+  }
   try {
-    await offerWrites(config);
+    await offerWrites(config, w);
   } finally {
     resumeService();
   }
 }
 
 /** The same pairing the `link_account` tool runs, with the code shown in a box. */
-async function linkByCode(authDir: string, phone: string, waiting: Countdown): Promise<LinkedAccount> {
+async function linkByCode(
+  authDir: string,
+  phone: string,
+  waiting: Countdown,
+  w: Wizard | null,
+): Promise<LinkedAccount> {
   const pairing = await startPairing(authDir, phone, PAIRING_TIMEOUT_MS);
   const pretty = prettyCode(pairing.code);
   if (!humanLayout()) say(`pairing code: ${pretty}`);
-  say("  On your phone: WhatsApp → Settings → Linked devices → Link a device → Link with phone number instead");
-  say("");
-  say(box(pretty));
-  say("");
+  if (w) {
+    await w.next("Type this in WhatsApp", [
+      "WhatsApp → Settings → Linked devices → Link a device → Link with phone number instead",
+      "",
+      ...box(pretty).split("\n"),
+    ]);
+  } else {
+    say("  On your phone: WhatsApp → Settings → Linked devices → Link a device → Link with phone number instead");
+    say("");
+    say(box(pretty));
+    say("");
+  }
   waiting.start();
   return pairing.done;
 }
 
-async function linkByQr(p: Paths, waiting: Countdown): Promise<LinkedAccount> {
+async function linkByQr(p: Paths, waiting: Countdown, w: Wizard | null): Promise<LinkedAccount> {
+  if (w) {
+    await w.next("Scan this with WhatsApp");
+    waiting.start("Waiting for a QR from WhatsApp…");
+  }
   const onQr = async (qr: string): Promise<void> => {
-    qrcodeTerminal.generate(qr, { small: true }, (art: string) => say(art));
+    const art = await new Promise<string>((resolve) => {
+      qrcodeTerminal.generate(qr, { small: true }, (drawn: string) => resolve(drawn));
+    });
+    if (w) {
+      await w.paint([
+        ...art.trimEnd().split("\n"),
+        "",
+        "WhatsApp → Settings → Linked devices → Link a device",
+        wizDim(`Also saved to ${shortPath(p.qrFile)}`),
+        wizDim("Prefer a code? Ctrl+C, then wazap login --phone +15550100"),
+      ]);
+    } else {
+      say(art);
+      say(`  Scan it with WhatsApp → Settings → Linked devices → Link a device (also saved to ${shortPath(p.qrFile)})`);
+      say(dim("  Prefer typing a code? Press Ctrl+C and run `wazap login --phone +15550100`."));
+      say("");
+    }
     await qrcode.toFile(p.qrFile, qr);
-    say(`  Scan it with WhatsApp → Settings → Linked devices → Link a device (also saved to ${shortPath(p.qrFile)})`);
-    say(dim("  Prefer typing a code? Press Ctrl+C and run `wazap login --phone +15550100`."));
-    say("");
     waiting.start();
   };
   const sock = await linkSession(p.authDir, { deadline: Date.now() + PAIRING_TIMEOUT_MS, onQr });
@@ -715,7 +799,7 @@ const HISTORY_QUIET_MS = 3_000;
  * socket that paired. The link socket has no store, so the real service takes
  * over here and stays up until the history has landed and gone quiet.
  */
-async function syncAfterLink(config: Config): Promise<void> {
+async function syncAfterLink(config: Config, w: Wizard | null = null): Promise<void> {
   const wa = new WhatsAppService(config);
   const spin = spinner("Syncing your chats…");
   try {
@@ -742,8 +826,12 @@ async function syncAfterLink(config: Config): Promise<void> {
     await wa.stop();
     spin.stop(
       got
-        ? ok(`Synced ${counts.chats} chats, ${counts.contacts} contacts, ${counts.messages} messages`)
-        : warn("No history arrived in 90s. The server keeps listening; if chats stay empty, run `wazap logout` then `wazap login`."),
+        ? w
+          ? wizOk(`Synced ${counts.chats} chats, ${counts.contacts} contacts, ${counts.messages} messages`)
+          : ok(`Synced ${counts.chats} chats, ${counts.contacts} contacts, ${counts.messages} messages`)
+        : w
+          ? wizWarn("No history arrived in 90s. The server keeps listening; if chats stay empty, run `wazap logout` then `wazap login`.")
+          : warn("No history arrived in 90s. The server keeps listening; if chats stay empty, run `wazap logout` then `wazap login`."),
     );
   }
 }
@@ -759,11 +847,25 @@ class Countdown {
 
   constructor(private readonly deadline: number) {}
 
-  /** No-op once stopped: the socket can settle while the code request is still in flight. */
-  start(): void {
+  line(): string {
+    const left = Math.max(0, Math.round((this.deadline - Date.now()) / 1_000));
+    return `Waiting for your phone…  (expires in ${Math.floor(left / 60)}:${String(left % 60).padStart(2, "0")})`;
+  }
+
+  /**
+   * Animate a status line. Pass a message for the wait-before-QR state; omit it
+   * to count the pairing code down. Calling again just changes the copy, the
+   * spinner keeps turning.
+   */
+  start(text?: string): void {
     if (this.#stopped) return;
-    this.#spinner = spinner(this.#line());
-    this.#ticker = setInterval(() => this.#spinner?.update(this.#line()), 1_000);
+    const line = text ?? this.line();
+    if (this.#spinner !== null) this.#spinner.update(line);
+    else this.#spinner = spinner(line);
+    if (this.#ticker !== null) clearInterval(this.#ticker);
+    this.#ticker = null;
+    if (text !== undefined) return;
+    this.#ticker = setInterval(() => this.#spinner?.update(this.line()), 1_000);
     this.#ticker.unref();
   }
 
@@ -777,11 +879,6 @@ class Countdown {
     }
     this.#spinner.stop(final);
     this.#spinner = null;
-  }
-
-  #line(): string {
-    const left = Math.max(0, Math.round((this.deadline - Date.now()) / 1_000));
-    return `Waiting for your phone…  (expires in ${Math.floor(left / 60)}:${String(left % 60).padStart(2, "0")})`;
   }
 }
 
@@ -847,13 +944,14 @@ export function describeAccount(account: LinkedAccount): string {
  * Writes stay off unless the user says otherwise, so a fresh link cannot message
  * anyone. A non-interactive login leaves the setting alone rather than guessing.
  */
-export async function offerWrites(config: Config): Promise<void> {
+export async function offerWrites(config: Config, w: Wizard | null = null): Promise<void> {
   if (config.writesAnswer !== null) {
     applyWrites(config, config.writesAnswer);
     return;
   }
   if (config.assumeYes || !process.stdin.isTTY) return;
-  const answer = await ask(`${brand("?")} Allow the agent to send messages, react and manage chats? [y/N] `);
+  const question = "Allow the agent to send messages, react and manage chats? [y/N] ";
+  const answer = w ? await w.prompt(question) : await ask(`${brand("?")} ${question}`);
   applyWrites(config, /^y(es)?$/i.test(answer.trim()));
 }
 
@@ -890,14 +988,16 @@ export async function askSecret(question: string): Promise<string> {
 const PHONE_ATTEMPTS = 3;
 
 /** A typo costs another prompt, not the whole login. */
-async function askPhone(): Promise<string> {
+async function askPhone(w: Wizard | null = null): Promise<string> {
   for (let attempt = 1; ; attempt++) {
-    const answer = await ask(`${brand("?")} WhatsApp number, international format (e.g. +15550100): `);
+    const question = "WhatsApp number, international format (e.g. +15550100): ";
+    const answer = w ? await w.prompt(question) : await ask(`${brand("?")} ${question}`);
     try {
       return normalizePhone(answer);
     } catch (err) {
       if (attempt === PHONE_ATTEMPTS) throw err;
-      say(fail("Use international format, e.g. +15550100"));
+      if (w) await w.paint([wizFail("Use international format, e.g. +15550100")], { reveal: false });
+      else say(fail("Use international format, e.g. +15550100"));
     }
   }
 }

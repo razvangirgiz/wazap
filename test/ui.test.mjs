@@ -7,6 +7,8 @@ import {
   bold,
   box,
   brand,
+  centerBlock,
+  centerLine,
   cmd,
   colorEnabled,
   dim,
@@ -18,7 +20,10 @@ import {
   next,
   nextHint,
   ok,
+  openCanvas,
+  openScreen,
   red,
+  screenChrome,
   shortPath,
   step,
   tilde,
@@ -56,6 +61,7 @@ const PLAIN = [
   [() => warn("careful"), "! careful"],
   [() => fix("chmod 700 ~/.wazap"), "  → chmod 700 ~/.wazap"],
   [() => step(2, 3, "Link your phone"), "\nStep 2 of 3 · Link your phone"],
+  [() => screenChrome(1, 6, "Link"), "wazap  1/6\nLink"],
 ];
 
 for (const [render, expected] of PLAIN) {
@@ -149,4 +155,50 @@ test("tilde replaces the home directory only as a prefix", () => {
 test("maskNumber keeps the first three digits and groups the rest", () => {
   assert.equal(maskNumber("15550100"), "+15 5xx xxx");
   assert.equal(maskNumber("447700900123"), "+44 7xx xxx xxx x");
+});
+
+function captureStderr(body) {
+  const chunks = [];
+  const orig = process.stderr.write;
+  process.stderr.write = (chunk) => {
+    chunks.push(String(chunk));
+    return true;
+  };
+  try {
+    body();
+  } finally {
+    process.stderr.write = orig;
+  }
+  return chunks.join("");
+}
+
+test("openScreen off-TTY is the existing Step line, and never clears the terminal", () => {
+  assert.equal(humanLayout(), false, "test stderr is piped");
+  const text = withColor(false, () => captureStderr(() => openScreen(2, 3, "Link your phone")));
+  assert.equal(text, "\nStep 2 of 3 · Link your phone\n");
+  assert.equal(text.includes("\x1b[2J"), false);
+});
+
+test("openCanvas off-TTY paints nothing, so the QR stays inside the current log step", () => {
+  const text = withColor(false, () => captureStderr(() => openCanvas("Scan this with WhatsApp")));
+  assert.equal(text, "");
+});
+
+test("centerLine pads a short string into the middle of the row", () => {
+  assert.equal(centerLine("ab", 6), "  ab");
+  assert.equal(width(centerLine("ab", 6)), 4);
+});
+
+test("centerBlock keeps a ragged column aligned, then drops it in the middle of the screen", () => {
+  const placed = centerBlock(["wazap", "hi"], 9, 6);
+  assert.equal(placed[0], "");
+  assert.equal(placed[1], "");
+  assert.match(placed[2], /^\s+wazap$/);
+  assert.match(placed[3], /^\s+hi$/);
+  assert.equal(placed[2].indexOf("w"), placed[3].indexOf("h"));
+});
+
+test("width ignores ANSI, so a painted line still centers on its visible glyphs", () => {
+  assert.equal(width("\x1b[32mhi\x1b[0m"), 2);
+  assert.equal(centerLine("\x1b[32mhi\x1b[0m", 6), "  \x1b[32mhi\x1b[0m");
 });

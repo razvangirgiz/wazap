@@ -7,7 +7,7 @@ import { delimiter, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 
-import { GUI_PATH, findClient, isNpxPath, launchCheck, launcher, relaunch, whereInstalled } from "../dist/connect.js";
+import { GUI_PATH, findClient, isNpxPath, launchCheck, launcher, relaunch, stableWazap, whereInstalled } from "../dist/connect.js";
 
 const run = promisify(execFile);
 const binary = join(dirname(fileURLToPath(import.meta.url)), "..", "dist", "index.js");
@@ -199,6 +199,20 @@ for (const [binPath, pathEnv, present, kind] of INSTALLS) {
 test("the npx cache wins over a wazap on PATH: this process is still the throwaway copy", () => {
   const npx = "/Users/x/.npm/_npx/8a1b/node_modules/wazap/dist/index.js";
   assert.equal(whereInstalled(npx, "/usr/local/bin", () => true).kind, "npx");
+});
+
+test("stableWazap prefers npm's prefix over an npx shim that npx put first on PATH", () => {
+  const prefix = "/usr/local/bin";
+  const npxDir = "/Users/x/.npm/_npx/8a1b/node_modules/.bin";
+  assert.equal(
+    stableWazap((p) => p === `${prefix}/wazap`, `${npxDir}:${prefix}`, prefix),
+    `${prefix}/wazap`,
+  );
+});
+
+test("stableWazap ignores a wazap that is itself in the npx cache", () => {
+  const npxDir = "/Users/x/.npm/_npx/8a1b/node_modules/.bin";
+  assert.equal(stableWazap((p) => p === `${npxDir}/wazap`, npxDir, "/usr/local/bin"), null);
 });
 
 test("connect codex leaves the comments that introduce the next table alone", async () => {

@@ -213,6 +213,32 @@ export function globalBinDir(npm = "npm"): string | null {
   return process.platform === "win32" ? prefix : join(prefix, "bin");
 }
 
+function wazapIn(dir: string, exists: (p: string) => boolean): string | null {
+  for (const ext of PATH_EXTENSIONS) {
+    const candidate = join(dir, `wazap${ext}`);
+    if (exists(candidate)) return candidate;
+  }
+  return null;
+}
+
+/**
+ * A `wazap` that will still exist after npm clears the npx cache. Prefers
+ * `npm prefix -g` over PATH, because npx puts its throwaway bin first.
+ */
+export function stableWazap(
+  exists: (p: string) => boolean = existsSync,
+  pathEnv: string = process.env.PATH ?? "",
+  dir: string | null = globalBinDir(),
+): string | null {
+  if (dir !== null) {
+    const fromPrefix = wazapIn(dir, exists);
+    if (fromPrefix !== null) return fromPrefix;
+  }
+  const onPath = commandPath("wazap", pathEnv, exists);
+  if (onPath !== null && !isNpxPath(onPath)) return onPath;
+  return null;
+}
+
 export const REAL_PROBES: Probes = { exists: existsSync, onPath: (command) => commandOnPath(command) };
 
 /** Enough of `spawnSync` for the three commands a relaunch runs, so a test can record them. */

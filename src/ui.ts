@@ -7,8 +7,10 @@ import { sep } from "node:path";
 
 const RESET = "\x1b[0m";
 const CLEAR_LINE = "\r\x1b[2K";
-const FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
-const FRAME_MS = 80;
+export const SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"] as const;
+export const SPINNER_MS = 80;
+const FRAMES = SPINNER_FRAMES;
+const FRAME_MS = SPINNER_MS;
 
 /** stderr carries every human-readable line, so stderr decides colour. */
 export function colorEnabled(): boolean {
@@ -92,6 +94,49 @@ export function step(n: number, total: number, title: string): string {
   return `\nStep ${n} of ${total} · ${bold(title)}`;
 }
 
+const CLEAR_SCREEN = "\x1b[2J\x1b[H";
+
+/** Compact header for a TTY wizard screen. Two lines, no ASCII art. */
+export function screenChrome(n: number, total: number, title: string): string {
+  return `${brand("wazap")}  ${dim(`${n}/${total}`)}\n${bold(title)}`;
+}
+
+function writeLine(text: string): void {
+  process.stderr.write(`${text}\n`);
+}
+
+/** Wipe the terminal. A pipe is a log, so this is a no-op there. */
+export function clearScreen(): void {
+  if (!humanLayout()) return;
+  process.stderr.write(CLEAR_SCREEN);
+}
+
+/**
+ * One wizard screen. At a terminal this replaces the previous screen; in a
+ * pipe it is the same `Step N of M · title` line as before.
+ */
+export function openScreen(n: number, total: number, title: string): void {
+  if (!humanLayout()) {
+    writeLine(step(n, total, title));
+    return;
+  }
+  clearScreen();
+  writeLine(screenChrome(n, total, title));
+  writeLine("");
+}
+
+/**
+ * A full-screen beat without a step number: the QR, the pairing code, a wait.
+ * No-op in a pipe, so the caller still prints the body into the current step.
+ */
+export function openCanvas(title: string): void {
+  if (!humanLayout()) return;
+  clearScreen();
+  writeLine(brand("wazap"));
+  writeLine(bold(title));
+  writeLine("");
+}
+
 function charWidth(code: number): number {
   if (code >= 0x0300 && code <= 0x036f) return 0;
   const wide =
@@ -107,10 +152,34 @@ function charWidth(code: number): number {
   return wide ? 2 : 1;
 }
 
+export function stripAnsi(text: string): string {
+  return text.replace(/\x1b\[[0-9;]*m/g, "");
+}
+
 export function width(text: string): number {
   let total = 0;
-  for (const char of text) total += charWidth(char.codePointAt(0)!);
+  for (const char of stripAnsi(text)) total += charWidth(char.codePointAt(0)!);
   return total;
+}
+
+/** Left-pad `text` so it sits in the middle of `cols`. */
+export function centerLine(text: string, cols: number): string {
+  const w = width(text);
+  if (w >= cols) return text;
+  return `${" ".repeat(Math.floor((cols - w) / 2))}${text}`;
+}
+
+/**
+ * A column of lines, centered as one block (same left pad), then vertically
+ * in `rows`. Overflow pins to one blank line at the top rather than clipping.
+ */
+export function centerBlock(lines: readonly string[], cols: number, rows: number): string[] {
+  const inner = Math.max(0, ...lines.map(width));
+  const left = Math.max(0, Math.floor((cols - inner) / 2));
+  const pad = " ".repeat(left);
+  const body = lines.map((line) => `${pad}${line}`);
+  const top = body.length >= rows ? 1 : Math.floor((rows - body.length) / 2);
+  return [...Array<string>(top).fill(""), ...body];
 }
 
 /** Every line padded to the widest, so a two-line box is still a rectangle. */
@@ -175,11 +244,33 @@ export interface Spinner {
   stop(final?: string): void;
 }
 
+/** The full-screen wizard, when one is up, owns the spinner so it can animate in-place. */
+export interface SpinnerHost {
+  spin(text: string): void;
+  stopSpin(final?: string): void;
+}
+
+let spinnerHost: SpinnerHost | null = null;
+
+export function setSpinnerHost(host: SpinnerHost | null): void {
+  spinnerHost = host;
+}
+
 /**
  * Animated only at a terminal: a `\r` rewrite is noise in a pipe, so there the
- * text is printed once and the final line replaces nothing.
+ * text is printed once and the final line replaces nothing. Inside the wizard
+ * the host paints the glyph on the centered status line instead.
  */
 export function spinner(text: string): Spinner {
+  if (spinnerHost !== null) {
+    const host = spinnerHost;
+    host.spin(text);
+    return {
+      update: (next) => host.spin(next),
+      stop: (final) => host.stopSpin(final),
+    };
+  }
+
   if (process.stderr.isTTY !== true) {
     process.stderr.write(`${text}\n`);
     return {

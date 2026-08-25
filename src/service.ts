@@ -1,11 +1,11 @@
 import { spawnSync } from "node:child_process";
 import { copyFileSync, existsSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, userInfo } from "node:os";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { setTimeout as sleep } from "node:timers/promises";
 import { WAZAP_VERSION, paths, type Config } from "./config.js";
-import { commandOnPath, whereInstalled, type Install } from "./connect.js";
+import { commandOnPath, isNpxPath, whereInstalled, type Install } from "./connect.js";
 import { WazapError } from "./errors.js";
 import { lockHolder } from "./lock.js";
 import { say } from "./logger.js";
@@ -360,7 +360,18 @@ export function serviceScript(install: Install = whereInstalled()): string {
       NPX_FIX,
     );
   }
-  return realpathSync(fileURLToPath(new URL("../dist/index.js", import.meta.url)));
+  const self = realpathSync(fileURLToPath(new URL("../dist/index.js", import.meta.url)));
+  if (install.script === "") return self;
+  let real: string;
+  try {
+    real = realpathSync(install.script);
+  } catch {
+    return self;
+  }
+  if (isNpxPath(real)) return self;
+  const name = basename(real);
+  if (name !== "index.js" && name !== "wazap") return self;
+  return real;
 }
 
 /** whisper and ffmpeg live in these, and a launchd job inherits none of your shell PATH. */

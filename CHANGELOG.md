@@ -1,5 +1,27 @@
 # Changelog
 
+## Unreleased
+### Fixed
+
+- **`setup` through npx can still install the service** when a global `wazap`
+  already exists. npx puts its cache first on PATH, so after `npm i -g` (or a
+  previous global install) the running process still looked like the throwaway
+  copy and `service install` refused. Setup now asks `npm prefix -g` for the
+  bin, and prints the repair instead of crashing if nothing stable is there.
+  The unit's script is the realpath of that global bin, not `import.meta.url`
+  of the npx process, which would have pointed launchd at a cache npm clears.
+
+### Changed
+
+- **`setup` and `login` are one screen at a time at a terminal.** Each step is
+  a black, centered frame: the ASCII logo ghosted at the top, the step number,
+  the title, then the QR or the question. Waiting states (QR, pairing
+  countdown, chat sync, model download) run an 80ms spinner on one line
+  instead of a once-a-second redraw. Titles, hints and menus type on from the
+  left, like a keyboard; the QR and the ASCII logo appear at once. Piped
+  output, tests and `setup --agent` stay a log, so agents still parse
+  `Step N of M`.
+
 ## 0.11.0
 ### Added
 

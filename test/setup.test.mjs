@@ -471,7 +471,12 @@ test("setup through npx installs wazap globally, then connects the client to tha
 
   assert.match(stderr, /Step 3 of 6 · Install/);
   assert.match(stderr, /wazap was started through npx/);
-  assert.deepEqual(calls(), [`install -g wazap-mcp@${WAZAP_VERSION}`], "exactly one global install");
+  assert.deepEqual(
+    calls().filter((line) => line.startsWith("install")),
+    [`install -g wazap-mcp@${WAZAP_VERSION}`],
+    "exactly one global install",
+  );
+  assert.ok(calls().includes("prefix -g"), "then setup asks npm where that bin landed");
   assert.match(stderr, new RegExp(`wazap-mcp@${WAZAP_VERSION.replace(/\./g, "\\.")} installed globally`));
 
   const written = JSON.parse(readFileSync(join(box.home, ".cursor", "mcp.json"), "utf8"));
@@ -489,6 +494,17 @@ test("setup --no-global never calls npm and leaves the clients on the npx entry"
   assert.deepEqual(written.mcpServers.whatsapp.command, "npx");
 });
 
+test("setup --service through npx without a global wazap prints the repair and still finishes", async () => {
+  const box = { ...sandbox({ wazap: false }), binary: npxBinary() };
+  const dir = linkedDataDir();
+  const stderr = await failingSetup(box, "--yes", "--no-global", "--service", "--client", "cursor", "--data-dir", dir);
+
+  assert.match(stderr, /npx cache, which npm clears/);
+  assert.match(stderr, /wazap service install/);
+  assert.match(stderr, /Setup finished with a failing check/);
+  assert.equal(readService(dir), null, "the service must not be installed from the cache");
+});
+
 test("a failing npm prints the repair and setup carries on to Connect", async () => {
   const box = { ...sandbox({ wazap: false }), binary: npxBinary() };
   stubNpm(box, { status: 1 });
@@ -499,3 +515,4 @@ test("a failing npm prints the repair and setup carries on to Connect", async ()
   assert.match(stderr, /Step 4 of 6 · Connect/);
   assert.equal(existsSync(join(box.home, ".cursor", "mcp.json")), true, "Connect must still run");
 });
+

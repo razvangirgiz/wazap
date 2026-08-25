@@ -24,11 +24,13 @@ npx wazap-mcp setup
 
 That is the whole install. It links your account, finds the MCP clients
 installed on this machine, writes their config, copies the five skills where
-that client reads them, and tells you what to restart. When you started through
-`npx`, `setup` offers to install wazap globally so Claude Desktop and the
-background service have a path that does not change. It also offers to
-`brew install` whisper-cpp, ffmpeg or Tailscale when a step needs one and it is
-missing, and to restart Claude Desktop itself once it has connected it.
+that client reads them, and tells you what to restart. At a terminal it is one
+black, centered screen per step: ghosted ASCII logo, step number, then the
+QR or the question. Piped output stays a log. When you
+started through `npx`, `setup` offers to install wazap globally so Claude
+Desktop and the background service have a path that does not change. It also
+offers to `brew install` whisper-cpp, ffmpeg or Tailscale when a step needs one
+and it is missing, and to restart Claude Desktop itself once it has connected it.
 
 ### Or the path your harness prefers
 

@@ -5,7 +5,7 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
 
@@ -18,6 +18,7 @@ import {
   runService,
   serverUnit,
   servicePath,
+  serviceScript,
 } from "../dist/service.js";
 
 function dataDir() {
@@ -96,6 +97,19 @@ test("a second install rewrites the same files and restarts instead of starting"
   assert.deepEqual(readService(dir), record, "the record must not drift on a re-run");
   assert.equal(readFileSync(record.unitFile, "utf8"), unit);
   assert.deepEqual(second.calls, ["restart com.wazap.server"]);
+});
+
+test("serviceScript of a global install is the real file behind that bin, not this process", () => {
+  const root = mkdtempSync(join(tmpdir(), "wazap-global-script-"));
+  const dist = join(root, "dist");
+  mkdirSync(dist);
+  const file = join(dist, "index.js");
+  writeFileSync(file, "#!/usr/bin/env node\n");
+  const bin = join(root, "bin");
+  mkdirSync(bin);
+  const wazap = join(bin, "wazap");
+  symlinkSync(file, wazap);
+  assert.equal(serviceScript({ kind: "global", script: wazap }), realpathSync(file));
 });
 
 test("a wazap launched through npx refuses to install, and says how to fix it", async () => {
