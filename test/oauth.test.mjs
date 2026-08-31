@@ -12,7 +12,6 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { startHttpEndpoint } from "../dist/server.js";
 import { WazapOAuthProvider, oauthProblem } from "../dist/oauth.js";
-import { RateLimiter } from "../dist/ratelimit.js";
 import { offlineConfig } from "./helpers.mjs";
 
 // The SDK refuses a plain-http issuer unless told this is a test.
@@ -52,12 +51,14 @@ async function boot(t, { password = PASSWORD, credentials = [{ token: "static-re
   const oauth = new WazapOAuthProvider({ publicUrl, password, stateFile: join(dataDir, "oauth.json") });
   const config = offlineConfig("wazap-oauth-cfg-", { readOnly: false, transport: "http", dataDir });
   const stop = new AbortController();
-  await startHttpEndpoint(
-    stubWa,
-    config,
-    { host: "127.0.0.1", port, credentials, openRead: credentials.length === 0, oauth, signal: stop.signal },
-    new RateLimiter(0),
-  );
+  await startHttpEndpoint(stubWa, config, {
+    host: "127.0.0.1",
+    port,
+    credentials,
+    openRead: credentials.length === 0,
+    oauth,
+    signal: stop.signal,
+  });
   t.after(() => {
     stop.abort();
     rmSync(dataDir, { recursive: true, force: true });

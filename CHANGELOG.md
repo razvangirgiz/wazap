@@ -4,10 +4,12 @@
 ### Added
 
 - **Outbound sends are a draft, then `confirm_send`.** `send_message`,
-  `send_media`, `send_poll`, `send_location` and `forward_message` resolve the
-  recipient and return a `draft_id` plus a preview (`To: Ana (+40 722 …)` and
-  the exact text). WhatsApp is reached only by `confirm_send`. A draft lasts
-  15 minutes, is one-shot, and drafting does not spend the write rate limit.
+  `send_media`, `send_poll`, `send_location` and `forward_message` ask the
+  session to resolve the recipient and return a `draft_id` plus a preview
+  (`To: Ana (+40 722 …)` and the exact text). WhatsApp is reached only by
+  `confirm_send`. A draft lasts 15 minutes, is one-shot, and lives on the
+  session that owns the socket. Drafting does not spend the write rate
+  limit; that bucket is taken when the session actually writes.
   `DRAFT_NOT_FOUND` and `DRAFT_EXPIRED` tell the agent to draft again.
 
 ### Fixed

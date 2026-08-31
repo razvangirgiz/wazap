@@ -14,7 +14,6 @@ import { promisify } from "node:util";
 
 import { paths } from "../dist/config.js";
 import { daemonHealthy, decideRole, readDaemon, removeDaemon, writeDaemon } from "../dist/daemon.js";
-import { RateLimiter } from "../dist/ratelimit.js";
 import { startHttpEndpoint } from "../dist/server.js";
 import { BINARY, mcpClient, offlineConfig, spawnWazap, waitFor } from "./helpers.mjs";
 
@@ -309,12 +308,13 @@ async function withHealth(status, sinceMsAgo, fn) {
   const wa = {
     getStatus: () => ({ status, status_since: new Date(Date.now() - sinceMsAgo).toISOString() }),
   };
-  await startHttpEndpoint(
-    wa,
-    offlineConfig("wazap-health-"),
-    { host: "127.0.0.1", port, credentials: [], openRead: false, signal: stop.signal },
-    new RateLimiter(0),
-  );
+  await startHttpEndpoint(wa, offlineConfig("wazap-health-"), {
+    host: "127.0.0.1",
+    port,
+    credentials: [],
+    openRead: false,
+    signal: stop.signal,
+  });
   try {
     return await fn(port);
   } finally {

@@ -10,7 +10,6 @@ import assert from "node:assert/strict";
 import { WhatsAppService, needsContactResync } from "../dist/whatsapp.js";
 import { connectedService } from "./helpers.mjs";
 import { registerTools } from "../dist/tools.js";
-import { RateLimiter } from "../dist/ratelimit.js";
 
 /** Stand-in for McpServer: records what got registered and lets us call it. */
 function fakeServer() {
@@ -146,7 +145,6 @@ test("sync_contacts reports what the resync changed, and never counts as a write
   const server = fakeServer();
   registerTools(server, { syncContacts: async () => ({ requested: true, named_before: 0, named_after: 217 }) }, {
     allowWrite: false,
-    limiter: new RateLimiter(20),
   });
   const tool = server.tools.get("sync_contacts");
   assert.equal(tool.meta.annotations.readOnlyHint, true, "it changes nothing on WhatsApp");
@@ -161,7 +159,6 @@ test("sync_contacts tells an empty address book apart from one already in hand",
     const server = fakeServer();
     registerTools(server, { syncContacts: async () => ({ requested: true, named_before, named_after }) }, {
       allowWrite: true,
-      limiter: new RateLimiter(20),
     });
     return (await server.tools.get("sync_contacts").handler({})).content[0].text;
   };
@@ -173,7 +170,7 @@ test("sync_contacts on a session that is not connected reports the code, not a c
   const { svc } = makeService();
   svc.status = "connecting";
   const server = fakeServer();
-  registerTools(server, svc, { allowWrite: true, limiter: new RateLimiter(20) });
+  registerTools(server, svc, { allowWrite: true });
   const result = await server.tools.get("sync_contacts").handler({});
   assert.equal(result.isError, true);
   assert.equal(result.structuredContent.error, "NOT_CONNECTED");

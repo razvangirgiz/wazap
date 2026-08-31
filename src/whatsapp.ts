@@ -59,6 +59,8 @@ import {
   type TranscribeSettings,
   type TranscriptRecord,
 } from "./transcribe/index.js";
+import { DraftStore, type Draft, type DraftPayload, type DraftView } from "./drafts.js";
+import { RateLimiter } from "./ratelimit.js";
 import { maskNumber } from "./ui.js";
 import type {
   CallInfo,
@@ -393,8 +395,11 @@ export class WhatsAppService implements WhatsAppApi {
   private transcriber = transcribeFile;
   /** Transcriptions under way, so one recording is never uploaded twice at once. */
   private readonly transcribing = new Map<string, Promise<TranscribeResult>>();
+  private readonly drafts = new DraftStore();
+  private readonly writes: RateLimiter;
 
   constructor(private readonly config: Config) {
+    this.writes = new RateLimiter(config.rateLimitPerMinute);
     this.paths = paths(config.dataDir);
     this.transcribe = readTranscribeConfig(config.dataDir);
     const settings = this.transcribe;
@@ -914,20 +919,33 @@ export class WhatsAppService implements WhatsAppApi {
     return this.transcribeQueue?.idle() ?? Promise.resolve();
   }
 
-  resolveOutgoing(chatId: string): Promise<OutgoingTarget> {
+  draft(payload: DraftPayload): Promise<DraftView> {
     return this.guarded(async () => {
+      if (payload.kind === "media") await assertMediaSource(payload.source);
       const sock = this.ensureConnected();
-      const jid = await this.assertOutgoing(chatId, sock);
-      const name = this.displayName(jid);
-      if (isGroupId(jid)) return { chat_id: jid, name };
-      const number = this.contactSummary(jid).number;
-      return number ? { chat_id: jid, name, number } : { chat_id: jid, name };
+      const jid = await this.assertOutgoing(payload.chatId, sock);
+      const stored: DraftPayload =
+        payload.kind === "forward"
+          ? { ...payload, chatId: jid, text: (await this.getMessage(payload.messageId)).text }
+          : { ...payload, chatId: jid };
+      return this.drafts.view(this.drafts.put(this.outgoingOf(jid), stored));
+    });
+  }
+
+  confirm(draftId: string): Promise<SentMessage> {
+    return this.guarded(async () => {
+      const draft = this.drafts.take(draftId);
+      try {
+        return await this.dispatchDraft(draft);
+      } catch (err) {
+        this.drafts.putBack(draft);
+        throw err;
+      }
     });
   }
 
   sendMessage(chatId: string, text: string, replyTo?: string, mentionIds?: string[]): Promise<SentMessage> {
     return this.guarded(async () => {
-      this.beginWrite();
       if (text.length > MAX_TEXT_CHARS) {
         throw new WazapError("TEXT_TOO_LONG", `The text is ${text.length} characters; WhatsApp allows ${MAX_TEXT_CHARS}.`);
       }
@@ -981,7 +999,6 @@ export class WhatsAppService implements WhatsAppApi {
 
   editMessage(messageId: string, text: string): Promise<SentMessage> {
     return this.guarded(async () => {
-      this.beginWrite();
       if (text.length > MAX_TEXT_CHARS) {
         throw new WazapError("TEXT_TOO_LONG", `The text is ${text.length} characters; WhatsApp allows ${MAX_TEXT_CHARS}.`);
       }
@@ -1001,7 +1018,6 @@ export class WhatsAppService implements WhatsAppApi {
 
   reactToMessage(messageId: string, emoji: string): Promise<{ message_id: string; emoji: string }> {
     return this.guarded(async () => {
-      this.beginWrite();
       const raw = this.messageOrThrow(messageId);
       const { sock, jid } = await this.prepareSend(this.chatOfOrThrow(messageId));
       await sock.sendMessage(jid, { react: { text: emoji, key: raw.key } });
@@ -1011,7 +1027,6 @@ export class WhatsAppService implements WhatsAppApi {
 
   forwardMessage(messageId: string, toChatId: string): Promise<SentMessage> {
     return this.guarded(async () => {
-      this.beginWrite();
       const raw = this.messageOrThrow(messageId);
       const { sock, jid } = await this.prepareSend(toChatId);
       const sent = await sock.sendMessage(jid, { forward: raw });
@@ -1021,7 +1036,6 @@ export class WhatsAppService implements WhatsAppApi {
 
   deleteMessage(messageId: string, forEveryone: boolean): Promise<{ message_id: string; for_everyone: boolean }> {
     return this.guarded(async () => {
-      this.beginWrite();
       const raw = this.messageOrThrow(messageId);
       if (!forEveryone) {
         throw new WazapError(
@@ -1552,12 +1566,46 @@ export class WhatsAppService implements WhatsAppApi {
     }
   }
 
-  /** First statement of every write, so a broken link is reported before anything else. */
+  /** First statement of every write, so a broken link is reported before the bucket is spent. */
   private beginWrite(): WASocket {
     if (this.config.readOnly) {
       throw new WazapError("READ_ONLY", "wazap runs read-only, so this write is refused.");
     }
-    return this.ensureConnected();
+    const sock = this.ensureConnected();
+    this.writes.take();
+    return sock;
+  }
+
+  private outgoingOf(jid: string): OutgoingTarget {
+    const name = this.displayName(jid);
+    if (isGroupId(jid)) return { chat_id: jid, name };
+    const number = this.contactSummary(jid).number;
+    return number ? { chat_id: jid, name, number } : { chat_id: jid, name };
+  }
+
+  private dispatchDraft(draft: Draft): Promise<SentMessage> {
+    const chatId = draft.to.chat_id;
+    const payload = draft.payload;
+    switch (payload.kind) {
+      case "text":
+        return this.sendMessage(chatId, payload.text, payload.replyTo, payload.mentionIds);
+      case "media":
+        return this.sendMedia(chatId, payload.source, {
+          caption: payload.caption,
+          asDocument: payload.asDocument,
+          asVoice: payload.asVoice,
+        });
+      case "poll":
+        return this.sendPoll(chatId, payload.question, payload.options, payload.multiSelect);
+      case "location":
+        return this.sendLocation(chatId, payload.latitude, payload.longitude, payload.name, payload.address);
+      case "forward":
+        return this.forwardMessage(payload.messageId, chatId);
+      default: {
+        const _exhaustive: never = payload;
+        return _exhaustive;
+      }
+    }
   }
 
   /** The single gate every send path passes: writability, addressability, announce-only. */
@@ -2320,22 +2368,26 @@ interface LoadedMedia {
   filename: string;
 }
 
-async function loadMedia(source: MediaSource): Promise<LoadedMedia> {
+async function assertMediaSource(source: MediaSource): Promise<void> {
   const hasPath = Boolean(source.file_path);
   const hasUrl = Boolean(source.url);
   if (hasPath === hasUrl) {
     throw new WazapError("FILE_NOT_FOUND", "Provide exactly one of file_path or url.");
   }
+  if (!source.file_path) return;
+  let size: number;
+  try {
+    size = (await stat(source.file_path)).size;
+  } catch {
+    throw new WazapError("FILE_NOT_FOUND", `No file at "${source.file_path}" on the machine running wazap.`);
+  }
+  assertMediaSize(size);
+}
 
+async function loadMedia(source: MediaSource): Promise<LoadedMedia> {
+  await assertMediaSource(source);
   if (source.file_path) {
     const path = source.file_path;
-    let size: number;
-    try {
-      size = (await stat(path)).size;
-    } catch {
-      throw new WazapError("FILE_NOT_FOUND", `No file at "${path}" on the machine running wazap.`);
-    }
-    assertMediaSize(size);
     return { buffer: await readFile(path), mimetype: guessMime(path), filename: basename(path) };
   }
 

@@ -1,5 +1,6 @@
 /** Public shapes of the WhatsApp service: what the MCP tools and the CLI consume. */
 
+import type { DraftPayload, DraftView } from "./drafts.js";
 import type { ProviderName } from "./transcribe/index.js";
 
 export type ConnectionStatus =
@@ -278,7 +279,8 @@ export interface WhatsAppApi {
   getGroupInfo(groupId: string): Promise<GroupInfo>;
   downloadMedia(messageId: string, saveTo?: string): Promise<MediaResult>;
   transcribeAudio(messageId: string, language?: string): Promise<TranscribeResult>;
-  resolveOutgoing(chatId: string): Promise<OutgoingTarget>;
+  draft(payload: DraftPayload): Promise<DraftView>;
+  confirm(draftId: string): Promise<SentMessage>;
   sendMessage(chatId: string, text: string, replyTo?: string, mentionIds?: string[]): Promise<SentMessage>;
   sendMedia(
     chatId: string,

@@ -2,6 +2,8 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 
 import { DraftStore, formatDraftPreview, formatToLine } from "../dist/drafts.js";
+import { WhatsAppService } from "../dist/whatsapp.js";
+import { connectedService, offlineConfig } from "./helpers.mjs";
 
 const ANA = { chat_id: "40722@s.whatsapp.net", name: "Ana", number: "40722123456" };
 const BLOC = { chat_id: "120363@g.us", name: "Bloc 12" };
@@ -96,7 +98,61 @@ test("preview bodies cover every draft kind", () => {
     "To: Ana (+40 722 123 456)\n[location] Notar\nStr. Lunii 14",
   );
   assert.equal(
-    formatDraftPreview(ANA, { kind: "forward", messageId: "m1", toChatId: ANA.chat_id, text: "factura" }),
+    formatDraftPreview(ANA, { kind: "forward", chatId: ANA.chat_id, messageId: "m1", text: "factura" }),
     `To: Ana (+40 722 123 456)\nForward: "factura"`,
   );
+});
+
+const PEER = "40722123456@s.whatsapp.net";
+
+test("draft rejects a missing local file before it touches the socket", async () => {
+  const svc = new WhatsAppService(offlineConfig("wazap-draft-media-"));
+  await assert.rejects(
+    () =>
+      svc.draft({
+        kind: "media",
+        chatId: PEER,
+        source: { file_path: "/no/such/wazap-media.bin" },
+        asDocument: false,
+        asVoice: false,
+      }),
+    (err) => err.code === "FILE_NOT_FOUND",
+  );
+  await svc.stop();
+});
+
+test("a failed confirm puts the draft back", async () => {
+  const { svc, sock } = connectedService(WhatsAppService, {
+    prefix: "wazap-draft-putback-",
+    id: "40700000000@s.whatsapp.net",
+    name: "Răzvan",
+    config: { readOnly: false },
+  });
+  sock.onWhatsApp = async () => [{ exists: true }];
+  let blows = true;
+  sock.sendMessage = async () => {
+    if (blows) throw new Error("still connecting");
+    return undefined;
+  };
+  const view = await svc.draft({ kind: "text", chatId: PEER, text: "hi" });
+  await assert.rejects(() => svc.confirm(view.draft_id));
+  blows = false;
+  const sent = await svc.confirm(view.draft_id);
+  assert.equal(sent.chat_id, PEER);
+  assert.equal(sent.text, "hi");
+  await svc.stop();
+});
+
+test("beginWrite spends the session write bucket", async () => {
+  const { svc, sock } = connectedService(WhatsAppService, {
+    prefix: "wazap-write-bucket-",
+    id: "40700000000@s.whatsapp.net",
+    name: "Răzvan",
+    config: { readOnly: false, rateLimitPerMinute: 2 },
+  });
+  sock.chatModify = async () => {};
+  await svc.manageChat(PEER, "pin");
+  await svc.manageChat(PEER, "unpin");
+  await assert.rejects(() => svc.manageChat(PEER, "pin"), (err) => err.code === "RATE_LIMITED");
+  await svc.stop();
 });

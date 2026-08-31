@@ -1,12 +1,6 @@
-import { existsSync, statSync } from "node:fs";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
-import {
-  outgoingDrafts,
-  renderDraft,
-  type Draft,
-  type DraftPayload,
-} from "./drafts.js";
+import { renderDraft, type DraftView } from "./drafts.js";
 import { asWazapError, ERROR_GUIDE, WazapError } from "./errors.js";
 import { clockLabel } from "./messages.js";
 import { RateLimiter } from "./ratelimit.js";
@@ -38,10 +32,8 @@ interface ToolDef {
   description: string;
   schema: z.ZodRawShape;
   write: boolean;
-  /** When false, a write tool stays hidden in read-only but does not spend the WhatsApp write bucket. */
-  spendWrite?: boolean;
   destructive?: boolean;
-  /** Calls a minute allowed to this tool alone, on top of the shared write bucket. */
+  /** Calls a minute allowed to this tool alone. The session write bucket is separate. */
   rate?: number;
   handler: (args: ToolArgs, wa: WhatsAppApi) => Promise<ToolResult>;
 }
@@ -52,7 +44,6 @@ function tool<S extends z.ZodRawShape>(def: {
   description: string;
   schema: S;
   write: boolean;
-  spendWrite?: boolean;
   destructive?: boolean;
   rate?: number;
   handler: (args: z.infer<z.ZodObject<S>>, wa: WhatsAppApi) => Promise<ToolResult>;
@@ -518,9 +509,8 @@ call confirm_send. A draft lasts 15 minutes.`,
         .describe("Chat ids to @-mention; include their names in the text yourself"),
     },
     write: true,
-    spendWrite: false,
     handler: async ({ chat_id, text, reply_to, mention_ids }, wa) => {
-      return draftOf(wa, { kind: "text", chatId: chat_id, text, replyTo: reply_to, mentionIds: mention_ids });
+      return drafted(await wa.draft({ kind: "text", chatId: chat_id, text, replyTo: reply_to, mentionIds: mention_ids }));
     },
   }),
 
@@ -539,17 +529,17 @@ Maximum 100 MB. Show the preview; after the user says yes, call confirm_send.`,
       as_voice: z.boolean().default(false).describe("Send an audio file as a voice note (push-to-talk)"),
     },
     write: true,
-    spendWrite: false,
     handler: async ({ chat_id, file_path, url, caption, as_document, as_voice }, wa) => {
-      assertDraftMedia(file_path, url);
-      return draftOf(wa, {
-        kind: "media",
-        chatId: chat_id,
-        source: { file_path, url },
-        caption,
-        asDocument: as_document,
-        asVoice: as_voice,
-      });
+      return drafted(
+        await wa.draft({
+          kind: "media",
+          chatId: chat_id,
+          source: { file_path, url },
+          caption,
+          asDocument: as_document,
+          asVoice: as_voice,
+        }),
+      );
     },
   }),
 
@@ -565,9 +555,8 @@ the votes back. Show the preview; after the user says yes, call confirm_send.`,
       multi_select: z.boolean().default(false).describe("Allow voters to pick more than one option"),
     },
     write: true,
-    spendWrite: false,
     handler: async ({ chat_id, question, options, multi_select }, wa) => {
-      return draftOf(wa, { kind: "poll", chatId: chat_id, question, options, multiSelect: multi_select });
+      return drafted(await wa.draft({ kind: "poll", chatId: chat_id, question, options, multiSelect: multi_select }));
     },
   }),
 
@@ -584,9 +573,8 @@ send. Show the preview; after the user says yes, call confirm_send.`,
       address: z.string().max(500).optional().describe("Street address shown under the name"),
     },
     write: true,
-    spendWrite: false,
     handler: async ({ chat_id, latitude, longitude, name, address }, wa) => {
-      return draftOf(wa, { kind: "location", chatId: chat_id, latitude, longitude, name, address });
+      return drafted(await wa.draft({ kind: "location", chatId: chat_id, latitude, longitude, name, address }));
     },
   }),
 
@@ -630,10 +618,8 @@ recipient will see it marked as forwarded. Show the preview; after the user
 says yes, call confirm_send.`,
     schema: { message_id: messageId, to_chat_id: chatId.describe("Destination chat") },
     write: true,
-    spendWrite: false,
     handler: async ({ message_id, to_chat_id }, wa) => {
-      const source = await wa.getMessage(message_id);
-      return draftOf(wa, { kind: "forward", messageId: message_id, toChatId: to_chat_id, text: source.text }, to_chat_id);
+      return drafted(await wa.draft({ kind: "forward", chatId: to_chat_id, messageId: message_id }));
     },
   }),
 
@@ -649,14 +635,8 @@ preview before calling this.`,
     },
     write: true,
     handler: async ({ draft_id }, wa) => {
-      const draft = outgoingDrafts.take(draft_id);
-      try {
-        const sent = await sendDraft(wa, draft);
-        return ok(sentText(draft, sent), sent as unknown as Record<string, unknown>);
-      } catch (err) {
-        outgoingDrafts.putBack(draft);
-        throw err;
-      }
+      const sent = await wa.confirm(draft_id);
+      return ok(sentText(sent), sent as unknown as Record<string, unknown>);
     },
   }),
 
@@ -759,7 +739,6 @@ export const TOOL_NAMES: readonly string[] = TOOLS.map((t) => t.name);
 
 export interface RegisterOpts {
   allowWrite: boolean;
-  limiter: RateLimiter;
 }
 
 /** Derived, so a second rated tool cannot inherit a message naming the wrong budget. */
@@ -769,9 +748,9 @@ function rateLabel(name: string): string {
 }
 
 /**
- * One bucket per rated tool for the whole process, like the write bucket: an
- * HTTP client re-initializing gets a new McpServer on every session, and a cap
- * that resets with it would be no cap at all.
+ * One bucket per rated tool for the whole process: an HTTP client
+ * re-initializing gets a new McpServer on every session, and a cap that
+ * resets with it would be no cap at all.
  */
 const RATE_BUCKETS = new Map<string, RateLimiter>(
   TOOLS.flatMap((def) =>
@@ -782,7 +761,6 @@ const RATE_BUCKETS = new Map<string, RateLimiter>(
 export function registerTools(server: McpServer, wa: WhatsAppApi, opts: RegisterOpts): void {
   for (const def of TOOLS) {
     if (def.write && !opts.allowWrite) continue;
-    // Spent alongside the shared write bucket rather than out of it.
     const own = RATE_BUCKETS.get(def.name);
     server.registerTool(
       def.name,
@@ -796,7 +774,6 @@ export function registerTools(server: McpServer, wa: WhatsAppApi, opts: Register
       },
       async (args: unknown): Promise<ToolResult> => {
         try {
-          if (def.write && def.spendWrite !== false) opts.limiter.take();
           own?.take();
           return await def.handler(args as ToolArgs, wa);
         } catch (err) {
@@ -879,85 +856,10 @@ function truncate(text: string, max: number): string {
   return text.length > max ? `${text.slice(0, max)}…` : text;
 }
 
-async function draftOf(wa: WhatsAppApi, payload: DraftPayload, chatId: string = payloadChatId(payload)): Promise<ToolResult> {
-  const to = await wa.resolveOutgoing(chatId);
-  const view = outgoingDrafts.view(outgoingDrafts.put(to, payload));
+function drafted(view: DraftView): ToolResult {
   return ok(renderDraft(view), { ...view });
 }
 
-function payloadChatId(payload: DraftPayload): string {
-  switch (payload.kind) {
-    case "text":
-    case "media":
-    case "poll":
-    case "location":
-      return payload.chatId;
-    case "forward":
-      return payload.toChatId;
-    default: {
-      const _exhaustive: never = payload;
-      return _exhaustive;
-    }
-  }
-}
-
-function assertDraftMedia(filePath: string | undefined, url: string | undefined): void {
-  const hasPath = Boolean(filePath);
-  const hasUrl = Boolean(url);
-  if (hasPath === hasUrl) {
-    throw new WazapError("FILE_NOT_FOUND", "Provide exactly one of file_path or url.");
-  }
-  if (!filePath) return;
-  try {
-    if (!existsSync(filePath) || !statSync(filePath).isFile()) {
-      throw new WazapError("FILE_NOT_FOUND", `No file at "${filePath}" on the machine running wazap.`);
-    }
-  } catch (err) {
-    if (err instanceof WazapError) throw err;
-    throw new WazapError("FILE_NOT_FOUND", `No file at "${filePath}" on the machine running wazap.`);
-  }
-}
-
-async function sendDraft(wa: WhatsAppApi, draft: Draft): Promise<SentMessage> {
-  const payload = draft.payload;
-  const chatId = draft.to.chat_id;
-  switch (payload.kind) {
-    case "text":
-      return wa.sendMessage(chatId, payload.text, payload.replyTo, payload.mentionIds);
-    case "media":
-      return wa.sendMedia(chatId, payload.source, {
-        caption: payload.caption,
-        asDocument: payload.asDocument,
-        asVoice: payload.asVoice,
-      });
-    case "poll":
-      return wa.sendPoll(chatId, payload.question, payload.options, payload.multiSelect);
-    case "location":
-      return wa.sendLocation(chatId, payload.latitude, payload.longitude, payload.name, payload.address);
-    case "forward":
-      return wa.forwardMessage(payload.messageId, chatId);
-    default: {
-      const _exhaustive: never = payload;
-      return _exhaustive;
-    }
-  }
-}
-
-function sentText(draft: Draft, sent: SentMessage): string {
-  switch (draft.payload.kind) {
-    case "text":
-      return `Sent to ${sent.chat_id} at ${sent.timestamp} (message_id: ${sent.message_id}):\n> ${sent.text}`;
-    case "media":
-      return `Media sent to ${sent.chat_id} at ${sent.timestamp} (message_id: ${sent.message_id})`;
-    case "poll":
-      return `Poll sent to ${sent.chat_id} (message_id: ${sent.message_id}):\n> ${draft.payload.question}`;
-    case "location":
-      return `Location sent to ${sent.chat_id} (message_id: ${sent.message_id})`;
-    case "forward":
-      return `Forwarded ${draft.payload.messageId} to ${sent.chat_id} (message_id: ${sent.message_id})`;
-    default: {
-      const _exhaustive: never = draft.payload;
-      return _exhaustive;
-    }
-  }
+function sentText(sent: SentMessage): string {
+  return `Sent to ${sent.chat_id} at ${sent.timestamp} (message_id: ${sent.message_id}):\n> ${sent.text}`;
 }

@@ -29,7 +29,7 @@ export type DraftPayload =
       name?: string;
       address?: string;
     }
-  | { kind: "forward"; messageId: string; toChatId: string; text: string };
+  | { kind: "forward"; chatId: string; messageId: string; text?: string };
 
 export interface Draft {
   id: string;
@@ -116,9 +116,6 @@ export class DraftStore {
   }
 }
 
-/** The process that owns the WhatsApp session holds the drafts. Bridges proxy here. */
-export const outgoingDrafts = new DraftStore();
-
 export function formatToLine(to: OutgoingTarget): string {
   if (to.number) return `To: ${to.name} (${formatNumber(to.number)})`;
   if (to.chat_id.endsWith("@g.us")) return `To: ${to.name} (group)`;
@@ -153,7 +150,7 @@ function formatBody(payload: DraftPayload): string {
       return `[location] ${label}${extra}`;
     }
     case "forward":
-      return `Forward: "${payload.text}"`;
+      return `Forward: "${payload.text ?? ""}"`;
     default: {
       const _exhaustive: never = payload;
       return _exhaustive;

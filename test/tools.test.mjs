@@ -2,8 +2,8 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 
 import { registerTools, toolError, TOOL_NAMES } from "../dist/tools.js";
+import { DraftStore } from "../dist/drafts.js";
 import { WazapError, ERROR_GUIDE } from "../dist/errors.js";
-import { RateLimiter } from "../dist/ratelimit.js";
 
 /** Stand-in for McpServer: records what got registered and lets us call it. */
 function fakeServer() {
@@ -55,13 +55,13 @@ test("the registry is exactly the 26 documented tools", () => {
 
 test("read-only registration exposes no write tool at all", () => {
   const server = fakeServer();
-  registerTools(server, {}, { allowWrite: false, limiter: new RateLimiter(20) });
+  registerTools(server, {}, { allowWrite: false });
   assert.deepEqual([...server.tools.keys()].sort(), [...READ_TOOLS].sort());
 });
 
 test("every tool declares a description and an input schema", () => {
   const server = fakeServer();
-  registerTools(server, {}, { allowWrite: true, limiter: new RateLimiter(20) });
+  registerTools(server, {}, { allowWrite: true });
   assert.equal(server.tools.size, 26);
   for (const [name, { meta }] of server.tools) {
     assert.ok(meta.description?.length > 40, `${name} needs a description an agent can act on`);
@@ -93,86 +93,35 @@ test("a handler that throws a raw error is reported as WHATSAPP_ERROR, never as 
       throw new TypeError("something internal broke");
     },
   };
-  registerTools(server, wa, { allowWrite: true, limiter: new RateLimiter(20) });
+  registerTools(server, wa, { allowWrite: true });
   const result = await server.tools.get("get_status").handler({});
   assert.equal(result.isError, true);
   assert.equal(result.structuredContent.error, "WHATSAPP_ERROR");
   assert.equal(result.structuredContent.message, "something internal broke");
 });
 
-test("write tools are rate limited and read tools are not", async () => {
+function draftApi(confirm) {
+  const store = new DraftStore();
+  const to = { chat_id: "40722123456@s.whatsapp.net", name: "Ana", number: "40722123456" };
+  return {
+    draft: async (payload) => store.view(store.put(to, payload)),
+    confirm: async (id) => {
+      const draft = store.take(id);
+      if (confirm) return confirm(draft);
+      const text = draft.payload.kind === "text" ? draft.payload.text : "";
+      return { message_id: "mid", chat_id: draft.to.chat_id, text, timestamp: "now" };
+    },
+  };
+}
+
+test("send_message drafts through the session and confirm_send is the only send", async () => {
   const server = fakeServer();
   const sent = [];
-  const wa = {
-    getStatus: () => ({ status: "connected", sync: "done", account: null }),
-    resolveOutgoing: async (chatId) => ({ chat_id: chatId, name: "Ana", number: "40722123456" }),
-    sendMessage: async (...args) => {
-      sent.push(args);
-      return { message_id: "x", chat_id: "y", text: "hi", timestamp: "now" };
-    },
-  };
-  registerTools(server, wa, { allowWrite: true, limiter: new RateLimiter(2) });
-  const send = server.tools.get("send_message").handler;
-  const confirm = server.tools.get("confirm_send").handler;
-
-  const first = await send({ chat_id: "1", text: "hi" });
-  assert.equal(first.structuredContent.status, "draft");
-  assert.equal(sent.length, 0, "drafting must not reach WhatsApp");
-  assert.equal((await confirm({ draft_id: first.structuredContent.draft_id })).isError, undefined);
-
-  const second = await send({ chat_id: "1", text: "hi" });
-  assert.equal((await confirm({ draft_id: second.structuredContent.draft_id })).isError, undefined);
-
-  const third = await send({ chat_id: "1", text: "hi" });
-  assert.equal(third.structuredContent.status, "draft", "drafting does not spend the write bucket");
-  const limited = await confirm({ draft_id: third.structuredContent.draft_id });
-  assert.equal(limited.structuredContent.error, "RATE_LIMITED");
-  assert.match(limited.structuredContent.fix, /^Wait \d+ seconds$/);
-  assert.equal(sent.length, 2);
-
-  const status = await server.tools.get("get_status").handler({});
-  assert.equal(status.isError, undefined, "reads must not consume the write budget");
-});
-
-test("send_media refuses a missing local file before it drafts", async () => {
-  const server = fakeServer();
-  let resolved = 0;
-  const wa = {
-    resolveOutgoing: async () => {
-      resolved += 1;
-      return { chat_id: "1", name: "Ana" };
-    },
-  };
-  registerTools(server, wa, { allowWrite: true, limiter: new RateLimiter(20) });
-  const result = await server.tools.get("send_media").handler({
-    chat_id: "1",
-    file_path: "/no/such/wazap-media.bin",
+  const wa = draftApi((draft) => {
+    sent.push({ chatId: draft.to.chat_id, text: draft.payload.text });
+    return { message_id: "mid", chat_id: draft.to.chat_id, text: draft.payload.text, timestamp: "now" };
   });
-  assert.equal(result.structuredContent.error, "FILE_NOT_FOUND");
-  assert.equal(resolved, 0);
-});
-
-test("confirm_send is the only call that invokes sendMessage", async () => {
-  const server = fakeServer();
-  const sent = [];
-  const wa = {
-    resolveOutgoing: async () => ({ chat_id: "40722123456@s.whatsapp.net", name: "Ana", number: "40722123456" }),
-    sendMessage: async (chatId, text) => {
-      sent.push({ chatId, text });
-      return { message_id: "mid", chat_id: chatId, text, timestamp: "now" };
-    },
-    sendPoll: async () => {
-      throw new Error("poll must not send at draft time");
-    },
-    sendLocation: async () => {
-      throw new Error("location must not send at draft time");
-    },
-    forwardMessage: async () => {
-      throw new Error("forward must not send at draft time");
-    },
-    getMessage: async () => ({ text: "factura" }),
-  };
-  registerTools(server, wa, { allowWrite: true, limiter: new RateLimiter(20) });
+  registerTools(server, wa, { allowWrite: true });
 
   const drafted = await server.tools.get("send_message").handler({ chat_id: "+40722123456", text: "Joi la 10." });
   assert.equal(sent.length, 0);
@@ -193,26 +142,33 @@ test("confirm_send is the only call that invokes sendMessage", async () => {
   assert.equal(confirmed.structuredContent.message_id, "mid");
 });
 
-test("a failed confirm_send puts the draft back", async () => {
+test("send_media surfaces FILE_NOT_FOUND from draft", async () => {
   const server = fakeServer();
-  let blows = true;
   const wa = {
-    resolveOutgoing: async (chatId) => ({ chat_id: chatId, name: "Ana", number: "40722123456" }),
-    sendMessage: async (chatId, text) => {
-      if (blows) throw new WazapError("NOT_CONNECTED", "still connecting");
-      return { message_id: "mid", chat_id: chatId, text, timestamp: "now" };
+    draft: async () => {
+      throw new WazapError("FILE_NOT_FOUND", `No file at "/no/such/wazap-media.bin" on the machine running wazap.`);
     },
   };
-  registerTools(server, wa, { allowWrite: true, limiter: new RateLimiter(20) });
+  registerTools(server, wa, { allowWrite: true });
+  const result = await server.tools.get("send_media").handler({
+    chat_id: "1",
+    file_path: "/no/such/wazap-media.bin",
+  });
+  assert.equal(result.structuredContent.error, "FILE_NOT_FOUND");
+});
+
+test("confirm_send surfaces the service error", async () => {
+  const server = fakeServer();
+  const wa = {
+    ...draftApi(),
+    confirm: async () => {
+      throw new WazapError("NOT_CONNECTED", "still connecting");
+    },
+  };
+  registerTools(server, wa, { allowWrite: true });
   const drafted = await server.tools.get("send_message").handler({ chat_id: "1", text: "hi" });
-  const id = drafted.structuredContent.draft_id;
-
-  const failed = await server.tools.get("confirm_send").handler({ draft_id: id });
+  const failed = await server.tools.get("confirm_send").handler({ draft_id: drafted.structuredContent.draft_id });
   assert.equal(failed.structuredContent.error, "NOT_CONNECTED");
-
-  blows = false;
-  const retry = await server.tools.get("confirm_send").handler({ draft_id: id });
-  assert.equal(retry.structuredContent.message_id, "mid");
 });
 
 test("read_messages passes types through to the service and echoes it back", async () => {
@@ -224,7 +180,7 @@ test("read_messages passes types through to the service and echoes it back", asy
       return { data: [], sync: "done" };
     },
   };
-  registerTools(server, wa, { allowWrite: true, limiter: new RateLimiter(20) });
+  registerTools(server, wa, { allowWrite: true });
 
   const result = await server.tools.get("read_messages").handler({ chat_id: "4072@s.whatsapp.net", limit: 20, types: ["call"] });
   assert.deepEqual(calls[0], ["4072@s.whatsapp.net", 20, undefined, ["call"]]);
@@ -243,7 +199,7 @@ test("get_recent_messages passes types through to the service and echoes it back
       return { data: [], sync: "done" };
     },
   };
-  registerTools(server, wa, { allowWrite: true, limiter: new RateLimiter(20) });
+  registerTools(server, wa, { allowWrite: true });
 
   const result = await server.tools
     .get("get_recent_messages")
@@ -265,7 +221,7 @@ test("link_account hands back the code and the steps that go with it", async () 
       return { code: "ABCD-1234", phone_masked: "+15 5xx xxx", expires_at: "2026-08-23T12:00:00+03:00" };
     },
   };
-  registerTools(server, wa, { allowWrite: false, limiter: new RateLimiter(20) });
+  registerTools(server, wa, { allowWrite: false });
 
   const result = await server.tools.get("link_account").handler({ phone: "+15550100" });
   assert.deepEqual(asked, ["+15550100"]);
@@ -283,7 +239,7 @@ test("link_account on a linked account reports ALREADY_LINKED instead of pairing
       throw new WazapError("ALREADY_LINKED", "The account is connected.", "Call get_status");
     },
   };
-  registerTools(server, wa, { allowWrite: true, limiter: new RateLimiter(20) });
+  registerTools(server, wa, { allowWrite: true });
 
   const result = await server.tools.get("link_account").handler({ phone: "+15550100" });
   assert.equal(result.isError, true);
@@ -293,7 +249,7 @@ test("link_account on a linked account reports ALREADY_LINKED instead of pairing
 
 test("learn documents every error code an agent can receive", async () => {
   const server = fakeServer();
-  registerTools(server, {}, { allowWrite: true, limiter: new RateLimiter(20) });
+  registerTools(server, {}, { allowWrite: true });
   const guide = (await server.tools.get("learn").handler({})).structuredContent.guide;
   for (const code of Object.keys(ERROR_GUIDE)) {
     assert.ok(guide.includes(code), `learn must tell the agent what to do about ${code}`);
