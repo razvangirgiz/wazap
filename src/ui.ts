@@ -171,7 +171,8 @@ export function centerLine(text: string, cols: number): string {
 
 /**
  * A column of lines, centered as one block (same left pad), then vertically
- * in `rows`. Overflow pins to one blank line at the top rather than clipping.
+ * in `rows`. Overflow keeps the last `rows` lines so a spinner and its hint
+ * survive a tall QR, instead of scrolling a second status line onto the screen.
  */
 export function centerBlock(lines: readonly string[], cols: number, rows: number): string[] {
   const inner = Math.max(0, ...lines.map(width));
@@ -179,7 +180,14 @@ export function centerBlock(lines: readonly string[], cols: number, rows: number
   const pad = " ".repeat(left);
   const body = lines.map((line) => `${pad}${line}`);
   const top = body.length >= rows ? 1 : Math.floor((rows - body.length) / 2);
-  return [...Array<string>(top).fill(""), ...body];
+  const placed = [...Array<string>(top).fill(""), ...body];
+  return placed.length <= rows ? placed : placed.slice(placed.length - rows);
+}
+
+/** One line for the QR file, or null when it would wrap. */
+export function qrSavedLine(qrFile: string, cols: number = process.stderr.columns ?? 80): string | null {
+  const line = `Also saved to ${shortPath(qrFile)}`;
+  return width(line) <= cols ? line : null;
 }
 
 /** Every line padded to the widest, so a two-line box is still a rectangle. */

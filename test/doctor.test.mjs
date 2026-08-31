@@ -50,7 +50,8 @@ test("a healthy data dir passes every check it can", async () => {
   assert.match(stderr, new RegExp(`✓ node: ${process.versions.node.replace(/\\./g, "\\.")}`));
   assert.match(stderr, /✓ data dir: .* \(0700, writable\)/);
   assert.match(stderr, /– lock: none/);
-  assert.match(stderr, /– service: not installed — run `wazap service install`/);
+  assert.match(stderr, /– service: not installed$/m);
+  assert.ok(!stderr.includes("wazap service install"), "unlinked status must not send the user past setup");
   assert.match(stderr, /– credentials: no account linked yet/);
   assert.match(stderr, /✓ writes: on \(default\)/);
 });
@@ -142,7 +143,8 @@ test("the skills check names the harness that never got them", async () => {
   const box = skillsBox();
   mkdirSync(join(box.home, ".cursor"), { recursive: true });
   const { stderr } = await status(dataDir(), [], box.env);
-  assert.match(skillsLine(stderr), /– skills: missing for cursor — run `wazap skills install`/);
+  assert.match(skillsLine(stderr), /– skills: missing for cursor$/);
+  assert.ok(!stderr.includes("wazap skills install"), "unlinked status must not send the user past setup");
 });
 
 test("the skills check passes once they are installed, and calls an edited copy stale", async () => {
@@ -157,5 +159,5 @@ test("the skills check passes once they are installed, and calls an edited copy 
 
   writeFileSync(join(box.home, ".cursor", "skills", "whatsapp-send", "SKILL.md"), "what an older wazap shipped\n");
   const stale = await status(dataDir(), [], box.env);
-  assert.match(skillsLine(stale.stderr), /– skills: stale for cursor — run `wazap skills install`/);
+  assert.match(skillsLine(stale.stderr), /– skills: stale for cursor$/);
 });

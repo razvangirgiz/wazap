@@ -51,6 +51,7 @@ import {
   next,
   ok,
   openScreen,
+  qrSavedLine,
   shortPath,
   spinner,
   tilde,
@@ -434,26 +435,53 @@ async function testTranscribe(settings: TranscribeSettings, file: string): Promi
   say(`"${transcript.text}"`);
 }
 
+/** The one line that names the leftover pid, so greet, login and logout cannot drift. */
+export function leftoverFix(pid: number): string {
+  return `stop it first: kill ${pid}`;
+}
+
+/**
+ * A client-launched wazap holding the session, or null if the lock is free or
+ * the background service owns it (that one we can stop ourselves).
+ */
+export function leftoverRefusal(config: Config): WazapError | null {
+  const running = lockHolder(paths(config.dataDir).lockFile);
+  if (running === null) return null;
+  if (serviceHolding(config.dataDir, running) !== null) return null;
+  return new WazapError("WHATSAPP_ERROR", `wazap is running (pid ${running}).`, leftoverFix(running));
+}
+
+export type GreetState = Pick<StatusReport, "linked" | "credentials_readable" | "server_pid">;
+
+/** After status, the lines that say what to type next. A leftover does not hide them. */
+export function greetNext(report: GreetState): string[] {
+  const lines: string[] = [];
+  if (report.server_pid !== null) {
+    lines.push(info(`A server is already running (pid ${report.server_pid}).`));
+    if (!report.linked || !report.credentials_readable) {
+      lines.push(fix(leftoverFix(report.server_pid)));
+    }
+  }
+  if (!report.credentials_readable) {
+    lines.push(next("wazap logout", "(then wazap login)"));
+    return lines;
+  }
+  if (!report.linked) {
+    lines.push(next("wazap setup"));
+    return lines;
+  }
+  if (report.server_pid !== null) return lines;
+  lines.push(next("wazap connect claude-code", '(then ask your agent: "what did I miss on WhatsApp today?")'));
+  return lines;
+}
+
 /** Bare `wazap` at a terminal: where you stand, and the one command to run next. */
 export async function runGreet(config: Config): Promise<void> {
   say(banner());
   say("");
   const report = await runStatus(config);
   say("");
-
-  if (report.server_pid !== null) {
-    say(info(`A server is already running (pid ${report.server_pid}).`));
-    return;
-  }
-  if (!report.credentials_readable) {
-    say(next("wazap logout", "(then wazap login)"));
-    return;
-  }
-  say(
-    report.linked
-      ? next("wazap connect claude-code", '(then ask your agent: "what did I miss on WhatsApp today?")')
-      : next("wazap login"),
-  );
+  for (const line of greetNext(report)) say(line);
 }
 
 export async function runServe(config: Config): Promise<void> {
@@ -576,8 +604,14 @@ export function stepper(total: number): Stepper {
 export async function runLogin(config: Config): Promise<void> {
   const p = paths(config.dataDir);
   const linked = readLinkedAccount(p.authDir);
-  const askWrites = config.writesAnswer === null && !config.assumeYes && process.stdin.isTTY === true;
-  const w = maybeWizard(linked ? 1 : loginWizardSteps(Boolean(config.loginCode), askWrites));
+  if (!linked) {
+    const refusal = leftoverRefusal(config);
+    if (refusal !== null) throw refusal;
+  }
+  const loginCode = linked ? config.loginCode : await chooseLoginCode(config);
+  const resolved = { ...config, loginCode };
+  const askWrites = resolved.writesAnswer === null && !resolved.assumeYes && process.stdin.isTTY === true;
+  const w = maybeWizard(linked ? 1 : loginWizardSteps(loginCode, askWrites));
   try {
     if (!w) say(banner());
 
@@ -599,7 +633,7 @@ export async function runLogin(config: Config): Promise<void> {
       return;
     }
 
-    await linkAndSync(config, w ? () => {} : stepper(config.loginCode ? 4 : 3), w);
+    await linkAndSync(resolved, w ? () => {} : stepper(loginCode ? 4 : 3), w);
     if (!w) {
       say("");
       say(connectNext());
@@ -730,18 +764,18 @@ async function linkByQr(p: Paths, waiting: Countdown, w: Wizard | null): Promise
     const art = await new Promise<string>((resolve) => {
       qrcodeTerminal.generate(qr, { small: true }, (drawn: string) => resolve(drawn));
     });
+    const saved = qrSavedLine(p.qrFile);
     if (w) {
       await w.paint([
         ...art.trimEnd().split("\n"),
         "",
         "WhatsApp → Settings → Linked devices → Link a device",
-        wizDim(`Also saved to ${shortPath(p.qrFile)}`),
-        wizDim("Prefer a code? Ctrl+C, then wazap login --phone +15550100"),
+        ...(saved === null ? [] : [wizDim(saved)]),
       ]);
     } else {
       say(art);
-      say(`  Scan it with WhatsApp → Settings → Linked devices → Link a device (also saved to ${shortPath(p.qrFile)})`);
-      say(dim("  Prefer typing a code? Press Ctrl+C and run `wazap login --phone +15550100`."));
+      say("  Scan it with WhatsApp → Settings → Linked devices → Link a device");
+      if (saved !== null) say(dim(`  ${saved}`));
       say("");
     }
     await qrcode.toFile(p.qrFile, qr);
@@ -768,8 +802,7 @@ export async function yieldSession(config: Config, lockFile: string): Promise<()
 
   const held = serviceHolding(config.dataDir, running);
   if (held === null) {
-    say(fail(`wazap is running (pid ${running}). Stop it first (or quit the client that launched it), then run this again.`));
-    process.exit(1);
+    throw leftoverRefusal(config) ?? new WazapError("WHATSAPP_ERROR", `wazap is running (pid ${running}).`, leftoverFix(running));
   }
 
   say(info("Stopping the wazap service for pairing"));
@@ -787,8 +820,11 @@ export async function yieldSession(config: Config, lockFile: string): Promise<()
     await sleep(200);
   }
   resume();
-  say(fail(`The wazap service (pid ${running}) did not let go of the session.`));
-  process.exit(1);
+  throw new WazapError(
+    "SERVICE_ERROR",
+    `The wazap service (pid ${running}) did not let go of the session.`,
+    "run `wazap service logs`",
+  );
 }
 
 const HISTORY_WAIT_MS = 90_000;
@@ -887,7 +923,8 @@ export async function runLogout(config: Config): Promise<void> {
 
   const running = lockHolder(p.lockFile);
   if (running !== null) {
-    say(fail(`wazap is running (pid ${running}). Stop it first.`));
+    say(fail(`wazap is running (pid ${running}).`));
+    say(fix(leftoverFix(running)));
     process.exit(1);
   }
 
@@ -986,6 +1023,48 @@ export async function askSecret(question: string): Promise<string> {
 }
 
 const PHONE_ATTEMPTS = 3;
+const LINK_CHOICE_ATTEMPTS = 3;
+
+export type LinkChoice = "qr" | "code" | "retry";
+
+/** Empty and 1 keep the QR default. 2 is a pairing code. Anything else is another try. */
+export function parseLinkChoice(answer: string): LinkChoice {
+  const trimmed = answer.trim();
+  if (trimmed === "" || trimmed === "1") return "qr";
+  if (trimmed === "2") return "code";
+  return "retry";
+}
+
+/**
+ * Whether login/setup should pair with a code. Asked before the wizard so its
+ * step count is already right. `--phone` / `--code` skip the question; a pipe
+ * or `--yes` keeps the QR.
+ */
+export async function chooseLoginCode(config: Config): Promise<boolean> {
+  if (config.loginCode) return true;
+  if (config.assumeYes || process.stdin.isTTY !== true) return false;
+
+  const menu = ["Link with a QR or a pairing code?", "  1. QR code", "  2. Pairing code (type on your phone)"];
+  for (const line of menu) say(line);
+  for (let attempt = 1; ; attempt++) {
+    const answer = await ask(`${brand("?")} Choose: [1] (enter to accept) `);
+    const picked = parseLinkChoice(answer);
+    switch (picked) {
+      case "qr":
+        return false;
+      case "code":
+        return true;
+      case "retry":
+        if (attempt === LINK_CHOICE_ATTEMPTS) return false;
+        say(fail("Type 1 or 2."));
+        continue;
+      default: {
+        const _never: never = picked;
+        return _never;
+      }
+    }
+  }
+}
 
 /** A typo costs another prompt, not the whole login. */
 async function askPhone(w: Wizard | null = null): Promise<string> {

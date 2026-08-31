@@ -8,6 +8,7 @@ import {
   box,
   brand,
   centerBlock,
+  qrSavedLine,
   centerLine,
   cmd,
   colorEnabled,
@@ -187,6 +188,17 @@ test("openCanvas off-TTY paints nothing, so the QR stays inside the current log 
 test("centerLine pads a short string into the middle of the row", () => {
   assert.equal(centerLine("ab", 6), "  ab");
   assert.equal(width(centerLine("ab", 6)), 4);
+});
+
+test("centerBlock overflow keeps the last rows, so a spinner is not drawn twice", () => {
+  const placed = centerBlock(["logo", "qr1", "qr2", "qr3", "Waiting…"], 8, 3);
+  assert.equal(placed.length, 3);
+  assert.match(placed[2], /Waiting/);
+});
+
+test("qrSavedLine omits the path when it would wrap", () => {
+  assert.equal(qrSavedLine("/tmp/wazap/qr.png", 80), "Also saved to /tmp/wazap/qr.png");
+  assert.equal(qrSavedLine("/tmp/wazap-ux2/qr.png", 20), null);
 });
 
 test("centerBlock keeps a ragged column aligned, then drops it in the middle of the screen", () => {

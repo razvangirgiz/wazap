@@ -53,10 +53,24 @@ const CHECKS: readonly CheckFn[] = [
   checkUpdate,
 ];
 
+/** Setup will offer these. Until an account is linked, their fix lines fight `Next wazap setup`. */
+const OPTIONAL_UNTIL_LINKED = new Set(["service", "skills", "transcribe"]);
+
 export async function runChecks(config: Config): Promise<Check[]> {
   const checks: Check[] = [];
   for (const check of CHECKS) checks.push(...[await check(config)].flat());
-  return checks;
+  let linked = false;
+  try {
+    linked = readLinkedAccount(paths(config.dataDir).authDir) !== null;
+  } catch {
+    linked = false;
+  }
+  if (linked) return checks;
+  return checks.map((check) => {
+    if (!OPTIONAL_UNTIL_LINKED.has(check.name) || check.fix === undefined) return check;
+    const { fix: _fix, ...rest } = check;
+    return rest;
+  });
 }
 
 /**
