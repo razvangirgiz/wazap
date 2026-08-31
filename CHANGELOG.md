@@ -1,7 +1,47 @@
 # Changelog
 
 ## Unreleased
+### Added
+
+- **Outbound sends are a draft, then `confirm_send`.** `send_message`,
+  `send_media`, `send_poll`, `send_location` and `forward_message` ask the
+  session to resolve the recipient and return a `draft_id` plus a preview
+  (`To: Ana (+40 722 …)` and the exact text). WhatsApp is reached only by
+  `confirm_send`. A draft lasts 15 minutes, is one-shot, and lives on the
+  session that owns the socket. Drafting does not spend the write rate
+  limit; that bucket is taken when the session actually writes.
+  `DRAFT_NOT_FOUND` and `DRAFT_EXPIRED` tell the agent to draft again.
+
 ### Fixed
+
+- **`login` and `setup` print a leftover on the real screen.** A client-held
+  lock used to fail inside the wizard alt buffer, so `close()` wiped
+  `kill <pid>` and left `EXIT:1` on an empty terminal. They now refuse
+  before the wizard opens, and `yieldSession` throws instead of
+  `process.exit` so a later failure still lands on the main screen.
+- **Unlinked `status` / greet no longer send you past setup.** Service,
+  skills and transcribe still show as facts. The `→ run …` lines stay
+  off until an account is linked, because setup is the next command.
+- **The QR screen no longer tells you to start setup over, and no longer
+  draws two countdowns.** After you already picked QR, the `--phone` hint
+  is gone. The saved-path line is omitted when it would wrap. A QR taller
+  than the terminal keeps the last rows, so the spinner is not painted
+  twice.
+
+- **A leftover server no longer hides the next step.** Bare `wazap` on an
+  unlinked data dir used to stop at "a server is already running" and
+  `login` told you to quit the client that launched it, without a command.
+  Greet now still says `Next wazap setup` and names `kill <pid>`. A second
+  `wazap` that finds a `not_linked` owner answering `/healthz` 503 becomes a
+  bridge instead of claiming the first process is an older version.
+- **A command with no arguments names its own usage.** `wazap connect`,
+  `skills`, `service`, `transcribe`, `contacts` and a half-typed `config`
+  used to dump you into `--help`. They now list the clients, verbs or
+  settings they accept. An unknown command still points at `--help`.
+- **Setup asks QR or pairing code before it draws a QR.** Ctrl+C then
+  `wazap login --phone` abandoned the rest of setup. `--phone` / `--code`
+  and `--yes` skip the question. The QR hint, if you still get one, is
+  `wazap setup --phone` from setup and `wazap login --phone` from login.
 
 - **`setup` through npx can still install the service** when a global `wazap`
   already exists. npx puts its cache first on PATH, so after `npm i -g` (or a

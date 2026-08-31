@@ -54,15 +54,18 @@ export function removeDaemon(file: string): void {
   }
 }
 
-/** Liveness of the loopback endpoint recorded in a sidecar. Never throws. */
+/**
+ * Whether the sidecar's loopback endpoint is there to bridge onto. `/healthz`
+ * uses `ok` for monitors (WhatsApp up), so a `not_linked` owner that has been
+ * up for minutes answers 503; that process is still sharing the session.
+ */
 export async function daemonHealthy(port: number, timeoutMs: number): Promise<boolean> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
     const res = await fetch(`http://127.0.0.1:${port}/healthz`, { signal: controller.signal });
-    if (!res.ok) return false;
     const body: unknown = await res.json();
-    return typeof body === "object" && body !== null && (body as { ok?: unknown }).ok === true;
+    return typeof body === "object" && body !== null && typeof (body as { status?: unknown }).status === "string";
   } catch {
     return false;
   } finally {

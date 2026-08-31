@@ -138,6 +138,19 @@ const COMMAND_ARGS: Record<Command, readonly number[]> = {
 
 const COMMANDS = Object.keys(COMMAND_ARGS) as readonly Command[];
 
+/**
+ * What to type instead of `--help` when the arity is wrong. Literals, not
+ * imports: this file cannot reach `connect` or `service` without a cycle.
+ */
+const COMMAND_USAGE: Partial<Record<Command, string>> = {
+  connect: "Pick one of: claude-code, claude-desktop, cursor, codex, vscode, gemini, windsurf, opencode",
+  skills: "Run `wazap skills install [<harness>]`",
+  service: "Run `wazap service install|status|start|stop|restart|logs|uninstall`",
+  transcribe: "Run `wazap transcribe download` or `wazap transcribe test <audio file>`",
+  contacts: "Run `wazap contacts resync`",
+  config: "Run `wazap config`, `wazap config writes on|off`, or `wazap config transcribe local|openai|off`",
+};
+
 export function defaultDataDir(): string {
   return resolve(join(homedir(), ".wazap"));
 }
@@ -229,7 +242,11 @@ export function parseCli(argv: string[] = process.argv.slice(2)): CliInvocation 
   }
   const command = (first as Command | undefined) ?? "serve";
   if (!COMMAND_ARGS[command].includes(args.length)) {
-    throw new WazapError("INVALID_ID", `Wrong arguments for \`wazap ${command}\`.`, "Run `wazap --help`");
+    throw new WazapError(
+      "INVALID_ID",
+      `Wrong arguments for \`wazap ${command}\`.`,
+      COMMAND_USAGE[command] ?? "Run `wazap --help`",
+    );
   }
 
   const dataDir = resolve(values["data-dir"] ?? process.env.WAZAP_DATA_DIR ?? defaultDataDir());

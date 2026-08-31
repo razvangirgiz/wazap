@@ -1,6 +1,7 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
-import { asWazapError, ERROR_GUIDE, type WazapError } from "./errors.js";
+import { renderDraft, type DraftView } from "./drafts.js";
+import { asWazapError, ERROR_GUIDE, WazapError } from "./errors.js";
 import { clockLabel } from "./messages.js";
 import { RateLimiter } from "./ratelimit.js";
 import { MESSAGE_TYPES } from "./wa-types.js";
@@ -9,6 +10,7 @@ import type {
   ContactSummary,
   MessageView,
   RecentConversation,
+  SentMessage,
   Synced,
   WhatsAppApi,
 } from "./wa-types.js";
@@ -31,7 +33,7 @@ interface ToolDef {
   schema: z.ZodRawShape;
   write: boolean;
   destructive?: boolean;
-  /** Calls a minute allowed to this tool alone, on top of the shared write bucket. */
+  /** Calls a minute allowed to this tool alone. The session write bucket is separate. */
   rate?: number;
   handler: (args: ToolArgs, wa: WhatsAppApi) => Promise<ToolResult>;
 }
@@ -108,9 +110,10 @@ link_account when it says no account is linked yet.
   address book; if they are missing (get_status shows contacts_named: 0), call
   sync_contacts once.
 - Find something said: search_messages(query[, chat_id]).
-- Send: send_message / send_media / send_poll / send_location. These are REAL
-  messages from the user's own account and there is no undo. Confirm the
-  recipient and the wording with the user before sending anything sensitive.
+- Send: send_message / send_media / send_poll / send_location / forward_message
+  draft only. They return a draft_id and a preview. Show the preview to the
+  user; after they say yes, call confirm_send({ draft_id }). That is the only
+  call that reaches WhatsApp. A draft lasts 15 minutes.
 - Media: a message with has_media=true → download_media(message_id).
 - Groups: get_group_info before manage_group; most actions need admin rights.
 
@@ -491,10 +494,10 @@ the fix names the command the user has to run. Do not retry it.`,
 
   tool({
     name: "send_message",
-    title: "Send a WhatsApp text message",
-    description: `Send a text message. This is a REAL message from the user's own account and
-there is no undo — confirm the recipient and the wording with the user before
-sending anything sensitive.`,
+    title: "Draft a WhatsApp text message",
+    description: `Draft a text message. Does not send. Returns a draft_id and a preview of the
+recipient and exact text. Show that preview to the user; after they say yes,
+call confirm_send. A draft lasts 15 minutes.`,
     schema: {
       chat_id: chatId,
       text: z.string().min(1).max(65536).describe("The message text"),
@@ -507,17 +510,16 @@ sending anything sensitive.`,
     },
     write: true,
     handler: async ({ chat_id, text, reply_to, mention_ids }, wa) => {
-      const sent = await wa.sendMessage(chat_id, text, reply_to, mention_ids);
-      return ok(`Sent to ${sent.chat_id} at ${sent.timestamp} (message_id: ${sent.message_id}):\n> ${sent.text}`, sent as unknown as Record<string, unknown>);
+      return drafted(await wa.draft({ kind: "text", chatId: chat_id, text, replyTo: reply_to, mentionIds: mention_ids }));
     },
   }),
 
   tool({
     name: "send_media",
-    title: "Send a WhatsApp media message",
-    description: `Send an image, video, audio file or document, from a local path on the machine
-running wazap or from a public URL. Exactly one of file_path / url. Maximum
-100 MB.`,
+    title: "Draft a WhatsApp media message",
+    description: `Draft an image, video, audio file or document, from a local path on the machine
+running wazap or from a public URL. Does not send. Exactly one of file_path / url.
+Maximum 100 MB. Show the preview; after the user says yes, call confirm_send.`,
     schema: {
       chat_id: chatId,
       file_path: z.string().min(1).optional().describe("Absolute path of a local file to send"),
@@ -528,16 +530,24 @@ running wazap or from a public URL. Exactly one of file_path / url. Maximum
     },
     write: true,
     handler: async ({ chat_id, file_path, url, caption, as_document, as_voice }, wa) => {
-      const sent = await wa.sendMedia(chat_id, { file_path, url }, { caption, asDocument: as_document, asVoice: as_voice });
-      return ok(`Media sent to ${sent.chat_id} at ${sent.timestamp} (message_id: ${sent.message_id})`, sent as unknown as Record<string, unknown>);
+      return drafted(
+        await wa.draft({
+          kind: "media",
+          chatId: chat_id,
+          source: { file_path, url },
+          caption,
+          asDocument: as_document,
+          asVoice: as_voice,
+        }),
+      );
     },
   }),
 
   tool({
     name: "send_poll",
-    title: "Send a WhatsApp poll",
-    description: `Send a poll to a chat. Participants vote in WhatsApp; wazap cannot read the
-votes back, so ask the user to report the outcome.`,
+    title: "Draft a WhatsApp poll",
+    description: `Draft a poll. Does not send. Participants vote in WhatsApp; wazap cannot read
+the votes back. Show the preview; after the user says yes, call confirm_send.`,
     schema: {
       chat_id: chatId,
       question: z.string().min(1).max(255).describe("The poll question"),
@@ -546,15 +556,15 @@ votes back, so ask the user to report the outcome.`,
     },
     write: true,
     handler: async ({ chat_id, question, options, multi_select }, wa) => {
-      const sent = await wa.sendPoll(chat_id, question, options, multi_select);
-      return ok(`Poll sent to ${sent.chat_id} (message_id: ${sent.message_id}):\n> ${question}`, sent as unknown as Record<string, unknown>);
+      return drafted(await wa.draft({ kind: "poll", chatId: chat_id, question, options, multiSelect: multi_select }));
     },
   }),
 
   tool({
     name: "send_location",
-    title: "Send a WhatsApp location",
-    description: "Send a map pin to a chat, optionally labelled with a place name and address.",
+    title: "Draft a WhatsApp location",
+    description: `Draft a map pin, optionally labelled with a place name and address. Does not
+send. Show the preview; after the user says yes, call confirm_send.`,
     schema: {
       chat_id: chatId,
       latitude: z.number().min(-90).max(90).describe("Latitude in decimal degrees"),
@@ -564,8 +574,7 @@ votes back, so ask the user to report the outcome.`,
     },
     write: true,
     handler: async ({ chat_id, latitude, longitude, name, address }, wa) => {
-      const sent = await wa.sendLocation(chat_id, latitude, longitude, name, address);
-      return ok(`Location sent to ${sent.chat_id} (message_id: ${sent.message_id})`, sent as unknown as Record<string, unknown>);
+      return drafted(await wa.draft({ kind: "location", chatId: chat_id, latitude, longitude, name, address }));
     },
   }),
 
@@ -603,13 +612,31 @@ this within 15 minutes of sending; after that send a correction instead.`,
 
   tool({
     name: "forward_message",
-    title: "Forward a WhatsApp message",
-    description: "Forward an existing message to another chat. The recipient sees it marked as forwarded.",
+    title: "Draft a forwarded WhatsApp message",
+    description: `Draft a forward of an existing message to another chat. Does not send. The
+recipient will see it marked as forwarded. Show the preview; after the user
+says yes, call confirm_send.`,
     schema: { message_id: messageId, to_chat_id: chatId.describe("Destination chat") },
     write: true,
     handler: async ({ message_id, to_chat_id }, wa) => {
-      const sent = await wa.forwardMessage(message_id, to_chat_id);
-      return ok(`Forwarded ${message_id} to ${sent.chat_id} (message_id: ${sent.message_id})`, sent as unknown as Record<string, unknown>);
+      return drafted(await wa.draft({ kind: "forward", chatId: to_chat_id, messageId: message_id }));
+    },
+  }),
+
+  tool({
+    name: "confirm_send",
+    title: "Send a drafted WhatsApp message",
+    description: `Send a draft created by send_message, send_media, send_poll, send_location or
+forward_message. This is the only call that reaches WhatsApp. The draft is
+consumed. A missing or expired draft_id means draft again and show the new
+preview before calling this.`,
+    schema: {
+      draft_id: z.string().min(1).describe("The draft_id returned by a send_* tool"),
+    },
+    write: true,
+    handler: async ({ draft_id }, wa) => {
+      const sent = await wa.confirm(draft_id);
+      return ok(sentText(sent), sent as unknown as Record<string, unknown>);
     },
   }),
 
@@ -712,7 +739,6 @@ export const TOOL_NAMES: readonly string[] = TOOLS.map((t) => t.name);
 
 export interface RegisterOpts {
   allowWrite: boolean;
-  limiter: RateLimiter;
 }
 
 /** Derived, so a second rated tool cannot inherit a message naming the wrong budget. */
@@ -722,9 +748,9 @@ function rateLabel(name: string): string {
 }
 
 /**
- * One bucket per rated tool for the whole process, like the write bucket: an
- * HTTP client re-initializing gets a new McpServer on every session, and a cap
- * that resets with it would be no cap at all.
+ * One bucket per rated tool for the whole process: an HTTP client
+ * re-initializing gets a new McpServer on every session, and a cap that
+ * resets with it would be no cap at all.
  */
 const RATE_BUCKETS = new Map<string, RateLimiter>(
   TOOLS.flatMap((def) =>
@@ -735,7 +761,6 @@ const RATE_BUCKETS = new Map<string, RateLimiter>(
 export function registerTools(server: McpServer, wa: WhatsAppApi, opts: RegisterOpts): void {
   for (const def of TOOLS) {
     if (def.write && !opts.allowWrite) continue;
-    // Spent alongside the shared write bucket rather than out of it.
     const own = RATE_BUCKETS.get(def.name);
     server.registerTool(
       def.name,
@@ -749,7 +774,6 @@ export function registerTools(server: McpServer, wa: WhatsAppApi, opts: Register
       },
       async (args: unknown): Promise<ToolResult> => {
         try {
-          if (def.write) opts.limiter.take();
           own?.take();
           return await def.handler(args as ToolArgs, wa);
         } catch (err) {
@@ -830,4 +854,12 @@ function renderParticipants(participants: Array<{ id: string; status: string; re
 
 function truncate(text: string, max: number): string {
   return text.length > max ? `${text.slice(0, max)}…` : text;
+}
+
+function drafted(view: DraftView): ToolResult {
+  return ok(renderDraft(view), { ...view });
+}
+
+function sentText(sent: SentMessage): string {
+  return `Sent to ${sent.chat_id} at ${sent.timestamp} (message_id: ${sent.message_id}):\n> ${sent.text}`;
 }

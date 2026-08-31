@@ -29,6 +29,8 @@ export type ErrorCode =
   | "TRANSCRIBE_FAILED"
   | "TIMEOUT"
   | "SERVICE_ERROR"
+  | "DRAFT_NOT_FOUND"
+  | "DRAFT_EXPIRED"
   | "WHATSAPP_ERROR";
 
 export class WazapError extends Error {
@@ -80,6 +82,10 @@ export const ERROR_GUIDE: Record<ErrorCode, string> = {
   TIMEOUT: "WhatsApp did not answer in time. Retry once; if it fails again, call get_status.",
   SERVICE_ERROR:
     "wazap's own background service could not be managed. This is a machine problem, not a WhatsApp one: read the fix and tell the user.",
+  DRAFT_NOT_FOUND:
+    "That draft_id is unknown or was already sent. Call the send tool again to draft, show the new preview, then confirm_send.",
+  DRAFT_EXPIRED:
+    "The draft expired (15 minutes). Call the send tool again to draft, show the new preview, then confirm_send.",
   WHATSAPP_ERROR: "WhatsApp rejected the operation. Read the message; do not blindly retry.",
 };
 

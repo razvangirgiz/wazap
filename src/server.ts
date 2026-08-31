@@ -8,7 +8,6 @@ import express, { type Request, type Response, type NextFunction } from "express
 import { rateLimit } from "express-rate-limit";
 import { WAZAP_VERSION, paths, type Config } from "./config.js";
 import { APPROVE_PATH, OAUTH_SCOPES, WazapOAuthProvider } from "./oauth.js";
-import { RateLimiter } from "./ratelimit.js";
 import { loadSkills, registerSkillPrompts, skillInstructions } from "./skills.js";
 import { registerTools } from "./tools.js";
 import { log, logError } from "./logger.js";
@@ -28,18 +27,18 @@ function isAuthorized(header: string | undefined, expected: string): boolean {
  * The one place a session is built, so the workflows reach stdio and HTTP alike:
  * a client that never installed the skill files still gets them here.
  */
-function buildMcpServer(wa: WhatsAppApi, config: Config, allowWrite: boolean, limiter: RateLimiter): McpServer {
+function buildMcpServer(wa: WhatsAppApi, config: Config, allowWrite: boolean): McpServer {
   const skills = loadSkills();
   const server = new McpServer({ name: "wazap", version: WAZAP_VERSION }, { instructions: skillInstructions(skills) });
-  registerTools(server, wa, { allowWrite: allowWrite && !config.readOnly, limiter });
+  registerTools(server, wa, { allowWrite: allowWrite && !config.readOnly });
   registerSkillPrompts(server, skills);
   return server;
 }
 
 type AuthedRequest = Request & { mcpWrite?: boolean };
 
-export async function runStdio(wa: WhatsAppApi, config: Config, limiter: RateLimiter): Promise<void> {
-  const server = buildMcpServer(wa, config, true, limiter);
+export async function runStdio(wa: WhatsAppApi, config: Config): Promise<void> {
+  const server = buildMcpServer(wa, config, true);
   const transport = new StdioServerTransport();
   await server.connect(transport);
   log("MCP server ready on stdio.");
@@ -65,12 +64,7 @@ export interface Endpoint {
 }
 
 /** Serve /mcp and /healthz on one address. Resolves with the bound port, so port 0 works. */
-export async function startHttpEndpoint(
-  wa: WhatsAppApi,
-  config: Config,
-  endpoint: Endpoint,
-  limiter: RateLimiter,
-): Promise<number> {
+export async function startHttpEndpoint(wa: WhatsAppApi, config: Config, endpoint: Endpoint): Promise<number> {
   const app = express();
   app.use(express.json());
 
@@ -185,7 +179,7 @@ export async function startHttpEndpoint(
           if (sid) transports.delete(sid);
         };
         // The session's tools are fixed at init by the token it authenticated with.
-        const server = buildMcpServer(wa, config, (req as AuthedRequest).mcpWrite === true, limiter);
+        const server = buildMcpServer(wa, config, (req as AuthedRequest).mcpWrite === true);
         await server.connect(newTransport);
         transport = newTransport;
       }
@@ -244,12 +238,7 @@ export async function startHttpEndpoint(
 }
 
 /** The endpoint the user asked for: WAZAP_HOST/WAZAP_PORT and the two configured tokens. */
-export async function runHttp(
-  wa: WhatsAppApi,
-  config: Config,
-  limiter: RateLimiter,
-  extra?: Credential,
-): Promise<number> {
+export async function runHttp(wa: WhatsAppApi, config: Config, extra?: Credential): Promise<number> {
   const credentials: Credential[] = [];
   if (config.readToken) credentials.push({ token: config.readToken, write: false });
   if (config.writeToken) credentials.push({ token: config.writeToken, write: true });
@@ -264,29 +253,25 @@ export async function runHttp(
         })
       : undefined;
 
-  const port = await startHttpEndpoint(
-    wa,
-    config,
-    { host: config.httpHost, port: config.httpPort, credentials, openRead: !config.readToken, oauth },
-    limiter,
-  );
+  const port = await startHttpEndpoint(wa, config, {
+    host: config.httpHost,
+    port: config.httpPort,
+    credentials,
+    openRead: !config.readToken,
+    oauth,
+  });
   log(`MCP server (Streamable HTTP) on http://${config.httpHost}:${port}/mcp`);
   return port;
 }
 
 /** A private endpoint on an ephemeral loopback port, reachable only with the token. */
-export async function startLoopbackEndpoint(
-  wa: WhatsAppApi,
-  config: Config,
-  token: string,
-  limiter: RateLimiter,
-): Promise<number> {
-  const port = await startHttpEndpoint(
-    wa,
-    config,
-    { host: "127.0.0.1", port: 0, credentials: [{ token, write: true }], openRead: false },
-    limiter,
-  );
+export async function startLoopbackEndpoint(wa: WhatsAppApi, config: Config, token: string): Promise<number> {
+  const port = await startHttpEndpoint(wa, config, {
+    host: "127.0.0.1",
+    port: 0,
+    credentials: [{ token, write: true }],
+    openRead: false,
+  });
   log(`sharing this session on 127.0.0.1:${port}`);
   return port;
 }

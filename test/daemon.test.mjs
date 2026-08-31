@@ -12,8 +12,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
 
-import { daemonHealthy, readDaemon, removeDaemon, writeDaemon } from "../dist/daemon.js";
-import { RateLimiter } from "../dist/ratelimit.js";
+import { paths } from "../dist/config.js";
+import { daemonHealthy, decideRole, readDaemon, removeDaemon, writeDaemon } from "../dist/daemon.js";
 import { startHttpEndpoint } from "../dist/server.js";
 import { BINARY, mcpClient, offlineConfig, spawnWazap, waitFor } from "./helpers.mjs";
 
@@ -234,7 +234,7 @@ test("--http publishes its own port and takes the internal token as a full-acces
 
     // No read token, so the endpoint is open; the internal token is what unlocks writes.
     assert.equal(await httpToolCount(info.port, null), 14, "an anonymous session gets the read tools");
-    assert.equal(await httpToolCount(info.port, info.token), 25, "the internal token gets everything");
+    assert.equal(await httpToolCount(info.port, info.token), 26, "the internal token gets everything");
   }, ["serve", "--http", "--port", "0"]);
 });
 
@@ -302,24 +302,31 @@ test("WAZAP_NO_SHARE serves stdio with no sidecar at all", async () => {
 });
 
 /** A server whose only job is to answer /healthz from a status we dictate. */
-async function healthOf(status, sinceMsAgo) {
+async function withHealth(status, sinceMsAgo, fn) {
   const port = await closedPort();
   const stop = new AbortController();
   const wa = {
     getStatus: () => ({ status, status_since: new Date(Date.now() - sinceMsAgo).toISOString() }),
   };
-  await startHttpEndpoint(
-    wa,
-    offlineConfig("wazap-health-"),
-    { host: "127.0.0.1", port, credentials: [], openRead: false, signal: stop.signal },
-    new RateLimiter(0),
-  );
+  await startHttpEndpoint(wa, offlineConfig("wazap-health-"), {
+    host: "127.0.0.1",
+    port,
+    credentials: [],
+    openRead: false,
+    signal: stop.signal,
+  });
   try {
-    const res = await fetch(`http://127.0.0.1:${port}/healthz`, { signal: AbortSignal.timeout(5_000) });
-    return { code: res.status, body: await res.json() };
+    return await fn(port);
   } finally {
     stop.abort();
   }
+}
+
+async function healthOf(status, sinceMsAgo) {
+  return withHealth(status, sinceMsAgo, async (port) => {
+    const res = await fetch(`http://127.0.0.1:${port}/healthz`, { signal: AbortSignal.timeout(5_000) });
+    return { code: res.status, body: await res.json() };
+  });
 }
 
 const MINUTE = 60_000;
@@ -343,4 +350,23 @@ test("two minutes off the air answers 503, with the status and since a monitor c
   assert.equal(body.ok, false);
   assert.equal(body.status, "disconnected");
   assert.ok(Date.now() - Date.parse(body.since) >= 3 * MINUTE, `since: ${body.since}`);
+});
+
+test("a not_linked owner that has been up for minutes is still a bridge, not an older version", async () => {
+  await withHealth("not_linked", 3 * MINUTE, async (port) => {
+    const res = await fetch(`http://127.0.0.1:${port}/healthz`, { signal: AbortSignal.timeout(5_000) });
+    const body = await res.json();
+    assert.equal(res.status, 503, "a monitor still sees the outage");
+    assert.equal(body.ok, false);
+    assert.equal(body.status, "not_linked");
+    assert.equal(await daemonHealthy(port, 2_000), true, "the sidecar is reachable");
+
+    const dataDir = tempDir();
+    const p = paths(dataDir);
+    writeFileSync(p.lockFile, `${process.pid}\n`, { mode: 0o600 });
+    writeDaemon(p.daemonFile, { pid: process.pid, port, token: "ab", version: "0.11.0" });
+    const role = await decideRole({ ...offlineConfig("wazap-role-"), dataDir, share: true, transport: "stdio" }, p);
+    assert.equal(role.kind, "bridge");
+    if (role.kind === "bridge") assert.equal(role.daemon.port, port);
+  });
 });

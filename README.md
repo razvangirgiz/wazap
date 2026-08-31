@@ -8,7 +8,7 @@
 ```
 
 **WhatsApp for your AI agent.** An MCP server that puts your WhatsApp account —
-chats, messages, media, contacts, groups — behind 25 tools any MCP client can
+chats, messages, media, contacts, groups — behind 26 tools any MCP client can
 call. Pairing-code login, no browser, no phone-number reseller, ~20 MB of RAM.
 
 Built on [Baileys](https://github.com/WhiskeySockets/Baileys), which speaks the
@@ -264,13 +264,14 @@ them. `--dry-run` prints the plan and touches nothing.
 | `get_group_info` | read | Participants, admins, announcement mode, invite link (when you are admin). |
 | `download_media` | read | Save an attachment to disk; small images also come back inline. |
 | `transcribe_audio` | read | Turn a voice note or audio message into text, with the local or the API provider. |
-| `send_message` | write | Send text, optionally as a reply, with @-mentions. |
-| `send_media` | write | Send an image, video, audio, voice note or document from a path or URL. |
-| `send_poll` | write | Send a poll with 2–12 options. |
-| `send_location` | write | Send a map pin. |
+| `send_message` | write | Draft text, optionally as a reply, with @-mentions. Does not send. |
+| `send_media` | write | Draft an image, video, audio, voice note or document from a path or URL. Does not send. |
+| `send_poll` | write | Draft a poll with 2–12 options. Does not send. |
+| `send_location` | write | Draft a map pin. Does not send. |
 | `edit_message` | write | Edit your own message, within WhatsApp's 15-minute window. |
 | `react_to_message` | write | Add or remove an emoji reaction. |
-| `forward_message` | write | Forward a message to another chat. |
+| `forward_message` | write | Draft a forward to another chat. Does not send. |
+| `confirm_send` | write | Send a draft after the user has seen the preview and said yes. |
 | `delete_message` | write | Retract your own message, within WhatsApp's 2-day window. |
 | `manage_chat` | write | Archive, pin, mute (8h by default), mark read/unread. |
 | `create_group` | write | Create a group and add participants. |
@@ -436,6 +437,7 @@ trace, so an agent can decide whether to retry, ask the user, or stop.
 | `EDIT_WINDOW_EXPIRED` / `RETRACT_WINDOW_EXPIRED` / `NOT_OWN_MESSAGE` | WhatsApp's own limits on editing and deleting. |
 | `READ_ONLY` | wazap is running read-only. |
 | `RATE_LIMITED` | Too many writes; `fix` says how long to wait. |
+| `DRAFT_NOT_FOUND` / `DRAFT_EXPIRED` | The preview was already sent, unknown, or older than 15 minutes. Draft again. |
 | `TIMEOUT` / `WHATSAPP_ERROR` | WhatsApp did not answer, or rejected the operation. |
 
 ## Data directory

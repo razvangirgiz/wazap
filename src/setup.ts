@@ -1,7 +1,17 @@
 import { readFileSync } from "node:fs";
 import { readLinkedAccount } from "./auth-state.js";
 import { banner } from "./banner.js";
-import { ask, describeAccount, downloadTranscribeModel, linkAndSync, runLiveProbe, serviceLive, stepper } from "./cli.js";
+import {
+  ask,
+  chooseLoginCode,
+  leftoverRefusal,
+  describeAccount,
+  downloadTranscribeModel,
+  linkAndSync,
+  runLiveProbe,
+  serviceLive,
+  stepper,
+} from "./cli.js";
 import { paths, type Config, type KeepRunning } from "./config.js";
 import {
   CLIENTS,
@@ -57,18 +67,24 @@ export async function runSetup(config: Config): Promise<void> {
   const announce = stepper(install.kind === "npx" ? 6 : 5);
 
   const account = readLinkedAccount(paths(config.dataDir).authDir);
+  if (account === null) {
+    const refusal = leftoverRefusal(config);
+    if (refusal !== null) throw refusal;
+  }
   const askWrites = config.writesAnswer === null && !config.assumeYes && process.stdin.isTTY === true;
+  const loginCode = account !== null ? config.loginCode : await chooseLoginCode(config);
+  const resolved = { ...config, loginCode };
   const w = maybeWizard(
     setupWizardSteps({
       linked: account !== null,
       npx: install.kind === "npx",
       askWrites,
-      loginCode: Boolean(config.loginCode),
+      loginCode,
     }),
   );
 
   try {
-    await runSetupSteps(config, { account, install, announce, w });
+    await runSetupSteps(resolved, { account, install, announce, w });
   } finally {
     w?.close();
   }
