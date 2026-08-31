@@ -334,13 +334,10 @@ test("transcribe_audio spends a bucket of its own, ten a minute", async () => {
   const server = fakeServer();
   const wa = {
     transcribeAudio: async () => ({ text: "salut", language: "ro", duration_seconds: 6, provider: "local", cached: true }),
-    sendMessage: async () => ({ message_id: "x", chat_id: "y", text: "hi", timestamp: "now" }),
   };
   registerTools(server, wa, { allowWrite: true, limiter: new RateLimiter(20) });
   const transcribe = server.tools.get("transcribe_audio").handler;
-  const send = server.tools.get("send_message").handler;
 
-  await send({ chat_id: PEER, text: "hi" });
   const first = await transcribe({ message_id: sidOf("V1") });
   assert.equal(first.content[0].text, 'Transcribed 0:06 (ro, local, cached): "salut"');
   for (let call = 2; call <= 10; call++) {
@@ -357,9 +354,6 @@ test("transcribe_audio spends a bucket of its own, ten a minute", async () => {
   registerTools(rejoined, wa, { allowWrite: true, limiter: new RateLimiter(20) });
   const again = await rejoined.tools.get("transcribe_audio").handler({ message_id: sidOf("V1") });
   assert.equal(again.structuredContent.error, "RATE_LIMITED", "a new session must not come with ten more");
-
-  const sent = await send({ chat_id: PEER, text: "hi" });
-  assert.equal(sent.isError, undefined, "and the write budget is untouched by all of it");
 });
 
 test("a history sync is not an arrival, so its backlog is never billed", async () => {

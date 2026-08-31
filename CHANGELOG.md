@@ -1,6 +1,15 @@
 # Changelog
 
 ## Unreleased
+### Added
+
+- **Outbound sends are a draft, then `confirm_send`.** `send_message`,
+  `send_media`, `send_poll`, `send_location` and `forward_message` resolve the
+  recipient and return a `draft_id` plus a preview (`To: Ana (+40 722 …)` and
+  the exact text). WhatsApp is reached only by `confirm_send`. A draft lasts
+  15 minutes, is one-shot, and drafting does not spend the write rate limit.
+  `DRAFT_NOT_FOUND` and `DRAFT_EXPIRED` tell the agent to draft again.
+
 ### Fixed
 
 - **`login` and `setup` print a leftover on the real screen.** A client-held

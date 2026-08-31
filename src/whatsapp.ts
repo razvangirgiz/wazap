@@ -76,6 +76,7 @@ import type {
   MediaResult,
   MediaSource,
   MessageType,
+  OutgoingTarget,
   MessageView,
   PairingInfo,
   ParticipantResult,
@@ -913,6 +914,17 @@ export class WhatsAppService implements WhatsAppApi {
     return this.transcribeQueue?.idle() ?? Promise.resolve();
   }
 
+  resolveOutgoing(chatId: string): Promise<OutgoingTarget> {
+    return this.guarded(async () => {
+      const sock = this.ensureConnected();
+      const jid = await this.assertOutgoing(chatId, sock);
+      const name = this.displayName(jid);
+      if (isGroupId(jid)) return { chat_id: jid, name };
+      const number = this.contactSummary(jid).number;
+      return number ? { chat_id: jid, name, number } : { chat_id: jid, name };
+    });
+  }
+
   sendMessage(chatId: string, text: string, replyTo?: string, mentionIds?: string[]): Promise<SentMessage> {
     return this.guarded(async () => {
       this.beginWrite();
@@ -1551,6 +1563,15 @@ export class WhatsAppService implements WhatsAppApi {
   /** The single gate every send path passes: writability, addressability, announce-only. */
   private async prepareSend(chatId: string): Promise<{ sock: WASocket; jid: string }> {
     const sock = this.beginWrite();
+    const jid = await this.assertOutgoing(chatId, sock);
+    return { sock, jid };
+  }
+
+  /**
+   * Same addressability checks as a send, without opening a write. A draft that
+   * fails here would fail at confirm_send too.
+   */
+  private async assertOutgoing(chatId: string, sock: WASocket): Promise<string> {
     const jid = this.resolveId(chatId);
 
     if (isGroupId(jid)) {
@@ -1559,7 +1580,7 @@ export class WhatsAppService implements WhatsAppApi {
       if (meta.announce && !(mine && isAdmin(mine))) {
         throw new WazapError("GROUP_ANNOUNCEMENT_ONLY", `Only admins may post in "${meta.subject}".`);
       }
-      return { sock, jid };
+      return jid;
     }
 
     if (!this.store.chats.has(jid) && !this.store.contacts.has(jid)) {
@@ -1568,7 +1589,7 @@ export class WhatsAppService implements WhatsAppApi {
         throw new WazapError("NOT_ON_WHATSAPP", `${jid} has no WhatsApp account.`);
       }
     }
-    return { sock, jid };
+    return jid;
   }
 
   private async groupMeta(jid: string, fresh = false): Promise<GroupMetadata> {

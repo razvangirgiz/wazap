@@ -178,6 +178,13 @@ export interface SentMessage {
   timestamp: string;
 }
 
+/** Who a draft or send is aimed at, after jid resolution. Groups have no number. */
+export interface OutgoingTarget {
+  chat_id: string;
+  name: string;
+  number?: string;
+}
+
 export interface MediaResult {
   path: string;
   mime: string;
@@ -271,6 +278,7 @@ export interface WhatsAppApi {
   getGroupInfo(groupId: string): Promise<GroupInfo>;
   downloadMedia(messageId: string, saveTo?: string): Promise<MediaResult>;
   transcribeAudio(messageId: string, language?: string): Promise<TranscribeResult>;
+  resolveOutgoing(chatId: string): Promise<OutgoingTarget>;
   sendMessage(chatId: string, text: string, replyTo?: string, mentionIds?: string[]): Promise<SentMessage>;
   sendMedia(
     chatId: string,

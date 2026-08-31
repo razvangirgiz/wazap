@@ -41,15 +41,16 @@ const WRITE_TOOLS = [
   "edit_message",
   "react_to_message",
   "forward_message",
+  "confirm_send",
   "delete_message",
   "manage_chat",
   "create_group",
   "manage_group",
 ];
 
-test("the registry is exactly the 25 documented tools", () => {
+test("the registry is exactly the 26 documented tools", () => {
   assert.deepEqual([...TOOL_NAMES].sort(), [...READ_TOOLS, ...WRITE_TOOLS].sort());
-  assert.equal(TOOL_NAMES.length, 25);
+  assert.equal(TOOL_NAMES.length, 26);
 });
 
 test("read-only registration exposes no write tool at all", () => {
@@ -61,7 +62,7 @@ test("read-only registration exposes no write tool at all", () => {
 test("every tool declares a description and an input schema", () => {
   const server = fakeServer();
   registerTools(server, {}, { allowWrite: true, limiter: new RateLimiter(20) });
-  assert.equal(server.tools.size, 25);
+  assert.equal(server.tools.size, 26);
   for (const [name, { meta }] of server.tools) {
     assert.ok(meta.description?.length > 40, `${name} needs a description an agent can act on`);
     assert.ok(meta.inputSchema, `${name} needs an input schema`);
@@ -101,21 +102,117 @@ test("a handler that throws a raw error is reported as WHATSAPP_ERROR, never as 
 
 test("write tools are rate limited and read tools are not", async () => {
   const server = fakeServer();
+  const sent = [];
   const wa = {
     getStatus: () => ({ status: "connected", sync: "done", account: null }),
-    sendMessage: async () => ({ message_id: "x", chat_id: "y", text: "hi", timestamp: "now" }),
+    resolveOutgoing: async (chatId) => ({ chat_id: chatId, name: "Ana", number: "40722123456" }),
+    sendMessage: async (...args) => {
+      sent.push(args);
+      return { message_id: "x", chat_id: "y", text: "hi", timestamp: "now" };
+    },
   };
   registerTools(server, wa, { allowWrite: true, limiter: new RateLimiter(2) });
   const send = server.tools.get("send_message").handler;
+  const confirm = server.tools.get("confirm_send").handler;
 
-  assert.equal((await send({ chat_id: "1", text: "hi" })).isError, undefined);
-  assert.equal((await send({ chat_id: "1", text: "hi" })).isError, undefined);
-  const limited = await send({ chat_id: "1", text: "hi" });
+  const first = await send({ chat_id: "1", text: "hi" });
+  assert.equal(first.structuredContent.status, "draft");
+  assert.equal(sent.length, 0, "drafting must not reach WhatsApp");
+  assert.equal((await confirm({ draft_id: first.structuredContent.draft_id })).isError, undefined);
+
+  const second = await send({ chat_id: "1", text: "hi" });
+  assert.equal((await confirm({ draft_id: second.structuredContent.draft_id })).isError, undefined);
+
+  const third = await send({ chat_id: "1", text: "hi" });
+  assert.equal(third.structuredContent.status, "draft", "drafting does not spend the write bucket");
+  const limited = await confirm({ draft_id: third.structuredContent.draft_id });
   assert.equal(limited.structuredContent.error, "RATE_LIMITED");
   assert.match(limited.structuredContent.fix, /^Wait \d+ seconds$/);
+  assert.equal(sent.length, 2);
 
   const status = await server.tools.get("get_status").handler({});
   assert.equal(status.isError, undefined, "reads must not consume the write budget");
+});
+
+test("send_media refuses a missing local file before it drafts", async () => {
+  const server = fakeServer();
+  let resolved = 0;
+  const wa = {
+    resolveOutgoing: async () => {
+      resolved += 1;
+      return { chat_id: "1", name: "Ana" };
+    },
+  };
+  registerTools(server, wa, { allowWrite: true, limiter: new RateLimiter(20) });
+  const result = await server.tools.get("send_media").handler({
+    chat_id: "1",
+    file_path: "/no/such/wazap-media.bin",
+  });
+  assert.equal(result.structuredContent.error, "FILE_NOT_FOUND");
+  assert.equal(resolved, 0);
+});
+
+test("confirm_send is the only call that invokes sendMessage", async () => {
+  const server = fakeServer();
+  const sent = [];
+  const wa = {
+    resolveOutgoing: async () => ({ chat_id: "40722123456@s.whatsapp.net", name: "Ana", number: "40722123456" }),
+    sendMessage: async (chatId, text) => {
+      sent.push({ chatId, text });
+      return { message_id: "mid", chat_id: chatId, text, timestamp: "now" };
+    },
+    sendPoll: async () => {
+      throw new Error("poll must not send at draft time");
+    },
+    sendLocation: async () => {
+      throw new Error("location must not send at draft time");
+    },
+    forwardMessage: async () => {
+      throw new Error("forward must not send at draft time");
+    },
+    getMessage: async () => ({ text: "factura" }),
+  };
+  registerTools(server, wa, { allowWrite: true, limiter: new RateLimiter(20) });
+
+  const drafted = await server.tools.get("send_message").handler({ chat_id: "+40722123456", text: "Joi la 10." });
+  assert.equal(sent.length, 0);
+  assert.match(drafted.content[0].text, /Not sent/);
+  assert.match(drafted.content[0].text, /To: Ana \(\+40 722 123 456\)/);
+  assert.match(drafted.content[0].text, /confirm_send/);
+
+  const poll = await server.tools.get("send_poll").handler({
+    chat_id: "+40722123456",
+    question: "Pizza?",
+    options: ["da", "nu"],
+  });
+  assert.equal(poll.structuredContent.status, "draft");
+
+  const confirmed = await server.tools.get("confirm_send").handler({ draft_id: drafted.structuredContent.draft_id });
+  assert.deepEqual(sent, [{ chatId: "40722123456@s.whatsapp.net", text: "Joi la 10." }]);
+  assert.match(confirmed.content[0].text, /Sent to/);
+  assert.equal(confirmed.structuredContent.message_id, "mid");
+});
+
+test("a failed confirm_send puts the draft back", async () => {
+  const server = fakeServer();
+  let blows = true;
+  const wa = {
+    resolveOutgoing: async (chatId) => ({ chat_id: chatId, name: "Ana", number: "40722123456" }),
+    sendMessage: async (chatId, text) => {
+      if (blows) throw new WazapError("NOT_CONNECTED", "still connecting");
+      return { message_id: "mid", chat_id: chatId, text, timestamp: "now" };
+    },
+  };
+  registerTools(server, wa, { allowWrite: true, limiter: new RateLimiter(20) });
+  const drafted = await server.tools.get("send_message").handler({ chat_id: "1", text: "hi" });
+  const id = drafted.structuredContent.draft_id;
+
+  const failed = await server.tools.get("confirm_send").handler({ draft_id: id });
+  assert.equal(failed.structuredContent.error, "NOT_CONNECTED");
+
+  blows = false;
+  const retry = await server.tools.get("confirm_send").handler({ draft_id: id });
+  assert.equal(retry.structuredContent.message_id, "mid");
 });
 
 test("read_messages passes types through to the service and echoes it back", async () => {

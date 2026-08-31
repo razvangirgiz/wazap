@@ -177,6 +177,7 @@ test("the static token still works with OAuth on", async (t) => {
   assert.equal(status, 200);
   assert.ok(names.includes("get_status"));
   assert.ok(!names.includes("send_message"));
+  assert.ok(!names.includes("confirm_send"));
 });
 
 test("a write grant walks discovery, consent, code and token, then sees the write tools", async (t) => {
@@ -198,6 +199,7 @@ test("a write grant walks discovery, consent, code and token, then sees the writ
   const { status, names } = await listTools(ctx, tokens.access_token);
   assert.equal(status, 200);
   assert.ok(names.includes("send_message"));
+  assert.ok(names.includes("confirm_send"));
 
   // A code is one use.
   const replay = await exchange(ctx, { ...g, code });
@@ -218,6 +220,7 @@ test("a read grant never sees a write tool, whatever the client asked for", asyn
   const { names } = await listTools(ctx, tokens.access_token);
   assert.ok(names.includes("get_status"));
   assert.ok(!names.includes("send_message"));
+  assert.ok(!names.includes("confirm_send"));
 });
 
 test("the consent page preselects what the client asked for", async (t) => {
@@ -325,6 +328,7 @@ test("with no static token and OAuth on, nobody gets in without signing in", asy
   const { tokens } = await signIn(ctx, { access: "write" });
   const { names } = await listTools(ctx, tokens.access_token);
   assert.ok(names.includes("send_message"), "a write grant is not downgraded by the missing read token");
+  assert.ok(names.includes("confirm_send"));
 });
 
 test("revoking the refresh token ends the access tokens it minted", async (t) => {
