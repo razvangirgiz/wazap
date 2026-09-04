@@ -270,3 +270,30 @@ test("a contact WhatsApp filed under a lid and under a phone is one search resul
   assert.deepEqual(found.map((c) => c.contact_id), [phone]);
   assert.equal(svc.store.contacts.has(lid), false, "the lid entry moved in with the phone entry");
 });
+
+test("a later contact update with unknown fields does not erase a name learned before", () => {
+  const { svc, sock } = makeService();
+  const phone = "40700000050@s.whatsapp.net";
+  sock.ev.emit("contacts.upsert", [{ id: phone, notify: "Dani Moler" }]);
+  sock.ev.emit("contacts.upsert", [{ id: phone, notify: undefined, name: undefined, lid: "505050505050505@lid" }]);
+  assert.equal(svc.displayName(phone), "Dani Moler");
+  assert.equal(svc.store.contacts.get(phone).lid, "505050505050505@lid", "the new field still lands");
+});
+
+test("a name that arrived on a lid message still names the number once the pairing is known, and the other way round", () => {
+  const { svc, sock } = makeService();
+  const lid = "606060606060606@lid";
+  const phone = "40700000060@s.whatsapp.net";
+  const group = "120363000000000060@g.us";
+  sock.ev.emit("messages.upsert", { type: "notify", messages: [message(group, { participant: lid, pushName: "Gigi", text: "hei" })] });
+  assert.equal(svc.displayName(lid), "Gigi");
+  sock.ev.emit("lid-mapping.update", { lid, pn: phone });
+  assert.equal(svc.displayName(phone), "Gigi", "the number wears the name the lid brought");
+
+  const lid2 = "707070707070707@lid";
+  const phone2 = "40700000070@s.whatsapp.net";
+  sock.ev.emit("lid-mapping.update", { lid: lid2, pn: phone2 });
+  sock.ev.emit("messages.upsert", { type: "notify", messages: [message(group, { participant: lid2, pushName: "Vali", text: "hei", id: "M9" })] });
+  assert.equal(svc.displayName(phone2), "Vali");
+  assert.equal(svc.displayName(lid2), "Vali");
+});

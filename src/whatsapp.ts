@@ -259,6 +259,8 @@ export class WhatsAppService implements WhatsAppApi {
   private readonly lidToPn = new Map<string, string>();
   /** The same, for naming only, and it holds more. See `learnLidPhone`. */
   private readonly lidPhones = new Map<string, string>();
+  /** The other way round, so a phone jid can be named from what was learned under its lid. */
+  private readonly phoneLids = new Map<string, string>();
   private readonly store = new Store();
   private readonly calls = new CallTracker();
   private readonly paths: Paths;
@@ -1922,7 +1924,7 @@ export class WhatsAppService implements WhatsAppApi {
     if (contact) {
       // What the phone entry says wins; the lid entry only fills gaps.
       const existing = this.store.contacts.get(jid);
-      this.store.contacts.set(jid, { ...contact, ...(existing ?? {}), id: jid });
+      this.store.contacts.set(jid, { ...definedOnly(contact), ...definedOnly(existing ?? {}), id: jid });
       this.store.contacts.delete(lid);
     }
     if (ring || alias || contact) this.markStoreDirty();
@@ -1938,6 +1940,7 @@ export class WhatsAppService implements WhatsAppApi {
     const key = lidKey(lid);
     const phone = jidNormalizedUser(pn);
     this.lidPhones.set(key, phone);
+    this.phoneLids.set(phone, key);
     const pushed = this.store.pushNames.get(key) ?? this.store.pushNames.get(phone);
     if (pushed) {
       this.store.pushNames.set(key, pushed);
@@ -1977,8 +1980,8 @@ export class WhatsAppService implements WhatsAppApi {
       return this.store.chats.get(jid)?.name || this.groupCache.get(jid)?.subject || jid;
     }
 
-    const phoneJid = jid.endsWith("@lid") ? this.lidPhones.get(jid) : undefined;
-    for (const known of phoneJid ? [jid, phoneJid] : [jid]) {
+    const alias = jid.endsWith("@lid") ? this.lidPhones.get(jid) : this.phoneLids.get(jid);
+    for (const known of alias ? [jid, alias] : [jid]) {
       const contact = this.store.contacts.get(known);
       const name =
         realName(contact?.name) ||
@@ -1991,6 +1994,7 @@ export class WhatsAppService implements WhatsAppApi {
     const hinted = realName(hint);
     if (hinted) return hinted;
 
+    const phoneJid = jid.endsWith("@lid") ? alias : jid;
     const digits = (phoneJid ?? jid).split("@")[0] ?? "";
     if ((phoneJid ?? jid).endsWith("@s.whatsapp.net")) return digits;
     return jid.endsWith("@lid") ? `unknown (lid …${digits.slice(-4)})` : jid;
@@ -2229,7 +2233,7 @@ export class WhatsAppService implements WhatsAppApi {
     const jid = this.canonical(chat.id);
     if (isNoiseJid(jid)) return;
     const previous = this.store.chats.get(jid);
-    this.store.chats.set(jid, { ...(previous ?? {}), ...chat, id: jid });
+    this.store.chats.set(jid, { ...(previous ?? {}), ...definedOnly(chat), id: jid });
   }
 
   private ingestContact(contact: BaileysContact): void {
@@ -2237,7 +2241,9 @@ export class WhatsAppService implements WhatsAppApi {
     this.relearnLid(contact);
     const jid = this.canonical(contact.id);
     const previous = this.store.contacts.get(jid);
-    this.store.contacts.set(jid, { ...(previous ?? {}), ...contact, id: jid });
+    // Baileys sends a contact with the fields it does not know set to
+    // undefined; spread as they are, they would erase a name learned earlier.
+    this.store.contacts.set(jid, { ...(previous ?? {}), ...definedOnly(contact), id: jid });
   }
 
   private ingestMessages(messages: WAMessage[]): WAMessage[] {
@@ -2541,6 +2547,11 @@ function transcribeResult(record: TranscriptRecord, cached: boolean): Transcribe
 function callDetail(raw: WAMessage, info: CallInfo): number {
   if (info.duration_seconds !== undefined) return 2;
   return isCallPlaceholder(raw) ? 0 : 1;
+}
+
+/** The own enumerable fields whose value is not undefined, so a spread cannot erase with "unknown". */
+function definedOnly<T extends object>(value: T): Partial<T> {
+  return Object.fromEntries(Object.entries(value).filter(([, v]) => v !== undefined)) as Partial<T>;
 }
 
 function lidKey(lid: string): string {

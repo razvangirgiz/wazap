@@ -59,6 +59,10 @@
 - **`search_contacts` listed a person twice**, once by number and once by lid.
   The lid entry now moves in with the phone entry as soon as the pairing is
   known, and the search never returns the same person under two ids.
+- **A name learned earlier survived a later contact update that knew less.**
+  Baileys sends a contact with unknown fields set to undefined; spread as they
+  were, they erased the name. And a number is now named from what arrived
+  under its lid, and the lid from what arrived under the number.
 - **`wazap service restart` now records the version it started**, so `status` stops saying an older one runs.
 - **`list_chats` showed some people twice.** WhatsApp files a contact under a
   `@lid` chat and a phone chat, and once the pairing is known both rows
