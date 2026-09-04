@@ -35,6 +35,10 @@
   pairings WhatsApp's own lid table taught are written to the snapshot, and
   in a one-to-one chat the other side is the sender whatever id the key
   carries, so "unknown (lid …)" is gone from direct chats.
+- **A photo or video sent inside an album, or in reply to a story, is a photo
+  or video again** (`associatedChildMessage` is an envelope, now unwrapped like
+  the others), and an encrypted edit notice reads as `[edited a message]`, a
+  notice, instead of `[unsupported: …]`.
 - **Animated stickers read as `[sticker]`, an album header as `[album · 4
   items]`** and is a notice, hidden from the catch-up like the other notices,
   since the photos follow as messages of their own.

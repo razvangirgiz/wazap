@@ -139,6 +139,12 @@ const RULES: Partial<Record<keyof WAMessageContent, Rule>> = {
   lottieStickerMessage: { type: "sticker", tag: "[sticker]" },
   // The header WhatsApp sends before the photos of an album; the photos follow
   // as messages of their own, so this is a notice, not content.
+  // An edit WhatsApp encrypted with the message's own secret; the new text
+  // is not readable from a linked device, only the fact of the edit.
+  secretEncryptedMessage: {
+    type: "system",
+    tag: (m) => (m.secretEncryptedMessage?.secretEncType === 1 ? "[edited an event]" : "[edited a message]"),
+  },
   albumMessage: {
     type: "system",
     tag: (m) => {
@@ -201,7 +207,10 @@ function unwrapEnvelopes(content: WAMessageContent | null | undefined): WAMessag
     const inner =
       current.deviceSentMessage?.message ??
       current.ephemeralMessage?.message ??
-      current.documentWithCaptionMessage?.message;
+      current.documentWithCaptionMessage?.message ??
+      // A photo or video sent as part of an album, or in reply to a story:
+      // the real message sits one level down.
+      current.associatedChildMessage?.message;
     if (!inner) break;
     current = inner;
   }

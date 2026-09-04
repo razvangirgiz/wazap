@@ -208,3 +208,13 @@ test("an animated sticker is a sticker and an album header is a notice with its 
   assert.equal(messageType(album), "system", "hidden from a catch-up: the photos follow on their own");
   assert.equal(messageText(album), "[album · 4 items]");
 });
+
+test("an album child is the photo or video it wraps, and an encrypted edit is a notice", () => {
+  const child = wrap({ associatedChildMessage: { message: { videoMessage: { mimetype: "video/mp4", caption: "vacanță" } } } });
+  assert.equal(messageType(child), "video");
+  assert.equal(messageText(child), "[video] vacanță");
+  assert.equal(mediaInfo(child)?.mime, "video/mp4");
+  const edit = wrap({ secretEncryptedMessage: { targetMessageKey: { id: "X" }, secretEncType: 2 } });
+  assert.equal(messageType(edit), "system");
+  assert.equal(messageText(edit), "[edited a message]");
+});
