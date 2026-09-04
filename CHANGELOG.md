@@ -1,5 +1,18 @@
 # Changelog
 
+## Unreleased
+### Fixed
+
+- **`list_chats` showed some people twice.** WhatsApp files a contact under a
+  `@lid` chat and a phone chat, and once the pairing is known both rows
+  canonicalised to the same `chat_id`. The list now merges the aliases: the
+  newer row keeps its flags, the unread count is the larger of the two.
+- **`get_contact` on a number WhatsApp does not know hung for 60 s.** The
+  about-text and profile-picture lookups never answered. They now give up
+  after 8 s and the contact comes back from the store with both set to null.
+- **`search_contacts` matches a number typed with the national leading zero**
+  (`0734 404…` finds `40734404…`).
+
 ## 0.12.0
 ### Added
 

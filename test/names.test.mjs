@@ -235,3 +235,23 @@ test("search_contacts still finds a masked contact by number, and never by dots"
     [["40700000041", false]],
   );
 });
+
+test("a contact filed under both a lid chat and a phone chat is listed once", async () => {
+  const { svc, sock } = makeService();
+  const phone = "40700000020@s.whatsapp.net";
+  const lid = "555444333222111@lid";
+  // The chats and their history land before WhatsApp says which number the
+  // lid belongs to, so the store keeps a row under each id.
+  sock.ev.emit("chats.upsert", [
+    { id: phone, conversationTimestamp: 1_700_000_000, unreadCount: 0 },
+    { id: lid, conversationTimestamp: 1_700_000_100, unreadCount: 2 },
+  ]);
+  sock.ev.emit("messages.upsert", { type: "notify", messages: [message(lid, { text: "salut", id: "L1" })] });
+  assert.equal(svc.store.chats.size, 2, "two rows before the pairing is known");
+  sock.ev.emit("contacts.upsert", [{ id: phone, name: "Mama", lid, phoneNumber: phone }]);
+
+  const chats = (await svc.listChats("all", 10)).data;
+  assert.deepEqual(chats.map((chat) => chat.chat_id), [phone], "one row for the person, not one per alias");
+  assert.equal(chats[0].name, "Mama");
+  assert.equal(chats[0].unread_count, 2, "the unread count survives the merge");
+});

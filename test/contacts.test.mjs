@@ -175,3 +175,24 @@ test("sync_contacts on a session that is not connected reports the code, not a c
   assert.equal(result.isError, true);
   assert.equal(result.structuredContent.error, "NOT_CONNECTED");
 });
+
+test("get_contact answers within a deadline when WhatsApp never replies for the number", async () => {
+  const { svc, sock } = makeService();
+  sock.fetchStatus = () => new Promise(() => {});
+  sock.profilePictureUrl = () => new Promise(() => {});
+  const started = Date.now();
+  const contact = await svc.getContact("+40 700 000 099");
+  assert.ok(Date.now() - started < 12_000, "did not wait for the MCP request timeout");
+  assert.equal(contact.number, "40700000099");
+  assert.equal(contact.about, null);
+  assert.equal(contact.profile_pic_url, null);
+});
+
+test("search_contacts finds a number typed with the national leading zero", async () => {
+  const { svc, sock } = makeService();
+  sock.ev.emit("contacts.upsert", [{ id: "40734000111@s.whatsapp.net", name: "Ana" }]);
+  const found = await svc.searchContacts("0734 000 111", 10);
+  assert.deepEqual(found.map((c) => c.name), ["Ana"]);
+  const stillFound = await svc.searchContacts("40734", 10);
+  assert.deepEqual(stillFound.map((c) => c.name), ["Ana"]);
+});

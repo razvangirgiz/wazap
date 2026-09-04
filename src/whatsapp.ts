@@ -344,6 +344,18 @@ class Store {
   }
 }
 
+/** How long `get_contact` waits for WhatsApp's about text or profile picture. */
+const PROFILE_LOOKUP_MS = 8_000;
+
+/** Resolves to `null` when `work` rejects or is still pending after `ms`. */
+function orNullAfter<T>(work: Promise<T>, ms: number): Promise<T | null> {
+  let timer: NodeJS.Timeout | undefined;
+  const guard = new Promise<null>((resolve) => {
+    timer = setTimeout(() => resolve(null), ms);
+  });
+  return Promise.race([work.catch(() => null), guard]).finally(() => clearTimeout(timer));
+}
+
 export class WhatsAppService implements WhatsAppApi {
   private sockClient: WASocket | null = null;
   private saveCreds: (() => Promise<void>) | null = null;
@@ -609,8 +621,7 @@ export class WhatsAppService implements WhatsAppApi {
     return this.guarded(async () => {
       this.ensureConnected();
       await this.waitForSync();
-      const shown = this.knownChats()
-        .filter((chat) => this.matchesChatFilter(chat, filter))
+      const shown = this.mergeAliases(this.knownChats().filter((chat) => this.matchesChatFilter(chat, filter)))
         .sort((a, b) => this.chatActivity(b) - this.chatActivity(a))
         .slice(0, limit);
       await this.learnLidPhones(shown.map((chat) => this.canonical(chat.id ?? "")));
@@ -720,7 +731,8 @@ export class WhatsAppService implements WhatsAppApi {
       this.ensureConnected();
       await this.waitForSync();
       const needle = query.trim().toLowerCase();
-      const digits = needle.replace(/\D/g, "");
+      // "0734…" typed the way a number is dialled at home matches "40734…".
+      const digits = needle.replace(/\D/g, "").replace(/^0+/, "");
       const matches: ContactSummary[] = [];
 
       for (const [jid, contact] of this.store.contacts) {
@@ -745,12 +757,14 @@ export class WhatsAppService implements WhatsAppApi {
       const sock = this.ensureConnected();
       const jid = this.resolveId(contactId);
       const contact = this.store.contacts.get(jid);
+      // A number WhatsApp does not know never answers these two queries, so
+      // they get a deadline and the contact still comes back from the store.
       const [about, picture] = await Promise.all([
-        sock
-          .fetchStatus(jid)
-          .then((entries) => statusTextOf(entries?.[0]))
-          .catch(() => null),
-        sock.profilePictureUrl(jid, "image").catch(() => null),
+        orNullAfter(
+          sock.fetchStatus(jid).then((entries) => statusTextOf(entries?.[0])),
+          PROFILE_LOOKUP_MS,
+        ),
+        orNullAfter(sock.profilePictureUrl(jid, "image"), PROFILE_LOOKUP_MS),
       ]);
       return {
         ...this.contactSummary(jid, contact),
@@ -1936,6 +1950,27 @@ export class WhatsAppService implements WhatsAppApi {
       if (!this.store.chats.has(jid) && !isNoiseJid(jid)) chats.push({ id: jid });
     }
     return chats;
+  }
+
+  /**
+   * WhatsApp files the same person under a `@lid` chat and a phone chat, and
+   * `chatSummary` canonicalises both to the phone jid, so without this a list
+   * shows one contact twice. The alias with the newest activity keeps its
+   * flags; the unread count is the larger of the two.
+   */
+  private mergeAliases(chats: BaileysChat[]): BaileysChat[] {
+    const byCanonical = new Map<string, BaileysChat>();
+    for (const chat of chats) {
+      const key = this.canonical(chat.id ?? "");
+      const seen = byCanonical.get(key);
+      if (!seen) {
+        byCanonical.set(key, chat);
+        continue;
+      }
+      const [newer, older] = this.chatActivity(chat) > this.chatActivity(seen) ? [chat, seen] : [seen, chat];
+      byCanonical.set(key, { ...newer, unreadCount: Math.max(newer.unreadCount ?? 0, older.unreadCount ?? 0) });
+    }
+    return [...byCanonical.values()];
   }
 
   private chatActivity(chat: BaileysChat): number {
