@@ -466,7 +466,9 @@ export interface MessageViewContext {
 
 function senderJid(raw: WAMessage, ctx: MessageViewContext): string {
   if (raw.key.fromMe) return ctx.ownId;
-  const from = raw.key.participant ?? raw.participant ?? raw.key.remoteJid ?? "";
+  // Baileys sets `participant` to "" on a direct message that arrived under a
+  // lid, and "" is not "absent": `??` would keep it and hand the message to us.
+  const from = raw.key.participant || raw.participant || raw.key.remoteJid || "";
   return from ? ctx.canonical(from) : ctx.ownId;
 }
 

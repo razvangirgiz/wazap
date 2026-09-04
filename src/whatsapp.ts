@@ -1748,6 +1748,34 @@ export class WhatsAppService implements WhatsAppApi {
     if (!lid || !pn) return;
     this.lidToPn.set(lidKey(lid), jidNormalizedUser(pn));
     this.learnLidPhone(lid, pn);
+    this.foldAlias(lidKey(lid));
+  }
+
+  /**
+   * A chat that was filed under a lid before its number was known moves in
+   * with the phone chat: its messages join that ring, its row merges into
+   * that row, and the lid key goes away. Without this a snapshot written
+   * while the pairing was unknown keeps showing the person twice.
+   */
+  private foldAlias(lid: string): void {
+    const jid = this.canonical(lid);
+    if (jid === lid) return;
+    const ring = this.store.byChat.get(lid);
+    if (ring) {
+      for (const sid of ring) {
+        const raw = this.store.messages.get(sid);
+        if (raw) this.store.putMessage(sid, jid, raw);
+      }
+      this.store.byChat.delete(lid);
+    }
+    const alias = this.store.chats.get(lid);
+    if (alias) {
+      const existing = this.store.chats.get(jid);
+      const unreadCount = Math.max(alias.unreadCount ?? 0, existing?.unreadCount ?? 0);
+      this.store.chats.set(jid, { ...alias, ...(existing ?? {}), id: jid, unreadCount });
+      this.store.chats.delete(lid);
+    }
+    if (ring || alias) this.markStoreDirty();
   }
 
   /**
@@ -1779,7 +1807,9 @@ export class WhatsAppService implements WhatsAppApi {
     const mappings = await this.sockClient?.signalRepository.lidMapping
       .getPNsForLIDs(missing)
       .catch(() => null);
-    for (const { lid, pn } of mappings ?? []) this.learnLidPhone(lid, pn);
+    // A pairing from WhatsApp's own table is as good as one from a contact:
+    // the chat moves in with the phone chat, history included.
+    for (const { lid, pn } of mappings ?? []) this.learnLid(lid, pn);
   }
 
   /**
@@ -2132,7 +2162,7 @@ export class WhatsAppService implements WhatsAppApi {
   private learnPushName(raw: WAMessage, chatJid: string): void {
     const name = raw.pushName?.trim();
     if (!name || raw.key.fromMe) return;
-    const sender = this.canonical(raw.key.participant ?? raw.participant ?? chatJid);
+    const sender = this.canonical(raw.key.participant || raw.participant || chatJid);
     if (sender && !this.isMe(sender)) this.store.pushNames.set(sender, name);
   }
 
@@ -2154,8 +2184,12 @@ export class WhatsAppService implements WhatsAppApi {
   private async loadPersisted(): Promise<void> {
     if (!this.config.persistHistory || this.persistedLoaded) return;
     this.persistedLoaded = true;
-    await this.loadHistoryStore();
+    // The snapshot first: its contacts carry the lid-to-phone pairings, and a
+    // history line whose message arrived under a lid can only be filed with
+    // its chat once those are known. Loaded the other way round, the same
+    // message sat in a ring under the lid and in one under the phone.
     await this.loadStoreSnapshot();
+    await this.loadHistoryStore();
   }
 
   private async loadStoreSnapshot(): Promise<void> {
@@ -2163,6 +2197,9 @@ export class WhatsAppService implements WhatsAppApi {
       const text = await readFile(this.paths.storeFile, "utf8");
       this.store.hydrate(JSON.parse(text) as StoreSnapshot);
       for (const contact of this.store.contacts.values()) this.relearnLid(contact);
+      for (const key of [...this.store.byChat.keys(), ...this.store.chats.keys()]) {
+        if (key.endsWith("@lid")) this.foldAlias(key);
+      }
       log(`store loaded: ${this.store.chats.size} chats, ${this.store.messages.size} messages`);
     } catch (err) {
       if (!isMissing(err)) logError("store load", err);
@@ -2239,6 +2276,8 @@ export class WhatsAppService implements WhatsAppApi {
       if (!raw?.key?.remoteJid || (!raw.message && !isStubEvent(raw))) continue;
       const jid = this.canonical(raw.key.remoteJid);
       if (isNoiseJid(jid) || isControlMessage(raw)) continue;
+      // The snapshot's copy is newer than the line written when the message arrived.
+      if (this.store.messages.has(record.sid)) continue;
       if (!this.keepOverEarlierCall(raw, jid, record.sid)) continue;
       this.store.putMessage(record.sid, jid, raw);
       if (record.tr) this.store.transcripts.set(record.sid, record.tr);

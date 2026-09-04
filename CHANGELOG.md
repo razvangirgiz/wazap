@@ -12,6 +12,16 @@
   after 8 s and the contact comes back from the store with both set to null.
 - **`search_contacts` matches a number typed with the national leading zero**
   (`0734 404…` finds `40734404…`).
+- **`get_recent_messages` listed the same conversation twice after a restart.**
+  The history file was read before the snapshot that knows which number a
+  lid belongs to, so a message that arrived under a lid was filed under the
+  lid and under the phone. The snapshot now loads first, a ring left under a
+  lid folds into the phone chat, and a pairing learned later folds the chat
+  the moment it arrives, from a contact or from WhatsApp's own lid table.
+- **A message from the other side showed as sent by you.** Baileys puts an
+  empty `participant` on a direct message that arrives under a lid, and the
+  empty string was taken as "absent", which handed the message to the
+  linked account.
 
 ## 0.12.0
 ### Added

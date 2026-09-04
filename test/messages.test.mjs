@@ -170,3 +170,24 @@ test("a missed-call stub is an event to report, not machinery to drop", () => {
   assert.equal(isControlMessage(wrap({ call: { callKey: new Uint8Array([7]) } })), false);
   assert.equal(isControlMessage(callLog({ callOutcome: Outcome.CONNECTED })), false);
 });
+
+test("a direct message with an empty participant is from the chat, not from us", async () => {
+  const { buildMessageView } = await import("../dist/messages.js");
+  const raw = proto.WebMessageInfo.fromObject({
+    key: { remoteJid: "117261398495351@lid", fromMe: false, id: "3AC5", participant: "" },
+    message: { conversation: "Da" },
+    messageTimestamp: 1_788_551_624,
+    pushName: "Sorin",
+  });
+  const view = buildMessageView(raw, {
+    canonical: (jid) => (jid === "117261398495351@lid" ? "40723321578@s.whatsapp.net" : jid),
+    nameFor: (jid) => (jid === "40723321578@s.whatsapp.net" ? "Sorin" : jid),
+    ownId: "40700000001@s.whatsapp.net",
+    chatId: "40723321578@s.whatsapp.net",
+    edited: false,
+    reactions: [],
+  });
+  assert.equal(view.from_me, false);
+  assert.equal(view.sender.id, "40723321578@s.whatsapp.net", "the sender is the person on the other end");
+  assert.equal(view.sender.name, "Sorin");
+});
