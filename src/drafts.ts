@@ -19,6 +19,7 @@ export type DraftPayload =
       caption?: string;
       asDocument: boolean;
       asVoice: boolean;
+      asGif: boolean;
     }
   | { kind: "poll"; chatId: string; question: string; options: string[]; multiSelect: boolean }
   | {
@@ -160,7 +161,7 @@ function formatBody(payload: DraftPayload): string {
 
 function mediaBody(payload: Extract<DraftPayload, { kind: "media" }>): string {
   const name = mediaLabel(payload);
-  const tag = payload.asVoice ? "voice" : payload.asDocument ? "document" : "media";
+  const tag = payload.asVoice ? "voice" : payload.asDocument ? "document" : payload.asGif ? "gif" : "media";
   const line = `[${tag}] ${name}`;
   return payload.caption ? `${line}\n"${payload.caption}"` : line;
 }

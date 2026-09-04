@@ -22,6 +22,10 @@
   account is marked. Groups count only when the user was @-mentioned or
   replied to. The inbox skill uses it instead of guessing from `list_chats`.
 
+- **`as_gif` on `send_media`.** An mp4 goes out looping, the way WhatsApp
+  plays a GIF; a .gif file is turned into that mp4 first with ffmpeg on the
+  machine running wazap. The draft preview says `[gif]`.
+
 ### Fixed
 
 - **Reactions vanished on restart and showed up as messages of their own.** A

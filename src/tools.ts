@@ -622,9 +622,11 @@ call confirm_send. A draft lasts 15 minutes.`,
   tool({
     name: "send_media",
     title: "Draft a WhatsApp media message",
-    description: `Draft an image, video, audio file or document, from a local path on the machine
+    description: `Draft an image, video, audio file, document or GIF, from a local path on the machine
 running wazap or from a public URL. Does not send. Exactly one of file_path / url.
-Maximum 100 MB. Show the preview; after the user says yes, call confirm_send.`,
+Maximum 100 MB. Show the preview; after the user says yes, call confirm_send.
+A GIF is sent with as_gif: an mp4 goes out looping, a .gif is converted to mp4
+first (needs ffmpeg on the machine running wazap).`,
     schema: {
       chat_id: chatId,
       file_path: z.string().min(1).optional().describe("Absolute path of a local file to send"),
@@ -632,9 +634,13 @@ Maximum 100 MB. Show the preview; after the user says yes, call confirm_send.`,
       caption: z.string().max(1024).optional().describe("Text shown under the media"),
       as_document: z.boolean().default(false).describe("Send as a plain document instead of rendered media"),
       as_voice: z.boolean().default(false).describe("Send an audio file as a voice note (push-to-talk)"),
+      as_gif: z
+        .boolean()
+        .default(false)
+        .describe("Send a .gif or an mp4 as a looping GIF, the way WhatsApp plays them"),
     },
     write: true,
-    handler: async ({ chat_id, file_path, url, caption, as_document, as_voice }, wa) => {
+    handler: async ({ chat_id, file_path, url, caption, as_document, as_voice, as_gif }, wa) => {
       return drafted(
         await wa.draft({
           kind: "media",
@@ -643,6 +649,7 @@ Maximum 100 MB. Show the preview; after the user says yes, call confirm_send.`,
           caption,
           asDocument: as_document,
           asVoice: as_voice,
+          asGif: as_gif,
         }),
       );
     },

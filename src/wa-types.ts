@@ -328,7 +328,7 @@ export interface WhatsAppApi {
   sendMedia(
     chatId: string,
     source: MediaSource,
-    opts: { caption?: string; asDocument: boolean; asVoice: boolean },
+    opts: { caption?: string; asDocument: boolean; asVoice: boolean; asGif: boolean },
   ): Promise<SentMessage>;
   sendPoll(chatId: string, question: string, options: string[], multiSelect: boolean): Promise<SentMessage>;
   sendLocation(

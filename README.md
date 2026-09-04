@@ -267,7 +267,7 @@ them. `--dry-run` prints the plan and touches nothing.
 | `download_media` | read | Save an attachment to disk; small images also come back inline. |
 | `transcribe_audio` | read | Turn a voice note or audio message into text, with the local or the API provider. |
 | `send_message` | write | Draft text, optionally as a reply, with @-mentions. Does not send. |
-| `send_media` | write | Draft an image, video, audio, voice note or document from a path or URL. Does not send. |
+| `send_media` | write | Draft an image, video, audio, voice note, document or GIF (`as_gif`: an mp4 loops, a .gif is converted with ffmpeg) from a path or URL. Does not send. |
 | `send_poll` | write | Draft a poll with 2–12 options. Does not send. |
 | `send_location` | write | Draft a map pin. Does not send. |
 | `edit_message` | write | Edit your own message, within WhatsApp's 15-minute window. |

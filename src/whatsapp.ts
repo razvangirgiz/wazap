@@ -31,6 +31,7 @@ import { CallTracker, callMessage, isTrackedCall, type CallEntry } from "./calls
 import { BAILEYS_VERSION, paths, WAZAP_VERSION, type Config, type Paths } from "./config.js";
 import { asWazapError, RELINK_FIX, RESET_FIX, WazapError } from "./errors.js";
 import { isGroupId, isNoiseJid, normalizePhone, resolveChatId } from "./ids.js";
+import { gifToMp4 } from "./gif.js";
 import { log, logError } from "./logger.js";
 import { makePreview } from "./previews.js";
 import {
@@ -1250,11 +1251,11 @@ export class WhatsAppService implements WhatsAppApi {
   sendMedia(
     chatId: string,
     source: MediaSource,
-    opts: { caption?: string; asDocument: boolean; asVoice: boolean },
+    opts: { caption?: string; asDocument: boolean; asVoice: boolean; asGif: boolean },
   ): Promise<SentMessage> {
     return this.guarded(async () => {
       const { sock, jid } = await this.prepareSend(chatId);
-      const media = await loadMedia(source);
+      const media = await asGifMedia(await loadMedia(source), opts.asGif);
       const content = mediaContent(media, opts);
       const sent = await sock.sendMessage(jid, content);
       return this.sentResult(sent, jid, opts.caption ?? `[${media.mimetype}]`);
@@ -1882,6 +1883,7 @@ export class WhatsAppService implements WhatsAppApi {
           caption: payload.caption,
           asDocument: payload.asDocument,
           asVoice: payload.asVoice,
+          asGif: payload.asGif,
         });
       case "poll":
         return this.sendPoll(chatId, payload.question, payload.options, payload.multiSelect);
@@ -2795,12 +2797,28 @@ function basename(path: string): string {
   return path.split(/[/\\]/).pop() || "file";
 }
 
-function mediaContent(
+/** With `asGif`, a .gif becomes the mp4 WhatsApp loops; an mp4 is already that. Anything else is refused. */
+async function asGifMedia(media: LoadedMedia, asGif: boolean): Promise<LoadedMedia> {
+  if (!asGif) return media;
+  if (media.mimetype === "image/gif") {
+    const buffer = await gifToMp4(media.buffer);
+    return { buffer, mimetype: "video/mp4", filename: media.filename.replace(/\.gif$/i, "") + ".mp4" };
+  }
+  if (media.mimetype.startsWith("video/")) return media;
+  throw new WazapError(
+    "MEDIA_UNAVAILABLE",
+    `as_gif needs a .gif or a video, not ${media.mimetype}.`,
+    "Pass a .gif or an mp4, or drop as_gif",
+  );
+}
+
+export function mediaContent(
   media: LoadedMedia,
-  opts: { caption?: string; asDocument: boolean; asVoice: boolean },
+  opts: { caption?: string; asDocument: boolean; asVoice: boolean; asGif: boolean },
 ): AnyMessageContent {
   const { buffer, mimetype, filename } = media;
   if (opts.asVoice) return { audio: buffer, mimetype: "audio/ogg; codecs=opus", ptt: true };
+  if (opts.asGif) return { video: buffer, gifPlayback: true, caption: opts.caption };
   if (opts.asDocument) return { document: buffer, mimetype, fileName: filename, caption: opts.caption };
   if (mimetype.startsWith("image/")) return { image: buffer, caption: opts.caption };
   if (mimetype.startsWith("video/")) return { video: buffer, caption: opts.caption };

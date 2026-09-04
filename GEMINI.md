@@ -237,7 +237,7 @@ A message sent here is indistinguishable from one the user typed. The rail: **th
 
 1. `read_messages` on the chat, `limit: 20`, and match the register already in use: language (Romanian or English), formality, emoji, length. A two-line chat gets a two-line reply.
 2. Write the message as the user, first person, without a signature or "sent by an assistant".
-3. Files: `send_media` needs a local `file_path` that exists on the machine running wazap, or a public URL. Check the path before drafting; pick `as_document: true` for PDFs and anything the recipient should keep at original quality, `as_voice: true` only for audio meant as a voice note.
+3. Files: `send_media` needs a local `file_path` that exists on the machine running wazap, or a public URL. Check the path before drafting; pick `as_document: true` for PDFs and anything the recipient should keep at original quality, `as_voice: true` only for audio meant as a voice note, `as_gif: true` for a .gif or an mp4 meant to loop like a GIF (a .gif needs ffmpeg on that machine).
 4. Call the matching send tool (`send_message` / `send_media` / `send_poll` / `send_location` / `forward_message`). It does **not** send. It returns a `draft_id` and a `preview`.
 
 ### Confirm, then send
