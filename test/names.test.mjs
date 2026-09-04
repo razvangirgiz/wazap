@@ -257,3 +257,14 @@ test("a contact filed under both a lid chat and a phone chat is listed once", as
   assert.equal(chats[0].name, "Mama");
   assert.equal(chats[0].unread_count, 2, "the unread count survives the merge");
 });
+
+test("a contact WhatsApp filed under a lid and under a phone is one search result", async () => {
+  const { svc, sock } = makeService();
+  const phone = "40700000030@s.whatsapp.net";
+  const lid = "611002551461120@lid";
+  sock.ev.emit("contacts.upsert", [{ id: lid, notify: "Eliza ♌︎" }]);
+  sock.ev.emit("contacts.upsert", [{ id: phone, name: "Eliza ♌︎", lid, phoneNumber: phone }]);
+  const found = await svc.searchContacts("eliza", 10);
+  assert.deepEqual(found.map((c) => c.contact_id), [phone]);
+  assert.equal(svc.store.contacts.has(lid), false, "the lid entry moved in with the phone entry");
+});

@@ -34,6 +34,9 @@
   appears as a "[reaction] 👍" line. A withdrawn reaction comes off. An older
   snapshot's loose reaction lines fold onto their targets on load.
 - **A GIF reads as `[gif]`**, not `[video]`.
+- **`search_contacts` listed a person twice**, once by number and once by lid.
+  The lid entry now moves in with the phone entry as soon as the pairing is
+  known, and the search never returns the same person under two ids.
 - **`list_chats` showed some people twice.** WhatsApp files a contact under a
   `@lid` chat and a phone chat, and once the pairing is known both rows
   canonicalised to the same `chat_id`. The list now merges the aliases: the

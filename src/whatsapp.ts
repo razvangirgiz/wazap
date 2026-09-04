@@ -793,8 +793,13 @@ export class WhatsAppService implements WhatsAppApi {
       // "0734…" typed the way a number is dialled at home matches "40734…".
       const digits = needle.replace(/\D/g, "").replace(/^0+/, "");
       const matches: ContactSummary[] = [];
+      const seen = new Set<string>();
 
       for (const [jid, contact] of this.store.contacts) {
+        // A lid entry whose number is known is the same person as the phone entry.
+        const person = this.canonical(jid);
+        if (seen.has(person)) continue;
+        seen.add(person);
         // Every name we might show, or someone the chat list calls "Carmen"
         // would not be findable by that name here.
         const known = [contact.name, contact.verifiedName, contact.notify, this.store.pushNames.get(jid)].map(realName);
@@ -2051,7 +2056,14 @@ export class WhatsAppService implements WhatsAppApi {
       this.store.chats.set(jid, { ...alias, ...(existing ?? {}), id: jid, unreadCount });
       this.store.chats.delete(lid);
     }
-    if (ring || alias) this.markStoreDirty();
+    const contact = this.store.contacts.get(lid);
+    if (contact) {
+      // What the phone entry says wins; the lid entry only fills gaps.
+      const existing = this.store.contacts.get(jid);
+      this.store.contacts.set(jid, { ...contact, ...(existing ?? {}), id: jid });
+      this.store.contacts.delete(lid);
+    }
+    if (ring || alias || contact) this.markStoreDirty();
   }
 
   /**
@@ -2496,7 +2508,7 @@ export class WhatsAppService implements WhatsAppApi {
       const text = await readFile(this.paths.storeFile, "utf8");
       this.store.hydrate(JSON.parse(text) as StoreSnapshot);
       for (const contact of this.store.contacts.values()) this.relearnLid(contact);
-      for (const key of [...this.store.byChat.keys(), ...this.store.chats.keys()]) {
+      for (const key of [...this.store.byChat.keys(), ...this.store.chats.keys(), ...this.store.contacts.keys()]) {
         if (key.endsWith("@lid")) this.foldAlias(key);
       }
       this.foldReactions();
