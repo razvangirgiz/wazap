@@ -24,6 +24,13 @@ export function isGroupId(jid: string): boolean {
  * not met yet — a broadcast list, a channel — still reaches the user instead of
  * being silently swallowed, and a stored one is never purged.
  */
+/** The pseudo-chat WhatsApp delivers stories (status updates) on; the author is the participant. */
+export const STATUS_JID = "status@broadcast";
+
+export function isStatusJid(jid: string): boolean {
+  return jid.toLowerCase() === STATUS_JID;
+}
+
 export function isNoiseJid(jid: string): boolean {
   const at = jid.lastIndexOf("@");
   if (at === -1) return true;

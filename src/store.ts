@@ -34,6 +34,8 @@ export interface StoreSnapshot {
   transcripts?: Record<string, TranscriptRecord>;
   /** Added in 0.13.0. Reactions on the messages this snapshot keeps: message id → author jid → emoji. */
   reactions?: Record<string, Record<string, string>>;
+  /** Added in 0.13.0. Stories seen in the last day, newest last, by message id; their messages are in `messages`. */
+  stories?: string[];
   /** Added in 0.13.0. Pairings learned from WhatsApp's lid table: lid → phone jid. Contacts carry their own; these are the ones only the table knew. */
   lids?: Record<string, string>;
 }
@@ -55,6 +57,8 @@ export class Store {
   readonly pushNames = new Map<string, string>();
   /** What a voice note said, keyed by message id. Transcribing is slow and can cost money. */
   readonly transcripts = new Map<string, TranscriptRecord>();
+  /** Stories (status updates), newest last. Not a chat: they never join a ring and expire after a day. */
+  readonly stories: string[] = [];
   /** lid → phone jid, every pairing learned, so a restart still knows who a lid-filed message is from. */
   readonly lids = new Map<string, string>();
 
@@ -85,6 +89,23 @@ export class Store {
     while (ring.length > MAX_MESSAGES_PER_CHAT) {
       const dropped = ring.shift();
       if (dropped) this.forget(dropped);
+    }
+  }
+
+  putStory(sid: string, chatJid: string, raw: WAMessage): void {
+    const known = this.messages.has(sid);
+    this.messages.set(sid, raw);
+    this.chatOf.set(sid, chatJid);
+    if (!known || !this.stories.includes(sid)) this.stories.push(sid);
+  }
+
+  /** Stories older than `cutoffMs` go, message and all, the way WhatsApp lets them go after a day. */
+  pruneStories(cutoffMs: number): void {
+    for (const sid of [...this.stories]) {
+      const raw = this.messages.get(sid);
+      if (raw && messageTimestampMs(raw) >= cutoffMs) continue;
+      this.stories.splice(this.stories.indexOf(sid), 1);
+      this.forget(sid);
     }
   }
 
@@ -147,7 +168,8 @@ export class Store {
       if (encoded) snapshot.chats[jid] = encoded;
     }
     for (const [jid, contact] of this.contacts) snapshot.contacts[jid] = contact;
-    const keep = new Set<string>();
+    const keep = new Set<string>(this.stories);
+    snapshot.stories = [...this.stories];
     for (const [jid, ring] of this.byChat) {
       const capped = ring.slice(-PERSIST_MESSAGES_PER_CHAT);
       snapshot.byChat[jid] = capped;
@@ -192,6 +214,11 @@ export class Store {
     }
     for (const [sid, byAuthor] of Object.entries(snapshot.reactions ?? {})) {
       if (this.messages.has(sid)) this.reactions.set(sid, new Map(Object.entries(byAuthor)));
+    }
+    for (const sid of snapshot.stories ?? []) {
+      if (!this.messages.has(sid) || this.stories.includes(sid)) continue;
+      this.stories.push(sid);
+      this.chatOf.set(sid, "status@broadcast");
     }
     for (const [jid, ring] of Object.entries(snapshot.byChat ?? {})) {
       if (isNoiseJid(jid)) continue;

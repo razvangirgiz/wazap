@@ -527,7 +527,7 @@ export interface MessageViewContext {
 function senderJid(raw: WAMessage, ctx: MessageViewContext): string {
   if (raw.key.fromMe) return ctx.ownId;
   // In a one-to-one chat the other side wrote it, whatever id the key carries.
-  if (!ctx.chatId.endsWith("@g.us")) return ctx.chatId;
+  if (ctx.chatId.endsWith("@s.whatsapp.net")) return ctx.chatId;
   // Baileys sets `participant` to "" on a direct message that arrived under a
   // lid, and "" is not "absent": `??` would keep it and hand the message to us.
   const from = raw.key.participant || raw.participant || raw.key.remoteJid || "";

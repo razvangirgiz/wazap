@@ -51,7 +51,7 @@ test("an unknown command fails with a pointer to --help", async () => {
 
 test("the built server answers MCP over stdio with no WhatsApp session", async () => {
   const { toolNames, status } = await runSmoke();
-  assert.equal(toolNames.length, 28);
+  assert.equal(toolNames.length, 29);
   assert.equal(status.status, "not_linked");
 });
 

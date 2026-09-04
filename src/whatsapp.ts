@@ -30,7 +30,7 @@ import { clearSession, readLinkedAccount, useAtomicAuthState, type LinkedAccount
 import { CallTracker, callMessage, isTrackedCall, type CallEntry } from "./calls.js";
 import { BAILEYS_VERSION, paths, WAZAP_VERSION, type Config, type Paths } from "./config.js";
 import { asWazapError, RELINK_FIX, RESET_FIX, WazapError } from "./errors.js";
-import { isGroupId, isNoiseJid, normalizePhone, resolveChatId } from "./ids.js";
+import { isGroupId, isNoiseJid, isStatusJid, normalizePhone, resolveChatId, STATUS_JID } from "./ids.js";
 import { log, logError } from "./logger.js";
 import { asGifMedia, assertMediaSource, describe, loadMedia, mediaContent, mediaFilename } from "./outgoing-media.js";
 import { makePreview, videoFrame } from "./previews.js";
@@ -132,6 +132,8 @@ const PREVIEW_VIDEO_MAX_BYTES = 25_000_000;
 const RECENT_GROUP_META_MAX = 12;
 /** How long one call may spend downloading and shrinking photos before it returns with what it has. */
 const PREVIEW_BUDGET_MS = 20_000;
+/** WhatsApp shows a story for a day; so does wazap. */
+const STORY_TTL_MS = 24 * 3_600_000;
 /** How far back into a chat get_unanswered reads for the ask. */
 const UNANSWERED_SCAN = 30;
 /** Words that make a message read as something asked of the user, when it has no question mark. */
@@ -699,6 +701,22 @@ export class WhatsAppService implements WhatsAppApi {
         timed_out: timedOut,
         cursor_reset: parsed.reset,
       };
+    });
+  }
+
+  /** The stories of the last `hours`, newest first, each with its author as the sender. */
+  getStories(hours: number): Promise<Synced<MessageView[]>> {
+    return this.guarded(async () => {
+      this.ensureConnected();
+      await this.waitForSync();
+      this.store.pruneStories(Date.now() - STORY_TTL_MS);
+      const cutoff = Date.now() - hours * 3_600_000;
+      const sids = this.store.stories.filter((sid) => {
+        const raw = this.store.messages.get(sid);
+        return raw !== undefined && messageTimestampMs(raw) >= cutoff;
+      });
+      await this.learnLidPhones(sids.map((sid) => this.store.messages.get(sid)?.key.participant ?? "").filter(Boolean));
+      return this.synced(this.viewsFor(sids, STATUS_JID).reverse());
     });
   }
 
@@ -2250,6 +2268,10 @@ export class WhatsAppService implements WhatsAppApi {
     const stored: WAMessage[] = [];
     for (const raw of messages) {
       if (!raw.key?.remoteJid || (!raw.message && !isStubEvent(raw))) continue;
+      if (isStatusJid(raw.key.remoteJid)) {
+        this.ingestStory(raw);
+        continue;
+      }
       const jid = this.canonical(raw.key.remoteJid);
       if (isNoiseJid(jid) || isControlMessage(raw)) continue;
       this.learnPushName(raw, jid);
@@ -2260,6 +2282,18 @@ export class WhatsAppService implements WhatsAppApi {
       stored.push(raw);
     }
     return stored;
+  }
+
+  /**
+   * A story is a message on the status pseudo-chat with its author as the
+   * participant. It is kept apart from the chats: no ring, no history file,
+   * no wait woken, and it goes after a day, as on the phone.
+   */
+  private ingestStory(raw: WAMessage): void {
+    if (raw.key.fromMe || isControlMessage(raw) || messageType(raw) === "system") return;
+    this.learnPushName(raw, STATUS_JID);
+    this.store.putStory(messageIdFor(raw.key, STATUS_JID), STATUS_JID, raw);
+    this.store.pruneStories(Date.now() - STORY_TTL_MS);
   }
 
   /**

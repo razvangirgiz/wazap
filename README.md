@@ -8,7 +8,7 @@
 ```
 
 **WhatsApp for your AI agent.** An MCP server that puts your WhatsApp account —
-chats, messages, media, contacts, groups — behind 28 tools any MCP client can
+chats, messages, media, contacts, groups — behind 29 tools any MCP client can
 call. Pairing-code login, no browser, no phone-number reseller, ~20 MB of RAM.
 
 Built on [Baileys](https://github.com/WhiskeySockets/Baileys), which speaks the
@@ -257,6 +257,7 @@ them. `--dry-run` prints the plan and touches nothing.
 | `read_messages` | read | Messages in a chat; `before` pages further back, pulling older history from the phone; `types` narrows to one or more message types, e.g. `["call"]`; `include_previews` attaches a small image of each photo. |
 | `get_recent_messages` | read | Everything from the last N hours, grouped by chat. The catch-up tool. `include_system` adds WhatsApp's own notices, `types` narrows to one or more message types, `include_previews` attaches a small image of each photo. |
 | `get_unanswered` | read | Who is waiting on the user: chats whose last word is theirs and asks for something, with the ask quoted. Groups only when the user was @-mentioned or replied to. |
+| `get_stories` | read | The stories (status updates) received in the last day, by author, with previews on request. They show nowhere else. |
 | `wait_for_messages` | read | Block up to 55 s until a message arrives, then return it with a cursor for the next call. `addressed_to_me` wakes only for direct messages, @-mentions and replies. |
 | `search_messages` | read | Text search across the locally held messages. |
 | `get_message` | read | One message in full, with its quoted message and reactions. |

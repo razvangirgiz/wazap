@@ -320,6 +320,7 @@ export interface WhatsAppApi {
   downloadMedia(messageId: string, saveTo?: string): Promise<MediaResult>;
   transcribeAudio(messageId: string, language?: string): Promise<TranscribeResult>;
   waitForMessages(opts: WaitOptions): Promise<WaitResult>;
+  getStories(hours: number): Promise<Synced<MessageView[]>>;
   previews(messageIds: string[], max: number): Promise<Preview[]>;
   getUnanswered(minAgeHours: number, maxAgeHours: number, limit: number): Promise<Synced<UnansweredChat[]>>;
   draft(payload: DraftPayload): Promise<DraftView>;

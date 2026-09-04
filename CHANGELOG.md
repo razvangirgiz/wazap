@@ -16,6 +16,9 @@
   the result is kept on disk, one file per message under `previews/`, across
   restarts. A video gets one frame, taken by ffmpeg a second in. A catch-up
   can tell a receipt from a baby without asking for a download.
+- **`get_stories`.** The status updates received in the last day, by author,
+  newest first, with `include_previews` for the photos. WhatsApp keeps a story
+  for a day and so does wazap; they never appear in chats, catch-ups or waits.
 - **`get_unanswered`.** Chats whose last word is the other side's and reads as
   an ask (a question mark, a request word, an unheard voice note), people
   first, oldest wait first, with the ask quoted. A link is not a question, an

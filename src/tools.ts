@@ -121,6 +121,8 @@ link_account when it says no account is linked yet.
   small images instead of "[image]".
 - Who is waiting on the user: get_unanswered. It returns only chats whose last
   word is theirs and asks for something, with the ask quoted.
+- Stories: get_stories lists the status updates received in the last day, by
+  author; they show nowhere else.
 - Stay on the line: wait_for_messages blocks up to 55 s until something arrives,
   and returns a cursor; call it again with that cursor to miss nothing between
   calls. Pass addressed_to_me to wake only for direct messages, @-mentions and
@@ -365,6 +367,31 @@ get_recent_messages for what happened, and this for who is still waiting.`,
       return ok(
         renderUnanswered(result.data, min_age_hours),
         synced(result, { min_age_hours, max_age_hours, count: result.data.length, chats: result.data }),
+      );
+    },
+  }),
+
+  tool({
+    name: "get_stories",
+    title: "See the stories people posted",
+    description: `The stories (status updates) the linked account has received in the last N
+hours, newest first, each with its author, its text or caption and its time.
+WhatsApp keeps a story for a day and so does wazap; nothing older is held.
+With include_previews the photos come as small images, and download_media
+works on a story's message_id like on any message. Stories never appear in
+chats, catch-ups or waits; this is the only place they show.`,
+    schema: {
+      hours: z.number().int().min(1).max(24).default(24).describe("Look-back window in hours (1-24)"),
+      include_previews: includePreviews,
+    },
+    write: false,
+    handler: async ({ hours, include_previews }, wa) => {
+      const result = await wa.getStories(hours);
+      const previews = include_previews ? await wa.previews(newestFirst(result.data), MAX_PREVIEWS) : [];
+      return ok(
+        renderStories(result.data, hours, previewLabels(previews), previewNote(result.data, previews, include_previews)),
+        synced(result, { hours, count: result.data.length, preview_count: previews.length, stories: result.data }),
+        previewBlocks(previews),
       );
     },
   }),
@@ -985,6 +1012,22 @@ function renderConversations(
       lines.push(`- [${m.timestamp}] ${m.from_me ? "me" : m.sender.name}: ${truncate(m.text, 500)}${label ? ` (${label})` : ""}`);
     }
     lines.push("");
+  }
+  return lines.join("\n");
+}
+
+function renderStories(stories: MessageView[], hours: number, labels: Map<string, string>, note: string | null): string {
+  if (stories.length === 0) return `No stories in the last ${hours}h.`;
+  const lines = [`# Stories · last ${hours}h (${stories.length})`, ""];
+  if (note) lines.splice(1, 0, note);
+  let author = "";
+  for (const m of stories) {
+    if (m.sender.id !== author) {
+      author = m.sender.id;
+      lines.push(`## ${m.sender.name} — \`${m.sender.id}\``);
+    }
+    const label = labels.get(m.message_id);
+    lines.push(`- ${m.age} · ${truncate(m.text, 300)}${label ? ` (${label})` : ""} · id: \`${m.message_id}\``);
   }
   return lines.join("\n");
 }
