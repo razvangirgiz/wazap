@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.13.0
 ### Added
 
 - **`wait_for_messages`.** Blocks up to 55 s until a message from someone else
@@ -31,6 +31,10 @@
   fetches the metadata of the groups that spoke in the window, once each, so
   someone the address book does not know reads by the name the group carries
   instead of "unknown (lid …)".
+- **A message filed under a lid keeps its sender after a restart.** The
+  pairings WhatsApp's own lid table taught are written to the snapshot, and
+  in a one-to-one chat the other side is the sender whatever id the key
+  carries, so "unknown (lid …)" is gone from direct chats.
 - **Animated stickers read as `[sticker]`, an album header as `[album · 4
   items]`** and is a notice, hidden from the catch-up like the other notices,
   since the photos follow as messages of their own.
