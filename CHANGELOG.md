@@ -19,6 +19,16 @@
 - **`get_stories`.** The status updates received in the last day, by author,
   newest first, with `include_previews` for the photos. WhatsApp keeps a story
   for a day and so does wazap; they never appear in chats, catch-ups or waits.
+- **`set_contact_note` and `mark_handled`.** Two tools that change wazap's
+  own notes on this machine and nothing on WhatsApp, so they are there in
+  read-only mode too. A note on a person ("Hermi, my own agent") shows next
+  to their name in every list; "handled" takes a chat off `get_unanswered`
+  until the other side writes again. Kept in `notes.json`.
+- **`search_messages` takes `since`, `until` and `from`**, so "what did Sorin
+  say about RCA last week" is one call.
+- **`compact` on `get_recent_messages`.** Media without a caption and
+  messages without a word in them are left out and counted, a run of
+  messages from one person folds into one line. About half the size.
 - **`get_unanswered`.** Chats whose last word is the other side's and reads as
   an ask (a question mark, a request word, an unheard voice note), people
   first, oldest wait first, with the ask quoted. A link is not a question, an

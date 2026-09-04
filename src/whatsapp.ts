@@ -32,6 +32,7 @@ import { BAILEYS_VERSION, paths, WAZAP_VERSION, type Config, type Paths } from "
 import { asWazapError, RELINK_FIX, RESET_FIX, WazapError } from "./errors.js";
 import { isGroupId, isNoiseJid, isStatusJid, normalizePhone, resolveChatId, STATUS_JID } from "./ids.js";
 import { log, logError } from "./logger.js";
+import { Notes } from "./notes.js";
 import { asGifMedia, assertMediaSource, describe, loadMedia, mediaContent, mediaFilename } from "./outgoing-media.js";
 import { makePreview, videoFrame } from "./previews.js";
 import { decodeMessage, encode, Store, type HistoryRecord, type StoreSnapshot } from "./store.js";
@@ -96,7 +97,9 @@ import type {
   Synced,
   TranscribeResult,
   WhatsAppApi,
+  HandledResult,
   Preview,
+  SearchOptions,
   UnansweredChat,
   WaitOptions,
   WaitResult,
@@ -266,6 +269,7 @@ export class WhatsAppService implements WhatsAppApi {
   private readonly store = new Store();
   private readonly calls = new CallTracker();
   private readonly paths: Paths;
+  private readonly notes: Notes;
   /** The transcription environment, or the complaint about it. See `readTranscribeConfig`. */
   private readonly transcribe: TranscribeSettings | WazapError;
   /** Null unless a provider is configured and auto mode is on. */
@@ -280,6 +284,7 @@ export class WhatsAppService implements WhatsAppApi {
   constructor(private readonly config: Config) {
     this.writes = new RateLimiter(config.rateLimitPerMinute);
     this.paths = paths(config.dataDir);
+    this.notes = new Notes(this.paths.notesFile);
     this.transcribe = readTranscribeConfig(config.dataDir);
     const settings = this.transcribe;
     this.transcribeQueue =
@@ -567,6 +572,7 @@ export class WhatsAppService implements WhatsAppApi {
         conversations.push({
           chat_id: jid,
           chat_name: this.displayName(jid),
+          ...(this.notes.noteFor(jid) ? { note: this.notes.noteFor(jid) } : {}),
           type: isGroupId(jid) ? "group" : "individual",
           last_activity: messages[messages.length - 1]!.timestamp,
           messages,
@@ -578,25 +584,40 @@ export class WhatsAppService implements WhatsAppApi {
     });
   }
 
-  searchMessages(query: string, chatId: string | undefined, limit: number): Promise<Synced<MessageView[]>> {
+  searchMessages(
+    query: string,
+    chatId: string | undefined,
+    limit: number,
+    opts: SearchOptions = {},
+  ): Promise<Synced<MessageView[]>> {
     return this.guarded(async () => {
       this.ensureConnected();
       await this.waitForSync();
       const needle = query.trim().toLowerCase();
       const scope = chatId === undefined ? undefined : this.resolveId(chatId);
+      const from = opts.from === undefined ? undefined : opts.from === "me" ? this.ownJid() : this.resolveId(opts.from);
       const hits: Array<{ sid: string; jid: string; at: number }> = [];
 
       for (const [sid, raw] of this.store.messages) {
         const jid = this.store.chatOf.get(sid);
         if (!jid || (scope !== undefined && jid !== scope)) continue;
+        const at = messageTimestampMs(raw);
+        if ((opts.sinceMs !== undefined && at < opts.sinceMs) || (opts.untilMs !== undefined && at > opts.untilMs)) continue;
         // The rendered text, not the bare placeholder, so a transcript is findable
         // by the words a reader can see.
         if (needle && !viewText(raw, this.store.transcripts.get(sid)).toLowerCase().includes(needle)) continue;
-        hits.push({ sid, jid, at: messageTimestampMs(raw) });
+        hits.push({ sid, jid, at });
       }
 
       hits.sort((a, b) => b.at - a.at);
-      return this.synced(hits.slice(0, limit).map((hit) => this.viewOf(hit.sid, hit.jid)));
+      const views: MessageView[] = [];
+      for (const hit of hits) {
+        if (views.length >= limit) break;
+        const view = this.viewOf(hit.sid, hit.jid);
+        if (from !== undefined && view.sender.id !== from) continue;
+        views.push(view);
+      }
+      return this.synced(views);
     });
   }
 
@@ -819,24 +840,11 @@ export class WhatsAppService implements WhatsAppApi {
         if (chat.archived) continue;
         const jid = this.canonical(chat.id ?? "");
         if (isNoiseJid(jid)) continue;
-        const ring = this.store.byChat.get(jid) ?? [];
-        const tail = ring.slice(-UNANSWERED_SCAN);
-        const theirs: string[] = [];
-        for (let i = tail.length - 1; i >= 0; i--) {
-          const raw = this.store.messages.get(tail[i]!);
-          if (!raw) continue;
-          if (raw.key.fromMe) break;
-          if (messageType(raw) === "system") continue;
-          theirs.unshift(tail[i]!);
-        }
-        if (theirs.length === 0) continue;
+        const open = this.openAsk(jid);
+        if (!open) continue;
+        const { askSid, theirs } = open;
+        if (this.notes.isHandled(jid, askSid)) continue;
         const group = isGroupId(jid);
-        const askSid = [...theirs].reverse().find((sid) => {
-          const raw = this.store.messages.get(sid)!;
-          if (group && !this.addressesMe(raw)) return false;
-          return this.readsAsAsk(raw, sid);
-        });
-        if (!askSid) continue;
         const ask = this.viewOf(askSid, jid);
         const askRaw = this.store.messages.get(askSid)!;
         const askedAt = messageTimestampMs(askRaw);
@@ -848,6 +856,7 @@ export class WhatsAppService implements WhatsAppApi {
           ask,
           messages_since_you: theirs.length,
           business: !group && Boolean(this.store.contacts.get(jid)?.verifiedName),
+          ...(this.notes.noteFor(jid) ? { note: this.notes.noteFor(jid) } : {}),
           waiting_since: isoWithOffset(askedAt),
           age: formatAge(askedAt),
         });
@@ -857,6 +866,61 @@ export class WhatsAppService implements WhatsAppApi {
         return a.waiting_since.localeCompare(b.waiting_since);
       });
       return this.synced(found.slice(0, limit));
+    });
+  }
+
+  /**
+   * The ask still open in a chat: their messages after the user's last one,
+   * and among them the newest that asks for something. In a group only a
+   * message addressed to the user counts.
+   */
+  private openAsk(jid: string): { askSid: string; theirs: string[] } | null {
+    const ring = this.store.byChat.get(jid) ?? [];
+    const tail = ring.slice(-UNANSWERED_SCAN);
+    const theirs: string[] = [];
+    for (let i = tail.length - 1; i >= 0; i--) {
+      const raw = this.store.messages.get(tail[i]!);
+      if (!raw) continue;
+      if (raw.key.fromMe) break;
+      if (messageType(raw) === "system") continue;
+      theirs.unshift(tail[i]!);
+    }
+    if (theirs.length === 0) return null;
+    const group = isGroupId(jid);
+    const askSid = [...theirs].reverse().find((sid) => {
+      const raw = this.store.messages.get(sid)!;
+      if (group && !this.addressesMe(raw)) return false;
+      return this.readsAsAsk(raw, sid);
+    });
+    return askSid ? { askSid, theirs } : null;
+  }
+
+  setContactNote(contactId: string, note: string): Promise<ContactSummary> {
+    return this.guarded(async () => {
+      const jid = this.resolveId(contactId);
+      this.notes.setNote(jid, note);
+      return this.contactSummary(jid, this.store.contacts.get(jid));
+    });
+  }
+
+  /**
+   * "I dealt with that outside WhatsApp." The open ask is remembered as
+   * handled, so it leaves the waiting list; the next message from them
+   * makes a new ask and the chat comes back.
+   */
+  markHandled(chatId: string): Promise<HandledResult> {
+    return this.guarded(async () => {
+      const jid = this.resolveId(chatId);
+      const open = this.openAsk(jid);
+      const last = this.lastMessageOf(jid);
+      const askSid = open?.askSid ?? (last && !last.key.fromMe ? messageIdFor(last.key, jid) : null);
+      if (askSid) this.notes.markHandled(jid, askSid);
+      return {
+        chat_id: jid,
+        name: this.displayName(jid),
+        ask_id: askSid,
+        ask_text: askSid ? viewText(this.store.messages.get(askSid)!, this.store.transcripts.get(askSid)) : null,
+      };
     });
   }
 
@@ -2214,6 +2278,7 @@ export class WhatsAppService implements WhatsAppApi {
             from_me: Boolean(last.key.fromMe),
           }
         : null,
+      ...(this.notes.noteFor(jid) ? { note: this.notes.noteFor(jid) } : {}),
       archived: Boolean(chat.archived),
       pinned: Boolean(chat.pinned),
       muted_until: muteEnd > Date.now() ? isoWithOffset(muteEnd) : null,
@@ -2229,6 +2294,7 @@ export class WhatsAppService implements WhatsAppApi {
     return {
       contact_id: jid,
       name: this.displayName(jid),
+      ...(this.notes.noteFor(jid) ? { note: this.notes.noteFor(jid) } : {}),
       number,
       is_my_contact: realName(contact?.name) !== "",
       is_business: Boolean(contact?.verifiedName),

@@ -1,5 +1,6 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
+import { compactConversations, renderCompact } from "./compact.js";
 import { renderDraft, type DraftView } from "./drafts.js";
 import { asWazapError, ERROR_GUIDE, WazapError } from "./errors.js";
 import { clockLabel } from "./messages.js";
@@ -36,6 +37,8 @@ interface ToolDef {
   schema: z.ZodRawShape;
   write: boolean;
   destructive?: boolean;
+  /** Changes wazap's own notes on this machine and nothing on WhatsApp, so it is there in read-only mode too. */
+  local?: boolean;
   /** Calls a minute allowed to this tool alone. The session write bucket is separate. */
   rate?: number;
   handler: (args: ToolArgs, wa: WhatsAppApi) => Promise<ToolResult>;
@@ -48,6 +51,7 @@ function tool<S extends z.ZodRawShape>(def: {
   schema: S;
   write: boolean;
   destructive?: boolean;
+  local?: boolean;
   rate?: number;
   handler: (args: z.infer<z.ZodObject<S>>, wa: WhatsAppApi) => Promise<ToolResult>;
 }): ToolDef {
@@ -70,6 +74,7 @@ export function toolError(err: WazapError): ToolResult {
 
 const READ_ONLY_HINTS = { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true } as const;
 const WRITE_HINTS = { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true } as const;
+const LOCAL_HINTS = { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false } as const;
 
 const chatId = z
   .string()
@@ -120,7 +125,11 @@ link_account when it says no account is linked yet.
   then read_messages(chat_id). Pass include_previews: true to see the photos as
   small images instead of "[image]".
 - Who is waiting on the user: get_unanswered. It returns only chats whose last
-  word is theirs and asks for something, with the ask quoted.
+  word is theirs and asks for something, with the ask quoted. When the user
+  says they dealt with one outside WhatsApp, mark_handled(chat_id) takes it
+  off the list until they write again.
+- Who is who: set_contact_note(contact_id, note) remembers what the user
+  says about a person, locally; the note then shows next to their name.
 - Stories: get_stories lists the status updates received in the last day, by
   author; they show nowhere else.
 - Stay on the line: wait_for_messages blocks up to 55 s until something arrives,
@@ -307,10 +316,23 @@ out so the counts are conversation; pass include_system to see them.`,
         .describe("Include WhatsApp's own system notices, which are excluded from the bodies and the counts by default"),
       types: messageTypes,
       include_previews: includePreviews,
+      compact: z
+        .boolean()
+        .default(false)
+        .describe(
+          "Leave out media without a caption and messages with no words in them, fold what one person sent in a row into one line, and say per chat what was left out. About half the size; use it for a routine catch-up",
+        ),
     },
     write: false,
-    handler: async ({ hours, filter, include_system, types, include_previews }, wa) => {
+    handler: async ({ hours, filter, include_system, types, include_previews, compact }, wa) => {
       const result = await wa.getRecentMessages(hours, filter, include_system, types);
+      if (compact) {
+        const conversations = compactConversations(result.data);
+        return ok(
+          renderCompact(conversations, hours),
+          synced(result, { hours, filter, compact: true, conversation_count: conversations.length, conversations }),
+        );
+      }
       const messageCount = result.data.reduce((n, c) => n + c.messages.length, 0);
       const all = result.data.flatMap((c) => c.messages);
       const previews = include_previews ? await wa.previews(newestFirst(all), MAX_PREVIEWS) : [];
@@ -397,6 +419,46 @@ chats, catch-ups or waits; this is the only place they show.`,
   }),
 
   tool({
+    name: "set_contact_note",
+    title: "Note something about a contact",
+    description: `Remember something about a person, on this machine only: "Hermi, my own agent",
+"the accountant", "always answers late". The note then rides along wherever
+the contact shows: list_chats, search_contacts, get_contact, get_recent_messages
+and get_unanswered. Nothing is sent to WhatsApp and the contact never sees it.
+An empty note removes it.`,
+    schema: {
+      contact_id: chatId.describe("Contact id or phone number"),
+      note: z.string().max(200).describe('What to remember, or "" to remove the note'),
+    },
+    write: false,
+    local: true,
+    handler: async ({ contact_id, note }, wa) => {
+      const c = await wa.setContactNote(contact_id, note);
+      return ok(c.note ? `Noted for ${c.name}: ${c.note}` : `Removed the note on ${c.name}.`, c as unknown as Record<string, unknown>);
+    },
+  }),
+
+  tool({
+    name: "mark_handled",
+    title: "Take a chat off the waiting list",
+    description: `The user dealt with what this chat was asking, outside WhatsApp or by a
+reply wazap did not see: a phone call, a meeting, a decision. The open ask is
+remembered as handled and the chat leaves get_unanswered. The next message
+from the other side makes a new ask and the chat comes back on its own.
+Kept on this machine only; nothing is sent or marked read on WhatsApp.`,
+    schema: { chat_id: chatId },
+    write: false,
+    local: true,
+    handler: async ({ chat_id }, wa) => {
+      const r = await wa.markHandled(chat_id);
+      const text = r.ask_id
+        ? `${r.name} is off the waiting list until they write again. Handled: "${truncate(r.ask_text ?? "", 120)}"`
+        : `${r.name} had nothing open; nothing to mark.`;
+      return ok(text, r as unknown as Record<string, unknown>);
+    },
+  }),
+
+  tool({
     name: "wait_for_messages",
     title: "Wait for new WhatsApp messages",
     description: `Block until a message arrives, then return it, or return empty when the timeout
@@ -442,13 +504,23 @@ or one chat. It cannot reach messages the phone never synced to this device.`,
       query: z.string().min(1).describe("Text to search for"),
       chat_id: chatId.optional().describe("Restrict the search to this chat"),
       limit: z.number().int().min(1).max(50).default(20).describe("Maximum number of results (1-50)"),
+      since: z.string().min(4).optional().describe('Only messages from this moment on: a date ("2026-09-01") or an ISO timestamp'),
+      until: z.string().min(4).optional().describe("Only messages up to this moment: a date or an ISO timestamp"),
+      from: z.string().min(1).optional().describe('Only messages this person sent: "me", a contact id or a phone number'),
     },
     write: false,
-    handler: async ({ query, chat_id, limit }, wa) => {
-      const result = await wa.searchMessages(query, chat_id, limit);
+    handler: async ({ query, chat_id, limit, since, until, from }, wa) => {
+      const result = await wa.searchMessages(query, chat_id, limit, {
+        sinceMs: parseMoment(since, "since"),
+        untilMs: parseMoment(until, "until", true),
+        from,
+      });
+      const scope = [chat_id ? `in ${chat_id}` : null, from ? `from ${from}` : null, since ? `since ${since}` : null, until ? `until ${until}` : null]
+        .filter(Boolean)
+        .join(", ");
       return ok(
-        renderMessages(`Search results for "${query}"`, result.data),
-        synced(result, { query, chat_id: chat_id ?? null, count: result.data.length, messages: result.data }),
+        renderMessages(`Search results for "${query}"${scope ? ` (${scope})` : ""}`, result.data),
+        synced(result, { query, chat_id: chat_id ?? null, since: since ?? null, until: until ?? null, from: from ?? null, count: result.data.length, messages: result.data }),
       );
     },
   }),
@@ -523,6 +595,7 @@ whether they are a saved contact, a business, or blocked.`,
         `# ${c.name}`,
         `- **contact_id**: \`${c.contact_id}\``,
         c.number ? `- **number**: ${c.number}` : null,
+        c.note ? `- **note**: ${c.note}` : null,
         c.about ? `- **about**: ${c.about}` : null,
         c.profile_pic_url ? `- **profile picture**: ${c.profile_pic_url}` : null,
         `- **saved**: ${c.is_my_contact} · **business**: ${c.is_business} · **blocked**: ${c.is_blocked}`,
@@ -909,7 +982,9 @@ export function registerTools(server: McpServer, wa: WhatsAppApi, opts: Register
         inputSchema: def.schema,
         annotations: def.write
           ? { ...WRITE_HINTS, destructiveHint: def.destructive === true }
-          : { ...READ_ONLY_HINTS, openWorldHint: def.name !== "learn" },
+          : def.local
+            ? LOCAL_HINTS
+            : { ...READ_ONLY_HINTS, openWorldHint: def.name !== "learn" },
       },
       async (args: unknown): Promise<ToolResult> => {
         try {
@@ -935,7 +1010,7 @@ function renderChats(chats: ChatSummary[], filter: string): string {
       c.archived ? "archived" : null,
       c.left ? "left" : null,
     ].filter(Boolean);
-    lines.push(`## ${c.name}${flags.length ? ` [${flags.join(", ")}]` : ""}`);
+    lines.push(`## ${c.name}${flags.length ? ` [${flags.join(", ")}]` : ""}${c.note ? ` · ${c.note}` : ""}`);
     lines.push(`- **chat_id**: \`${c.chat_id}\``);
     if (c.last_message) {
       lines.push(`- **last**: ${c.last_message.from_me ? "me: " : ""}${truncate(c.last_message.text, 160)} (${c.last_message.timestamp})`);
@@ -943,6 +1018,17 @@ function renderChats(chats: ChatSummary[], filter: string): string {
     lines.push("");
   }
   return lines.join("\n");
+}
+
+/** A date or an ISO timestamp as epoch ms; a bare date for `until` means the end of that day. */
+function parseMoment(value: string | undefined, field: string, endOfDay = false): number | undefined {
+  if (value === undefined) return undefined;
+  const bareDate = /^\d{4}-\d{2}-\d{2}$/.test(value.trim());
+  const ms = Date.parse(bareDate ? `${value.trim()}T${endOfDay ? "23:59:59.999" : "00:00:00"}` : value);
+  if (Number.isNaN(ms)) {
+    throw new WazapError("INVALID_ID", `${field} is not a date: "${value}".`, 'Pass "2026-09-01" or an ISO timestamp like "2026-09-01T14:00:00+03:00"');
+  }
+  return ms;
 }
 
 function newestFirst(messages: MessageView[]): string[] {
@@ -1006,7 +1092,7 @@ function renderConversations(
   const lines = [`# WhatsApp · last ${hours}h (${conversations.length} chats, ${total} messages)`, ""];
   if (note) lines.splice(1, 0, note);
   for (const c of conversations) {
-    lines.push(`## ${c.chat_name}${c.type === "group" ? " [group]" : ""} — \`${c.chat_id}\``);
+    lines.push(`## ${c.chat_name}${c.type === "group" ? " [group]" : ""}${c.note ? ` · ${c.note}` : ""} — \`${c.chat_id}\``);
     for (const m of c.messages) {
       const label = labels.get(m.message_id);
       lines.push(`- [${m.timestamp}] ${m.from_me ? "me" : m.sender.name}: ${truncate(m.text, 500)}${label ? ` (${label})` : ""}`);
@@ -1037,7 +1123,7 @@ function renderUnanswered(chats: UnansweredChat[], minAgeHours: number): string 
   if (chats.length === 0) return `Nobody is waiting on you${since}.`;
   const lines = [`# Waiting on you${since} (${chats.length})`, ""];
   chats.forEach((c, i) => {
-    const who = c.type === "group" ? `${c.name} [group] — ${c.ask.sender.name}` : `${c.name}${c.business ? " [business]" : ""}`;
+    const who = (c.type === "group" ? `${c.name} [group] — ${c.ask.sender.name}` : `${c.name}${c.business ? " [business]" : ""}`) + (c.note ? ` · ${c.note}` : "");
     const more = c.messages_since_you > 1 ? `, ${c.messages_since_you} messages since yours` : "";
     lines.push(`${i + 1}. **${who}** · ${c.age}${more} — \`${c.chat_id}\``);
     lines.push(`   > ${truncate(c.ask.text, 300)}`);
@@ -1069,7 +1155,7 @@ function renderContacts(query: string, contacts: ContactSummary[]): string {
   const lines = [`# Contacts matching "${query}" (${contacts.length})`, ""];
   for (const c of contacts) {
     const flags = [c.is_my_contact ? "saved" : null, c.is_business ? "business" : null].filter(Boolean);
-    lines.push(`- **${c.name}**${flags.length ? ` [${flags.join(", ")}]` : ""} — \`${c.contact_id}\`${c.number ? ` (${c.number})` : ""}`);
+    lines.push(`- **${c.name}**${flags.length ? ` [${flags.join(", ")}]` : ""}${c.note ? ` · ${c.note}` : ""} — \`${c.contact_id}\`${c.number ? ` (${c.number})` : ""}`);
   }
   return lines.join("\n");
 }

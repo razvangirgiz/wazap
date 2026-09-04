@@ -88,6 +88,7 @@ export interface StatusInfo {
 export interface ChatSummary {
   chat_id: string;
   name: string;
+  note?: string;
   type: ChatType;
   unread_count: number;
   last_message: { text: string; timestamp: string; from_me: boolean } | null;
@@ -128,6 +129,7 @@ export interface MessageView {
 export interface RecentConversation {
   chat_id: string;
   chat_name: string;
+  note?: string;
   type: ChatType;
   last_activity: string;
   messages: MessageView[];
@@ -169,13 +171,33 @@ export interface UnansweredChat {
   messages_since_you: number;
   /** A WhatsApp Business account, whose asks are often automatic replies. */
   business: boolean;
+  note?: string;
   waiting_since: string;
   age: string;
+}
+
+export interface SearchOptions {
+  /** Epoch ms; only messages at or after it. */
+  sinceMs?: number;
+  /** Epoch ms; only messages at or before it. */
+  untilMs?: number;
+  /** "me", or a contact / chat id: only messages that person sent. */
+  from?: string;
+}
+
+export interface HandledResult {
+  chat_id: string;
+  name: string;
+  /** The ask that was open; the chat is off the waiting list until a newer one arrives. */
+  ask_id: string | null;
+  ask_text: string | null;
 }
 
 export interface ContactSummary {
   contact_id: string;
   name: string;
+  /** What the user told wazap about this person; kept locally, never sent. */
+  note?: string;
   number: string | null;
   is_my_contact: boolean;
   is_business: boolean;
@@ -311,7 +333,7 @@ export interface WhatsAppApi {
     includeSystem?: boolean,
     types?: MessageType[],
   ): Promise<Synced<RecentConversation[]>>;
-  searchMessages(query: string, chatId: string | undefined, limit: number): Promise<Synced<MessageView[]>>;
+  searchMessages(query: string, chatId: string | undefined, limit: number, opts?: SearchOptions): Promise<Synced<MessageView[]>>;
   getMessage(messageId: string): Promise<MessageView>;
   searchContacts(query: string, limit: number): Promise<ContactSummary[]>;
   getContact(contactId: string): Promise<ContactDetails>;
@@ -321,6 +343,8 @@ export interface WhatsAppApi {
   transcribeAudio(messageId: string, language?: string): Promise<TranscribeResult>;
   waitForMessages(opts: WaitOptions): Promise<WaitResult>;
   getStories(hours: number): Promise<Synced<MessageView[]>>;
+  setContactNote(contactId: string, note: string): Promise<ContactSummary>;
+  markHandled(chatId: string): Promise<HandledResult>;
   previews(messageIds: string[], max: number): Promise<Preview[]>;
   getUnanswered(minAgeHours: number, maxAgeHours: number, limit: number): Promise<Synced<UnansweredChat[]>>;
   draft(payload: DraftPayload): Promise<DraftView>;

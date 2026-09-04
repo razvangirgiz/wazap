@@ -85,6 +85,7 @@ export interface Paths {
   mediaDir: string;
   historyDir: string;
   previewsDir: string;
+  notesFile: string;
   storeFile: string;
   lockFile: string;
   daemonFile: string;
@@ -101,6 +102,7 @@ export function paths(dataDir: string): Paths {
     mediaDir: join(dataDir, "media"),
     historyDir: join(dataDir, "history"),
     previewsDir: join(dataDir, "previews"),
+    notesFile: join(dataDir, "notes.json"),
     storeFile: join(dataDir, "store.json"),
     lockFile: join(dataDir, "server.lock"),
     daemonFile: join(dataDir, "daemon.json"),
