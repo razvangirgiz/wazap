@@ -49,6 +49,7 @@ import {
   messageType,
   protoNumber,
   quotedSenderJid,
+  reactionOf,
   thumbnailOf,
   viewText,
   voiceSeconds,
@@ -221,6 +222,8 @@ interface StoreSnapshot {
   transcripts?: Record<string, TranscriptRecord>;
   /** Added in 0.13.0. Previews made from the photos this snapshot keeps, by message id. */
   previews?: Record<string, { mime: string; base64: string }>;
+  /** Added in 0.13.0. Reactions on the messages this snapshot keeps: message id → author jid → emoji. */
+  reactions?: Record<string, Record<string, string>>;
 }
 
 /** In-memory state fed from Baileys events, keyed by canonical jid. */
@@ -302,6 +305,15 @@ class Store {
     this.previews.delete(sid);
   }
 
+  /** Set or withdraw one author's reaction on a message. */
+  react(target: string, author: string, emoji: string): void {
+    const map = this.reactions.get(target) ?? new Map<string, string>();
+    if (emoji) map.set(author, emoji);
+    else map.delete(author);
+    if (map.size > 0) this.reactions.set(target, map);
+    else this.reactions.delete(target);
+  }
+
   reactionsFor(sid: string): Array<{ emoji: string; sender: string }> {
     const map = this.reactions.get(sid);
     if (!map) return [];
@@ -331,6 +343,7 @@ class Store {
     }
     const transcripts: Record<string, TranscriptRecord> = {};
     const previews: Record<string, { mime: string; base64: string }> = {};
+    const reactions: Record<string, Record<string, string>> = {};
     for (const sid of keep) {
       const raw = this.messages.get(sid);
       if (!raw) continue;
@@ -340,9 +353,12 @@ class Store {
       if (transcript) transcripts[sid] = transcript;
       const preview = this.previews.get(sid);
       if (preview) previews[sid] = preview;
+      const reacted = this.reactions.get(sid);
+      if (reacted && reacted.size > 0) reactions[sid] = Object.fromEntries(reacted);
     }
     snapshot.transcripts = transcripts;
     snapshot.previews = previews;
+    snapshot.reactions = reactions;
     return snapshot;
   }
 
@@ -367,6 +383,9 @@ class Store {
     }
     for (const [sid, preview] of Object.entries(snapshot.previews ?? {})) {
       if (this.messages.has(sid)) this.previews.set(sid, preview);
+    }
+    for (const [sid, byAuthor] of Object.entries(snapshot.reactions ?? {})) {
+      if (this.messages.has(sid)) this.reactions.set(sid, new Map(Object.entries(byAuthor)));
     }
     for (const [jid, ring] of Object.entries(snapshot.byChat ?? {})) {
       if (isNoiseJid(jid)) continue;
@@ -1612,14 +1631,11 @@ export class WhatsAppService implements WhatsAppApi {
         const target = messageIdFor(key, jid);
         const author = reaction.key?.fromMe
           ? this.ownJid()
-          : this.canonical(reaction.key?.participant ?? reaction.key?.remoteJid ?? "");
+          : this.canonical(reaction.key?.participant || reaction.key?.remoteJid || "");
         if (!author) continue;
-        const map = this.store.reactions.get(target) ?? new Map<string, string>();
-        if (reaction.text) map.set(author, reaction.text);
-        else map.delete(author);
-        if (map.size > 0) this.store.reactions.set(target, map);
-        else this.store.reactions.delete(target);
+        this.store.react(target, author, reaction.text ?? "");
       }
+      this.markStoreDirty();
     });
 
     sock.ev.on("groups.upsert", (groups) => {
@@ -2356,12 +2372,35 @@ export class WhatsAppService implements WhatsAppApi {
       const jid = this.canonical(raw.key.remoteJid);
       if (isNoiseJid(jid) || isControlMessage(raw)) continue;
       this.learnPushName(raw, jid);
+      if (this.applyReaction(raw, jid)) continue;
       const sid = messageIdFor(raw.key, jid);
       if (!this.keepOverEarlierCall(raw, jid, sid)) continue;
       this.store.putMessage(sid, jid, raw);
       stored.push(raw);
     }
     return stored;
+  }
+
+  /**
+   * A reaction is not a message in the chat, it is a mark on one: it goes onto
+   * the target and is never filed on its own, whether it arrives live, in a
+   * history sync or back from disk. True when `raw` was a reaction.
+   */
+  private applyReaction(raw: WAMessage, chatJid: string): boolean {
+    const reaction = reactionOf(raw);
+    if (!reaction) return false;
+    const author = raw.key.fromMe ? this.ownJid() : this.canonical(raw.key.participant || raw.key.remoteJid || chatJid);
+    const target = messageIdFor(reaction.targetKey, chatJid);
+    if (author) this.store.react(target, author, reaction.text);
+    return true;
+  }
+
+  /** Reactions an older snapshot filed as messages of their own move onto their targets. */
+  private foldReactions(): void {
+    for (const [sid, raw] of [...this.store.messages]) {
+      const jid = this.store.chatOf.get(sid);
+      if (jid !== undefined && this.applyReaction(raw, jid)) this.store.dropMessage(sid);
+    }
   }
 
   /**
@@ -2458,6 +2497,7 @@ export class WhatsAppService implements WhatsAppApi {
       for (const key of [...this.store.byChat.keys(), ...this.store.chats.keys()]) {
         if (key.endsWith("@lid")) this.foldAlias(key);
       }
+      this.foldReactions();
       log(`store loaded: ${this.store.chats.size} chats, ${this.store.messages.size} messages`);
     } catch (err) {
       if (!isMissing(err)) logError("store load", err);
@@ -2536,6 +2576,7 @@ export class WhatsAppService implements WhatsAppApi {
       if (isNoiseJid(jid) || isControlMessage(raw)) continue;
       // The snapshot's copy is newer than the line written when the message arrived.
       if (this.store.messages.has(record.sid)) continue;
+      if (this.applyReaction(raw, jid)) continue;
       if (!this.keepOverEarlierCall(raw, jid, record.sid)) continue;
       this.store.putMessage(record.sid, jid, raw);
       if (record.tr) this.store.transcripts.set(record.sid, record.tr);

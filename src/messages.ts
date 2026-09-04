@@ -116,7 +116,8 @@ const RULES: Partial<Record<keyof WAMessageContent, Rule>> = {
   conversation: { type: "text", tag: "[text]", text: (m) => m.conversation },
   extendedTextMessage: { type: "text", tag: "[text]", text: (m) => m.extendedTextMessage?.text },
   imageMessage: { type: "image", tag: "[image]", caption: (m) => m.imageMessage?.caption },
-  videoMessage: { type: "video", tag: "[video]", caption: (m) => m.videoMessage?.caption },
+  // A GIF on WhatsApp is an mp4 with a flag; the reader deserves the word.
+  videoMessage: { type: "video", tag: (m) => (m.videoMessage?.gifPlayback ? "[gif]" : "[video]"), caption: (m) => m.videoMessage?.caption },
   ptvMessage: { type: "video", tag: "[video]", caption: (m) => m.ptvMessage?.caption },
   audioMessage: {
     type: (m) => (m.audioMessage?.ptt ? "voice" : "audio"),
@@ -403,6 +404,14 @@ export function viewText(raw: WAMessage, transcript?: TranscriptRecord): string 
   const text = messageText(raw);
   const spoken = spokenTranscript(raw, transcript);
   return spoken === undefined ? text : `${text} "${spoken}"`;
+}
+
+/** The reaction a message is, if it is one: what was reacted with, and to which message key. An empty text withdraws. */
+export function reactionOf(raw: WAMessage): { text: string; targetKey: WAMessageKey } | undefined {
+  const content = unwrapEnvelopes(raw.message);
+  const reaction = content?.reactionMessage;
+  if (!reaction?.key?.remoteJid) return undefined;
+  return { text: reaction.text ?? "", targetKey: reaction.key as WAMessageKey };
 }
 
 export function mediaInfo(raw: WAMessage): { mime: string; size?: number; filename?: string } | undefined {

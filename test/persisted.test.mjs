@@ -126,3 +126,47 @@ test("a lid chat learned before its number folds in the moment the pairing arriv
   const messages = (await svc.readMessages(PHONE, 10)).data;
   assert.deepEqual(messages.map((m) => m.text), ["salut"], "history reads from the phone chat");
 });
+
+test("reactions come back after a restart, and a reaction an older snapshot filed as a message moves onto its target", async () => {
+  const { svc } = connectedService(WhatsAppService, {
+    prefix: "wazap-persisted-",
+    id: ME,
+    name: "Răzvan",
+    config: { persistHistory: true },
+  });
+  const { dataDir } = svc.config;
+  const b64 = (raw) => Buffer.from(proto.WebMessageInfo.encode(proto.WebMessageInfo.fromObject(raw)).finish()).toString("base64");
+  const target = `false_${PHONE}_T1`;
+  const loose = `false_${PHONE}_R1`;
+  writeFileSync(
+    join(dataDir, "store.json"),
+    JSON.stringify({
+      v: 1,
+      chats: {},
+      contacts: {},
+      pushNames: {},
+      messages: {
+        [target]: b64({ key: { remoteJid: PHONE, fromMe: false, id: "T1" }, message: { conversation: "gata" }, messageTimestamp: 1_700_000_000 }),
+        [loose]: b64({
+          key: { remoteJid: PHONE, fromMe: false, id: "R1" },
+          message: { reactionMessage: { key: { remoteJid: PHONE, fromMe: false, id: "T1" }, text: "🔥" } },
+          messageTimestamp: 1_700_000_010,
+        }),
+      },
+      byChat: { [PHONE]: [target, loose] },
+      transcripts: {},
+      reactions: { [target]: { [ME]: "👍" } },
+      contactsResyncedAt: null,
+    }),
+  );
+
+  await svc.loadPersisted();
+
+  assert.deepEqual(svc.store.byChat.get(PHONE), [target], "the loose reaction line is gone");
+  const [view] = (await svc.readMessages(PHONE, 10)).data;
+  assert.deepEqual(
+    view.reactions.map((r) => [r.emoji, r.sender]).sort(),
+    [["🔥", PHONE], ["👍", ME]].sort(),
+    "the persisted one and the folded one both sit on the target",
+  );
+});

@@ -191,3 +191,11 @@ test("a direct message with an empty participant is from the chat, not from us",
   assert.equal(view.sender.id, "40723321578@s.whatsapp.net", "the sender is the person on the other end");
   assert.equal(view.sender.name, "Sorin");
 });
+
+test("a GIF reads as a gif, a video as a video", () => {
+  const gif = wrap({ videoMessage: { mimetype: "video/mp4", gifPlayback: true } });
+  const video = wrap({ videoMessage: { mimetype: "video/mp4", caption: "uite" } });
+  assert.equal(messageText(gif), "[gif]");
+  assert.equal(messageType(gif), "video");
+  assert.equal(messageText(video), "[video] uite");
+});

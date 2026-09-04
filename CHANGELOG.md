@@ -24,6 +24,12 @@
 
 ### Fixed
 
+- **Reactions vanished on restart and showed up as messages of their own.** A
+  reaction now goes onto the message it answers the moment it arrives, live,
+  from a history sync or back from disk, is written to the snapshot, and never
+  appears as a "[reaction] 👍" line. A withdrawn reaction comes off. An older
+  snapshot's loose reaction lines fold onto their targets on load.
+- **A GIF reads as `[gif]`**, not `[video]`.
 - **`list_chats` showed some people twice.** WhatsApp files a contact under a
   `@lid` chat and a phone chat, and once the pairing is known both rows
   canonicalised to the same `chat_id`. The list now merges the aliases: the

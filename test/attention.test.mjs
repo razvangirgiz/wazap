@@ -247,3 +247,28 @@ test("a voice note nobody has heard is an ask; a transcribed one is judged on it
   result = await call("get_unanswered", {});
   assert.deepEqual(result.structuredContent.chats, [], "the words say nothing was asked");
 });
+
+test("a reaction lands on the message it answers, never as a line of its own, and a withdrawal takes it off", async () => {
+  const { svc, call, arrive } = setup();
+  const target = arrive(ANA, "am ajuns");
+  const react = (text, { fromMe = false } = {}) =>
+    arrive(ANA, { reactionMessage: { key: { remoteJid: ANA, fromMe: false, id: target }, text } }, { fromMe });
+  react("❤️");
+  react("👍", { fromMe: true });
+
+  let read = await call("read_messages", { chat_id: ANA });
+  assert.deepEqual(read.structuredContent.messages.map((m) => m.text), ["am ajuns"], "no [reaction] line");
+  assert.deepEqual(
+    read.structuredContent.messages[0].reactions.map((r) => [r.emoji, r.sender]),
+    [["❤️", ANA], ["👍", ME]],
+  );
+  assert.match(read.content[0].text, /\[❤️👍\]/);
+
+  react("");
+  read = await call("read_messages", { chat_id: ANA });
+  assert.deepEqual(read.structuredContent.messages[0].reactions.map((r) => r.emoji), ["👍"], "Ana took hers back");
+
+  const recent = await call("wait_for_messages", { timeout_seconds: 1 });
+  assert.equal(recent.structuredContent.timed_out, true, "a reaction wakes no wait");
+  assert.equal(svc.store.serialize().reactions[`false_${ANA}_${target}`][ME], "👍", "and it is written to disk");
+});
