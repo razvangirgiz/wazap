@@ -23,7 +23,8 @@
   own notes on this machine and nothing on WhatsApp, so they are there in
   read-only mode too. A note on a person ("Hermi, my own agent") shows next
   to their name in every list; "handled" takes a chat off `get_unanswered`
-  until the other side writes again. Kept in `notes.json`.
+  until the other side writes again. Kept in `notes.json`. In a chat or a
+  group the note introduces the sender once, then the name stands alone.
 - **`search_messages` takes `since`, `until` and `from`**, so "what did Sorin
   say about RCA last week" is one call.
 - **`compact` on `get_recent_messages`.** Media without a caption and

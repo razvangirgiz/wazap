@@ -514,6 +514,8 @@ export interface MessageViewContext {
   canonical: (jid: string) => string;
   /** Display name for a canonical jid; never empty. */
   nameFor: (jid: string) => string;
+  /** The user's note on a canonical jid, if any. */
+  noteFor?: (jid: string) => string | undefined;
   /** Our own canonical jid. */
   ownId: string;
   /** Canonical chat this message belongs to. */
@@ -555,6 +557,7 @@ export function buildMessageView(raw: WAMessage, ctx: MessageViewContext): Messa
       id: sender,
       name: ctx.nameFor(sender),
       ...(phoneOf(sender) ? { phone: phoneOf(sender) } : {}),
+      ...(ctx.noteFor?.(sender) ? { note: ctx.noteFor(sender) } : {}),
     },
     type: messageType(raw),
     text: viewText(raw, ctx.transcript),

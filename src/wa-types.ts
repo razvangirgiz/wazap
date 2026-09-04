@@ -103,6 +103,8 @@ export interface MessageSender {
   id: string;
   name: string;
   phone?: string;
+  /** The user's own note on this person, when there is one. */
+  note?: string;
 }
 
 export interface MessageView {

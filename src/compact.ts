@@ -59,7 +59,11 @@ export function compactConversations(conversations: RecentConversation[]): Compa
       }
       lines.push({ timestamp: m.timestamp, sender: m.sender.id, from_me: m.from_me, text: m.text, message_ids: [m.message_id] });
       // The name rides on the line, once, for the renderer.
-      (lines[lines.length - 1] as CompactLine & { name?: string }).name = m.from_me ? "me" : m.sender.name;
+      (lines[lines.length - 1] as CompactLine & { name?: string }).name = m.from_me
+        ? "me"
+        : m.sender.note && !lines.some((l) => l.sender === m.sender.id && l !== lines[lines.length - 1])
+          ? `${m.sender.name} · ${m.sender.note}`
+          : m.sender.name;
     }
     if (lines.length === 0 && dropped.media === 0 && dropped.wordless === 0) continue;
     out.push({ chat_id: c.chat_id, chat_name: c.chat_name, type: c.type, ...(c.note ? { note: c.note } : {}), lines, dropped });

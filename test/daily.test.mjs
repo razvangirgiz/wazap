@@ -124,3 +124,20 @@ test("compact keeps the words, folds a run into one line, and counts what it lef
   assert.ok(compact.content[0].text.length < full.content[0].text.length * 0.7, "well under the full size");
   assert.equal(compactConversations([]).length, 0);
 });
+
+test("in a group the note introduces the sender once, then the name alone", async () => {
+  const { call, arrive } = setup();
+  await call("set_contact_note", { contact_id: DAN, note: "Hermi" });
+  const t = Date.now() - hour;
+  arrive(GROUP, "sunt aici", { participant: DAN, at: t });
+  arrive(GROUP, "și tu?", { participant: ANA, at: t + 10 * 60_000 });
+  arrive(GROUP, "tot aici", { participant: DAN, at: t + 20 * 60_000 });
+  const full = (await call("get_recent_messages", { hours: 2 })).content[0].text;
+  assert.equal((full.match(/Dan · Hermi:/g) || []).length, 1, "introduced once");
+  assert.match(full, /\] Dan: tot aici/);
+  const read = (await call("read_messages", { chat_id: GROUP })).content[0].text;
+  assert.equal((read.match(/\*\*Dan · Hermi\*\*/g) || []).length, 1);
+  const compact = (await call("get_recent_messages", { hours: 2, compact: true })).content[0].text;
+  assert.equal((compact.match(/Dan · Hermi:/g) || []).length, 1);
+  assert.match(compact, /\] Dan: tot aici/);
+});

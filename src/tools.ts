@@ -1056,6 +1056,14 @@ function previewNote(messages: MessageView[], previews: Preview[], asked: boolea
   return parts.length > 0 ? `${parts.join("; ")}.` : null;
 }
 
+/** The sender's name, with the user's note on them the first time they appear in this rendering. */
+function senderLabel(m: MessageView, introduced: Set<string>): string {
+  if (m.from_me) return "me";
+  if (!m.sender.note || introduced.has(m.sender.id)) return m.sender.name;
+  introduced.add(m.sender.id);
+  return `${m.sender.name} · ${m.sender.note}`;
+}
+
 function renderMessages(
   title: string,
   messages: MessageView[],
@@ -1065,6 +1073,7 @@ function renderMessages(
   if (messages.length === 0) return `${title}: no messages found.`;
   const lines = [`# ${title} (${messages.length})`, ""];
   if (note) lines.splice(1, 0, note);
+  const introduced = new Set<string>();
   for (const m of messages) {
     const tags = [
       labels.get(m.message_id) ?? null,
@@ -1074,7 +1083,7 @@ function renderMessages(
       m.quoted ? "reply" : null,
       m.reactions?.length ? m.reactions.map((r) => r.emoji).join("") : null,
     ].filter(Boolean);
-    lines.push(`- **${m.from_me ? "me" : m.sender.name}** · ${m.age}${tags.length ? ` [${tags.join(", ")}]` : ""} · id: \`${m.message_id}\``);
+    lines.push(`- **${senderLabel(m, introduced)}** · ${m.age}${tags.length ? ` [${tags.join(", ")}]` : ""} · id: \`${m.message_id}\``);
     if (m.quoted) lines.push(`  > ${truncate(m.quoted.text, 160)}`);
     lines.push(`  ${truncate(m.text, 500)}`);
   }
@@ -1093,9 +1102,10 @@ function renderConversations(
   if (note) lines.splice(1, 0, note);
   for (const c of conversations) {
     lines.push(`## ${c.chat_name}${c.type === "group" ? " [group]" : ""}${c.note ? ` · ${c.note}` : ""} — \`${c.chat_id}\``);
+    const introduced = new Set<string>();
     for (const m of c.messages) {
       const label = labels.get(m.message_id);
-      lines.push(`- [${m.timestamp}] ${m.from_me ? "me" : m.sender.name}: ${truncate(m.text, 500)}${label ? ` (${label})` : ""}`);
+      lines.push(`- [${m.timestamp}] ${senderLabel(m, introduced)}: ${truncate(m.text, 500)}${label ? ` (${label})` : ""}`);
     }
     lines.push("");
   }
@@ -1139,12 +1149,13 @@ function renderWait(result: WaitResult): string {
   if (result.messages.length === 0) return `Nothing arrived before the timeout.\n${tail}`;
   const lines = [`# ${result.messages.length} new message${result.messages.length === 1 ? "" : "s"}`, ""];
   let chat = "";
+  const introduced = new Set<string>();
   for (const m of result.messages) {
     if (m.chat_id !== chat) {
       chat = m.chat_id;
       lines.push(`## \`${chat}\``);
     }
-    lines.push(`- [${m.timestamp}] ${m.sender.name}: ${truncate(m.text, 500)} · id: \`${m.message_id}\``);
+    lines.push(`- [${m.timestamp}] ${senderLabel(m, introduced)}: ${truncate(m.text, 500)} · id: \`${m.message_id}\``);
   }
   lines.push("", tail);
   return lines.join("\n");

@@ -2150,6 +2150,7 @@ export class WhatsAppService implements WhatsAppApi {
     return buildMessageView(raw, {
       canonical: (jid) => this.canonical(jid),
       nameFor: (jid) => this.displayName(jid, raw.pushName ?? undefined),
+      noteFor: (jid) => this.notes.noteFor(jid),
       ownId: this.ownJid(),
       chatId: chatJid,
       edited: this.store.edited.has(sid),
