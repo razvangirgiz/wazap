@@ -170,3 +170,38 @@ test("reactions come back after a restart, and a reaction an older snapshot file
     "the persisted one and the folded one both sit on the target",
   );
 });
+
+test("a pairing WhatsApp's table taught is written down, so after a restart a lid-filed message still has its sender", async () => {
+  const { svc } = connectedService(WhatsAppService, {
+    prefix: "wazap-persisted-",
+    id: ME,
+    name: "Răzvan",
+    config: { persistHistory: true },
+  });
+  const { dataDir } = svc.config;
+  const raw = proto.WebMessageInfo.fromObject({
+    key: { remoteJid: LID, fromMe: false, id: "3AC5" },
+    message: { conversation: "In fine" },
+    messageTimestamp: Math.floor(Date.now() / 1000) - 60,
+  });
+  const sid = `false_${PHONE}_3AC5`;
+  writeFileSync(
+    join(dataDir, "store.json"),
+    JSON.stringify({
+      v: 1,
+      chats: {},
+      contacts: { [PHONE]: { id: PHONE } },
+      pushNames: {},
+      messages: { [sid]: Buffer.from(proto.WebMessageInfo.encode(raw).finish()).toString("base64") },
+      byChat: { [PHONE]: [sid] },
+      transcripts: {},
+      lids: { [LID]: PHONE },
+      contactsResyncedAt: null,
+    }),
+  );
+  await svc.loadPersisted();
+  const [view] = (await svc.readMessages(PHONE, 10)).data;
+  assert.equal(view.sender.id, PHONE);
+  assert.equal(view.sender.name, "40723321578", "the number, not unknown (lid …)");
+  assert.equal(svc.store.serialize().lids[LID], PHONE, "and it is written again");
+});

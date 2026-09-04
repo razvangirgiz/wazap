@@ -195,7 +195,50 @@ test("a photo that shipped no preview is downloaded once, shrunk here, and remem
   const again = await call("read_messages", { chat_id: ANA, include_previews: true });
   assert.equal(downloads, 2, "the second time it comes from the cache");
   assert.equal(again.structuredContent.preview_count, 1);
-  assert.equal(svc.store.serialize().previews[`false_${ANA}_M1`].base64, block.data, "and survives a restart");
+  const { existsSync } = await import("node:fs");
+  const { join } = await import("node:path");
+  assert.ok(existsSync(join(svc.paths.previewsDir, `false_${ANA}_M1.jpg`)), "and lives on disk, outside the snapshot");
+  assert.equal(svc.store.serialize().previews, undefined, "the snapshot carries no image bytes");
+});
+
+test("a video gets one frame as its preview when ffmpeg is there", async (t) => {
+  const { which } = await import("../dist/transcribe/local.js");
+  const ffmpeg = which("ffmpeg");
+  if (ffmpeg === null) return t.skip("ffmpeg not installed");
+  const { execFile } = await import("node:child_process");
+  const { promisify } = await import("node:util");
+  const { mkdtempSync, readFileSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  const dir = mkdtempSync(join(tmpdir(), "wazap-frame-test-"));
+  const clip = join(dir, "clip.mp4");
+  await promisify(execFile)(ffmpeg, ["-nostdin", "-loglevel", "error", "-y", "-f", "lavfi", "-i", "testsrc=size=640x360:rate=10", "-t", "2", "-pix_fmt", "yuv420p", clip]);
+  const mp4 = readFileSync(clip);
+
+  const { svc, call, arrive } = setup();
+  svc.mediaBuffer = async () => mp4;
+  arrive(ANA, { videoMessage: { mimetype: "video/mp4", fileLength: mp4.length, seconds: 2, caption: "uite" } });
+  const result = await call("read_messages", { chat_id: ANA, include_previews: true });
+  assert.equal(result.structuredContent.preview_count, 1);
+  const { decode } = await import("jpeg-js");
+  const frame = decode(Buffer.from(result.content[1].data, "base64"));
+  assert.deepEqual([frame.width, frame.height], [320, 180], "one frame, shrunk to the preview edge");
+});
+
+test("a catch-up fetches the metadata of the groups that spoke, so their senders have names", async () => {
+  const { svc, sock, call, arrive } = setup();
+  const lid = "777888999000111@lid";
+  let fetches = 0;
+  svc.sockClient.groupMetadata = async (id) => {
+    fetches++;
+    return { id, subject: "Meniul zilei", participants: [{ id: lid, phoneNumber: "40700000040@s.whatsapp.net", name: "Rodica" }] };
+  };
+  arrive(GROUP, "meniul de azi", { participant: lid });
+  const recent = await call("get_recent_messages", { hours: 1 });
+  assert.equal(fetches, 1);
+  assert.deepEqual(recent.structuredContent.conversations[0].messages.map((m) => m.sender.name), ["Rodica"]);
+  await call("get_recent_messages", { hours: 1 });
+  assert.equal(fetches, 1, "and asks once");
 });
 
 test("get_unanswered lists the people whose ask is still open, oldest first, and nobody else", async () => {

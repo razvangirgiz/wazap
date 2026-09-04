@@ -31,9 +31,10 @@ import { CallTracker, callMessage, isTrackedCall, type CallEntry } from "./calls
 import { BAILEYS_VERSION, paths, WAZAP_VERSION, type Config, type Paths } from "./config.js";
 import { asWazapError, RELINK_FIX, RESET_FIX, WazapError } from "./errors.js";
 import { isGroupId, isNoiseJid, normalizePhone, resolveChatId } from "./ids.js";
-import { gifToMp4 } from "./gif.js";
 import { log, logError } from "./logger.js";
-import { makePreview } from "./previews.js";
+import { asGifMedia, assertMediaSource, describe, loadMedia, mediaContent, mediaFilename } from "./outgoing-media.js";
+import { makePreview, videoFrame } from "./previews.js";
+import { decodeMessage, encode, Store, type HistoryRecord, type StoreSnapshot } from "./store.js";
 import {
   buildMessageView,
   callInfo,
@@ -114,13 +115,10 @@ const SYNC_WAIT_MS = 10_000;
 const HISTORY_FETCH_WAIT_MS = 5_000;
 const INLINE_IMAGE_MAX_BYTES = 1_000_000;
 const MAX_TEXT_CHARS = 65_536;
-const MAX_MEDIA_BYTES = 100 * 1024 * 1024;
 const EDIT_WINDOW_MS = 15 * 60_000;
 const RETRACT_WINDOW_MS = 2 * 24 * 3_600_000;
 const MAX_GROUP_PARTICIPANTS = 500;
 const STALE_INBOUND_MS = 24 * 3_600_000;
-const MAX_MESSAGES_PER_CHAT = 1_000;
-const PERSIST_MESSAGES_PER_CHAT = 120;
 const STORE_SAVE_DEBOUNCE_MS = 20_000;
 /** How many arrivals wait_for_messages can replay to a cursor before it has to say it lost track. */
 const ARRIVALS_KEPT = 500;
@@ -128,6 +126,10 @@ const ARRIVALS_KEPT = 500;
 const ARRIVAL_SETTLE_MS = 1_000;
 /** A photo bigger than this is not downloaded for a preview. */
 const PREVIEW_SOURCE_MAX_BYTES = 6_000_000;
+/** A video bigger than this is not downloaded for a frame. */
+const PREVIEW_VIDEO_MAX_BYTES = 25_000_000;
+/** How many active groups one catch-up fetches metadata for, to name their senders. */
+const RECENT_GROUP_META_MAX = 12;
 /** How long one call may spend downloading and shrinking photos before it returns with what it has. */
 const PREVIEW_BUDGET_MS = 20_000;
 /** How far back into a chat get_unanswered reads for the ask. */
@@ -201,203 +203,6 @@ const silentLogger: ILogger = {
   error: () => {},
 };
 
-interface HistoryRecord {
-  sid: string;
-  ts: number;
-  raw: string;
-  /** Added in 0.9.8. The transcript held for this message when the line was written. */
-  tr?: TranscriptRecord;
-}
-
-interface StoreSnapshot {
-  v: 1;
-  chats: Record<string, string>;
-  contacts: Record<string, BaileysContact>;
-  messages: Record<string, string>;
-  byChat: Record<string, string[]>;
-  /** Added in 0.9.4; absent in snapshots older wazap versions wrote. */
-  pushNames?: Record<string, string>;
-  /** Added in 0.9.5. When wazap last asked WhatsApp for the whole address book. */
-  contactsResyncedAt?: number;
-  /** Added in 0.9.8. Transcripts of the messages this snapshot keeps, by message id. */
-  transcripts?: Record<string, TranscriptRecord>;
-  /** Added in 0.13.0. Previews made from the photos this snapshot keeps, by message id. */
-  previews?: Record<string, { mime: string; base64: string }>;
-  /** Added in 0.13.0. Reactions on the messages this snapshot keeps: message id → author jid → emoji. */
-  reactions?: Record<string, Record<string, string>>;
-}
-
-/** In-memory state fed from Baileys events, keyed by canonical jid. */
-class Store {
-  readonly chats = new Map<string, BaileysChat>();
-  readonly contacts = new Map<string, BaileysContact>();
-  readonly messages = new Map<string, WAMessage>();
-  readonly chatOf = new Map<string, string>();
-  readonly byChat = new Map<string, string[]>();
-  readonly edited = new Set<string>();
-  readonly reactions = new Map<string, Map<string, string>>();
-  /**
-   * The name a sender publishes on their own profile, as WhatsApp attaches it
-   * to their messages. It is the only name we get for someone the user has not
-   * saved, and it never arrives through the contact list.
-   */
-  readonly pushNames = new Map<string, string>();
-  /** What a voice note said, keyed by message id. Transcribing is slow and can cost money. */
-  readonly transcripts = new Map<string, TranscriptRecord>();
-  /** Small JPEGs made from photos, keyed by message id, so a photo is downloaded and shrunk once. */
-  readonly previews = new Map<string, { mime: string; base64: string }>();
-
-  /** See `needsContactResync`: it keeps a full resync from repeating forever. */
-  contactsResyncedAt: number | null = null;
-
-  private seconds(sid: string): number {
-    const raw = this.messages.get(sid);
-    return raw ? messageTimestampMs(raw) / 1000 : 0;
-  }
-
-  putMessage(sid: string, chatJid: string, raw: WAMessage): void {
-    const known = this.messages.has(sid);
-    this.messages.set(sid, raw);
-    this.chatOf.set(sid, chatJid);
-    let ring = this.byChat.get(chatJid);
-    if (!ring) {
-      ring = [];
-      this.byChat.set(chatJid, ring);
-    }
-    if (known && ring.includes(sid)) return;
-    // Live messages arrive newest-last, so appending is enough; a history sync
-    // delivers older ones out of order and only then is a re-sort needed.
-    const ts = messageTimestampMs(raw) / 1000;
-    const last = ring.length > 0 ? this.seconds(ring[ring.length - 1]!) : Number.NEGATIVE_INFINITY;
-    ring.push(sid);
-    if (ts < last) ring.sort((a, b) => this.seconds(a) - this.seconds(b));
-    while (ring.length > MAX_MESSAGES_PER_CHAT) {
-      const dropped = ring.shift();
-      if (dropped) this.forget(dropped);
-    }
-  }
-
-  /** The tail of a chat, newest first. */
-  recent(chatJid: string, count: number): Array<{ sid: string; raw: WAMessage }> {
-    const ring = this.byChat.get(chatJid) ?? [];
-    const tail: Array<{ sid: string; raw: WAMessage }> = [];
-    for (let i = ring.length - 1; i >= 0 && tail.length < count; i--) {
-      const sid = ring[i];
-      const raw = this.messages.get(sid);
-      if (raw) tail.push({ sid, raw });
-    }
-    return tail;
-  }
-
-  /** Forget one message entirely, its place in the chat included. */
-  dropMessage(sid: string): void {
-    const ring = this.byChat.get(this.chatOf.get(sid) ?? "");
-    const at = ring?.indexOf(sid) ?? -1;
-    if (ring && at !== -1) ring.splice(at, 1);
-    this.forget(sid);
-  }
-
-  private forget(sid: string): void {
-    this.messages.delete(sid);
-    this.chatOf.delete(sid);
-    this.edited.delete(sid);
-    this.reactions.delete(sid);
-    this.transcripts.delete(sid);
-    this.previews.delete(sid);
-  }
-
-  /** Set or withdraw one author's reaction on a message. */
-  react(target: string, author: string, emoji: string): void {
-    const map = this.reactions.get(target) ?? new Map<string, string>();
-    if (emoji) map.set(author, emoji);
-    else map.delete(author);
-    if (map.size > 0) this.reactions.set(target, map);
-    else this.reactions.delete(target);
-  }
-
-  reactionsFor(sid: string): Array<{ emoji: string; sender: string }> {
-    const map = this.reactions.get(sid);
-    if (!map) return [];
-    return [...map].map(([sender, emoji]) => ({ emoji, sender }));
-  }
-
-  serialize(): StoreSnapshot {
-    const snapshot: StoreSnapshot = {
-      v: 1,
-      chats: {},
-      contacts: {},
-      messages: {},
-      byChat: {},
-      pushNames: Object.fromEntries(this.pushNames),
-      ...(this.contactsResyncedAt === null ? {} : { contactsResyncedAt: this.contactsResyncedAt }),
-    };
-    for (const [jid, chat] of this.chats) {
-      const encoded = encode(() => proto.Conversation.encode(chat).finish());
-      if (encoded) snapshot.chats[jid] = encoded;
-    }
-    for (const [jid, contact] of this.contacts) snapshot.contacts[jid] = contact;
-    const keep = new Set<string>();
-    for (const [jid, ring] of this.byChat) {
-      const capped = ring.slice(-PERSIST_MESSAGES_PER_CHAT);
-      snapshot.byChat[jid] = capped;
-      for (const sid of capped) keep.add(sid);
-    }
-    const transcripts: Record<string, TranscriptRecord> = {};
-    const previews: Record<string, { mime: string; base64: string }> = {};
-    const reactions: Record<string, Record<string, string>> = {};
-    for (const sid of keep) {
-      const raw = this.messages.get(sid);
-      if (!raw) continue;
-      const encoded = encode(() => proto.WebMessageInfo.encode(raw).finish());
-      if (encoded) snapshot.messages[sid] = encoded;
-      const transcript = this.transcripts.get(sid);
-      if (transcript) transcripts[sid] = transcript;
-      const preview = this.previews.get(sid);
-      if (preview) previews[sid] = preview;
-      const reacted = this.reactions.get(sid);
-      if (reacted && reacted.size > 0) reactions[sid] = Object.fromEntries(reacted);
-    }
-    snapshot.transcripts = transcripts;
-    snapshot.previews = previews;
-    snapshot.reactions = reactions;
-    return snapshot;
-  }
-
-  /** A snapshot an older wazap wrote can still hold noise it used to keep. */
-  hydrate(snapshot: StoreSnapshot): void {
-    if (snapshot?.v !== 1) return;
-    for (const [jid, b64] of Object.entries(snapshot.chats ?? {})) {
-      if (isNoiseJid(jid)) continue;
-      const chat = decodeChat(b64);
-      if (chat) this.chats.set(jid, chat);
-    }
-    for (const [jid, contact] of Object.entries(snapshot.contacts ?? {})) this.contacts.set(jid, contact);
-    for (const [jid, name] of Object.entries(snapshot.pushNames ?? {})) this.pushNames.set(jid, name);
-    this.contactsResyncedAt = snapshot.contactsResyncedAt ?? null;
-    for (const [sid, b64] of Object.entries(snapshot.messages ?? {})) {
-      const raw = decodeMessage(b64);
-      if (raw && !isControlMessage(raw)) this.messages.set(sid, raw);
-    }
-    // A transcript of a message the snapshot no longer carries is a leak, not a cache.
-    for (const [sid, transcript] of Object.entries(snapshot.transcripts ?? {})) {
-      if (this.messages.has(sid)) this.transcripts.set(sid, transcript);
-    }
-    for (const [sid, preview] of Object.entries(snapshot.previews ?? {})) {
-      if (this.messages.has(sid)) this.previews.set(sid, preview);
-    }
-    for (const [sid, byAuthor] of Object.entries(snapshot.reactions ?? {})) {
-      if (this.messages.has(sid)) this.reactions.set(sid, new Map(Object.entries(byAuthor)));
-    }
-    for (const [jid, ring] of Object.entries(snapshot.byChat ?? {})) {
-      if (isNoiseJid(jid)) continue;
-      const present = ring.filter((sid) => this.messages.has(sid));
-      this.byChat.set(jid, present);
-      for (const sid of present) this.chatOf.set(sid, jid);
-    }
-  }
-}
-
-/** How long `get_contact` waits for WhatsApp's about text or profile picture. */
 const PROFILE_LOOKUP_MS = 8_000;
 
 /** Resolves to `null` when `work` rejects or is still pending after `ms`. */
@@ -730,6 +535,14 @@ export class WhatsAppService implements WhatsAppApi {
       const cutoff = Date.now() - hours * 3_600_000;
       const conversations: RecentConversation[] = [];
       await this.learnLidPhones(this.store.byChat.keys());
+      // A group's metadata is what names a sender the address book does not
+      // know; fetch it for the groups that spoke in the window, once each.
+      const activeGroups = [...this.store.byChat.keys()].filter((jid) => {
+        if (!isGroupId(jid) || this.groupCache.has(jid) || this.unreadableGroups.has(jid)) return false;
+        const last = this.lastMessageOf(jid);
+        return last !== null && messageTimestampMs(last) >= cutoff;
+      });
+      await Promise.all(activeGroups.slice(0, RECENT_GROUP_META_MAX).map((jid) => this.learnParticipants(jid)));
 
       for (const [jid, ring] of this.store.byChat) {
         if (isNoiseJid(jid)) continue;
@@ -907,28 +720,65 @@ export class WhatsAppService implements WhatsAppApi {
           out.push({ message_id: sid, ...shipped });
           continue;
         }
-        const cached = this.store.previews.get(sid);
+        const cached = await this.readPreview(sid);
         if (cached) {
-          out.push({ message_id: sid, ...cached });
+          out.push({ message_id: sid, mime: "image/jpeg", base64: cached.toString("base64") });
           continue;
         }
         const info = mediaInfo(raw);
-        if (!info || !/^image\/jpe?g\b/i.test(info.mime) || (info.size ?? 0) > PREVIEW_SOURCE_MAX_BYTES) continue;
+        if (!info) continue;
+        const photo = /^image\/jpe?g\b/i.test(info.mime) && (info.size ?? 0) <= PREVIEW_SOURCE_MAX_BYTES;
+        const video = /^video\//i.test(info.mime) && (info.size ?? 0) <= PREVIEW_VIDEO_MAX_BYTES;
+        if (!photo && !video) continue;
         if (Date.now() - started > PREVIEW_BUDGET_MS) continue;
         const sock = this.sockClient;
         if (!sock || this.status !== "connected") continue;
         try {
-          const preview = makePreview(await this.mediaBuffer(sock, sid, raw));
-          const kept = { mime: preview.mime, base64: preview.base64 };
-          this.store.previews.set(sid, kept);
-          this.markStoreDirty();
-          out.push({ message_id: sid, ...kept });
+          const buffer = await this.mediaBuffer(sock, sid, raw);
+          const made = photo ? Buffer.from(makePreview(buffer).base64, "base64") : await videoFrame(buffer);
+          if (!made) continue;
+          await this.writePreview(sid, made);
+          out.push({ message_id: sid, mime: "image/jpeg", base64: made.toString("base64") });
         } catch {
           // Expired on WhatsApp's side, or not decodable: this one goes without.
         }
       }
       return out;
     });
+  }
+
+  /** Previews live as files, one JPEG per message, so the snapshot stays small and a restart keeps them. */
+  private previewPath(sid: string): string {
+    return join(this.paths.previewsDir, `${safeFilename(sid)}.jpg`);
+  }
+
+  private async readPreview(sid: string): Promise<Buffer | null> {
+    try {
+      return await readFile(this.previewPath(sid));
+    } catch (err) {
+      if (!isMissing(err)) logError("preview read", err);
+      return null;
+    }
+  }
+
+  private async writePreview(sid: string, jpeg: Buffer): Promise<void> {
+    await mkdir(this.paths.previewsDir, { recursive: true, mode: DIR_MODE });
+    await writeFile(this.previewPath(sid), jpeg, { mode: FILE_MODE });
+  }
+
+  /** A preview whose message the store no longer holds is a leak; drop it at load. */
+  private async prunePreviews(): Promise<void> {
+    let names: string[];
+    try {
+      names = await readdir(this.paths.previewsDir);
+    } catch (err) {
+      if (!isMissing(err)) logError("preview prune", err);
+      return;
+    }
+    const keep = new Set([...this.store.messages.keys()].map((sid) => `${safeFilename(sid)}.jpg`));
+    await Promise.all(
+      names.filter((name) => !keep.has(name)).map((name) => rm(join(this.paths.previewsDir, name), { force: true })),
+    );
   }
 
   /**
@@ -2033,9 +1883,15 @@ export class WhatsAppService implements WhatsAppApi {
   /** A pairing WhatsApp stated in a field meant for it, so ids may follow it. */
   private learnLid(lid: string, pn: string): void {
     if (!lid || !pn) return;
-    this.lidToPn.set(lidKey(lid), jidNormalizedUser(pn));
+    const key = lidKey(lid);
+    const phone = jidNormalizedUser(pn);
+    this.lidToPn.set(key, phone);
+    if (this.store.lids.get(key) !== phone) {
+      this.store.lids.set(key, phone);
+      this.markStoreDirty();
+    }
     this.learnLidPhone(lid, pn);
-    this.foldAlias(lidKey(lid));
+    this.foldAlias(key);
   }
 
   /**
@@ -2513,10 +2369,12 @@ export class WhatsAppService implements WhatsAppApi {
       const text = await readFile(this.paths.storeFile, "utf8");
       this.store.hydrate(JSON.parse(text) as StoreSnapshot);
       for (const contact of this.store.contacts.values()) this.relearnLid(contact);
+      for (const [lid, pn] of this.store.lids) this.learnLid(lid, pn);
       for (const key of [...this.store.byChat.keys(), ...this.store.chats.keys(), ...this.store.contacts.keys()]) {
         if (key.endsWith("@lid")) this.foldAlias(key);
       }
       this.foldReactions();
+      void this.prunePreviews();
       log(`store loaded: ${this.store.chats.size} chats, ${this.store.messages.size} messages`);
     } catch (err) {
       if (!isMissing(err)) logError("store load", err);
@@ -2699,9 +2557,6 @@ function requireValue(value: string | undefined, action: GroupAction, what: stri
   return trimmed;
 }
 
-function describe(err: unknown): string {
-  return err instanceof Error ? err.message : String(err);
-}
 
 function isMissing(err: unknown): boolean {
   return (err as NodeJS.ErrnoException | undefined)?.code === "ENOENT";
@@ -2719,149 +2574,6 @@ function statusTextOf(entry: { [protocol: string]: unknown } | undefined): strin
   return typeof status === "string" ? status : null;
 }
 
-function encode(run: () => Uint8Array): string | null {
-  try {
-    return Buffer.from(run()).toString("base64");
-  } catch {
-    return null;
-  }
-}
-
-function decodeMessage(b64: string): WAMessage | null {
-  try {
-    return proto.WebMessageInfo.decode(Buffer.from(b64, "base64")) as unknown as WAMessage;
-  } catch {
-    return null;
-  }
-}
-
-function decodeChat(b64: string): BaileysChat | null {
-  try {
-    return proto.Conversation.decode(Buffer.from(b64, "base64")) as unknown as BaileysChat;
-  } catch {
-    return null;
-  }
-}
-
 function safeFilename(jid: string): string {
   return jid.replace(/[/\\:*?"<>|]/g, "_");
-}
-
-function mediaFilename(info: { mime: string; filename?: string }): string {
-  const original = (info.filename ?? "").replace(/[^\w.-]/g, "_");
-  const fromName = original.includes(".") ? original.slice(original.lastIndexOf(".")) : "";
-  const subtype = info.mime.split("/")[1]?.split(";")[0] ?? "bin";
-  return `${Date.now()}-${randomUUID().slice(0, 8)}${fromName || `.${subtype}`}`;
-}
-
-interface LoadedMedia {
-  buffer: Buffer;
-  mimetype: string;
-  filename: string;
-}
-
-async function assertMediaSource(source: MediaSource): Promise<void> {
-  const hasPath = Boolean(source.file_path);
-  const hasUrl = Boolean(source.url);
-  if (hasPath === hasUrl) {
-    throw new WazapError("FILE_NOT_FOUND", "Provide exactly one of file_path or url.");
-  }
-  if (!source.file_path) return;
-  let size: number;
-  try {
-    size = (await stat(source.file_path)).size;
-  } catch {
-    throw new WazapError("FILE_NOT_FOUND", `No file at "${source.file_path}" on the machine running wazap.`);
-  }
-  assertMediaSize(size);
-}
-
-async function loadMedia(source: MediaSource): Promise<LoadedMedia> {
-  await assertMediaSource(source);
-  if (source.file_path) {
-    const path = source.file_path;
-    return { buffer: await readFile(path), mimetype: guessMime(path), filename: basename(path) };
-  }
-
-  const url = source.url!;
-  let response: Response;
-  try {
-    response = await fetch(url);
-  } catch (err) {
-    throw new WazapError("URL_FETCH_FAILED", `Could not fetch ${url}: ${describe(err)}`);
-  }
-  if (!response.ok) {
-    throw new WazapError("URL_FETCH_FAILED", `Fetching ${url} returned HTTP ${response.status}.`);
-  }
-  const declared = Number.parseInt(response.headers.get("content-length") ?? "", 10);
-  if (Number.isFinite(declared)) assertMediaSize(declared);
-  const buffer = Buffer.from(await response.arrayBuffer());
-  assertMediaSize(buffer.length);
-  return {
-    buffer,
-    mimetype: response.headers.get("content-type")?.split(";")[0] ?? guessMime(url),
-    filename: basename(url.split("?")[0] ?? url),
-  };
-}
-
-function assertMediaSize(size: number): void {
-  if (size > MAX_MEDIA_BYTES) {
-    throw new WazapError("FILE_TOO_LARGE", `The file is ${Math.round(size / 1_048_576)} MB; WhatsApp allows 100 MB.`);
-  }
-}
-
-function basename(path: string): string {
-  return path.split(/[/\\]/).pop() || "file";
-}
-
-/** With `asGif`, a .gif becomes the mp4 WhatsApp loops; an mp4 is already that. Anything else is refused. */
-async function asGifMedia(media: LoadedMedia, asGif: boolean): Promise<LoadedMedia> {
-  if (!asGif) return media;
-  if (media.mimetype === "image/gif") {
-    const buffer = await gifToMp4(media.buffer);
-    return { buffer, mimetype: "video/mp4", filename: media.filename.replace(/\.gif$/i, "") + ".mp4" };
-  }
-  if (media.mimetype.startsWith("video/")) return media;
-  throw new WazapError(
-    "MEDIA_UNAVAILABLE",
-    `as_gif needs a .gif or a video, not ${media.mimetype}.`,
-    "Pass a .gif or an mp4, or drop as_gif",
-  );
-}
-
-export function mediaContent(
-  media: LoadedMedia,
-  opts: { caption?: string; asDocument: boolean; asVoice: boolean; asGif: boolean },
-): AnyMessageContent {
-  const { buffer, mimetype, filename } = media;
-  if (opts.asVoice) return { audio: buffer, mimetype: "audio/ogg; codecs=opus", ptt: true };
-  if (opts.asGif) return { video: buffer, gifPlayback: true, caption: opts.caption };
-  if (opts.asDocument) return { document: buffer, mimetype, fileName: filename, caption: opts.caption };
-  if (mimetype.startsWith("image/")) return { image: buffer, caption: opts.caption };
-  if (mimetype.startsWith("video/")) return { video: buffer, caption: opts.caption };
-  if (mimetype.startsWith("audio/")) return { audio: buffer, mimetype };
-  return { document: buffer, mimetype, fileName: filename, caption: opts.caption };
-}
-
-const MIME_BY_EXTENSION: Record<string, string> = {
-  jpg: "image/jpeg",
-  jpeg: "image/jpeg",
-  png: "image/png",
-  gif: "image/gif",
-  webp: "image/webp",
-  mp4: "video/mp4",
-  mov: "video/quicktime",
-  mp3: "audio/mpeg",
-  m4a: "audio/mp4",
-  ogg: "audio/ogg",
-  opus: "audio/ogg",
-  pdf: "application/pdf",
-  txt: "text/plain",
-  csv: "text/csv",
-  zip: "application/zip",
-};
-
-function guessMime(path: string): string {
-  const ext = path.slice(path.lastIndexOf(".") + 1).toLowerCase();
-  return MIME_BY_EXTENSION[ext] ?? "application/octet-stream";
 }

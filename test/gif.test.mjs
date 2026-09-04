@@ -10,7 +10,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
 
-import { mediaContent } from "../dist/whatsapp.js";
+import { mediaContent } from "../dist/outgoing-media.js";
 import { gifToMp4 } from "../dist/gif.js";
 import { which } from "../dist/transcribe/local.js";
 import { DraftStore } from "../dist/drafts.js";

@@ -136,6 +136,16 @@ const RULES: Partial<Record<keyof WAMessageContent, Rule>> = {
     detail: (m) => m.documentMessage?.fileName,
   },
   stickerMessage: { type: "sticker", tag: "[sticker]" },
+  lottieStickerMessage: { type: "sticker", tag: "[sticker]" },
+  // The header WhatsApp sends before the photos of an album; the photos follow
+  // as messages of their own, so this is a notice, not content.
+  albumMessage: {
+    type: "system",
+    tag: (m) => {
+      const n = (m.albumMessage?.expectedImageCount ?? 0) + (m.albumMessage?.expectedVideoCount ?? 0);
+      return n > 0 ? `[album · ${n} items]` : "[album]";
+    },
+  },
   locationMessage: {
     type: "location",
     tag: "[location]",
@@ -507,6 +517,8 @@ export interface MessageViewContext {
 
 function senderJid(raw: WAMessage, ctx: MessageViewContext): string {
   if (raw.key.fromMe) return ctx.ownId;
+  // In a one-to-one chat the other side wrote it, whatever id the key carries.
+  if (!ctx.chatId.endsWith("@g.us")) return ctx.chatId;
   // Baileys sets `participant` to "" on a direct message that arrived under a
   // lid, and "" is not "absent": `??` would keep it and hand the message to us.
   const from = raw.key.participant || raw.participant || raw.key.remoteJid || "";

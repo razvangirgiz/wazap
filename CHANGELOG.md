@@ -13,8 +13,9 @@
   12 per call, with the message line labelled. WhatsApp almost never ships a
   preview inside the message any more, so the photo is downloaded once and
   shrunk to 320 px here with jpeg-js (pure JavaScript, no native build), and
-  the result is kept across restarts. A catch-up can tell a receipt from a
-  baby without asking for a download.
+  the result is kept on disk, one file per message under `previews/`, across
+  restarts. A video gets one frame, taken by ffmpeg a second in. A catch-up
+  can tell a receipt from a baby without asking for a download.
 - **`get_unanswered`.** Chats whose last word is the other side's and reads as
   an ask (a question mark, a request word, an unheard voice note), people
   first, oldest wait first, with the ask quoted. A link is not a question, an
@@ -25,6 +26,19 @@
 - **`as_gif` on `send_media`.** An mp4 goes out looping, the way WhatsApp
   plays a GIF; a .gif file is turned into that mp4 first with ffmpeg on the
   machine running wazap. The draft preview says `[gif]`.
+
+- **A catch-up names the senders in a busy group.** `get_recent_messages`
+  fetches the metadata of the groups that spoke in the window, once each, so
+  someone the address book does not know reads by the name the group carries
+  instead of "unknown (lid …)".
+- **Animated stickers read as `[sticker]`, an album header as `[album · 4
+  items]`** and is a notice, hidden from the catch-up like the other notices,
+  since the photos follow as messages of their own.
+
+### Changed
+
+- `whatsapp.ts` gave up its store (`store.ts`) and the outgoing media helpers
+  (`outgoing-media.ts`), 2.9k lines down to 2.5k. No behaviour changed.
 
 ### Fixed
 

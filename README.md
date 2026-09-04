@@ -287,8 +287,10 @@ and labels each message line with the preview it belongs to, so a catch-up can
 say "a photo of a receipt" without a download. WhatsApp used to ship such a
 preview inside every image message and in 2026 almost never does, so when
 none is there wazap downloads the photo once, shrinks it to 320 px on this
-machine with pure JavaScript, and remembers the result across restarts. The
-first call over a day of photos takes a few seconds; the next is instant.
+machine with pure JavaScript, and keeps the result as a file under
+`previews/` in the data directory, so a restart does not redo it. A video gets
+one frame, taken by ffmpeg a second in, when ffmpeg is installed. The first
+call over a day of photos takes a few seconds; the next is instant.
 
 `wait_for_messages` blocks until something arrives, up to 55 seconds, then
 returns it with a `cursor`. Calling it again with that cursor replays whatever
@@ -478,6 +480,7 @@ created `0700` with credentials written `0600`:
   auth/         WhatsApp credentials — treat this like a password
   media/        downloads from download_media
   history/      per-chat message history, so a restart is not amnesia
+  previews/     one small JPEG per photo or video already previewed
   models/       whisper.cpp models, when transcription runs locally
   store.json    chat-list snapshot
   server.lock   pid of the running server

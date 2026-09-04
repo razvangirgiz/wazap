@@ -199,3 +199,12 @@ test("a GIF reads as a gif, a video as a video", () => {
   assert.equal(messageType(gif), "video");
   assert.equal(messageText(video), "[video] uite");
 });
+
+test("an animated sticker is a sticker and an album header is a notice with its count", () => {
+  const lottie = wrap({ lottieStickerMessage: { mimetype: "application/was" } });
+  assert.equal(messageType(lottie), "sticker");
+  assert.equal(messageText(lottie), "[sticker]");
+  const album = wrap({ albumMessage: { expectedImageCount: 3, expectedVideoCount: 1 } });
+  assert.equal(messageType(album), "system", "hidden from a catch-up: the photos follow on their own");
+  assert.equal(messageText(album), "[album · 4 items]");
+});

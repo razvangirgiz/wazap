@@ -5,7 +5,16 @@
  * to be computed from the photo itself. jpeg-js is pure JavaScript: no
  * native build, no sharp, and the photo never leaves the machine.
  */
+import { execFile } from "node:child_process";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { promisify } from "node:util";
 import jpeg from "jpeg-js";
+import { which } from "./transcribe/local.js";
+
+const run = promisify(execFile);
+const FRAME_TIMEOUT_MS = 30_000;
 
 /** Longest edge of a preview. 320 px reads a receipt's total and a face. */
 export const PREVIEW_MAX_EDGE = 320;
@@ -54,4 +63,41 @@ export function makePreview(input: Buffer, maxEdge = PREVIEW_MAX_EDGE): PreviewI
   }
   const encoded = jpeg.encode({ data: out, width, height }, PREVIEW_QUALITY);
   return { mime: "image/jpeg", base64: Buffer.from(encoded.data).toString("base64"), width, height };
+}
+
+/**
+ * One frame of a video as a small JPEG, made by ffmpeg when it is installed;
+ * null when it is not, or when the clip yields no frame. The frame is taken
+ * a second in, where a clip has usually settled, and at the start for one
+ * shorter than that.
+ */
+export async function videoFrame(video: Buffer, maxEdge = PREVIEW_MAX_EDGE): Promise<Buffer | null> {
+  const ffmpeg = which("ffmpeg");
+  if (ffmpeg === null) return null;
+  const dir = await mkdtemp(join(tmpdir(), "wazap-frame-"));
+  try {
+    const input = join(dir, "in.bin");
+    const output = join(dir, "out.jpg");
+    await writeFile(input, video);
+    for (const at of ["1", "0"]) {
+      const args = [
+        "-nostdin", "-loglevel", "error", "-y",
+        "-ss", at, "-i", input,
+        "-frames:v", "1",
+        "-vf", `scale='min(${maxEdge},iw)':-2`,
+        "-q:v", "6",
+        output,
+      ];
+      try {
+        await run(ffmpeg, args, { timeout: FRAME_TIMEOUT_MS, windowsHide: true });
+        const frame = await readFile(output);
+        if (frame.length > 0) return frame;
+      } catch {
+        // No frame at that offset; try the start.
+      }
+    }
+    return null;
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
 }
