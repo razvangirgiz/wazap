@@ -120,7 +120,8 @@ function trigger(description: string): string {
  */
 export function skillInstructions(skills: readonly Skill[]): string {
   const intro =
-    "Call `learn` first: it returns every tool, the id formats and every error code with what to do about it.";
+    "Call `learn` first: it returns every tool, the id formats and every error code with what to do about it. " +
+    "An agent that should act as messages arrive calls `wait_for_messages` in a loop with the cursor it returns, instead of polling.";
   if (skills.length === 0) return intro;
   return [
     intro,
