@@ -31,18 +31,18 @@ for (const { name, config, stdin, stderr, expect } of CASES) {
 
 test("bare wazap with piped stdio serves rather than greeting", async () => {
   const { toolNames } = await runSmoke();
-  assert.equal(toolNames.length, 26);
+  assert.equal(toolNames.length, 28);
 });
 
 test("explicit `wazap serve` with piped stdio still answers initialize", async () => {
   const { toolNames, status } = await runSmoke({ args: ["serve"] });
-  assert.equal(toolNames.length, 26);
+  assert.equal(toolNames.length, 28);
   assert.equal(status.status, "not_linked");
 });
 
-test("writes off in .env leaves the server with the 14 read tools only", async () => {
+test("writes off in .env leaves the server with the 16 read tools only", async () => {
   const dataDir = mkdtempSync(join(tmpdir(), "wazap-readonly-"));
   await run(process.execPath, [binary, "config", "writes", "off", "--data-dir", dataDir]);
-  const { toolNames } = await runSmoke({ args: ["serve"], dataDir, keepDataDir: true, expectedTools: 14, expectReadOnly: true });
+  const { toolNames } = await runSmoke({ args: ["serve"], dataDir, keepDataDir: true, expectedTools: 16, expectReadOnly: true });
   assert.ok(!toolNames.includes("send_message"));
 });

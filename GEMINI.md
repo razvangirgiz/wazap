@@ -141,9 +141,9 @@ Deliverable: a short, ranked list of what needs the user, with everything else c
 
 ### Collect
 
-1. `get_recent_messages` with the window the user implied (default 24h; "this week" = 168). If the result says `sync: "in_progress"`, wait 5 seconds and call it again once.
+1. `get_recent_messages` with the window the user implied (default 24h; "this week" = 168). If the result says `sync: "in_progress"`, wait 5 seconds and call it again once. Pass `include_previews: true` when the window holds photos, so "[image]" becomes something you can describe; the first call over many photos takes a few seconds.
 2. `list_chats` with `filter: "unread"` to catch chats whose activity predates the window.
-3. For follow-ups ("whom did I forget"): in `list_chats` results, an individual chat whose `last_message.from_me` is false and older than 2 days is an unanswered conversation. Read its last 5 messages with `read_messages` to confirm something was actually asked.
+3. `get_unanswered` for who is still waiting: it returns only chats whose last word is theirs and asks for something, with the ask quoted. For "whom did I forget", pass `min_age_hours: 48`. Do not rebuild this from `list_chats`; the tool already skips conversations that ended in "ok, thanks".
 
 Done collecting when every chat with unread messages appears in exactly one bucket below.
 

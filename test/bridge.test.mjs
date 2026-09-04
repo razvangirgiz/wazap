@@ -221,7 +221,7 @@ test("a bridge serves what the owner exposes, so --read-only reaches every clien
     const b = s.start();
     const mcp = await session(b.child);
     const names = (await toolShape(mcp)).map((tool) => tool.name);
-    assert.equal(names.length, 14);
+    assert.equal(names.length, 16);
     assert.ok(!names.includes("send_message"), names.join(", "));
 
     const status = await mcp.request("tools/call", { name: "get_status", arguments: {} });

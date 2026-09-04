@@ -32,6 +32,7 @@ import { BAILEYS_VERSION, paths, WAZAP_VERSION, type Config, type Paths } from "
 import { asWazapError, RELINK_FIX, RESET_FIX, WazapError } from "./errors.js";
 import { isGroupId, isNoiseJid, normalizePhone, resolveChatId } from "./ids.js";
 import { log, logError } from "./logger.js";
+import { makePreview } from "./previews.js";
 import {
   buildMessageView,
   callInfo,
@@ -41,11 +42,14 @@ import {
   isStubEvent,
   isoWithOffset,
   mediaInfo,
+  mentionedJids,
   messageIdFor,
   messageText,
   messageTimestampMs,
   messageType,
   protoNumber,
+  quotedSenderJid,
+  thumbnailOf,
   viewText,
   voiceSeconds,
 } from "./messages.js";
@@ -89,6 +93,10 @@ import type {
   Synced,
   TranscribeResult,
   WhatsAppApi,
+  Preview,
+  UnansweredChat,
+  WaitOptions,
+  WaitResult,
 } from "./wa-types.js";
 
 /** Reconnect pacing. A closed socket used to be retried instantly, which turns
@@ -112,6 +120,19 @@ const STALE_INBOUND_MS = 24 * 3_600_000;
 const MAX_MESSAGES_PER_CHAT = 1_000;
 const PERSIST_MESSAGES_PER_CHAT = 120;
 const STORE_SAVE_DEBOUNCE_MS = 20_000;
+/** How many arrivals wait_for_messages can replay to a cursor before it has to say it lost track. */
+const ARRIVALS_KEPT = 500;
+/** After the first matching arrival, how long a wait keeps collecting the rest of the burst. */
+const ARRIVAL_SETTLE_MS = 1_000;
+/** A photo bigger than this is not downloaded for a preview. */
+const PREVIEW_SOURCE_MAX_BYTES = 6_000_000;
+/** How long one call may spend downloading and shrinking photos before it returns with what it has. */
+const PREVIEW_BUDGET_MS = 20_000;
+/** How far back into a chat get_unanswered reads for the ask. */
+const UNANSWERED_SCAN = 30;
+/** Words that make a message read as something asked of the user, when it has no question mark. */
+const ASK_PATTERN =
+  /\b(te rog|v[ăa] rog|po[țt]i|pute[țt]i|ai putea|a[țt]i putea|c[âa]nd|c[âa]t|unde|trimite|trimi[țt]i|sun[ăa]|spune-mi|zi-mi|confirm[ăai]?|urgent|please|can you|could you|would you|when|where|how much|send me|let me know|need)\b/i;
 const CALL_SWEEP_MS = 30_000;
 /** The same call reaches the store up to three ways; only nearness in time tells them apart. */
 const CALL_DEDUPE_WINDOW_MS = 60_000;
@@ -198,6 +219,8 @@ interface StoreSnapshot {
   contactsResyncedAt?: number;
   /** Added in 0.9.8. Transcripts of the messages this snapshot keeps, by message id. */
   transcripts?: Record<string, TranscriptRecord>;
+  /** Added in 0.13.0. Previews made from the photos this snapshot keeps, by message id. */
+  previews?: Record<string, { mime: string; base64: string }>;
 }
 
 /** In-memory state fed from Baileys events, keyed by canonical jid. */
@@ -217,6 +240,8 @@ class Store {
   readonly pushNames = new Map<string, string>();
   /** What a voice note said, keyed by message id. Transcribing is slow and can cost money. */
   readonly transcripts = new Map<string, TranscriptRecord>();
+  /** Small JPEGs made from photos, keyed by message id, so a photo is downloaded and shrunk once. */
+  readonly previews = new Map<string, { mime: string; base64: string }>();
 
   /** See `needsContactResync`: it keeps a full resync from repeating forever. */
   contactsResyncedAt: number | null = null;
@@ -274,6 +299,7 @@ class Store {
     this.edited.delete(sid);
     this.reactions.delete(sid);
     this.transcripts.delete(sid);
+    this.previews.delete(sid);
   }
 
   reactionsFor(sid: string): Array<{ emoji: string; sender: string }> {
@@ -304,6 +330,7 @@ class Store {
       for (const sid of capped) keep.add(sid);
     }
     const transcripts: Record<string, TranscriptRecord> = {};
+    const previews: Record<string, { mime: string; base64: string }> = {};
     for (const sid of keep) {
       const raw = this.messages.get(sid);
       if (!raw) continue;
@@ -311,8 +338,11 @@ class Store {
       if (encoded) snapshot.messages[sid] = encoded;
       const transcript = this.transcripts.get(sid);
       if (transcript) transcripts[sid] = transcript;
+      const preview = this.previews.get(sid);
+      if (preview) previews[sid] = preview;
     }
     snapshot.transcripts = transcripts;
+    snapshot.previews = previews;
     return snapshot;
   }
 
@@ -334,6 +364,9 @@ class Store {
     // A transcript of a message the snapshot no longer carries is a leak, not a cache.
     for (const [sid, transcript] of Object.entries(snapshot.transcripts ?? {})) {
       if (this.messages.has(sid)) this.transcripts.set(sid, transcript);
+    }
+    for (const [sid, preview] of Object.entries(snapshot.previews ?? {})) {
+      if (this.messages.has(sid)) this.previews.set(sid, preview);
     }
     for (const [jid, ring] of Object.entries(snapshot.byChat ?? {})) {
       if (isNoiseJid(jid)) continue;
@@ -382,6 +415,11 @@ export class WhatsAppService implements WhatsAppApi {
   private historyReceived = false;
   private syncDeadline: ReturnType<typeof setTimeout> | null = null;
   private syncWaiters: Array<() => void> = [];
+  /** Inbound messages as they land, newest last, so a wait can resume from a cursor. */
+  private readonly arrivals: Array<{ seq: number; sid: string; jid: string }> = [];
+  private arrivalSeq = 0;
+  private readonly bootId = randomUUID().slice(0, 8);
+  private arrivalWaiters: Array<() => void> = [];
   private historyWaiters: Array<() => void> = [];
   private storeDirty = false;
   private storeSaveTimer: ReturnType<typeof setTimeout> | null = null;
@@ -472,6 +510,7 @@ export class WhatsAppService implements WhatsAppApi {
     this.syncDeadline = null;
     this.stopCallSweep();
     this.releaseWaiters();
+    this.wakeArrivalWaiters();
     await this.flushStore();
     this.teardownSocket();
   }
@@ -773,6 +812,224 @@ export class WhatsAppService implements WhatsAppApi {
         is_blocked: this.blocked.has(jid),
       };
     });
+  }
+
+  /**
+   * Block until something arrives that matches, or until the deadline. The
+   * first match starts a short settle so a burst of messages comes back as
+   * one answer. A cursor from this run replays what landed since it, so a
+   * loop of calls misses nothing between them; one from another run is
+   * refused and the wait starts from now, and says so.
+   */
+  waitForMessages(opts: WaitOptions): Promise<WaitResult> {
+    return this.guarded(async () => {
+      this.ensureConnected();
+      const chatJid = opts.chatId === undefined ? undefined : this.resolveId(opts.chatId);
+      const parsed = this.parseCursor(opts.cursor);
+      let since = parsed.seq;
+      const deadline = Date.now() + opts.timeoutMs;
+      const matching = (): typeof this.arrivals =>
+        this.arrivals.filter((a) => a.seq > since && this.arrivalMatches(a, chatJid, opts.addressedToMe));
+
+      let found = matching();
+      let timedOut = false;
+      if (found.length === 0) {
+        while (!this.stopped && Date.now() < deadline) {
+          await this.nextArrival(deadline - Date.now());
+          found = matching();
+          if (found.length > 0) break;
+        }
+        if (found.length === 0) timedOut = true;
+      }
+      if (found.length > 0) {
+        await this.nextArrival(Math.min(ARRIVAL_SETTLE_MS, Math.max(0, deadline - Date.now())), true);
+        found = matching();
+      }
+      const last = found.length > 0 ? found[found.length - 1]!.seq : Math.max(since, this.arrivalSeq);
+      since = last;
+      return {
+        messages: found.map((a) => this.viewOf(a.sid, a.jid)),
+        cursor: `${this.bootId}:${last}`,
+        timed_out: timedOut,
+        cursor_reset: parsed.reset,
+      };
+    });
+  }
+
+  /**
+   * Small JPEGs of these messages' photos, in the order given, at most `max`.
+   * The preview WhatsApp shipped comes first, then one made earlier, and only
+   * then is the photo downloaded and shrunk here, once, within a time budget so
+   * the call returns with what it has. A photo that is not a JPEG, has expired
+   * or is too big simply has no preview.
+   */
+  previews(messageIds: string[], max: number): Promise<Preview[]> {
+    return this.guarded(async () => {
+      const out: Preview[] = [];
+      const started = Date.now();
+      for (const sid of messageIds) {
+        if (out.length >= max) break;
+        const raw = this.store.messages.get(sid);
+        if (!raw) continue;
+        const shipped = thumbnailOf(raw);
+        if (shipped) {
+          out.push({ message_id: sid, ...shipped });
+          continue;
+        }
+        const cached = this.store.previews.get(sid);
+        if (cached) {
+          out.push({ message_id: sid, ...cached });
+          continue;
+        }
+        const info = mediaInfo(raw);
+        if (!info || !/^image\/jpe?g\b/i.test(info.mime) || (info.size ?? 0) > PREVIEW_SOURCE_MAX_BYTES) continue;
+        if (Date.now() - started > PREVIEW_BUDGET_MS) continue;
+        const sock = this.sockClient;
+        if (!sock || this.status !== "connected") continue;
+        try {
+          const preview = makePreview(await this.mediaBuffer(sock, sid, raw));
+          const kept = { mime: preview.mime, base64: preview.base64 };
+          this.store.previews.set(sid, kept);
+          this.markStoreDirty();
+          out.push({ message_id: sid, ...kept });
+        } catch {
+          // Expired on WhatsApp's side, or not decodable: this one goes without.
+        }
+      }
+      return out;
+    });
+  }
+
+  /**
+   * Chats where the last word is theirs and it asks for something: a question
+   * mark, a request word, or a voice note nobody has heard yet. A closing
+   * "ok, mersi" is not an ask, so the chat is left out. Groups count only when
+   * the account was @-mentioned or replied to after its own last message.
+   * People first, then the oldest wait first.
+   */
+  getUnanswered(minAgeHours: number, maxAgeHours: number, limit: number): Promise<Synced<UnansweredChat[]>> {
+    return this.guarded(async () => {
+      this.ensureConnected();
+      await this.waitForSync();
+      const cutoff = Date.now() - minAgeHours * 3_600_000;
+      const horizon = Date.now() - maxAgeHours * 3_600_000;
+      const found: UnansweredChat[] = [];
+      for (const chat of this.mergeAliases(this.knownChats())) {
+        if (chat.archived) continue;
+        const jid = this.canonical(chat.id ?? "");
+        if (isNoiseJid(jid)) continue;
+        const ring = this.store.byChat.get(jid) ?? [];
+        const tail = ring.slice(-UNANSWERED_SCAN);
+        const theirs: string[] = [];
+        for (let i = tail.length - 1; i >= 0; i--) {
+          const raw = this.store.messages.get(tail[i]!);
+          if (!raw) continue;
+          if (raw.key.fromMe) break;
+          if (messageType(raw) === "system") continue;
+          theirs.unshift(tail[i]!);
+        }
+        if (theirs.length === 0) continue;
+        const group = isGroupId(jid);
+        const askSid = [...theirs].reverse().find((sid) => {
+          const raw = this.store.messages.get(sid)!;
+          if (group && !this.addressesMe(raw)) return false;
+          return this.readsAsAsk(raw, sid);
+        });
+        if (!askSid) continue;
+        const ask = this.viewOf(askSid, jid);
+        const askRaw = this.store.messages.get(askSid)!;
+        const askedAt = messageTimestampMs(askRaw);
+        if (askedAt > cutoff || askedAt < horizon) continue;
+        found.push({
+          chat_id: jid,
+          name: this.displayName(jid),
+          type: group ? "group" : "individual",
+          ask,
+          messages_since_you: theirs.length,
+          business: !group && Boolean(this.store.contacts.get(jid)?.verifiedName),
+          waiting_since: isoWithOffset(askedAt),
+          age: formatAge(askedAt),
+        });
+      }
+      found.sort((a, b) => {
+        if (a.type !== b.type) return a.type === "individual" ? -1 : 1;
+        return a.waiting_since.localeCompare(b.waiting_since);
+      });
+      return this.synced(found.slice(0, limit));
+    });
+  }
+
+  private readsAsAsk(raw: WAMessage, sid: string): boolean {
+    const type = messageType(raw);
+    if (type === "call") return false;
+    const transcript = this.store.transcripts.get(sid);
+    // A voice note nobody has heard is an ask until proven otherwise.
+    if (type === "voice" && transcript === undefined) return true;
+    // A link's query string is not a question.
+    const text = viewText(raw, transcript).replace(/https?:\/\/\S+/g, "");
+    return text.includes("?") || ASK_PATTERN.test(text);
+  }
+
+  /** A group message that @-mentions the linked account or replies to one of its messages. */
+  private addressesMe(raw: WAMessage): boolean {
+    if (mentionedJids(raw).some((jid) => this.isMe(jid))) return true;
+    const quoted = quotedSenderJid(raw);
+    return quoted !== undefined && this.isMe(quoted);
+  }
+
+  private arrivalMatches(arrival: { sid: string; jid: string }, chatJid: string | undefined, addressedToMe: boolean): boolean {
+    if (chatJid !== undefined && arrival.jid !== chatJid) return false;
+    if (!addressedToMe || !isGroupId(arrival.jid)) return true;
+    const raw = this.store.messages.get(arrival.sid);
+    return raw !== undefined && this.addressesMe(raw);
+  }
+
+  private parseCursor(cursor: string | undefined): { seq: number; reset: boolean } {
+    if (cursor === undefined) return { seq: this.arrivalSeq, reset: false };
+    const [boot, rest] = cursor.split(":");
+    const seq = Number(rest);
+    const oldest = this.arrivals[0]?.seq ?? this.arrivalSeq;
+    if (boot !== this.bootId || !Number.isInteger(seq) || seq > this.arrivalSeq || (seq < oldest - 1 && this.arrivals.length > 0)) {
+      return { seq: this.arrivalSeq, reset: true };
+    }
+    return { seq, reset: false };
+  }
+
+  /** Resolves on the next arrival or after `ms`; a settle rides out the burst and ends only on the deadline or a stop. */
+  private nextArrival(ms: number, settle = false): Promise<void> {
+    return new Promise((resolve) => {
+      const waiter = (): void => {
+        if (!settle || this.stopped) done();
+      };
+      const done = (): void => {
+        clearTimeout(timer);
+        const at = this.arrivalWaiters.indexOf(waiter);
+        if (at !== -1) this.arrivalWaiters.splice(at, 1);
+        resolve();
+      };
+      const timer = setTimeout(done, Math.max(0, ms));
+      this.arrivalWaiters.push(waiter);
+    });
+  }
+
+  private noteArrivals(stored: readonly WAMessage[]): void {
+    let landed = false;
+    for (const raw of stored) {
+      if (raw.key.fromMe || !raw.key.remoteJid) continue;
+      if (messageType(raw) === "system") continue;
+      const jid = this.canonical(raw.key.remoteJid);
+      if (isNoiseJid(jid)) continue;
+      this.arrivals.push({ seq: ++this.arrivalSeq, sid: messageIdFor(raw.key, jid), jid });
+      landed = true;
+    }
+    while (this.arrivals.length > ARRIVALS_KEPT) this.arrivals.shift();
+    if (landed) this.wakeArrivalWaiters();
+  }
+
+  private wakeArrivalWaiters(): void {
+    const waiters = this.arrivalWaiters;
+    this.arrivalWaiters = [];
+    for (const waiter of waiters) waiter();
   }
 
   getGroupInfo(groupId: string): Promise<GroupInfo> {
@@ -1325,6 +1582,7 @@ export class WhatsAppService implements WhatsAppApi {
           this.lastInboundAt = Math.max(this.lastInboundAt ?? 0, messageTimestampMs(raw));
         }
         this.queueTranscripts(stored);
+        this.noteArrivals(stored);
       }
       void this.appendHistory(stored);
       this.markStoreDirty();

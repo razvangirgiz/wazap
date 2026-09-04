@@ -1,6 +1,27 @@
 # Changelog
 
 ## Unreleased
+### Added
+
+- **`wait_for_messages`.** Blocks up to 55 s until a message from someone else
+  arrives, then returns it with a `cursor`; the next call with that cursor
+  replays what landed in between. `addressed_to_me` wakes only for direct
+  messages, @-mentions and replies to the user. An agent can stay on the line
+  instead of polling every few minutes and reporting nothing.
+- **`include_previews` on `get_recent_messages` and `read_messages`.** A
+  small JPEG of each photo comes back as an image block, newest first, up to
+  12 per call, with the message line labelled. WhatsApp almost never ships a
+  preview inside the message any more, so the photo is downloaded once and
+  shrunk to 320 px here with jpeg-js (pure JavaScript, no native build), and
+  the result is kept across restarts. A catch-up can tell a receipt from a
+  baby without asking for a download.
+- **`get_unanswered`.** Chats whose last word is the other side's and reads as
+  an ask (a question mark, a request word, an unheard voice note), people
+  first, oldest wait first, with the ask quoted. A link is not a question, an
+  ask older than two weeks is abandoned rather than waiting, a business
+  account is marked. Groups count only when the user was @-mentioned or
+  replied to. The inbox skill uses it instead of guessing from `list_chats`.
+
 ### Fixed
 
 - **`list_chats` showed some people twice.** WhatsApp files a contact under a

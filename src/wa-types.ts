@@ -133,6 +133,46 @@ export interface RecentConversation {
   messages: MessageView[];
 }
 
+/** What wait_for_messages is asked to watch for. */
+export interface WaitOptions {
+  timeoutMs: number;
+  chatId?: string;
+  /** Only messages that address the linked account: any direct message, or a group message that @-mentions it or replies to one of its own. */
+  addressedToMe: boolean;
+  cursor?: string;
+}
+
+export interface WaitResult {
+  messages: MessageView[];
+  /** Pass back on the next call to continue from here without a gap. */
+  cursor: string;
+  timed_out: boolean;
+  /** The cursor came from another run of wazap and could not be honoured; the wait started from now. */
+  cursor_reset: boolean;
+}
+
+/** A small JPEG of a photo: the one WhatsApp shipped in the message, or one made here from the photo. */
+export interface Preview {
+  message_id: string;
+  mime: string;
+  base64: string;
+}
+
+/** A conversation whose last word is theirs and reads as something asked of the user. */
+export interface UnansweredChat {
+  chat_id: string;
+  name: string;
+  type: ChatType;
+  /** The message that asks; a voice note counts as an ask until it has been heard. */
+  ask: MessageView;
+  /** How many of their messages arrived after the user's last one. */
+  messages_since_you: number;
+  /** A WhatsApp Business account, whose asks are often automatic replies. */
+  business: boolean;
+  waiting_since: string;
+  age: string;
+}
+
 export interface ContactSummary {
   contact_id: string;
   name: string;
@@ -279,6 +319,9 @@ export interface WhatsAppApi {
   getGroupInfo(groupId: string): Promise<GroupInfo>;
   downloadMedia(messageId: string, saveTo?: string): Promise<MediaResult>;
   transcribeAudio(messageId: string, language?: string): Promise<TranscribeResult>;
+  waitForMessages(opts: WaitOptions): Promise<WaitResult>;
+  previews(messageIds: string[], max: number): Promise<Preview[]>;
+  getUnanswered(minAgeHours: number, maxAgeHours: number, limit: number): Promise<Synced<UnansweredChat[]>>;
   draft(payload: DraftPayload): Promise<DraftView>;
   confirm(draftId: string): Promise<SentMessage>;
   sendMessage(chatId: string, text: string, replyTo?: string, mentionIds?: string[]): Promise<SentMessage>;

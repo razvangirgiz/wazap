@@ -12,6 +12,9 @@ import type {
   RecentConversation,
   SentMessage,
   Synced,
+  Preview,
+  UnansweredChat,
+  WaitResult,
   WhatsAppApi,
 } from "./wa-types.js";
 
@@ -85,6 +88,16 @@ const messageTypes = z
     'Keep only these message types; omit for every type. The limit counts matching messages, so ["call"] returns that many calls, not that many messages of which some are calls.',
   );
 
+const includePreviews = z
+  .boolean()
+  .default(false)
+  .describe(
+    "Attach a small JPEG of each photo, newest first, up to 12 per call, so you can see what was sent: the preview WhatsApp shipped when there is one, otherwise the photo is downloaded once and shrunk on the machine running wazap",
+  );
+
+/** Previews are 5-15 KB each; a dozen keep one answer small and the first call under the client's timeout. */
+const MAX_PREVIEWS = 12;
+
 const GUIDE = `# wazap — WhatsApp for your AI agent
 
 Read/write access to the user's linked WhatsApp account: chats, messages, media,
@@ -104,7 +117,14 @@ link_account when it says no account is linked yet.
   auth_failure → link_account(phone), show the user the code, then poll
   get_status every 10 s until it says connected.
 - Catch up: get_recent_messages(hours) for everything, or list_chats(filter:"unread")
-  then read_messages(chat_id).
+  then read_messages(chat_id). Pass include_previews: true to see the photos as
+  small images instead of "[image]".
+- Who is waiting on the user: get_unanswered. It returns only chats whose last
+  word is theirs and asks for something, with the ask quoted.
+- Stay on the line: wait_for_messages blocks up to 55 s until something arrives,
+  and returns a cursor; call it again with that cursor to miss nothing between
+  calls. Pass addressed_to_me to wake only for direct messages, @-mentions and
+  replies to the user.
 - Go back further: read_messages(chat_id, before: <oldest message_id you have>).
 - Find a person: search_contacts → get_contact. Names come from the phone's own
   address book; if they are missing (get_status shows contacts_named: 0), call
@@ -252,13 +272,16 @@ older history when the local store runs out, which takes a few seconds.`,
       limit: z.number().int().min(1).max(200).default(20).describe("Maximum number of messages (1-200)"),
       before: messageId.optional().describe("Return the messages immediately older than this message_id"),
       types: messageTypes,
+      include_previews: includePreviews,
     },
     write: false,
-    handler: async ({ chat_id, limit, before, types }, wa) => {
+    handler: async ({ chat_id, limit, before, types, include_previews }, wa) => {
       const result = await wa.readMessages(chat_id, limit, before, types);
+      const previews = include_previews ? await wa.previews(newestFirst(result.data), MAX_PREVIEWS) : [];
       return ok(
-        renderMessages(`Messages in ${chat_id}`, result.data),
-        synced(result, { chat_id, types, count: result.data.length, messages: result.data }),
+        renderMessages(`Messages in ${chat_id}`, result.data, previewLabels(previews), previewNote(result.data, previews, include_previews)),
+        synced(result, { chat_id, types, count: result.data.length, preview_count: previews.length, messages: result.data }),
+        previewBlocks(previews),
       );
     },
   }),
@@ -281,13 +304,16 @@ out so the counts are conversation; pass include_system to see them.`,
         .default(false)
         .describe("Include WhatsApp's own system notices, which are excluded from the bodies and the counts by default"),
       types: messageTypes,
+      include_previews: includePreviews,
     },
     write: false,
-    handler: async ({ hours, filter, include_system, types }, wa) => {
+    handler: async ({ hours, filter, include_system, types, include_previews }, wa) => {
       const result = await wa.getRecentMessages(hours, filter, include_system, types);
       const messageCount = result.data.reduce((n, c) => n + c.messages.length, 0);
+      const all = result.data.flatMap((c) => c.messages);
+      const previews = include_previews ? await wa.previews(newestFirst(all), MAX_PREVIEWS) : [];
       return ok(
-        renderConversations(result.data, hours),
+        renderConversations(result.data, hours, previewLabels(previews), previewNote(all, previews, include_previews)),
         synced(result, {
           hours,
           filter,
@@ -295,9 +321,88 @@ out so the counts are conversation; pass include_system to see them.`,
           types,
           conversation_count: result.data.length,
           message_count: messageCount,
+          preview_count: previews.length,
           conversations: result.data,
         }),
+        previewBlocks(previews),
       );
+    },
+  }),
+
+  tool({
+    name: "get_unanswered",
+    title: "Find who is waiting on the user",
+    description: `Chats where the last word is theirs and it asks for something: a question, a
+request ("poți", "te rog", "can you", "when"…), or a voice note nobody has heard
+yet. A conversation that ended in "ok, thanks" is not listed, and neither is an
+ask older than max_age_hours (two weeks by default): that one was abandoned, not
+left waiting. Groups count only when the user was @-mentioned or replied to
+after their own last message. A [business] account's ask is often an automatic
+reply; weigh it accordingly.
+
+People come first, then the oldest wait. Each entry quotes the ask, says how
+many of their messages arrived since the user's last one, and how long they
+have been waiting. This is the follow-up half of an inbox triage; use
+get_recent_messages for what happened, and this for who is still waiting.`,
+    schema: {
+      min_age_hours: z
+        .number()
+        .min(0)
+        .max(8760)
+        .default(0)
+        .describe("Only asks at least this old, e.g. 48 for people the user forgot for two days"),
+      max_age_hours: z
+        .number()
+        .min(1)
+        .max(8760)
+        .default(336)
+        .describe("Ignore asks older than this; an ask left for two weeks (the default) is abandoned, not waiting"),
+      limit: z.number().int().min(1).max(50).default(20).describe("Maximum number of chats (1-50)"),
+    },
+    write: false,
+    handler: async ({ min_age_hours, max_age_hours, limit }, wa) => {
+      const result = await wa.getUnanswered(min_age_hours, max_age_hours, limit);
+      return ok(
+        renderUnanswered(result.data, min_age_hours),
+        synced(result, { min_age_hours, max_age_hours, count: result.data.length, chats: result.data }),
+      );
+    },
+  }),
+
+  tool({
+    name: "wait_for_messages",
+    title: "Wait for new WhatsApp messages",
+    description: `Block until a message arrives, then return it, or return empty when the timeout
+passes. This is how an agent stays on the line without polling: call it in a
+loop, and pass the cursor it returns into the next call so nothing that landed
+between two calls is missed. The first matching message starts a one-second
+settle so a burst comes back together.
+
+Only messages from other people are returned, never the user's own, and never
+WhatsApp's system notices. With addressed_to_me, only direct messages, group
+messages that @-mention the user, and replies to the user's own messages wake
+the wait; everything else in a group is ignored. A cursor from a previous run of
+wazap cannot be honoured: the wait then starts from now and says cursor_reset.
+
+The timeout is capped at 55 seconds because MCP clients give up at 60.`,
+    schema: {
+      timeout_seconds: z.number().int().min(1).max(55).default(30).describe("How long to wait (1-55 s)"),
+      chat_id: chatId.optional().describe("Only messages in this chat"),
+      addressed_to_me: z
+        .boolean()
+        .default(false)
+        .describe("Only direct messages, @-mentions of the user and replies to the user's messages"),
+      cursor: z.string().min(1).optional().describe("The cursor returned by the previous call"),
+    },
+    write: false,
+    handler: async ({ timeout_seconds, chat_id, addressed_to_me, cursor }, wa) => {
+      const result = await wa.waitForMessages({
+        timeoutMs: timeout_seconds * 1000,
+        chatId: chat_id,
+        addressedToMe: addressed_to_me,
+        cursor,
+      });
+      return ok(renderWait(result), { ...result, count: result.messages.length });
     },
   }),
 
@@ -806,11 +911,43 @@ function renderChats(chats: ChatSummary[], filter: string): string {
   return lines.join("\n");
 }
 
-function renderMessages(title: string, messages: MessageView[]): string {
+function newestFirst(messages: MessageView[]): string[] {
+  return [...messages].sort((a, b) => b.timestamp.localeCompare(a.timestamp)).map((m) => m.message_id);
+}
+
+/** message_id → "preview 3", numbered the way the image blocks are attached. */
+function previewLabels(previews: Preview[]): Map<string, string> {
+  return new Map(previews.map((p, i) => [p.message_id, `preview ${i + 1}`]));
+}
+
+function previewBlocks(previews: Preview[]): ContentBlock[] {
+  return previews.map((p) => ({ type: "image", data: p.base64, mimeType: p.mime }));
+}
+
+/** The line under the title that says what was attached and what could not be. */
+function previewNote(messages: MessageView[], previews: Preview[], asked: boolean): string | null {
+  if (!asked) return null;
+  const photos = messages.filter((m) => m.type === "image").length;
+  const missing = photos - previews.length;
+  const parts = [
+    previews.length > 0 ? `${previews.length} preview${previews.length === 1 ? "" : "s"} attached, numbered in the order of the image blocks` : null,
+    missing > 0 ? `${missing} photo${missing === 1 ? "" : "s"} without a preview (over the ${MAX_PREVIEWS} per call, expired, not JPEG, or out of time; call again for more)` : null,
+  ].filter((part): part is string => part !== null);
+  return parts.length > 0 ? `${parts.join("; ")}.` : null;
+}
+
+function renderMessages(
+  title: string,
+  messages: MessageView[],
+  labels: Map<string, string> = new Map(),
+  note: string | null = null,
+): string {
   if (messages.length === 0) return `${title}: no messages found.`;
   const lines = [`# ${title} (${messages.length})`, ""];
+  if (note) lines.splice(1, 0, note);
   for (const m of messages) {
     const tags = [
+      labels.get(m.message_id) ?? null,
       m.type !== "text" ? m.type : null,
       m.forwarded ? "forwarded" : null,
       m.edited ? "edited" : null,
@@ -824,17 +961,56 @@ function renderMessages(title: string, messages: MessageView[]): string {
   return lines.join("\n");
 }
 
-function renderConversations(conversations: RecentConversation[], hours: number): string {
+function renderConversations(
+  conversations: RecentConversation[],
+  hours: number,
+  labels: Map<string, string> = new Map(),
+  note: string | null = null,
+): string {
   if (conversations.length === 0) return `No WhatsApp conversations in the last ${hours}h.`;
   const total = conversations.reduce((n, c) => n + c.messages.length, 0);
   const lines = [`# WhatsApp · last ${hours}h (${conversations.length} chats, ${total} messages)`, ""];
+  if (note) lines.splice(1, 0, note);
   for (const c of conversations) {
     lines.push(`## ${c.chat_name}${c.type === "group" ? " [group]" : ""} — \`${c.chat_id}\``);
     for (const m of c.messages) {
-      lines.push(`- [${m.timestamp}] ${m.from_me ? "me" : m.sender.name}: ${truncate(m.text, 500)}`);
+      const label = labels.get(m.message_id);
+      lines.push(`- [${m.timestamp}] ${m.from_me ? "me" : m.sender.name}: ${truncate(m.text, 500)}${label ? ` (${label})` : ""}`);
     }
     lines.push("");
   }
+  return lines.join("\n");
+}
+
+function renderUnanswered(chats: UnansweredChat[], minAgeHours: number): string {
+  const since = minAgeHours > 0 ? ` for ${minAgeHours}h or more` : "";
+  if (chats.length === 0) return `Nobody is waiting on you${since}.`;
+  const lines = [`# Waiting on you${since} (${chats.length})`, ""];
+  chats.forEach((c, i) => {
+    const who = c.type === "group" ? `${c.name} [group] — ${c.ask.sender.name}` : `${c.name}${c.business ? " [business]" : ""}`;
+    const more = c.messages_since_you > 1 ? `, ${c.messages_since_you} messages since yours` : "";
+    lines.push(`${i + 1}. **${who}** · ${c.age}${more} — \`${c.chat_id}\``);
+    lines.push(`   > ${truncate(c.ask.text, 300)}`);
+    lines.push(`   ask id: \`${c.ask.message_id}\``);
+  });
+  return lines.join("\n");
+}
+
+function renderWait(result: WaitResult): string {
+  const tail = [`cursor: \`${result.cursor}\``, result.cursor_reset ? "The cursor was from another run; this wait started from now." : null]
+    .filter(Boolean)
+    .join("\n");
+  if (result.messages.length === 0) return `Nothing arrived before the timeout.\n${tail}`;
+  const lines = [`# ${result.messages.length} new message${result.messages.length === 1 ? "" : "s"}`, ""];
+  let chat = "";
+  for (const m of result.messages) {
+    if (m.chat_id !== chat) {
+      chat = m.chat_id;
+      lines.push(`## \`${chat}\``);
+    }
+    lines.push(`- [${m.timestamp}] ${m.sender.name}: ${truncate(m.text, 500)} · id: \`${m.message_id}\``);
+  }
+  lines.push("", tail);
   return lines.join("\n");
 }
 

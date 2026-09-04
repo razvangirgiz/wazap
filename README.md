@@ -8,7 +8,7 @@
 ```
 
 **WhatsApp for your AI agent.** An MCP server that puts your WhatsApp account —
-chats, messages, media, contacts, groups — behind 26 tools any MCP client can
+chats, messages, media, contacts, groups — behind 28 tools any MCP client can
 call. Pairing-code login, no browser, no phone-number reseller, ~20 MB of RAM.
 
 Built on [Baileys](https://github.com/WhiskeySockets/Baileys), which speaks the
@@ -254,8 +254,10 @@ them. `--dry-run` prints the plan and touches nothing.
 | `get_status` | read | Connection status, sync state, linked account, named-contact count, versions, data dir. |
 | `link_account` | read | Pair the account without a terminal: returns the code to type into the phone. Registered in read-only mode too. |
 | `list_chats` | read | Conversations newest-first; filter `all`/`unread`/`groups`/`individual`/`archived`. |
-| `read_messages` | read | Messages in a chat; `before` pages further back, pulling older history from the phone; `types` narrows to one or more message types, e.g. `["call"]`. |
-| `get_recent_messages` | read | Everything from the last N hours, grouped by chat. The catch-up tool. `include_system` adds WhatsApp's own notices, `types` narrows to one or more message types. |
+| `read_messages` | read | Messages in a chat; `before` pages further back, pulling older history from the phone; `types` narrows to one or more message types, e.g. `["call"]`; `include_previews` attaches a small image of each photo. |
+| `get_recent_messages` | read | Everything from the last N hours, grouped by chat. The catch-up tool. `include_system` adds WhatsApp's own notices, `types` narrows to one or more message types, `include_previews` attaches a small image of each photo. |
+| `get_unanswered` | read | Who is waiting on the user: chats whose last word is theirs and asks for something, with the ask quoted. Groups only when the user was @-mentioned or replied to. |
+| `wait_for_messages` | read | Block up to 55 s until a message arrives, then return it with a cursor for the next call. `addressed_to_me` wakes only for direct messages, @-mentions and replies. |
 | `search_messages` | read | Text search across the locally held messages. |
 | `get_message` | read | One message in full, with its quoted message and reactions. |
 | `search_contacts` | read | Find contacts by name or number. |
@@ -276,6 +278,32 @@ them. `--dry-run` prints the plan and touches nothing.
 | `manage_chat` | write | Archive, pin, mute (8h by default), mark read/unread. |
 | `create_group` | write | Create a group and add participants. |
 | `manage_group` | write | Add, remove, promote, demote, leave, rename, invite links. |
+
+### Seeing, waiting, following up
+
+`include_previews: true` on `get_recent_messages` or `read_messages` attaches a
+small JPEG of each photo as an image block, newest first, up to 12 per call,
+and labels each message line with the preview it belongs to, so a catch-up can
+say "a photo of a receipt" without a download. WhatsApp used to ship such a
+preview inside every image message and in 2026 almost never does, so when
+none is there wazap downloads the photo once, shrinks it to 320 px on this
+machine with pure JavaScript, and remembers the result across restarts. The
+first call over a day of photos takes a few seconds; the next is instant.
+
+`wait_for_messages` blocks until something arrives, up to 55 seconds, then
+returns it with a `cursor`. Calling it again with that cursor replays whatever
+landed in between, so an agent can sit in a loop and miss nothing. With
+`addressed_to_me` only direct messages, @-mentions of the user and replies to
+their messages wake it; group chatter does not. The user's own messages and
+WhatsApp's notices never do.
+
+`get_unanswered` returns the chats whose last word is the other side's and reads
+as an ask: a question mark, a request word, or a voice note nobody has heard
+yet. "Ok, thanks" is not an ask, a link is not a question, and an ask older
+than two weeks (`max_age_hours`) was abandoned rather than left waiting. People
+come first, then the oldest wait, each with the ask quoted and how long they
+have been waiting; a WhatsApp Business account is marked, since its asks are
+often automatic replies.
 
 Every message comes back with a non-empty `text`: media and system messages
 carry a placeholder such as `[image] caption`, `[voice message · 0:42]`, `[deleted]` or

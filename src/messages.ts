@@ -177,7 +177,11 @@ interface MediaNode {
   mimetype?: string | null;
   fileLength?: ProtoLong;
   fileName?: string | null;
+  jpegThumbnail?: Uint8Array | null;
 }
+
+/** Media whose WhatsApp envelope carries a JPEG preview of a few KB. */
+const THUMBNAIL_KEYS: ReadonlyArray<keyof WAMessageContent> = ["imageMessage", "videoMessage", "ptvMessage", "documentMessage"];
 
 /** Envelopes that only wrap another message; the inner one is the real content. */
 function unwrapEnvelopes(content: WAMessageContent | null | undefined): WAMessageContent | undefined {
@@ -415,6 +419,34 @@ export function mediaInfo(raw: WAMessage): { mime: string; size?: number; filena
     };
   }
   return undefined;
+}
+
+/**
+ * The preview WhatsApp ships inside a photo, video or document message: a JPEG
+ * of a few KB, there before any download. Enough to tell a receipt from a baby.
+ */
+export function thumbnailOf(raw: WAMessage): { mime: string; base64: string } | undefined {
+  const outer = unwrapEnvelopes(raw.message);
+  const content = outer ? (viewOnceInner(outer) ?? outer) : undefined;
+  if (!content) return undefined;
+  for (const key of THUMBNAIL_KEYS) {
+    const node = content[key] as MediaNode | null | undefined;
+    const bytes = node?.jpegThumbnail;
+    if (bytes && bytes.length > 0) return { mime: "image/jpeg", base64: Buffer.from(bytes).toString("base64") };
+  }
+  return undefined;
+}
+
+/** Who a message @-mentions, as the jids WhatsApp put on it (lid or phone). */
+export function mentionedJids(raw: WAMessage): string[] {
+  return (contextInfo(raw)?.mentionedJid ?? []).filter((jid): jid is string => typeof jid === "string" && jid.length > 0);
+}
+
+/** The author of the message this one quotes, when it is a reply. */
+export function quotedSenderJid(raw: WAMessage): string | undefined {
+  const context = contextInfo(raw);
+  if (!context?.quotedMessage) return undefined;
+  return context.participant ?? undefined;
 }
 
 function contextInfo(raw: WAMessage): proto.IContextInfo | undefined {

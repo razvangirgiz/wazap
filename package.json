@@ -2,7 +2,7 @@
   "name": "wazap-mcp",
   "version": "0.12.0",
   "mcpName": "io.github.razvangirgiz/wazap",
-  "description": "WhatsApp for your AI agent. MCP server over Baileys: pairing-code login, 26 tools, stdio or HTTP with bearer tokens and OAuth.",
+  "description": "WhatsApp for your AI agent. MCP server over Baileys: pairing-code login, 28 tools, stdio or HTTP with bearer tokens and OAuth.",
   "license": "MIT",
   "author": "Răzvan Girgiz",
   "repository": {
@@ -53,12 +53,14 @@
     "dotenv": "^16.4.5",
     "express": "^4.22.2",
     "express-rate-limit": "^8.2.1",
+    "jpeg-js": "^0.4.4",
     "qrcode": "^1.5.4",
     "qrcode-terminal": "^0.12.0",
     "zod": "^3.24.1"
   },
   "devDependencies": {
     "@types/express": "^4.17.25",
+    "@types/jpeg-js": "^0.3.0",
     "@types/node": "^22.10.0",
     "@types/qrcode": "^1.5.5",
     "@types/qrcode-terminal": "^0.12.2",
