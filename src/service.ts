@@ -543,6 +543,8 @@ const VERBS: Record<string, Verb> = {
   restart: (config, registry) => {
     const { supervisor, record } = requireService(config, registry);
     supervisor.restart(record);
+    // The unit runs whatever dist/ holds now, so the record says so too.
+    if (record.installedVersion !== WAZAP_VERSION) writeService(config.dataDir, { ...record, installedVersion: WAZAP_VERSION });
     say(ok(`Restarted ${record.label}`));
   },
   logs: (config, registry) => {

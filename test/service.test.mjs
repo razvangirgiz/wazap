@@ -159,6 +159,9 @@ test("status reports the drift between the running build and the installed one",
   const output = await captured(() => runService(config(dir, { args: ["status"] }), [supervisor]));
   assert.match(output, new RegExp(`runs 0\\.0\\.1, ${WAZAP_VERSION.replace(/\./g, "\\.")} is installed`));
   assert.match(output, /wazap service restart/);
+
+  await captured(() => runService(config(dir, { args: ["restart"] }), [supervisor]));
+  assert.equal(readService(dir).installedVersion, WAZAP_VERSION, "a restart runs the installed build, and says so");
 });
 
 test("uninstall removes the unit and the record, and leaves the data dir alone", async () => {

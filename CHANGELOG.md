@@ -55,6 +55,7 @@
 - **`search_contacts` listed a person twice**, once by number and once by lid.
   The lid entry now moves in with the phone entry as soon as the pairing is
   known, and the search never returns the same person under two ids.
+- **`wazap service restart` now records the version it started**, so `status` stops saying an older one runs.
 - **`list_chats` showed some people twice.** WhatsApp files a contact under a
   `@lid` chat and a phone chat, and once the pairing is known both rows
   canonicalised to the same `chat_id`. The list now merges the aliases: the
