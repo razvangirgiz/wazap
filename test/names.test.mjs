@@ -67,7 +67,7 @@ test("a group learns its participants' names and numbers from its metadata", () 
   assert.equal(svc.displayName("999888777666555@lid"), "Elena", "the saved contact behind the lid");
   assert.equal(svc.displayName("555666777888999@lid"), "Florin", "the name the metadata carried");
   assert.equal(svc.lidPhones.get("999888777666555@lid"), "40700000007@s.whatsapp.net");
-  assert.equal(svc.lidToPn.has("999888777666555@lid"), false, "naming a participant must not rename their chat");
+  assert.equal(svc.lidToPn.get("999888777666555@lid"), "40700000007@s.whatsapp.net", "and the number is canonical from here on");
 });
 
 test("a group message renders its sender as a name, not as a LID", async () => {
@@ -88,7 +88,8 @@ test("a group message renders its sender as a name, not as a LID", async () => {
   const { data } = await svc.readMessages(group, 10);
   assert.equal(data.length, 1);
   assert.equal(data[0].sender.name, "Gigi");
-  assert.equal(data[0].sender.id, "123123123123123@lid", "the id stays the one the chat's history is filed under");
+  assert.equal(data[0].sender.id, "40700000010@s.whatsapp.net", "the sender is the person, by number, once the pairing is known");
+  assert.equal(data[0].sender.phone, "40700000010");
 });
 
 test("pushNames survive a store round trip, so a restart does not forget who wrote", () => {

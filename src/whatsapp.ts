@@ -2021,7 +2021,7 @@ export class WhatsAppService implements WhatsAppApi {
   private relearnLid(contact: BaileysContact): void {
     if (!contact.lid) return;
     if (contact.phoneNumber) this.learnLid(contact.lid, contact.phoneNumber);
-    else if (contact.id?.endsWith("@s.whatsapp.net")) this.learnLidPhone(contact.lid, contact.id);
+    else if (contact.id?.endsWith("@s.whatsapp.net")) this.learnLid(contact.lid, contact.id);
   }
 
   /** A pairing WhatsApp stated in a field meant for it, so ids may follow it. */
@@ -2067,10 +2067,9 @@ export class WhatsAppService implements WhatsAppApi {
   }
 
   /**
-   * A pairing wazap inferred or looked up. It names people and never renames a
-   * chat: a chat whose history is filed under a LID would split in two the
-   * moment its id started canonicalising to the number instead, and the older
-   * half would stop being reachable by any id at all.
+   * The naming half of a pairing: who a lid is, for display. `learnLid` calls
+   * it and also makes the number canonical, folding any chat or contact filed
+   * under the lid into the phone one, history included, so nothing splits.
    */
   private learnLidPhone(lid: string, pn: string): void {
     if (!lid || !pn) return;
@@ -2486,7 +2485,7 @@ export class WhatsAppService implements WhatsAppApi {
     for (const p of meta.participants) {
       const lid = p.lid ?? (p.id.endsWith("@lid") ? p.id : undefined);
       const phone = p.phoneNumber ?? (p.id.endsWith("@s.whatsapp.net") ? p.id : undefined);
-      if (lid && phone) this.learnLidPhone(lid, phone);
+      if (lid && phone) this.learnLid(lid, phone);
       const name = p.name ?? p.notify ?? p.username;
       if (name) this.ingestContact({ id: phone ?? p.id, ...(lid ? { lid } : {}), notify: name });
     }
