@@ -680,11 +680,17 @@ export class WhatsAppService implements WhatsAppApi {
     return this.guarded(async () => {
       this.ensureConnected();
       await this.waitForSync();
-      const shown = this.mergeAliases(this.knownChats().filter((chat) => this.matchesChatFilter(chat, filter)))
+      const candidates = this.knownChats().filter((chat) => this.matchesChatFilter(chat, filter));
+      // The lookup can teach a pairing, and a pairing changes which rows are
+      // the same person, so it comes first and everything after it is one
+      // synchronous pass: merge, sort, cut, render. Otherwise a chat merged
+      // under its lid could render under its number and sit next to the row
+      // that already had that number.
+      await this.learnLidPhones(candidates.map((chat) => this.canonical(chat.id ?? "")));
+      const chats = this.mergeAliases(candidates)
         .sort((a, b) => this.chatActivity(b) - this.chatActivity(a))
-        .slice(0, limit);
-      await this.learnLidPhones(shown.map((chat) => this.canonical(chat.id ?? "")));
-      const chats = shown.map((chat) => this.chatSummary(chat));
+        .slice(0, limit)
+        .map((chat) => this.chatSummary(chat));
       return this.synced(chats);
     });
   }
