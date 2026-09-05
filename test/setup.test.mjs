@@ -407,11 +407,14 @@ case "$*" in
     fi
     echo 0; exit 113 ;;
   *bootout*|*"--user stop"*) [ -f ${state} ] && kill $(cat ${state}) 2>/dev/null; rm -f ${state}; exit 0 ;;
+  *bootstrap*|*kickstart*|*"--user enable --now"*|*"--user restart"*) ;;
+  *) exit 0 ;;
 esac
 [ -f "$UNIT" ] || exit 0
 LINE=$(${reader})
 env $LINE >/dev/null 2>&1 &
 echo $! > ${state}
+echo $! >> ${join(box.home, "launched")}
 exit 0
 `;
   for (const binary of SUPERVISOR_STUB) writeFileSync(join(box.bin, binary), script, { mode: 0o755 });
@@ -455,6 +458,8 @@ test(
       assert.equal(record.port, port);
       assert.equal(existsSync(record.unitFile), true, "the unit landed in the sandbox HOME");
       assert.ok(record.unitFile.startsWith(box.home), `the unit must stay in the sandbox: ${record.unitFile}`);
+      assert.equal(readFileSync(join(box.home, "launched"), "utf8").trim().split("\n").length, 1,
+        "supervisor configuration and log commands must not start additional processes");
     } finally {
       kill();
     }
