@@ -121,7 +121,7 @@ test("compact keeps the words, folds a run into one line, and counts what it lef
   assert.deepEqual(c.dropped, { media: 1, wordless: 1 });
   assert.match(compact.content[0].text, /left out: 1 media without a word, 1 wordless/);
   assert.match(compact.content[0].text, /Dan: da, de la 8 · mai avem 2 ore · \[image\] autostrada \(3 msgs\)/);
-  assert.ok(compact.content[0].text.length < full.content[0].text.length * 0.7, "well under the full size");
+  assert.ok(compact.content[0].text.split("\nCoverage:")[0].length < full.content[0].text.split("\nCoverage:")[0].length * 0.7, "well under the full size");
   assert.equal(compactConversations([]).length, 0);
 });
 

@@ -5,6 +5,13 @@ description: Install, link or repair the WhatsApp connection. Use when the user 
 
 # wazap setup
 
+## Account selection
+
+Call `list_accounts` first. With multiple profiles, pass the chosen `account_id` to every account operation below, including `get_status` and `link_account`. Preserve `(account_id, chat_id/message_id)` from results; matching names or IDs across accounts do not make them interchangeable. Show the sending account in every draft and pass its exact `draft_id` to `confirm_send`.
+
+For an explicitly combined inbox, `search_messages`, `get_recent_messages` and `get_unanswered` accept `account_ids` or `all_accounts: true`. Keep account labels in the summary. Follow each pagination cursor unchanged; an unavailable account makes results partial, never proof of absence. Other tools remain per account. Account additions require new OAuth consent.
+
+
 wazap links the user's own WhatsApp account as a "linked device" and exposes it as MCP tools. The phone must stay online; the link needs the user's hands once.
 
 ## Diagnose first
@@ -13,7 +20,7 @@ Run `npx wazap-mcp status` and branch on its output. It never contacts WhatsApp,
 
 | `status` says | Do |
 | --- | --- |
-| `wazap: command not found` / npx fails | Node 20+ is required. `node --version`; install from nodejs.org if older. |
+| `wazap: command not found` / npx fails | Node 22.16+ is required. `node --version`; install from nodejs.org if older. |
 | `linked: no` | Go to **Link**. |
 | `linked: yes`, `server: running` | The server is up. If tools still fail, call `get_status` and follow its `fix`. |
 | `linked: yes`, `server: not running` | Go to **Connect a client**. |
@@ -60,6 +67,8 @@ the tool is unavailable. `SESSION_CORRUPT` means unreadable credentials, which
 
 ## Connect a client
 
+For ChatGPT, have the user run `wazap setup --client chatgpt --data-dir <installation-directory>` on the Wazap host. It guides HTTPS/OAuth setup; publishing requires choosing that option. Use `wazap connect chatgpt` for read-only guidance. A successful first read in the chosen client is required before declaring setup complete. `setup --dry-run` makes no changes; deferring transcription preserves existing settings. ChatGPT does not automatically have a shell on that host. Follow `docs/chatgpt.md`; never ask the user to paste authentication secrets into chat. Additional accounts require new OAuth consent.
+
 Run `npx wazap-mcp connect <client>`, where the client is one of `claude-code`,
 `claude-desktop`, `cursor`, `codex`, `vscode` or `gemini`. It writes the entry,
 keeps whatever else is in the file, backs it up once, and prints the next step
@@ -67,7 +76,7 @@ keeps whatever else is in the file, backs it up once, and prints the next step
 
 - Add `--dry-run` first if the user wants to see the entry before it is written.
 - Claude Code users can install this plugin instead, which registers the server.
-- Remote clients (claude.ai, another machine) need HTTP mode with tokens; follow "HTTP mode" in the wazap README rather than improvising.
+- Remote clients use HTTP with the authentication their client supports; hosted OAuth clients use the OAuth flow in the README. Do not substitute a bearer token in conversation.
 
 Done when `get_status` returns `status: "connected"`. Then call `learn` once before using the other tools.
 

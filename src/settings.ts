@@ -1,3 +1,4 @@
+import { atomicWrite } from "./atomic-file.js";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { ask, askSecret } from "./cli.js";
@@ -14,15 +15,15 @@ import {
   type Readiness,
   type TranscribeSettings,
 } from "./transcribe/index.js";
-import { brand, dim, fix, ok, shortPath, warn } from "./ui.js";
+import { brand, dim, fix, info, ok, shortPath, warn } from "./ui.js";
 
 /** Replace `KEY=` in place, keeping every other line, or append it. */
 export function setEnvSetting(envFile: string, key: string, value: string): void {
   let text = "";
   try {
     text = readFileSync(envFile, "utf8");
-  } catch {
-    /* a data dir without an .env yet */
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
   }
 
   const line = `${key}=${value}`;
@@ -41,7 +42,7 @@ export function setEnvSetting(envFile: string, key: string, value: string): void
   }
 
   mkdirSync(dirname(envFile), { recursive: true, mode: 0o700 });
-  writeFileSync(envFile, text, { mode: 0o600 });
+  atomicWrite(envFile, text);
 }
 
 interface SettingRow {
@@ -69,16 +70,17 @@ const SETTINGS: readonly SettingRow[] = [
 ];
 
 /** Every setting `wazap config <name> <value>` can change, and what each accepts. */
-const COMMANDS: Record<string, { values: readonly string[]; apply: (config: Config, value: string) => Promise<void> }> = {
-  writes: {
-    values: ["on", "off"],
-    apply: async (config, value) => applyWrites(config, value === "on"),
-  },
-  transcribe: {
-    values: ["local", "openai", "off"],
-    apply: applyTranscribe,
-  },
-};
+const COMMANDS: Record<string, { values: readonly string[]; apply: (config: Config, value: string) => Promise<void> }> =
+  {
+    writes: {
+      values: ["on", "off"],
+      apply: async (config, value) => applyWrites(config, value === "on"),
+    },
+    transcribe: {
+      values: ["local", "openai", "off"],
+      apply: applyTranscribe,
+    },
+  };
 
 const USAGE_FIX = "Run `wazap config writes on|off` or `wazap config transcribe local|openai|off`";
 
@@ -120,7 +122,7 @@ function transcribeSettings(env: NodeJS.ProcessEnv, dataDir: string): Transcribe
 }
 
 function transcribeRows(config: Config): string[] {
-  const settings = transcribeSettings(process.env, config.dataDir);
+  const settings = transcribeSettings(config.accountEnv ?? process.env, config.dataDir);
   if (settings instanceof WazapError) {
     return [`transcribe: ${settings.message}${settings.fix === undefined ? "" : ` — ${settings.fix}`}`];
   }
@@ -144,6 +146,10 @@ const TRANSCRIBE_SAID: Record<string, string> = {
  * is about to close.
  */
 export async function applyTranscribe(config: Config, choice: string, report = true): Promise<void> {
+  if (config.dryRun) {
+    say(info(`Simulation: would set transcription to ${choice}; no settings, credentials or downloads changed.`));
+    return;
+  }
   const p = paths(config.dataDir);
   const writes: Record<string, string> = { WAZAP_TRANSCRIBE: choice };
 
@@ -190,6 +196,10 @@ async function reportReadiness(env: NodeJS.ProcessEnv, dataDir: string): Promise
 
 /** Persist the writes answer, then say what is now true and how to change it. */
 export function applyWrites(config: Config, allowWrites: boolean): void {
+  if (config.dryRun) {
+    say(info(`Simulation: would set writes ${allowWrites ? "on" : "off"}; no settings changed.`));
+    return;
+  }
   const p = paths(config.dataDir);
   setEnvSetting(p.envFile, "WAZAP_READ_ONLY", allowWrites ? "0" : "1");
   say(

@@ -377,3 +377,14 @@ test(
     );
   },
 );
+
+test('reinstall preserves a service port when CLI did not configure one, but honors an explicit new port',async()=>{
+ const dir=dataDir(), supervisor=fakeSupervisor(dir);
+ const first=config(dir);
+ await captured(()=>installService(first,supervisor,0));
+ await captured(()=>installService(config(dir,{httpPortConfigured:false}),supervisor,0));
+ assert.equal(readService(dir).port,first.httpPort);
+ const next=config(dir,{httpPortConfigured:true});
+ await captured(()=>installService(next,supervisor,0));
+ assert.equal(readService(dir).port,next.httpPort);
+});

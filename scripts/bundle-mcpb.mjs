@@ -14,7 +14,9 @@ import { fileURLToPath } from "node:url";
 const root = fileURLToPath(new URL("..", import.meta.url));
 const outDir = join(root, "dist-bundle");
 const stage = join(outDir, "stage");
-const version = JSON.parse(readFileSync(join(root, "package.json"), "utf8")).version;
+const metadata = JSON.parse(readFileSync(join(root, "package.json"), "utf8"));
+const { version } = metadata;
+const publicDocs = metadata.files.filter(name => name.startsWith("docs/"));
 const bundle = join(outDir, `wazap-${version}.mcpb`);
 
 const run = (command, args, cwd) => execFileSync(command, args, { cwd, stdio: "inherit" });
@@ -25,14 +27,15 @@ rmSync(outDir, { recursive: true, force: true });
 mkdirSync(stage, { recursive: true });
 // `skills` is here because the server reads it at runtime to serve the
 // workflows as MCP prompts, which is the only way they reach Claude Desktop.
-for (const name of ["manifest.json", "icon.png", "package.json", "package-lock.json", "README.md", "LICENSE", "dist", "skills"]) {
+for (const name of ["manifest.json", "icon.png", "package.json", "npm-shrinkwrap.json", "README.md", "AGENT.md", "LICENSE", "dist", "skills", ...publicDocs]) {
+  mkdirSync(join(stage, name, ".."), { recursive: true });
   cpSync(join(root, name), join(stage, name), { recursive: true });
 }
 
 run("npm", ["install", "--omit=dev", "--ignore-scripts", "--no-audit", "--no-fund"], stage);
 // The lockfile npm just rewrote describes a tree without devDependencies, and
 // shipping it would tell anyone reading the bundle the wrong thing.
-rmSync(join(stage, "package-lock.json"), { force: true });
+rmSync(join(stage, "npm-shrinkwrap.json"), { force: true });
 
 run("npx", ["-y", "@anthropic-ai/mcpb@2", "validate", join(stage, "manifest.json")], root);
 run("npx", ["-y", "@anthropic-ai/mcpb@2", "pack", stage, bundle], root);

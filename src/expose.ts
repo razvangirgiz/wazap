@@ -161,7 +161,7 @@ function findProvider(name: string, providers: readonly TunnelProvider[]): Tunne
 }
 
 function requireService(config: Config, registry: readonly Supervisor[]): Installed {
-  const found = installedService(config.dataDir, registry);
+  const found = installedService((config.rootDataDir ?? config.dataDir), registry);
   if (found === null) {
     throw new WazapError(
       "SERVICE_ERROR",
@@ -230,13 +230,13 @@ async function exposeOn(
     supervisor.restart(ref);
   }
 
-  const p = paths(config.dataDir);
+  const p = paths((config.rootDataDir ?? config.dataDir));
   setEnvSetting(p.envFile, "WAZAP_PUBLIC_URL", url);
   const fresh = config.oauthPassword === null;
   const password = config.oauthPassword ?? newPassword();
   if (fresh) setEnvSetting(p.envFile, "WAZAP_OAUTH_PASSWORD", password);
 
-  writeService(config.dataDir, { ...record, tunnel: { provider: provider.name, url } });
+  writeService((config.rootDataDir ?? config.dataDir), { ...record, tunnel: { provider: provider.name, url } });
   supervisor.restart(record);
 
   say(ok(`${provider.describe} · ${url}`));
@@ -264,9 +264,9 @@ async function exposeOff(
     providers.find((provider) => provider.name === record.tunnel?.provider)?.close(record.port);
   }
 
-  setEnvSetting(paths(config.dataDir).envFile, "WAZAP_PUBLIC_URL", "");
+  setEnvSetting(paths((config.rootDataDir ?? config.dataDir)).envFile, "WAZAP_PUBLIC_URL", "");
   const { tunnel: _dropped, ...kept } = record;
-  writeService(config.dataDir, kept);
+  writeService((config.rootDataDir ?? config.dataDir), kept);
   supervisor.restart(kept);
 
   say(ok("Tunnel off. Only this machine reaches wazap again."));

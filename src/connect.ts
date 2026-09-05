@@ -1,3 +1,4 @@
+import { chatgptConnectionGuide, effectiveChatgptConfig } from "./chatgpt.js";
 import { spawnSync } from "node:child_process";
 import { copyFileSync, existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
@@ -189,7 +190,16 @@ export function whereInstalled(
 ): Install {
   const script = binPath === "" ? "" : resolve(binPath);
   if (isNpxPath(binPath)) return { kind: "npx", script };
-  if (commandOnPath("wazap", pathEnv, exists)) return { kind: "global", script };
+  const onPath = commandPath("wazap", pathEnv, exists);
+  if (onPath) {
+    try {
+      if (realpathSync(onPath) === realpathSync(script)) return { kind: "global", script };
+    } catch {
+      // A package path or a direct launcher can still be classified when inspecting another host.
+      if (/[/\\]node_modules[/\\]wazap(?:-mcp)?[/\\]/.test(script) || resolve(onPath) === script)
+        return { kind: "global", script };
+    }
+  }
   return { kind: "checkout", script };
 }
 
@@ -275,7 +285,7 @@ export function detectClients(probe: Probes = REAL_PROBES): ClientSpec[] {
  * the client at a command that does not exist.
  */
 export function entryFor(install: Install): McpEntry {
-  if (install.kind === "npx") return { command: "npx", args: ["-y", "wazap-mcp"] };
+  if (install.kind === "npx") return { command: "npx", args: ["-y", `wazap-mcp@${WAZAP_VERSION}`] };
   if (install.kind === "global") return { command: "wazap", args: [] };
   return { command: "node", args: [install.script] };
 }
@@ -291,12 +301,13 @@ export function mcpEntry(config: Config, spec: ClientSpec, install: Install = wh
   const entry = entryFor(install);
   // The global `wazap` bin is a symlink into the package, and launchd's PATH has
   // neither it nor npx, so a GUI client gets this Node and the script behind it.
-  if (spec.gui && entry.command === "wazap") {
+  if (spec.gui && (entry.command === "wazap" || install.kind === "checkout")) {
     entry.command = process.execPath;
     entry.args = [realpathSync(install.script)];
   }
-  if (config.dataDir !== defaultDataDir()) entry.args.push("--data-dir", config.dataDir);
-  if (config.readOnly) entry.args.push("--read-only");
+  const installationDir = config.rootDataDir ?? config.dataDir;
+  if (installationDir !== defaultDataDir()) entry.args.push("--data-dir", installationDir);
+  if (config.readOnly && config.sources.readOnly === "flag") entry.args.push("--read-only");
   return entry;
 }
 
@@ -346,6 +357,18 @@ export function connectClient(spec: ClientSpec, config: Config, install?: Instal
 }
 
 export function runConnect(config: Config): void {
+  if (config.args[0] === "chatgpt") {
+    const guide = chatgptConnectionGuide(effectiveChatgptConfig(config));
+    if (config.json) process.stdout.write(`${JSON.stringify(guide, null, 2)}\n`);
+    else say([
+      "Connect Wazap to ChatGPT",
+      guide.endpoint ? `MCP URL: ${guide.endpoint}` : "MCP URL: not configured",
+      `Configuration: ${guide.state} (connection not tested)`,
+      ...guide.steps.map((step, i) => `${i + 1}. ${step}`),
+      guide.docs,
+    ].join("\n"));
+    return;
+  }
   const spec = findClient(config.args[0] ?? "");
   connectClient(spec, config);
   say(nextHint(spec.next));

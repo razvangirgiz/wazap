@@ -1,11 +1,14 @@
 {
   "name": "wazap",
-  "version": "0.13.0",
+  "version": "0.15.0-beta.1",
   "description": "WhatsApp for your agent: chats, messages, media, contacts and groups behind MCP tools.",
   "mcpServers": {
     "whatsapp": {
       "command": "npx",
-      "args": ["-y", "wazap-mcp"]
+      "args": [
+        "-y",
+        "wazap-mcp@0.15.0-beta.1"
+      ]
     }
   },
   "contextFileName": "GEMINI.md"

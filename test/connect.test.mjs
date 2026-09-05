@@ -1,13 +1,15 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 
 import { GUI_PATH, findClient, isNpxPath, launchCheck, launcher, relaunch, stableWazap, whereInstalled } from "../dist/connect.js";
+
+import { WAZAP_VERSION } from "../dist/config.js";
 
 const run = promisify(execFile);
 const binary = join(dirname(fileURLToPath(import.meta.url)), "..", "dist", "index.js");
@@ -17,7 +19,7 @@ function sandbox() {
   const cwd = mkdtempSync(join(tmpdir(), "wazap-cwd-"));
   const bin = join(home, "bin");
   mkdirSync(bin);
-  writeFileSync(join(bin, "wazap"), "", { mode: 0o755 });
+  symlinkSync(binary, join(bin, "wazap"));
   return { home, cwd, bin };
 }
 
@@ -173,7 +175,7 @@ for (const [binPath, expected] of BIN_PATHS) {
 }
 
 const LAUNCHERS = [
-  ["/Users/x/.npm/_npx/8a1b/node_modules/wazap/dist/index.js", "/usr/bin", [], { command: "npx", args: ["-y", "wazap-mcp"] }],
+  ["/Users/x/.npm/_npx/8a1b/node_modules/wazap/dist/index.js", "/usr/bin", [], { command: "npx", args: ["-y", `wazap-mcp@${WAZAP_VERSION}`] }],
   ["/usr/local/lib/node_modules/wazap/dist/index.js", "/usr/local/bin:/usr/bin", ["/usr/local/bin/wazap"], { command: "wazap", args: [] }],
   ["/Users/x/Projects/wazap/dist/index.js", "/usr/local/bin:/usr/bin", [], { command: "node", args: ["/Users/x/Projects/wazap/dist/index.js"] }],
 ];

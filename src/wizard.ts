@@ -139,8 +139,7 @@ function typewriterOff(): boolean {
 function sleep(ms: number): Promise<void> {
   if (ms <= 0) return Promise.resolve();
   return new Promise((resolve) => {
-    const timer = setTimeout(resolve, ms);
-    timer.unref();
+    setTimeout(resolve, ms);
   });
 }
 

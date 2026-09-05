@@ -14,7 +14,7 @@ export type ConnectionStatus =
   | "session_corrupt"
   | "auth_failure";
 
-export type SyncState = "in_progress" | "done";
+export type SyncState = "in_progress" | "done" | "partial";
 
 export type ChatType = "individual" | "group";
 
@@ -66,6 +66,7 @@ export interface PairingInfo {
 
 export interface StatusInfo {
   status: ConnectionStatus;
+  archive?: { state: string; error: string | null; migrated: boolean; unknown_sends?: number };
   /** When the socket entered `status`. What /healthz calls a stall on. */
   status_since: string;
   sync: SyncState;
@@ -178,7 +179,11 @@ export interface UnansweredChat {
   age: string;
 }
 
+export interface ReadSnapshot { through: number; watermark: number; anchor?: { ts: number; sid: string } }
+
 export interface SearchOptions {
+  snapshot?: ReadSnapshot;
+  before?: string;
   /** Epoch ms; only messages at or after it. */
   sinceMs?: number;
   /** Epoch ms; only messages at or before it. */
@@ -268,15 +273,7 @@ export interface TranscribeResult {
   cached: boolean;
 }
 
-export type ChatAction =
-  | "archive"
-  | "unarchive"
-  | "pin"
-  | "unpin"
-  | "mute"
-  | "unmute"
-  | "mark_read"
-  | "mark_unread";
+export type ChatAction = "archive" | "unarchive" | "pin" | "unpin" | "mute" | "unmute" | "mark_read" | "mark_unread";
 
 export type GroupAction =
   | "add"
@@ -312,6 +309,11 @@ export interface MediaSource {
 export interface Synced<T> {
   data: T;
   sync: SyncState;
+  coverage?: Record<string, unknown>;
+  has_more_local?: boolean;
+  history_fetch?: string;
+  next_before?: string | null;
+  next_cursor?: string | null;
 }
 
 export interface ContactSyncResult {
@@ -325,6 +327,7 @@ export interface ContactSyncResult {
  * against the contract rather than the implementation.
  */
 export interface WhatsAppApi {
+  captureReadSnapshot?(): Promise<ReadSnapshot>;
   getStatus(): StatusInfo;
   link(phone: string): Promise<PairingInfo>;
   listChats(filter: ChatFilter, limit: number): Promise<Synced<ChatSummary[]>>;
@@ -334,8 +337,16 @@ export interface WhatsAppApi {
     filter: Exclude<ChatFilter, "archived">,
     includeSystem?: boolean,
     types?: MessageType[],
+    limit?: number,
+    cursor?: string,
+    snapshot?: ReadSnapshot,
   ): Promise<Synced<RecentConversation[]>>;
-  searchMessages(query: string, chatId: string | undefined, limit: number, opts?: SearchOptions): Promise<Synced<MessageView[]>>;
+  searchMessages(
+    query: string,
+    chatId: string | undefined,
+    limit: number,
+    opts?: SearchOptions,
+  ): Promise<Synced<MessageView[]>>;
   getMessage(messageId: string): Promise<MessageView>;
   searchContacts(query: string, limit: number): Promise<ContactSummary[]>;
   getContact(contactId: string): Promise<ContactDetails>;

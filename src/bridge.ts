@@ -26,7 +26,12 @@ const HEARTBEAT_MS = 1_000;
  * `daemonFile` is here because the heartbeat re-reads the sidecar, and DaemonInfo
  * carries no path.
  */
-export async function runBridge(daemon: DaemonInfo, daemonFile: string): Promise<void> {
+export async function runBridge(
+  daemon: DaemonInfo,
+  daemonFile: string,
+  readOnly = false,
+  accountIds?: string[],
+): Promise<void> {
   let left = false;
   /** Exit 1 so the client restarts us, and the restart becomes the new daemon. */
   const leave = (reason: string): void => {
@@ -38,36 +43,65 @@ export async function runBridge(daemon: DaemonInfo, daemonFile: string): Promise
 
   const client = new Client({ name: "wazap-bridge", version: WAZAP_VERSION });
   await client.connect(
-    new StreamableHTTPClientTransport(new URL(`http://127.0.0.1:${daemon.port}/mcp`), {
-      requestInit: { headers: { Authorization: `Bearer ${daemon.token}` } },
-    }),
+    new StreamableHTTPClientTransport(
+      new URL(`http://127.0.0.1:${daemon.port}/mcp`),
+      {
+        requestInit: {
+          headers: {
+            Authorization: `Bearer ${daemon.token}`,
+            "x-wazap-read-only": readOnly ? "1" : "0",
+            ...(accountIds ? { "x-wazap-accounts": accountIds.join(",") } : {}),
+          },
+        },
+      },
+    ),
   );
 
   const caps = client.getServerCapabilities() ?? {};
-  const server = new Server(client.getServerVersion() ?? { name: "wazap", version: daemon.version }, {
-    // Only what we forward: the daemon has no resources, and we have no handler
-    // for them. The SDK refuses a handler for a capability we did not declare,
-    // so the prompts pair is registered under the same condition.
-    capabilities: { tools: caps.tools ?? {}, ...(caps.prompts ? { prompts: caps.prompts } : {}) },
-    instructions: client.getInstructions(),
-  });
+  const server = new Server(
+    client.getServerVersion() ?? { name: "wazap", version: daemon.version },
+    {
+      // Only what we forward: the daemon has no resources, and we have no handler
+      // for them. The SDK refuses a handler for a capability we did not declare,
+      // so the prompts pair is registered under the same condition.
+      capabilities: {
+        tools: caps.tools ?? {},
+        ...(caps.prompts ? { prompts: caps.prompts } : {}),
+      },
+      instructions: client.getInstructions(),
+    },
+  );
   server.setRequestHandler(ListToolsRequestSchema, (req) =>
-    client.request({ method: "tools/list", params: req.params }, ListToolsResultSchema),
+    client.request(
+      { method: "tools/list", params: req.params },
+      ListToolsResultSchema,
+    ),
   );
   server.setRequestHandler(CallToolRequestSchema, (req) =>
-    client.request({ method: "tools/call", params: req.params }, CallToolResultSchema),
+    client.request(
+      { method: "tools/call", params: req.params },
+      CallToolResultSchema,
+    ),
   );
   if (caps.prompts) {
     server.setRequestHandler(ListPromptsRequestSchema, (req) =>
-      client.request({ method: "prompts/list", params: req.params }, ListPromptsResultSchema),
+      client.request(
+        { method: "prompts/list", params: req.params },
+        ListPromptsResultSchema,
+      ),
     );
     server.setRequestHandler(GetPromptRequestSchema, (req) =>
-      client.request({ method: "prompts/get", params: req.params }, GetPromptResultSchema),
+      client.request(
+        { method: "prompts/get", params: req.params },
+        GetPromptResultSchema,
+      ),
     );
   }
 
-  client.onclose = () => leave(`the session holder (pid ${daemon.pid}) closed the connection`);
-  client.onerror = () => leave(`lost the connection to the session holder (pid ${daemon.pid})`);
+  client.onclose = () =>
+    leave(`the session holder (pid ${daemon.pid}) closed the connection`);
+  client.onerror = () =>
+    leave(`lost the connection to the session holder (pid ${daemon.pid})`);
   // A dead daemon does not close the client: the transport retries its stream and
   // reports nothing, measured. So the liveness of the pid is ours to watch.
   const heartbeat = setInterval(() => {

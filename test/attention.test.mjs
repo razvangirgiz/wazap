@@ -269,7 +269,7 @@ test("get_unanswered lists the people whose ask is still open, oldest first, and
       ["120363000000000001@g.us", "group", "@Răzvan tu?", 2],
     ],
   );
-  assert.match(all.content[0].text, /Waiting on you \(3\)/);
+  assert.match(all.content[0].text, /Possible follow-ups \(3\)/);
   assert.match(all.content[0].text, /> poți să-mi trimiți contractul\?/);
 
   const old = await call("get_unanswered", { min_age_hours: 48 });
@@ -287,6 +287,7 @@ test("a voice note nobody has heard is an ask; a transcribed one is judged on it
   assert.deepEqual(result.structuredContent.chats.map((c) => c.ask.type), ["voice"]);
 
   svc.store.transcripts.set(`false_${ANA}_${id}`, { text: "gata, am rezolvat, mersi", provider: "local" });
+  await svc.appendHistory([svc.store.messages.get(`false_${ANA}_${id}`)]);
   result = await call("get_unanswered", {});
   assert.deepEqual(result.structuredContent.chats, [], "the words say nothing was asked");
 });

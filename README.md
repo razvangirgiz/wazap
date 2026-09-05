@@ -8,34 +8,42 @@
 ```
 
 **WhatsApp for your AI agent.** An MCP server that puts your WhatsApp account —
-chats, messages, media, contacts, groups — behind 31 tools any MCP client can
-call. Pairing-code login, no browser, no phone-number reseller, ~20 MB of RAM.
+chats, messages, media, contacts, groups — behind 32 tools any MCP client can
+call. Pairing-code login, no phone-number reseller.
 
 Built on [Baileys](https://github.com/WhiskeySockets/Baileys), which speaks the
 WhatsApp multi-device protocol over a WebSocket.
+
+## Beta 0.15.0-beta.1
+
+This branch is an opt-in beta. The stable npm channel remains separate. Start with read access and a small group of testers. See the [beta guide](docs/beta.md) for backup, setup, acceptance checks, known limits and rollback.
+
+```bash
+npm install -g wazap-mcp@0.15.0-beta.1
+wazap setup
+```
+
+For ChatGPT: `wazap setup --client chatgpt`. Existing users must stop the old service and back up its complete data directory before upgrading. Keep each person's installation and data separate; this is not a hosted multi-user service.
 
 ## Get started
 
 The npm package is `wazap-mcp`; the command it installs is `wazap`.
 
 ```bash
-npx wazap-mcp setup
+npx wazap-mcp@0.15.0-beta.1 setup
 ```
 
-That is the whole install. It links your account, finds the MCP clients
-installed on this machine, writes their config, copies the five skills where
-that client reads them, and tells you what to restart. At a terminal it is one
-black, centered screen per step: ghosted ASCII logo, step number, then the
-QR or the question. Piped output stays a log. When you
-started through `npx`, `setup` offers to install wazap globally so Claude
-Desktop and the background service have a path that does not change. It also
-offers to `brew install` whisper-cpp, ffmpeg or Tailscale when a step needs one
-and it is missing, and to restart Claude Desktop itself once it has connected it.
+Choose where to use Wazap first. Setup reuses a linked account or guides you through linking, configures your chosen client and checks the connection. With multiple accounts, choose one by name. No client is preselected in the interactive menu.
+
+For ChatGPT, run `npx wazap-mcp setup --client chatgpt`. The wizard offers HTTPS setup or an address you already manage, checks OAuth discovery and explains the final steps in ChatGPT. The host must stay running. Setup is complete only after your first successful read in the chosen client.
+
+Transcription is optional and comes last. Choosing Later keeps your existing settings. Use `--dry-run` to preview setup without linking, writing files, downloading models or installing services. Setup offers a stable global installation when needed; it also reports when the running service uses a different version.
 
 ### Or the path your harness prefers
 
 | Harness | Fastest path |
 | --- | --- |
+| ChatGPT | `npx wazap-mcp setup --client chatgpt`; see the [guide](docs/chatgpt.md) |
 | Claude Code | `/plugin marketplace add razvangirgiz/wazap`, then `/plugin install wazap@wazap` |
 | Claude Desktop | download `wazap-<version>.mcpb` from [Releases](https://github.com/razvangirgiz/wazap/releases) and double-click it |
 | Gemini CLI | `gemini extensions install https://github.com/razvangirgiz/wazap` |
@@ -95,15 +103,15 @@ it would write.
 
 Cursor and VS Code install from a link:
 
-[![Install in Cursor](https://cursor.com/deeplink/mcp-install-dark.png)](cursor://anysphere.cursor-deeplink/mcp/install?name=whatsapp&config=eyJjb21tYW5kIjoibnB4IiwiYXJncyI6WyIteSIsIndhemFwLW1jcCJdfQ)
-[![Install in VS Code](https://img.shields.io/badge/VS_Code-Install_Server-0098FF?style=flat-square&logo=visualstudiocode&logoColor=white)](vscode:mcp/install?%7B%22name%22%3A%22whatsapp%22%2C%22command%22%3A%22npx%22%2C%22args%22%3A%5B%22-y%22%2C%22wazap-mcp%22%5D%7D)
+[![Install in Cursor](https://cursor.com/deeplink/mcp-install-dark.png)](cursor://anysphere.cursor-deeplink/mcp/install?name=whatsapp&config=eyJjb21tYW5kIjoibnB4IiwiYXJncyI6WyIteSIsIndhemFwLW1jcEAwLjE1LjAtYmV0YS4xIl19)
+[![Install in VS Code](https://img.shields.io/badge/VS_Code-Install_Server-0098FF?style=flat-square&logo=visualstudiocode&logoColor=white)](vscode:mcp/install?%7B%22name%22%3A%22whatsapp%22%2C%22command%22%3A%22npx%22%2C%22args%22%3A%5B%22-y%22%2C%22wazap-mcp%400.15.0-beta.1%22%5D%7D)
 
 Both carry the same entry `connect` writes. Where a custom scheme is stripped
 before you can click it, VS Code also takes
-[the https form](https://insiders.vscode.dev/redirect/mcp/install?name=whatsapp&config=%7B%22command%22%3A%22npx%22%2C%22args%22%3A%5B%22-y%22%2C%22wazap-mcp%22%5D%7D).
+[the https form](https://insiders.vscode.dev/redirect/mcp/install?name=whatsapp&config=%7B%22command%22%3A%22npx%22%2C%22args%22%3A%5B%22-y%22%2C%22wazap-mcp%400.15.0-beta.1%22%5D%7D).
 `node scripts/badges.mjs` reprints all three.
 
-Any other MCP client works the same way: the command is `npx -y wazap-mcp`, the
+Any other MCP client works the same way: the command is `npx -y wazap-mcp@0.15.0-beta.1`, the
 transport is stdio. Tell the agent to call `learn` first — it returns the id
 formats, the workflows and every error code with what to do about it.
 
@@ -233,7 +241,7 @@ holds a grant. See [Hosted agents (OAuth)](#hosted-agents-oauth) for what that
 page does. `npx wazap-mcp expose off` takes the tunnel down and keeps the
 password, so the next `expose` hands agents the same one.
 
-`npx wazap-mcp setup` asks all of this once, as its fourth step.
+`npx wazap-mcp setup` offers the hosting options needed by your chosen client.
 
 ### Upgrade
 
@@ -250,6 +258,7 @@ them. `--dry-run` prints the plan and touches nothing.
 
 | Tool | Kind | What it does |
 | --- | --- | --- |
+| `list_accounts` | read | Discover accessible account IDs, names, connection and archive states. |
 | `learn` | read | The guide to every tool, id format and error code. Call it first. |
 | `get_status` | read | Connection status, sync state, linked account, named-contact count, versions, data dir. |
 | `link_account` | read | Pair the account without a terminal: returns the code to type into the phone. Registered in read-only mode too. |
@@ -473,6 +482,11 @@ trace, so an agent can decide whether to retry, ask the user, or stop.
 | `DRAFT_NOT_FOUND` / `DRAFT_EXPIRED` | The preview was already sent, unknown, or older than 15 minutes. Draft again. |
 | `TIMEOUT` / `WHATSAPP_ERROR` | WhatsApp did not answer, or rejected the operation. |
 
+## Consolidation in 0.14
+
+See [upgrade, permissions, archive migration and read-result changes](docs/consolidation.md).
+The archive stores every synchronized message locally; withdrawn and expired content is removed from active results. Node 22.16+ is required.
+
 ## Data directory
 
 Everything lives in `~/.wazap` (override with `--data-dir` or `WAZAP_DATA_DIR`),
@@ -482,11 +496,13 @@ created `0700` with credentials written `0600`:
 ~/.wazap/
   auth/         WhatsApp credentials — treat this like a password
   media/        downloads from download_media
-  history/      per-chat message history, so a restart is not amnesia
+  history/      preserved JSONL migration backups; no longer written
   previews/     one small JPEG per photo or video already previewed
   notes.json    notes on contacts and "handled" marks; never sent anywhere
   models/       whisper.cpp models, when transcription runs locally
-  store.json    chat-list snapshot
+  archive.sqlite indexed message archive and send journal
+  state.json    current chat-list snapshot
+  store.json    preserved migration snapshot
   server.lock   pid of the running server
   daemon.json   loopback endpoint a second wazap bridges to
   oauth.json    registered agents and hashed OAuth grants, when OAuth is on
@@ -506,8 +522,9 @@ endpoint. There is nothing to configure, and no client can tell the difference.
 The owner publishes `<data-dir>/daemon.json` (`0600`) with its pid, its port
 and the token a bridge authenticates with.
 
-A bridge serves whatever the owner exposes, so an owner started `--read-only`
-makes every client read-only, whatever flags that client was launched with.
+A bridge uses the intersection of its own permissions and the owner’s. Either
+process started with `--read-only` prevents that client from writing. The bridge
+token works only on the private loopback listener.
 
 When the owner exits, the bridges exit with it, and the next `wazap` a client
 starts becomes the new owner.
@@ -605,6 +622,10 @@ Claude Code, Claude Desktop, Cursor, Codex, VS Code, Poke and any client with an
 
 claude.ai Connectors, ChatGPT and some hosted agents will not take a static header. They want OAuth, which is the next section.
 
+### ChatGPT
+
+Run `wazap setup --client chatgpt` for guided setup. Use `wazap connect chatgpt` for read-only connection guidance, or add `--json` for structured guidance. This command does not expose the server or register a connection automatically. See the [ChatGPT guide](docs/chatgpt.md) and [conversation evaluation set](docs/chatgpt-evaluation.md).
+
 ### Hosted agents (OAuth)
 
 Two more lines in the same `.env` turn wazap into its own OAuth 2.1 server:
@@ -617,14 +638,14 @@ WAZAP_OAUTH_PASSWORD=$(openssl rand -base64 18)
 Then give an agent nothing but `https://wazap.example.com/mcp`. It finds the
 authorization server at `/.well-known/oauth-protected-resource/mcp`, registers
 itself (RFC 7591, so there is no client id to paste anywhere), and sends you to
-a page on your own host that asks two things: the password above, and whether
-this agent may only read or also send. A refresh token keeps the agent signed
+a page on your own host that verifies the password, then asks which accounts
+to authorize and whether this agent may only read or also send. A refresh token keeps the agent signed
 in until you revoke it; access tokens rotate every 24 hours on their own.
 
-Tested against the flow claude.ai, ChatGPT and Poke use: S256 PKCE, public
+Protocol tests cover hosted-client OAuth flows: S256 PKCE, public
 clients, `/token` with refresh, `/revoke`. The bearer tokens keep working next
 to it, so a laptop client on a header and a hosted agent on OAuth share one
-server.
+server. These tests do not establish a completed live connection in every hosted client.
 
 What to know before exposing it:
 
@@ -648,8 +669,9 @@ What to know before exposing it:
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
+| `WAZAP_EXPORT_DIR` | unset | Directory whose files HTTP agents may send. |
 | `WAZAP_DATA_DIR` | `~/.wazap` | Where everything is stored. |
-| `WAZAP_READ_ONLY` | `0` | Do not register the write tools. |
+| `WAZAP_READ_ONLY` | `1` | Do not register the write tools. |
 | `WAZAP_SYNC_FULL_HISTORY` | `0` | Ask WhatsApp for a fuller history sync. |
 | `WAZAP_PERSIST_HISTORY` | `1` | Keep chats and messages across restarts. |
 | `WAZAP_RATE_LIMIT` | `20` | Write tool calls per minute; `0` disables. |
@@ -713,3 +735,21 @@ binary against a throwaway data directory and checks that an unlinked install
 still answers `initialize`, `tools/list` and `get_status`.
 
 MIT licensed.
+
+
+## Multiple personal accounts
+
+One MCP connection can use several of your WhatsApp accounts at once. Each account has separate credentials, archive, notes, media and drafts.
+
+```sh
+wazap accounts list
+wazap accounts add --name Business
+wazap login --account <account_id>
+wazap status --account <account_id>
+```
+
+Keep the existing account in place; `accounts list` identifies it as `default`. New profiles receive generated IDs. With a running shared daemon, CLI login uses its private endpoint and phone-number pairing.
+
+Call `list_accounts` in the agent. With multiple profiles, pass `account_id` on account operations. Search, recent messages and follow-up candidates also accept `account_ids` or `all_accounts: true`. Every result carries its source account; confirm a draft with the exact `draft_id` returned. There is no global active account.
+
+OAuth asks for a password before showing accounts, then grants only the selected accounts. New accounts need new consent. See [multi-account operation, access and recovery](docs/multi-account.md).

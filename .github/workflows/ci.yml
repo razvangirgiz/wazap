@@ -1,0 +1,61 @@
+name: Checks
+on: [push, pull_request, workflow_dispatch]
+permissions:
+  contents: read
+concurrency:
+  group: checks-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  test:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        node: ['22.16.0', '24']
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+          cache-dependency-path: npm-shrinkwrap.json
+      - uses: actions/setup-python@v5
+        if: runner.os != 'Windows'
+        with:
+          python-version: '3.12'
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
+      - run: node test/smoke-stdio.mjs
+      - run: npm audit --omit=dev
+      - run: node scripts/build-context.mjs --check
+      - run: npm run release:check
+      - run: node scripts/smoke-distribution.mjs
+      - run: node scripts/smoke-distribution.mjs local dist/index.js --multi
+  docker:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker build -t wazap-test .
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22.16.0'
+      - run: npm ci
+      - run: node scripts/smoke-distribution.mjs docker wazap-test
+      - run: node scripts/smoke-distribution.mjs docker wazap-test --multi
+      - run: npm run bundle:mcpb
+      - run: node scripts/check-release.mjs dist-bundle/stage
+      - run: node scripts/smoke-distribution.mjs mcpb dist-bundle/stage/dist/index.js
+      - run: node scripts/smoke-distribution.mjs mcpb dist-bundle/stage/dist/index.js --multi
+      - name: Verify installed npm tarball
+        run: |
+          task_package_dir=$(mktemp -d)
+          npm pack --pack-destination "$task_package_dir"
+          (cd "$task_package_dir" && npm init -y && npm install --omit=dev --ignore-scripts ./wazap-mcp-*.tgz && npm audit --omit=dev)
+          node scripts/smoke-distribution.mjs npm "$task_package_dir/node_modules/wazap-mcp/dist/index.js"
+          node scripts/smoke-distribution.mjs npm "$task_package_dir/node_modules/wazap-mcp/dist/index.js" --multi
+      - uses: actions/upload-artifact@v4
+        with:
+          name: beta-mcpb
+          path: dist-bundle/*.mcpb
+          retention-days: 14

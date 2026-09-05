@@ -1,4 +1,6 @@
-import { accessSync, constants, statSync } from "node:fs";
+import { join } from "node:path";
+import { inspectArchive } from "./archive.js";
+import { existsSync, accessSync, constants, statSync } from "node:fs";
 import { readLinkedAccount } from "./auth-state.js";
 import { WAZAP_VERSION, paths, type Config } from "./config.js";
 import { WazapError, asWazapError } from "./errors.js";
@@ -35,7 +37,7 @@ const GLYPH: Record<CheckState, (text: string) => string> = { ok, fail, info };
 const TINT: Record<CheckState, (text: string) => string> = { ok: green, fail: red, info: dim };
 
 const UPDATE_TIMEOUT_MS = 2_000;
-const MIN_NODE_MAJOR = 20;
+const MIN_NODE_MAJOR = 22;
 
 /** A check function may answer with a group, the way transcription does. */
 type CheckFn = (config: Config) => Check | Check[] | Promise<Check | Check[]>;
@@ -47,6 +49,7 @@ const CHECKS: readonly CheckFn[] = [
   checkService,
   checkCredentials,
   checkWrites,
+  checkArchive,
   checkSkills,
   checkOAuth,
   checkTranscribe,
@@ -92,9 +95,9 @@ export function checkLines(check: Check): string[] {
 function checkNode(): Check {
   const version = process.versions.node;
   const major = Number.parseInt(version.split(".")[0]!, 10);
-  return major >= MIN_NODE_MAJOR
+  return major > MIN_NODE_MAJOR || (major === MIN_NODE_MAJOR && Number(process.versions.node.split(".")[1]) >= 16)
     ? { name: "node", state: "ok", detail: version }
-    : { name: "node", state: "fail", detail: `${version} is too old`, fix: `install Node ${MIN_NODE_MAJOR} or newer` };
+    : { name: "node", state: "fail", detail: `${version} is too old`, fix: `install Node ${MIN_NODE_MAJOR}.16 or newer` };
 }
 
 function checkDataDir(config: Config): Check {
@@ -106,7 +109,12 @@ function checkDataDir(config: Config): Check {
     return { name: "data dir", state: "info", detail: `${dir} does not exist yet (login creates it)` };
   }
   if (!stat.isDirectory()) {
-    return { name: "data dir", state: "fail", detail: `${dir} is not a directory`, fix: "move it aside or use --data-dir" };
+    return {
+      name: "data dir",
+      state: "fail",
+      detail: `${dir} is not a directory`,
+      fix: "move it aside or use --data-dir",
+    };
   }
 
   const mode = stat.mode & 0o777;
@@ -121,7 +129,12 @@ function checkDataDir(config: Config): Check {
   try {
     accessSync(dir, constants.W_OK);
   } catch {
-    return { name: "data dir", state: "fail", detail: `${dir} is not writable`, fix: "fix its ownership or permissions" };
+    return {
+      name: "data dir",
+      state: "fail",
+      detail: `${dir} is not writable`,
+      fix: "fix its ownership or permissions",
+    };
   }
   return { name: "data dir", state: "ok", detail: `${dir} (0700, writable)` };
 }
@@ -231,7 +244,7 @@ const TRANSCRIBE_CHECKS: Record<ProviderName, (settings: TranscribeSettings) => 
 async function checkTranscribe(config: Config): Promise<Check | Check[]> {
   let settings: TranscribeSettings;
   try {
-    settings = readTranscribeSettings(process.env, config.dataDir);
+    settings = readTranscribeSettings(config.accountEnv ?? process.env, config.dataDir);
   } catch (err) {
     // A stale WAZAP_TRANSCRIBE_URL or provider name in someone's .env is exactly
     // what status is for, so the refusal is reported rather than thrown.
@@ -285,7 +298,8 @@ function openaiChecks(settings: TranscribeSettings): Check[] {
 
 /** Version comparison over the numeric release fields; prereleases sort as their release. */
 export function isNewer(candidate: string, current: string): boolean {
-  const parts = (version: string): number[] => version.split(/[.\-+]/, 3).map((piece) => Number.parseInt(piece, 10) || 0);
+  const parts = (version: string): number[] =>
+    version.split(/[.\-+]/, 3).map((piece) => Number.parseInt(piece, 10) || 0);
   const [a, b] = [parts(candidate), parts(current)];
   for (let i = 0; i < 3; i++) {
     if ((a[i] ?? 0) !== (b[i] ?? 0)) return (a[i] ?? 0) > (b[i] ?? 0);
@@ -315,6 +329,38 @@ async function checkUpdate(): Promise<Check> {
   const latest = await latestVersion();
   if (latest === null) return { name: "update", state: "info", detail: "update check skipped (no answer)" };
   return isNewer(latest, WAZAP_VERSION)
-    ? { name: "update", state: "info", detail: `${latest} is out (running ${WAZAP_VERSION})`, fix: "run `wazap update`" }
+    ? {
+        name: "update",
+        state: "info",
+        detail: `${latest} is out (running ${WAZAP_VERSION})`,
+        fix: "run `wazap update`",
+      }
     : { name: "update", state: "ok", detail: `${WAZAP_VERSION} is current` };
+}
+
+export async function checkArchive(config: Config): Promise<Check> {
+  if (!config.persistHistory)
+    return { name: "archive", state: "info", detail: "memory only; history persistence disabled" };
+  const file = join(config.dataDir, "archive.sqlite");
+  if (!existsSync(file))
+    return {
+      name: "archive",
+      state: "info",
+      detail: "not initialized; import deferred until the linked account is available",
+    };
+  try {
+    const state = await inspectArchive(file);
+    return {
+      name: "archive",
+      state: state.migrated ? "ok" : "fail",
+      detail: `${state.migrated ? "migration complete" : "migration incomplete"}; ${state.unknown_sends} sends with unknown outcome`,
+    };
+  } catch (error) {
+    return {
+      name: "archive",
+      state: "fail",
+      detail: error instanceof Error ? error.message : String(error),
+      fix: "Keep the legacy backups. Resolve the archive error before continuing.",
+    };
+  }
 }

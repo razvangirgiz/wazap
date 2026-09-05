@@ -1,5 +1,31 @@
 # Changelog
 
+## 0.15.0-beta.1
+
+- First opt-in beta, published under the npm `beta` tag. Stable users are not automatically upgraded.
+- Ship only public documentation and pin generated npx launchers to the installed version.
+
+- Reclaim completed inactive sessions for hosted clients that initialize per call, retaining the 8-per-identity/128-global limits and protecting in-flight calls. Expired sessions return HTTP 404 for reinitialization.
+- Default OAuth consent to read access even when a client requests write access.
+
+- Repair animated terminal setup, choose clients and accounts explicitly, and add guided ChatGPT HTTPS/OAuth setup with recovery instructions.
+- Make setup simulations side-effect free, preserve deferred transcription, retain service ports, and detect an older running service before claiming readiness.
+- Keep checkout clients on the exact installation being configured and retain the final setup result in terminal scrollback.
+
+- Add a read-only ChatGPT connection guide, output schemas for all tools, concise account/approval instructions and a 30-case ChatGPT evaluation set.
+- Connect multiple personal WhatsApp accounts through one MCP server, with separate archives and persistent drafts.
+- Add account administration, explicit tool selection, account-scoped OAuth consent and access restrictions.
+- Search and triage across selected accounts with source labels, stable pagination and partial-coverage reporting.
+- Keep disconnected account archives readable and bound the combined message cache to 10,000 entries.
+- Use Express 5 and a published npm shrinkwrap so installed packages retain the audited HTTP dependencies.
+
+## 0.14.0
+
+- Bind HTTP sessions and drafts to authenticated identities; default to read-only.
+- Restrict remote files and URL downloads; freeze drafts and preserve uncertain send outcomes.
+- Add a transactional SQLite archive with complete local pagination, retractions and explicit coverage.
+- Require Node 22.16+, preserve migration originals, and include workflows in Docker.
+
 ## 0.13.0
 ### Added
 

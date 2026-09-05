@@ -3,10 +3,11 @@ import assert from "node:assert/strict";
 import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 
 import { installSkills, loadSkills, skillState } from "../dist/skills.js";
 
-const root = new URL("..", import.meta.url).pathname;
+const root = fileURLToPath(new URL("..", import.meta.url));
 const toolNames = new Set([...readFileSync(join(root, "src/tools.ts"), "utf8").matchAll(/^\s+name: "([a-z_]+)",$/gm)].map((m) => m[1]));
 const skillDirs = readdirSync(join(root, "skills"));
 
@@ -35,7 +36,7 @@ test("plugin manifest lists the skills directory and the MCP server", () => {
   const plugin = JSON.parse(readFileSync(join(root, ".claude-plugin/plugin.json"), "utf8"));
   assert.equal(plugin.name, "wazap");
   assert.equal(plugin.skills, "./skills/");
-  assert.deepEqual(plugin.mcpServers.whatsapp.args, ["-y", "wazap-mcp"]);
+  assert.deepEqual(plugin.mcpServers.whatsapp.args, ["-y", `wazap-mcp@${plugin.version}`]);
 });
 
 test("plugin manifest version matches package.json", () => {

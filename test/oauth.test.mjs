@@ -224,10 +224,11 @@ test("a read grant never sees a write tool, whatever the client asked for", asyn
   assert.ok(!names.includes("confirm_send"));
 });
 
-test("the consent page preselects what the client asked for", async (t) => {
+test("the consent page defaults to read even when the client requests write", async (t) => {
   const ctx = await boot(t);
   const asksWrite = await grant(ctx, { scope: "read write" });
-  assert.match(asksWrite.html, /value="write" checked/);
+  assert.match(asksWrite.html, /value="read" checked/);
+  assert.doesNotMatch(asksWrite.html, /value="write" checked/);
   const asksNothing = await grant(ctx);
   assert.match(asksNothing.html, /value="read" checked/);
 });
@@ -413,4 +414,14 @@ test("oauthProblem names what is missing or wrong", () => {
   assert.match(oauthProblem({ publicUrl: "https://h.example", oauthPassword: "short" }), /shorter/);
   assert.equal(oauthProblem({ publicUrl: "https://h.example", oauthPassword: "x".repeat(12) }), null);
   assert.equal(oauthProblem({ publicUrl: "http://127.0.0.1:8766", oauthPassword: "x".repeat(12) }), null);
+});
+
+test('OAuth refresh preserves session identity but another grant cannot borrow it',async t=>{
+ const ctx=await boot(t);const a=await signIn(ctx,{access:'write'});const b=await signIn(ctx,{access:'write'});
+ const request=async(token,method,sid)=>fetch(`${ctx.base}/mcp`,{method:'POST',headers:{authorization:`Bearer ${token}`,'content-type':'application/json',accept:'application/json, text/event-stream',...(sid?{'mcp-session-id':sid}:{})},body:JSON.stringify({jsonrpc:'2.0',id:1,method,params:method==='initialize'?{protocolVersion:'2025-03-26',capabilities:{},clientInfo:{name:'security',version:'1'}}:{}})});
+ const init=await request(a.tokens.access_token,'initialize');const sid=init.headers.get('mcp-session-id');await init.text();
+ const wrong=await request(b.tokens.access_token,'tools/list',sid);assert.equal(wrong.status,403);await wrong.text();
+ const refreshed=await ctx.oauth.exchangeRefreshToken(a.client,a.tokens.refresh_token);
+ const ok=await request(refreshed.access_token,'tools/list',sid);assert.equal(ok.status,200);await ok.text();
+ await ctx.oauth.revokeToken(a.client,{token:a.tokens.refresh_token});const revoked=await request(refreshed.access_token,'tools/list',sid);assert.equal(revoked.status,401);await revoked.text();
 });

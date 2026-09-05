@@ -53,7 +53,7 @@ test("a healthy data dir passes every check it can", async () => {
   assert.match(stderr, /– service: not installed$/m);
   assert.ok(!stderr.includes("wazap service install"), "unlinked status must not send the user past setup");
   assert.match(stderr, /– credentials: no account linked yet/);
-  assert.match(stderr, /✓ writes: on \(default\)/);
+  assert.match(stderr, /✓ writes: off \(default\)/);
 });
 
 test("a data dir with the wrong mode fails with the chmod that fixes it", async () => {
@@ -94,9 +94,9 @@ test("status --json prints one parseable object carrying the same checks", async
   assert.equal(report.server_pid, null);
   assert.deepEqual(
     report.checks.map((check) => check.name),
-    ["node", "data dir", "lock", "service", "credentials", "writes", "skills", "transcribe", "update"],
+    ["node", "data dir", "lock", "service", "credentials", "writes", "archive", "skills", "transcribe", "update"],
   );
-  assert.equal(report.checks.find((check) => check.name === "writes").detail, "on (default)");
+  assert.equal(report.checks.find((check) => check.name === "writes").detail, "off (default)");
   assert.ok(["global", "checkout", "npx"].includes(report.install.kind), `install: ${JSON.stringify(report.install)}`);
   assert.match(report.install.script, /index\.js$/);
 });

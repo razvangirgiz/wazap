@@ -154,7 +154,7 @@ test("sync_contacts reports what the resync changed, and never counts as a write
   assert.match(result.content[0].text, /217 named contacts \(was 0\)/);
 });
 
-test("sync_contacts tells an empty address book apart from one already in hand", async () => {
+test("sync_contacts distinguishes missing names from names already in hand", async () => {
   const say = async (named_before, named_after) => {
     const server = fakeServer();
     registerTools(server, { syncContacts: async () => ({ requested: true, named_before, named_after }) }, {
@@ -162,7 +162,7 @@ test("sync_contacts tells an empty address book apart from one already in hand",
     });
     return (await server.tools.get("sync_contacts").handler({})).content[0].text;
   };
-  assert.match(await say(0, 0), /no names at all/);
+  assert.match(await say(0, 0), /No contact names were received/);
   assert.match(await say(217, 217), /already current: 217/);
 });
 

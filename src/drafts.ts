@@ -20,6 +20,7 @@ export type DraftPayload =
       asDocument: boolean;
       asVoice: boolean;
       asGif: boolean;
+      prepared?: boolean;
     }
   | { kind: "poll"; chatId: string; question: string; options: string[]; multiSelect: boolean }
   | {
@@ -30,7 +31,7 @@ export type DraftPayload =
       name?: string;
       address?: string;
     }
-  | { kind: "forward"; chatId: string; messageId: string; text?: string };
+  | { kind: "forward"; chatId: string; messageId: string; text?: string; snapshotRaw?: string };
 
 export interface Draft {
   id: string;

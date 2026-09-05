@@ -1,3 +1,5 @@
+import { loginThroughDaemon } from "./accounts-cli.js";
+import { AccountManager } from "./account-manager.js";
 import { randomBytes } from "node:crypto";
 import { once } from "node:events";
 import { mkdirSync } from "node:fs";
@@ -362,7 +364,7 @@ function mib(bytes: number): number {
 /** `wazap transcribe download` and `wazap transcribe test <audio file>`. */
 export async function runTranscribe(config: Config): Promise<void> {
   const [verb, file] = config.args;
-  const settings = readTranscribeSettings(process.env, config.dataDir);
+  const settings = readTranscribeSettings(config.accountEnv ?? process.env, config.dataDir);
   if (verb === "download" && file === undefined) {
     await ensureDeps([DEPS.whisper, DEPS.ffmpeg], config);
     await downloadTranscribeModel(settings, modelSpec(config.modelName ?? settings.model));
@@ -496,7 +498,7 @@ export async function runServe(config: Config): Promise<void> {
       process.exit(2);
     }
     if (role.kind === "bridge") {
-      await runBridge(role.daemon, p.daemonFile);
+      await runBridge(role.daemon, p.daemonFile, config.readOnly, config.allowedAccountIds);
       return;
     }
 
@@ -529,28 +531,18 @@ export async function runServe(config: Config): Promise<void> {
     releaseLock(p.lockFile);
   });
 
-  const wa = new WhatsAppService(config);
+  const wa = new AccountManager(config);
   let stopping = false;
   const shutdown = (reason: string): void => {
     if (stopping) return;
     stopping = true;
     log(`received ${reason}, shutting down`);
     // A wedged socket must not cost the user a kill -9; the lock goes on "exit".
-    setTimeout(() => process.exit(0), 3_000).unref();
-    void wa.stop().finally(() => process.exit(0));
+    setTimeout(() => { logError("shutdown", "Persistence did not finish before the deadline"); process.exit(1); }, 15_000);
+    void wa.stop().then(() => process.exit(0), err => { logError("shutdown", err); process.exit(1); });
   };
   process.on("SIGINT", () => shutdown("SIGINT"));
   process.on("SIGTERM", () => shutdown("SIGTERM"));
-
-  // A socket WhatsApp keeps refusing is not something this process can fix, and
-  // a live MCP server answering NOT_CONNECTED forever is worse than a dead one:
-  // exiting hands the problem to whoever started us, which is a supervisor that
-  // restarts it, or a client that shows the error. An unlinked device is the
-  // exception and stays up in auth_failure, because no restart brings it back.
-  wa.onGiveUp = () => {
-    logError("whatsapp", "reconnects exhausted; exiting so the supervisor can restart wazap");
-    process.exit(GAVE_UP_EXIT);
-  };
 
   // Connecting in the background: MCP startup never waits on WhatsApp, and the
   // tools answer NOT_LINKED until a session exists.
@@ -559,9 +551,10 @@ export async function runServe(config: Config): Promise<void> {
   const token = config.share ? randomBytes(32).toString("hex") : null;
 
   if (config.transport === "http") {
-    const port = await runHttp(wa, config, token === null ? undefined : { token, write: true });
+    await runHttp(wa, config);
     // Off-loopback binds get no sidecar: a bridge on this machine could not reach them.
-    if (token !== null && SHAREABLE_HOSTS.includes(config.httpHost)) {
+    if (token !== null) {
+      const port = await startLoopbackEndpoint(wa, config, token);
       writeDaemon(p.daemonFile, { pid: process.pid, port, token, version: WAZAP_VERSION });
     }
     return;
@@ -598,6 +591,7 @@ export function stepper(total: number): Stepper {
 }
 
 export async function runLogin(config: Config): Promise<void> {
+  if (await loginThroughDaemon(config, async () => config.loginPhone ?? await askPhone(null))) return;
   const p = paths(config.dataDir);
   const linked = readLinkedAccount(p.authDir);
   if (!linked) {
@@ -692,6 +686,7 @@ export async function linkAndSync(
       waiting.stop();
       throw err;
     }
+    config.validateAccount?.(account.id);
     if (w) waiting.stop();
     else waiting.stop(ok(`Linked as ${describeAccount(account)}`));
 

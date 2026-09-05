@@ -113,7 +113,7 @@ function sandbox({ wazap = true } = {}) {
   const cwd = mkdtempSync(join(tmpdir(), "wazap-cwd-"));
   const bin = join(home, "bin");
   mkdirSync(bin);
-  if (wazap) writeFileSync(join(bin, "wazap"), "", { mode: 0o755 });
+  if (wazap) symlinkSync(binary, join(bin, "wazap"));
   return { home, cwd, bin };
 }
 
@@ -244,7 +244,8 @@ test("setup skips the live check while another process holds the session", async
   const { stderr } = await setup(box, "--yes", "--client", "cursor", "--data-dir", dir);
 
   assert.match(stderr, new RegExp(`A server already holds the session \\(pid ${process.pid}\\); skipping the live check\\.`));
-  assert.match(stderr, /Setup complete/);
+  assert.match(stderr, /connection not verified/);
+  assert.doesNotMatch(stderr, /Setup complete/);
 });
 
 test("setup tells a client with no skills directory that the server carries the workflows", async () => {
@@ -440,10 +441,10 @@ test(
         (rejected) => rejected,
       );
 
-      assert.match(err.stderr, /Step 4 of 5 · Keep running/);
+      assert.match(err.stderr, /Step 3 of 5 · Keep running/);
       assert.match(err.stderr, new RegExp(`Running · pid \\d+ · http://127\\.0\\.0\\.1:${port}/mcp`));
-      assert.match(err.stderr, /the service reports \w+/);
-      assert.match(err.stderr, /→ run `wazap service logs`/);
+      assert.match(err.stderr, /The selected account reports/);
+      assert.match(err.stderr, /Run wazap status to diagnose it/);
       assert.ok(!err.stderr.includes("already owns this session"), "Finish must not fight the service for the socket");
 
       const record = readService(dir);
@@ -460,7 +461,7 @@ test("setup with no answer keeps wazap running only while a client has it open",
   const box = sandbox();
   const dir = linkedDataDir();
   const stderr = await failingSetup(box, "--yes", "--client", "cursor", "--data-dir", dir);
-  assert.match(stderr, /Step 4 of 5 · Keep running/);
+  assert.match(stderr, /Step 3 of 5 · Keep running/);
   assert.equal(readService(dir), null, "the default must install nothing");
 });
 
@@ -469,7 +470,7 @@ test("setup through npx installs wazap globally, then connects the client to tha
   const calls = stubNpm(box);
   const stderr = await failingSetup(box, "--yes", "--client", "cursor", "--data-dir", linkedDataDir());
 
-  assert.match(stderr, /Step 3 of 6 · Install/);
+  assert.match(stderr, /Step 2 of 6 · Install/);
   assert.match(stderr, /wazap was started through npx/);
   assert.deepEqual(
     calls().filter((line) => line.startsWith("install")),
@@ -512,7 +513,7 @@ test("a failing npm prints the repair and setup carries on to Connect", async ()
 
   assert.match(stderr, /✗ install npm install -g wazap-mcp@.* failed \(exit 1\)/);
   assert.match(stderr, /→ run `npm i -g wazap-mcp` yourself \(sudo on some Linux installs\), then `wazap setup` again/);
-  assert.match(stderr, /Step 4 of 6 · Connect/);
+  assert.match(stderr, /Step 3 of 6 · Connect/);
   assert.equal(existsSync(join(box.home, ".cursor", "mcp.json")), true, "Connect must still run");
 });
 

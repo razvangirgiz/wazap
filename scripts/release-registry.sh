@@ -11,6 +11,10 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 version=$(node -p "require('./package.json').version")
+if [[ "$version" == *-* ]]; then
+  echo "Prereleases are distributed through npm beta and GitHub prereleases, not the stable MCP Registry." >&2
+  exit 1
+fi
 server_version=$(node -p "require('./server.json').version")
 mcp_name=$(node -p "require('./package.json').mcpName")
 

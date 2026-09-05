@@ -106,7 +106,7 @@ test("preview bodies cover every draft kind", () => {
 const PEER = "40722123456@s.whatsapp.net";
 
 test("draft rejects a missing local file before it touches the socket", async () => {
-  const svc = new WhatsAppService(offlineConfig("wazap-draft-media-"));
+  const svc = new WhatsAppService(offlineConfig("wazap-draft-media-", {readOnly:false}));
   await assert.rejects(
     () =>
       svc.draft({
@@ -121,7 +121,7 @@ test("draft rejects a missing local file before it touches the socket", async ()
   await svc.stop();
 });
 
-test("a failed confirm puts the draft back", async () => {
+test("a confirm with an ambiguous send is not retried", async () => {
   const { svc, sock } = connectedService(WhatsAppService, {
     prefix: "wazap-draft-putback-",
     id: "40700000000@s.whatsapp.net",
@@ -137,9 +137,7 @@ test("a failed confirm puts the draft back", async () => {
   const view = await svc.draft({ kind: "text", chatId: PEER, text: "hi" });
   await assert.rejects(() => svc.confirm(view.draft_id));
   blows = false;
-  const sent = await svc.confirm(view.draft_id);
-  assert.equal(sent.chat_id, PEER);
-  assert.equal(sent.text, "hi");
+  await assert.rejects(() => svc.confirm(view.draft_id), {code:"SEND_OUTCOME_UNKNOWN"});
   await svc.stop();
 });
 

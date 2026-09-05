@@ -51,7 +51,7 @@ test("an unknown command fails with a pointer to --help", async () => {
 
 test("the built server answers MCP over stdio with no WhatsApp session", async () => {
   const { toolNames, status } = await runSmoke();
-  assert.equal(toolNames.length, 31);
+  assert.equal(toolNames.length, 20);
   assert.equal(status.status, "not_linked");
 });
 
@@ -112,7 +112,7 @@ test("leftoverRefusal names a client leftover and ignores a free lock", () => {
 test("setup on a leftover refuses before the wizard opens", async () => {
   const dataDir = mkdtempSync(join(tmpdir(), "wazap-setup-lock-"));
   writeFileSync(join(dataDir, "server.lock"), `${process.pid}\n`, { mode: 0o600 });
-  await assert.rejects(wazap("setup", "--yes", "--no-writes", "--data-dir", dataDir), (err) => {
+  await assert.rejects(wazap("setup", "--yes", "--client", "cursor", "--no-writes", "--data-dir", dataDir), (err) => {
     assert.equal(err.code, 1);
     assert.match(err.stderr, new RegExp(`stop it first: kill ${process.pid}`));
     return true;

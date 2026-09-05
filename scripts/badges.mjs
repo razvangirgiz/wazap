@@ -8,10 +8,13 @@
  * VS Code: https://code.visualstudio.com/api/extension-guides/ai/mcp
  */
 import { fileURLToPath } from "node:url";
+import { readFileSync } from "node:fs";
+
+const { version } = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8"));
 
 /** The name the server is registered under, the same one `wazap connect` writes. */
 export const NAME = "whatsapp";
-export const ENTRY = { command: "npx", args: ["-y", "wazap-mcp"] };
+export const ENTRY = { command: "npx", args: ["-y", `wazap-mcp@${version}`] };
 
 /**
  * base64url, not plain base64. Cursor reads the config through URLSearchParams,

@@ -1,4 +1,14 @@
 export type ErrorCode =
+  | "ACCOUNT_REQUIRED"
+  | "ACCOUNT_NOT_FOUND"
+  | "ACCOUNT_MISMATCH"
+  | "ACCOUNT_DUPLICATE"
+  | "ACCOUNT_REGISTRY_ERROR"
+  | "ACCOUNT_DISABLED"
+  | "ACCOUNT_ACCESS_CHANGED"
+  | "ARCHIVE_UNAVAILABLE"
+  | "MEDIA_ACCESS_DENIED"
+  | "SEND_OUTCOME_UNKNOWN"
   | "NOT_LINKED"
   | "ALREADY_LINKED"
   | "SESSION_EXPIRED"
@@ -50,6 +60,16 @@ export const RESET_FIX = "Run `npx wazap-mcp logout` then `npx wazap-mcp login`"
 
 /** What an agent should do about each code. Rendered by the `learn` tool. */
 export const ERROR_GUIDE: Record<ErrorCode, string> = {
+  ACCOUNT_REQUIRED: "Call list_accounts and select account_id explicitly.",
+  ACCOUNT_NOT_FOUND: "Unknown or inaccessible account. Call list_accounts.",
+  ACCOUNT_MISMATCH: "This operation belongs to another account. Keep the original account or create a new profile.",
+  ACCOUNT_DUPLICATE: "This WhatsApp identity is already registered; use its existing profile.",
+  ACCOUNT_REGISTRY_ERROR: "Read the accounts diagnostic. Do not delete or reset data.",
+  ACCOUNT_DISABLED: "The account is disabled. Enable it with wazap accounts enable before connecting or writing.",
+  ACCOUNT_ACCESS_CHANGED: "Account access changed. Reinitialize the MCP connection and begin pagination again.",
+  ARCHIVE_UNAVAILABLE: "Archive unavailable. Read the diagnostic; do not reset or delete data.",
+  MEDIA_ACCESS_DENIED: "This source is outside the permitted export directory or public network.",
+  SEND_OUTCOME_UNKNOWN: "Sending may have succeeded. Do not resend. Check the conversation and confirm with the user.",
   NOT_LINKED: "No WhatsApp account is linked. Tell the user to run `npx wazap-mcp login`; do not retry.",
   ALREADY_LINKED: "The account is linked; call get_status.",
   SESSION_EXPIRED: "The account was unlinked from the phone. Tell the user to run `npx wazap-mcp login`; do not retry.",
@@ -74,7 +94,7 @@ export const ERROR_GUIDE: Record<ErrorCode, string> = {
   EDIT_WINDOW_EXPIRED: "WhatsApp only allows editing within 15 minutes of sending. Send a correction instead.",
   RETRACT_WINDOW_EXPIRED: "WhatsApp only allows deleting for everyone within 2 days. Do not retry.",
   NOT_OWN_MESSAGE: "This action only works on messages the linked account sent. Do not retry.",
-  READ_ONLY: "wazap runs read-only, so writes are refused. Tell the user to restart without WAZAP_READ_ONLY.",
+  READ_ONLY: "This client is read-only. The user can enable writes with wazap config writes on; --read-only remains an absolute restriction.",
   RATE_LIMITED: "Too many writes too fast. Wait the number of seconds in the fix, then retry once.",
   TRANSCRIBE_UNAVAILABLE:
     "Transcription is off, or its binaries or model are missing. Tell the user to run the command in the fix; do not retry.",
@@ -83,7 +103,7 @@ export const ERROR_GUIDE: Record<ErrorCode, string> = {
   SERVICE_ERROR:
     "wazap's own background service could not be managed. This is a machine problem, not a WhatsApp one: read the fix and tell the user.",
   DRAFT_NOT_FOUND:
-    "That draft_id is unknown or was already sent. Call the send tool again to draft, show the new preview, then confirm_send.",
+    "That draft_id is unknown for this client or account. Check its source account and exact ID before preparing a new draft and asking for approval.",
   DRAFT_EXPIRED:
     "The draft expired (15 minutes). Call the send tool again to draft, show the new preview, then confirm_send.",
   WHATSAPP_ERROR: "WhatsApp rejected the operation. Read the message; do not blindly retry.",

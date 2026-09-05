@@ -125,6 +125,7 @@ test("a voice note reads as its length, and as its words once it has them", asyn
   assert.equal(before[1].text, "[voice message]", "a note WhatsApp said nothing about keeps the bare placeholder");
 
   svc.store.transcripts.set(sidOf("V1"), { text: "salut", language: "ro", provider: "local", at: Date.now() });
+  await svc.appendHistory([svc.store.messages.get(sidOf("V1"))]);
   const after = (await svc.readMessages(PEER, 10)).data;
   assert.equal(after[0].text, '[voice message · 0:42] "salut"');
   assert.equal(after[0].transcript, "salut", "the bare words too, so an agent need not unwrap the placeholder");
@@ -168,7 +169,7 @@ test("two callers wanting the same recording share one upload", async () => {
   await svc.stop();
 });
 
-test("a transcript survives both the store snapshot and the history file", async () => {
+test("a transcript survives the cache snapshot and a SQLite archive restart", async () => {
   const { svc, sock } = serviceWith(MANUAL);
   stub(svc, mockProvider());
   deliver(sock, [voiceNote("V1", { seconds: 6 })]);
@@ -187,10 +188,12 @@ test("a transcript survives both the store snapshot and the history file", async
   svc.store.transcripts.set(sidOf("V1"), { text: "a doua încercare", provider: "openai", at: Date.now() });
   await svc.appendHistory([raw]);
 
-  const reloaded = new WhatsAppService(svc.config);
-  await reloaded.loadHistoryStore();
-  assert.equal(reloaded.store.transcripts.get(sidOf("V1"))?.text, "a doua încercare", "the newest line for a sid wins");
   await svc.stop();
+  const reloaded = new WhatsAppService(svc.config);
+  reloaded.account = svc.account;
+  await reloaded.loadPersisted();
+  assert.equal(reloaded.store.transcripts.get(sidOf("V1"))?.text, "a doua încercare", "the newest record for a sid wins");
+  await reloaded.stop();
 });
 
 test("an older snapshot, written before transcripts existed, still loads", () => {
@@ -263,6 +266,7 @@ test("search_messages finds a word that exists only in a transcript", async () =
   deliver(sock, [voiceNote("V1", { seconds: 6, at }), textMessage("T1", "nimic aici", at + 1000)]);
   svc.store.transcripts.set(sidOf("V1"), { text: "am uitat umbrela acasă", provider: "local", at: Date.now() });
 
+  await svc.appendHistory([svc.store.messages.get(sidOf("V1"))]);
   const spoken = (await svc.searchMessages("umbrela", undefined, 10)).data;
   assert.deepEqual(
     spoken.map((view) => view.message_id),
@@ -321,7 +325,7 @@ test("no tool output carries the API key, whatever the tool", async () => {
   registerTools(server, svc, { allowWrite: true });
   const said = [JSON.stringify(await svc.transcribeAudio(sidOf("V1")))];
   for (const name of ["get_status", "read_messages", "search_messages"]) {
-    said.push(JSON.stringify(await server.tools.get(name).handler({ chat_id: PEER, query: "salut" })));
+    said.push(JSON.stringify(await server.tools.get(name).handler({ chat_id: PEER, query: "salut", limit:20 })));
   }
 
   assert.ok(said.every((text) => !text.includes(key)), "the key belongs in .env and nowhere else");

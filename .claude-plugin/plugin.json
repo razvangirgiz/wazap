@@ -1,6 +1,6 @@
 {
   "name": "wazap",
-  "version": "0.13.0",
+  "version": "0.15.0-beta.1",
   "description": "WhatsApp for your AI agent: the wazap MCP server plus skills for inbox triage, recall, group catch-up and safe sending.",
   "author": {
     "name": "Răzvan Girgiz"
@@ -19,7 +19,7 @@
       "command": "npx",
       "args": [
         "-y",
-        "wazap-mcp"
+        "wazap-mcp@0.15.0-beta.1"
       ]
     }
   }

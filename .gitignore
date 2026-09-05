@@ -3,3 +3,10 @@ dist/
 .env
 *.log
 dist-bundle/
+
+# Local verification reports may contain personal paths or account details.
+docs/*-verification.md
+docs/*-review.md
+docs/*-plan.md
+release-artifacts/
+*.tgz

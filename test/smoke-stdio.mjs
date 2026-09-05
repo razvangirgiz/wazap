@@ -14,7 +14,7 @@ import assert from "node:assert/strict";
 
 import { BINARY, mcpClient, spawnWazap } from "./helpers.mjs";
 
-const EXPECTED_TOOL_COUNT = 31;
+const EXPECTED_TOOL_COUNT = 20;
 const skillsDir = join(dirname(fileURLToPath(import.meta.url)), "..", "skills");
 const SKILL_NAMES = readdirSync(skillsDir, { withFileTypes: true })
   .filter((entry) => entry.isDirectory())
@@ -34,7 +34,7 @@ export async function runSmoke({
   dataDir = mkdtempSync(join(tmpdir(), "wazap-smoke-")),
   keepDataDir = false,
   expectedTools = EXPECTED_TOOL_COUNT,
-  expectReadOnly = false,
+  expectReadOnly = true,
 } = {}) {
   const { child, stderr } = spawnWazap({ dataDir, args, env, binary });
   const { request, notify } = mcpClient(child);
@@ -58,6 +58,7 @@ export async function runSmoke({
 
     const list = await request("tools/list", {});
     assert.equal(list.error, undefined, `tools/list failed: ${JSON.stringify(list.error)}`);
+    for (const tool of list.result.tools) assert.equal(tool.outputSchema?.type, "object", `${tool.name}: missing output schema`);
     const names = list.result.tools.map((t) => t.name).sort();
     assert.equal(names.length, expectedTools, `expected ${expectedTools} tools, got ${names.length}: ${names}`);
     log(`tools/list ok — ${names.length} tools`);

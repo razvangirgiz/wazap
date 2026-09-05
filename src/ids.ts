@@ -4,9 +4,16 @@ const PHONE_EXAMPLE = "Use international format, e.g. +15550100";
 
 /** Digits of a phone number in international format, or INVALID_PHONE. */
 export function normalizePhone(input: string): string {
-  const digits = input.trim().replace(/^\+/, "").replace(/[\s\-().]/g, "");
+  const digits = input
+    .trim()
+    .replace(/^\+/, "")
+    .replace(/[\s\-().]/g, "");
   if (!/^\d+$/.test(digits) || digits.startsWith("0") || digits.length < 8 || digits.length > 15) {
-    throw new WazapError("INVALID_PHONE", `"${input.trim()}" is not a phone number in international format.`, PHONE_EXAMPLE);
+    throw new WazapError(
+      "INVALID_PHONE",
+      `"${input.trim()}" is not a phone number in international format.`,
+      PHONE_EXAMPLE,
+    );
   }
   return digits;
 }
@@ -83,4 +90,12 @@ function digitsOrThrow(value: string, original: string): string {
   const digits = value.split("@")[0]!.split(":")[0]!;
   if (!/^\d+$/.test(digits)) throw new WazapError("INVALID_ID", `"${original}" is not a WhatsApp id.`);
   return digits;
+}
+
+/** Message keys themselves may contain underscores; only the first two separate fields. */
+export function splitMessageId(sid: string): { origin: string; jid: string; key: string } {
+  const first = sid.indexOf("_"),
+    second = first < 0 ? -1 : sid.indexOf("_", first + 1);
+  if (second < 0) return { origin: "", jid: "", key: sid };
+  return { origin: sid.slice(0, first + 1), jid: sid.slice(first + 1, second), key: sid.slice(second + 1) };
 }

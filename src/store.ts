@@ -10,6 +10,7 @@ import { isControlMessage, messageTimestampMs } from "./messages.js";
 import type { TranscriptRecord } from "./transcribe/index.js";
 
 const MAX_MESSAGES_PER_CHAT = 1_000;
+const MAX_CACHED_MESSAGES = 10_000;
 const PERSIST_MESSAGES_PER_CHAT = 120;
 
 export interface HistoryRecord {
@@ -42,6 +43,8 @@ export interface StoreSnapshot {
 
 /** In-memory state fed from Baileys events, keyed by canonical jid. */
 export class Store {
+  private cacheLimit = MAX_CACHED_MESSAGES;
+  setCacheLimit(limit: number): void { this.cacheLimit = Math.max(1, Math.floor(limit)); this.trimCache(); }
   readonly chats = new Map<string, BaileysChat>();
   readonly contacts = new Map<string, BaileysContact>();
   readonly messages = new Map<string, WAMessage>();
@@ -90,6 +93,16 @@ export class Store {
       const dropped = ring.shift();
       if (dropped) this.forget(dropped);
     }
+    this.trimCache();
+  }
+
+  private trimCache(): void {
+    while (this.messages.size > this.cacheLimit) {
+      const sid = this.messages.keys().next().value!;
+      this.dropMessage(sid);
+      const story = this.stories.indexOf(sid);
+      if (story !== -1) this.stories.splice(story, 1);
+    }
   }
 
   putStory(sid: string, chatJid: string, raw: WAMessage): void {
@@ -97,6 +110,7 @@ export class Store {
     this.messages.set(sid, raw);
     this.chatOf.set(sid, chatJid);
     if (!known || !this.stories.includes(sid)) this.stories.push(sid);
+    this.trimCache();
   }
 
   /** Stories older than `cutoffMs` go, message and all, the way WhatsApp lets them go after a day. */
@@ -253,4 +267,3 @@ export function decodeChat(b64: string): BaileysChat | null {
     return null;
   }
 }
-

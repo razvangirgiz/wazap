@@ -11,12 +11,18 @@ function fakeServer() {
   return {
     tools,
     registerTool(name, meta, handler) {
-      tools.set(name, { meta, handler });
+      tools.set(name, { meta, handler: async (args) => {
+        const result = await handler(args);
+        if (!result.isError) assert.ok(meta.outputSchema.safeParse(result.structuredContent).success,
+          `${name}: result violates output schema: ${JSON.stringify(meta.outputSchema.safeParse(result.structuredContent))}`);
+        return result;
+      } });
     },
   };
 }
 
 const READ_TOOLS = [
+  "list_accounts",
   "learn",
   "get_status",
   "link_account",
@@ -53,9 +59,9 @@ const WRITE_TOOLS = [
   "manage_group",
 ];
 
-test("the registry is exactly the 31 documented tools", () => {
+test("the registry is exactly the 32 documented tools", () => {
   assert.deepEqual([...TOOL_NAMES].sort(), [...READ_TOOLS, ...WRITE_TOOLS].sort());
-  assert.equal(TOOL_NAMES.length, 31);
+  assert.equal(TOOL_NAMES.length, 32);
 });
 
 test("read-only registration exposes no write tool at all", () => {
@@ -67,7 +73,7 @@ test("read-only registration exposes no write tool at all", () => {
 test("every tool declares a description and an input schema", () => {
   const server = fakeServer();
   registerTools(server, {}, { allowWrite: true });
-  assert.equal(server.tools.size, 31);
+  assert.equal(server.tools.size, 32);
   for (const [name, { meta }] of server.tools) {
     assert.ok(meta.description?.length > 40, `${name} needs a description an agent can act on`);
     assert.ok(meta.inputSchema, `${name} needs an input schema`);
@@ -209,7 +215,7 @@ test("get_recent_messages passes types through to the service and echoes it back
   const result = await server.tools
     .get("get_recent_messages")
     .handler({ hours: 24, filter: "all", include_system: false, types: ["call", "voice"] });
-  assert.deepEqual(calls[0], [24, "all", false, ["call", "voice"]]);
+  assert.deepEqual(calls[0], [24, "all", false, ["call", "voice"], undefined, undefined]);
   assert.deepEqual(result.structuredContent.types, ["call", "voice"]);
 });
 

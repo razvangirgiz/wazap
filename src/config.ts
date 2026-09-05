@@ -6,13 +6,18 @@ import dotenv from "dotenv";
 import { WazapError } from "./errors.js";
 
 const require = createRequire(import.meta.url);
-export const WAZAP_VERSION: string = (require("../package.json") as { version: string }).version;
-export const BAILEYS_VERSION: string = (require("baileys/package.json") as { version: string }).version;
+export const WAZAP_VERSION: string = (
+  require("../package.json") as { version: string }
+).version;
+export const BAILEYS_VERSION: string = (
+  require("baileys/package.json") as { version: string }
+).version;
 
 /** Where an effective setting came from, in precedence order. */
 export type Source = "flag" | "env" | ".env" | "default";
 
 export type Command =
+  | "accounts"
   | "serve"
   | "login"
   | "setup"
@@ -29,13 +34,27 @@ export type Command =
 
 export interface Config {
   dataDir: string;
+  rootDataDir?: string;
+  accountId?: string;
+  accountName?: string;
+  accountOwner?: string;
+  accountEnv?: NodeJS.ProcessEnv;
+  offline?: boolean;
+  cacheLimit?: number;
+  validateAccount?: (owner: string) => void;
+  allowedAccountIds?: string[];
+  readAccountIds?: string[];
+  writeAccountIds?: string[];
   readOnly: boolean;
+  exportDir?: string;
   syncFullHistory: boolean;
   /** Persist chats and messages under the data dir so they survive a restart. */
   persistHistory: boolean;
   transport: "stdio" | "http";
   httpHost: string;
   httpPort: number;
+  /** False when CLI defaults the port; a service update then preserves its existing port. */
+  httpPortConfigured?: boolean;
   readToken: string | null;
   writeToken: string | null;
   /** Where clients reach the HTTP endpoint from outside; with the password, turns OAuth on. */
@@ -45,7 +64,10 @@ export interface Config {
   share: boolean;
   /** Write-tool token bucket, per minute. 0 disables the limit. */
   rateLimitPerMinute: number;
-  sources: Record<"dataDir" | "readOnly" | "transport" | "rateLimit" | "transcribe", Source>;
+  sources: Record<
+    "dataDir" | "readOnly" | "transport" | "rateLimit" | "transcribe",
+    Source
+  >;
   command: Command;
   /** The command was named on the command line rather than defaulted to serve. */
   explicitCommand: boolean;
@@ -116,10 +138,14 @@ export function paths(dataDir: string): Paths {
 /** The answer to `setup`'s "keep running" question. */
 export type KeepRunning = "client" | "service" | "expose";
 
-export type CliInvocation = { kind: "help" } | { kind: "version" } | { kind: "run"; config: Config };
+export type CliInvocation =
+  | { kind: "help" }
+  | { kind: "version" }
+  | { kind: "run"; config: Config };
 
 /** How many positionals each command takes after its own name. */
 const COMMAND_ARGS: Record<Command, readonly number[]> = {
+  accounts: [1, 2],
   serve: [0],
   login: [0],
   setup: [0],
@@ -147,12 +173,16 @@ const COMMANDS = Object.keys(COMMAND_ARGS) as readonly Command[];
  * imports: this file cannot reach `connect` or `service` without a cycle.
  */
 const COMMAND_USAGE: Partial<Record<Command, string>> = {
-  connect: "Pick one of: claude-code, claude-desktop, cursor, codex, vscode, gemini, windsurf, opencode",
+  connect:
+    "Pick one of: claude-code, claude-desktop, cursor, codex, vscode, gemini, windsurf, opencode, chatgpt",
   skills: "Run `wazap skills install [<harness>]`",
-  service: "Run `wazap service install|status|start|stop|restart|logs|uninstall`",
-  transcribe: "Run `wazap transcribe download` or `wazap transcribe test <audio file>`",
+  service:
+    "Run `wazap service install|status|start|stop|restart|logs|uninstall`",
+  transcribe:
+    "Run `wazap transcribe download` or `wazap transcribe test <audio file>`",
   contacts: "Run `wazap contacts resync`",
-  config: "Run `wazap config`, `wazap config writes on|off`, or `wazap config transcribe local|openai|off`",
+  config:
+    "Run `wazap config`, `wazap config writes on|off`, or `wazap config transcribe local|openai|off`",
 };
 
 export function defaultDataDir(): string {
@@ -176,7 +206,8 @@ function asInt(value: string | undefined, fallback: number): number {
  */
 function dropUnfilledTemplates(): void {
   for (const [key, value] of Object.entries(process.env)) {
-    if (key.startsWith("WAZAP_") && /^\$\{[^}]*\}$/.test(value ?? "")) delete process.env[key];
+    if (key.startsWith("WAZAP_") && /^\$\{[^}]*\}$/.test(value ?? ""))
+      delete process.env[key];
   }
 }
 
@@ -192,17 +223,25 @@ export function pickDefaultAction(
   stderrTTY: boolean,
 ): DefaultAction {
   const human =
-    config.command === "serve" && !config.explicitCommand && config.transport === "stdio" && stdinTTY && stderrTTY;
+    config.command === "serve" &&
+    !config.explicitCommand &&
+    config.transport === "stdio" &&
+    stdinTTY &&
+    stderrTTY;
   return human ? "greet" : "serve";
 }
 
-export function parseCli(argv: string[] = process.argv.slice(2)): CliInvocation {
+export function parseCli(
+  argv: string[] = process.argv.slice(2),
+): CliInvocation {
   let parsed;
   try {
     parsed = parseArgs({
       args: argv,
       allowPositionals: true,
       options: {
+        account: { type: "string" },
+        name: { type: "string" },
         "data-dir": { type: "string" },
         "read-only": { type: "boolean" },
         http: { type: "boolean" },
@@ -231,7 +270,11 @@ export function parseCli(argv: string[] = process.argv.slice(2)): CliInvocation 
       },
     });
   } catch (err) {
-    throw new WazapError("INVALID_ID", err instanceof Error ? err.message : String(err), "Run `wazap --help`");
+    throw new WazapError(
+      "INVALID_ID",
+      err instanceof Error ? err.message : String(err),
+      "Run `wazap --help`",
+    );
   }
 
   const { values, positionals } = parsed;
@@ -242,7 +285,11 @@ export function parseCli(argv: string[] = process.argv.slice(2)): CliInvocation 
 
   const [first, ...args] = positionals;
   if (first !== undefined && !COMMANDS.includes(first as Command)) {
-    throw new WazapError("INVALID_ID", `Unknown command "${first}".`, "Run `wazap --help`");
+    throw new WazapError(
+      "INVALID_ID",
+      `Unknown command "${first}".`,
+      "Run `wazap --help`",
+    );
   }
   const command = (first as Command | undefined) ?? "serve";
   if (!COMMAND_ARGS[command].includes(args.length)) {
@@ -253,11 +300,15 @@ export function parseCli(argv: string[] = process.argv.slice(2)): CliInvocation 
     );
   }
 
-  const dataDir = resolve(values["data-dir"] ?? process.env.WAZAP_DATA_DIR ?? defaultDataDir());
+  const dataDir = resolve(
+    values["data-dir"] ?? process.env.WAZAP_DATA_DIR ?? defaultDataDir(),
+  );
 
   // Snapshot before dotenv, which fills process.env from the data dir's .env
   // without overriding what the real environment already set.
-  const shell = new Set(Object.keys(process.env).filter((key) => key.startsWith("WAZAP_")));
+  const shell = new Set(
+    Object.keys(process.env).filter((key) => key.startsWith("WAZAP_")),
+  );
   dotenv.config({ path: paths(dataDir).envFile, quiet: true });
   const sourceOf = (key: string, flagged: boolean): Source => {
     if (flagged) return "flag";
@@ -265,27 +316,52 @@ export function parseCli(argv: string[] = process.argv.slice(2)): CliInvocation 
     return process.env[key] === undefined ? "default" : ".env";
   };
 
-  const httpFromEnv = process.env.WAZAP_TRANSPORT?.trim().toLowerCase() === "http";
+  const configuredReadOnly = readOnlySetting(process.env.WAZAP_READ_ONLY);
+  const httpFromEnv =
+    process.env.WAZAP_TRANSPORT?.trim().toLowerCase() === "http";
 
   return {
     kind: "run",
     config: {
       dataDir,
-      readOnly: values["read-only"] === true || asBool(process.env.WAZAP_READ_ONLY, false),
+      accountId: values.account,
+      accountName: values.name,
+      allowedAccountIds: process.env.WAZAP_ACCOUNTS?.split(",")
+        .map((s) => s.trim())
+        .filter(Boolean),
+      readAccountIds: process.env.WAZAP_READ_ACCOUNTS?.split(",")
+        .map((s) => s.trim())
+        .filter(Boolean),
+      writeAccountIds: process.env.WAZAP_WRITE_ACCOUNTS?.split(",")
+        .map((s) => s.trim())
+        .filter(Boolean),
+      exportDir: process.env.WAZAP_EXPORT_DIR
+        ? resolve(process.env.WAZAP_EXPORT_DIR)
+        : undefined,
+      readOnly: values["read-only"] === true || configuredReadOnly,
       syncFullHistory: asBool(process.env.WAZAP_SYNC_FULL_HISTORY, false),
       persistHistory: asBool(process.env.WAZAP_PERSIST_HISTORY, true),
       transport: values.http === true || httpFromEnv ? "http" : "stdio",
       httpHost: values.host ?? (process.env.WAZAP_HOST?.trim() || "127.0.0.1"),
-      httpPort: values.port ? asInt(values.port, 8766) : asInt(process.env.WAZAP_PORT, 8766),
+      httpPortConfigured: values.port !== undefined || process.env.WAZAP_PORT !== undefined,
+      httpPort: values.port
+        ? asInt(values.port, 8766)
+        : asInt(process.env.WAZAP_PORT, 8766),
       readToken: (process.env.WAZAP_READ_TOKEN ?? "").trim() || null,
       writeToken: (process.env.WAZAP_WRITE_TOKEN ?? "").trim() || null,
-      publicUrl: (process.env.WAZAP_PUBLIC_URL ?? "").trim().replace(/\/+$/, "") || null,
+      publicUrl:
+        (process.env.WAZAP_PUBLIC_URL ?? "").trim().replace(/\/+$/, "") || null,
       oauthPassword: process.env.WAZAP_OAUTH_PASSWORD || null,
       share: !asBool(process.env.WAZAP_NO_SHARE, false),
       rateLimitPerMinute: asInt(process.env.WAZAP_RATE_LIMIT, 20),
       sources: {
         // Resolved before dotenv runs, so the data dir's own .env cannot name it.
-        dataDir: values["data-dir"] !== undefined ? "flag" : shell.has("WAZAP_DATA_DIR") ? "env" : "default",
+        dataDir:
+          values["data-dir"] !== undefined
+            ? "flag"
+            : shell.has("WAZAP_DATA_DIR")
+              ? "env"
+              : "default",
         readOnly: sourceOf("WAZAP_READ_ONLY", values["read-only"] === true),
         transport: sourceOf("WAZAP_TRANSPORT", values.http === true),
         rateLimit: sourceOf("WAZAP_RATE_LIMIT", false),
@@ -299,7 +375,12 @@ export function parseCli(argv: string[] = process.argv.slice(2)): CliInvocation 
       json: values.json === true,
       loginPhone: values.phone,
       loginCode: values.code === true || values.phone !== undefined,
-      writesAnswer: values.writes === true ? true : values["no-writes"] === true ? false : null,
+      writesAnswer:
+        values.writes === true
+          ? true
+          : values["no-writes"] === true
+            ? false
+            : null,
       agent: values.agent === true,
       clients: values.client ?? [],
       noGlobal: values["no-global"] === true,
@@ -308,7 +389,20 @@ export function parseCli(argv: string[] = process.argv.slice(2)): CliInvocation 
       assumeYes: values.yes === true,
       modelName: values.model,
       transcribeChoice: values.transcribe,
-      keepRunning: values.expose === true ? "expose" : values.service === true ? "service" : null,
+      keepRunning:
+        values.expose === true
+          ? "expose"
+          : values.service === true
+            ? "service"
+            : null,
     },
   };
+}
+
+export function readOnlySetting(value: string | undefined): boolean {
+  if (value === undefined) return true;
+  const clean = value.trim().toLowerCase();
+  if (["1", "true", "yes", "on"].includes(clean)) return true;
+  if (["0", "false", "no", "off"].includes(clean)) return false;
+  throw new WazapError("INVALID_ID", "Invalid WAZAP_READ_ONLY. Use 1 or 0.");
 }

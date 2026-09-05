@@ -97,7 +97,7 @@ test("the Gemini extension launches the same server under the same name", () => 
   assert.equal(extension.name, "wazap");
   assert.match(extension.name, /^[a-zA-Z0-9-]+$/);
   assert.equal(extension.version, pkg.version);
-  assert.deepEqual(extension.mcpServers.whatsapp, { command: "npx", args: ["-y", "wazap-mcp"] });
+  assert.deepEqual(extension.mcpServers.whatsapp, { command: "npx", args: ["-y", `wazap-mcp@${pkg.version}`] });
   assert.equal(extension.contextFileName, "GEMINI.md");
 });
 

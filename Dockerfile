@@ -1,6 +1,6 @@
 FROM node:22-alpine AS build
 WORKDIR /app
-COPY package.json package-lock.json tsconfig.json ./
+COPY package.json npm-shrinkwrap.json tsconfig.json ./
 COPY src ./src
 RUN npm ci && npm run build && npm prune --omit=dev
 
@@ -9,7 +9,9 @@ WORKDIR /app
 ENV NODE_ENV=production WAZAP_DATA_DIR=/data WAZAP_HOST=0.0.0.0 WAZAP_PORT=8766
 COPY --from=build /app/node_modules ./node_modules
 COPY --from=build /app/dist ./dist
-COPY package.json LICENSE README.md ./
+COPY package.json LICENSE README.md AGENT.md ./
+COPY skills ./skills
+COPY docs/beta.md docs/chatgpt.md docs/chatgpt-evaluation.md docs/consolidation.md docs/multi-account.md ./docs/
 RUN mkdir -p /data && chown node:node /data
 USER node
 VOLUME ["/data"]

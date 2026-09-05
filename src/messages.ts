@@ -477,7 +477,7 @@ export function quotedSenderJid(raw: WAMessage): string | undefined {
   return context.participant ?? undefined;
 }
 
-function contextInfo(raw: WAMessage): proto.IContextInfo | undefined {
+export function contextInfo(raw: WAMessage): proto.IContextInfo | undefined {
   const content = unwrapEnvelopes(raw.message);
   if (!content) return undefined;
   const key = getContentType(content);

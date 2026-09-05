@@ -423,14 +423,14 @@ export async function installService(
   install: Install = whereInstalled(),
 ): Promise<void> {
   const script = serviceScript(install);
-  const p = paths(config.dataDir);
-  const existing = readService(config.dataDir);
+  const p = paths((config.rootDataDir ?? config.dataDir));
+  const existing = readService((config.rootDataDir ?? config.dataDir));
   const label = SERVER_LABELS[supervisor.name];
   const record: ServiceRecord = {
     supervisor: supervisor.name,
     label,
     unitFile: supervisor.unitFile(label),
-    port: config.httpPort,
+    port: config.httpPortConfigured === false && existing ? existing.port : config.httpPort,
     logDir: supervisor.logDir(),
     installedVersion: WAZAP_VERSION,
   };
@@ -454,7 +454,7 @@ export async function installService(
     );
   }
 
-  const text = supervisor.render(serverUnit({ ...record, node: process.execPath, script, dataDir: config.dataDir }));
+  const text = supervisor.render(serverUnit({ ...record, node: process.execPath, script, dataDir: (config.rootDataDir ?? config.dataDir) }));
   if (config.dryRun) {
     say(info(`would write ${shortPath(record.unitFile)}`));
     for (const line of text.split("\n")) say(`  ${dim(line)}`);
@@ -462,10 +462,10 @@ export async function installService(
     return;
   }
 
-  mkdirSync(config.dataDir, { recursive: true, mode: 0o700 });
+  mkdirSync((config.rootDataDir ?? config.dataDir), { recursive: true, mode: 0o700 });
   if (record.logDir !== "") mkdirSync(record.logDir, { recursive: true });
   writeUnit(record.unitFile, text);
-  writeService(config.dataDir, record);
+  writeService((config.rootDataDir ?? config.dataDir), record);
   if (existing === null) supervisor.start(record);
   else supervisor.restart(record);
 
@@ -488,7 +488,7 @@ async function report(supervisor: Supervisor, record: ServiceRecord, waitMs: num
 }
 
 function requireService(config: Config, registry: readonly Supervisor[]): Installed {
-  const found = installedService(config.dataDir, registry);
+  const found = installedService((config.rootDataDir ?? config.dataDir), registry);
   if (found === null) {
     throw new WazapError("SERVICE_ERROR", "No wazap service is installed.", "run `wazap service install`");
   }
@@ -521,7 +521,7 @@ function uninstallService(config: Config, registry: readonly Supervisor[]): void
   supervisor.remove(record);
   const tunnelLabel = TUNNEL_LABELS[supervisor.name];
   supervisor.remove({ label: tunnelLabel, unitFile: supervisor.unitFile(tunnelLabel) });
-  removeService(config.dataDir);
+  removeService((config.rootDataDir ?? config.dataDir));
   say(ok("Service removed. Your session and credentials are untouched."));
 }
 
@@ -544,7 +544,7 @@ const VERBS: Record<string, Verb> = {
     const { supervisor, record } = requireService(config, registry);
     supervisor.restart(record);
     // The unit runs whatever dist/ holds now, so the record says so too.
-    if (record.installedVersion !== WAZAP_VERSION) writeService(config.dataDir, { ...record, installedVersion: WAZAP_VERSION });
+    if (record.installedVersion !== WAZAP_VERSION) writeService((config.rootDataDir ?? config.dataDir), { ...record, installedVersion: WAZAP_VERSION });
     say(ok(`Restarted ${record.label}`));
   },
   logs: (config, registry) => {

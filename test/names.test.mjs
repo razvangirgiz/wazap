@@ -140,7 +140,7 @@ test("a lid WhatsApp never paired on a chat is still named from Baileys' own tab
   assert.deepEqual(asked, [lid]);
   assert.deepEqual(chats.map((c) => [c.name, c.chat_id]), [["Vlad", "447535707769@s.whatsapp.net"]], "one row, under the number");
   const history = (await svc.readMessages("447535707769@s.whatsapp.net", 10)).data;
-  assert.deepEqual(history.map((m) => m.text), ["hei", "salut"], "both halves of the history");
+  assert.deepEqual(history.map((m) => m.text), ["salut", "hei"], "both halves, with timestamp ties ordered by stable message id");
 });
 
 test("a sender's own name is used even when only this message carries it", () => {

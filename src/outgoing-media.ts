@@ -1,3 +1,4 @@
+import { readAllowedFile, publicMedia } from "./safe-media.js";
 /**
  * What goes out as media: reading a file or a URL into a buffer, the size
  * cap, the mime guess, the GIF conversion, and the Baileys content for each
@@ -46,32 +47,16 @@ export function describe(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
 
-export async function loadMedia(source: MediaSource): Promise<LoadedMedia> {
+export async function loadMedia(source: MediaSource, policy?: {exportDir?:string;dataDir:string}): Promise<LoadedMedia> {
   await assertMediaSource(source);
   if (source.file_path) {
     const path = source.file_path;
-    return { buffer: await readFile(path), mimetype: guessMime(path), filename: basename(path) };
+    return { buffer: await readAllowedFile(path, policy), mimetype: guessMime(path), filename: basename(path) };
   }
 
-  const url = source.url!;
-  let response: Response;
-  try {
-    response = await fetch(url);
-  } catch (err) {
-    throw new WazapError("URL_FETCH_FAILED", `Could not fetch ${url}: ${describe(err)}`);
-  }
-  if (!response.ok) {
-    throw new WazapError("URL_FETCH_FAILED", `Fetching ${url} returned HTTP ${response.status}.`);
-  }
-  const declared = Number.parseInt(response.headers.get("content-length") ?? "", 10);
-  if (Number.isFinite(declared)) assertMediaSize(declared);
-  const buffer = Buffer.from(await response.arrayBuffer());
-  assertMediaSize(buffer.length);
-  return {
-    buffer,
-    mimetype: response.headers.get("content-type")?.split(";")[0] ?? guessMime(url),
-    filename: basename(url.split("?")[0] ?? url),
-  };
+  const result=await publicMedia(source.url!);
+  return {buffer:result.buffer,mimetype:result.mime ?? guessMime(result.url),filename:basename(result.url.split("?")[0] ?? result.url)};
+
 }
 
 function assertMediaSize(size: number): void {

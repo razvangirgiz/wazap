@@ -1,3 +1,9 @@
+import { chatgptSetup, chatgptConnectionGuide, effectiveChatgptConfig } from "./chatgpt.js";
+import { loginThroughDaemon } from "./accounts-cli.js";
+import { Accounts } from "./accounts.js";
+import { readDaemon } from "./daemon.js";
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { readFileSync } from "node:fs";
 import { readLinkedAccount } from "./auth-state.js";
 import { banner } from "./banner.js";
@@ -9,10 +15,9 @@ import {
   downloadTranscribeModel,
   linkAndSync,
   runLiveProbe,
-  serviceLive,
   stepper,
 } from "./cli.js";
-import { paths, type Config, type KeepRunning } from "./config.js";
+import { WAZAP_VERSION, paths, type Config, type KeepRunning } from "./config.js";
 import {
   CLIENTS,
   REAL_PROBES,
@@ -62,29 +67,52 @@ export async function runSetup(config: Config): Promise<void> {
     return;
   }
 
+  if (config.transcribeChoice && !["local", "openai", "off"].includes(config.transcribeChoice))
+    throw new WazapError("INVALID_ID", `Unknown --transcribe ${config.transcribeChoice}.`, "Use --transcribe local|openai|off.");
+  const selected = await chooseSetupClients(config);
+  if (selected.length) config = await chooseSetupAccount(config);
+  if (config.dryRun) {
+    say("Simulation only — no files, settings, connections, installations or services changed.");
+    say(selected.length ? `Destination: ${selected.join(", ")}` : "Destination: not selected");
+    say("Would link or reuse the selected WhatsApp account, configure the chosen client, then verify the connection.");
+    if (selected.includes("chatgpt")) for (const step of chatgptConnectionGuide(config).steps) say(`- ${step}`);
+    if (config.transcribeChoice) say(`Would set transcription to ${config.transcribeChoice}.`);
+    else say("Existing transcription settings would be kept.");
+    say("Simulation finished. No connection has been verified.");
+    return;
+  }
+  if (selected.length === 0) {
+    say("Setup paused — choose where to use Wazap with `wazap setup --client chatgpt` or a local client.");
+    return;
+  }
   if (!humanLayout()) say(banner());
   let install = whereInstalled();
+  say(`Using Wazap ${WAZAP_VERSION} from ${install.script}.`);
+  if (install.kind === "checkout") say("Client configuration will use this checkout, not a different wazap command on PATH.");
   const announce = stepper(install.kind === "npx" ? 6 : 5);
 
   const account = readLinkedAccount(paths(config.dataDir).authDir);
-  if (account === null) {
+  const rootPaths = paths(config.rootDataDir ?? config.dataDir);
+  const daemon = readDaemon(rootPaths.daemonFile);
+  const shared = !!config.accountId && !!daemon && lockHolder(rootPaths.lockFile) === daemon.pid;
+  if (account === null && !shared) {
     const refusal = leftoverRefusal(config);
     if (refusal !== null) throw refusal;
   }
   const askWrites = config.writesAnswer === null && !config.assumeYes && process.stdin.isTTY === true;
-  const loginCode = account !== null ? config.loginCode : await chooseLoginCode(config);
+  const loginCode = account !== null ? config.loginCode : shared ? true : await chooseLoginCode(config);
   const resolved = { ...config, loginCode };
   const w = maybeWizard(
     setupWizardSteps({
-      linked: account !== null,
+      linked: account !== null || shared,
       npx: install.kind === "npx",
       askWrites,
       loginCode,
-    }),
+    }) + (account === null && shared ? 1 : 0),
   );
 
   try {
-    await runSetupSteps(resolved, { account, install, announce, w });
+    await runSetupSteps(resolved, { account, install, announce, w, selected, shared });
   } finally {
     w?.close();
   }
@@ -97,6 +125,8 @@ async function runSetupSteps(
     install: Install;
     announce: ReturnType<typeof stepper>;
     w: Wizard | null;
+    selected: string[];
+    shared: boolean;
   },
 ): Promise<void> {
   let { install } = ctx;
@@ -109,13 +139,13 @@ async function runSetupSteps(
     }
   } else {
     if (!w) announce("Link");
-    await linkAndSync(config, () => {}, w);
+    else if (ctx.shared) await w.next("Link", ["The running Wazap service will link this account."]);
+    const bridged = await loginThroughDaemon(config, async () => {
+      if (config.loginPhone) return config.loginPhone;
+      return w ? w.prompt("Your WhatsApp number, including country code: ") : ask("Your WhatsApp number, including country code: ");
+    });
+    if (!bridged) await linkAndSync(config, () => {}, w);
   }
-
-  // The spec puts this step after Permissions; linkAndSync asks the writes
-  // question itself, at its own end, so here Transcribe follows Link directly.
-  if (!w) announce("Transcribe");
-  await chooseTranscribe(config, w, account && w ? [wizOk(`Already linked as ${describeAccount(account)}`)] : []);
 
   if (install.kind === "npx") {
     if (!w) announce("Install");
@@ -123,14 +153,17 @@ async function runSetupSteps(
   }
 
   if (!w) announce("Connect");
-  const chosen = await chooseClients(config, w);
-  if (chosen.length === 0 && !w) {
+  const chatgpt = ctx.selected.includes("chatgpt");
+  const chosen = ctx.selected.filter((name) => name !== "chatgpt").map(findClient);
+  if (w) await w.next("Connect", [account ? wizOk(`Already linked as ${describeAccount(account)}`) : "WhatsApp account linked."]);
+
+  if (chosen.length === 0 && !chatgpt && !w) {
     say(info("No client connected yet."));
     say(connectNext());
   }
   const restarted = new Set<ClientSpec>();
   const notes: string[] = [];
-  if (chosen.length === 0) notes.push(wizInfo("No client connected yet."), connectNext());
+  if (chosen.length === 0 && !chatgpt) notes.push(wizInfo("No client connected yet."), connectNext());
   for (const spec of chosen) {
     connectClient(spec, config, install);
     const target = skillTargetFor(spec.name);
@@ -144,7 +177,12 @@ async function runSetupSteps(
   }
 
   if (!w) announce("Keep running");
-  const keep = await chooseKeepRunning(config, w);
+  const keep = chatgpt ? "client" : await chooseKeepRunning(config, w);
+  let chatgptReady = false;
+  if (chatgpt) {
+    if (w) await w.next("ChatGPT", []);
+    chatgptReady = await chatgptSetup(config, { install, wizard: w, remember: (line) => notes.push(line) });
+  }
   if (keep !== "client") {
     if (install.kind === "npx") {
       const bin = stableWazap();
@@ -164,10 +202,14 @@ async function runSetupSteps(
   }
   if (keep === "expose" && !config.dryRun && install.kind !== "npx") await runExpose(config);
 
+  // Transcription is optional, after the connection steps. Never change it by default.
+  if (!w) announce("Transcribe");
+  await chooseTranscribe(config, w);
   const finish: string[] = [...notes];
   if (w) await w.next("Finish", finish, { reveal: false });
   else announce("Finish");
-  let failing = !(await proveSession(config, w, finish));
+  const session = await proveSession(config, w, finish);
+  let failing = session === "failed";
   for (const spec of chosen) {
     const check = launchCheck(spec, mcpEntry(config, spec, install));
     if (check.state === "fail") failing = true;
@@ -182,17 +224,31 @@ async function runSetupSteps(
     if (w) finish.push(restarted.has(spec) ? wizOk(line) : wizInfo(line));
     else say(restarted.has(spec) ? ok(`${spec.describe} restarted`) : info(spec.next));
   }
+  const summary = failing ? "Setup finished with a failing check"
+    : session === "version_mismatch" ? "Setup saved — the running service uses a different version"
+    : chatgpt && !chatgptReady ? "Setup saved — ChatGPT connection still needs attention"
+    : session !== "verified" ? "Setup saved — WhatsApp connection not verified"
+    : "WhatsApp connected — verify the first read in your client";
+  const nextStep = session === "version_mismatch"
+    ? "Rerun this same setup with --service to use this installation for the background service. Then verify the first read in your client."
+    : chatgpt
+    ? 'In ChatGPT, enable Wazap and ask: "List my WhatsApp accounts." Setup is complete only when that succeeds.'
+    : 'Open your chosen client and ask: "List my WhatsApp accounts." Client configuration alone does not verify access.';
   if (w) {
-    finish.push(failing ? wizWarn("Setup finished with a failing check") : wizOk("Setup complete"));
-    finish.push("");
-    finish.push('Ask your agent: "what did I miss on WhatsApp today?"');
-    await w.paint(finish);
-  } else {
-    say(failing ? warn("Setup finished with a failing check") : ok("Setup complete"));
-    say("");
-    say('Ask your agent: "what did I miss on WhatsApp today?"');
+    finish.push(failing ? wizWarn(summary) : wizInfo(summary), "", nextStep);
+    await w.paint(finish, { reveal: false });
+    w.close();
   }
-  if (failing) process.exit(1);
+  // Retain the outcome in ordinary terminal scrollback after the alternate screen closes.
+  say(summary);
+  say(nextStep);
+  if (chatgpt) {
+    for (const line of notes) say(line);
+    const guide = chatgptConnectionGuide(effectiveChatgptConfig(config, true));
+    if (guide.endpoint) say(`MCP URL: ${guide.endpoint}`);
+    say(guide.docs);
+  }
+  if (failing) process.exitCode = 1;
 }
 
 const NO_GLOBAL_NOTE = "Claude Desktop and `wazap service install` need a global install; run `npm i -g wazap-mcp` before either.";
@@ -206,7 +262,7 @@ async function offerGlobalInstall(config: Config, install: Install, w: Wizard | 
   const lead = "wazap was started through npx, which keeps no stable copy on disk.";
   if (w) await w.next("Install", [lead]);
   else say(lead);
-  if (!(await askGlobal(config, w))) {
+  if (config.dryRun || !(await askGlobal(config, w))) {
     if (w) await w.paint([lead, "", wizInfo(NO_GLOBAL_NOTE)], { reveal: false });
     else say(info(NO_GLOBAL_NOTE));
     return install;
@@ -259,41 +315,52 @@ async function askGlobal(config: Config, w: Wizard | null = null): Promise<boole
  * leave for the first tool call inside a client. False only when the probe ran
  * and could not reach WhatsApp.
  */
-async function proveSession(config: Config, w: Wizard | null = null, buf: string[] = []): Promise<boolean> {
+async function proveSession(config: Config, w: Wizard | null = null, buf: string[] = []): Promise<"verified" | "unverified" | "failed" | "version_mismatch"> {
   const put = (line: string): void => {
     if (w) buf.push(line);
     else say(line);
   };
   const p = paths(config.dataDir);
-  if (config.dryRun || readLinkedAccount(p.authDir) === null) return true;
+  if (config.dryRun || readLinkedAccount(p.authDir) === null) return "unverified";
 
-  // The service holds the session, so nothing else may open it. Its /healthz is
-  // the only honest answer left, and it is the one the tunnel sees too.
-  const running = lockHolder(p.lockFile);
+  const rootPaths = paths(config.rootDataDir ?? config.dataDir);
+  const running = lockHolder(rootPaths.lockFile) ?? lockHolder(p.lockFile);
   if (running !== null) {
-    const served = await serviceLive(config, running);
-    if (served === null) {
+    const daemon = readDaemon(rootPaths.daemonFile);
+    if (!daemon || daemon.pid !== running) {
       put(w ? wizInfo(`A server already holds the session (pid ${running}); skipping the live check.`) : info(`A server already holds the session (pid ${running}); skipping the live check.`));
-      return true;
+      return "unverified";
     }
-    if (served.reachable) {
-      put(w ? wizOk("Connected · the wazap service holds the session") : ok("Connected · the wazap service holds the session"));
-      return true;
-    }
-    put(w ? wizFail(`the service reports ${served.reason ?? "no connection"}`) : fail(`the service reports ${served.reason ?? "no connection"}`));
-    put(w ? `  → run \`wazap service logs\`` : fix("run `wazap service logs`"));
-    return false;
+    const client = new Client({ name: "wazap-setup-check", version: WAZAP_VERSION });
+    try {
+      await client.connect(new StreamableHTTPClientTransport(new URL(`http://127.0.0.1:${daemon.port}/mcp`), {
+        requestInit: { headers: { Authorization: `Bearer ${daemon.token}`, "x-wazap-read-only": "1" }, signal: AbortSignal.timeout(5_000) },
+      }));
+      const result = await client.callTool({ name: "get_status", arguments: config.accountId ? { account_id: config.accountId } : {} }, undefined, { timeout: 5_000 });
+      const status = result.structuredContent as Record<string, unknown> | undefined;
+      const version = client.getServerVersion()?.version;
+      if (version !== WAZAP_VERSION) put(`Running service: ${version ?? "unknown"}; this setup: ${WAZAP_VERSION}. Update the service before using new features.`);
+      if (!result.isError && status?.status === "connected") {
+        put(w ? wizOk("Connected · the wazap service holds the session") : ok("Connected · the wazap service holds the session"));
+        return version === WAZAP_VERSION ? "verified" : "version_mismatch";
+      }
+      put(`The selected account reports ${status?.status ?? "an unavailable status"}. Run wazap status to diagnose it.`);
+      return "failed";
+    } catch {
+      put("Could not read account status from the running service. Run wazap service status and retry; do not link the account again.");
+      return "unverified";
+    } finally { await client.close().catch(() => {}); }
   }
 
   const live = await runLiveProbe(config);
   if (live.reachable) {
     const line = live.chats === null ? "Connected" : `Connected · ${live.chats} chats`;
     put(w ? wizOk(line) : ok(line));
-    return true;
+    return "verified";
   }
   put(w ? wizFail(live.reason ?? "no connection") : fail(live.reason ?? "no connection"));
   put(w ? "  → run `wazap status --live` after fixing it" : fix("run `wazap status --live` after fixing it"));
-  return false;
+  return "failed";
 }
 
 const CHOICE_ATTEMPTS = 3;
@@ -345,10 +412,10 @@ const TRANSCRIBE_OPTIONS: readonly { choice: string; describe: string }[] = [
     describe: `Locally with whisper.cpp — free and private, downloads a ${Math.round(MODELS.turbo.bytes / 1_000_000)} MB model`,
   },
   { choice: "openai", describe: "OpenAI-compatible API — needs a key, audio leaves this machine" },
-  { choice: "off", describe: "Not now" },
+  { choice: "keep", describe: "Later — keep current settings" },
 ];
 
-const TRANSCRIBE_CHOICES = TRANSCRIBE_OPTIONS.map((option) => option.choice);
+const TRANSCRIBE_CHOICES = ["local", "openai", "off"];
 
 async function chooseTranscribe(config: Config, w: Wizard | null = null, preface: string[] = []): Promise<void> {
   const flagged = config.transcribeChoice;
@@ -358,9 +425,13 @@ async function chooseTranscribe(config: Config, w: Wizard | null = null, preface
 
   if (flagged !== undefined && w) await w.next("Transcribe", preface);
   const choice = flagged ?? (await askTranscribe(config, w, preface));
-  if (choice === null) {
-    const line = "Transcription stays off. Turn it on with `wazap config transcribe local`.";
-    if (w) await w.next("Transcribe", [...preface, ...(preface.length > 0 ? [""] : []), wizInfo(line)]);
+  if (choice === null || choice === "keep") {
+    const line = "Transcription settings kept. You can configure voice messages later with `wazap config transcribe`.";
+    if (w) {
+      const body = [...preface, ...(preface.length > 0 ? [""] : []), wizInfo(line)];
+      if (!config.assumeYes && process.stdin.isTTY) await w.paint(body, { reveal: false });
+      else await w.next("Transcribe", body, { reveal: false });
+    }
     else say(info(line));
     return;
   }
@@ -368,7 +439,7 @@ async function chooseTranscribe(config: Config, w: Wizard | null = null, preface
   // The local report is left to installModel below, which knows whether the gap
   // it would announce is one setup is about to close.
   await applyTranscribe(config, choice, choice !== "local");
-  if (choice === "local") await installModel(config);
+  if (choice === "local" && !config.dryRun) await installModel(config);
 }
 
 /** Null when nobody is there to answer, which leaves the setting alone. */
@@ -386,7 +457,7 @@ async function askTranscribe(config: Config, w: Wizard | null = null, preface: s
   for (let attempt = 1; ; attempt++) {
     const question = "Choose: [3] (enter to accept) ";
     const answer = (w ? await w.prompt(question) : await ask(`${brand("?")} ${question}`)).trim();
-    if (answer === "") return "off";
+    if (answer === "") return "keep";
     const picked = Number(answer);
     if (Number.isInteger(picked) && picked >= 1 && picked <= TRANSCRIBE_OPTIONS.length) {
       return TRANSCRIBE_OPTIONS[picked - 1]!.choice;
@@ -416,28 +487,38 @@ async function installModel(config: Config): Promise<void> {
  * numbers and "all" mean something, and it lets someone pick a client the
  * probes missed.
  */
-async function chooseClients(config: Config, w: Wizard | null = null): Promise<ClientSpec[]> {
-  if (config.clients.length > 0) return config.clients.map(findClient);
+export const SETUP_CLIENTS = ["chatgpt", ...CLIENTS.map((c) => c.name)];
 
-  const detected = detectClients();
-  if (config.assumeYes || process.stdin.isTTY !== true) return detected;
-
-  const menu = CLIENTS.map(
-    (spec, index) => `  ${index + 1}. [${detected.includes(spec) ? "x" : " "}] ${spec.describe}`,
-  );
-  const suggested = detected.map((spec) => CLIENTS.indexOf(spec) + 1).join(",");
-  if (w) await w.next("Connect", menu);
-  else for (const line of menu) say(line);
-
-  for (let attempt = 1; ; attempt++) {
-    const question = `Connect to: [${suggested}] (enter to accept, or type numbers, "all", "none") `;
-    const answer = w ? await w.prompt(question) : await ask(`${brand("?")} ${question}`);
-    const picked = parseChoice(answer, detected);
-    if (picked !== null) return picked;
-    if (attempt === CHOICE_ATTEMPTS) return detected;
-    if (w) await w.paint([...menu, wizFail('Type numbers from the list, "all", or "none".')], { reveal: false });
-    else say(fail('Type numbers from the list, "all", or "none".'));
+export function parseSetupChoice(answer: string): string[] | null {
+  const value = answer.trim().toLowerCase();
+  if (!value || value === "none") return [];
+  const result: string[] = [];
+  for (const token of value.split(/[\s,]+/)) {
+    const name = /^\d+$/.test(token) ? SETUP_CLIENTS[Number(token) - 1] : token;
+    if (!name || !SETUP_CLIENTS.includes(name)) return null;
+    if (!result.includes(name)) result.push(name);
   }
+  return result;
+}
+
+async function chooseSetupClients(config: Config): Promise<string[]> {
+  if (config.clients.length) {
+    for (const name of config.clients) if (!SETUP_CLIENTS.includes(name))
+      throw new WazapError("INVALID_ID", `Unknown client "${name}".`, `Pick one of: ${SETUP_CLIENTS.join(", ")}`);
+    return [...new Set(config.clients)];
+  }
+  const detected = detectClients();
+  if (config.assumeYes || !process.stdin.isTTY) return detected.length === 1 ? [detected[0]!.name] : [];
+  say("Where do you want to use WhatsApp?");
+  for (const [index, name] of SETUP_CLIENTS.entries())
+    say(`  ${index + 1}. ${name === "chatgpt" ? "ChatGPT" : findClient(name).describe}`);
+  for (let attempt = 0; attempt < CHOICE_ATTEMPTS; attempt++) {
+    const answer = await ask('Choose a name or number (Enter to decide later): ');
+    const choice = parseSetupChoice(answer);
+    if (choice !== null) return choice;
+    say("Choose a name or number from the list. No clients have been configured.");
+  }
+  throw new WazapError("INVALID_ID", "No valid client selected.", "Run setup again, or use --client chatgpt.");
 }
 
 /** Null when the answer names something that is not on the list. */
@@ -454,4 +535,29 @@ export function parseChoice(answer: string, detected: readonly ClientSpec[]): Cl
     picked.add(CLIENTS[n - 1]!);
   }
   return [...picked];
+}
+
+
+async function chooseSetupAccount(config: Config): Promise<Config> {
+  const registry = new Accounts(config.dataDir);
+  const profiles = registry.list();
+  if (!profiles.length && !config.accountId) return config;
+  let id = config.accountId;
+  if (!id && profiles.length > 1) {
+    say("Which WhatsApp account do you want to set up?");
+    for (const [index, profile] of profiles.entries()) say(`  ${index + 1}. ${profile.name}${profile.enabled ? "" : " (disabled)"}`);
+    if (!process.stdin.isTTY || config.assumeYes)
+      throw new WazapError("ACCOUNT_REQUIRED", "Choose an account for setup.", "Use --account with an ID from `wazap accounts list`.");
+    for (let attempt = 0; attempt < CHOICE_ATTEMPTS; attempt++) {
+      const answer = (await ask("Account name or number: ")).trim();
+      const profile = profiles.find((p) => p.name.toLowerCase() === answer.toLowerCase() || p.id === answer)
+        ?? (/^\d+$/.test(answer) ? profiles[Number(answer) - 1] : undefined);
+      if (profile) { id = profile.id; break; }
+      say("Choose an account from the list. No account has been changed.");
+    }
+    if (!id) throw new WazapError("ACCOUNT_REQUIRED", "No account selected.", "Run setup again.");
+  }
+  const profile = registry.get(id);
+  if (!profile.enabled) throw new WazapError("ACCOUNT_DISABLED", "This account is disabled.", `Run wazap accounts enable ${profile.id} first.`);
+  return registry.config(config, profile);
 }
