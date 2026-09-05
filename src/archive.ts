@@ -31,7 +31,9 @@ export class Archive {
       await chmod(file, 0o600);
     }
     this.worker = new Worker(new URL("./archive-worker.js", import.meta.url), {
-      execArgv: process.execArgv.filter((a) => !a.startsWith("--input-type")),
+      // The compiled worker needs no CLI flags. Node 24's test runner also
+      // exposes process-only V8 flags that Worker rejects when passed explicitly.
+      execArgv: [],
     });
     this.worker.on("message", ({ id, result, error }) => {
       const p = this.pending.get(id);
@@ -86,7 +88,7 @@ export async function inspectArchive(
   file: string,
 ): Promise<{ migrated: boolean; owner: string; unknown_sends: number }> {
   const worker = new Worker(new URL("./archive-worker.js", import.meta.url), {
-    execArgv: process.execArgv.filter((a) => !a.startsWith("--input-type")),
+    execArgv: [],
   });
   try {
     return await new Promise((resolve, reject) => {

@@ -437,7 +437,9 @@ export async function startHttpEndpoint(
       try {
         await transport.handleRequest(req, res, req.body);
       } finally {
-        if (res.writableEnded) release();
+        // end() can precede the finish event, especially on Node 24. Wait for
+        // completed output before classifying a session as safe to recycle.
+        if (res.writableFinished) release();
       }
     } catch (err) {
       logError("http request", err);

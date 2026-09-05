@@ -1,5 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 import { mkdtemp, writeFile, readFile, symlink, mkdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -28,6 +30,21 @@ async function archive(t, file = ":memory:", owner = ME) {
   return a;
 }
 const row = (id, ts, text) => ({ sid: id, jid: PEER, ts, sender: PEER, type: "text", text, raw: "", extra: {} });
+
+test("archive startup and inspection ignore process-only Node flags", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "wazap-worker-flags-"));
+  const code = `
+    import { Archive, inspectArchive } from ${JSON.stringify(new URL("../dist/archive.js", import.meta.url).href)};
+    const archive = new Archive();
+    await archive.open(process.argv[1], "fixture");
+    await archive.close();
+    console.log(JSON.stringify(await inspectArchive(process.argv[1])));
+  `;
+  const result = await promisify(execFile)(process.execPath,
+    ["--stack-trace-limit=10", "--input-type=module", "-e", code, join(dir, "archive.sqlite")],
+    { timeout: 10000 });
+  assert.equal(JSON.parse(result.stdout).owner, "fixture");
+});
 
 test("read credential cannot call, stream or delete a write session", async (t) => {
   const stop = new AbortController();

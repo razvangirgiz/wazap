@@ -6,6 +6,8 @@
 - Ship only public documentation and pin generated npx launchers to the installed version.
 - Pin installation and recovery instructions too; retain MCP workflows when files use Windows line endings.
 - Support macOS and Linux hosts for the first beta. Native Windows hosting is not yet validated; Windows CI covers packaging and MCP startup only.
+- Start archive workers without inheriting process-only Node flags, including those supplied by the Node 24 test runner.
+- Wait for HTTP response completion before recycling hosted-client sessions on Node 24.
 
 - Reclaim completed inactive sessions for hosted clients that initialize per call, retaining the 8-per-identity/128-global limits and protecting in-flight calls. Expired sessions return HTTP 404 for reinitialization.
 - Default OAuth consent to read access even when a client requests write access.
