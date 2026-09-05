@@ -181,15 +181,17 @@ exit 0
   return () => (existsSync(log) ? readFileSync(log, "utf8").trim().split("\n") : []);
 }
 
-test("setup --agent is AGENT.md on stdout, nothing on stderr", async () => {
-  const document = readFileSync(join(root, "AGENT.md"), "utf8");
+test("setup --agent is USE-ME.md on stdout, nothing on stderr", async () => {
+  const document = readFileSync(join(root, "USE-ME.md"), "utf8");
+  const dir = dataDir("wazap-agent-");
   // A non-zero exit rejects, so reaching the assertions is the exit-0 check.
-  const { stdout, stderr } = await run(process.execPath, [binary, "setup", "--agent", "--data-dir", dataDir("wazap-agent-")], {
+  const { stdout, stderr } = await run(process.execPath, [binary, "setup", "--agent", "--data-dir", dir], {
     env: childEnv(),
   });
 
   assert.equal(stdout, document, "the command and the file must be the same document");
   assert.equal(stderr, "");
+  assert.deepEqual(readdirSync(dir), [], "reading the guide must not create account data");
   assert.match(stdout, /pairing code:/);
   assert.match(stdout, /connect/);
 });

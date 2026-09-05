@@ -63,6 +63,8 @@ Or have your agent do it. Paste this:
 
 *Set up WhatsApp for me: run `npx wazap-mcp@0.15.0-beta.1 setup --agent` and follow what it prints.*
 
+The command prints [USE-ME.md](https://github.com/razvangirgiz/wazap/blob/v0.15.0-beta.1/USE-ME.md), a guide for any AI harness. It covers account selection, local and ChatGPT setup, first-read verification and recovery. The same file ships in npm, Docker and MCPB; `AGENT.md` points to it for existing integrations.
+
 Then ask your agent: *"what did I miss on WhatsApp today?"*
 
 Below are the steps `setup` runs for you. Each is still its own command when you
@@ -125,7 +127,7 @@ formats, the workflows and every error code with what to do about it.
   "mcpServers": {
     "whatsapp": {
       "command": "npx",
-      "args": ["-y", "wazap-mcp"]
+      "args": ["-y", "wazap-mcp@0.15.0-beta.1"]
     }
   }
 }
@@ -138,7 +140,7 @@ is TOML:
 ```toml
 [mcp_servers.whatsapp]
 command = "npx"
-args = ["-y", "wazap-mcp"]
+args = ["-y", "wazap-mcp@0.15.0-beta.1"]
 ```
 
 OpenCode takes the command and its arguments as one array, under `mcp`:
@@ -146,7 +148,7 @@ OpenCode takes the command and its arguments as one array, under `mcp`:
 ```json
 {
   "mcp": {
-    "whatsapp": { "type": "local", "command": ["npx", "-y", "wazap-mcp"] }
+    "whatsapp": { "type": "local", "command": ["npx", "-y", "wazap-mcp@0.15.0-beta.1"] }
   }
 }
 ```

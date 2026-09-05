@@ -1,6 +1,6 @@
 /** Exercise a built distribution over real stdio with an isolated empty data directory. */
-import { spawn } from "node:child_process";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { execFileSync } from "node:child_process";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import assert from "node:assert/strict";
@@ -55,6 +55,18 @@ const client = new Client({ name: "distribution-check", version: "1" });
 let errors = "";
 transport.stderr?.on("data", (b) => (errors += b));
 try {
+  const guide = execFileSync(
+    docker ? "docker" : process.execPath,
+    docker
+      ? ["run", "--rm", "--network=none", "--read-only", target, "setup", "--agent"]
+      : [resolve(target), "setup", "--agent", "--data-dir", dir],
+    {
+      encoding: "utf8",
+      timeout: 30_000,
+      env: { ...process.env, WAZAP_NO_UPDATE_CHECK: "1" },
+    },
+  );
+  assert.equal(guide, await readFile(new URL("../USE-ME.md", import.meta.url), "utf8"));
   await client.connect(transport);
   const list = await client.listPrompts();
   assert.equal(list.prompts.length, 5);
@@ -100,7 +112,7 @@ try {
   assert.equal(status.structuredContent.read_only, true);
   assert.equal((await client.listTools()).tools.length, 20);
   console.log(
-    `${kind}${multi ? " multi-account" : ""}: initialized, 5 prompts loaded, learn and get_status passed, read-only default`,
+    `${kind}${multi ? " multi-account" : ""}: USE-ME guide printed, initialized, 5 prompts loaded, learn and get_status passed, read-only default`,
   );
 } catch (error) {
   console.error(errors);

@@ -27,7 +27,7 @@ rmSync(outDir, { recursive: true, force: true });
 mkdirSync(stage, { recursive: true });
 // `skills` is here because the server reads it at runtime to serve the
 // workflows as MCP prompts, which is the only way they reach Claude Desktop.
-for (const name of ["manifest.json", "icon.png", "package.json", "npm-shrinkwrap.json", "README.md", "AGENT.md", "LICENSE", "dist", "skills", ...publicDocs]) {
+for (const name of ["manifest.json", "icon.png", "package.json", "npm-shrinkwrap.json", "README.md", "AGENT.md", "USE-ME.md", "LICENSE", "dist", "skills", ...publicDocs]) {
   mkdirSync(join(stage, name, ".."), { recursive: true });
   cpSync(join(root, name), join(stage, name), { recursive: true });
 }
@@ -41,7 +41,7 @@ run("npx", ["-y", "@anthropic-ai/mcpb@2", "validate", join(stage, "manifest.json
 run("npx", ["-y", "@anthropic-ai/mcpb@2", "pack", stage, bundle], root);
 
 const listing = execFileSync("unzip", ["-Z1", bundle], { encoding: "utf8" }).split("\n");
-const required = ["manifest.json", "dist/index.js", "icon.png", "skills/whatsapp-inbox/SKILL.md"];
+const required = ["manifest.json", "dist/index.js", "USE-ME.md", "icon.png", "skills/whatsapp-inbox/SKILL.md"];
 const missing = required.filter((name) => !listing.includes(name));
 if (missing.length > 0) {
   console.error(`${bundle} is missing ${missing.join(", ")}`);

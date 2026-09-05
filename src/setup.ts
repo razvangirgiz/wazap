@@ -60,10 +60,10 @@ import {
 
 export async function runSetup(config: Config): Promise<void> {
   // The whole output is the document and this command never serves, so stdout is
-  // the right channel. AGENT.md sits at the package root, which is what `files`
+  // the right channel. USE-ME.md sits at the package root, which is what `files`
   // publishes.
   if (config.agent) {
-    process.stdout.write(readFileSync(new URL("../AGENT.md", import.meta.url), "utf8"));
+    process.stdout.write(readFileSync(new URL("../USE-ME.md", import.meta.url), "utf8"));
     return;
   }
 

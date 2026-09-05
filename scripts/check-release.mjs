@@ -17,10 +17,10 @@ assert.ok(!pkg.files.includes('docs'),'Ship explicit public documents, never the
 const npm=process.platform==='win32'?'npm.cmd':'npm';
 const packed=JSON.parse(execFileSync(npm,['pack','--dry-run','--json'],{cwd:root,encoding:'utf8',shell:process.platform==='win32'}))[0];
 const names=packed.files.map(f=>f.path);
-for(const path of ['dist/index.js','AGENT.md','npm-shrinkwrap.json',...publicDocs]) assert.ok(names.includes(path),`Missing ${path}`);
+for(const path of ['dist/index.js','AGENT.md','USE-ME.md','npm-shrinkwrap.json',...publicDocs]) assert.ok(names.includes(path),`Missing ${path}`);
 const skills=readdirSync(join(root,'skills'),{withFileTypes:true}).filter(e=>e.isDirectory()).map(e=>`skills/${e.name}/SKILL.md`);
 assert.equal(skills.length,5);for(const path of skills)assert.ok(names.includes(path),`Missing ${path}`);
-for(const path of ['README.md','AGENT.md',...skills,...publicDocs]){
+for(const path of ['README.md','AGENT.md','USE-ME.md',...skills,...publicDocs]){
  const body=readFileSync(join(root,path),'utf8');
  assert.doesNotMatch(body,/npx (?:-y )?wazap-mcp(?![@\w-])/,`Unpinned launcher in ${path}`);
  for(const [,version] of body.matchAll(/npx (?:-y )?wazap-mcp@([\w.-]+)/g))assert.equal(version,pkg.version,`Wrong launcher version in ${path}`);
@@ -32,11 +32,11 @@ for(const path of names){
 }
 const docker=readFileSync(join(root,'Dockerfile'),'utf8');
 assert.ok(!/^COPY docs \.\/docs/m.test(docker),'Docker must also select public docs');
-for(const path of publicDocs)assert.ok(docker.includes(path),`Docker missing ${path}`);
+for(const path of ['USE-ME.md',...publicDocs])assert.ok(docker.includes(path),`Docker missing ${path}`);
 const stage=process.argv[2];
 if(stage){
  const shipped=readdirSync(join(stage,'docs')).map(name=>`docs/${name}`).sort();
  assert.deepEqual(shipped,[...publicDocs].sort(),'Bundle documentation differs from npm');
- for(const path of skills)assert.ok(existsSync(join(stage,path)));
+ for(const path of ['USE-ME.md',...skills])assert.ok(existsSync(join(stage,path)));
 }
 console.log(`release ${pkg.version}: ${names.length} npm files, 5 workflows, public docs only, versions and launchers consistent`);

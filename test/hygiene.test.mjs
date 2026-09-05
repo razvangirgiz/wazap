@@ -32,9 +32,10 @@ test("no console.log in src: stdout is the MCP JSON-RPC channel", () => {
   assert.deepEqual(offenders, [], "these files would corrupt the stdio protocol stream");
 });
 
-test("AGENT.md ships, because `setup --agent` reads it out of the package root", () => {
+test("the setup guide and its legacy entry point ship in the package", () => {
   const pkg = JSON.parse(readFileSync(join(root, "package.json"), "utf8"));
   assert.ok(pkg.files.includes("AGENT.md"), `files: ${pkg.files.join(", ")}`);
+  assert.ok(pkg.files.includes("USE-ME.md"), `files: ${pkg.files.join(", ")}`);
 });
 
 test("no leftover names from the pre-wazap fork", () => {

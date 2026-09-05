@@ -4,6 +4,7 @@
 
 - First opt-in beta, published under the npm `beta` tag. Stable users are not automatically upgraded.
 - Ship only public documentation and pin generated npx launchers to the installed version.
+- Include USE-ME.md for setup through any AI harness; `setup --agent` prints the complete guide in npm, Docker and MCPB.
 - Pin installation and recovery instructions too; retain MCP workflows when files use Windows line endings.
 - Support macOS and Linux hosts for the first beta. Native Windows hosting is not yet validated; Windows CI covers packaging and MCP startup only.
 - Start archive workers without inheriting process-only Node flags, including those supplied by the Node 24 test runner.

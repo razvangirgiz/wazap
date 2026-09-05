@@ -17,6 +17,8 @@ wazap setup
 
 The version must be `0.15.0-beta.1`. Select your client; setup links or reuses your account and offers optional hosting and transcription. Later preserves existing transcription settings. For ChatGPT, use `wazap setup --client chatgpt` and follow the [connection guide](chatgpt.md). For a preview with no changes, add `--dry-run`.
 
+Setting up with an AI agent? Give it [USE-ME.md](../USE-ME.md), or ask it to run `wazap setup --agent` and follow the printed guide. It can reuse your linked account, configure the chosen client and verify a first read. You still complete phone pairing and sign-in on your own devices.
+
 The npm `beta` tag points to the current beta; use the exact version above for reproducible testing. Do not use `wazap update` to switch beta versions: install the next explicitly announced beta and restart its service. `latest` stays on the stable release.
 
 A Claude Desktop MCPB bundle and an npm tarball are attached to the GitHub prerelease. Docker users can build the tagged source:
