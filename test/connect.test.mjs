@@ -301,7 +301,7 @@ for (const [title, client, entry, platform, state, detail] of LAUNCH_CHECKS) {
 
 test("launchCheck sends a GUI client with no npx to a global install", () => {
   const check = launchCheck(findClient("claude-desktop"), NPX_ENTRY, GUI_PATH, () => false, "darwin");
-  assert.equal(check.fix, "run `npm i -g wazap-mcp`, then `wazap connect claude-desktop` again");
+  assert.equal(check.fix, `run \`npm i -g wazap-mcp@${WAZAP_VERSION}\`, then \`wazap connect claude-desktop\` again`);
 });
 
 test("launchCheck passes a GUI client whose command is on launchd's own PATH", () => {

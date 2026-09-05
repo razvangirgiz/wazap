@@ -25,7 +25,8 @@ if (multi)
         enabled: true,
       })),
     }),
-    { mode: 0o600 },
+    // Synthetic registry mounted read-only for the image's uid 1000 on Linux.
+    { mode: docker ? 0o644 : 0o600 },
   );
 const transport = new StdioClientTransport({
   command: docker ? "docker" : process.execPath,

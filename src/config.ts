@@ -1,17 +1,10 @@
-import { createRequire } from "node:module";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import dotenv from "dotenv";
 import { WazapError } from "./errors.js";
 
-const require = createRequire(import.meta.url);
-export const WAZAP_VERSION: string = (
-  require("../package.json") as { version: string }
-).version;
-export const BAILEYS_VERSION: string = (
-  require("baileys/package.json") as { version: string }
-).version;
+export { WAZAP_VERSION, BAILEYS_VERSION } from "./version.js";
 
 /** Where an effective setting came from, in precedence order. */
 export type Source = "flag" | "env" | ".env" | "default";

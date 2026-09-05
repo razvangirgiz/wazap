@@ -16,7 +16,7 @@ WhatsApp multi-device protocol over a WebSocket.
 
 ## Beta 0.15.0-beta.1
 
-This branch is an opt-in beta. The stable npm channel remains separate. Start with read access and a small group of testers. See the [beta guide](docs/beta.md) for backup, setup, acceptance checks, known limits and rollback.
+This branch is an opt-in beta for a Wazap host on macOS or Linux. Native Windows hosting is outside this beta; Windows users can connect their AI client to a Linux/macOS host over HTTPS. The stable npm channel remains separate. Start with read access and a small group of testers. See the [beta guide](https://github.com/razvangirgiz/wazap/blob/v0.15.0-beta.1/docs/beta.md) for backup, setup, acceptance checks, known limits and rollback.
 
 ```bash
 npm install -g wazap-mcp@0.15.0-beta.1
@@ -35,48 +35,50 @@ npx wazap-mcp@0.15.0-beta.1 setup
 
 Choose where to use Wazap first. Setup reuses a linked account or guides you through linking, configures your chosen client and checks the connection. With multiple accounts, choose one by name. No client is preselected in the interactive menu.
 
-For ChatGPT, run `npx wazap-mcp setup --client chatgpt`. The wizard offers HTTPS setup or an address you already manage, checks OAuth discovery and explains the final steps in ChatGPT. The host must stay running. Setup is complete only after your first successful read in the chosen client.
+For ChatGPT, run `npx wazap-mcp@0.15.0-beta.1 setup --client chatgpt`. The wizard offers HTTPS setup or an address you already manage, checks OAuth discovery and explains the final steps in ChatGPT. The host must stay running. Setup is complete only after your first successful read in the chosen client.
 
 Transcription is optional and comes last. Choosing Later keeps your existing settings. Use `--dry-run` to preview setup without linking, writing files, downloading models or installing services. Setup offers a stable global installation when needed; it also reports when the running service uses a different version.
 
 ### Or the path your harness prefers
 
+Use the pinned npm commands or the prerelease MCPB below.
+
 | Harness | Fastest path |
 | --- | --- |
-| ChatGPT | `npx wazap-mcp setup --client chatgpt`; see the [guide](docs/chatgpt.md) |
-| Claude Code | `/plugin marketplace add razvangirgiz/wazap`, then `/plugin install wazap@wazap` |
+| ChatGPT | `npx wazap-mcp@0.15.0-beta.1 setup --client chatgpt`; see the [guide](https://github.com/razvangirgiz/wazap/blob/v0.15.0-beta.1/docs/chatgpt.md) |
+| Claude Code | `npx wazap-mcp@0.15.0-beta.1 connect claude-code` |
 | Claude Desktop | download `wazap-<version>.mcpb` from [Releases](https://github.com/razvangirgiz/wazap/releases) and double-click it |
-| Gemini CLI | `gemini extensions install https://github.com/razvangirgiz/wazap` |
-| Cursor | the [Install in Cursor](#other-mcp-clients) badge, then `npx wazap-mcp skills install cursor` |
+| Gemini CLI | `npx wazap-mcp@0.15.0-beta.1 connect gemini` |
+| Cursor | the [Install in Cursor](#other-mcp-clients) badge, then `npx wazap-mcp@0.15.0-beta.1 skills install cursor` |
 | VS Code | the [Install in VS Code](#other-mcp-clients) badge |
-| Codex CLI | `npx wazap-mcp connect codex`, then `npx wazap-mcp skills install codex` |
-| OpenCode | `npx wazap-mcp connect opencode`, then `npx wazap-mcp skills install opencode` |
-| Windsurf | `npx wazap-mcp connect windsurf` |
-| Anything else | the MCP entry `npx -y wazap-mcp` over stdio, or a [self-hosted](#self-host) URL |
+| Codex CLI | `npx wazap-mcp@0.15.0-beta.1 connect codex`, then `npx wazap-mcp@0.15.0-beta.1 skills install codex` |
+| OpenCode | `npx wazap-mcp@0.15.0-beta.1 connect opencode`, then `npx wazap-mcp@0.15.0-beta.1 skills install opencode` |
+| Windsurf | `npx wazap-mcp@0.15.0-beta.1 connect windsurf` |
+| Anything else | the MCP entry `npx -y wazap-mcp@0.15.0-beta.1` over stdio, or a [self-hosted](#self-host) URL |
 
 Each of those registers the server. Linking the WhatsApp account is a separate,
-one-time step in every one of them: `npx wazap-mcp login`.
+one-time step in every one of them: `npx wazap-mcp@0.15.0-beta.1 login`.
 
 Or have your agent do it. Paste this:
 
-*Set up WhatsApp for me: run `npx wazap-mcp setup --agent` and follow what it prints.*
+*Set up WhatsApp for me: run `npx wazap-mcp@0.15.0-beta.1 setup --agent` and follow what it prints.*
 
 Then ask your agent: *"what did I miss on WhatsApp today?"*
 
 Below are the steps `setup` runs for you. Each is still its own command when you
 want to run it by hand.
 
-`npx wazap-mcp login` shows a QR code; scan it from **Settings → Linked devices
-→ Link a device**. No camera handy, or linking over SSH? `npx wazap-mcp login --phone +15550100`
+`npx wazap-mcp@0.15.0-beta.1 login` shows a QR code; scan it from **Settings → Linked devices
+→ Link a device**. No camera handy, or linking over SSH? `npx wazap-mcp@0.15.0-beta.1 login --phone +15550100`
 prints an 8-character code you type under *Link with phone number instead*.
 It ends by asking whether the agent may send messages; the answer is no unless
-you say yes, and `npx wazap-mcp config writes on` changes it later.
+you say yes, and `npx wazap-mcp@0.15.0-beta.1 config writes on` changes it later.
 
-`npx wazap-mcp connect claude-code` writes the MCP entry for one client. The
+`npx wazap-mcp@0.15.0-beta.1 connect claude-code` writes the MCP entry for one client. The
 table under **Connect a client** has the rest.
 
-`npx wazap-mcp` on its own is safe to run: it prints where you stand and what to do
-next, and starts no server. When something is off, `npx wazap-mcp status` is the
+`npx wazap-mcp@0.15.0-beta.1` on its own is safe to run: it prints where you stand and what to do
+next, and starts no server. When something is off, `npx wazap-mcp@0.15.0-beta.1 status` is the
 first thing to run — it checks Node, the data directory, the lock, the
 credentials and whether a newer version is out, and prints the fix next to
 anything broken.
@@ -182,7 +184,7 @@ one Claude Desktop can actually launch.
 Then ask Claude to link your WhatsApp. It calls `link_account` with your number,
 hands back an 8-character code, and you type that code into **WhatsApp →
 Settings → Linked devices → Link a device → Link with phone number instead**.
-No terminal at any point. `npx wazap-mcp login` does the same job from a shell
+No terminal at any point. `npx wazap-mcp@0.15.0-beta.1 login` does the same job from a shell
 when you have one.
 
 Untick **Read-only** to let Claude send. It ships ticked because a bundle that
@@ -204,7 +206,7 @@ and the session is gone until you open it again. Two commands change that.
 Staying up and being reachable are separate choices.
 
 ```bash
-npx wazap-mcp service install
+npx wazap-mcp@0.15.0-beta.1 service install
 ```
 
 That writes a launchd agent on macOS (`~/Library/LaunchAgents/com.wazap.server.plist`)
@@ -225,7 +227,7 @@ A sleeping Mac is an offline wazap. System Settings → Lock Screen, or Battery 
 Options, has the switch that keeps it awake on power.
 
 ```bash
-npx wazap-mcp expose
+npx wazap-mcp@0.15.0-beta.1 expose
 ```
 
 That gives the running service a public `https` URL, for agents that are not on
@@ -238,15 +240,17 @@ prints the MCP URL and the password once.
 Give an agent the URL only. It signs in on a consent page on your own host with
 that password and picks read or read-and-send there; `wazap status` lists who
 holds a grant. See [Hosted agents (OAuth)](#hosted-agents-oauth) for what that
-page does. `npx wazap-mcp expose off` takes the tunnel down and keeps the
+page does. `npx wazap-mcp@0.15.0-beta.1 expose off` takes the tunnel down and keeps the
 password, so the next `expose` hands agents the same one.
 
-`npx wazap-mcp setup` offers the hosting options needed by your chosen client.
+`npx wazap-mcp@0.15.0-beta.1 setup` offers the hosting options needed by your chosen client.
 
 ### Upgrade
 
+Beta testers: install the exact next beta announced in its release notes and restart the service. The command below follows the stable channel.
+
 ```bash
-npx wazap-mcp update
+npx wazap-mcp@0.15.0-beta.1 update
 ```
 
 One command for what used to be three. It compares this install against the
@@ -426,7 +430,7 @@ nothing to run. The command behind it, for a harness `setup` never offered or
 for a checkout you want to install by hand:
 
 ```bash
-npx wazap-mcp skills install codex     # or claude-code, cursor, opencode, agents
+npx wazap-mcp@0.15.0-beta.1 skills install codex     # or claude-code, cursor, opencode, agents
 ```
 
 With no harness named it installs into every client it finds on this machine.
@@ -462,10 +466,10 @@ trace, so an agent can decide whether to retry, ask the user, or stop.
 
 | Code | Meaning |
 | --- | --- |
-| `NOT_LINKED` | No account linked. Call `link_account`, or run `npx wazap-mcp login`. |
+| `NOT_LINKED` | No account linked. Call `link_account`, or run `npx wazap-mcp@0.15.0-beta.1 login`. |
 | `ALREADY_LINKED` | `link_account` was called on a session that is already linked. Call `get_status`. |
-| `SESSION_EXPIRED` | Unlinked from the phone. Run `npx wazap-mcp login`. |
-| `SESSION_CORRUPT` | Credentials unreadable. Run `npx wazap-mcp logout` then `login`. |
+| `SESSION_EXPIRED` | Unlinked from the phone. Run `npx wazap-mcp@0.15.0-beta.1 login`. |
+| `SESSION_CORRUPT` | Credentials unreadable. Run `npx wazap-mcp@0.15.0-beta.1 logout` then `login`. |
 | `NOT_CONNECTED` | Still connecting or reconnecting. |
 | `SYNC_IN_PROGRESS` | History sync has not finished; results may be partial. |
 | `INVALID_PHONE` | Number is not in international format. |
@@ -484,7 +488,7 @@ trace, so an agent can decide whether to retry, ask the user, or stop.
 
 ## Consolidation in 0.14
 
-See [upgrade, permissions, archive migration and read-result changes](docs/consolidation.md).
+See [upgrade, permissions, archive migration and read-result changes](https://github.com/razvangirgiz/wazap/blob/v0.15.0-beta.1/docs/consolidation.md).
 The archive stores every synchronized message locally; withdrawn and expired content is removed from active results. Node 22.16+ is required.
 
 ## Data directory
@@ -551,7 +555,7 @@ disables). Sending faster than a human is how accounts get banned.
 ```bash
 WAZAP_READ_TOKEN=$(openssl rand -hex 32) \
 WAZAP_WRITE_TOKEN=$(openssl rand -hex 32) \
-npx wazap-mcp serve --http --host 0.0.0.0 --port 8766
+npx wazap-mcp@0.15.0-beta.1 serve --http --host 0.0.0.0 --port 8766
 ```
 
 Streamable HTTP at `/mcp`, with a health check at `/healthz`. That check answers
@@ -598,7 +602,7 @@ The container publishes `8766` on loopback only; add the same TLS proxy in front
 
 ### From a machine without a public address
 
-A laptop or a box behind NAT can still serve hosted agents through a tunnel, with no port opened and TLS done at the edge. `npx wazap-mcp expose` does the whole thing with Tailscale Funnel or Cloudflare Tunnel, whichever is installed. See [Keep it running](#keep-it-running).
+A laptop or a box behind NAT can still serve hosted agents through a tunnel, with no port opened and TLS done at the edge. `npx wazap-mcp@0.15.0-beta.1 expose` does the whole thing with Tailscale Funnel or Cloudflare Tunnel, whichever is installed. See [Keep it running](#keep-it-running).
 
 wazap keeps binding loopback either way; only the tunnel reaches it.
 
@@ -624,7 +628,7 @@ claude.ai Connectors, ChatGPT and some hosted agents will not take a static head
 
 ### ChatGPT
 
-Run `wazap setup --client chatgpt` for guided setup. Use `wazap connect chatgpt` for read-only connection guidance, or add `--json` for structured guidance. This command does not expose the server or register a connection automatically. See the [ChatGPT guide](docs/chatgpt.md) and [conversation evaluation set](docs/chatgpt-evaluation.md).
+Run `wazap setup --client chatgpt` for guided setup. Use `wazap connect chatgpt` for read-only connection guidance, or add `--json` for structured guidance. This command does not expose the server or register a connection automatically. See the [ChatGPT guide](https://github.com/razvangirgiz/wazap/blob/v0.15.0-beta.1/docs/chatgpt.md) and [conversation evaluation set](https://github.com/razvangirgiz/wazap/blob/v0.15.0-beta.1/docs/chatgpt-evaluation.md).
 
 ### Hosted agents (OAuth)
 
@@ -752,4 +756,4 @@ Keep the existing account in place; `accounts list` identifies it as `default`. 
 
 Call `list_accounts` in the agent. With multiple profiles, pass `account_id` on account operations. Search, recent messages and follow-up candidates also accept `account_ids` or `all_accounts: true`. Every result carries its source account; confirm a draft with the exact `draft_id` returned. There is no global active account.
 
-OAuth asks for a password before showing accounts, then grants only the selected accounts. New accounts need new consent. See [multi-account operation, access and recovery](docs/multi-account.md).
+OAuth asks for a password before showing accounts, then grants only the selected accounts. New accounts need new consent. See [multi-account operation, access and recovery](https://github.com/razvangirgiz/wazap/blob/v0.15.0-beta.1/docs/multi-account.md).

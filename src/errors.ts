@@ -1,3 +1,5 @@
+import { WAZAP_NPX } from "./version.js";
+
 export type ErrorCode =
   | "ACCOUNT_REQUIRED"
   | "ACCOUNT_NOT_FOUND"
@@ -55,8 +57,8 @@ export class WazapError extends Error {
   }
 }
 
-export const RELINK_FIX = "Run `npx wazap-mcp login`";
-export const RESET_FIX = "Run `npx wazap-mcp logout` then `npx wazap-mcp login`";
+export const RELINK_FIX = `Run \`${WAZAP_NPX} login\``;
+export const RESET_FIX = `Run \`${WAZAP_NPX} logout\` then \`${WAZAP_NPX} login\``;
 
 /** What an agent should do about each code. Rendered by the `learn` tool. */
 export const ERROR_GUIDE: Record<ErrorCode, string> = {
@@ -70,10 +72,10 @@ export const ERROR_GUIDE: Record<ErrorCode, string> = {
   ARCHIVE_UNAVAILABLE: "Archive unavailable. Read the diagnostic; do not reset or delete data.",
   MEDIA_ACCESS_DENIED: "This source is outside the permitted export directory or public network.",
   SEND_OUTCOME_UNKNOWN: "Sending may have succeeded. Do not resend. Check the conversation and confirm with the user.",
-  NOT_LINKED: "No WhatsApp account is linked. Tell the user to run `npx wazap-mcp login`; do not retry.",
+  NOT_LINKED: `No WhatsApp account is linked. ${RELINK_FIX}; do not retry.`,
   ALREADY_LINKED: "The account is linked; call get_status.",
-  SESSION_EXPIRED: "The account was unlinked from the phone. Tell the user to run `npx wazap-mcp login`; do not retry.",
-  SESSION_CORRUPT: "Stored credentials are unreadable. Tell the user to run `npx wazap-mcp logout` then `npx wazap-mcp login`.",
+  SESSION_EXPIRED: `The account was unlinked from the phone. ${RELINK_FIX}; do not retry.`,
+  SESSION_CORRUPT: `Stored credentials are unreadable. ${RESET_FIX}.`,
   NOT_CONNECTED: "The socket is still connecting or reconnecting. Call get_status, wait, retry once.",
   SYNC_IN_PROGRESS: "History sync has not finished. Retry in a few seconds; earlier messages may be missing until then.",
   INVALID_PHONE: "The number is not in international format. Ask the user for a number with a country code, e.g. +15550100.",

@@ -83,7 +83,7 @@ test("unreadable creds surface as SESSION_CORRUPT with a fix", async () => {
     () => readLinkedAccount(dir),
     (err) => {
       assert.equal(err.code, "SESSION_CORRUPT");
-      assert.match(err.fix, /wazap-mcp logout/);
+      assert.match(err.fix, /wazap-mcp@[^ ]+ logout/);
       return true;
     },
   );

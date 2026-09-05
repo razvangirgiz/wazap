@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -53,6 +53,20 @@ test("loadSkills reads the packaged skills into one registry", () => {
     assert.ok(skillDirs.includes(skill.name), `${skill.name} has no directory`);
     assert.ok(skill.description.length > 0, `${skill.name}: empty description`);
     assert.ok(skill.body.startsWith("# "), `${skill.name}: body must start at the title, not the frontmatter`);
+  }
+});
+
+test("Windows line endings preserve all five MCP workflows", () => {
+  const dir = mkdtempSync(join(tmpdir(), "wazap-crlf-skills-"));
+  try {
+    for (const name of skillDirs) {
+      mkdirSync(join(dir, name));
+      const source = readFileSync(join(root, "skills", name, "SKILL.md"), "utf8");
+      writeFileSync(join(dir, name, "SKILL.md"), source.replace(/\r?\n/g, "\r\n"));
+    }
+    assert.deepEqual(loadSkills(dir), loadSkills());
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
   }
 });
 

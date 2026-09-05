@@ -190,7 +190,7 @@ async function runSetupSteps(
     }
     if (install.kind === "npx") {
       const message = "wazap is running out of the npx cache, which npm clears; a service cannot point at it.";
-      const repair = "run `npm i -g wazap-mcp`, then `wazap service install` again";
+      const repair = `run \`npm i -g wazap-mcp@${WAZAP_VERSION}\`, then \`wazap service install\` again`;
       if (w) notes.push(wizFail(message), `  → ${repair}`);
       else {
         say(fail(message));
@@ -251,7 +251,7 @@ async function runSetupSteps(
   if (failing) process.exitCode = 1;
 }
 
-const NO_GLOBAL_NOTE = "Claude Desktop and `wazap service install` need a global install; run `npm i -g wazap-mcp` before either.";
+const NO_GLOBAL_NOTE = `Claude Desktop and \`wazap service install\` need a global install; run \`npm i -g wazap-mcp@${WAZAP_VERSION}\` before either.`;
 
 /**
  * npx keeps no stable copy on disk, so Claude Desktop and the background service

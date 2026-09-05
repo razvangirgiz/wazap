@@ -20,6 +20,11 @@ const names=packed.files.map(f=>f.path);
 for(const path of ['dist/index.js','AGENT.md','npm-shrinkwrap.json',...publicDocs]) assert.ok(names.includes(path),`Missing ${path}`);
 const skills=readdirSync(join(root,'skills'),{withFileTypes:true}).filter(e=>e.isDirectory()).map(e=>`skills/${e.name}/SKILL.md`);
 assert.equal(skills.length,5);for(const path of skills)assert.ok(names.includes(path),`Missing ${path}`);
+for(const path of ['README.md','AGENT.md',...skills,...publicDocs]){
+ const body=readFileSync(join(root,path),'utf8');
+ assert.doesNotMatch(body,/npx (?:-y )?wazap-mcp(?![@\w-])/,`Unpinned launcher in ${path}`);
+ for(const [,version] of body.matchAll(/npx (?:-y )?wazap-mcp@([\w.-]+)/g))assert.equal(version,pkg.version,`Wrong launcher version in ${path}`);
+}
 for(const path of names){
  assert.ok(!path.startsWith('docs/')||publicDocs.includes(path),`Internal document leaked: ${path}`);
  assert.ok(!/(?:^|\/)(?:\.env|auth|oauth\.json|daemon\.json|archive\.sqlite)(?:$|\/)|-(?:verification|review|plan)\.md$/.test(path),`Private file leaked: ${path}`);

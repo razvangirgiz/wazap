@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { detectClients } from "./connect.js";
 import type { Config } from "./config.js";
+import { WAZAP_VERSION } from "./version.js";
 import { WazapError } from "./errors.js";
 import { log, say } from "./logger.js";
 import { info, nextHint, ok, shortPath } from "./ui.js";
@@ -75,6 +76,7 @@ function packagedSkills(): string {
  * scripts/build-context.mjs strips to build GEMINI.md.
  */
 function parseSkill(text: string): Skill | null {
+  text = text.replace(/\r\n/g, "\n");
   const close = text.startsWith("---\n") ? text.indexOf("\n---\n", 3) : -1;
   if (close === -1) return null;
   const front = text.slice(4, close + 1);
@@ -170,7 +172,7 @@ export function installSkills(target: SkillTarget, dryRun: boolean, source: stri
     throw new WazapError(
       "FILE_NOT_FOUND",
       "This wazap install ships no skills/ directory.",
-      "Upgrade with `npm i -g wazap-mcp@latest`, or run this from a checkout.",
+      `Reinstall with \`npm i -g wazap-mcp@${WAZAP_VERSION}\`, or run this from a checkout.`,
     );
   }
 

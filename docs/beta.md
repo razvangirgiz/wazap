@@ -4,6 +4,8 @@ This is an opt-in beta for 5–10 early testers using their own WhatsApp account
 
 ## Install
 
+Supported Wazap hosts for this beta: **macOS and Linux**. Native Windows hosting is not validated: the full suite exposed POSIX permission and process-fixture incompatibilities. Windows CI checks packaging and MCP startup only. Windows AI clients may connect to a supported host over HTTPS; WSL2 and Docker Desktop remain additional usability checks. The MCPB beta advertises macOS/Linux only.
+
 Requirements: Node 22.16 or newer, your phone with WhatsApp, and an MCP client. ChatGPT requires Developer mode availability and a Wazap host reachable through HTTPS. The host must remain awake and online. Wazap does not require an OpenAI API key for ChatGPT; optional API transcription is separate and can incur costs.
 
 ```bash
@@ -59,7 +61,7 @@ For optional write testing, use synthetic data and an intercepted transport: do 
 
 ## Report a problem
 
-Open a [beta feedback issue](https://github.com/razvangirgiz/wazap/issues/new?template=beta-feedback.yml). Include the step, expected/actual result, client and versions, plus the error code. Share only redacted excerpts needed to reproduce the issue.
+Open a [beta feedback issue](https://github.com/razvangirgiz/wazap/issues/new?title=%5BBeta%5D+&body=Wazap+version%3A%0ANode+version+%2F+OS+%2F+AI+client%3A%0AStep+and+setup+time%3A%0AExpected+result%3A%0AActual+result+and+redacted+error+code%3A%0ASteps+to+reproduce%3A%0A%0ARemove+credentials%2C+phone+numbers+and+private+messages+before+submitting.). Include the step, expected/actual result, client and versions, plus the error code. Share only redacted excerpts needed to reproduce the issue.
 
 Never attach `.env`, `auth/`, `oauth.json`, `daemon.json`, a database, a data-directory backup, access tokens, QR/pairing codes, phone numbers or message contents. Do not paste complete status output or logs without checking them. No tool sends reports automatically.
 

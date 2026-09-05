@@ -366,7 +366,9 @@ test("setup --transcribe local --no-brew leaves the fix line standing and instal
 
   assert.deepEqual(calls(), [], "brew must not be called");
   assert.match(stderr, /whisper\.cpp not found/);
-  assert.match(stderr, /→ Run `brew install whisper-cpp ffmpeg`/);
+  assert.match(stderr, process.platform === "darwin"
+    ? /→ Run `brew install whisper-cpp ffmpeg`/
+    : /→ Build whisper\.cpp from .* and install ffmpeg from your package manager/);
   assert.match(stderr, /Run `wazap transcribe download` once they are installed\./);
 });
 
@@ -397,7 +399,7 @@ UNIT=${unit}
 case "$*" in
   *print*|*MainPID*)
     if [ -f ${state} ] && kill -0 $(cat ${state}) 2>/dev/null; then
-      printf '\tpid = %s\n' "$(cat ${state})"
+      ${process.platform === "darwin" ? `printf '\\tpid = %s\\n' "$(cat ${state})"` : ""}
       cat ${state}
       exit 0
     fi
@@ -490,7 +492,7 @@ test("setup --no-global never calls npm and leaves the clients on the npx entry"
   const stderr = await failingSetup(box, "--yes", "--no-global", "--client", "cursor", "--data-dir", linkedDataDir());
 
   assert.deepEqual(calls(), [], "npm must not be called");
-  assert.match(stderr, /need a global install; run `npm i -g wazap-mcp` before either/);
+  assert.match(stderr, /need a global install; run `npm i -g wazap-mcp@[^ ]+` before either/);
   const written = JSON.parse(readFileSync(join(box.home, ".cursor", "mcp.json"), "utf8"));
   assert.deepEqual(written.mcpServers.whatsapp.command, "npx");
 });
@@ -512,8 +514,7 @@ test("a failing npm prints the repair and setup carries on to Connect", async ()
   const stderr = await failingSetup(box, "--yes", "--client", "cursor", "--data-dir", linkedDataDir());
 
   assert.match(stderr, /✗ install npm install -g wazap-mcp@.* failed \(exit 1\)/);
-  assert.match(stderr, /→ run `npm i -g wazap-mcp` yourself \(sudo on some Linux installs\), then `wazap setup` again/);
+  assert.match(stderr, /→ run `npm i -g wazap-mcp@[^ ]+` yourself \(sudo on some Linux installs\), then `wazap setup` again/);
   assert.match(stderr, /Step 3 of 6 · Connect/);
   assert.equal(existsSync(join(box.home, ".cursor", "mcp.json")), true, "Connect must still run");
 });
-

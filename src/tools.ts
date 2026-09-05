@@ -1,4 +1,5 @@
 import { toolOutputSchema } from "./tool-results.js";
+import { WAZAP_NPX } from "./version.js";
 import { AccountManager } from "./account-manager.js";
 import {
   aggregate,
@@ -288,7 +289,7 @@ code with what to do about it. Takes no arguments and never touches WhatsApp.`,
     name: "get_status",
     title: "Get the WhatsApp connection status",
     description: `Check the session: connection status ("connected" means the tools work,
-"not_linked" means the user must run \`npx wazap-mcp login\`), whether the initial
+"not_linked" means the user must run \`${WAZAP_NPX} login\`), whether the initial
 history sync has finished, which account is linked, when a message last arrived,
 the versions and data directory in use, and how many contacts carry a name from
 the phone's address book (contacts_named: 0 means it never arrived).

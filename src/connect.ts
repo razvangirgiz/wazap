@@ -203,7 +203,7 @@ export function whereInstalled(
   return { kind: "checkout", script };
 }
 
-const GLOBAL_FIX = "run `npm i -g wazap-mcp` yourself (sudo on some Linux installs), then `wazap setup` again";
+const GLOBAL_FIX = `run \`npm i -g wazap-mcp@${WAZAP_VERSION}\` yourself (sudo on some Linux installs), then \`wazap setup\` again`;
 
 /** `npm i -g wazap-mcp@<this version>`, so setup and the global install agree. */
 export function installGlobally(version: string = WAZAP_VERSION, npm = "npm"): Check {
@@ -311,7 +311,7 @@ export function mcpEntry(config: Config, spec: ClientSpec, install: Install = wh
   return entry;
 }
 
-const GLOBAL_INSTALL_FIX = "run `npm i -g wazap-mcp`, then `wazap connect claude-desktop` again";
+const GLOBAL_INSTALL_FIX = `run \`npm i -g wazap-mcp@${WAZAP_VERSION}\`, then \`wazap connect claude-desktop\` again`;
 
 /** Whether the client can still find the command once it is launched without a shell. */
 export function launchCheck(
