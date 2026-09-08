@@ -45,7 +45,7 @@ export interface Config {
   share: boolean;
   /** Write-tool token bucket, per minute. 0 disables the limit. */
   rateLimitPerMinute: number;
-  sources: Record<"dataDir" | "readOnly" | "transport" | "rateLimit" | "transcribe", Source>;
+  sources: Record<"dataDir" | "readOnly" | "transport" | "rateLimit" | "transcribe" | "webhook", Source>;
   command: Command;
   /** The command was named on the command line rather than defaulted to serve. */
   explicitCommand: boolean;
@@ -152,7 +152,7 @@ const COMMAND_USAGE: Partial<Record<Command, string>> = {
   service: "Run `wazap service install|status|start|stop|restart|logs|uninstall`",
   transcribe: "Run `wazap transcribe download` or `wazap transcribe test <audio file>`",
   contacts: "Run `wazap contacts resync`",
-  config: "Run `wazap config`, `wazap config writes on|off`, or `wazap config transcribe local|openai|off`",
+  config: "Run `wazap config`, `wazap config writes on|off`, `wazap config transcribe local|openai|off`, or `wazap config webhook on|off|test`",
 };
 
 export function defaultDataDir(): string {
@@ -327,6 +327,7 @@ export function parseCli(argv: string[] = process.argv.slice(2)): CliInvocation 
         transport: sourceOf("WAZAP_TRANSPORT", values.http === true),
         rateLimit: sourceOf("WAZAP_RATE_LIMIT", false),
         transcribe: sourceOf("WAZAP_TRANSCRIBE", false),
+        webhook: sourceOf("WAZAP_WEBHOOK", false),
       },
       command,
       explicitCommand: first !== undefined,

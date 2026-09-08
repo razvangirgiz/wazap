@@ -671,6 +671,50 @@ What to know before exposing it:
 - A read grant never sees a write tool, whatever scope the agent requested.
   The radio button on the consent page is the only thing that decides.
 
+## Outbound webhook
+
+When a live inbound WhatsApp message arrives, wazap can POST it to one URL.
+This is off until you turn it on with a URL and a shared secret. History
+sync is not posted. There is one event, `message_received`.
+
+```bash
+npx wazap-mcp config webhook on
+```
+
+That asks for the URL and the secret (the secret is not echoed) and writes
+them to `<data-dir>/.env`. `npx wazap-mcp config webhook test` POSTs a
+`message_received` payload with `"test": true` so you can check the receiver
+without waiting for a chat. `npx wazap-mcp config webhook off` stops
+delivery.
+
+On without a URL or secret is a failing check on `wazap status`, doctor and
+setup. A delivery that gets a non-2xx or cannot reach the host is a soft
+fail: WhatsApp and MCP keep running, and `get_status` / `status` show
+`webhook.last_error`.
+
+The request is `POST` with `Content-Type: application/json`,
+`X-Wazap-Event: message_received`, and `X-Wazap-Signature: sha256=<hex>`.
+The hex is HMAC-SHA256 of the exact raw body with `WAZAP_WEBHOOK_SECRET`.
+Verify against that raw body, not a re-serialized object. HTTPS is
+required except `http://` on loopback.
+
+```json
+{
+  "event": "message_received",
+  "id": "<delivery id>",
+  "created_at": "<ISO-8601>",
+  "message": {
+    "message_id": "...",
+    "chat_id": "...",
+    "from_me": false,
+    "type": "text",
+    "text": "...",
+    "timestamp": "...",
+    "sender": { "id": "...", "name": "..." }
+  }
+}
+```
+
 ## Settings
 
 | Variable | Default | Meaning |
@@ -694,6 +738,9 @@ What to know before exposing it:
 | `WAZAP_TRANSCRIBE_API_KEY` | unset | API key; `OPENAI_API_KEY` is the fallback. Never a flag. |
 | `WAZAP_TRANSCRIBE_URL` | `https://api.openai.com/v1` | OpenAI-compatible base URL. |
 | `WAZAP_TRANSCRIBE_MODEL` | `gpt-4o-mini-transcribe` | Model at that URL. |
+| `WAZAP_WEBHOOK` | `off` | `on` posts live inbound messages to the webhook URL. |
+| `WAZAP_WEBHOOK_URL` | unset | HTTPS endpoint. `http://` only on loopback. |
+| `WAZAP_WEBHOOK_SECRET` | unset | Shared secret for `X-Wazap-Signature`. Never a flag. |
 
 Flags beat environment variables, which beat `<data-dir>/.env`.
 

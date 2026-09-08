@@ -18,6 +18,7 @@ import {
   type TranscribeSettings,
 } from "./transcribe/index.js";
 import { dim, fail, fix, green, info, ok, red } from "./ui.js";
+import { readWebhookSettings } from "./webhook.js";
 
 export type CheckState = "ok" | "fail" | "info";
 
@@ -50,6 +51,7 @@ const CHECKS: readonly CheckFn[] = [
   checkSkills,
   checkOAuth,
   checkTranscribe,
+  checkWebhook,
   checkUpdate,
 ];
 
@@ -284,6 +286,27 @@ async function localChecks(settings: TranscribeSettings): Promise<Check[]> {
       ? { name: "model", state: "fail", detail: `${spec.file} is not downloaded`, fix: DOWNLOAD_FIX }
       : { name: "model", state: "ok", detail: `${spec.file} (${Math.round(size / MIB)} MiB)` },
   ];
+}
+
+/** W1 webhook: off is quiet; on without a URL or secret is a visible fail. */
+export function webhookCheck(env: NodeJS.ProcessEnv = process.env): Check {
+  const settings = readWebhookSettings(env);
+  switch (settings.kind) {
+    case "off":
+      return { name: "webhook", state: "info", detail: "off" };
+    case "ready":
+      return { name: "webhook", state: "ok", detail: `on (${new URL(settings.url).host})` };
+    case "invalid":
+      return { name: "webhook", state: "fail", detail: settings.detail, fix: settings.fix };
+    default: {
+      const _exhaustive: never = settings;
+      return _exhaustive;
+    }
+  }
+}
+
+function checkWebhook(): Check {
+  return webhookCheck();
 }
 
 /** maskKey is the only thing that ever renders the key, here and everywhere else. */

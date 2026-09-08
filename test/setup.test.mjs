@@ -20,7 +20,7 @@ const SKILLS = readdirSync(join(root, "skills"), { withFileTypes: true })
   .map((entry) => entry.name);
 
 function childEnv(extra) {
-  return { ...process.env, WAZAP_NO_UPDATE_CHECK: "1", ...extra };
+  return { ...process.env, WAZAP_NO_UPDATE_CHECK: "1", WAZAP_WEBHOOK: "off", ...extra };
 }
 
 function dataDir(prefix) {

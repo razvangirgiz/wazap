@@ -19,7 +19,7 @@ const binary = join(dirname(fileURLToPath(import.meta.url)), "..", "dist", "inde
  */
 function status(dataDir, args = [], env = {}) {
   return run(process.execPath, [binary, "status", "--data-dir", dataDir, ...args], {
-    env: { ...process.env, WAZAP_NO_UPDATE_CHECK: "1", WAZAP_TRANSCRIBE: "off", ...env },
+    env: { ...process.env, WAZAP_NO_UPDATE_CHECK: "1", WAZAP_TRANSCRIBE: "off", WAZAP_WEBHOOK: "off", ...env },
   });
 }
 
@@ -109,7 +109,7 @@ test("status --json prints one parseable object carrying the same checks", async
   assert.equal(report.server_pid, null);
   assert.deepEqual(
     report.checks.map((check) => check.name),
-    ["node", "data dir", "lock", "service", "credentials", "writes", "skills", "transcribe", "update"],
+    ["node", "data dir", "lock", "service", "credentials", "writes", "skills", "transcribe", "webhook", "update"],
   );
   assert.equal(report.checks.find((check) => check.name === "writes").detail, "on (default)");
   assert.ok(["global", "checkout", "npx"].includes(report.install.kind), `install: ${JSON.stringify(report.install)}`);
