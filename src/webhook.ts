@@ -2,17 +2,21 @@
  * W1 outbound webhook: one URL, one shared secret, one live event
  * (`message_received`). Delivery never throws into the WhatsApp or MCP path.
  */
-import { createHmac, randomUUID, timingSafeEqual } from "node:crypto";
+import { createHmac, timingSafeEqual } from "node:crypto";
+import { setTimeout as sleep } from "node:timers/promises";
 import { WAZAP_VERSION } from "./config.js";
 import { WazapError, asWazapError } from "./errors.js";
 import { logError } from "./logger.js";
-import { stripPasted } from "./transcribe/index.js";
+import { redact, stripPasted } from "./transcribe/index.js";
 import type { MessageView, WebhookInfo } from "./wa-types.js";
 
 export const WEBHOOK_EVENT = "message_received" as const;
 export const WEBHOOK_TIMEOUT_MS = 10_000;
+export const WEBHOOK_TEXT_MAX = 500;
+export const WEBHOOK_RETRY_DELAYS_MS = [200, 500] as const;
 export const WEBHOOK_ON_FIX = "run `wazap config webhook on`";
 export const WEBHOOK_URL_FIX = "set WAZAP_WEBHOOK_URL to an https:// URL, or http:// on 127.0.0.1";
+export const WEBHOOK_TEST_FIX = "run `wazap webhook test`";
 
 const OFF = new Set(["", "off", "0", "no", "none", "false"]);
 const ON = new Set(["on", "1", "true", "yes"]);
@@ -23,22 +27,14 @@ export type WebhookSettings =
   | { kind: "ready"; url: string; secret: string }
   | { kind: "invalid"; detail: string; fix: string };
 
-export interface WebhookMessage {
-  message_id: string;
-  chat_id: string;
-  from_me: boolean;
-  type: string;
-  text: string;
-  timestamp: string;
-  sender: { id: string; name: string; phone?: string };
-}
-
-export interface WebhookEnvelope {
+/** The JSON body. HMAC is over this exact UTF-8 string. */
+export interface WebhookPayload {
   event: typeof WEBHOOK_EVENT;
-  id: string;
-  created_at: string;
-  test?: true;
-  message: WebhookMessage;
+  from: string;
+  chat_id: string;
+  ts: string;
+  text: string;
+  message_id: string;
 }
 
 export type WebhookTestResult = { ok: true } | { ok: false; error: string; fix: string };
@@ -77,8 +73,8 @@ export function readWebhookSettings(env: NodeJS.ProcessEnv = process.env): Webho
 }
 
 /**
- * The body is posted over this URL and the secret rides with the signature, so
- * plain http is refused unless it points back at this machine.
+ * The body is posted over this URL and the secret signs it, so plain http is
+ * refused unless it points back at this machine.
  */
 export function requireWebhookUrl(url: string): string {
   let parsed: URL;
@@ -105,19 +101,19 @@ export function webhookSignatureMatches(body: string, secret: string, header: st
   return expected.length === received.length && timingSafeEqual(expected, received);
 }
 
-export function asWebhookMessage(view: MessageView): WebhookMessage {
+export function previewText(text: string): string {
+  if (text.length <= WEBHOOK_TEXT_MAX) return text;
+  return `${text.slice(0, WEBHOOK_TEXT_MAX - 1)}…`;
+}
+
+export function asWebhookPayload(view: MessageView): WebhookPayload {
   return {
-    message_id: view.message_id,
+    event: WEBHOOK_EVENT,
+    from: view.sender.phone ?? view.sender.id,
     chat_id: view.chat_id,
-    from_me: view.from_me,
-    type: view.type,
-    text: view.text,
-    timestamp: view.timestamp,
-    sender: {
-      id: view.sender.id,
-      name: view.sender.name,
-      ...(view.sender.phone === undefined ? {} : { phone: view.sender.phone }),
-    },
+    ts: view.timestamp,
+    text: previewText(view.text),
+    message_id: view.message_id,
   };
 }
 
@@ -143,6 +139,7 @@ export class WebhookSink {
   constructor(
     private readonly env: NodeJS.ProcessEnv = process.env,
     private readonly post: WebhookFetch = fetch,
+    private readonly retryDelays: readonly number[] = WEBHOOK_RETRY_DELAYS_MS,
   ) {}
 
   settings(): WebhookSettings {
@@ -153,10 +150,10 @@ export class WebhookSink {
     return webhookInfo(this.settings(), this.lastError);
   }
 
-  async notify(message: WebhookMessage): Promise<void> {
+  async notify(payload: WebhookPayload): Promise<void> {
     const settings = this.settings();
     if (settings.kind !== "ready") return;
-    await this.postEvent(liveEnvelope(message), settings);
+    await this.postEvent(payload, settings);
   }
 
   async sendTest(): Promise<WebhookTestResult> {
@@ -167,7 +164,7 @@ export class WebhookSink {
       case "invalid":
         return { ok: false, error: settings.detail, fix: settings.fix };
       case "ready":
-        return this.postEvent(testEnvelope(), settings);
+        return this.postEvent(testPayload(), settings);
       default: {
         const _exhaustive: never = settings;
         return _exhaustive;
@@ -176,65 +173,62 @@ export class WebhookSink {
   }
 
   private async postEvent(
-    payload: WebhookEnvelope,
+    payload: WebhookPayload,
     settings: Extract<WebhookSettings, { kind: "ready" }>,
   ): Promise<WebhookTestResult> {
     const body = JSON.stringify(payload);
+    const attempts = 1 + this.retryDelays.length;
+    let last: WebhookTestResult = { ok: false, error: "webhook POST failed", fix: "check the webhook URL is reachable and returns 2xx" };
+    for (let i = 0; i < attempts; i++) {
+      last = await this.postOnce(body, settings);
+      if (last.ok) {
+        this.lastError = null;
+        return last;
+      }
+      const delay = this.retryDelays[i];
+      if (delay !== undefined) {
+        logError("webhook", `${last.error}; retry ${i + 1}/${this.retryDelays.length}`);
+        if (delay > 0) await sleep(delay);
+      }
+    }
+    this.lastError = last.error;
+    logError("webhook", last.error);
+    return last;
+  }
+
+  private async postOnce(
+    body: string,
+    settings: Extract<WebhookSettings, { kind: "ready" }>,
+  ): Promise<WebhookTestResult> {
     try {
       const response = await this.post(settings.url, {
         method: "POST",
         headers: {
           "content-type": "application/json",
           "user-agent": `wazap/${WAZAP_VERSION}`,
-          "x-wazap-event": payload.event,
+          "x-wazap-event": WEBHOOK_EVENT,
           "x-wazap-signature": webhookSignature(body, settings.secret),
         },
         body,
         redirect: "error",
         signal: AbortSignal.timeout(WEBHOOK_TIMEOUT_MS),
       });
-      if (response.ok) {
-        this.lastError = null;
-        return { ok: true };
-      }
-      const error = `HTTP ${response.status} from ${hostOf(settings.url)}`;
-      this.lastError = error;
-      logError("webhook", error);
-      return { ok: false, error, fix: "check the webhook URL is reachable and returns 2xx" };
+      if (response.ok) return { ok: true };
+      return failResult(`HTTP ${response.status} from ${hostOf(settings.url)}`, settings.secret);
     } catch (err) {
-      const error = describePostError(err, settings.url);
-      this.lastError = error;
-      logError("webhook", err);
-      return { ok: false, error, fix: "check the webhook URL is reachable and returns 2xx" };
+      return failResult(describePostError(err, settings.url, settings.secret), settings.secret);
     }
   }
 }
 
-function liveEnvelope(message: WebhookMessage): WebhookEnvelope {
+function testPayload(): WebhookPayload {
   return {
     event: WEBHOOK_EVENT,
-    id: randomUUID(),
-    created_at: new Date().toISOString(),
-    message,
-  };
-}
-
-function testEnvelope(): WebhookEnvelope {
-  const created_at = new Date().toISOString();
-  return {
-    event: WEBHOOK_EVENT,
-    id: randomUUID(),
-    created_at,
-    test: true,
-    message: {
-      message_id: "test",
-      chat_id: "test@s.whatsapp.net",
-      from_me: false,
-      type: "text",
-      text: "wazap webhook test",
-      timestamp: created_at,
-      sender: { id: "wazap", name: "wazap" },
-    },
+    from: "wazap",
+    chat_id: "test@s.whatsapp.net",
+    ts: new Date().toISOString(),
+    text: "wazap webhook test",
+    message_id: "test",
   };
 }
 
@@ -246,9 +240,17 @@ function hostOf(url: string): string {
   }
 }
 
-function describePostError(err: unknown, url: string): string {
+function describePostError(err: unknown, url: string, secret: string): string {
   const host = hostOf(url);
   if (err instanceof Error && err.name === "TimeoutError") return `timed out reaching ${host}`;
-  const cause = err instanceof Error ? err.message : String(err);
+  const cause = redact(err instanceof Error ? err.message : String(err), secret);
   return `could not reach ${host} (${cause})`;
+}
+
+function failResult(error: string, secret: string): WebhookTestResult {
+  return {
+    ok: false,
+    error: redact(error, secret),
+    fix: "check the webhook URL is reachable and returns 2xx",
+  };
 }

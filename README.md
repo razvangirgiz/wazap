@@ -673,45 +673,31 @@ What to know before exposing it:
 
 ## Outbound webhook
 
-When a live inbound WhatsApp message arrives, wazap can POST it to one URL.
-This is off until you turn it on with a URL and a shared secret. History
-sync is not posted. There is one event, `message_received`.
+A live inbound message can POST to one URL. Off by default. History sync
+is not posted. The only event is `message_received`.
 
 ```bash
-npx wazap-mcp config webhook on
+npx wazap-mcp config webhook on    # asks for URL + secret (secret is not echoed)
+npx wazap-mcp webhook test         # POST a probe event
+npx wazap-mcp config webhook off
 ```
 
-That asks for the URL and the secret (the secret is not echoed) and writes
-them to `<data-dir>/.env`. `npx wazap-mcp config webhook test` POSTs a
-`message_received` payload with `"test": true` so you can check the receiver
-without waiting for a chat. `npx wazap-mcp config webhook off` stops
-delivery.
+On without a URL or secret fails `wazap status`, doctor and setup. A failed
+delivery retries twice (200 ms, then 500 ms), then sets `webhook.last_error`
+and leaves WhatsApp and MCP running.
 
-On without a URL or secret is a failing check on `wazap status`, doctor and
-setup. A delivery that gets a non-2xx or cannot reach the host is a soft
-fail: WhatsApp and MCP keep running, and `get_status` / `status` show
-`webhook.last_error`.
-
-The request is `POST` with `Content-Type: application/json`,
-`X-Wazap-Event: message_received`, and `X-Wazap-Signature: sha256=<hex>`.
-The hex is HMAC-SHA256 of the exact raw body with `WAZAP_WEBHOOK_SECRET`.
-Verify against that raw body, not a re-serialized object. HTTPS is
-required except `http://` on loopback.
+HMAC: `X-Wazap-Signature` is `sha256=<hex>`, HMAC-SHA256 of the exact raw
+JSON body with `WAZAP_WEBHOOK_SECRET`. Verify that raw body, not a
+re-serialized object. HTTPS only, except `http://` on loopback.
 
 ```json
 {
   "event": "message_received",
-  "id": "<delivery id>",
-  "created_at": "<ISO-8601>",
-  "message": {
-    "message_id": "...",
-    "chat_id": "...",
-    "from_me": false,
-    "type": "text",
-    "text": "...",
-    "timestamp": "...",
-    "sender": { "id": "...", "name": "..." }
-  }
+  "from": "+15550100",
+  "chat_id": "15550100@s.whatsapp.net",
+  "ts": "2026-09-08T14:00:00+00:00",
+  "text": "hello, or a short preview",
+  "message_id": "false_15550100@s.whatsapp.net_3EB0…"
 }
 ```
 

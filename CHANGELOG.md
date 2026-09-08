@@ -3,13 +3,13 @@
 ## Unreleased
 ### Added
 
-- **Outbound webhook (`message_received`).** `WAZAP_WEBHOOK=on` with a URL and
-  a shared secret POSTs each live inbound message to that URL. The JSON body
-  is signed with HMAC-SHA256 (`X-Wazap-Signature: sha256=<hex>`). On without
-  a URL or secret fails `status` / doctor / setup. A failed delivery sets
-  `webhook.last_error` and does not take down the WhatsApp or MCP path.
-  `wazap config webhook on|off|test` writes the settings and sends a test
-  event. History sync is not posted. One URL, no filters.
+- **Outbound webhook (`message_received`).** `wazap config webhook on|off`
+  sets one URL and an HMAC secret. Each live inbound message POSTs a small
+  JSON body (`event`, `from`, `chat_id`, `ts`, `text`, `message_id`). On
+  without a URL or secret fails `status` / doctor / setup. A failed delivery
+  retries twice, then sets `webhook.last_error` and leaves the WhatsApp and
+  MCP paths up. `wazap webhook test` sends a probe. History sync is not
+  posted. Signature: see README.
 
 - **Grok Bot / remote MCP.** README and `wazap setup` now have the four-step
   HTTP path: `wazap login` on the host until the CLI says linked, answer

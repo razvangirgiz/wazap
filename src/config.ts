@@ -25,7 +25,8 @@ export type Command =
   | "service"
   | "expose"
   | "transcribe"
-  | "update";
+  | "update"
+  | "webhook";
 
 export interface Config {
   dataDir: string;
@@ -138,6 +139,7 @@ const COMMAND_ARGS: Record<Command, readonly number[]> = {
   expose: [0, 1],
   transcribe: [1, 2],
   update: [0],
+  webhook: [1],
 };
 
 const COMMANDS = Object.keys(COMMAND_ARGS) as readonly Command[];
@@ -152,7 +154,8 @@ const COMMAND_USAGE: Partial<Record<Command, string>> = {
   service: "Run `wazap service install|status|start|stop|restart|logs|uninstall`",
   transcribe: "Run `wazap transcribe download` or `wazap transcribe test <audio file>`",
   contacts: "Run `wazap contacts resync`",
-  config: "Run `wazap config`, `wazap config writes on|off`, `wazap config transcribe local|openai|off`, or `wazap config webhook on|off|test`",
+  config: "Run `wazap config`, `wazap config writes on|off`, `wazap config transcribe local|openai|off`, or `wazap config webhook on|off`",
+  webhook: "Run `wazap webhook test`",
 };
 
 export function defaultDataDir(): string {

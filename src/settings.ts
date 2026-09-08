@@ -15,7 +15,7 @@ import {
   type TranscribeSettings,
 } from "./transcribe/index.js";
 import { brand, dim, fix, ok, shortPath, warn } from "./ui.js";
-import { WEBHOOK_ON_FIX, WebhookSink, readWebhookSettings, requireWebhookUrl } from "./webhook.js";
+import { WEBHOOK_ON_FIX, WEBHOOK_TEST_FIX, WebhookSink, readWebhookSettings, requireWebhookUrl } from "./webhook.js";
 
 /** Replace `KEY=` in place, keeping every other line, or append it. */
 export function setEnvSetting(envFile: string, key: string, value: string): void {
@@ -80,13 +80,13 @@ const COMMANDS: Record<string, { values: readonly string[]; apply: (config: Conf
     apply: applyTranscribe,
   },
   webhook: {
-    values: ["on", "off", "test"],
+    values: ["on", "off"],
     apply: applyWebhook,
   },
 };
 
 const USAGE_FIX =
-  "Run `wazap config writes on|off`, `wazap config transcribe local|openai|off`, or `wazap config webhook on|off|test`";
+  "Run `wazap config writes on|off`, `wazap config transcribe local|openai|off`, or `wazap config webhook on|off`";
 
 export async function runConfig(config: Config): Promise<void> {
   if (config.args.length === 0) {
@@ -96,7 +96,7 @@ export async function runConfig(config: Config): Promise<void> {
     say("");
     say(
       dim(
-        "Change writes with `wazap config writes on|off`, transcription with `wazap config transcribe`, webhook with `wazap config webhook`.",
+        "Change writes with `wazap config writes on|off`, transcription with `wazap config transcribe`, webhook with `wazap config webhook on|off`. Probe it with `wazap webhook test`.",
       ),
     );
     for (const line of writesHints(config)) say(dim(line));
@@ -174,19 +174,38 @@ async function applyWebhook(config: Config, value: string): Promise<void> {
     warnIfServerRunning(config);
     return;
   }
-  if (value === "test") {
-    await testWebhook();
-    return;
-  }
   throw new WazapError("INVALID_ID", `Cannot set webhook "${value}".`, USAGE_FIX);
 }
 
-async function enableWebhook(config: Config): Promise<void> {
-  const typedUrl = stripPasted(await ask(`${brand("?")} Webhook URL: `));
-  if (typedUrl === "") {
-    throw new WazapError("INVALID_ID", "No webhook URL was typed.", "Run `wazap config webhook on` again");
+export async function runWebhook(config: Config): Promise<void> {
+  const [verb] = config.args;
+  if (verb !== "test") {
+    throw new WazapError("INVALID_ID", `Cannot run \`wazap webhook ${config.args.join(" ")}\`.`, WEBHOOK_TEST_FIX);
   }
-  const url = requireWebhookUrl(typedUrl.replace(/\/+$/, ""));
+  await testWebhook();
+}
+
+async function enableWebhook(config: Config): Promise<void> {
+  // A pipe is consumed whole by the first readline, so a script sets the URL
+  // in the environment and only types the secret, the way transcribe does.
+  let url: string;
+  if (process.stdin.isTTY === true) {
+    const typedUrl = stripPasted(await ask(`${brand("?")} Webhook URL: `));
+    if (typedUrl === "") {
+      throw new WazapError("INVALID_ID", "No webhook URL was typed.", "Run `wazap config webhook on` again");
+    }
+    url = requireWebhookUrl(typedUrl.replace(/\/+$/, ""));
+  } else {
+    const fromEnv = stripPasted(process.env.WAZAP_WEBHOOK_URL ?? "").replace(/\/+$/, "");
+    if (fromEnv === "") {
+      throw new WazapError(
+        "INVALID_ID",
+        "No webhook URL was typed.",
+        "Set WAZAP_WEBHOOK_URL or run `wazap config webhook on` at a terminal",
+      );
+    }
+    url = requireWebhookUrl(fromEnv);
+  }
   const secret = await askSecret(`${brand("?")} Shared secret (it is not echoed): `);
   if (secret === "") {
     throw new WazapError("INVALID_ID", "No webhook secret was typed.", "Run `wazap config webhook on` again");

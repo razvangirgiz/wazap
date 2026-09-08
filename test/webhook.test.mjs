@@ -16,6 +16,7 @@ import { promisify } from "node:util";
 import { webhookCheck } from "../dist/doctor.js";
 import {
   WebhookSink,
+  previewText,
   readWebhookSettings,
   requireWebhookUrl,
   webhookSignature,
@@ -89,6 +90,22 @@ function textMessage(id, body, at = Date.now()) {
   };
 }
 
+function samplePayload(overrides = {}) {
+  return {
+    event: "message_received",
+    from: PEER,
+    chat_id: PEER,
+    ts: "2026-09-08T14:00:00+00:00",
+    text: "salut",
+    message_id: "false_40700000002@s.whatsapp.net_ABC",
+    ...overrides,
+  };
+}
+
+function readyEnv(url) {
+  return { WAZAP_WEBHOOK: "on", WAZAP_WEBHOOK_URL: url, WAZAP_WEBHOOK_SECRET: SECRET };
+}
+
 test("webhook is off unless WAZAP_WEBHOOK is an on-value", () => {
   assert.equal(readWebhookSettings({}).kind, "off");
   assert.equal(readWebhookSettings({ WAZAP_WEBHOOK: "off" }).kind, "off");
@@ -144,7 +161,7 @@ test("the signature is HMAC-SHA256 of the exact raw body", () => {
   assert.equal(webhookSignatureMatches(`${body} `, SECRET, header), false);
 });
 
-test("a ready sink POSTs message_received with a matching signature", async () => {
+test("a ready sink POSTs the small payload with a matching signature", async () => {
   const received = [];
   const server = await listen(async (req, res) => {
     const body = await readBody(req);
@@ -159,20 +176,8 @@ test("a ready sink POSTs message_received with a matching signature", async () =
     res.end();
   });
 
-  const sink = new WebhookSink({
-    WAZAP_WEBHOOK: "on",
-    WAZAP_WEBHOOK_URL: server.url,
-    WAZAP_WEBHOOK_SECRET: SECRET,
-  });
-  await sink.notify({
-    message_id: "false_40700000002@s.whatsapp.net_ABC",
-    chat_id: PEER,
-    from_me: false,
-    type: "text",
-    text: "salut",
-    timestamp: "2026-09-08T14:00:00+00:00",
-    sender: { id: PEER, name: "Ana" },
-  });
+  const sink = new WebhookSink(readyEnv(server.url), fetch, []);
+  await sink.notify(samplePayload());
 
   assert.equal(received.length, 1);
   const hit = received[0];
@@ -180,34 +185,40 @@ test("a ready sink POSTs message_received with a matching signature", async () =
   assert.equal(hit.event, "message_received");
   assert.match(hit.type, /application\/json/);
   assert.equal(webhookSignatureMatches(hit.body, SECRET, hit.signature), true);
-  const payload = JSON.parse(hit.body);
-  assert.equal(payload.event, "message_received");
-  assert.equal(payload.test, undefined);
-  assert.equal(payload.message.text, "salut");
-  assert.equal(payload.message.chat_id, PEER);
+  assert.deepEqual(JSON.parse(hit.body), samplePayload());
   assert.equal(sink.lastError, null);
   await server.close();
 });
 
-test("a 5xx is a soft fail that sets last_error and does not throw", async () => {
+test("off delivers zero POSTs, even when a URL is set", async () => {
+  let calls = 0;
+  const post = async () => {
+    calls++;
+    return new Response(null, { status: 204 });
+  };
+  await new WebhookSink({}, post).notify(samplePayload());
+  await new WebhookSink({ WAZAP_WEBHOOK: "off", WAZAP_WEBHOOK_URL: "http://127.0.0.1:9/hook", WAZAP_WEBHOOK_SECRET: SECRET }, post).notify(
+    samplePayload(),
+  );
+  assert.equal(calls, 0);
+});
+
+test("a long body is posted as a preview, not the whole text", () => {
+  assert.equal(previewText("short"), "short");
+  assert.equal(previewText("x".repeat(500)).length, 500);
+  assert.equal(previewText("x".repeat(501)), `${"x".repeat(499)}…`);
+});
+
+test("a 5xx is retried, then last_error is set and nothing is thrown", async () => {
+  let hits = 0;
   const server = await listen((_req, res) => {
+    hits++;
     res.writeHead(502, { "content-type": "text/plain" });
     res.end("no");
   });
-  const sink = new WebhookSink({
-    WAZAP_WEBHOOK: "on",
-    WAZAP_WEBHOOK_URL: server.url,
-    WAZAP_WEBHOOK_SECRET: SECRET,
-  });
-  await sink.notify({
-    message_id: "m1",
-    chat_id: PEER,
-    from_me: false,
-    type: "text",
-    text: "x",
-    timestamp: "now",
-    sender: { id: PEER, name: "Ana" },
-  });
+  const sink = new WebhookSink(readyEnv(server.url), fetch, [0, 0]);
+  await sink.notify(samplePayload({ text: "x" }));
+  assert.equal(hits, 3);
   assert.match(sink.lastError ?? "", /HTTP 502/);
   assert.equal(sink.info().enabled, true);
   assert.equal(sink.info().valid, true);
@@ -215,25 +226,26 @@ test("a 5xx is a soft fail that sets last_error and does not throw", async () =>
   await server.close();
 });
 
-test("an unreachable URL is a soft fail that sets last_error", async () => {
-  const sink = new WebhookSink({
-    WAZAP_WEBHOOK: "on",
-    WAZAP_WEBHOOK_URL: "http://127.0.0.1:1/hook",
-    WAZAP_WEBHOOK_SECRET: SECRET,
-  });
-  await sink.notify({
-    message_id: "m1",
-    chat_id: PEER,
-    from_me: false,
-    type: "text",
-    text: "x",
-    timestamp: "now",
-    sender: { id: PEER, name: "Ana" },
-  });
-  assert.match(sink.lastError ?? "", /could not reach 127.0.0.1:1/);
+test("a short retry then a 2xx clears last_error", async () => {
+  let hits = 0;
+  const post = async () => {
+    hits++;
+    return new Response(hits < 3 ? "no" : null, { status: hits < 3 ? 502 : 204 });
+  };
+  const sink = new WebhookSink(readyEnv("http://127.0.0.1:9/hook"), post, [0, 0]);
+  await sink.notify(samplePayload());
+  assert.equal(hits, 3);
+  assert.equal(sink.lastError, null);
 });
 
-test("sendTest refuses off and invalid config, and posts test:true when ready", async () => {
+test("an unreachable URL is a soft fail that sets last_error", async () => {
+  const sink = new WebhookSink(readyEnv("http://127.0.0.1:1/hook"), fetch, []);
+  await sink.notify(samplePayload({ text: "x" }));
+  assert.match(sink.lastError ?? "", /could not reach 127.0.0.1:1/);
+  assert.ok(!(sink.lastError ?? "").includes(SECRET), "the secret must not appear in last_error");
+});
+
+test("sendTest refuses off and invalid config, and posts the same event when ready", async () => {
   const off = await new WebhookSink({}).sendTest();
   assert.equal(off.ok, false);
   assert.match(off.error, /off/i);
@@ -248,15 +260,12 @@ test("sendTest refuses off and invalid config, and posts test:true when ready", 
     res.writeHead(200);
     res.end();
   });
-  const ready = await new WebhookSink({
-    WAZAP_WEBHOOK: "on",
-    WAZAP_WEBHOOK_URL: server.url,
-    WAZAP_WEBHOOK_SECRET: SECRET,
-  }).sendTest();
+  const ready = await new WebhookSink(readyEnv(server.url), fetch, []).sendTest();
   assert.equal(ready.ok, true);
   assert.equal(received[0].event, "message_received");
-  assert.equal(received[0].test, true);
-  assert.equal(received[0].message.text, "wazap webhook test");
+  assert.equal(received[0].text, "wazap webhook test");
+  assert.equal(received[0].message_id, "test");
+  assert.equal(received[0].from, "wazap");
   await server.close();
 });
 
@@ -316,8 +325,11 @@ test("a live notify POSTs the inbound message, and an append does not", async ()
     await waitFor(() => received.length > 0, 3_000, "the live webhook POST");
     assert.equal(received.length, 1);
     assert.equal(received[0].event, "message_received");
-    assert.equal(received[0].message.text, "live inbound");
-    assert.equal(received[0].test, undefined);
+    assert.equal(received[0].text, "live inbound");
+    assert.equal(received[0].chat_id, PEER);
+    assert.equal(received[0].from, "40700000002");
+    assert.ok(received[0].message_id);
+    assert.ok(received[0].ts);
     const listed = await svc.readMessages(PEER, 10);
     assert.equal(listed.data.length, 2, "history ingest still stored the append");
   } finally {
@@ -360,7 +372,8 @@ test("a down webhook does not break ingest or get_status", async () => {
 test("config webhook on writes url and secret, and prints neither the secret nor most of it", async () => {
   const dir = dataDir();
   const { code, stdout, stderr } = await wazap(dir, ["config", "webhook", "on"], {
-    input: `http://127.0.0.1:9/hook\n${SECRET}\n`,
+    input: `${SECRET}\n`,
+    env: { WAZAP_WEBHOOK_URL: "http://127.0.0.1:9/hook" },
   });
   assert.equal(code, 0, stderr);
   const envFile = readFileSync(join(dir, ".env"), "utf8");
@@ -369,9 +382,13 @@ test("config webhook on writes url and secret, and prints neither the secret nor
   assert.match(envFile, new RegExp(`^WAZAP_WEBHOOK_SECRET=${SECRET}$`, "m"));
   assert.ok(!stdout.includes(SECRET) && !stderr.includes(SECRET), "the secret must not be printed");
   assert.match(stderr, /webhook: on/);
+
+  const shown = await wazap(dir, ["config"]);
+  assert.ok(!shown.stderr.includes(SECRET), "config must not print the secret");
+  assert.match(shown.stderr, /secret: set/);
 });
 
-test("config webhook test delivers, and refuses when the webhook is off", async () => {
+test("wazap webhook test delivers, and refuses when the webhook is off", async () => {
   const received = [];
   const server = await listen(async (req, res) => {
     received.push({
@@ -382,16 +399,18 @@ test("config webhook test delivers, and refuses when the webhook is off", async 
     res.end();
   });
   const dir = dataDir();
-  const ready = await wazap(dir, ["config", "webhook", "test"], {
-    env: { WAZAP_WEBHOOK: "on", WAZAP_WEBHOOK_URL: server.url, WAZAP_WEBHOOK_SECRET: SECRET },
+  const ready = await wazap(dir, ["webhook", "test"], {
+    env: readyEnv(server.url),
   });
   assert.equal(ready.code, 0, ready.stderr);
   assert.match(ready.stderr, /test delivered/);
   assert.equal(received.length, 1);
   assert.equal(webhookSignatureMatches(received[0].body, SECRET, received[0].signature), true);
-  assert.equal(JSON.parse(received[0].body).test, true);
+  assert.equal(JSON.parse(received[0].body).event, "message_received");
+  assert.equal(JSON.parse(received[0].body).text, "wazap webhook test");
+  assert.ok(!ready.stderr.includes(SECRET) && !ready.stdout.includes(SECRET));
 
-  const off = await wazap(dir, ["config", "webhook", "test"]);
+  const off = await wazap(dir, ["webhook", "test"]);
   assert.equal(off.code, 1);
   assert.match(off.stderr, /Webhook is off/);
   await server.close();

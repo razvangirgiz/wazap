@@ -8,7 +8,7 @@ import { PROVIDER_NAMES, runExpose } from "./expose.js";
 import { SERVICE_VERBS, runService } from "./service.js";
 import { runSetup } from "./setup.js";
 import { runUpdate } from "./update.js";
-import { runConfig } from "./settings.js";
+import { runConfig, runWebhook } from "./settings.js";
 import { WazapError } from "./errors.js";
 import { say } from "./logger.js";
 import { fail, fix } from "./ui.js";
@@ -24,8 +24,9 @@ Usage:
   wazap service ${SERVICE_VERBS}
                                                            Keep the server running in the background, under launchd or systemd
   wazap expose [tailscale|cloudflare|off]                  Give the running service a public https URL cloud agents can reach
-  wazap config [writes on|off] [transcribe local|openai|off] [webhook on|off|test]
+  wazap config [writes on|off] [transcribe local|openai|off] [webhook on|off]
                                                            Show the effective settings, or change one
+  wazap webhook test                                       POST a test message_received to the configured webhook
   wazap transcribe download [--model <alias>]              Fetch the whisper.cpp model into the data dir
   wazap transcribe test <audio file>                       Transcribe a local file with the configured provider
   wazap contacts resync                                    Fetch the phone's address book from WhatsApp again
@@ -126,6 +127,9 @@ async function main(): Promise<void> {
       return;
     case "logout":
       await runLogout(config);
+      return;
+    case "webhook":
+      await runWebhook(config);
       return;
     default: {
       const _exhaustive: never = config.command;

@@ -70,7 +70,7 @@ import {
 import { DraftStore, type Draft, type DraftPayload, type DraftView } from "./drafts.js";
 import { RateLimiter } from "./ratelimit.js";
 import { maskNumber } from "./ui.js";
-import { WebhookSink, asWebhookMessage } from "./webhook.js";
+import { WebhookSink, asWebhookPayload } from "./webhook.js";
 import type {
   CallInfo,
   ChatAction,
@@ -2145,7 +2145,7 @@ export class WhatsAppService implements WhatsAppApi {
       try {
         const jid = this.canonical(raw.key.remoteJid ?? "");
         const sid = messageIdFor(raw.key, jid);
-        void this.webhook.notify(asWebhookMessage(this.viewOf(sid, jid)));
+        void this.webhook.notify(asWebhookPayload(this.viewOf(sid, jid)));
       } catch (err) {
         logError("webhook", err);
       }
