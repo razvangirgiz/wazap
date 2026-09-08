@@ -1,6 +1,17 @@
 # Changelog
 
 ## Unreleased
+### Added
+
+- **Grok Bot / remote MCP.** README and `wazap setup` now have the four-step
+  HTTP path: link until `get_status` is connected, answer writes at login
+  (unset `WAZAP_READ_ONLY` keeps writes on; a Bearer write token is not
+  writes being enabled; `wazap config writes on` and restart),
+  `serve --http` with `WAZAP_READ_TOKEN` and optional `WAZAP_WRITE_TOKEN`,
+  then connect that URL on Grok Bot and call `learn`, `get_status`, read.
+  Setup asks "remote client?" and prints the URL template; it does not
+  start `expose`.
+
 ### Fixed
 
 - **`wazap config` and `readOnlySetting` agree.** Unset `WAZAP_READ_ONLY`

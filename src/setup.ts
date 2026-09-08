@@ -143,6 +143,14 @@ async function runSetupSteps(
     if (await offerRelaunch(spec, config, w)) restarted.add(spec);
   }
 
+  // A yes here is a URL and a header, not a tunnel. expose stays a Keep-running choice.
+  if (await askRemoteClient(config, w)) {
+    for (const line of remoteMcpLines(config.httpPort)) {
+      if (w) notes.push(wizInfo(line));
+      else say(info(line));
+    }
+  }
+
   if (!w) announce("Keep running");
   const keep = await chooseKeepRunning(config, w);
   if (keep !== "client") {
@@ -319,6 +327,44 @@ export function keepRunningOptions(
 ): typeof KEEP_OPTIONS {
   const reachable = providers.some((provider) => provider.available()) || probes.onPath("brew");
   return reachable ? KEEP_OPTIONS : KEEP_OPTIONS.slice(0, 2);
+}
+
+export const REMOTE_CLIENT_QUESTION = "Remote client (Grok Bot / HTTP MCP)? [y/N] ";
+
+/** Empty and anything but yes stay local. */
+export function wantsRemoteClient(answer: string): boolean {
+  return /^y(es)?$/i.test(answer.trim());
+}
+
+/**
+ * What setup prints when the person wants a remote HTTP client such as Grok Bot.
+ * Tokens go in the client's Authorization header. This is not expose.
+ */
+export function remoteMcpLines(port: number): string[] {
+  return [
+    "Grok Bot / remote MCP",
+    `URL     http://<host>:${port}/mcp`,
+    "Header  Authorization: Bearer <WAZAP_READ_TOKEN or WAZAP_WRITE_TOKEN>",
+    "Put that token in Grok Bot's MCP Authorization header. The values are WAZAP_READ_TOKEN and optional WAZAP_WRITE_TOKEN in the environment or <data-dir>/.env.",
+    "A Bearer write token is not writes being enabled. Writes stay on when WAZAP_READ_ONLY is unset. If write tools are missing, run `wazap config writes on` and restart.",
+    "1. Login or link until get_status says connected.",
+    "2. Answer writes yes or no at login.",
+    "3. wazap serve --http with WAZAP_READ_TOKEN and optional WAZAP_WRITE_TOKEN.",
+    "4. Connect that URL on Grok Bot, then learn, get_status, read.",
+  ];
+}
+
+/**
+ * Asked after the local clients, on the same Connect screen when the wizard
+ * already opened one. `--client` at a TTY never opened that screen, so the
+ * question then goes to stderr rather than incrementing the wizard total.
+ */
+async function askRemoteClient(config: Config, w: Wizard | null = null): Promise<boolean> {
+  if (config.assumeYes || process.stdin.isTTY !== true) return false;
+  if (w !== null && config.clients.length === 0) {
+    return wantsRemoteClient(await w.prompt(REMOTE_CLIENT_QUESTION));
+  }
+  return wantsRemoteClient(await ask(`${brand("?")} ${REMOTE_CLIENT_QUESTION}`));
 }
 
 /** Only while a client has it open, unless a flag or a person says otherwise. */

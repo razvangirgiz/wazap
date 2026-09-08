@@ -44,10 +44,11 @@ and it is missing, and to restart Claude Desktop itself once it has connected it
 | Codex CLI | `npx wazap-mcp connect codex`, then `npx wazap-mcp skills install codex` |
 | OpenCode | `npx wazap-mcp connect opencode`, then `npx wazap-mcp skills install opencode` |
 | Windsurf | `npx wazap-mcp connect windsurf` |
+| Grok Bot | [Grok Bot / remote MCP](#grok-bot--remote-mcp) |
 | Anything else | the MCP entry `npx -y wazap-mcp` over stdio, or a [self-hosted](#self-host) URL |
 
-Each of those registers the server. Linking the WhatsApp account is a separate,
-one-time step in every one of them: `npx wazap-mcp login`.
+Each local harness registers the server. Grok Bot is a URL you paste. Linking
+the WhatsApp account is a separate, one-time step: `npx wazap-mcp login`.
 
 Or have your agent do it. Paste this:
 
@@ -89,7 +90,26 @@ it would write.
 | `gemini` | `~/.gemini/settings.json` |
 | `windsurf` | `~/.codeium/windsurf/mcp_config.json` |
 | `opencode` | `mcp.whatsapp` in `~/.config/opencode/opencode.json` |
+| Grok Bot | client's MCP URL field: `http://<host>:<port>/mcp` with header `Authorization: Bearer <token>` (see [Grok Bot / remote MCP](#grok-bot--remote-mcp)) |
 | anything remote | client's MCP URL field: `https://your-host/mcp` with header `Authorization: Bearer <token>`, or just the URL once [OAuth](#hosted-agents-oauth) is on (see [Self-host](#self-host)) |
+
+### Grok Bot / remote MCP
+
+Grok Bot is an HTTP MCP client. It does not launch wazap over stdio.
+
+1. Login or link (`npx wazap-mcp login` or `link_account`) until `get_status` says `connected`.
+2. Answer writes yes or no at login. Writes stay on when `WAZAP_READ_ONLY` is unset. A Bearer write token is not writes being enabled. If write tools are missing, run `wazap config writes on` and restart.
+3. Serve HTTP with a read token, and a write token only if this client should send:
+
+```bash
+WAZAP_READ_TOKEN=$(openssl rand -hex 32) \
+WAZAP_WRITE_TOKEN=$(openssl rand -hex 32) \
+npx wazap-mcp serve --http
+```
+
+4. In Grok Bot, add an MCP server at `http://<host>:<port>/mcp` with header `Authorization: Bearer <token>`. Then call `learn`, then `get_status`, then read. `get_status` is how you tell whether this session can send.
+
+`wazap setup` asks `Remote client (Grok Bot / HTTP MCP)?` and prints the same URL and header. Answering yes does not start `expose`.
 
 ### Other MCP clients
 

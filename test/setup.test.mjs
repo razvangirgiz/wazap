@@ -10,7 +10,7 @@ import { promisify } from "node:util";
 import { CLIENTS, detectClients } from "../dist/connect.js";
 import { WAZAP_VERSION } from "../dist/config.js";
 import { readService } from "../dist/service.js";
-import { keepRunningOptions, parseChoice } from "../dist/setup.js";
+import { keepRunningOptions, parseChoice, remoteMcpLines, wantsRemoteClient } from "../dist/setup.js";
 
 const run = promisify(execFile);
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
@@ -319,6 +319,58 @@ test("a 401 at logout means the phone already removed the device, not a bad pair
   assert.equal(alreadyUnlinked(undefined), false);
 });
 
+const REMOTE_ANSWERS = [
+  ["y", true],
+  ["yes", true],
+  ["Y", true],
+  ["", false],
+  ["n", false],
+  ["no", false],
+  ["maybe", false],
+];
+
+for (const [answer, expected] of REMOTE_ANSWERS) {
+  test(`the remote-client answer ${JSON.stringify(answer)} means ${expected}`, () => {
+    assert.equal(wantsRemoteClient(answer), expected);
+  });
+}
+
+test("the remote MCP notes are the Grok path, not expose", () => {
+  const text = remoteMcpLines(8766).join("\n");
+  assert.match(text, /Grok Bot \/ remote MCP/);
+  assert.match(text, /URL     http:\/\/<host>:8766\/mcp/);
+  assert.match(text, /Authorization: Bearer <WAZAP_READ_TOKEN or WAZAP_WRITE_TOKEN>/);
+  assert.match(text, /WAZAP_READ_TOKEN and optional WAZAP_WRITE_TOKEN/);
+  assert.match(text, /1\. Login or link until get_status says connected\./);
+  assert.match(text, /2\. Answer writes yes or no at login\./);
+  assert.match(text, /3\. wazap serve --http with WAZAP_READ_TOKEN and optional WAZAP_WRITE_TOKEN\./);
+  assert.match(text, /4\. Connect that URL on Grok Bot, then learn, get_status, read\./);
+  assert.match(text, /A Bearer write token is not writes being enabled/);
+  assert.match(text, /Writes stay on when WAZAP_READ_ONLY is unset/);
+  assert.match(text, /wazap config writes on` and restart/);
+  assert.doesNotMatch(text, /expose|cloudflare|tunnel|tailscale/i);
+});
+
+test("the README Grok block matches the four setup steps", () => {
+  const readme = readFileSync(join(root, "README.md"), "utf8");
+  const start = readme.indexOf("### Grok Bot / remote MCP");
+  assert.ok(start >= 0, "README is missing the Grok Bot / remote MCP heading");
+  const next = readme.indexOf("\n### ", start + 1);
+  const block = readme.slice(start, next === -1 ? undefined : next);
+  assert.match(block, /login or link/i);
+  assert.match(block, /get_status.*connected/s);
+  assert.match(block, /writes yes or no at login/);
+  assert.match(block, /Bearer write token is not writes being enabled/);
+  assert.match(block, /wazap config writes on` and restart/);
+  assert.match(block, /WAZAP_READ_ONLY` is unset/);
+  assert.match(block, /serve --http/);
+  assert.match(block, /WAZAP_READ_TOKEN/);
+  assert.match(block, /WAZAP_WRITE_TOKEN/);
+  assert.match(block, /learn/);
+  assert.match(block, /does not start `expose`/);
+  assert.doesNotMatch(block, /cloudflare|tailscale|CreateAgent/i);
+});
+
 test("the keep-running menu offers a public URL only when something can tunnel", () => {
   const noBrew = { onPath: () => false };
   const none = keepRunningOptions([{ available: () => false }], noBrew);
@@ -462,6 +514,7 @@ test("setup with no answer keeps wazap running only while a client has it open",
   const stderr = await failingSetup(box, "--yes", "--client", "cursor", "--data-dir", dir);
   assert.match(stderr, /Step 4 of 5 · Keep running/);
   assert.equal(readService(dir), null, "the default must install nothing");
+  assert.ok(!stderr.includes("Grok Bot / remote MCP"), "--yes must not print the remote MCP notes");
 });
 
 test("setup through npx installs wazap globally, then connects the client to that install", async () => {
