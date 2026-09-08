@@ -43,6 +43,7 @@ import {
   isCallPlaceholder,
   isControlMessage,
   isStubEvent,
+  isUserInboundMessage,
   isoWithOffset,
   mediaInfo,
   mentionedJids,
@@ -2134,14 +2135,15 @@ export class WhatsAppService implements WhatsAppApi {
   }
 
   /**
-   * Live inbound only, same notify gate as transcription: a history sync must
-   * not POST the backlog. Failures stay on `webhook.last_error` and never
+   * Live inbound a person sent, same notify gate as transcription: a history
+   * sync must not POST the backlog, and stubs or system notices are not
+   * `message_received`. Failures stay on `webhook.last_error` and never
    * reject this path.
    */
   private queueWebhook(arrived: readonly WAMessage[]): void {
     if (this.stopped || this.webhook.settings().kind !== "ready") return;
     for (const raw of arrived) {
-      if (raw.key.fromMe) continue;
+      if (!isUserInboundMessage(raw)) continue;
       try {
         const jid = this.canonical(raw.key.remoteJid ?? "");
         const sid = messageIdFor(raw.key, jid);

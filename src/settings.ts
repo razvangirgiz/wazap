@@ -17,6 +17,26 @@ import {
 import { brand, dim, fix, ok, shortPath, warn } from "./ui.js";
 import { WEBHOOK_ON_FIX, WEBHOOK_TEST_FIX, WebhookSink, readWebhookSettings, requireWebhookUrl } from "./webhook.js";
 
+/**
+ * dotenv 16 treats an unquoted `#` as a comment, even with no space, and
+ * trims unquoted padding. Quote so a secret like `p@ss#word` round-trips.
+ * dotenv only expands `\n` / `\r` inside double quotes and does not unescape
+ * `\"`, so the quote style is picked to avoid needing that.
+ */
+const SAFE_UNQUOTED = /^[A-Za-z0-9_./:@+-]*$/;
+
+export function encodeEnvValue(value: string): string {
+  if (SAFE_UNQUOTED.test(value)) return value;
+  const hasSingle = value.includes("'");
+  const hasDouble = value.includes('"');
+  const hasTick = value.includes("`");
+  const hasBreak = /[\n\r]/.test(value);
+  if (!hasSingle && !hasBreak) return `'${value}'`;
+  if (!hasDouble) return `"${value.replace(/\r/g, "\\r").replace(/\n/g, "\\n")}"`;
+  if (!hasTick && !hasBreak) return `\`${value}\``;
+  return `"${value.replace(/\r/g, "\\r").replace(/\n/g, "\\n")}"`;
+}
+
 /** Replace `KEY=` in place, keeping every other line, or append it. */
 export function setEnvSetting(envFile: string, key: string, value: string): void {
   let text = "";
@@ -26,7 +46,7 @@ export function setEnvSetting(envFile: string, key: string, value: string): void
     /* a data dir without an .env yet */
   }
 
-  const line = `${key}=${value}`;
+  const line = `${key}=${encodeEnvValue(value)}`;
   const lines = text === "" ? [] : text.split("\n");
   // dotenv trims around `=` and applies last-wins, so every spelling of the key
   // has to go: leaving a later duplicate behind would silently outrank the edit.

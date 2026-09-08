@@ -12,6 +12,8 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
+import { parse } from "dotenv";
+import { proto } from "baileys";
 
 import { webhookCheck } from "../dist/doctor.js";
 import {
@@ -355,6 +357,59 @@ test("a live notify POSTs the inbound message, and an append does not", async ()
   }
 });
 
+test("stub and system notices are not posted as message_received", async () => {
+  const received = [];
+  const server = await listen(async (req, res) => {
+    received.push(JSON.parse(await readBody(req)));
+    res.writeHead(204);
+    res.end();
+  });
+  const saved = WEBHOOK_KEYS.map((key) => [key, process.env[key]]);
+  Object.assign(process.env, readyEnv(server.url));
+  const group = "120363000000000003@g.us";
+  const { svc, sock } = connectedService(WhatsAppService, { prefix: "wazap-webhook-stub-", id: ME, name: "Răzvan" });
+  try {
+    sock.ev.emit("messages.upsert", {
+      type: "notify",
+      messages: [
+        {
+          key: { remoteJid: group, fromMe: false, id: "STUB" },
+          messageTimestamp: Math.floor(Date.now() / 1000),
+          messageStubType: proto.WebMessageInfo.StubType.GROUP_PARTICIPANT_ADD,
+        },
+        {
+          key: { remoteJid: group, fromMe: false, id: "ENC" },
+          messageTimestamp: Math.floor(Date.now() / 1000),
+          messageStubType: proto.WebMessageInfo.StubType.E2E_ENCRYPTED,
+        },
+        {
+          key: { remoteJid: PEER, fromMe: false, id: "SYS" },
+          messageTimestamp: Math.floor(Date.now() / 1000),
+          message: { protocolMessage: { type: proto.Message.ProtocolMessage.Type.EPHEMERAL_SETTING } },
+        },
+        textMessage("REAL", "only this one"),
+      ],
+    });
+    await waitFor(() => received.length > 0, 3_000, "the user inbound webhook POST");
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    assert.equal(received.length, 1);
+    assert.equal(received[0].text, "only this one");
+    assert.equal(received[0].event, "message_received");
+    const listed = await svc.readMessages(group, 10);
+    assert.ok(
+      listed.data.some((row) => row.type === "system"),
+      "the stub is still stored, just not posted",
+    );
+  } finally {
+    await svc.stop();
+    await server.close();
+    for (const [key, value] of saved) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  }
+});
+
 test("a down webhook does not break ingest or get_status", async () => {
   const saved = WEBHOOK_KEYS.map((key) => [key, process.env[key]]);
   Object.assign(process.env, {
@@ -399,6 +454,36 @@ test("config webhook on writes url and secret, and prints neither the secret nor
   const shown = await wazap(dir, ["config"]);
   assert.ok(!shown.stderr.includes(SECRET), "config must not print the secret");
   assert.match(shown.stderr, /secret: set/);
+});
+
+test("config webhook on keeps a secret that contains #, and webhook test signs with it", async () => {
+  const secret = "p@ss#word with spaces";
+  const received = [];
+  const server = await listen(async (req, res) => {
+    received.push({
+      signature: req.headers["x-wazap-signature"],
+      body: await readBody(req),
+    });
+    res.writeHead(204);
+    res.end();
+  });
+  const dir = dataDir();
+  const enabled = await wazap(dir, ["config", "webhook", "on"], {
+    input: `${secret}\n`,
+    env: { WAZAP_WEBHOOK_URL: server.url },
+  });
+  assert.equal(enabled.code, 0, enabled.stderr);
+  assert.ok(!enabled.stdout.includes(secret) && !enabled.stderr.includes(secret), "the secret must not be printed");
+  const envFile = readFileSync(join(dir, ".env"), "utf8");
+  assert.equal(parse(envFile).WAZAP_WEBHOOK_SECRET, secret);
+  assert.match(envFile, /WAZAP_WEBHOOK_SECRET='/);
+
+  const probed = await wazap(dir, ["webhook", "test"]);
+  assert.equal(probed.code, 0, probed.stderr);
+  assert.equal(received.length, 1);
+  assert.equal(webhookSignatureMatches(received[0].body, secret, received[0].signature), true);
+  assert.equal(webhookSignatureMatches(received[0].body, secret.split("#")[0], received[0].signature), false);
+  await server.close();
 });
 
 test("wazap webhook test delivers, and refuses when the webhook is off", async () => {

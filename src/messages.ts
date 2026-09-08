@@ -375,6 +375,16 @@ export function isStubEvent(raw: WAMessage): boolean {
   return stubKind(raw) !== undefined;
 }
 
+/**
+ * A person sent this inbound. Stubs, protocol machinery and system notices
+ * are not `message_received`.
+ */
+export function isUserInboundMessage(raw: WAMessage): boolean {
+  if (raw.key.fromMe) return false;
+  if (isControlMessage(raw) || isStubEvent(raw)) return false;
+  return messageType(raw) !== "system";
+}
+
 export function messageType(raw: WAMessage): MessageType {
   if (callInfo(raw)) return "call";
   const stub = stubKind(raw);

@@ -9,7 +9,7 @@
   without a URL or secret fails `status` / doctor / setup. A failed delivery
   retries twice, then sets `webhook.last_error` and leaves the WhatsApp and
   MCP paths up. `wazap webhook test` sends a probe. History sync is not
-  posted. Signature: see README.
+  posted. Stubs and system notices are not posted. Signature: see README.
 
 - **Grok Bot / remote MCP.** README and `wazap setup` now have the four-step
   HTTP path: `wazap login` on the host until the CLI says linked, answer
@@ -23,6 +23,12 @@
 
 ### Fixed
 
+- **`.env` writes quote values dotenv would otherwise cut.** A secret with
+  `#` (or spaces, quotes) is written quoted so it round-trips through
+  dotenv. Unquoted `p@ss#word` used to load as `p@ss`.
+- **Outbound webhook skips stubs and system notices.** Only a person sending
+  something fires `message_received`. Group-join stubs and protocol
+  machinery stay in the store, they are not POSTed.
 - **`wazap config` and `readOnlySetting` agree.** Unset `WAZAP_READ_ONLY`
   means writes are on, which is what config already printed as
   "writes: on (default)". One function now decides that, so the two cannot

@@ -7,8 +7,10 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 
+import { parse } from "dotenv";
+
 import { offerWrites } from "../dist/cli.js";
-import { setEnvSetting } from "../dist/settings.js";
+import { encodeEnvValue, setEnvSetting } from "../dist/settings.js";
 
 const run = promisify(execFile);
 const binary = join(dirname(fileURLToPath(import.meta.url)), "..", "dist", "index.js");
@@ -56,6 +58,36 @@ test("setEnvSetting creates the file when the data dir has no .env yet", () => {
   const envFile = join(dataDir(), ".env");
   setEnvSetting(envFile, "WAZAP_READ_ONLY", "1");
   assert.equal(readFileSync(envFile, "utf8"), "WAZAP_READ_ONLY=1\n");
+});
+
+test("encodeEnvValue quotes what dotenv 16 would otherwise cut or trim", () => {
+  assert.equal(encodeEnvValue("on"), "on");
+  assert.equal(encodeEnvValue("0.0.0.0"), "0.0.0.0");
+  assert.equal(encodeEnvValue("http://127.0.0.1:9/hook"), "http://127.0.0.1:9/hook");
+  assert.equal(encodeEnvValue("p@ss#word"), "'p@ss#word'");
+  assert.equal(encodeEnvValue("a b"), "'a b'");
+  assert.equal(encodeEnvValue('say "hi"'), `'say "hi"'`);
+  assert.equal(encodeEnvValue("it's"), `"it's"`);
+  assert.equal(encodeEnvValue("  pad  "), "'  pad  '");
+});
+
+test("setEnvSetting round-trips #, spaces and quotes through dotenv.parse", () => {
+  const cases = [
+    ["plain", "plain"],
+    ["p@ss#word", "p@ss#word"],
+    ["hash#and more", "hash#and more"],
+    ['say "hi" #now', 'say "hi" #now'],
+    ["it's a secret", "it's a secret"],
+    ["  padded  ", "  padded  "],
+    ["a\\b", "a\\b"],
+    ["line1\nline2", "line1\nline2"],
+  ];
+  for (const [raw] of cases) {
+    const envFile = join(dataDir(), ".env");
+    setEnvSetting(envFile, "WAZAP_WEBHOOK_SECRET", raw);
+    const parsed = parse(readFileSync(envFile, "utf8"));
+    assert.equal(parsed.WAZAP_WEBHOOK_SECRET, raw, raw);
+  }
 });
 
 const ANSWERS = [
