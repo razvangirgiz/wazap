@@ -271,6 +271,21 @@ test("get_status says write tools are missing and how to enable them", async () 
   assert.match(result.structuredContent.hint, /write token is not the same as writes being enabled/i);
 });
 
+test("get_status on a write-enabled server hides write tools from a read-token session", async () => {
+  const { svc } = connectedService(WhatsAppService, {
+    prefix: "wazap-status-read-token-",
+    id: "40700000001@s.whatsapp.net",
+    name: "Răzvan",
+    config: { readOnly: false },
+  });
+  const server = fakeServer();
+  registerTools(server, svc, { allowWrite: false });
+  const result = await server.tools.get("get_status").handler({});
+  assert.equal(result.structuredContent.read_only, false);
+  assert.equal(result.structuredContent.write_tools, false);
+  assert.match(result.content[0].text, /read token/);
+});
+
 test("get_status on a write session still says a read token never sees write tools when remote", async () => {
   const { svc } = connectedService(WhatsAppService, {
     prefix: "wazap-status-remote-",

@@ -79,14 +79,15 @@ Done when `get_status` returns `status: "connected"`. Then call `learn` once bef
 
 ### Allow writes
 
-Writes are off unless the user said yes at `login`. The write tools are then not
-registered at all, so the agent cannot see them.
+Writes are on when `WAZAP_READ_ONLY` is unset (the same as `0`). The write
+tools are missing only when someone turned them off: `WAZAP_READ_ONLY=1`,
+`--read-only`, or `login` answering no, which persists `1` in
+`<data-dir>/.env`. `npx wazap-mcp config` prints the effective setting and
+where it came from.
 
 Turn them on with `npx wazap-mcp config writes on`, off again with
-`npx wazap-mcp config writes off`. Both edit `WAZAP_READ_ONLY` in
-`<data-dir>/.env`; a running server has to be restarted for the change to take
-effect. `npx wazap-mcp config` alone prints every effective setting and where it
-came from, which is how you tell a flag from an `.env` line.
+`npx wazap-mcp config writes off`. A running server has to be restarted for
+the change to take effect.
 
 ### Limits the user should hear once
 

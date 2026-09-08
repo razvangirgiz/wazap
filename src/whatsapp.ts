@@ -1104,7 +1104,7 @@ export class WhatsAppService implements WhatsAppApi {
         throw new WazapError(
           "READ_ONLY",
           "wazap runs read-only, so it will not upload audio to the transcription API.",
-          "Restart without WAZAP_READ_ONLY, or run `wazap config transcribe local`",
+          "Run `wazap config writes on` and restart the server, or run `wazap config transcribe local`",
         );
       }
       const readiness = await transcribeReady(settings);
