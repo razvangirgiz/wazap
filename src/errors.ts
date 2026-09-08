@@ -74,7 +74,8 @@ export const ERROR_GUIDE: Record<ErrorCode, string> = {
   EDIT_WINDOW_EXPIRED: "WhatsApp only allows editing within 15 minutes of sending. Send a correction instead.",
   RETRACT_WINDOW_EXPIRED: "WhatsApp only allows deleting for everyone within 2 days. Do not retry.",
   NOT_OWN_MESSAGE: "This action only works on messages the linked account sent. Do not retry.",
-  READ_ONLY: "wazap runs read-only, so writes are refused. Tell the user to restart without WAZAP_READ_ONLY.",
+  READ_ONLY:
+    "wazap runs read-only, so writes are refused. Tell the user to run `wazap config writes on` and restart the server.",
   RATE_LIMITED: "Too many writes too fast. Wait the number of seconds in the fix, then retry once.",
   TRANSCRIBE_UNAVAILABLE:
     "Transcription is off, or its binaries or model are missing. Tell the user to run the command in the fix; do not retry.",

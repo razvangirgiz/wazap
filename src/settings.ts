@@ -1,7 +1,7 @@
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { ask, askSecret } from "./cli.js";
-import { paths, type Config } from "./config.js";
+import { paths, writesHints, type Config } from "./config.js";
 import { WazapError, asWazapError } from "./errors.js";
 import { lockHolder } from "./lock.js";
 import { say } from "./logger.js";
@@ -88,6 +88,7 @@ export async function runConfig(config: Config): Promise<void> {
     for (const line of transcribeRows(config)) say(line);
     say("");
     say(dim("Change writes with `wazap config writes on|off`, transcription with `wazap config transcribe`."));
+    for (const line of writesHints(config)) say(dim(line));
     return;
   }
 
@@ -192,6 +193,8 @@ async function reportReadiness(env: NodeJS.ProcessEnv, dataDir: string): Promise
 export function applyWrites(config: Config, allowWrites: boolean): void {
   const p = paths(config.dataDir);
   setEnvSetting(p.envFile, "WAZAP_READ_ONLY", allowWrites ? "0" : "1");
+  config.readOnly = !allowWrites;
+  if (config.sources) config.sources.readOnly = ".env";
   say(
     ok(
       allowWrites

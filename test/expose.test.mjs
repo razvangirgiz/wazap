@@ -107,6 +107,8 @@ test("expose writes the public URL and a password into a 0600 .env, and says bot
 
   assert.match(output, new RegExp(`${URL_LINE}/mcp`));
   assert.match(output, /Give an agent the URL only\./);
+  assert.match(output, /write token is not the same as writes being enabled/i);
+  assert.match(output, /read token never registers write tools/i);
   const shown = output.split(settings.WAZAP_OAUTH_PASSWORD).length - 1;
   assert.equal(shown, 1, "the password is printed exactly once, or the user cannot trust where it went");
 });

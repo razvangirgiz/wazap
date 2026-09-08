@@ -6,7 +6,7 @@ import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/
 import { isInitializeRequest } from "@modelcontextprotocol/sdk/types.js";
 import express, { type Request, type Response, type NextFunction } from "express";
 import { rateLimit } from "express-rate-limit";
-import { WAZAP_VERSION, paths, type Config } from "./config.js";
+import { WAZAP_VERSION, paths, writesHints, type Config } from "./config.js";
 import { APPROVE_PATH, OAUTH_SCOPES, WazapOAuthProvider } from "./oauth.js";
 import { loadSkills, registerSkillPrompts, skillInstructions } from "./skills.js";
 import { registerTools } from "./tools.js";
@@ -261,6 +261,7 @@ export async function runHttp(wa: WhatsAppApi, config: Config, extra?: Credentia
     oauth,
   });
   log(`MCP server (Streamable HTTP) on http://${config.httpHost}:${port}/mcp`);
+  for (const line of writesHints(config)) log(line);
   return port;
 }
 

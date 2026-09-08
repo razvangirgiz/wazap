@@ -12,7 +12,7 @@ import {
   serviceLive,
   stepper,
 } from "./cli.js";
-import { paths, type Config, type KeepRunning } from "./config.js";
+import { isRemoteHttp, paths, writesHints, type Config, type KeepRunning } from "./config.js";
 import {
   CLIENTS,
   REAL_PROBES,
@@ -165,8 +165,13 @@ async function runSetupSteps(
   if (keep === "expose" && !config.dryRun && install.kind !== "npx") await runExpose(config);
 
   const finish: string[] = [...notes];
+  const writeNotes = writesHints(config, keep === "expose" || isRemoteHttp(config));
+  if (w) finish.push(...writeNotes.map(wizInfo));
   if (w) await w.next("Finish", finish, { reveal: false });
-  else announce("Finish");
+  else {
+    announce("Finish");
+    for (const line of writeNotes) say(info(line));
+  }
   let failing = !(await proveSession(config, w, finish));
   for (const spec of chosen) {
     const check = launchCheck(spec, mcpEntry(config, spec, install));

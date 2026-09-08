@@ -1,5 +1,19 @@
 # Changelog
 
+## Unreleased
+### Fixed
+
+- **`wazap config` and `readOnlySetting` agree.** Unset `WAZAP_READ_ONLY`
+  means writes are on, which is what config already printed as
+  "writes: on (default)". One function now decides that, so the two cannot
+  drift. When writes are off, `status` / doctor / setup say the write tools
+  are missing and to run `wazap config writes on` then restart. On HTTP or
+  a public URL they also say a Bearer write token is not writes being
+  enabled, and that a read token never registers write tools.
+- **`get_status` last message after a restart.** `last_message_received_at`
+  no longer stays `never` when the store or history already has inbound
+  messages; it reports the latest of those until a live message arrives.
+
 ## 0.13.0
 ### Added
 

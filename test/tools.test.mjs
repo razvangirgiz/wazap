@@ -4,6 +4,8 @@ import assert from "node:assert/strict";
 import { registerTools, toolError, TOOL_NAMES } from "../dist/tools.js";
 import { DraftStore } from "../dist/drafts.js";
 import { WazapError, ERROR_GUIDE } from "../dist/errors.js";
+import { WhatsAppService } from "../dist/whatsapp.js";
+import { connectedService } from "./helpers.mjs";
 
 /** Stand-in for McpServer: records what got registered and lets us call it. */
 function fakeServer() {
@@ -250,6 +252,38 @@ test("link_account on a linked account reports ALREADY_LINKED instead of pairing
   assert.equal(result.isError, true);
   assert.equal(result.structuredContent.error, "ALREADY_LINKED");
   assert.equal(wa.getStatus().status, "connected", "the tool must not have touched the session");
+});
+
+test("get_status says write tools are missing and how to enable them", async () => {
+  const { svc } = connectedService(WhatsAppService, {
+    prefix: "wazap-status-writes-",
+    id: "40700000001@s.whatsapp.net",
+    name: "Răzvan",
+    config: { readOnly: true, transport: "http", publicUrl: "https://wazap.example" },
+  });
+  const server = fakeServer();
+  registerTools(server, svc, { allowWrite: false });
+  const result = await server.tools.get("get_status").handler({});
+  assert.equal(result.structuredContent.write_tools, false);
+  assert.equal(result.structuredContent.read_only, true);
+  assert.match(result.content[0].text, /write tools.*not registered/i);
+  assert.match(result.structuredContent.hint, /wazap config writes on/);
+  assert.match(result.structuredContent.hint, /write token is not the same as writes being enabled/i);
+});
+
+test("get_status on a write session still says a read token never sees write tools when remote", async () => {
+  const { svc } = connectedService(WhatsAppService, {
+    prefix: "wazap-status-remote-",
+    id: "40700000001@s.whatsapp.net",
+    name: "Răzvan",
+    config: { readOnly: false, transport: "http", publicUrl: "https://wazap.example" },
+  });
+  const server = fakeServer();
+  registerTools(server, svc, { allowWrite: true });
+  const result = await server.tools.get("get_status").handler({});
+  assert.equal(result.structuredContent.write_tools, true);
+  assert.match(result.content[0].text, /write tools.*registered/i);
+  assert.match(result.structuredContent.hint, /read token never registers write tools/i);
 });
 
 test("learn documents every error code an agent can receive", async () => {

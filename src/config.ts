@@ -164,6 +164,43 @@ function asBool(value: string | undefined, fallback: boolean): boolean {
   return ["1", "true", "yes", "on"].includes(value.trim().toLowerCase());
 }
 
+/**
+ * Whether write tools stay unregistered.
+ *
+ * Unset means writes are on (`false`). That is what `wazap config` prints as
+ * "writes: on (default)" and what `WAZAP_READ_ONLY=0` also means. Login still
+ * asks and may persist `1`. Only an explicit on-value (`1` / `true` / `yes` /
+ * `on`) or `--read-only` turns writes off.
+ */
+export function readOnlySetting(value: string | undefined): boolean {
+  if (value === undefined) return false;
+  return ["1", "true", "yes", "on"].includes(value.trim().toLowerCase());
+}
+
+/** HTTP serve, or a public URL that remote agents use. */
+export function isRemoteHttp(config: Pick<Config, "transport" | "publicUrl">): boolean {
+  return config.transport === "http" || Boolean(config.publicUrl);
+}
+
+export const WRITES_ENABLE_FIX = "run `wazap config writes on`, then restart the server";
+
+export const WRITES_ENABLE_HINT =
+  "Write tools are not registered. Run `wazap config writes on` and restart the server.";
+
+export const WRITE_TOKEN_NOTE =
+  "A Bearer write token is not the same as writes being enabled. A read token never registers write tools.";
+
+/** Operator-facing lines for status, doctor, setup and HTTP connect. */
+export function writesHints(
+  config: Pick<Config, "readOnly" | "transport" | "publicUrl">,
+  remote: boolean = isRemoteHttp(config),
+): string[] {
+  const hints: string[] = [];
+  if (config.readOnly) hints.push(WRITES_ENABLE_HINT);
+  if (remote) hints.push(WRITE_TOKEN_NOTE);
+  return hints;
+}
+
 function asInt(value: string | undefined, fallback: number): number {
   const n = Number.parseInt((value ?? "").trim(), 10);
   return Number.isFinite(n) ? n : fallback;
@@ -271,7 +308,7 @@ export function parseCli(argv: string[] = process.argv.slice(2)): CliInvocation 
     kind: "run",
     config: {
       dataDir,
-      readOnly: values["read-only"] === true || asBool(process.env.WAZAP_READ_ONLY, false),
+      readOnly: values["read-only"] === true || readOnlySetting(process.env.WAZAP_READ_ONLY),
       syncFullHistory: asBool(process.env.WAZAP_SYNC_FULL_HISTORY, false),
       persistHistory: asBool(process.env.WAZAP_PERSIST_HISTORY, true),
       transport: values.http === true || httpFromEnv ? "http" : "stdio",

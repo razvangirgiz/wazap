@@ -14,6 +14,7 @@ import type {
   SentMessage,
   Synced,
   Preview,
+  StatusInfo,
   UnansweredChat,
   WaitResult,
   WhatsAppApi,
@@ -199,24 +200,7 @@ While a link is in progress the status is "linking" and \`pairing\` carries the
 code the user still has to type into their phone.`,
     schema: {},
     write: false,
-    handler: async (_args, wa) => {
-      const s = wa.getStatus();
-      const account = s.account ? `${s.account.name || "(no name)"} (${s.account.number})` : "none";
-      const text = [
-        `# WhatsApp: ${s.status} (sync: ${s.sync})`,
-        `- **account**: ${account}`,
-        `- **last message received**: ${s.last_message_received_at ?? "never"}`,
-        `- **contacts named**: ${s.contacts_named}`,
-        `- **data dir**: ${s.data_dir} · **read-only**: ${s.read_only} · **rate limit**: ${s.rate_limit}/min`,
-        `- **versions**: wazap ${s.wazap_version}, baileys ${s.baileys_version}`,
-        s.pairing ? `- **pairing code**: ${s.pairing.code} for ${s.pairing.phone_masked}, until ${s.pairing.expires_at}` : null,
-        s.last_error ? `- **last error**: ${s.last_error}` : null,
-        s.hint ? `- **hint**: ${s.hint}` : null,
-      ]
-        .filter((line): line is string => line !== null)
-        .join("\n");
-      return ok(text, s as unknown as Record<string, unknown>);
-    },
+    handler: async (_args, wa) => renderGetStatus(wa.getStatus(), true),
   }),
 
   tool({
@@ -989,6 +973,7 @@ export function registerTools(server: McpServer, wa: WhatsAppApi, opts: Register
       async (args: unknown): Promise<ToolResult> => {
         try {
           own?.take();
+          if (def.name === "get_status") return renderGetStatus(wa.getStatus(), opts.allowWrite);
           return await def.handler(args as ToolArgs, wa);
         } catch (err) {
           return toolError(asWazapError(err));
@@ -996,6 +981,30 @@ export function registerTools(server: McpServer, wa: WhatsAppApi, opts: Register
       },
     );
   }
+}
+
+/** The get_status body: `write_tools` is this session's, not the process default. */
+export function renderGetStatus(s: StatusInfo, writeTools: boolean): ToolResult {
+  const account = s.account ? `${s.account.name || "(no name)"} (${s.account.number})` : "none";
+  const writeLine = writeTools
+    ? "registered"
+    : s.read_only
+      ? "not registered (server is read-only; run `wazap config writes on` and restart)"
+      : "not registered (this session used a read token)";
+  const text = [
+    `# WhatsApp: ${s.status} (sync: ${s.sync})`,
+    `- **account**: ${account}`,
+    `- **last message received**: ${s.last_message_received_at ?? "never"}`,
+    `- **contacts named**: ${s.contacts_named}`,
+    `- **data dir**: ${s.data_dir} · **read-only**: ${s.read_only} · **write tools**: ${writeLine} · **rate limit**: ${s.rate_limit}/min`,
+    `- **versions**: wazap ${s.wazap_version}, baileys ${s.baileys_version}`,
+    s.pairing ? `- **pairing code**: ${s.pairing.code} for ${s.pairing.phone_masked}, until ${s.pairing.expires_at}` : null,
+    s.last_error ? `- **last error**: ${s.last_error}` : null,
+    s.hint ? `- **hint**: ${s.hint}` : null,
+  ]
+    .filter((line): line is string => line !== null)
+    .join("\n");
+  return ok(text, { ...s, write_tools: writeTools } as unknown as Record<string, unknown>);
 }
 
 function renderChats(chats: ChatSummary[], filter: string): string {

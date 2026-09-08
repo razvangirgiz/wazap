@@ -73,6 +73,12 @@ for (const [name, flags, expected] of ANSWERS) {
   });
 }
 
+test("config without a writes setting says on (default), matching readOnlySetting(undefined)", async () => {
+  const { stderr } = await wazap(dataDir(), ["config"]);
+  assert.match(stderr, /writes: on \(default\)/);
+  assert.ok(!stderr.includes("Write tools are not registered"), "on must not be described as off");
+});
+
 test("config writes off persists the setting, and config reads it back from .env", async () => {
   const dir = dataDir();
   const off = await wazap(dir, ["config", "writes", "off"]);
@@ -81,6 +87,8 @@ test("config writes off persists the setting, and config reads it back from .env
 
   const shown = await wazap(dir, ["config"]);
   assert.match(shown.stderr, /writes: off \(\.env\)/);
+  assert.match(shown.stderr, /Write tools are not registered/);
+  assert.match(shown.stderr, /wazap config writes on/);
   assert.match(shown.stderr, new RegExp(`data dir: ${dir} \\(flag\\)`));
   assert.match(shown.stderr, /transport: stdio \(default\)/);
   assert.match(shown.stderr, /rate limit: 20 writes\/minute \(default\)/);

@@ -85,6 +85,21 @@ test("WAZAP_NO_UPDATE_CHECK=1 skips the registry call and says so", async () => 
   assert.match(stderr, /– update: update check skipped \(WAZAP_NO_UPDATE_CHECK=1\)/);
 });
 
+test("writes off is an info check that says how to turn them on", async () => {
+  const dir = dataDir();
+  writeFileSync(join(dir, ".env"), "WAZAP_READ_ONLY=1\n");
+  const { stderr } = await status(dir);
+  assert.match(stderr, /– writes: off \(\.env\); write tools are not registered/);
+  assert.match(stderr, /wazap config writes on/);
+});
+
+test("an HTTP read-only server also says a write token is not writes being on", async () => {
+  const { stderr } = await status(dataDir(), [], { WAZAP_READ_ONLY: "1", WAZAP_TRANSPORT: "http" });
+  assert.match(stderr, /write tools are not registered/);
+  assert.match(stderr, /write token is not the same as writes being enabled/i);
+  assert.match(stderr, /wazap config writes on/);
+});
+
 test("status --json prints one parseable object carrying the same checks", async () => {
   const dir = dataDir();
   const { stdout } = await status(dir, ["--json"]);

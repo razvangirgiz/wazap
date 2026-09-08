@@ -1,6 +1,6 @@
 import { accessSync, constants, statSync } from "node:fs";
 import { readLinkedAccount } from "./auth-state.js";
-import { WAZAP_VERSION, paths, type Config } from "./config.js";
+import { WAZAP_VERSION, WRITES_ENABLE_FIX, WRITE_TOKEN_NOTE, isRemoteHttp, paths, type Config } from "./config.js";
 import { WazapError, asWazapError } from "./errors.js";
 import { lockHolder, lockPid } from "./lock.js";
 import { oauthProblem, readGrants } from "./oauth.js";
@@ -174,10 +174,23 @@ function checkCredentials(config: Config): Check {
 }
 
 function checkWrites(config: Config): Check {
+  const source = config.sources.readOnly;
+  if (!config.readOnly) {
+    return {
+      name: "writes",
+      state: "ok",
+      detail: isRemoteHttp(config)
+        ? `on (${source}); a write token unlocks write tools only while this stays on`
+        : `on (${source})`,
+    };
+  }
   return {
     name: "writes",
-    state: "ok",
-    detail: `${config.readOnly ? "off" : "on"} (${config.sources.readOnly})`,
+    state: "info",
+    detail: isRemoteHttp(config)
+      ? `off (${source}); write tools are not registered. ${WRITE_TOKEN_NOTE}`
+      : `off (${source}); write tools are not registered`,
+    fix: WRITES_ENABLE_FIX,
   };
 }
 

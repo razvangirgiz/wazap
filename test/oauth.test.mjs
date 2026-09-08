@@ -44,12 +44,12 @@ function form(fields) {
 }
 
 /** One server, one provider, torn down by the caller. */
-async function boot(t, { password = PASSWORD, credentials = [{ token: "static-read", write: false }] } = {}) {
+async function boot(t, { password = PASSWORD, credentials = [{ token: "static-read", write: false }], readOnly = false } = {}) {
   const dataDir = mkdtempSync(join(tmpdir(), "wazap-oauth-"));
   const port = await freePort();
   const publicUrl = new URL(`http://127.0.0.1:${port}`);
   const oauth = new WazapOAuthProvider({ publicUrl, password, stateFile: join(dataDir, "oauth.json") });
-  const config = offlineConfig("wazap-oauth-cfg-", { readOnly: false, transport: "http", dataDir });
+  const config = offlineConfig("wazap-oauth-cfg-", { readOnly, transport: "http", dataDir });
   const stop = new AbortController();
   await startHttpEndpoint(stubWa, config, {
     host: "127.0.0.1",
@@ -175,6 +175,15 @@ test("an unauthenticated call is told where to sign in", async (t) => {
 test("the static token still works with OAuth on", async (t) => {
   const ctx = await boot(t);
   const { status, names } = await listTools(ctx, "static-read");
+  assert.equal(status, 200);
+  assert.ok(names.includes("get_status"));
+  assert.ok(!names.includes("send_message"));
+  assert.ok(!names.includes("confirm_send"));
+});
+
+test("a write bearer does not unlock write tools while the server is read-only", async (t) => {
+  const ctx = await boot(t, { credentials: [{ token: "writer", write: true }], readOnly: true });
+  const { status, names } = await listTools(ctx, "writer");
   assert.equal(status, 200);
   assert.ok(names.includes("get_status"));
   assert.ok(!names.includes("send_message"));
