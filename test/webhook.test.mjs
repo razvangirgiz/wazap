@@ -238,6 +238,19 @@ test("a short retry then a 2xx clears last_error", async () => {
   assert.equal(sink.lastError, null);
 });
 
+test("notify never rejects, even when building the POST throws", async () => {
+  const sink = new WebhookSink(readyEnv("http://127.0.0.1:9/hook"), fetch, []);
+  const payload = {
+    ...samplePayload(),
+    get text() {
+      throw new Error(`cannot serialize ${SECRET}`);
+    },
+  };
+  await sink.notify(payload);
+  assert.match(sink.lastError ?? "", /cannot serialize/);
+  assert.ok(!(sink.lastError ?? "").includes(SECRET), "the secret must not appear in last_error");
+});
+
 test("an unreachable URL is a soft fail that sets last_error", async () => {
   const sink = new WebhookSink(readyEnv("http://127.0.0.1:1/hook"), fetch, []);
   await sink.notify(samplePayload({ text: "x" }));

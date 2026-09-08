@@ -2145,7 +2145,9 @@ export class WhatsAppService implements WhatsAppApi {
       try {
         const jid = this.canonical(raw.key.remoteJid ?? "");
         const sid = messageIdFor(raw.key, jid);
-        void this.webhook.notify(asWebhookPayload(this.viewOf(sid, jid)));
+        void this.webhook.notify(asWebhookPayload(this.viewOf(sid, jid))).catch((err) => {
+          logError("webhook", err);
+        });
       } catch (err) {
         logError("webhook", err);
       }

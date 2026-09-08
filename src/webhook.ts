@@ -151,9 +151,16 @@ export class WebhookSink {
   }
 
   async notify(payload: WebhookPayload): Promise<void> {
-    const settings = this.settings();
-    if (settings.kind !== "ready") return;
-    await this.postEvent(payload, settings);
+    try {
+      const settings = this.settings();
+      if (settings.kind !== "ready") return;
+      await this.postEvent(payload, settings);
+    } catch (err) {
+      const settings = this.settings();
+      const secret = settings.kind === "ready" ? settings.secret : "";
+      this.lastError = redact(err instanceof Error ? err.message : String(err), secret);
+      logError("webhook", this.lastError);
+    }
   }
 
   async sendTest(): Promise<WebhookTestResult> {
