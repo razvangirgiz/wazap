@@ -97,17 +97,18 @@ it would write.
 
 Grok Bot is an HTTP MCP client. It does not launch wazap over stdio.
 
-1. Login or link (`npx wazap-mcp login` or `link_account`) until `get_status` says `connected`.
-2. Answer writes yes or no at login. Writes stay on when `WAZAP_READ_ONLY` is unset. A Bearer write token is not writes being enabled. If write tools are missing, run `wazap config writes on` and restart.
-3. Serve HTTP with a read token, and a write token only if this client should send:
+1. On the machine that will run wazap, `npx wazap-mcp login` until the CLI says the account is linked. `get_status` and `link_account` are MCP tools; they need HTTP already serving (step 3) and Grok already connected (step 4).
+2. Answer writes yes or no at login. Writes stay on when `WAZAP_READ_ONLY` is unset. A Bearer write token is not writes being enabled. If write tools are missing, you need writes on (`wazap config writes on` and restart) and a write Bearer on this session. Config alone is not enough on HTTP.
+3. Serve HTTP with a read token:
 
 ```bash
 WAZAP_READ_TOKEN=$(openssl rand -hex 32) \
-WAZAP_WRITE_TOKEN=$(openssl rand -hex 32) \
 npx wazap-mcp serve --http
 ```
 
-4. In Grok Bot, add an MCP server at `http://<host>:<port>/mcp` with header `Authorization: Bearer <token>`. Then call `learn`, then `get_status`, then read. `get_status` is how you tell whether this session can send.
+Set `WAZAP_WRITE_TOKEN` too only if this client should send, and put that value in the header in step 4.
+
+4. In Grok Bot, add an MCP server at `http://<host>:<port>/mcp` with header `Authorization: Bearer <token>`. Then call `learn`, then `get_status`. `connected` means the WhatsApp socket is up. This session can send only when write tools are registered (`write_tools: true`, or send tools appear in the tool list). Then read.
 
 `wazap setup` asks `Remote client (Grok Bot / HTTP MCP)?` and prints the same URL and header. Answering yes does not start `expose`.
 

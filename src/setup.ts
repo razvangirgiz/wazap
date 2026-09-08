@@ -345,12 +345,12 @@ export function remoteMcpLines(port: number): string[] {
     "Grok Bot / remote MCP",
     `URL     http://<host>:${port}/mcp`,
     "Header  Authorization: Bearer <WAZAP_READ_TOKEN or WAZAP_WRITE_TOKEN>",
-    "Put that token in Grok Bot's MCP Authorization header. The values are WAZAP_READ_TOKEN and optional WAZAP_WRITE_TOKEN in the environment or <data-dir>/.env.",
-    "A Bearer write token is not writes being enabled. Writes stay on when WAZAP_READ_ONLY is unset. If write tools are missing, run `wazap config writes on` and restart.",
-    "1. Login or link until get_status says connected.",
+    "Put the read token in Grok Bot's MCP Authorization header for a read session. To send, put the write token instead. The values live as WAZAP_READ_TOKEN and WAZAP_WRITE_TOKEN in the environment or <data-dir>/.env.",
+    "A Bearer write token is not writes being enabled. If write tools are missing, you need writes on (`wazap config writes on` and restart) and a write Bearer on this session. Config alone is not enough.",
+    "1. wazap login on this host until the CLI says linked. get_status and link_account wait until HTTP is up.",
     "2. Answer writes yes or no at login.",
-    "3. wazap serve --http with WAZAP_READ_TOKEN and optional WAZAP_WRITE_TOKEN.",
-    "4. Connect that URL on Grok Bot, then learn, get_status, read.",
+    "3. wazap serve --http with WAZAP_READ_TOKEN. Set WAZAP_WRITE_TOKEN only if this client should send.",
+    "4. Connect that URL on Grok Bot, then learn, then get_status. connected is the socket. write_tools (or send tools in the list) is whether this session can send. Then read.",
   ];
 }
 

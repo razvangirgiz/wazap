@@ -4,13 +4,14 @@
 ### Added
 
 - **Grok Bot / remote MCP.** README and `wazap setup` now have the four-step
-  HTTP path: link until `get_status` is connected, answer writes at login
-  (unset `WAZAP_READ_ONLY` keeps writes on; a Bearer write token is not
-  writes being enabled; `wazap config writes on` and restart),
-  `serve --http` with `WAZAP_READ_TOKEN` and optional `WAZAP_WRITE_TOKEN`,
-  then connect that URL on Grok Bot and call `learn`, `get_status`, read.
-  Setup asks "remote client?" and prints the URL template; it does not
-  start `expose`.
+  HTTP path: `wazap login` on the host until the CLI says linked, answer
+  writes at login, `serve --http` with `WAZAP_READ_TOKEN` (set
+  `WAZAP_WRITE_TOKEN` only if this client should send), then connect that
+  URL on Grok Bot and call `learn`, `get_status`, read. Missing write tools
+  on HTTP need writes on and a write Bearer on the session; config alone is
+  not enough. `connected` is the socket; `write_tools` (or send tools in
+  the list) is whether this session can send. Setup asks "remote client?"
+  and prints the URL template; it does not start `expose`.
 
 ### Fixed
 
