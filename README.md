@@ -518,13 +518,16 @@ server of its own rather than a bridge, and is refused the same way.
 
 ## Read-only mode
 
-Writes are opt-in. `login` asks once and stores the answer in
-`<data-dir>/.env`; `wazap config writes on|off` changes it, and `wazap config`
-alone prints every effective setting with where it came from.
+Writes are opt-in at `login` (the question defaults to no and stores the
+answer in `<data-dir>/.env`). `wazap config writes on|off` changes it later.
+`wazap config` and `wazap status` print the effective setting and where it
+came from. If that line says off, write tools are not registered: run
+`wazap config writes on` and restart the server.
 
-`WAZAP_READ_ONLY=1` or `wazap serve --read-only` does not register the write
-tools at all. The agent never sees them, so it cannot message anyone from your
-number even by mistake — useful when the linked account is your personal one.
+An unset `WAZAP_READ_ONLY` and `WAZAP_READ_ONLY=0` both register write tools
+(`wazap config` then says "writes: on"). `WAZAP_READ_ONLY=1` or
+`wazap serve --read-only` does not register them at all. The agent never
+sees them, so it cannot message anyone from your number even by mistake.
 
 Writes are also rate limited to `WAZAP_RATE_LIMIT` per minute (default 20, `0`
 disables). Sending faster than a human is how accounts get banned.
@@ -541,10 +544,13 @@ Streamable HTTP at `/mcp`, with a health check at `/healthz`. That check answers
 `{ ok, status, since }`. It turns 503 once the socket has been anything but
 connected for two minutes, so a tunnel or a monitor sees a real outage rather
 than a reconnect in progress. Two bearer tokens:
-the read token gets the read tools, the write token also unlocks the write
-tools, so a leaked read token can never message anyone. wazap refuses to bind a
-non-loopback address without a read token. Agents that cannot carry a header
-sign in with [OAuth](#hosted-agents-oauth) instead.
+the read token gets the read tools, the write token can unlock the write
+tools. A leaked read token can never message anyone. A write token is not
+the same as writes being enabled: if the server is read-only, even a write
+token session has no write tools. `get_status` says so and how to turn
+writes on. wazap refuses to bind a non-loopback address without a read
+token. Agents that cannot carry a header sign in with
+[OAuth](#hosted-agents-oauth) instead.
 
 ## Self-host
 
@@ -649,7 +655,7 @@ What to know before exposing it:
 | Variable | Default | Meaning |
 | --- | --- | --- |
 | `WAZAP_DATA_DIR` | `~/.wazap` | Where everything is stored. |
-| `WAZAP_READ_ONLY` | `0` | Do not register the write tools. |
+| `WAZAP_READ_ONLY` | unset (`0`) | `1` does not register the write tools. Unset and `0` both do. |
 | `WAZAP_SYNC_FULL_HISTORY` | `0` | Ask WhatsApp for a fuller history sync. |
 | `WAZAP_PERSIST_HISTORY` | `1` | Keep chats and messages across restarts. |
 | `WAZAP_RATE_LIMIT` | `20` | Write tool calls per minute; `0` disables. |

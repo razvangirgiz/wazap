@@ -391,6 +391,7 @@ test("read-only refuses the API provider and nothing else", async () => {
 
   await assert.rejects(() => svc.transcribeAudio(sidOf("R1")), (err) => {
     assert.equal(err.code, "READ_ONLY", "uploading the user's audio and spending their money is not a read");
+    assert.match(err.fix, /wazap config writes on/);
     assert.match(err.fix, /transcribe local/);
     return true;
   });

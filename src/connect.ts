@@ -2,7 +2,7 @@ import { spawnSync } from "node:child_process";
 import { copyFileSync, existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, delimiter, dirname, isAbsolute, join, resolve } from "node:path";
-import { WAZAP_VERSION, defaultDataDir, type Config } from "./config.js";
+import { WAZAP_VERSION, defaultDataDir, writesHints, type Config } from "./config.js";
 import type { Check } from "./doctor.js";
 import { WazapError } from "./errors.js";
 import { say } from "./logger.js";
@@ -349,6 +349,7 @@ export function runConnect(config: Config): void {
   const spec = findClient(config.args[0] ?? "");
   connectClient(spec, config);
   say(nextHint(spec.next));
+  for (const line of writesHints(config)) say(info(line));
 }
 
 /** Null only when the file is absent; an unreadable file must never be overwritten. */

@@ -4,7 +4,7 @@ import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { ask } from "./cli.js";
-import { paths, type Config } from "./config.js";
+import { paths, writesHints, type Config } from "./config.js";
 import { REAL_PROBES, commandOnPath, type Probes } from "./connect.js";
 import { DEPS, ensureDeps } from "./deps.js";
 import { WazapError } from "./errors.js";
@@ -251,6 +251,9 @@ async function exposeOn(
   say(box(`MCP URL   ${url}/mcp`, `Password  ${fresh ? password : maskKey(password)}`));
   say("");
   say(HANDOVER);
+  for (const line of writesHints({ readOnly: config.readOnly, transport: "http", publicUrl: url })) {
+    say(info(line));
+  }
 }
 
 async function exposeOff(

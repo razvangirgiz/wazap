@@ -28,7 +28,7 @@ fixes it; run that command rather than improvising.
 | `– lock: stale` | A previous server died without cleaning up. Harmless; the next start reclaims it. |
 | `✓ lock: held` | A server is running. Do not run `logout` or `status --live`; ask through the client with `get_status`. |
 | `✗ credentials` | Unreadable. Call `link_account`, or `npx wazap-mcp logout` then `npx wazap-mcp login`. |
-| `writes: off` | Write tools are not registered. Enabling them is **Allow writes**. |
+| `writes: off` | Write tools are not registered. Enabling them is **Allow writes**. A Bearer write token does not turn writes on; a read token never sees write tools. |
 | `– update` | A newer wazap exists, or the check could not reach npm. Never blocking. |
 
 `npx wazap-mcp status --live` reaches WhatsApp for real and reports whether the
@@ -67,20 +67,21 @@ keeps whatever else is in the file, backs it up once, and prints the next step
 
 - Add `--dry-run` first if the user wants to see the entry before it is written.
 - Claude Code users can install this plugin instead, which registers the server.
-- Remote clients (claude.ai, another machine) need HTTP mode with tokens; follow "HTTP mode" in the wazap README rather than improvising.
+- Remote clients (claude.ai, another machine, Grok) need HTTP mode with tokens; follow "HTTP mode" in the wazap README rather than improvising. A Bearer write token is not the same as writes being enabled. A read token never registers write tools. If `get_status` says write tools are missing, run `npx wazap-mcp config writes on` and restart the server.
 
 Done when `get_status` returns `status: "connected"`. Then call `learn` once before using the other tools.
 
 ## Allow writes
 
-Writes are off unless the user said yes at `login`. The write tools are then not
-registered at all, so the agent cannot see them.
+Writes are on when `WAZAP_READ_ONLY` is unset (the same as `0`). The write
+tools are missing only when someone turned them off: `WAZAP_READ_ONLY=1`,
+`--read-only`, or `login` answering no, which persists `1` in
+`<data-dir>/.env`. `npx wazap-mcp config` prints the effective setting and
+where it came from.
 
 Turn them on with `npx wazap-mcp config writes on`, off again with
-`npx wazap-mcp config writes off`. Both edit `WAZAP_READ_ONLY` in
-`<data-dir>/.env`; a running server has to be restarted for the change to take
-effect. `npx wazap-mcp config` alone prints every effective setting and where it
-came from, which is how you tell a flag from an `.env` line.
+`npx wazap-mcp config writes off`. A running server has to be restarted for
+the change to take effect.
 
 ## Limits the user should hear once
 

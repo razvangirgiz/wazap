@@ -64,6 +64,10 @@ test("a history line filed under the phone reloads into one ring even though it 
   );
   assert.equal(recent[0].messages[0].sender.name, "Sorin Cobzaru", "and knows who wrote it");
   assert.equal(recent[0].messages[0].from_me, false);
+
+  const status = svc.getStatus();
+  assert.ok(status.last_message_received_at, "status must not say never after a restart that already has messages");
+  assert.equal(Date.parse(status.last_message_received_at), Number(raw.messageTimestamp) * 1000);
 });
 
 test("a snapshot that still holds a ring under the lid folds it into the phone chat on load", async () => {

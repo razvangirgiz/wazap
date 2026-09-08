@@ -28,7 +28,7 @@ import makeWASocket, {
 import type { ILogger } from "baileys/lib/Utils/logger.js";
 import { clearSession, readLinkedAccount, useAtomicAuthState, type LinkedAccount } from "./auth-state.js";
 import { CallTracker, callMessage, isTrackedCall, type CallEntry } from "./calls.js";
-import { BAILEYS_VERSION, paths, WAZAP_VERSION, type Config, type Paths } from "./config.js";
+import { BAILEYS_VERSION, paths, WAZAP_VERSION, writesHints, type Config, type Paths } from "./config.js";
 import { asWazapError, RELINK_FIX, RESET_FIX, WazapError } from "./errors.js";
 import { isGroupId, isNoiseJid, isStatusJid, normalizePhone, resolveChatId, STATUS_JID } from "./ids.js";
 import { log, logError } from "./logger.js";
@@ -464,12 +464,13 @@ export class WhatsAppService implements WhatsAppApi {
   }
 
   getStatus(): StatusInfo {
+    const inboundAt = this.latestInboundAt();
     const info: StatusInfo = {
       status: this.status,
       status_since: isoWithOffset(this.statusSince),
       sync: this.syncState(),
       account: this.account,
-      last_message_received_at: this.lastInboundAt === null ? null : isoWithOffset(this.lastInboundAt),
+      last_message_received_at: inboundAt === null ? null : isoWithOffset(inboundAt),
       reconnect_attempts: this.reconnectAttempts,
       wazap_version: WAZAP_VERSION,
       baileys_version: BAILEYS_VERSION,
@@ -479,15 +480,33 @@ export class WhatsAppService implements WhatsAppApi {
       rate_limit: this.config.rateLimitPerMinute,
       last_error: this.lastError,
     };
+    const hints: string[] = [];
     if (this.status === "linking" && this.pairing) {
       info.pairing = this.pairing;
-      info.hint = "Enter the code on the phone; call get_status again in 10 s";
+      hints.push("Enter the code on the phone; call get_status again in 10 s");
     }
-    const stale = this.lastInboundAt !== null && Date.now() - this.lastInboundAt > STALE_INBOUND_MS;
+    hints.push(...writesHints(this.config));
+    const stale = inboundAt !== null && Date.now() - inboundAt > STALE_INBOUND_MS;
     if (this.status === "connected" && stale) {
-      info.hint = "No messages received for 24h; the phone may be offline.";
+      hints.push("No messages received for 24h; the phone may be offline.");
     }
+    if (hints.length > 0) info.hint = hints.join(" ");
     return info;
+  }
+
+  /**
+   * Live upserts set `lastInboundAt`. After a restart that field is empty even
+   * when the store or history already holds messages, so status also looks at
+   * those.
+   */
+  private latestInboundAt(): number | null {
+    let latest = this.lastInboundAt;
+    for (const raw of this.store.messages.values()) {
+      if (raw.key.fromMe) continue;
+      const at = messageTimestampMs(raw);
+      if (latest === null || at > latest) latest = at;
+    }
+    return latest;
   }
 
   listChats(filter: ChatFilter, limit: number): Promise<Synced<ChatSummary[]>> {
@@ -1085,7 +1104,7 @@ export class WhatsAppService implements WhatsAppApi {
         throw new WazapError(
           "READ_ONLY",
           "wazap runs read-only, so it will not upload audio to the transcription API.",
-          "Restart without WAZAP_READ_ONLY, or run `wazap config transcribe local`",
+          "Run `wazap config writes on` and restart the server, or run `wazap config transcribe local`",
         );
       }
       const readiness = await transcribeReady(settings);
@@ -1803,7 +1822,11 @@ export class WhatsAppService implements WhatsAppApi {
   /** First statement of every write, so a broken link is reported before the bucket is spent. */
   private beginWrite(): WASocket {
     if (this.config.readOnly) {
-      throw new WazapError("READ_ONLY", "wazap runs read-only, so this write is refused.");
+      throw new WazapError(
+        "READ_ONLY",
+        "wazap runs read-only, so this write is refused.",
+        "Run `wazap config writes on`, then restart the server",
+      );
     }
     const sock = this.ensureConnected();
     this.writes.take();
