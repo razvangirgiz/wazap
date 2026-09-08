@@ -43,6 +43,7 @@ import {
   isCallPlaceholder,
   isControlMessage,
   isStubEvent,
+  isUserInboundMessage,
   isoWithOffset,
   mediaInfo,
   mentionedJids,
@@ -70,6 +71,7 @@ import {
 import { DraftStore, type Draft, type DraftPayload, type DraftView } from "./drafts.js";
 import { RateLimiter } from "./ratelimit.js";
 import { maskNumber } from "./ui.js";
+import { WebhookSink, asWebhookPayload } from "./webhook.js";
 import type {
   CallInfo,
   ChatAction,
@@ -280,6 +282,7 @@ export class WhatsAppService implements WhatsAppApi {
   private readonly transcribing = new Map<string, Promise<TranscribeResult>>();
   private readonly drafts = new DraftStore();
   private readonly writes: RateLimiter;
+  private readonly webhook = new WebhookSink();
 
   constructor(private readonly config: Config) {
     this.writes = new RateLimiter(config.rateLimitPerMinute);
@@ -479,6 +482,7 @@ export class WhatsAppService implements WhatsAppApi {
       read_only: this.config.readOnly,
       rate_limit: this.config.rateLimitPerMinute,
       last_error: this.lastError,
+      webhook: this.webhook.info(),
     };
     const hints: string[] = [];
     if (this.status === "linking" && this.pairing) {
@@ -1566,6 +1570,7 @@ export class WhatsAppService implements WhatsAppApi {
           this.lastInboundAt = Math.max(this.lastInboundAt ?? 0, messageTimestampMs(raw));
         }
         this.queueTranscripts(stored);
+        this.queueWebhook(stored);
         this.noteArrivals(stored);
       }
       void this.appendHistory(stored);
@@ -2127,6 +2132,28 @@ export class WhatsAppService implements WhatsAppApi {
       throw new WazapError("TRANSCRIBE_UNAVAILABLE", this.transcribe.message, this.transcribe.fix);
     }
     return this.transcribe;
+  }
+
+  /**
+   * Live inbound a person sent, same notify gate as transcription: a history
+   * sync must not POST the backlog, and stubs or system notices are not
+   * `message_received`. Failures stay on `webhook.last_error` and never
+   * reject this path.
+   */
+  private queueWebhook(arrived: readonly WAMessage[]): void {
+    if (this.stopped || this.webhook.settings().kind !== "ready") return;
+    for (const raw of arrived) {
+      if (!isUserInboundMessage(raw)) continue;
+      try {
+        const jid = this.canonical(raw.key.remoteJid ?? "");
+        const sid = messageIdFor(raw.key, jid);
+        void this.webhook.notify(asWebhookPayload(this.viewOf(sid, jid))).catch((err) => {
+          logError("webhook", err);
+        });
+      } catch (err) {
+        logError("webhook", err);
+      }
+    }
   }
 
   /**

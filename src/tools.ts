@@ -999,12 +999,19 @@ export function renderGetStatus(s: StatusInfo, writeTools: boolean): ToolResult 
     `- **data dir**: ${s.data_dir} · **read-only**: ${s.read_only} · **write tools**: ${writeLine} · **rate limit**: ${s.rate_limit}/min`,
     `- **versions**: wazap ${s.wazap_version}, baileys ${s.baileys_version}`,
     s.pairing ? `- **pairing code**: ${s.pairing.code} for ${s.pairing.phone_masked}, until ${s.pairing.expires_at}` : null,
+    webhookStatusLine(s.webhook),
     s.last_error ? `- **last error**: ${s.last_error}` : null,
     s.hint ? `- **hint**: ${s.hint}` : null,
   ]
     .filter((line): line is string => line !== null)
     .join("\n");
   return ok(text, { ...s, write_tools: writeTools } as unknown as Record<string, unknown>);
+}
+
+function webhookStatusLine(webhook: StatusInfo["webhook"]): string {
+  if (!webhook.enabled) return "- **webhook**: off";
+  if (!webhook.valid) return `- **webhook**: invalid${webhook.last_error ? ` · ${webhook.last_error}` : ""}`;
+  return `- **webhook**: on${webhook.last_error ? ` · last error: ${webhook.last_error}` : ""}`;
 }
 
 function renderChats(chats: ChatSummary[], filter: string): string {

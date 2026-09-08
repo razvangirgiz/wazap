@@ -671,6 +671,36 @@ What to know before exposing it:
 - A read grant never sees a write tool, whatever scope the agent requested.
   The radio button on the consent page is the only thing that decides.
 
+## Outbound webhook
+
+A live inbound message can POST to one URL. Off by default. History sync
+is not posted. The only event is `message_received`.
+
+```bash
+npx wazap-mcp config webhook on    # asks for URL + secret (secret is not echoed)
+npx wazap-mcp webhook test         # POST a probe event
+npx wazap-mcp config webhook off
+```
+
+On without a URL or secret fails `wazap status`, doctor and setup. A failed
+delivery retries twice (200 ms, then 500 ms), then sets `webhook.last_error`
+and leaves WhatsApp and MCP running.
+
+HMAC: `X-Wazap-Signature` is `sha256=<hex>`, HMAC-SHA256 of the exact raw
+JSON body with `WAZAP_WEBHOOK_SECRET`. Verify that raw body, not a
+re-serialized object. HTTPS only, except `http://` on loopback.
+
+```json
+{
+  "event": "message_received",
+  "from": "+15550100",
+  "chat_id": "15550100@s.whatsapp.net",
+  "ts": "2026-09-08T14:00:00+00:00",
+  "text": "hello, or a short preview",
+  "message_id": "false_15550100@s.whatsapp.net_3EB0…"
+}
+```
+
 ## Settings
 
 | Variable | Default | Meaning |
@@ -694,6 +724,9 @@ What to know before exposing it:
 | `WAZAP_TRANSCRIBE_API_KEY` | unset | API key; `OPENAI_API_KEY` is the fallback. Never a flag. |
 | `WAZAP_TRANSCRIBE_URL` | `https://api.openai.com/v1` | OpenAI-compatible base URL. |
 | `WAZAP_TRANSCRIBE_MODEL` | `gpt-4o-mini-transcribe` | Model at that URL. |
+| `WAZAP_WEBHOOK` | `off` | `on` posts live inbound messages to the webhook URL. |
+| `WAZAP_WEBHOOK_URL` | unset | HTTPS endpoint. `http://` only on loopback. |
+| `WAZAP_WEBHOOK_SECRET` | unset | Shared secret for `X-Wazap-Signature`. Never a flag. |
 
 Flags beat environment variables, which beat `<data-dir>/.env`.
 

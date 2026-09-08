@@ -2,7 +2,17 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { proto } from "baileys";
 
-import { callInfo, formatAge, isControlMessage, isStubEvent, isoWithOffset, messageText, messageType, mediaInfo } from "../dist/messages.js";
+import {
+  callInfo,
+  formatAge,
+  isControlMessage,
+  isStubEvent,
+  isUserInboundMessage,
+  isoWithOffset,
+  mediaInfo,
+  messageText,
+  messageType,
+} from "../dist/messages.js";
 
 const wrap = (message) => ({ key: { fromMe: false, remoteJid: "4072@s.whatsapp.net", id: "X" }, message });
 
@@ -95,6 +105,30 @@ test("a stub message is an event to report, not machinery to drop", () => {
   const stub = { ...wrap({}), messageStubType: proto.WebMessageInfo.StubType.GROUP_PARTICIPANT_ADD };
   assert.equal(isControlMessage(stub), false);
   assert.equal(messageType(stub), "system");
+});
+
+test("isUserInboundMessage is only a person sending something", () => {
+  assert.equal(isUserInboundMessage(wrap({ conversation: "hi" })), true);
+  assert.equal(isUserInboundMessage(wrap({ imageMessage: { mimetype: "image/jpeg" } })), true);
+  assert.equal(isUserInboundMessage(wrap({ someFutureMessage: {} })), true);
+  assert.equal(
+    isUserInboundMessage({ key: { fromMe: true, remoteJid: "4072@s.whatsapp.net", id: "X" }, message: { conversation: "hi" } }),
+    false,
+  );
+  const stub = { ...wrap({}), messageStubType: proto.WebMessageInfo.StubType.GROUP_PARTICIPANT_ADD };
+  assert.equal(isUserInboundMessage(stub), false);
+  assert.equal(
+    isUserInboundMessage({ ...wrap(undefined), messageStubType: proto.WebMessageInfo.StubType.E2E_ENCRYPTED }),
+    false,
+  );
+  assert.equal(
+    isUserInboundMessage(wrap({ protocolMessage: { type: proto.Message.ProtocolMessage.Type.HISTORY_SYNC_NOTIFICATION } })),
+    false,
+  );
+  assert.equal(
+    isUserInboundMessage(wrap({ protocolMessage: { type: proto.Message.ProtocolMessage.Type.EPHEMERAL_SETTING } })),
+    false,
+  );
 });
 
 const StubType = proto.WebMessageInfo.StubType;

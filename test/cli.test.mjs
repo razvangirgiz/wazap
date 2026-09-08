@@ -20,7 +20,7 @@ function wazap(...args) {
 
 test("--help explains every command and exits 0", async () => {
   const { stderr } = await wazap("--help");
-  for (const fragment of ["wazap login", "wazap status", "wazap logout", "--data-dir", "--read-only"]) {
+  for (const fragment of ["wazap login", "wazap status", "wazap logout", "wazap webhook test", "--data-dir", "--read-only"]) {
     assert.ok(stderr.includes(fragment), `--help must mention ${fragment}`);
   }
 });
@@ -138,6 +138,7 @@ test("a command with no arguments names its own usage, not --help", async () => 
     { args: ["transcribe"], usage: /wazap transcribe download/ },
     { args: ["contacts"], usage: /wazap contacts resync/ },
     { args: ["config", "writes"], usage: /wazap config writes on\|off/ },
+    { args: ["webhook"], usage: /wazap webhook test/ },
   ];
   for (const { args, usage } of cases) {
     await assert.rejects(wazap(...args), (err) => {

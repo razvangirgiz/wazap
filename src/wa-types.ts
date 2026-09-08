@@ -80,9 +80,17 @@ export interface StatusInfo {
   read_only: boolean;
   rate_limit: number;
   last_error: string | null;
+  /** W1 outbound webhook: on/off, whether url+secret are present, delivery `last_error`. */
+  webhook: WebhookInfo;
   /** Present only while `status` is "linking". */
   pairing?: PairingInfo;
   hint?: string;
+}
+
+export interface WebhookInfo {
+  enabled: boolean;
+  valid: boolean;
+  last_error: string | null;
 }
 
 export interface ChatSummary {

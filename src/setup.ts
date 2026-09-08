@@ -33,7 +33,7 @@ import {
   type Probes,
 } from "./connect.js";
 import { DEPS, ensureDeps } from "./deps.js";
-import { checkLines } from "./doctor.js";
+import { checkLines, webhookCheck } from "./doctor.js";
 import { WazapError } from "./errors.js";
 import { PROVIDERS, runExpose, type TunnelProvider } from "./expose.js";
 import { INSTALL_WAIT_MS, installService, pickSupervisor } from "./service.js";
@@ -181,6 +181,14 @@ async function runSetupSteps(
     for (const line of writeNotes) say(info(line));
   }
   let failing = !(await proveSession(config, w, finish));
+  const webhook = webhookCheck();
+  if (webhook.state === "fail") {
+    failing = true;
+    for (const line of checkLines(webhook)) {
+      if (w) finish.push(line);
+      else say(line);
+    }
+  }
   for (const spec of chosen) {
     const check = launchCheck(spec, mcpEntry(config, spec, install));
     if (check.state === "fail") failing = true;

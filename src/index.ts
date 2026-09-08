@@ -8,7 +8,7 @@ import { PROVIDER_NAMES, runExpose } from "./expose.js";
 import { SERVICE_VERBS, runService } from "./service.js";
 import { runSetup } from "./setup.js";
 import { runUpdate } from "./update.js";
-import { runConfig } from "./settings.js";
+import { runConfig, runWebhook } from "./settings.js";
 import { WazapError } from "./errors.js";
 import { say } from "./logger.js";
 import { fail, fix } from "./ui.js";
@@ -24,8 +24,9 @@ Usage:
   wazap service ${SERVICE_VERBS}
                                                            Keep the server running in the background, under launchd or systemd
   wazap expose [tailscale|cloudflare|off]                  Give the running service a public https URL cloud agents can reach
-  wazap config [writes on|off] [transcribe local|openai|off]
+  wazap config [writes on|off] [transcribe local|openai|off] [webhook on|off]
                                                            Show the effective settings, or change one
+  wazap webhook test                                       POST a test message_received to the configured webhook
   wazap transcribe download [--model <alias>]              Fetch the whisper.cpp model into the data dir
   wazap transcribe test <audio file>                       Transcribe a local file with the configured provider
   wazap contacts resync                                    Fetch the phone's address book from WhatsApp again
@@ -68,7 +69,7 @@ WAZAP_TRANSPORT, WAZAP_HOST, WAZAP_PORT, WAZAP_READ_TOKEN, WAZAP_WRITE_TOKEN, WA
 WAZAP_OAUTH_PASSWORD, WAZAP_RATE_LIMIT,
 WAZAP_NO_SHARE, WAZAP_NO_UPDATE_CHECK, WAZAP_TRANSCRIBE, WAZAP_TRANSCRIBE_AUTO,
 WAZAP_TRANSCRIBE_LANGUAGE, WAZAP_TRANSCRIBE_API_KEY, WAZAP_TRANSCRIBE_URL, WAZAP_TRANSCRIBE_MODEL,
-WAZAP_WHISPER_MODEL, WAZAP_WHISPER_BIN.
+WAZAP_WHISPER_MODEL, WAZAP_WHISPER_BIN, WAZAP_WEBHOOK, WAZAP_WEBHOOK_URL, WAZAP_WEBHOOK_SECRET.
 An optional <data-dir>/.env is loaded if present.`;
 
 async function main(): Promise<void> {
@@ -127,6 +128,13 @@ async function main(): Promise<void> {
     case "logout":
       await runLogout(config);
       return;
+    case "webhook":
+      await runWebhook(config);
+      return;
+    default: {
+      const _exhaustive: never = config.command;
+      return _exhaustive;
+    }
   }
 }
 
