@@ -12,15 +12,13 @@ import { join } from "node:path";
 import { readDaemon } from "../dist/daemon.js";
 import { mcpClient, spawnWazap, waitFor } from "./helpers.mjs";
 
-const CHILD_ENV = { WAZAP_READ_TOKEN: "", WAZAP_WRITE_TOKEN: "", WAZAP_NO_UPDATE_CHECK: "1" };
-
 /** A data dir and the children started against it, all killed when the case ends. */
 function scene() {
   const dataDir = mkdtempSync(join(tmpdir(), "wazap-bridge-"));
   const started = [];
 
   const start = (args = [], env = {}) => {
-    const { child, stderr } = spawnWazap({ dataDir, args, env: { ...CHILD_ENV, ...env } });
+    const { child, stderr } = spawnWazap({ dataDir, args, env });
     const wazap = { child, stderr, code: undefined };
     const exited = new Promise((resolve) => {
       child.once("exit", (code) => {

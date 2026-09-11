@@ -258,11 +258,12 @@ export async function startHttpEndpoint(hub: AccountSource, config: Config, endp
     res.status(body.ok ? 200 : 503).json(body);
   });
 
-  return await new Promise<number>((resolve) => {
+  return await new Promise<number>((resolve, reject) => {
     const server = app.listen(endpoint.port, endpoint.host, () => {
       const bound = server.address();
       resolve(typeof bound === "object" && bound !== null ? bound.port : endpoint.port);
     });
+    server.once("error", reject);
     endpoint.signal?.addEventListener("abort", () => {
       for (const transport of transports.values()) void transport.close();
       server.closeAllConnections();

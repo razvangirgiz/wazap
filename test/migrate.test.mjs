@@ -20,6 +20,8 @@ import { promisify } from "node:util";
 import { AccountRegistry, DEFAULT_ACCOUNT_ID } from "../dist/accounts.js";
 import { accountPaths, paths } from "../dist/config.js";
 import { LAYOUT_ENTRIES, migrateLayout, rollbackMigration } from "../dist/migrate.js";
+import { childEnv } from "./helpers.mjs";
+import { runSmoke } from "./smoke-stdio.mjs";
 
 const run = promisify(execFile);
 const binary = join(dirname(fileURLToPath(import.meta.url)), "..", "dist", "index.js");
@@ -192,7 +194,7 @@ test("migrate rollback on a flat dir does not migrate first", async () => {
   seedV0(dir);
   await assert.rejects(
     run(process.execPath, [binary, "migrate", "rollback", "--data-dir", dir], {
-      env: { ...process.env, WAZAP_NO_UPDATE_CHECK: "1" },
+      env: childEnv(),
     }),
     (err) => {
       assert.match(err.stderr, /No migration\.json/);
@@ -213,7 +215,7 @@ test("rollback still runs when a leftover symlink would make a forward migrate t
   assert.throws(() => migrateLayout(dir), (err) => err.code === "WHATSAPP_ERROR");
 
   await run(process.execPath, [binary, "migrate", "rollback", "--data-dir", dir], {
-    env: { ...process.env, WAZAP_NO_UPDATE_CHECK: "1" },
+    env: childEnv(),
   });
   assert.equal(existsSync(join(dir, "auth", "creds.json")), true);
   assert.equal(existsSync(join(dir, "migration.json")), false);
@@ -241,16 +243,27 @@ test("qr.png at the data-dir root moves with the rest", () => {
   assert.equal(readFileSync(accountPaths(dir, DEFAULT_ACCOUNT_ID).qrFile, "utf8"), "qr");
 });
 
+test("serve on a v0 dir migrates then answers initialize", async () => {
+  const dir = dataDir();
+  seedV0(dir);
+  const { toolNames, status } = await runSmoke({ args: ["serve"], dataDir: dir, keepDataDir: true });
+  assert.equal(toolNames.length, 32);
+  assert.equal(status.status, "not_linked");
+  assert.equal(existsSync(join(dir, "auth")), false);
+  assert.equal(existsSync(accountPaths(dir, DEFAULT_ACCOUNT_ID).authDir), true);
+  assert.equal(existsSync(paths(dir).accountsFile), true);
+});
+
 test("wazap migrate rollback undoes a previous migrate through the CLI", async () => {
   const dir = dataDir();
   seedV0(dir, { linked: true });
   await run(process.execPath, [binary, "status", "--data-dir", dir], {
-    env: { ...process.env, WAZAP_NO_UPDATE_CHECK: "1" },
+    env: childEnv(),
   });
   assert.equal(existsSync(accountPaths(dir, DEFAULT_ACCOUNT_ID).authDir), true);
 
   await run(process.execPath, [binary, "migrate", "rollback", "--data-dir", dir], {
-    env: { ...process.env, WAZAP_NO_UPDATE_CHECK: "1" },
+    env: childEnv(),
   });
   assert.equal(existsSync(join(dir, "auth", "creds.json")), true);
   assert.equal(existsSync(join(dir, "migration.json")), false);

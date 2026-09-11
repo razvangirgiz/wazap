@@ -15,9 +15,8 @@ import { promisify } from "node:util";
 import { paths } from "../dist/config.js";
 import { daemonHealthy, decideRole, readDaemon, removeDaemon, writeDaemon } from "../dist/daemon.js";
 import { startHttpEndpoint } from "../dist/server.js";
-import { BINARY, mcpClient, offlineConfig, spawnWazap, stubAccountSource, waitFor } from "./helpers.mjs";
+import { BINARY, childEnv, mcpClient, offlineConfig, spawnWazap, stubAccountSource, waitFor } from "./helpers.mjs";
 
-const CHILD_ENV = { WAZAP_READ_TOKEN: "", WAZAP_WRITE_TOKEN: "", WAZAP_NO_UPDATE_CHECK: "1" };
 const SAMPLE = { pid: 4242, port: 51515, token: "deadbeef", version: "9.9.9" };
 
 function tempDir() {
@@ -33,14 +32,14 @@ const run = promisify(execFile);
 /** The binary's own `status` against a data dir: human lines on stderr, `--json` on stdout. */
 function status(dataDir, args = []) {
   return run(process.execPath, [BINARY, "status", "--data-dir", dataDir, ...args], {
-    env: { ...process.env, WAZAP_NO_UPDATE_CHECK: "1" },
+    env: childEnv(),
   });
 }
 
 /** Run `fn` against a live `wazap serve` child, then make sure it is gone. */
 async function withDaemon(env, fn, args = []) {
   const dataDir = tempDir();
-  const { child, stderr } = spawnWazap({ dataDir, args, env: { ...CHILD_ENV, ...env } });
+  const { child, stderr } = spawnWazap({ dataDir, args, env });
   let alive = true;
   const exited = new Promise((resolve) => {
     child.once("exit", (code) => {
@@ -285,6 +284,26 @@ test("status leaves the sharing suffix off a session that is not shared", async 
       `server: running (pid ${child.pid})`,
     );
   });
+});
+
+test("a taken listen port rejects instead of hanging", async () => {
+  const blocker = createServer();
+  await new Promise((resolve) => blocker.listen(0, "127.0.0.1", resolve));
+  const { port } = blocker.address();
+  try {
+    await assert.rejects(
+      startHttpEndpoint(
+        stubAccountSource({
+          getStatus: () => ({ status: "not_linked", status_since: new Date().toISOString(), account_id: "default" }),
+        }),
+        offlineConfig("wazap-listen-"),
+        { host: "127.0.0.1", port, credentials: [], openRead: false },
+      ),
+      (err) => err.code === "EADDRINUSE",
+    );
+  } finally {
+    await new Promise((resolve) => blocker.close(resolve));
+  }
 });
 
 test("WAZAP_NO_SHARE serves stdio with no sidecar at all", async () => {

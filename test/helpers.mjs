@@ -16,13 +16,24 @@ const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
 export const BINARY = join(repoRoot, "dist", "index.js");
 
 /**
+ * A child's environment must not inherit the developer's WAZAP_* shell.
+ * `WAZAP_TRANSPORT=http` turns `wazap serve` into HTTP on port 8766, so the
+ * stdio initialize never answers and two children race the same port.
+ * `WAZAP_NO_SHARE=1` skips daemon.json. Tests pass explicit overrides in `extra`.
+ */
+export function childEnv(extra = {}) {
+  const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("WAZAP_")));
+  return { ...env, WAZAP_NO_UPDATE_CHECK: "1", WAZAP_READ_TOKEN: "", WAZAP_WRITE_TOKEN: "", ...extra };
+}
+
+/**
  * Spawn `dist/index.js` against `dataDir` with every stream piped. The returned
  * `stderr` array collects the child's log lines as they arrive.
  */
 export function spawnWazap({ dataDir, args = [], env = {}, binary = BINARY } = {}) {
   const child = spawn(process.execPath, [binary, ...args, "--data-dir", dataDir], {
     stdio: ["pipe", "pipe", "pipe"],
-    env: { ...process.env, WAZAP_READ_TOKEN: "", WAZAP_WRITE_TOKEN: "", ...env },
+    env: childEnv(env),
   });
   const stderr = [];
   child.stderr.on("data", (chunk) => stderr.push(chunk.toString()));

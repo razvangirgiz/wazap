@@ -8,6 +8,7 @@ import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 
 import { pickDefaultAction } from "../dist/config.js";
+import { childEnv } from "./helpers.mjs";
 import { runSmoke } from "./smoke-stdio.mjs";
 
 const run = promisify(execFile);
@@ -40,9 +41,30 @@ test("explicit `wazap serve` with piped stdio still answers initialize", async (
   assert.equal(status.status, "not_linked");
 });
 
+test("child env drops a shell WAZAP_TRANSPORT unless the test sets it", () => {
+  const saved = { transport: process.env.WAZAP_TRANSPORT, share: process.env.WAZAP_NO_SHARE };
+  process.env.WAZAP_TRANSPORT = "http";
+  process.env.WAZAP_NO_SHARE = "1";
+  try {
+    const isolated = childEnv({});
+    assert.equal(isolated.WAZAP_TRANSPORT, undefined);
+    assert.equal(isolated.WAZAP_NO_SHARE, undefined);
+    assert.equal(isolated.WAZAP_NO_UPDATE_CHECK, "1");
+    assert.equal(isolated.WAZAP_READ_TOKEN, "");
+    assert.equal(isolated.WAZAP_WRITE_TOKEN, "");
+    assert.equal(childEnv({ WAZAP_TRANSPORT: "http" }).WAZAP_TRANSPORT, "http");
+    assert.equal(childEnv({ WAZAP_NO_SHARE: "1" }).WAZAP_NO_SHARE, "1");
+  } finally {
+    if (saved.transport === undefined) delete process.env.WAZAP_TRANSPORT;
+    else process.env.WAZAP_TRANSPORT = saved.transport;
+    if (saved.share === undefined) delete process.env.WAZAP_NO_SHARE;
+    else process.env.WAZAP_NO_SHARE = saved.share;
+  }
+});
+
 test("writes off in .env leaves the server with the 19 read tools only", async () => {
   const dataDir = mkdtempSync(join(tmpdir(), "wazap-readonly-"));
-  await run(process.execPath, [binary, "config", "writes", "off", "--data-dir", dataDir]);
+  await run(process.execPath, [binary, "config", "writes", "off", "--data-dir", dataDir], { env: childEnv() });
   const { toolNames } = await runSmoke({ args: ["serve"], dataDir, keepDataDir: true, expectedTools: 19, expectReadOnly: true });
   assert.ok(!toolNames.includes("send_message"));
 });
