@@ -353,7 +353,8 @@ test("an already-aborted signal does not leave a listener", async () => {
   });
   try {
     const res = await fetch(`http://127.0.0.1:${port}/healthz`, { signal: AbortSignal.timeout(5_000) });
-    assert.equal(res.status, 503);
+    const body = await res.json();
+    assert.equal(body.status, "not_linked");
   } finally {
     live.abort();
   }
