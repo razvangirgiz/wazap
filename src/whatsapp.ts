@@ -453,6 +453,17 @@ export class WhatsAppService implements WhatsAppApi {
     return { chats: this.store.chats.size, contacts: this.namedContacts(), messages: this.store.messages.size };
   }
 
+  /** This account already has the chat, or the person, in its store. */
+  hasChat(jid: string): boolean {
+    const id = this.canonical(jid);
+    if (!id || isNoiseJid(id)) return false;
+    return this.store.chats.has(id) || this.store.byChat.has(id) || this.store.contacts.has(id);
+  }
+
+  hasMessage(id: string): boolean {
+    return this.store.messages.has(id);
+  }
+
   /**
    * People from the phone's address book: the only contact count worth
    * reporting. The store also holds everyone who ever appeared in a group and
@@ -483,6 +494,8 @@ export class WhatsAppService implements WhatsAppApi {
       account: this.account,
       account_id: this.accountRecord.id,
       account_name: this.accountRecord.name,
+      enabled: this.accountRecord.enabled,
+      write_tools: !this.effectiveReadOnly,
       last_message_received_at: inboundAt === null ? null : isoWithOffset(inboundAt),
       reconnect_attempts: this.reconnectAttempts,
       wazap_version: WAZAP_VERSION,

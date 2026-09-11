@@ -149,6 +149,11 @@ export function openService(WhatsAppService, config) {
   return new WhatsAppService(config, { ...DEFAULT_ACCOUNT }, accountPaths(config.dataDir, "default"));
 }
 
+/** Enough of an AccountHub for HTTP tests that only need one stub WhatsApp. */
+export function stubAccountSource(wa) {
+  return { default: () => wa, all: () => [wa] };
+}
+
 /** A connected service fed only by events, so no socket and no disk are involved. */
 export function connectedService(WhatsAppService, { prefix, id, name, config = {} }) {
   const svc = openService(WhatsAppService, offlineConfig(prefix, config));

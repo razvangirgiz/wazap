@@ -73,6 +73,9 @@ export interface StatusInfo {
   /** Registry id (`default`, `work`, …), not the WhatsApp jid. */
   account_id: string;
   account_name: string;
+  enabled: boolean;
+  /** Whether this account's writes policy would register write tools. */
+  write_tools: boolean;
   last_message_received_at: string | null;
   reconnect_attempts: number;
   /** Contacts carrying a name from the phone's address book. Zero means it never arrived. */

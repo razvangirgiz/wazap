@@ -6,6 +6,7 @@ import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/
 import { isInitializeRequest } from "@modelcontextprotocol/sdk/types.js";
 import express, { type Request, type Response, type NextFunction } from "express";
 import { rateLimit } from "express-rate-limit";
+import type { AccountSource } from "./account-hub.js";
 import { WAZAP_VERSION, paths, writesHints, type Config } from "./config.js";
 import { APPROVE_PATH, OAUTH_SCOPES, WazapOAuthProvider } from "./oauth.js";
 import { loadSkills, registerSkillPrompts, skillInstructions } from "./skills.js";
@@ -39,11 +40,43 @@ function buildMcpServer(wa: WhatsAppApi, config: Config, allowWrite: boolean): M
 
 type AuthedRequest = Request & { mcpWrite?: boolean };
 
-export async function runStdio(wa: WhatsAppApi, config: Config): Promise<void> {
-  const server = buildMcpServer(wa, config, true);
+export async function runStdio(hub: AccountSource, config: Config): Promise<void> {
+  const server = buildMcpServer(hub.default(), config, true);
   const transport = new StdioServerTransport();
   await server.connect(transport);
   log("MCP server ready on stdio.");
+}
+
+export interface AccountHealth {
+  account_id: string;
+  account_name: string;
+  status: string;
+  since: string;
+}
+
+export interface HealthBody {
+  ok: boolean;
+  status: string;
+  since: string;
+  default: AccountHealth;
+  accounts: AccountHealth[];
+}
+
+function rowOf(wa: WhatsAppApi): AccountHealth {
+  const s = wa.getStatus();
+  return { account_id: s.account_id, account_name: s.account_name, status: s.status, since: s.status_since };
+}
+
+function isFresh(since: string): boolean {
+  return Date.now() - Date.parse(since) <= UNHEALTHY_AFTER_MS;
+}
+
+/** Liveness for /healthz: default account on top, every live account listed. */
+export function healthBody(hub: AccountSource): HealthBody {
+  const accounts = hub.all().map(rowOf);
+  const primary = rowOf(hub.default());
+  const ok = accounts.some((row) => row.status === "connected" || isFresh(row.since));
+  return { ok, status: primary.status, since: primary.since, default: primary, accounts };
 }
 
 /** One bearer token and what it unlocks. */
@@ -66,7 +99,7 @@ export interface Endpoint {
 }
 
 /** Serve /mcp and /healthz on one address. Resolves with the bound port, so port 0 works. */
-export async function startHttpEndpoint(wa: WhatsAppApi, config: Config, endpoint: Endpoint): Promise<number> {
+export async function startHttpEndpoint(hub: AccountSource, config: Config, endpoint: Endpoint): Promise<number> {
   const app = express();
   app.use(express.json());
 
@@ -181,7 +214,7 @@ export async function startHttpEndpoint(wa: WhatsAppApi, config: Config, endpoin
           if (sid) transports.delete(sid);
         };
         // The session's tools are fixed at init by the token it authenticated with.
-        const server = buildMcpServer(wa, config, (req as AuthedRequest).mcpWrite === true);
+        const server = buildMcpServer(hub.default(), config, (req as AuthedRequest).mcpWrite === true);
         await server.connect(newTransport);
         transport = newTransport;
       }
@@ -218,12 +251,11 @@ export async function startHttpEndpoint(wa: WhatsAppApi, config: Config, endpoin
   // Unauthenticated, so it carries liveness only; the account and data dir
   // stay behind the token in get_status. A socket that has been anything but
   // connected for two minutes is a real outage, and a 503 is what a tunnel or a
-  // monitor can act on; a reconnect in progress is not.
+  // monitor can act on; a reconnect in progress is not. One dead account does
+  // not 503 the process while another is still up.
   app.get("/healthz", (_req, res) => {
-    const { status, status_since } = wa.getStatus();
-    const stalled = Date.now() - Date.parse(status_since) > UNHEALTHY_AFTER_MS;
-    const ok = status === "connected" || !stalled;
-    res.status(ok ? 200 : 503).json({ ok, status, since: status_since });
+    const body = healthBody(hub);
+    res.status(body.ok ? 200 : 503).json(body);
   });
 
   return await new Promise<number>((resolve) => {
@@ -240,7 +272,7 @@ export async function startHttpEndpoint(wa: WhatsAppApi, config: Config, endpoin
 }
 
 /** The endpoint the user asked for: WAZAP_HOST/WAZAP_PORT and the two configured tokens. */
-export async function runHttp(wa: WhatsAppApi, config: Config, extra?: Credential): Promise<number> {
+export async function runHttp(hub: AccountSource, config: Config, extra?: Credential): Promise<number> {
   const credentials: Credential[] = [];
   if (config.readToken) credentials.push({ token: config.readToken, write: false });
   if (config.writeToken) credentials.push({ token: config.writeToken, write: true });
@@ -255,7 +287,7 @@ export async function runHttp(wa: WhatsAppApi, config: Config, extra?: Credentia
         })
       : undefined;
 
-  const port = await startHttpEndpoint(wa, config, {
+  const port = await startHttpEndpoint(hub, config, {
     host: config.httpHost,
     port: config.httpPort,
     credentials,
@@ -268,8 +300,8 @@ export async function runHttp(wa: WhatsAppApi, config: Config, extra?: Credentia
 }
 
 /** A private endpoint on an ephemeral loopback port, reachable only with the token. */
-export async function startLoopbackEndpoint(wa: WhatsAppApi, config: Config, token: string): Promise<number> {
-  const port = await startHttpEndpoint(wa, config, {
+export async function startLoopbackEndpoint(hub: AccountSource, config: Config, token: string): Promise<number> {
+  const port = await startHttpEndpoint(hub, config, {
     host: "127.0.0.1",
     port: 0,
     credentials: [{ token, write: true }],

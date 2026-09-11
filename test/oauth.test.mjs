@@ -12,7 +12,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { startHttpEndpoint } from "../dist/server.js";
 import { WazapOAuthProvider, oauthProblem } from "../dist/oauth.js";
-import { offlineConfig } from "./helpers.mjs";
+import { offlineConfig, stubAccountSource } from "./helpers.mjs";
 
 // The SDK refuses a plain-http issuer unless told this is a test.
 process.env.MCP_DANGEROUSLY_ALLOW_INSECURE_ISSUER_URL = "1";
@@ -51,7 +51,7 @@ async function boot(t, { password = PASSWORD, credentials = [{ token: "static-re
   const oauth = new WazapOAuthProvider({ publicUrl, password, stateFile: join(dataDir, "oauth.json") });
   const config = offlineConfig("wazap-oauth-cfg-", { readOnly, transport: "http", dataDir });
   const stop = new AbortController();
-  await startHttpEndpoint(stubWa, config, {
+  await startHttpEndpoint(stubAccountSource(stubWa), config, {
     host: "127.0.0.1",
     port,
     credentials,

@@ -7,7 +7,8 @@ import { DisconnectReason } from "baileys";
 import qrcode from "qrcode";
 import qrcodeTerminal from "qrcode-terminal";
 import { accountRows, describeAccount, describeStatusAccount, type StatusAccountRow } from "./account-cli.js";
-import { resolveAccount } from "./accounts.js";
+import { AccountHub } from "./account-hub.js";
+import { AccountRegistry, resolveAccount } from "./accounts.js";
 import { clearSession, readLinkedAccount, type LinkedAccount } from "./auth-state.js";
 import { banner } from "./banner.js";
 import { runBridge } from "./bridge.js";
@@ -512,8 +513,8 @@ export async function runServe(config: Config): Promise<void> {
   if (config.accountId !== undefined) {
     throw new WazapError(
       "INVALID_ID",
-      "wazap serve always uses the default account.",
-      "Drop --account; this release serves one account",
+      "wazap serve starts every enabled account.",
+      "Drop --account; pick an account on login, logout, status, or a tool call",
     );
   }
 
@@ -562,7 +563,7 @@ export async function runServe(config: Config): Promise<void> {
     releaseLock(p.lockFile);
   });
 
-  const wa = openService(config);
+  const hub = new AccountHub(config, AccountRegistry.load(config.dataDir));
   let stopping = false;
   const shutdown = (reason: string): void => {
     if (stopping) return;
@@ -570,7 +571,7 @@ export async function runServe(config: Config): Promise<void> {
     log(`received ${reason}, shutting down`);
     // A wedged socket must not cost the user a kill -9; the lock goes on "exit".
     setTimeout(() => process.exit(0), 3_000).unref();
-    void wa.stop().finally(() => process.exit(0));
+    void hub.stop().finally(() => process.exit(0));
   };
   process.on("SIGINT", () => shutdown("SIGINT"));
   process.on("SIGTERM", () => shutdown("SIGTERM"));
@@ -580,19 +581,21 @@ export async function runServe(config: Config): Promise<void> {
   // exiting hands the problem to whoever started us, which is a supervisor that
   // restarts it, or a client that shows the error. An unlinked device is the
   // exception and stays up in auth_failure, because no restart brings it back.
-  wa.onGiveUp = () => {
-    logError("whatsapp", "reconnects exhausted; exiting so the supervisor can restart wazap");
+  // One dead account stays down; the process exits only when every enabled
+  // account has given up.
+  hub.onGiveUp = () => {
+    logError("whatsapp", "reconnects exhausted on every enabled account; exiting so the supervisor can restart wazap");
     process.exit(GAVE_UP_EXIT);
   };
 
   // Connecting in the background: MCP startup never waits on WhatsApp, and the
   // tools answer NOT_LINKED until a session exists.
-  wa.start().catch((err: unknown) => logError("whatsapp start", err));
+  hub.start().catch((err: unknown) => logError("whatsapp start", err));
 
   const token = config.share ? randomBytes(32).toString("hex") : null;
 
   if (config.transport === "http") {
-    const port = await runHttp(wa, config, token === null ? undefined : { token, write: true });
+    const port = await runHttp(hub, config, token === null ? undefined : { token, write: true });
     // Off-loopback binds get no sidecar: a bridge on this machine could not reach them.
     if (token !== null && SHAREABLE_HOSTS.includes(config.httpHost)) {
       writeDaemon(p.daemonFile, { pid: process.pid, port, token, version: WAZAP_VERSION });
@@ -601,10 +604,10 @@ export async function runServe(config: Config): Promise<void> {
   }
 
   if (token !== null) {
-    const port = await startLoopbackEndpoint(wa, config, token);
+    const port = await startLoopbackEndpoint(hub, config, token);
     writeDaemon(p.daemonFile, { pid: process.pid, port, token, version: WAZAP_VERSION });
   }
-  await runStdio(wa, config);
+  await runStdio(hub, config);
   if (token === null) return;
 
   // The loopback endpoint keeps the event loop alive, so stdin EOF no longer ends
