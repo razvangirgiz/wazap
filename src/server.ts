@@ -10,7 +10,7 @@ import type { AccountSource } from "./account-hub.js";
 import { WAZAP_VERSION, paths, writesHints, type Config } from "./config.js";
 import { APPROVE_PATH, OAUTH_SCOPES, WazapOAuthProvider } from "./oauth.js";
 import { loadSkills, registerSkillPrompts, skillInstructions } from "./skills.js";
-import { registerTools } from "./tools.js";
+import { anyAccountAllowsWrites, registerTools } from "./tools.js";
 import { log, logError } from "./logger.js";
 import type { ConnectionStatus, WhatsAppApi } from "./wa-types.js";
 
@@ -28,11 +28,11 @@ function isAuthorized(header: string | undefined, expected: string): boolean {
  * The one place a session is built, so the workflows reach stdio and HTTP alike:
  * a client that never installed the skill files still gets them here.
  */
-function buildMcpServer(wa: WhatsAppApi, config: Config, allowWrite: boolean): McpServer {
+function buildMcpServer(hub: AccountSource, config: Config, allowWrite: boolean): McpServer {
   const skills = loadSkills();
   const server = new McpServer({ name: "wazap", version: WAZAP_VERSION }, { instructions: skillInstructions(skills) });
-  registerTools(server, wa, {
-    allowWrite: allowWrite && !config.readOnly && wa.getStatus().read_only !== true,
+  registerTools(server, hub, {
+    allowWrite: allowWrite && !config.readOnly && anyAccountAllowsWrites(hub),
   });
   registerSkillPrompts(server, skills);
   return server;
@@ -41,7 +41,7 @@ function buildMcpServer(wa: WhatsAppApi, config: Config, allowWrite: boolean): M
 type AuthedRequest = Request & { mcpWrite?: boolean };
 
 export async function runStdio(hub: AccountSource, config: Config): Promise<void> {
-  const server = buildMcpServer(hub.default(), config, true);
+  const server = buildMcpServer(hub, config, true);
   const transport = new StdioServerTransport();
   await server.connect(transport);
   log("MCP server ready on stdio.");
@@ -213,7 +213,7 @@ export async function startHttpEndpoint(hub: AccountSource, config: Config, endp
           if (sid) transports.delete(sid);
         };
         // The session's tools are fixed at init by the token it authenticated with.
-        const server = buildMcpServer(hub.default(), config, (req as AuthedRequest).mcpWrite === true);
+        const server = buildMcpServer(hub, config, (req as AuthedRequest).mcpWrite === true);
         await server.connect(newTransport);
         transport = newTransport;
       }

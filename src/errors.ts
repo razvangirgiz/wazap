@@ -32,6 +32,9 @@ export type ErrorCode =
   | "SERVICE_ERROR"
   | "DRAFT_NOT_FOUND"
   | "DRAFT_EXPIRED"
+  | "AMBIGUOUS_ACCOUNT"
+  | "ACCOUNT_NOT_FOUND"
+  | "ACCOUNT_DISABLED"
   | "WHATSAPP_ERROR";
 
 export class WazapError extends Error {
@@ -89,6 +92,12 @@ export const ERROR_GUIDE: Record<ErrorCode, string> = {
     "That draft_id is unknown or was already sent. Call the send tool again to draft, show the new preview, then confirm_send.",
   DRAFT_EXPIRED:
     "The draft expired (15 minutes). Call the send tool again to draft, show the new preview, then confirm_send.",
+  AMBIGUOUS_ACCOUNT:
+    "More than one account could handle this, or a write named a chat no account knows. Pass account_id. Call list_accounts to see the ids.",
+  ACCOUNT_NOT_FOUND:
+    "No account with that id. Run `wazap account add` first, or call list_accounts.",
+  ACCOUNT_DISABLED:
+    "That account is disabled. Tell the user to run `wazap account enable <id>` and restart the server.",
   WHATSAPP_ERROR: "WhatsApp rejected the operation. Read the message; do not blindly retry.",
 };
 

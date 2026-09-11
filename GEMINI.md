@@ -44,6 +44,10 @@ refuses while a server holds the lock, because one process owns the session.
 
 ### Link
 
+The account must already exist (`npx wazap-mcp account add <id>`). `link_account`
+does not create one. When more than one account is configured, call
+`list_accounts` and pass `account_id`. An unknown id is `ACCOUNT_NOT_FOUND`.
+
 Inside an MCP client that already has the `whatsapp` tools, call `link_account`
 with the user's number in international format. No terminal is involved. It
 returns an 8-character code, and `get_status` reports `linking` with that code
@@ -227,6 +231,10 @@ Done searching when you have a match, or all three query variants and the pagina
 ## WhatsApp send
 
 A message sent here is indistinguishable from one the user typed. The rail: **the user sees recipient and exact text, says yes, then it goes.** One approval covers one message to one chat.
+
+### Which account
+
+If more than one WhatsApp account is linked, call `list_accounts` first and pass `account_id` on every tool in this flow, including `confirm_send`. A send to a chat no account knows, with two or more accounts, fails `AMBIGUOUS_ACCOUNT`; do not retry without `account_id`. A chat only one account knows selects that account.
 
 ### Resolve the recipient
 

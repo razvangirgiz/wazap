@@ -1,14 +1,21 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
+import {
+  asAccountSource,
+  type AccountSource,
+} from "./account-hub.js";
+import type { AccountRecord } from "./accounts.js";
 import { compactConversations, renderCompact } from "./compact.js";
 import { renderDraft, type DraftView } from "./drafts.js";
 import { asWazapError, ERROR_GUIDE, WazapError } from "./errors.js";
 import { clockLabel } from "./messages.js";
 import { RateLimiter } from "./ratelimit.js";
+import { maskNumber } from "./ui.js";
 import { MESSAGE_TYPES } from "./wa-types.js";
 import type {
   ChatSummary,
   ContactSummary,
+  ListedAccount,
   MessageView,
   RecentConversation,
   SentMessage,
@@ -45,6 +52,13 @@ interface ToolDef {
   handler: (args: ToolArgs, wa: WhatsAppApi) => Promise<ToolResult>;
 }
 
+const ACCOUNT_ID = z
+  .string()
+  .min(1)
+  .describe(
+    "Registry account id (default, work, …). Omit to resolve from chat_id or message_id, or the default account.",
+  );
+
 function tool<S extends z.ZodRawShape>(def: {
   name: string;
   title: string;
@@ -56,7 +70,11 @@ function tool<S extends z.ZodRawShape>(def: {
   rate?: number;
   handler: (args: z.infer<z.ZodObject<S>>, wa: WhatsAppApi) => Promise<ToolResult>;
 }): ToolDef {
-  return { ...def, handler: def.handler as (args: ToolArgs, wa: WhatsAppApi) => Promise<ToolResult> };
+  return {
+    ...def,
+    schema: { ...def.schema, account_id: ACCOUNT_ID.optional() },
+    handler: def.handler as (args: ToolArgs, wa: WhatsAppApi) => Promise<ToolResult>,
+  };
 }
 
 function ok(text: string, structured: Record<string, unknown>, extra: ContentBlock[] = []): ToolResult {
@@ -117,8 +135,17 @@ link_account when it says no account is linked yet.
 - message_id — the full id from read_messages / search_messages. Needed for
   get_message, download_media, react_to_message, edit_message, forward_message,
   delete_message, and the reply_to of send_message.
+- account_id — registry slug (\`default\`, \`work\`). Optional on every tool.
+  Several accounts: call list_accounts first and pass account_id. A send
+  to a chat no account knows, with two or more accounts, fails
+  AMBIGUOUS_ACCOUNT; it never falls back to the default.
 
 ## Workflows
+- Several accounts: call list_accounts first. Pass account_id on the tools
+  that follow. Without it, a chat or message that only one account knows
+  selects that account; a chat none of them know uses the default for reads
+  and fails AMBIGUOUS_ACCOUNT for writes. link_account needs an account that
+  already exists (\`wazap account add\`).
 - Not linked: get_status says not_linked, logged_out, session_corrupt or
   auth_failure → link_account(phone), show the user the code, then poll
   get_status every 10 s until it says connected.
@@ -198,11 +225,25 @@ the phone's address book (contacts_named: 0 means it never arrived).
 
 Call this whenever another tool reports NOT_CONNECTED, NOT_LINKED or
 SYNC_IN_PROGRESS, or to confirm which account you are about to send from.
-While a link is in progress the status is "linking" and \`pairing\` carries the
-code the user still has to type into their phone.`,
+Without account_id the top-level fields are the default account, plus
+\`accounts\` listing every live one. While a link is in progress the status
+is "linking" and \`pairing\` carries the code the user still has to type
+into their phone.`,
     schema: {},
     write: false,
     handler: async (_args, wa) => renderGetStatus(wa.getStatus(), true),
+  }),
+
+  tool({
+    name: "list_accounts",
+    title: "List WhatsApp accounts on this server",
+    description: `List every configured WhatsApp account: id, name, connection status, masked
+phone, owner name, and whether that account allows writes. Call this first
+when more than one account is linked, then pass account_id on the other tools.
+Takes no arguments besides the optional account_id (ignored for the listing).`,
+    schema: {},
+    write: false,
+    handler: async (_args, wa) => renderListAccountsFromStatuses([wa.getStatus()]),
   }),
 
   tool({
@@ -214,6 +255,8 @@ call this, and show them the code it returns with these exact steps:
 WhatsApp → Settings → Linked devices → Link a device → Link with phone number instead → enter the code.
 Then call get_status every 10 seconds until it says connected (up to 3 minutes). The code expires;
 call this again for a fresh one if get_status goes back to not_linked with an error.
+The account must already exist (\`wazap account add\`). Pass account_id when
+more than one is configured. An unknown id is ACCOUNT_NOT_FOUND.
 Never call this when the account is already linked.`,
     schema: { phone: z.string().describe("International format, e.g. +15550100") },
     write: false,
@@ -977,7 +1020,21 @@ const RATE_BUCKETS = new Map<string, RateLimiter>(
   ),
 );
 
-export function registerTools(server: McpServer, wa: WhatsAppApi, opts: RegisterOpts): void {
+/** Write tools register when any enabled account allows writes. */
+export function anyAccountAllowsWrites(source: AccountSource | WhatsAppApi): boolean {
+  const hub = asAccountSource(source);
+  return hub.all().some((wa) => {
+    if (typeof wa.getStatus !== "function") return true;
+    try {
+      return wa.getStatus().read_only !== true;
+    } catch {
+      return true;
+    }
+  });
+}
+
+export function registerTools(server: McpServer, source: AccountSource | WhatsAppApi, opts: RegisterOpts): void {
+  const hub = asAccountSource(source);
   for (const def of TOOLS) {
     if (def.write && !opts.allowWrite) continue;
     const own = RATE_BUCKETS.get(def.name);
@@ -994,26 +1051,189 @@ export function registerTools(server: McpServer, wa: WhatsAppApi, opts: Register
             : { ...READ_ONLY_HINTS, openWorldHint: def.name !== "learn" },
       },
       async (args: unknown): Promise<ToolResult> => {
+        const parsed = (args ?? {}) as ToolArgs;
         try {
           own?.take();
-          if (def.name === "get_status") return renderGetStatus(wa.getStatus(), opts.allowWrite);
-          return await def.handler(args as ToolArgs, wa);
+          const resolved = resolveToolAccount(hub, parsed, def);
+          try {
+            let result: ToolResult;
+            if (def.name === "get_status") {
+              result = renderGetStatus(resolved.wa.getStatus(), opts.allowWrite, hub);
+            } else if (def.name === "list_accounts") {
+              result = renderListAccounts(hub);
+            } else {
+              result = await def.handler(parsed, resolved.wa);
+            }
+            return attachAccountId(result, resolved.id);
+          } catch (err) {
+            return attachAccountId(toolError(asWazapError(err)), resolved.id);
+          }
         } catch (err) {
-          return toolError(asWazapError(err));
+          const result = toolError(asWazapError(err));
+          const requested = stringArg(parsed, "account_id");
+          return requested === undefined ? result : attachAccountId(result, requested);
         }
       },
     );
   }
 }
 
+const FIX_ADD_ACCOUNT = "Run `wazap account add`";
+const FIX_PASS_ACCOUNT = "Pass account_id";
+
+function stringArg(args: ToolArgs, key: string): string | undefined {
+  const value = args[key];
+  return typeof value === "string" && value.length > 0 ? value : undefined;
+}
+
+function accountIdOf(wa: WhatsAppApi): string {
+  if (typeof wa.getStatus !== "function") return "default";
+  try {
+    const id = wa.getStatus().account_id;
+    return typeof id === "string" && id.length > 0 ? id : "default";
+  } catch {
+    return "default";
+  }
+}
+
+function attachAccountId(result: ToolResult, accountId: string): ToolResult {
+  return { ...result, structuredContent: { ...(result.structuredContent ?? {}), account_id: accountId } };
+}
+
+function namesOf(matches: WhatsAppApi[]): string {
+  return matches.map(accountIdOf).join(", ");
+}
+
+function pickFromMatches(
+  matches: WhatsAppApi[],
+  write: boolean,
+  hub: AccountSource,
+  what: "chat" | "message",
+): { wa: WhatsAppApi; id: string } {
+  if (matches.length === 1) {
+    const wa = matches[0]!;
+    return { wa, id: accountIdOf(wa) };
+  }
+  if (matches.length > 1) {
+    throw new WazapError(
+      "AMBIGUOUS_ACCOUNT",
+      `Several accounts have that ${what}: ${namesOf(matches)}.`,
+      FIX_PASS_ACCOUNT,
+    );
+  }
+  if (write) {
+    throw new WazapError("AMBIGUOUS_ACCOUNT", `No account knows that ${what}.`, FIX_PASS_ACCOUNT);
+  }
+  const wa = hub.default();
+  return { wa, id: accountIdOf(wa) };
+}
+
+function resolveGivenId(hub: AccountSource, requested: string, toolName: string): { wa: WhatsAppApi; id: string } {
+  const record = hub.record(requested);
+  const live = hub.get(requested);
+  if (record !== undefined && !record.enabled) {
+    throw new WazapError(
+      "ACCOUNT_DISABLED",
+      `Account "${requested}" is disabled.`,
+      `Run \`wazap account enable ${requested}\` and restart the server`,
+    );
+  }
+  if (live === undefined) {
+    const fix = toolName === "link_account" ? FIX_ADD_ACCOUNT : `${FIX_ADD_ACCOUNT}, or call list_accounts`;
+    throw new WazapError("ACCOUNT_NOT_FOUND", `No account "${requested}".`, fix);
+  }
+  return { wa: live, id: requested };
+}
+
+function resolveToolAccount(hub: AccountSource, args: ToolArgs, def: ToolDef): { wa: WhatsAppApi; id: string } {
+  const requested = stringArg(args, "account_id");
+  if (requested !== undefined) return resolveGivenId(hub, requested, def.name);
+
+  const live = hub.all();
+  if (live.length === 1) {
+    const wa = live[0]!;
+    return { wa, id: accountIdOf(wa) };
+  }
+
+  const chatId = stringArg(args, "chat_id") ?? stringArg(args, "group_id");
+  const messageId = stringArg(args, "message_id");
+  if (chatId !== undefined) return pickFromMatches(hub.findByChat(chatId), def.write, hub, "chat");
+  if (messageId !== undefined) return pickFromMatches(hub.findByMessage(messageId), def.write, hub, "message");
+
+  const wa = hub.default();
+  return { wa, id: accountIdOf(wa) };
+}
+
+function listedFromStatus(s: StatusInfo): ListedAccount {
+  return {
+    id: s.account_id,
+    name: s.account_name,
+    status: s.status,
+    phone_masked: s.account ? maskNumber(s.account.number) : null,
+    owner_name: s.account?.name ?? null,
+    write_tools: s.write_tools,
+  };
+}
+
+function listedFromRecord(record: AccountRecord): ListedAccount {
+  return {
+    id: record.id,
+    name: record.name,
+    status: record.enabled ? "disconnected" : "disabled",
+    phone_masked: null,
+    owner_name: null,
+    write_tools: false,
+    enabled: record.enabled,
+  };
+}
+
+function renderAccountLines(rows: Array<ListedAccount & { enabled?: boolean }>): string[] {
+  return rows.map((row) => {
+    const who = row.owner_name ? `${row.owner_name}${row.phone_masked ? ` (${row.phone_masked})` : ""}` : "not linked";
+    const writes = row.write_tools ? "writes on" : "writes off";
+    const flag = row.enabled === false ? "disabled" : row.status;
+    return `- **${row.id}** (${row.name}) · ${flag} · ${who} · ${writes}`;
+  });
+}
+
+function renderListAccountsFromStatuses(statuses: StatusInfo[]): ToolResult {
+  const accounts = statuses.map(listedFromStatus);
+  const text = [`# Accounts (${accounts.length})`, "", ...renderAccountLines(accounts)].join("\n");
+  return ok(text, { count: accounts.length, accounts });
+}
+
+function renderListAccounts(hub: AccountSource): ToolResult {
+  const live = new Map(hub.all().map((wa) => [accountIdOf(wa), wa.getStatus()] as const));
+  const accounts: ListedAccount[] = [];
+  const records = hub.records();
+  const source = records.length > 0 ? records : hub.all().map((wa) => ({
+    id: accountIdOf(wa),
+    name: accountIdOf(wa),
+    enabled: true,
+    owner: null as string | null,
+  }));
+  for (const record of source) {
+    const status = live.get(record.id);
+    if (status) {
+      accounts.push({ ...listedFromStatus(status), enabled: record.enabled });
+    } else {
+      accounts.push(listedFromRecord(record));
+    }
+  }
+  const text = [`# Accounts (${accounts.length})`, "", ...renderAccountLines(accounts)].join("\n");
+  return ok(text, { count: accounts.length, default: accountIdOf(hub.default()), accounts });
+}
+
 /** The get_status body: `write_tools` is this session's, not the process default. */
-export function renderGetStatus(s: StatusInfo, writeTools: boolean): ToolResult {
+export function renderGetStatus(s: StatusInfo, writeTools: boolean, hub?: AccountSource): ToolResult {
   const account = s.account ? `${s.account.name || "(no name)"} (${s.account.number})` : "none";
   const writeLine = writeTools
     ? "registered"
     : s.read_only
       ? "not registered (server is read-only; run `wazap config writes on` and restart)"
       : "not registered (this session used a read token)";
+  const others = hub === undefined ? [s] : hub.all().map((wa) => wa.getStatus());
+  const accounts = others.map(listedFromStatus);
   const text = [
     `# WhatsApp: ${s.status} (sync: ${s.sync})`,
     `- **account**: ${account}`,
@@ -1025,10 +1245,11 @@ export function renderGetStatus(s: StatusInfo, writeTools: boolean): ToolResult 
     webhookStatusLine(s.webhook),
     s.last_error ? `- **last error**: ${s.last_error}` : null,
     s.hint ? `- **hint**: ${s.hint}` : null,
+    accounts.length > 1 ? `- **accounts**: ${accounts.map((row) => row.id).join(", ")}` : null,
   ]
     .filter((line): line is string => line !== null)
     .join("\n");
-  return ok(text, { ...s, write_tools: writeTools } as unknown as Record<string, unknown>);
+  return ok(text, { ...s, write_tools: writeTools, accounts } as unknown as Record<string, unknown>);
 }
 
 function webhookStatusLine(webhook: StatusInfo["webhook"]): string {
