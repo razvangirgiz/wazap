@@ -1,5 +1,5 @@
 import { randomUUID, timingSafeEqual } from "node:crypto";
-import { createServer } from "node:http";
+import { createServer, type Server } from "node:http";
 import { createConnection } from "node:net";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { mcpAuthRouter, getOAuthProtectedResourceMetadataUrl } from "@modelcontextprotocol/sdk/server/auth/router.js";
@@ -99,12 +99,7 @@ export interface Endpoint {
   signal?: AbortSignal;
 }
 
-function listenInUse(host: string, port: number): NodeJS.ErrnoException {
-  const err: NodeJS.ErrnoException = new Error(`listen EADDRINUSE: address already in use ${host}:${port}`);
-  err.code = "EADDRINUSE";
-  err.syscall = "listen";
-  return err;
-}
+const TAKEN_PROBE_MS = 500;
 
 /**
  * Node sets SO_REUSEADDR on every listen. On Darwin that (and an IPv4/IPv6
@@ -114,7 +109,7 @@ function listenInUse(host: string, port: number): NodeJS.ErrnoException {
  */
 function takenListenPort(host: string, port: number): Promise<boolean> {
   return new Promise((resolve) => {
-    const socket = createConnection({ host, port });
+    const socket = createConnection({ host, port, signal: AbortSignal.timeout(TAKEN_PROBE_MS) });
     socket.unref();
     let settled = false;
     const done = (taken: boolean): void => {
@@ -124,26 +119,35 @@ function takenListenPort(host: string, port: number): Promise<boolean> {
       socket.destroy();
       resolve(taken);
     };
-    socket.setTimeout(500, () => done(true));
     socket.once("connect", () => done(true));
-    socket.once("error", () => done(false));
+    socket.once("error", (err: NodeJS.ErrnoException) => {
+      done(err.name === "AbortError" || err.code === "ABORT_ERR");
+    });
   });
 }
 
-/** Bind /mcp. Port 0 still works. A taken port rejects with EADDRINUSE. */
-async function listenHttp(app: express.Express, endpoint: Endpoint): Promise<{ server: ReturnType<typeof createServer>; port: number }> {
-  if (endpoint.port !== 0 && (await takenListenPort(endpoint.host, endpoint.port))) {
-    throw listenInUse(endpoint.host, endpoint.port);
+/**
+ * Probe a fixed port, then exclusive listen. exclusive stops cluster handle
+ * sharing; it does not clear Darwin SO_REUSEADDR. The probe is that check.
+ * Port 0 has nothing to probe.
+ */
+async function listenHttp(server: Server, host: string, port: number): Promise<number> {
+  if (port !== 0 && (await takenListenPort(host, port))) {
+    const err: NodeJS.ErrnoException = new Error(`listen EADDRINUSE: address already in use ${host}:${port}`);
+    err.code = "EADDRINUSE";
+    throw err;
   }
   return await new Promise((resolve, reject) => {
-    const server = createServer(app);
     server.once("error", reject);
-    server.listen({ port: endpoint.port, host: endpoint.host, exclusive: true }, () => {
+    server.listen({ port, host, exclusive: true }, () => {
+      server.removeListener("error", reject);
       const bound = server.address();
-      resolve({
-        server,
-        port: typeof bound === "object" && bound !== null ? bound.port : endpoint.port,
-      });
+      if (bound === null || typeof bound === "string") {
+        server.close();
+        reject(new Error(`listen on ${host}:${port} returned no AddressInfo`));
+        return;
+      }
+      resolve(bound.port);
     });
   });
 }
@@ -309,13 +313,25 @@ export async function startHttpEndpoint(hub: AccountSource, config: Config, endp
     res.status(body.ok ? 200 : 503).json(body);
   });
 
-  const { server, port } = await listenHttp(app, endpoint);
-  endpoint.signal?.addEventListener("abort", () => {
+  const server = createServer(app);
+  const onAbort = (): void => {
     for (const transport of transports.values()) void transport.close();
     server.closeAllConnections();
     server.close();
-  });
-  return port;
+  };
+  const signal = endpoint.signal;
+  signal?.addEventListener("abort", onAbort);
+  if (signal?.aborted) {
+    onAbort();
+    throw signal.reason instanceof Error ? signal.reason : new Error("The listen was aborted");
+  }
+  try {
+    return await listenHttp(server, endpoint.host, endpoint.port);
+  } catch (err) {
+    signal?.removeEventListener("abort", onAbort);
+    server.close();
+    throw err;
+  }
 }
 
 /** The endpoint the user asked for: WAZAP_HOST/WAZAP_PORT and the two configured tokens. */

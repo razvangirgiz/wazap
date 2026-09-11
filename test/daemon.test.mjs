@@ -286,23 +286,76 @@ test("status leaves the sharing suffix off a session that is not shared", async 
   });
 });
 
+function silentHub() {
+  return stubAccountSource({
+    getStatus: () => ({ status: "not_linked", status_since: new Date().toISOString(), account_id: "default" }),
+  });
+}
+
 test("a taken listen port rejects instead of hanging", async () => {
   const blocker = createServer();
   await new Promise((resolve) => blocker.listen({ port: 0, host: "127.0.0.1", exclusive: true }, resolve));
   const { address, port } = blocker.address();
   try {
     await assert.rejects(
-      startHttpEndpoint(
-        stubAccountSource({
-          getStatus: () => ({ status: "not_linked", status_since: new Date().toISOString(), account_id: "default" }),
-        }),
-        offlineConfig("wazap-listen-"),
-        { host: address, port, credentials: [], openRead: false },
-      ),
+      startHttpEndpoint(silentHub(), offlineConfig("wazap-listen-"), {
+        host: address,
+        port,
+        credentials: [],
+        openRead: false,
+      }),
       (err) => err.code === "EADDRINUSE",
     );
   } finally {
     await new Promise((resolve) => blocker.close(resolve));
+  }
+});
+
+test("a taken listen port rejects across address families", async () => {
+  const blocker = createServer();
+  await new Promise((resolve) => blocker.listen({ port: 0, exclusive: true }, resolve));
+  const { port } = blocker.address();
+  try {
+    await assert.rejects(
+      startHttpEndpoint(silentHub(), offlineConfig("wazap-listen-family-"), {
+        host: "127.0.0.1",
+        port,
+        credentials: [],
+        openRead: false,
+      }),
+      (err) => err.code === "EADDRINUSE",
+    );
+  } finally {
+    await new Promise((resolve) => blocker.close(resolve));
+  }
+});
+
+test("an already-aborted signal does not leave a listener", async () => {
+  const port = await closedPort();
+  const stop = new AbortController();
+  stop.abort();
+  await assert.rejects(
+    startHttpEndpoint(silentHub(), offlineConfig("wazap-listen-abort-"), {
+      host: "127.0.0.1",
+      port,
+      credentials: [],
+      openRead: false,
+      signal: stop.signal,
+    }),
+  );
+  const live = new AbortController();
+  await startHttpEndpoint(silentHub(), offlineConfig("wazap-listen-abort-live-"), {
+    host: "127.0.0.1",
+    port,
+    credentials: [],
+    openRead: false,
+    signal: live.signal,
+  });
+  try {
+    const res = await fetch(`http://127.0.0.1:${port}/healthz`, { signal: AbortSignal.timeout(5_000) });
+    assert.equal(res.status, 503);
+  } finally {
+    live.abort();
   }
 });
 
