@@ -22,10 +22,7 @@ export const BINARY = join(repoRoot, "dist", "index.js");
  * `WAZAP_NO_SHARE=1` skips daemon.json. Tests pass explicit overrides in `extra`.
  */
 export function childEnv(extra = {}) {
-  const env = { ...process.env };
-  for (const key of Object.keys(env)) {
-    if (key.startsWith("WAZAP_")) delete env[key];
-  }
+  const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("WAZAP_")));
   return { ...env, WAZAP_NO_UPDATE_CHECK: "1", WAZAP_READ_TOKEN: "", WAZAP_WRITE_TOKEN: "", ...extra };
 }
 
