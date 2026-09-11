@@ -1,4 +1,6 @@
 import { randomUUID, timingSafeEqual } from "node:crypto";
+import { createServer, type Server } from "node:http";
+import { createConnection } from "node:net";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { mcpAuthRouter, getOAuthProtectedResourceMetadataUrl } from "@modelcontextprotocol/sdk/server/auth/router.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
@@ -95,6 +97,59 @@ export interface Endpoint {
   oauth?: WazapOAuthProvider;
   /** Aborting it closes the listener and every session on it. */
   signal?: AbortSignal;
+}
+
+const TAKEN_PROBE_MS = 500;
+
+/**
+ * Node sets SO_REUSEADDR on every listen. On Darwin that (and an IPv4/IPv6
+ * split between two listen()s) lets a second bind on a taken host:port
+ * succeed, so the listening callback fires and we never see EADDRINUSE.
+ * Something already accepting there is taken, even if bind would share.
+ */
+function takenListenPort(host: string, port: number): Promise<boolean> {
+  return new Promise((resolve) => {
+    const socket = createConnection({ host, port, signal: AbortSignal.timeout(TAKEN_PROBE_MS) });
+    socket.unref();
+    let settled = false;
+    const done = (taken: boolean): void => {
+      if (settled) return;
+      settled = true;
+      socket.removeAllListeners();
+      socket.destroy();
+      resolve(taken);
+    };
+    socket.once("connect", () => done(true));
+    socket.once("error", (err: NodeJS.ErrnoException) => {
+      done(err.name === "AbortError" || err.code === "ABORT_ERR");
+    });
+  });
+}
+
+/**
+ * Probe a fixed port, then exclusive listen. exclusive stops cluster handle
+ * sharing; it does not clear Darwin SO_REUSEADDR. The probe is that check.
+ * Port 0 has nothing to probe.
+ */
+async function listenHttp(server: Server, host: string, port: number): Promise<number> {
+  if (port !== 0 && (await takenListenPort(host, port))) {
+    const err: NodeJS.ErrnoException = new Error(`listen EADDRINUSE: address already in use ${host}:${port}`);
+    err.code = "EADDRINUSE";
+    throw err;
+  }
+  return await new Promise((resolve, reject) => {
+    server.once("error", reject);
+    server.listen({ port, host, exclusive: true }, () => {
+      server.removeListener("error", reject);
+      const bound = server.address();
+      if (bound === null || typeof bound === "string") {
+        server.close();
+        reject(new Error(`listen on ${host}:${port} returned no AddressInfo`));
+        return;
+      }
+      resolve(bound.port);
+    });
+  });
 }
 
 /** Serve /mcp and /healthz on one address. Resolves with the bound port, so port 0 works. */
@@ -258,18 +313,25 @@ export async function startHttpEndpoint(hub: AccountSource, config: Config, endp
     res.status(body.ok ? 200 : 503).json(body);
   });
 
-  return await new Promise<number>((resolve, reject) => {
-    const server = app.listen(endpoint.port, endpoint.host, () => {
-      const bound = server.address();
-      resolve(typeof bound === "object" && bound !== null ? bound.port : endpoint.port);
-    });
-    server.once("error", reject);
-    endpoint.signal?.addEventListener("abort", () => {
-      for (const transport of transports.values()) void transport.close();
-      server.closeAllConnections();
-      server.close();
-    });
-  });
+  const server = createServer(app);
+  const onAbort = (): void => {
+    for (const transport of transports.values()) void transport.close();
+    server.closeAllConnections();
+    server.close();
+  };
+  const signal = endpoint.signal;
+  signal?.addEventListener("abort", onAbort);
+  if (signal?.aborted) {
+    onAbort();
+    throw signal.reason instanceof Error ? signal.reason : new Error("The listen was aborted");
+  }
+  try {
+    return await listenHttp(server, endpoint.host, endpoint.port);
+  } catch (err) {
+    signal?.removeEventListener("abort", onAbort);
+    server.close();
+    throw err;
+  }
 }
 
 /** The endpoint the user asked for: WAZAP_HOST/WAZAP_PORT and the two configured tokens. */
