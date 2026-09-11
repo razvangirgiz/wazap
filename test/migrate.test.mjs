@@ -203,16 +203,14 @@ test("migrate rollback on a flat dir does not migrate first", async () => {
   assert.equal(existsSync(accountPaths(dir, DEFAULT_ACCOUNT_ID).authDir), false);
 });
 
-test("rollback still runs when leftover dest auth would make a forward migrate throw", async () => {
+test("rollback still runs when a leftover symlink would make a forward migrate throw", async () => {
   const dir = dataDir();
   seedV0(dir);
-  const dest = accountPaths(dir, DEFAULT_ACCOUNT_ID);
-  mkdirSync(dest.authDir, { recursive: true });
-  writeFileSync(join(dest.authDir, "creds.json"), "{}");
-  writeFileSync(
-    join(dir, "migration.json"),
-    `${JSON.stringify({ v: 2, at: "2026-01-01T00:00:00.000Z", moved: ["auth"] }, null, 2)}\n`,
-  );
+  migrateLayout(dir);
+  const other = dataDir();
+  writeFileSync(join(other, "qr.png"), "qr");
+  symlinkSync(join(other, "qr.png"), join(dir, "qr.png"));
+  assert.throws(() => migrateLayout(dir), (err) => err.code === "WHATSAPP_ERROR");
 
   await run(process.execPath, [binary, "migrate", "rollback", "--data-dir", dir], {
     env: { ...process.env, WAZAP_NO_UPDATE_CHECK: "1" },

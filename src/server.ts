@@ -30,7 +30,9 @@ function isAuthorized(header: string | undefined, expected: string): boolean {
 function buildMcpServer(wa: WhatsAppApi, config: Config, allowWrite: boolean): McpServer {
   const skills = loadSkills();
   const server = new McpServer({ name: "wazap", version: WAZAP_VERSION }, { instructions: skillInstructions(skills) });
-  registerTools(server, wa, { allowWrite: allowWrite && !wa.getStatus().read_only });
+  registerTools(server, wa, {
+    allowWrite: allowWrite && !config.readOnly && wa.getStatus().read_only !== true,
+  });
   registerSkillPrompts(server, skills);
   return server;
 }
