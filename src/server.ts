@@ -12,7 +12,7 @@ import { APPROVE_PATH, OAUTH_SCOPES, WazapOAuthProvider } from "./oauth.js";
 import { loadSkills, registerSkillPrompts, skillInstructions } from "./skills.js";
 import { registerTools } from "./tools.js";
 import { log, logError } from "./logger.js";
-import type { WhatsAppApi } from "./wa-types.js";
+import type { ConnectionStatus, WhatsAppApi } from "./wa-types.js";
 
 const UNHEALTHY_AFTER_MS = 2 * 60 * 1000;
 
@@ -49,14 +49,13 @@ export async function runStdio(hub: AccountSource, config: Config): Promise<void
 
 export interface AccountHealth {
   account_id: string;
-  account_name: string;
-  status: string;
+  status: ConnectionStatus;
   since: string;
 }
 
 export interface HealthBody {
   ok: boolean;
-  status: string;
+  status: ConnectionStatus;
   since: string;
   default: AccountHealth;
   accounts: AccountHealth[];
@@ -64,7 +63,7 @@ export interface HealthBody {
 
 function rowOf(wa: WhatsAppApi): AccountHealth {
   const s = wa.getStatus();
-  return { account_id: s.account_id, account_name: s.account_name, status: s.status, since: s.status_since };
+  return { account_id: s.account_id, status: s.status, since: s.status_since };
 }
 
 function isFresh(since: string): boolean {
@@ -248,11 +247,12 @@ export async function startHttpEndpoint(hub: AccountSource, config: Config, endp
   app.get("/mcp", authed, handleMcp);
   app.delete("/mcp", authed, handleMcp);
 
-  // Unauthenticated, so it carries liveness only; the account and data dir
+  // Unauthenticated, so it carries liveness only; names, phone and data dir
   // stay behind the token in get_status. A socket that has been anything but
   // connected for two minutes is a real outage, and a 503 is what a tunnel or a
   // monitor can act on; a reconnect in progress is not. One dead account does
-  // not 503 the process while another is still up.
+  // not 503 the process while another is still up. `ok` is process liveness;
+  // `status` / `since` stay the default socket's.
   app.get("/healthz", (_req, res) => {
     const body = healthBody(hub);
     res.status(body.ok ? 200 : 503).json(body);

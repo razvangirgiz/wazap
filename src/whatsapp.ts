@@ -453,15 +453,15 @@ export class WhatsAppService implements WhatsAppApi {
     return { chats: this.store.chats.size, contacts: this.namedContacts(), messages: this.store.messages.size };
   }
 
-  /** This account already has the chat, or the person, in its store. */
+  /** This account already has a chat, or messages, for this jid. Contacts do not count. */
   hasChat(jid: string): boolean {
     const id = this.canonical(jid);
     if (!id || isNoiseJid(id)) return false;
-    return this.store.chats.has(id) || this.store.byChat.has(id) || this.store.contacts.has(id);
+    return this.store.hasChat(id);
   }
 
   hasMessage(id: string): boolean {
-    return this.store.messages.has(id);
+    return this.store.hasMessage(id);
   }
 
   /**

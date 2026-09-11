@@ -306,7 +306,11 @@ async function withHealth(status, sinceMsAgo, fn) {
   const port = await closedPort();
   const stop = new AbortController();
   const wa = {
-    getStatus: () => ({ status, status_since: new Date(Date.now() - sinceMsAgo).toISOString() }),
+    getStatus: () => ({
+      status,
+      status_since: new Date(Date.now() - sinceMsAgo).toISOString(),
+      account_id: "default",
+    }),
   };
   await startHttpEndpoint(stubAccountSource(wa), offlineConfig("wazap-health-"), {
     host: "127.0.0.1",

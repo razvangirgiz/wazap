@@ -20,7 +20,7 @@ process.env.MCP_DANGEROUSLY_ALLOW_INSECURE_ISSUER_URL = "1";
 const PASSWORD = "correct horse battery";
 
 const stubWa = {
-  getStatus: () => ({ status: "connected", status_since: new Date().toISOString() }),
+  getStatus: () => ({ status: "connected", status_since: new Date().toISOString(), account_id: "default" }),
 };
 
 async function freePort() {

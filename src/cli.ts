@@ -514,7 +514,7 @@ export async function runServe(config: Config): Promise<void> {
     throw new WazapError(
       "INVALID_ID",
       "wazap serve starts every enabled account.",
-      "Drop --account; pick an account on login, logout, status, or a tool call",
+      "Drop --account; pick an account on login, logout, or status",
     );
   }
 
@@ -563,7 +563,16 @@ export async function runServe(config: Config): Promise<void> {
     releaseLock(p.lockFile);
   });
 
-  const hub = new AccountHub(config, AccountRegistry.load(config.dataDir));
+  let hub: AccountHub;
+  try {
+    hub = new AccountHub(config, AccountRegistry.load(config.dataDir));
+  } catch (err) {
+    if (err instanceof WazapError) {
+      say(fail(`${err.message}${err.fix ? ` ${err.fix}` : ""}`));
+      process.exit(1);
+    }
+    throw err;
+  }
   let stopping = false;
   const shutdown = (reason: string): void => {
     if (stopping) return;

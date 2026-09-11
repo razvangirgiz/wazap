@@ -8,8 +8,7 @@ import { createServer } from "node:net";
 
 import { AccountHub } from "../dist/account-hub.js";
 import { AccountRegistry } from "../dist/accounts.js";
-import { startHttpEndpoint } from "../dist/server.js";
-import { WhatsAppService } from "../dist/whatsapp.js";
+import { healthBody, startHttpEndpoint } from "../dist/server.js";
 import { fakeSocket, offlineConfig } from "./helpers.mjs";
 
 const HOME = "40700000001@s.whatsapp.net";
@@ -132,6 +131,10 @@ test("findByChat and findByMessage look across two stores", () => {
   );
   assert.equal(home.hasChat(ANA), true);
   assert.equal(work.hasChat(DAN), true);
+
+  workSock.ev.emit("contacts.upsert", [{ id: HOME, name: "Home on work" }]);
+  assert.deepEqual(hub.findByChat(HOME), [], "a contact is not a chat");
+  assert.equal(work.hasChat(HOME), false);
 });
 
 test("each service has its own write bucket", () => {
@@ -182,13 +185,48 @@ test("/healthz lists the default account and every live account", async () => {
     assert.equal(body.ok, true);
     assert.equal(body.status, "connected");
     assert.equal(body.default.account_id, "default");
+    assert.equal(body.default.account_name, undefined);
     assert.deepEqual(
       body.accounts.map((row) => row.account_id),
       ["default", "work"],
     );
-    assert.equal(body.accounts[1].account_name, "Work");
     assert.equal(body.accounts[1].status, "connected");
   } finally {
     stop.abort();
   }
+});
+
+test("one live account keeps /healthz up even if the default is stalled", () => {
+  const { hub, home, work } = twoAccountHub();
+  home.status = "disconnected";
+  home.statusSince = Date.now() - 3 * 60_000;
+  const body = healthBody(hub);
+  assert.equal(body.ok, true);
+  assert.equal(body.status, "disconnected");
+  assert.equal(body.default.account_id, "default");
+  assert.equal(work.getStatus().status, "connected");
+  assert.equal(body.accounts[1].status, "connected");
+});
+
+test("stop stops every live service", async () => {
+  const { hub, home, work } = twoAccountHub();
+  await hub.stop();
+  assert.equal(home.stopped, true);
+  assert.equal(work.stopped, true);
+});
+
+test("a start that throws counts toward give-up", async () => {
+  const { hub, home, work } = twoAccountHub();
+  let exited = 0;
+  hub.onGiveUp = () => {
+    exited += 1;
+  };
+  home.start = async () => {
+    throw new Error("boom");
+  };
+  await hub.start();
+  assert.equal(exited, 0, "the other account is still up");
+  work.reconnectAttempts = 10;
+  work.scheduleReconnect("Connection Terminated");
+  assert.equal(exited, 1);
 });

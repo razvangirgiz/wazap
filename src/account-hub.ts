@@ -13,7 +13,7 @@ import { WhatsAppService } from "./whatsapp.js";
 
 const FIX_ENABLE = "Run `wazap account enable <id>` or `wazap account add <id>`";
 
-/** What HTTP and stdio need: the default socket and every live one. */
+/** What HTTP and stdio need until Phase 3 retargets tools at the hub. */
 export interface AccountSource {
   default(): WhatsAppApi;
   all(): WhatsAppApi[];
@@ -22,11 +22,12 @@ export interface AccountSource {
 export class AccountHub implements AccountSource {
   private readonly services = new Map<string, WhatsAppService>();
   private readonly givenUp = new Set<string>();
+  private readonly primary: WhatsAppService;
   /** Process exit hook. Fires only after every enabled account has given up. */
   onGiveUp: (() => void) | null = null;
 
-  constructor(config: Config, private readonly registry: AccountRegistry) {
-    const enabled = this.registry.all().filter((account) => account.enabled);
+  constructor(config: Config, registry: AccountRegistry) {
+    const enabled = registry.all().filter((account) => account.enabled);
     if (enabled.length === 0) {
       throw new WazapError("INVALID_ID", "No enabled account to serve.", FIX_ENABLE);
     }
@@ -35,11 +36,21 @@ export class AccountHub implements AccountSource {
       wa.onGiveUp = () => this.noteGiveUp(account.id);
       this.services.set(account.id, wa);
     }
+    const first = this.services.values().next().value;
+    if (first === undefined) {
+      throw new WazapError("INVALID_ID", "No enabled account to serve.", FIX_ENABLE);
+    }
+    this.primary = this.services.get(registry.defaultId()) ?? first;
   }
 
   async start(): Promise<void> {
     await Promise.all(
-      [...this.services].map(([id, wa]) => wa.start().catch((err: unknown) => logError(`whatsapp start ${id}`, err))),
+      [...this.services].map(([id, wa]) =>
+        wa.start().catch((err: unknown) => {
+          logError(`whatsapp start ${id}`, err);
+          this.noteGiveUp(id);
+        }),
+      ),
     );
   }
 
@@ -52,13 +63,7 @@ export class AccountHub implements AccountSource {
   }
 
   default(): WhatsAppService {
-    const preferred = this.services.get(this.registry.defaultId());
-    if (preferred !== undefined) return preferred;
-    const first = this.services.values().next().value;
-    if (first === undefined) {
-      throw new WazapError("INVALID_ID", "No enabled account to serve.", FIX_ENABLE);
-    }
-    return first;
+    return this.primary;
   }
 
   all(): WhatsAppService[] {
@@ -74,6 +79,7 @@ export class AccountHub implements AccountSource {
   }
 
   private noteGiveUp(id: string): void {
+    if (this.givenUp.has(id)) return;
     this.givenUp.add(id);
     logError("whatsapp", `account ${id}: reconnects exhausted`);
     if (this.givenUp.size < this.services.size) return;

@@ -74,7 +74,10 @@ export interface StatusInfo {
   account_id: string;
   account_name: string;
   enabled: boolean;
-  /** Whether this account's writes policy would register write tools. */
+  /**
+   * Account writes policy (`!read_only`). `get_status` overwrites this key with
+   * whether the current MCP session registered write tools.
+   */
   write_tools: boolean;
   last_message_received_at: string | null;
   reconnect_attempts: number;
