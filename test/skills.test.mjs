@@ -25,7 +25,7 @@ test("every skill has matching frontmatter and a trigger-bearing description", (
 test("skills only reference tools the server registers", () => {
   for (const dir of skillDirs) {
     const text = readFileSync(join(root, "skills", dir, "SKILL.md"), "utf8");
-    for (const [, name] of text.matchAll(/`((?:get|list|read|search|send|edit|react|forward|delete|manage|create|download)_[a-z_]+)`/g)) {
+    for (const [, name] of text.matchAll(/`((?:get|list|read|search|send|edit|react|forward|delete|manage|create|download|set|confirm)_[a-z_]+)`/g)) {
       assert.ok(toolNames.has(name), `${dir}: unknown tool \`${name}\``);
     }
   }

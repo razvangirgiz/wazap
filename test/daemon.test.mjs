@@ -234,7 +234,7 @@ test("--http publishes its own port and takes the internal token as a full-acces
 
     // No read token, so the endpoint is open; the internal token is what unlocks writes.
     assert.equal(await httpToolCount(info.port, null), 19, "an anonymous session gets the read tools");
-    assert.equal(await httpToolCount(info.port, info.token), 31, "the internal token gets everything");
+    assert.equal(await httpToolCount(info.port, info.token), 32, "the internal token gets everything");
   }, ["serve", "--http", "--port", "0"]);
 });
 

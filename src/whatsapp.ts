@@ -119,6 +119,8 @@ const RECONNECT_MAX_ATTEMPTS = 10;
 const SYNC_WAIT_MS = 10_000;
 const HISTORY_FETCH_WAIT_MS = 5_000;
 const INLINE_IMAGE_MAX_BYTES = 1_000_000;
+const PROFILE_PICTURE_MAX_BYTES = 10 * 1024 * 1024;
+const PROFILE_PICTURE_MIMES = new Set(["image/jpeg", "image/png", "image/webp"]);
 const MAX_TEXT_CHARS = 65_536;
 const EDIT_WINDOW_MS = 15 * 60_000;
 const RETRACT_WINDOW_MS = 2 * 24 * 3_600_000;
@@ -1312,6 +1314,30 @@ export class WhatsAppService implements WhatsAppApi {
       const { sock, jid } = await this.prepareSend(this.chatOfOrThrow(messageId));
       await sock.sendMessage(jid, { delete: raw.key });
       return { message_id: messageId, for_everyone: true };
+    });
+  }
+
+  setOwnProfilePicture(source: MediaSource): Promise<{ profile_pic_url: string | null }> {
+    return this.guarded(async () => {
+      const media = await loadMedia(source);
+      if (media.buffer.length > PROFILE_PICTURE_MAX_BYTES) {
+        throw new WazapError(
+          "FILE_TOO_LARGE",
+          `The image is ${Math.round(media.buffer.length / 1_048_576)} MB; a profile picture may be at most 10 MB.`,
+        );
+      }
+      if (!PROFILE_PICTURE_MIMES.has(media.mimetype)) {
+        throw new WazapError(
+          "INVALID_IMAGE",
+          `A profile picture must be a JPEG, PNG or WebP, not ${media.mimetype}.`,
+          "Pass a .jpg, .png or .webp via file_path or url",
+        );
+      }
+      const sock = this.beginWrite();
+      const jid = this.ownJid();
+      await sock.updateProfilePicture(jid, media.buffer);
+      const picture = await orNullAfter(sock.profilePictureUrl(jid, "image"), PROFILE_LOOKUP_MS);
+      return { profile_pic_url: picture ?? null };
     });
   }
 

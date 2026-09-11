@@ -18,6 +18,7 @@ export type ErrorCode =
   | "MEDIA_UNAVAILABLE"
   | "FILE_NOT_FOUND"
   | "FILE_TOO_LARGE"
+  | "INVALID_IMAGE"
   | "URL_FETCH_FAILED"
   | "TEXT_TOO_LONG"
   | "EDIT_WINDOW_EXPIRED"
@@ -69,6 +70,7 @@ export const ERROR_GUIDE: Record<ErrorCode, string> = {
   MEDIA_UNAVAILABLE: "The media expired on WhatsApp's servers or was never synced. Do not retry; ask the sender to resend.",
   FILE_NOT_FOUND: "The local path does not exist on the machine running wazap. Check the path with the user.",
   FILE_TOO_LARGE: "The file exceeds WhatsApp's 100 MB limit. Send a smaller file.",
+  INVALID_IMAGE: "The file is not a JPEG, PNG or WebP. Pass a photo via file_path or url; GIF, video and documents are refused.",
   URL_FETCH_FAILED: "The URL could not be fetched. Check it, or download the file first and pass file_path.",
   TEXT_TOO_LONG: "The text exceeds WhatsApp's limit. Split it into several messages.",
   EDIT_WINDOW_EXPIRED: "WhatsApp only allows editing within 15 minutes of sending. Send a correction instead.",

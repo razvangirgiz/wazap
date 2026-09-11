@@ -3,6 +3,12 @@
 ## Unreleased
 ### Added
 
+- **`set_profile_picture`.** Write tool that updates the linked account's own
+  profile photo via Baileys `updateProfilePicture`. Exactly one of `file_path`
+  or `url` (same loader as `send_media`). JPEG, PNG or WebP, at most 10 MB.
+  Hidden when writes are off. No draft, no remove, no group avatars. Show the
+  image and wait for a yes first; the call hits WhatsApp immediately.
+
 - **Outbound webhook (`message_received`).** `wazap config webhook on|off`
   sets one URL and an HMAC secret. Each live inbound message POSTs a small
   JSON body (`event`, `from`, `chat_id`, `ts`, `text`, `message_id`). On
