@@ -157,8 +157,8 @@ export function stubSockets(socketFactory, sockets) {
 export const DEFAULT_ACCOUNT = Object.freeze({ id: "default", name: "default", enabled: true, owner: null });
 
 /** Build a service the same way production does after the constructor grew an account. */
-export function openService(WhatsAppService, config) {
-  return new WhatsAppService(config, { ...DEFAULT_ACCOUNT }, accountPaths(config.dataDir, "default"));
+export function openService(WhatsAppService, config, account = DEFAULT_ACCOUNT) {
+  return new WhatsAppService(config, { ...account }, accountPaths(config.dataDir, account.id));
 }
 
 /** Enough of an AccountHub for HTTP tests that only need one stub WhatsApp. */
@@ -175,8 +175,8 @@ export function asToolSource(source) {
 }
 
 /** A connected service fed only by events, so no socket and no disk are involved. */
-export function connectedService(WhatsAppService, { prefix, id, name, config = {} }) {
-  const svc = openService(WhatsAppService, offlineConfig(prefix, config));
+export function connectedService(WhatsAppService, { prefix, id, name, config = {}, account } = {}) {
+  const svc = openService(WhatsAppService, offlineConfig(prefix, config), account);
   const sock = fakeSocket();
   svc.sockClient = sock;
   svc.wireEvents(sock, ++svc.generation);

@@ -1,6 +1,7 @@
 /**
- * W1 outbound webhook: one URL, one shared secret, one live event
- * (`message_received`). Delivery never throws into the WhatsApp or MCP path.
+ * W1 outbound webhook: one live event (`message_received`). Global URL and
+ * secret live in `.env`; an account may override either. Delivery never throws
+ * into the WhatsApp or MCP path.
  */
 import { createHmac, timingSafeEqual } from "node:crypto";
 import { setTimeout as sleep } from "node:timers/promises";
@@ -27,6 +28,20 @@ export type WebhookSettings =
   | { kind: "ready"; url: string; secret: string }
   | { kind: "invalid"; detail: string; fix: string };
 
+/** Per-account URL/secret win over `WAZAP_WEBHOOK_URL` / `WAZAP_WEBHOOK_SECRET`. */
+export interface WebhookOverride {
+  url?: string;
+  secret?: string;
+}
+
+/** The account the payload names, and whose override the sink prefers. */
+export interface WebhookAccount {
+  id: string;
+  name: string;
+  webhook_url?: string;
+  webhook_secret?: string;
+}
+
 /** The JSON body. HMAC is over this exact UTF-8 string. */
 export interface WebhookPayload {
   event: typeof WEBHOOK_EVENT;
@@ -35,14 +50,26 @@ export interface WebhookPayload {
   ts: string;
   text: string;
   message_id: string;
+  account_id: string;
+  account_name: string;
 }
 
 export type WebhookTestResult = { ok: true } | { ok: false; error: string; fix: string };
 
 export type WebhookFetch = (url: string, init: RequestInit) => Promise<Response>;
 
+/** Test seams and the account whose override the sink prefers. */
+export interface WebhookSinkOptions {
+  post?: WebhookFetch;
+  retryDelays?: readonly number[];
+  account?: WebhookAccount;
+}
+
 /** The one place the webhook environment becomes typed. */
-export function readWebhookSettings(env: NodeJS.ProcessEnv = process.env): WebhookSettings {
+export function readWebhookSettings(
+  env: NodeJS.ProcessEnv = process.env,
+  override: WebhookOverride = {},
+): WebhookSettings {
   const raw = stripPasted(env.WAZAP_WEBHOOK ?? "");
   const flag = raw.toLowerCase();
   if (OFF.has(flag)) return { kind: "off" };
@@ -54,8 +81,10 @@ export function readWebhookSettings(env: NodeJS.ProcessEnv = process.env): Webho
     };
   }
 
-  const urlRaw = stripPasted(env.WAZAP_WEBHOOK_URL ?? "").replace(/\/+$/, "");
-  const secret = stripPasted(env.WAZAP_WEBHOOK_SECRET ?? "");
+  const overrideUrl = stripPasted(override.url ?? "");
+  const overrideSecret = stripPasted(override.secret ?? "");
+  const urlRaw = (overrideUrl || stripPasted(env.WAZAP_WEBHOOK_URL ?? "")).replace(/\/+$/, "");
+  const secret = overrideSecret || stripPasted(env.WAZAP_WEBHOOK_SECRET ?? "");
   const missingUrl = urlRaw === "";
   const missingSecret = secret === "";
   if (missingUrl && missingSecret) {
@@ -106,7 +135,7 @@ export function previewText(text: string): string {
   return `${text.slice(0, WEBHOOK_TEXT_MAX - 1)}…`;
 }
 
-export function asWebhookPayload(view: MessageView): WebhookPayload {
+export function asWebhookPayload(view: MessageView, account: Pick<WebhookAccount, "id" | "name">): WebhookPayload {
   return {
     event: WEBHOOK_EVENT,
     from: view.sender.phone ?? view.sender.id,
@@ -114,6 +143,8 @@ export function asWebhookPayload(view: MessageView): WebhookPayload {
     ts: view.timestamp,
     text: previewText(view.text),
     message_id: view.message_id,
+    account_id: account.id,
+    account_name: account.name,
   };
 }
 
@@ -135,15 +166,24 @@ export function webhookInfo(settings: WebhookSettings, lastError: string | null)
 /** Posts `message_received` when the webhook is on and valid. Never throws. */
 export class WebhookSink {
   lastError: string | null = null;
+  private readonly post: WebhookFetch;
+  private readonly retryDelays: readonly number[];
+  private readonly account?: WebhookAccount;
 
   constructor(
     private readonly env: NodeJS.ProcessEnv = process.env,
-    private readonly post: WebhookFetch = fetch,
-    private readonly retryDelays: readonly number[] = WEBHOOK_RETRY_DELAYS_MS,
-  ) {}
+    opts: WebhookSinkOptions = {},
+  ) {
+    this.post = opts.post ?? fetch;
+    this.retryDelays = opts.retryDelays ?? WEBHOOK_RETRY_DELAYS_MS;
+    this.account = opts.account;
+  }
 
   settings(): WebhookSettings {
-    return readWebhookSettings(this.env);
+    return readWebhookSettings(this.env, {
+      url: this.account?.webhook_url,
+      secret: this.account?.webhook_secret,
+    });
   }
 
   info(): WebhookInfo {
@@ -171,7 +211,7 @@ export class WebhookSink {
       case "invalid":
         return { ok: false, error: settings.detail, fix: settings.fix };
       case "ready":
-        return this.postEvent(testPayload(), settings);
+        return this.postEvent(testPayload(this.account), settings);
       default: {
         const _exhaustive: never = settings;
         return _exhaustive;
@@ -228,7 +268,7 @@ export class WebhookSink {
   }
 }
 
-function testPayload(): WebhookPayload {
+function testPayload(account?: Pick<WebhookAccount, "id" | "name">): WebhookPayload {
   return {
     event: WEBHOOK_EVENT,
     from: "wazap",
@@ -236,6 +276,8 @@ function testPayload(): WebhookPayload {
     ts: new Date().toISOString(),
     text: "wazap webhook test",
     message_id: "test",
+    account_id: account?.id ?? "default",
+    account_name: account?.name ?? "default",
   };
 }
 

@@ -27,7 +27,7 @@ Usage:
   wazap expose [tailscale|cloudflare|off]                  Give the running service a public https URL cloud agents can reach
   wazap config [writes on|off] [transcribe local|openai|off] [webhook on|off]
                                                            Show the effective settings, or change one
-  wazap webhook test                                       POST a test message_received to the configured webhook
+  wazap webhook test [--account <id>]                      POST a test message_received to the configured webhook
   wazap transcribe download [--model <alias>]              Fetch the whisper.cpp model into the data dir
   wazap transcribe test <audio file>                       Transcribe a local file with the configured provider
   wazap contacts resync                                    Fetch the phone's address book from WhatsApp again
@@ -45,7 +45,7 @@ Tunnel providers for wazap expose: ${PROVIDER_NAMES}.
 
 Options:
   --data-dir <path>   Where wazap keeps its data (default ~/.wazap, or $WAZAP_DATA_DIR)
-  --account <id>      With login, logout, status, contacts, config writes: pick this account
+  --account <id>      With login, logout, status, contacts, config writes, webhook test: pick this account
   --name <name>       With account add: a display name
   --read-only         Refuse every write; the write tools are not registered at all
   --http              Serve Streamable HTTP instead of stdio

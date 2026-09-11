@@ -119,6 +119,54 @@ test("wazap account add/remove/enable/disable round-trip through the binary", as
   assert.doesNotMatch((await wazap(dir, ["account", "list"])).stderr, /^work /m);
 });
 
+test("setWebhook persists url and secret through a reload", () => {
+  const dir = dataDir();
+  const registry = AccountRegistry.load(dir);
+  registry.add("work", "Work");
+  registry.setWebhook("work", { url: "https://hooks.example/work///", secret: "work-secret" });
+  const loaded = AccountRegistry.load(dir).get("work");
+  assert.equal(loaded.webhook_url, "https://hooks.example/work");
+  assert.equal(loaded.webhook_secret, "work-secret");
+  assert.equal(AccountRegistry.load(dir).get("default").webhook_url, undefined);
+});
+
+test("setWebhook refuses an empty url or secret", () => {
+  const dir = dataDir();
+  const registry = AccountRegistry.load(dir);
+  registry.add("work", "Work");
+  assert.throws(() => registry.setWebhook("work", { url: "   " }), (err) => {
+    assert.equal(err.code, "INVALID_ID");
+    assert.match(err.message, /webhook_url/);
+    return true;
+  });
+  assert.throws(() => registry.setWebhook("work", { secret: "" }), (err) => {
+    assert.equal(err.code, "INVALID_ID");
+    assert.match(err.message, /webhook_secret/);
+    return true;
+  });
+  assert.equal(AccountRegistry.load(dir).get("work").webhook_url, undefined);
+  assert.equal(AccountRegistry.load(dir).get("work").webhook_secret, undefined);
+});
+
+test("a bad webhook_url in accounts.json is refused", () => {
+  const dir = dataDir();
+  const registry = AccountRegistry.load(dir);
+  registry.save();
+  writeFileSync(
+    paths(dir).accountsFile,
+    JSON.stringify({
+      v: 2,
+      default: "default",
+      accounts: [{ id: "default", name: "default", enabled: true, owner: null, webhook_url: "" }],
+    }),
+  );
+  assert.throws(() => AccountRegistry.load(dir), (err) => {
+    assert.equal(err.code, "INVALID_ID");
+    assert.match(err.message, /webhook_url/);
+    return true;
+  });
+});
+
 test("config writes --account stores the override in accounts.json, not .env", async () => {
   const dir = dataDir();
   await wazap(dir, ["account", "add", "work"]);

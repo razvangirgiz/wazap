@@ -283,13 +283,14 @@ export class WhatsAppService implements WhatsAppApi {
   private readonly transcribing = new Map<string, Promise<TranscribeResult>>();
   private readonly drafts = new DraftStore();
   private readonly writes: RateLimiter;
-  private readonly webhook = new WebhookSink();
+  private readonly webhook: WebhookSink;
   private readonly accountRecord: AccountRecord;
   private readonly effectiveReadOnly: boolean;
   private readonly effectiveRateLimit: number;
 
   constructor(private readonly config: Config, account: AccountRecord, paths: AccountPaths) {
     this.accountRecord = account;
+    this.webhook = new WebhookSink(process.env, { account });
     const policy = accountPolicy(account, config);
     this.effectiveReadOnly = policy.readOnly;
     this.effectiveRateLimit = policy.rateLimit;
@@ -2194,7 +2195,7 @@ export class WhatsAppService implements WhatsAppApi {
       try {
         const jid = this.canonical(raw.key.remoteJid ?? "");
         const sid = messageIdFor(raw.key, jid);
-        void this.webhook.notify(asWebhookPayload(this.viewOf(sid, jid))).catch((err) => {
+        void this.webhook.notify(asWebhookPayload(this.viewOf(sid, jid), this.accountRecord)).catch((err) => {
           logError("webhook", err);
         });
       } catch (err) {

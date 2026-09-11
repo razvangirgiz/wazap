@@ -80,7 +80,7 @@ export interface Config {
   transcribeChoice?: string;
   /** `setup` only: the answer to the "keep running" question, from --service / --expose. */
   keepRunning: KeepRunning | null;
-  /** `--account` on login, logout, status, config writes, and short-lived services. */
+  /** `--account` on login, logout, status, config writes, webhook test, and short-lived services. */
   accountId?: string;
   /** `--name` on `account add`. */
   accountName?: string;

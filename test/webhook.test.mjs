@@ -15,9 +15,11 @@ import { promisify } from "node:util";
 import { parse } from "dotenv";
 import { proto } from "baileys";
 
+import { AccountRegistry } from "../dist/accounts.js";
 import { webhookCheck } from "../dist/doctor.js";
 import {
   WebhookSink,
+  asWebhookPayload,
   previewText,
   readWebhookSettings,
   requireWebhookUrl,
@@ -100,6 +102,8 @@ function samplePayload(overrides = {}) {
     ts: "2026-09-08T14:00:00+00:00",
     text: "salut",
     message_id: "false_40700000002@s.whatsapp.net_ABC",
+    account_id: "default",
+    account_name: "default",
     ...overrides,
   };
 }
@@ -128,6 +132,40 @@ test("on without a URL or secret is invalid, and names what is missing", () => {
   const noSecret = readWebhookSettings({ WAZAP_WEBHOOK: "on", WAZAP_WEBHOOK_URL: "https://hooks.example/wazap" });
   assert.equal(noSecret.kind, "invalid");
   assert.match(noSecret.detail, /without a secret/);
+});
+
+test("an account webhook_url and webhook_secret win over the environment", () => {
+  const settings = readWebhookSettings(readyEnv("https://hooks.example/global"), {
+    url: "https://hooks.example/work///",
+    secret: "  work-secret  ",
+  });
+  assert.deepEqual(settings, { kind: "ready", url: "https://hooks.example/work", secret: "work-secret" });
+});
+
+test("an account can override only the URL and still use the global secret", () => {
+  const settings = readWebhookSettings(readyEnv("https://hooks.example/global"), {
+    url: "http://127.0.0.1:9/work",
+  });
+  assert.deepEqual(settings, { kind: "ready", url: "http://127.0.0.1:9/work", secret: SECRET });
+});
+
+test("asWebhookPayload names the account", () => {
+  const payload = asWebhookPayload(
+    {
+      message_id: "false_40700000002@s.whatsapp.net_ABC",
+      chat_id: PEER,
+      from_me: false,
+      timestamp: "2026-09-08T14:00:00+00:00",
+      type: "text",
+      text: "salut",
+      sender: { id: PEER, phone: "40700000002" },
+    },
+    { id: "work", name: "Work" },
+  );
+  assert.equal(payload.account_id, "work");
+  assert.equal(payload.account_name, "Work");
+  assert.equal(payload.event, "message_received");
+  assert.equal(payload.text, "salut");
 });
 
 test("on with a URL and a secret is ready, and a trailing slash is stripped", () => {
@@ -178,7 +216,7 @@ test("a ready sink POSTs the small payload with a matching signature", async () 
     res.end();
   });
 
-  const sink = new WebhookSink(readyEnv(server.url), fetch, []);
+  const sink = new WebhookSink(readyEnv(server.url), { retryDelays: [] });
   await sink.notify(samplePayload());
 
   assert.equal(received.length, 1);
@@ -198,10 +236,11 @@ test("off delivers zero POSTs, even when a URL is set", async () => {
     calls++;
     return new Response(null, { status: 204 });
   };
-  await new WebhookSink({}, post).notify(samplePayload());
-  await new WebhookSink({ WAZAP_WEBHOOK: "off", WAZAP_WEBHOOK_URL: "http://127.0.0.1:9/hook", WAZAP_WEBHOOK_SECRET: SECRET }, post).notify(
-    samplePayload(),
-  );
+  await new WebhookSink({}, { post }).notify(samplePayload());
+  await new WebhookSink(
+    { WAZAP_WEBHOOK: "off", WAZAP_WEBHOOK_URL: "http://127.0.0.1:9/hook", WAZAP_WEBHOOK_SECRET: SECRET },
+    { post },
+  ).notify(samplePayload());
   assert.equal(calls, 0);
 });
 
@@ -218,7 +257,7 @@ test("a 5xx is retried, then last_error is set and nothing is thrown", async () 
     res.writeHead(502, { "content-type": "text/plain" });
     res.end("no");
   });
-  const sink = new WebhookSink(readyEnv(server.url), fetch, [0, 0]);
+  const sink = new WebhookSink(readyEnv(server.url), { retryDelays: [0, 0] });
   await sink.notify(samplePayload({ text: "x" }));
   assert.equal(hits, 3);
   assert.match(sink.lastError ?? "", /HTTP 502/);
@@ -234,14 +273,14 @@ test("a short retry then a 2xx clears last_error", async () => {
     hits++;
     return new Response(hits < 3 ? "no" : null, { status: hits < 3 ? 502 : 204 });
   };
-  const sink = new WebhookSink(readyEnv("http://127.0.0.1:9/hook"), post, [0, 0]);
+  const sink = new WebhookSink(readyEnv("http://127.0.0.1:9/hook"), { post, retryDelays: [0, 0] });
   await sink.notify(samplePayload());
   assert.equal(hits, 3);
   assert.equal(sink.lastError, null);
 });
 
 test("notify never rejects, even when building the POST throws", async () => {
-  const sink = new WebhookSink(readyEnv("http://127.0.0.1:9/hook"), fetch, []);
+  const sink = new WebhookSink(readyEnv("http://127.0.0.1:9/hook"), { retryDelays: [] });
   const payload = {
     ...samplePayload(),
     get text() {
@@ -254,7 +293,7 @@ test("notify never rejects, even when building the POST throws", async () => {
 });
 
 test("an unreachable URL is a soft fail that sets last_error", async () => {
-  const sink = new WebhookSink(readyEnv("http://127.0.0.1:1/hook"), fetch, []);
+  const sink = new WebhookSink(readyEnv("http://127.0.0.1:1/hook"), { retryDelays: [] });
   await sink.notify(samplePayload({ text: "x" }));
   assert.match(sink.lastError ?? "", /could not reach 127.0.0.1:1/);
   assert.ok(!(sink.lastError ?? "").includes(SECRET), "the secret must not appear in last_error");
@@ -275,12 +314,44 @@ test("sendTest refuses off and invalid config, and posts the same event when rea
     res.writeHead(200);
     res.end();
   });
-  const ready = await new WebhookSink(readyEnv(server.url), fetch, []).sendTest();
+  const ready = await new WebhookSink(readyEnv(server.url), { retryDelays: [] }).sendTest();
   assert.equal(ready.ok, true);
   assert.equal(received[0].event, "message_received");
   assert.equal(received[0].text, "wazap webhook test");
   assert.equal(received[0].message_id, "test");
   assert.equal(received[0].from, "wazap");
+  assert.equal(received[0].account_id, "default");
+  assert.equal(received[0].account_name, "default");
+  await server.close();
+});
+
+test("a sink prefers the account webhook_url and names that account on sendTest", async () => {
+  const received = [];
+  const server = await listen(async (req, res) => {
+    received.push({
+      signature: req.headers["x-wazap-signature"],
+      body: await readBody(req),
+    });
+    res.writeHead(204);
+    res.end();
+  });
+  const workSecret = "work-hook-secret";
+  const sink = new WebhookSink(readyEnv("http://127.0.0.1:1/dead"), {
+    retryDelays: [],
+    account: {
+      id: "work",
+      name: "Work",
+      webhook_url: server.url,
+      webhook_secret: workSecret,
+    },
+  });
+  const result = await sink.sendTest();
+  assert.equal(result.ok, true);
+  assert.equal(received.length, 1);
+  const payload = JSON.parse(received[0].body);
+  assert.equal(payload.account_id, "work");
+  assert.equal(payload.account_name, "Work");
+  assert.equal(webhookSignatureMatches(received[0].body, workSecret, received[0].signature), true);
   await server.close();
 });
 
@@ -343,6 +414,8 @@ test("a live notify POSTs the inbound message, and an append does not", async ()
     assert.equal(received[0].text, "live inbound");
     assert.equal(received[0].chat_id, PEER);
     assert.equal(received[0].from, "40700000002");
+    assert.equal(received[0].account_id, "default");
+    assert.equal(received[0].account_name, "default");
     assert.ok(received[0].message_id);
     assert.ok(received[0].ts);
     const listed = await svc.readMessages(PEER, 10);
@@ -400,6 +473,45 @@ test("stub and system notices are not posted as message_received", async () => {
       listed.data.some((row) => row.type === "system"),
       "the stub is still stored, just not posted",
     );
+  } finally {
+    await svc.stop();
+    await server.close();
+    for (const [key, value] of saved) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  }
+});
+
+test("a live notify posts to the account webhook_url and names that account", async () => {
+  const received = [];
+  const server = await listen(async (req, res) => {
+    received.push(JSON.parse(await readBody(req)));
+    res.writeHead(204);
+    res.end();
+  });
+  const saved = WEBHOOK_KEYS.map((key) => [key, process.env[key]]);
+  Object.assign(process.env, readyEnv("http://127.0.0.1:1/dead"));
+  const { svc, sock } = connectedService(WhatsAppService, {
+    prefix: "wazap-webhook-acct-",
+    id: ME,
+    name: "Work phone",
+    account: {
+      id: "work",
+      name: "Work",
+      enabled: true,
+      owner: null,
+      webhook_url: server.url,
+      webhook_secret: "work-live-secret",
+    },
+  });
+  try {
+    sock.ev.emit("messages.upsert", { type: "notify", messages: [textMessage("LIVE", "from work")] });
+    await waitFor(() => received.length > 0, 3_000, "the per-account webhook POST");
+    assert.equal(received.length, 1);
+    assert.equal(received[0].text, "from work");
+    assert.equal(received[0].account_id, "work");
+    assert.equal(received[0].account_name, "Work");
   } finally {
     await svc.stop();
     await server.close();
@@ -506,12 +618,49 @@ test("wazap webhook test delivers, and refuses when the webhook is off", async (
   assert.equal(webhookSignatureMatches(received[0].body, SECRET, received[0].signature), true);
   assert.equal(JSON.parse(received[0].body).event, "message_received");
   assert.equal(JSON.parse(received[0].body).text, "wazap webhook test");
+  assert.equal(JSON.parse(received[0].body).account_id, "default");
+  assert.equal(JSON.parse(received[0].body).account_name, "default");
   assert.ok(!ready.stderr.includes(SECRET) && !ready.stdout.includes(SECRET));
 
   const off = await wazap(dir, ["webhook", "test"]);
   assert.equal(off.code, 1);
   assert.match(off.stderr, /Webhook is off/);
   await server.close();
+});
+
+test("wazap webhook test --account posts to that account's override", async () => {
+  const received = [];
+  const server = await listen(async (req, res) => {
+    received.push({
+      signature: req.headers["x-wazap-signature"],
+      body: await readBody(req),
+    });
+    res.writeHead(204);
+    res.end();
+  });
+  const dir = dataDir();
+  const workSecret = "work-cli-secret";
+  AccountRegistry.load(dir).add("work", "Work");
+  AccountRegistry.load(dir).setWebhook("work", { url: server.url, secret: workSecret });
+  const probed = await wazap(dir, ["webhook", "test", "--account", "work"], {
+    env: readyEnv("http://127.0.0.1:1/dead"),
+  });
+  assert.equal(probed.code, 0, probed.stderr);
+  assert.equal(received.length, 1);
+  const payload = JSON.parse(received[0].body);
+  assert.equal(payload.account_id, "work");
+  assert.equal(payload.account_name, "Work");
+  assert.equal(webhookSignatureMatches(received[0].body, workSecret, received[0].signature), true);
+  assert.ok(!probed.stderr.includes(workSecret) && !probed.stdout.includes(workSecret));
+  await server.close();
+});
+
+test("wazap webhook test --account refuses an unknown id", async () => {
+  const { code, stderr } = await wazap(dataDir(), ["webhook", "test", "--account", "ghost"], {
+    env: readyEnv("http://127.0.0.1:9/hook"),
+  });
+  assert.equal(code, 1);
+  assert.match(stderr, /No account "ghost"/);
 });
 
 test("config rejects a webhook secret on the command line", async () => {

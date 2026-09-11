@@ -13,6 +13,8 @@ export interface AccountRecord {
   owner: string | null;
   writes?: boolean;
   rate_limit?: number;
+  webhook_url?: string;
+  webhook_secret?: string;
 }
 
 export interface AccountsFile {
@@ -108,7 +110,31 @@ function parseAccountRecord(value: unknown, file: string): AccountRecord {
     }
     record.rate_limit = value.rate_limit;
   }
-  return record;
+  return { ...record, ...webhookFields(value.id, value.webhook_url, value.webhook_secret, ` in ${file}`) };
+}
+
+/** Shared by load and `setWebhook` so a writer cannot persist what load refuses. */
+function webhookFields(
+  id: string,
+  url: unknown,
+  secret: unknown,
+  where = "",
+  fix = "Fix or remove accounts.json",
+): Pick<AccountRecord, "webhook_url" | "webhook_secret"> {
+  const fields: Pick<AccountRecord, "webhook_url" | "webhook_secret"> = {};
+  if (url !== undefined) {
+    if (typeof url !== "string" || url.trim() === "") {
+      throw new WazapError("INVALID_ID", `Account "${id}"${where} has a bad webhook_url.`, fix);
+    }
+    fields.webhook_url = url.trim().replace(/\/+$/, "");
+  }
+  if (secret !== undefined) {
+    if (typeof secret !== "string" || secret === "") {
+      throw new WazapError("INVALID_ID", `Account "${id}"${where} has a bad webhook_secret.`, fix);
+    }
+    fields.webhook_secret = secret;
+  }
+  return fields;
 }
 
 function parseAccountsFile(value: unknown, file: string): AccountsFile {
@@ -223,6 +249,15 @@ export class AccountRegistry {
 
   setWrites(id: string, writes: boolean): void {
     this.commit(this.withAccount(id, (account) => ({ ...account, writes })));
+  }
+
+  setWebhook(id: string, webhook: { url?: string; secret?: string }): void {
+    this.commit(
+      this.withAccount(id, (account) => ({
+        ...account,
+        ...webhookFields(id, webhook.url, webhook.secret, "", "Set a non-empty webhook URL or secret"),
+      })),
+    );
   }
 
   private commit(next: AccountsFile): void {
