@@ -100,6 +100,45 @@ test("INVALID_IMAGE for a non-image", async () => {
   await svc.stop();
 });
 
+test("FILE_TOO_LARGE for a photo over 10 MB, before the socket is touched", async () => {
+  const { svc, sock } = writableService();
+  let called = false;
+  sock.updateProfilePicture = async () => {
+    called = true;
+  };
+  const dir = mkdtempSync(join(tmpdir(), "wazap-pic-big-"));
+  const path = join(dir, "huge.jpg");
+  writeFileSync(path, Buffer.alloc(10 * 1024 * 1024 + 1));
+  await assert.rejects(
+    () => svc.setOwnProfilePicture({ file_path: path }),
+    (err) => err.code === "FILE_TOO_LARGE" && /10 MB/.test(err.message),
+  );
+  assert.equal(called, false);
+  await svc.stop();
+});
+
+test("a url is fetched and passed to updateProfilePicture", async () => {
+  const { svc, sock } = writableService();
+  const calls = [];
+  sock.updateProfilePicture = async (jid, content) => {
+    calls.push({ jid, content });
+  };
+  sock.profilePictureUrl = async () => PIC_URL;
+  const original = globalThis.fetch;
+  globalThis.fetch = async () =>
+    new Response(Buffer.from("fake-jpeg-bytes"), { headers: { "content-type": "image/jpeg" } });
+  try {
+    const result = await svc.setOwnProfilePicture({ url: "https://example.com/me.jpg" });
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].jid, ME);
+    assert.ok(Buffer.isBuffer(calls[0].content));
+    assert.deepEqual(result, { profile_pic_url: PIC_URL });
+  } finally {
+    globalThis.fetch = original;
+  }
+  await svc.stop();
+});
+
 test("the write tool is absent when allowWrite is false", () => {
   const hidden = fakeServer();
   registerTools(hidden, {}, { allowWrite: false });
@@ -125,5 +164,6 @@ test("the tool hits the service and learn names it", async () => {
   const guide = (await server.tools.get("learn").handler({})).structuredContent.guide;
   assert.match(guide, /set_profile_picture/);
   assert.match(guide, /INVALID_IMAGE/);
+  assert.match(guide, /profile picture may be 10 MB/);
   await svc.stop();
 });

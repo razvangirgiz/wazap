@@ -487,7 +487,7 @@ trace, so an agent can decide whether to retry, ask the user, or stop.
 | `CHAT_NOT_FOUND` / `MESSAGE_NOT_FOUND` / `CONTACT_NOT_FOUND` / `GROUP_NOT_FOUND` | Unknown id. |
 | `NOT_A_PARTICIPANT` / `NOT_ADMIN` / `GROUP_ANNOUNCEMENT_ONLY` | Group permissions. |
 | `MEDIA_UNAVAILABLE` | WhatsApp expired the file, or it was never synced here. |
-| `FILE_NOT_FOUND` / `FILE_TOO_LARGE` / `URL_FETCH_FAILED` | Outbound media problems. |
+| `FILE_NOT_FOUND` / `FILE_TOO_LARGE` / `URL_FETCH_FAILED` / `INVALID_IMAGE` | Outbound media problems. |
 | `TEXT_TOO_LONG` | Over WhatsApp's message limit. |
 | `EDIT_WINDOW_EXPIRED` / `RETRACT_WINDOW_EXPIRED` / `NOT_OWN_MESSAGE` | WhatsApp's own limits on editing and deleting. |
 | `READ_ONLY` | wazap is running read-only. |

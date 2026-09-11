@@ -12,6 +12,8 @@ import { gifToMp4 } from "./gif.js";
 import type { MediaSource } from "./wa-types.js";
 
 const MAX_MEDIA_BYTES = 100 * 1024 * 1024;
+const PROFILE_PICTURE_MAX_BYTES = 10 * 1024 * 1024;
+const PROFILE_PICTURE_MIMES = new Set(["image/jpeg", "image/png", "image/webp"]);
 
 export function mediaFilename(info: { mime: string; filename?: string }): string {
   const original = (info.filename ?? "").replace(/[^\w.-]/g, "_");
@@ -26,7 +28,7 @@ export interface LoadedMedia {
   filename: string;
 }
 
-export async function assertMediaSource(source: MediaSource): Promise<void> {
+export async function assertMediaSource(source: MediaSource, maxBytes = MAX_MEDIA_BYTES): Promise<void> {
   const hasPath = Boolean(source.file_path);
   const hasUrl = Boolean(source.url);
   if (hasPath === hasUrl) {
@@ -39,15 +41,15 @@ export async function assertMediaSource(source: MediaSource): Promise<void> {
   } catch {
     throw new WazapError("FILE_NOT_FOUND", `No file at "${source.file_path}" on the machine running wazap.`);
   }
-  assertMediaSize(size);
+  assertMediaSize(size, maxBytes);
 }
 
 export function describe(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
 
-export async function loadMedia(source: MediaSource): Promise<LoadedMedia> {
-  await assertMediaSource(source);
+export async function loadMedia(source: MediaSource, maxBytes = MAX_MEDIA_BYTES): Promise<LoadedMedia> {
+  await assertMediaSource(source, maxBytes);
   if (source.file_path) {
     const path = source.file_path;
     return { buffer: await readFile(path), mimetype: guessMime(path), filename: basename(path) };
@@ -64,9 +66,9 @@ export async function loadMedia(source: MediaSource): Promise<LoadedMedia> {
     throw new WazapError("URL_FETCH_FAILED", `Fetching ${url} returned HTTP ${response.status}.`);
   }
   const declared = Number.parseInt(response.headers.get("content-length") ?? "", 10);
-  if (Number.isFinite(declared)) assertMediaSize(declared);
+  if (Number.isFinite(declared)) assertMediaSize(declared, maxBytes);
   const buffer = Buffer.from(await response.arrayBuffer());
-  assertMediaSize(buffer.length);
+  assertMediaSize(buffer.length, maxBytes);
   return {
     buffer,
     mimetype: response.headers.get("content-type")?.split(";")[0] ?? guessMime(url),
@@ -74,10 +76,25 @@ export async function loadMedia(source: MediaSource): Promise<LoadedMedia> {
   };
 }
 
-function assertMediaSize(size: number): void {
-  if (size > MAX_MEDIA_BYTES) {
-    throw new WazapError("FILE_TOO_LARGE", `The file is ${Math.round(size / 1_048_576)} MB; WhatsApp allows 100 MB.`);
+/** JPEG, PNG or WebP, capped at 10 MB before Baileys sees the buffer. */
+export async function loadProfilePicture(source: MediaSource): Promise<LoadedMedia> {
+  const media = await loadMedia(source, PROFILE_PICTURE_MAX_BYTES);
+  if (!PROFILE_PICTURE_MIMES.has(media.mimetype)) {
+    throw new WazapError(
+      "INVALID_IMAGE",
+      `A profile picture must be a JPEG, PNG or WebP, not ${media.mimetype}.`,
+      "Pass a .jpg, .png or .webp via file_path or url",
+    );
   }
+  return media;
+}
+
+function assertMediaSize(size: number, maxBytes: number): void {
+  if (size <= maxBytes) return;
+  throw new WazapError(
+    "FILE_TOO_LARGE",
+    `The file is ${Math.round(size / 1_048_576)} MB; the limit is ${Math.round(maxBytes / 1_048_576)} MB.`,
+  );
 }
 
 function basename(path: string): string {

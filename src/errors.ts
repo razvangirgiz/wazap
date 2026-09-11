@@ -69,7 +69,7 @@ export const ERROR_GUIDE: Record<ErrorCode, string> = {
   GROUP_ANNOUNCEMENT_ONLY: "Only admins may post in that group. Do not retry.",
   MEDIA_UNAVAILABLE: "The media expired on WhatsApp's servers or was never synced. Do not retry; ask the sender to resend.",
   FILE_NOT_FOUND: "The local path does not exist on the machine running wazap. Check the path with the user.",
-  FILE_TOO_LARGE: "The file exceeds WhatsApp's 100 MB limit. Send a smaller file.",
+  FILE_TOO_LARGE: "The file is too large. Chat media may be 100 MB; a profile picture may be 10 MB. Send a smaller file.",
   INVALID_IMAGE: "The file is not a JPEG, PNG or WebP. Pass a photo via file_path or url; GIF, video and documents are refused.",
   URL_FETCH_FAILED: "The URL could not be fetched. Check it, or download the file first and pass file_path.",
   TEXT_TOO_LONG: "The text exceeds WhatsApp's limit. Split it into several messages.",
