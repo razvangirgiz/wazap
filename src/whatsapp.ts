@@ -26,7 +26,7 @@ import makeWASocket, {
   type WASocket,
 } from "baileys";
 import type { ILogger } from "baileys/lib/Utils/logger.js";
-import { AccountRegistry, type AccountRecord } from "./accounts.js";
+import { accountPolicy, type AccountRecord } from "./accounts.js";
 import { clearSession, readLinkedAccount, useAtomicAuthState, type LinkedAccount } from "./auth-state.js";
 import { CallTracker, callMessage, isTrackedCall, type CallEntry } from "./calls.js";
 import { BAILEYS_VERSION, WAZAP_VERSION, writesHints, type AccountPaths, type Config } from "./config.js";
@@ -290,8 +290,9 @@ export class WhatsAppService implements WhatsAppApi {
 
   constructor(private readonly config: Config, account: AccountRecord, paths: AccountPaths) {
     this.accountRecord = account;
-    this.effectiveReadOnly = account.writes === undefined ? config.readOnly : !account.writes;
-    this.effectiveRateLimit = account.rate_limit ?? config.rateLimitPerMinute;
+    const policy = accountPolicy(account, config);
+    this.effectiveReadOnly = policy.readOnly;
+    this.effectiveRateLimit = policy.rateLimit;
     this.writes = new RateLimiter(this.effectiveRateLimit);
     this.paths = paths;
     this.notes = new Notes(this.paths.notesFile);
@@ -498,7 +499,13 @@ export class WhatsAppService implements WhatsAppApi {
       info.pairing = this.pairing;
       hints.push("Enter the code on the phone; call get_status again in 10 s");
     }
-    hints.push(...writesHints({ ...this.config, readOnly: this.effectiveReadOnly }));
+    hints.push(
+      ...writesHints({
+        readOnly: this.effectiveReadOnly,
+        transport: this.config.transport,
+        publicUrl: this.config.publicUrl,
+      }),
+    );
     const stale = inboundAt !== null && Date.now() - inboundAt > STALE_INBOUND_MS;
     if (this.status === "connected" && stale) {
       hints.push("No messages received for 24h; the phone may be offline.");
@@ -1113,7 +1120,7 @@ export class WhatsAppService implements WhatsAppApi {
       // Read-only has always meant no side effect anyone outside can see. The
       // local provider keeps that promise; uploading the user's audio to a
       // third party and spending their money does not.
-      if (this.config.readOnly && settings.provider === "openai") {
+      if (this.effectiveReadOnly && settings.provider === "openai") {
         throw new WazapError(
           "READ_ONLY",
           "wazap runs read-only, so it will not upload audio to the transcription API.",
@@ -1671,16 +1678,7 @@ export class WhatsAppService implements WhatsAppApi {
       log("no WhatsApp account is linked; run `npx wazap-mcp login`");
       return null;
     }
-    this.rememberOwner(linked.id);
     return { id: linked.id, name: linked.name, number: linked.number };
-  }
-
-  private rememberOwner(owner: string): void {
-    if (this.accountRecord.owner === owner) return;
-    this.accountRecord.owner = owner;
-    const registry = AccountRegistry.load(this.config.dataDir);
-    if (registry.get(this.accountRecord.id) === undefined) return;
-    registry.setOwner(this.accountRecord.id, owner);
   }
 
   private markCorrupt(err: unknown): void {
@@ -1694,7 +1692,6 @@ export class WhatsAppService implements WhatsAppApi {
     if (!user?.id) return;
     const id = this.canonical(user.id);
     this.account = { id, name: user.name ?? this.account?.name ?? "", number: id.split("@")[0] ?? "" };
-    this.rememberOwner(id);
     if (user.lid) this.learnLid(user.lid, id);
   }
 

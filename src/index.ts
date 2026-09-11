@@ -37,7 +37,7 @@ Usage:
   wazap account add <id> [--name <name>]                   Add an account slot
   wazap account remove|enable|disable <id>                 Change an account, or delete its local data
   wazap account list                                       List accounts in this data dir
-  wazap migrate rollback                                   Undo a v0 to v1 data-dir layout move
+  wazap migrate rollback                                   Undo a flat-layout move into accounts/
 
 Clients for wazap connect: ${CLIENT_NAMES}.
 Harnesses for wazap skills install: ${SKILL_TARGET_NAMES}. wazap setup does this for the clients it connects.
@@ -45,7 +45,7 @@ Tunnel providers for wazap expose: ${PROVIDER_NAMES}.
 
 Options:
   --data-dir <path>   Where wazap keeps its data (default ~/.wazap, or $WAZAP_DATA_DIR)
-  --account <id>      With login, logout, status, config writes: pick this account
+  --account <id>      With login, logout, status, contacts, config writes: pick this account
   --name <name>       With account add: a display name
   --read-only         Refuse every write; the write tools are not registered at all
   --http              Serve Streamable HTTP instead of stdio
@@ -91,7 +91,9 @@ async function main(): Promise<void> {
   }
 
   const { config } = invocation;
-  migrateLayout(config.dataDir);
+  // Rollback is the inverse of this move. Running it first would re-apply a
+  // half-finished migrate and then fail to undo it.
+  if (config.command !== "migrate") migrateLayout(config.dataDir);
   switch (config.command) {
     case "serve":
       if (pickDefaultAction(config, process.stdin.isTTY === true, process.stderr.isTTY === true) === "greet") {

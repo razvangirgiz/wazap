@@ -1,12 +1,12 @@
 import { existsSync, lstatSync, mkdirSync, readFileSync, renameSync, rmdirSync, unlinkSync } from "node:fs";
-import { dirname, join } from "node:path";
-import { AccountRegistry, DEFAULT_ACCOUNT_ID, ensureAccountsFile, writeJsonFile } from "./accounts.js";
+import { join } from "node:path";
+import { AccountRegistry, DEFAULT_ACCOUNT_ID, ensureAccountsFile, isRecord, writeJsonFile } from "./accounts.js";
 import { readLinkedAccount } from "./auth-state.js";
 import { accountPaths } from "./config.js";
 import { WazapError } from "./errors.js";
 
-/** The six v0 entries that live under the data dir today and move into accounts/default/. */
-export const LAYOUT_ENTRIES = ["auth", "store.json", "history", "media", "previews", "notes.json"] as const;
+/** Flat-layout names that move into accounts/default/. qr.png is leftover login art. */
+export const LAYOUT_ENTRIES = ["auth", "store.json", "history", "media", "previews", "notes.json", "qr.png"] as const;
 
 export interface MigrationManifest {
   v: 2;
@@ -30,8 +30,25 @@ function isLink(path: string): boolean {
   }
 }
 
+function existsHere(path: string): boolean {
+  try {
+    lstatSync(path);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function leftoverEntries(dataDir: string): string[] {
+  return LAYOUT_ENTRIES.filter((name) => existsHere(join(dataDir, name)));
+}
+
 function rollbackFix(dataDir: string): string {
   return `Run \`wazap migrate rollback --data-dir ${dataDir}\``;
+}
+
+function migrateFail(dataDir: string, message: string): WazapError {
+  return new WazapError("WHATSAPP_ERROR", message, rollbackFix(dataDir));
 }
 
 function tryLinkedOwner(authDir: string): string | null {
@@ -43,11 +60,7 @@ function tryLinkedOwner(authDir: string): string | null {
   }
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-function readManifest(file: string): MigrationManifest | null {
+function readManifest(file: string, dataDir: string): MigrationManifest | null {
   let text: string;
   try {
     text = readFileSync(file, "utf8");
@@ -58,94 +71,114 @@ function readManifest(file: string): MigrationManifest | null {
   try {
     parsed = JSON.parse(text);
   } catch {
-    throw new WazapError("INVALID_ID", `Could not read ${file}.`, rollbackFix(dirname(file)));
+    throw new WazapError("INVALID_ID", `Could not read ${file}.`, rollbackFix(dataDir));
   }
   if (!isRecord(parsed) || parsed.v !== 2 || typeof parsed.at !== "string" || !Array.isArray(parsed.moved)) {
-    throw new WazapError("INVALID_ID", `Could not read ${file}.`, rollbackFix(dirname(file)));
+    throw new WazapError("INVALID_ID", `Could not read ${file}.`, rollbackFix(dataDir));
   }
   const moved: string[] = [];
   for (const name of parsed.moved) {
     if (typeof name !== "string") {
-      throw new WazapError("INVALID_ID", `Could not read ${file}.`, rollbackFix(dirname(file)));
+      throw new WazapError("INVALID_ID", `Could not read ${file}.`, rollbackFix(dataDir));
     }
     moved.push(name);
   }
   return { v: 2, at: parsed.at, moved };
 }
 
-function writeManifest(file: string, manifest: MigrationManifest): void {
-  writeJsonFile(file, manifest);
+function writeManifest(file: string, manifest: MigrationManifest, dataDir: string): void {
+  try {
+    writeJsonFile(file, manifest);
+  } catch (err) {
+    if (err instanceof WazapError) throw err;
+    const detail = err instanceof Error ? err.message : String(err);
+    throw migrateFail(dataDir, `Could not write ${file}: ${detail}.`);
+  }
+}
+
+function refuseLink(path: string, dataDir: string): void {
+  if (isLink(path)) {
+    throw migrateFail(
+      dataDir,
+      `Refusing to move ${path}: the layout migrator does not follow or write symlinks.`,
+    );
+  }
 }
 
 function moveEntry(src: string, dest: string, dataDir: string): void {
-  if (isLink(src) || isLink(dest)) {
-    throw new WazapError(
-      "WHATSAPP_ERROR",
-      `Refusing to move ${src}: the layout migrator does not follow or write symlinks.`,
-      rollbackFix(dataDir),
-    );
-  }
-  if (existsSync(dest)) {
-    throw new WazapError("WHATSAPP_ERROR", `Could not move ${src}: ${dest} already exists.`, rollbackFix(dataDir));
+  refuseLink(src, dataDir);
+  refuseLink(dest, dataDir);
+  if (existsHere(dest)) {
+    throw migrateFail(dataDir, `Could not move ${src}: ${dest} already exists.`);
   }
   try {
     renameSync(src, dest);
   } catch (err) {
     const detail = err instanceof Error ? err.message : String(err);
-    throw new WazapError("WHATSAPP_ERROR", `Could not move ${src} to ${dest}: ${detail}.`, rollbackFix(dataDir));
+    throw migrateFail(dataDir, `Could not move ${src} to ${dest}: ${detail}.`);
   }
 }
 
 function seedOwner(dataDir: string): void {
-  const registry = ensureAccountsFile(dataDir);
-  const owner = tryLinkedOwner(accountPaths(dataDir, DEFAULT_ACCOUNT_ID).authDir);
-  const current = registry.get(DEFAULT_ACCOUNT_ID);
-  if (current !== undefined && current.owner !== owner) registry.setOwner(DEFAULT_ACCOUNT_ID, owner);
+  try {
+    const registry = ensureAccountsFile(dataDir);
+    const owner = tryLinkedOwner(accountPaths(dataDir, DEFAULT_ACCOUNT_ID).authDir);
+    const current = registry.get(DEFAULT_ACCOUNT_ID);
+    if (current !== undefined && current.owner !== owner) registry.setOwner(DEFAULT_ACCOUNT_ID, owner);
+  } catch (err) {
+    if (err instanceof WazapError) throw err;
+    const detail = err instanceof Error ? err.message : String(err);
+    throw migrateFail(dataDir, `Could not write accounts.json in ${dataDir}: ${detail}.`);
+  }
 }
 
 function applyMigration(dataDir: string, manifestFile: string, existing: MigrationManifest | null): void {
   const destRoot = accountPaths(dataDir, DEFAULT_ACCOUNT_ID).root;
-  mkdirSync(destRoot, { recursive: true, mode: 0o700 });
+  refuseLink(join(dataDir, "accounts"), dataDir);
+  refuseLink(destRoot, dataDir);
+  try {
+    mkdirSync(destRoot, { recursive: true, mode: 0o700 });
+  } catch (err) {
+    const detail = err instanceof Error ? err.message : String(err);
+    throw migrateFail(dataDir, `Could not create ${destRoot}: ${detail}.`);
+  }
 
-  const already = new Set(existing?.moved ?? []);
   const at = existing?.at ?? new Date().toISOString();
-  const moved = [...already];
-  writeManifest(manifestFile, { v: 2, at, moved });
+  const moved = new Set(existing?.moved ?? []);
 
   for (const name of LAYOUT_ENTRIES) {
     const src = join(dataDir, name);
-    if (!existsSync(src) || already.has(name)) continue;
-    moveEntry(src, join(destRoot, name), dataDir);
-    moved.push(name);
-    writeManifest(manifestFile, { v: 2, at, moved });
+    const dest = join(destRoot, name);
+    const srcHere = existsHere(src);
+    const destHere = existsHere(dest);
+    if (srcHere) {
+      moveEntry(src, dest, dataDir);
+      moved.add(name);
+      writeManifest(manifestFile, { v: 2, at, moved: [...moved] }, dataDir);
+      continue;
+    }
+    if (destHere) moved.add(name);
   }
 
+  writeManifest(manifestFile, { v: 2, at, moved: [...moved] }, dataDir);
   seedOwner(dataDir);
 }
 
 /**
- * One-shot v0 → v1 layout move. Detects `auth/` directly under `dataDir`.
- * Same-filesystem rename, no copy, no symlinks. A missing accounts.json next
- * to an existing `accounts/default/` is created, not treated as an error.
- * Failures name the path and the rollback command.
+ * One-shot flat layout → accounts/default. Detects leftover names at the data-dir
+ * root, not only `auth/`. Same-filesystem rename, no copy, no symlinks. A
+ * missing accounts.json next to an existing `accounts/default/` is created, not
+ * treated as an error. Failures name the path and the rollback command.
  */
 export function migrateLayout(dataDir: string): void {
   if (!existsSync(dataDir)) return;
 
-  const v0Auth = join(dataDir, "auth");
-  if (isLink(v0Auth)) {
-    throw new WazapError(
-      "WHATSAPP_ERROR",
-      `Refusing to move ${v0Auth}: the layout migrator does not follow or write symlinks.`,
-      rollbackFix(dataDir),
-    );
-  }
-  const hasV0 = isDir(v0Auth);
+  const leftover = leftoverEntries(dataDir);
   const manifestFile = join(dataDir, "migration.json");
-  const manifest = readManifest(manifestFile);
+  const manifest = readManifest(manifestFile, dataDir);
   const defaultRoot = accountPaths(dataDir, DEFAULT_ACCOUNT_ID).root;
 
-  if (hasV0) {
+  if (leftover.length > 0) {
     applyMigration(dataDir, manifestFile, manifest);
     return;
   }
@@ -159,7 +192,7 @@ export function migrateLayout(dataDir: string): void {
  */
 export function rollbackMigration(dataDir: string): MigrationManifest {
   const manifestFile = join(dataDir, "migration.json");
-  const manifest = readManifest(manifestFile);
+  const manifest = readManifest(manifestFile, dataDir);
   if (manifest === null) {
     throw new WazapError("INVALID_ID", `No migration.json in ${dataDir}.`, "Nothing to roll back");
   }
@@ -177,7 +210,7 @@ export function rollbackMigration(dataDir: string): MigrationManifest {
   for (const name of [...manifest.moved].reverse()) {
     const src = join(destRoot, name);
     const dest = join(dataDir, name);
-    if (!existsSync(src)) continue;
+    if (!existsHere(src)) continue;
     moveEntry(src, dest, dataDir);
   }
 

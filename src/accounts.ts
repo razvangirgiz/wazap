@@ -1,6 +1,6 @@
 import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
-import { accountPaths, paths, type AccountPaths } from "./config.js";
+import { accountPaths, paths, type AccountPaths, type Config } from "./config.js";
 import { WazapError } from "./errors.js";
 
 export const DEFAULT_ACCOUNT_ID = "default";
@@ -30,8 +30,23 @@ export interface ResolvedAccount {
 const FIX_LIST = "Run `wazap account list`";
 const FIX_ADD = "Run `wazap account add <id>` first, or `wazap account list`";
 
-function isRecord(value: unknown): value is Record<string, unknown> {
+export function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function isEnoent(err: unknown): boolean {
+  return typeof err === "object" && err !== null && "code" in err && err.code === "ENOENT";
+}
+
+/** Global flag/env is a hard off. A per-account `writes: false` turns that account off. */
+export function accountPolicy(
+  account: AccountRecord,
+  config: Pick<Config, "readOnly" | "rateLimitPerMinute">,
+): { readOnly: boolean; rateLimit: number } {
+  return {
+    readOnly: config.readOnly || account.writes === false,
+    rateLimit: account.rate_limit ?? config.rateLimitPerMinute,
+  };
 }
 
 /** Atomic JSON write: tmp plus rename, mode 0600, the same contract as daemon.json. */
@@ -117,7 +132,7 @@ function parseAccountsFile(value: unknown, file: string): AccountsFile {
 export class AccountRegistry {
   private constructor(
     readonly dataDir: string,
-    private readonly file: AccountsFile,
+    private file: AccountsFile,
   ) {}
 
   /**
@@ -131,8 +146,9 @@ export class AccountRegistry {
     let text: string;
     try {
       text = readFileSync(file, "utf8");
-    } catch {
-      return new AccountRegistry(dataDir, synthesizedDefault());
+    } catch (err) {
+      if (isEnoent(err)) return new AccountRegistry(dataDir, synthesizedDefault());
+      throw new WazapError("INVALID_ID", `Could not read ${file}.`, "Fix the JSON or remove the file");
     }
     let parsed: unknown;
     try {
@@ -144,7 +160,7 @@ export class AccountRegistry {
   }
 
   save(): void {
-    writeJsonFile(paths(this.dataDir).accountsFile, this.file);
+    this.commit(this.file);
   }
 
   defaultId(): string {
@@ -171,9 +187,8 @@ export class AccountRegistry {
       enabled: true,
       owner: null,
     };
-    this.file.accounts.push(record);
+    this.commit({ ...this.file, accounts: [...this.file.accounts, record] });
     mkdirSync(accountPaths(this.dataDir, slug).root, { recursive: true, mode: 0o700 });
-    this.save();
     return { ...record };
   }
 
@@ -182,43 +197,51 @@ export class AccountRegistry {
     if (this.file.accounts.length <= 1) {
       throw new WazapError("INVALID_ID", "Cannot remove the last account.", "Add another account first");
     }
-    const index = this.file.accounts.findIndex((account) => account.id === slug);
-    if (index === -1) {
+    const accounts = this.file.accounts.filter((account) => account.id !== slug);
+    if (accounts.length === this.file.accounts.length) {
       throw new WazapError("INVALID_ID", `No account "${slug}".`, FIX_LIST);
     }
-    this.file.accounts.splice(index, 1);
-    if (this.file.default === slug) this.file.default = this.file.accounts[0]!.id;
-    this.save();
+    this.commit({
+      ...this.file,
+      default: this.file.default === slug ? accounts[0]!.id : this.file.default,
+      accounts,
+    });
     rmSync(accountPaths(this.dataDir, slug).root, { recursive: true, force: true });
   }
 
   enable(id: string): void {
-    this.require(id).enabled = true;
-    this.save();
+    this.commit(this.withAccount(id, (account) => ({ ...account, enabled: true })));
   }
 
   disable(id: string): void {
-    this.require(id).enabled = false;
-    this.save();
+    this.commit(this.withAccount(id, (account) => ({ ...account, enabled: false })));
   }
 
   setOwner(id: string, owner: string | null): void {
-    this.require(id).owner = owner;
-    this.save();
+    this.commit(this.withAccount(id, (account) => ({ ...account, owner })));
   }
 
   setWrites(id: string, writes: boolean): void {
-    this.require(id).writes = writes;
-    this.save();
+    this.commit(this.withAccount(id, (account) => ({ ...account, writes })));
   }
 
-  private require(id: string): AccountRecord {
+  private commit(next: AccountsFile): void {
+    writeJsonFile(paths(this.dataDir).accountsFile, next);
+    this.file = next;
+  }
+
+  private withAccount(id: string, update: (account: AccountRecord) => AccountRecord): AccountsFile {
     const slug = parseAccountId(id);
-    const record = this.file.accounts.find((account) => account.id === slug);
-    if (record === undefined) {
+    let found = false;
+    const accounts = this.file.accounts.map((account) => {
+      if (account.id !== slug) return account;
+      found = true;
+      return update(account);
+    });
+    if (!found) {
       throw new WazapError("INVALID_ID", `No account "${slug}".`, FIX_LIST);
     }
-    return record;
+    return { ...this.file, accounts };
   }
 }
 

@@ -7,10 +7,10 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 
-import { AccountRegistry, parseAccountId, resolveAccount } from "../dist/accounts.js";
+import { AccountRegistry, accountPolicy, parseAccountId, resolveAccount } from "../dist/accounts.js";
 import { accountPaths, paths } from "../dist/config.js";
 import { WhatsAppService } from "../dist/whatsapp.js";
-import { connectedService } from "./helpers.mjs";
+import { connectedService, DEFAULT_ACCOUNT, offlineConfig, openService } from "./helpers.mjs";
 
 const run = promisify(execFile);
 const binary = join(dirname(fileURLToPath(import.meta.url)), "..", "dist", "index.js");
@@ -131,6 +131,73 @@ test("config writes without --account still writes WAZAP_READ_ONLY", async () =>
   const dir = dataDir();
   await wazap(dir, ["config", "writes", "off"]);
   assert.match(readFileSync(join(dir, ".env"), "utf8"), /WAZAP_READ_ONLY=1/);
+});
+
+test("a directory named accounts.json is an error, not a synthesized default", () => {
+  const dir = dataDir();
+  mkdirSync(join(dir, "accounts.json"));
+  assert.throws(() => AccountRegistry.load(dir), (err) => {
+    assert.equal(err.code, "INVALID_ID");
+    assert.match(err.message, /Could not read/);
+    return true;
+  });
+});
+
+test("accountPolicy: --read-only wins, writes false turns one account off", () => {
+  const account = { ...DEFAULT_ACCOUNT, writes: true };
+  assert.equal(accountPolicy(account, { readOnly: true, rateLimitPerMinute: 20 }).readOnly, true);
+  assert.equal(accountPolicy({ ...DEFAULT_ACCOUNT, writes: false }, { readOnly: false, rateLimitPerMinute: 20 }).readOnly, true);
+  assert.equal(accountPolicy(DEFAULT_ACCOUNT, { readOnly: false, rateLimitPerMinute: 20 }).readOnly, false);
+  assert.equal(accountPolicy({ ...DEFAULT_ACCOUNT, rate_limit: 5 }, { readOnly: false, rateLimitPerMinute: 20 }).rateLimit, 5);
+});
+
+test("WhatsAppService honors writes and rate_limit from the record", () => {
+  const config = offlineConfig("wazap-acct-policy-", { readOnly: false, rateLimitPerMinute: 20 });
+  const svc = openService(WhatsAppService, config);
+  assert.equal(svc.getStatus().read_only, false);
+  assert.equal(svc.getStatus().rate_limit, 20);
+
+  const locked = new WhatsAppService(
+    config,
+    { ...DEFAULT_ACCOUNT, writes: false, rate_limit: 3 },
+    accountPaths(config.dataDir, "default"),
+  );
+  assert.equal(locked.getStatus().read_only, true);
+  assert.equal(locked.getStatus().rate_limit, 3);
+});
+
+test("account remove without --yes on a non-TTY refuses", async () => {
+  const dir = dataDir();
+  await wazap(dir, ["account", "add", "work"]);
+  await assert.rejects(wazap(dir, ["account", "remove", "work"]), (err) => {
+    assert.match(err.stderr, /without --yes/);
+    return true;
+  });
+  assert.equal(existsSync(accountPaths(dir, "work").root), true);
+});
+
+test("unknown --account through the binary fails", async () => {
+  const dir = dataDir();
+  await assert.rejects(wazap(dir, ["status", "--account", "ghost"]), (err) => {
+    assert.match(err.stderr, /No account "ghost"/);
+    return true;
+  });
+});
+
+test("serve refuses --account", async () => {
+  const dir = dataDir();
+  await assert.rejects(wazap(dir, ["serve", "--account", "default"]), (err) => {
+    assert.match(err.stderr, /always uses the default account/);
+    return true;
+  });
+});
+
+test("config writes --account shows the override on wazap config", async () => {
+  const dir = dataDir();
+  await wazap(dir, ["account", "add", "work"]);
+  await wazap(dir, ["config", "writes", "off", "--account", "work"]);
+  const { stderr } = await wazap(dir, ["config", "--account", "work"]);
+  assert.match(stderr, /writes: off \(accounts\.json\)/);
 });
 
 test("status --json on one account keeps linked/account and adds accounts[]", async () => {

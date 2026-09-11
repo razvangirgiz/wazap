@@ -6,12 +6,12 @@ import { setTimeout as sleep } from "node:timers/promises";
 import { DisconnectReason } from "baileys";
 import qrcode from "qrcode";
 import qrcodeTerminal from "qrcode-terminal";
-import { AccountRegistry, resolveAccount } from "./accounts.js";
+import { accountRows, describeAccount, describeStatusAccount, type StatusAccountRow } from "./account-cli.js";
+import { resolveAccount } from "./accounts.js";
 import { clearSession, readLinkedAccount, type LinkedAccount } from "./auth-state.js";
 import { banner } from "./banner.js";
 import { runBridge } from "./bridge.js";
 import { BAILEYS_VERSION, WAZAP_VERSION, paths, type AccountPaths, type Config } from "./config.js";
-import { rollbackMigration } from "./migrate.js";
 import { connectNext, whereInstalled, type Install } from "./connect.js";
 import { decideRole, readDaemon, removeDaemon, writeDaemon } from "./daemon.js";
 import { DEPS, ensureDeps } from "./deps.js";
@@ -96,14 +96,7 @@ export interface LiveReport {
   reason: string | null;
 }
 
-interface StatusAccountRow {
-  id: string;
-  name: string;
-  enabled: boolean;
-  linked: boolean;
-  default: boolean;
-  account: LinkedAccount | null;
-}
+export { describeAccount, runAccount, runMigrate } from "./account-cli.js";
 
 interface StatusReport {
   data_dir: string;
@@ -123,32 +116,6 @@ interface StatusReport {
 function openService(config: Config): WhatsAppService {
   const { account, paths: accountStorage } = resolveAccount(config.dataDir, config.accountId);
   return new WhatsAppService(config, account, accountStorage);
-}
-
-function describeStatusAccount(row: StatusAccountRow): string {
-  const flag = row.enabled ? "enabled" : "disabled";
-  const who = row.account === null ? "not linked" : describeAccount(row.account);
-  return `${row.id}  ${flag}  ${who}`;
-}
-
-function accountRows(config: Config): StatusAccountRow[] {
-  const registry = AccountRegistry.load(config.dataDir);
-  return registry.all().map((record) => {
-    let linked: LinkedAccount | null = null;
-    try {
-      linked = readLinkedAccount(resolveAccount(config.dataDir, record.id).paths.authDir);
-    } catch {
-      linked = null;
-    }
-    return {
-      id: record.id,
-      name: record.name,
-      enabled: record.enabled,
-      linked: linked !== null,
-      default: record.id === registry.defaultId(),
-      account: linked,
-    };
-  });
 }
 
 export async function runStatus(config: Config): Promise<StatusReport> {
@@ -542,6 +509,14 @@ export async function runGreet(config: Config): Promise<void> {
 }
 
 export async function runServe(config: Config): Promise<void> {
+  if (config.accountId !== undefined) {
+    throw new WazapError(
+      "INVALID_ID",
+      "wazap serve always uses the default account.",
+      "Drop --account; this release serves one account",
+    );
+  }
+
   const p = paths(config.dataDir);
 
   // Losing the atomic claim means another `serve` won it, and the next pass finds
@@ -587,8 +562,7 @@ export async function runServe(config: Config): Promise<void> {
     releaseLock(p.lockFile);
   });
 
-  const { account, paths: accountStorage } = resolveAccount(config.dataDir);
-  const wa = new WhatsAppService(config, account, accountStorage);
+  const wa = openService(config);
   let stopping = false;
   const shutdown = (reason: string): void => {
     if (stopping) return;
@@ -752,6 +726,7 @@ export async function linkAndSync(
       waiting.stop();
       throw err;
     }
+    selected.registry.setOwner(selected.account.id, account.id);
     if (w) waiting.stop();
     else waiting.stop(ok(`Linked as ${describeAccount(account)}`));
 
@@ -1019,89 +994,6 @@ export async function runLogout(config: Config): Promise<void> {
   process.exit(0);
 }
 
-const ACCOUNT_USAGE =
-  "Run `wazap account add <id> [--name <name>]`, `wazap account remove|enable|disable <id>`, or `wazap account list`";
-
-export async function runAccount(config: Config): Promise<void> {
-  const [verb, id] = config.args;
-  switch (verb) {
-    case "list":
-      if (id !== undefined) throw new WazapError("INVALID_ID", `Cannot run \`wazap account list ${id}\`.`, ACCOUNT_USAGE);
-      listAccounts(config);
-      return;
-    case "add":
-      if (id === undefined) throw new WazapError("INVALID_ID", "Missing account id.", ACCOUNT_USAGE);
-      addAccount(config, id);
-      return;
-    case "remove":
-      if (id === undefined) throw new WazapError("INVALID_ID", "Missing account id.", ACCOUNT_USAGE);
-      await removeAccount(config, id);
-      return;
-    case "enable":
-      if (id === undefined) throw new WazapError("INVALID_ID", "Missing account id.", ACCOUNT_USAGE);
-      enableAccount(config, id, true);
-      return;
-    case "disable":
-      if (id === undefined) throw new WazapError("INVALID_ID", "Missing account id.", ACCOUNT_USAGE);
-      enableAccount(config, id, false);
-      return;
-    default:
-      throw new WazapError("INVALID_ID", `Unknown account command "${verb ?? ""}".`, ACCOUNT_USAGE);
-  }
-}
-
-function listAccounts(config: Config): void {
-  const rows = accountRows(config);
-  if (rows.length === 0) {
-    say(info("No accounts yet."));
-    return;
-  }
-  for (const row of rows) {
-    say(`${describeStatusAccount(row)}${row.default ? "  (default)" : ""}`);
-  }
-}
-
-function addAccount(config: Config, id: string): void {
-  const record = AccountRegistry.load(config.dataDir).add(id, config.accountName);
-  say(ok(`Account "${record.id}" added.`));
-}
-
-async function removeAccount(config: Config, id: string): Promise<void> {
-  const registry = AccountRegistry.load(config.dataDir);
-  if (registry.get(id) === undefined) {
-    throw new WazapError("INVALID_ID", `No account "${id}".`, "Run `wazap account list`");
-  }
-  if (!config.assumeYes && process.stdin.isTTY === true) {
-    const answer = await ask(`${brand("?")} Delete account "${id}" and its local data? [y/N] `);
-    if (!/^y(es)?$/i.test(answer.trim())) {
-      say(info("Cancelled."));
-      return;
-    }
-  }
-  registry.remove(id);
-  say(ok(`Account "${id}" removed.`));
-}
-
-function enableAccount(config: Config, id: string, enabled: boolean): void {
-  const registry = AccountRegistry.load(config.dataDir);
-  if (enabled) registry.enable(id);
-  else registry.disable(id);
-  say(ok(`Account "${id}" ${enabled ? "enabled" : "disabled"}.`));
-}
-
-export function runMigrate(config: Config): void {
-  const [verb] = config.args;
-  if (verb !== "rollback") {
-    throw new WazapError(
-      "INVALID_ID",
-      `Cannot run \`wazap migrate ${config.args.join(" ")}\`.`,
-      "Run `wazap migrate rollback`",
-    );
-  }
-  rollbackMigration(config.dataDir);
-  say(ok("Rolled back the data-dir layout."));
-}
-
 /**
  * WhatsApp answers 401 both when a pairing code was wrong and when the phone has
  * already removed this device. At logout the second reading is the true one, so
@@ -1110,12 +1002,6 @@ export function runMigrate(config: Config): void {
 export function alreadyUnlinked(err: unknown): boolean {
   if (err instanceof WazapError) return err.code === "SESSION_EXPIRED";
   return (err as { output?: { statusCode?: number } } | null)?.output?.statusCode === DisconnectReason.loggedOut;
-}
-
-/** The number is masked: a status screenshot should not carry it. */
-export function describeAccount(account: LinkedAccount): string {
-  const number = maskNumber(account.number);
-  return account.name ? `${account.name} (${number})` : number;
 }
 
 /**

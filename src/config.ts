@@ -165,6 +165,11 @@ const COMMAND_ARGS: Record<Command, readonly number[]> = {
 
 const COMMANDS = Object.keys(COMMAND_ARGS) as readonly Command[];
 
+export const ACCOUNT_USAGE =
+  "Run `wazap account add <id> [--name <name>]`, `wazap account remove|enable|disable <id>`, or `wazap account list`";
+
+export const MIGRATE_USAGE = "Run `wazap migrate rollback`";
+
 /**
  * What to type instead of `--help` when the arity is wrong. Literals, not
  * imports: this file cannot reach `connect` or `service` without a cycle.
@@ -177,8 +182,8 @@ const COMMAND_USAGE: Partial<Record<Command, string>> = {
   contacts: "Run `wazap contacts resync`",
   config: "Run `wazap config`, `wazap config writes on|off`, `wazap config transcribe local|openai|off`, or `wazap config webhook on|off`",
   webhook: "Run `wazap webhook test`",
-  account: "Run `wazap account add <id> [--name <name>]`, `wazap account remove|enable|disable <id>`, or `wazap account list`",
-  migrate: "Run `wazap migrate rollback`",
+  account: ACCOUNT_USAGE,
+  migrate: MIGRATE_USAGE,
 };
 
 export function defaultDataDir(): string {

@@ -7,6 +7,7 @@ import {
   mkdtempSync,
   readFileSync,
   readdirSync,
+  renameSync,
   statSync,
   symlinkSync,
   writeFileSync,
@@ -16,7 +17,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 
-import { DEFAULT_ACCOUNT_ID } from "../dist/accounts.js";
+import { AccountRegistry, DEFAULT_ACCOUNT_ID } from "../dist/accounts.js";
 import { accountPaths, paths } from "../dist/config.js";
 import { LAYOUT_ENTRIES, migrateLayout, rollbackMigration } from "../dist/migrate.js";
 
@@ -148,6 +149,98 @@ test("the migrator refuses a symlink instead of following it", () => {
     return true;
   });
   assert.equal(existsSync(accountPaths(dir, DEFAULT_ACCOUNT_ID).authDir), false);
+});
+
+test("leftover root entries still migrate after auth/ has already moved", () => {
+  const dir = dataDir();
+  seedV0(dir, { linked: true });
+  const dest = accountPaths(dir, DEFAULT_ACCOUNT_ID);
+  mkdirSync(dest.root, { recursive: true, mode: 0o700 });
+  renameSync(join(dir, "auth"), dest.authDir);
+  writeFileSync(
+    join(dir, "migration.json"),
+    `${JSON.stringify({ v: 2, at: "2026-01-01T00:00:00.000Z", moved: ["auth"] }, null, 2)}\n`,
+  );
+
+  migrateLayout(dir);
+  assert.equal(existsSync(join(dir, "store.json")), false);
+  assert.equal(existsSync(dest.storeFile), true);
+  assert.equal(existsSync(join(dest.historyDir, "40700000001@s.whatsapp.net.jsonl")), true);
+  assert.deepEqual(JSON.parse(readFileSync(join(dir, "migration.json"), "utf8")).moved.sort(), [
+    ...LAYOUT_ENTRIES.filter((name) => name !== "qr.png"),
+  ].sort());
+});
+
+test("a dest that exists with no source is treated as already moved", () => {
+  const dir = dataDir();
+  seedV0(dir);
+  const dest = accountPaths(dir, DEFAULT_ACCOUNT_ID);
+  mkdirSync(dest.root, { recursive: true, mode: 0o700 });
+  renameSync(join(dir, "auth"), dest.authDir);
+  // Crash between rename and journal: dest has auth, journal does not list it.
+  writeFileSync(join(dir, "migration.json"), `${JSON.stringify({ v: 2, at: "2026-01-01T00:00:00.000Z", moved: [] }, null, 2)}\n`);
+
+  migrateLayout(dir);
+  assert.equal(existsSync(dest.authDir), true);
+  assert.equal(existsSync(join(dir, "auth")), false);
+  assert.equal(existsSync(dest.storeFile), true);
+  assert.ok(JSON.parse(readFileSync(join(dir, "migration.json"), "utf8")).moved.includes("auth"));
+});
+
+test("migrate rollback on a flat dir does not migrate first", async () => {
+  const dir = dataDir();
+  seedV0(dir);
+  await assert.rejects(
+    run(process.execPath, [binary, "migrate", "rollback", "--data-dir", dir], {
+      env: { ...process.env, WAZAP_NO_UPDATE_CHECK: "1" },
+    }),
+    (err) => {
+      assert.match(err.stderr, /No migration\.json/);
+      return true;
+    },
+  );
+  assert.equal(existsSync(join(dir, "auth", "creds.json")), true);
+  assert.equal(existsSync(accountPaths(dir, DEFAULT_ACCOUNT_ID).authDir), false);
+});
+
+test("rollback still runs when leftover dest auth would make a forward migrate throw", async () => {
+  const dir = dataDir();
+  seedV0(dir);
+  const dest = accountPaths(dir, DEFAULT_ACCOUNT_ID);
+  mkdirSync(dest.authDir, { recursive: true });
+  writeFileSync(join(dest.authDir, "creds.json"), "{}");
+  writeFileSync(
+    join(dir, "migration.json"),
+    `${JSON.stringify({ v: 2, at: "2026-01-01T00:00:00.000Z", moved: ["auth"] }, null, 2)}\n`,
+  );
+
+  await run(process.execPath, [binary, "migrate", "rollback", "--data-dir", dir], {
+    env: { ...process.env, WAZAP_NO_UPDATE_CHECK: "1" },
+  });
+  assert.equal(existsSync(join(dir, "auth", "creds.json")), true);
+  assert.equal(existsSync(join(dir, "migration.json")), false);
+});
+
+test("rollback refuses when a second account exists", () => {
+  const dir = dataDir();
+  seedV0(dir);
+  migrateLayout(dir);
+  AccountRegistry.load(dir).add("work");
+  assert.throws(() => rollbackMigration(dir), (err) => {
+    assert.equal(err.code, "INVALID_ID");
+    assert.match(err.message, /more than one account/);
+    return true;
+  });
+  assert.equal(existsSync(accountPaths(dir, DEFAULT_ACCOUNT_ID).authDir), true);
+});
+
+test("qr.png at the data-dir root moves with the rest", () => {
+  const dir = dataDir();
+  seedV0(dir);
+  writeFileSync(join(dir, "qr.png"), "qr");
+  migrateLayout(dir);
+  assert.equal(existsSync(join(dir, "qr.png")), false);
+  assert.equal(readFileSync(accountPaths(dir, DEFAULT_ACCOUNT_ID).qrFile, "utf8"), "qr");
 });
 
 test("wazap migrate rollback undoes a previous migrate through the CLI", async () => {

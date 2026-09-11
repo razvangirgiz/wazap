@@ -1,5 +1,5 @@
 import { accessSync, constants, statSync } from "node:fs";
-import { resolveAccount } from "./accounts.js";
+import { accountPolicy, resolveAccount } from "./accounts.js";
 import { readLinkedAccount } from "./auth-state.js";
 import { WAZAP_VERSION, WRITES_ENABLE_FIX, WRITE_TOKEN_NOTE, isRemoteHttp, paths, type Config } from "./config.js";
 import { WazapError, asWazapError } from "./errors.js";
@@ -177,8 +177,10 @@ function checkCredentials(config: Config): Check {
 }
 
 function checkWrites(config: Config): Check {
-  const source = config.sources.readOnly;
-  if (!config.readOnly) {
+  const selected = resolveAccount(config.dataDir, config.accountId);
+  const readOnly = accountPolicy(selected.account, config).readOnly;
+  const source = selected.account.writes === undefined ? config.sources.readOnly : "accounts.json";
+  if (!readOnly) {
     return {
       name: "writes",
       state: "ok",
