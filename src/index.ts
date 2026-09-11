@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 import { BANNER } from "./banner.js";
-import { runContacts, runGreet, runLogin, runLogout, runServe, runStatus, runTranscribe } from "./cli.js";
+import { runAccount, runContacts, runGreet, runLogin, runLogout, runMigrate, runServe, runStatus, runTranscribe } from "./cli.js";
 import { WAZAP_VERSION, parseCli, pickDefaultAction } from "./config.js";
+import { migrateLayout } from "./migrate.js";
 import { CLIENT_NAMES, runConnect } from "./connect.js";
 import { SKILL_TARGET_NAMES, runSkills } from "./skills.js";
 import { PROVIDER_NAMES, runExpose } from "./expose.js";
@@ -31,8 +32,12 @@ Usage:
   wazap transcribe test <audio file>                       Transcribe a local file with the configured provider
   wazap contacts resync                                    Fetch the phone's address book from WhatsApp again
   wazap update [--dry-run]                                 Upgrade wazap, then the service and the skills that follow it
-  wazap status [--live] [--json]                           Check the install, the session and the server
-  wazap logout                                             Unlink and delete local credentials
+  wazap status [--live] [--json] [--account <id>]          Check the install, the session and the server
+  wazap logout [--account <id>]                            Unlink and delete local credentials
+  wazap account add <id> [--name <name>]                   Add an account slot
+  wazap account remove|enable|disable <id>                 Change an account, or delete its local data
+  wazap account list                                       List accounts in this data dir
+  wazap migrate rollback                                   Undo a v0 to v1 data-dir layout move
 
 Clients for wazap connect: ${CLIENT_NAMES}.
 Harnesses for wazap skills install: ${SKILL_TARGET_NAMES}. wazap setup does this for the clients it connects.
@@ -40,6 +45,8 @@ Tunnel providers for wazap expose: ${PROVIDER_NAMES}.
 
 Options:
   --data-dir <path>   Where wazap keeps its data (default ~/.wazap, or $WAZAP_DATA_DIR)
+  --account <id>      With login, logout, status, config writes: pick this account
+  --name <name>       With account add: a display name
   --read-only         Refuse every write; the write tools are not registered at all
   --http              Serve Streamable HTTP instead of stdio
   --host <host>       HTTP bind address (default 127.0.0.1)
@@ -84,6 +91,7 @@ async function main(): Promise<void> {
   }
 
   const { config } = invocation;
+  migrateLayout(config.dataDir);
   switch (config.command) {
     case "serve":
       if (pickDefaultAction(config, process.stdin.isTTY === true, process.stderr.isTTY === true) === "greet") {
@@ -130,6 +138,12 @@ async function main(): Promise<void> {
       return;
     case "webhook":
       await runWebhook(config);
+      return;
+    case "account":
+      await runAccount(config);
+      return;
+    case "migrate":
+      runMigrate(config);
       return;
     default: {
       const _exhaustive: never = config.command;

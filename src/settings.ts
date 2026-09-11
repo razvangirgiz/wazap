@@ -1,5 +1,6 @@
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
+import { AccountRegistry } from "./accounts.js";
 import { ask, askSecret } from "./cli.js";
 import { paths, writesHints, type Config } from "./config.js";
 import { WazapError, asWazapError } from "./errors.js";
@@ -320,6 +321,22 @@ async function reportReadiness(env: NodeJS.ProcessEnv, dataDir: string): Promise
 /** Persist the writes answer, then say what is now true and how to change it. */
 export function applyWrites(config: Config, allowWrites: boolean): void {
   const p = paths(config.dataDir);
+  if (config.accountId !== undefined) {
+    const registry = AccountRegistry.load(config.dataDir);
+    registry.setWrites(config.accountId, allowWrites);
+    say(
+      ok(
+        allowWrites
+          ? `writes: on for ${config.accountId} — the agent can send from this account. Turn it off with \`wazap config writes off --account ${config.accountId}\`.`
+          : `writes: off for ${config.accountId} — the agent can only read this account. Turn it on with \`wazap config writes on --account ${config.accountId}\`.`,
+      ),
+    );
+    say(dim(`Stored in ${shortPath(p.accountsFile)}.`));
+    const running = lockHolder(p.lockFile);
+    if (running !== null) say(warn(`A server is running (pid ${running}); restart it for this to apply.`));
+    return;
+  }
+
   setEnvSetting(p.envFile, "WAZAP_READ_ONLY", allowWrites ? "0" : "1");
   config.readOnly = !allowWrites;
   if (config.sources) config.sources.readOnly = ".env";

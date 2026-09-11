@@ -10,7 +10,7 @@ import { z } from "zod";
 import { WhatsAppService } from "../dist/whatsapp.js";
 import { registerTools } from "../dist/tools.js";
 import { compactConversations } from "../dist/compact.js";
-import { connectedService, offlineConfig } from "./helpers.mjs";
+import { connectedService, offlineConfig, openService } from "./helpers.mjs";
 
 const ME = "40700000001@s.whatsapp.net";
 const ANA = "40700000002@s.whatsapp.net";
@@ -53,7 +53,7 @@ test("a note on a contact rides along wherever the person shows, and lives in no
   assert.ok(existsSync(svc.paths.notesFile));
   assert.equal(JSON.parse(readFileSync(svc.paths.notesFile, "utf8")).contacts[DAN].note, "Hermi, my own agent");
 
-  const again = new WhatsAppService({ ...offlineConfig("x"), dataDir: svc.config.dataDir });
+  const again = openService(WhatsAppService, { ...offlineConfig("x"), dataDir: svc.config.dataDir });
   assert.equal(again.notes.noteFor(DAN), "Hermi, my own agent", "a restart reads it back");
 
   await call("set_contact_note", { contact_id: DAN, note: "" });

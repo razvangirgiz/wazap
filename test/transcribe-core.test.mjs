@@ -10,7 +10,7 @@ import { setTimeout as sleep } from "node:timers/promises";
 import { WhatsAppService } from "../dist/whatsapp.js";
 import { clockLabel } from "../dist/messages.js";
 import { registerTools } from "../dist/tools.js";
-import { connectedService } from "./helpers.mjs";
+import { connectedService, openService } from "./helpers.mjs";
 
 const ME = "40700000001@s.whatsapp.net";
 const PEER = "40700000002@s.whatsapp.net";
@@ -178,7 +178,7 @@ test("a transcript survives both the store snapshot and the history file", async
   await svc.appendHistory([raw]);
   await svc.transcribeAudio(sidOf("V1"));
 
-  const snapshot = new WhatsAppService(svc.config);
+  const snapshot = openService(WhatsAppService, svc.config);
   snapshot.store.hydrate(svc.store.serialize());
   assert.equal(snapshot.store.transcripts.get(sidOf("V1"))?.text, "salut");
 
@@ -187,7 +187,7 @@ test("a transcript survives both the store snapshot and the history file", async
   svc.store.transcripts.set(sidOf("V1"), { text: "a doua încercare", provider: "openai", at: Date.now() });
   await svc.appendHistory([raw]);
 
-  const reloaded = new WhatsAppService(svc.config);
+  const reloaded = openService(WhatsAppService, svc.config);
   await reloaded.loadHistoryStore();
   assert.equal(reloaded.store.transcripts.get(sidOf("V1"))?.text, "a doua încercare", "the newest line for a sid wins");
   await svc.stop();

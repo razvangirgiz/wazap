@@ -26,9 +26,10 @@ import makeWASocket, {
   type WASocket,
 } from "baileys";
 import type { ILogger } from "baileys/lib/Utils/logger.js";
+import { AccountRegistry, type AccountRecord } from "./accounts.js";
 import { clearSession, readLinkedAccount, useAtomicAuthState, type LinkedAccount } from "./auth-state.js";
 import { CallTracker, callMessage, isTrackedCall, type CallEntry } from "./calls.js";
-import { BAILEYS_VERSION, paths, WAZAP_VERSION, writesHints, type Config, type Paths } from "./config.js";
+import { BAILEYS_VERSION, WAZAP_VERSION, writesHints, type AccountPaths, type Config } from "./config.js";
 import { asWazapError, RELINK_FIX, RESET_FIX, WazapError } from "./errors.js";
 import { isGroupId, isNoiseJid, isStatusJid, normalizePhone, resolveChatId, STATUS_JID } from "./ids.js";
 import { log, logError } from "./logger.js";
@@ -270,7 +271,7 @@ export class WhatsAppService implements WhatsAppApi {
   private readonly phoneLids = new Map<string, string>();
   private readonly store = new Store();
   private readonly calls = new CallTracker();
-  private readonly paths: Paths;
+  private readonly paths: AccountPaths;
   private readonly notes: Notes;
   /** The transcription environment, or the complaint about it. See `readTranscribeConfig`. */
   private readonly transcribe: TranscribeSettings | WazapError;
@@ -283,10 +284,16 @@ export class WhatsAppService implements WhatsAppApi {
   private readonly drafts = new DraftStore();
   private readonly writes: RateLimiter;
   private readonly webhook = new WebhookSink();
+  private readonly accountRecord: AccountRecord;
+  private readonly effectiveReadOnly: boolean;
+  private readonly effectiveRateLimit: number;
 
-  constructor(private readonly config: Config) {
-    this.writes = new RateLimiter(config.rateLimitPerMinute);
-    this.paths = paths(config.dataDir);
+  constructor(private readonly config: Config, account: AccountRecord, paths: AccountPaths) {
+    this.accountRecord = account;
+    this.effectiveReadOnly = account.writes === undefined ? config.readOnly : !account.writes;
+    this.effectiveRateLimit = account.rate_limit ?? config.rateLimitPerMinute;
+    this.writes = new RateLimiter(this.effectiveRateLimit);
+    this.paths = paths;
     this.notes = new Notes(this.paths.notesFile);
     this.transcribe = readTranscribeConfig(config.dataDir);
     const settings = this.transcribe;
@@ -473,14 +480,16 @@ export class WhatsAppService implements WhatsAppApi {
       status_since: isoWithOffset(this.statusSince),
       sync: this.syncState(),
       account: this.account,
+      account_id: this.accountRecord.id,
+      account_name: this.accountRecord.name,
       last_message_received_at: inboundAt === null ? null : isoWithOffset(inboundAt),
       reconnect_attempts: this.reconnectAttempts,
       wazap_version: WAZAP_VERSION,
       baileys_version: BAILEYS_VERSION,
       contacts_named: this.namedContacts(),
       data_dir: this.config.dataDir,
-      read_only: this.config.readOnly,
-      rate_limit: this.config.rateLimitPerMinute,
+      read_only: this.effectiveReadOnly,
+      rate_limit: this.effectiveRateLimit,
       last_error: this.lastError,
       webhook: this.webhook.info(),
     };
@@ -489,7 +498,7 @@ export class WhatsAppService implements WhatsAppApi {
       info.pairing = this.pairing;
       hints.push("Enter the code on the phone; call get_status again in 10 s");
     }
-    hints.push(...writesHints(this.config));
+    hints.push(...writesHints({ ...this.config, readOnly: this.effectiveReadOnly }));
     const stale = inboundAt !== null && Date.now() - inboundAt > STALE_INBOUND_MS;
     if (this.status === "connected" && stale) {
       hints.push("No messages received for 24h; the phone may be offline.");
@@ -1662,7 +1671,16 @@ export class WhatsAppService implements WhatsAppApi {
       log("no WhatsApp account is linked; run `npx wazap-mcp login`");
       return null;
     }
+    this.rememberOwner(linked.id);
     return { id: linked.id, name: linked.name, number: linked.number };
+  }
+
+  private rememberOwner(owner: string): void {
+    if (this.accountRecord.owner === owner) return;
+    this.accountRecord.owner = owner;
+    const registry = AccountRegistry.load(this.config.dataDir);
+    if (registry.get(this.accountRecord.id) === undefined) return;
+    registry.setOwner(this.accountRecord.id, owner);
   }
 
   private markCorrupt(err: unknown): void {
@@ -1676,6 +1694,7 @@ export class WhatsAppService implements WhatsAppApi {
     if (!user?.id) return;
     const id = this.canonical(user.id);
     this.account = { id, name: user.name ?? this.account?.name ?? "", number: id.split("@")[0] ?? "" };
+    this.rememberOwner(id);
     if (user.lid) this.learnLid(user.lid, id);
   }
 
@@ -1837,7 +1856,7 @@ export class WhatsAppService implements WhatsAppApi {
 
   /** First statement of every write, so a broken link is reported before the bucket is spent. */
   private beginWrite(): WASocket {
-    if (this.config.readOnly) {
+    if (this.effectiveReadOnly) {
       throw new WazapError(
         "READ_ONLY",
         "wazap runs read-only, so this write is refused.",
@@ -2565,7 +2584,7 @@ export class WhatsAppService implements WhatsAppApi {
     if (!this.config.persistHistory || !this.storeDirty) return;
     this.storeDirty = false;
     try {
-      await mkdir(this.paths.dataDir, { recursive: true, mode: DIR_MODE });
+      await mkdir(this.paths.root, { recursive: true, mode: DIR_MODE });
       const tmp = `${this.paths.storeFile}.tmp`;
       await writeFile(tmp, JSON.stringify(this.store.serialize()), { mode: FILE_MODE });
       await rename(tmp, this.paths.storeFile);

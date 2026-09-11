@@ -10,6 +10,8 @@ import { setTimeout as sleep } from "node:timers/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { accountPaths } from "../dist/config.js";
+
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
 export const BINARY = join(repoRoot, "dist", "index.js");
 
@@ -140,9 +142,16 @@ export function stubSockets(socketFactory, sockets) {
   return { opened, restore: () => (socketFactory.open = original) };
 }
 
+export const DEFAULT_ACCOUNT = Object.freeze({ id: "default", name: "default", enabled: true, owner: null });
+
+/** Build a service the same way production does after the constructor grew an account. */
+export function openService(WhatsAppService, config) {
+  return new WhatsAppService(config, { ...DEFAULT_ACCOUNT }, accountPaths(config.dataDir, "default"));
+}
+
 /** A connected service fed only by events, so no socket and no disk are involved. */
 export function connectedService(WhatsAppService, { prefix, id, name, config = {} }) {
-  const svc = new WhatsAppService(offlineConfig(prefix, config));
+  const svc = openService(WhatsAppService, offlineConfig(prefix, config));
   const sock = fakeSocket();
   svc.sockClient = sock;
   svc.wireEvents(sock, ++svc.generation);

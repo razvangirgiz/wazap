@@ -23,8 +23,6 @@ test("a history line filed under the phone reloads into one ring even though it 
     name: "Răzvan",
     config: { persistHistory: true },
   });
-  const { dataDir } = svc.config;
-
   const raw = proto.WebMessageInfo.fromObject({
     key: { remoteJid: LID, fromMe: false, id: "3AC5", participant: "" },
     message: { conversation: "Da" },
@@ -37,10 +35,11 @@ test("a history line filed under the phone reloads into one ring even though it 
     ts: Number(raw.messageTimestamp),
     raw: Buffer.from(proto.WebMessageInfo.encode(raw).finish()).toString("base64"),
   };
-  mkdirSync(join(dataDir, "history"), { recursive: true });
-  writeFileSync(join(dataDir, "history", `${PHONE}.jsonl`), `${JSON.stringify(record)}\n`);
+  mkdirSync(svc.paths.historyDir, { recursive: true });
+  writeFileSync(join(svc.paths.historyDir, `${PHONE}.jsonl`), `${JSON.stringify(record)}\n`);
+  mkdirSync(svc.paths.root, { recursive: true });
   writeFileSync(
-    join(dataDir, "store.json"),
+    svc.paths.storeFile,
     JSON.stringify({
       v: 1,
       chats: {},
@@ -77,7 +76,6 @@ test("a snapshot that still holds a ring under the lid folds it into the phone c
     name: "Răzvan",
     config: { persistHistory: true },
   });
-  const { dataDir } = svc.config;
   const raw = proto.WebMessageInfo.fromObject({
     key: { remoteJid: LID, fromMe: false, id: "3AC5", participant: "" },
     message: { conversation: "Da" },
@@ -86,8 +84,9 @@ test("a snapshot that still holds a ring under the lid folds it into the phone c
   });
   const sid = `false_${PHONE}_3AC5`;
   const b64 = Buffer.from(proto.WebMessageInfo.encode(raw).finish()).toString("base64");
+  mkdirSync(svc.paths.root, { recursive: true });
   writeFileSync(
-    join(dataDir, "store.json"),
+    svc.paths.storeFile,
     JSON.stringify({
       v: 1,
       chats: {},
@@ -138,12 +137,12 @@ test("reactions come back after a restart, and a reaction an older snapshot file
     name: "Răzvan",
     config: { persistHistory: true },
   });
-  const { dataDir } = svc.config;
   const b64 = (raw) => Buffer.from(proto.WebMessageInfo.encode(proto.WebMessageInfo.fromObject(raw)).finish()).toString("base64");
   const target = `false_${PHONE}_T1`;
   const loose = `false_${PHONE}_R1`;
+  mkdirSync(svc.paths.root, { recursive: true });
   writeFileSync(
-    join(dataDir, "store.json"),
+    svc.paths.storeFile,
     JSON.stringify({
       v: 1,
       chats: {},
@@ -182,15 +181,15 @@ test("a pairing WhatsApp's table taught is written down, so after a restart a li
     name: "Răzvan",
     config: { persistHistory: true },
   });
-  const { dataDir } = svc.config;
   const raw = proto.WebMessageInfo.fromObject({
     key: { remoteJid: LID, fromMe: false, id: "3AC5" },
     message: { conversation: "In fine" },
     messageTimestamp: Math.floor(Date.now() / 1000) - 60,
   });
   const sid = `false_${PHONE}_3AC5`;
+  mkdirSync(svc.paths.root, { recursive: true });
   writeFileSync(
-    join(dataDir, "store.json"),
+    svc.paths.storeFile,
     JSON.stringify({
       v: 1,
       chats: {},

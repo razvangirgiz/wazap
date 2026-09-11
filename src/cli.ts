@@ -6,10 +6,12 @@ import { setTimeout as sleep } from "node:timers/promises";
 import { DisconnectReason } from "baileys";
 import qrcode from "qrcode";
 import qrcodeTerminal from "qrcode-terminal";
+import { AccountRegistry, resolveAccount } from "./accounts.js";
 import { clearSession, readLinkedAccount, type LinkedAccount } from "./auth-state.js";
 import { banner } from "./banner.js";
 import { runBridge } from "./bridge.js";
-import { BAILEYS_VERSION, WAZAP_VERSION, paths, type Config, type Paths } from "./config.js";
+import { BAILEYS_VERSION, WAZAP_VERSION, paths, type AccountPaths, type Config } from "./config.js";
+import { rollbackMigration } from "./migrate.js";
 import { connectNext, whereInstalled, type Install } from "./connect.js";
 import { decideRole, readDaemon, removeDaemon, writeDaemon } from "./daemon.js";
 import { DEPS, ensureDeps } from "./deps.js";
@@ -94,11 +96,21 @@ export interface LiveReport {
   reason: string | null;
 }
 
+interface StatusAccountRow {
+  id: string;
+  name: string;
+  enabled: boolean;
+  linked: boolean;
+  default: boolean;
+  account: LinkedAccount | null;
+}
+
 interface StatusReport {
   data_dir: string;
   linked: boolean;
   credentials_readable: boolean;
   account: LinkedAccount | null;
+  accounts: StatusAccountRow[];
   wazap_version: string;
   baileys_version: string;
   install: Install;
@@ -108,13 +120,45 @@ interface StatusReport {
   live?: LiveReport;
 }
 
+function openService(config: Config): WhatsAppService {
+  const { account, paths: accountStorage } = resolveAccount(config.dataDir, config.accountId);
+  return new WhatsAppService(config, account, accountStorage);
+}
+
+function describeStatusAccount(row: StatusAccountRow): string {
+  const flag = row.enabled ? "enabled" : "disabled";
+  const who = row.account === null ? "not linked" : describeAccount(row.account);
+  return `${row.id}  ${flag}  ${who}`;
+}
+
+function accountRows(config: Config): StatusAccountRow[] {
+  const registry = AccountRegistry.load(config.dataDir);
+  return registry.all().map((record) => {
+    let linked: LinkedAccount | null = null;
+    try {
+      linked = readLinkedAccount(resolveAccount(config.dataDir, record.id).paths.authDir);
+    } catch {
+      linked = null;
+    }
+    return {
+      id: record.id,
+      name: record.name,
+      enabled: record.enabled,
+      linked: linked !== null,
+      default: record.id === registry.defaultId(),
+      account: linked,
+    };
+  });
+}
+
 export async function runStatus(config: Config): Promise<StatusReport> {
   const p = paths(config.dataDir);
+  const selected = resolveAccount(config.dataDir, config.accountId);
 
   let account: LinkedAccount | null = null;
   let unreadable = false;
   try {
-    account = readLinkedAccount(p.authDir);
+    account = readLinkedAccount(selected.paths.authDir);
   } catch {
     unreadable = true;
   }
@@ -130,6 +174,7 @@ export async function runStatus(config: Config): Promise<StatusReport> {
     linked: account !== null,
     credentials_readable: !unreadable,
     account,
+    accounts: accountRows(config),
     wazap_version: WAZAP_VERSION,
     baileys_version: BAILEYS_VERSION,
     install: whereInstalled(),
@@ -164,6 +209,12 @@ function plainStatus(report: StatusReport): string[] {
     lines.push("linked: yes", `account: ${describeAccount(report.account)}`);
   } else {
     lines.push("linked: no");
+  }
+  if (report.accounts.length > 1) {
+    lines.push("accounts:");
+    for (const row of report.accounts) {
+      lines.push(`  ${describeStatusAccount(row)}${row.default ? "  (default)" : ""}`);
+    }
   }
   lines.push(
     `wazap: ${report.wazap_version}`,
@@ -206,6 +257,13 @@ function richStatus(report: StatusReport): string[] {
     row("data dir", tilde(report.data_dir)),
     row("install", describeInstall(report.install)),
     row("account", account),
+    ...(report.accounts.length > 1
+      ? report.accounts.map((entry) =>
+          entry.default
+            ? row("accounts", `${describeStatusAccount(entry)}  (default)`)
+            : row("", describeStatusAccount(entry)),
+        )
+      : []),
     row("server", serverState(report)),
     "",
     ...report.checks.flatMap(checkLines),
@@ -271,7 +329,7 @@ export async function runLiveProbe(config: Config): Promise<LiveReport> {
     );
   }
 
-  const wa = new WhatsAppService(config);
+  const wa = openService(config);
   const deadline = Date.now() + LIVE_TIMEOUT_MS;
   try {
     await wa.start();
@@ -324,7 +382,7 @@ export async function runContacts(config: Config): Promise<void> {
     process.exit(1);
   }
 
-  const wa = new WhatsAppService(config);
+  const wa = openService(config);
   const spin = spinner("Asking WhatsApp for your address book…");
   try {
     await wa.start();
@@ -529,7 +587,8 @@ export async function runServe(config: Config): Promise<void> {
     releaseLock(p.lockFile);
   });
 
-  const wa = new WhatsAppService(config);
+  const { account, paths: accountStorage } = resolveAccount(config.dataDir);
+  const wa = new WhatsAppService(config, account, accountStorage);
   let stopping = false;
   const shutdown = (reason: string): void => {
     if (stopping) return;
@@ -598,8 +657,8 @@ export function stepper(total: number): Stepper {
 }
 
 export async function runLogin(config: Config): Promise<void> {
-  const p = paths(config.dataDir);
-  const linked = readLinkedAccount(p.authDir);
+  const selected = resolveAccount(config.dataDir, config.accountId);
+  const linked = readLinkedAccount(selected.paths.authDir);
   if (!linked) {
     const refusal = leftoverRefusal(config);
     if (refusal !== null) throw refusal;
@@ -651,6 +710,7 @@ export async function linkAndSync(
   w: Wizard | null = null,
 ): Promise<void> {
   const p = paths(config.dataDir);
+  const selected = resolveAccount(config.dataDir, config.accountId);
 
   const resumeService = await yieldSession(config, p.lockFile);
   // The lock goes the moment pairing is over; the service waits until the
@@ -687,7 +747,7 @@ export async function linkAndSync(
 
     let account: LinkedAccount;
     try {
-      account = phone === null ? await linkByQr(p, waiting, w) : await linkByCode(p.authDir, phone, waiting, w);
+      account = phone === null ? await linkByQr(selected.paths, waiting, w) : await linkByCode(selected.paths.authDir, phone, waiting, w);
     } catch (err) {
       waiting.stop();
       throw err;
@@ -751,7 +811,7 @@ async function linkByCode(
   return pairing.done;
 }
 
-async function linkByQr(p: Paths, waiting: Countdown, w: Wizard | null): Promise<LinkedAccount> {
+async function linkByQr(p: AccountPaths, waiting: Countdown, w: Wizard | null): Promise<LinkedAccount> {
   if (w) {
     await w.next("Scan this with WhatsApp");
     waiting.start("Waiting for a QR from WhatsApp…");
@@ -832,7 +892,7 @@ const HISTORY_QUIET_MS = 3_000;
  * over here and stays up until the history has landed and gone quiet.
  */
 async function syncAfterLink(config: Config, w: Wizard | null = null): Promise<void> {
-  const wa = new WhatsAppService(config);
+  const wa = openService(config);
   const spin = spinner("Syncing your chats…");
   try {
     await wa.start();
@@ -916,6 +976,7 @@ class Countdown {
 
 export async function runLogout(config: Config): Promise<void> {
   const p = paths(config.dataDir);
+  const selected = resolveAccount(config.dataDir, config.accountId);
 
   const running = lockHolder(p.lockFile);
   if (running !== null) {
@@ -927,7 +988,7 @@ export async function runLogout(config: Config): Promise<void> {
   let linked: LinkedAccount | null = null;
   let unreadable = false;
   try {
-    linked = readLinkedAccount(p.authDir);
+    linked = readLinkedAccount(selected.paths.authDir);
   } catch {
     // Unreadable creds are exactly what logout exists to clear, so keep going.
     unreadable = true;
@@ -940,7 +1001,7 @@ export async function runLogout(config: Config): Promise<void> {
   if (linked) {
     const deadline = Date.now() + LOGOUT_TIMEOUT_MS;
     try {
-      const sock = await linkSession(p.authDir, { deadline });
+      const sock = await linkSession(selected.paths.authDir, { deadline });
       await withDeadline(sock.logout(), deadline, "WhatsApp did not confirm the unlink in time.");
     } catch (err: unknown) {
       if (alreadyUnlinked(err)) {
@@ -952,9 +1013,93 @@ export async function runLogout(config: Config): Promise<void> {
     }
   }
 
-  clearSession(p);
+  clearSession(selected.paths);
+  selected.registry.setOwner(selected.account.id, null);
   say(ok("Logged out. Local credentials deleted."));
   process.exit(0);
+}
+
+const ACCOUNT_USAGE =
+  "Run `wazap account add <id> [--name <name>]`, `wazap account remove|enable|disable <id>`, or `wazap account list`";
+
+export async function runAccount(config: Config): Promise<void> {
+  const [verb, id] = config.args;
+  switch (verb) {
+    case "list":
+      if (id !== undefined) throw new WazapError("INVALID_ID", `Cannot run \`wazap account list ${id}\`.`, ACCOUNT_USAGE);
+      listAccounts(config);
+      return;
+    case "add":
+      if (id === undefined) throw new WazapError("INVALID_ID", "Missing account id.", ACCOUNT_USAGE);
+      addAccount(config, id);
+      return;
+    case "remove":
+      if (id === undefined) throw new WazapError("INVALID_ID", "Missing account id.", ACCOUNT_USAGE);
+      await removeAccount(config, id);
+      return;
+    case "enable":
+      if (id === undefined) throw new WazapError("INVALID_ID", "Missing account id.", ACCOUNT_USAGE);
+      enableAccount(config, id, true);
+      return;
+    case "disable":
+      if (id === undefined) throw new WazapError("INVALID_ID", "Missing account id.", ACCOUNT_USAGE);
+      enableAccount(config, id, false);
+      return;
+    default:
+      throw new WazapError("INVALID_ID", `Unknown account command "${verb ?? ""}".`, ACCOUNT_USAGE);
+  }
+}
+
+function listAccounts(config: Config): void {
+  const rows = accountRows(config);
+  if (rows.length === 0) {
+    say(info("No accounts yet."));
+    return;
+  }
+  for (const row of rows) {
+    say(`${describeStatusAccount(row)}${row.default ? "  (default)" : ""}`);
+  }
+}
+
+function addAccount(config: Config, id: string): void {
+  const record = AccountRegistry.load(config.dataDir).add(id, config.accountName);
+  say(ok(`Account "${record.id}" added.`));
+}
+
+async function removeAccount(config: Config, id: string): Promise<void> {
+  const registry = AccountRegistry.load(config.dataDir);
+  if (registry.get(id) === undefined) {
+    throw new WazapError("INVALID_ID", `No account "${id}".`, "Run `wazap account list`");
+  }
+  if (!config.assumeYes && process.stdin.isTTY === true) {
+    const answer = await ask(`${brand("?")} Delete account "${id}" and its local data? [y/N] `);
+    if (!/^y(es)?$/i.test(answer.trim())) {
+      say(info("Cancelled."));
+      return;
+    }
+  }
+  registry.remove(id);
+  say(ok(`Account "${id}" removed.`));
+}
+
+function enableAccount(config: Config, id: string, enabled: boolean): void {
+  const registry = AccountRegistry.load(config.dataDir);
+  if (enabled) registry.enable(id);
+  else registry.disable(id);
+  say(ok(`Account "${id}" ${enabled ? "enabled" : "disabled"}.`));
+}
+
+export function runMigrate(config: Config): void {
+  const [verb] = config.args;
+  if (verb !== "rollback") {
+    throw new WazapError(
+      "INVALID_ID",
+      `Cannot run \`wazap migrate ${config.args.join(" ")}\`.`,
+      "Run `wazap migrate rollback`",
+    );
+  }
+  rollbackMigration(config.dataDir);
+  say(ok("Rolled back the data-dir layout."));
 }
 
 /**

@@ -1,4 +1,5 @@
 import { readFileSync } from "node:fs";
+import { resolveAccount } from "./accounts.js";
 import { readLinkedAccount } from "./auth-state.js";
 import { banner } from "./banner.js";
 import {
@@ -66,7 +67,7 @@ export async function runSetup(config: Config): Promise<void> {
   let install = whereInstalled();
   const announce = stepper(install.kind === "npx" ? 6 : 5);
 
-  const account = readLinkedAccount(paths(config.dataDir).authDir);
+  const account = readLinkedAccount(resolveAccount(config.dataDir, config.accountId).paths.authDir);
   if (account === null) {
     const refusal = leftoverRefusal(config);
     if (refusal !== null) throw refusal;
@@ -286,7 +287,8 @@ async function proveSession(config: Config, w: Wizard | null = null, buf: string
     else say(line);
   };
   const p = paths(config.dataDir);
-  if (config.dryRun || readLinkedAccount(p.authDir) === null) return true;
+  const selected = resolveAccount(config.dataDir, config.accountId);
+  if (config.dryRun || readLinkedAccount(selected.paths.authDir) === null) return true;
 
   // The service holds the session, so nothing else may open it. Its /healthz is
   // the only honest answer left, and it is the one the tunnel sees too.

@@ -26,7 +26,9 @@ export type Command =
   | "expose"
   | "transcribe"
   | "update"
-  | "webhook";
+  | "webhook"
+  | "account"
+  | "migrate";
 
 export interface Config {
   dataDir: string;
@@ -78,39 +80,56 @@ export interface Config {
   transcribeChoice?: string;
   /** `setup` only: the answer to the "keep running" question, from --service / --expose. */
   keepRunning: KeepRunning | null;
+  /** `--account` on login, logout, status, config writes, and short-lived services. */
+  accountId?: string;
+  /** `--name` on `account add`. */
+  accountName?: string;
 }
 
 export interface Paths {
   dataDir: string;
+  lockFile: string;
+  daemonFile: string;
+  serviceFile: string;
+  oauthFile: string;
+  envFile: string;
+  accountsFile: string;
+}
+
+export interface AccountPaths {
+  root: string;
   authDir: string;
   mediaDir: string;
   historyDir: string;
   previewsDir: string;
   notesFile: string;
   storeFile: string;
-  lockFile: string;
-  daemonFile: string;
-  serviceFile: string;
-  oauthFile: string;
-  envFile: string;
   qrFile: string;
 }
 
 export function paths(dataDir: string): Paths {
   return {
     dataDir,
-    authDir: join(dataDir, "auth"),
-    mediaDir: join(dataDir, "media"),
-    historyDir: join(dataDir, "history"),
-    previewsDir: join(dataDir, "previews"),
-    notesFile: join(dataDir, "notes.json"),
-    storeFile: join(dataDir, "store.json"),
     lockFile: join(dataDir, "server.lock"),
     daemonFile: join(dataDir, "daemon.json"),
     serviceFile: join(dataDir, "service.json"),
     oauthFile: join(dataDir, "oauth.json"),
     envFile: join(dataDir, ".env"),
-    qrFile: join(dataDir, "qr.png"),
+    accountsFile: join(dataDir, "accounts.json"),
+  };
+}
+
+export function accountPaths(dataDir: string, accountId: string): AccountPaths {
+  const root = join(dataDir, "accounts", accountId);
+  return {
+    root,
+    authDir: join(root, "auth"),
+    mediaDir: join(root, "media"),
+    historyDir: join(root, "history"),
+    previewsDir: join(root, "previews"),
+    notesFile: join(root, "notes.json"),
+    storeFile: join(root, "store.json"),
+    qrFile: join(root, "qr.png"),
   };
 }
 
@@ -140,6 +159,8 @@ const COMMAND_ARGS: Record<Command, readonly number[]> = {
   transcribe: [1, 2],
   update: [0],
   webhook: [1],
+  account: [1, 2],
+  migrate: [1],
 };
 
 const COMMANDS = Object.keys(COMMAND_ARGS) as readonly Command[];
@@ -156,6 +177,8 @@ const COMMAND_USAGE: Partial<Record<Command, string>> = {
   contacts: "Run `wazap contacts resync`",
   config: "Run `wazap config`, `wazap config writes on|off`, `wazap config transcribe local|openai|off`, or `wazap config webhook on|off`",
   webhook: "Run `wazap webhook test`",
+  account: "Run `wazap account add <id> [--name <name>]`, `wazap account remove|enable|disable <id>`, or `wazap account list`",
+  migrate: "Run `wazap migrate rollback`",
 };
 
 export function defaultDataDir(): string {
@@ -266,6 +289,8 @@ export function parseCli(argv: string[] = process.argv.slice(2)): CliInvocation 
         service: { type: "boolean" },
         expose: { type: "boolean" },
         yes: { type: "boolean", short: "y" },
+        account: { type: "string" },
+        name: { type: "string" },
         help: { type: "boolean", short: "h" },
         version: { type: "boolean", short: "v" },
       },
@@ -350,6 +375,8 @@ export function parseCli(argv: string[] = process.argv.slice(2)): CliInvocation 
       modelName: values.model,
       transcribeChoice: values.transcribe,
       keepRunning: values.expose === true ? "expose" : values.service === true ? "service" : null,
+      accountId: values.account,
+      accountName: values.name,
     },
   };
 }

@@ -8,7 +8,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 
 import { WhatsAppService, needsContactResync } from "../dist/whatsapp.js";
-import { connectedService } from "./helpers.mjs";
+import { connectedService, openService } from "./helpers.mjs";
 import { registerTools } from "../dist/tools.js";
 
 /** Stand-in for McpServer: records what got registered and lets us call it. */
@@ -76,7 +76,7 @@ test("a resync forgets every stored version before it asks", async () => {
 test("the resync stamp survives a store round trip, so a restart does not repeat it", () => {
   const { svc } = makeService();
   svc.store.contactsResyncedAt = NOW;
-  const revived = new WhatsAppService(svc.config);
+  const revived = openService(WhatsAppService, svc.config);
   revived.store.hydrate(svc.store.serialize());
   assert.equal(revived.store.contactsResyncedAt, NOW);
 });

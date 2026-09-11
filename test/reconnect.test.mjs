@@ -16,6 +16,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { WhatsAppService } from "../dist/whatsapp.js";
+import { openService } from "./helpers.mjs";
 
 const RECONNECT_MAX_ATTEMPTS = 10;
 /** Baileys reports a server-side termination as connectionClosed, not loggedOut. */
@@ -41,7 +42,7 @@ function config() {
 
 /** A service whose start() never touches the network, so we observe only pacing. */
 function makeService() {
-  const svc = new WhatsAppService(config());
+  const svc = openService(WhatsAppService, config());
   const starts = [];
   svc.start = async () => {
     starts.push(true);
