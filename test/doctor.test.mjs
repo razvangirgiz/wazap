@@ -8,6 +8,7 @@ import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 
 import { isNewer } from "../dist/doctor.js";
+import { childEnv } from "./helpers.mjs";
 
 const run = promisify(execFile);
 const binary = join(dirname(fileURLToPath(import.meta.url)), "..", "dist", "index.js");
@@ -19,7 +20,7 @@ const binary = join(dirname(fileURLToPath(import.meta.url)), "..", "dist", "inde
  */
 function status(dataDir, args = [], env = {}) {
   return run(process.execPath, [binary, "status", "--data-dir", dataDir, ...args], {
-    env: { ...process.env, WAZAP_NO_UPDATE_CHECK: "1", WAZAP_TRANSCRIBE: "off", WAZAP_WEBHOOK: "off", ...env },
+    env: childEnv({ WAZAP_TRANSCRIBE: "off", WAZAP_WEBHOOK: "off", ...env }),
   });
 }
 
