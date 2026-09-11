@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.14.0
 ### Added
 
 - **`set_profile_picture`.** Write tool that updates the linked account's own
