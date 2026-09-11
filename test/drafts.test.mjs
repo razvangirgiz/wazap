@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 
 import { DraftStore, formatDraftPreview, formatToLine } from "../dist/drafts.js";
 import { WhatsAppService } from "../dist/whatsapp.js";
-import { connectedService, offlineConfig } from "./helpers.mjs";
+import { connectedService, offlineConfig, openService } from "./helpers.mjs";
 
 const ANA = { chat_id: "40722@s.whatsapp.net", name: "Ana", number: "40722123456" };
 const BLOC = { chat_id: "120363@g.us", name: "Bloc 12" };
@@ -106,7 +106,7 @@ test("preview bodies cover every draft kind", () => {
 const PEER = "40722123456@s.whatsapp.net";
 
 test("draft rejects a missing local file before it touches the socket", async () => {
-  const svc = new WhatsAppService(offlineConfig("wazap-draft-media-"));
+  const svc = openService(WhatsAppService, offlineConfig("wazap-draft-media-"));
   await assert.rejects(
     () =>
       svc.draft({

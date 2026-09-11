@@ -10,7 +10,7 @@ import { join } from "node:path";
 
 import { socketFactory } from "../dist/pairing.js";
 import { WhatsAppService } from "../dist/whatsapp.js";
-import { fakeSocket, offlineConfig, stubSockets, waitFor } from "./helpers.mjs";
+import { fakeSocket, offlineConfig, openService, stubSockets, waitFor } from "./helpers.mjs";
 
 const LOGGED_OUT = 401;
 const USER = { id: "15550100:12@s.whatsapp.net", name: "Test Account" };
@@ -20,7 +20,7 @@ const USER = { id: "15550100:12@s.whatsapp.net", name: "Test Account" };
  * would open a socket to WhatsApp, which is the thing under test's next step.
  */
 async function unlinkedService() {
-  const svc = new WhatsAppService(offlineConfig("wazap-link-"));
+  const svc = openService(WhatsAppService, offlineConfig("wazap-link-"));
   await svc.start();
   assert.equal(svc.getStatus().status, "not_linked");
   const starts = [];

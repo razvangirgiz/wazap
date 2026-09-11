@@ -20,7 +20,17 @@ function wazap(...args) {
 
 test("--help explains every command and exits 0", async () => {
   const { stderr } = await wazap("--help");
-  for (const fragment of ["wazap login", "wazap status", "wazap logout", "wazap webhook test", "--data-dir", "--read-only"]) {
+  for (const fragment of [
+    "wazap login",
+    "wazap status",
+    "wazap logout",
+    "wazap webhook test",
+    "wazap account",
+    "wazap migrate rollback",
+    "--account",
+    "--data-dir",
+    "--read-only",
+  ]) {
     assert.ok(stderr.includes(fragment), `--help must mention ${fragment}`);
   }
 });

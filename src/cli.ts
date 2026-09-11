@@ -6,10 +6,12 @@ import { setTimeout as sleep } from "node:timers/promises";
 import { DisconnectReason } from "baileys";
 import qrcode from "qrcode";
 import qrcodeTerminal from "qrcode-terminal";
+import { accountRows, describeAccount, describeStatusAccount, type StatusAccountRow } from "./account-cli.js";
+import { resolveAccount } from "./accounts.js";
 import { clearSession, readLinkedAccount, type LinkedAccount } from "./auth-state.js";
 import { banner } from "./banner.js";
 import { runBridge } from "./bridge.js";
-import { BAILEYS_VERSION, WAZAP_VERSION, paths, type Config, type Paths } from "./config.js";
+import { BAILEYS_VERSION, WAZAP_VERSION, paths, type AccountPaths, type Config } from "./config.js";
 import { connectNext, whereInstalled, type Install } from "./connect.js";
 import { decideRole, readDaemon, removeDaemon, writeDaemon } from "./daemon.js";
 import { DEPS, ensureDeps } from "./deps.js";
@@ -94,11 +96,14 @@ export interface LiveReport {
   reason: string | null;
 }
 
+export { describeAccount, runAccount, runMigrate } from "./account-cli.js";
+
 interface StatusReport {
   data_dir: string;
   linked: boolean;
   credentials_readable: boolean;
   account: LinkedAccount | null;
+  accounts: StatusAccountRow[];
   wazap_version: string;
   baileys_version: string;
   install: Install;
@@ -108,13 +113,19 @@ interface StatusReport {
   live?: LiveReport;
 }
 
+function openService(config: Config): WhatsAppService {
+  const { account, paths: accountStorage } = resolveAccount(config.dataDir, config.accountId);
+  return new WhatsAppService(config, account, accountStorage);
+}
+
 export async function runStatus(config: Config): Promise<StatusReport> {
   const p = paths(config.dataDir);
+  const selected = resolveAccount(config.dataDir, config.accountId);
 
   let account: LinkedAccount | null = null;
   let unreadable = false;
   try {
-    account = readLinkedAccount(p.authDir);
+    account = readLinkedAccount(selected.paths.authDir);
   } catch {
     unreadable = true;
   }
@@ -130,6 +141,7 @@ export async function runStatus(config: Config): Promise<StatusReport> {
     linked: account !== null,
     credentials_readable: !unreadable,
     account,
+    accounts: accountRows(config),
     wazap_version: WAZAP_VERSION,
     baileys_version: BAILEYS_VERSION,
     install: whereInstalled(),
@@ -164,6 +176,12 @@ function plainStatus(report: StatusReport): string[] {
     lines.push("linked: yes", `account: ${describeAccount(report.account)}`);
   } else {
     lines.push("linked: no");
+  }
+  if (report.accounts.length > 1) {
+    lines.push("accounts:");
+    for (const row of report.accounts) {
+      lines.push(`  ${describeStatusAccount(row)}${row.default ? "  (default)" : ""}`);
+    }
   }
   lines.push(
     `wazap: ${report.wazap_version}`,
@@ -206,6 +224,13 @@ function richStatus(report: StatusReport): string[] {
     row("data dir", tilde(report.data_dir)),
     row("install", describeInstall(report.install)),
     row("account", account),
+    ...(report.accounts.length > 1
+      ? report.accounts.map((entry) =>
+          entry.default
+            ? row("accounts", `${describeStatusAccount(entry)}  (default)`)
+            : row("", describeStatusAccount(entry)),
+        )
+      : []),
     row("server", serverState(report)),
     "",
     ...report.checks.flatMap(checkLines),
@@ -271,7 +296,7 @@ export async function runLiveProbe(config: Config): Promise<LiveReport> {
     );
   }
 
-  const wa = new WhatsAppService(config);
+  const wa = openService(config);
   const deadline = Date.now() + LIVE_TIMEOUT_MS;
   try {
     await wa.start();
@@ -324,7 +349,7 @@ export async function runContacts(config: Config): Promise<void> {
     process.exit(1);
   }
 
-  const wa = new WhatsAppService(config);
+  const wa = openService(config);
   const spin = spinner("Asking WhatsApp for your address book…");
   try {
     await wa.start();
@@ -484,6 +509,14 @@ export async function runGreet(config: Config): Promise<void> {
 }
 
 export async function runServe(config: Config): Promise<void> {
+  if (config.accountId !== undefined) {
+    throw new WazapError(
+      "INVALID_ID",
+      "wazap serve always uses the default account.",
+      "Drop --account; this release serves one account",
+    );
+  }
+
   const p = paths(config.dataDir);
 
   // Losing the atomic claim means another `serve` won it, and the next pass finds
@@ -529,7 +562,7 @@ export async function runServe(config: Config): Promise<void> {
     releaseLock(p.lockFile);
   });
 
-  const wa = new WhatsAppService(config);
+  const wa = openService(config);
   let stopping = false;
   const shutdown = (reason: string): void => {
     if (stopping) return;
@@ -598,8 +631,8 @@ export function stepper(total: number): Stepper {
 }
 
 export async function runLogin(config: Config): Promise<void> {
-  const p = paths(config.dataDir);
-  const linked = readLinkedAccount(p.authDir);
+  const selected = resolveAccount(config.dataDir, config.accountId);
+  const linked = readLinkedAccount(selected.paths.authDir);
   if (!linked) {
     const refusal = leftoverRefusal(config);
     if (refusal !== null) throw refusal;
@@ -651,6 +684,7 @@ export async function linkAndSync(
   w: Wizard | null = null,
 ): Promise<void> {
   const p = paths(config.dataDir);
+  const selected = resolveAccount(config.dataDir, config.accountId);
 
   const resumeService = await yieldSession(config, p.lockFile);
   // The lock goes the moment pairing is over; the service waits until the
@@ -687,11 +721,12 @@ export async function linkAndSync(
 
     let account: LinkedAccount;
     try {
-      account = phone === null ? await linkByQr(p, waiting, w) : await linkByCode(p.authDir, phone, waiting, w);
+      account = phone === null ? await linkByQr(selected.paths, waiting, w) : await linkByCode(selected.paths.authDir, phone, waiting, w);
     } catch (err) {
       waiting.stop();
       throw err;
     }
+    selected.registry.setOwner(selected.account.id, account.id);
     if (w) waiting.stop();
     else waiting.stop(ok(`Linked as ${describeAccount(account)}`));
 
@@ -751,7 +786,7 @@ async function linkByCode(
   return pairing.done;
 }
 
-async function linkByQr(p: Paths, waiting: Countdown, w: Wizard | null): Promise<LinkedAccount> {
+async function linkByQr(p: AccountPaths, waiting: Countdown, w: Wizard | null): Promise<LinkedAccount> {
   if (w) {
     await w.next("Scan this with WhatsApp");
     waiting.start("Waiting for a QR from WhatsApp…");
@@ -832,7 +867,7 @@ const HISTORY_QUIET_MS = 3_000;
  * over here and stays up until the history has landed and gone quiet.
  */
 async function syncAfterLink(config: Config, w: Wizard | null = null): Promise<void> {
-  const wa = new WhatsAppService(config);
+  const wa = openService(config);
   const spin = spinner("Syncing your chats…");
   try {
     await wa.start();
@@ -916,6 +951,7 @@ class Countdown {
 
 export async function runLogout(config: Config): Promise<void> {
   const p = paths(config.dataDir);
+  const selected = resolveAccount(config.dataDir, config.accountId);
 
   const running = lockHolder(p.lockFile);
   if (running !== null) {
@@ -927,7 +963,7 @@ export async function runLogout(config: Config): Promise<void> {
   let linked: LinkedAccount | null = null;
   let unreadable = false;
   try {
-    linked = readLinkedAccount(p.authDir);
+    linked = readLinkedAccount(selected.paths.authDir);
   } catch {
     // Unreadable creds are exactly what logout exists to clear, so keep going.
     unreadable = true;
@@ -940,7 +976,7 @@ export async function runLogout(config: Config): Promise<void> {
   if (linked) {
     const deadline = Date.now() + LOGOUT_TIMEOUT_MS;
     try {
-      const sock = await linkSession(p.authDir, { deadline });
+      const sock = await linkSession(selected.paths.authDir, { deadline });
       await withDeadline(sock.logout(), deadline, "WhatsApp did not confirm the unlink in time.");
     } catch (err: unknown) {
       if (alreadyUnlinked(err)) {
@@ -952,7 +988,8 @@ export async function runLogout(config: Config): Promise<void> {
     }
   }
 
-  clearSession(p);
+  clearSession(selected.paths);
+  selected.registry.setOwner(selected.account.id, null);
   say(ok("Logged out. Local credentials deleted."));
   process.exit(0);
 }
@@ -965,12 +1002,6 @@ export async function runLogout(config: Config): Promise<void> {
 export function alreadyUnlinked(err: unknown): boolean {
   if (err instanceof WazapError) return err.code === "SESSION_EXPIRED";
   return (err as { output?: { statusCode?: number } } | null)?.output?.statusCode === DisconnectReason.loggedOut;
-}
-
-/** The number is masked: a status screenshot should not carry it. */
-export function describeAccount(account: LinkedAccount): string {
-  const number = maskNumber(account.number);
-  return account.name ? `${account.name} (${number})` : number;
 }
 
 /**

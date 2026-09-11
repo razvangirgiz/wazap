@@ -1,4 +1,5 @@
 import { accessSync, constants, statSync } from "node:fs";
+import { accountPolicy, resolveAccount } from "./accounts.js";
 import { readLinkedAccount } from "./auth-state.js";
 import { WAZAP_VERSION, WRITES_ENABLE_FIX, WRITE_TOKEN_NOTE, isRemoteHttp, paths, type Config } from "./config.js";
 import { WazapError, asWazapError } from "./errors.js";
@@ -63,7 +64,7 @@ export async function runChecks(config: Config): Promise<Check[]> {
   for (const check of CHECKS) checks.push(...[await check(config)].flat());
   let linked = false;
   try {
-    linked = readLinkedAccount(paths(config.dataDir).authDir) !== null;
+    linked = readLinkedAccount(resolveAccount(config.dataDir, config.accountId).paths.authDir) !== null;
   } catch {
     linked = false;
   }
@@ -162,7 +163,7 @@ function checkService(config: Config): Check {
 }
 
 function checkCredentials(config: Config): Check {
-  const authDir = paths(config.dataDir).authDir;
+  const authDir = resolveAccount(config.dataDir, config.accountId).paths.authDir;
   try {
     const account = readLinkedAccount(authDir);
     // The number is deliberately absent: status is the thing people screenshot.
@@ -176,8 +177,10 @@ function checkCredentials(config: Config): Check {
 }
 
 function checkWrites(config: Config): Check {
-  const source = config.sources.readOnly;
-  if (!config.readOnly) {
+  const selected = resolveAccount(config.dataDir, config.accountId);
+  const readOnly = accountPolicy(selected.account, config).readOnly;
+  const source = selected.account.writes === undefined ? config.sources.readOnly : "accounts.json";
+  if (!readOnly) {
     return {
       name: "writes",
       state: "ok",

@@ -1,5 +1,6 @@
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
+import { AccountRegistry, accountPolicy, resolveAccount } from "./accounts.js";
 import { ask, askSecret } from "./cli.js";
 import { paths, writesHints, type Config } from "./config.js";
 import { WazapError, asWazapError } from "./errors.js";
@@ -69,11 +70,22 @@ interface SettingRow {
   label: string;
   source: keyof Config["sources"];
   value: (config: Config) => string;
+  sourceLabel?: (config: Config) => string;
+}
+
+function writesSource(config: Config): string {
+  const selected = resolveAccount(config.dataDir, config.accountId);
+  return selected.account.writes === undefined ? config.sources.readOnly : "accounts.json";
 }
 
 const SETTINGS: readonly SettingRow[] = [
   { label: "data dir", source: "dataDir", value: (config) => config.dataDir },
-  { label: "writes", source: "readOnly", value: (config) => (config.readOnly ? "off" : "on") },
+  {
+    label: "writes",
+    source: "readOnly",
+    value: (config) => (accountPolicy(resolveAccount(config.dataDir, config.accountId).account, config).readOnly ? "off" : "on"),
+    sourceLabel: writesSource,
+  },
   {
     label: "transport",
     source: "transport",
@@ -110,7 +122,10 @@ const USAGE_FIX =
 
 export async function runConfig(config: Config): Promise<void> {
   if (config.args.length === 0) {
-    for (const row of SETTINGS) say(`${row.label}: ${row.value(config)} (${config.sources[row.source]})`);
+    for (const row of SETTINGS) {
+      const source = row.sourceLabel === undefined ? config.sources[row.source] : row.sourceLabel(config);
+      say(`${row.label}: ${row.value(config)} (${source})`);
+    }
     for (const line of transcribeRows(config)) say(line);
     for (const line of webhookRows(config)) say(line);
     say("");
@@ -119,7 +134,10 @@ export async function runConfig(config: Config): Promise<void> {
         "Change writes with `wazap config writes on|off`, transcription with `wazap config transcribe`, webhook with `wazap config webhook on|off`. Probe it with `wazap webhook test`.",
       ),
     );
-    for (const line of writesHints(config)) say(dim(line));
+    const selected = resolveAccount(config.dataDir, config.accountId);
+    for (const line of writesHints({ ...config, readOnly: accountPolicy(selected.account, config).readOnly })) {
+      say(dim(line));
+    }
     return;
   }
 
@@ -320,17 +338,29 @@ async function reportReadiness(env: NodeJS.ProcessEnv, dataDir: string): Promise
 /** Persist the writes answer, then say what is now true and how to change it. */
 export function applyWrites(config: Config, allowWrites: boolean): void {
   const p = paths(config.dataDir);
-  setEnvSetting(p.envFile, "WAZAP_READ_ONLY", allowWrites ? "0" : "1");
-  config.readOnly = !allowWrites;
-  if (config.sources) config.sources.readOnly = ".env";
-  say(
-    ok(
-      allowWrites
-        ? "writes: on — the agent can send messages, react and manage chats. Turn it off with `wazap config writes off`."
-        : "writes: off — the agent can only read. Turn it on with `wazap config writes on`.",
-    ),
-  );
-  say(dim(`Stored in ${shortPath(p.envFile)}.`));
+  if (config.accountId !== undefined) {
+    AccountRegistry.load(config.dataDir).setWrites(config.accountId, allowWrites);
+    say(
+      ok(
+        allowWrites
+          ? `writes: on for ${config.accountId} — the agent can send from this account. Turn it off with \`wazap config writes off --account ${config.accountId}\`.`
+          : `writes: off for ${config.accountId} — the agent can only read this account. Turn it on with \`wazap config writes on --account ${config.accountId}\`.`,
+      ),
+    );
+    say(dim(`Stored in ${shortPath(p.accountsFile)}.`));
+  } else {
+    setEnvSetting(p.envFile, "WAZAP_READ_ONLY", allowWrites ? "0" : "1");
+    config.readOnly = !allowWrites;
+    if (config.sources) config.sources.readOnly = ".env";
+    say(
+      ok(
+        allowWrites
+          ? "writes: on — the agent can send messages, react and manage chats. Turn it off with `wazap config writes off`."
+          : "writes: off — the agent can only read. Turn it on with `wazap config writes on`.",
+      ),
+    );
+    say(dim(`Stored in ${shortPath(p.envFile)}.`));
+  }
 
   const running = lockHolder(p.lockFile);
   if (running !== null) say(warn(`A server is running (pid ${running}); restart it for this to apply.`));

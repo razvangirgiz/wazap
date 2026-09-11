@@ -2,6 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFile, spawn } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, symlinkSync, writeFileSync } from "node:fs";
+import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { delimiter, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -25,6 +26,16 @@ function childEnv(extra) {
 
 function dataDir(prefix) {
   return mkdtempSync(join(tmpdir(), prefix));
+}
+
+function freePort() {
+  return new Promise((resolve) => {
+    const srv = createServer();
+    srv.listen(0, "127.0.0.1", () => {
+      const { port } = srv.address();
+      srv.close(() => resolve(port));
+    });
+  });
 }
 
 test("login refuses to touch a session another process holds", async () => {
@@ -428,7 +439,12 @@ test("setup --transcribe local --no-brew leaves the fix line standing and instal
 
   assert.deepEqual(calls(), [], "brew must not be called");
   assert.match(stderr, /whisper\.cpp not found/);
-  assert.match(stderr, /→ Run `brew install whisper-cpp ffmpeg`/);
+  assert.match(
+    stderr,
+    process.platform === "darwin"
+      ? /→ Run `brew install whisper-cpp ffmpeg`/
+      : /→ Build whisper\.cpp from https:\/\/github\.com\/ggml-org\/whisper\.cpp#quick-start/,
+  );
   assert.match(stderr, /Run `wazap transcribe download` once they are installed\./);
 });
 
@@ -485,7 +501,14 @@ exit 0
 
 test(
   "setup --service installs the service, and Finish reports its health instead of opening the session",
-  { skip: SUPERVISOR_STUB === undefined ? `no launchd or systemd on ${process.platform}` : false },
+  {
+    skip:
+      SUPERVISOR_STUB === undefined
+        ? `no launchd or systemd on ${process.platform}`
+        : process.platform !== "darwin"
+          ? "the systemd stub reports the wrapper pid, so serviceHolding misses and Finish skips the live check"
+          : false,
+  },
   async () => {
     const box = sandbox();
     // The supervisor stub is a shell script that needs sed, env and kill. The
@@ -493,7 +516,7 @@ test(
     // the client is Cursor and there is no --relaunch.
     box.path = `${box.bin}${delimiter}/usr/bin${delimiter}/bin`;
     const dir = linkedDataDir();
-    const port = 43_311;
+    const port = await freePort();
     const kill = stubSupervisor(box);
     try {
       // The stub credentials never reach `connected`, so Finish fails; what this

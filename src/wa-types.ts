@@ -70,6 +70,9 @@ export interface StatusInfo {
   status_since: string;
   sync: SyncState;
   account: { id: string; name: string; number: string } | null;
+  /** Registry id (`default`, `work`, …), not the WhatsApp jid. */
+  account_id: string;
+  account_name: string;
   last_message_received_at: string | null;
   reconnect_attempts: number;
   /** Contacts carrying a name from the phone's address book. Zero means it never arrived. */
