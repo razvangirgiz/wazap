@@ -216,7 +216,7 @@ test("a ready sink POSTs the small payload with a matching signature", async () 
     res.end();
   });
 
-  const sink = new WebhookSink(readyEnv(server.url), fetch, []);
+  const sink = new WebhookSink(readyEnv(server.url), { retryDelays: [] });
   await sink.notify(samplePayload());
 
   assert.equal(received.length, 1);
@@ -236,10 +236,11 @@ test("off delivers zero POSTs, even when a URL is set", async () => {
     calls++;
     return new Response(null, { status: 204 });
   };
-  await new WebhookSink({}, post).notify(samplePayload());
-  await new WebhookSink({ WAZAP_WEBHOOK: "off", WAZAP_WEBHOOK_URL: "http://127.0.0.1:9/hook", WAZAP_WEBHOOK_SECRET: SECRET }, post).notify(
-    samplePayload(),
-  );
+  await new WebhookSink({}, { post }).notify(samplePayload());
+  await new WebhookSink(
+    { WAZAP_WEBHOOK: "off", WAZAP_WEBHOOK_URL: "http://127.0.0.1:9/hook", WAZAP_WEBHOOK_SECRET: SECRET },
+    { post },
+  ).notify(samplePayload());
   assert.equal(calls, 0);
 });
 
@@ -256,7 +257,7 @@ test("a 5xx is retried, then last_error is set and nothing is thrown", async () 
     res.writeHead(502, { "content-type": "text/plain" });
     res.end("no");
   });
-  const sink = new WebhookSink(readyEnv(server.url), fetch, [0, 0]);
+  const sink = new WebhookSink(readyEnv(server.url), { retryDelays: [0, 0] });
   await sink.notify(samplePayload({ text: "x" }));
   assert.equal(hits, 3);
   assert.match(sink.lastError ?? "", /HTTP 502/);
@@ -272,14 +273,14 @@ test("a short retry then a 2xx clears last_error", async () => {
     hits++;
     return new Response(hits < 3 ? "no" : null, { status: hits < 3 ? 502 : 204 });
   };
-  const sink = new WebhookSink(readyEnv("http://127.0.0.1:9/hook"), post, [0, 0]);
+  const sink = new WebhookSink(readyEnv("http://127.0.0.1:9/hook"), { post, retryDelays: [0, 0] });
   await sink.notify(samplePayload());
   assert.equal(hits, 3);
   assert.equal(sink.lastError, null);
 });
 
 test("notify never rejects, even when building the POST throws", async () => {
-  const sink = new WebhookSink(readyEnv("http://127.0.0.1:9/hook"), fetch, []);
+  const sink = new WebhookSink(readyEnv("http://127.0.0.1:9/hook"), { retryDelays: [] });
   const payload = {
     ...samplePayload(),
     get text() {
@@ -292,7 +293,7 @@ test("notify never rejects, even when building the POST throws", async () => {
 });
 
 test("an unreachable URL is a soft fail that sets last_error", async () => {
-  const sink = new WebhookSink(readyEnv("http://127.0.0.1:1/hook"), fetch, []);
+  const sink = new WebhookSink(readyEnv("http://127.0.0.1:1/hook"), { retryDelays: [] });
   await sink.notify(samplePayload({ text: "x" }));
   assert.match(sink.lastError ?? "", /could not reach 127.0.0.1:1/);
   assert.ok(!(sink.lastError ?? "").includes(SECRET), "the secret must not appear in last_error");
@@ -313,7 +314,7 @@ test("sendTest refuses off and invalid config, and posts the same event when rea
     res.writeHead(200);
     res.end();
   });
-  const ready = await new WebhookSink(readyEnv(server.url), fetch, []).sendTest();
+  const ready = await new WebhookSink(readyEnv(server.url), { retryDelays: [] }).sendTest();
   assert.equal(ready.ok, true);
   assert.equal(received[0].event, "message_received");
   assert.equal(received[0].text, "wazap webhook test");
@@ -335,11 +336,14 @@ test("a sink prefers the account webhook_url and names that account on sendTest"
     res.end();
   });
   const workSecret = "work-hook-secret";
-  const sink = new WebhookSink(readyEnv("http://127.0.0.1:1/dead"), fetch, [], {
-    id: "work",
-    name: "Work",
-    webhook_url: server.url,
-    webhook_secret: workSecret,
+  const sink = new WebhookSink(readyEnv("http://127.0.0.1:1/dead"), {
+    retryDelays: [],
+    account: {
+      id: "work",
+      name: "Work",
+      webhook_url: server.url,
+      webhook_secret: workSecret,
+    },
   });
   const result = await sink.sendTest();
   assert.equal(result.ok, true);

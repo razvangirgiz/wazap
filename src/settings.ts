@@ -18,11 +18,11 @@ import {
 import { brand, dim, fix, ok, shortPath, warn } from "./ui.js";
 import {
   WEBHOOK_ON_FIX,
-  WEBHOOK_RETRY_DELAYS_MS,
   WEBHOOK_TEST_FIX,
   WebhookSink,
   readWebhookSettings,
   requireWebhookUrl,
+  type WebhookOverride,
 } from "./webhook.js";
 
 /**
@@ -188,19 +188,16 @@ function transcribeRows(config: Config): string[] {
   return rows;
 }
 
-function webhookOverride(config: Config): { url?: string; secret?: string } {
+function accountWebhook(config: Config): { override: WebhookOverride; source: string } {
   const selected = resolveAccount(config.dataDir, config.accountId);
-  return { url: selected.account.webhook_url, secret: selected.account.webhook_secret };
-}
-
-function webhookSource(config: Config): string {
-  const override = webhookOverride(config);
-  return override.url !== undefined || override.secret !== undefined ? "accounts.json" : config.sources.webhook;
+  const override: WebhookOverride = { url: selected.account.webhook_url, secret: selected.account.webhook_secret };
+  const source = override.url !== undefined || override.secret !== undefined ? "accounts.json" : config.sources.webhook;
+  return { override, source };
 }
 
 function webhookRows(config: Config): string[] {
-  const settings = readWebhookSettings(process.env, webhookOverride(config));
-  const source = webhookSource(config);
+  const { override, source } = accountWebhook(config);
+  const settings = readWebhookSettings(process.env, override);
   switch (settings.kind) {
     case "off":
       return [`webhook: off (${source})`];
@@ -279,7 +276,7 @@ function setWebhookFlag(config: Config, value: "on" | "off"): void {
 
 async function testWebhook(config: Config): Promise<void> {
   const selected = resolveAccount(config.dataDir, config.accountId);
-  const result = await new WebhookSink(process.env, fetch, WEBHOOK_RETRY_DELAYS_MS, selected.account).sendTest();
+  const result = await new WebhookSink(process.env, { account: selected.account }).sendTest();
   if (result.ok) {
     say(ok("webhook: test delivered"));
     return;

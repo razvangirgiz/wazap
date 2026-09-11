@@ -58,6 +58,13 @@ export type WebhookTestResult = { ok: true } | { ok: false; error: string; fix: 
 
 export type WebhookFetch = (url: string, init: RequestInit) => Promise<Response>;
 
+/** Test seams and the account whose override the sink prefers. */
+export interface WebhookSinkOptions {
+  post?: WebhookFetch;
+  retryDelays?: readonly number[];
+  account?: WebhookAccount;
+}
+
 /** The one place the webhook environment becomes typed. */
 export function readWebhookSettings(
   env: NodeJS.ProcessEnv = process.env,
@@ -159,13 +166,18 @@ export function webhookInfo(settings: WebhookSettings, lastError: string | null)
 /** Posts `message_received` when the webhook is on and valid. Never throws. */
 export class WebhookSink {
   lastError: string | null = null;
+  private readonly post: WebhookFetch;
+  private readonly retryDelays: readonly number[];
+  private readonly account?: WebhookAccount;
 
   constructor(
     private readonly env: NodeJS.ProcessEnv = process.env,
-    private readonly post: WebhookFetch = fetch,
-    private readonly retryDelays: readonly number[] = WEBHOOK_RETRY_DELAYS_MS,
-    private readonly account?: WebhookAccount,
-  ) {}
+    opts: WebhookSinkOptions = {},
+  ) {
+    this.post = opts.post ?? fetch;
+    this.retryDelays = opts.retryDelays ?? WEBHOOK_RETRY_DELAYS_MS;
+    this.account = opts.account;
+  }
 
   settings(): WebhookSettings {
     return readWebhookSettings(this.env, {

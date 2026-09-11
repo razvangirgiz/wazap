@@ -130,6 +130,24 @@ test("setWebhook persists url and secret through a reload", () => {
   assert.equal(AccountRegistry.load(dir).get("default").webhook_url, undefined);
 });
 
+test("setWebhook refuses an empty url or secret", () => {
+  const dir = dataDir();
+  const registry = AccountRegistry.load(dir);
+  registry.add("work", "Work");
+  assert.throws(() => registry.setWebhook("work", { url: "   " }), (err) => {
+    assert.equal(err.code, "INVALID_ID");
+    assert.match(err.message, /webhook_url/);
+    return true;
+  });
+  assert.throws(() => registry.setWebhook("work", { secret: "" }), (err) => {
+    assert.equal(err.code, "INVALID_ID");
+    assert.match(err.message, /webhook_secret/);
+    return true;
+  });
+  assert.equal(AccountRegistry.load(dir).get("work").webhook_url, undefined);
+  assert.equal(AccountRegistry.load(dir).get("work").webhook_secret, undefined);
+});
+
 test("a bad webhook_url in accounts.json is refused", () => {
   const dir = dataDir();
   const registry = AccountRegistry.load(dir);

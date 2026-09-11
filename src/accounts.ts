@@ -110,19 +110,31 @@ function parseAccountRecord(value: unknown, file: string): AccountRecord {
     }
     record.rate_limit = value.rate_limit;
   }
-  if (value.webhook_url !== undefined) {
-    if (typeof value.webhook_url !== "string" || value.webhook_url.trim() === "") {
-      throw new WazapError("INVALID_ID", `Account "${value.id}" in ${file} has a bad webhook_url.`, "Fix or remove accounts.json");
+  return { ...record, ...webhookFields(value.id, value.webhook_url, value.webhook_secret, ` in ${file}`) };
+}
+
+/** Shared by load and `setWebhook` so a writer cannot persist what load refuses. */
+function webhookFields(
+  id: string,
+  url: unknown,
+  secret: unknown,
+  where = "",
+  fix = "Fix or remove accounts.json",
+): Pick<AccountRecord, "webhook_url" | "webhook_secret"> {
+  const fields: Pick<AccountRecord, "webhook_url" | "webhook_secret"> = {};
+  if (url !== undefined) {
+    if (typeof url !== "string" || url.trim() === "") {
+      throw new WazapError("INVALID_ID", `Account "${id}"${where} has a bad webhook_url.`, fix);
     }
-    record.webhook_url = value.webhook_url.trim().replace(/\/+$/, "");
+    fields.webhook_url = url.trim().replace(/\/+$/, "");
   }
-  if (value.webhook_secret !== undefined) {
-    if (typeof value.webhook_secret !== "string" || value.webhook_secret === "") {
-      throw new WazapError("INVALID_ID", `Account "${value.id}" in ${file} has a bad webhook_secret.`, "Fix or remove accounts.json");
+  if (secret !== undefined) {
+    if (typeof secret !== "string" || secret === "") {
+      throw new WazapError("INVALID_ID", `Account "${id}"${where} has a bad webhook_secret.`, fix);
     }
-    record.webhook_secret = value.webhook_secret;
+    fields.webhook_secret = secret;
   }
-  return record;
+  return fields;
 }
 
 function parseAccountsFile(value: unknown, file: string): AccountsFile {
@@ -241,12 +253,10 @@ export class AccountRegistry {
 
   setWebhook(id: string, webhook: { url?: string; secret?: string }): void {
     this.commit(
-      this.withAccount(id, (account) => {
-        const next = { ...account };
-        if (webhook.url !== undefined) next.webhook_url = webhook.url.trim().replace(/\/+$/, "");
-        if (webhook.secret !== undefined) next.webhook_secret = webhook.secret;
-        return next;
-      }),
+      this.withAccount(id, (account) => ({
+        ...account,
+        ...webhookFields(id, webhook.url, webhook.secret, "", "Set a non-empty webhook URL or secret"),
+      })),
     );
   }
 
