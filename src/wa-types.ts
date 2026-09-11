@@ -96,6 +96,17 @@ export interface StatusInfo {
   hint?: string;
 }
 
+/** One row of `get_status.accounts` / `list_accounts`. Policy `write_tools`, not the session bit. */
+export interface ListedAccount {
+  id: string;
+  name: string;
+  status: ConnectionStatus | "disabled";
+  phone_masked: string | null;
+  owner_name: string | null;
+  write_tools: boolean;
+  enabled: boolean;
+}
+
 export interface WebhookInfo {
   enabled: boolean;
   valid: boolean;
@@ -343,6 +354,9 @@ export interface ContactSyncResult {
  */
 export interface WhatsAppApi {
   getStatus(): StatusInfo;
+  hasChat(jid: string): boolean;
+  hasMessage(id: string): boolean;
+  hasDraft(id: string): boolean;
   link(phone: string): Promise<PairingInfo>;
   listChats(filter: ChatFilter, limit: number): Promise<Synced<ChatSummary[]>>;
   readMessages(chatId: string, limit: number, before?: string, types?: MessageType[]): Promise<Synced<MessageView[]>>;

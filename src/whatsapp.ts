@@ -464,6 +464,10 @@ export class WhatsAppService implements WhatsAppApi {
     return this.store.hasMessage(id);
   }
 
+  hasDraft(id: string): boolean {
+    return this.drafts.has(id);
+  }
+
   /**
    * People from the phone's address book: the only contact count worth
    * reporting. The store also holds everyone who ever appeared in a group and
@@ -1867,10 +1871,13 @@ export class WhatsAppService implements WhatsAppApi {
   /** First statement of every write, so a broken link is reported before the bucket is spent. */
   private beginWrite(): WASocket {
     if (this.effectiveReadOnly) {
+      const id = this.accountRecord.id;
       throw new WazapError(
         "READ_ONLY",
-        "wazap runs read-only, so this write is refused.",
-        "Run `wazap config writes on`, then restart the server",
+        `Account "${id}" is read-only, so this write is refused.`,
+        this.accountRecord.writes === false
+          ? `Run \`wazap config writes on --account ${id}\`, then restart the server`
+          : "Run `wazap config writes on`, then restart the server",
       );
     }
     const sock = this.ensureConnected();

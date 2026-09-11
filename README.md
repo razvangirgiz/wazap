@@ -8,7 +8,7 @@
 ```
 
 **WhatsApp for your AI agent.** An MCP server that puts your WhatsApp account —
-chats, messages, media, contacts, groups — behind 32 tools any MCP client can
+chats, messages, media, contacts, groups — behind 33 tools any MCP client can
 call. Pairing-code login, no browser, no phone-number reseller, ~20 MB of RAM.
 
 Built on [Baileys](https://github.com/WhiskeySockets/Baileys), which speaks the
@@ -272,8 +272,9 @@ them. `--dry-run` prints the plan and touches nothing.
 | Tool | Kind | What it does |
 | --- | --- | --- |
 | `learn` | read | The guide to every tool, id format and error code. Call it first. |
-| `get_status` | read | Connection status, sync state, linked account, named-contact count, versions, data dir. |
-| `link_account` | read | Pair the account without a terminal: returns the code to type into the phone. Registered in read-only mode too. |
+| `get_status` | read | Connection status, sync state, linked account, named-contact count, versions, data dir. Top-level fields are the default account; `accounts` lists every live one. Optional `account_id` on this and every other tool. |
+| `list_accounts` | read | Every configured account: id, name, status, masked phone, owner name, writes policy. Call this first when more than one account is linked. |
+| `link_account` | read | Pair an account that already exists (`wazap account add`). Returns the code to type into the phone. Registered in read-only mode too. |
 | `list_chats` | read | Conversations newest-first; filter `all`/`unread`/`groups`/`individual`/`archived`. |
 | `read_messages` | read | Messages in a chat; `before` pages further back, pulling older history from the phone; `types` narrows to one or more message types, e.g. `["call"]`; `include_previews` attaches a small image of each photo. |
 | `get_recent_messages` | read | Everything from the last N hours, grouped by chat. The catch-up tool. `include_system` adds WhatsApp's own notices, `types` narrows to one or more message types, `include_previews` attaches a small image of each photo, `compact` halves it for a routine catch-up. |
@@ -493,6 +494,9 @@ trace, so an agent can decide whether to retry, ask the user, or stop.
 | `READ_ONLY` | wazap is running read-only. |
 | `RATE_LIMITED` | Too many writes; `fix` says how long to wait. |
 | `DRAFT_NOT_FOUND` / `DRAFT_EXPIRED` | The preview was already sent, unknown, or older than 15 minutes. Draft again. |
+| `AMBIGUOUS_ACCOUNT` | More than one account could handle this, or a write named a chat no account knows. Pass `account_id`. |
+| `ACCOUNT_NOT_FOUND` | No account with that id. Run `wazap account add`, or call `list_accounts`. |
+| `ACCOUNT_DISABLED` | That account is disabled. `wazap account enable <id>` and restart. |
 | `TIMEOUT` / `WHATSAPP_ERROR` | WhatsApp did not answer, or rejected the operation. |
 
 ## Data directory

@@ -10,7 +10,7 @@ import { z } from "zod";
 import { WhatsAppService } from "../dist/whatsapp.js";
 import { registerTools } from "../dist/tools.js";
 import { compactConversations } from "../dist/compact.js";
-import { connectedService, offlineConfig, openService } from "./helpers.mjs";
+import { asToolSource, connectedService, offlineConfig, openService } from "./helpers.mjs";
 
 const ME = "40700000001@s.whatsapp.net";
 const ANA = "40700000002@s.whatsapp.net";
@@ -21,7 +21,7 @@ const hour = 3_600_000;
 function setup(config = {}) {
   const { svc, sock } = connectedService(WhatsAppService, { prefix: "wazap-daily-", id: ME, name: "Răzvan", config });
   const tools = new Map();
-  registerTools({ registerTool: (name, meta, handler) => tools.set(name, { meta, handler }) }, svc, { allowWrite: false });
+  registerTools({ registerTool: (name, meta, handler) => tools.set(name, { meta, handler }) }, asToolSource(svc), { allowWrite: false });
   const call = (name, args = {}) => {
     const { meta, handler } = tools.get(name);
     return handler(z.object(meta.inputSchema).parse(args));

@@ -9,7 +9,7 @@ import { z } from "zod";
 
 import { WhatsAppService } from "../dist/whatsapp.js";
 import { registerTools } from "../dist/tools.js";
-import { connectedService } from "./helpers.mjs";
+import { asToolSource, connectedService } from "./helpers.mjs";
 
 const ME = "40700000001@s.whatsapp.net";
 const ANA = "40700000002@s.whatsapp.net";
@@ -29,7 +29,7 @@ function fakeServer() {
 function setup() {
   const { svc, sock } = connectedService(WhatsAppService, { prefix: "wazap-attention-", id: ME, name: "Răzvan" });
   const server = fakeServer();
-  registerTools(server, svc, { allowWrite: false });
+  registerTools(server, asToolSource(svc), { allowWrite: false });
   sock.ev.emit("contacts.upsert", [
     { id: ANA, name: "Ana" },
     { id: DAN, name: "Dan" },

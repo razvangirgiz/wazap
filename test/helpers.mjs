@@ -10,6 +10,7 @@ import { setTimeout as sleep } from "node:timers/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { singletonSource } from "../dist/account-hub.js";
 import { accountPaths } from "../dist/config.js";
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
@@ -162,7 +163,15 @@ export function openService(WhatsAppService, config) {
 
 /** Enough of an AccountHub for HTTP tests that only need one stub WhatsApp. */
 export function stubAccountSource(wa) {
-  return { default: () => wa, all: () => [wa] };
+  return singletonSource(wa);
+}
+
+/** registerTools takes an AccountSource. Stubs and live services go through here. */
+export function asToolSource(source) {
+  if (source && typeof source.bindings === "function" && typeof source.defaultBinding === "function") {
+    return source;
+  }
+  return singletonSource(source && typeof source === "object" ? source : {});
 }
 
 /** A connected service fed only by events, so no socket and no disk are involved. */

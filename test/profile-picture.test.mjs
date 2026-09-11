@@ -10,7 +10,7 @@ import { join } from "node:path";
 
 import { registerTools } from "../dist/tools.js";
 import { WhatsAppService } from "../dist/whatsapp.js";
-import { connectedService } from "./helpers.mjs";
+import { asToolSource, connectedService } from "./helpers.mjs";
 
 const ME = "40700000000@s.whatsapp.net";
 const PIC_URL = "https://pps.whatsapp.net/v/t61.24694-24/pic.jpg";
@@ -141,11 +141,11 @@ test("a url is fetched and passed to updateProfilePicture", async () => {
 
 test("the write tool is absent when allowWrite is false", () => {
   const hidden = fakeServer();
-  registerTools(hidden, {}, { allowWrite: false });
+  registerTools(hidden, asToolSource({}), { allowWrite: false });
   assert.equal(hidden.tools.has("set_profile_picture"), false);
 
   const shown = fakeServer();
-  registerTools(shown, {}, { allowWrite: true });
+  registerTools(shown, asToolSource({}), { allowWrite: true });
   assert.ok(shown.tools.has("set_profile_picture"));
   assert.equal(shown.tools.get("set_profile_picture").meta.annotations.destructiveHint, true);
 });
@@ -155,7 +155,7 @@ test("the tool hits the service and learn names it", async () => {
   sock.updateProfilePicture = async () => {};
   sock.profilePictureUrl = async () => PIC_URL;
   const server = fakeServer();
-  registerTools(server, svc, { allowWrite: true });
+  registerTools(server, asToolSource(svc), { allowWrite: true });
 
   const result = await server.tools.get("set_profile_picture").handler({ file_path: jpegPath() });
   assert.equal(result.structuredContent.profile_pic_url, PIC_URL);

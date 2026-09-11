@@ -7,6 +7,10 @@ description: Send, reply, forward, share a file, react, create a poll, or change
 
 A message sent here is indistinguishable from one the user typed. The rail: **the user sees recipient and exact text, says yes, then it goes.** One approval covers one message to one chat.
 
+## Which account
+
+If more than one WhatsApp account is linked, call `list_accounts` first and pass `account_id` on every tool in this flow, including `confirm_send`. A send to a chat no account knows, with two or more accounts, fails `AMBIGUOUS_ACCOUNT`; do not retry without `account_id`. A chat only one account knows selects that account.
+
 ## Resolve the recipient
 
 1. `search_contacts` with the name. Exactly one match: use its `chat_id`. Several: list them with numbers and ask. None: ask for the number in international format; `NOT_ON_WHATSAPP` means the number is wrong, not that you should retry.

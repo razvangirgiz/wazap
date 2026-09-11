@@ -10,7 +10,7 @@ import { setTimeout as sleep } from "node:timers/promises";
 import { WhatsAppService } from "../dist/whatsapp.js";
 import { clockLabel } from "../dist/messages.js";
 import { registerTools } from "../dist/tools.js";
-import { connectedService, openService } from "./helpers.mjs";
+import { asToolSource, connectedService, openService } from "./helpers.mjs";
 
 const ME = "40700000001@s.whatsapp.net";
 const PEER = "40700000002@s.whatsapp.net";
@@ -318,7 +318,7 @@ test("no tool output carries the API key, whatever the tool", async () => {
   deliver(sock, [voiceNote("V1", { seconds: 6 })]);
 
   const server = fakeServer();
-  registerTools(server, svc, { allowWrite: true });
+  registerTools(server, asToolSource(svc), { allowWrite: true });
   const said = [JSON.stringify(await svc.transcribeAudio(sidOf("V1")))];
   for (const name of ["get_status", "read_messages", "search_messages"]) {
     said.push(JSON.stringify(await server.tools.get(name).handler({ chat_id: PEER, query: "salut" })));
@@ -334,7 +334,7 @@ test("transcribe_audio spends a bucket of its own, ten a minute", async () => {
   const wa = {
     transcribeAudio: async () => ({ text: "salut", language: "ro", duration_seconds: 6, provider: "local", cached: true }),
   };
-  registerTools(server, wa, { allowWrite: true });
+  registerTools(server, asToolSource(wa), { allowWrite: true });
   const transcribe = server.tools.get("transcribe_audio").handler;
 
   const first = await transcribe({ message_id: sidOf("V1") });
@@ -350,7 +350,7 @@ test("transcribe_audio spends a bucket of its own, ten a minute", async () => {
   // An HTTP client that re-initializes gets a fresh McpServer; the bucket is the
   // process's and must not arrive fresh with it.
   const rejoined = fakeServer();
-  registerTools(rejoined, wa, { allowWrite: true });
+  registerTools(rejoined, asToolSource(wa), { allowWrite: true });
   const again = await rejoined.tools.get("transcribe_audio").handler({ message_id: sidOf("V1") });
   assert.equal(again.structuredContent.error, "RATE_LIMITED", "a new session must not come with ten more");
 });
