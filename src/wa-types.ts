@@ -377,6 +377,7 @@ export interface WhatsAppApi {
   reactToMessage(messageId: string, emoji: string): Promise<{ message_id: string; emoji: string }>;
   forwardMessage(messageId: string, toChatId: string): Promise<SentMessage>;
   deleteMessage(messageId: string, forEveryone: boolean): Promise<{ message_id: string; for_everyone: boolean }>;
+  setOwnProfilePicture(source: MediaSource): Promise<{ profile_pic_url: string | null }>;
   manageChat(chatId: string, action: ChatAction, muteHours?: number): Promise<ChatActionResult>;
   createGroup(name: string, participantIds: string[]): Promise<{ chat_id: string; participants: ParticipantResult[] }>;
   manageGroup(

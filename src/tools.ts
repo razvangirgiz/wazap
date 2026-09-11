@@ -146,6 +146,8 @@ link_account when it says no account is linked yet.
   draft only. They return a draft_id and a preview. Show the preview to the
   user; after they say yes, call confirm_send({ draft_id }). That is the only
   call that reaches WhatsApp. A draft lasts 15 minutes.
+- Profile picture: set_profile_picture changes the linked account's photo.
+  Show the image and wait for a yes first; the call hits WhatsApp immediately.
 - Media: a message with has_media=true → download_media(message_id).
 - Groups: get_group_info before manage_group; most actions need admin rights.
 
@@ -851,6 +853,27 @@ within 2 days of sending.`,
     handler: async ({ message_id, for_everyone }, wa) => {
       const result = await wa.deleteMessage(message_id, for_everyone);
       return ok(`Deleted ${message_id} for everyone`, result as unknown as Record<string, unknown>);
+    },
+  }),
+
+  tool({
+    name: "set_profile_picture",
+    title: "Set the linked WhatsApp profile picture",
+    description: `Set the linked WhatsApp account's own profile picture from a local path on the
+machine running wazap or from a public URL. Exactly one of file_path / url.
+JPEG, PNG or WebP only, at most 10 MB. DESTRUCTIVE and visible to every contact.
+Show the image and wait for a yes first. This call hits WhatsApp immediately;
+there is no draft.`,
+    schema: {
+      file_path: z.string().min(1).optional().describe("Absolute path of a local JPEG, PNG or WebP"),
+      url: z.string().url().optional().describe("Public http(s) URL to fetch and use as the photo"),
+    },
+    write: true,
+    destructive: true,
+    handler: async ({ file_path, url }, wa) => {
+      const result = await wa.setOwnProfilePicture({ file_path, url });
+      const where = result.profile_pic_url ?? "WhatsApp has not published a URL yet";
+      return ok(`Updated the linked account's profile picture (${where})`, result);
     },
   }),
 

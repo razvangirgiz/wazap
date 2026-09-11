@@ -33,7 +33,7 @@ import { asWazapError, RELINK_FIX, RESET_FIX, WazapError } from "./errors.js";
 import { isGroupId, isNoiseJid, isStatusJid, normalizePhone, resolveChatId, STATUS_JID } from "./ids.js";
 import { log, logError } from "./logger.js";
 import { Notes } from "./notes.js";
-import { asGifMedia, assertMediaSource, describe, loadMedia, mediaContent, mediaFilename } from "./outgoing-media.js";
+import { asGifMedia, assertMediaSource, describe, loadMedia, loadProfilePicture, mediaContent, mediaFilename } from "./outgoing-media.js";
 import { makePreview, videoFrame } from "./previews.js";
 import { decodeMessage, encode, Store, type HistoryRecord, type StoreSnapshot } from "./store.js";
 import {
@@ -1312,6 +1312,17 @@ export class WhatsAppService implements WhatsAppApi {
       const { sock, jid } = await this.prepareSend(this.chatOfOrThrow(messageId));
       await sock.sendMessage(jid, { delete: raw.key });
       return { message_id: messageId, for_everyone: true };
+    });
+  }
+
+  setOwnProfilePicture(source: MediaSource): Promise<{ profile_pic_url: string | null }> {
+    return this.guarded(async () => {
+      const media = await loadProfilePicture(source);
+      const sock = this.beginWrite();
+      const jid = this.ownJid();
+      await sock.updateProfilePicture(jid, media.buffer);
+      const picture = await orNullAfter(sock.profilePictureUrl(jid, "image"), PROFILE_LOOKUP_MS);
+      return { profile_pic_url: picture ?? null };
     });
   }
 

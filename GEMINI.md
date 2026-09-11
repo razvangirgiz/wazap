@@ -254,6 +254,10 @@ On the user's yes, call `confirm_send` with that `draft_id`. Do not call the sen
 
 Approval is per message, even after "just send it" for a batch, when the recipient is a group, a number not in the user's contacts, or the content contains money, dates, or commitments. For a batch of plain messages the user already approved as a list, `confirm_send` them one by one and stop at the first error; `RATE_LIMITED` means wait the seconds in `fix`, then continue.
 
+### Profile picture
+
+`set_profile_picture` changes the linked account's photo. It is not a chat message and there is no draft. Show the image (`file_path` or `url`) and wait for a yes, then call it. JPEG, PNG or WebP only, at most 10 MB. It does not remove the photo and does not change a group avatar.
+
 ### Out of scope
 
 `delete_message` with `for_everyone` and `manage_group` remove/leave run only on an explicit ask naming the message or person. Bulk sends to people who did not write first are the user's account at risk of a WhatsApp ban; say that once and let them decide.

@@ -1,6 +1,6 @@
 ---
 name: whatsapp-send
-description: Send, reply, forward, share a file, react, or create a poll on WhatsApp on the user's behalf. Use for any request that results in an outgoing WhatsApp message. Drafts first and sends after the user approves; messages leave from the user's own account and cannot be unsent.
+description: Send, reply, forward, share a file, react, create a poll, or change the linked account's profile picture on WhatsApp on the user's behalf. Use for any request that results in an outgoing WhatsApp message or a new profile photo. Messages draft first; a profile picture has no draft. Show the image, wait for a yes, then call set_profile_picture.
 ---
 
 # WhatsApp send
@@ -32,6 +32,10 @@ To: Ana (+40 722 …)
 On the user's yes, call `confirm_send` with that `draft_id`. Do not call the send tool again. Report the result with the `message_id` so the user can follow up with `edit_message` (own messages, 15 minutes) or `delete_message`. `DRAFT_EXPIRED` (15 minutes) or `DRAFT_NOT_FOUND` means draft again, show the new preview, and wait for another yes.
 
 Approval is per message, even after "just send it" for a batch, when the recipient is a group, a number not in the user's contacts, or the content contains money, dates, or commitments. For a batch of plain messages the user already approved as a list, `confirm_send` them one by one and stop at the first error; `RATE_LIMITED` means wait the seconds in `fix`, then continue.
+
+## Profile picture
+
+`set_profile_picture` changes the linked account's photo. It is not a chat message and there is no draft. Show the image (`file_path` or `url`) and wait for a yes, then call it. JPEG, PNG or WebP only, at most 10 MB. It does not remove the photo and does not change a group avatar.
 
 ## Out of scope
 
