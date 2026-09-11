@@ -150,7 +150,7 @@ test("sync_contacts reports what the resync changed, and never counts as a write
   assert.equal(tool.meta.annotations.readOnlyHint, true, "it changes nothing on WhatsApp");
 
   const result = await tool.handler({});
-  assert.deepEqual(result.structuredContent, { requested: true, named_before: 0, named_after: 217 });
+  assert.deepEqual(result.structuredContent, { requested: true, named_before: 0, named_after: 217, account_id: "default" });
   assert.match(result.content[0].text, /217 named contacts \(was 0\)/);
 });
 

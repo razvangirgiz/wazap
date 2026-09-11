@@ -247,7 +247,7 @@ test("serve on a v0 dir migrates then answers initialize", async () => {
   const dir = dataDir();
   seedV0(dir);
   const { toolNames, status } = await runSmoke({ args: ["serve"], dataDir: dir, keepDataDir: true });
-  assert.equal(toolNames.length, 32);
+  assert.equal(toolNames.length, 33);
   assert.equal(status.status, "not_linked");
   assert.equal(existsSync(join(dir, "auth")), false);
   assert.equal(existsSync(accountPaths(dir, DEFAULT_ACCOUNT_ID).authDir), true);
