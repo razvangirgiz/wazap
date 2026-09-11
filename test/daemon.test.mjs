@@ -288,8 +288,8 @@ test("status leaves the sharing suffix off a session that is not shared", async 
 
 test("a taken listen port rejects instead of hanging", async () => {
   const blocker = createServer();
-  await new Promise((resolve) => blocker.listen(0, "127.0.0.1", resolve));
-  const { port } = blocker.address();
+  await new Promise((resolve) => blocker.listen({ port: 0, host: "127.0.0.1", exclusive: true }, resolve));
+  const { address, port } = blocker.address();
   try {
     await assert.rejects(
       startHttpEndpoint(
@@ -297,7 +297,7 @@ test("a taken listen port rejects instead of hanging", async () => {
           getStatus: () => ({ status: "not_linked", status_since: new Date().toISOString(), account_id: "default" }),
         }),
         offlineConfig("wazap-listen-"),
-        { host: "127.0.0.1", port, credentials: [], openRead: false },
+        { host: address, port, credentials: [], openRead: false },
       ),
       (err) => err.code === "EADDRINUSE",
     );
