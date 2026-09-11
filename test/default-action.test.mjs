@@ -8,6 +8,7 @@ import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 
 import { pickDefaultAction } from "../dist/config.js";
+import { childEnv } from "./helpers.mjs";
 import { runSmoke } from "./smoke-stdio.mjs";
 
 const run = promisify(execFile);
@@ -38,6 +39,11 @@ test("explicit `wazap serve` with piped stdio still answers initialize", async (
   const { toolNames, status } = await runSmoke({ args: ["serve"] });
   assert.equal(toolNames.length, 32);
   assert.equal(status.status, "not_linked");
+});
+
+test("child env drops a shell WAZAP_TRANSPORT unless the test sets it", () => {
+  assert.equal(childEnv({}).WAZAP_TRANSPORT, undefined);
+  assert.equal(childEnv({ WAZAP_TRANSPORT: "http" }).WAZAP_TRANSPORT, "http");
 });
 
 test("writes off in .env leaves the server with the 19 read tools only", async () => {

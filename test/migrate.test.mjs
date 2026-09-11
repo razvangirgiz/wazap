@@ -20,6 +20,7 @@ import { promisify } from "node:util";
 import { AccountRegistry, DEFAULT_ACCOUNT_ID } from "../dist/accounts.js";
 import { accountPaths, paths } from "../dist/config.js";
 import { LAYOUT_ENTRIES, migrateLayout, rollbackMigration } from "../dist/migrate.js";
+import { runSmoke } from "./smoke-stdio.mjs";
 
 const run = promisify(execFile);
 const binary = join(dirname(fileURLToPath(import.meta.url)), "..", "dist", "index.js");
@@ -239,6 +240,17 @@ test("qr.png at the data-dir root moves with the rest", () => {
   migrateLayout(dir);
   assert.equal(existsSync(join(dir, "qr.png")), false);
   assert.equal(readFileSync(accountPaths(dir, DEFAULT_ACCOUNT_ID).qrFile, "utf8"), "qr");
+});
+
+test("serve on a v0 dir migrates then answers initialize", async () => {
+  const dir = dataDir();
+  seedV0(dir);
+  const { toolNames, status } = await runSmoke({ args: ["serve"], dataDir: dir, keepDataDir: true });
+  assert.equal(toolNames.length, 32);
+  assert.equal(status.status, "not_linked");
+  assert.equal(existsSync(join(dir, "auth")), false);
+  assert.equal(existsSync(accountPaths(dir, DEFAULT_ACCOUNT_ID).authDir), true);
+  assert.equal(existsSync(paths(dir).accountsFile), true);
 });
 
 test("wazap migrate rollback undoes a previous migrate through the CLI", async () => {
