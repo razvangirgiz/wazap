@@ -2,6 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFile, spawn } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, symlinkSync, writeFileSync } from "node:fs";
+import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { delimiter, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -25,6 +26,16 @@ function childEnv(extra) {
 
 function dataDir(prefix) {
   return mkdtempSync(join(tmpdir(), prefix));
+}
+
+function freePort() {
+  return new Promise((resolve) => {
+    const srv = createServer();
+    srv.listen(0, "127.0.0.1", () => {
+      const { port } = srv.address();
+      srv.close(() => resolve(port));
+    });
+  });
 }
 
 test("login refuses to touch a session another process holds", async () => {
@@ -503,7 +514,7 @@ test(
     // the client is Cursor and there is no --relaunch.
     box.path = `${box.bin}${delimiter}/usr/bin${delimiter}/bin`;
     const dir = linkedDataDir();
-    const port = 43_311;
+    const port = await freePort();
     const kill = stubSupervisor(box);
     try {
       // The stub credentials never reach `connected`, so Finish fails; what this
