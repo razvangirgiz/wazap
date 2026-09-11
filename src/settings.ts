@@ -16,7 +16,14 @@ import {
   type TranscribeSettings,
 } from "./transcribe/index.js";
 import { brand, dim, fix, ok, shortPath, warn } from "./ui.js";
-import { WEBHOOK_ON_FIX, WEBHOOK_TEST_FIX, WebhookSink, readWebhookSettings, requireWebhookUrl } from "./webhook.js";
+import {
+  WEBHOOK_ON_FIX,
+  WEBHOOK_RETRY_DELAYS_MS,
+  WEBHOOK_TEST_FIX,
+  WebhookSink,
+  readWebhookSettings,
+  requireWebhookUrl,
+} from "./webhook.js";
 
 /**
  * dotenv 16 treats an unquoted `#` as a comment, even with no space, and
@@ -181,16 +188,24 @@ function transcribeRows(config: Config): string[] {
   return rows;
 }
 
+function webhookOverride(config: Config): { url?: string; secret?: string } {
+  const selected = resolveAccount(config.dataDir, config.accountId);
+  return { url: selected.account.webhook_url, secret: selected.account.webhook_secret };
+}
+
+function webhookSource(config: Config): string {
+  const override = webhookOverride(config);
+  return override.url !== undefined || override.secret !== undefined ? "accounts.json" : config.sources.webhook;
+}
+
 function webhookRows(config: Config): string[] {
-  const settings = readWebhookSettings(process.env);
+  const settings = readWebhookSettings(process.env, webhookOverride(config));
+  const source = webhookSource(config);
   switch (settings.kind) {
     case "off":
-      return [`webhook: off (${config.sources.webhook})`];
+      return [`webhook: off (${source})`];
     case "ready":
-      return [
-        `webhook: on (${new URL(settings.url).host}) (${config.sources.webhook})`,
-        `secret: ${maskKey(settings.secret)}`,
-      ];
+      return [`webhook: on (${new URL(settings.url).host}) (${source})`, `secret: ${maskKey(settings.secret)}`];
     case "invalid":
       return [`webhook: ${settings.detail}${settings.fix === "" ? "" : ` — ${settings.fix}`}`];
     default: {
@@ -220,7 +235,7 @@ export async function runWebhook(config: Config): Promise<void> {
   if (verb !== "test") {
     throw new WazapError("INVALID_ID", `Cannot run \`wazap webhook ${config.args.join(" ")}\`.`, WEBHOOK_TEST_FIX);
   }
-  await testWebhook();
+  await testWebhook(config);
 }
 
 async function enableWebhook(config: Config): Promise<void> {
@@ -262,8 +277,9 @@ function setWebhookFlag(config: Config, value: "on" | "off"): void {
   setEnvSetting(paths(config.dataDir).envFile, "WAZAP_WEBHOOK", value);
 }
 
-async function testWebhook(): Promise<void> {
-  const result = await new WebhookSink(process.env).sendTest();
+async function testWebhook(config: Config): Promise<void> {
+  const selected = resolveAccount(config.dataDir, config.accountId);
+  const result = await new WebhookSink(process.env, fetch, WEBHOOK_RETRY_DELAYS_MS, selected.account).sendTest();
   if (result.ok) {
     say(ok("webhook: test delivered"));
     return;

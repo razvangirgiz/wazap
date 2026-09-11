@@ -1,5 +1,26 @@
 # Changelog
 
+## Unreleased
+### Added
+
+- **Several WhatsApp accounts in one process.** `accounts.json` names each
+  account; auth, store, history, media, previews and notes live under
+  `accounts/<id>/`. A flat `~/.wazap` moves into `accounts/default/` on the
+  first command (`wazap migrate rollback` undoes it). `wazap account
+  add|remove|list|enable|disable` manages slots. `--account` picks one on
+  `login`, `logout`, `status`, `config writes` and `webhook test`. One
+  `wazap serve` starts a socket per enabled account. MCP tools take optional
+  `account_id`; `list_accounts` lists them. A chat only one account knows
+  selects that account. A send to a chat no account knows, with two or more
+  accounts, fails `AMBIGUOUS_ACCOUNT`. `get_status` keeps today's top-level
+  fields and adds `accounts[]`.
+
+- **Webhook payload names the account.** Each `message_received` body includes
+  `account_id` and `account_name`. An account may set `webhook_url` and
+  `webhook_secret` in `accounts.json`; those win over the global `.env`
+  values. `wazap webhook test --account x` posts with that account's override
+  and id.
+
 ## 0.14.0
 ### Added
 

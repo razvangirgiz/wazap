@@ -13,6 +13,8 @@ export interface AccountRecord {
   owner: string | null;
   writes?: boolean;
   rate_limit?: number;
+  webhook_url?: string;
+  webhook_secret?: string;
 }
 
 export interface AccountsFile {
@@ -107,6 +109,18 @@ function parseAccountRecord(value: unknown, file: string): AccountRecord {
       throw new WazapError("INVALID_ID", `Account "${value.id}" in ${file} has a bad rate_limit.`, "Fix or remove accounts.json");
     }
     record.rate_limit = value.rate_limit;
+  }
+  if (value.webhook_url !== undefined) {
+    if (typeof value.webhook_url !== "string" || value.webhook_url.trim() === "") {
+      throw new WazapError("INVALID_ID", `Account "${value.id}" in ${file} has a bad webhook_url.`, "Fix or remove accounts.json");
+    }
+    record.webhook_url = value.webhook_url.trim().replace(/\/+$/, "");
+  }
+  if (value.webhook_secret !== undefined) {
+    if (typeof value.webhook_secret !== "string" || value.webhook_secret === "") {
+      throw new WazapError("INVALID_ID", `Account "${value.id}" in ${file} has a bad webhook_secret.`, "Fix or remove accounts.json");
+    }
+    record.webhook_secret = value.webhook_secret;
   }
   return record;
 }
@@ -223,6 +237,17 @@ export class AccountRegistry {
 
   setWrites(id: string, writes: boolean): void {
     this.commit(this.withAccount(id, (account) => ({ ...account, writes })));
+  }
+
+  setWebhook(id: string, webhook: { url?: string; secret?: string }): void {
+    this.commit(
+      this.withAccount(id, (account) => {
+        const next = { ...account };
+        if (webhook.url !== undefined) next.webhook_url = webhook.url.trim().replace(/\/+$/, "");
+        if (webhook.secret !== undefined) next.webhook_secret = webhook.secret;
+        return next;
+      }),
+    );
   }
 
   private commit(next: AccountsFile): void {

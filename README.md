@@ -502,31 +502,57 @@ trace, so an agent can decide whether to retry, ask the user, or stop.
 ## Data directory
 
 Everything lives in `~/.wazap` (override with `--data-dir` or `WAZAP_DATA_DIR`),
-created `0700` with credentials written `0600`:
+created `0700` with credentials written `0600`. A data dir from before several
+accounts moves into `accounts/default/` the first time a wazap command runs.
 
 ```
 ~/.wazap/
-  auth/         WhatsApp credentials — treat this like a password
-  media/        downloads from download_media
-  history/      per-chat message history, so a restart is not amnesia
-  previews/     one small JPEG per photo or video already previewed
-  notes.json    notes on contacts and "handled" marks; never sent anywhere
-  models/       whisper.cpp models, when transcription runs locally
-  store.json    chat-list snapshot
-  server.lock   pid of the running server
-  daemon.json   loopback endpoint a second wazap bridges to
-  oauth.json    registered agents and hashed OAuth grants, when OAuth is on
-  .env          optional settings, see .env.example
+  accounts.json     which accounts exist, and which is default
+  accounts/<id>/
+    auth/           WhatsApp credentials — treat this like a password
+    media/          downloads from download_media
+    history/        per-chat message history, so a restart is not amnesia
+    previews/       one small JPEG per photo or video already previewed
+    notes.json      notes on contacts and "handled" marks; never sent anywhere
+    store.json      chat-list snapshot
+    qr.png          last QR, when login showed one
+  models/           whisper.cpp models, when transcription runs locally
+  server.lock       pid of the running server
+  daemon.json       loopback endpoint a second wazap bridges to
+  oauth.json        registered agents and hashed OAuth grants, when OAuth is on
+  .env              optional settings, see .env.example
+  migration.json    written once when a flat dir moved into accounts/default
 ```
 
 Credential writes go to a temp file and are renamed into place, so killing the
 process mid-write cannot leave you re-linking your phone.
 
+## Several accounts
+
+One `wazap serve` holds every enabled account in the data dir. Each account is
+its own Baileys socket and its own folder under `accounts/<id>/`. The first
+account is `default`. Add another with `wazap account add work --name Work`,
+then `wazap login --account work`.
+
+`--account` picks one on `login`, `logout`, `status`, `config writes` and
+`webhook test`. MCP tools take an optional `account_id`. Call `list_accounts`
+first when more than one is linked. A chat only one account knows selects that
+account. A send to a chat no account knows, with two or more accounts, fails
+`AMBIGUOUS_ACCOUNT` instead of falling back to default.
+
+Reads without a chat and without `account_id` use the default account; the
+response still carries `account_id`. `link_account` needs an account that
+already exists. Five accounts is advice, not a cap. One phone number is one
+account.
+
+An account can override the global webhook URL and secret in `accounts.json`
+(`webhook_url`, `webhook_secret`). `wazap webhook test --account work` posts
+with that account's id and name.
+
 ## Several clients at once
 
-Claude Desktop, Claude Code and Cursor each launch their own `wazap`. WhatsApp
-allows one socket per linked device, so they share one session instead of
-fighting over it. The first `wazap` on a data directory owns the session and
+Claude Desktop, Claude Code and Cursor each launch their own `wazap`. The first
+one on a data directory owns every enabled account, each on its own socket, and
 opens an MCP endpoint on `127.0.0.1`; every later one bridges to it over that
 endpoint. There is nothing to configure, and no client can tell the difference.
 The owner publishes `<data-dir>/daemon.json` (`0600`) with its pid, its port
@@ -684,15 +710,17 @@ is not posted. The only event is `message_received`.
 ```bash
 npx wazap-mcp config webhook on    # asks for URL + secret (secret is not echoed)
 npx wazap-mcp webhook test         # POST a probe event
+npx wazap-mcp webhook test --account work
 npx wazap-mcp config webhook off
 ```
 
 On without a URL or secret fails `wazap status`, doctor and setup. A failed
 delivery retries twice (200 ms, then 500 ms), then sets `webhook.last_error`
-and leaves WhatsApp and MCP running.
+and leaves WhatsApp and MCP running. An account may set `webhook_url` and
+`webhook_secret` in `accounts.json`; those win over the global URL and secret.
 
 HMAC: `X-Wazap-Signature` is `sha256=<hex>`, HMAC-SHA256 of the exact raw
-JSON body with `WAZAP_WEBHOOK_SECRET`. Verify that raw body, not a
+JSON body with the secret that signed it. Verify that raw body, not a
 re-serialized object. HTTPS only, except `http://` on loopback.
 
 ```json
@@ -702,7 +730,9 @@ re-serialized object. HTTPS only, except `http://` on loopback.
   "chat_id": "15550100@s.whatsapp.net",
   "ts": "2026-09-08T14:00:00+00:00",
   "text": "hello, or a short preview",
-  "message_id": "false_15550100@s.whatsapp.net_3EB0…"
+  "message_id": "false_15550100@s.whatsapp.net_3EB0…",
+  "account_id": "default",
+  "account_name": "default"
 }
 ```
 
@@ -730,8 +760,8 @@ re-serialized object. HTTPS only, except `http://` on loopback.
 | `WAZAP_TRANSCRIBE_URL` | `https://api.openai.com/v1` | OpenAI-compatible base URL. |
 | `WAZAP_TRANSCRIBE_MODEL` | `gpt-4o-mini-transcribe` | Model at that URL. |
 | `WAZAP_WEBHOOK` | `off` | `on` posts live inbound messages to the webhook URL. |
-| `WAZAP_WEBHOOK_URL` | unset | HTTPS endpoint. `http://` only on loopback. |
-| `WAZAP_WEBHOOK_SECRET` | unset | Shared secret for `X-Wazap-Signature`. Never a flag. |
+| `WAZAP_WEBHOOK_URL` | unset | HTTPS endpoint. `http://` only on loopback. An account `webhook_url` wins. |
+| `WAZAP_WEBHOOK_SECRET` | unset | Shared secret for `X-Wazap-Signature`. Never a flag. An account `webhook_secret` wins. |
 
 Flags beat environment variables, which beat `<data-dir>/.env`.
 
