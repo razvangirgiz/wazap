@@ -15,7 +15,7 @@ import { promisify } from "node:util";
 import { paths } from "../dist/config.js";
 import { daemonHealthy, decideRole, readDaemon, removeDaemon, writeDaemon } from "../dist/daemon.js";
 import { startHttpEndpoint } from "../dist/server.js";
-import { BINARY, childEnv, mcpClient, offlineConfig, spawnWazap, waitFor } from "./helpers.mjs";
+import { BINARY, childEnv, mcpClient, offlineConfig, spawnWazap, stubAccountSource, waitFor } from "./helpers.mjs";
 
 const SAMPLE = { pid: 4242, port: 51515, token: "deadbeef", version: "9.9.9" };
 
@@ -293,7 +293,9 @@ test("a taken listen port rejects instead of hanging", async () => {
   try {
     await assert.rejects(
       startHttpEndpoint(
-        { getStatus: () => ({ status: "not_linked", status_since: new Date().toISOString() }) },
+        stubAccountSource({
+          getStatus: () => ({ status: "not_linked", status_since: new Date().toISOString(), account_id: "default" }),
+        }),
         offlineConfig("wazap-listen-"),
         { host: "127.0.0.1", port, credentials: [], openRead: false },
       ),
@@ -323,9 +325,13 @@ async function withHealth(status, sinceMsAgo, fn) {
   const port = await closedPort();
   const stop = new AbortController();
   const wa = {
-    getStatus: () => ({ status, status_since: new Date(Date.now() - sinceMsAgo).toISOString() }),
+    getStatus: () => ({
+      status,
+      status_since: new Date(Date.now() - sinceMsAgo).toISOString(),
+      account_id: "default",
+    }),
   };
-  await startHttpEndpoint(wa, offlineConfig("wazap-health-"), {
+  await startHttpEndpoint(stubAccountSource(wa), offlineConfig("wazap-health-"), {
     host: "127.0.0.1",
     port,
     credentials: [],

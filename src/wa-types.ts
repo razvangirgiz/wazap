@@ -73,6 +73,12 @@ export interface StatusInfo {
   /** Registry id (`default`, `work`, …), not the WhatsApp jid. */
   account_id: string;
   account_name: string;
+  enabled: boolean;
+  /**
+   * Account writes policy (`!read_only`). `get_status` overwrites this key with
+   * whether the current MCP session registered write tools.
+   */
+  write_tools: boolean;
   last_message_received_at: string | null;
   reconnect_attempts: number;
   /** Contacts carrying a name from the phone's address book. Zero means it never arrived. */
