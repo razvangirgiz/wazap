@@ -32,7 +32,7 @@ function buildMcpServer(hub: AccountSource, config: Config, allowWrite: boolean)
   const skills = loadSkills();
   const server = new McpServer({ name: "wazap", version: WAZAP_VERSION }, { instructions: skillInstructions(skills) });
   registerTools(server, hub, {
-    allowWrite: allowWrite && anyAccountAllowsWrites(hub),
+    allowWrite: allowWrite && !config.readOnly && anyAccountAllowsWrites(hub),
   });
   registerSkillPrompts(server, skills);
   return server;
