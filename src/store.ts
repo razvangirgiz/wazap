@@ -109,6 +109,15 @@ export class Store {
     }
   }
 
+  /** A chat WhatsApp listed, or one that only arrived as messages. Contacts are not chats. */
+  hasChat(id: string): boolean {
+    return this.chats.has(id) || this.byChat.has(id);
+  }
+
+  hasMessage(id: string): boolean {
+    return this.messages.has(id);
+  }
+
   /** The tail of a chat, newest first. */
   recent(chatJid: string, count: number): Array<{ sid: string; raw: WAMessage }> {
     const ring = this.byChat.get(chatJid) ?? [];

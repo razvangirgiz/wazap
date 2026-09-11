@@ -90,6 +90,8 @@ test("getStatus carries the registry id and name", () => {
   const status = svc.getStatus();
   assert.equal(status.account_id, "default");
   assert.equal(status.account_name, "default");
+  assert.equal(status.enabled, true);
+  assert.equal(status.write_tools, false);
   assert.equal(status.account.name, "Ada");
 });
 
@@ -187,7 +189,7 @@ test("unknown --account through the binary fails", async () => {
 test("serve refuses --account", async () => {
   const dir = dataDir();
   await assert.rejects(wazap(dir, ["serve", "--account", "default"]), (err) => {
-    assert.match(err.stderr, /always uses the default account/);
+    assert.match(err.stderr, /starts every enabled account/);
     return true;
   });
 });
