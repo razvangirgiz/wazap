@@ -428,7 +428,12 @@ test("setup --transcribe local --no-brew leaves the fix line standing and instal
 
   assert.deepEqual(calls(), [], "brew must not be called");
   assert.match(stderr, /whisper\.cpp not found/);
-  assert.match(stderr, /→ Run `brew install whisper-cpp ffmpeg`/);
+  assert.match(
+    stderr,
+    process.platform === "darwin"
+      ? /→ Run `brew install whisper-cpp ffmpeg`/
+      : /→ Build whisper\.cpp from https:\/\/github\.com\/ggml-org\/whisper\.cpp#quick-start/,
+  );
   assert.match(stderr, /Run `wazap transcribe download` once they are installed\./);
 });
 
@@ -457,9 +462,14 @@ function stubSupervisor(box) {
   const script = `#!/bin/sh
 UNIT=${unit}
 case "$*" in
-  *print*|*MainPID*)
+  *print*)
     if [ -f ${state} ] && kill -0 $(cat ${state}) 2>/dev/null; then
       printf '\tpid = %s\n' "$(cat ${state})"
+      exit 0
+    fi
+    echo 0; exit 113 ;;
+  *MainPID*)
+    if [ -f ${state} ] && kill -0 $(cat ${state}) 2>/dev/null; then
       cat ${state}
       exit 0
     fi
