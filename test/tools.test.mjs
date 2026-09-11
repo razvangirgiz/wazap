@@ -5,7 +5,7 @@ import { registerTools, toolError, TOOL_NAMES } from "../dist/tools.js";
 import { DraftStore } from "../dist/drafts.js";
 import { WazapError, ERROR_GUIDE } from "../dist/errors.js";
 import { WhatsAppService } from "../dist/whatsapp.js";
-import { connectedService } from "./helpers.mjs";
+import { asToolSource, connectedService } from "./helpers.mjs";
 
 /** Stand-in for McpServer: records what got registered and lets us call it. */
 function fakeServer() {
@@ -64,13 +64,13 @@ test("the registry is exactly the 33 documented tools", () => {
 
 test("read-only registration exposes no write tool at all", () => {
   const server = fakeServer();
-  registerTools(server, {}, { allowWrite: false });
+  registerTools(server, asToolSource({}), { allowWrite: false });
   assert.deepEqual([...server.tools.keys()].sort(), [...READ_TOOLS].sort());
 });
 
 test("every tool declares a description and an input schema", () => {
   const server = fakeServer();
-  registerTools(server, {}, { allowWrite: true });
+  registerTools(server, asToolSource({}), { allowWrite: true });
   assert.equal(server.tools.size, 33);
   for (const [name, { meta }] of server.tools) {
     assert.ok(meta.description?.length > 40, `${name} needs a description an agent can act on`);
@@ -103,7 +103,7 @@ test("a handler that throws a raw error is reported as WHATSAPP_ERROR, never as 
       throw new TypeError("something internal broke");
     },
   };
-  registerTools(server, wa, { allowWrite: true });
+  registerTools(server, asToolSource(wa), { allowWrite: true });
   const result = await server.tools.get("get_status").handler({});
   assert.equal(result.isError, true);
   assert.equal(result.structuredContent.error, "WHATSAPP_ERROR");
@@ -131,7 +131,7 @@ test("send_message drafts through the session and confirm_send is the only send"
     sent.push({ chatId: draft.to.chat_id, text: draft.payload.text });
     return { message_id: "mid", chat_id: draft.to.chat_id, text: draft.payload.text, timestamp: "now" };
   });
-  registerTools(server, wa, { allowWrite: true });
+  registerTools(server, asToolSource(wa), { allowWrite: true });
 
   const drafted = await server.tools.get("send_message").handler({ chat_id: "+40722123456", text: "Joi la 10." });
   assert.equal(sent.length, 0);
@@ -159,7 +159,7 @@ test("send_media surfaces FILE_NOT_FOUND from draft", async () => {
       throw new WazapError("FILE_NOT_FOUND", `No file at "/no/such/wazap-media.bin" on the machine running wazap.`);
     },
   };
-  registerTools(server, wa, { allowWrite: true });
+  registerTools(server, asToolSource(wa), { allowWrite: true });
   const result = await server.tools.get("send_media").handler({
     chat_id: "1",
     file_path: "/no/such/wazap-media.bin",
@@ -175,7 +175,7 @@ test("confirm_send surfaces the service error", async () => {
       throw new WazapError("NOT_CONNECTED", "still connecting");
     },
   };
-  registerTools(server, wa, { allowWrite: true });
+  registerTools(server, asToolSource(wa), { allowWrite: true });
   const drafted = await server.tools.get("send_message").handler({ chat_id: "1", text: "hi" });
   const failed = await server.tools.get("confirm_send").handler({ draft_id: drafted.structuredContent.draft_id });
   assert.equal(failed.structuredContent.error, "NOT_CONNECTED");
@@ -190,7 +190,7 @@ test("read_messages passes types through to the service and echoes it back", asy
       return { data: [], sync: "done" };
     },
   };
-  registerTools(server, wa, { allowWrite: true });
+  registerTools(server, asToolSource(wa), { allowWrite: true });
 
   const result = await server.tools.get("read_messages").handler({ chat_id: "4072@s.whatsapp.net", limit: 20, types: ["call"] });
   assert.deepEqual(calls[0], ["4072@s.whatsapp.net", 20, undefined, ["call"]]);
@@ -209,7 +209,7 @@ test("get_recent_messages passes types through to the service and echoes it back
       return { data: [], sync: "done" };
     },
   };
-  registerTools(server, wa, { allowWrite: true });
+  registerTools(server, asToolSource(wa), { allowWrite: true });
 
   const result = await server.tools
     .get("get_recent_messages")
@@ -231,7 +231,7 @@ test("link_account hands back the code and the steps that go with it", async () 
       return { code: "ABCD-1234", phone_masked: "+15 5xx xxx", expires_at: "2026-08-23T12:00:00+03:00" };
     },
   };
-  registerTools(server, wa, { allowWrite: false });
+  registerTools(server, asToolSource(wa), { allowWrite: false });
 
   const result = await server.tools.get("link_account").handler({ phone: "+15550100" });
   assert.deepEqual(asked, ["+15550100"]);
@@ -249,7 +249,7 @@ test("link_account on a linked account reports ALREADY_LINKED instead of pairing
       throw new WazapError("ALREADY_LINKED", "The account is connected.", "Call get_status");
     },
   };
-  registerTools(server, wa, { allowWrite: true });
+  registerTools(server, asToolSource(wa), { allowWrite: true });
 
   const result = await server.tools.get("link_account").handler({ phone: "+15550100" });
   assert.equal(result.isError, true);
@@ -265,7 +265,7 @@ test("get_status says write tools are missing and how to enable them", async () 
     config: { readOnly: true, transport: "http", publicUrl: "https://wazap.example" },
   });
   const server = fakeServer();
-  registerTools(server, svc, { allowWrite: false });
+  registerTools(server, asToolSource(svc), { allowWrite: false });
   const result = await server.tools.get("get_status").handler({});
   assert.equal(result.structuredContent.write_tools, false);
   assert.equal(result.structuredContent.read_only, true);
@@ -282,7 +282,7 @@ test("get_status on a write-enabled server hides write tools from a read-token s
     config: { readOnly: false },
   });
   const server = fakeServer();
-  registerTools(server, svc, { allowWrite: false });
+  registerTools(server, asToolSource(svc), { allowWrite: false });
   const result = await server.tools.get("get_status").handler({});
   assert.equal(result.structuredContent.read_only, false);
   assert.equal(result.structuredContent.write_tools, false);
@@ -297,7 +297,7 @@ test("get_status on a write session still says a read token never sees write too
     config: { readOnly: false, transport: "http", publicUrl: "https://wazap.example" },
   });
   const server = fakeServer();
-  registerTools(server, svc, { allowWrite: true });
+  registerTools(server, asToolSource(svc), { allowWrite: true });
   const result = await server.tools.get("get_status").handler({});
   assert.equal(result.structuredContent.write_tools, true);
   assert.match(result.content[0].text, /write tools.*registered/i);
@@ -306,7 +306,7 @@ test("get_status on a write session still says a read token never sees write too
 
 test("learn documents every error code an agent can receive", async () => {
   const server = fakeServer();
-  registerTools(server, {}, { allowWrite: true });
+  registerTools(server, asToolSource({}), { allowWrite: true });
   const guide = (await server.tools.get("learn").handler({})).structuredContent.guide;
   for (const code of Object.keys(ERROR_GUIDE)) {
     assert.ok(guide.includes(code), `learn must tell the agent what to do about ${code}`);

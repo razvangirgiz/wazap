@@ -1,31 +1,33 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
+import type { AccountSource } from "./account-hub.js";
 import {
-  asAccountSource,
-  type AccountSource,
-} from "./account-hub.js";
-import type { AccountRecord } from "./accounts.js";
+  attachAccountId,
+  renderGetStatus,
+  renderListAccounts,
+  resolveToolAccount,
+  stringArg,
+} from "./account-resolve.js";
 import { compactConversations, renderCompact } from "./compact.js";
 import { renderDraft, type DraftView } from "./drafts.js";
 import { asWazapError, ERROR_GUIDE, WazapError } from "./errors.js";
 import { clockLabel } from "./messages.js";
 import { RateLimiter } from "./ratelimit.js";
-import { maskNumber } from "./ui.js";
 import { MESSAGE_TYPES } from "./wa-types.js";
 import type {
   ChatSummary,
   ContactSummary,
-  ListedAccount,
   MessageView,
   RecentConversation,
   SentMessage,
   Synced,
   Preview,
-  StatusInfo,
   UnansweredChat,
   WaitResult,
   WhatsAppApi,
 } from "./wa-types.js";
+
+export { anyAccountAllowsWrites } from "./account-resolve.js";
 
 type ContentBlock = { type: "text"; text: string } | { type: "image"; data: string; mimeType: string };
 
@@ -38,6 +40,13 @@ interface ToolResult {
 
 type ToolArgs = Record<string, unknown>;
 
+export interface ToolCtx {
+  wa: WhatsAppApi;
+  hub: AccountSource;
+  allowWrite: boolean;
+  accountId: string;
+}
+
 interface ToolDef {
   name: string;
   title: string;
@@ -49,7 +58,7 @@ interface ToolDef {
   local?: boolean;
   /** Calls a minute allowed to this tool alone. The session write bucket is separate. */
   rate?: number;
-  handler: (args: ToolArgs, wa: WhatsAppApi) => Promise<ToolResult>;
+  handler: (args: ToolArgs, ctx: ToolCtx) => Promise<ToolResult>;
 }
 
 const ACCOUNT_ID = z
@@ -68,12 +77,12 @@ function tool<S extends z.ZodRawShape>(def: {
   destructive?: boolean;
   local?: boolean;
   rate?: number;
-  handler: (args: z.infer<z.ZodObject<S>>, wa: WhatsAppApi) => Promise<ToolResult>;
+  handler: (args: z.infer<z.ZodObject<S>>, ctx: ToolCtx) => Promise<ToolResult>;
 }): ToolDef {
   return {
     ...def,
     schema: { ...def.schema, account_id: ACCOUNT_ID.optional() },
-    handler: def.handler as (args: ToolArgs, wa: WhatsAppApi) => Promise<ToolResult>,
+    handler: def.handler as (args: ToolArgs, ctx: ToolCtx) => Promise<ToolResult>,
   };
 }
 
@@ -231,7 +240,7 @@ is "linking" and \`pairing\` carries the code the user still has to type
 into their phone.`,
     schema: {},
     write: false,
-    handler: async (_args, wa) => renderGetStatus(wa.getStatus(), true),
+    handler: async (_args, { wa, hub, allowWrite }) => renderGetStatus(wa.getStatus(), allowWrite, hub),
   }),
 
   tool({
@@ -243,7 +252,7 @@ when more than one account is linked, then pass account_id on the other tools.
 Takes no arguments besides the optional account_id (ignored for the listing).`,
     schema: {},
     write: false,
-    handler: async (_args, wa) => renderListAccountsFromStatuses([wa.getStatus()]),
+    handler: async (_args, { hub }) => renderListAccounts(hub),
   }),
 
   tool({
@@ -261,7 +270,7 @@ Never call this when the account is already linked.`,
     schema: { phone: z.string().describe("International format, e.g. +15550100") },
     write: false,
     rate: 2,
-    handler: async ({ phone }, wa) => {
+    handler: async ({ phone }, { wa }) => {
       const pairing = await wa.link(phone);
       const next =
         "Show the user the code and the steps, then call get_status every 10 seconds until it says connected.";
@@ -293,7 +302,7 @@ from_me}, archived, pinned, muted_until, and left (groups you are no longer in).
       limit: z.number().int().min(1).max(100).default(20).describe("Maximum number of chats (1-100)"),
     },
     write: false,
-    handler: async ({ filter, limit }, wa) => {
+    handler: async ({ filter, limit }, { wa }) => {
       const result = await wa.listChats(filter, limit);
       return ok(renderChats(result.data, filter), synced(result, { filter, count: result.data.length, chats: result.data }));
     },
@@ -315,7 +324,7 @@ older history when the local store runs out, which takes a few seconds.`,
       include_previews: includePreviews,
     },
     write: false,
-    handler: async ({ chat_id, limit, before, types, include_previews }, wa) => {
+    handler: async ({ chat_id, limit, before, types, include_previews }, { wa }) => {
       const result = await wa.readMessages(chat_id, limit, before, types);
       const previews = include_previews ? await wa.previews(newestFirst(result.data), MAX_PREVIEWS) : [];
       return ok(
@@ -353,7 +362,7 @@ out so the counts are conversation; pass include_system to see them.`,
         ),
     },
     write: false,
-    handler: async ({ hours, filter, include_system, types, include_previews, compact }, wa) => {
+    handler: async ({ hours, filter, include_system, types, include_previews, compact }, { wa }) => {
       const result = await wa.getRecentMessages(hours, filter, include_system, types);
       if (compact) {
         const conversations = compactConversations(result.data);
@@ -413,7 +422,7 @@ get_recent_messages for what happened, and this for who is still waiting.`,
       limit: z.number().int().min(1).max(50).default(20).describe("Maximum number of chats (1-50)"),
     },
     write: false,
-    handler: async ({ min_age_hours, max_age_hours, limit }, wa) => {
+    handler: async ({ min_age_hours, max_age_hours, limit }, { wa }) => {
       const result = await wa.getUnanswered(min_age_hours, max_age_hours, limit);
       return ok(
         renderUnanswered(result.data, min_age_hours),
@@ -436,7 +445,7 @@ chats, catch-ups or waits; this is the only place they show.`,
       include_previews: includePreviews,
     },
     write: false,
-    handler: async ({ hours, include_previews }, wa) => {
+    handler: async ({ hours, include_previews }, { wa }) => {
       const result = await wa.getStories(hours);
       const previews = include_previews ? await wa.previews(newestFirst(result.data), MAX_PREVIEWS) : [];
       return ok(
@@ -461,7 +470,7 @@ An empty note removes it.`,
     },
     write: false,
     local: true,
-    handler: async ({ contact_id, note }, wa) => {
+    handler: async ({ contact_id, note }, { wa }) => {
       const c = await wa.setContactNote(contact_id, note);
       return ok(c.note ? `Noted for ${c.name}: ${c.note}` : `Removed the note on ${c.name}.`, c as unknown as Record<string, unknown>);
     },
@@ -478,7 +487,7 @@ Kept on this machine only; nothing is sent or marked read on WhatsApp.`,
     schema: { chat_id: chatId },
     write: false,
     local: true,
-    handler: async ({ chat_id }, wa) => {
+    handler: async ({ chat_id }, { wa }) => {
       const r = await wa.markHandled(chat_id);
       const text = r.ask_id
         ? `${r.name} is off the waiting list until they write again. Handled: "${truncate(r.ask_text ?? "", 120)}"`
@@ -513,7 +522,7 @@ The timeout is capped at 55 seconds because MCP clients give up at 60.`,
       cursor: z.string().min(1).optional().describe("The cursor returned by the previous call"),
     },
     write: false,
-    handler: async ({ timeout_seconds, chat_id, addressed_to_me, cursor }, wa) => {
+    handler: async ({ timeout_seconds, chat_id, addressed_to_me, cursor }, { wa }) => {
       const result = await wa.waitForMessages({
         timeoutMs: timeout_seconds * 1000,
         chatId: chat_id,
@@ -538,7 +547,7 @@ or one chat. It cannot reach messages the phone never synced to this device.`,
       from: z.string().min(1).optional().describe('Only messages this person sent: "me", a contact id or a phone number'),
     },
     write: false,
-    handler: async ({ query, chat_id, limit, since, until, from }, wa) => {
+    handler: async ({ query, chat_id, limit, since, until, from }, { wa }) => {
       const result = await wa.searchMessages(query, chat_id, limit, {
         sinceMs: parseMoment(since, "since"),
         untilMs: parseMoment(until, "until", true),
@@ -562,7 +571,7 @@ replies to, its reactions, and its media metadata. Use it after search_messages
 or read_messages when you need the context around a single message.`,
     schema: { message_id: messageId },
     write: false,
-    handler: async ({ message_id }, wa) => {
+    handler: async ({ message_id }, { wa }) => {
       const message = await wa.getMessage(message_id);
       return ok(renderMessages("Message", [message]), message as unknown as Record<string, unknown>);
     },
@@ -578,7 +587,7 @@ on the number). Returns contact_id values usable as chat_id.`,
       limit: z.number().int().min(1).max(50).default(10).describe("Maximum number of results (1-50)"),
     },
     write: false,
-    handler: async ({ query, limit }, wa) => {
+    handler: async ({ query, limit }, { wa }) => {
       const contacts = await wa.searchContacts(query, limit);
       return ok(renderContacts(query, contacts), { query, count: contacts.length, contacts });
     },
@@ -597,7 +606,7 @@ named_before and named_after so you can tell whether it helped; if both are 0
 the phone has no saved contacts for these people.`,
     schema: {},
     write: false,
-    handler: async (_args, wa) => {
+    handler: async (_args, { wa }) => {
       const result = await wa.syncContacts();
       const text =
         result.named_after > result.named_before
@@ -618,7 +627,7 @@ whether they are a saved contact, a business, or blocked.`,
       contact_id: chatId.describe('Contact id from search_contacts / list_chats, or a phone number'),
     },
     write: false,
-    handler: async ({ contact_id }, wa) => {
+    handler: async ({ contact_id }, { wa }) => {
       const c = await wa.getContact(contact_id);
       const text = [
         `# ${c.name}`,
@@ -646,7 +655,7 @@ only when the linked account is an admin.
 Call this before manage_group: most group actions need admin rights.`,
     schema: { group_id: chatId.describe('Group chat id ("<id>@g.us")') },
     write: false,
-    handler: async ({ group_id }, wa) => {
+    handler: async ({ group_id }, { wa }) => {
       const info = await wa.getGroupInfo(group_id);
       const text = [
         `# ${info.name} (${info.participant_count} participants)`,
@@ -679,7 +688,7 @@ Fails with MEDIA_UNAVAILABLE when WhatsApp has expired the file.`,
       save_to: z.string().min(1).optional().describe("Absolute directory to save into (default: <data-dir>/media)"),
     },
     write: false,
-    handler: async ({ message_id, save_to }, wa) => {
+    handler: async ({ message_id, save_to }, { wa }) => {
       const media = await wa.downloadMedia(message_id, save_to);
       const { inline_base64, ...structured } = media;
       const extra: ContentBlock[] = inline_base64
@@ -718,7 +727,7 @@ the fix names the command the user has to run. Do not retry it.`,
     },
     write: false,
     rate: 10,
-    handler: async ({ message_id, language }, wa) => {
+    handler: async ({ message_id, language }, { wa }) => {
       const result = await wa.transcribeAudio(message_id, language);
       const clock = result.duration_seconds === undefined ? "" : ` ${clockLabel(result.duration_seconds)}`;
       const facts = [result.language, result.provider, result.cached ? "cached" : null].filter(Boolean).join(", ");
@@ -743,7 +752,7 @@ call confirm_send. A draft lasts 15 minutes.`,
         .describe("Chat ids to @-mention; include their names in the text yourself"),
     },
     write: true,
-    handler: async ({ chat_id, text, reply_to, mention_ids }, wa) => {
+    handler: async ({ chat_id, text, reply_to, mention_ids }, { wa }) => {
       return drafted(await wa.draft({ kind: "text", chatId: chat_id, text, replyTo: reply_to, mentionIds: mention_ids }));
     },
   }),
@@ -769,7 +778,7 @@ first (needs ffmpeg on the machine running wazap).`,
         .describe("Send a .gif or an mp4 as a looping GIF, the way WhatsApp plays them"),
     },
     write: true,
-    handler: async ({ chat_id, file_path, url, caption, as_document, as_voice, as_gif }, wa) => {
+    handler: async ({ chat_id, file_path, url, caption, as_document, as_voice, as_gif }, { wa }) => {
       return drafted(
         await wa.draft({
           kind: "media",
@@ -796,7 +805,7 @@ the votes back. Show the preview; after the user says yes, call confirm_send.`,
       multi_select: z.boolean().default(false).describe("Allow voters to pick more than one option"),
     },
     write: true,
-    handler: async ({ chat_id, question, options, multi_select }, wa) => {
+    handler: async ({ chat_id, question, options, multi_select }, { wa }) => {
       return drafted(await wa.draft({ kind: "poll", chatId: chat_id, question, options, multiSelect: multi_select }));
     },
   }),
@@ -814,7 +823,7 @@ send. Show the preview; after the user says yes, call confirm_send.`,
       address: z.string().max(500).optional().describe("Street address shown under the name"),
     },
     write: true,
-    handler: async ({ chat_id, latitude, longitude, name, address }, wa) => {
+    handler: async ({ chat_id, latitude, longitude, name, address }, { wa }) => {
       return drafted(await wa.draft({ kind: "location", chatId: chat_id, latitude, longitude, name, address }));
     },
   }),
@@ -829,7 +838,7 @@ this within 15 minutes of sending; after that send a correction instead.`,
       text: z.string().min(1).max(65536).describe("The replacement text"),
     },
     write: true,
-    handler: async ({ message_id, text }, wa) => {
+    handler: async ({ message_id, text }, { wa }) => {
       const sent = await wa.editMessage(message_id, text);
       return ok(`Edited ${message_id}:\n> ${sent.text}`, sent as unknown as Record<string, unknown>);
     },
@@ -844,7 +853,7 @@ this within 15 minutes of sending; after that send a correction instead.`,
       emoji: z.string().max(8).describe('A single emoji such as "👍", or "" to remove your reaction'),
     },
     write: true,
-    handler: async ({ message_id, emoji }, wa) => {
+    handler: async ({ message_id, emoji }, { wa }) => {
       const result = await wa.reactToMessage(message_id, emoji);
       const text = emoji ? `Reacted ${emoji} to ${message_id}` : `Removed the reaction from ${message_id}`;
       return ok(text, result as unknown as Record<string, unknown>);
@@ -859,7 +868,7 @@ recipient will see it marked as forwarded. Show the preview; after the user
 says yes, call confirm_send.`,
     schema: { message_id: messageId, to_chat_id: chatId.describe("Destination chat") },
     write: true,
-    handler: async ({ message_id, to_chat_id }, wa) => {
+    handler: async ({ message_id, to_chat_id }, { wa }) => {
       return drafted(await wa.draft({ kind: "forward", chatId: to_chat_id, messageId: message_id }));
     },
   }),
@@ -875,7 +884,7 @@ preview before calling this.`,
       draft_id: z.string().min(1).describe("The draft_id returned by a send_* tool"),
     },
     write: true,
-    handler: async ({ draft_id }, wa) => {
+    handler: async ({ draft_id }, { wa }) => {
       const sent = await wa.confirm(draft_id);
       return ok(sentText(sent), sent as unknown as Record<string, unknown>);
     },
@@ -893,7 +902,7 @@ within 2 days of sending.`,
     },
     write: true,
     destructive: true,
-    handler: async ({ message_id, for_everyone }, wa) => {
+    handler: async ({ message_id, for_everyone }, { wa }) => {
       const result = await wa.deleteMessage(message_id, for_everyone);
       return ok(`Deleted ${message_id} for everyone`, result as unknown as Record<string, unknown>);
     },
@@ -913,7 +922,7 @@ there is no draft.`,
     },
     write: true,
     destructive: true,
-    handler: async ({ file_path, url }, wa) => {
+    handler: async ({ file_path, url }, { wa }) => {
       const result = await wa.setOwnProfilePicture({ file_path, url });
       const where = result.profile_pic_url ?? "WhatsApp has not published a URL yet";
       return ok(`Updated the linked account's profile picture (${where})`, result);
@@ -933,7 +942,7 @@ there is no draft.`,
       mute_hours: z.number().int().min(1).max(720).optional().describe('Hours to mute, default 8; only used by "mute"'),
     },
     write: true,
-    handler: async ({ chat_id, action, mute_hours }, wa) => {
+    handler: async ({ chat_id, action, mute_hours }, { wa }) => {
       const result = await wa.manageChat(chat_id, action, mute_hours);
       return ok(result.applied, result as unknown as Record<string, unknown>);
     },
@@ -950,7 +959,7 @@ privacy settings require an invite link) or failed.`,
       participant_ids: z.array(z.string().min(1)).min(1).max(256).describe("Chat ids or phone numbers to add (1-256)"),
     },
     write: true,
-    handler: async ({ name, participant_ids }, wa) => {
+    handler: async ({ name, participant_ids }, { wa }) => {
       const result = await wa.createGroup(name, participant_ids);
       const text = [`Group "${name}" created: ${result.chat_id}`, ...renderParticipants(result.participants)].join("\n");
       return ok(text, { name, ...result });
@@ -989,7 +998,7 @@ get_group_info first to check.`,
     },
     write: true,
     destructive: true,
-    handler: async ({ group_id, action, participant_ids, value }, wa) => {
+    handler: async ({ group_id, action, participant_ids, value }, { wa }) => {
       const result = await wa.manageGroup(group_id, action, participant_ids, value);
       const text = [result.applied, ...renderParticipants(result.participants ?? [])].join("\n");
       return ok(text, result as unknown as Record<string, unknown>);
@@ -1020,21 +1029,7 @@ const RATE_BUCKETS = new Map<string, RateLimiter>(
   ),
 );
 
-/** Write tools register when any enabled account allows writes. */
-export function anyAccountAllowsWrites(source: AccountSource | WhatsAppApi): boolean {
-  const hub = asAccountSource(source);
-  return hub.all().some((wa) => {
-    if (typeof wa.getStatus !== "function") return true;
-    try {
-      return wa.getStatus().read_only !== true;
-    } catch {
-      return true;
-    }
-  });
-}
-
-export function registerTools(server: McpServer, source: AccountSource | WhatsAppApi, opts: RegisterOpts): void {
-  const hub = asAccountSource(source);
+export function registerTools(server: McpServer, hub: AccountSource, opts: RegisterOpts): void {
   for (const def of TOOLS) {
     if (def.write && !opts.allowWrite) continue;
     const own = RATE_BUCKETS.get(def.name);
@@ -1052,210 +1047,25 @@ export function registerTools(server: McpServer, source: AccountSource | WhatsAp
       },
       async (args: unknown): Promise<ToolResult> => {
         const parsed = (args ?? {}) as ToolArgs;
+        let resolved: { id: string; wa: WhatsAppApi } | undefined;
         try {
           own?.take();
-          const resolved = resolveToolAccount(hub, parsed, def);
-          try {
-            let result: ToolResult;
-            if (def.name === "get_status") {
-              result = renderGetStatus(resolved.wa.getStatus(), opts.allowWrite, hub);
-            } else if (def.name === "list_accounts") {
-              result = renderListAccounts(hub);
-            } else {
-              result = await def.handler(parsed, resolved.wa);
-            }
-            return attachAccountId(result, resolved.id);
-          } catch (err) {
-            return attachAccountId(toolError(asWazapError(err)), resolved.id);
-          }
+          resolved = resolveToolAccount(hub, parsed, def);
+          const result = await def.handler(parsed, {
+            wa: resolved.wa,
+            hub,
+            allowWrite: opts.allowWrite,
+            accountId: resolved.id,
+          });
+          return attachAccountId(result, resolved.id);
         } catch (err) {
           const result = toolError(asWazapError(err));
-          const requested = stringArg(parsed, "account_id");
-          return requested === undefined ? result : attachAccountId(result, requested);
+          const id = resolved?.id ?? stringArg(parsed, "account_id");
+          return id === undefined ? result : attachAccountId(result, id);
         }
       },
     );
   }
-}
-
-const FIX_ADD_ACCOUNT = "Run `wazap account add`";
-const FIX_PASS_ACCOUNT = "Pass account_id";
-
-function stringArg(args: ToolArgs, key: string): string | undefined {
-  const value = args[key];
-  return typeof value === "string" && value.length > 0 ? value : undefined;
-}
-
-function accountIdOf(wa: WhatsAppApi): string {
-  if (typeof wa.getStatus !== "function") return "default";
-  try {
-    const id = wa.getStatus().account_id;
-    return typeof id === "string" && id.length > 0 ? id : "default";
-  } catch {
-    return "default";
-  }
-}
-
-function attachAccountId(result: ToolResult, accountId: string): ToolResult {
-  return { ...result, structuredContent: { ...(result.structuredContent ?? {}), account_id: accountId } };
-}
-
-function namesOf(matches: WhatsAppApi[]): string {
-  return matches.map(accountIdOf).join(", ");
-}
-
-function pickFromMatches(
-  matches: WhatsAppApi[],
-  write: boolean,
-  hub: AccountSource,
-  what: "chat" | "message",
-): { wa: WhatsAppApi; id: string } {
-  if (matches.length === 1) {
-    const wa = matches[0]!;
-    return { wa, id: accountIdOf(wa) };
-  }
-  if (matches.length > 1) {
-    throw new WazapError(
-      "AMBIGUOUS_ACCOUNT",
-      `Several accounts have that ${what}: ${namesOf(matches)}.`,
-      FIX_PASS_ACCOUNT,
-    );
-  }
-  if (write) {
-    throw new WazapError("AMBIGUOUS_ACCOUNT", `No account knows that ${what}.`, FIX_PASS_ACCOUNT);
-  }
-  const wa = hub.default();
-  return { wa, id: accountIdOf(wa) };
-}
-
-function resolveGivenId(hub: AccountSource, requested: string, toolName: string): { wa: WhatsAppApi; id: string } {
-  const record = hub.record(requested);
-  const live = hub.get(requested);
-  if (record !== undefined && !record.enabled) {
-    throw new WazapError(
-      "ACCOUNT_DISABLED",
-      `Account "${requested}" is disabled.`,
-      `Run \`wazap account enable ${requested}\` and restart the server`,
-    );
-  }
-  if (live === undefined) {
-    const fix = toolName === "link_account" ? FIX_ADD_ACCOUNT : `${FIX_ADD_ACCOUNT}, or call list_accounts`;
-    throw new WazapError("ACCOUNT_NOT_FOUND", `No account "${requested}".`, fix);
-  }
-  return { wa: live, id: requested };
-}
-
-function resolveToolAccount(hub: AccountSource, args: ToolArgs, def: ToolDef): { wa: WhatsAppApi; id: string } {
-  const requested = stringArg(args, "account_id");
-  if (requested !== undefined) return resolveGivenId(hub, requested, def.name);
-
-  const live = hub.all();
-  if (live.length === 1) {
-    const wa = live[0]!;
-    return { wa, id: accountIdOf(wa) };
-  }
-
-  const chatId = stringArg(args, "chat_id") ?? stringArg(args, "group_id");
-  const messageId = stringArg(args, "message_id");
-  if (chatId !== undefined) return pickFromMatches(hub.findByChat(chatId), def.write, hub, "chat");
-  if (messageId !== undefined) return pickFromMatches(hub.findByMessage(messageId), def.write, hub, "message");
-
-  const wa = hub.default();
-  return { wa, id: accountIdOf(wa) };
-}
-
-function listedFromStatus(s: StatusInfo): ListedAccount {
-  return {
-    id: s.account_id,
-    name: s.account_name,
-    status: s.status,
-    phone_masked: s.account ? maskNumber(s.account.number) : null,
-    owner_name: s.account?.name ?? null,
-    write_tools: s.write_tools,
-  };
-}
-
-function listedFromRecord(record: AccountRecord): ListedAccount {
-  return {
-    id: record.id,
-    name: record.name,
-    status: record.enabled ? "disconnected" : "disabled",
-    phone_masked: null,
-    owner_name: null,
-    write_tools: false,
-    enabled: record.enabled,
-  };
-}
-
-function renderAccountLines(rows: Array<ListedAccount & { enabled?: boolean }>): string[] {
-  return rows.map((row) => {
-    const who = row.owner_name ? `${row.owner_name}${row.phone_masked ? ` (${row.phone_masked})` : ""}` : "not linked";
-    const writes = row.write_tools ? "writes on" : "writes off";
-    const flag = row.enabled === false ? "disabled" : row.status;
-    return `- **${row.id}** (${row.name}) · ${flag} · ${who} · ${writes}`;
-  });
-}
-
-function renderListAccountsFromStatuses(statuses: StatusInfo[]): ToolResult {
-  const accounts = statuses.map(listedFromStatus);
-  const text = [`# Accounts (${accounts.length})`, "", ...renderAccountLines(accounts)].join("\n");
-  return ok(text, { count: accounts.length, accounts });
-}
-
-function renderListAccounts(hub: AccountSource): ToolResult {
-  const live = new Map(hub.all().map((wa) => [accountIdOf(wa), wa.getStatus()] as const));
-  const accounts: ListedAccount[] = [];
-  const records = hub.records();
-  const source = records.length > 0 ? records : hub.all().map((wa) => ({
-    id: accountIdOf(wa),
-    name: accountIdOf(wa),
-    enabled: true,
-    owner: null as string | null,
-  }));
-  for (const record of source) {
-    const status = live.get(record.id);
-    if (status) {
-      accounts.push({ ...listedFromStatus(status), enabled: record.enabled });
-    } else {
-      accounts.push(listedFromRecord(record));
-    }
-  }
-  const text = [`# Accounts (${accounts.length})`, "", ...renderAccountLines(accounts)].join("\n");
-  return ok(text, { count: accounts.length, default: accountIdOf(hub.default()), accounts });
-}
-
-/** The get_status body: `write_tools` is this session's, not the process default. */
-export function renderGetStatus(s: StatusInfo, writeTools: boolean, hub?: AccountSource): ToolResult {
-  const account = s.account ? `${s.account.name || "(no name)"} (${s.account.number})` : "none";
-  const writeLine = writeTools
-    ? "registered"
-    : s.read_only
-      ? "not registered (server is read-only; run `wazap config writes on` and restart)"
-      : "not registered (this session used a read token)";
-  const others = hub === undefined ? [s] : hub.all().map((wa) => wa.getStatus());
-  const accounts = others.map(listedFromStatus);
-  const text = [
-    `# WhatsApp: ${s.status} (sync: ${s.sync})`,
-    `- **account**: ${account}`,
-    `- **last message received**: ${s.last_message_received_at ?? "never"}`,
-    `- **contacts named**: ${s.contacts_named}`,
-    `- **data dir**: ${s.data_dir} · **read-only**: ${s.read_only} · **write tools**: ${writeLine} · **rate limit**: ${s.rate_limit}/min`,
-    `- **versions**: wazap ${s.wazap_version}, baileys ${s.baileys_version}`,
-    s.pairing ? `- **pairing code**: ${s.pairing.code} for ${s.pairing.phone_masked}, until ${s.pairing.expires_at}` : null,
-    webhookStatusLine(s.webhook),
-    s.last_error ? `- **last error**: ${s.last_error}` : null,
-    s.hint ? `- **hint**: ${s.hint}` : null,
-    accounts.length > 1 ? `- **accounts**: ${accounts.map((row) => row.id).join(", ")}` : null,
-  ]
-    .filter((line): line is string => line !== null)
-    .join("\n");
-  return ok(text, { ...s, write_tools: writeTools, accounts } as unknown as Record<string, unknown>);
-}
-
-function webhookStatusLine(webhook: StatusInfo["webhook"]): string {
-  if (!webhook.enabled) return "- **webhook**: off";
-  if (!webhook.valid) return `- **webhook**: invalid${webhook.last_error ? ` · ${webhook.last_error}` : ""}`;
-  return `- **webhook**: on${webhook.last_error ? ` · last error: ${webhook.last_error}` : ""}`;
 }
 
 function renderChats(chats: ChatSummary[], filter: string): string {

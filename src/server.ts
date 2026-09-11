@@ -6,13 +6,13 @@ import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/
 import { isInitializeRequest } from "@modelcontextprotocol/sdk/types.js";
 import express, { type Request, type Response, type NextFunction } from "express";
 import { rateLimit } from "express-rate-limit";
-import type { AccountSource } from "./account-hub.js";
+import type { AccountBinding, AccountSource } from "./account-hub.js";
 import { WAZAP_VERSION, paths, writesHints, type Config } from "./config.js";
 import { APPROVE_PATH, OAUTH_SCOPES, WazapOAuthProvider } from "./oauth.js";
 import { loadSkills, registerSkillPrompts, skillInstructions } from "./skills.js";
 import { anyAccountAllowsWrites, registerTools } from "./tools.js";
 import { log, logError } from "./logger.js";
-import type { ConnectionStatus, WhatsAppApi } from "./wa-types.js";
+import type { ConnectionStatus } from "./wa-types.js";
 
 const UNHEALTHY_AFTER_MS = 2 * 60 * 1000;
 
@@ -32,7 +32,7 @@ function buildMcpServer(hub: AccountSource, config: Config, allowWrite: boolean)
   const skills = loadSkills();
   const server = new McpServer({ name: "wazap", version: WAZAP_VERSION }, { instructions: skillInstructions(skills) });
   registerTools(server, hub, {
-    allowWrite: allowWrite && !config.readOnly && anyAccountAllowsWrites(hub),
+    allowWrite: allowWrite && anyAccountAllowsWrites(hub),
   });
   registerSkillPrompts(server, skills);
   return server;
@@ -61,9 +61,9 @@ export interface HealthBody {
   accounts: AccountHealth[];
 }
 
-function rowOf(wa: WhatsAppApi): AccountHealth {
-  const s = wa.getStatus();
-  return { account_id: s.account_id, status: s.status, since: s.status_since };
+function rowOf(row: AccountBinding): AccountHealth {
+  const s = row.wa.getStatus();
+  return { account_id: row.id, status: s.status, since: s.status_since };
 }
 
 function isFresh(since: string): boolean {
@@ -72,8 +72,8 @@ function isFresh(since: string): boolean {
 
 /** Liveness for /healthz: default account on top, every live account listed. */
 export function healthBody(hub: AccountSource): HealthBody {
-  const accounts = hub.all().map(rowOf);
-  const primary = rowOf(hub.default());
+  const accounts = hub.bindings().map(rowOf);
+  const primary = rowOf(hub.defaultBinding());
   const ok = accounts.some((row) => row.status === "connected" || isFresh(row.since));
   return { ok, status: primary.status, since: primary.since, default: primary, accounts };
 }

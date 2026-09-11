@@ -13,19 +13,29 @@ import { WhatsAppService } from "./whatsapp.js";
 
 const FIX_ENABLE = "Run `wazap account enable <id>` or `wazap account add <id>`";
 
+/** A live socket plus the registry id that owns it. Tools never recover the id from getStatus. */
+export interface AccountBinding {
+  readonly id: string;
+  readonly wa: WhatsAppApi;
+}
+
 /** What HTTP, stdio and `registerTools` use to pick an account. */
 export interface AccountSource {
-  get(id: string): WhatsAppApi | undefined;
-  default(): WhatsAppApi;
-  all(): WhatsAppApi[];
-  findByChat(jid: string): WhatsAppApi[];
-  findByMessage(id: string): WhatsAppApi[];
+  binding(id: string): AccountBinding | undefined;
+  defaultBinding(): AccountBinding;
+  bindings(): AccountBinding[];
+  findByChat(jid: string): AccountBinding[];
+  findByMessage(id: string): AccountBinding[];
+  findByDraft(id: string): AccountBinding[];
   record(id: string): AccountRecord | undefined;
   records(): AccountRecord[];
 }
 
-function accountIdOf(wa: WhatsAppApi): string {
-  if (typeof wa.getStatus !== "function") return "default";
+function bind(id: string, wa: WhatsAppApi): AccountBinding {
+  return { id, wa };
+}
+
+function readSingletonId(wa: WhatsAppApi): string {
   try {
     const id = wa.getStatus().account_id;
     return typeof id === "string" && id.length > 0 ? id : "default";
@@ -34,66 +44,35 @@ function accountIdOf(wa: WhatsAppApi): string {
   }
 }
 
-function canFindChat(wa: WhatsAppApi): wa is WhatsAppApi & { hasChat(jid: string): boolean } {
-  return typeof wa.hasChat === "function";
-}
-
-function canFindMessage(wa: WhatsAppApi): wa is WhatsAppApi & { hasMessage(id: string): boolean } {
-  return typeof wa.hasMessage === "function";
+function readSingletonName(wa: WhatsAppApi, fallback: string): string {
+  try {
+    const name = wa.getStatus().account_name;
+    return typeof name === "string" && name.length > 0 ? name : fallback;
+  } catch {
+    return fallback;
+  }
 }
 
 /** One live service as a hub, so existing tests can keep passing a stub `wa`. */
 export function singletonSource(wa: WhatsAppApi): AccountSource {
-  const idOf = (): string => accountIdOf(wa);
-  const self = (): AccountRecord => {
-    let name = idOf();
-    try {
-      const listed = wa.getStatus().account_name;
-      if (typeof listed === "string" && listed.length > 0) name = listed;
-    } catch {
-      // Stub services often have no getStatus.
-    }
-    return { id: idOf(), name, enabled: true, owner: null };
-  };
+  const id = readSingletonId(wa);
+  const binding = bind(id, wa);
+  const self = (): AccountRecord => ({
+    id,
+    name: readSingletonName(wa, id),
+    enabled: true,
+    owner: null,
+  });
   return {
-    get(id) {
-      return id === idOf() ? wa : undefined;
-    },
-    default: () => wa,
-    all: () => [wa],
-    findByChat(jid) {
-      return canFindChat(wa) && wa.hasChat(jid) ? [wa] : [];
-    },
-    findByMessage(id) {
-      return canFindMessage(wa) && wa.hasMessage(id) ? [wa] : [];
-    },
-    record(id) {
-      return id === idOf() ? self() : undefined;
-    },
+    binding: (requested) => (requested === id ? binding : undefined),
+    defaultBinding: () => binding,
+    bindings: () => [binding],
+    findByChat: (jid) => (typeof wa.hasChat === "function" && wa.hasChat(jid) ? [binding] : []),
+    findByMessage: (mid) => (typeof wa.hasMessage === "function" && wa.hasMessage(mid) ? [binding] : []),
+    findByDraft: (did) => (typeof wa.hasDraft === "function" && wa.hasDraft(did) ? [binding] : []),
+    record: (requested) => (requested === id ? self() : undefined),
     records: () => [self()],
   };
-}
-
-export function isAccountSource(value: AccountSource | WhatsAppApi): value is AccountSource {
-  return (
-    typeof value === "object" &&
-    value !== null &&
-    "default" in value &&
-    "all" in value &&
-    typeof (value as AccountSource).default === "function" &&
-    typeof (value as AccountSource).all === "function"
-  );
-}
-
-export function asAccountSource(source: AccountSource | WhatsAppApi): AccountSource {
-  if (!isAccountSource(source)) return singletonSource(source);
-  const complete =
-    typeof source.get === "function" &&
-    typeof source.findByChat === "function" &&
-    typeof source.findByMessage === "function" &&
-    typeof source.record === "function" &&
-    typeof source.records === "function";
-  return complete ? source : singletonSource(source.default());
 }
 
 export class AccountHub implements AccountSource {
@@ -101,6 +80,7 @@ export class AccountHub implements AccountSource {
   private readonly known = new Map<string, AccountRecord>();
   private readonly givenUp = new Set<string>();
   private readonly primary: WhatsAppService;
+  private readonly primaryId: string;
   /** Process exit hook. Fires only after every enabled account has given up. */
   onGiveUp: (() => void) | null = null;
 
@@ -117,11 +97,9 @@ export class AccountHub implements AccountSource {
       wa.onGiveUp = () => this.noteGiveUp(account.id);
       this.services.set(account.id, wa);
     }
-    const first = this.services.values().next().value;
-    if (first === undefined) {
-      throw new WazapError("INVALID_ID", "No enabled account to serve.", FIX_ENABLE);
-    }
-    this.primary = this.services.get(registry.defaultId()) ?? first;
+    const firstId = enabled[0]!.id;
+    this.primaryId = this.services.has(registry.defaultId()) ? registry.defaultId() : firstId;
+    this.primary = this.services.get(this.primaryId)!;
   }
 
   async start(): Promise<void> {
@@ -151,12 +129,29 @@ export class AccountHub implements AccountSource {
     return [...this.services.values()];
   }
 
-  findByChat(jid: string): WhatsAppService[] {
-    return this.all().filter((wa) => wa.hasChat(jid));
+  binding(id: string): AccountBinding | undefined {
+    const wa = this.services.get(id);
+    return wa === undefined ? undefined : bind(id, wa);
   }
 
-  findByMessage(id: string): WhatsAppService[] {
-    return this.all().filter((wa) => wa.hasMessage(id));
+  defaultBinding(): AccountBinding {
+    return bind(this.primaryId, this.primary);
+  }
+
+  bindings(): AccountBinding[] {
+    return [...this.services].map(([id, wa]) => bind(id, wa));
+  }
+
+  findByChat(jid: string): AccountBinding[] {
+    return this.bindings().filter((row) => row.wa.hasChat(jid));
+  }
+
+  findByMessage(id: string): AccountBinding[] {
+    return this.bindings().filter((row) => row.wa.hasMessage(id));
+  }
+
+  findByDraft(id: string): AccountBinding[] {
+    return this.bindings().filter((row) => row.wa.hasDraft(id));
   }
 
   record(id: string): AccountRecord | undefined {

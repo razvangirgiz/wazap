@@ -8,9 +8,10 @@ import assert from "node:assert/strict";
 
 import { AccountHub } from "../dist/account-hub.js";
 import { AccountRegistry } from "../dist/accounts.js";
+import { ERROR_GUIDE } from "../dist/errors.js";
 import { anyAccountAllowsWrites, registerTools } from "../dist/tools.js";
 import { WhatsAppService } from "../dist/whatsapp.js";
-import { connectedService, fakeSocket, offlineConfig } from "./helpers.mjs";
+import { asToolSource, connectedService, fakeSocket, offlineConfig } from "./helpers.mjs";
 
 const HOME = "40700000001@s.whatsapp.net";
 const WORK = "40700000002@s.whatsapp.net";
@@ -38,10 +39,11 @@ function connect(svc, { id, name }) {
   return sock;
 }
 
-function twoAccountHub({ workWrites, disableWork } = {}) {
+function twoAccountHub({ workWrites, disableWork, defaultWrites } = {}) {
   const config = offlineConfig("wazap-resolve-", { readOnly: false, rateLimitPerMinute: 20 });
   const registry = AccountRegistry.load(config.dataDir);
   registry.add("work", "Work");
+  if (defaultWrites === false) registry.setWrites("default", false);
   if (workWrites === false) registry.setWrites("work", false);
   if (disableWork) registry.disable("work");
   const hub = new AccountHub(config, AccountRegistry.load(config.dataDir));
@@ -60,7 +62,8 @@ function message(chat, text, { id = "M1", fromMe = false } = {}) {
   };
 }
 
-function toolsOf(hub, allowWrite = true) {
+function toolsOf(source, allowWrite = true) {
+  const hub = asToolSource(source);
   const server = fakeServer();
   registerTools(server, hub, { allowWrite: allowWrite && anyAccountAllowsWrites(hub) });
   return server.tools;
@@ -207,6 +210,69 @@ test("get_status on two accounts keeps the default on top and lists both", async
   );
   assert.equal(result.structuredContent.accounts[1].write_tools, false);
   assert.match(result.content[0].text, /accounts.*default, work/);
+});
+
+test("list_chats without a locator uses the default account", async () => {
+  const { hub } = twoAccountHub();
+  const tools = toolsOf(hub);
+  const result = await tools.get("list_chats").handler({ filter: "all", limit: 20 });
+  assert.equal(result.structuredContent.account_id, "default");
+});
+
+test("contact_id and group_id unique to work select work", async () => {
+  const { hub, workSock } = twoAccountHub();
+  const group = "120363000000000001@g.us";
+  workSock.ev.emit("chats.upsert", [
+    { id: ANA, conversationTimestamp: Math.floor(Date.now() / 1000) },
+    { id: group, conversationTimestamp: Math.floor(Date.now() / 1000) },
+  ]);
+  const tools = toolsOf(hub);
+  const contact = await tools.get("get_contact").handler({ contact_id: ANA });
+  assert.equal(contact.structuredContent.account_id, "work");
+  const info = await tools.get("get_group_info").handler({ group_id: group });
+  assert.equal(info.structuredContent.account_id, "work");
+});
+
+test("confirm_send finds a draft stored on work", async () => {
+  const { hub, workSock } = twoAccountHub();
+  workSock.ev.emit("chats.upsert", [{ id: DAN, conversationTimestamp: Math.floor(Date.now() / 1000) }]);
+  workSock.ev.emit("contacts.upsert", [{ id: DAN, name: "Dan" }]);
+  workSock.sendMessage = async () => undefined;
+  const tools = toolsOf(hub);
+  const drafted = await tools.get("send_message").handler({ chat_id: DAN, text: "hi" });
+  assert.equal(drafted.structuredContent.account_id, "work");
+  const draftId = drafted.structuredContent.draft_id;
+  assert.equal(typeof draftId, "string");
+  const sent = await tools.get("confirm_send").handler({ draft_id: draftId });
+  assert.equal(sent.isError, undefined);
+  assert.equal(sent.structuredContent.account_id, "work");
+});
+
+test("list_accounts ignores a bad account_id and still lists a disabled row", async () => {
+  const { hub } = twoAccountHub({ disableWork: true });
+  const tools = toolsOf(hub);
+  const result = await tools.get("list_accounts").handler({ account_id: "ghost" });
+  assert.equal(result.isError, undefined);
+  assert.equal(result.structuredContent.count, 2);
+  assert.deepEqual(
+    result.structuredContent.accounts.map((row) => row.id),
+    ["default", "work"],
+  );
+  assert.equal(result.structuredContent.accounts[1].status, "disabled");
+  assert.equal(result.structuredContent.accounts[1].enabled, false);
+  assert.equal(result.structuredContent.account_id, "default");
+});
+
+test("write tools stay unregistered when every enabled account is read-only", () => {
+  const { hub } = twoAccountHub({ workWrites: false, defaultWrites: false });
+  assert.equal(anyAccountAllowsWrites(hub), false);
+  const tools = toolsOf(hub);
+  assert.equal(tools.has("send_message"), false);
+  assert.ok(tools.has("list_accounts"));
+});
+
+test("ACCOUNT_NOT_CONNECTED is not an error code", () => {
+  assert.equal("ACCOUNT_NOT_CONNECTED" in ERROR_GUIDE, false);
 });
 
 test("write tools register when any account allows writes; beginWrite names the read-only one", async () => {

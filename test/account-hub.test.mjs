@@ -103,11 +103,11 @@ test("findByChat and findByMessage look across two stores", () => {
   workSock.ev.emit("messages.upsert", { type: "notify", messages: [message(DAN, "from work", { id: "W1" })] });
 
   assert.deepEqual(
-    hub.findByChat(ANA).map((wa) => wa.getStatus().account_id),
+    hub.findByChat(ANA).map((row) => row.id),
     ["default"],
   );
   assert.deepEqual(
-    hub.findByChat(DAN).map((wa) => wa.getStatus().account_id),
+    hub.findByChat(DAN).map((row) => row.id),
     ["work"],
   );
   assert.deepEqual(hub.findByChat(HOME), []);
@@ -115,18 +115,18 @@ test("findByChat and findByMessage look across two stores", () => {
   const homeSid = `false_${ANA}_H1`;
   const workSid = `false_${DAN}_W1`;
   assert.deepEqual(
-    hub.findByMessage(homeSid).map((wa) => wa.getStatus().account_id),
+    hub.findByMessage(homeSid).map((row) => row.id),
     ["default"],
   );
   assert.deepEqual(
-    hub.findByMessage(workSid).map((wa) => wa.getStatus().account_id),
+    hub.findByMessage(workSid).map((row) => row.id),
     ["work"],
   );
   assert.deepEqual(hub.findByMessage("false_nobody_X"), []);
 
   workSock.ev.emit("chats.upsert", [{ id: ANA, conversationTimestamp: Math.floor(Date.now() / 1000) }]);
   assert.deepEqual(
-    hub.findByChat(ANA).map((wa) => wa.getStatus().account_id).sort(),
+    hub.findByChat(ANA).map((row) => row.id).sort(),
     ["default", "work"],
   );
   assert.equal(home.hasChat(ANA), true);

@@ -72,6 +72,11 @@ export class DraftStore {
     return draft;
   }
 
+  /** Peek without consuming. Expired drafts still count so confirm can throw DRAFT_EXPIRED. */
+  has(id: string): boolean {
+    return this.drafts.has(id);
+  }
+
   /** Consume a live draft. Missing and expired are different errors so the agent knows which. */
   take(id: string): Draft {
     const draft = this.drafts.get(id);

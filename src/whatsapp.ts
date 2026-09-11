@@ -464,6 +464,10 @@ export class WhatsAppService implements WhatsAppApi {
     return this.store.hasMessage(id);
   }
 
+  hasDraft(id: string): boolean {
+    return this.drafts.has(id);
+  }
+
   /**
    * People from the phone's address book: the only contact count worth
    * reporting. The store also holds everyone who ever appeared in a group and

@@ -26,8 +26,10 @@ test("put returns a preview and take consumes it once", () => {
   assert.equal(view.kind, "text");
   assert.equal(view.draft_id, draft.id);
 
+  assert.equal(store.has(draft.id), true);
   const taken = store.take(draft.id);
   assert.equal(taken.id, draft.id);
+  assert.equal(store.has(draft.id), false);
   assert.equal(store.size, 0);
   store.putBack(taken);
   assert.equal(store.take(draft.id).id, draft.id);

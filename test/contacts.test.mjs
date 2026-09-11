@@ -8,7 +8,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 
 import { WhatsAppService, needsContactResync } from "../dist/whatsapp.js";
-import { connectedService, openService } from "./helpers.mjs";
+import { asToolSource, connectedService, openService } from "./helpers.mjs";
 import { registerTools } from "../dist/tools.js";
 
 /** Stand-in for McpServer: records what got registered and lets us call it. */
@@ -143,7 +143,7 @@ test("names arriving on either contact event reach the disk", () => {
 
 test("sync_contacts reports what the resync changed, and never counts as a write", async () => {
   const server = fakeServer();
-  registerTools(server, { syncContacts: async () => ({ requested: true, named_before: 0, named_after: 217 }) }, {
+  registerTools(server, asToolSource({ syncContacts: async () => ({ requested: true, named_before: 0, named_after: 217 }) }), {
     allowWrite: false,
   });
   const tool = server.tools.get("sync_contacts");
@@ -157,7 +157,7 @@ test("sync_contacts reports what the resync changed, and never counts as a write
 test("sync_contacts tells an empty address book apart from one already in hand", async () => {
   const say = async (named_before, named_after) => {
     const server = fakeServer();
-    registerTools(server, { syncContacts: async () => ({ requested: true, named_before, named_after }) }, {
+    registerTools(server, asToolSource({ syncContacts: async () => ({ requested: true, named_before, named_after }) }), {
       allowWrite: true,
     });
     return (await server.tools.get("sync_contacts").handler({})).content[0].text;
@@ -170,7 +170,7 @@ test("sync_contacts on a session that is not connected reports the code, not a c
   const { svc } = makeService();
   svc.status = "connecting";
   const server = fakeServer();
-  registerTools(server, svc, { allowWrite: true });
+  registerTools(server, asToolSource(svc), { allowWrite: true });
   const result = await server.tools.get("sync_contacts").handler({});
   assert.equal(result.isError, true);
   assert.equal(result.structuredContent.error, "NOT_CONNECTED");

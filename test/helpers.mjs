@@ -166,6 +166,14 @@ export function stubAccountSource(wa) {
   return singletonSource(wa);
 }
 
+/** registerTools takes an AccountSource. Stubs and live services go through here. */
+export function asToolSource(source) {
+  if (source && typeof source.bindings === "function" && typeof source.defaultBinding === "function") {
+    return source;
+  }
+  return singletonSource(source && typeof source === "object" ? source : {});
+}
+
 /** A connected service fed only by events, so no socket and no disk are involved. */
 export function connectedService(WhatsAppService, { prefix, id, name, config = {} }) {
   const svc = openService(WhatsAppService, offlineConfig(prefix, config));

@@ -104,7 +104,7 @@ export interface ListedAccount {
   phone_masked: string | null;
   owner_name: string | null;
   write_tools: boolean;
-  enabled?: boolean;
+  enabled: boolean;
 }
 
 export interface WebhookInfo {
@@ -354,9 +354,9 @@ export interface ContactSyncResult {
  */
 export interface WhatsAppApi {
   getStatus(): StatusInfo;
-  /** Present on a live service; stubs used in tests may omit it. */
-  hasChat?(jid: string): boolean;
-  hasMessage?(id: string): boolean;
+  hasChat(jid: string): boolean;
+  hasMessage(id: string): boolean;
+  hasDraft(id: string): boolean;
   link(phone: string): Promise<PairingInfo>;
   listChats(filter: ChatFilter, limit: number): Promise<Synced<ChatSummary[]>>;
   readMessages(chatId: string, limit: number, before?: string, types?: MessageType[]): Promise<Synced<MessageView[]>>;
