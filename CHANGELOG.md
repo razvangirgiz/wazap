@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.16.0
 ### Added
 
 - **`wazap account default <id>`** picks the account tools use when a call
