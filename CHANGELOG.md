@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.15.0
 ### Added
 
 - **Several WhatsApp accounts in one process.** `accounts.json` names each
