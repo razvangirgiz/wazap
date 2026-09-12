@@ -109,6 +109,8 @@ interface StatusReport {
   baileys_version: string;
   install: Install;
   server_pid: number | null;
+  /** The lock holder is the background service, so it can be stopped with `wazap service stop`. */
+  server_is_service?: boolean;
   daemon: { pid: number; port: number } | null;
   checks: Check[];
   live?: LiveReport;
@@ -137,16 +139,20 @@ export async function runStatus(config: Config): Promise<StatusReport> {
   const daemon = readDaemon(p.daemonFile);
   const sharing = daemon !== null && daemon.pid === serverPid ? { pid: daemon.pid, port: daemon.port } : null;
 
+  const rows = accountRows(config);
   const report: StatusReport = {
     data_dir: config.dataDir,
-    linked: account !== null,
+    // The dir is linked when any account is; `account` still describes the
+    // selected one, and `accounts` carries each row's own credentials.
+    linked: account !== null || rows.some((row) => row.account !== null),
     credentials_readable: !unreadable,
     account,
-    accounts: accountRows(config),
+    accounts: rows,
     wazap_version: WAZAP_VERSION,
     baileys_version: BAILEYS_VERSION,
     install: whereInstalled(),
     server_pid: serverPid,
+    server_is_service: serverPid !== null && serviceHolding(config.dataDir, serverPid) !== null,
     daemon: sharing,
     checks: await runChecks(config),
   };
@@ -171,13 +177,9 @@ export async function runStatus(config: Config): Promise<StatusReport> {
 /** Today's phrasing, kept verbatim so pipes and log captures keep parsing. */
 function plainStatus(report: StatusReport): string[] {
   const lines = [`data dir: ${report.data_dir}`];
-  if (!report.credentials_readable) {
-    lines.push("linked: no (credentials unreadable — run `wazap logout` then `wazap login`)");
-  } else if (report.account) {
-    lines.push("linked: yes", `account: ${describeAccount(report.account)}`);
-  } else {
-    lines.push("linked: no");
-  }
+  const credsNote = report.credentials_readable ? "" : " (credentials unreadable — run `wazap logout` then `wazap login`)";
+  lines.push(`linked: ${report.linked ? "yes" : "no"}${credsNote}`);
+  if (report.account) lines.push(`account: ${describeAccount(report.account)}`);
   if (report.accounts.length > 1) {
     lines.push("accounts:");
     for (const row of report.accounts) {
@@ -460,9 +462,19 @@ async function testTranscribe(settings: TranscribeSettings, file: string): Promi
   say(`"${transcript.text}"`);
 }
 
-/** The one line that names the leftover pid, so greet, login and logout cannot drift. */
-export function leftoverFix(pid: number): string {
-  return `stop it first: kill ${pid}`;
+/**
+ * The one line that names the leftover pid, so greet, login and logout cannot
+ * drift. `kill` on a service-held pid just gets it restarted by the supervisor,
+ * so that case names the service verb instead.
+ */
+export function leftoverFix(pid: number, heldByService = false): string {
+  return heldByService ? "stop it first: `wazap service stop`" : `stop it first: kill ${pid}`;
+}
+
+/** A mutation the running server cannot see asks for a restart, on the spot. */
+export function warnIfServerRunning(config: Config): void {
+  const running = lockHolder(paths(config.dataDir).lockFile);
+  if (running !== null) say(warn(`A server is running (pid ${running}); restart it for this to apply.`));
 }
 
 /**
@@ -476,7 +488,7 @@ export function leftoverRefusal(config: Config): WazapError | null {
   return new WazapError("WHATSAPP_ERROR", `wazap is running (pid ${running}).`, leftoverFix(running));
 }
 
-export type GreetState = Pick<StatusReport, "linked" | "credentials_readable" | "server_pid">;
+export type GreetState = Pick<StatusReport, "linked" | "credentials_readable" | "server_pid" | "server_is_service">;
 
 /** After status, the lines that say what to type next. A leftover does not hide them. */
 export function greetNext(report: GreetState): string[] {
@@ -484,7 +496,7 @@ export function greetNext(report: GreetState): string[] {
   if (report.server_pid !== null) {
     lines.push(info(`A server is already running (pid ${report.server_pid}).`));
     if (!report.linked || !report.credentials_readable) {
-      lines.push(fix(leftoverFix(report.server_pid)));
+      lines.push(fix(leftoverFix(report.server_pid, report.server_is_service === true)));
     }
   }
   if (!report.credentials_readable) {
@@ -839,7 +851,7 @@ const SERVICE_STOP_MS = 10_000;
  * quit; the background service is ours to stop, which is why the returned
  * function starts it again. What `~/.wazap/link.sh` did by hand.
  */
-export async function yieldSession(config: Config, lockFile: string): Promise<() => void> {
+export async function yieldSession(config: Config, lockFile: string, why = "pairing"): Promise<() => void> {
   const running = takeSessionLock(lockFile);
   if (running === null) return () => {};
 
@@ -848,7 +860,7 @@ export async function yieldSession(config: Config, lockFile: string): Promise<()
     throw leftoverRefusal(config) ?? new WazapError("WHATSAPP_ERROR", `wazap is running (pid ${running}).`, leftoverFix(running));
   }
 
-  say(info("Stopping the wazap service for pairing"));
+  say(info(`Stopping the wazap service for ${why}`));
   held.supervisor.stop(held.record);
   let resumed = false;
   const resume = (): void => {
@@ -965,44 +977,43 @@ export async function runLogout(config: Config): Promise<void> {
   const p = paths(config.dataDir);
   const selected = resolveAccount(config.dataDir, config.accountId);
 
-  const running = lockHolder(p.lockFile);
-  if (running !== null) {
-    say(fail(`wazap is running (pid ${running}).`));
-    say(fix(leftoverFix(running)));
-    process.exit(1);
-  }
-
-  let linked: LinkedAccount | null = null;
-  let unreadable = false;
+  const resumeService = await yieldSession(config, p.lockFile, "logout");
   try {
-    linked = readLinkedAccount(selected.paths.authDir);
-  } catch {
-    // Unreadable creds are exactly what logout exists to clear, so keep going.
-    unreadable = true;
-  }
-  if (!linked && !unreadable) {
-    say(info("Not linked."));
-    return;
-  }
-
-  if (linked) {
-    const deadline = Date.now() + LOGOUT_TIMEOUT_MS;
+    let linked: LinkedAccount | null = null;
+    let unreadable = false;
     try {
-      const sock = await linkSession(selected.paths.authDir, { deadline });
-      await withDeadline(sock.logout(), deadline, "WhatsApp did not confirm the unlink in time.");
-    } catch (err: unknown) {
-      if (alreadyUnlinked(err)) {
-        say(info("WhatsApp had already unlinked this device."));
-      } else {
-        logError("unlink from WhatsApp", err);
-        say(warn("Could not tell WhatsApp to unlink; remove this device from your phone if it is still listed."));
+      linked = readLinkedAccount(selected.paths.authDir);
+    } catch {
+      // Unreadable creds are exactly what logout exists to clear, so keep going.
+      unreadable = true;
+    }
+    if (!linked && !unreadable) {
+      say(info("Not linked."));
+      return;
+    }
+
+    if (linked) {
+      const deadline = Date.now() + LOGOUT_TIMEOUT_MS;
+      try {
+        const sock = await linkSession(selected.paths.authDir, { deadline });
+        await withDeadline(sock.logout(), deadline, "WhatsApp did not confirm the unlink in time.");
+      } catch (err: unknown) {
+        if (alreadyUnlinked(err)) {
+          say(info("WhatsApp had already unlinked this device."));
+        } else {
+          logError("unlink from WhatsApp", err);
+          say(warn("Could not tell WhatsApp to unlink; remove this device from your phone if it is still listed."));
+        }
       }
     }
-  }
 
-  clearSession(selected.paths);
-  selected.registry.setOwner(selected.account.id, null);
-  say(ok("Logged out. Local credentials deleted."));
+    clearSession(selected.paths);
+    selected.registry.setOwner(selected.account.id, null);
+    say(ok("Logged out. Local credentials deleted."));
+  } finally {
+    releaseLock(p.lockFile);
+    resumeService();
+  }
   process.exit(0);
 }
 

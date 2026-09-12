@@ -99,6 +99,43 @@ test("link_account on an unknown id tells the user to run wazap account add", as
   assert.match(result.structuredContent.fix, /wazap account add/);
 });
 
+test("an account added after the hub started asks for a restart, not another add", async () => {
+  const config = offlineConfig("wazap-resolve-late-", { readOnly: false });
+  const hub = new AccountHub(config, AccountRegistry.load(config.dataDir));
+  // The hub snapshotted one account; this one lands on disk afterwards.
+  AccountRegistry.load(config.dataDir).add("work");
+  const tools = toolsOf(hub);
+  const result = await tools.get("link_account").handler({ phone: "+15550100", account_id: "work" });
+  assert.equal(result.structuredContent.error, "ACCOUNT_NOT_FOUND");
+  assert.match(result.structuredContent.message, /added after this server started/);
+  assert.match(result.structuredContent.fix, /[Rr]estart/);
+});
+
+test("an account added disabled after the hub started asks to enable, then restart", async () => {
+  const config = offlineConfig("wazap-resolve-late-off-", { readOnly: false });
+  const hub = new AccountHub(config, AccountRegistry.load(config.dataDir));
+  const fresh = AccountRegistry.load(config.dataDir);
+  fresh.add("work");
+  fresh.disable("work");
+  const tools = toolsOf(hub);
+  // read_messages, not link_account: the link tool's process-wide rate bucket
+  // is spent by the tests above.
+  const result = await tools.get("read_messages").handler({ chat_id: ANA, limit: 20, account_id: "work" });
+  assert.equal(result.structuredContent.error, "ACCOUNT_NOT_FOUND");
+  assert.match(result.structuredContent.fix, /account enable work/);
+  assert.match(result.structuredContent.fix, /restart/);
+});
+
+test("a link settles the owner on the record, on disk and in the snapshot", async () => {
+  const config = offlineConfig("wazap-resolve-owner-");
+  const hub = new AccountHub(config, AccountRegistry.load(config.dataDir));
+  const jid = "40700000001:12@s.whatsapp.net";
+  // What adoptLink fires once the pairing socket resolves.
+  hub.get("default").onLinked({ id: jid, name: "Home", number: "40700000001" });
+  assert.equal(AccountRegistry.load(config.dataDir).get("default").owner, jid);
+  assert.equal(hub.record("default").owner, jid);
+});
+
 test("a single enabled account is used even without account_id", async () => {
   const { svc } = connectedService(WhatsAppService, {
     prefix: "wazap-resolve-one-",
@@ -261,6 +298,21 @@ test("list_accounts ignores a bad account_id and still lists a disabled row", as
   assert.equal(result.structuredContent.accounts[1].status, "disabled");
   assert.equal(result.structuredContent.accounts[1].enabled, false);
   assert.equal(result.structuredContent.account_id, "default");
+});
+
+test("list_accounts shows the persisted owner of an account with no live socket, masked", async () => {
+  const config = offlineConfig("wazap-resolve-listed-");
+  const registry = AccountRegistry.load(config.dataDir);
+  registry.add("work", "Work");
+  registry.setOwner("work", "40700000002:9@s.whatsapp.net");
+  registry.disable("work");
+  const hub = new AccountHub(config, AccountRegistry.load(config.dataDir));
+  const tools = toolsOf(hub);
+  const result = await tools.get("list_accounts").handler({});
+  const work = result.structuredContent.accounts[1];
+  assert.equal(work.enabled, false);
+  assert.equal(work.phone_masked, "+40 7xx xxx xxx");
+  assert.match(result.content[0].text, /\+40 7xx xxx xxx/);
 });
 
 test("write tools stay unregistered when every enabled account is read-only", () => {

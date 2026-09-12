@@ -35,7 +35,7 @@ Usage:
   wazap status [--live] [--json] [--account <id>]          Check the install, the session and the server
   wazap logout [--account <id>]                            Unlink and delete local credentials
   wazap account add <id> [--name <name>]                   Add an account slot
-  wazap account remove|enable|disable <id>                 Change an account, or delete its local data
+  wazap account remove|enable|disable|default <id>         Change an account, or delete its local data
   wazap account list                                       List accounts in this data dir
   wazap migrate rollback                                   Undo a flat-layout move into accounts/
 
@@ -45,7 +45,8 @@ Tunnel providers for wazap expose: ${PROVIDER_NAMES}.
 
 Options:
   --data-dir <path>   Where wazap keeps its data (default ~/.wazap, or $WAZAP_DATA_DIR)
-  --account <id>      With login, logout, status, contacts, config writes, webhook test: pick this account
+  --account <id>      With login, logout, status, contacts, config writes|webhook, webhook test:
+                      pick this account. account add|enable|disable|default apply on server restart
   --name <name>       With account add: a display name
   --read-only         Refuse every write; the write tools are not registered at all
   --http              Serve Streamable HTTP instead of stdio
@@ -92,8 +93,11 @@ async function main(): Promise<void> {
 
   const { config } = invocation;
   // Rollback is the inverse of this move. Running it first would re-apply a
-  // half-finished migrate and then fail to undo it.
-  if (config.command !== "migrate") migrateLayout(config.dataDir);
+  // half-finished migrate and then fail to undo it. The other exempt commands
+  // never open account state, and `service stop` is how a lock that blocks the
+  // migration is released.
+  const MIGRATE_EXEMPT: ReadonlySet<string> = new Set(["migrate", "service", "connect", "skills", "expose", "update", "transcribe"]);
+  if (!MIGRATE_EXEMPT.has(config.command)) migrateLayout(config.dataDir);
   switch (config.command) {
     case "serve":
       if (pickDefaultAction(config, process.stdin.isTTY === true, process.stderr.isTTY === true) === "greet") {

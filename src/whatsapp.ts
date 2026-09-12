@@ -239,6 +239,8 @@ export class WhatsAppService implements WhatsAppApi {
    * fix. The CLI turns it into an exit code, so a supervisor gets its turn.
    */
   onGiveUp: (() => void) | null = null;
+  /** Fires when a `link` lands, so the hub can persist the owner on the record. */
+  onLinked: ((account: LinkedAccount) => void) | null = null;
   private account: StatusInfo["account"] = null;
   /** The pairing in flight, from the first `link` call until it settles either way. */
   private linking: Promise<PairingInfo> | null = null;
@@ -420,6 +422,7 @@ export class WhatsAppService implements WhatsAppApi {
     this.pairing = null;
     this.account = account;
     this.lastError = null;
+    this.onLinked?.(account);
     await this.start();
   }
 

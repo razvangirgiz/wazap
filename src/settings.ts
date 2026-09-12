@@ -1,7 +1,7 @@
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { AccountRegistry, accountPolicy, resolveAccount } from "./accounts.js";
-import { ask, askSecret } from "./cli.js";
+import { ask, askSecret, warnIfServerRunning } from "./cli.js";
 import { paths, writesHints, type Config } from "./config.js";
 import { WazapError, asWazapError } from "./errors.js";
 import { lockHolder } from "./lock.js";
@@ -218,6 +218,20 @@ async function applyWebhook(config: Config, value: string): Promise<void> {
     return;
   }
   if (value === "off") {
+    if (config.accountId !== undefined) {
+      // The on/off switch is global; only the endpoint is per-account. `off`
+      // scoped to an account drops its override so it follows the global again.
+      AccountRegistry.load(config.dataDir).clearWebhook(config.accountId);
+      const global = readWebhookSettings(process.env);
+      say(
+        ok(
+          `webhook override removed for ${config.accountId} — the global webhook applies${global.kind === "off" ? " (off)" : ""}.`,
+        ),
+      );
+      say(dim(`Stored in ${shortPath(paths(config.dataDir).accountsFile)}.`));
+      warnIfServerRunning(config);
+      return;
+    }
     setWebhookFlag(config, "off");
     say(ok("webhook: off — live inbound messages are not posted anywhere. Turn it on with `wazap config webhook on`."));
     say(dim(`Stored in ${shortPath(paths(config.dataDir).envFile)}.`));
@@ -236,6 +250,8 @@ export async function runWebhook(config: Config): Promise<void> {
 }
 
 async function enableWebhook(config: Config): Promise<void> {
+  // An unknown --account fails before any prompt asks for a URL or a secret.
+  if (config.accountId !== undefined) resolveAccount(config.dataDir, config.accountId);
   // A pipe is consumed whole by the first readline, so a script sets the URL
   // in the environment and only types the secret, the way transcribe does.
   let url: string;
@@ -262,6 +278,15 @@ async function enableWebhook(config: Config): Promise<void> {
   }
 
   const p = paths(config.dataDir);
+  if (config.accountId !== undefined) {
+    // The switch stays global; the URL and secret are this account's override.
+    AccountRegistry.load(config.dataDir).setWebhook(config.accountId, { url, secret });
+    setEnvSetting(p.envFile, "WAZAP_WEBHOOK", "on");
+    say(ok(`webhook: on for ${config.accountId} — live inbound messages POST to ${new URL(url).host} as message_received.`));
+    say(dim(`URL and secret stored in ${shortPath(p.accountsFile)}; WAZAP_WEBHOOK=on in ${shortPath(p.envFile)}.`));
+    warnIfServerRunning(config);
+    return;
+  }
   setEnvSetting(p.envFile, "WAZAP_WEBHOOK", "on");
   setEnvSetting(p.envFile, "WAZAP_WEBHOOK_URL", url);
   setEnvSetting(p.envFile, "WAZAP_WEBHOOK_SECRET", secret);
@@ -282,11 +307,6 @@ async function testWebhook(config: Config): Promise<void> {
     return;
   }
   throw new WazapError("INVALID_ID", result.error, result.fix === "" ? WEBHOOK_ON_FIX : result.fix);
-}
-
-function warnIfServerRunning(config: Config): void {
-  const running = lockHolder(paths(config.dataDir).lockFile);
-  if (running !== null) say(warn(`A server is running (pid ${running}); restart it for this to apply.`));
 }
 
 const DEFAULT_URL = "https://api.openai.com/v1";
@@ -361,6 +381,10 @@ export function applyWrites(config: Config, allowWrites: boolean): void {
       ),
     );
     say(dim(`Stored in ${shortPath(p.accountsFile)}.`));
+    // The account flag is set, but the global switch is a hard off either way.
+    if (allowWrites && config.readOnly) {
+      say(warn("Global read-only is still on, so writes stay off until `wazap config writes on` clears it."));
+    }
   } else {
     setEnvSetting(p.envFile, "WAZAP_READ_ONLY", allowWrites ? "0" : "1");
     config.readOnly = !allowWrites;

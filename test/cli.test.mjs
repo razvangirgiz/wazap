@@ -109,6 +109,21 @@ test("leftoverFix is the one line login and logout print", () => {
   assert.equal(leftoverFix(85007), "stop it first: kill 85007");
 });
 
+test("leftoverFix names service stop for a service-held pid, since kill would respawn it", () => {
+  assert.equal(leftoverFix(85007, true), "stop it first: `wazap service stop`");
+});
+
+test("greetNext on a service-held leftover points at service stop", () => {
+  const lines = greetNext({
+    linked: false,
+    credentials_readable: true,
+    server_pid: 85007,
+    server_is_service: true,
+  }).join("\n");
+  assert.match(lines, /stop it first: `wazap service stop`/);
+  assert.ok(!lines.includes(`kill 85007`), lines);
+});
+
 test("leftoverRefusal names a client leftover and ignores a free lock", () => {
   const dataDir = mkdtempSync(join(tmpdir(), "wazap-leftover-"));
   assert.equal(leftoverRefusal({ dataDir }), null);
@@ -133,6 +148,17 @@ test("a leftover that is not a service tells login the kill command", async () =
   const dataDir = mkdtempSync(join(tmpdir(), "wazap-login-lock-"));
   writeFileSync(join(dataDir, "server.lock"), `${process.pid}\n`, { mode: 0o600 });
   await assert.rejects(wazap("login", "--yes", "--no-writes", "--data-dir", dataDir), (err) => {
+    assert.equal(err.code, 1);
+    assert.match(err.stderr, new RegExp(`wazap is running \\(pid ${process.pid}\\)`));
+    assert.match(err.stderr, new RegExp(`stop it first: kill ${process.pid}`));
+    return true;
+  });
+});
+
+test("a leftover that is not a service tells logout the kill command", async () => {
+  const dataDir = mkdtempSync(join(tmpdir(), "wazap-logout-lock-"));
+  writeFileSync(join(dataDir, "server.lock"), `${process.pid}\n`, { mode: 0o600 });
+  await assert.rejects(wazap("logout", "--data-dir", dataDir), (err) => {
     assert.equal(err.code, 1);
     assert.match(err.stderr, new RegExp(`wazap is running \\(pid ${process.pid}\\)`));
     assert.match(err.stderr, new RegExp(`stop it first: kill ${process.pid}`));

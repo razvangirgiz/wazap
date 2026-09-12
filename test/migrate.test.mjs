@@ -8,6 +8,7 @@ import {
   readFileSync,
   readdirSync,
   renameSync,
+  rmSync,
   statSync,
   symlinkSync,
   writeFileSync,
@@ -267,4 +268,80 @@ test("wazap migrate rollback undoes a previous migrate through the CLI", async (
   });
   assert.equal(existsSync(join(dir, "auth", "creds.json")), true);
   assert.equal(existsSync(join(dir, "migration.json")), false);
+});
+
+test("migrate refuses to move a live process's files out from under it", () => {
+  const dir = dataDir();
+  seedV0(dir);
+  writeFileSync(paths(dir).lockFile, `${process.pid}\n`, { mode: 0o600 });
+  assert.throws(() => migrateLayout(dir), (err) => {
+    assert.equal(err.code, "WHATSAPP_ERROR");
+    assert.match(err.message, /running \(pid \d+\) on the old data layout/);
+    assert.match(err.fix, /wazap service stop/);
+    assert.match(err.fix, new RegExp(`kill ${process.pid}`));
+    return true;
+  });
+  assert.equal(existsSync(join(dir, "auth", "creds.json")), true, "nothing may move while the lock is held");
+  assert.equal(existsSync(accountPaths(dir, DEFAULT_ACCOUNT_ID).authDir), false);
+});
+
+test("rollback refuses while the session is held, then runs once it is free", () => {
+  const dir = dataDir();
+  seedV0(dir);
+  migrateLayout(dir);
+  writeFileSync(paths(dir).lockFile, `${process.pid}\n`, { mode: 0o600 });
+  assert.throws(() => rollbackMigration(dir), (err) => {
+    assert.match(err.message, /old data layout/);
+    return true;
+  });
+  assert.equal(existsSync(join(dir, "auth")), false, "rollback must not start either");
+
+  rmSync(paths(dir).lockFile);
+  rollbackMigration(dir);
+  assert.equal(existsSync(join(dir, "auth", "creds.json")), true);
+});
+
+test("a stale lock does not block the migration", () => {
+  const dir = dataDir();
+  seedV0(dir);
+  writeFileSync(paths(dir).lockFile, "999999\n");
+  migrateLayout(dir);
+  assert.equal(existsSync(accountPaths(dir, DEFAULT_ACCOUNT_ID).authDir), true);
+});
+
+test("status on a held flat dir refuses instead of migrating under the server", async () => {
+  const dir = dataDir();
+  seedV0(dir);
+  writeFileSync(paths(dir).lockFile, `${process.pid}\n`, { mode: 0o600 });
+  await assert.rejects(
+    run(process.execPath, [binary, "status", "--data-dir", dir], { env: childEnv() }),
+    (err) => {
+      assert.match(err.stderr, /old data layout/);
+      assert.match(err.stderr, /wazap service stop/);
+      return true;
+    },
+  );
+  assert.equal(existsSync(join(dir, "auth")), true);
+});
+
+test("service and migrate commands do not run the migration first", async () => {
+  const dir = dataDir();
+  seedV0(dir);
+  writeFileSync(paths(dir).lockFile, `${process.pid}\n`, { mode: 0o600 });
+  await assert.rejects(
+    run(process.execPath, [binary, "service", "status", "--data-dir", dir], { env: childEnv() }),
+    (err) => {
+      assert.match(err.stderr, /No wazap service is installed/);
+      assert.doesNotMatch(err.stderr, /old data layout/);
+      return true;
+    },
+  );
+  await assert.rejects(
+    run(process.execPath, [binary, "migrate", "rollback", "--data-dir", dir], { env: childEnv() }),
+    (err) => {
+      assert.match(err.stderr, /old data layout/);
+      return true;
+    },
+  );
+  assert.equal(existsSync(join(dir, "auth", "creds.json")), true);
 });
