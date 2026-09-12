@@ -1,5 +1,43 @@
 # Changelog
 
+## Unreleased
+### Added
+
+- **`wazap account default <id>`** picks the account tools use when a call
+  does not say otherwise. `config webhook on|off --account <id>` sets or
+  clears that account's webhook URL/secret in `accounts.json` (the on/off
+  switch stays global in `.env`). `account list` and `list_accounts` show the
+  persisted `owner`, masked, for accounts with no live socket.
+
+### Fixed
+
+- **Account changes while a server runs now say so.** `account
+  add|enable|disable|default` warn that the running server needs a restart,
+  and a tool given an `account_id` that exists on disk but not in the
+  server's snapshot answers ACCOUNT_NOT_FOUND with "restart the server"
+  instead of "run `wazap account add`".
+- **`wazap logout` yields the session the way `login` does.** When the
+  background service holds the lock, logout stops it, unlinks, and starts it
+  again instead of refusing with a `kill` that the supervisor would respawn.
+  `account remove` refuses with `wazap service stop` in the same case.
+- **The layout migration refuses while a process holds the session.** A
+  `status` against a flat `~/.wazap` used to move `auth/` out from under a
+  running pre-0.15 server. Now it says to stop the holder first;
+  `migrate rollback` refuses the same way, and commands that never open
+  account state (`service`, `connect`, `skills`, `expose`, `update`,
+  `transcribe`) skip the migration so `wazap service stop` can free the lock.
+- **`status --json` `linked` is true when any account is linked**, not only
+  the selected one; `accounts[]` still carries each account's own state, and
+  the credentials check names the linked ids. A linked `work` no longer
+  sends a setup flow back through pairing because `default` is unlinked.
+- **`config writes on --account x` warns when global read-only still wins.**
+  The account flag is stored, but the message no longer claims writes are on.
+- **`wazap status` tells a newer service from an older one.** A service
+  ahead of the installed wazap gets `wazap update`, not a restart that keeps
+  the same build.
+- **`link_account` persists `owner`** on the account's record once the
+  pairing settles, so `list_accounts` and `account list` can name it later.
+
 ## 0.15.0
 ### Added
 

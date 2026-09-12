@@ -1,11 +1,12 @@
-import { AccountRegistry } from "./accounts.js";
+import { AccountRegistry, ownerNumber } from "./accounts.js";
 import { readLinkedAccount, type LinkedAccount } from "./auth-state.js";
-import { ask, leftoverFix } from "./cli.js";
+import { ask, leftoverFix, warnIfServerRunning } from "./cli.js";
 import { ACCOUNT_USAGE, MIGRATE_USAGE, accountPaths, paths, type Config } from "./config.js";
 import { WazapError } from "./errors.js";
 import { lockHolder } from "./lock.js";
 import { say } from "./logger.js";
 import { rollbackMigration } from "./migrate.js";
+import { serviceHolding } from "./service.js";
 import { brand, info, maskNumber, ok } from "./ui.js";
 
 export interface StatusAccountRow {
@@ -14,9 +15,11 @@ export interface StatusAccountRow {
   enabled: boolean;
   default: boolean;
   account: LinkedAccount | null;
+  /** The jid remembered at link time, so an unlinked row still says whose it was. */
+  owner: string | null;
 }
 
-type AccountVerb = "list" | "add" | "remove" | "enable" | "disable";
+type AccountVerb = "list" | "add" | "remove" | "enable" | "disable" | "default";
 
 function parseAccountVerb(verb: string | undefined): AccountVerb {
   switch (verb) {
@@ -25,6 +28,7 @@ function parseAccountVerb(verb: string | undefined): AccountVerb {
     case "remove":
     case "enable":
     case "disable":
+    case "default":
       return verb;
     default:
       throw new WazapError("INVALID_ID", `Unknown account command "${verb ?? ""}".`, ACCOUNT_USAGE);
@@ -39,7 +43,12 @@ export function describeAccount(account: LinkedAccount): string {
 
 export function describeStatusAccount(row: StatusAccountRow): string {
   const flag = row.enabled ? "enabled" : "disabled";
-  const who = row.account === null ? "not linked" : describeAccount(row.account);
+  const who =
+    row.account !== null
+      ? describeAccount(row.account)
+      : row.owner !== null
+        ? `was ${maskNumber(ownerNumber(row.owner))}`
+        : "not linked";
   return `${row.id}  ${flag}  ${who}`;
 }
 
@@ -58,6 +67,7 @@ export function accountRows(config: Config): StatusAccountRow[] {
       enabled: record.enabled,
       default: record.id === registry.defaultId(),
       account: linked,
+      owner: record.owner ?? null,
     };
   });
 }
@@ -86,6 +96,10 @@ export async function runAccount(config: Config): Promise<void> {
       if (id === undefined) throw new WazapError("INVALID_ID", "Missing account id.", ACCOUNT_USAGE);
       enableAccount(config, id, false);
       return;
+    case "default":
+      if (id === undefined) throw new WazapError("INVALID_ID", "Missing account id.", ACCOUNT_USAGE);
+      defaultAccount(config, id);
+      return;
     default: {
       const _exhaustive: never = verb;
       return _exhaustive;
@@ -102,6 +116,7 @@ function listAccounts(config: Config): void {
 function addAccount(config: Config, id: string): void {
   const record = AccountRegistry.load(config.dataDir).add(id, config.accountName);
   say(ok(`Account "${record.id}" added.`));
+  warnIfServerRunning(config);
 }
 
 async function removeAccount(config: Config, id: string): Promise<void> {
@@ -109,9 +124,15 @@ async function removeAccount(config: Config, id: string): Promise<void> {
   if (registry.get(id) === undefined) {
     throw new WazapError("INVALID_ID", `No account "${id}".`, "Run `wazap account list`");
   }
+  // Removing an account under a live hub would orphan its socket; even the
+  // service must be stopped by hand, so the fix names whichever holder it is.
   const running = lockHolder(paths(config.dataDir).lockFile);
   if (running !== null) {
-    throw new WazapError("INVALID_ID", `wazap is running (pid ${running}).`, leftoverFix(running));
+    throw new WazapError(
+      "INVALID_ID",
+      `wazap is running (pid ${running}).`,
+      leftoverFix(running, serviceHolding(config.dataDir, running) !== null),
+    );
   }
   if (!config.assumeYes) {
     if (process.stdin.isTTY !== true) {
@@ -136,6 +157,13 @@ function enableAccount(config: Config, id: string, enabled: boolean): void {
   if (enabled) registry.enable(id);
   else registry.disable(id);
   say(ok(`Account "${id}" ${enabled ? "enabled" : "disabled"}.`));
+  warnIfServerRunning(config);
+}
+
+function defaultAccount(config: Config, id: string): void {
+  AccountRegistry.load(config.dataDir).setDefault(id);
+  say(ok(`Default account: "${id}".`));
+  warnIfServerRunning(config);
 }
 
 export function runMigrate(config: Config): void {

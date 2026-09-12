@@ -663,6 +663,70 @@ test("wazap webhook test --account refuses an unknown id", async () => {
   assert.match(stderr, /No account "ghost"/);
 });
 
+test("config webhook on --account stores url and secret in accounts.json, then test posts to it", async () => {
+  const received = [];
+  const server = await listen(async (req, res) => {
+    received.push({
+      signature: req.headers["x-wazap-signature"],
+      body: await readBody(req),
+    });
+    res.writeHead(204);
+    res.end();
+  });
+  const dir = dataDir();
+  await wazap(dir, ["account", "add", "work"]);
+  const workSecret = "work-config-secret";
+  const enabled = await wazap(dir, ["config", "webhook", "on", "--account", "work"], {
+    input: `${workSecret}\n`,
+    env: { WAZAP_WEBHOOK_URL: server.url },
+  });
+  assert.equal(enabled.code, 0, enabled.stderr);
+  assert.match(enabled.stderr, /webhook: on for work/);
+  assert.ok(!enabled.stdout.includes(workSecret) && !enabled.stderr.includes(workSecret));
+
+  const file = JSON.parse(readFileSync(join(dir, "accounts.json"), "utf8"));
+  const work = file.accounts.find((account) => account.id === "work");
+  assert.equal(work.webhook_url, server.url);
+  assert.equal(work.webhook_secret, workSecret);
+  const envFile = parse(readFileSync(join(dir, ".env"), "utf8"));
+  assert.equal(envFile.WAZAP_WEBHOOK, "on", "the switch stays global");
+  assert.equal(envFile.WAZAP_WEBHOOK_URL, undefined, "the URL belongs to the account, not .env");
+  assert.equal(envFile.WAZAP_WEBHOOK_SECRET, undefined);
+
+  const probed = await wazap(dir, ["webhook", "test", "--account", "work"]);
+  assert.equal(probed.code, 0, probed.stderr);
+  assert.equal(received.length, 1);
+  const payload = JSON.parse(received[0].body);
+  assert.equal(payload.account_id, "work");
+  assert.equal(webhookSignatureMatches(received[0].body, workSecret, received[0].signature), true);
+  await server.close();
+});
+
+test("config webhook off --account drops the override; the account follows the global again", async () => {
+  const dir = dataDir();
+  const registry = AccountRegistry.load(dir);
+  registry.add("work", "Work");
+  registry.setWebhook("work", { url: "https://hooks.example/work", secret: "gone" });
+  const { code, stderr } = await wazap(dir, ["config", "webhook", "off", "--account", "work"]);
+  assert.equal(code, 0, stderr);
+  assert.match(stderr, /override removed for work/);
+  const work = JSON.parse(readFileSync(join(dir, "accounts.json"), "utf8")).accounts.find(
+    (account) => account.id === "work",
+  );
+  assert.equal(work.webhook_url, undefined);
+  assert.equal(work.webhook_secret, undefined);
+});
+
+test("config webhook on --account refuses an unknown id before asking for a secret", async () => {
+  const dir = dataDir();
+  const { code, stderr } = await wazap(dir, ["config", "webhook", "on", "--account", "ghost"], {
+    input: "secret\n",
+    env: { WAZAP_WEBHOOK_URL: "https://hooks.example/x" },
+  });
+  assert.equal(code, 1);
+  assert.match(stderr, /No account "ghost"/);
+});
+
 test("config rejects a webhook secret on the command line", async () => {
   const { code, stderr } = await wazap(dataDir(), ["config", "webhook", "on", SECRET]);
   assert.equal(code, 1);

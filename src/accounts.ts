@@ -1,5 +1,6 @@
 import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
+import { readLinkedAccount } from "./auth-state.js";
 import { accountPaths, paths, type AccountPaths, type Config } from "./config.js";
 import { WazapError } from "./errors.js";
 
@@ -260,6 +261,26 @@ export class AccountRegistry {
     );
   }
 
+  /** Drop the per-account override so the account follows the global webhook again. */
+  clearWebhook(id: string): void {
+    this.commit(
+      this.withAccount(id, (account) => {
+        const next = { ...account };
+        delete next.webhook_url;
+        delete next.webhook_secret;
+        return next;
+      }),
+    );
+  }
+
+  setDefault(id: string): void {
+    const slug = parseAccountId(id);
+    if (!this.file.accounts.some((account) => account.id === slug)) {
+      throw new WazapError("INVALID_ID", `No account "${slug}".`, FIX_LIST);
+    }
+    this.commit({ ...this.file, default: slug });
+  }
+
   private commit(next: AccountsFile): void {
     writeJsonFile(paths(this.dataDir).accountsFile, next);
     this.file = next;
@@ -296,4 +317,23 @@ export function ensureAccountsFile(dataDir: string): AccountRegistry {
   const registry = AccountRegistry.load(dataDir);
   if (!existsSync(paths(dataDir).accountsFile)) registry.save();
   return registry;
+}
+
+/** The digits of an owner jid like `40734…:75@s.whatsapp.net`, for display. */
+export function ownerNumber(owner: string): string {
+  return owner.split(/[:@]/)[0] ?? "";
+}
+
+/**
+ * Whether any configured account has linked credentials on disk. `status` and
+ * the doctor checks answer for the data dir, not only the selected account.
+ */
+export function anyAccountLinked(dataDir: string, registry: AccountRegistry = AccountRegistry.load(dataDir)): boolean {
+  return registry.all().some((account) => {
+    try {
+      return readLinkedAccount(accountPaths(dataDir, account.id).authDir) !== null;
+    } catch {
+      return false;
+    }
+  });
 }

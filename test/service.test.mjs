@@ -5,10 +5,14 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { execFile } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { delimiter, join } from "node:path";
+import { delimiter, dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+import { promisify } from "node:util";
 
+import { AccountRegistry } from "../dist/accounts.js";
 import { paths, WAZAP_VERSION } from "../dist/config.js";
 import { yieldSession } from "../dist/cli.js";
 import {
@@ -327,6 +331,76 @@ esac
 };
 
 const STUB = STUBS[process.platform] ?? null;
+const BINARY = join(dirname(fileURLToPath(import.meta.url)), "..", "dist", "index.js");
+
+/**
+ * The pieces that make a pid read as the background service: service.json, a
+ * stub supervisor on PATH that reports that pid, and the lock holding it.
+ * `bin` gets the stub binaries; `record` collects what the supervisor ran.
+ */
+function serviceHeldDir() {
+  const dir = dataDir();
+  const bin = mkdtempSync(join(tmpdir(), "wazap-bin-"));
+  const state = join(dir, "loaded");
+  const record = join(dir, "calls");
+  const p = paths(dir);
+  writeFileSync(state, "");
+  writeFileSync(record, "");
+  writeFileSync(p.lockFile, `${process.pid}\n`, { mode: 0o600 });
+  writeFileSync(
+    p.serviceFile,
+    JSON.stringify({
+      supervisor: STUB.name,
+      label: STUB.name === "launchd" ? "com.wazap.server" : "wazap.service",
+      unitFile: join(dir, "unit"),
+      port: 41_999,
+      logDir: join(dir, "logs"),
+      installedVersion: WAZAP_VERSION,
+    }),
+  );
+  for (const binary of STUB.binaries) {
+    writeFileSync(join(bin, binary), STUB.script(state, p.lockFile, process.pid, record), { mode: 0o755 });
+  }
+  const env = { ...process.env, WAZAP_NO_UPDATE_CHECK: "1", PATH: `${bin}${delimiter}${process.env.PATH ?? ""}` };
+  return { dir, record, env };
+}
+
+function wazapIn(env, args) {
+  return promisify(execFile)(process.execPath, [BINARY, ...args], { env });
+}
+
+test(
+  "logout stops the wazap service, unlinks, and starts it again",
+  { skip: STUB === null ? `no launchd or systemd on ${process.platform}` : false },
+  async () => {
+    const { dir, record, env } = serviceHeldDir();
+    const { stderr } = await wazapIn(env, ["logout", "--data-dir", dir]);
+    assert.match(stderr, /Stopping the wazap service for logout/);
+    assert.match(stderr, /Not linked/);
+    const calls = readFileSync(record, "utf8");
+    assert.match(calls, STUB.stopped, "logout never stopped the service");
+    assert.match(calls, STUB.started, "logout left the service down");
+    assert.ok(
+      calls.search(STUB.stopped) < calls.search(STUB.started),
+      `the service must be stopped before it is started again: ${calls}`,
+    );
+    assert.equal(existsSync(paths(dir).lockFile), false, "the command must not leave the session held");
+  },
+);
+
+test(
+  "account remove on a service-held lock points at wazap service stop",
+  { skip: STUB === null ? `no launchd or systemd on ${process.platform}` : false },
+  async () => {
+    const { dir, env } = serviceHeldDir();
+    AccountRegistry.load(dir).add("work");
+    await assert.rejects(wazapIn(env, ["account", "remove", "work", "--yes", "--data-dir", dir]), (err) => {
+      assert.match(err.stderr, new RegExp(`stop it first: \`wazap service stop\``));
+      assert.doesNotMatch(err.stderr, new RegExp(`kill ${process.pid}`));
+      return true;
+    });
+  },
+);
 
 test(
   "login stops the wazap service for pairing and starts it again",

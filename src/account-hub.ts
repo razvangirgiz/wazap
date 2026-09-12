@@ -29,6 +29,10 @@ export interface AccountSource {
   findByDraft(id: string): AccountBinding[];
   record(id: string): AccountRecord | undefined;
   records(): AccountRecord[];
+  /** The record on disk, which may be newer than the snapshot `record` reads. */
+  recordOnDisk(id: string): AccountRecord | undefined;
+  /** Persist the linked jid on the account's record, after link_account lands it. */
+  noteOwner(id: string, owner: string): void;
 }
 
 function bind(id: string, wa: WhatsAppApi): AccountBinding {
@@ -72,6 +76,9 @@ export function singletonSource(wa: WhatsAppApi): AccountSource {
     findByDraft: (did) => (typeof wa.hasDraft === "function" && wa.hasDraft(did) ? [binding] : []),
     record: (requested) => (requested === id ? self() : undefined),
     records: () => [self()],
+    // The stub has no disk: what it knows is all there is.
+    recordOnDisk: (requested) => (requested === id ? self() : undefined),
+    noteOwner: () => {},
   };
 }
 
@@ -81,10 +88,12 @@ export class AccountHub implements AccountSource {
   private readonly givenUp = new Set<string>();
   private readonly primary: WhatsAppService;
   private readonly primaryId: string;
+  private readonly dataDir: string;
   /** Process exit hook. Fires only after every enabled account has given up. */
   onGiveUp: (() => void) | null = null;
 
   constructor(config: Config, registry: AccountRegistry) {
+    this.dataDir = config.dataDir;
     for (const account of registry.all()) {
       this.known.set(account.id, { ...account });
     }
@@ -95,6 +104,7 @@ export class AccountHub implements AccountSource {
     for (const account of enabled) {
       const wa = new WhatsAppService(config, account, accountPaths(config.dataDir, account.id));
       wa.onGiveUp = () => this.noteGiveUp(account.id);
+      wa.onLinked = (linked) => this.noteOwner(account.id, linked.id);
       this.services.set(account.id, wa);
     }
     const firstId = enabled[0]!.id;
@@ -161,6 +171,29 @@ export class AccountHub implements AccountSource {
 
   records(): AccountRecord[] {
     return [...this.known.values()].map((account) => ({ ...account }));
+  }
+
+  /**
+   * The registry re-read from disk, so a tool can tell "account added after
+   * this server started" apart from "no such account" and ask for a restart.
+   */
+  recordOnDisk(id: string): AccountRecord | undefined {
+    try {
+      return AccountRegistry.load(this.dataDir).get(id);
+    } catch {
+      return undefined;
+    }
+  }
+
+  noteOwner(id: string, owner: string): void {
+    try {
+      AccountRegistry.load(this.dataDir).setOwner(id, owner);
+      const record = this.known.get(id);
+      if (record !== undefined) record.owner = owner;
+    } catch (err) {
+      // A linked session still works; the display field is what is lost.
+      logError(`owner persist ${id}`, err);
+    }
   }
 
   private noteGiveUp(id: string): void {

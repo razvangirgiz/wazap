@@ -4,7 +4,7 @@
  */
 
 import type { AccountBinding, AccountSource } from "./account-hub.js";
-import type { AccountRecord } from "./accounts.js";
+import { ownerNumber, type AccountRecord } from "./accounts.js";
 import { WazapError } from "./errors.js";
 import { maskNumber } from "./ui.js";
 import type { ListedAccount, StatusInfo } from "./wa-types.js";
@@ -73,6 +73,18 @@ function resolveGivenId(hub: AccountSource, requested: string, toolName: string)
     );
   }
   if (live === undefined) {
+    // The registry may have grown since this server started; `record` reads a
+    // snapshot, so check disk before calling the id unknown.
+    const onDisk = hub.recordOnDisk(requested);
+    if (onDisk !== undefined) {
+      throw new WazapError(
+        "ACCOUNT_NOT_FOUND",
+        `Account "${requested}" was added after this server started.`,
+        onDisk.enabled
+          ? "Restart the server so it picks up the account (`wazap service restart`, or restart your client)"
+          : `Run \`wazap account enable ${requested}\`, then restart the server`,
+      );
+    }
     const fix = toolName === "link_account" ? FIX_ADD_ACCOUNT : `${FIX_ADD_ACCOUNT}, or call list_accounts`;
     throw new WazapError("ACCOUNT_NOT_FOUND", `No account "${requested}".`, fix);
   }
@@ -119,7 +131,7 @@ function listedFromRecord(record: AccountRecord): ListedAccount {
     id: record.id,
     name: record.name,
     status: record.enabled ? "disconnected" : "disabled",
-    phone_masked: null,
+    phone_masked: record.owner === null ? null : maskNumber(ownerNumber(record.owner)),
     owner_name: null,
     write_tools: false,
     enabled: record.enabled,
@@ -128,7 +140,9 @@ function listedFromRecord(record: AccountRecord): ListedAccount {
 
 function renderAccountLines(rows: ListedAccount[]): string[] {
   return rows.map((row) => {
-    const who = row.owner_name ? `${row.owner_name}${row.phone_masked ? ` (${row.phone_masked})` : ""}` : "not linked";
+    const who = row.owner_name
+      ? `${row.owner_name}${row.phone_masked ? ` (${row.phone_masked})` : ""}`
+      : (row.phone_masked ?? "not linked");
     const writes = row.write_tools ? "writes on" : "writes off";
     const flag = row.enabled ? row.status : "disabled";
     return `- **${row.id}** (${row.name}) · ${flag} · ${who} · ${writes}`;

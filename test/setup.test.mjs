@@ -10,6 +10,7 @@ import { promisify } from "node:util";
 
 import { CLIENTS, detectClients } from "../dist/connect.js";
 import { WAZAP_VERSION } from "../dist/config.js";
+import { migrateLayout } from "../dist/migrate.js";
 import { readService } from "../dist/service.js";
 import { keepRunningOptions, parseChoice, remoteMcpLines, wantsRemoteClient } from "../dist/setup.js";
 
@@ -251,11 +252,26 @@ test("setup on a linked session connects the named client and reports the sessio
 test("setup skips the live check while another process holds the session", async () => {
   const box = sandbox();
   const dir = linkedDataDir();
+  migrateLayout(dir);
   writeFileSync(join(dir, "server.lock"), `${process.pid}\n`);
   const { stderr } = await setup(box, "--yes", "--client", "cursor", "--data-dir", dir);
 
   assert.match(stderr, new RegExp(`A server already holds the session \\(pid ${process.pid}\\); skipping the live check\\.`));
   assert.match(stderr, /Setup complete/);
+});
+
+test("setup refuses to move a held flat dir out from under its process", async () => {
+  const box = sandbox();
+  const dir = linkedDataDir();
+  writeFileSync(join(dir, "server.lock"), `${process.pid}\n`);
+  const err = await setup(box, "--yes", "--client", "cursor", "--data-dir", dir).then(
+    () => assert.fail("a held flat dir must fail before the wizard"),
+    (rejected) => rejected,
+  );
+  assert.equal(err.code, 1);
+  assert.match(err.stderr, /on the old data layout/);
+  assert.match(err.stderr, /wazap service stop/);
+  assert.ok(existsSync(join(dir, "auth", "creds.json")), "the flat auth dir must not have moved");
 });
 
 test("setup tells a client with no skills directory that the server carries the workflows", async () => {

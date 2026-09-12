@@ -7,6 +7,7 @@ import { delimiter, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 
+import { WAZAP_VERSION } from "../dist/config.js";
 import { isNewer } from "../dist/doctor.js";
 import { childEnv } from "./helpers.mjs";
 
@@ -72,12 +73,77 @@ test("a lock left by a dead process reads as stale, not as a running server", as
   assert.match(stderr, /server: not running/);
 });
 
+/**
+ * A stub supervisor binary that reports a live pid, so the service check sees
+ * the service as running and compares versions. Nothing reaches the real
+ * launchd or systemd.
+ */
+const SUPERVISOR_STUB =
+  {
+    darwin: {
+      name: "launchd",
+      label: "com.wazap.server",
+      binaries: { launchctl: (pid) => `#!/bin/sh\n[ "$1" = "print" ] && printf '\\tpid = ${pid}\\n' && exit 0\nexit 113\n` },
+    },
+    linux: {
+      name: "systemd",
+      label: "wazap.service",
+      binaries: { systemctl: (pid) => `#!/bin/sh\necho ${pid}\n` },
+    },
+  }[process.platform] ?? null;
+
+test(
+  "the service check tells a newer install, an older service and a newer service apart",
+  { skip: SUPERVISOR_STUB === null ? `no launchd or systemd on ${process.platform}` : false },
+  async () => {
+    const dir = dataDir();
+    const bin = mkdtempSync(join(tmpdir(), "wazap-doctor-bin-"));
+    for (const [name, script] of Object.entries(SUPERVISOR_STUB.binaries)) {
+      writeFileSync(join(bin, name), script(4242), { mode: 0o755 });
+    }
+    const record = {
+      supervisor: SUPERVISOR_STUB.name,
+      label: SUPERVISOR_STUB.label,
+      unitFile: join(dir, "unit"),
+      port: 41_999,
+      logDir: join(dir, "logs"),
+      installedVersion: "0.0.1",
+    };
+    writeFileSync(join(dir, "service.json"), `${JSON.stringify(record)}\n`);
+    // Unlinked dirs have the service fix muted (it would fight `Next wazap
+    // setup`), so this check needs a linked account to reach the wording.
+    mkdirSync(join(dir, "auth"), { recursive: true });
+    writeFileSync(
+      join(dir, "auth", "creds.json"),
+      JSON.stringify({ registered: true, me: { id: "15550100:1@s.whatsapp.net", name: "Test" } }),
+    );
+    const env = { PATH: `${bin}${delimiter}${process.env.PATH ?? ""}` };
+
+    const older = await status(dir, [], env);
+    assert.match(older.stderr, /– service: runs 0\.0\.1, .* is installed/);
+    assert.match(older.stderr, /wazap service restart/);
+
+    writeFileSync(join(dir, "service.json"), `${JSON.stringify({ ...record, installedVersion: "999.0.0" })}\n`);
+    const newer = await status(dir, [], env);
+    assert.match(newer.stderr, /– service: runs 999\.0\.0, but only .* is installed/);
+    assert.match(newer.stderr, /wazap update/);
+    assert.doesNotMatch(newer.stderr, /service restart/);
+
+    writeFileSync(
+      join(dir, "service.json"),
+      `${JSON.stringify({ ...record, installedVersion: WAZAP_VERSION })}\n`,
+    );
+    const same = await status(dir, [], env);
+    assert.match(same.stderr, /✓ service: running \(pid 4242/);
+  },
+);
+
 test("unreadable credentials fail the check and carry the repair", async () => {
   const dir = dataDir();
   mkdirSync(join(dir, "auth"), { recursive: true });
   writeFileSync(join(dir, "auth", "creds.json"), "{ truncated");
   const { stderr } = await status(dir);
-  assert.match(stderr, /✗ credentials: Stored credentials in .* are unreadable/);
+  assert.match(stderr, /✗ credentials: default: Stored credentials in .* are unreadable/);
   assert.match(stderr, /wazap logout/);
 });
 

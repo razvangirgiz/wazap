@@ -266,3 +266,89 @@ test("status --json on one account keeps linked/account and adds accounts[]", as
   assert.equal(report.accounts[0].account.name, "Test");
   assert.doesNotMatch(stderr, /accounts:/);
 });
+
+test("status --json is linked when any account is, not only the selected", async () => {
+  const dir = dataDir();
+  AccountRegistry.load(dir).add("work");
+  mkdirSync(accountPaths(dir, "work").authDir, { recursive: true });
+  writeFileSync(
+    join(accountPaths(dir, "work").authDir, "creds.json"),
+    JSON.stringify({ registered: true, me: { id: "40700000002:5@s.whatsapp.net", name: "Work" } }),
+  );
+  const { stdout } = await wazap(dir, ["status", "--json"]);
+  const report = JSON.parse(stdout);
+  assert.equal(report.linked, true, "a linked work must not read as unlinked because default is not");
+  assert.equal(report.account, null, "the selected account is still the unlinked default");
+  assert.equal(report.accounts.length, 2);
+  assert.equal(report.accounts[1].account.name, "Work");
+  // The human layout prints the per-account block only without --json.
+  const human = await wazap(dir, ["status"]);
+  assert.match(human.stderr, /accounts:/);
+  const creds = report.checks.find((check) => check.name === "credentials");
+  assert.equal(creds.state, "ok");
+  assert.match(creds.detail, /readable \(work\)/);
+});
+
+test("wazap account default moves the default, and a running server gets the restart hint", async () => {
+  const dir = dataDir();
+  await wazap(dir, ["account", "add", "work"]);
+  const { stderr } = await wazap(dir, ["account", "default", "work"]);
+  assert.match(stderr, /Default account: "work"/);
+  assert.equal(JSON.parse(readFileSync(paths(dir).accountsFile, "utf8")).default, "work");
+  assert.match((await wazap(dir, ["account", "list"])).stderr, /work  enabled  not linked  \(default\)/);
+
+  await wazap(dir, ["account", "default", "default"]);
+  assert.equal(JSON.parse(readFileSync(paths(dir).accountsFile, "utf8")).default, "default");
+});
+
+test("wazap account default refuses an unknown id", async () => {
+  const dir = dataDir();
+  await assert.rejects(wazap(dir, ["account", "default", "ghost"]), (err) => {
+    assert.match(err.stderr, /No account "ghost"/);
+    assert.match(err.stderr, /wazap account list/);
+    return true;
+  });
+});
+
+test("account add/enable/disable/default warn that a running server needs a restart", async () => {
+  const dir = dataDir();
+  writeFileSync(paths(dir).lockFile, `${process.pid}\n`, { mode: 0o600 });
+  const running = new RegExp(`A server is running \\(pid ${process.pid}\\); restart it`);
+  assert.match((await wazap(dir, ["account", "add", "work"])).stderr, running);
+  assert.match((await wazap(dir, ["account", "disable", "work"])).stderr, running);
+  assert.match((await wazap(dir, ["account", "enable", "work"])).stderr, running);
+  assert.match((await wazap(dir, ["account", "default", "work"])).stderr, running);
+});
+
+test("account remove on a client-held lock names the kill, not a service verb", async () => {
+  const dir = dataDir();
+  await wazap(dir, ["account", "add", "work"]);
+  writeFileSync(paths(dir).lockFile, `${process.pid}\n`, { mode: 0o600 });
+  await assert.rejects(wazap(dir, ["account", "remove", "work", "--yes"]), (err) => {
+    assert.match(err.stderr, new RegExp(`stop it first: kill ${process.pid}`));
+    assert.doesNotMatch(err.stderr, /service stop/);
+    return true;
+  });
+  assert.equal(existsSync(accountPaths(dir, "work").root), true);
+});
+
+test("account list shows the remembered owner of an unlinked account, masked", async () => {
+  const dir = dataDir();
+  const registry = AccountRegistry.load(dir);
+  registry.add("work", "Work");
+  registry.setOwner("work", "40700000002:5@s.whatsapp.net");
+  const { stderr } = await wazap(dir, ["account", "list"]);
+  assert.match(stderr, /work  enabled  was \+40 7xx xxx xxx/);
+  assert.ok(!stderr.includes("40700000002"), "the owner must be masked");
+});
+
+test("config writes on --account under a global read-only says so", async () => {
+  const dir = dataDir();
+  await wazap(dir, ["account", "add", "work"]);
+  await wazap(dir, ["config", "writes", "off"]);
+  const { stderr } = await wazap(dir, ["config", "writes", "on", "--account", "work"]);
+  assert.match(stderr, /writes: on for work/);
+  assert.match(stderr, /Global read-only is still on/);
+  const file = JSON.parse(readFileSync(paths(dir).accountsFile, "utf8"));
+  assert.equal(file.accounts.find((account) => account.id === "work").writes, true);
+});

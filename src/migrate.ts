@@ -2,8 +2,9 @@ import { existsSync, lstatSync, mkdirSync, readFileSync, renameSync, rmdirSync, 
 import { join } from "node:path";
 import { AccountRegistry, DEFAULT_ACCOUNT_ID, ensureAccountsFile, isRecord, writeJsonFile } from "./accounts.js";
 import { readLinkedAccount } from "./auth-state.js";
-import { accountPaths } from "./config.js";
+import { accountPaths, paths } from "./config.js";
 import { WazapError } from "./errors.js";
+import { lockHolder } from "./lock.js";
 
 /** Flat-layout names that move into accounts/default/. qr.png is leftover login art. */
 export const LAYOUT_ENTRIES = ["auth", "store.json", "history", "media", "previews", "notes.json", "qr.png"] as const;
@@ -45,6 +46,21 @@ function leftoverEntries(dataDir: string): string[] {
 
 function rollbackFix(dataDir: string): string {
   return `Run \`wazap migrate rollback --data-dir ${dataDir}\``;
+}
+
+/**
+ * Moving `auth/` out from under a live process breaks it, and whatever it
+ * recreates at the root then blocks both migrate and rollback. The holder can
+ * only be a pre-migration build: every newer one migrated at its own start.
+ */
+function refuseWhileRunning(dataDir: string): void {
+  const running = lockHolder(paths(dataDir).lockFile);
+  if (running === null) return;
+  throw new WazapError(
+    "WHATSAPP_ERROR",
+    `wazap is running (pid ${running}) on the old data layout.`,
+    `stop it first (\`wazap service stop\` if it is the background service, otherwise \`kill ${running}\`), then run this again`,
+  );
 }
 
 function migrateFail(dataDir: string, message: string): WazapError {
@@ -179,6 +195,7 @@ export function migrateLayout(dataDir: string): void {
   const defaultRoot = accountPaths(dataDir, DEFAULT_ACCOUNT_ID).root;
 
   if (leftover.length > 0) {
+    refuseWhileRunning(dataDir);
     applyMigration(dataDir, manifestFile, manifest);
     return;
   }
@@ -191,6 +208,7 @@ export function migrateLayout(dataDir: string): void {
  * later add cannot be smashed back into a flat v0 dir.
  */
 export function rollbackMigration(dataDir: string): MigrationManifest {
+  refuseWhileRunning(dataDir);
   const manifestFile = join(dataDir, "migration.json");
   const manifest = readManifest(manifestFile, dataDir);
   if (manifest === null) {

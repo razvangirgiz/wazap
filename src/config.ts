@@ -166,7 +166,7 @@ const COMMAND_ARGS: Record<Command, readonly number[]> = {
 const COMMANDS = Object.keys(COMMAND_ARGS) as readonly Command[];
 
 export const ACCOUNT_USAGE =
-  "Run `wazap account add <id> [--name <name>]`, `wazap account remove|enable|disable <id>`, or `wazap account list`";
+  "Run `wazap account add <id> [--name <name>]`, `wazap account remove|enable|disable|default <id>`, or `wazap account list`";
 
 export const MIGRATE_USAGE = "Run `wazap migrate rollback`";
 

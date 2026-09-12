@@ -1,7 +1,7 @@
 import { accessSync, constants, statSync } from "node:fs";
-import { accountPolicy, resolveAccount } from "./accounts.js";
+import { AccountRegistry, accountPolicy, anyAccountLinked, resolveAccount } from "./accounts.js";
 import { readLinkedAccount } from "./auth-state.js";
-import { WAZAP_VERSION, WRITES_ENABLE_FIX, WRITE_TOKEN_NOTE, isRemoteHttp, paths, type Config } from "./config.js";
+import { WAZAP_VERSION, WRITES_ENABLE_FIX, WRITE_TOKEN_NOTE, accountPaths, isRemoteHttp, paths, type Config } from "./config.js";
 import { WazapError, asWazapError } from "./errors.js";
 import { lockHolder, lockPid } from "./lock.js";
 import { oauthProblem, readGrants } from "./oauth.js";
@@ -64,7 +64,7 @@ export async function runChecks(config: Config): Promise<Check[]> {
   for (const check of CHECKS) checks.push(...[await check(config)].flat());
   let linked = false;
   try {
-    linked = readLinkedAccount(resolveAccount(config.dataDir, config.accountId).paths.authDir) !== null;
+    linked = anyAccountLinked(config.dataDir);
   } catch {
     linked = false;
   }
@@ -151,7 +151,7 @@ function checkService(config: Config): Check {
   if (pid === null) {
     return { name: "service", state: "fail", detail: "installed but not running", fix: "run `wazap service start`" };
   }
-  if (record.installedVersion !== WAZAP_VERSION) {
+  if (isNewer(WAZAP_VERSION, record.installedVersion)) {
     return {
       name: "service",
       state: "info",
@@ -159,21 +159,39 @@ function checkService(config: Config): Check {
       fix: "run `wazap service restart`",
     };
   }
+  if (isNewer(record.installedVersion, WAZAP_VERSION)) {
+    return {
+      name: "service",
+      state: "info",
+      detail: `runs ${record.installedVersion}, but only ${WAZAP_VERSION} is installed`,
+      fix: "run `wazap update` — restarting keeps the newer build",
+    };
+  }
   return { name: "service", state: "ok", detail: `running (pid ${pid}, ${supervisor.name})` };
 }
 
 function checkCredentials(config: Config): Check {
-  const authDir = resolveAccount(config.dataDir, config.accountId).paths.authDir;
+  // The data dir is linked when any account is; every corrupt record fails,
+  // naming its account.
+  let records;
   try {
-    const account = readLinkedAccount(authDir);
-    // The number is deliberately absent: status is the thing people screenshot.
-    return account === null
-      ? { name: "credentials", state: "info", detail: "no account linked yet" }
-      : { name: "credentials", state: "ok", detail: "readable" };
+    records = AccountRegistry.load(config.dataDir).all();
   } catch (err) {
     const wazap = err as WazapError;
     return { name: "credentials", state: "fail", detail: wazap.message, fix: wazap.fix };
   }
+  const linkedIds: string[] = [];
+  for (const record of records) {
+    try {
+      if (readLinkedAccount(accountPaths(config.dataDir, record.id).authDir) !== null) linkedIds.push(record.id);
+    } catch (err) {
+      const wazap = err as WazapError;
+      return { name: "credentials", state: "fail", detail: `${record.id}: ${wazap.message}`, fix: wazap.fix };
+    }
+  }
+  if (linkedIds.length === 0) return { name: "credentials", state: "info", detail: "no account linked yet" };
+  // The number is deliberately absent: status is the thing people screenshot.
+  return { name: "credentials", state: "ok", detail: records.length > 1 ? `readable (${linkedIds.join(", ")})` : "readable" };
 }
 
 function checkWrites(config: Config): Check {
