@@ -3,6 +3,9 @@ name: Publish
 on:
   push:
     tags: ["v*"]
+  # Manual run for a re-publish or a smoke test: publishing a version that
+  # is already on npm fails at the upload step after auth succeeds.
+  workflow_dispatch:
 
 jobs:
   publish:
@@ -21,6 +24,7 @@ jobs:
       # Refuse a tag that does not match package.json, so a v0.16.1 tag can
       # never publish 0.16.0 again.
       - name: Check tag matches package.json version
+        if: startsWith(github.ref, 'refs/tags/')
         run: |
           tag="${GITHUB_REF_NAME#v}"
           version=$(node -p "require('./package.json').version")
