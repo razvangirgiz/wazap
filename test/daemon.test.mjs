@@ -29,6 +29,17 @@ function mode(file) {
 
 const run = promisify(execFile);
 
+/**
+ * Budgets for the two waits every live-daemon test makes. A spawned child pays
+ * Node boot plus the whole module graph (baileys, the MCP SDK, express) before
+ * it can bind and write daemon.json — under a second idle, but the suite runs
+ * test files and their children in parallel, so a starved child needs room.
+ * SHUTDOWN_MS must outlast the daemon's own 3s forced-exit fallback, or the
+ * wait loses the race against the very exit it is watching for.
+ */
+const STARTUP_MS = 30_000;
+const SHUTDOWN_MS = 10_000;
+
 /** The binary's own `status` against a data dir: human lines on stderr, `--json` on stdout. */
 function status(dataDir, args = []) {
   return run(process.execPath, [BINARY, "status", "--data-dir", dataDir, ...args], {
@@ -56,6 +67,14 @@ async function withDaemon(env, fn, args = []) {
       daemonFile: join(dataDir, "daemon.json"),
       lockFile: join(dataDir, "server.lock"),
     });
+  } catch (err) {
+    // A timeout that says only what the parent waited for is undebuggable; the
+    // child's own last lines say where it actually was.
+    if (err instanceof Error) {
+      const tail = stderr.join("").trimEnd().split("\n").slice(-15).join("\n");
+      err.message += `\nchild pid ${child.pid} ${alive ? "still running" : "exited"}; last stderr:\n${tail || "(silent)"}`;
+    }
+    throw err;
   } finally {
     child.kill("SIGKILL");
     await exited;
@@ -205,7 +224,7 @@ test("remove leaves another process's sidecar alone", () => {
 
 test("a served session publishes a loopback endpoint only its token opens", async () => {
   await withDaemon({}, async ({ child, stderr, daemonFile }) => {
-    const info = await waitFor(() => readDaemon(daemonFile), 10_000, "daemon.json to appear");
+    const info = await waitFor(() => readDaemon(daemonFile), STARTUP_MS, "daemon.json to appear");
     assert.equal(info.pid, child.pid);
     assert.ok(info.port > 0, `port ${info.port}`);
     assert.match(info.token, /^[0-9a-f]{64}$/);
@@ -234,7 +253,7 @@ test("--http publishes its own port and takes the internal token as a full-acces
   await withDaemon(
     {},
     async ({ daemonFile }) => {
-      const info = await waitFor(() => readDaemon(daemonFile), 10_000, "daemon.json to appear");
+      const info = await waitFor(() => readDaemon(daemonFile), STARTUP_MS, "daemon.json to appear");
       assert.ok(info.port > 0, `port ${info.port}`);
 
       const health = await fetch(`http://127.0.0.1:${info.port}/healthz`, { signal: AbortSignal.timeout(5_000) });
@@ -250,9 +269,9 @@ test("--http publishes its own port and takes the internal token as a full-acces
 
 test("SIGTERM clears the sidecar and the lock", async () => {
   await withDaemon({}, async ({ child, hasExited, daemonFile, lockFile }) => {
-    await waitFor(() => readDaemon(daemonFile), 10_000, "daemon.json to appear");
+    await waitFor(() => readDaemon(daemonFile), STARTUP_MS, "daemon.json to appear");
     child.kill("SIGTERM");
-    await waitFor(hasExited, 3_000, "the daemon to exit");
+    await waitFor(hasExited, SHUTDOWN_MS, "the daemon to exit");
     assert.equal(existsSync(daemonFile), false, "daemon.json outlived the daemon");
     assert.equal(existsSync(lockFile), false, "server.lock outlived the daemon");
   });
@@ -260,9 +279,9 @@ test("SIGTERM clears the sidecar and the lock", async () => {
 
 test("closing the client's stdin ends the daemon rather than leaving it listening", async () => {
   await withDaemon({}, async ({ child, hasExited, daemonFile, lockFile }) => {
-    await waitFor(() => readDaemon(daemonFile), 10_000, "daemon.json to appear");
+    await waitFor(() => readDaemon(daemonFile), STARTUP_MS, "daemon.json to appear");
     child.stdin.end();
-    await waitFor(hasExited, 3_000, "the daemon to exit");
+    await waitFor(hasExited, SHUTDOWN_MS, "the daemon to exit");
     assert.equal(existsSync(daemonFile), false, "daemon.json outlived the daemon");
     assert.equal(existsSync(lockFile), false, "server.lock outlived the daemon");
   });
@@ -270,7 +289,7 @@ test("closing the client's stdin ends the daemon rather than leaving it listenin
 
 test("status names the endpoint a served session is shared on, and never its token", async () => {
   await withDaemon({}, async ({ child, dataDir, daemonFile }) => {
-    const info = await waitFor(() => readDaemon(daemonFile), 10_000, "daemon.json to appear");
+    const info = await waitFor(() => readDaemon(daemonFile), STARTUP_MS, "daemon.json to appear");
 
     const human = await status(dataDir);
     assert.equal(
@@ -288,7 +307,7 @@ test("status names the endpoint a served session is shared on, and never its tok
 
 test("status leaves the sharing suffix off a session that is not shared", async () => {
   await withDaemon({ WAZAP_NO_SHARE: "1" }, async ({ child, dataDir, lockFile }) => {
-    await waitFor(() => existsSync(lockFile), 10_000, "server.lock to appear");
+    await waitFor(() => existsSync(lockFile), STARTUP_MS, "server.lock to appear");
     const { stderr } = await status(dataDir);
     assert.equal(
       stderr.split("\n").find((line) => line.startsWith("server:")),
@@ -373,7 +392,7 @@ test("an already-aborted signal does not leave a listener", async () => {
 
 test("WAZAP_NO_SHARE serves stdio with no sidecar at all", async () => {
   await withDaemon({ WAZAP_NO_SHARE: "1" }, async ({ child, daemonFile, lockFile }) => {
-    await waitFor(() => existsSync(lockFile), 10_000, "server.lock to appear");
+    await waitFor(() => existsSync(lockFile), STARTUP_MS, "server.lock to appear");
     const { request } = mcpClient(child);
     const init = await request("initialize", {
       protocolVersion: "2024-11-05",
