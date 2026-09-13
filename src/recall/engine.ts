@@ -3,6 +3,11 @@
  * loopback, restarted when it dies, killed when wazap stops. The queue is the
  * only caller, so a slow restart stalls indexing — never ingestion.
  *
+ * The /embedding API is stateless, so every account in the process shares one
+ * server: the registry below spawns on the first acquire and kills on the
+ * last release, keyed by the only things that make a sidecar distinct — the
+ * resolved binary and the model file.
+ *
  * WAZAP_EMBED_URL points at an already-running compatible server instead of
  * spawning one; that seam exists for the test stub, not as a supported option.
  */
@@ -229,6 +234,88 @@ class UrlBackend implements EmbeddingTarget {
   }
 }
 
+/** A target the registry also owns the lifetime of: start spawns, stop kills. */
+interface SpawnedSidecar extends EmbeddingTarget {
+  start(): Promise<void>;
+}
+
+/** The seam the tests replace; production always spawns a real llama-server. */
+export const sidecarFactory = {
+  open: (bin: string, model: string, onLog: (line: string) => void): SpawnedSidecar =>
+    new LlamaSidecar(bin, model, onLog),
+};
+
+/** One row of the registry: the child, its start promise, and who holds it. */
+interface SidecarEntry {
+  /** Live consumers; the release that takes this to zero kills the server. */
+  refs: number;
+  sidecar: SpawnedSidecar;
+  /**
+   * Kept on the entry so two accounts reaching for their first embeddings at
+   * once — the boot backfill — await the same spawn rather than each starting
+   * a server of their own.
+   */
+  started: Promise<void>;
+}
+
+const sharedSidecars = new Map<string, SidecarEntry>();
+
+/**
+ * One consumer's claim on a shared sidecar. Embedding calls reach the child
+ * directly; stop() only gives this claim back — the last one out is the one
+ * that kills the server. The child's restart lines keep arriving through the
+ * first consumer's onLog, which in production is the same `log` for everyone.
+ */
+class SharedSidecar implements EmbeddingTarget {
+  private released = false;
+
+  private constructor(
+    private readonly key: string,
+    private readonly entry: SidecarEntry
+  ) {}
+
+  /** First claim on a key spawns; later ones join the start already under way. */
+  static acquire(bin: string, model: string, onLog: (line: string) => void): SharedSidecar {
+    const key = `${bin}\n${model}`;
+    let entry = sharedSidecars.get(key);
+    if (entry === undefined) {
+      const sidecar = sidecarFactory.open(bin, model, onLog);
+      entry = { refs: 0, sidecar, started: sidecar.start() };
+      sharedSidecars.set(key, entry);
+      // A failed start frees the slot, so the next acquire spawns fresh
+      // instead of joining a rejection. Consumers still holding refs release
+      // into a sidecar that never ran — stop() on it is a safe no-op.
+      entry.started.catch(() => {
+        if (sharedSidecars.get(key) === entry) sharedSidecars.delete(key);
+      });
+    }
+    entry.refs++;
+    return new SharedSidecar(key, entry);
+  }
+
+  /** The shared start; the engine releases its claim when this rejects. */
+  started(): Promise<void> {
+    return this.entry.started;
+  }
+
+  get base(): string {
+    return this.entry.sidecar.base;
+  }
+
+  waitReady(): Promise<void> {
+    return this.entry.sidecar.waitReady();
+  }
+
+  async stop(): Promise<void> {
+    if (this.released) return;
+    this.released = true;
+    this.entry.refs--;
+    if (this.entry.refs > 0) return;
+    if (sharedSidecars.get(this.key) === this.entry) sharedSidecars.delete(this.key);
+    await this.entry.sidecar.stop();
+  }
+}
+
 /**
  * The queue's handle on embeddings. `embed` waits out a restart for up to
  * START_TIMEOUT_MS, then fails the batch — the queue retries, so a dying
@@ -257,9 +344,16 @@ export class EmbedEngine {
         llamaInstallFix()
       );
     }
-    const sidecar = new LlamaSidecar(bin, embedModelPath(settings.modelsDir, spec), onLog);
-    await sidecar.start();
-    return new EmbedEngine(sidecar, spec);
+    // Accounts on the same binary and model share one server: acquire bumps
+    // the registry's refcount, this engine's stop() hands just this claim back.
+    const target = SharedSidecar.acquire(bin, embedModelPath(settings.modelsDir, spec), onLog);
+    try {
+      await target.started();
+    } catch (err) {
+      await target.stop();
+      throw err;
+    }
+    return new EmbedEngine(target, spec);
   }
 
   /**

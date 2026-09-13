@@ -1425,8 +1425,9 @@ export class WhatsAppService implements WhatsAppApi {
   }
 
   /**
-   * The sidecar, started on the first embedding request. A failed start is not
-   * cached — the next queued batch tries again.
+   * The sidecar, started on the first embedding request and shared with every
+   * other account in the process on the same binary and model. A failed start
+   * is not cached — the next queued batch tries again.
    */
   private recallEngine(): Promise<EmbedEngine> {
     if (this.stopped) return Promise.reject(new WazapError("RECALL_UNAVAILABLE", "the service is stopping"));
@@ -1562,9 +1563,10 @@ export class WhatsAppService implements WhatsAppApi {
   }
 
   /**
-   * Queue first, then the sidecar — stopping it unblocks an embedding call in
-   * flight — then the store, whose own write queue drains before it closes.
-   * An engine still coming up is stopped whenever its start resolves.
+   * Queue first, then the engine — releasing its claim on the shared sidecar
+   * unblocks an embedding call in flight — then the store, whose own write
+   * queue drains before it closes. An engine still coming up is released
+   * whenever its start resolves.
    */
   private async stopRecall(): Promise<void> {
     const queueStop = this.recallQueue?.stop() ?? Promise.resolve();
