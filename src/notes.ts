@@ -25,6 +25,9 @@ interface NotesFile {
 }
 
 export class Notes {
+  /** Why the file on disk could not be read, or why the last save failed. Null when healthy. */
+  error: string | null = null;
+  private loadError: string | null = null;
   readonly contacts = new Map<string, ContactNote>();
   readonly handled = new Map<string, HandledMark>();
 
@@ -36,22 +39,35 @@ export class Notes {
     let parsed: NotesFile;
     try {
       parsed = JSON.parse(readFileSync(this.file, "utf8")) as NotesFile;
-    } catch {
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT")
+        this.error = this.loadError = error instanceof Error ? error.message : String(error);
       return;
     }
-    if (parsed?.v !== 1) return;
+    if (parsed?.v !== 1) {
+      this.error = this.loadError = "Unsupported notes file version";
+      return;
+    }
     for (const [jid, note] of Object.entries(parsed.contacts ?? {})) this.contacts.set(jid, note);
     for (const [jid, mark] of Object.entries(parsed.handled ?? {})) this.handled.set(jid, mark);
   }
 
   private save(): void {
+    // A file that never read cleanly must not be overwritten with a fresh one.
+    if (this.loadError) throw new Error(`Cannot overwrite unreadable notes: ${this.loadError}`);
     const data: NotesFile = {
       v: 1,
       contacts: Object.fromEntries(this.contacts),
       handled: Object.fromEntries(this.handled),
     };
     mkdirSync(dirname(this.file), { recursive: true, mode: 0o700 });
-    writeFileSync(this.file, `${JSON.stringify(data, null, 2)}\n`, { mode: 0o600 });
+    try {
+      writeFileSync(this.file, `${JSON.stringify(data, null, 2)}\n`, { mode: 0o600 });
+      this.error = null;
+    } catch (error) {
+      this.error = error instanceof Error ? error.message : String(error);
+      throw error;
+    }
   }
 
   noteFor(jid: string): string | undefined {
