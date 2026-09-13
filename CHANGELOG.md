@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.18.1
+### Fixed
+
+- **Recall no longer ranks noise as answers.** On the live index, unrelated
+  queries matched ultra-short texts ("Da", "Ceau") at 0.45-0.54 cosine while
+  real matches start around 0.5, so a nonsense query returned confident
+  junk. Hits must now clear `WAZAP_RECALL_MIN_SIMILARITY` (default 0.5,
+  calibrated on embeddinggemma-300m; another model needs its own value),
+  texts under five letters or digits never enter the index, and results
+  surviving but staying weak are flagged in the output instead of being
+  listed like found facts.
+
 ## 0.18.0
 ### Added
 
