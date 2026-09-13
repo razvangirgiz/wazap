@@ -1,0 +1,21 @@
+{
+  "limit": 5,
+  "cases": [
+    {
+      "query": "what time are we meeting tomorrow",
+      "expect": ["meet", "o'clock", "am", "pm"]
+    },
+    {
+      "query": "the address they sent me",
+      "expect": "street"
+    },
+    {
+      "query": "bitcoin wallet seed phrase",
+      "expectNone": true
+    },
+    {
+      "query": "xyzzy quantum flange torquemada",
+      "expectNone": true
+    }
+  ]
+}
