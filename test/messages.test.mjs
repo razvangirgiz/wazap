@@ -7,7 +7,7 @@ import {
   formatAge,
   isControlMessage,
   isStubEvent,
-  isUserInboundMessage,
+  isUserMessage,
   isoWithOffset,
   mediaInfo,
   messageText,
@@ -107,26 +107,27 @@ test("a stub message is an event to report, not machinery to drop", () => {
   assert.equal(messageType(stub), "system");
 });
 
-test("isUserInboundMessage is only a person sending something", () => {
-  assert.equal(isUserInboundMessage(wrap({ conversation: "hi" })), true);
-  assert.equal(isUserInboundMessage(wrap({ imageMessage: { mimetype: "image/jpeg" } })), true);
-  assert.equal(isUserInboundMessage(wrap({ someFutureMessage: {} })), true);
+test("isUserMessage is a person sending something, either way", () => {
+  assert.equal(isUserMessage(wrap({ conversation: "hi" })), true);
+  assert.equal(isUserMessage(wrap({ imageMessage: { mimetype: "image/jpeg" } })), true);
+  assert.equal(isUserMessage(wrap({ someFutureMessage: {} })), true);
   assert.equal(
-    isUserInboundMessage({ key: { fromMe: true, remoteJid: "4072@s.whatsapp.net", id: "X" }, message: { conversation: "hi" } }),
-    false,
+    isUserMessage({ key: { fromMe: true, remoteJid: "4072@s.whatsapp.net", id: "X" }, message: { conversation: "hi" } }),
+    true,
+    "a message the person sent themselves is still a person's message",
   );
   const stub = { ...wrap({}), messageStubType: proto.WebMessageInfo.StubType.GROUP_PARTICIPANT_ADD };
-  assert.equal(isUserInboundMessage(stub), false);
+  assert.equal(isUserMessage(stub), false);
   assert.equal(
-    isUserInboundMessage({ ...wrap(undefined), messageStubType: proto.WebMessageInfo.StubType.E2E_ENCRYPTED }),
+    isUserMessage({ ...wrap(undefined), messageStubType: proto.WebMessageInfo.StubType.E2E_ENCRYPTED }),
     false,
   );
   assert.equal(
-    isUserInboundMessage(wrap({ protocolMessage: { type: proto.Message.ProtocolMessage.Type.HISTORY_SYNC_NOTIFICATION } })),
+    isUserMessage(wrap({ protocolMessage: { type: proto.Message.ProtocolMessage.Type.HISTORY_SYNC_NOTIFICATION } })),
     false,
   );
   assert.equal(
-    isUserInboundMessage(wrap({ protocolMessage: { type: proto.Message.ProtocolMessage.Type.EPHEMERAL_SETTING } })),
+    isUserMessage(wrap({ protocolMessage: { type: proto.Message.ProtocolMessage.Type.EPHEMERAL_SETTING } })),
     false,
   );
 });

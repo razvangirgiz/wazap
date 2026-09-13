@@ -1,5 +1,40 @@
 # Changelog
 
+## Unreleased
+### Added
+
+- **The webhook posts messages you send, too.** A message typed on the phone
+  or on another linked device arrives as `event: "message_sent"`. A message
+  wazap sent through its own tools is not announced, so a consumer cannot be
+  made to answer itself. History sync is still not posted.
+
+- **Connection changes are an event.** `event: "connection"` carries a
+  `status` of `linked`, `disconnected` or `expired`. `not_linked`, `linking`
+  and `connecting` post nothing, and two changes that mean the same status
+  post once.
+
+- **Five payload fields.** `timestamp` is the same instant as `ts` in ISO
+  8601 UTC, `truncated` says whether `text` was cut, `kind` is `text`,
+  `audio`, `image` or `other`, and `from_me` and `is_self_chat` say who sent
+  it and where. Existing consumers keep every field they had, `ts` included,
+  with the meaning it had.
+
+- **`wazap webhook test --event <name>`** posts `message_received` (the
+  default), `message_sent` or `connection`. An unknown name exits 1.
+
+### Changed
+
+- **An existing webhook endpoint now receives three events at the same URL.**
+  Branch on `event`. `message_sent` is a message this account sent, not one to
+  reply to, and `connection` carries no `from`, `text` or `message_id`.
+
+- **The webhook text preview is cut at 2000 characters, not 500.** A cut
+  preview ends in a single `…`, and `truncated` is true.
+
+- **A voice note's webhook waits for its transcript.** The event of an
+  auto-transcribed voice note carries the words in `text` instead of the
+  `[voice message · 0:42]` placeholder.
+
 ## 0.16.0
 ### Added
 
