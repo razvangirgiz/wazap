@@ -704,12 +704,17 @@ What to know before exposing it:
 
 ## Outbound webhook
 
-A live inbound message can POST to one URL. Off by default. History sync
-is not posted. The only event is `message_received`.
+Live events POST to one URL. Off by default. History sync is not posted.
+The `event` field names one of three. `message_received` is a message another
+person sent. `message_sent` is a message this account sent itself, typed on
+the phone or on another linked device; a message wazap sent through its own
+tools is not announced, so a consumer can never be made to answer itself.
+`connection` says the link came up, went down or expired.
 
 ```bash
 npx wazap-mcp config webhook on    # asks for URL + secret (secret is not echoed)
 npx wazap-mcp webhook test         # POST a probe event
+npx wazap-mcp webhook test --event connection
 npx wazap-mcp webhook test --account work
 npx wazap-mcp config webhook off
 ```
@@ -723,18 +728,78 @@ HMAC: `X-Wazap-Signature` is `sha256=<hex>`, HMAC-SHA256 of the exact raw
 JSON body with the secret that signed it. Verify that raw body, not a
 re-serialized object. HTTPS only, except `http://` on loopback.
 
+`text` is a preview, cut at 2000 characters and ending in a single `…`.
+`truncated` is true when it was cut. For `kind: "audio"`, `text` is the
+transcription when wazap auto-transcribed the note itself, which it does for
+incoming notes only; the event waits up to 60 seconds for those words. In
+every other case `text` is the `[voice message · 0:42]` placeholder: a note
+you recorded yourself, a note longer than 600 seconds, a note WhatsApp stated
+no duration for, and a transcription that failed. `ts` is the original local
+time with a numeric offset, kept for consumers already reading it, and
+`timestamp` is the same instant in UTC.
+
+Events are not guaranteed to arrive in the order they happened. A message held
+for its transcript is overtaken by the messages behind it, so order by
+`timestamp` and not by arrival. Connection events are the exception: they are
+delivered in the order the link moved in.
+
+A message another person sent:
+
 ```json
 {
   "event": "message_received",
-  "from": "+15550100",
+  "from": "15550100",
   "chat_id": "15550100@s.whatsapp.net",
-  "ts": "2026-09-08T14:00:00+00:00",
-  "text": "hello, or a short preview",
+  "ts": "2026-09-08T17:00:00+03:00",
+  "timestamp": "2026-09-08T14:00:00.000Z",
+  "text": "hello, or a preview of something longer",
+  "truncated": false,
+  "kind": "text",
+  "from_me": false,
+  "is_self_chat": false,
   "message_id": "false_15550100@s.whatsapp.net_3EB0…",
   "account_id": "default",
   "account_name": "default"
 }
 ```
+
+A message sent from the phone, here in the "Message yourself" chat:
+
+```json
+{
+  "event": "message_sent",
+  "from": "15551234",
+  "chat_id": "15551234@s.whatsapp.net",
+  "ts": "2026-09-08T17:04:12+03:00",
+  "timestamp": "2026-09-08T14:04:12.000Z",
+  "text": "call the notary at 14:00 on Wednesday",
+  "truncated": false,
+  "kind": "text",
+  "from_me": true,
+  "is_self_chat": true,
+  "message_id": "true_15551234@s.whatsapp.net_3EB0…",
+  "account_id": "default",
+  "account_name": "default"
+}
+```
+
+A connection change. `status` is `linked`, `disconnected` or `expired`;
+`not_linked`, `linking` and `connecting` post nothing, and two changes that
+mean the same status post once.
+
+```json
+{
+  "event": "connection",
+  "status": "expired",
+  "timestamp": "2026-09-08T14:10:00.000Z",
+  "account_id": "default",
+  "account_name": "default"
+}
+```
+
+`connection` reports what the socket does while wazap is running. A clean
+shutdown posts nothing, and a crash posts nothing either, so silence does not
+mean the link is up. Poll `get_status` when you need to know that.
 
 ## Settings
 
@@ -759,7 +824,7 @@ re-serialized object. HTTPS only, except `http://` on loopback.
 | `WAZAP_TRANSCRIBE_API_KEY` | unset | API key; `OPENAI_API_KEY` is the fallback. Never a flag. |
 | `WAZAP_TRANSCRIBE_URL` | `https://api.openai.com/v1` | OpenAI-compatible base URL. |
 | `WAZAP_TRANSCRIBE_MODEL` | `gpt-4o-mini-transcribe` | Model at that URL. |
-| `WAZAP_WEBHOOK` | `off` | `on` posts live inbound messages to the webhook URL. |
+| `WAZAP_WEBHOOK` | `off` | `on` posts messages both ways, and connection changes, to the webhook URL. |
 | `WAZAP_WEBHOOK_URL` | unset | HTTPS endpoint. `http://` only on loopback. An account `webhook_url` wins. |
 | `WAZAP_WEBHOOK_SECRET` | unset | Shared secret for `X-Wazap-Signature`. Never a flag. An account `webhook_secret` wins. |
 
