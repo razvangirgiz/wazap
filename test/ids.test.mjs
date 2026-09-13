@@ -40,7 +40,7 @@ test("a number without a country code is INVALID_PHONE with an example", () => {
         assert.match(err.fix, /\+15550100/);
         return true;
       },
-      `resolveChatId(${JSON.stringify(input)})`,
+      `resolveChatId(${JSON.stringify(input)})`
     );
   }
 });
@@ -55,7 +55,7 @@ test("anything else is INVALID_ID", () => {
         assert.equal(err.code, "INVALID_ID", `${JSON.stringify(input)} should be INVALID_ID, got ${err.code}`);
         return true;
       },
-      `resolveChatId(${JSON.stringify(input)})`,
+      `resolveChatId(${JSON.stringify(input)})`
     );
   }
 });

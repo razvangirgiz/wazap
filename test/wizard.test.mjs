@@ -13,6 +13,7 @@ import {
 } from "../dist/wizard.js";
 
 function strip(text) {
+  // eslint-disable-next-line no-control-regex -- asserting on ANSI output
   return text.replace(/\x1b\[[0-9;]*m/g, "");
 }
 

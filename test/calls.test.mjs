@@ -58,7 +58,11 @@ test("a call that was answered carries how long it lasted", () => {
 test("nobody picking up is missed at one end and unanswered at the other", () => {
   const incoming = track();
   incoming.observe(event("offer", { isVideo: true }), ME, T0);
-  like(incoming.observe(event("timeout"), ME, T0 + 30_000), { outcome: "missed", kind: "video", direction: "incoming" });
+  like(incoming.observe(event("timeout"), ME, T0 + 30_000), {
+    outcome: "missed",
+    kind: "video",
+    direction: "incoming",
+  });
 
   const outgoing = track();
   outgoing.observe(event("offer", { from: `${ME.split("@")[0]}:12@s.whatsapp.net` }), ME, T0);
@@ -116,24 +120,48 @@ test("an event for a call wazap never saw offered still records it", () => {
 });
 
 const ENTRIES = [
-  { callId: "A", chatId: PEER, at: T0, kind: "voice", direction: "incoming", outcome: "answered", durationSeconds: 360 },
+  {
+    callId: "A",
+    chatId: PEER,
+    at: T0,
+    kind: "voice",
+    direction: "incoming",
+    outcome: "answered",
+    durationSeconds: 360,
+  },
   { callId: "B", chatId: PEER, at: T0, kind: "video", direction: "incoming", outcome: "missed" },
   { callId: "C", chatId: PEER, at: T0, kind: "voice", direction: "outgoing", outcome: "unanswered" },
   { callId: "D", chatId: PEER, at: T0, kind: "video", direction: "outgoing", outcome: "rejected" },
-  { callId: "E", chatId: GROUP, at: T0, kind: "voice", direction: "outgoing", outcome: "answered", durationSeconds: 45 },
+  {
+    callId: "E",
+    chatId: GROUP,
+    at: T0,
+    kind: "voice",
+    direction: "outgoing",
+    outcome: "answered",
+    durationSeconds: 45,
+  },
 ];
 
 test("an entry survives the encode and decode the store puts it through", () => {
   for (const entry of ENTRIES) {
     const raw = callMessage(entry);
     const restored = proto.WebMessageInfo.decode(proto.WebMessageInfo.encode(raw).finish());
-    assert.deepEqual(callInfo(restored), {
-      kind: entry.kind,
-      direction: entry.direction,
-      outcome: entry.outcome,
-      ...(entry.durationSeconds === undefined ? {} : { duration_seconds: entry.durationSeconds }),
-    }, entry.callId);
-    assert.equal(restored.key.id, `call_${entry.callId}`, "the id is stable, so a redelivery lands on the same message");
+    assert.deepEqual(
+      callInfo(restored),
+      {
+        kind: entry.kind,
+        direction: entry.direction,
+        outcome: entry.outcome,
+        ...(entry.durationSeconds === undefined ? {} : { duration_seconds: entry.durationSeconds }),
+      },
+      entry.callId
+    );
+    assert.equal(
+      restored.key.id,
+      `call_${entry.callId}`,
+      "the id is stable, so a redelivery lands on the same message"
+    );
     assert.equal(Number(restored.messageTimestamp), Math.floor(entry.at / 1000));
   }
 });

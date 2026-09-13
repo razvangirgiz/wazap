@@ -46,7 +46,7 @@ function isEnoent(err: unknown): boolean {
 /** Global flag/env is a hard off. A per-account `writes: false` turns that account off. */
 export function accountPolicy(
   account: AccountRecord,
-  config: Pick<Config, "readOnly" | "rateLimitPerMinute">,
+  config: Pick<Config, "readOnly" | "rateLimitPerMinute">
 ): { readOnly: boolean; rateLimit: number } {
   return {
     readOnly: config.readOnly || account.writes === false,
@@ -68,7 +68,7 @@ export function parseAccountId(id: string): string {
     throw new WazapError(
       "INVALID_ID",
       `Invalid account id "${id}".`,
-      "Use a slug like default or work: lowercase letters, digits, hyphen; 1–32 characters",
+      "Use a slug like default or work: lowercase letters, digits, hyphen; 1–32 characters"
     );
   }
   return id;
@@ -90,10 +90,18 @@ function parseAccountRecord(value: unknown, file: string): AccountRecord {
     throw new WazapError("INVALID_ID", `Account "${value.id}" in ${file} has no name.`, "Fix or remove accounts.json");
   }
   if (typeof value.enabled !== "boolean") {
-    throw new WazapError("INVALID_ID", `Account "${value.id}" in ${file} is missing enabled.`, "Fix or remove accounts.json");
+    throw new WazapError(
+      "INVALID_ID",
+      `Account "${value.id}" in ${file} is missing enabled.`,
+      "Fix or remove accounts.json"
+    );
   }
   if (value.owner !== null && typeof value.owner !== "string") {
-    throw new WazapError("INVALID_ID", `Account "${value.id}" in ${file} has a bad owner.`, "Fix or remove accounts.json");
+    throw new WazapError(
+      "INVALID_ID",
+      `Account "${value.id}" in ${file} has a bad owner.`,
+      "Fix or remove accounts.json"
+    );
   }
   const record: AccountRecord = {
     id: value.id,
@@ -103,13 +111,21 @@ function parseAccountRecord(value: unknown, file: string): AccountRecord {
   };
   if (value.writes !== undefined) {
     if (typeof value.writes !== "boolean") {
-      throw new WazapError("INVALID_ID", `Account "${value.id}" in ${file} has a bad writes flag.`, "Fix or remove accounts.json");
+      throw new WazapError(
+        "INVALID_ID",
+        `Account "${value.id}" in ${file} has a bad writes flag.`,
+        "Fix or remove accounts.json"
+      );
     }
     record.writes = value.writes;
   }
   if (value.rate_limit !== undefined) {
     if (typeof value.rate_limit !== "number" || !Number.isFinite(value.rate_limit) || value.rate_limit < 0) {
-      throw new WazapError("INVALID_ID", `Account "${value.id}" in ${file} has a bad rate_limit.`, "Fix or remove accounts.json");
+      throw new WazapError(
+        "INVALID_ID",
+        `Account "${value.id}" in ${file} has a bad rate_limit.`,
+        "Fix or remove accounts.json"
+      );
     }
     record.rate_limit = value.rate_limit;
   }
@@ -126,7 +142,7 @@ function webhookFields(
   secret: unknown,
   events: unknown,
   where = "",
-  fix = "Fix or remove accounts.json",
+  fix = "Fix or remove accounts.json"
 ): Pick<AccountRecord, "webhook_url" | "webhook_secret" | "webhook_events"> {
   const fields: Pick<AccountRecord, "webhook_url" | "webhook_secret" | "webhook_events"> = {};
   if (url !== undefined) {
@@ -152,7 +168,7 @@ function webhookFields(
       throw new WazapError(
         "INVALID_ID",
         `Account "${id}"${where} has a bad webhook_events: ${asWazapError(err).message}`,
-        fix,
+        fix
       );
     }
     fields.webhook_events = trimmed;
@@ -173,7 +189,11 @@ function parseAccountsFile(value: unknown, file: string): AccountsFile {
     throw new WazapError("INVALID_ID", `${file} lists the same account id twice.`, "Fix or remove accounts.json");
   }
   if (!ids.has(value.default)) {
-    throw new WazapError("INVALID_ID", `${file} default "${value.default}" is not an account.`, "Fix or remove accounts.json");
+    throw new WazapError(
+      "INVALID_ID",
+      `${file} default "${value.default}" is not an account.`,
+      "Fix or remove accounts.json"
+    );
   }
   return { v: 2, default: value.default, accounts };
 }
@@ -181,7 +201,7 @@ function parseAccountsFile(value: unknown, file: string): AccountsFile {
 export class AccountRegistry {
   private constructor(
     readonly dataDir: string,
-    private file: AccountsFile,
+    private file: AccountsFile
   ) {}
 
   /**
@@ -279,7 +299,7 @@ export class AccountRegistry {
       this.withAccount(id, (account) => ({
         ...account,
         ...webhookFields(id, webhook.url, webhook.secret, undefined, "", "Set a non-empty webhook URL or secret"),
-      })),
+      }))
     );
   }
 
@@ -292,7 +312,7 @@ export class AccountRegistry {
         delete next.webhook_secret;
         delete next.webhook_events;
         return next;
-      }),
+      })
     );
   }
 

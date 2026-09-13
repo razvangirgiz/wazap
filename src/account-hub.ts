@@ -118,8 +118,8 @@ export class AccountHub implements AccountSource {
         wa.start().catch((err: unknown) => {
           logError(`whatsapp start ${id}`, err);
           this.noteGiveUp(id);
-        }),
-      ),
+        })
+      )
     );
   }
 

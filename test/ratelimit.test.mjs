@@ -19,7 +19,7 @@ test("spends the whole bucket, then refuses", () => {
       assert.equal(err.code, "RATE_LIMITED");
       assert.match(err.fix, /^Wait \d+ seconds$/);
       return true;
-    },
+    }
   );
 });
 

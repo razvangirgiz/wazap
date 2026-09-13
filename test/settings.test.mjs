@@ -37,7 +37,7 @@ test("setEnvSetting replaces its own line and keeps every other one", () => {
   setEnvSetting(envFile, "WAZAP_HOST", "0.0.0.0");
   assert.equal(
     readFileSync(envFile, "utf8"),
-    "# notes\nWAZAP_READ_TOKEN=abc\nWAZAP_READ_ONLY=0\nWAZAP_RATE_LIMIT=5\nWAZAP_HOST=0.0.0.0\n",
+    "# notes\nWAZAP_READ_TOKEN=abc\nWAZAP_READ_ONLY=0\nWAZAP_RATE_LIMIT=5\nWAZAP_HOST=0.0.0.0\n"
   );
 });
 

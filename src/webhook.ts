@@ -119,7 +119,7 @@ export interface WebhookSinkOptions {
 /** The one place the webhook environment becomes typed. */
 export function readWebhookSettings(
   env: NodeJS.ProcessEnv = process.env,
-  override: WebhookOverride = {},
+  override: WebhookOverride = {}
 ): WebhookSettings {
   const raw = stripPasted(env.WAZAP_WEBHOOK ?? "");
   const flag = raw.toLowerCase();
@@ -232,7 +232,10 @@ export function parseWebhookEvent(raw: string | undefined): WebhookEvent {
  * hearing only what it already handled.
  */
 export function parseWebhookEvents(raw: string): readonly WebhookEvent[] {
-  const tokens = raw.split(",").map((token) => token.trim()).filter((token) => token !== "");
+  const tokens = raw
+    .split(",")
+    .map((token) => token.trim())
+    .filter((token) => token !== "");
   if (tokens.length === 0) return WEBHOOK_EVENTS_DEFAULT;
   const wanted = new Set<WebhookEvent>();
   for (const token of tokens) {
@@ -338,7 +341,7 @@ export class WebhookSink {
 
   constructor(
     private readonly env: NodeJS.ProcessEnv = process.env,
-    opts: WebhookSinkOptions = {},
+    opts: WebhookSinkOptions = {}
   ) {
     this.post = opts.post ?? fetch;
     this.retryDelays = opts.retryDelays ?? WEBHOOK_RETRY_DELAYS_MS;
@@ -403,11 +406,15 @@ export class WebhookSink {
 
   private async postEvent(
     payload: WebhookPayload,
-    settings: Extract<WebhookSettings, { kind: "ready" }>,
+    settings: Extract<WebhookSettings, { kind: "ready" }>
   ): Promise<WebhookTestResult> {
     const body = JSON.stringify(payload);
     const attempts = 1 + this.retryDelays.length;
-    let last: WebhookTestResult = { ok: false, error: "webhook POST failed", fix: "check the webhook URL is reachable and returns 2xx" };
+    let last: WebhookTestResult = {
+      ok: false,
+      error: "webhook POST failed",
+      fix: "check the webhook URL is reachable and returns 2xx",
+    };
     for (let i = 0; i < attempts; i++) {
       last = await this.postOnce(body, payload.event, settings);
       if (last.ok) {
@@ -428,7 +435,7 @@ export class WebhookSink {
   private async postOnce(
     body: string,
     event: WebhookEvent,
-    settings: Extract<WebhookSettings, { kind: "ready" }>,
+    settings: Extract<WebhookSettings, { kind: "ready" }>
   ): Promise<WebhookTestResult> {
     try {
       const response = await this.post(settings.url, {

@@ -44,7 +44,10 @@ function form(fields) {
 }
 
 /** One server, one provider, torn down by the caller. */
-async function boot(t, { password = PASSWORD, credentials = [{ token: "static-read", write: false }], readOnly = false } = {}) {
+async function boot(
+  t,
+  { password = PASSWORD, credentials = [{ token: "static-read", write: false }], readOnly = false } = {}
+) {
   const dataDir = mkdtempSync(join(tmpdir(), "wazap-oauth-"));
   const port = await freePort();
   const publicUrl = new URL(`http://127.0.0.1:${port}`);
@@ -77,7 +80,11 @@ async function begin(ctx, { scope, clientName = "Poke", authMethod = "none" } = 
   const { body: client } = await ctx.fetchJson("/register", {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ redirect_uris: [redirectUri], client_name: clientName, token_endpoint_auth_method: authMethod }),
+    body: JSON.stringify({
+      redirect_uris: [redirectUri],
+      client_name: clientName,
+      token_endpoint_auth_method: authMethod,
+    }),
   });
   assert.ok(client.client_id, "registration returns a client_id");
 
@@ -139,28 +146,53 @@ async function signIn(ctx, options) {
 async function listTools(ctx, token) {
   const init = await fetch(`${ctx.base}/mcp`, {
     method: "POST",
-    headers: { "content-type": "application/json", accept: "application/json, text/event-stream", authorization: `Bearer ${token}` },
-    body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2025-03-26", capabilities: {}, clientInfo: { name: "t", version: "0" } } }),
+    headers: {
+      "content-type": "application/json",
+      accept: "application/json, text/event-stream",
+      authorization: `Bearer ${token}`,
+    },
+    body: JSON.stringify({
+      jsonrpc: "2.0",
+      id: 1,
+      method: "initialize",
+      params: { protocolVersion: "2025-03-26", capabilities: {}, clientInfo: { name: "t", version: "0" } },
+    }),
   });
   if (init.status !== 200) return { status: init.status };
   const session = init.headers.get("mcp-session-id");
   await init.text();
   const res = await fetch(`${ctx.base}/mcp`, {
     method: "POST",
-    headers: { "content-type": "application/json", accept: "application/json, text/event-stream", authorization: `Bearer ${token}`, "mcp-session-id": session },
+    headers: {
+      "content-type": "application/json",
+      accept: "application/json, text/event-stream",
+      authorization: `Bearer ${token}`,
+      "mcp-session-id": session,
+    },
     body: JSON.stringify({ jsonrpc: "2.0", id: 2, method: "tools/list" }),
   });
   const text = await res.text();
-  const data = text.split("\n").find((line) => line.startsWith("data:"))?.slice(5) ?? text;
+  const data =
+    text
+      .split("\n")
+      .find((line) => line.startsWith("data:"))
+      ?.slice(5) ?? text;
   const names = JSON.parse(data).result.tools.map((tool) => tool.name);
   return { status: res.status, names };
 }
 
 test("an unauthenticated call is told where to sign in", async (t) => {
   const ctx = await boot(t);
-  const { res } = await ctx.fetchJson("/mcp", { method: "POST", headers: { "content-type": "application/json" }, body: "{}" });
+  const { res } = await ctx.fetchJson("/mcp", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: "{}",
+  });
   assert.equal(res.status, 401);
-  assert.equal(res.headers.get("www-authenticate"), `Bearer resource_metadata="${ctx.base}/.well-known/oauth-protected-resource/mcp"`);
+  assert.equal(
+    res.headers.get("www-authenticate"),
+    `Bearer resource_metadata="${ctx.base}/.well-known/oauth-protected-resource/mcp"`
+  );
 
   const { body: resource } = await ctx.fetchJson("/.well-known/oauth-protected-resource/mcp");
   assert.equal(resource.resource, `${ctx.base}/mcp`);
@@ -252,7 +284,10 @@ test("a wrong password stays on the page twice, the third throws the page away, 
   assert.equal(third.res.status, 401);
   assert.match(third.body, /three times/);
   // The page is gone: the right password on it goes nowhere.
-  assert.equal((await approve(ctx, g.request, { password: PASSWORD, access: "read", decision: "allow" })).res.status, 400);
+  assert.equal(
+    (await approve(ctx, g.request, { password: PASSWORD, access: "read", decision: "allow" })).res.status,
+    400
+  );
 
   const fresh = await begin(ctx);
   assert.equal((await again(fresh.request)).res.status, 401);
@@ -291,7 +326,11 @@ test("a refresh keeps the grant, a revoke ends it, and a restart remembers both"
   assert.equal(second.scope, "read write");
 
   // Another process reading the same file sees the grant.
-  const reloaded = new WazapOAuthProvider({ publicUrl: new URL(ctx.base), password: PASSWORD, stateFile: join(ctx.dataDir, "oauth.json") });
+  const reloaded = new WazapOAuthProvider({
+    publicUrl: new URL(ctx.base),
+    password: PASSWORD,
+    stateFile: join(ctx.dataDir, "oauth.json"),
+  });
   const info = await reloaded.verifyAccessToken(second.access_token);
   assert.deepEqual(info.scopes, ["read", "write"]);
   assert.equal(reloaded.grants().length, 1);
@@ -317,7 +356,10 @@ test("an expired access token is refused and swept", async (t) => {
     stateFile: join(dataDir, "oauth.json"),
     now: () => now,
   });
-  const client = await provider.clientsStore.registerClient({ redirect_uris: ["https://a.example/cb"], client_name: "x" });
+  const client = await provider.clientsStore.registerClient({
+    redirect_uris: ["https://a.example/cb"],
+    client_name: "x",
+  });
   // Reach into the flow the way /oauth/approve does, without HTTP.
   const tokens = provider["issue"](client.client_id, ["read"]);
   assert.deepEqual((await provider.verifyAccessToken(tokens.access_token)).scopes, ["read"]);
@@ -331,7 +373,11 @@ test("an expired access token is refused and swept", async (t) => {
 
 test("with no static token and OAuth on, nobody gets in without signing in", async (t) => {
   const ctx = await boot(t, { credentials: [] });
-  const { res } = await ctx.fetchJson("/mcp", { method: "POST", headers: { "content-type": "application/json" }, body: "{}" });
+  const { res } = await ctx.fetchJson("/mcp", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: "{}",
+  });
   assert.equal(res.status, 401);
   assert.equal((await listTools(ctx, "anything")).status, 401);
 
@@ -395,7 +441,10 @@ test("a forgotten refresh token and an orphaned registration are swept", async (
     stateFile: join(dataDir, "oauth.json"),
     now: () => now,
   });
-  const used = await provider.clientsStore.registerClient({ redirect_uris: ["https://a.example/cb"], client_name: "used" });
+  const used = await provider.clientsStore.registerClient({
+    redirect_uris: ["https://a.example/cb"],
+    client_name: "used",
+  });
   await provider.clientsStore.registerClient({ redirect_uris: ["https://b.example/cb"], client_name: "orphan" });
   provider["issue"](used.client_id, ["read"]);
   assert.equal(provider.grants().length, 1);
@@ -403,7 +452,10 @@ test("a forgotten refresh token and an orphaned registration are swept", async (
   now += 2 * 60 * 60 * 1000;
   provider["sweep"]();
   let onDisk = JSON.parse(readFileSync(join(dataDir, "oauth.json"), "utf8"));
-  assert.deepEqual(Object.values(onDisk.clients).map((c) => c.client_name), ["used"]);
+  assert.deepEqual(
+    Object.values(onDisk.clients).map((c) => c.client_name),
+    ["used"]
+  );
   assert.equal(Object.keys(onDisk.refresh).length, 1);
 
   now += 91 * 24 * 60 * 60 * 1000;

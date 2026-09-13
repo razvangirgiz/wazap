@@ -45,17 +45,17 @@ test("a current wazap with nothing stale has nothing to do", () => {
 test("a newer release upgrades, restarts the service and refreshes the skills, in that order", () => {
   const plan = planUpdate(
     probes({ service: service(), targets: [target("cursor", "stale"), target("codex", "installed")] }),
-    NEWER,
+    NEWER
   );
   assert.deepEqual(
     plan.steps.map((step) => step.kind),
-    ["npm", "service-restart", "skills"],
+    ["npm", "service-restart", "skills"]
   );
   assert.deepEqual(plan.steps[0], { kind: "npm", version: NEWER });
   assert.deepEqual(
     plan.steps[2].targets.map((entry) => entry.name),
     ["cursor", "codex"],
-    "the new package ships new skills, so every detected harness is behind",
+    "the new package ships new skills, so every detected harness is behind"
   );
 });
 
@@ -75,7 +75,7 @@ test("no service record means no restart", () => {
   const plan = planUpdate(probes(), NEWER);
   assert.deepEqual(
     plan.steps.map((step) => step.kind),
-    ["npm"],
+    ["npm"]
   );
 });
 
@@ -83,7 +83,7 @@ test("a service left on an older build is restarted even with nothing to install
   const plan = planUpdate(probes({ service: service("0.0.1") }), WAZAP_VERSION);
   assert.deepEqual(
     plan.steps.map((step) => step.kind),
-    ["service-restart"],
+    ["service-restart"]
   );
 });
 
@@ -92,7 +92,7 @@ test("a silent registry plans no npm step, only a note", () => {
   assert.equal(plan.latest, null);
   assert.deepEqual(
     plan.steps.map((step) => step.kind),
-    ["note"],
+    ["note"]
   );
   assert.match(plan.steps[0].text, /registry did not answer/);
 });
@@ -101,7 +101,7 @@ test("a missing skill target is installed even when the version is current", () 
   const plan = planUpdate(probes({ targets: [target("cursor", "missing")] }), WAZAP_VERSION);
   assert.deepEqual(
     plan.steps.map((step) => step.kind),
-    ["skills"],
+    ["skills"]
   );
 });
 

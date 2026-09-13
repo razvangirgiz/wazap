@@ -1,18 +1,8 @@
 /** Opening a WhatsApp socket for the sole purpose of linking a device. */
 
 import { setTimeout as sleep } from "node:timers/promises";
-import makeWASocket, {
-  Browsers,
-  DisconnectReason,
-  type UserFacingSocketConfig,
-  type WASocket,
-} from "baileys";
-import {
-  readLinkedAccount,
-  useAtomicAuthState,
-  withoutAppStateSync,
-  type LinkedAccount,
-} from "./auth-state.js";
+import makeWASocket, { Browsers, DisconnectReason, type UserFacingSocketConfig, type WASocket } from "baileys";
+import { readLinkedAccount, useAtomicAuthState, withoutAppStateSync, type LinkedAccount } from "./auth-state.js";
 import { RELINK_FIX, WazapError, asWazapError } from "./errors.js";
 
 /**
@@ -43,10 +33,7 @@ export const PAIRING_TIMEOUT_MS = 120_000;
 const CODE_TIMEOUT_MS = 10_000;
 
 type Attempt =
-  | { kind: "open" }
-  | { kind: "restart" }
-  | { kind: "closed"; statusCode?: number }
-  | { kind: "failed"; error: unknown };
+  { kind: "open" } | { kind: "restart" } | { kind: "closed"; statusCode?: number } | { kind: "failed"; error: unknown };
 
 export interface LinkOptions {
   deadline: number;
@@ -100,7 +87,9 @@ export async function linkSession(authDir: string, opts: LinkOptions): Promise<W
           if (update.connection === "close") {
             const statusCode = (update.lastDisconnect?.error as { output?: { statusCode?: number } } | undefined)
               ?.output?.statusCode;
-            resolve(statusCode === DisconnectReason.restartRequired ? { kind: "restart" } : { kind: "closed", statusCode });
+            resolve(
+              statusCode === DisconnectReason.restartRequired ? { kind: "restart" } : { kind: "closed", statusCode }
+            );
           }
         });
       });
@@ -115,10 +104,13 @@ export async function linkSession(authDir: string, opts: LinkOptions): Promise<W
         throw new WazapError(
           "SESSION_EXPIRED",
           "WhatsApp rejected the link. The code may have expired or been entered wrong.",
-          RELINK_FIX,
+          RELINK_FIX
         );
       }
-      throw new WazapError("WHATSAPP_ERROR", `WhatsApp closed the connection (code ${attempt.statusCode ?? "unknown"}).`);
+      throw new WazapError(
+        "WHATSAPP_ERROR",
+        `WhatsApp closed the connection (code ${attempt.statusCode ?? "unknown"}).`
+      );
     }
   } finally {
     clearTimeout(timer);

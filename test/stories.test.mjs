@@ -19,7 +19,9 @@ const STATUS = "status@broadcast";
 function setup() {
   const { svc, sock } = connectedService(WhatsAppService, { prefix: "wazap-stories-", id: ME, name: "Răzvan" });
   const tools = new Map();
-  registerTools({ registerTool: (name, meta, handler) => tools.set(name, { meta, handler }) }, asToolSource(svc), { allowWrite: false });
+  registerTools({ registerTool: (name, meta, handler) => tools.set(name, { meta, handler }) }, asToolSource(svc), {
+    allowWrite: false,
+  });
   const call = (name, args = {}) => {
     const { meta, handler } = tools.get(name);
     return handler(z.object(meta.inputSchema).parse(args));
@@ -51,8 +53,11 @@ test("stories are listed by author, newest first, and show nowhere else", async 
   const result = await call("get_stories", {});
   assert.deepEqual(
     result.structuredContent.stories.map((s) => [s.sender.name, s.text]),
-    [["Dan", "[image] apus"], ["Ana", "la mare 🌊"]],
-    "the day-old one is gone, the rest newest first",
+    [
+      ["Dan", "[image] apus"],
+      ["Ana", "la mare 🌊"],
+    ],
+    "the day-old one is gone, the rest newest first"
   );
   assert.match(result.content[0].text, /## Dan — `40700000003@s.whatsapp.net`/);
   assert.match(result.content[0].text, /- 3h ago · la mare 🌊/);
@@ -65,7 +70,10 @@ test("stories are listed by author, newest first, and show nowhere else", async 
   assert.equal(wait.structuredContent.timed_out, true, "not something a wait wakes for");
 
   const narrow = await call("get_stories", { hours: 2 });
-  assert.deepEqual(narrow.structuredContent.stories.map((s) => s.sender.name), ["Dan"]);
+  assert.deepEqual(
+    narrow.structuredContent.stories.map((s) => s.sender.name),
+    ["Dan"]
+  );
 });
 
 test("a story's photo gets a preview and its message id works with the media tools", async () => {
@@ -86,7 +94,13 @@ test("stories survive a restart through the snapshot, and the user's own are not
   story(ANA, "ieri");
   sock.ev.emit("messages.upsert", {
     type: "notify",
-    messages: [{ key: { remoteJid: STATUS, fromMe: true, id: "MINE" }, message: { conversation: "a mea" }, messageTimestamp: Math.floor(Date.now() / 1000) }],
+    messages: [
+      {
+        key: { remoteJid: STATUS, fromMe: true, id: "MINE" },
+        message: { conversation: "a mea" },
+        messageTimestamp: Math.floor(Date.now() / 1000),
+      },
+    ],
   });
   const snapshot = svc.store.serialize();
   assert.deepEqual(snapshot.stories, [`false_${STATUS}_S1`]);
@@ -95,5 +109,8 @@ test("stories survive a restart through the snapshot, and the user's own are not
   const { svc: again } = connectedService(WhatsAppService, { prefix: "wazap-stories-", id: ME, name: "Răzvan" });
   again.store.hydrate(JSON.parse(JSON.stringify(snapshot)));
   const back = (await again.getStories(24)).data;
-  assert.deepEqual(back.map((s) => s.text), ["ieri"]);
+  assert.deepEqual(
+    back.map((s) => s.text),
+    ["ieri"]
+  );
 });

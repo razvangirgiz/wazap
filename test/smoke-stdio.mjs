@@ -23,7 +23,9 @@ const SKILL_NAMES = readdirSync(skillsDir, { withFileTypes: true })
 
 /** The markdown a prompt has to hand back: the SKILL.md minus its frontmatter. */
 function skillBody(name) {
-  return readFileSync(join(skillsDir, name, "SKILL.md"), "utf8").replace(/^---\n[\s\S]*?\n---\n/, "").trim();
+  return readFileSync(join(skillsDir, name, "SKILL.md"), "utf8")
+    .replace(/^---\n[\s\S]*?\n---\n/, "")
+    .trim();
 }
 
 export async function runSmoke({
@@ -52,7 +54,9 @@ export async function runSmoke({
     for (const name of SKILL_NAMES) {
       assert.ok(instructions.includes(name), `the instructions never name ${name}: ${instructions}`);
     }
-    log(`initialize ok — ${init.result.serverInfo.name} ${init.result.serverInfo.version}, ${instructions.length} chars of instructions`);
+    log(
+      `initialize ok — ${init.result.serverInfo.name} ${init.result.serverInfo.version}, ${instructions.length} chars of instructions`
+    );
 
     notify("notifications/initialized", {});
 
@@ -98,6 +102,6 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
     (err) => {
       console.error(`stdio smoke test FAILED: ${err.message}`);
       process.exit(1);
-    },
+    }
   );
 }

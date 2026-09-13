@@ -80,7 +80,10 @@ test("a refused link goes back to not_linked and says why", async () => {
   const { svc } = await unlinkedService();
   const { sock, stop } = await linking(svc);
   try {
-    sock.ev.emit("connection.update", { connection: "close", lastDisconnect: { error: { output: { statusCode: LOGGED_OUT } } } });
+    sock.ev.emit("connection.update", {
+      connection: "close",
+      lastDisconnect: { error: { output: { statusCode: LOGGED_OUT } } },
+    });
     await waitFor(() => svc.getStatus().status === "not_linked", 5_000, "the link to be given up");
     const after = svc.getStatus();
     assert.equal(after.pairing, undefined);

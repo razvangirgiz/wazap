@@ -199,7 +199,7 @@ test("list_accounts lists every configured account", async () => {
   assert.equal(result.structuredContent.default, "default");
   assert.deepEqual(
     result.structuredContent.accounts.map((row) => row.id),
-    ["default", "work"],
+    ["default", "work"]
   );
   assert.equal(result.structuredContent.accounts[0].write_tools, true);
   assert.equal(result.structuredContent.accounts[1].write_tools, false);
@@ -243,7 +243,7 @@ test("get_status on two accounts keeps the default on top and lists both", async
   assert.equal(result.structuredContent.write_tools, true, "session write tools, not work's policy");
   assert.deepEqual(
     result.structuredContent.accounts.map((row) => row.id),
-    ["default", "work"],
+    ["default", "work"]
   );
   assert.equal(result.structuredContent.accounts[1].write_tools, false);
   assert.match(result.content[0].text, /accounts.*default, work/);
@@ -293,7 +293,7 @@ test("list_accounts ignores a bad account_id and still lists a disabled row", as
   assert.equal(result.structuredContent.count, 2);
   assert.deepEqual(
     result.structuredContent.accounts.map((row) => row.id),
-    ["default", "work"],
+    ["default", "work"]
   );
   assert.equal(result.structuredContent.accounts[1].status, "disabled");
   assert.equal(result.structuredContent.accounts[1].enabled, false);

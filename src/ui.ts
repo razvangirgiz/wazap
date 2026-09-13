@@ -35,8 +35,7 @@ function paint(code: string, text: string): string {
 }
 
 function brandCode(): string {
-  const rich =
-    (process.env.TERM ?? "").includes("256color") || /truecolor|24bit/i.test(process.env.COLORTERM ?? "");
+  const rich = (process.env.TERM ?? "").includes("256color") || /truecolor|24bit/i.test(process.env.COLORTERM ?? "");
   return rich ? "\x1b[38;5;42m" : "\x1b[32m";
 }
 
@@ -153,6 +152,7 @@ function charWidth(code: number): number {
 }
 
 export function stripAnsi(text: string): string {
+  // eslint-disable-next-line no-control-regex -- ANSI SGR codes are the point
   return text.replace(/\x1b\[[0-9;]*m/g, "");
 }
 

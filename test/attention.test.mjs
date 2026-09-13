@@ -69,7 +69,7 @@ test("wait_for_messages returns the message that lands while it waits, and nothi
   assert.equal(result.structuredContent.timed_out, false);
   assert.deepEqual(
     result.structuredContent.messages.map((m) => [m.sender.name, m.text]),
-    [["Ana", "ești liber mâine la 10?"]],
+    [["Ana", "ești liber mâine la 10?"]]
   );
   assert.match(result.content[0].text, /1 new message/);
   assert.match(result.content[0].text, /cursor: `/);
@@ -85,7 +85,7 @@ test("a burst that follows the first message comes back in the same answer", asy
   const result = await waiting;
   assert.deepEqual(
     result.structuredContent.messages.map((m) => m.text),
-    ["salut", "ai o secundă?"],
+    ["salut", "ai o secundă?"]
   );
 });
 
@@ -102,7 +102,7 @@ test("the cursor replays what landed between two calls, and a timeout comes back
   assert.ok(Date.now() - started < 3_000, "did not block: the message was already there");
   assert.deepEqual(
     second.structuredContent.messages.map((m) => m.text),
-    ["poți să mă suni?"],
+    ["poți să mă suni?"]
   );
 
   const third = await call("wait_for_messages", { timeout_seconds: 1, cursor: second.structuredContent.cursor });
@@ -124,19 +124,30 @@ test("addressed_to_me wakes for a direct message, a mention and a reply, not for
   await sleep(20);
   arrive(GROUP, "cineva vine la 12?", { participant: DAN });
   await sleep(100);
-  arrive(GROUP, { extendedTextMessage: { text: "@Răzvan poți?", contextInfo: { mentionedJid: [ME] } } }, { participant: DAN });
+  arrive(
+    GROUP,
+    { extendedTextMessage: { text: "@Răzvan poți?", contextInfo: { mentionedJid: [ME] } } },
+    { participant: DAN }
+  );
   const result = await waiting;
   assert.deepEqual(
     result.structuredContent.messages.map((m) => m.text),
     ["@Răzvan poți?"],
-    "only the mention",
+    "only the mention"
   );
 
-  const chatOnly = call("wait_for_messages", { timeout_seconds: 3, chat_id: ANA, cursor: result.structuredContent.cursor });
+  const chatOnly = call("wait_for_messages", {
+    timeout_seconds: 3,
+    chat_id: ANA,
+    cursor: result.structuredContent.cursor,
+  });
   await sleep(20);
   arrive(DAN, "ignored, wrong chat");
   arrive(ANA, "și eu");
-  assert.deepEqual((await chatOnly).structuredContent.messages.map((m) => m.text), ["și eu"]);
+  assert.deepEqual(
+    (await chatOnly).structuredContent.messages.map((m) => m.text),
+    ["și eu"]
+  );
 });
 
 test("include_previews attaches the preview WhatsApp shipped with a photo and labels its line", async () => {
@@ -151,7 +162,11 @@ test("include_previews attaches the preview WhatsApp shipped with a photo and la
   const withPreviews = await call("get_recent_messages", { hours: 1, include_previews: true });
   assert.equal(withPreviews.structuredContent.preview_count, 1);
   assert.equal(withPreviews.content.length, 2);
-  assert.deepEqual(withPreviews.content[1], { type: "image", data: Buffer.from(jpeg).toString("base64"), mimeType: "image/jpeg" });
+  assert.deepEqual(withPreviews.content[1], {
+    type: "image",
+    data: Buffer.from(jpeg).toString("base64"),
+    mimeType: "image/jpeg",
+  });
   assert.match(withPreviews.content[0].text, /1 preview attached/);
   assert.match(withPreviews.content[0].text, /\[image\] chitanța \(preview 1\)/);
 
@@ -212,7 +227,21 @@ test("a video gets one frame as its preview when ffmpeg is there", async (t) => 
   const { join } = await import("node:path");
   const dir = mkdtempSync(join(tmpdir(), "wazap-frame-test-"));
   const clip = join(dir, "clip.mp4");
-  await promisify(execFile)(ffmpeg, ["-nostdin", "-loglevel", "error", "-y", "-f", "lavfi", "-i", "testsrc=size=640x360:rate=10", "-t", "2", "-pix_fmt", "yuv420p", clip]);
+  await promisify(execFile)(ffmpeg, [
+    "-nostdin",
+    "-loglevel",
+    "error",
+    "-y",
+    "-f",
+    "lavfi",
+    "-i",
+    "testsrc=size=640x360:rate=10",
+    "-t",
+    "2",
+    "-pix_fmt",
+    "yuv420p",
+    clip,
+  ]);
   const mp4 = readFileSync(clip);
 
   const { svc, call, arrive } = setup();
@@ -226,17 +255,24 @@ test("a video gets one frame as its preview when ffmpeg is there", async (t) => 
 });
 
 test("a catch-up fetches the metadata of the groups that spoke, so their senders have names", async () => {
-  const { svc, sock, call, arrive } = setup();
+  const { svc, call, arrive } = setup();
   const lid = "777888999000111@lid";
   let fetches = 0;
   svc.sockClient.groupMetadata = async (id) => {
     fetches++;
-    return { id, subject: "Meniul zilei", participants: [{ id: lid, phoneNumber: "40700000040@s.whatsapp.net", name: "Rodica" }] };
+    return {
+      id,
+      subject: "Meniul zilei",
+      participants: [{ id: lid, phoneNumber: "40700000040@s.whatsapp.net", name: "Rodica" }],
+    };
   };
   arrive(GROUP, "meniul de azi", { participant: lid });
   const recent = await call("get_recent_messages", { hours: 1 });
   assert.equal(fetches, 1);
-  assert.deepEqual(recent.structuredContent.conversations[0].messages.map((m) => m.sender.name), ["Rodica"]);
+  assert.deepEqual(
+    recent.structuredContent.conversations[0].messages.map((m) => m.sender.name),
+    ["Rodica"]
+  );
   await call("get_recent_messages", { hours: 1 });
   assert.equal(fetches, 1, "and asks once");
 });
@@ -254,7 +290,11 @@ test("get_unanswered lists the people whose ask is still open, oldest first, and
   arrive(VLAD, "ai o clipă", { at: Date.now() - 4 * hour });
   arrive(VLAD, "?", { at: Date.now() - 4 * hour + 1000 });
   arrive(GROUP, "cine vine la 12?", { participant: DAN, at: Date.now() - hour });
-  arrive(GROUP, { extendedTextMessage: { text: "@Răzvan tu?", contextInfo: { mentionedJid: [ME] } } }, { participant: DAN, at: Date.now() - hour });
+  arrive(
+    GROUP,
+    { extendedTextMessage: { text: "@Răzvan tu?", contextInfo: { mentionedJid: [ME] } } },
+    { participant: DAN, at: Date.now() - hour }
+  );
   const LINK = "40700000006@s.whatsapp.net";
   arrive(LINK, "https://youtu.be/abc?si=xyz", { at: Date.now() - hour });
   const OLD = "40700000007@s.whatsapp.net";
@@ -267,16 +307,23 @@ test("get_unanswered lists the people whose ask is still open, oldest first, and
       ["Ana", "individual", "poți să-mi trimiți contractul?", 1],
       ["40700000005", "individual", "?", 2],
       ["120363000000000001@g.us", "group", "@Răzvan tu?", 2],
-    ],
+    ]
   );
   assert.match(all.content[0].text, /Waiting on you \(3\)/);
   assert.match(all.content[0].text, /> poți să-mi trimiți contractul\?/);
 
   const old = await call("get_unanswered", { min_age_hours: 48 });
-  assert.deepEqual(old.structuredContent.chats.map((c) => c.name), ["Ana"], "a link's query string is not a question, and a 20-day-old ask is abandoned");
+  assert.deepEqual(
+    old.structuredContent.chats.map((c) => c.name),
+    ["Ana"],
+    "a link's query string is not a question, and a 20-day-old ask is abandoned"
+  );
 
   const everything = await call("get_unanswered", { min_age_hours: 48, max_age_hours: 8760 });
-  assert.deepEqual(everything.structuredContent.chats.map((c) => c.name), ["40700000007", "Ana"]);
+  assert.deepEqual(
+    everything.structuredContent.chats.map((c) => c.name),
+    ["40700000007", "Ana"]
+  );
 });
 
 test("a voice note nobody has heard is an ask; a transcribed one is judged on its words", async () => {
@@ -284,7 +331,10 @@ test("a voice note nobody has heard is an ask; a transcribed one is judged on it
   const voice = { audioMessage: { mimetype: "audio/ogg; codecs=opus", ptt: true, seconds: 12 } };
   const id = arrive(ANA, voice);
   let result = await call("get_unanswered", {});
-  assert.deepEqual(result.structuredContent.chats.map((c) => c.ask.type), ["voice"]);
+  assert.deepEqual(
+    result.structuredContent.chats.map((c) => c.ask.type),
+    ["voice"]
+  );
 
   svc.store.transcripts.set(`false_${ANA}_${id}`, { text: "gata, am rezolvat, mersi", provider: "local" });
   result = await call("get_unanswered", {});
@@ -300,16 +350,27 @@ test("a reaction lands on the message it answers, never as a line of its own, an
   react("👍", { fromMe: true });
 
   let read = await call("read_messages", { chat_id: ANA });
-  assert.deepEqual(read.structuredContent.messages.map((m) => m.text), ["am ajuns"], "no [reaction] line");
+  assert.deepEqual(
+    read.structuredContent.messages.map((m) => m.text),
+    ["am ajuns"],
+    "no [reaction] line"
+  );
   assert.deepEqual(
     read.structuredContent.messages[0].reactions.map((r) => [r.emoji, r.sender]),
-    [["❤️", ANA], ["👍", ME]],
+    [
+      ["❤️", ANA],
+      ["👍", ME],
+    ]
   );
   assert.match(read.content[0].text, /\[❤️👍\]/);
 
   react("");
   read = await call("read_messages", { chat_id: ANA });
-  assert.deepEqual(read.structuredContent.messages[0].reactions.map((r) => r.emoji), ["👍"], "Ana took hers back");
+  assert.deepEqual(
+    read.structuredContent.messages[0].reactions.map((r) => r.emoji),
+    ["👍"],
+    "Ana took hers back"
+  );
 
   const recent = await call("wait_for_messages", { timeout_seconds: 1 });
   assert.equal(recent.structuredContent.timed_out, true, "a reaction wakes no wait");

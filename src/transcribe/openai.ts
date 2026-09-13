@@ -71,7 +71,10 @@ export const openaiProvider: Provider = {
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
         const timedOut = err instanceof Error && (err.name === "TimeoutError" || err.name === "AbortError");
-        throw failed(timedOut ? "Transcription request timed out after 2 minutes." : `Transcription request failed: ${message}`, key);
+        throw failed(
+          timedOut ? "Transcription request timed out after 2 minutes." : `Transcription request failed: ${message}`,
+          key
+        );
       }
       if (response.ok) break;
       const retryable = response.status === 429 || response.status >= 500;
@@ -80,7 +83,7 @@ export const openaiProvider: Provider = {
         throw failed(
           `Transcription API returned ${response.status}${excerpt === "" ? "" : `: ${excerpt}`}`,
           key,
-          response.status === 401 || response.status === 403 ? KEY_FIX : undefined,
+          response.status === 401 || response.status === 403 ? KEY_FIX : undefined
         );
       }
       await response.body?.cancel().catch(() => {});

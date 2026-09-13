@@ -25,18 +25,48 @@ const CASES = [
   ["video", { videoMessage: { mimetype: "video/mp4" } }, "video", "[video]"],
   ["audio file", { audioMessage: { mimetype: "audio/mpeg", ptt: false } }, "audio", "[audio]"],
   ["voice note", { audioMessage: { mimetype: "audio/ogg", ptt: true } }, "voice", "[voice message]"],
-  ["voice note with a length", { audioMessage: { mimetype: "audio/ogg", ptt: true, seconds: 42 } }, "voice", "[voice message · 0:42]"],
-  ["audio file with a length", { audioMessage: { mimetype: "audio/mpeg", ptt: false, seconds: 185 } }, "audio", "[audio · 3:05]"],
+  [
+    "voice note with a length",
+    { audioMessage: { mimetype: "audio/ogg", ptt: true, seconds: 42 } },
+    "voice",
+    "[voice message · 0:42]",
+  ],
+  [
+    "audio file with a length",
+    { audioMessage: { mimetype: "audio/mpeg", ptt: false, seconds: 185 } },
+    "audio",
+    "[audio · 3:05]",
+  ],
   ["document", { documentMessage: { fileName: "report.pdf" } }, "document", "[document] report.pdf"],
   ["sticker", { stickerMessage: { mimetype: "image/webp" } }, "sticker", "[sticker]"],
-  ["named location", { locationMessage: { degreesLatitude: 46.77, degreesLongitude: 23.6, name: "Cluj" } }, "location", "[location] Cluj"],
-  ["bare location", { locationMessage: { degreesLatitude: 46.77, degreesLongitude: 23.6 } }, "location", "[location] 46.77, 23.60"],
+  [
+    "named location",
+    { locationMessage: { degreesLatitude: 46.77, degreesLongitude: 23.6, name: "Cluj" } },
+    "location",
+    "[location] Cluj",
+  ],
+  [
+    "bare location",
+    { locationMessage: { degreesLatitude: 46.77, degreesLongitude: 23.6 } },
+    "location",
+    "[location] 46.77, 23.60",
+  ],
   ["contact card", { contactMessage: { displayName: "Ana" } }, "contact", "[contact] Ana"],
   ["poll", { pollCreationMessageV3: { name: "Pizza or pasta?", options: [] } }, "poll", "[poll] Pizza or pasta?"],
   ["reaction", { reactionMessage: { text: "👍" } }, "reaction", "[reaction] 👍"],
   ["deleted", { protocolMessage: { type: proto.Message.ProtocolMessage.Type.REVOKE } }, "deleted", "[deleted]"],
-  ["view-once photo", { viewOnceMessageV2: { message: { imageMessage: { mimetype: "image/jpeg" } } } }, "view_once", "[view-once photo]"],
-  ["view-once video", { viewOnceMessageV2: { message: { videoMessage: { mimetype: "video/mp4" } } } }, "view_once", "[view-once video]"],
+  [
+    "view-once photo",
+    { viewOnceMessageV2: { message: { imageMessage: { mimetype: "image/jpeg" } } } },
+    "view_once",
+    "[view-once photo]",
+  ],
+  [
+    "view-once video",
+    { viewOnceMessageV2: { message: { videoMessage: { mimetype: "video/mp4" } } } },
+    "view_once",
+    "[view-once video]",
+  ],
   ["key distribution", { senderKeyDistributionMessage: { groupId: "g" } }, "system", "[system message]"],
   ["something new", { someFutureMessage: {} }, "unknown", "[unsupported: someFutureMessage]"],
   ["ephemeral wrapper", { ephemeralMessage: { message: { conversation: "disappearing" } } }, "text", "disappearing"],
@@ -51,17 +81,28 @@ test("every message type maps to a type and a non-empty text", () => {
 });
 
 test("text is never empty, whatever arrives", () => {
-  for (const content of [{}, null, { conversation: "" }, { extendedTextMessage: {} }, { imageMessage: { caption: "" } }]) {
+  for (const content of [
+    {},
+    null,
+    { conversation: "" },
+    { extendedTextMessage: {} },
+    { imageMessage: { caption: "" } },
+  ]) {
     const text = messageText(wrap(content));
     assert.ok(text.length > 0, `empty text for ${JSON.stringify(content)}`);
   }
 });
 
 test("media metadata is read from the media node and skipped otherwise", () => {
-  const doc = mediaInfo(wrap({ documentMessage: { mimetype: "application/pdf", fileLength: 4096, fileName: "a.pdf" } }));
+  const doc = mediaInfo(
+    wrap({ documentMessage: { mimetype: "application/pdf", fileLength: 4096, fileName: "a.pdf" } })
+  );
   assert.deepEqual(doc, { mime: "application/pdf", size: 4096, filename: "a.pdf" });
   assert.equal(mediaInfo(wrap({ conversation: "hi" })), undefined);
-  assert.equal(mediaInfo(wrap({ viewOnceMessageV2: { message: { imageMessage: { mimetype: "image/jpeg" } } } }))?.mime, "image/jpeg");
+  assert.equal(
+    mediaInfo(wrap({ viewOnceMessageV2: { message: { imageMessage: { mimetype: "image/jpeg" } } } }))?.mime,
+    "image/jpeg"
+  );
 });
 
 test("formatAge reports the largest whole unit", () => {
@@ -81,16 +122,40 @@ test("timestamps are ISO 8601 with a numeric offset, never a bare Z", () => {
 
 /** [label, message content, is it machinery rather than something a person sent] */
 const CONTROL_CASES = [
-  ["history sync notice", { protocolMessage: { type: proto.Message.ProtocolMessage.Type.HISTORY_SYNC_NOTIFICATION } }, true],
-  ["peer data response", { protocolMessage: { type: proto.Message.ProtocolMessage.Type.PEER_DATA_OPERATION_REQUEST_RESPONSE_MESSAGE } }, true],
-  ["app state sync key share", { protocolMessage: { type: proto.Message.ProtocolMessage.Type.APP_STATE_SYNC_KEY_SHARE } }, true],
+  [
+    "history sync notice",
+    { protocolMessage: { type: proto.Message.ProtocolMessage.Type.HISTORY_SYNC_NOTIFICATION } },
+    true,
+  ],
+  [
+    "peer data response",
+    { protocolMessage: { type: proto.Message.ProtocolMessage.Type.PEER_DATA_OPERATION_REQUEST_RESPONSE_MESSAGE } },
+    true,
+  ],
+  [
+    "app state sync key share",
+    { protocolMessage: { type: proto.Message.ProtocolMessage.Type.APP_STATE_SYNC_KEY_SHARE } },
+    true,
+  ],
   ["sender key distribution", { senderKeyDistributionMessage: { groupId: "g" } }, true],
   ["bare context info", { messageContextInfo: { deviceListMetadataVersion: 2 } }, true],
   ["nothing at all", {}, true],
   ["a retraction is a real event", { protocolMessage: { type: proto.Message.ProtocolMessage.Type.REVOKE } }, false],
-  ["so is someone turning on disappearing messages", { protocolMessage: { type: proto.Message.ProtocolMessage.Type.EPHEMERAL_SETTING } }, false],
-  ["so is a group member label change", { protocolMessage: { type: proto.Message.ProtocolMessage.Type.GROUP_MEMBER_LABEL_CHANGE } }, false],
-  ["an edit is applied to the message it edits, not shown twice", { protocolMessage: { type: proto.Message.ProtocolMessage.Type.MESSAGE_EDIT } }, true],
+  [
+    "so is someone turning on disappearing messages",
+    { protocolMessage: { type: proto.Message.ProtocolMessage.Type.EPHEMERAL_SETTING } },
+    false,
+  ],
+  [
+    "so is a group member label change",
+    { protocolMessage: { type: proto.Message.ProtocolMessage.Type.GROUP_MEMBER_LABEL_CHANGE } },
+    false,
+  ],
+  [
+    "an edit is applied to the message it edits, not shown twice",
+    { protocolMessage: { type: proto.Message.ProtocolMessage.Type.MESSAGE_EDIT } },
+    true,
+  ],
   ["text", { conversation: "hello" }, false],
   ["an unknown future type is not machinery", { someFutureMessage: {} }, false],
 ];
@@ -112,23 +177,26 @@ test("isUserMessage is a person sending something, either way", () => {
   assert.equal(isUserMessage(wrap({ imageMessage: { mimetype: "image/jpeg" } })), true);
   assert.equal(isUserMessage(wrap({ someFutureMessage: {} })), true);
   assert.equal(
-    isUserMessage({ key: { fromMe: true, remoteJid: "4072@s.whatsapp.net", id: "X" }, message: { conversation: "hi" } }),
+    isUserMessage({
+      key: { fromMe: true, remoteJid: "4072@s.whatsapp.net", id: "X" },
+      message: { conversation: "hi" },
+    }),
     true,
-    "a message the person sent themselves is still a person's message",
+    "a message the person sent themselves is still a person's message"
   );
   const stub = { ...wrap({}), messageStubType: proto.WebMessageInfo.StubType.GROUP_PARTICIPANT_ADD };
   assert.equal(isUserMessage(stub), false);
   assert.equal(
     isUserMessage({ ...wrap(undefined), messageStubType: proto.WebMessageInfo.StubType.E2E_ENCRYPTED }),
-    false,
+    false
   );
   assert.equal(
     isUserMessage(wrap({ protocolMessage: { type: proto.Message.ProtocolMessage.Type.HISTORY_SYNC_NOTIFICATION } })),
-    false,
+    false
   );
   assert.equal(
     isUserMessage(wrap({ protocolMessage: { type: proto.Message.ProtocolMessage.Type.EPHEMERAL_SETTING } })),
-    false,
+    false
   );
 });
 
@@ -148,13 +216,32 @@ const CALL_CASES = [
   ["incoming answered, no duration", callLog({ callOutcome: Outcome.CONNECTED }), "[voice call]"],
   ["incoming missed video", callLog({ isVideo: true, callOutcome: Outcome.MISSED }), "[missed video call]"],
   ["incoming rejected", callLog({ callOutcome: Outcome.REJECTED }), "[rejected voice call]"],
-  ["outgoing nobody picked up", callLog({ callOutcome: Outcome.MISSED }, { fromMe: true }), "[outgoing voice call · unanswered]"],
-  ["outgoing rejected", callLog({ isVideo: true, callOutcome: Outcome.REJECTED }, { fromMe: true }), "[outgoing video call · rejected]"],
-  ["outgoing answered, seconds", callLog({ callOutcome: Outcome.CONNECTED, durationSecs: 45 }, { fromMe: true }), "[outgoing voice call · 45s]"],
+  [
+    "outgoing nobody picked up",
+    callLog({ callOutcome: Outcome.MISSED }, { fromMe: true }),
+    "[outgoing voice call · unanswered]",
+  ],
+  [
+    "outgoing rejected",
+    callLog({ isVideo: true, callOutcome: Outcome.REJECTED }, { fromMe: true }),
+    "[outgoing video call · rejected]",
+  ],
+  [
+    "outgoing answered, seconds",
+    callLog({ callOutcome: Outcome.CONNECTED, durationSecs: 45 }, { fromMe: true }),
+    "[outgoing voice call · 45s]",
+  ],
   ["an hour and change", callLog({ callOutcome: Outcome.CONNECTED, durationSecs: 3900 }), "[voice call · 1h 5 min]"],
   ["silenced by do not disturb", callLog({ callOutcome: Outcome.SILENCED_BY_DND }), "[missed voice call]"],
   // getContentType is blind to callLogMesssage, so without the call check first this would read "[system message]".
-  ["alongside context info", callLog({ callOutcome: Outcome.CONNECTED, durationSecs: 90 }, { extra: { messageContextInfo: { deviceListMetadataVersion: 2 } } }), "[voice call · 2 min]"],
+  [
+    "alongside context info",
+    callLog(
+      { callOutcome: Outcome.CONNECTED, durationSecs: 90 },
+      { extra: { messageContextInfo: { deviceListMetadataVersion: 2 } } }
+    ),
+    "[voice call · 2 min]",
+  ],
   ["missed voice stub", callStub(StubType.CALL_MISSED_VOICE), "[missed voice call]"],
   ["missed video stub", callStub(StubType.CALL_MISSED_VIDEO), "[missed video call]"],
   ["missed group voice stub", callStub(StubType.CALL_MISSED_GROUP_VOICE), "[missed voice call]"],
@@ -186,19 +273,33 @@ test("callInfo reports kind, direction, outcome and duration", () => {
     direction: "incoming",
     outcome: "missed",
   });
-  assert.deepEqual(callInfo(callLog({ callOutcome: Outcome.CONNECTED, durationSecs: 12, participants: [{ jid: "4073@s.whatsapp.net" }, {}] })), {
-    kind: "voice",
-    direction: "incoming",
-    outcome: "answered",
-    duration_seconds: 12,
-    participants: ["4073@s.whatsapp.net"],
-  });
+  assert.deepEqual(
+    callInfo(
+      callLog({ callOutcome: Outcome.CONNECTED, durationSecs: 12, participants: [{ jid: "4073@s.whatsapp.net" }, {}] })
+    ),
+    {
+      kind: "voice",
+      direction: "incoming",
+      outcome: "answered",
+      duration_seconds: 12,
+      participants: ["4073@s.whatsapp.net"],
+    }
+  );
   assert.equal(callInfo(wrap({ conversation: "hi" })), undefined, "an ordinary message is not a call");
-  assert.equal(callInfo(callLog({ callOutcome: Outcome.MISSED }))?.duration_seconds, undefined, "a call nobody took has no duration");
+  assert.equal(
+    callInfo(callLog({ callOutcome: Outcome.MISSED }))?.duration_seconds,
+    undefined,
+    "a call nobody took has no duration"
+  );
 });
 
 test("a missed-call stub is an event to report, not machinery to drop", () => {
-  for (const stub of [StubType.CALL_MISSED_VOICE, StubType.CALL_MISSED_VIDEO, StubType.CALL_MISSED_GROUP_VOICE, StubType.CALL_MISSED_GROUP_VIDEO]) {
+  for (const stub of [
+    StubType.CALL_MISSED_VOICE,
+    StubType.CALL_MISSED_VIDEO,
+    StubType.CALL_MISSED_GROUP_VOICE,
+    StubType.CALL_MISSED_GROUP_VIDEO,
+  ]) {
     assert.equal(isStubEvent(callStub(stub)), true, `stub ${stub}`);
     assert.equal(isControlMessage(callStub(stub)), false, `stub ${stub}`);
   }
@@ -245,7 +346,9 @@ test("an animated sticker is a sticker and an album header is a notice with its 
 });
 
 test("an album child is the photo or video it wraps, and an encrypted edit is a notice", () => {
-  const child = wrap({ associatedChildMessage: { message: { videoMessage: { mimetype: "video/mp4", caption: "vacanță" } } } });
+  const child = wrap({
+    associatedChildMessage: { message: { videoMessage: { mimetype: "video/mp4", caption: "vacanță" } } },
+  });
   assert.equal(messageType(child), "video");
   assert.equal(messageText(child), "[video] vacanță");
   assert.equal(mediaInfo(child)?.mime, "video/mp4");

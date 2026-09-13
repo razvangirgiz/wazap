@@ -104,11 +104,11 @@ test("findByChat and findByMessage look across two stores", () => {
 
   assert.deepEqual(
     hub.findByChat(ANA).map((row) => row.id),
-    ["default"],
+    ["default"]
   );
   assert.deepEqual(
     hub.findByChat(DAN).map((row) => row.id),
-    ["work"],
+    ["work"]
   );
   assert.deepEqual(hub.findByChat(HOME), []);
 
@@ -116,18 +116,21 @@ test("findByChat and findByMessage look across two stores", () => {
   const workSid = `false_${DAN}_W1`;
   assert.deepEqual(
     hub.findByMessage(homeSid).map((row) => row.id),
-    ["default"],
+    ["default"]
   );
   assert.deepEqual(
     hub.findByMessage(workSid).map((row) => row.id),
-    ["work"],
+    ["work"]
   );
   assert.deepEqual(hub.findByMessage("false_nobody_X"), []);
 
   workSock.ev.emit("chats.upsert", [{ id: ANA, conversationTimestamp: Math.floor(Date.now() / 1000) }]);
   assert.deepEqual(
-    hub.findByChat(ANA).map((row) => row.id).sort(),
-    ["default", "work"],
+    hub
+      .findByChat(ANA)
+      .map((row) => row.id)
+      .sort(),
+    ["default", "work"]
   );
   assert.equal(home.hasChat(ANA), true);
   assert.equal(work.hasChat(DAN), true);
@@ -140,7 +143,10 @@ test("findByChat and findByMessage look across two stores", () => {
 test("each service has its own write bucket", () => {
   const { home, work } = twoAccountHub();
   for (let i = 0; i < 20; i++) home.writes.take();
-  assert.throws(() => home.writes.take(), (err) => err.code === "RATE_LIMITED");
+  assert.throws(
+    () => home.writes.take(),
+    (err) => err.code === "RATE_LIMITED"
+  );
   assert.doesNotThrow(() => work.writes.take());
 });
 
@@ -160,11 +166,14 @@ test("no enabled account refuses to construct", () => {
   const config = offlineConfig("wazap-hub-empty-", { readOnly: false });
   const registry = AccountRegistry.load(config.dataDir);
   registry.disable("default");
-  assert.throws(() => new AccountHub(config, AccountRegistry.load(config.dataDir)), (err) => {
-    assert.equal(err.code, "INVALID_ID");
-    assert.match(err.message, /No enabled account/);
-    return true;
-  });
+  assert.throws(
+    () => new AccountHub(config, AccountRegistry.load(config.dataDir)),
+    (err) => {
+      assert.equal(err.code, "INVALID_ID");
+      assert.match(err.message, /No enabled account/);
+      return true;
+    }
+  );
 });
 
 test("/healthz lists the default account and every live account", async () => {
@@ -188,7 +197,7 @@ test("/healthz lists the default account and every live account", async () => {
     assert.equal(body.default.account_name, undefined);
     assert.deepEqual(
       body.accounts.map((row) => row.account_id),
-      ["default", "work"],
+      ["default", "work"]
     );
     assert.equal(body.accounts[1].status, "connected");
   } finally {

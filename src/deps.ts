@@ -37,7 +37,7 @@ function andList(names: readonly string[]): string {
 export async function ensureDeps(
   deps: readonly Dependency[],
   config: Config,
-  probes: Probes = REAL_PROBES,
+  probes: Probes = REAL_PROBES
 ): Promise<boolean> {
   const missing = deps.filter((dep) => !probes.onPath(dep.binary));
   if (missing.length === 0) return true;

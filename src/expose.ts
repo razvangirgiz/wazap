@@ -58,7 +58,7 @@ function runOrThrow(argv: readonly string[], repair: string): void {
   const result = spawnSync(argv[0]!, argv.slice(1), { encoding: "utf8" });
   if (result.status === 0) return;
   const detail = ((result.stderr ?? "").trim() || (result.stdout ?? "").trim() || String(result.error?.message)).split(
-    "\n",
+    "\n"
   )[0]!;
   throw new WazapError("SERVICE_ERROR", `\`${argv.join(" ")}\` failed: ${detail}`, repair);
 }
@@ -92,7 +92,8 @@ const tailscale: TunnelProvider = {
       : { ok: true },
   publicUrl: async (_port, _stored) => {
     const name = tailscaleName();
-    if (name === null) throw new WazapError("SERVICE_ERROR", "Tailscale has no name for this machine.", TAILSCALE_UP_FIX);
+    if (name === null)
+      throw new WazapError("SERVICE_ERROR", "Tailscale has no name for this machine.", TAILSCALE_UP_FIX);
     return `https://${name}`;
   },
   open: (port) => {
@@ -134,7 +135,7 @@ const cloudflare: TunnelProvider = {
     run(["cloudflared", "tunnel", "create", CLOUDFLARE_TUNNEL]);
     runOrThrow(
       ["cloudflared", "tunnel", "route", "dns", "--overwrite-dns", CLOUDFLARE_TUNNEL, new URL(url).hostname],
-      "check that the domain is on this Cloudflare account",
+      "check that the domain is on this Cloudflare account"
     );
   },
   close: () => {},
@@ -166,7 +167,7 @@ function requireService(config: Config, registry: readonly Supervisor[]): Instal
     throw new WazapError(
       "SERVICE_ERROR",
       "A public URL needs the background service: something has to stay up for the tunnel to reach.",
-      "run `wazap service install`",
+      "run `wazap service install`"
     );
   }
   return found;
@@ -201,18 +202,14 @@ async function publicHealth(url: string): Promise<number | null> {
 const HANDOVER =
   "Give an agent the URL only. It signs in on your consent page with this password; wazap status shows who holds a grant.";
 
-async function exposeOn(
-  config: Config,
-  provider: TunnelProvider,
-  { supervisor, record }: Installed,
-): Promise<void> {
+async function exposeOn(config: Config, provider: TunnelProvider, { supervisor, record }: Installed): Promise<void> {
   if (!provider.available()) {
     throw new WazapError(
       "SERVICE_ERROR",
       `${provider.describe} is not installed on this machine.`,
       `install ${provider.name}, or run \`wazap expose ${PROVIDERS.filter((p) => p !== provider)
         .map((p) => p.name)
-        .join("|")}\``,
+        .join("|")}\``
     );
   }
   const readiness = provider.ready();
@@ -245,7 +242,7 @@ async function exposeOn(
   say(
     status === 200
       ? ok("The public URL reaches this machine.")
-      : warn(`${url}/healthz answered ${status ?? "nothing"}; the tunnel may still be coming up.`),
+      : warn(`${url}/healthz answered ${status ?? "nothing"}; the tunnel may still be coming up.`)
   );
   say("");
   say(box(`MCP URL   ${url}/mcp`, `Password  ${fresh ? password : maskKey(password)}`));
@@ -259,7 +256,7 @@ async function exposeOn(
 async function exposeOff(
   config: Config,
   providers: readonly TunnelProvider[],
-  { supervisor, record }: Installed,
+  { supervisor, record }: Installed
 ): Promise<void> {
   const label = TUNNEL_LABELS[supervisor.name];
   supervisor.remove({ label, unitFile: supervisor.unitFile(label) });
@@ -280,7 +277,7 @@ export async function runExpose(
   config: Config,
   providers: readonly TunnelProvider[] = PROVIDERS,
   registry: readonly Supervisor[] = SUPERVISORS,
-  probes: Probes = REAL_PROBES,
+  probes: Probes = REAL_PROBES
 ): Promise<void> {
   const installed = requireService(config, registry);
   const named = config.args[0];
@@ -299,7 +296,7 @@ export async function runExpose(
     throw new WazapError(
       "SERVICE_ERROR",
       "No tunnel provider is installed.",
-      `install Tailscale or cloudflared, then run \`wazap expose\` (providers: ${PROVIDER_NAMES})`,
+      `install Tailscale or cloudflared, then run \`wazap expose\` (providers: ${PROVIDER_NAMES})`
     );
   }
   return exposeOn(config, first, installed);

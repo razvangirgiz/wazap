@@ -87,7 +87,7 @@ function env(dir) {
     text
       .split("\n")
       .filter(Boolean)
-      .map((line) => [line.slice(0, line.indexOf("=")), line.slice(line.indexOf("=") + 1)]),
+      .map((line) => [line.slice(0, line.indexOf("=")), line.slice(line.indexOf("=") + 1)])
   );
 }
 
@@ -118,9 +118,7 @@ test("a second expose keeps the password it already generated, and only masks it
   await captured(() => runExpose(config(dir), [fakeProvider()], [supervisor]));
   const first = env(dir).WAZAP_OAUTH_PASSWORD;
 
-  const output = await captured(() =>
-    runExpose(config(dir, { oauthPassword: first }), [fakeProvider()], [supervisor]),
-  );
+  const output = await captured(() => runExpose(config(dir, { oauthPassword: first }), [fakeProvider()], [supervisor]));
 
   assert.equal(env(dir).WAZAP_OAUTH_PASSWORD, first, "a re-run must never rotate the password agents signed in with");
   assert.ok(!output.includes(first), "an already-known password is never printed in the clear again");
@@ -136,7 +134,7 @@ test("expose off clears the URL, keeps the password, and takes the tunnel unit w
   assert.equal(existsSync(unitFile), true, "a provider with a command needs a unit of its own");
 
   const output = await captured(() =>
-    runExpose(config(dir, { args: ["off"], oauthPassword: password }), [provider], [supervisor]),
+    runExpose(config(dir, { args: ["off"], oauthPassword: password }), [provider], [supervisor])
   );
 
   assert.equal(env(dir).WAZAP_PUBLIC_URL, "", "OAuth stays off while no public URL is set");
@@ -190,7 +188,9 @@ test("expose with nothing installed offers Tailscale, then stops at `tailscale u
   // The binary is on PATH while the provider still says no: the state a fresh
   // `brew install tailscale` leaves, with nothing for ensureDeps left to do.
   const probes = { exists: () => false, onPath: (command) => command === "tailscale" };
-  const output = await captured(() => runExpose(config(dir), [fakeProvider({ available: false })], [supervisor], probes));
+  const output = await captured(() =>
+    runExpose(config(dir), [fakeProvider({ available: false })], [supervisor], probes)
+  );
 
   assert.match(output, /Tailscale is installed\./);
   assert.match(output, /tailscale up/);
@@ -200,29 +200,20 @@ test("expose with nothing installed offers Tailscale, then stops at `tailscale u
 test("expose with nothing installed and no Homebrew keeps its own repair", async () => {
   const { dir, supervisor } = await exposable();
   const probes = { exists: () => false, onPath: () => false };
-  await assert.rejects(
-    runExpose(config(dir), [fakeProvider({ available: false })], [supervisor], probes),
-    (err) => {
-      assert.match(err.message, /No tunnel provider is installed\./);
-      assert.match(err.fix, /install Tailscale or cloudflared/);
-      return true;
-    },
-  );
+  await assert.rejects(runExpose(config(dir), [fakeProvider({ available: false })], [supervisor], probes), (err) => {
+    assert.match(err.message, /No tunnel provider is installed\./);
+    assert.match(err.fix, /install Tailscale or cloudflared/);
+    return true;
+  });
 });
 
 test("the real providers are a registry of two, each naming its own binary", () => {
   assert.deepEqual(
     PROVIDERS.map((provider) => provider.name),
-    ["tailscale", "cloudflare"],
+    ["tailscale", "cloudflare"]
   );
   assert.equal(PROVIDERS[0].command(8766), null, "tailscaled holds the funnel itself");
-  assert.deepEqual(PROVIDERS[1].command(8766).slice(1), [
-    "tunnel",
-    "run",
-    "--url",
-    "http://127.0.0.1:8766",
-    "wazap",
-  ]);
+  assert.deepEqual(PROVIDERS[1].command(8766).slice(1), ["tunnel", "run", "--url", "http://127.0.0.1:8766", "wazap"]);
 });
 
 test("cloudflare is not ready until `cloudflared tunnel login` has been run", () => {

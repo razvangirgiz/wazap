@@ -73,7 +73,11 @@ function mcpPost(port, token, id = 1) {
       jsonrpc: "2.0",
       id,
       method: "initialize",
-      params: { protocolVersion: "2024-11-05", capabilities: {}, clientInfo: { name: "wazap-daemon-test", version: "0" } },
+      params: {
+        protocolVersion: "2024-11-05",
+        capabilities: {},
+        clientInfo: { name: "wazap-daemon-test", version: "0" },
+      },
     }),
     signal: AbortSignal.timeout(5_000),
   });
@@ -87,7 +91,6 @@ async function closedPort() {
   await new Promise((resolve) => server.close(resolve));
   return port;
 }
-
 
 /** One Streamable HTTP MCP session: initialize, then ask what tools it was given. */
 async function httpToolCount(port, token) {
@@ -112,7 +115,11 @@ async function httpToolCount(port, token) {
     jsonrpc: "2.0",
     id: 1,
     method: "initialize",
-    params: { protocolVersion: "2024-11-05", capabilities: {}, clientInfo: { name: "wazap-daemon-test", version: "0" } },
+    params: {
+      protocolVersion: "2024-11-05",
+      capabilities: {},
+      clientInfo: { name: "wazap-daemon-test", version: "0" },
+    },
   });
   assert.equal(init.result.serverInfo.name, "wazap");
   await post({ jsonrpc: "2.0", method: "notifications/initialized" });
@@ -224,17 +231,21 @@ test("a served session publishes a loopback endpoint only its token opens", asyn
 });
 
 test("--http publishes its own port and takes the internal token as a full-access bearer", async () => {
-  await withDaemon({}, async ({ daemonFile }) => {
-    const info = await waitFor(() => readDaemon(daemonFile), 10_000, "daemon.json to appear");
-    assert.ok(info.port > 0, `port ${info.port}`);
+  await withDaemon(
+    {},
+    async ({ daemonFile }) => {
+      const info = await waitFor(() => readDaemon(daemonFile), 10_000, "daemon.json to appear");
+      assert.ok(info.port > 0, `port ${info.port}`);
 
-    const health = await fetch(`http://127.0.0.1:${info.port}/healthz`, { signal: AbortSignal.timeout(5_000) });
-    assert.equal((await health.json()).ok, true);
+      const health = await fetch(`http://127.0.0.1:${info.port}/healthz`, { signal: AbortSignal.timeout(5_000) });
+      assert.equal((await health.json()).ok, true);
 
-    // No read token, so the endpoint is open; the internal token is what unlocks writes.
-    assert.equal(await httpToolCount(info.port, null), 20, "an anonymous session gets the read tools");
-    assert.equal(await httpToolCount(info.port, info.token), 33, "the internal token gets everything");
-  }, ["serve", "--http", "--port", "0"]);
+      // No read token, so the endpoint is open; the internal token is what unlocks writes.
+      assert.equal(await httpToolCount(info.port, null), 20, "an anonymous session gets the read tools");
+      assert.equal(await httpToolCount(info.port, info.token), 33, "the internal token gets everything");
+    },
+    ["serve", "--http", "--port", "0"]
+  );
 });
 
 test("SIGTERM clears the sidecar and the lock", async () => {
@@ -264,7 +275,7 @@ test("status names the endpoint a served session is shared on, and never its tok
     const human = await status(dataDir);
     assert.equal(
       human.stderr.split("\n").find((line) => line.startsWith("server:")),
-      `server: running (pid ${child.pid}, sharing on 127.0.0.1:${info.port})`,
+      `server: running (pid ${child.pid}, sharing on 127.0.0.1:${info.port})`
     );
 
     const { stdout } = await status(dataDir, ["--json"]);
@@ -281,7 +292,7 @@ test("status leaves the sharing suffix off a session that is not shared", async 
     const { stderr } = await status(dataDir);
     assert.equal(
       stderr.split("\n").find((line) => line.startsWith("server:")),
-      `server: running (pid ${child.pid})`,
+      `server: running (pid ${child.pid})`
     );
   });
 });
@@ -304,7 +315,7 @@ test("a taken listen port rejects instead of hanging", async () => {
         credentials: [],
         openRead: false,
       }),
-      (err) => err.code === "EADDRINUSE",
+      (err) => err.code === "EADDRINUSE"
     );
   } finally {
     await new Promise((resolve) => blocker.close(resolve));
@@ -323,7 +334,7 @@ test("a taken listen port rejects across address families", async () => {
         credentials: [],
         openRead: false,
       }),
-      (err) => err.code === "EADDRINUSE",
+      (err) => err.code === "EADDRINUSE"
     );
   } finally {
     await new Promise((resolve) => blocker.close(resolve));
@@ -341,7 +352,7 @@ test("an already-aborted signal does not leave a listener", async () => {
       credentials: [],
       openRead: false,
       signal: stop.signal,
-    }),
+    })
   );
   const live = new AbortController();
   await startHttpEndpoint(silentHub(), offlineConfig("wazap-listen-abort-live-"), {

@@ -17,7 +17,11 @@ import type { Request, Response } from "express";
 import type { OAuthServerProvider, AuthorizationParams } from "@modelcontextprotocol/sdk/server/auth/provider.js";
 import type { OAuthRegisteredClientsStore } from "@modelcontextprotocol/sdk/server/auth/clients.js";
 import type { AuthInfo } from "@modelcontextprotocol/sdk/server/auth/types.js";
-import { InvalidGrantError, InvalidScopeError, InvalidTokenError } from "@modelcontextprotocol/sdk/server/auth/errors.js";
+import {
+  InvalidGrantError,
+  InvalidScopeError,
+  InvalidTokenError,
+} from "@modelcontextprotocol/sdk/server/auth/errors.js";
 import type {
   OAuthClientInformationFull,
   OAuthTokenRevocationRequest,
@@ -128,7 +132,10 @@ function sameSecret(a: string, b: string): boolean {
 }
 
 function escapeHtml(value: string): string {
-  return value.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c] ?? c);
+  return value.replace(
+    /[&<>"']/g,
+    (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c] ?? c
+  );
 }
 
 /** Keep the scopes we know; a client asking for nothing gets read. */
@@ -280,7 +287,10 @@ export class WazapOAuthProvider implements OAuthServerProvider {
   /** Deleting oauth.json is the documented way to sign everyone out; honour it while running. */
   private sync(): void {
     const populated =
-      Object.keys(this.state.clients).length + Object.keys(this.state.access).length + Object.keys(this.state.refresh).length > 0;
+      Object.keys(this.state.clients).length +
+        Object.keys(this.state.access).length +
+        Object.keys(this.state.refresh).length >
+      0;
     if (populated && !existsSync(this.options.stateFile)) {
       log("oauth: oauth.json is gone, every grant is revoked");
       this.state.clients = {};
@@ -334,7 +344,10 @@ export class WazapOAuthProvider implements OAuthServerProvider {
     const id = randomBytes(24).toString("hex");
     this.pending.set(id, { client, params, createdAt: this.now(), misses: 0 });
     res.setHeader("Cache-Control", "no-store");
-    res.status(200).type("html").send(this.consentPage(id, client, params));
+    res
+      .status(200)
+      .type("html")
+      .send(this.consentPage(id, client, params));
   }
 
   /** Express handler for the consent form. Mount with urlencoded parsing. */
@@ -344,7 +357,10 @@ export class WazapOAuthProvider implements OAuthServerProvider {
     const id = typeof body.request === "string" ? body.request : "";
     const entry = this.pending.get(id);
     if (!entry) {
-      res.status(400).type("html").send(this.messagePage("This sign-in link has expired. Go back to the agent and connect again."));
+      res
+        .status(400)
+        .type("html")
+        .send(this.messagePage("This sign-in link has expired. Go back to the agent and connect again."));
       return;
     }
 
@@ -375,10 +391,16 @@ export class WazapOAuthProvider implements OAuthServerProvider {
       log(`oauth: wrong password from ${caller}`);
       if (entry.misses >= PENDING_MISSES) {
         this.pending.delete(id);
-        res.status(401).type("html").send(this.messagePage("Wrong password, three times. Go back to the agent and connect again."));
+        res
+          .status(401)
+          .type("html")
+          .send(this.messagePage("Wrong password, three times. Go back to the agent and connect again."));
         return;
       }
-      res.status(401).type("html").send(this.consentPage(id, client, params, "Wrong password."));
+      res
+        .status(401)
+        .type("html")
+        .send(this.consentPage(id, client, params, "Wrong password."));
       return;
     }
     this.lockout.clear(caller);
@@ -411,12 +433,13 @@ export class WazapOAuthProvider implements OAuthServerProvider {
     client: OAuthClientInformationFull,
     code: string,
     _codeVerifier?: string,
-    redirectUri?: string,
+    redirectUri?: string
   ): Promise<OAuthTokens> {
     this.sweep();
     const entry = this.codes.get(code);
     if (!entry || entry.clientId !== client.client_id) throw new InvalidGrantError("Unknown authorization code");
-    if (redirectUri !== undefined && redirectUri !== entry.redirectUri) throw new InvalidGrantError("redirect_uri mismatch");
+    if (redirectUri !== undefined && redirectUri !== entry.redirectUri)
+      throw new InvalidGrantError("redirect_uri mismatch");
     // One use: a replayed code must fail even inside its ten minutes.
     this.codes.delete(code);
     return this.issue(client.client_id, entry.scopes);
@@ -425,7 +448,7 @@ export class WazapOAuthProvider implements OAuthServerProvider {
   async exchangeRefreshToken(
     client: OAuthClientInformationFull,
     refreshToken: string,
-    scopes?: string[],
+    scopes?: string[]
   ): Promise<OAuthTokens> {
     this.sweep();
     const entry = this.state.refresh[sha256(refreshToken)];
@@ -468,7 +491,8 @@ export class WazapOAuthProvider implements OAuthServerProvider {
     this.sync();
     const entry = this.state.access[sha256(token)];
     if (!entry) throw new InvalidTokenError("Unknown access token");
-    if (entry.expiresAt !== undefined && entry.expiresAt < this.now()) throw new InvalidTokenError("Access token expired");
+    if (entry.expiresAt !== undefined && entry.expiresAt < this.now())
+      throw new InvalidTokenError("Access token expired");
     return {
       token,
       clientId: entry.clientId,
@@ -511,7 +535,12 @@ export class WazapOAuthProvider implements OAuthServerProvider {
 
   // --- pages ---------------------------------------------------------------
 
-  private consentPage(id: string, client: OAuthClientInformationFull, params: AuthorizationParams, error?: string): string {
+  private consentPage(
+    id: string,
+    client: OAuthClientInformationFull,
+    params: AuthorizationParams,
+    error?: string
+  ): string {
     const rawName = client.client_name ?? new URL(params.redirectUri).hostname;
     const name = escapeHtml(rawName);
     const wantsWrite = normalizeScopes(params.scopes).includes("write");
@@ -535,7 +564,7 @@ ${error ? `<p class="error">${escapeHtml(error)}</p>` : ""}
     <button type="submit" name="decision" value="allow">Connect</button>
     <button type="submit" name="decision" value="deny" class="secondary" formnovalidate>Cancel</button>
   </div>
-</form>`,
+</form>`
     );
   }
 

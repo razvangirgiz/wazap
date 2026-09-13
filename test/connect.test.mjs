@@ -7,7 +7,16 @@ import { delimiter, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 
-import { GUI_PATH, findClient, isNpxPath, launchCheck, launcher, relaunch, stableWazap, whereInstalled } from "../dist/connect.js";
+import {
+  GUI_PATH,
+  findClient,
+  isNpxPath,
+  launchCheck,
+  launcher,
+  relaunch,
+  stableWazap,
+  whereInstalled,
+} from "../dist/connect.js";
 
 const run = promisify(execFile);
 const binary = join(dirname(fileURLToPath(import.meta.url)), "..", "dist", "index.js");
@@ -94,7 +103,10 @@ test("connect keeps the other keys, backs the file up once, and is idempotent", 
   const box = sandbox();
   const target = join(box.home, ".cursor", "mcp.json");
   mkdirSync(dirname(target), { recursive: true });
-  writeFileSync(target, JSON.stringify({ mcpServers: { other: { command: "other" } }, ui: { theme: "dark" } }, null, 2));
+  writeFileSync(
+    target,
+    JSON.stringify({ mcpServers: { other: { command: "other" } }, ui: { theme: "dark" } }, null, 2)
+  );
   const original = readFileSync(target, "utf8");
 
   await connect(box, "cursor");
@@ -149,12 +161,15 @@ test("connect codex replaces an existing whatsapp table without touching its nei
   mkdirSync(dirname(target), { recursive: true });
   writeFileSync(
     target,
-    '[mcp_servers.whatsapp]\ncommand = "stale"\nargs = ["old"]\nenv = { A = "1" }\n\n[mcp_servers.other]\ncommand = "other"\n',
+    '[mcp_servers.whatsapp]\ncommand = "stale"\nargs = ["old"]\nenv = { A = "1" }\n\n[mcp_servers.other]\ncommand = "other"\n'
   );
 
   await connect(box, "codex");
   const text = readFileSync(target, "utf8");
-  assert.equal(text, '[mcp_servers.whatsapp]\ncommand = "wazap"\nargs = []\n\n[mcp_servers.other]\ncommand = "other"\n');
+  assert.equal(
+    text,
+    '[mcp_servers.whatsapp]\ncommand = "wazap"\nargs = []\n\n[mcp_servers.other]\ncommand = "other"\n'
+  );
   assert.ok(existsSync(`${target}.bak`));
 });
 
@@ -173,14 +188,32 @@ for (const [binPath, expected] of BIN_PATHS) {
 }
 
 const LAUNCHERS = [
-  ["/Users/x/.npm/_npx/8a1b/node_modules/wazap/dist/index.js", "/usr/bin", [], { command: "npx", args: ["-y", "wazap-mcp"] }],
-  ["/usr/local/lib/node_modules/wazap/dist/index.js", "/usr/local/bin:/usr/bin", ["/usr/local/bin/wazap"], { command: "wazap", args: [] }],
-  ["/Users/x/Projects/wazap/dist/index.js", "/usr/local/bin:/usr/bin", [], { command: "node", args: ["/Users/x/Projects/wazap/dist/index.js"] }],
+  [
+    "/Users/x/.npm/_npx/8a1b/node_modules/wazap/dist/index.js",
+    "/usr/bin",
+    [],
+    { command: "npx", args: ["-y", "wazap-mcp"] },
+  ],
+  [
+    "/usr/local/lib/node_modules/wazap/dist/index.js",
+    "/usr/local/bin:/usr/bin",
+    ["/usr/local/bin/wazap"],
+    { command: "wazap", args: [] },
+  ],
+  [
+    "/Users/x/Projects/wazap/dist/index.js",
+    "/usr/local/bin:/usr/bin",
+    [],
+    { command: "node", args: ["/Users/x/Projects/wazap/dist/index.js"] },
+  ],
 ];
 
 for (const [binPath, pathEnv, present, expected] of LAUNCHERS) {
   test(`launcher for ${binPath} is ${expected.command}`, () => {
-    assert.deepEqual(launcher(binPath, pathEnv, (p) => present.includes(p)), expected);
+    assert.deepEqual(
+      launcher(binPath, pathEnv, (p) => present.includes(p)),
+      expected
+    );
   });
 }
 
@@ -192,7 +225,10 @@ const INSTALLS = [
 
 for (const [binPath, pathEnv, present, kind] of INSTALLS) {
   test(`whereInstalled calls ${binPath} a ${kind} install`, () => {
-    assert.deepEqual(whereInstalled(binPath, pathEnv, (p) => present.includes(p)), { kind, script: binPath });
+    assert.deepEqual(
+      whereInstalled(binPath, pathEnv, (p) => present.includes(p)),
+      { kind, script: binPath }
+    );
   });
 }
 
@@ -206,13 +242,16 @@ test("stableWazap prefers npm's prefix over an npx shim that npx put first on PA
   const npxDir = "/Users/x/.npm/_npx/8a1b/node_modules/.bin";
   assert.equal(
     stableWazap((p) => p === `${prefix}/wazap`, `${npxDir}:${prefix}`, prefix),
-    `${prefix}/wazap`,
+    `${prefix}/wazap`
   );
 });
 
 test("stableWazap ignores a wazap that is itself in the npx cache", () => {
   const npxDir = "/Users/x/.npm/_npx/8a1b/node_modules/.bin";
-  assert.equal(stableWazap((p) => p === `${npxDir}/wazap`, npxDir, "/usr/local/bin"), null);
+  assert.equal(
+    stableWazap((p) => p === `${npxDir}/wazap`, npxDir, "/usr/local/bin"),
+    null
+  );
 });
 
 test("connect codex leaves the comments that introduce the next table alone", async () => {
@@ -236,23 +275,27 @@ test("connect codex --dry-run leaves the TOML file untouched", async () => {
   assert.equal(readFileSync(target, "utf8"), 'model = "gpt-5"\n');
 });
 
-test("connect refuses a config file it cannot read rather than replacing it", { skip: process.getuid?.() === 0 }, async () => {
-  const box = sandbox();
-  const target = join(box.home, ".cursor", "mcp.json");
-  mkdirSync(dirname(target), { recursive: true });
-  writeFileSync(target, '{"mcpServers":{"other":{"command":"o"}}}');
-  chmodSync(target, 0o200);
-  try {
-    await assert.rejects(connect(box, "cursor"), (err) => {
-      assert.equal(err.code, 1);
-      assert.match(err.stderr, /cannot be read/);
-      return true;
-    });
-  } finally {
-    chmodSync(target, 0o600);
+test(
+  "connect refuses a config file it cannot read rather than replacing it",
+  { skip: process.getuid?.() === 0 },
+  async () => {
+    const box = sandbox();
+    const target = join(box.home, ".cursor", "mcp.json");
+    mkdirSync(dirname(target), { recursive: true });
+    writeFileSync(target, '{"mcpServers":{"other":{"command":"o"}}}');
+    chmodSync(target, 0o200);
+    try {
+      await assert.rejects(connect(box, "cursor"), (err) => {
+        assert.equal(err.code, 1);
+        assert.match(err.stderr, /cannot be read/);
+        return true;
+      });
+    } finally {
+      chmodSync(target, 0o600);
+    }
+    assert.equal(readFileSync(target, "utf8"), '{"mcpServers":{"other":{"command":"o"}}}');
   }
-  assert.equal(readFileSync(target, "utf8"), '{"mcpServers":{"other":{"command":"o"}}}');
-});
+);
 
 test("connect --dry-run prints the entry and touches nothing", async () => {
   const box = sandbox();
@@ -283,7 +326,14 @@ test("--read-only carries through into the entry args", async () => {
 
 const NPX_ENTRY = { command: "npx", args: ["-y", "wazap-mcp"] };
 const LAUNCH_CHECKS = [
-  ["a shell client trusts the shell PATH", "cursor", { command: "wazap", args: [] }, "darwin", "ok", /Cursor runs `wazap` from your shell PATH/],
+  [
+    "a shell client trusts the shell PATH",
+    "cursor",
+    { command: "wazap", args: [] },
+    "darwin",
+    "ok",
+    /Cursor runs `wazap` from your shell PATH/,
+  ],
   ["a GUI client cannot reach npx", "claude-desktop", NPX_ENTRY, "darwin", "fail", /cannot find `npx`/],
   ["only darwin strips the PATH", "claude-desktop", NPX_ENTRY, "win32", "info", /not checked on this platform/],
 ];

@@ -49,7 +49,7 @@ test("a history line filed under the phone reloads into one ring even though it 
       byChat: {},
       transcripts: {},
       contactsResyncedAt: null,
-    }),
+    })
   );
 
   await svc.loadPersisted();
@@ -59,7 +59,7 @@ test("a history line filed under the phone reloads into one ring even though it 
   assert.deepEqual(
     recent.map((c) => c.chat_id),
     [PHONE],
-    "the catch-up shows the conversation once",
+    "the catch-up shows the conversation once"
   );
   assert.equal(recent[0].messages[0].sender.name, "Sorin Cobzaru", "and knows who wrote it");
   assert.equal(recent[0].messages[0].from_me, false);
@@ -96,7 +96,7 @@ test("a snapshot that still holds a ring under the lid folds it into the phone c
       byChat: { [PHONE]: [sid], [LID]: [sid] },
       transcripts: {},
       contactsResyncedAt: null,
-    }),
+    })
   );
 
   await svc.loadPersisted();
@@ -104,7 +104,10 @@ test("a snapshot that still holds a ring under the lid folds it into the phone c
   assert.deepEqual([...svc.store.byChat.keys()], [PHONE]);
   assert.deepEqual(svc.store.byChat.get(PHONE), [sid], "the message is filed once");
   const recent = (await svc.getRecentMessages(24, "all")).data;
-  assert.deepEqual(recent.map((c) => c.chat_id), [PHONE]);
+  assert.deepEqual(
+    recent.map((c) => c.chat_id),
+    [PHONE]
+  );
 });
 
 test("a lid chat learned before its number folds in the moment the pairing arrives", async () => {
@@ -116,7 +119,11 @@ test("a lid chat learned before its number folds in the moment the pairing arriv
   sock.ev.emit("messages.upsert", {
     type: "notify",
     messages: [
-      { key: { remoteJid: LID, fromMe: false, id: "L1" }, message: { conversation: "salut" }, messageTimestamp: 1_700_000_100 },
+      {
+        key: { remoteJid: LID, fromMe: false, id: "L1" },
+        message: { conversation: "salut" },
+        messageTimestamp: 1_700_000_100,
+      },
     ],
   });
   assert.equal(svc.store.byChat.has(LID), true, "filed under the lid while nothing better is known");
@@ -127,7 +134,11 @@ test("a lid chat learned before its number folds in the moment the pairing arriv
   assert.equal(svc.store.chats.has(LID), false);
   assert.equal(svc.store.chats.get(PHONE).unreadCount, 2);
   const messages = (await svc.readMessages(PHONE, 10)).data;
-  assert.deepEqual(messages.map((m) => m.text), ["salut"], "history reads from the phone chat");
+  assert.deepEqual(
+    messages.map((m) => m.text),
+    ["salut"],
+    "history reads from the phone chat"
+  );
 });
 
 test("reactions come back after a restart, and a reaction an older snapshot filed as a message moves onto its target", async () => {
@@ -137,7 +148,8 @@ test("reactions come back after a restart, and a reaction an older snapshot file
     name: "Răzvan",
     config: { persistHistory: true },
   });
-  const b64 = (raw) => Buffer.from(proto.WebMessageInfo.encode(proto.WebMessageInfo.fromObject(raw)).finish()).toString("base64");
+  const b64 = (raw) =>
+    Buffer.from(proto.WebMessageInfo.encode(proto.WebMessageInfo.fromObject(raw)).finish()).toString("base64");
   const target = `false_${PHONE}_T1`;
   const loose = `false_${PHONE}_R1`;
   mkdirSync(svc.paths.root, { recursive: true });
@@ -149,7 +161,11 @@ test("reactions come back after a restart, and a reaction an older snapshot file
       contacts: {},
       pushNames: {},
       messages: {
-        [target]: b64({ key: { remoteJid: PHONE, fromMe: false, id: "T1" }, message: { conversation: "gata" }, messageTimestamp: 1_700_000_000 }),
+        [target]: b64({
+          key: { remoteJid: PHONE, fromMe: false, id: "T1" },
+          message: { conversation: "gata" },
+          messageTimestamp: 1_700_000_000,
+        }),
         [loose]: b64({
           key: { remoteJid: PHONE, fromMe: false, id: "R1" },
           message: { reactionMessage: { key: { remoteJid: PHONE, fromMe: false, id: "T1" }, text: "🔥" } },
@@ -160,7 +176,7 @@ test("reactions come back after a restart, and a reaction an older snapshot file
       transcripts: {},
       reactions: { [target]: { [ME]: "👍" } },
       contactsResyncedAt: null,
-    }),
+    })
   );
 
   await svc.loadPersisted();
@@ -169,8 +185,11 @@ test("reactions come back after a restart, and a reaction an older snapshot file
   const [view] = (await svc.readMessages(PHONE, 10)).data;
   assert.deepEqual(
     view.reactions.map((r) => [r.emoji, r.sender]).sort(),
-    [["🔥", PHONE], ["👍", ME]].sort(),
-    "the persisted one and the folded one both sit on the target",
+    [
+      ["🔥", PHONE],
+      ["👍", ME],
+    ].sort(),
+    "the persisted one and the folded one both sit on the target"
   );
 });
 
@@ -200,7 +219,7 @@ test("a pairing WhatsApp's table taught is written down, so after a restart a li
       transcripts: {},
       lids: { [LID]: PHONE },
       contactsResyncedAt: null,
-    }),
+    })
   );
   await svc.loadPersisted();
   const [view] = (await svc.readMessages(PHONE, 10)).data;

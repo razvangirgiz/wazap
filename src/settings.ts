@@ -91,7 +91,8 @@ const SETTINGS: readonly SettingRow[] = [
   {
     label: "writes",
     source: "readOnly",
-    value: (config) => (accountPolicy(resolveAccount(config.dataDir, config.accountId).account, config).readOnly ? "off" : "on"),
+    value: (config) =>
+      accountPolicy(resolveAccount(config.dataDir, config.accountId).account, config).readOnly ? "off" : "on",
     sourceLabel: writesSource,
   },
   {
@@ -110,20 +111,21 @@ const SETTINGS: readonly SettingRow[] = [
 ];
 
 /** Every setting `wazap config <name> <value>` can change, and what each accepts. */
-const COMMANDS: Record<string, { values: readonly string[]; apply: (config: Config, value: string) => Promise<void> }> = {
-  writes: {
-    values: ["on", "off"],
-    apply: async (config, value) => applyWrites(config, value === "on"),
-  },
-  transcribe: {
-    values: ["local", "openai", "off"],
-    apply: applyTranscribe,
-  },
-  webhook: {
-    values: ["on", "off"],
-    apply: applyWebhook,
-  },
-};
+const COMMANDS: Record<string, { values: readonly string[]; apply: (config: Config, value: string) => Promise<void> }> =
+  {
+    writes: {
+      values: ["on", "off"],
+      apply: async (config, value) => applyWrites(config, value === "on"),
+    },
+    transcribe: {
+      values: ["local", "openai", "off"],
+      apply: applyTranscribe,
+    },
+    webhook: {
+      values: ["on", "off"],
+      apply: applyWebhook,
+    },
+  };
 
 const USAGE_FIX =
   "Run `wazap config writes on|off`, `wazap config transcribe local|openai|off`, or `wazap config webhook on|off`";
@@ -139,8 +141,8 @@ export async function runConfig(config: Config): Promise<void> {
     say("");
     say(
       dim(
-        "Change writes with `wazap config writes on|off`, transcription with `wazap config transcribe`, webhook with `wazap config webhook on|off`. Probe it with `wazap webhook test`.",
-      ),
+        "Change writes with `wazap config writes on|off`, transcription with `wazap config transcribe`, webhook with `wazap config webhook on|off`. Probe it with `wazap webhook test`."
+      )
     );
     const selected = resolveAccount(config.dataDir, config.accountId);
     for (const line of writesHints({ ...config, readOnly: accountPolicy(selected.account, config).readOnly })) {
@@ -156,7 +158,7 @@ export async function runConfig(config: Config): Promise<void> {
       "The API key or webhook secret is never a command-line argument: it would be kept in your shell history and readable in `ps` by anyone on this machine.",
       setting === "webhook"
         ? "Run `wazap config webhook on` and paste the secret at the prompt, which does not echo it"
-        : "Run `wazap config transcribe openai` and paste the key at the prompt, which does not echo it",
+        : "Run `wazap config transcribe openai` and paste the key at the prompt, which does not echo it"
     );
   }
 
@@ -235,8 +237,8 @@ async function applyWebhook(config: Config, value: string): Promise<void> {
       const global = readWebhookSettings(process.env);
       say(
         ok(
-          `webhook override removed for ${config.accountId} — the global webhook applies${global.kind === "off" ? " (off)" : ""}.`,
-        ),
+          `webhook override removed for ${config.accountId} — the global webhook applies${global.kind === "off" ? " (off)" : ""}.`
+        )
       );
       say(dim(`Stored in ${shortPath(paths(config.dataDir).accountsFile)}.`));
       warnIfServerRunning(config);
@@ -277,7 +279,7 @@ async function enableWebhook(config: Config): Promise<void> {
       throw new WazapError(
         "INVALID_ID",
         "No webhook URL was typed.",
-        "Set WAZAP_WEBHOOK_URL or run `wazap config webhook on` at a terminal",
+        "Set WAZAP_WEBHOOK_URL or run `wazap config webhook on` at a terminal"
       );
     }
     url = requireWebhookUrl(fromEnv);
@@ -388,8 +390,8 @@ export function applyWrites(config: Config, allowWrites: boolean): void {
       ok(
         allowWrites
           ? `writes: on for ${config.accountId} — the agent can send from this account. Turn it off with \`wazap config writes off --account ${config.accountId}\`.`
-          : `writes: off for ${config.accountId} — the agent can only read this account. Turn it on with \`wazap config writes on --account ${config.accountId}\`.`,
-      ),
+          : `writes: off for ${config.accountId} — the agent can only read this account. Turn it on with \`wazap config writes on --account ${config.accountId}\`.`
+      )
     );
     say(dim(`Stored in ${shortPath(p.accountsFile)}.`));
     // The account flag is set, but the global switch is a hard off either way.
@@ -404,8 +406,8 @@ export function applyWrites(config: Config, allowWrites: boolean): void {
       ok(
         allowWrites
           ? "writes: on — the agent can send messages, react and manage chats. Turn it off with `wazap config writes off`."
-          : "writes: off — the agent can only read. Turn it on with `wazap config writes on`.",
-      ),
+          : "writes: off — the agent can only read. Turn it on with `wazap config writes on`."
+      )
     );
     say(dim(`Stored in ${shortPath(p.envFile)}.`));
   }

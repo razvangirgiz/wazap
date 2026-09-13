@@ -79,6 +79,7 @@ export function wizardSpinLine(frame: number, text: string): string {
   return `${tint(BRAND, SPINNER_FRAMES[frame % SPINNER_FRAMES.length]!)} ${text}`;
 }
 
+// eslint-disable-next-line no-control-regex -- ANSI SGR codes are the point
 const CSI = /^\x1b\[[0-9;]*m/;
 
 /** Visible characters in `text` after stripping SGR, not counting a leading indent. */
@@ -305,6 +306,7 @@ class WizardImpl implements Wizard {
       return;
     }
     const placed = centerBlock(this.#content(), cols(), rows());
+    // eslint-disable-next-line no-control-regex -- ANSI SGR codes are the point
     const line = (placed[this.#spinRow - 1] ?? "").replace(/\x1b\[0m/g, REST);
     write(`${BLACK}\x1b[${this.#spinRow};1H\x1b[2K${line}`);
   }
@@ -314,6 +316,7 @@ class WizardImpl implements Wizard {
     const last = placed.length - 1;
     write(`${BLACK}${FG}\x1b[H`);
     for (let i = 0; i < placed.length; i++) {
+      // eslint-disable-next-line no-control-regex -- ANSI SGR codes are the point
       const line = placed[i]!.replace(/\x1b\[0m/g, REST);
       if (keep && i === last) write(`\x1b[2K${line}`);
       else write(`\x1b[2K${line}\n`);
@@ -384,7 +387,7 @@ class WizardImpl implements Wizard {
   }
 
   async #render(
-    opts: { leaveCursor?: boolean; reveal?: boolean; onlyLast?: boolean; bodyOnly?: boolean } = {},
+    opts: { leaveCursor?: boolean; reveal?: boolean; onlyLast?: boolean; bodyOnly?: boolean } = {}
   ): Promise<void> {
     this.enter();
     const gen = ++this.#gen;
@@ -419,7 +422,12 @@ export function activeWizard(): Wizard | null {
 }
 
 /** How many screens setup will show at a terminal. */
-export function setupWizardSteps(opts: { linked: boolean; npx: boolean; askWrites: boolean; loginCode: boolean }): number {
+export function setupWizardSteps(opts: {
+  linked: boolean;
+  npx: boolean;
+  askWrites: boolean;
+  loginCode: boolean;
+}): number {
   let n = 0;
   if (!opts.linked) {
     if (opts.loginCode) n += 2;

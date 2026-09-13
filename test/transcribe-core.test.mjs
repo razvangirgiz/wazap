@@ -162,7 +162,11 @@ test("two callers wanting the same recording share one upload", async () => {
   deliver(sock, [voiceNote("V1", { seconds: 6 })]);
 
   const [first, second] = await Promise.all([svc.transcribeAudio(sidOf("V1")), svc.transcribeAudio(sidOf("V1"))]);
-  assert.equal(provider.state.calls, 1, "the cache is written only after a provider has run, so the second caller has to join the first");
+  assert.equal(
+    provider.state.calls,
+    1,
+    "the cache is written only after a provider has run, so the second caller has to join the first"
+  );
   assert.equal(first.text, "salut");
   assert.equal(second.text, "salut");
   await svc.stop();
@@ -219,7 +223,7 @@ test("auto mode takes the voice notes, one at a time, and leaves the rest", asyn
   assert.deepEqual(
     [...svc.store.transcripts.keys()].sort(),
     ["V1", "V2", "V3"].map(sidOf).sort(),
-    "an audio file is something the sender attached, and a recording that is long or of unknown length is a bill nobody asked for",
+    "an audio file is something the sender attached, and a recording that is long or of unknown length is a bill nobody asked for"
   );
   assert.equal(provider.state.calls, 3);
   await svc.stop();
@@ -266,14 +270,14 @@ test("search_messages finds a word that exists only in a transcript", async () =
   const spoken = (await svc.searchMessages("umbrela", undefined, 10)).data;
   assert.deepEqual(
     spoken.map((view) => view.message_id),
-    [sidOf("V1")],
+    [sidOf("V1")]
   );
 
   const written = (await svc.searchMessages("nimic", undefined, 10)).data;
   assert.deepEqual(
     written.map((view) => view.message_id),
     [sidOf("T1")],
-    "every other message still matches on exactly what it matched on before",
+    "every other message still matches on exactly what it matched on before"
   );
   await svc.stop();
 });
@@ -290,11 +294,14 @@ test("transcribe_audio names the reason it cannot answer", async () => {
   const off = serviceWith();
   stub(off.svc, mockProvider());
   deliver(off.sock, [voiceNote("V1", { seconds: 6 })]);
-  await assert.rejects(() => off.svc.transcribeAudio(sidOf("V1")), (err) => {
-    assert.equal(err.code, "TRANSCRIBE_UNAVAILABLE");
-    assert.match(err.fix, /wazap config transcribe/, "the fix has to name the command that turns it on");
-    return true;
-  });
+  await assert.rejects(
+    () => off.svc.transcribeAudio(sidOf("V1")),
+    (err) => {
+      assert.equal(err.code, "TRANSCRIBE_UNAVAILABLE");
+      assert.match(err.fix, /wazap config transcribe/, "the fix has to name the command that turns it on");
+      return true;
+    }
+  );
   await off.svc.stop();
 });
 
@@ -303,11 +310,14 @@ test("a provider name wazap does not know leaves the server up and says why", as
   deliver(sock, [voiceNote("V1", { seconds: 6 })]);
 
   assert.equal((await svc.readMessages(PEER, 10)).data.length, 1, "every other tool keeps working");
-  await assert.rejects(() => svc.transcribeAudio(sidOf("V1")), (err) => {
-    assert.equal(err.code, "TRANSCRIBE_UNAVAILABLE");
-    assert.match(err.message, /wishful-thinking/);
-    return true;
-  });
+  await assert.rejects(
+    () => svc.transcribeAudio(sidOf("V1")),
+    (err) => {
+      assert.equal(err.code, "TRANSCRIBE_UNAVAILABLE");
+      assert.match(err.message, /wishful-thinking/);
+      return true;
+    }
+  );
   await svc.stop();
 });
 
@@ -324,15 +334,27 @@ test("no tool output carries the API key, whatever the tool", async () => {
     said.push(JSON.stringify(await server.tools.get(name).handler({ chat_id: PEER, query: "salut" })));
   }
 
-  assert.ok(said.every((text) => !text.includes(key)), "the key belongs in .env and nowhere else");
-  assert.ok(said.some((text) => text.includes("salut")), "and the transcript did come back, so this is not passing vacuously");
+  assert.ok(
+    said.every((text) => !text.includes(key)),
+    "the key belongs in .env and nowhere else"
+  );
+  assert.ok(
+    said.some((text) => text.includes("salut")),
+    "and the transcript did come back, so this is not passing vacuously"
+  );
   await svc.stop();
 });
 
 test("transcribe_audio spends a bucket of its own, ten a minute", async () => {
   const server = fakeServer();
   const wa = {
-    transcribeAudio: async () => ({ text: "salut", language: "ro", duration_seconds: 6, provider: "local", cached: true }),
+    transcribeAudio: async () => ({
+      text: "salut",
+      language: "ro",
+      duration_seconds: 6,
+      provider: "local",
+      cached: true,
+    }),
   };
   registerTools(server, asToolSource(wa), { allowWrite: true });
   const transcribe = server.tools.get("transcribe_audio").handler;
@@ -389,20 +411,26 @@ test("read-only refuses the API provider and nothing else", async () => {
   stub(svc, mockProvider());
   deliver(sock, [voiceNote("R1", { seconds: 6 })]);
 
-  await assert.rejects(() => svc.transcribeAudio(sidOf("R1")), (err) => {
-    assert.equal(err.code, "READ_ONLY", "uploading the user's audio and spending their money is not a read");
-    assert.match(err.fix, /wazap config writes on/);
-    assert.match(err.fix, /transcribe local/);
-    return true;
-  });
+  await assert.rejects(
+    () => svc.transcribeAudio(sidOf("R1")),
+    (err) => {
+      assert.equal(err.code, "READ_ONLY", "uploading the user's audio and spending their money is not a read");
+      assert.match(err.fix, /wazap config writes on/);
+      assert.match(err.fix, /transcribe local/);
+      return true;
+    }
+  );
   await svc.stop();
 
   const local = serviceWith({ WAZAP_TRANSCRIBE: "local" }, { readOnly: true });
   stub(local.svc, mockProvider());
   deliver(local.sock, [voiceNote("R2", { seconds: 6 })]);
-  await assert.rejects(() => local.svc.transcribeAudio(sidOf("R2")), (err) => {
-    assert.equal(err.code, "TRANSCRIBE_UNAVAILABLE", "whisper.cpp sends nothing anywhere, so read-only has no say");
-    return true;
-  });
+  await assert.rejects(
+    () => local.svc.transcribeAudio(sidOf("R2")),
+    (err) => {
+      assert.equal(err.code, "TRANSCRIBE_UNAVAILABLE", "whisper.cpp sends nothing anywhere, so read-only has no say");
+      return true;
+    }
+  );
   await local.svc.stop();
 });

@@ -50,10 +50,22 @@ function syncableSocket(sock, { versions = COLLECTIONS } = {}) {
 
 test("the resync decision reads the same four facts every time", () => {
   const cases = [
-    ["no names and versions stored: the delivery went somewhere else", { named: 0, storedVersions: true, resyncedAt: null }, true],
+    [
+      "no names and versions stored: the delivery went somewhere else",
+      { named: 0, storedVersions: true, resyncedAt: null },
+      true,
+    ],
     ["names in hand: nothing to heal", { named: 217, storedVersions: true, resyncedAt: null }, false],
-    ["no stored version: this connection is already doing the sync", { named: 0, storedVersions: false, resyncedAt: null }, false],
-    ["asked yesterday: the account really has no contacts", { named: 0, storedVersions: true, resyncedAt: NOW - DAY }, false],
+    [
+      "no stored version: this connection is already doing the sync",
+      { named: 0, storedVersions: false, resyncedAt: null },
+      false,
+    ],
+    [
+      "asked yesterday: the account really has no contacts",
+      { named: 0, storedVersions: true, resyncedAt: NOW - DAY },
+      false,
+    ],
     ["asked eight days ago: worth one more try", { named: 0, storedVersions: true, resyncedAt: NOW - 8 * DAY }, true],
     ["one name is enough to stop asking", { named: 1, storedVersions: true, resyncedAt: NOW - 8 * DAY }, false],
   ];
@@ -143,23 +155,36 @@ test("names arriving on either contact event reach the disk", () => {
 
 test("sync_contacts reports what the resync changed, and never counts as a write", async () => {
   const server = fakeServer();
-  registerTools(server, asToolSource({ syncContacts: async () => ({ requested: true, named_before: 0, named_after: 217 }) }), {
-    allowWrite: false,
-  });
+  registerTools(
+    server,
+    asToolSource({ syncContacts: async () => ({ requested: true, named_before: 0, named_after: 217 }) }),
+    {
+      allowWrite: false,
+    }
+  );
   const tool = server.tools.get("sync_contacts");
   assert.equal(tool.meta.annotations.readOnlyHint, true, "it changes nothing on WhatsApp");
 
   const result = await tool.handler({});
-  assert.deepEqual(result.structuredContent, { requested: true, named_before: 0, named_after: 217, account_id: "default" });
+  assert.deepEqual(result.structuredContent, {
+    requested: true,
+    named_before: 0,
+    named_after: 217,
+    account_id: "default",
+  });
   assert.match(result.content[0].text, /217 named contacts \(was 0\)/);
 });
 
 test("sync_contacts tells an empty address book apart from one already in hand", async () => {
   const say = async (named_before, named_after) => {
     const server = fakeServer();
-    registerTools(server, asToolSource({ syncContacts: async () => ({ requested: true, named_before, named_after }) }), {
-      allowWrite: true,
-    });
+    registerTools(
+      server,
+      asToolSource({ syncContacts: async () => ({ requested: true, named_before, named_after }) }),
+      {
+        allowWrite: true,
+      }
+    );
     return (await server.tools.get("sync_contacts").handler({})).content[0].text;
   };
   assert.match(await say(0, 0), /no names at all/);
@@ -192,7 +217,13 @@ test("search_contacts finds a number typed with the national leading zero", asyn
   const { svc, sock } = makeService();
   sock.ev.emit("contacts.upsert", [{ id: "40734000111@s.whatsapp.net", name: "Ana" }]);
   const found = await svc.searchContacts("0734 000 111", 10);
-  assert.deepEqual(found.map((c) => c.name), ["Ana"]);
+  assert.deepEqual(
+    found.map((c) => c.name),
+    ["Ana"]
+  );
   const stillFound = await svc.searchContacts("40734", 10);
-  assert.deepEqual(stillFound.map((c) => c.name), ["Ana"]);
+  assert.deepEqual(
+    stillFound.map((c) => c.name),
+    ["Ana"]
+  );
 });

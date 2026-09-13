@@ -66,7 +66,7 @@ test("READ_ONLY when writes are off", async () => {
   });
   await assert.rejects(
     () => svc.setOwnProfilePicture({ file_path: jpegPath() }),
-    (err) => err.code === "READ_ONLY",
+    (err) => err.code === "READ_ONLY"
   );
   await svc.stop();
 });
@@ -75,15 +75,15 @@ test("FILE_NOT_FOUND for a missing path and for not exactly one of path or url",
   const { svc } = writableService();
   await assert.rejects(
     () => svc.setOwnProfilePicture({ file_path: "/no/such/wazap-pic.jpg" }),
-    (err) => err.code === "FILE_NOT_FOUND",
+    (err) => err.code === "FILE_NOT_FOUND"
   );
   await assert.rejects(
     () => svc.setOwnProfilePicture({}),
-    (err) => err.code === "FILE_NOT_FOUND" && /exactly one/i.test(err.message),
+    (err) => err.code === "FILE_NOT_FOUND" && /exactly one/i.test(err.message)
   );
   await assert.rejects(
     () => svc.setOwnProfilePicture({ file_path: jpegPath(), url: "https://example.com/pic.jpg" }),
-    (err) => err.code === "FILE_NOT_FOUND" && /exactly one/i.test(err.message),
+    (err) => err.code === "FILE_NOT_FOUND" && /exactly one/i.test(err.message)
   );
   await svc.stop();
 });
@@ -95,7 +95,7 @@ test("INVALID_IMAGE for a non-image", async () => {
   writeFileSync(path, "not an image");
   await assert.rejects(
     () => svc.setOwnProfilePicture({ file_path: path }),
-    (err) => err.code === "INVALID_IMAGE",
+    (err) => err.code === "INVALID_IMAGE"
   );
   await svc.stop();
 });
@@ -111,7 +111,7 @@ test("FILE_TOO_LARGE for a photo over 10 MB, before the socket is touched", asyn
   writeFileSync(path, Buffer.alloc(10 * 1024 * 1024 + 1));
   await assert.rejects(
     () => svc.setOwnProfilePicture({ file_path: path }),
-    (err) => err.code === "FILE_TOO_LARGE" && /10 MB/.test(err.message),
+    (err) => err.code === "FILE_TOO_LARGE" && /10 MB/.test(err.message)
   );
   assert.equal(called, false);
   await svc.stop();

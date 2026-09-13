@@ -26,7 +26,8 @@ function dataDir() {
 /** Nothing the machine running the suite has configured may reach the child. */
 function childEnv(extra) {
   const env = { ...process.env, WAZAP_NO_UPDATE_CHECK: "1" };
-  for (const name of Object.keys(env)) if (name.startsWith("WAZAP_TRANSCRIBE") || name.startsWith("WAZAP_WHISPER")) delete env[name];
+  for (const name of Object.keys(env))
+    if (name.startsWith("WAZAP_TRANSCRIBE") || name.startsWith("WAZAP_WHISPER")) delete env[name];
   delete env.OPENAI_API_KEY;
   return { ...env, ...extra };
 }

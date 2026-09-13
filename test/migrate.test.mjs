@@ -132,7 +132,7 @@ test("a missing accounts.json next to accounts/default is created, not an error"
   mkdirSync(accountPaths(dir, DEFAULT_ACCOUNT_ID).authDir, { recursive: true });
   writeFileSync(
     join(accountPaths(dir, DEFAULT_ACCOUNT_ID).authDir, "creds.json"),
-    JSON.stringify({ me: { id: "40700000001:1@s.whatsapp.net", name: "Răzvan" } }),
+    JSON.stringify({ me: { id: "40700000001:1@s.whatsapp.net", name: "Răzvan" } })
   );
   migrateLayout(dir);
   const file = JSON.parse(readFileSync(paths(dir).accountsFile, "utf8"));
@@ -145,12 +145,15 @@ test("the migrator refuses a symlink instead of following it", () => {
   mkdirSync(join(other, "auth"), { recursive: true });
   writeFileSync(join(other, "auth", "creds.json"), "{}");
   symlinkSync(join(other, "auth"), join(dir, "auth"));
-  assert.throws(() => migrateLayout(dir), (err) => {
-    assert.equal(err.code, "WHATSAPP_ERROR");
-    assert.match(err.message, /symlink/i);
-    assert.match(err.fix, /migrate rollback/);
-    return true;
-  });
+  assert.throws(
+    () => migrateLayout(dir),
+    (err) => {
+      assert.equal(err.code, "WHATSAPP_ERROR");
+      assert.match(err.message, /symlink/i);
+      assert.match(err.fix, /migrate rollback/);
+      return true;
+    }
+  );
   assert.equal(existsSync(accountPaths(dir, DEFAULT_ACCOUNT_ID).authDir), false);
 });
 
@@ -162,16 +165,17 @@ test("leftover root entries still migrate after auth/ has already moved", () => 
   renameSync(join(dir, "auth"), dest.authDir);
   writeFileSync(
     join(dir, "migration.json"),
-    `${JSON.stringify({ v: 2, at: "2026-01-01T00:00:00.000Z", moved: ["auth"] }, null, 2)}\n`,
+    `${JSON.stringify({ v: 2, at: "2026-01-01T00:00:00.000Z", moved: ["auth"] }, null, 2)}\n`
   );
 
   migrateLayout(dir);
   assert.equal(existsSync(join(dir, "store.json")), false);
   assert.equal(existsSync(dest.storeFile), true);
   assert.equal(existsSync(join(dest.historyDir, "40700000001@s.whatsapp.net.jsonl")), true);
-  assert.deepEqual(JSON.parse(readFileSync(join(dir, "migration.json"), "utf8")).moved.sort(), [
-    ...LAYOUT_ENTRIES.filter((name) => name !== "qr.png"),
-  ].sort());
+  assert.deepEqual(
+    JSON.parse(readFileSync(join(dir, "migration.json"), "utf8")).moved.sort(),
+    [...LAYOUT_ENTRIES.filter((name) => name !== "qr.png")].sort()
+  );
 });
 
 test("a dest that exists with no source is treated as already moved", () => {
@@ -181,7 +185,10 @@ test("a dest that exists with no source is treated as already moved", () => {
   mkdirSync(dest.root, { recursive: true, mode: 0o700 });
   renameSync(join(dir, "auth"), dest.authDir);
   // Crash between rename and journal: dest has auth, journal does not list it.
-  writeFileSync(join(dir, "migration.json"), `${JSON.stringify({ v: 2, at: "2026-01-01T00:00:00.000Z", moved: [] }, null, 2)}\n`);
+  writeFileSync(
+    join(dir, "migration.json"),
+    `${JSON.stringify({ v: 2, at: "2026-01-01T00:00:00.000Z", moved: [] }, null, 2)}\n`
+  );
 
   migrateLayout(dir);
   assert.equal(existsSync(dest.authDir), true);
@@ -200,7 +207,7 @@ test("migrate rollback on a flat dir does not migrate first", async () => {
     (err) => {
       assert.match(err.stderr, /No migration\.json/);
       return true;
-    },
+    }
   );
   assert.equal(existsSync(join(dir, "auth", "creds.json")), true);
   assert.equal(existsSync(accountPaths(dir, DEFAULT_ACCOUNT_ID).authDir), false);
@@ -213,7 +220,10 @@ test("rollback still runs when a leftover symlink would make a forward migrate t
   const other = dataDir();
   writeFileSync(join(other, "qr.png"), "qr");
   symlinkSync(join(other, "qr.png"), join(dir, "qr.png"));
-  assert.throws(() => migrateLayout(dir), (err) => err.code === "WHATSAPP_ERROR");
+  assert.throws(
+    () => migrateLayout(dir),
+    (err) => err.code === "WHATSAPP_ERROR"
+  );
 
   await run(process.execPath, [binary, "migrate", "rollback", "--data-dir", dir], {
     env: childEnv(),
@@ -227,11 +237,14 @@ test("rollback refuses when a second account exists", () => {
   seedV0(dir);
   migrateLayout(dir);
   AccountRegistry.load(dir).add("work");
-  assert.throws(() => rollbackMigration(dir), (err) => {
-    assert.equal(err.code, "INVALID_ID");
-    assert.match(err.message, /more than one account/);
-    return true;
-  });
+  assert.throws(
+    () => rollbackMigration(dir),
+    (err) => {
+      assert.equal(err.code, "INVALID_ID");
+      assert.match(err.message, /more than one account/);
+      return true;
+    }
+  );
   assert.equal(existsSync(accountPaths(dir, DEFAULT_ACCOUNT_ID).authDir), true);
 });
 
@@ -274,13 +287,16 @@ test("migrate refuses to move a live process's files out from under it", () => {
   const dir = dataDir();
   seedV0(dir);
   writeFileSync(paths(dir).lockFile, `${process.pid}\n`, { mode: 0o600 });
-  assert.throws(() => migrateLayout(dir), (err) => {
-    assert.equal(err.code, "WHATSAPP_ERROR");
-    assert.match(err.message, /running \(pid \d+\) on the old data layout/);
-    assert.match(err.fix, /wazap service stop/);
-    assert.match(err.fix, new RegExp(`kill ${process.pid}`));
-    return true;
-  });
+  assert.throws(
+    () => migrateLayout(dir),
+    (err) => {
+      assert.equal(err.code, "WHATSAPP_ERROR");
+      assert.match(err.message, /running \(pid \d+\) on the old data layout/);
+      assert.match(err.fix, /wazap service stop/);
+      assert.match(err.fix, new RegExp(`kill ${process.pid}`));
+      return true;
+    }
+  );
   assert.equal(existsSync(join(dir, "auth", "creds.json")), true, "nothing may move while the lock is held");
   assert.equal(existsSync(accountPaths(dir, DEFAULT_ACCOUNT_ID).authDir), false);
 });
@@ -290,10 +306,13 @@ test("rollback refuses while the session is held, then runs once it is free", ()
   seedV0(dir);
   migrateLayout(dir);
   writeFileSync(paths(dir).lockFile, `${process.pid}\n`, { mode: 0o600 });
-  assert.throws(() => rollbackMigration(dir), (err) => {
-    assert.match(err.message, /old data layout/);
-    return true;
-  });
+  assert.throws(
+    () => rollbackMigration(dir),
+    (err) => {
+      assert.match(err.message, /old data layout/);
+      return true;
+    }
+  );
   assert.equal(existsSync(join(dir, "auth")), false, "rollback must not start either");
 
   rmSync(paths(dir).lockFile);
@@ -313,14 +332,11 @@ test("status on a held flat dir refuses instead of migrating under the server", 
   const dir = dataDir();
   seedV0(dir);
   writeFileSync(paths(dir).lockFile, `${process.pid}\n`, { mode: 0o600 });
-  await assert.rejects(
-    run(process.execPath, [binary, "status", "--data-dir", dir], { env: childEnv() }),
-    (err) => {
-      assert.match(err.stderr, /old data layout/);
-      assert.match(err.stderr, /wazap service stop/);
-      return true;
-    },
-  );
+  await assert.rejects(run(process.execPath, [binary, "status", "--data-dir", dir], { env: childEnv() }), (err) => {
+    assert.match(err.stderr, /old data layout/);
+    assert.match(err.stderr, /wazap service stop/);
+    return true;
+  });
   assert.equal(existsSync(join(dir, "auth")), true);
 });
 
@@ -334,14 +350,14 @@ test("service and migrate commands do not run the migration first", async () => 
       assert.match(err.stderr, /No wazap service is installed/);
       assert.doesNotMatch(err.stderr, /old data layout/);
       return true;
-    },
+    }
   );
   await assert.rejects(
     run(process.execPath, [binary, "migrate", "rollback", "--data-dir", dir], { env: childEnv() }),
     (err) => {
       assert.match(err.stderr, /old data layout/);
       return true;
-    },
+    }
   );
   assert.equal(existsSync(join(dir, "auth", "creds.json")), true);
 });

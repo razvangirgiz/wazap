@@ -51,7 +51,7 @@ export function planUpdate(probes: UpdateProbes, registryLatest: string | null):
     steps.push(
       probes.install.kind === "global"
         ? { kind: "npm", version: registryLatest }
-        : { kind: "note", text: upgradeNote(probes.install, registryLatest) },
+        : { kind: "note", text: upgradeNote(probes.install, registryLatest) }
     );
   }
 

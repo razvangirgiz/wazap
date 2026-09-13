@@ -50,7 +50,7 @@ test("login refuses to touch a session another process holds", async () => {
       assert.equal(err.code, 1);
       assert.match(err.stderr, /wazap is running \(pid \d+\)/);
       return true;
-    },
+    }
   );
 });
 
@@ -67,7 +67,10 @@ test("login prints a machine-readable pairing code and releases the lock when ki
   try {
     const code = await new Promise((resolve, reject) => {
       let seen = "";
-      const timer = setTimeout(() => reject(new Error(`no pairing code in ${PAIRING_DEADLINE_MS}ms: ${seen}`)), PAIRING_DEADLINE_MS);
+      const timer = setTimeout(
+        () => reject(new Error(`no pairing code in ${PAIRING_DEADLINE_MS}ms: ${seen}`)),
+        PAIRING_DEADLINE_MS
+      );
       child.stderr.setEncoding("utf8");
       child.stderr.on("data", (chunk) => {
         seen += chunk;
@@ -94,7 +97,10 @@ test("login prints a machine-readable pairing code and releases the lock when ki
 
 test("detectClients reports the clients the probes find, in table order", () => {
   const found = detectClients({ exists: (p) => p.endsWith(".cursor"), onPath: (c) => c === "claude" });
-  assert.deepEqual(found.map((spec) => spec.name), ["claude-code", "cursor"]);
+  assert.deepEqual(
+    found.map((spec) => spec.name),
+    ["claude-code", "cursor"]
+  );
 });
 
 test("detectClients finds nothing when nothing is installed", () => {
@@ -154,7 +160,7 @@ printf '#!/bin/sh\nexit 0\n' > ${join(box.bin, "wazap")}
 chmod +x ${join(box.bin, "wazap")}
 exit 0
 `,
-    { mode: 0o755 },
+    { mode: 0o755 }
   );
   return () => (existsSync(log) ? readFileSync(log, "utf8").trim().split("\n") : []);
 }
@@ -188,7 +194,7 @@ for formula in "$@"; do
 done
 exit 0
 `,
-    { mode: 0o755 },
+    { mode: 0o755 }
   );
   return () => (existsSync(log) ? readFileSync(log, "utf8").trim().split("\n") : []);
 }
@@ -196,9 +202,13 @@ exit 0
 test("setup --agent is AGENT.md on stdout, nothing on stderr", async () => {
   const document = readFileSync(join(root, "AGENT.md"), "utf8");
   // A non-zero exit rejects, so reaching the assertions is the exit-0 check.
-  const { stdout, stderr } = await run(process.execPath, [binary, "setup", "--agent", "--data-dir", dataDir("wazap-agent-")], {
-    env: childEnv(),
-  });
+  const { stdout, stderr } = await run(
+    process.execPath,
+    [binary, "setup", "--agent", "--data-dir", dataDir("wazap-agent-")],
+    {
+      env: childEnv(),
+    }
+  );
 
   assert.equal(stdout, document, "the command and the file must be the same document");
   assert.equal(stderr, "");
@@ -212,7 +222,7 @@ function linkedDataDir() {
   mkdirSync(join(dir, "auth"));
   writeFileSync(
     join(dir, "auth", "creds.json"),
-    JSON.stringify({ registered: true, me: { id: "15550100:1@s.whatsapp.net", name: "Test" } }),
+    JSON.stringify({ registered: true, me: { id: "15550100:1@s.whatsapp.net", name: "Test" } })
   );
   return dir;
 }
@@ -224,7 +234,7 @@ function linkedDataDir() {
 async function failingSetup(box, ...args) {
   const err = await setup(box, ...args).then(
     () => assert.fail("a failing live check must exit non-zero"),
-    (rejected) => rejected,
+    (rejected) => rejected
   );
   assert.equal(err.code, 1);
   assert.match(err.stderr, /→ run `wazap status --live` after fixing it/);
@@ -256,7 +266,10 @@ test("setup skips the live check while another process holds the session", async
   writeFileSync(join(dir, "server.lock"), `${process.pid}\n`);
   const { stderr } = await setup(box, "--yes", "--client", "cursor", "--data-dir", dir);
 
-  assert.match(stderr, new RegExp(`A server already holds the session \\(pid ${process.pid}\\); skipping the live check\\.`));
+  assert.match(
+    stderr,
+    new RegExp(`A server already holds the session \\(pid ${process.pid}\\); skipping the live check\\.`)
+  );
   assert.match(stderr, /Setup complete/);
 });
 
@@ -266,7 +279,7 @@ test("setup refuses to move a held flat dir out from under its process", async (
   writeFileSync(join(dir, "server.lock"), `${process.pid}\n`);
   const err = await setup(box, "--yes", "--client", "cursor", "--data-dir", dir).then(
     () => assert.fail("a held flat dir must fail before the wizard"),
-    (rejected) => rejected,
+    (rejected) => rejected
   );
   assert.equal(err.code, 1);
   assert.match(err.stderr, /on the old data layout/);
@@ -300,30 +313,46 @@ function stubRelaunch(box) {
 
 const DARWIN_ONLY = process.platform === "darwin" ? false : "relaunch is a macOS answer";
 
-test("setup --relaunch restarts Claude Desktop for the user, and says so instead of asking", { skip: DARWIN_ONLY }, async () => {
-  const box = sandbox();
-  const calls = stubRelaunch(box);
-  const stderr = await failingSetup(box, "--yes", "--relaunch", "--client", "claude-desktop", "--data-dir", linkedDataDir());
+test(
+  "setup --relaunch restarts Claude Desktop for the user, and says so instead of asking",
+  { skip: DARWIN_ONLY },
+  async () => {
+    const box = sandbox();
+    const calls = stubRelaunch(box);
+    const stderr = await failingSetup(
+      box,
+      "--yes",
+      "--relaunch",
+      "--client",
+      "claude-desktop",
+      "--data-dir",
+      linkedDataDir()
+    );
 
-  assert.deepEqual(calls(), [
-    "pgrep -x Claude",
-    "pgrep -x Claude",
-    'osascript -e tell application "Claude" to quit',
-    "pgrep -x Claude",
-    "open -a Claude",
-  ]);
-  assert.match(stderr, /✓ Claude Desktop restarted/);
-  assert.ok(!stderr.includes("– Restart Claude Desktop."), "the restarted client keeps no leftover instruction");
-});
+    assert.deepEqual(calls(), [
+      "pgrep -x Claude",
+      "pgrep -x Claude",
+      'osascript -e tell application "Claude" to quit',
+      "pgrep -x Claude",
+      "open -a Claude",
+    ]);
+    assert.match(stderr, /✓ Claude Desktop restarted/);
+    assert.ok(!stderr.includes("– Restart Claude Desktop."), "the restarted client keeps no leftover instruction");
+  }
+);
 
-test("setup --yes alone leaves Claude Desktop alone: an agent inside it must not quit itself", { skip: DARWIN_ONLY }, async () => {
-  const box = sandbox();
-  const calls = stubRelaunch(box);
-  const stderr = await failingSetup(box, "--yes", "--client", "claude-desktop", "--data-dir", linkedDataDir());
+test(
+  "setup --yes alone leaves Claude Desktop alone: an agent inside it must not quit itself",
+  { skip: DARWIN_ONLY },
+  async () => {
+    const box = sandbox();
+    const calls = stubRelaunch(box);
+    const stderr = await failingSetup(box, "--yes", "--client", "claude-desktop", "--data-dir", linkedDataDir());
 
-  assert.deepEqual(calls(), ["pgrep -x Claude"], "the running check is all that may run");
-  assert.match(stderr, /Restart Claude Desktop\./);
-});
+    assert.deepEqual(calls(), ["pgrep -x Claude"], "the running check is all that may run");
+    assert.match(stderr, /Restart Claude Desktop\./);
+  }
+);
 
 test("setup refuses to link while another process owns the session", async () => {
   const box = sandbox();
@@ -365,12 +394,15 @@ for (const [answer, expected] of REMOTE_ANSWERS) {
 test("the remote MCP notes are the Grok path, not expose", () => {
   const text = remoteMcpLines(8766).join("\n");
   assert.match(text, /Grok Bot \/ remote MCP/);
-  assert.match(text, /URL     http:\/\/<host>:8766\/mcp/);
+  assert.match(text, /URL {5}http:\/\/<host>:8766\/mcp/);
   assert.match(text, /Authorization: Bearer <WAZAP_READ_TOKEN or WAZAP_WRITE_TOKEN>/);
   assert.match(text, /1\. wazap login on this host until the CLI says linked/);
   assert.match(text, /get_status and link_account wait until HTTP is up/);
   assert.match(text, /2\. Answer writes yes or no at login\./);
-  assert.match(text, /3\. wazap serve --http with WAZAP_READ_TOKEN\. Set WAZAP_WRITE_TOKEN only if this client should send\./);
+  assert.match(
+    text,
+    /3\. wazap serve --http with WAZAP_READ_TOKEN\. Set WAZAP_WRITE_TOKEN only if this client should send\./
+  );
   assert.match(text, /4\. Connect that URL on Grok Bot, then learn, then get_status/);
   assert.match(text, /connected is the socket/);
   assert.match(text, /write_tools \(or send tools in the list\) is whether this session can send/);
@@ -412,13 +444,23 @@ test("the README Grok block matches the four setup steps", () => {
 test("the keep-running menu offers a public URL only when something can tunnel", () => {
   const noBrew = { onPath: () => false };
   const none = keepRunningOptions([{ available: () => false }], noBrew);
-  assert.deepEqual(none.map((option) => option.choice), ["client", "service"]);
+  assert.deepEqual(
+    none.map((option) => option.choice),
+    ["client", "service"]
+  );
 
   const some = keepRunningOptions([{ available: () => false }, { available: () => true }], noBrew);
-  assert.deepEqual(some.map((option) => option.choice), ["client", "service", "expose"]);
+  assert.deepEqual(
+    some.map((option) => option.choice),
+    ["client", "service", "expose"]
+  );
 
   const brewable = keepRunningOptions([{ available: () => false }], { onPath: (command) => command === "brew" });
-  assert.deepEqual(brewable.map((option) => option.choice), ["client", "service", "expose"], "brew can install one");
+  assert.deepEqual(
+    brewable.map((option) => option.choice),
+    ["client", "service", "expose"],
+    "brew can install one"
+  );
 });
 
 test("setup --transcribe local brews the binaries, then goes straight on to the model", async () => {
@@ -435,7 +477,7 @@ test("setup --transcribe local brews the binaries, then goes straight on to the 
 
   const err = await setup(box, "--yes", "--transcribe", "local", "--client", "cursor", "--data-dir", dir).then(
     () => assert.fail("a blocked models directory must fail the run"),
-    (rejected) => rejected,
+    (rejected) => rejected
   );
 
   assert.deepEqual(calls(), ["install whisper-cpp ffmpeg"], "one brew call for the whole set");
@@ -443,7 +485,7 @@ test("setup --transcribe local brews the binaries, then goes straight on to the 
   assert.match(err.stderr, /Checking ggml-large-v3-turbo-q5_0\.bin…/, "the same run must reach the download");
   assert.ok(
     !err.stderr.includes("once they are installed"),
-    "setup must not send the user off to `transcribe download` after installing the binaries",
+    "setup must not send the user off to `transcribe download` after installing the binaries"
   );
 });
 
@@ -451,7 +493,17 @@ test("setup --transcribe local --no-brew leaves the fix line standing and instal
   const box = sandbox();
   box.path = box.bin;
   const calls = stubBrew(box);
-  const stderr = await failingSetup(box, "--yes", "--no-brew", "--transcribe", "local", "--client", "cursor", "--data-dir", linkedDataDir());
+  const stderr = await failingSetup(
+    box,
+    "--yes",
+    "--no-brew",
+    "--transcribe",
+    "local",
+    "--client",
+    "cursor",
+    "--data-dir",
+    linkedDataDir()
+  );
 
   assert.deepEqual(calls(), [], "brew must not be called");
   assert.match(stderr, /whisper\.cpp not found/);
@@ -459,7 +511,7 @@ test("setup --transcribe local --no-brew leaves the fix line standing and instal
     stderr,
     process.platform === "darwin"
       ? /→ Run `brew install whisper-cpp ffmpeg`/
-      : /→ Build whisper\.cpp from https:\/\/github\.com\/ggml-org\/whisper\.cpp#quick-start/,
+      : /→ Build whisper\.cpp from https:\/\/github\.com\/ggml-org\/whisper\.cpp#quick-start/
   );
   assert.match(stderr, /Run `wazap transcribe download` once they are installed\./);
 });
@@ -537,9 +589,19 @@ test(
     try {
       // The stub credentials never reach `connected`, so Finish fails; what this
       // pins is that it failed on the service's own /healthz.
-      const err = await setup(box, "--yes", "--service", "--client", "cursor", "--port", String(port), "--data-dir", dir).then(
+      const err = await setup(
+        box,
+        "--yes",
+        "--service",
+        "--client",
+        "cursor",
+        "--port",
+        String(port),
+        "--data-dir",
+        dir
+      ).then(
         () => assert.fail("stub credentials cannot reach connected"),
-        (rejected) => rejected,
+        (rejected) => rejected
       );
 
       assert.match(err.stderr, /Step 4 of 5 · Keep running/);
@@ -555,7 +617,7 @@ test(
     } finally {
       kill();
     }
-  },
+  }
 );
 
 test("setup with no answer keeps wazap running only while a client has it open", async () => {
@@ -577,7 +639,7 @@ test("setup through npx installs wazap globally, then connects the client to tha
   assert.deepEqual(
     calls().filter((line) => line.startsWith("install")),
     [`install -g wazap-mcp@${WAZAP_VERSION}`],
-    "exactly one global install",
+    "exactly one global install"
   );
   assert.ok(calls().includes("prefix -g"), "then setup asks npm where that bin landed");
   assert.match(stderr, new RegExp(`wazap-mcp@${WAZAP_VERSION.replace(/\./g, "\\.")} installed globally`));
@@ -618,4 +680,3 @@ test("a failing npm prints the repair and setup carries on to Connect", async ()
   assert.match(stderr, /Step 4 of 6 · Connect/);
   assert.equal(existsSync(join(box.home, ".cursor", "mcp.json")), true, "Connect must still run");
 });
-

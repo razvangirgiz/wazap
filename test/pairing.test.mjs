@@ -75,7 +75,10 @@ test("a rejected code is SESSION_EXPIRED, not a hang", async () => {
   try {
     sock.ev.emit("connection.update", { qr: "a-qr" });
     const p = await started;
-    sock.ev.emit("connection.update", { connection: "close", lastDisconnect: { error: { output: { statusCode: LOGGED_OUT } } } });
+    sock.ev.emit("connection.update", {
+      connection: "close",
+      lastDisconnect: { error: { output: { statusCode: LOGGED_OUT } } },
+    });
     await assert.rejects(p.done, (err) => {
       assert.equal(err.code, "SESSION_EXPIRED");
       return true;

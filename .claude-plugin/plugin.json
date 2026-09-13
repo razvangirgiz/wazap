@@ -7,20 +7,12 @@
   },
   "repository": "https://github.com/razvangirgiz/wazap",
   "license": "MIT",
-  "keywords": [
-    "whatsapp",
-    "mcp",
-    "baileys",
-    "messaging"
-  ],
+  "keywords": ["whatsapp", "mcp", "baileys", "messaging"],
   "skills": "./skills/",
   "mcpServers": {
     "whatsapp": {
       "command": "npx",
-      "args": [
-        "-y",
-        "wazap-mcp"
-      ]
+      "args": ["-y", "wazap-mcp"]
     }
   }
 }

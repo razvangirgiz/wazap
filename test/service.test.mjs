@@ -6,7 +6,17 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  statSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -250,7 +260,7 @@ test("the launchd plist keeps the job alive, throttled, with its own PATH", () =
 \t<string>/home/u/logs/com.wazap.server.err.log</string>
 </dict>
 </plist>
-`,
+`
   );
 });
 
@@ -282,7 +292,7 @@ PrivateTmp=true
 
 [Install]
 WantedBy=default.target
-`,
+`
   );
   assert.ok(!unit.includes("ProtectHome"), "ProtectHome would hide ~/.wazap from the service");
 });
@@ -356,7 +366,7 @@ function serviceHeldDir() {
       port: 41_999,
       logDir: join(dir, "logs"),
       installedVersion: WAZAP_VERSION,
-    }),
+    })
   );
   for (const binary of STUB.binaries) {
     writeFileSync(join(bin, binary), STUB.script(state, p.lockFile, process.pid, record), { mode: 0o755 });
@@ -382,10 +392,10 @@ test(
     assert.match(calls, STUB.started, "logout left the service down");
     assert.ok(
       calls.search(STUB.stopped) < calls.search(STUB.started),
-      `the service must be stopped before it is started again: ${calls}`,
+      `the service must be stopped before it is started again: ${calls}`
     );
     assert.equal(existsSync(paths(dir).lockFile), false, "the command must not leave the session held");
-  },
+  }
 );
 
 test(
@@ -399,7 +409,7 @@ test(
       assert.doesNotMatch(err.stderr, new RegExp(`kill ${process.pid}`));
       return true;
     });
-  },
+  }
 );
 
 test(
@@ -424,7 +434,7 @@ test(
         port: 41_999,
         logDir: join(dir, "logs"),
         installedVersion: WAZAP_VERSION,
-      }),
+      })
     );
     for (const binary of STUB.binaries) {
       writeFileSync(join(bin, binary), STUB.script(state, p.lockFile, process.pid, record), { mode: 0o755 });
@@ -447,7 +457,7 @@ test(
     assert.match(calls, STUB.started, "pairing left the service down");
     assert.ok(
       calls.search(STUB.stopped) < calls.search(STUB.started),
-      `the service must be stopped before it is started again: ${calls}`,
+      `the service must be stopped before it is started again: ${calls}`
     );
-  },
+  }
 );

@@ -6,7 +6,7 @@
  */
 
 import { randomUUID } from "node:crypto";
-import { appendFile, mkdir, mkdtemp, readdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
+import { appendFile, mkdir, mkdtemp, readdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { isAbsolute, join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
@@ -16,13 +16,11 @@ import makeWASocket, {
   downloadMediaMessage,
   jidNormalizedUser,
   proto,
-  type AnyMessageContent,
   type Chat as BaileysChat,
   type Contact as BaileysContact,
   type GroupMetadata,
   type GroupParticipant,
   type WAMessage,
-  type WAMessageKey,
   type WASocket,
 } from "baileys";
 import type { ILogger } from "baileys/lib/Utils/logger.js";
@@ -34,7 +32,15 @@ import { asWazapError, RELINK_FIX, RESET_FIX, WazapError } from "./errors.js";
 import { isGroupId, isNoiseJid, isStatusJid, normalizePhone, resolveChatId, STATUS_JID } from "./ids.js";
 import { log, logError } from "./logger.js";
 import { Notes } from "./notes.js";
-import { asGifMedia, assertMediaSource, describe, loadMedia, loadProfilePicture, mediaContent, mediaFilename } from "./outgoing-media.js";
+import {
+  asGifMedia,
+  assertMediaSource,
+  describe,
+  loadMedia,
+  loadProfilePicture,
+  mediaContent,
+  mediaFilename,
+} from "./outgoing-media.js";
 import { makePreview, videoFrame } from "./previews.js";
 import { decodeMessage, encode, Store, type HistoryRecord, type StoreSnapshot } from "./store.js";
 import {
@@ -305,7 +311,11 @@ export class WhatsAppService implements WhatsAppApi {
   private readonly effectiveReadOnly: boolean;
   private readonly effectiveRateLimit: number;
 
-  constructor(private readonly config: Config, account: AccountRecord, paths: AccountPaths) {
+  constructor(
+    private readonly config: Config,
+    account: AccountRecord,
+    paths: AccountPaths
+  ) {
     this.accountRecord = account;
     this.webhook = new WebhookSink(process.env, { account });
     const policy = accountPolicy(account, config);
@@ -422,7 +432,7 @@ export class WhatsAppService implements WhatsAppApi {
     this.setStatus("linking");
     void pairing.done.then(
       (account) => this.adoptLink(account),
-      (err: unknown) => this.abandonLink(err),
+      (err: unknown) => this.abandonLink(err)
     );
     return this.pairing;
   }
@@ -568,7 +578,7 @@ export class WhatsAppService implements WhatsAppApi {
         readOnly: this.effectiveReadOnly,
         transport: this.config.transport,
         publicUrl: this.config.publicUrl,
-      }),
+      })
     );
     const stale = inboundAt !== null && Date.now() - inboundAt > STALE_INBOUND_MS;
     if (this.status === "connected" && stale) {
@@ -639,7 +649,7 @@ export class WhatsAppService implements WhatsAppApi {
     hours: number,
     filter: Exclude<ChatFilter, "archived">,
     includeSystem = false,
-    types?: MessageType[],
+    types?: MessageType[]
   ): Promise<Synced<RecentConversation[]>> {
     return this.guarded(async () => {
       this.ensureConnected();
@@ -669,7 +679,7 @@ export class WhatsAppService implements WhatsAppApi {
         if (recent.length === 0) continue;
 
         const messages = this.viewsFor(this.ofTypes(recent, types), jid).filter(
-          (view) => includeSystem || view.type !== "system",
+          (view) => includeSystem || view.type !== "system"
         );
         if (messages.length === 0) continue;
         conversations.push({
@@ -691,7 +701,7 @@ export class WhatsAppService implements WhatsAppApi {
     query: string,
     chatId: string | undefined,
     limit: number,
-    opts: SearchOptions = {},
+    opts: SearchOptions = {}
   ): Promise<Synced<MessageView[]>> {
     return this.guarded(async () => {
       this.ensureConnected();
@@ -705,7 +715,8 @@ export class WhatsAppService implements WhatsAppApi {
         const jid = this.store.chatOf.get(sid);
         if (!jid || (scope !== undefined && jid !== scope)) continue;
         const at = messageTimestampMs(raw);
-        if ((opts.sinceMs !== undefined && at < opts.sinceMs) || (opts.untilMs !== undefined && at > opts.untilMs)) continue;
+        if ((opts.sinceMs !== undefined && at < opts.sinceMs) || (opts.untilMs !== undefined && at > opts.untilMs))
+          continue;
         // The rendered text, not the bare placeholder, so a transcript is findable
         // by the words a reader can see.
         if (needle && !viewText(raw, this.store.transcripts.get(sid)).toLowerCase().includes(needle)) continue;
@@ -773,7 +784,7 @@ export class WhatsAppService implements WhatsAppApi {
       const [about, picture] = await Promise.all([
         orNullAfter(
           sock.fetchStatus(jid).then((entries) => statusTextOf(entries?.[0])),
-          PROFILE_LOOKUP_MS,
+          PROFILE_LOOKUP_MS
         ),
         orNullAfter(sock.profilePictureUrl(jid, "image"), PROFILE_LOOKUP_MS),
       ]);
@@ -921,7 +932,7 @@ export class WhatsAppService implements WhatsAppApi {
     }
     const keep = new Set([...this.store.messages.keys()].map((sid) => `${safeFilename(sid)}.jpg`));
     await Promise.all(
-      names.filter((name) => !keep.has(name)).map((name) => rm(join(this.paths.previewsDir, name), { force: true })),
+      names.filter((name) => !keep.has(name)).map((name) => rm(join(this.paths.previewsDir, name), { force: true }))
     );
   }
 
@@ -1045,7 +1056,11 @@ export class WhatsAppService implements WhatsAppApi {
     return quoted !== undefined && this.isMe(quoted);
   }
 
-  private arrivalMatches(arrival: { sid: string; jid: string }, chatJid: string | undefined, addressedToMe: boolean): boolean {
+  private arrivalMatches(
+    arrival: { sid: string; jid: string },
+    chatJid: string | undefined,
+    addressedToMe: boolean
+  ): boolean {
     if (chatJid !== undefined && arrival.jid !== chatJid) return false;
     if (!addressedToMe || !isGroupId(arrival.jid)) return true;
     const raw = this.store.messages.get(arrival.sid);
@@ -1057,7 +1072,12 @@ export class WhatsAppService implements WhatsAppApi {
     const [boot, rest] = cursor.split(":");
     const seq = Number(rest);
     const oldest = this.arrivals[0]?.seq ?? this.arrivalSeq;
-    if (boot !== this.bootId || !Number.isInteger(seq) || seq > this.arrivalSeq || (seq < oldest - 1 && this.arrivals.length > 0)) {
+    if (
+      boot !== this.bootId ||
+      !Number.isInteger(seq) ||
+      seq > this.arrivalSeq ||
+      (seq < oldest - 1 && this.arrivals.length > 0)
+    ) {
       return { seq: this.arrivalSeq, reset: true };
     }
     return { seq, reset: false };
@@ -1176,7 +1196,7 @@ export class WhatsAppService implements WhatsAppApi {
         throw new WazapError(
           "MEDIA_UNAVAILABLE",
           `Message ${messageId} is not a voice note or an audio message.`,
-          "Pass a message whose type is voice or audio",
+          "Pass a message whose type is voice or audio"
         );
       }
 
@@ -1188,7 +1208,7 @@ export class WhatsAppService implements WhatsAppApi {
         throw new WazapError(
           "READ_ONLY",
           "wazap runs read-only, so it will not upload audio to the transcription API.",
-          "Run `wazap config writes on` and restart the server, or run `wazap config transcribe local`",
+          "Run `wazap config writes on` and restart the server, or run `wazap config transcribe local`"
         );
       }
       const readiness = await transcribeReady(settings);
@@ -1214,7 +1234,7 @@ export class WhatsAppService implements WhatsAppApi {
     raw: WAMessage,
     info: { mime: string; size?: number; filename?: string },
     settings: TranscribeSettings,
-    language?: string,
+    language?: string
   ): Promise<TranscribeResult> {
     // Readiness is never ok while no provider is configured.
     const provider = settings.provider!;
@@ -1286,12 +1306,19 @@ export class WhatsAppService implements WhatsAppApi {
   sendMessage(chatId: string, text: string, replyTo?: string, mentionIds?: string[]): Promise<SentMessage> {
     return this.guarded(async () => {
       if (text.length > MAX_TEXT_CHARS) {
-        throw new WazapError("TEXT_TOO_LONG", `The text is ${text.length} characters; WhatsApp allows ${MAX_TEXT_CHARS}.`);
+        throw new WazapError(
+          "TEXT_TOO_LONG",
+          `The text is ${text.length} characters; WhatsApp allows ${MAX_TEXT_CHARS}.`
+        );
       }
       const { sock, jid } = await this.prepareSend(chatId);
       const mentions = (mentionIds ?? []).map((id) => this.resolveId(id));
       const quoted = replyTo === undefined ? undefined : this.messageOrThrow(replyTo);
-      const sent = await sock.sendMessage(jid, mentions.length > 0 ? { text, mentions } : { text }, quoted ? { quoted } : {});
+      const sent = await sock.sendMessage(
+        jid,
+        mentions.length > 0 ? { text, mentions } : { text },
+        quoted ? { quoted } : {}
+      );
       return this.sentResult(sent, jid, text);
     });
   }
@@ -1299,7 +1326,7 @@ export class WhatsAppService implements WhatsAppApi {
   sendMedia(
     chatId: string,
     source: MediaSource,
-    opts: { caption?: string; asDocument: boolean; asVoice: boolean; asGif: boolean },
+    opts: { caption?: string; asDocument: boolean; asVoice: boolean; asGif: boolean }
   ): Promise<SentMessage> {
     return this.guarded(async () => {
       const { sock, jid } = await this.prepareSend(chatId);
@@ -1325,7 +1352,7 @@ export class WhatsAppService implements WhatsAppApi {
     latitude: number,
     longitude: number,
     name?: string,
-    address?: string,
+    address?: string
   ): Promise<SentMessage> {
     return this.guarded(async () => {
       const { sock, jid } = await this.prepareSend(chatId);
@@ -1339,7 +1366,10 @@ export class WhatsAppService implements WhatsAppApi {
   editMessage(messageId: string, text: string): Promise<SentMessage> {
     return this.guarded(async () => {
       if (text.length > MAX_TEXT_CHARS) {
-        throw new WazapError("TEXT_TOO_LONG", `The text is ${text.length} characters; WhatsApp allows ${MAX_TEXT_CHARS}.`);
+        throw new WazapError(
+          "TEXT_TOO_LONG",
+          `The text is ${text.length} characters; WhatsApp allows ${MAX_TEXT_CHARS}.`
+        );
       }
       const raw = this.messageOrThrow(messageId);
       if (!raw.key.fromMe) {
@@ -1380,7 +1410,7 @@ export class WhatsAppService implements WhatsAppApi {
         throw new WazapError(
           "WHATSAPP_ERROR",
           "WhatsApp only supports delete-for-everyone from a linked device; deleting for yourself alone is not available.",
-          "Call delete_message again with for_everyone=true",
+          "Call delete_message again with for_everyone=true"
         );
       }
       if (!raw.key.fromMe) {
@@ -1453,7 +1483,7 @@ export class WhatsAppService implements WhatsAppApi {
         participants: ids.map((id) =>
           present.has(id)
             ? { id, status: "ok" as const }
-            : { id, status: "failed" as const, reason: "WhatsApp did not add this participant" },
+            : { id, status: "failed" as const, reason: "WhatsApp did not add this participant" }
         ),
       };
     });
@@ -1463,7 +1493,7 @@ export class WhatsAppService implements WhatsAppApi {
     groupId: string,
     action: GroupAction,
     participantIds?: string[],
-    value?: string,
+    value?: string
   ): Promise<GroupActionResult> {
     return this.guarded(async () => {
       const sock = this.beginWrite();
@@ -1898,7 +1928,11 @@ export class WhatsAppService implements WhatsAppApi {
       case "not_linked":
         throw new WazapError("NOT_LINKED", "No WhatsApp account is linked.", RELINK_FIX);
       case "linking":
-        throw new WazapError("NOT_CONNECTED", "Pairing is in progress.", "Enter the code on the phone, then call get_status");
+        throw new WazapError(
+          "NOT_CONNECTED",
+          "Pairing is in progress.",
+          "Enter the code on the phone, then call get_status"
+        );
       case "session_corrupt":
         throw new WazapError("SESSION_CORRUPT", this.lastError ?? "Stored credentials are unreadable.", RESET_FIX);
       case "logged_out":
@@ -1924,7 +1958,7 @@ export class WhatsAppService implements WhatsAppApi {
         `Account "${id}" is read-only, so this write is refused.`,
         this.accountRecord.writes === false
           ? `Run \`wazap config writes on --account ${id}\`, then restart the server`
-          : "Run `wazap config writes on`, then restart the server",
+          : "Run `wazap config writes on`, then restart the server"
       );
     }
     const sock = this.ensureConnected();
@@ -2160,9 +2194,7 @@ export class WhatsAppService implements WhatsAppApi {
   private async learnLidPhones(jids: Iterable<string>): Promise<void> {
     const missing = [...new Set(jids)].filter((jid) => jid.endsWith("@lid") && !this.lidPhones.has(jid));
     if (missing.length === 0) return;
-    const mappings = await this.sockClient?.signalRepository.lidMapping
-      .getPNsForLIDs(missing)
-      .catch(() => null);
+    const mappings = await this.sockClient?.signalRepository.lidMapping.getPNsForLIDs(missing).catch(() => null);
     // A pairing from WhatsApp's own table is as good as one from a contact:
     // the chat moves in with the phone chat, history included.
     for (const { lid, pn } of mappings ?? []) this.learnLid(lid, pn);
@@ -2207,15 +2239,20 @@ export class WhatsAppService implements WhatsAppApi {
   /** The bytes behind a message's media. Saving them and transcribing them share it. */
   private async mediaBuffer(sock: WASocket, messageId: string, raw: WAMessage): Promise<Buffer> {
     try {
-      return await downloadMediaMessage(raw, "buffer", {}, {
-        logger: silentLogger,
-        reuploadRequest: sock.updateMediaMessage,
-      });
+      return await downloadMediaMessage(
+        raw,
+        "buffer",
+        {},
+        {
+          logger: silentLogger,
+          reuploadRequest: sock.updateMediaMessage,
+        }
+      );
     } catch (err) {
       throw new WazapError(
         "MEDIA_UNAVAILABLE",
         `Could not download the media of ${messageId}: ${describe(err)}`,
-        "Ask the sender to resend it",
+        "Ask the sender to resend it"
       );
     }
   }
@@ -2281,7 +2318,7 @@ export class WhatsAppService implements WhatsAppApi {
         view: this.viewOf(args.sid, args.jid),
         account: this.accountRecord,
         isSelfChat: this.isMe(args.jid),
-      }),
+      })
     );
   }
 
@@ -2316,7 +2353,7 @@ export class WhatsAppService implements WhatsAppApi {
       throw new WazapError(
         "MESSAGE_NOT_FOUND",
         `No message "${messageId}" is loaded.`,
-        "Use a message_id from read_messages or search_messages",
+        "Use a message_id from read_messages or search_messages"
       );
     }
     return raw;
@@ -2852,7 +2889,6 @@ function requireValue(value: string | undefined, action: GroupAction, what: stri
   if (!trimmed) throw new WazapError("INVALID_ID", `The "${action}" action needs a value: ${what}.`);
   return trimmed;
 }
-
 
 function isMissing(err: unknown): boolean {
   return (err as NodeJS.ErrnoException | undefined)?.code === "ENOENT";

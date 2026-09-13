@@ -7,7 +7,9 @@ import { join } from "node:path";
 import { installSkills, loadSkills, skillState } from "../dist/skills.js";
 
 const root = new URL("..", import.meta.url).pathname;
-const toolNames = new Set([...readFileSync(join(root, "src/tools.ts"), "utf8").matchAll(/^\s+name: "([a-z_]+)",$/gm)].map((m) => m[1]));
+const toolNames = new Set(
+  [...readFileSync(join(root, "src/tools.ts"), "utf8").matchAll(/^\s+name: "([a-z_]+)",$/gm)].map((m) => m[1])
+);
 const skillDirs = readdirSync(join(root, "skills"));
 
 test("every skill has matching frontmatter and a trigger-bearing description", () => {
@@ -25,7 +27,9 @@ test("every skill has matching frontmatter and a trigger-bearing description", (
 test("skills only reference tools the server registers", () => {
   for (const dir of skillDirs) {
     const text = readFileSync(join(root, "skills", dir, "SKILL.md"), "utf8");
-    for (const [, name] of text.matchAll(/`((?:get|list|read|search|send|edit|react|forward|delete|manage|create|download|set|confirm)_[a-z_]+)`/g)) {
+    for (const [, name] of text.matchAll(
+      /`((?:get|list|read|search|send|edit|react|forward|delete|manage|create|download|set|confirm)_[a-z_]+)`/g
+    )) {
       assert.ok(toolNames.has(name), `${dir}: unknown tool \`${name}\``);
     }
   }
@@ -47,7 +51,10 @@ test("plugin manifest version matches package.json", () => {
 test("loadSkills reads the packaged skills into one registry", () => {
   const skills = loadSkills();
   assert.equal(skills.length, 5);
-  assert.deepEqual(skills.map((skill) => skill.name), [...skills.map((skill) => skill.name)].sort());
+  assert.deepEqual(
+    skills.map((skill) => skill.name),
+    [...skills.map((skill) => skill.name)].sort()
+  );
   for (const skill of skills) {
     assert.ok(skillDirs.includes(skill.name), `${skill.name} has no directory`);
     assert.ok(skill.description.length > 0, `${skill.name}: empty description`);

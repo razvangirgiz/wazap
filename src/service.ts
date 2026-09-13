@@ -256,8 +256,6 @@ export function pickSupervisor(registry: readonly Supervisor[] = SUPERVISORS): S
   return found;
 }
 
-
-
 function isPositiveInt(value: unknown): value is number {
   return typeof value === "number" && Number.isInteger(value) && value > 0;
 }
@@ -357,7 +355,7 @@ export function serviceScript(install: Install = whereInstalled()): string {
     throw new WazapError(
       "SERVICE_ERROR",
       "wazap is running out of the npx cache, which npm clears; a service cannot point at it.",
-      NPX_FIX,
+      NPX_FIX
     );
   }
   const self = realpathSync(fileURLToPath(new URL("../dist/index.js", import.meta.url)));
@@ -420,7 +418,7 @@ export async function installService(
   config: Config,
   supervisor: Supervisor = pickSupervisor(),
   waitMs: number = INSTALL_WAIT_MS,
-  install: Install = whereInstalled(),
+  install: Install = whereInstalled()
 ): Promise<void> {
   const script = serviceScript(install);
   const p = paths(config.dataDir);
@@ -442,7 +440,7 @@ export async function installService(
     throw new WazapError(
       "SERVICE_ERROR",
       `Port ${record.port} is already held by pid ${holder}.`,
-      `stop that process, or set WAZAP_PORT in ${shortPath(p.envFile)} to a free port and run this again`,
+      `stop that process, or set WAZAP_PORT in ${shortPath(p.envFile)} to a free port and run this again`
     );
   }
   const locked = lockHolder(p.lockFile);
@@ -450,7 +448,7 @@ export async function installService(
     throw new WazapError(
       "SERVICE_ERROR",
       `wazap is already running (pid ${locked}) on this data dir.`,
-      "quit the client that launched it, then run `wazap service install` again",
+      "quit the client that launched it, then run `wazap service install` again"
     );
   }
 
@@ -506,7 +504,7 @@ async function serviceStatus(config: Config, registry: readonly Supervisor[]): P
       ? fail(`no answer on http://127.0.0.1:${record.port}/healthz`)
       : health.ok
         ? ok(`healthy · ${health.status} · http://127.0.0.1:${record.port}/mcp`)
-        : info(`unhealthy · ${health.status} since ${health.since ?? "unknown"}`),
+        : info(`unhealthy · ${health.status} since ${health.since ?? "unknown"}`)
   );
   if (record.tunnel) say(info(`${record.tunnel.provider} · ${record.tunnel.url}/mcp`));
   if (record.installedVersion !== WAZAP_VERSION) {
@@ -544,7 +542,8 @@ const VERBS: Record<string, Verb> = {
     const { supervisor, record } = requireService(config, registry);
     supervisor.restart(record);
     // The unit runs whatever dist/ holds now, so the record says so too.
-    if (record.installedVersion !== WAZAP_VERSION) writeService(config.dataDir, { ...record, installedVersion: WAZAP_VERSION });
+    if (record.installedVersion !== WAZAP_VERSION)
+      writeService(config.dataDir, { ...record, installedVersion: WAZAP_VERSION });
     say(ok(`Restarted ${record.label}`));
   },
   logs: (config, registry) => {
@@ -562,7 +561,7 @@ export async function runService(config: Config, registry: readonly Supervisor[]
     throw new WazapError(
       "INVALID_ID",
       `Cannot run \`wazap service ${config.args.join(" ")}\`.`,
-      `Run \`wazap service ${SERVICE_VERBS}\``,
+      `Run \`wazap service ${SERVICE_VERBS}\``
     );
   }
   await verb(config, registry);
