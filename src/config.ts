@@ -48,7 +48,10 @@ export interface Config {
   share: boolean;
   /** Write-tool token bucket, per minute. 0 disables the limit. */
   rateLimitPerMinute: number;
-  sources: Record<"dataDir" | "readOnly" | "transport" | "rateLimit" | "transcribe" | "webhook", Source>;
+  sources: Record<
+    "dataDir" | "readOnly" | "transport" | "rateLimit" | "transcribe" | "webhook" | "recall",
+    Source
+  >;
   command: Command;
   /** The command was named on the command line rather than defaulted to serve. */
   explicitCommand: boolean;
@@ -183,7 +186,7 @@ const COMMAND_USAGE: Partial<Record<Command, string>> = {
   transcribe: "Run `wazap transcribe download` or `wazap transcribe test <audio file>`",
   contacts: "Run `wazap contacts resync`",
   config:
-    "Run `wazap config`, `wazap config writes on|off`, `wazap config transcribe local|openai|off`, or `wazap config webhook on|off`",
+    "Run `wazap config`, `wazap config writes on|off`, `wazap config transcribe local|openai|off`, `wazap config recall local|off`, or `wazap config webhook on|off`",
   webhook: "Run `wazap webhook test`",
   account: ACCOUNT_USAGE,
   migrate: MIGRATE_USAGE,
@@ -365,6 +368,7 @@ export function parseCli(argv: string[] = process.argv.slice(2)): CliInvocation 
         rateLimit: sourceOf("WAZAP_RATE_LIMIT", false),
         transcribe: sourceOf("WAZAP_TRANSCRIBE", false),
         webhook: sourceOf("WAZAP_WEBHOOK", false),
+        recall: sourceOf("WAZAP_RECALL", false),
       },
       command,
       explicitCommand: first !== undefined,

@@ -20,6 +20,7 @@ export interface Dependency {
 export const DEPS = {
   whisper: { binary: "whisper-cli", brew: "whisper-cpp", why: "transcribes voice messages locally" },
   ffmpeg: { binary: "ffmpeg", brew: "ffmpeg", why: "converts voice notes for whisper" },
+  llama: { binary: "llama-server", brew: "llama.cpp", why: "embeds messages for local semantic recall" },
   tailscale: { binary: "tailscale", brew: "tailscale", why: "gives wazap a public https URL" },
   cloudflared: { binary: "cloudflared", brew: "cloudflared", why: "gives wazap a public https URL" },
 } as const satisfies Record<string, Dependency>;

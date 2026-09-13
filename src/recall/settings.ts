@@ -1,0 +1,56 @@
+/**
+ * The one place the recall environment becomes typed. A bad value is refused
+ * here, once, and the caller decides between feature-off and a crash — the
+ * server always chooses off.
+ */
+import { join } from "node:path";
+import { WazapError } from "../errors.js";
+import { stripPasted } from "../transcribe/index.js";
+import type { EmbedModelAlias, RecallSettings } from "./types.js";
+
+const OFF = new Set(["", "off", "0", "no", "none", "false"]);
+const ON = new Set(["local", "on", "1", "yes", "true"]);
+const MODEL_ALIASES: readonly EmbedModelAlias[] = ["embeddinggemma-300m", "e5-base-multilingual"];
+const DEFAULT_MAX_ROWS = 50_000;
+const MIN_MAX_ROWS = 100;
+
+function parseEnabled(raw: string | undefined): boolean {
+  const value = stripPasted(raw ?? "").toLowerCase();
+  if (OFF.has(value)) return false;
+  if (ON.has(value)) return true;
+  throw new WazapError("INVALID_ID", `Unknown recall mode "${value}".`, "Set WAZAP_RECALL to local or off");
+}
+
+function parseModel(raw: string | undefined): EmbedModelAlias {
+  const value = stripPasted(raw ?? "").toLowerCase();
+  if (value === "") return "embeddinggemma-300m";
+  if ((MODEL_ALIASES as readonly string[]).includes(value)) return value as EmbedModelAlias;
+  throw new WazapError(
+    "INVALID_ID",
+    `Unknown embedding model "${value}".`,
+    `Set WAZAP_EMBED_MODEL to one of: ${MODEL_ALIASES.join(", ")}`
+  );
+}
+
+function parseMaxRows(raw: string | undefined): number {
+  const value = stripPasted(raw ?? "");
+  if (value === "") return DEFAULT_MAX_ROWS;
+  const n = Number.parseInt(value, 10);
+  if (Number.isFinite(n) && n >= MIN_MAX_ROWS) return n;
+  throw new WazapError(
+    "INVALID_ID",
+    `WAZAP_RECALL_MAX must be a number >= ${MIN_MAX_ROWS}, got "${value}".`,
+    "Fix WAZAP_RECALL_MAX or remove it"
+  );
+}
+
+export function readRecallSettings(env: NodeJS.ProcessEnv, dataDir: string): RecallSettings {
+  const embedBin = stripPasted(env.WAZAP_EMBED_BIN ?? "");
+  return {
+    enabled: parseEnabled(env.WAZAP_RECALL),
+    model: parseModel(env.WAZAP_EMBED_MODEL),
+    embedBin: embedBin === "" ? null : embedBin,
+    modelsDir: join(dataDir, "models"),
+    maxRows: parseMaxRows(env.WAZAP_RECALL_MAX),
+  };
+}
