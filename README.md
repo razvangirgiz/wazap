@@ -545,9 +545,9 @@ response still carries `account_id`. `link_account` needs an account that
 already exists. Five accounts is advice, not a cap. One phone number is one
 account.
 
-An account can override the global webhook URL and secret in `accounts.json`
-(`webhook_url`, `webhook_secret`). `wazap webhook test --account work` posts
-with that account's id and name.
+An account can override the global webhook URL, secret and event list in
+`accounts.json` (`webhook_url`, `webhook_secret`, `webhook_events`).
+`wazap webhook test --account work` posts with that account's id and name.
 
 ## Several clients at once
 
@@ -705,24 +705,40 @@ What to know before exposing it:
 ## Outbound webhook
 
 Live events POST to one URL. Off by default. History sync is not posted.
+Only `message_received` is posted unless you ask for more, because a consumer
+that answers every POST without reading `event` would otherwise answer the
+messages its own owner typed on the phone.
+
 The `event` field names one of three. `message_received` is a message another
 person sent. `message_sent` is a message this account sent itself, typed on
 the phone or on another linked device; a message wazap sent through its own
 tools is not announced, so a consumer can never be made to answer itself.
 `connection` says the link came up, went down or expired.
 
+Ask for the other two in `WAZAP_WEBHOOK_EVENTS`, comma-separated
+(`message_received,connection`), or say `all` for the three of them. Case
+does not matter and the spaces around a name are ignored. An unknown name
+fails `wazap status`, doctor and setup. An account carries its own list as
+`webhook_events` in `accounts.json`.
+
 ```bash
 npx wazap-mcp config webhook on    # asks for URL + secret (secret is not echoed)
 npx wazap-mcp webhook test         # POST a probe event
-npx wazap-mcp webhook test --event connection
+npx wazap-mcp webhook test --event connection   # needs connection enabled
 npx wazap-mcp webhook test --account work
 npx wazap-mcp config webhook off
 ```
 
 On without a URL or secret fails `wazap status`, doctor and setup. A failed
 delivery retries twice (200 ms, then 500 ms), then sets `webhook.last_error`
-and leaves WhatsApp and MCP running. An account may set `webhook_url` and
-`webhook_secret` in `accounts.json`; those win over the global URL and secret.
+and leaves WhatsApp and MCP running. An account may set `webhook_url`,
+`webhook_secret` and `webhook_events` in `accounts.json`; those win over the
+global URL, secret and event list, and `config webhook off --account work`
+clears all three.
+
+`webhook test --event <name>` posts nothing and exits non-zero when that
+event is not enabled, and says what to enable it with. While the webhook is
+on, `wazap config` prints the events it posts on an `events:` line.
 
 HMAC: `X-Wazap-Signature` is `sha256=<hex>`, HMAC-SHA256 of the exact raw
 JSON body with the secret that signed it. Verify that raw body, not a
@@ -824,9 +840,10 @@ mean the link is up. Poll `get_status` when you need to know that.
 | `WAZAP_TRANSCRIBE_API_KEY` | unset | API key; `OPENAI_API_KEY` is the fallback. Never a flag. |
 | `WAZAP_TRANSCRIBE_URL` | `https://api.openai.com/v1` | OpenAI-compatible base URL. |
 | `WAZAP_TRANSCRIBE_MODEL` | `gpt-4o-mini-transcribe` | Model at that URL. |
-| `WAZAP_WEBHOOK` | `off` | `on` posts messages both ways, and connection changes, to the webhook URL. |
+| `WAZAP_WEBHOOK` | `off` | `on` posts the enabled events to the webhook URL. |
 | `WAZAP_WEBHOOK_URL` | unset | HTTPS endpoint. `http://` only on loopback. An account `webhook_url` wins. |
 | `WAZAP_WEBHOOK_SECRET` | unset | Shared secret for `X-Wazap-Signature`. Never a flag. An account `webhook_secret` wins. |
+| `WAZAP_WEBHOOK_EVENTS` | unset (`message_received`) | Which events to post, comma-separated, or `all`. An account `webhook_events` wins. |
 
 Flags beat environment variables, which beat `<data-dir>/.env`.
 

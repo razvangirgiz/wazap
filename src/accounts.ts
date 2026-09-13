@@ -2,7 +2,8 @@ import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, wri
 import { dirname } from "node:path";
 import { readLinkedAccount } from "./auth-state.js";
 import { accountPaths, paths, type AccountPaths, type Config } from "./config.js";
-import { WazapError } from "./errors.js";
+import { WazapError, asWazapError } from "./errors.js";
+import { parseWebhookEvents } from "./webhook.js";
 
 export const DEFAULT_ACCOUNT_ID = "default";
 export const ACCOUNT_ID_RE = /^[a-z0-9][a-z0-9-]{0,31}$/;
@@ -16,6 +17,7 @@ export interface AccountRecord {
   rate_limit?: number;
   webhook_url?: string;
   webhook_secret?: string;
+  webhook_events?: string;
 }
 
 export interface AccountsFile {
@@ -111,7 +113,10 @@ function parseAccountRecord(value: unknown, file: string): AccountRecord {
     }
     record.rate_limit = value.rate_limit;
   }
-  return { ...record, ...webhookFields(value.id, value.webhook_url, value.webhook_secret, ` in ${file}`) };
+  return {
+    ...record,
+    ...webhookFields(value.id, value.webhook_url, value.webhook_secret, value.webhook_events, ` in ${file}`),
+  };
 }
 
 /** Shared by load and `setWebhook` so a writer cannot persist what load refuses. */
@@ -119,10 +124,11 @@ function webhookFields(
   id: string,
   url: unknown,
   secret: unknown,
+  events: unknown,
   where = "",
   fix = "Fix or remove accounts.json",
-): Pick<AccountRecord, "webhook_url" | "webhook_secret"> {
-  const fields: Pick<AccountRecord, "webhook_url" | "webhook_secret"> = {};
+): Pick<AccountRecord, "webhook_url" | "webhook_secret" | "webhook_events"> {
+  const fields: Pick<AccountRecord, "webhook_url" | "webhook_secret" | "webhook_events"> = {};
   if (url !== undefined) {
     if (typeof url !== "string" || url.trim() === "") {
       throw new WazapError("INVALID_ID", `Account "${id}"${where} has a bad webhook_url.`, fix);
@@ -134,6 +140,22 @@ function webhookFields(
       throw new WazapError("INVALID_ID", `Account "${id}"${where} has a bad webhook_secret.`, fix);
     }
     fields.webhook_secret = secret;
+  }
+  if (events !== undefined) {
+    if (typeof events !== "string" || events.trim() === "") {
+      throw new WazapError("INVALID_ID", `Account "${id}"${where} has a bad webhook_events.`, fix);
+    }
+    const trimmed = events.trim();
+    try {
+      parseWebhookEvents(trimmed);
+    } catch (err) {
+      throw new WazapError(
+        "INVALID_ID",
+        `Account "${id}"${where} has a bad webhook_events: ${asWazapError(err).message}`,
+        fix,
+      );
+    }
+    fields.webhook_events = trimmed;
   }
   return fields;
 }
@@ -256,7 +278,7 @@ export class AccountRegistry {
     this.commit(
       this.withAccount(id, (account) => ({
         ...account,
-        ...webhookFields(id, webhook.url, webhook.secret, "", "Set a non-empty webhook URL or secret"),
+        ...webhookFields(id, webhook.url, webhook.secret, undefined, "", "Set a non-empty webhook URL or secret"),
       })),
     );
   }
@@ -268,6 +290,7 @@ export class AccountRegistry {
         const next = { ...account };
         delete next.webhook_url;
         delete next.webhook_secret;
+        delete next.webhook_events;
         return next;
       }),
     );

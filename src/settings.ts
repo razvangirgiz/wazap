@@ -191,8 +191,13 @@ function transcribeRows(config: Config): string[] {
 
 function accountWebhook(config: Config): { override: WebhookOverride; source: string } {
   const selected = resolveAccount(config.dataDir, config.accountId);
-  const override: WebhookOverride = { url: selected.account.webhook_url, secret: selected.account.webhook_secret };
-  const source = override.url !== undefined || override.secret !== undefined ? "accounts.json" : config.sources.webhook;
+  const override: WebhookOverride = {
+    url: selected.account.webhook_url,
+    secret: selected.account.webhook_secret,
+    events: selected.account.webhook_events,
+  };
+  const fromAccount = override.url !== undefined || override.secret !== undefined || override.events !== undefined;
+  const source = fromAccount ? "accounts.json" : config.sources.webhook;
   return { override, source };
 }
 
@@ -203,7 +208,11 @@ function webhookRows(config: Config): string[] {
     case "off":
       return [`webhook: off (${source})`];
     case "ready":
-      return [`webhook: on (${new URL(settings.url).host}) (${source})`, `secret: ${maskKey(settings.secret)}`];
+      return [
+        `webhook: on (${new URL(settings.url).host}) (${source})`,
+        `secret: ${maskKey(settings.secret)}`,
+        `events: ${settings.events.join(", ")}`,
+      ];
     case "invalid":
       return [`webhook: ${settings.detail}${settings.fix === "" ? "" : ` — ${settings.fix}`}`];
     default: {

@@ -3,6 +3,14 @@
 ## Unreleased
 ### Added
 
+- **The new webhook events are opt-in.** `WAZAP_WEBHOOK_EVENTS` names what
+  gets posted, comma-separated, and unset means `message_received` only, so
+  an existing endpoint sees nothing new unless it asks for it. Say `all` for
+  every event. An account overrides the list with `webhook_events` in
+  `accounts.json`, beside `webhook_url` and `webhook_secret`, and
+  `config webhook off --account <id>` clears all three. An unknown name
+  fails `wazap status`, doctor and setup.
+
 - **The webhook posts messages you send, too.** A message typed on the phone
   or on another linked device arrives as `event: "message_sent"`. A message
   wazap sent through its own tools is not announced, so a consumer cannot be
@@ -20,13 +28,16 @@
   with the meaning it had.
 
 - **`wazap webhook test --event <name>`** posts `message_received` (the
-  default), `message_sent` or `connection`. An unknown name exits 1.
+  default), `message_sent` or `connection`. An unknown name exits 1. An event
+  you have not enabled posts nothing and exits non-zero.
 
 ### Changed
 
-- **An existing webhook endpoint now receives three events at the same URL.**
-  Branch on `event`. `message_sent` is a message this account sent, not one to
-  reply to, and `connection` carries no `from`, `text` or `message_id`.
+- **An existing webhook endpoint receives exactly what it received before.**
+  `message_sent` and `connection` stay off until `WAZAP_WEBHOOK_EVENTS` asks
+  for them. Once you do ask, branch on `event`. `message_sent` is a message
+  this account sent, not one to reply to, and `connection` carries no `from`,
+  `text` or `message_id`.
 
 - **The webhook text preview is cut at 2000 characters, not 500.** A cut
   preview ends in a single `…`, and `truncated` is true.

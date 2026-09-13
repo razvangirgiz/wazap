@@ -1,7 +1,9 @@
 /**
  * W1 outbound webhook: three live events (`message_received`, `message_sent`
- * and `connection`). Global URL and secret live in `.env`; an account may
- * override either. Delivery never throws into the WhatsApp or MCP path.
+ * and `connection`), of which only `message_received` is posted unless
+ * `WAZAP_WEBHOOK_EVENTS` asks for more. Global URL, secret and event list live
+ * in `.env`; an account may override any of the three. Delivery never throws
+ * into the WhatsApp or MCP path.
  */
 import { createHmac, timingSafeEqual } from "node:crypto";
 import { setTimeout as sleep } from "node:timers/promises";
@@ -23,6 +25,8 @@ export const WEBHOOK_ON_FIX = "run `wazap config webhook on`";
 export const WEBHOOK_URL_FIX = "set WAZAP_WEBHOOK_URL to an https:// URL, or http:// on 127.0.0.1";
 export const WEBHOOK_TEST_FIX = "run `wazap webhook test`";
 export const WEBHOOK_EVENT_FIX = `pass one of ${WEBHOOK_EVENTS.join(", ")}`;
+export const WEBHOOK_EVENTS_DEFAULT: readonly WebhookEvent[] = ["message_received"] as const;
+export const WEBHOOK_EVENTS_FIX = `set WAZAP_WEBHOOK_EVENTS to all or a comma-separated list of ${WEBHOOK_EVENTS.join(", ")}`;
 
 export const WEBHOOK_KINDS = ["text", "audio", "image", "other"] as const;
 export type WebhookKind = (typeof WEBHOOK_KINDS)[number];
@@ -35,13 +39,14 @@ const LOOPBACK = new Set(["127.0.0.1", "::1", "localhost"]);
 
 export type WebhookSettings =
   | { kind: "off" }
-  | { kind: "ready"; url: string; secret: string }
+  | { kind: "ready"; url: string; secret: string; events: readonly WebhookEvent[] }
   | { kind: "invalid"; detail: string; fix: string };
 
-/** Per-account URL/secret win over `WAZAP_WEBHOOK_URL` / `WAZAP_WEBHOOK_SECRET`. */
+/** Per-account values win over `WAZAP_WEBHOOK_URL`, `_SECRET` and `_EVENTS`. */
 export interface WebhookOverride {
   url?: string;
   secret?: string;
+  events?: string;
 }
 
 /** The account the payload names, and whose override the sink prefers. */
@@ -50,6 +55,7 @@ export interface WebhookAccount {
   name: string;
   webhook_url?: string;
   webhook_secret?: string;
+  webhook_events?: string;
 }
 
 /** The JSON body of a message event. HMAC is over this exact UTF-8 string. */
@@ -130,6 +136,8 @@ export function readWebhookSettings(
   const overrideSecret = stripPasted(override.secret ?? "");
   const urlRaw = (overrideUrl || stripPasted(env.WAZAP_WEBHOOK_URL ?? "")).replace(/\/+$/, "");
   const secret = overrideSecret || stripPasted(env.WAZAP_WEBHOOK_SECRET ?? "");
+  const overrideEvents = stripPasted(override.events ?? "");
+  const eventsRaw = overrideEvents || stripPasted(env.WAZAP_WEBHOOK_EVENTS ?? "");
   const missingUrl = urlRaw === "";
   const missingSecret = secret === "";
   if (missingUrl && missingSecret) {
@@ -139,7 +147,7 @@ export function readWebhookSettings(
   if (missingSecret) return { kind: "invalid", detail: "on without a secret", fix: WEBHOOK_ON_FIX };
 
   try {
-    return { kind: "ready", url: requireWebhookUrl(urlRaw), secret };
+    return { kind: "ready", url: requireWebhookUrl(urlRaw), secret, events: parseWebhookEvents(eventsRaw) };
   } catch (err) {
     const failure = asWazapError(err);
     return { kind: "invalid", detail: failure.message, fix: failure.fix ?? WEBHOOK_URL_FIX };
@@ -216,6 +224,30 @@ export function parseWebhookEvent(raw: string | undefined): WebhookEvent {
     throw new WazapError("INVALID_ID", `Unknown webhook event "${raw}".`, WEBHOOK_EVENT_FIX);
   }
   return known;
+}
+
+/**
+ * `WAZAP_WEBHOOK_EVENTS` as an operator typed it. An unset list is the 0.16.0
+ * set, so a consumer that answers every POST without reading `event` keeps
+ * hearing only what it already handled.
+ */
+export function parseWebhookEvents(raw: string): readonly WebhookEvent[] {
+  const tokens = raw.split(",").map((token) => token.trim()).filter((token) => token !== "");
+  if (tokens.length === 0) return WEBHOOK_EVENTS_DEFAULT;
+  const wanted = new Set<WebhookEvent>();
+  for (const token of tokens) {
+    const value = token.toLowerCase();
+    if (value === "all") {
+      for (const event of WEBHOOK_EVENTS) wanted.add(event);
+      continue;
+    }
+    const known = WEBHOOK_EVENTS.find((event) => event === value);
+    if (known === undefined) {
+      throw new WazapError("INVALID_ID", `Unknown webhook event "${token}".`, WEBHOOK_EVENTS_FIX);
+    }
+    wanted.add(known);
+  }
+  return WEBHOOK_EVENTS.filter((event) => wanted.has(event));
 }
 
 export function webhookKind(type: MessageType): WebhookKind {
@@ -317,6 +349,7 @@ export class WebhookSink {
     return readWebhookSettings(this.env, {
       url: this.account?.webhook_url,
       secret: this.account?.webhook_secret,
+      events: this.account?.webhook_events,
     });
   }
 
@@ -333,6 +366,7 @@ export class WebhookSink {
     try {
       const settings = this.settings();
       if (settings.kind !== "ready") return false;
+      if (!settings.events.includes(payload.event)) return false;
       return (await this.postEvent(payload, settings)).ok;
     } catch (err) {
       const settings = this.settings();
@@ -350,8 +384,16 @@ export class WebhookSink {
         return { ok: false, error: "Webhook is off.", fix: WEBHOOK_ON_FIX };
       case "invalid":
         return { ok: false, error: settings.detail, fix: settings.fix };
-      case "ready":
+      case "ready": {
+        if (!settings.events.includes(event)) {
+          return {
+            ok: false,
+            error: `Webhook event "${event}" is not enabled.`,
+            fix: enableEventFix(settings.events, event, this.account),
+          };
+        }
         return this.postEvent(testPayload(event, this.account), settings);
+      }
       default: {
         const _exhaustive: never = settings;
         return _exhaustive;
@@ -407,6 +449,13 @@ export class WebhookSink {
       return failResult(describePostError(err, settings.url, settings.secret), settings.secret);
     }
   }
+}
+
+/** A list is set whole, so enabling one event means naming the ones already on. */
+function enableEventFix(active: readonly WebhookEvent[], event: WebhookEvent, account?: WebhookAccount): string {
+  const both = WEBHOOK_EVENTS.filter((known) => active.includes(known) || known === event).join(",");
+  if (account?.webhook_events === undefined) return `set WAZAP_WEBHOOK_EVENTS=${both}, or all`;
+  return `set webhook_events for "${account.id}" in accounts.json to ${both}, or all`;
 }
 
 function testPayload(event: WebhookEvent, account?: Pick<WebhookAccount, "id" | "name">): WebhookPayload {
