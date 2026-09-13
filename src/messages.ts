@@ -434,6 +434,33 @@ function spokenTranscript(raw: WAMessage, transcript: TranscriptRecord | undefin
 }
 
 /**
+ * What the recall index stores for a message: the rendered view text when the
+ * message carries words a person chose, and null when it is only a placeholder
+ * — "[sticker]", "[deleted]", a call log, a reaction. A bare tag is nothing to
+ * search by; a voice note becomes indexable once its transcript exists.
+ */
+export function searchableText(raw: WAMessage, transcript?: TranscriptRecord): string | null {
+  const spoken = spokenTranscript(raw, transcript);
+  const content = unwrapEnvelopes(raw.message);
+  const { rule, content: node } = ruleFor(content);
+  const type = resolve(rule.type, node);
+  if (type === "reaction" || type === "deleted" || type === "system") return null;
+  const own =
+    rule.text?.(node)?.trim() || rule.caption?.(node)?.trim() || rule.detail?.(node)?.trim() || "";
+  if (own === "" && spoken === undefined) return null;
+  return viewText(raw, transcript);
+}
+
+/** The message a REVOKE protocol message takes back, when there is one. */
+export function revokedTargetKey(raw: WAMessage): WAMessageKey | undefined {
+  const content = unwrapEnvelopes(raw.message);
+  const proto_ = content?.protocolMessage;
+  if (proto_?.type !== proto.Message.ProtocolMessage.Type.REVOKE) return undefined;
+  const key = proto_.key;
+  return key?.id ? (key as WAMessageKey) : undefined;
+}
+
+/**
  * What a reader sees. searchMessages matches on this rather than on the bare
  * placeholder, so a transcript is findable by the words it puts on the screen.
  */

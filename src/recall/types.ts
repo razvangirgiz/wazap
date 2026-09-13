@@ -41,7 +41,7 @@ export interface RankedHit {
   score: number;
 }
 
-export type RecallState = "indexing" | "ready" | "degraded";
+export type RecallState = "off" | "indexing" | "ready" | "degraded";
 
 /** What get_status and the tool report about the index. */
 export interface RecallStatus {

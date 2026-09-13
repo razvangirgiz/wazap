@@ -175,7 +175,7 @@ test("status --json prints one parseable object carrying the same checks", async
   assert.equal(report.server_pid, null);
   assert.deepEqual(
     report.checks.map((check) => check.name),
-    ["node", "data dir", "lock", "service", "credentials", "writes", "skills", "transcribe", "webhook", "update"]
+    ["node", "data dir", "lock", "service", "credentials", "writes", "skills", "transcribe", "recall", "webhook", "update"]
   );
   assert.equal(report.checks.find((check) => check.name === "writes").detail, "on (default)");
   assert.ok(["global", "checkout", "npx"].includes(report.install.kind), `install: ${JSON.stringify(report.install)}`);

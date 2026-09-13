@@ -26,6 +26,9 @@ const TEXT_CAP = 2048;
 const COMPACT_DEAD_RATIO = 0.3;
 const STATE_VERSION = 1;
 const QUANT = "int8";
+/** The index holds message text; it gets history's permissions, not the defaults. */
+const DIR_MODE = 0o700;
+const FILE_MODE = 0o600;
 /** Owner call: fresh matches rank first. 0.5^(age/half-life) scales similarity. */
 const RECENCY_HALF_LIFE_MS = 30 * 24 * 60 * 60 * 1000;
 
@@ -227,9 +230,9 @@ export class RecallStore {
   }
 
   private async handles(): Promise<{ meta: FileHandle; vec: FileHandle }> {
-    await mkdir(this.dir, { recursive: true });
-    this.metaFH ??= await open(this.metaPath, "a");
-    this.vecFH ??= await open(this.vectorsPath, "a");
+    await mkdir(this.dir, { recursive: true, mode: DIR_MODE });
+    this.metaFH ??= await open(this.metaPath, "a", FILE_MODE);
+    this.vecFH ??= await open(this.vectorsPath, "a", FILE_MODE);
     return { meta: this.metaFH!, vec: this.vecFH! };
   }
 
@@ -349,8 +352,8 @@ export class RecallStore {
     return this.enqueue(async () => {
       if (this.closed) return;
       this.state.offsets[file] = bytes;
-      await mkdir(this.dir, { recursive: true });
-      await writeFile(this.statePath, `${JSON.stringify(this.state)}\n`, "utf8");
+      await mkdir(this.dir, { recursive: true, mode: DIR_MODE });
+      await writeFile(this.statePath, `${JSON.stringify(this.state)}\n`, { mode: FILE_MODE });
     });
   }
 
@@ -400,7 +403,7 @@ export class RecallStore {
    */
   private async compact(): Promise<void> {
     await this.closeHandles();
-    await mkdir(this.dir, { recursive: true });
+    await mkdir(this.dir, { recursive: true, mode: DIR_MODE });
     const liveByRow = new Map<number, RecallRecord>();
     for (const record of this.live.values()) liveByRow.set(record.row, record);
     const lines: string[] = [];
@@ -430,8 +433,10 @@ export class RecallStore {
         i * this.spec.dims
       );
     }
-    await writeFile(this.vectorsPath, Buffer.from(packed.buffer, packed.byteOffset, packed.byteLength));
-    await writeFile(this.metaPath, lines.join("\n") + (lines.length > 0 ? "\n" : ""), "utf8");
+    await writeFile(this.vectorsPath, Buffer.from(packed.buffer, packed.byteOffset, packed.byteLength), {
+      mode: FILE_MODE,
+    });
+    await writeFile(this.metaPath, lines.join("\n") + (lines.length > 0 ? "\n" : ""), { mode: FILE_MODE });
     const fh = await open(this.metaPath, "r");
     try {
       await fh.sync();

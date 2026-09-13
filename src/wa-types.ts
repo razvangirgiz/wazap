@@ -1,6 +1,7 @@
 /** Public shapes of the WhatsApp service: what the MCP tools and the CLI consume. */
 
 import type { DraftPayload, DraftView } from "./drafts.js";
+import type { RecallStatus } from "./recall/index.js";
 import type { ProviderName } from "./transcribe/index.js";
 
 export type ConnectionStatus =
@@ -91,6 +92,8 @@ export interface StatusInfo {
   last_error: string | null;
   /** W1 outbound webhook: on/off, whether url+secret are present, delivery `last_error`. */
   webhook: WebhookInfo;
+  /** Local semantic recall: off, or how far the index is from caught-up. */
+  recall: RecallStatus;
   /** Present only while `status` is "linking". */
   pairing?: PairingInfo;
   hint?: string;

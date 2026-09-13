@@ -156,6 +156,9 @@ export class RecallQueue {
         this.failures = 0;
         await this.applySeals();
       }
+      // A seal that arrived behind an empty queue has nothing to wait for and
+      // still owes the file its offset.
+      if (!this.stopped && this.deadReason === null) await this.applySeals();
     } finally {
       this.draining = false;
       if (this.settled()) this.wake();
