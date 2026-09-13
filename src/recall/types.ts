@@ -59,6 +59,8 @@ export interface RecallSettings {
   model: EmbedModelAlias;
   /** WAZAP_EMBED_BIN override. */
   embedBin: string | null;
+  /** WAZAP_EMBED_URL: an already-running server; the test seam, not a user option. */
+  embedUrl: string | null;
   modelsDir: string;
   /** Index rows one account keeps; the oldest are evicted past this. */
   maxRows: number;

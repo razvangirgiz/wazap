@@ -1,4 +1,5 @@
 /** The only entry point the rest of wazap imports. */
+export { EmbedEngine, embedReady, findLlama, type EmbedReadiness } from "./engine.js";
 export {
   EMBED_MODELS,
   downloadEmbed,

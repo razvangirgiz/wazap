@@ -35,11 +35,13 @@ import {
 } from "./connect.js";
 import { DEPS, ensureDeps } from "./deps.js";
 import { checkLines, webhookCheck } from "./doctor.js";
+import { downloadEmbedModel } from "./cli.js";
 import { WazapError } from "./errors.js";
 import { PROVIDERS, runExpose, type TunnelProvider } from "./expose.js";
 import { INSTALL_WAIT_MS, installService, pickSupervisor } from "./service.js";
 import { lockHolder } from "./lock.js";
 import { say } from "./logger.js";
+import { readRecallSettings } from "./recall/index.js";
 import { applyTranscribe } from "./settings.js";
 import { installSkills, skillTargetFor } from "./skills.js";
 import { MODELS, findWhisper, localProvider, readTranscribeSettings, which } from "./transcribe/index.js";
@@ -109,6 +111,7 @@ async function runSetupSteps(
   // question itself, at its own end, so here Transcribe follows Link directly.
   if (!w) announce("Transcribe");
   await chooseTranscribe(config, w, account && w ? [wizOk(`Already linked as ${describeAccount(account)}`)] : []);
+  await provisionRecall(config);
 
   if (install.kind === "npx") {
     if (!w) announce("Install");
@@ -480,6 +483,23 @@ async function installModel(config: Config): Promise<void> {
     return;
   }
   await downloadTranscribeModel(settings, MODELS[settings.model]);
+}
+
+/**
+ * Recall is opt-in through .env, so setup only closes the gap when it is
+ * already on: install llama.cpp if needed and fetch the embedding model. A
+ * machine without them warns and continues — recall degrades, setup finishes.
+ */
+async function provisionRecall(config: Config): Promise<void> {
+  let settings;
+  try {
+    settings = readRecallSettings(process.env, config.dataDir);
+  } catch {
+    return;
+  }
+  if (!settings.enabled || config.dryRun) return;
+  await ensureDeps([DEPS.llama], config);
+  await downloadEmbedModel(settings);
 }
 
 /**

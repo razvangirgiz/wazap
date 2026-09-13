@@ -13,6 +13,7 @@ import {
 import { WazapError, asWazapError } from "./errors.js";
 import { lockHolder, lockPid } from "./lock.js";
 import { oauthProblem, readGrants } from "./oauth.js";
+import { EMBED_MODELS, embedModelPath, embedReady, readRecallSettings } from "./recall/index.js";
 import { installedService } from "./service.js";
 import { detectedTargets, skillState } from "./skills.js";
 import {
@@ -60,6 +61,7 @@ const CHECKS: readonly CheckFn[] = [
   checkSkills,
   checkOAuth,
   checkTranscribe,
+  checkRecall,
   checkWebhook,
   checkUpdate,
 ];
@@ -328,6 +330,35 @@ async function localChecks(settings: TranscribeSettings): Promise<Check[]> {
     size === null
       ? { name: "model", state: "fail", detail: `${spec.file} is not downloaded`, fix: DOWNLOAD_FIX }
       : { name: "model", state: "ok", detail: `${spec.file} (${Math.round(size / MIB)} MiB)` },
+  ];
+}
+
+const RECALL_OFF_FIX = "run `wazap config recall local` to search messages by meaning";
+
+/**
+ * Off is quiet; on reports the sidecar binary and the model file, the two
+ * things `embed download` plus an install can repair.
+ */
+async function checkRecall(config: Config): Promise<Check[]> {
+  let settings;
+  try {
+    settings = readRecallSettings(process.env, config.dataDir);
+  } catch (err) {
+    const failure = asWazapError(err);
+    return [{ name: "recall", state: "fail", detail: failure.message, fix: failure.fix }];
+  }
+  if (!settings.enabled) return [{ name: "recall", state: "info", detail: "off", fix: RECALL_OFF_FIX }];
+  const spec = EMBED_MODELS[settings.model];
+  const size = fileSize(embedModelPath(settings.modelsDir, spec));
+  const readiness = await embedReady(settings, spec);
+  return [
+    { name: "recall", state: "ok", detail: `local (${settings.model})` },
+    readiness.ok
+      ? { name: "llama-server", state: "ok", detail: settings.embedUrl ?? "found" }
+      : { name: "llama-server", state: "fail", detail: readiness.detail, fix: readiness.fix },
+    size === null && settings.embedUrl === null
+      ? { name: "embed model", state: "fail", detail: `${spec.file} is not downloaded`, fix: "run `wazap embed download`" }
+      : { name: "embed model", state: "ok", detail: `${spec.file} (${Math.round((size ?? 0) / MIB)} MiB)` },
   ];
 }
 

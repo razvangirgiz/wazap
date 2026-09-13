@@ -44,12 +44,25 @@ function parseMaxRows(raw: string | undefined): number {
   );
 }
 
+function parseUrl(raw: string | undefined): string | null {
+  const value = stripPasted(raw ?? "");
+  if (value === "") return null;
+  try {
+    const url = new URL(value);
+    if (url.protocol !== "http:" && url.protocol !== "https:") throw new Error("scheme");
+    return value;
+  } catch {
+    throw new WazapError("INVALID_ID", `WAZAP_EMBED_URL "${value}" is not an http(s) URL.`, "Fix or remove WAZAP_EMBED_URL");
+  }
+}
+
 export function readRecallSettings(env: NodeJS.ProcessEnv, dataDir: string): RecallSettings {
   const embedBin = stripPasted(env.WAZAP_EMBED_BIN ?? "");
   return {
     enabled: parseEnabled(env.WAZAP_RECALL),
     model: parseModel(env.WAZAP_EMBED_MODEL),
     embedBin: embedBin === "" ? null : embedBin,
+    embedUrl: parseUrl(env.WAZAP_EMBED_URL),
     modelsDir: join(dataDir, "models"),
     maxRows: parseMaxRows(env.WAZAP_RECALL_MAX),
   };
