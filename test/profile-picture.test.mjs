@@ -8,6 +8,9 @@ import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
+import { Readable } from "node:stream";
+
+import { loadProfilePicture } from "../dist/outgoing-media.js";
 import { registerTools } from "../dist/tools.js";
 import { WhatsAppService } from "../dist/whatsapp.js";
 import { asToolSource, connectedService } from "./helpers.mjs";
@@ -117,26 +120,33 @@ test("FILE_TOO_LARGE for a photo over 10 MB, before the socket is touched", asyn
   await svc.stop();
 });
 
-test("a url is fetched and passed to updateProfilePicture", async () => {
-  const { svc, sock } = writableService();
-  const calls = [];
-  sock.updateProfilePicture = async (jid, content) => {
-    calls.push({ jid, content });
+test("a public url is fetched into the buffer updateProfilePicture sends", async () => {
+  // The socket handoff itself is covered by the file_path test; a fake network
+  // stands in for the fetch, since a real loopback server is exactly what the
+  // public-address check refuses.
+  const request = (_url, _options, cb) => {
+    const res = Readable.from([Buffer.from("fake-jpeg-bytes")]);
+    res.statusCode = 200;
+    res.headers = { "content-type": "image/jpeg" };
+    res.socket = { remoteAddress: "93.184.216.34" };
+    queueMicrotask(() => cb(res));
+    return {
+      on() {
+        return this;
+      },
+      end() {},
+    };
   };
-  sock.profilePictureUrl = async () => PIC_URL;
-  const original = globalThis.fetch;
-  globalThis.fetch = async () =>
-    new Response(Buffer.from("fake-jpeg-bytes"), { headers: { "content-type": "image/jpeg" } });
-  try {
-    const result = await svc.setOwnProfilePicture({ url: "https://example.com/me.jpg" });
-    assert.equal(calls.length, 1);
-    assert.equal(calls[0].jid, ME);
-    assert.ok(Buffer.isBuffer(calls[0].content));
-    assert.deepEqual(result, { profile_pic_url: PIC_URL });
-  } finally {
-    globalThis.fetch = original;
-  }
-  await svc.stop();
+  const media = await loadProfilePicture(
+    { url: "https://example.com/me.jpg" },
+    {
+      request,
+      requestTls: request,
+      resolve: async () => [{ address: "93.184.216.34", family: 4 }],
+    }
+  );
+  assert.equal(media.mimetype, "image/jpeg");
+  assert.equal(media.buffer.toString(), "fake-jpeg-bytes");
 });
 
 test("the write tool is absent when allowWrite is false", () => {
