@@ -9,7 +9,8 @@ WORKDIR /app
 ENV NODE_ENV=production WAZAP_DATA_DIR=/data WAZAP_HOST=0.0.0.0 WAZAP_PORT=8766
 COPY --from=build /app/node_modules ./node_modules
 COPY --from=build /app/dist ./dist
-COPY package.json LICENSE README.md ./
+COPY package.json LICENSE README.md AGENT.md ./
+COPY skills ./skills
 RUN mkdir -p /data && chown node:node /data
 USER node
 VOLUME ["/data"]
