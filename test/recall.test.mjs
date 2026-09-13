@@ -15,7 +15,7 @@ import { proto } from "baileys";
 
 import { WhatsAppService } from "../dist/whatsapp.js";
 import { registerTools } from "../dist/tools.js";
-import { EMBED_MODELS } from "../dist/recall/index.js";
+import { EMBED_MODELS, readRecallSettings } from "../dist/recall/index.js";
 import { asToolSource, connectedService } from "./helpers.mjs";
 import { accountPaths } from "../dist/config.js";
 
@@ -484,6 +484,36 @@ test("the similarity floor drops noise hits instead of listing them", async () =
   } finally {
     await svc.stop();
     stub.server.close();
+  }
+});
+
+test("the floor defaults to the model's own, and the env override wins over both", () => {
+  const dir = mkdtempSync(join(tmpdir(), "wazap-recall-"));
+  assert.equal(
+    readRecallSettings({}, dir).minSimilarity,
+    EMBED_MODELS["embeddinggemma-300m"].defaultMinSimilarity
+  );
+  const e5 = readRecallSettings({ WAZAP_EMBED_MODEL: "e5-base-multilingual" }, dir);
+  assert.equal(e5.minSimilarity, EMBED_MODELS["e5-base-multilingual"].defaultMinSimilarity);
+  assert.notEqual(e5.minSimilarity, 0.35, "e5 must not silently inherit gemma's floor");
+  for (const model of ["embeddinggemma-300m", "e5-base-multilingual"]) {
+    const env = { WAZAP_EMBED_MODEL: model, WAZAP_RECALL_MIN_SIMILARITY: "0.5" };
+    assert.equal(readRecallSettings(env, dir).minSimilarity, 0.5, model);
+  }
+});
+
+test("a min-similarity outside 0..1 is refused at parse, whichever model is picked", () => {
+  const dir = mkdtempSync(join(tmpdir(), "wazap-recall-"));
+  for (const bad of ["2", "-0.1", "soon"]) {
+    assert.throws(
+      () => readRecallSettings({ WAZAP_RECALL_MIN_SIMILARITY: bad }, dir),
+      (err) => {
+        assert.equal(err.code, "INVALID_ID");
+        assert.match(err.message, /MIN_SIMILARITY/);
+        return true;
+      },
+      bad
+    );
   }
 });
 
