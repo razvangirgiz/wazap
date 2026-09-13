@@ -2,12 +2,10 @@ import { randomUUID, timingSafeEqual } from "node:crypto";
 import { createServer, type Server } from "node:http";
 import { createConnection } from "node:net";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { mcpAuthRouter, getOAuthProtectedResourceMetadataUrl } from "@modelcontextprotocol/sdk/server/auth/router.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
-import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
+import type { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { isInitializeRequest } from "@modelcontextprotocol/sdk/types.js";
-import express, { type Request, type Response, type NextFunction } from "express";
-import { rateLimit } from "express-rate-limit";
+import type { Request, Response, NextFunction } from "express";
 import type { AccountBinding, AccountSource } from "./account-hub.js";
 import { WAZAP_VERSION, paths, writesHints, type Config } from "./config.js";
 import { APPROVE_PATH, OAUTH_SCOPES, WazapOAuthProvider } from "./oauth.js";
@@ -154,6 +152,9 @@ async function listenHttp(server: Server, host: string, port: number): Promise<n
 
 /** Serve /mcp and /healthz on one address. Resolves with the bound port, so port 0 works. */
 export async function startHttpEndpoint(hub: AccountSource, config: Config, endpoint: Endpoint): Promise<number> {
+  // express is only needed once a listener is actually bound; a stdio server
+  // with sharing off and a bridge onto a running daemon never reach here.
+  const { default: express } = await import("express");
   const app = express();
   app.use(express.json());
 
@@ -187,7 +188,14 @@ export async function startHttpEndpoint(hub: AccountSource, config: Config, endp
   const oauth = endpoint.oauth;
   // A server that advertises sign-in must not also answer strangers.
   const openRead = endpoint.openRead && !oauth;
+  let resourceMetadataUrl: string | null = null;
   if (oauth) {
+    // The OAuth stack (the SDK's auth router and its own limiter) is the one
+    // part of this endpoint only a public server pays for, so it loads here.
+    const [{ mcpAuthRouter, getOAuthProtectedResourceMetadataUrl }, { rateLimit }] = await Promise.all([
+      import("@modelcontextprotocol/sdk/server/auth/router.js"),
+      import("express-rate-limit"),
+    ]);
     // Reached through a TLS proxy: on this machine, or the Docker bridge when
     // the container binds 0.0.0.0. The proxy's idea of the caller is the one
     // the password lockout and the SDK's limiters should count.
@@ -212,8 +220,8 @@ export async function startHttpEndpoint(hub: AccountSource, config: Config, endp
       oauth.approve
     );
     log(`OAuth on: agents sign in at ${oauth.issuerUrl.href}`);
+    resourceMetadataUrl = getOAuthProtectedResourceMetadataUrl(oauth.resourceUrl);
   }
-  const resourceMetadataUrl = oauth ? getOAuthProtectedResourceMetadataUrl(oauth.resourceUrl) : null;
 
   // The first credential the bearer token matches decides the session's tools,
   // so a leaked read token can never message anyone. An OAuth token carries
@@ -262,6 +270,11 @@ export async function startHttpEndpoint(hub: AccountSource, config: Config, endp
       let transport = typeof sessionId === "string" ? transports.get(sessionId) : undefined;
 
       if (!transport && req.method === "POST" && isInitializeRequest(req.body)) {
+        // Session state is only needed when a client actually posts initialize;
+        // loading it here keeps it off the bind path that daemon.json waits on.
+        const { StreamableHTTPServerTransport } = await import(
+          "@modelcontextprotocol/sdk/server/streamableHttp.js"
+        );
         const newTransport: StreamableHTTPServerTransport = new StreamableHTTPServerTransport({
           sessionIdGenerator: () => randomUUID(),
           onsessioninitialized: (sid: string) => {

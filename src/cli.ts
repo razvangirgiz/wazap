@@ -4,14 +4,11 @@ import { mkdirSync } from "node:fs";
 import { createInterface } from "node:readline/promises";
 import { setTimeout as sleep } from "node:timers/promises";
 import { DisconnectReason } from "baileys";
-import qrcode from "qrcode";
-import qrcodeTerminal from "qrcode-terminal";
 import { accountRows, describeAccount, describeStatusAccount, type StatusAccountRow } from "./account-cli.js";
 import { AccountHub } from "./account-hub.js";
 import { AccountRegistry, resolveAccount } from "./accounts.js";
 import { clearSession, readLinkedAccount, type LinkedAccount } from "./auth-state.js";
 import { banner } from "./banner.js";
-import { runBridge } from "./bridge.js";
 import { BAILEYS_VERSION, WAZAP_VERSION, paths, type AccountPaths, type Config } from "./config.js";
 import { connectNext, whereInstalled, type Install } from "./connect.js";
 import { decideRole, readDaemon, removeDaemon, writeDaemon } from "./daemon.js";
@@ -572,6 +569,9 @@ export async function runServe(config: Config): Promise<void> {
       process.exit(2);
     }
     if (role.kind === "bridge") {
+      // Bridging onto a running daemon is the rare role; the MCP client stack
+      // it needs stays out of the common path until then.
+      const { runBridge } = await import("./bridge.js");
       await runBridge(role.daemon, p.daemonFile);
       return;
     }
@@ -844,6 +844,11 @@ async function linkByCode(
 }
 
 async function linkByQr(p: AccountPaths, waiting: Countdown, w: Wizard | null): Promise<LinkedAccount> {
+  // The QR drawers are only needed by this one login path, not by serve.
+  const [{ default: qrcode }, { default: qrcodeTerminal }] = await Promise.all([
+    import("qrcode"),
+    import("qrcode-terminal"),
+  ]);
   if (w) {
     await w.next("Scan this with WhatsApp");
     waiting.start("Waiting for a QR from WhatsApp…");
