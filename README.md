@@ -8,7 +8,7 @@
 ```
 
 **WhatsApp for your AI agent.** An MCP server that puts your WhatsApp account —
-chats, messages, media, contacts, groups — behind 33 tools any MCP client can
+chats, messages, media, contacts, groups — behind 34 tools any MCP client can
 call. Pairing-code login, no browser, no phone-number reseller, ~20 MB of RAM.
 
 Built on [Baileys](https://github.com/WhiskeySockets/Baileys), which speaks the
@@ -284,6 +284,7 @@ them. `--dry-run` prints the plan and touches nothing.
 | `get_stories` | read | The stories (status updates) received in the last day, by author, with previews on request. They show nowhere else. |
 | `wait_for_messages` | read | Block up to 55 s until a message arrives, then return it with a cursor for the next call. `addressed_to_me` wakes only for direct messages, @-mentions and replies. |
 | `search_messages` | read | Text search across the locally held messages; `since`, `until` and `from` narrow it. |
+| `recall` | read | Semantic search over the whole indexed history: matches by meaning, so a paraphrase or another language still hits, and it finds messages too old for `search_messages`. Off until [turned on](#semantic-recall). |
 | `get_message` | read | One message in full, with its quoted message and reactions. |
 | `search_contacts` | read | Find contacts by name or number. |
 | `sync_contacts` | read | Fetch the phone's address book from WhatsApp again, when names are missing. |
@@ -423,6 +424,41 @@ transcribed once and not again after a restart. Audio *files* are left alone,
 since one can be an hour long; call `transcribe_audio(message_id)` for those.
 `WAZAP_TRANSCRIBE_AUTO=0` keeps the tool and stops the background work.
 
+## Semantic recall
+
+`search_messages` matches exact words; `recall` matches what was meant. A
+paraphrase or another language still hits, and it keeps finding messages too
+old for `search_messages` to see — those come back marked `index only`, which
+`get_message` and `download_media` cannot open. For an exact string — an id,
+a phone number, a URL — `search_messages` stays the right tool.
+
+Off by default, and fully local: a `llama-server` sidecar bound to loopback
+does the embedding, so nothing leaves the machine. It needs llama.cpp, the
+pinned model and persisted history (`WAZAP_PERSIST_HISTORY`, on by default):
+
+```bash
+brew install llama.cpp      # macOS; elsewhere build llama.cpp and put llama-server on PATH
+wazap embed download        # fetch the embedding model, ~318 MB sha256-verified
+wazap config recall local   # then restart the service
+```
+
+`wazap embed download` offers the `brew install` itself when `llama-server`
+is missing. `wazap status` runs the three checks — `recall`, `llama-server`,
+`embed model` — and `get_status` reports the index as `off`, `indexing`,
+`ready` or `degraded`.
+
+`chat_id`, `since`, `until` and `from` narrow a recall exactly like
+`search_messages`. Hits rank by similarity scaled by recency, and anything
+under the similarity floor is dropped rather than listed. The index lives at
+`accounts/<id>/recall/` (dir `0700`, files `0600`), holds only what persisted
+history already stores, and tombstones a message out when it is deleted or
+revoked.
+
+The knobs — `WAZAP_RECALL`, `WAZAP_EMBED_MODEL` (`embeddinggemma-300m` by
+default, `e5-base-multilingual` for an older llama.cpp), `WAZAP_EMBED_BIN`,
+`WAZAP_RECALL_MAX`, `WAZAP_RECALL_MIN_SIMILARITY` — are documented in
+`.env.example`.
+
 ## Skills
 
 wazap ships five [Agent Skills](https://agentskills.io) that teach an agent the workflows behind the tools, not just the tools:
@@ -512,11 +548,12 @@ accounts moves into `accounts/default/` the first time a wazap command runs.
     auth/           WhatsApp credentials — treat this like a password
     media/          downloads from download_media
     history/        per-chat message history, so a restart is not amnesia
+    recall/         the semantic index, when recall is on
     previews/       one small JPEG per photo or video already previewed
     notes.json      notes on contacts and "handled" marks; never sent anywhere
     store.json      chat-list snapshot
     qr.png          last QR, when login showed one
-  models/           whisper.cpp models, when transcription runs locally
+  models/           whisper.cpp and embedding models, when transcription or recall run locally
   server.lock       pid of the running server
   daemon.json       loopback endpoint a second wazap bridges to
   oauth.json        registered agents and hashed OAuth grants, when OAuth is on
