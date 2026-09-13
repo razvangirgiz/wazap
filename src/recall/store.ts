@@ -368,6 +368,7 @@ export class RecallStore {
    */
   query(q: RecallQuery, nowMs = Date.now()): RankedHit[] {
     const unit = normalize(q.vector);
+    const floor = q.minSimilarity ?? 0;
     const hits: RankedHit[] = [];
     for (const record of this.live.values()) {
       if (q.chatId !== undefined && record.jid !== q.chatId) continue;
@@ -378,7 +379,7 @@ export class RecallStore {
       let dot = 0;
       for (let i = 0; i < this.spec.dims; i++) dot += unit[i]! * this.vectors[offset + i]!;
       const similarity = dot / 127;
-      if (similarity <= 0) continue;
+      if (similarity <= 0 || similarity < floor) continue;
       hits.push({ record, similarity, score: similarity * recencyDecay(nowMs - record.ts) });
     }
     hits.sort((a, b) => b.score - a.score);

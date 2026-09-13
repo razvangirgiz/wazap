@@ -644,6 +644,8 @@ Each result carries its date and a score: semantic similarity scaled by
 recency, so fresh matches rank first. chat_id, since, until and from narrow
 the search exactly like search_messages. A hit marked "index only" lives in
 the index alone: quote it, but get_message and download_media cannot see it.
+Results under the similarity floor are dropped rather than listed; when only
+weak matches survive, the output says so — do not present them as found facts.
 
 RECALL_UNAVAILABLE means recall is off or the embedding setup is missing; the
 fix names the command the user has to run. Do not retry it.`,
@@ -1324,7 +1326,16 @@ function renderRecall(title: string, answer: RecallAnswer): string {
   if (hits.length === 0) {
     return `${title}: no messages found.${catchingUp ? ` ${catchingUp}` : ""}`;
   }
+  // Under ~0.55 cosine, embeddinggemma matches are usually coincidental — the
+  // agent must not present them as found facts.
+  const weak = Math.max(...hits.map((h) => h.similarity)) < 0.55;
   const lines = [`# ${title} (${hits.length})`, ""];
+  if (weak) {
+    lines.push(
+      `Weak matches only (best similarity ${Math.max(...hits.map((h) => h.similarity)).toFixed(2)}): the query may have no real answer — treat these as guesses.`,
+      ""
+    );
+  }
   if (catchingUp) lines.push(catchingUp, "");
   const introduced = new Set<string>();
   for (const hit of hits) {

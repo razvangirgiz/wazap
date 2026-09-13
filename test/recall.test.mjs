@@ -22,7 +22,14 @@ const ME = "40700000001@s.whatsapp.net";
 const PEER = "40700000002@s.whatsapp.net";
 const DIMS = 768;
 
-const RECALL_ENV = ["WAZAP_RECALL", "WAZAP_EMBED_MODEL", "WAZAP_EMBED_BIN", "WAZAP_EMBED_URL", "WAZAP_RECALL_MAX"];
+const RECALL_ENV = [
+  "WAZAP_RECALL",
+  "WAZAP_EMBED_MODEL",
+  "WAZAP_EMBED_BIN",
+  "WAZAP_EMBED_URL",
+  "WAZAP_RECALL_MAX",
+  "WAZAP_RECALL_MIN_SIMILARITY",
+];
 
 /**
  * Words that mean the same thing share one slot, so a query can hit a message
@@ -89,7 +96,8 @@ function stubEmbedServer() {
 async function serviceWith(env, config = {}) {
   const saved = RECALL_ENV.map((key) => [key, process.env[key]]);
   for (const key of RECALL_ENV) delete process.env[key];
-  Object.assign(process.env, env);
+  // The stub's word-concept vectors sit far under the production cosine floor.
+  Object.assign(process.env, { WAZAP_RECALL_MIN_SIMILARITY: "0" }, env);
   try {
     const connected = await connectedService(WhatsAppService, {
       prefix: "wazap-recall-",
@@ -129,6 +137,7 @@ test("live messages land in the index; placeholders do not", async () => {
       text("M2", "la ce ora e programarea la doctor?"),
       { ...text("M3"), message: { stickerMessage: { mimetype: "image/webp" } } },
       text("M4", "🥰🥰😘"),
+      text("M5", "Da"),
     ]);
     await svc.recallIdle();
     assert.equal(svc.recallStore.count, 2);
@@ -444,6 +453,57 @@ test("an over-cap message re-delivered is diffed by its stored text, not re-embe
     await svc.recallIdle();
     assert.equal(stub.seen.length, seenAfterFirst, "same capped text is not fresh work");
     assert.equal(svc.recallStore.count, 1);
+  } finally {
+    await svc.stop();
+    stub.server.close();
+  }
+});
+
+test("the similarity floor drops noise hits instead of listing them", async () => {
+  const stub = await stubEmbedServer();
+  const { svc, sock } = await serviceWith({
+    WAZAP_RECALL: "local",
+    WAZAP_EMBED_URL: stub.url,
+    WAZAP_RECALL_MIN_SIMILARITY: "0.9",
+  });
+  try {
+    deliver(sock, [text("M1", "ți-am trimis factura pe e-mail ieri")]);
+    await svc.recallIdle();
+    const { data } = await svc.recall("when did she send the invoice?", undefined, 10);
+    assert.equal(data.hits.length, 0, "a stub-strength match sits under a real floor");
+  } finally {
+    await svc.stop();
+    stub.server.close();
+  }
+});
+
+test("weak matches are flagged, not sold as answers", async () => {
+  const stub = await stubEmbedServer();
+  const { svc, sock } = await serviceWith({ WAZAP_RECALL: "local", WAZAP_EMBED_URL: stub.url });
+  try {
+    deliver(sock, [text("M1", "ți-am trimis factura pe e-mail ieri")]);
+    await svc.recallIdle();
+    const server = fakeServer();
+    registerTools(server, asToolSource(svc), { allowWrite: false });
+    const result = await server.tools.get("recall").handler({ query: "the invoice" });
+    assert.match(result.content[0].text, /Weak matches only/);
+  } finally {
+    await svc.stop();
+    stub.server.close();
+  }
+});
+
+test("a min-similarity wazap cannot parse degrades to a line, not a crash", async () => {
+  const stub = await stubEmbedServer();
+  const { svc } = await serviceWith({
+    WAZAP_RECALL: "local",
+    WAZAP_EMBED_URL: stub.url,
+    WAZAP_RECALL_MIN_SIMILARITY: "2",
+  });
+  try {
+    const recall = svc.getStatus().recall;
+    assert.equal(recall.state, "degraded");
+    assert.match(recall.detail, /MIN_SIMILARITY/);
   } finally {
     await svc.stop();
     stub.server.close();
