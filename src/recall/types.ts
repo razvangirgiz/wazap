@@ -30,6 +30,8 @@ export interface RecallQuery {
   untilMs?: number;
   /** Canonical sender jid; "me" is already resolved by the caller. */
   from?: string;
+  /** Raw cosine floor; hits under it are noise, not answers. 0 keeps everything. */
+  minSimilarity?: number;
   limit: number;
 }
 
@@ -64,4 +66,6 @@ export interface RecallSettings {
   modelsDir: string;
   /** Index rows one account keeps; the oldest are evicted past this. */
   maxRows: number;
+  /** Cosine floor for a hit to count; model-dependent, tuned on the default. */
+  minSimilarity: number;
 }
