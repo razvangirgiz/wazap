@@ -8,6 +8,7 @@ export {
   type EmbedModelSpec,
 } from "./models.js";
 export { readRecallSettings } from "./settings.js";
+export { RecallQueue, type RecallOp } from "./queue.js";
 export { RecallStore } from "./store.js";
 export type {
   EmbedModelAlias,
