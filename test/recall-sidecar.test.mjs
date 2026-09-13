@@ -29,18 +29,20 @@ const RECALL_ENV = [
   "WAZAP_EMBED_MODEL",
   "WAZAP_EMBED_BIN",
   "WAZAP_EMBED_URL",
+  "WAZAP_EMBED_IDLE_MINUTES",
   "WAZAP_RECALL_MAX",
   "WAZAP_RECALL_MIN_SIMILARITY",
 ];
 
 /** What readRecallSettings produces, without the env dance. */
-function recallSettings(modelsDir, embedBin = process.execPath) {
+function recallSettings(modelsDir, embedBin = process.execPath, embedIdleMs = 0) {
   return {
     enabled: true,
     model: SPEC.alias,
     embedBin,
     embedUrl: null,
     modelsDir,
+    embedIdleMs,
     maxRows: 1000,
     minSimilarity: 0,
   };
@@ -215,6 +217,69 @@ test("a failed start rejects every waiter, frees the slot and cleans up the half
     const engine = await EmbedEngine.start(settings, SPEC);
     assert.equal(spawned.length, 2, "the next acquire spawned fresh rather than joining the dead start");
     await engine.stop();
+  } finally {
+    restore();
+    stub.server.close();
+  }
+});
+
+test("an idle sidecar is reaped under live claims; the next embed spawns fresh", async () => {
+  const stub = await stubEmbedServer();
+  const { spawned, restore } = fakeSidecars(stub.url);
+  try {
+    const settings = recallSettings(modelsDir(), process.execPath, 60);
+    const engine = await EmbedEngine.start(settings, SPEC);
+    await engine.embed(["factura"], "document");
+    assert.equal(spawned.length, 1);
+
+    // The engine still holds its claim — only the child is gone.
+    await waitFor(() => spawned[0].stops === 1, 5_000, "the idle sidecar to be reaped");
+
+    const vectors = await engine.embed(["chiria"], "document");
+    assert.equal(vectors.length, 1, "the stale claim re-acquired a server");
+    assert.equal(spawned.length, 2, "a fresh spawn, not the reaped child");
+    assert.equal(stub.seen.length, 2, "the request reached the new server");
+
+    await engine.stop();
+    assert.equal(spawned[0].stops, 1, "the reaped child is not stopped twice");
+    assert.equal(spawned[1].stops, 1, "the release stops the replacement");
+  } finally {
+    restore();
+    stub.server.close();
+  }
+});
+
+test("embed calls keep resetting the idle clock, so a busy sidecar is never reaped", async () => {
+  const stub = await stubEmbedServer();
+  const { spawned, restore } = fakeSidecars(stub.url);
+  try {
+    const settings = recallSettings(modelsDir(), process.execPath, 80);
+    const engine = await EmbedEngine.start(settings, SPEC);
+    for (let i = 0; i < 4; i++) {
+      await engine.embed([`text ${i}`], "document");
+      await sleep(40);
+    }
+    assert.equal(spawned[0].stops, 0, "a call every 40ms outran the 80ms window");
+    await waitFor(() => spawned[0].stops === 1, 5_000, "the sidecar to be reaped once calls stop");
+    await engine.stop();
+    assert.equal(spawned[0].stops, 1);
+  } finally {
+    restore();
+    stub.server.close();
+  }
+});
+
+test("an idle window of 0 keeps the sidecar resident until the last release", async () => {
+  const stub = await stubEmbedServer();
+  const { spawned, restore } = fakeSidecars(stub.url);
+  try {
+    const settings = recallSettings(modelsDir(), process.execPath, 0);
+    const engine = await EmbedEngine.start(settings, SPEC);
+    await engine.embed(["factura"], "document");
+    await sleep(120);
+    assert.equal(spawned[0].stops, 0, "no idle timer ran");
+    await engine.stop();
+    assert.equal(spawned[0].stops, 1);
   } finally {
     restore();
     stub.server.close();

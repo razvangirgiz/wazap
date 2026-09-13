@@ -1,7 +1,8 @@
 /**
  * The embedding backend: one `llama-server --embedding` child bound to
- * loopback, restarted when it dies, killed when wazap stops. The queue is the
- * only caller, so a slow restart stalls indexing — never ingestion.
+ * loopback, restarted when it dies, reaped when idle, killed when wazap
+ * stops. The queue is the only caller, so a slow restart stalls indexing —
+ * never ingestion.
  *
  * The /embedding API is stateless, so every account in the process shares one
  * server: the registry below spawns on the first acquire and kills on the
@@ -256,41 +257,94 @@ interface SidecarEntry {
    * a server of their own.
    */
   started: Promise<void>;
+  /** WAZAP_EMBED_IDLE_MINUTES in ms; 0 leaves the server resident forever. */
+  idleMs: number;
+  /** The reap countdown, armed once the server is up and re-armed by every embed. */
+  idleTimer: NodeJS.Timeout | null;
+  /** Set when the idle window ran out: evicted and stopped, claims orphaned. */
+  reaped: boolean;
 }
 
 const sharedSidecars = new Map<string, SidecarEntry>();
 
 /**
+ * The claim side of the registry: an existing entry is joined, a missing one
+ * is spawned. A failed start frees the slot, so the next claim spawns fresh
+ * instead of joining a rejection; a successful one starts the idle clock.
+ * Consumers still holding refs on a failed or reaped entry release into a
+ * stopped sidecar — stop() on it is a safe no-op.
+ */
+function claimEntry(key: string, bin: string, model: string, onLog: (line: string) => void, idleMs: number): SidecarEntry {
+  let entry = sharedSidecars.get(key);
+  if (entry === undefined) {
+    const sidecar = sidecarFactory.open(bin, model, onLog);
+    entry = { refs: 0, sidecar, started: sidecar.start(), idleMs, idleTimer: null, reaped: false };
+    sharedSidecars.set(key, entry);
+    const spawned = entry;
+    spawned.started.then(
+      () => touchIdle(key, spawned),
+      () => {
+        if (sharedSidecars.get(key) === spawned) sharedSidecars.delete(key);
+      }
+    );
+  }
+  entry.refs++;
+  return entry;
+}
+
+/**
+ * The idle clock only runs while the server is up and unused: every embed
+ * through the entry re-arms it, and an entry the registry no longer holds —
+ * stopped or already reaped — is never armed.
+ */
+function touchIdle(key: string, entry: SidecarEntry): void {
+  if (entry.idleMs <= 0 || entry.reaped) return;
+  if (sharedSidecars.get(key) !== entry) return;
+  if (entry.idleTimer !== null) clearTimeout(entry.idleTimer);
+  entry.idleTimer = setTimeout(() => reapIdle(key, entry), entry.idleMs);
+  entry.idleTimer.unref();
+}
+
+/**
+ * Idle means nobody is calling embed — the claims themselves can stay. The
+ * entry is evicted and the child killed while consumers still hold it; their
+ * next embed finds the slot empty and claims a fresh spawn.
+ */
+function reapIdle(key: string, entry: SidecarEntry): void {
+  entry.idleTimer = null;
+  entry.reaped = true;
+  if (sharedSidecars.get(key) === entry) sharedSidecars.delete(key);
+  entry.sidecar.stop().catch(() => {});
+}
+
+/**
  * One consumer's claim on a shared sidecar. Embedding calls reach the child
- * directly; stop() only gives this claim back — the last one out is the one
- * that kills the server. The child's restart lines keep arriving through the
- * first consumer's onLog, which in production is the same `log` for everyone.
+ * through waitReady(); stop() only gives this claim back — the last one out
+ * is the one that kills the server. The child's restart lines keep arriving
+ * through the first consumer's onLog, which in production is the same `log`
+ * for everyone.
+ *
+ * An idle reap can evict the entry out from under a live claim; the next
+ * embed then re-claims the key — joining a respawn already under way or
+ * starting one — so a live engine always reaches a running server.
  */
 class SharedSidecar implements EmbeddingTarget {
   private released = false;
+  private entry: SidecarEntry;
 
   private constructor(
     private readonly key: string,
-    private readonly entry: SidecarEntry
-  ) {}
+    private readonly bin: string,
+    private readonly model: string,
+    private readonly onLog: (line: string) => void,
+    private readonly idleMs: number
+  ) {
+    this.entry = claimEntry(key, bin, model, onLog, idleMs);
+  }
 
   /** First claim on a key spawns; later ones join the start already under way. */
-  static acquire(bin: string, model: string, onLog: (line: string) => void): SharedSidecar {
-    const key = `${bin}\n${model}`;
-    let entry = sharedSidecars.get(key);
-    if (entry === undefined) {
-      const sidecar = sidecarFactory.open(bin, model, onLog);
-      entry = { refs: 0, sidecar, started: sidecar.start() };
-      sharedSidecars.set(key, entry);
-      // A failed start frees the slot, so the next acquire spawns fresh
-      // instead of joining a rejection. Consumers still holding refs release
-      // into a sidecar that never ran — stop() on it is a safe no-op.
-      entry.started.catch(() => {
-        if (sharedSidecars.get(key) === entry) sharedSidecars.delete(key);
-      });
-    }
-    entry.refs++;
-    return new SharedSidecar(key, entry);
+  static acquire(bin: string, model: string, onLog: (line: string) => void, idleMs: number): SharedSidecar {
+    return new SharedSidecar(`${bin}\n${model}`, bin, model, onLog, idleMs);
   }
 
   /** The shared start; the engine releases its claim when this rejects. */
@@ -302,17 +356,38 @@ class SharedSidecar implements EmbeddingTarget {
     return this.entry.sidecar.base;
   }
 
-  waitReady(): Promise<void> {
-    return this.entry.sidecar.waitReady();
+  /**
+   * The per-embed heartbeat on the registry: a reaped entry is swapped for a
+   * live claim and the idle clock restarts before the health gate runs.
+   */
+  async waitReady(): Promise<void> {
+    const entry = this.liveEntry();
+    touchIdle(this.key, entry);
+    await entry.started;
+    await entry.sidecar.waitReady();
+  }
+
+  /** The claim's entry while the registry holds it; a fresh claim once it was evicted. */
+  private liveEntry(): SidecarEntry {
+    if (!this.released && sharedSidecars.get(this.key) !== this.entry) {
+      this.entry = claimEntry(this.key, this.bin, this.model, this.onLog, this.idleMs);
+    }
+    return this.entry;
   }
 
   async stop(): Promise<void> {
     if (this.released) return;
     this.released = true;
-    this.entry.refs--;
-    if (this.entry.refs > 0) return;
-    if (sharedSidecars.get(this.key) === this.entry) sharedSidecars.delete(this.key);
-    await this.entry.sidecar.stop();
+    const entry = this.entry;
+    entry.refs--;
+    // A reaped entry was already evicted and stopped; only the claim is left.
+    if (entry.refs > 0 || entry.reaped) return;
+    if (entry.idleTimer !== null) {
+      clearTimeout(entry.idleTimer);
+      entry.idleTimer = null;
+    }
+    if (sharedSidecars.get(this.key) === entry) sharedSidecars.delete(this.key);
+    await entry.sidecar.stop();
   }
 }
 
@@ -346,7 +421,7 @@ export class EmbedEngine {
     }
     // Accounts on the same binary and model share one server: acquire bumps
     // the registry's refcount, this engine's stop() hands just this claim back.
-    const target = SharedSidecar.acquire(bin, embedModelPath(settings.modelsDir, spec), onLog);
+    const target = SharedSidecar.acquire(bin, embedModelPath(settings.modelsDir, spec), onLog, settings.embedIdleMs);
     try {
       await target.started();
     } catch (err) {
