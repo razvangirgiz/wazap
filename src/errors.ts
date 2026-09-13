@@ -31,6 +31,7 @@ export type ErrorCode =
   | "TRANSCRIBE_FAILED"
   | "RECALL_UNAVAILABLE"
   | "RECALL_FAILED"
+  | "RECALL_BAD_INPUT"
   | "TIMEOUT"
   | "SERVICE_ERROR"
   | "DRAFT_NOT_FOUND"
@@ -99,6 +100,7 @@ export const ERROR_GUIDE: Record<ErrorCode, string> = {
   RECALL_UNAVAILABLE:
     "Semantic recall is off, or llama.cpp or the embedding model is missing. Tell the user to run the command in the fix; do not retry.",
   RECALL_FAILED: "The embedding backend ran and failed. Read the message; retry once at most.",
+  RECALL_BAD_INPUT: "The embedding server refused the input itself. Do not retry it unchanged.",
   TIMEOUT: "WhatsApp did not answer in time. Retry once; if it fails again, call get_status.",
   SERVICE_ERROR:
     "wazap's own background service could not be managed. This is a machine problem, not a WhatsApp one: read the fix and tell the user.",

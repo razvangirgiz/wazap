@@ -1468,8 +1468,11 @@ export class WhatsAppService implements WhatsAppApi {
     if (text !== null) {
       // Capped here, not only in the store, so the feed diff compares the text
       // the index would actually keep — an over-cap message is not fresh work
-      // on every boot.
-      const capped = text.slice(0, RECALL_TEXT_CAP);
+      // on every boot. The cap is the model's: e5's 512-token window takes
+      // far less text than gemma's.
+      const maxChars =
+        this.recallEnv instanceof WazapError ? RECALL_TEXT_CAP : EMBED_MODELS[this.recallEnv.model].maxChars;
+      const capped = text.slice(0, maxChars);
       ops.push({
         sid,
         item: { sid, jid, ts: messageTimestampMs(raw), sender: this.recallSender(raw, jid), type: messageType(raw), text: capped },

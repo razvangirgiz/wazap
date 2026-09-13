@@ -10,6 +10,7 @@
  * by the put it deletes; inside one batch the last op per sid wins.
  */
 import { setTimeout as sleep } from "node:timers/promises";
+import { WazapError } from "../errors.js";
 import { logError } from "../logger.js";
 import type { RecallStore } from "./store.js";
 import type { RecallItem } from "./types.js";
@@ -182,9 +183,31 @@ export class RecallQueue {
     const dels = ops.filter((op) => op.item === undefined).map((op) => op.sid);
     const puts = ops.flatMap((op) => (op.item === undefined ? [] : [op.item]));
     if (dels.length > 0) await this.store.remove(dels);
+    await this.commitPuts(puts);
+  }
+
+  /**
+   * A 4xx from the embed server names the input, not the backend — one text
+   * over the model's context window fails the whole request and would retry
+   * forever. The batch is bisected until only the bad text is left, and that
+   * single message is dropped: the index loses one unembeddable entry rather
+   * than dying behind a poison pill that every restart would re-feed.
+   */
+  private async commitPuts(puts: RecallItem[]): Promise<void> {
     if (puts.length === 0) return;
-    const vectors = await this.embed(puts.map((item) => item.text));
-    await this.store.add(puts, vectors);
+    try {
+      const vectors = await this.embed(puts.map((item) => item.text));
+      await this.store.add(puts, vectors);
+    } catch (err) {
+      if (!(err instanceof WazapError && err.code === "RECALL_BAD_INPUT")) throw err;
+      if (puts.length === 1) {
+        logError(`recall index: dropping unembeddable message ${puts[0].sid}`, err);
+        return;
+      }
+      const mid = Math.ceil(puts.length / 2);
+      await this.commitPuts(puts.slice(0, mid));
+      await this.commitPuts(puts.slice(mid));
+    }
   }
 
   private async applySeals(): Promise<void> {

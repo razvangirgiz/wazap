@@ -382,7 +382,11 @@ export class EmbedEngine {
     }
     if (!response.ok) {
       const body = (await response.text().catch(() => "")).slice(0, 300);
-      throw new WazapError("RECALL_FAILED", `embedding server answered ${response.status}: ${body}`);
+      // A 4xx means the input itself is unembeddable — over the model's
+      // context, malformed — and no retry will change that, so the queue
+      // treats it differently from a sick backend.
+      const code = response.status >= 400 && response.status < 500 ? "RECALL_BAD_INPUT" : "RECALL_FAILED";
+      throw new WazapError(code, `embedding server answered ${response.status}: ${body}`);
     }
     const reply = (await response.json()) as EmbeddingReply[] | { error?: { message?: string } };
     if (!Array.isArray(reply)) {

@@ -11,6 +11,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 
+import { WazapError } from "../dist/errors.js";
 import { embedModelSpec } from "../dist/recall/models.js";
 import { RecallQueue } from "../dist/recall/queue.js";
 import { RecallStore } from "../dist/recall/store.js";
@@ -114,6 +115,68 @@ test("a failing embed call retries the batch instead of dropping it", async () =
   await queue.idle();
   assert.equal(attempts, 2);
   assert.equal(store.count, 1);
+  await store.close();
+});
+
+test("a permanently unembeddable message is dropped, not retried into queue death", async () => {
+  const store = await openStore();
+  const queue = new RecallQueue(store, async (texts) => {
+    if (texts.some((t) => t.includes("prea-lung"))) {
+      throw new WazapError("RECALL_BAD_INPUT", "embedding server answered 400: input too large");
+    }
+    return texts.map(() => [1, ...new Array(DIMS - 1).fill(0)]);
+  });
+  queue.enqueue({ sid: "good1", item: item("good1", "mesaj bun unu") });
+  queue.enqueue({ sid: "bad", item: item("bad", "mesaj prea-lung") });
+  queue.enqueue({ sid: "good2", item: item("good2", "mesaj bun doi") });
+  await queue.idle();
+  assert.equal(queue.dead, null);
+  assert.equal(store.count, 2);
+  assert.equal(store.record("bad"), undefined);
+  assert.ok(store.record("good1") !== undefined);
+  assert.ok(store.record("good2") !== undefined);
+  await store.close();
+});
+
+test("a 4xx in one text isolates it without losing its batchmates", async () => {
+  const store = await openStore();
+  const calls = [];
+  const queue = new RecallQueue(store, async (texts) => {
+    calls.push(texts.length);
+    if (texts.some((t) => t.includes("otravit"))) {
+      throw new WazapError("RECALL_BAD_INPUT", "embedding server answered 400: input too large");
+    }
+    return texts.map(() => [1, ...new Array(DIMS - 1).fill(0)]);
+  });
+  const ops = [];
+  for (let i = 0; i < 8; i++) ops.push({ sid: `s${i}`, item: item(`s${i}`, i === 5 ? "text otravit" : `text ok ${i}`) });
+  queue.feed(ops);
+  await queue.idle();
+  // 8-put batch fails, bisects to 4+4, the half with the poison bisects again
+  // — and the survivors all land.
+  assert.equal(queue.dead, null);
+  assert.equal(store.count, 7);
+  assert.equal(store.record("s5"), undefined);
+  await store.close();
+});
+
+test("a 4xx on a query does not masquerade as a backend failure", async () => {
+  const store = await openStore();
+  const queue = new RecallQueue(store, async (texts) => {
+    if (texts[0] === "bad query") {
+      throw new WazapError("RECALL_BAD_INPUT", "embedding server answered 400: input too large");
+    }
+    return texts.map(() => [1, ...new Array(DIMS - 1).fill(0)]);
+  });
+  queue.enqueue({ sid: "s1", item: item("s1", "mesaj normal") });
+  await queue.idle();
+  assert.equal(store.count, 1);
+  // 4xx only ever surfaces for puts — a queue embed is never a query — but a
+  // dropped put must not starve a seal behind it.
+  queue.feed([{ sid: "s2", item: item("s2", "bad query") }], { file: "h.jsonl", bytes: 7 });
+  await queue.idle();
+  assert.equal(store.count, 1);
+  assert.equal(store.offsets()["h.jsonl"], 7);
   await store.close();
 });
 

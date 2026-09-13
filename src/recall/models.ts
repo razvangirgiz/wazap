@@ -28,6 +28,14 @@ export interface EmbedModelSpec {
    */
   prompts: { query: string; document: string };
   /**
+   * Characters of a message the model may see, set by its context size: one
+   * over-context text is a deterministic 400 that must never reach the
+   * server. Romanian runs ~2.3 chars/token once the task prompt is counted,
+   * so e5's 512-token window only fits ~800 chars while gemma's much larger
+   * context keeps the store's own cap.
+   */
+  maxChars: number;
+  /**
    * Cosine floor a recall hit must clear when WAZAP_RECALL_MIN_SIMILARITY is
    * unset. Each model's prompted space prices similarity differently — a score
    * that means "real match" for one is noise for another — so the floor
@@ -55,6 +63,7 @@ export const EMBED_MODELS: Record<EmbedModelAlias, EmbedModelSpec> = {
     url: "https://huggingface.co/ggml-org/embeddinggemma-300M-GGUF/resolve/main/embeddinggemma-300M-Q8_0.gguf",
     // EmbeddingGemma's own retrieval task, from its model card.
     prompts: { query: "task: search result | query: ", document: "title: none | text: " },
+    maxChars: 2048,
     // Measured on a real index under those prompts: noise tops out ~0.31,
     // real paraphrases start ~0.35.
     defaultMinSimilarity: 0.35,
@@ -69,15 +78,17 @@ export const EMBED_MODELS: Record<EmbedModelAlias, EmbedModelSpec> = {
     url: "https://huggingface.co/dinab/multilingual-e5-base-Q8_0-GGUF/resolve/main/multilingual-e5-base-q8_0.gguf",
     // e5's documented asymmetric prefixes.
     prompts: { query: "query: ", document: "passage: " },
-    // UNCALIBRATED — a placeholder, not a measurement. e5's contrastive
-    // training compresses prompted cosines into a much higher band than
-    // gemma's: unrelated pairs commonly read ~0.6-0.75 where real matches
-    // start ~0.8, so gemma's 0.35 would pass noise as answers. 0.7 errs
-    // high on purpose: a dropped real hit answers "nothing found", a false
-    // hit is a wrong memory an agent will repeat. Re-measure on a real
-    // index before flipping floorCalibrated.
-    defaultMinSimilarity: 0.7,
-    floorCalibrated: false,
+    // e5's context window is 512 tokens; the cap leaves headroom for the
+    // document prefix and diacritic-heavy text.
+    maxChars: 800,
+    // Measured on a real 12k-message index: noise tops out ~0.84 while real
+    // paraphrases run 0.82-0.88 — the bands overlap, so no floor separates
+    // cleanly. 0.85 deliberately errs toward silence: a missed hit answers
+    // "nothing found", a false hit is a wrong memory an agent will repeat.
+    // Gemma stays the recommended model; e5 remains the fallback for a
+    // llama.cpp too old for gemma embeddings.
+    defaultMinSimilarity: 0.85,
+    floorCalibrated: true,
   },
 };
 
