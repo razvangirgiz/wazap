@@ -27,6 +27,15 @@ export interface EmbedModelSpec {
    * prefix is what tells the model which side a text is on.
    */
   prompts: { query: string; document: string };
+  /**
+   * Cosine floor a recall hit must clear when WAZAP_RECALL_MIN_SIMILARITY is
+   * unset. Each model's prompted space prices similarity differently — a score
+   * that means "real match" for one is noise for another — so the floor
+   * travels with the spec. `floorCalibrated` is false while the value is a
+   * placeholder rather than a measurement on a real index; doctor says so.
+   */
+  defaultMinSimilarity: number;
+  floorCalibrated: boolean;
 }
 
 /**
@@ -46,6 +55,10 @@ export const EMBED_MODELS: Record<EmbedModelAlias, EmbedModelSpec> = {
     url: "https://huggingface.co/ggml-org/embeddinggemma-300M-GGUF/resolve/main/embeddinggemma-300M-Q8_0.gguf",
     // EmbeddingGemma's own retrieval task, from its model card.
     prompts: { query: "task: search result | query: ", document: "title: none | text: " },
+    // Measured on a real index under those prompts: noise tops out ~0.31,
+    // real paraphrases start ~0.35.
+    defaultMinSimilarity: 0.35,
+    floorCalibrated: true,
   },
   "e5-base-multilingual": {
     alias: "e5-base-multilingual",
@@ -56,6 +69,15 @@ export const EMBED_MODELS: Record<EmbedModelAlias, EmbedModelSpec> = {
     url: "https://huggingface.co/dinab/multilingual-e5-base-Q8_0-GGUF/resolve/main/multilingual-e5-base-q8_0.gguf",
     // e5's documented asymmetric prefixes.
     prompts: { query: "query: ", document: "passage: " },
+    // UNCALIBRATED — a placeholder, not a measurement. e5's contrastive
+    // training compresses prompted cosines into a much higher band than
+    // gemma's: unrelated pairs commonly read ~0.6-0.75 where real matches
+    // start ~0.8, so gemma's 0.35 would pass noise as answers. 0.7 errs
+    // high on purpose: a dropped real hit answers "nothing found", a false
+    // hit is a wrong memory an agent will repeat. Re-measure on a real
+    // index before flipping floorCalibrated.
+    defaultMinSimilarity: 0.7,
+    floorCalibrated: false,
   },
 };
 

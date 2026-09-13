@@ -6,6 +6,7 @@
 import { join } from "node:path";
 import { WazapError } from "../errors.js";
 import { stripPasted } from "../transcribe/index.js";
+import { EMBED_MODELS } from "./models.js";
 import type { EmbedModelAlias, RecallSettings } from "./types.js";
 
 const OFF = new Set(["", "off", "0", "no", "none", "false"]);
@@ -13,13 +14,6 @@ const ON = new Set(["local", "on", "1", "yes", "true"]);
 const MODEL_ALIASES: readonly EmbedModelAlias[] = ["embeddinggemma-300m", "e5-base-multilingual"];
 const DEFAULT_MAX_ROWS = 50_000;
 const MIN_MAX_ROWS = 100;
-/**
- * Cosine floor for embeddinggemma-300m under its task prompts, measured on a
- * real index: noise tops out ~0.31, real paraphrases start ~0.35. The prompts
- * widened the noise/signal gap enough for the floor to mean something.
- * e5-base needs its own calibration.
- */
-const DEFAULT_MIN_SIMILARITY = 0.35;
 
 function parseEnabled(raw: string | undefined): boolean {
   const value = stripPasted(raw ?? "").toLowerCase();
@@ -51,9 +45,13 @@ function parseMaxRows(raw: string | undefined): number {
   );
 }
 
-function parseMinSimilarity(raw: string | undefined): number {
+/**
+ * The env wins over the model's own floor — a cosine that means "real match"
+ * is the model's to price, the override is the user's.
+ */
+function parseMinSimilarity(raw: string | undefined, fallback: number): number {
   const value = stripPasted(raw ?? "");
-  if (value === "") return DEFAULT_MIN_SIMILARITY;
+  if (value === "") return fallback;
   const n = Number(value);
   if (Number.isFinite(n) && n >= 0 && n <= 1) return n;
   throw new WazapError(
@@ -77,13 +75,14 @@ function parseUrl(raw: string | undefined): string | null {
 
 export function readRecallSettings(env: NodeJS.ProcessEnv, dataDir: string): RecallSettings {
   const embedBin = stripPasted(env.WAZAP_EMBED_BIN ?? "");
+  const model = parseModel(env.WAZAP_EMBED_MODEL);
   return {
     enabled: parseEnabled(env.WAZAP_RECALL),
-    model: parseModel(env.WAZAP_EMBED_MODEL),
+    model,
     embedBin: embedBin === "" ? null : embedBin,
     embedUrl: parseUrl(env.WAZAP_EMBED_URL),
     modelsDir: join(dataDir, "models"),
     maxRows: parseMaxRows(env.WAZAP_RECALL_MAX),
-    minSimilarity: parseMinSimilarity(env.WAZAP_RECALL_MIN_SIMILARITY),
+    minSimilarity: parseMinSimilarity(env.WAZAP_RECALL_MIN_SIMILARITY, EMBED_MODELS[model].defaultMinSimilarity),
   };
 }

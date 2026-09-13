@@ -351,8 +351,12 @@ async function checkRecall(config: Config): Promise<Check[]> {
   const spec = EMBED_MODELS[settings.model];
   const size = fileSize(embedModelPath(settings.modelsDir, spec));
   const readiness = await embedReady(settings, spec);
+  // An env-set floor is the user's own calibration; only the model's
+  // unmeasured default gets flagged.
+  const uncalibrated =
+    !spec.floorCalibrated && process.env.WAZAP_RECALL_MIN_SIMILARITY === undefined ? ", uncalibrated floor" : "";
   return [
-    { name: "recall", state: "ok", detail: `local (${settings.model})` },
+    { name: "recall", state: "ok", detail: `local (${settings.model}${uncalibrated})` },
     readiness.ok
       ? { name: "llama-server", state: "ok", detail: settings.embedUrl ?? "found" }
       : { name: "llama-server", state: "fail", detail: readiness.detail, fix: readiness.fix },
