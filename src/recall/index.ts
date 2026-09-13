@@ -8,6 +8,7 @@ export {
   type EmbedModelSpec,
 } from "./models.js";
 export { readRecallSettings } from "./settings.js";
+export { RecallStore } from "./store.js";
 export type {
   EmbedModelAlias,
   RankedHit,
