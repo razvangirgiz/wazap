@@ -43,6 +43,11 @@ Skip it consciously when you must: `git push --no-verify` or
 `SKIP_GATE=1 git push`. Skipping to move faster on a broken tree just moves the
 red to CI.
 
+Recall quality has its own check: `node scripts/recall-eval.mjs <cases.json>`
+scores a fixed case set against the running daemon, so prompt, model and
+floor changes are measured, not eyeballed. The real cases are private data
+and are not committed; `scripts/recall-eval.example.json` shows the shape.
+
 ## Commit style
 
 `<Area>: <what changed>` as a sentence, from `git log`:
