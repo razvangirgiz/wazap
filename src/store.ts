@@ -99,14 +99,17 @@ export class Store {
     if (!known || !this.stories.includes(sid)) this.stories.push(sid);
   }
 
-  /** Stories older than `cutoffMs` go, message and all, the way WhatsApp lets them go after a day. */
-  pruneStories(cutoffMs: number): void {
+  /** Stories older than `cutoffMs` go, message and all, the way WhatsApp lets them go after a day. Returns the dropped sids. */
+  pruneStories(cutoffMs: number): string[] {
+    const dropped: string[] = [];
     for (const sid of [...this.stories]) {
       const raw = this.messages.get(sid);
       if (raw && messageTimestampMs(raw) >= cutoffMs) continue;
       this.stories.splice(this.stories.indexOf(sid), 1);
       this.forget(sid);
+      dropped.push(sid);
     }
+    return dropped;
   }
 
   /** A chat WhatsApp listed, or one that only arrived as messages. Contacts are not chats. */

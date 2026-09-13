@@ -6,6 +6,7 @@ import { paths, writesHints, type Config } from "./config.js";
 import { WazapError, asWazapError } from "./errors.js";
 import { lockHolder } from "./lock.js";
 import { say } from "./logger.js";
+import { readRecallSettings } from "./recall/index.js";
 import {
   maskKey,
   readTranscribeSettings,
@@ -121,6 +122,10 @@ const COMMANDS: Record<string, { values: readonly string[]; apply: (config: Conf
       values: ["local", "openai", "off"],
       apply: applyTranscribe,
     },
+    recall: {
+      values: ["local", "off"],
+      apply: applyRecall,
+    },
     webhook: {
       values: ["on", "off"],
       apply: applyWebhook,
@@ -128,7 +133,7 @@ const COMMANDS: Record<string, { values: readonly string[]; apply: (config: Conf
   };
 
 const USAGE_FIX =
-  "Run `wazap config writes on|off`, `wazap config transcribe local|openai|off`, or `wazap config webhook on|off`";
+  "Run `wazap config writes on|off`, `wazap config transcribe local|openai|off`, `wazap config recall local|off`, or `wazap config webhook on|off`";
 
 export async function runConfig(config: Config): Promise<void> {
   if (config.args.length === 0) {
@@ -137,11 +142,12 @@ export async function runConfig(config: Config): Promise<void> {
       say(`${row.label}: ${row.value(config)} (${source})`);
     }
     for (const line of transcribeRows(config)) say(line);
+    for (const line of recallRows(config)) say(line);
     for (const line of webhookRows(config)) say(line);
     say("");
     say(
       dim(
-        "Change writes with `wazap config writes on|off`, transcription with `wazap config transcribe`, webhook with `wazap config webhook on|off`. Probe it with `wazap webhook test`."
+        "Change writes with `wazap config writes on|off`, transcription with `wazap config transcribe`, recall with `wazap config recall`, webhook with `wazap config webhook on|off`. Probe it with `wazap webhook test`."
       )
     );
     const selected = resolveAccount(config.dataDir, config.accountId);
@@ -152,7 +158,7 @@ export async function runConfig(config: Config): Promise<void> {
   }
 
   const [setting, value, extra] = config.args;
-  if (extra !== undefined && (setting === "transcribe" || setting === "webhook")) {
+  if (extra !== undefined && (setting === "transcribe" || setting === "webhook" || setting === "recall")) {
     throw new WazapError(
       "INVALID_ID",
       "The API key or webhook secret is never a command-line argument: it would be kept in your shell history and readable in `ps` by anyone on this machine.",
@@ -189,6 +195,31 @@ function transcribeRows(config: Config): string[] {
   const rows = [`transcribe: ${settings.provider ?? "off"} (${config.sources.transcribe})`];
   if (settings.provider === "openai") rows.push(`api key: ${maskKey(settings.apiKey)}`);
   return rows;
+}
+
+/** Same failure-is-a-line rule as transcribeRows: a stale .env must not take config down. */
+function recallRows(config: Config): string[] {
+  try {
+    const settings = readRecallSettings(process.env, config.dataDir);
+    return [`recall: ${settings.enabled ? `local (${settings.model})` : "off"} (${config.sources.recall})`];
+  } catch (err) {
+    const failure = asWazapError(err);
+    return [`recall: ${failure.message}${failure.fix === undefined ? "" : ` — ${failure.fix}`}`];
+  }
+}
+
+const RECALL_SAID: Record<string, string> = {
+  local: "recall: local — messages are embedded by llama.cpp on this machine; nothing leaves it.",
+  off: "recall: off — `recall` reports how to turn it on.",
+};
+
+async function applyRecall(config: Config, value: string): Promise<void> {
+  const p = paths(config.dataDir);
+  setEnvSetting(p.envFile, "WAZAP_RECALL", value);
+  say(ok(RECALL_SAID[value]!));
+  say(dim(`Stored in ${shortPath(p.envFile)}.`));
+  const running = lockHolder(p.lockFile);
+  if (running !== null) say(warn(`A server is running (pid ${running}); restart it for this to apply.`));
 }
 
 function accountWebhook(config: Config): { override: WebhookOverride; source: string } {

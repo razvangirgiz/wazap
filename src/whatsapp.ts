@@ -8,7 +8,7 @@
 import { randomUUID } from "node:crypto";
 import { appendFile, mkdir, mkdtemp, readdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { isAbsolute, join } from "node:path";
+import { basename, isAbsolute, join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import makeWASocket, {
   ALL_WA_PATCH_NAMES,
@@ -58,14 +58,30 @@ import {
   messageText,
   messageTimestampMs,
   messageType,
+  phoneOf,
   protoNumber,
   quotedSenderJid,
   reactionOf,
+  revokedTargetKey,
+  searchableText,
   thumbnailOf,
   viewText,
   voiceSeconds,
 } from "./messages.js";
 import { PAIRING_TIMEOUT_MS, WA_BROWSER, prettyCode, startPairing } from "./pairing.js";
+import {
+  EMBED_MODELS,
+  EmbedEngine,
+  embedReady,
+  RECALL_TEXT_CAP,
+  RecallQueue,
+  RecallStore,
+  readRecallSettings,
+  type RecallOp,
+  type RecallRecord,
+  type RecallSettings,
+  type RecallStatus,
+} from "./recall/index.js";
 import {
   readTranscribeSettings,
   transcribeFile,
@@ -106,6 +122,7 @@ import type {
   MessageView,
   PairingInfo,
   ParticipantResult,
+  RecallAnswer,
   RecentConversation,
   SentMessage,
   StatusInfo,
@@ -292,6 +309,13 @@ export class WhatsAppService implements WhatsAppApi {
   private readonly notes: Notes;
   /** The transcription environment, or the complaint about it. See `readTranscribeConfig`. */
   private readonly transcribe: TranscribeSettings | WazapError;
+  /** The recall environment, or the complaint about it. Same rule as transcribe: a bad env is a line, not a crash. */
+  private readonly recallEnv: RecallSettings | WazapError;
+  /** The on-disk index; opened in loadPersisted, before history is replayed. */
+  private recallStore: RecallStore | null = null;
+  private recallQueue: RecallQueue | null = null;
+  /** The sidecar starts on the first embedding call, never at boot. */
+  private recallEngineP: Promise<EmbedEngine> | null = null;
   /** Null unless a provider is configured and auto mode is on. */
   private readonly transcribeQueue: TranscribeQueue | null;
   /** The seam the tests replace; production always runs the real providers. */
@@ -325,6 +349,7 @@ export class WhatsAppService implements WhatsAppApi {
     this.paths = paths;
     this.notes = new Notes(this.paths.notesFile);
     this.transcribe = readTranscribeConfig(config.dataDir);
+    this.recallEnv = readRecallConfig(config.dataDir);
     const settings = this.transcribe;
     this.transcribeQueue =
       settings instanceof WazapError || settings.provider === null || !settings.auto
@@ -386,6 +411,7 @@ export class WhatsAppService implements WhatsAppApi {
     this.wakeArrivalWaiters();
     await this.flushStore();
     this.teardownSocket();
+    await this.stopRecall();
   }
 
   /**
@@ -567,6 +593,7 @@ export class WhatsAppService implements WhatsAppApi {
       rate_limit: this.effectiveRateLimit,
       last_error: this.lastError,
       webhook: this.webhook.info(),
+      recall: this.recallStatus(),
     };
     const hints: string[] = [];
     if (this.status === "linking" && this.pairing) {
@@ -735,6 +762,94 @@ export class WhatsAppService implements WhatsAppApi {
     });
   }
 
+  /**
+   * Semantic search over the living-memory index: the query is embedded, then
+   * cosine-matched against every live row under the same filters
+   * search_messages takes, ranked by similarity × recency decay. A hit still
+   * in the store hydrates to a full view; one that fell out answers from the
+   * index's own copy — reaching it is the whole point of the index.
+   */
+  recall(
+    query: string,
+    chatId: string | undefined,
+    limit: number,
+    opts: SearchOptions = {}
+  ): Promise<Synced<RecallAnswer>> {
+    return this.guarded(async () => {
+      this.ensureConnected();
+      await this.waitForSync();
+      const store = this.readyRecall();
+      const scope = chatId === undefined ? undefined : this.resolveId(chatId);
+      const from = opts.from === undefined ? undefined : opts.from === "me" ? this.ownJid() : this.resolveId(opts.from);
+      const [vector] = await this.recallEmbed([query]);
+      const hits = store
+        .query({ vector: vector!, chatId: scope, sinceMs: opts.sinceMs, untilMs: opts.untilMs, from, limit })
+        .map((hit) => {
+          const live = this.store.messages.has(hit.record.sid);
+          return {
+            score: hit.score,
+            similarity: hit.similarity,
+            message: live ? this.viewOf(hit.record.sid, hit.record.jid) : this.indexView(hit.record),
+            from_index: !live,
+          };
+        });
+      return this.synced({ hits, index: this.recallStatus() });
+    });
+  }
+
+  /**
+   * The index a recall query may run on, or the refusal the tool reports.
+   * "off" splits by cause: the feature disabled, or the history it derives
+   * from not persisted; "degraded" carries the line the status already found.
+   */
+  private readyRecall(): RecallStore {
+    const status = this.recallStatus();
+    if (status.state === "degraded") {
+      throw new WazapError("RECALL_UNAVAILABLE", status.detail ?? "Semantic recall is unavailable.", status.fix);
+    }
+    if (status.state === "off") {
+      if (this.recallEnv instanceof WazapError || !this.recallEnv.enabled) {
+        throw new WazapError("RECALL_UNAVAILABLE", "Semantic recall is off.", "Run `wazap config recall local`");
+      }
+      throw new WazapError(
+        "RECALL_UNAVAILABLE",
+        "Semantic recall needs message history kept on disk, which is off.",
+        "Set WAZAP_PERSIST_HISTORY=1 and restart the server"
+      );
+    }
+    // "ready" and "indexing" are only reached once the store opened.
+    return this.recallStore!;
+  }
+
+  /**
+   * What the index still knows about a message the live store dropped: enough
+   * to quote it, name its chat and sender, and date it. get_message and
+   * download_media can no longer see it — `from_index` says so.
+   */
+  private indexView(record: RecallRecord): MessageView {
+    const sender = record.sender;
+    const phone = phoneOf(sender);
+    const note = this.notes.noteFor(sender);
+    return {
+      message_id: record.sid,
+      chat_id: record.jid,
+      from_me: this.isMe(sender),
+      sender: {
+        id: sender,
+        name: this.displayName(sender),
+        ...(phone !== undefined ? { phone } : {}),
+        ...(note !== undefined ? { note } : {}),
+      },
+      type: record.type as MessageType,
+      text: record.text,
+      timestamp: isoWithOffset(record.ts),
+      age: formatAge(record.ts),
+      has_media: false,
+      forwarded: false,
+      edited: false,
+    };
+  }
+
   getMessage(messageId: string): Promise<MessageView> {
     return this.guarded(async () => {
       this.ensureConnected();
@@ -844,7 +959,7 @@ export class WhatsAppService implements WhatsAppApi {
     return this.guarded(async () => {
       this.ensureConnected();
       await this.waitForSync();
-      this.store.pruneStories(Date.now() - STORY_TTL_MS);
+      this.recallForget(this.store.pruneStories(Date.now() - STORY_TTL_MS));
       const cutoff = Date.now() - hours * 3_600_000;
       const sids = this.store.stories.filter((sid) => {
         const raw = this.store.messages.get(sid);
@@ -1266,6 +1381,8 @@ export class WhatsAppService implements WhatsAppApi {
     // The newest line for a sid wins on reload, so re-appending is what makes
     // the transcript outlive the process.
     await this.appendHistory([raw]);
+    // With the transcript on it, the voice note finally carries searchable text.
+    this.recallFeedRaw([raw]);
     return transcribeResult(record, false);
   }
 
@@ -1276,6 +1393,185 @@ export class WhatsAppService implements WhatsAppApi {
    */
   transcribeIdle(): Promise<void> {
     return this.transcribeQueue?.idle() ?? Promise.resolve();
+  }
+
+  /**
+   * Resolves when the index queue has nothing left to embed or write. Same
+   * rule as transcribeIdle: off the public API, here so tests can wait on the
+   * queue instead of sleeping.
+   */
+  recallIdle(): Promise<void> {
+    return this.recallQueue?.idle() ?? Promise.resolve();
+  }
+
+  /**
+   * The on-disk semantic index opens only when recall is on and history is
+   * persisted — a memory that outlives the history it is derived from would be
+   * a leak, not a feature. A store that refuses to open leaves recall off.
+   */
+  private async openRecall(): Promise<void> {
+    if (this.recallEnv instanceof WazapError || !this.recallEnv.enabled || !this.config.persistHistory) return;
+    try {
+      const spec = EMBED_MODELS[this.recallEnv.model];
+      this.recallStore = await RecallStore.open(join(this.paths.root, "recall"), spec, this.recallEnv.maxRows);
+      this.recallQueue = new RecallQueue(this.recallStore, (texts) => this.recallEmbed(texts));
+      if (this.recallStore.count > 0) log(`recall index: ${this.recallStore.count} messages`);
+    } catch (err) {
+      logError("recall index", err);
+      this.recallStore = null;
+      this.recallQueue = null;
+    }
+  }
+
+  /**
+   * The sidecar, started on the first embedding request. A failed start is not
+   * cached — the next queued batch tries again.
+   */
+  private recallEngine(): Promise<EmbedEngine> {
+    if (this.stopped) return Promise.reject(new WazapError("RECALL_UNAVAILABLE", "the service is stopping"));
+    if (this.recallEnv instanceof WazapError || !this.recallEnv.enabled) {
+      return Promise.reject(
+        new WazapError("RECALL_UNAVAILABLE", "Semantic recall is off.", "Run `wazap config recall local`")
+      );
+    }
+    if (this.recallEngineP === null) {
+      const settings = this.recallEnv;
+      this.recallEngineP = (async () => {
+        const spec = EMBED_MODELS[settings.model];
+        const readiness = await embedReady(settings, spec);
+        if (!readiness.ok) throw new WazapError("RECALL_UNAVAILABLE", readiness.detail, readiness.fix);
+        return EmbedEngine.start(settings, spec, log);
+      })();
+      this.recallEngineP.catch(() => (this.recallEngineP = null));
+    }
+    return this.recallEngineP;
+  }
+
+  private async recallEmbed(texts: string[]): Promise<number[][]> {
+    const engine = await this.recallEngine();
+    return engine.embed(texts);
+  }
+
+  /**
+   * The ops one raw message turns into: the tombstone a revoke carries for the
+   * message it takes back, and a put for whatever searchable text it carries.
+   * Most messages produce one or the other; plenty produce neither.
+   */
+  private recallOpsFor(raw: WAMessage, jid: string, transcript?: TranscriptRecord): RecallOp[] {
+    const ops: RecallOp[] = [];
+    const target = revokedTargetKey(raw);
+    if (target !== undefined) ops.push({ sid: messageIdFor(target, this.canonical(target.remoteJid ?? jid)) });
+    const sid = messageIdFor(raw.key, jid);
+    const text = searchableText(raw, transcript ?? this.store.transcripts.get(sid));
+    if (text !== null) {
+      // Capped here, not only in the store, so the feed diff compares the text
+      // the index would actually keep — an over-cap message is not fresh work
+      // on every boot.
+      const capped = text.slice(0, RECALL_TEXT_CAP);
+      ops.push({
+        sid,
+        item: { sid, jid, ts: messageTimestampMs(raw), sender: this.recallSender(raw, jid), type: messageType(raw), text: capped },
+      });
+    }
+    return ops;
+  }
+
+  /** The same sender buildMessageView resolves, kept canonical at index time. */
+  private recallSender(raw: WAMessage, jid: string): string {
+    if (raw.key.fromMe) return this.ownJid();
+    if (jid.endsWith("@s.whatsapp.net")) return jid;
+    const from = raw.key.participant || raw.participant || raw.key.remoteJid || "";
+    return from ? this.canonical(from) : this.ownJid();
+  }
+
+  private recallFeedRaw(messages: WAMessage[]): void {
+    if (this.recallQueue === null || messages.length === 0) return;
+    const ops: RecallOp[] = [];
+    for (const raw of messages) {
+      if (!raw.key?.remoteJid) continue;
+      ops.push(...this.recallOpsFor(raw, this.canonical(raw.key.remoteJid)));
+    }
+    this.recallFeed(ops);
+  }
+
+  /**
+   * The boot reconcile. A history file was just compacted to `bytes`, so a
+   * matching stored offset means every line was already diffed and there is
+   * nothing to do; otherwise every surviving record — including the ones the
+   * per-chat cap just dropped — is diffed against the index, and the seal only
+   * lands once the queue has committed them.
+   */
+  private recallFeedHistory(file: string, records: HistoryRecord[], bytes: number): void {
+    const store = this.recallStore;
+    if (this.recallQueue === null || store === null) return;
+    if (store.offsets()[file] === bytes) return;
+    const ops: RecallOp[] = [];
+    for (const record of records) {
+      const raw = decodeMessage(record.raw);
+      if (!raw?.key?.remoteJid || (!raw.message && !isStubEvent(raw))) continue;
+      const jid = this.canonical(raw.key.remoteJid);
+      if (isNoiseJid(jid) || isControlMessage(raw)) continue;
+      ops.push(...this.recallOpsFor(raw, jid, record.tr));
+    }
+    this.recallFeed(ops, { file, bytes });
+  }
+
+  /**
+   * The sid-diff every feed goes through: a put is work only when the index
+   * does not already hold exactly this text, and a tombstone only when there
+   * is something to remove. One edge is deliberate — a put whose sid has a
+   * tombstone still queued is dropped, because once deleted stays deleted.
+   */
+  private recallFeed(ops: RecallOp[], seal?: { file: string; bytes: number }): void {
+    const queue = this.recallQueue;
+    const store = this.recallStore;
+    if (queue === null || store === null || this.stopped) return;
+    const fresh = ops.filter((op) => {
+      const queued = queue.queued(op.sid);
+      if (op.item === undefined) {
+        return queued === undefined ? store.record(op.sid) !== undefined : queued.item !== undefined;
+      }
+      if (queued !== undefined) return queued.item !== undefined && queued.item.text !== op.item.text;
+      return store.record(op.sid)?.text !== op.item.text;
+    });
+    if (fresh.length > 0 || seal !== undefined) queue.feed(fresh, seal);
+  }
+
+  /** The store forgot these sids, so the index must too; a sid it never held diffs away. */
+  private recallForget(sids: string[]): void {
+    if (sids.length === 0) return;
+    this.recallFeed(sids.map((sid) => ({ sid })));
+  }
+
+  private recallStatus(): RecallStatus {
+    if (this.recallEnv instanceof WazapError) {
+      return { state: "degraded", indexed: 0, pending: 0, detail: this.recallEnv.message, fix: this.recallEnv.fix };
+    }
+    if (!this.recallEnv.enabled || !this.config.persistHistory) return { state: "off", indexed: 0, pending: 0 };
+    const indexed = this.recallStore?.count ?? 0;
+    const pending = this.recallQueue?.size ?? 0;
+    const dead = this.recallQueue?.dead;
+    if (dead !== null && dead !== undefined) {
+      return { state: "degraded", indexed, pending, detail: dead, fix: "Restart the wazap server" };
+    }
+    if (this.recallStore === null) {
+      return { state: "degraded", indexed, pending, detail: "the recall index could not be opened" };
+    }
+    return { state: pending > 0 ? "indexing" : "ready", indexed, pending };
+  }
+
+  /**
+   * Queue first, then the sidecar — stopping it unblocks an embedding call in
+   * flight — then the store, whose own write queue drains before it closes.
+   * An engine still coming up is stopped whenever its start resolves.
+   */
+  private async stopRecall(): Promise<void> {
+    const queueStop = this.recallQueue?.stop() ?? Promise.resolve();
+    if (this.recallEngineP !== null) {
+      void this.recallEngineP.then((engine) => engine.stop()).catch(() => {});
+    }
+    await queueStop;
+    await this.recallStore?.close();
   }
 
   draft(payload: DraftPayload): Promise<DraftView> {
@@ -1421,6 +1717,8 @@ export class WhatsAppService implements WhatsAppApi {
       }
       const { sock, jid } = await this.prepareSend(this.chatOfOrThrow(messageId));
       await sock.sendMessage(jid, { delete: raw.key });
+      // Deleted means out of the index too — the text does not get to linger on.
+      this.recallForget([messageId]);
       return { message_id: messageId, for_everyone: true };
     });
   }
@@ -1709,6 +2007,9 @@ export class WhatsAppService implements WhatsAppApi {
         if (edited) {
           this.store.edited.add(sid);
           raw.message = edited;
+          // New words for a sid the index may already hold: a re-feed writes
+          // a fresh row and tombstones the old one.
+          this.recallFeedRaw([raw]);
         }
         if (update.messageTimestamp) raw.messageTimestamp = update.messageTimestamp;
         this.markStoreDirty();
@@ -2569,6 +2870,9 @@ export class WhatsAppService implements WhatsAppApi {
       this.store.putMessage(sid, jid, raw);
       stored.push(raw);
     }
+    // Everything that reached the store is indexable work; the feed itself
+    // decides which of these messages carry words worth embedding.
+    this.recallFeedRaw(stored);
     return stored;
   }
 
@@ -2581,7 +2885,7 @@ export class WhatsAppService implements WhatsAppApi {
     if (raw.key.fromMe || isControlMessage(raw) || messageType(raw) === "system") return;
     this.learnPushName(raw, STATUS_JID);
     this.store.putStory(messageIdFor(raw.key, STATUS_JID), STATUS_JID, raw);
-    this.store.pruneStories(Date.now() - STORY_TTL_MS);
+    this.recallForget(this.store.pruneStories(Date.now() - STORY_TTL_MS));
   }
 
   /**
@@ -2602,7 +2906,10 @@ export class WhatsAppService implements WhatsAppApi {
   private foldReactions(): void {
     for (const [sid, raw] of [...this.store.messages]) {
       const jid = this.store.chatOf.get(sid);
-      if (jid !== undefined && this.applyReaction(raw, jid)) this.store.dropMessage(sid);
+      if (jid !== undefined && this.applyReaction(raw, jid)) {
+        this.store.dropMessage(sid);
+        this.recallForget([sid]);
+      }
     }
   }
 
@@ -2627,6 +2934,7 @@ export class WhatsAppService implements WhatsAppApi {
       if (Math.abs(messageTimestampMs(known.raw) - at) > CALL_DEDUPE_WINDOW_MS) continue;
       if (callDetail(raw, info) <= callDetail(known.raw, other)) return false;
       this.store.dropMessage(known.sid);
+      this.recallForget([known.sid]);
       return true;
     }
     return true;
@@ -2689,6 +2997,8 @@ export class WhatsAppService implements WhatsAppApi {
     // its chat once those are known. Loaded the other way round, the same
     // message sat in a ring under the lid and in one under the phone.
     await this.loadStoreSnapshot();
+    // The index opens before history replays, so the replay can feed it.
+    await this.openRecall();
     await this.loadHistoryStore();
   }
 
@@ -2769,9 +3079,14 @@ export class WhatsAppService implements WhatsAppApi {
 
     // Rewrite compacted, so the file stays bounded across restarts.
     const compacted = kept.map((record) => JSON.stringify(record)).join("\n");
+    const written = kept.length > 0 ? `${compacted}\n` : "";
     const tmp = `${path}.tmp`;
-    await writeFile(tmp, kept.length > 0 ? `${compacted}\n` : "", { mode: FILE_MODE });
+    await writeFile(tmp, written, { mode: FILE_MODE });
     await rename(tmp, path);
+
+    // `newest`, not `kept`: a record the cap just dropped is exactly what the
+    // index is for. The seal marks the file as it now stands on disk.
+    this.recallFeedHistory(basename(path), [...newest.values()], Buffer.byteLength(written));
 
     let loaded = 0;
     for (const record of kept) {
@@ -2850,6 +3165,17 @@ function readTranscribeConfig(dataDir: string): TranscribeSettings | WazapError 
   } catch (err) {
     const fault = asWazapError(err);
     logError("transcribe settings", fault);
+    return fault;
+  }
+}
+
+/** Same rule as transcribe: a wrong WAZAP_RECALL_* value degrades to feature-off, never a crash. */
+function readRecallConfig(dataDir: string): RecallSettings | WazapError {
+  try {
+    return readRecallSettings(process.env, dataDir);
+  } catch (err) {
+    const fault = asWazapError(err);
+    logError("recall settings", fault);
     return fault;
   }
 }

@@ -3,6 +3,7 @@ import { BANNER } from "./banner.js";
 import {
   runAccount,
   runContacts,
+  runEmbed,
   runGreet,
   runLogin,
   runLogout,
@@ -35,11 +36,12 @@ Usage:
   wazap service ${SERVICE_VERBS}
                                                            Keep the server running in the background, under launchd or systemd
   wazap expose [tailscale|cloudflare|off]                  Give the running service a public https URL cloud agents can reach
-  wazap config [writes on|off] [transcribe local|openai|off] [webhook on|off]
+  wazap config [writes on|off] [transcribe local|openai|off] [recall local|off] [webhook on|off]
                                                            Show the effective settings, or change one
   wazap webhook test [--event <name>] [--account <id>]     POST a test event to the configured webhook
   wazap transcribe download [--model <alias>]              Fetch the whisper.cpp model into the data dir
   wazap transcribe test <audio file>                       Transcribe a local file with the configured provider
+  wazap embed download [--model <alias>]                   Fetch the llama.cpp embedding model for semantic recall
   wazap contacts resync                                    Fetch the phone's address book from WhatsApp again
   wazap update [--dry-run]                                 Upgrade wazap, then the service and the skills that follow it
   wazap status [--live] [--json] [--account <id>]          Check the install, the session and the server
@@ -73,7 +75,8 @@ Options:
   --transcribe <how>  With setup: answer the transcription question (local, openai or off)
   --service           With setup: keep wazap running on this machine, without asking
   --expose            With setup: also give it a public URL cloud agents can reach
-  --model <alias>     With transcribe download: turbo (default), large-v3 or medium
+  --model <alias>     With transcribe download: turbo (default), large-v3 or medium.
+                      With embed download: embeddinggemma-300m (default) or e5-base-multilingual
   --dry-run           With connect, skills install, service install or update: print what would happen, and do nothing
   --live              With status: reach WhatsApp for real, then close the connection
   --json              With status: print the whole report as one JSON object on stdout
@@ -89,7 +92,8 @@ WAZAP_OAUTH_PASSWORD, WAZAP_RATE_LIMIT,
 WAZAP_NO_SHARE, WAZAP_NO_UPDATE_CHECK, WAZAP_TRANSCRIBE, WAZAP_TRANSCRIBE_AUTO,
 WAZAP_TRANSCRIBE_LANGUAGE, WAZAP_TRANSCRIBE_API_KEY, WAZAP_TRANSCRIBE_URL, WAZAP_TRANSCRIBE_MODEL,
 WAZAP_WHISPER_MODEL, WAZAP_WHISPER_BIN, WAZAP_WEBHOOK, WAZAP_WEBHOOK_URL,
-WAZAP_WEBHOOK_SECRET, WAZAP_WEBHOOK_EVENTS.
+WAZAP_WEBHOOK_SECRET, WAZAP_WEBHOOK_EVENTS, WAZAP_RECALL, WAZAP_RECALL_MAX,
+WAZAP_EMBED_MODEL, WAZAP_EMBED_BIN.
 An optional <data-dir>/.env is loaded if present.`;
 
 async function main(): Promise<void> {
@@ -116,6 +120,7 @@ async function main(): Promise<void> {
     "expose",
     "update",
     "transcribe",
+    "embed",
   ]);
   if (!MIGRATE_EXEMPT.has(config.command)) migrateLayout(config.dataDir);
   switch (config.command) {
@@ -149,6 +154,9 @@ async function main(): Promise<void> {
       return;
     case "transcribe":
       await runTranscribe(config);
+      return;
+    case "embed":
+      await runEmbed(config);
       return;
     case "contacts":
       await runContacts(config);

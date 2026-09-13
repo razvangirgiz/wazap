@@ -1,0 +1,22 @@
+/** The only entry point the rest of wazap imports. */
+export { EmbedEngine, embedReady, findLlama, type EmbedReadiness } from "./engine.js";
+export {
+  EMBED_MODELS,
+  downloadEmbed,
+  embedModelPath,
+  embedModelSpec,
+  type EmbedModelSpec,
+} from "./models.js";
+export { readRecallSettings } from "./settings.js";
+export { RecallQueue, type RecallOp } from "./queue.js";
+export { RecallStore, TEXT_CAP as RECALL_TEXT_CAP } from "./store.js";
+export type {
+  EmbedModelAlias,
+  RankedHit,
+  RecallItem,
+  RecallQuery,
+  RecallRecord,
+  RecallSettings,
+  RecallState,
+  RecallStatus,
+} from "./types.js";

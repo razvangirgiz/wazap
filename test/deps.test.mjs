@@ -129,6 +129,7 @@ test("the table names the binary each formula puts on PATH", () => {
     [
       ["whisper-cli", "whisper-cpp"],
       ["ffmpeg", "ffmpeg"],
+      ["llama-server", "llama.cpp"],
       ["tailscale", "tailscale"],
       ["cloudflared", "cloudflared"],
     ]

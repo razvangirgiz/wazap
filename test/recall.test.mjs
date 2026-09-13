@@ -1,0 +1,466 @@
+/**
+ * Semantic recall where it meets WhatsApp: live ingest feeds the index, edits
+ * and revokes rewrite it, boot reconcile picks up whatever was left unindexed,
+ * and the feature stays off unless asked for. The embedding backend is a stub
+ * /embedding server with a word-concept table — enough for a paraphrase to
+ * share a concept and hit — so llama.cpp and its model stay out of CI.
+ */
+import { test } from "node:test";
+import assert from "node:assert/strict";
+import http from "node:http";
+import { mkdtempSync, mkdirSync, writeFileSync, appendFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { proto } from "baileys";
+
+import { WhatsAppService } from "../dist/whatsapp.js";
+import { registerTools } from "../dist/tools.js";
+import { asToolSource, connectedService } from "./helpers.mjs";
+import { accountPaths } from "../dist/config.js";
+
+const ME = "40700000001@s.whatsapp.net";
+const PEER = "40700000002@s.whatsapp.net";
+const DIMS = 768;
+
+const RECALL_ENV = ["WAZAP_RECALL", "WAZAP_EMBED_MODEL", "WAZAP_EMBED_BIN", "WAZAP_EMBED_URL", "WAZAP_RECALL_MAX"];
+
+/**
+ * Words that mean the same thing share one slot, so a query can hit a message
+ * that never repeats its words. Diacritics are folded first: „factură" and
+ * "factura" are one token, and a paraphrase through English still lands.
+ */
+const CONCEPTS = [
+  ["factura", "invoice", "bill"],
+  ["chiria", "rent", "renta"],
+  ["platit", "paid", "payment", "plata"],
+  ["doctor", "medic", "appointment", "programare"],
+  ["masina", "car", "auto"],
+  ["aeroport", "airport", "terminal"],
+];
+
+function conceptOf(word) {
+  const folded = word
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[̀-ͯ]/g, "");
+  for (const group of CONCEPTS) if (group.includes(folded)) return `c${CONCEPTS.indexOf(group)}`;
+  return folded;
+}
+
+function vectorFor(text) {
+  const vector = new Array(DIMS).fill(0);
+  for (const word of text.split(/[^\p{L}\p{N}]+/u)) {
+    if (word === "") continue;
+    const concept = conceptOf(word);
+    let hash = 0;
+    for (const ch of concept) hash = (hash * 31 + ch.codePointAt(0)) % 9973;
+    vector[hash % DIMS] += 1;
+  }
+  return vector;
+}
+
+/** A stand-in llama-server: POST /embedding → [{index, embedding: [[dims]]}]. */
+function stubEmbedServer() {
+  const seen = [];
+  const server = http.createServer((req, res) => {
+    if (req.method !== "POST" || req.url !== "/embedding") {
+      res.writeHead(404).end();
+      return;
+    }
+    let body = "";
+    req.on("data", (chunk) => (body += chunk));
+    req.on("end", () => {
+      const texts = [JSON.parse(body).content].flat();
+      seen.push(...texts);
+      const reply = texts.map((_, index) => ({ index, embedding: [vectorFor(texts[index])] }));
+      res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify(reply));
+    });
+  });
+  return new Promise((resolve) => {
+    server.listen(0, "127.0.0.1", () => resolve({ server, seen, url: `http://127.0.0.1:${server.address().port}` }));
+  });
+}
+
+/**
+ * The recall environment is read once, in the constructor — set around it.
+ * loadPersisted runs what start() runs before the socket: snapshot, then the
+ * index, then the history replay that owes it the backlog.
+ */
+async function serviceWith(env, config = {}) {
+  const saved = RECALL_ENV.map((key) => [key, process.env[key]]);
+  for (const key of RECALL_ENV) delete process.env[key];
+  Object.assign(process.env, env);
+  try {
+    const connected = await connectedService(WhatsAppService, {
+      prefix: "wazap-recall-",
+      id: ME,
+      name: "Răzvan",
+      config: { persistHistory: true, ...config },
+    });
+    await connected.svc.loadPersisted();
+    return connected;
+  } finally {
+    for (const [key, value] of saved) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  }
+}
+
+const text = (id, body, over = {}) => ({
+  key: { remoteJid: PEER, fromMe: false, id },
+  messageTimestamp: Math.floor(Date.now() / 1000),
+  message: { conversation: body },
+  ...over,
+});
+
+const deliver = (sock, messages) => sock.ev.emit("messages.upsert", { type: "notify", messages });
+
+/** One history line the store loader accepts — the shape appendHistory writes. */
+const historyLine = (raw, sid) => `${JSON.stringify({ sid, ts: raw.messageTimestamp, raw: encodeRaw(raw) })}\n`;
+const encodeRaw = (raw) => Buffer.from(proto.WebMessageInfo.encode(raw).finish()).toString("base64");
+
+test("live messages land in the index; placeholders do not", async () => {
+  const stub = await stubEmbedServer();
+  const { svc, sock } = await serviceWith({ WAZAP_RECALL: "local", WAZAP_EMBED_URL: stub.url });
+  try {
+    deliver(sock, [
+      text("M1", "ți-am trimis factura pe e-mail ieri"),
+      text("M2", "la ce ora e programarea la doctor?"),
+      { ...text("M3"), message: { stickerMessage: { mimetype: "image/webp" } } },
+      text("M4", "🥰🥰😘"),
+    ]);
+    await svc.recallIdle();
+    assert.equal(svc.recallStore.count, 2);
+    assert.equal(svc.recallStore.record(`false_${PEER}_M1`).text, "ți-am trimis factura pe e-mail ieri");
+  } finally {
+    await svc.stop();
+    stub.server.close();
+  }
+});
+
+test("an edit re-indexes the sid under its new text", async () => {
+  const stub = await stubEmbedServer();
+  const { svc, sock } = await serviceWith({ WAZAP_RECALL: "local", WAZAP_EMBED_URL: stub.url });
+  try {
+    deliver(sock, [text("M1", "ne vedem la aeroport la șase")]);
+    await svc.recallIdle();
+    const sid = `false_${PEER}_M1`;
+    assert.equal(svc.recallStore.record(sid).text, "ne vedem la aeroport la șase");
+    sock.ev.emit("messages.update", [
+      { key: { remoteJid: PEER, fromMe: false, id: "M1" }, update: { message: { editedMessage: { message: { conversation: "ne vedem la aeroport la șapte" } } } } },
+    ]);
+    await svc.recallIdle();
+    assert.equal(svc.recallStore.count, 1);
+    assert.equal(svc.recallStore.record(sid).text, "ne vedem la aeroport la șapte");
+  } finally {
+    await svc.stop();
+    stub.server.close();
+  }
+});
+
+test("a revoke tombstones the message it takes back", async () => {
+  const stub = await stubEmbedServer();
+  const { svc, sock } = await serviceWith({ WAZAP_RECALL: "local", WAZAP_EMBED_URL: stub.url });
+  try {
+    deliver(sock, [text("M1", "parola de la masina e 1234"), text("M2", "ignora ce am scris")]);
+    await svc.recallIdle();
+    assert.equal(svc.recallStore.count, 2);
+    deliver(sock, [
+      {
+        key: { remoteJid: PEER, fromMe: false, id: "R1" },
+        messageTimestamp: Math.floor(Date.now() / 1000),
+        message: {
+          protocolMessage: {
+            type: proto.Message.ProtocolMessage.Type.REVOKE,
+            key: { remoteJid: PEER, fromMe: false, id: "M1" },
+          },
+        },
+      },
+    ]);
+    await svc.recallIdle();
+    assert.equal(svc.recallStore.record(`false_${PEER}_M1`), undefined);
+    assert.equal(svc.recallStore.count, 1);
+  } finally {
+    await svc.stop();
+    stub.server.close();
+  }
+});
+
+test("boot reconcile indexes what a file still holds, then seals it", async () => {
+  const stub = await stubEmbedServer();
+  const dataDir = mkdtempSync(join(tmpdir(), "wazap-recall-"));
+  const historyDir = join(accountPaths(dataDir, "default").root, "history");
+  mkdirSync(historyDir, { recursive: true });
+  const file = join(historyDir, `${PEER}.jsonl`);
+  writeFileSync(file, [
+    historyLine(text("M1", "am plătit chiria pe toată luna"), `false_${PEER}_M1`),
+    historyLine(text("M2", "factura vine săptămâna viitoare"), `false_${PEER}_M2`),
+  ].join(""));
+  try {
+    // History existed before this wazap booted — the loader owes the index.
+    const first = await serviceWith({ WAZAP_RECALL: "local", WAZAP_EMBED_URL: stub.url }, { dataDir });
+    await first.svc.recallIdle();
+    assert.equal(first.svc.recallStore.count, 2);
+    const seenAfterFirst = stub.seen.length;
+    await first.svc.stop();
+
+    // A second boot over the same data dir sees the sealed file and skips it.
+    const second = await serviceWith({ WAZAP_RECALL: "local", WAZAP_EMBED_URL: stub.url }, { dataDir });
+    await second.svc.recallIdle();
+    assert.equal(second.svc.recallStore.count, 2);
+    assert.equal(stub.seen.length, seenAfterFirst, "a sealed file is not re-embedded");
+    await second.svc.stop();
+
+    // Lines appended while wazap was away are the tail the next boot owes.
+    appendFileSync(file, historyLine(text("M3", "doctorul mi-a dat programare luni"), `false_${PEER}_M3`));
+    const third = await serviceWith({ WAZAP_RECALL: "local", WAZAP_EMBED_URL: stub.url }, { dataDir });
+    await third.svc.recallIdle();
+    assert.equal(third.svc.recallStore.count, 3);
+    assert.ok(stub.seen.length > seenAfterFirst, "the appended line reached the embedder");
+    await third.svc.stop();
+  } finally {
+    stub.server.close();
+  }
+});
+
+test("persistHistory off keeps recall off — the index would outlive its source", async () => {
+  const stub = await stubEmbedServer();
+  const { svc, sock } = await serviceWith(
+    { WAZAP_RECALL: "local", WAZAP_EMBED_URL: stub.url },
+    { persistHistory: false }
+  );
+  try {
+    assert.equal(svc.recallStore, null);
+    deliver(sock, [text("M1", "ceva ce nu trebuie indexat")]);
+    await svc.recallIdle();
+    assert.equal(svc.getStatus().recall.state, "off");
+  } finally {
+    await svc.stop();
+    stub.server.close();
+  }
+});
+
+test("a recall setting wazap does not know degrades to a line, not a crash", async () => {
+  const { svc } = await serviceWith({ WAZAP_RECALL: "cloud-please" });
+  try {
+    const recall = svc.getStatus().recall;
+    assert.equal(recall.state, "degraded");
+    assert.match(recall.detail, /Unknown recall mode/);
+    assert.equal(svc.status, "connected");
+  } finally {
+    await svc.stop();
+  }
+});
+
+/** Stand-in for McpServer: records what got registered and lets us call it. */
+function fakeServer() {
+  const tools = new Map();
+  return {
+    tools,
+    registerTool(name, meta, handler) {
+      tools.set(name, { meta, handler });
+    },
+  };
+}
+
+test("recall answers a Romanian paraphrase, ranked by score, with the date on the hit", async () => {
+  const stub = await stubEmbedServer();
+  const { svc, sock } = await serviceWith({ WAZAP_RECALL: "local", WAZAP_EMBED_URL: stub.url });
+  try {
+    deliver(sock, [
+      text("M1", "ți-am trimis factura pe e-mail ieri"),
+      text("M2", "la ce ora e programarea la doctor?"),
+    ]);
+    await svc.recallIdle();
+    const { data } = await svc.recall("when did she send the invoice?", undefined, 10);
+    assert.equal(data.hits[0].message.message_id, `false_${PEER}_M1`);
+    assert.equal(data.hits[0].from_index, false);
+    assert.ok(data.hits[0].similarity > 0);
+    assert.match(data.hits[0].message.timestamp, /^\d{4}-\d{2}-\d{2}T/);
+    assert.equal(data.index.state, "ready");
+    assert.equal(data.index.indexed, 2);
+    const only = await svc.recall("invoice", undefined, 1);
+    assert.equal(only.data.hits.length, 1, "limit caps the ranked list");
+  } finally {
+    await svc.stop();
+    stub.server.close();
+  }
+});
+
+test("chat, since/until and from narrow recall the way they narrow search_messages", async () => {
+  const OTHER = "40700000003@s.whatsapp.net";
+  const stub = await stubEmbedServer();
+  const { svc, sock } = await serviceWith({ WAZAP_RECALL: "local", WAZAP_EMBED_URL: stub.url });
+  try {
+    const nowS = Math.floor(Date.now() / 1000);
+    deliver(sock, [
+      text("M1", "factura pe e-mail"),
+      text("M2", "factura veche", { messageTimestamp: nowS - 10 * 86_400 }),
+      { ...text("X1", "factura de la altcineva"), key: { remoteJid: OTHER, fromMe: false, id: "X1" } },
+      { ...text("ME1", "factura trimisa de mine"), key: { remoteJid: PEER, fromMe: true, id: "ME1" } },
+    ]);
+    await svc.recallIdle();
+    assert.equal(svc.recallStore.count, 4);
+
+    const inChat = await svc.recall("invoice", PEER, 10);
+    assert.equal(inChat.data.hits.length, 3);
+    assert.ok(inChat.data.hits.every((h) => h.message.chat_id === PEER));
+
+    const since = await svc.recall("invoice", undefined, 10, { sinceMs: Date.now() - 86_400_000 });
+    assert.ok(!since.data.hits.some((h) => h.message.message_id === `false_${PEER}_M2`), "the old one is before since");
+
+    const until = await svc.recall("invoice", undefined, 10, { untilMs: Date.now() - 86_400_000 });
+    assert.deepEqual(until.data.hits.map((h) => h.message.message_id), [`false_${PEER}_M2`]);
+
+    const mine = await svc.recall("invoice", undefined, 10, { from: "me" });
+    assert.deepEqual(mine.data.hits.map((h) => h.message.message_id), [`true_${PEER}_ME1`]);
+  } finally {
+    await svc.stop();
+    stub.server.close();
+  }
+});
+
+test("a message that fell out of the store still answers from the index", async () => {
+  const stub = await stubEmbedServer();
+  const { svc, sock } = await serviceWith({ WAZAP_RECALL: "local", WAZAP_EMBED_URL: stub.url });
+  try {
+    deliver(sock, [text("M1", "factura din august, plătită integral")]);
+    await svc.recallIdle();
+    const sid = `false_${PEER}_M1`;
+    // What eviction does: the raw message leaves the live store.
+    svc.store.messages.delete(sid);
+    svc.store.chatOf.delete(sid);
+    const { data } = await svc.recall("the paid invoice", undefined, 5);
+    const hit = data.hits.find((h) => h.message.message_id === sid);
+    assert.ok(hit, "the index still holds it");
+    assert.equal(hit.from_index, true);
+    assert.equal(hit.message.text, "factura din august, plătită integral");
+    assert.equal(hit.message.chat_id, PEER);
+    assert.equal(hit.message.sender.id, PEER);
+    assert.match(hit.message.timestamp, /^\d{4}-\d{2}-\d{2}T/);
+  } finally {
+    await svc.stop();
+    stub.server.close();
+  }
+});
+
+test("recall off answers RECALL_UNAVAILABLE with the fix, through the tool too", async () => {
+  const { svc } = await serviceWith({});
+  try {
+    await assert.rejects(() => svc.recall("anything", undefined, 5), (err) => {
+      assert.equal(err.code, "RECALL_UNAVAILABLE");
+      assert.match(err.fix, /wazap config recall local/);
+      return true;
+    });
+    const server = fakeServer();
+    registerTools(server, asToolSource(svc), { allowWrite: true });
+    const result = await server.tools.get("recall").handler({ query: "anything" });
+    assert.equal(result.isError, true);
+    assert.equal(result.structuredContent.error, "RECALL_UNAVAILABLE");
+    assert.match(result.structuredContent.fix, /wazap config recall local/);
+  } finally {
+    await svc.stop();
+  }
+});
+
+test("recall on but history off names the missing piece, not the feature", async () => {
+  const stub = await stubEmbedServer();
+  const { svc } = await serviceWith(
+    { WAZAP_RECALL: "local", WAZAP_EMBED_URL: stub.url },
+    { persistHistory: false }
+  );
+  try {
+    await assert.rejects(() => svc.recall("x", undefined, 5), (err) => {
+      assert.equal(err.code, "RECALL_UNAVAILABLE");
+      assert.match(err.fix, /WAZAP_PERSIST_HISTORY/);
+      return true;
+    });
+  } finally {
+    await svc.stop();
+    stub.server.close();
+  }
+});
+
+test("a recall env wazap cannot parse answers RECALL_UNAVAILABLE, not a crash", async () => {
+  const { svc } = await serviceWith({ WAZAP_RECALL: "cloud-please" });
+  try {
+    await assert.rejects(() => svc.recall("x", undefined, 5), (err) => {
+      assert.equal(err.code, "RECALL_UNAVAILABLE");
+      assert.match(err.message, /Unknown recall mode/);
+      return true;
+    });
+  } finally {
+    await svc.stop();
+  }
+});
+
+test("the tool renders each hit with its date, score and the index-only mark", async () => {
+  const stub = await stubEmbedServer();
+  const { svc, sock } = await serviceWith({ WAZAP_RECALL: "local", WAZAP_EMBED_URL: stub.url });
+  try {
+    deliver(sock, [
+      text("M1", "ți-am trimis factura pe e-mail ieri"),
+      text("M2", "factura veche din index"),
+    ]);
+    await svc.recallIdle();
+    // M2 fell out of the live store; the index is all that still holds it.
+    svc.store.messages.delete(`false_${PEER}_M2`);
+    svc.store.chatOf.delete(`false_${PEER}_M2`);
+
+    const server = fakeServer();
+    registerTools(server, asToolSource(svc), { allowWrite: false });
+    const result = await server.tools.get("recall").handler({ query: "the invoice" });
+    assert.equal(result.isError, undefined);
+    const out = result.content[0].text;
+    assert.match(out, /# Recall results for "the invoice" \(2\)/);
+    assert.match(out, /score \d\.\d{2}/);
+    assert.match(out, /\[\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/);
+    assert.match(out, /index only/);
+    assert.match(out, /factura veche din index/);
+    assert.equal(result.structuredContent.count, 2);
+    assert.equal(result.structuredContent.index.state, "ready");
+    const evicted = result.structuredContent.hits.find((h) => h.from_index);
+    assert.equal(evicted.message.message_id, `false_${PEER}_M2`);
+    assert.equal(evicted.message.text, "factura veche din index");
+  } finally {
+    await svc.stop();
+    stub.server.close();
+  }
+});
+
+test("an over-cap message re-delivered is diffed by its stored text, not re-embedded", async () => {
+  const stub = await stubEmbedServer();
+  const { svc, sock } = await serviceWith({ WAZAP_RECALL: "local", WAZAP_EMBED_URL: stub.url });
+  try {
+    const long = `factura ${"pe e-mail ".repeat(400)}`; // ~3.6k chars, over the index cap
+    deliver(sock, [text("M1", long)]);
+    await svc.recallIdle();
+    const seenAfterFirst = stub.seen.length;
+    const sid = `false_${PEER}_M1`;
+    assert.ok(svc.recallStore.record(sid).text.length < long.length, "the index keeps the capped text");
+    // A reconnect or history re-sync delivers the same raw again.
+    deliver(sock, [text("M1", long)]);
+    await svc.recallIdle();
+    assert.equal(stub.seen.length, seenAfterFirst, "same capped text is not fresh work");
+    assert.equal(svc.recallStore.count, 1);
+  } finally {
+    await svc.stop();
+    stub.server.close();
+  }
+});
+
+test("a bad since is INVALID_ID, same as search_messages", async () => {
+  const stub = await stubEmbedServer();
+  const { svc } = await serviceWith({ WAZAP_RECALL: "local", WAZAP_EMBED_URL: stub.url });
+  try {
+    const server = fakeServer();
+    registerTools(server, asToolSource(svc), { allowWrite: true });
+    const result = await server.tools.get("recall").handler({ query: "x", since: "last Tuesdayish" });
+    assert.equal(result.isError, true);
+    assert.equal(result.structuredContent.error, "INVALID_ID");
+  } finally {
+    await svc.stop();
+    stub.server.close();
+  }
+});
