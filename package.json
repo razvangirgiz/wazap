@@ -44,7 +44,8 @@
     "icon": "node scripts/make-icon.mjs",
     "context:build": "node scripts/build-context.mjs",
     "lint": "eslint .",
-    "check": "node scripts/check.mjs"
+    "check": "node scripts/check.mjs",
+    "hooks:install": "git config core.hooksPath scripts/git-hooks && echo 'pre-push hook active (scripts/git-hooks)'"
   },
   "engines": {
     "node": ">=20"

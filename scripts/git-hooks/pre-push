@@ -1,0 +1,11 @@
+#!/bin/sh
+# The fast part of `npm run check` before a push leaves the machine.
+# Skip consciously: `git push --no-verify` or `SKIP_GATE=1 git push`.
+if [ "$SKIP_GATE" = "1" ]; then
+  echo "pre-push: SKIP_GATE=1, gate skipped" >&2
+  exit 0
+fi
+set -e
+npm run lint
+npm run typecheck
+npm test

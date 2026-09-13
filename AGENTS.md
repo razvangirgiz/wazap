@@ -26,6 +26,7 @@ user.
   `test/`, `scripts/`; Prettier-compatible via `eslint-config-prettier`.
 - `npm run check` — the local gate: lint → typecheck → test (which builds).
   Green from a clean tree before you push.
+- `npm run hooks:install` — installs the pre-push hook; once per clone.
 
 ## The gate and the hook
 
@@ -34,15 +35,13 @@ plus lint. The one CI step you cannot run in place is `npm ci`, because it
 wipes `node_modules`; `check` assumes a working install and CI proves the
 clean-install path.
 
-A pre-push hook runs the fast part of the gate (lint, typecheck, test). Hooks
-do not travel with clones, so install it once per clone:
+A pre-push hook (`scripts/git-hooks/pre-push`) runs the fast part of the gate:
+lint, typecheck, test. `npm run hooks:install` points `core.hooksPath` at that
+directory — run it once per clone.
 
-```bash
-npm run hooks:install
-```
-
-Skip it consciously when you must: `git push --no-verify`. Skipping to move
-faster on a broken tree just moves the red to CI.
+Skip it consciously when you must: `git push --no-verify` or
+`SKIP_GATE=1 git push`. Skipping to move faster on a broken tree just moves the
+red to CI.
 
 ## Commit style
 
