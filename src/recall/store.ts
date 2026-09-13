@@ -21,7 +21,7 @@ import type { EmbedModelSpec } from "./models.js";
 import type { RankedHit, RecallItem, RecallQuery, RecallRecord } from "./types.js";
 
 /** viewText can run long; a bounded text keeps meta.jsonl honest on big histories. */
-const TEXT_CAP = 2048;
+export const TEXT_CAP = 2048;
 /** Rewrite meta+vectors when more than this share of rows is dead. */
 const COMPACT_DEAD_RATIO = 0.3;
 const STATE_VERSION = 1;
@@ -296,14 +296,6 @@ export class RecallStore {
 
   /** Tombstone sids — deleted or retracted messages must leave the index. */
   remove(sids: string[]): Promise<void> {
-    return this.tombstone(sids);
-  }
-
-  /** Every live record of one chat — story pruning removes them all. */
-  removeJid(jid: string): Promise<void> {
-    const sids = [...this.live.values()]
-      .filter((record) => record.jid === jid)
-      .map((record) => record.sid);
     return this.tombstone(sids);
   }
 

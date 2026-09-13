@@ -9,7 +9,7 @@ export {
 } from "./models.js";
 export { readRecallSettings } from "./settings.js";
 export { RecallQueue, type RecallOp } from "./queue.js";
-export { RecallStore } from "./store.js";
+export { RecallStore, TEXT_CAP as RECALL_TEXT_CAP } from "./store.js";
 export type {
   EmbedModelAlias,
   RankedHit,

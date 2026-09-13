@@ -428,6 +428,27 @@ test("the tool renders each hit with its date, score and the index-only mark", a
   }
 });
 
+test("an over-cap message re-delivered is diffed by its stored text, not re-embedded", async () => {
+  const stub = await stubEmbedServer();
+  const { svc, sock } = await serviceWith({ WAZAP_RECALL: "local", WAZAP_EMBED_URL: stub.url });
+  try {
+    const long = `factura ${"pe e-mail ".repeat(400)}`; // ~3.6k chars, over the index cap
+    deliver(sock, [text("M1", long)]);
+    await svc.recallIdle();
+    const seenAfterFirst = stub.seen.length;
+    const sid = `false_${PEER}_M1`;
+    assert.ok(svc.recallStore.record(sid).text.length < long.length, "the index keeps the capped text");
+    // A reconnect or history re-sync delivers the same raw again.
+    deliver(sock, [text("M1", long)]);
+    await svc.recallIdle();
+    assert.equal(stub.seen.length, seenAfterFirst, "same capped text is not fresh work");
+    assert.equal(svc.recallStore.count, 1);
+  } finally {
+    await svc.stop();
+    stub.server.close();
+  }
+});
+
 test("a bad since is INVALID_ID, same as search_messages", async () => {
   const stub = await stubEmbedServer();
   const { svc } = await serviceWith({ WAZAP_RECALL: "local", WAZAP_EMBED_URL: stub.url });

@@ -73,6 +73,7 @@ import {
   EMBED_MODELS,
   EmbedEngine,
   embedReady,
+  RECALL_TEXT_CAP,
   RecallQueue,
   RecallStore,
   readRecallSettings,
@@ -1463,9 +1464,13 @@ export class WhatsAppService implements WhatsAppApi {
     const sid = messageIdFor(raw.key, jid);
     const text = searchableText(raw, transcript ?? this.store.transcripts.get(sid));
     if (text !== null) {
+      // Capped here, not only in the store, so the feed diff compares the text
+      // the index would actually keep — an over-cap message is not fresh work
+      // on every boot.
+      const capped = text.slice(0, RECALL_TEXT_CAP);
       ops.push({
         sid,
-        item: { sid, jid, ts: messageTimestampMs(raw), sender: this.recallSender(raw, jid), type: messageType(raw), text },
+        item: { sid, jid, ts: messageTimestampMs(raw), sender: this.recallSender(raw, jid), type: messageType(raw), text: capped },
       });
     }
     return ops;
