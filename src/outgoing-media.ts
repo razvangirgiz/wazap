@@ -8,6 +8,7 @@ import { readFile, stat } from "node:fs/promises";
 import type { AnyMessageContent } from "baileys";
 import { WazapError } from "./errors.js";
 import { gifToMp4 } from "./gif.js";
+import { publicMedia, type MediaNetwork } from "./safe-media.js";
 import type { MediaSource } from "./wa-types.js";
 
 const MAX_MEDIA_BYTES = 100 * 1024 * 1024;
@@ -47,37 +48,31 @@ export function describe(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
 
-export async function loadMedia(source: MediaSource, maxBytes = MAX_MEDIA_BYTES): Promise<LoadedMedia> {
+export async function loadMedia(
+  source: MediaSource,
+  maxBytes = MAX_MEDIA_BYTES,
+  io: Partial<MediaNetwork> = {}
+): Promise<LoadedMedia> {
   await assertMediaSource(source, maxBytes);
   if (source.file_path) {
     const path = source.file_path;
     return { buffer: await readFile(path), mimetype: guessMime(path), filename: basename(path) };
   }
 
-  const url = source.url!;
-  let response: Response;
-  try {
-    response = await fetch(url);
-  } catch (err) {
-    throw new WazapError("URL_FETCH_FAILED", `Could not fetch ${url}: ${describe(err)}`);
-  }
-  if (!response.ok) {
-    throw new WazapError("URL_FETCH_FAILED", `Fetching ${url} returned HTTP ${response.status}.`);
-  }
-  const declared = Number.parseInt(response.headers.get("content-length") ?? "", 10);
-  if (Number.isFinite(declared)) assertMediaSize(declared, maxBytes);
-  const buffer = Buffer.from(await response.arrayBuffer());
-  assertMediaSize(buffer.length, maxBytes);
+  const result = await publicMedia(source.url!, { maxBytes, ...io });
   return {
-    buffer,
-    mimetype: response.headers.get("content-type")?.split(";")[0] ?? guessMime(url),
-    filename: basename(url.split("?")[0] ?? url),
+    buffer: result.buffer,
+    mimetype: result.mime ?? guessMime(result.url),
+    filename: basename(result.url.split("?")[0] ?? result.url),
   };
 }
 
 /** JPEG, PNG or WebP, capped at 10 MB before Baileys sees the buffer. */
-export async function loadProfilePicture(source: MediaSource): Promise<LoadedMedia> {
-  const media = await loadMedia(source, PROFILE_PICTURE_MAX_BYTES);
+export async function loadProfilePicture(
+  source: MediaSource,
+  io: Partial<MediaNetwork> = {}
+): Promise<LoadedMedia> {
+  const media = await loadMedia(source, PROFILE_PICTURE_MAX_BYTES, io);
   if (!PROFILE_PICTURE_MIMES.has(media.mimetype)) {
     throw new WazapError(
       "INVALID_IMAGE",

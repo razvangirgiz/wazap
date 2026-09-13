@@ -16,6 +16,7 @@ export type ErrorCode =
   | "NOT_ADMIN"
   | "GROUP_ANNOUNCEMENT_ONLY"
   | "MEDIA_UNAVAILABLE"
+  | "MEDIA_ACCESS_DENIED"
   | "FILE_NOT_FOUND"
   | "FILE_TOO_LARGE"
   | "INVALID_IMAGE"
@@ -75,6 +76,8 @@ export const ERROR_GUIDE: Record<ErrorCode, string> = {
   GROUP_ANNOUNCEMENT_ONLY: "Only admins may post in that group. Do not retry.",
   MEDIA_UNAVAILABLE:
     "The media expired on WhatsApp's servers or was never synced. Do not retry; ask the sender to resend.",
+  MEDIA_ACCESS_DENIED:
+    "The URL is not a public http(s) address, or resolves to a private or internal one. Pass a public URL or download the file and use file_path.",
   FILE_NOT_FOUND: "The local path does not exist on the machine running wazap. Check the path with the user.",
   FILE_TOO_LARGE:
     "The file is too large. Chat media may be 100 MB; a profile picture may be 10 MB. Send a smaller file.",
