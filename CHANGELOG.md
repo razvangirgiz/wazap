@@ -1,5 +1,27 @@
 # Changelog
 
+## 0.18.0
+### Added
+
+- **Local semantic recall ("living memory").** A new read tool, `recall`,
+  searches the whole indexed WhatsApp history by meaning rather than exact
+  words — a paraphrase or another language still hits, and it keeps finding
+  messages too old for `search_messages` to see. Off by default: turn it on
+  with `wazap config recall local`, install llama.cpp
+  (`brew install llama.cpp`) and fetch the model with `wazap embed download`.
+  Embedding runs on-device — a `llama-server` sidecar bound to loopback — and
+  the index lives per account under `accounts/<id>/recall/` with history's
+  permissions (0700/0600). Hits rank by similarity scaled by recency and each
+  carries its date; one that fell out of the live store is marked "index
+  only" and answers from the index's own copy. `chat_id`, `since`, `until`
+  and `from` narrow a search the way they narrow `search_messages`. Recall
+  requires `persistHistory` — the index never outlives its source — and
+  deletes, edits, revokes and expired stories leave it. `get_status` reports
+  the index as `off`, `indexing`, `ready` or `degraded`; `wazap doctor`
+  checks the binary and the model file. Knobs: `WAZAP_RECALL`,
+  `WAZAP_EMBED_MODEL` (`embeddinggemma-300m` default, `e5-base-multilingual`
+  fallback for older llama.cpp), `WAZAP_EMBED_BIN`, `WAZAP_RECALL_MAX`.
+
 ## 0.17.0
 ### Added
 
