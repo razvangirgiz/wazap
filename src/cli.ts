@@ -17,7 +17,7 @@ import { connectNext, whereInstalled, type Install } from "./connect.js";
 import { decideRole, readDaemon, removeDaemon, writeDaemon } from "./daemon.js";
 import { DEPS, ensureDeps } from "./deps.js";
 import { checkLine, checkLines, runChecks, type Check } from "./doctor.js";
-import { RELINK_FIX, WazapError, asWazapError } from "./errors.js";
+import { WazapError, asWazapError } from "./errors.js";
 import { normalizePhone } from "./ids.js";
 import { lockHolder, releaseLock, writeLock } from "./lock.js";
 import { log, logError, say } from "./logger.js";
@@ -60,16 +60,7 @@ import {
   warn,
   type Spinner,
 } from "./ui.js";
-import {
-  loginWizardSteps,
-  maybeWizard,
-  wizDim,
-  wizFail,
-  wizInfo,
-  wizOk,
-  wizWarn,
-  type Wizard,
-} from "./wizard.js";
+import { loginWizardSteps, maybeWizard, wizDim, wizFail, wizInfo, wizOk, wizWarn, type Wizard } from "./wizard.js";
 import type { ConnectionStatus } from "./wa-types.js";
 import { WhatsAppService } from "./whatsapp.js";
 
@@ -177,7 +168,9 @@ export async function runStatus(config: Config): Promise<StatusReport> {
 /** Today's phrasing, kept verbatim so pipes and log captures keep parsing. */
 function plainStatus(report: StatusReport): string[] {
   const lines = [`data dir: ${report.data_dir}`];
-  const credsNote = report.credentials_readable ? "" : " (credentials unreadable — run `wazap logout` then `wazap login`)";
+  const credsNote = report.credentials_readable
+    ? ""
+    : " (credentials unreadable — run `wazap logout` then `wazap login`)";
   lines.push(`linked: ${report.linked ? "yes" : "no"}${credsNote}`);
   if (report.account) lines.push(`account: ${describeAccount(report.account)}`);
   if (report.accounts.length > 1) {
@@ -193,7 +186,7 @@ function plainStatus(report: StatusReport): string[] {
     `server: ${serverState(report)}`,
     "",
     "checks:",
-    ...report.checks.map(checkLine),
+    ...report.checks.map(checkLine)
   );
   return lines;
 }
@@ -231,7 +224,7 @@ function richStatus(report: StatusReport): string[] {
       ? report.accounts.map((entry) =>
           entry.default
             ? row("accounts", `${describeStatusAccount(entry)}  (default)`)
-            : row("", describeStatusAccount(entry)),
+            : row("", describeStatusAccount(entry))
         )
       : []),
     row("server", serverState(report)),
@@ -295,7 +288,7 @@ export async function runLiveProbe(config: Config): Promise<LiveReport> {
     throw new WazapError(
       "WHATSAPP_ERROR",
       `A server (pid ${running}) already owns this session.`,
-      "use get_status through your client, or wazap status",
+      "use get_status through your client, or wazap status"
     );
   }
 
@@ -368,7 +361,7 @@ export async function runContacts(config: Config): Promise<void> {
         ? ok(`${result.named_after} contacts have a name (was ${result.named_before})`)
         : result.named_after > 0
           ? ok(`Already up to date: ${result.named_after} contacts have a name`)
-          : warn("WhatsApp sent no names at all. The phone has no saved contacts for these people."),
+          : warn("WhatsApp sent no names at all. The phone has no saved contacts for these people.")
     );
   } catch (err) {
     const failure = asWazapError(err);
@@ -403,7 +396,7 @@ export async function runTranscribe(config: Config): Promise<void> {
   throw new WazapError(
     "INVALID_ID",
     `Cannot run \`wazap transcribe ${config.args.join(" ")}\`.`,
-    "Run `wazap transcribe download` or `wazap transcribe test <audio file>`",
+    "Run `wazap transcribe download` or `wazap transcribe test <audio file>`"
   );
 }
 
@@ -526,7 +519,7 @@ export async function runServe(config: Config): Promise<void> {
     throw new WazapError(
       "INVALID_ID",
       "wazap serve starts every enabled account.",
-      "Drop --account; pick an account on login, logout, or status",
+      "Drop --account; pick an account on login, logout, or status"
     );
   }
 
@@ -705,7 +698,7 @@ export async function runLogin(config: Config): Promise<void> {
 export async function linkAndSync(
   config: Config,
   announce: (title: string) => void = () => {},
-  w: Wizard | null = null,
+  w: Wizard | null = null
 ): Promise<void> {
   const p = paths(config.dataDir);
   const selected = resolveAccount(config.dataDir, config.accountId);
@@ -745,7 +738,10 @@ export async function linkAndSync(
 
     let account: LinkedAccount;
     try {
-      account = phone === null ? await linkByQr(selected.paths, waiting, w) : await linkByCode(selected.paths.authDir, phone, waiting, w);
+      account =
+        phone === null
+          ? await linkByQr(selected.paths, waiting, w)
+          : await linkByCode(selected.paths.authDir, phone, waiting, w);
     } catch (err) {
       waiting.stop();
       throw err;
@@ -789,7 +785,7 @@ async function linkByCode(
   authDir: string,
   phone: string,
   waiting: Countdown,
-  w: Wizard | null,
+  w: Wizard | null
 ): Promise<LinkedAccount> {
   const pairing = await startPairing(authDir, phone, PAIRING_TIMEOUT_MS);
   const pretty = prettyCode(pairing.code);
@@ -857,7 +853,10 @@ export async function yieldSession(config: Config, lockFile: string, why = "pair
 
   const held = serviceHolding(config.dataDir, running);
   if (held === null) {
-    throw leftoverRefusal(config) ?? new WazapError("WHATSAPP_ERROR", `wazap is running (pid ${running}).`, leftoverFix(running));
+    throw (
+      leftoverRefusal(config) ??
+      new WazapError("WHATSAPP_ERROR", `wazap is running (pid ${running}).`, leftoverFix(running))
+    );
   }
 
   say(info(`Stopping the wazap service for ${why}`));
@@ -878,7 +877,7 @@ export async function yieldSession(config: Config, lockFile: string, why = "pair
   throw new WazapError(
     "SERVICE_ERROR",
     `The wazap service (pid ${running}) did not let go of the session.`,
-    "run `wazap service logs`",
+    "run `wazap service logs`"
   );
 }
 
@@ -902,7 +901,9 @@ async function syncAfterLink(config: Config, w: Wizard | null = null): Promise<v
       await new Promise((resolve) => setTimeout(resolve, 500));
       const counts = wa.storeCounts();
       const key = `${counts.chats}/${counts.contacts}/${counts.messages}`;
-      spin.update(`Syncing your chats…  ${counts.chats} chats, ${counts.contacts} contacts, ${counts.messages} messages`);
+      spin.update(
+        `Syncing your chats…  ${counts.chats} chats, ${counts.contacts} contacts, ${counts.messages} messages`
+      );
       if (!wa.hasHistory()) continue;
       if (key !== seen) {
         seen = key;
@@ -921,8 +922,12 @@ async function syncAfterLink(config: Config, w: Wizard | null = null): Promise<v
           ? wizOk(`Synced ${counts.chats} chats, ${counts.contacts} contacts, ${counts.messages} messages`)
           : ok(`Synced ${counts.chats} chats, ${counts.contacts} contacts, ${counts.messages} messages`)
         : w
-          ? wizWarn("No history arrived in 90s. The server keeps listening; if chats stay empty, run `wazap logout` then `wazap login`.")
-          : warn("No history arrived in 90s. The server keeps listening; if chats stay empty, run `wazap logout` then `wazap login`."),
+          ? wizWarn(
+              "No history arrived in 90s. The server keeps listening; if chats stay empty, run `wazap logout` then `wazap login`."
+            )
+          : warn(
+              "No history arrived in 90s. The server keeps listening; if chats stay empty, run `wazap logout` then `wazap login`."
+            )
     );
   }
 }

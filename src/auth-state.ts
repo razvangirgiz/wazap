@@ -31,7 +31,7 @@ function fileFor(dir: string, name: string): string {
  * has to be re-linked.
  */
 export async function useAtomicAuthState(
-  dir: string,
+  dir: string
 ): Promise<{ state: AuthenticationState; saveCreds: () => Promise<void> }> {
   await mkdir(dir, { recursive: true, mode: 0o700 });
 
@@ -40,7 +40,7 @@ export async function useAtomicAuthState(
     const next = (queues.get(path) ?? Promise.resolve()).then(task, task);
     queues.set(
       path,
-      next.catch(() => undefined),
+      next.catch(() => undefined)
     );
     return next;
   };
@@ -82,7 +82,7 @@ export async function useAtomicAuthState(
                 value = proto.Message.AppStateSyncKeyData.fromObject(value as object);
               }
               data[id] = value as SignalDataTypeMap[T];
-            }),
+            })
           );
           return data;
         },

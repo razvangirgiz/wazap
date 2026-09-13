@@ -1,6 +1,16 @@
 #!/usr/bin/env node
 import { BANNER } from "./banner.js";
-import { runAccount, runContacts, runGreet, runLogin, runLogout, runMigrate, runServe, runStatus, runTranscribe } from "./cli.js";
+import {
+  runAccount,
+  runContacts,
+  runGreet,
+  runLogin,
+  runLogout,
+  runMigrate,
+  runServe,
+  runStatus,
+  runTranscribe,
+} from "./cli.js";
 import { WAZAP_VERSION, parseCli, pickDefaultAction } from "./config.js";
 import { migrateLayout } from "./migrate.js";
 import { CLIENT_NAMES, runConnect } from "./connect.js";
@@ -98,7 +108,15 @@ async function main(): Promise<void> {
   // half-finished migrate and then fail to undo it. The other exempt commands
   // never open account state, and `service stop` is how a lock that blocks the
   // migration is released.
-  const MIGRATE_EXEMPT: ReadonlySet<string> = new Set(["migrate", "service", "connect", "skills", "expose", "update", "transcribe"]);
+  const MIGRATE_EXEMPT: ReadonlySet<string> = new Set([
+    "migrate",
+    "service",
+    "connect",
+    "skills",
+    "expose",
+    "update",
+    "transcribe",
+  ]);
   if (!MIGRATE_EXEMPT.has(config.command)) migrateLayout(config.dataDir);
   switch (config.command) {
     case "serve":

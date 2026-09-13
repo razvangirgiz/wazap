@@ -40,7 +40,7 @@ export async function runBridge(daemon: DaemonInfo, daemonFile: string): Promise
   await client.connect(
     new StreamableHTTPClientTransport(new URL(`http://127.0.0.1:${daemon.port}/mcp`), {
       requestInit: { headers: { Authorization: `Bearer ${daemon.token}` } },
-    }),
+    })
   );
 
   const caps = client.getServerCapabilities() ?? {};
@@ -52,17 +52,17 @@ export async function runBridge(daemon: DaemonInfo, daemonFile: string): Promise
     instructions: client.getInstructions(),
   });
   server.setRequestHandler(ListToolsRequestSchema, (req) =>
-    client.request({ method: "tools/list", params: req.params }, ListToolsResultSchema),
+    client.request({ method: "tools/list", params: req.params }, ListToolsResultSchema)
   );
   server.setRequestHandler(CallToolRequestSchema, (req) =>
-    client.request({ method: "tools/call", params: req.params }, CallToolResultSchema),
+    client.request({ method: "tools/call", params: req.params }, CallToolResultSchema)
   );
   if (caps.prompts) {
     server.setRequestHandler(ListPromptsRequestSchema, (req) =>
-      client.request({ method: "prompts/list", params: req.params }, ListPromptsResultSchema),
+      client.request({ method: "prompts/list", params: req.params }, ListPromptsResultSchema)
     );
     server.setRequestHandler(GetPromptRequestSchema, (req) =>
-      client.request({ method: "prompts/get", params: req.params }, GetPromptResultSchema),
+      client.request({ method: "prompts/get", params: req.params }, GetPromptResultSchema)
     );
   }
 

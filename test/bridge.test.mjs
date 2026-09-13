@@ -138,10 +138,14 @@ test("the bridge exits when the session holder dies, and the next start owns the
     assert.equal(b.code, 1, "the bridge must exit 1 so its client restarts it");
 
     const c = s.start();
-    const info = await waitFor(() => {
-      const current = readDaemon(s.daemonFile);
-      return current !== null && current.pid === c.child.pid ? current : null;
-    }, 15_000, "the restart to publish itself");
+    const info = await waitFor(
+      () => {
+        const current = readDaemon(s.daemonFile);
+        return current !== null && current.pid === c.child.pid ? current : null;
+      },
+      15_000,
+      "the restart to publish itself"
+    );
     assert.equal(info.pid, c.child.pid);
   } finally {
     await s.close();
@@ -158,7 +162,7 @@ test("a lock with no sidecar behind it is refused rather than waited on forever"
     assert.equal(b.code, 2);
     assert.match(
       b.stderr.join(""),
-      new RegExp(`wazap is running \\(pid ${process.pid}\\) but is not sharing its session \\(older version\\?\\)`),
+      new RegExp(`wazap is running \\(pid ${process.pid}\\) but is not sharing its session \\(older version\\?\\)`)
     );
   } finally {
     await s.close();
@@ -177,10 +181,8 @@ test("WAZAP_NO_SHARE asks for a session of its own, so it is refused", async () 
     assert.ok(
       b.stderr
         .join("")
-        .includes(
-          `wazap is already running (pid ${a.child.pid}) using ${s.dataDir}. Stop it first or use --data-dir.`,
-        ),
-      b.stderr.join(""),
+        .includes(`wazap is already running (pid ${a.child.pid}) using ${s.dataDir}. Stop it first or use --data-dir.`),
+      b.stderr.join("")
     );
   } finally {
     await s.close();
@@ -199,10 +201,8 @@ test("--http asks for an HTTP server, not a bridge, so it is refused", async () 
     assert.ok(
       b.stderr
         .join("")
-        .includes(
-          `wazap is already running (pid ${a.child.pid}) using ${s.dataDir}. Stop it first or use --data-dir.`,
-        ),
-      b.stderr.join(""),
+        .includes(`wazap is already running (pid ${a.child.pid}) using ${s.dataDir}. Stop it first or use --data-dir.`),
+      b.stderr.join("")
     );
   } finally {
     await s.close();

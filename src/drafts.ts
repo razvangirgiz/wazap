@@ -55,7 +55,7 @@ export class DraftStore {
   constructor(
     private readonly now: () => number = Date.now,
     private readonly ttlMs: number = DRAFT_TTL_MS,
-    private readonly cap: number = DRAFT_CAP,
+    private readonly cap: number = DRAFT_CAP
   ) {}
 
   get size(): number {
@@ -81,11 +81,19 @@ export class DraftStore {
   take(id: string): Draft {
     const draft = this.drafts.get(id);
     if (draft === undefined) {
-      throw new WazapError("DRAFT_NOT_FOUND", `No draft ${id}.`, "Call send_message (or send_media / send_poll / send_location / forward_message) again to draft, then confirm_send");
+      throw new WazapError(
+        "DRAFT_NOT_FOUND",
+        `No draft ${id}.`,
+        "Call send_message (or send_media / send_poll / send_location / forward_message) again to draft, then confirm_send"
+      );
     }
     this.drafts.delete(id);
     if (draft.expiresAt <= this.now()) {
-      throw new WazapError("DRAFT_EXPIRED", `Draft ${id} expired.`, "Call the send tool again to draft, show the new preview, then confirm_send");
+      throw new WazapError(
+        "DRAFT_EXPIRED",
+        `Draft ${id} expired.`,
+        "Call the send tool again to draft, show the new preview, then confirm_send"
+      );
     }
     return draft;
   }
@@ -191,6 +199,10 @@ function mediaLabel(payload: Extract<DraftPayload, { kind: "media" }>): string {
 function formatNumber(digits: string): string {
   const raw = digits.startsWith("+") ? digits.slice(1) : digits;
   if (!/^\d+$/.test(raw) || raw.length < 4) return digits.startsWith("+") ? digits : `+${digits}`;
-  const rest = raw.slice(2).match(/.{1,3}/g)?.join(" ") ?? raw.slice(2);
+  const rest =
+    raw
+      .slice(2)
+      .match(/.{1,3}/g)
+      ?.join(" ") ?? raw.slice(2);
   return `+${raw.slice(0, 2)} ${rest}`;
 }

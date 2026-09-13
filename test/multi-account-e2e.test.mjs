@@ -83,8 +83,10 @@ test("migrate, two accounts, list_accounts, get_status, send by chat, AMBIGUOUS_
   assert.equal(added.code, 0, added.stderr);
   assert.equal(existsSync(accountPaths(dir, "work").root), true);
   assert.deepEqual(
-    AccountRegistry.load(dir).all().map((account) => account.id),
-    ["default", "work"],
+    AccountRegistry.load(dir)
+      .all()
+      .map((account) => account.id),
+    ["default", "work"]
   );
 
   const config = offlineConfig("wazap-multi-e2e-hub-", { dataDir: dir, readOnly: false, rateLimitPerMinute: 20 });
@@ -105,7 +107,7 @@ test("migrate, two accounts, list_accounts, get_status, send by chat, AMBIGUOUS_
   assert.equal(listed.structuredContent.count, 2);
   assert.deepEqual(
     listed.structuredContent.accounts.map((row) => row.id),
-    ["default", "work"],
+    ["default", "work"]
   );
   assert.equal(listed.structuredContent.accounts[1].name, "Work");
 
@@ -113,7 +115,7 @@ test("migrate, two accounts, list_accounts, get_status, send by chat, AMBIGUOUS_
   assert.equal(status.structuredContent.account_id, "default");
   assert.deepEqual(
     status.structuredContent.accounts.map((row) => row.id),
-    ["default", "work"],
+    ["default", "work"]
   );
   assert.equal(status.structuredContent.accounts[0].status, "connected");
   assert.equal(status.structuredContent.accounts[1].status, "connected");

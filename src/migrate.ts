@@ -59,7 +59,7 @@ function refuseWhileRunning(dataDir: string): void {
   throw new WazapError(
     "WHATSAPP_ERROR",
     `wazap is running (pid ${running}) on the old data layout.`,
-    `stop it first (\`wazap service stop\` if it is the background service, otherwise \`kill ${running}\`), then run this again`,
+    `stop it first (\`wazap service stop\` if it is the background service, otherwise \`kill ${running}\`), then run this again`
   );
 }
 
@@ -114,10 +114,7 @@ function writeManifest(file: string, manifest: MigrationManifest, dataDir: strin
 
 function refuseLink(path: string, dataDir: string): void {
   if (isLink(path)) {
-    throw migrateFail(
-      dataDir,
-      `Refusing to move ${path}: the layout migrator does not follow or write symlinks.`,
-    );
+    throw migrateFail(dataDir, `Refusing to move ${path}: the layout migrator does not follow or write symlinks.`);
   }
 }
 
@@ -220,7 +217,7 @@ export function rollbackMigration(dataDir: string): MigrationManifest {
     throw new WazapError(
       "INVALID_ID",
       "Cannot roll back: more than one account exists.",
-      "Remove extra accounts first, then run `wazap migrate rollback`",
+      "Remove extra accounts first, then run `wazap migrate rollback`"
     );
   }
 

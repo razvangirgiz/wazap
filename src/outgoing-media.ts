@@ -5,7 +5,6 @@
  */
 import { randomUUID } from "node:crypto";
 import { readFile, stat } from "node:fs/promises";
-import { isAbsolute } from "node:path";
 import type { AnyMessageContent } from "baileys";
 import { WazapError } from "./errors.js";
 import { gifToMp4 } from "./gif.js";
@@ -83,7 +82,7 @@ export async function loadProfilePicture(source: MediaSource): Promise<LoadedMed
     throw new WazapError(
       "INVALID_IMAGE",
       `A profile picture must be a JPEG, PNG or WebP, not ${media.mimetype}.`,
-      "Pass a .jpg, .png or .webp via file_path or url",
+      "Pass a .jpg, .png or .webp via file_path or url"
     );
   }
   return media;
@@ -93,7 +92,7 @@ function assertMediaSize(size: number, maxBytes: number): void {
   if (size <= maxBytes) return;
   throw new WazapError(
     "FILE_TOO_LARGE",
-    `The file is ${Math.round(size / 1_048_576)} MB; the limit is ${Math.round(maxBytes / 1_048_576)} MB.`,
+    `The file is ${Math.round(size / 1_048_576)} MB; the limit is ${Math.round(maxBytes / 1_048_576)} MB.`
   );
 }
 
@@ -112,13 +111,13 @@ export async function asGifMedia(media: LoadedMedia, asGif: boolean): Promise<Lo
   throw new WazapError(
     "MEDIA_UNAVAILABLE",
     `as_gif needs a .gif or a video, not ${media.mimetype}.`,
-    "Pass a .gif or an mp4, or drop as_gif",
+    "Pass a .gif or an mp4, or drop as_gif"
   );
 }
 
 export function mediaContent(
   media: LoadedMedia,
-  opts: { caption?: string; asDocument: boolean; asVoice: boolean; asGif: boolean },
+  opts: { caption?: string; asDocument: boolean; asVoice: boolean; asGif: boolean }
 ): AnyMessageContent {
   const { buffer, mimetype, filename } = media;
   if (opts.asVoice) return { audio: buffer, mimetype: "audio/ogg; codecs=opus", ptt: true };
@@ -152,4 +151,3 @@ function guessMime(path: string): string {
   const ext = path.slice(path.lastIndexOf(".") + 1).toLowerCase();
   return MIME_BY_EXTENSION[ext] ?? "application/octet-stream";
 }
-

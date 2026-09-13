@@ -136,11 +136,9 @@ export function skillInstructions(skills: readonly Skill[]): string {
 /** The same workflows a skill-aware harness reads off disk, for every client that has no skills directory. */
 export function registerSkillPrompts(server: McpServer, skills: readonly Skill[]): void {
   for (const skill of skills) {
-    server.registerPrompt(
-      skill.name,
-      { title: skillTitle(skill), description: skill.description },
-      async () => ({ messages: [{ role: "user" as const, content: { type: "text" as const, text: skill.body } }] }),
-    );
+    server.registerPrompt(skill.name, { title: skillTitle(skill), description: skill.description }, async () => ({
+      messages: [{ role: "user" as const, content: { type: "text" as const, text: skill.body } }],
+    }));
   }
 }
 
@@ -164,7 +162,7 @@ export function installSkills(target: SkillTarget, dryRun: boolean, source: stri
     throw new WazapError(
       "FILE_NOT_FOUND",
       "This wazap install ships no skills/ directory.",
-      "Upgrade with `npm i -g wazap-mcp@latest`, or run this from a checkout.",
+      "Upgrade with `npm i -g wazap-mcp@latest`, or run this from a checkout."
     );
   }
 
@@ -191,14 +189,19 @@ export function skillState(target: SkillTarget): SkillState {
   for (const skill of loadSkills()) {
     const installed = join(dir, skill.name, "SKILL.md");
     if (!existsSync(installed)) return "missing";
-    if (readFileSync(installed, "utf8") !== readFileSync(join(packaged, skill.name, "SKILL.md"), "utf8")) state = "stale";
+    if (readFileSync(installed, "utf8") !== readFileSync(join(packaged, skill.name, "SKILL.md"), "utf8"))
+      state = "stale";
   }
   return state;
 }
 
 export function runSkills(config: Config): void {
   if (config.args[0] !== "install") {
-    throw new WazapError("INVALID_ID", `Unknown skills command "${config.args[0]}".`, "Run `wazap skills install <harness>`");
+    throw new WazapError(
+      "INVALID_ID",
+      `Unknown skills command "${config.args[0]}".`,
+      "Run `wazap skills install <harness>`"
+    );
   }
 
   const named = config.args[1];
@@ -207,7 +210,7 @@ export function runSkills(config: Config): void {
     throw new WazapError(
       "INVALID_ID",
       "No skill-aware harness found on this machine.",
-      `Pick one of: ${SKILL_TARGET_NAMES}`,
+      `Pick one of: ${SKILL_TARGET_NAMES}`
     );
   }
 

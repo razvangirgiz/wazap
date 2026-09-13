@@ -117,7 +117,11 @@ const RULES: Partial<Record<keyof WAMessageContent, Rule>> = {
   extendedTextMessage: { type: "text", tag: "[text]", text: (m) => m.extendedTextMessage?.text },
   imageMessage: { type: "image", tag: "[image]", caption: (m) => m.imageMessage?.caption },
   // A GIF on WhatsApp is an mp4 with a flag; the reader deserves the word.
-  videoMessage: { type: "video", tag: (m) => (m.videoMessage?.gifPlayback ? "[gif]" : "[video]"), caption: (m) => m.videoMessage?.caption },
+  videoMessage: {
+    type: "video",
+    tag: (m) => (m.videoMessage?.gifPlayback ? "[gif]" : "[video]"),
+    caption: (m) => m.videoMessage?.caption,
+  },
   ptvMessage: { type: "video", tag: "[video]", caption: (m) => m.ptvMessage?.caption },
   audioMessage: {
     type: (m) => (m.audioMessage?.ptt ? "voice" : "audio"),
@@ -198,7 +202,12 @@ interface MediaNode {
 }
 
 /** Media whose WhatsApp envelope carries a JPEG preview of a few KB. */
-const THUMBNAIL_KEYS: ReadonlyArray<keyof WAMessageContent> = ["imageMessage", "videoMessage", "ptvMessage", "documentMessage"];
+const THUMBNAIL_KEYS: ReadonlyArray<keyof WAMessageContent> = [
+  "imageMessage",
+  "videoMessage",
+  "ptvMessage",
+  "documentMessage",
+];
 
 /** Envelopes that only wrap another message; the inner one is the real content. */
 function unwrapEnvelopes(content: WAMessageContent | null | undefined): WAMessageContent | undefined {
@@ -476,7 +485,9 @@ export function thumbnailOf(raw: WAMessage): { mime: string; base64: string } | 
 
 /** Who a message @-mentions, as the jids WhatsApp put on it (lid or phone). */
 export function mentionedJids(raw: WAMessage): string[] {
-  return (contextInfo(raw)?.mentionedJid ?? []).filter((jid): jid is string => typeof jid === "string" && jid.length > 0);
+  return (contextInfo(raw)?.mentionedJid ?? []).filter(
+    (jid): jid is string => typeof jid === "string" && jid.length > 0
+  );
 }
 
 /** The author of the message this one quotes, when it is a reply. */
@@ -591,7 +602,7 @@ export function buildMessageView(raw: WAMessage, ctx: MessageViewContext): Messa
 
 function quotedView(
   context: proto.IContextInfo,
-  ctx: MessageViewContext,
+  ctx: MessageViewContext
 ): { message_id: string; text: string; sender: string } | undefined {
   if (!context.quotedMessage || !context.stanzaId) return undefined;
   const participant = context.participant ? ctx.canonical(context.participant) : ctx.ownId;

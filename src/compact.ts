@@ -57,7 +57,13 @@ export function compactConversations(conversations: RecentConversation[]): Compa
         last.message_ids.push(m.message_id);
         continue;
       }
-      lines.push({ timestamp: m.timestamp, sender: m.sender.id, from_me: m.from_me, text: m.text, message_ids: [m.message_id] });
+      lines.push({
+        timestamp: m.timestamp,
+        sender: m.sender.id,
+        from_me: m.from_me,
+        text: m.text,
+        message_ids: [m.message_id],
+      });
       // The name rides on the line, once, for the renderer.
       (lines[lines.length - 1] as CompactLine & { name?: string }).name = m.from_me
         ? "me"
@@ -66,7 +72,14 @@ export function compactConversations(conversations: RecentConversation[]): Compa
           : m.sender.name;
     }
     if (lines.length === 0 && dropped.media === 0 && dropped.wordless === 0) continue;
-    out.push({ chat_id: c.chat_id, chat_name: c.chat_name, type: c.type, ...(c.note ? { note: c.note } : {}), lines, dropped });
+    out.push({
+      chat_id: c.chat_id,
+      chat_name: c.chat_name,
+      type: c.type,
+      ...(c.note ? { note: c.note } : {}),
+      lines,
+      dropped,
+    });
   }
   return out;
 }
@@ -81,7 +94,7 @@ export function renderCompact(conversations: CompactConversation[], hours: numbe
       c.dropped.wordless > 0 ? `${c.dropped.wordless} wordless` : null,
     ].filter(Boolean);
     lines.push(
-      `## ${c.chat_name}${c.type === "group" ? " [group]" : ""}${c.note ? ` · ${c.note}` : ""} — \`${c.chat_id}\`${left.length ? ` (left out: ${left.join(", ")})` : ""}`,
+      `## ${c.chat_name}${c.type === "group" ? " [group]" : ""}${c.note ? ` · ${c.note}` : ""} — \`${c.chat_id}\`${left.length ? ` (left out: ${left.join(", ")})` : ""}`
     );
     for (const l of c.lines) {
       const stamp = l.timestamp.slice(5, 16).replace("T", " ");

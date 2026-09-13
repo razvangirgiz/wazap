@@ -4,9 +4,16 @@ const PHONE_EXAMPLE = "Use international format, e.g. +15550100";
 
 /** Digits of a phone number in international format, or INVALID_PHONE. */
 export function normalizePhone(input: string): string {
-  const digits = input.trim().replace(/^\+/, "").replace(/[\s\-().]/g, "");
+  const digits = input
+    .trim()
+    .replace(/^\+/, "")
+    .replace(/[\s\-().]/g, "");
   if (!/^\d+$/.test(digits) || digits.startsWith("0") || digits.length < 8 || digits.length > 15) {
-    throw new WazapError("INVALID_PHONE", `"${input.trim()}" is not a phone number in international format.`, PHONE_EXAMPLE);
+    throw new WazapError(
+      "INVALID_PHONE",
+      `"${input.trim()}" is not a phone number in international format.`,
+      PHONE_EXAMPLE
+    );
   }
   return digits;
 }
@@ -75,7 +82,7 @@ export function resolveChatId(input: string, lidToPn?: (lid: string) => string |
   throw new WazapError(
     "INVALID_ID",
     `"${trimmed}" is not a WhatsApp id.`,
-    "Expected a phone number, <digits>@s.whatsapp.net or <id>@g.us",
+    "Expected a phone number, <digits>@s.whatsapp.net or <id>@g.us"
   );
 }
 

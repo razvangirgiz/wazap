@@ -156,7 +156,7 @@ const PATH_EXTENSIONS = process.platform === "win32" ? [".cmd", ".exe", ""] : ["
 export function commandPath(
   name: string,
   pathEnv: string = process.env.PATH ?? "",
-  exists: (p: string) => boolean = existsSync,
+  exists: (p: string) => boolean = existsSync
 ): string | null {
   for (const dir of pathEnv.split(delimiter).filter(Boolean)) {
     for (const ext of PATH_EXTENSIONS) {
@@ -170,7 +170,7 @@ export function commandPath(
 export function commandOnPath(
   name: string,
   pathEnv: string = process.env.PATH ?? "",
-  exists: (p: string) => boolean = existsSync,
+  exists: (p: string) => boolean = existsSync
 ): boolean {
   return commandPath(name, pathEnv, exists) !== null;
 }
@@ -185,7 +185,7 @@ export type Install = { kind: "global" | "checkout" | "npx"; script: string };
 export function whereInstalled(
   binPath: string = process.argv[1] ?? "",
   pathEnv: string = process.env.PATH ?? "",
-  exists?: (p: string) => boolean,
+  exists?: (p: string) => boolean
 ): Install {
   const script = binPath === "" ? "" : resolve(binPath);
   if (isNpxPath(binPath)) return { kind: "npx", script };
@@ -200,7 +200,12 @@ export function installGlobally(version: string = WAZAP_VERSION, npm = "npm"): C
   const result = spawnSync(npm, ["install", "-g", `wazap-mcp@${version}`], { stdio: "inherit" });
   if (result.error !== undefined || result.status !== 0) {
     const detail = result.error === undefined ? `exit ${result.status ?? -1}` : result.error.message;
-    return { name: "install", state: "fail", detail: `npm install -g wazap-mcp@${version} failed (${detail})`, fix: GLOBAL_FIX };
+    return {
+      name: "install",
+      state: "fail",
+      detail: `npm install -g wazap-mcp@${version} failed (${detail})`,
+      fix: GLOBAL_FIX,
+    };
   }
   return { name: "install", state: "ok", detail: `wazap-mcp@${version} installed globally` };
 }
@@ -228,7 +233,7 @@ function wazapIn(dir: string, exists: (p: string) => boolean): string | null {
 export function stableWazap(
   exists: (p: string) => boolean = existsSync,
   pathEnv: string = process.env.PATH ?? "",
-  dir: string | null = globalBinDir(),
+  dir: string | null = globalBinDir()
 ): string | null {
   if (dir !== null) {
     const fromPrefix = wazapIn(dir, exists);
@@ -248,7 +253,11 @@ const QUIT_WAIT_MS = 10_000;
 const QUIT_POLL_MS = 250;
 
 /** Whether a macOS app of this name has a process right now. */
-export function appRunning(app: string, platform: NodeJS.Platform = process.platform, run: Runner = spawnSync): boolean {
+export function appRunning(
+  app: string,
+  platform: NodeJS.Platform = process.platform,
+  run: Runner = spawnSync
+): boolean {
   if (platform !== "darwin") return false;
   return run("pgrep", ["-x", app], { encoding: "utf8" }).status === 0;
 }
@@ -308,14 +317,18 @@ export function launchCheck(
   entry: McpEntry,
   pathEnv: string = GUI_PATH,
   exists?: (p: string) => boolean,
-  platform: NodeJS.Platform = process.platform,
+  platform: NodeJS.Platform = process.platform
 ): Check {
   if (!spec.gui) {
     return { name: "launch", state: "ok", detail: `${spec.describe} runs \`${entry.command}\` from your shell PATH` };
   }
   if (platform !== "darwin") return { name: "launch", state: "info", detail: "not checked on this platform" };
   if (isAbsolute(entry.command) || commandOnPath(entry.command, pathEnv, exists)) {
-    return { name: "launch", state: "ok", detail: `${spec.describe} can start \`${entry.command}\` without your shell PATH` };
+    return {
+      name: "launch",
+      state: "ok",
+      detail: `${spec.describe} can start \`${entry.command}\` without your shell PATH`,
+    };
   }
   return {
     name: "launch",
@@ -358,7 +371,11 @@ function readTextOrNull(file: string): string | null {
     return readFileSync(file, "utf8");
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code === "ENOENT") return null;
-    throw new WazapError("INVALID_ID", `${file} cannot be read.`, "Fix its permissions or move the file aside, then run this again.");
+    throw new WazapError(
+      "INVALID_ID",
+      `${file} cannot be read.`,
+      "Fix its permissions or move the file aside, then run this again."
+    );
   }
 }
 
@@ -381,10 +398,18 @@ function writeJsonEntry(spec: ClientSpec, entry: McpEntry, dryRun: boolean): voi
     try {
       parsed = JSON.parse(current);
     } catch {
-      throw new WazapError("INVALID_ID", `${file} is not valid JSON.`, "Fix the JSON or move the file aside, then run this again.");
+      throw new WazapError(
+        "INVALID_ID",
+        `${file} is not valid JSON.`,
+        "Fix the JSON or move the file aside, then run this again."
+      );
     }
     if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
-      throw new WazapError("INVALID_ID", `${file} is not a JSON object.`, "Fix the JSON or move the file aside, then run this again.");
+      throw new WazapError(
+        "INVALID_ID",
+        `${file} is not a JSON object.`,
+        "Fix the JSON or move the file aside, then run this again."
+      );
     }
     doc = parsed as Record<string, unknown>;
   }
@@ -427,7 +452,7 @@ function apply(
   content: string,
   current: string | null,
   dryRun: boolean,
-  shown: string,
+  shown: string
 ): void {
   const where = shortPath(file);
   const entry = shown.split("\n").map((line) => `  ${dim(line)}`);

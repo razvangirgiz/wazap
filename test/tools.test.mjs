@@ -192,7 +192,9 @@ test("read_messages passes types through to the service and echoes it back", asy
   };
   registerTools(server, asToolSource(wa), { allowWrite: true });
 
-  const result = await server.tools.get("read_messages").handler({ chat_id: "4072@s.whatsapp.net", limit: 20, types: ["call"] });
+  const result = await server.tools
+    .get("read_messages")
+    .handler({ chat_id: "4072@s.whatsapp.net", limit: 20, types: ["call"] });
   assert.deepEqual(calls[0], ["4072@s.whatsapp.net", 20, undefined, ["call"]]);
   assert.deepEqual(result.structuredContent.types, ["call"]);
 

@@ -39,7 +39,14 @@ test("AGENT.md ships, because `setup --agent` reads it out of the package root",
 
 test("no leftover names from the pre-wazap fork", () => {
   // WHATSAPP_ERROR is a wazap error code; the ban is on the old env var prefix.
-  const banned = [/pkgRoot/, /WHATSAPP_(?!ERROR\b)/, /MCP_AUTH_TOKEN/, /whatsapp-baileys-mcp/, /load_older_history/, /get_recent_chats/];
+  const banned = [
+    /pkgRoot/,
+    /WHATSAPP_(?!ERROR\b)/,
+    /MCP_AUTH_TOKEN/,
+    /whatsapp-baileys-mcp/,
+    /load_older_history/,
+    /get_recent_chats/,
+  ];
   const offenders = [];
   for (const file of sourceFiles(srcDir)) {
     const text = readFileSync(file, "utf8");
@@ -59,6 +66,7 @@ test("FORCE_COLOR paints piped output but never reshapes it", async () => {
   const plain = await run(process.execPath, args, { env: cleanEnv({ FORCE_COLOR: "0" }) });
   const painted = await run(process.execPath, args, { env: cleanEnv({ FORCE_COLOR: "1" }) });
 
+  // eslint-disable-next-line no-control-regex -- asserting on ANSI output
   const strip = (text) => text.replace(/\x1b\[[0-9;]*m/g, "");
   assert.equal(strip(painted.stderr), plain.stderr, "colour must not change the words or the shape");
 });
@@ -68,10 +76,13 @@ test("FORCE_COLOR does paint the surfaces that use a glyph", async () => {
   const env = cleanEnv({ FORCE_COLOR: "1" });
   const err = await run(process.execPath, [binary, "frobnicate"], { env }).then(
     () => assert.fail("an unknown command must exit non-zero"),
-    (rejected) => rejected,
+    (rejected) => rejected
   );
+  // eslint-disable-next-line no-control-regex -- asserting on ANSI output
   assert.match(err.stderr, /\x1b\[31m/, "the failure glyph should be red");
+  // eslint-disable-next-line no-control-regex -- asserting on ANSI output
   assert.match(err.stderr, /\x1b\[33m/, "the repair should be yellow");
+  // eslint-disable-next-line no-control-regex -- asserting on ANSI output
   assert.equal(err.stderr.replace(/\x1b\[[0-9;]*m/g, ""), '✗ Unknown command "frobnicate".\n  → Run `wazap --help`\n');
 });
 

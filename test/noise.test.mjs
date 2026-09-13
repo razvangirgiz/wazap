@@ -57,13 +57,13 @@ test("noise chats never reach the chat list, the digest or the store", async () 
   const chats = (await svc.listChats("all", 20)).data;
   assert.deepEqual(
     chats.map((c) => c.chat_id),
-    [REAL],
+    [REAL]
   );
 
   const digest = (await svc.getRecentMessages(24, "all")).data;
   assert.deepEqual(
     digest.map((c) => c.chat_id),
-    [REAL],
+    [REAL]
   );
   assert.equal(svc.store.byChat.has("0@s.whatsapp.net"), false, "nothing is stored for a noise jid");
 });
@@ -74,8 +74,16 @@ test("linking machinery is dropped, not shown as a message", async () => {
   sock.ev.emit("messages.upsert", {
     type: "notify",
     messages: [
-      message(ME, { protocolMessage: { type: types.HISTORY_SYNC_NOTIFICATION }, messageContextInfo: {} }, { id: "S1", fromMe: true }),
-      message(ME, { protocolMessage: { type: types.PEER_DATA_OPERATION_REQUEST_RESPONSE_MESSAGE } }, { id: "S2", fromMe: true }),
+      message(
+        ME,
+        { protocolMessage: { type: types.HISTORY_SYNC_NOTIFICATION }, messageContextInfo: {} },
+        { id: "S1", fromMe: true }
+      ),
+      message(
+        ME,
+        { protocolMessage: { type: types.PEER_DATA_OPERATION_REQUEST_RESPONSE_MESSAGE } },
+        { id: "S2", fromMe: true }
+      ),
       message(ME, { conversation: "note to self" }, { id: "S3", fromMe: true }),
     ],
   });
@@ -83,7 +91,7 @@ test("linking machinery is dropped, not shown as a message", async () => {
   const messages = (await svc.readMessages(ME, 20)).data;
   assert.deepEqual(
     messages.map((m) => m.text),
-    ["note to self"],
+    ["note to self"]
   );
 
   const digest = (await svc.getRecentMessages(24, "all")).data;
@@ -93,7 +101,10 @@ test("linking machinery is dropped, not shown as a message", async () => {
 
 test("a snapshot an older wazap wrote is cleaned on the way in", () => {
   const { svc, sock } = makeService();
-  sock.ev.emit("messages.upsert", { type: "notify", messages: [message(REAL, { conversation: "keep me" }, { id: "K1" })] });
+  sock.ev.emit("messages.upsert", {
+    type: "notify",
+    messages: [message(REAL, { conversation: "keep me" }, { id: "K1" })],
+  });
   const snapshot = JSON.parse(JSON.stringify(svc.store.serialize()));
 
   const noisy = proto.WebMessageInfo.encode({
@@ -127,19 +138,32 @@ test("system notices are typed, excluded from the digest, and returned on reques
   sock.ev.emit("messages.upsert", {
     type: "notify",
     messages: [
-      { ...message(group, undefined, { id: "G1" }), messageStubType: proto.WebMessageInfo.StubType.GROUP_PARTICIPANT_ADD },
+      {
+        ...message(group, undefined, { id: "G1" }),
+        messageStubType: proto.WebMessageInfo.StubType.GROUP_PARTICIPANT_ADD,
+      },
       message(group, { conversation: "salut" }, { id: "G2" }),
     ],
   });
 
   const read = (await svc.readMessages(group, 20)).data;
-  assert.deepEqual(read.map((m) => m.type), ["system", "text"], "read_messages shows the whole chat");
+  assert.deepEqual(
+    read.map((m) => m.type),
+    ["system", "text"],
+    "read_messages shows the whole chat"
+  );
 
   const quiet = (await svc.getRecentMessages(24, "all")).data;
-  assert.deepEqual(quiet[0].messages.map((m) => m.text), ["salut"]);
+  assert.deepEqual(
+    quiet[0].messages.map((m) => m.text),
+    ["salut"]
+  );
 
   const loud = (await svc.getRecentMessages(24, "all", true)).data;
-  assert.deepEqual(loud[0].messages.map((m) => m.type), ["system", "text"]);
+  assert.deepEqual(
+    loud[0].messages.map((m) => m.type),
+    ["system", "text"]
+  );
 });
 
 test("a chat with nothing but system notices drops out of the digest entirely", async () => {
@@ -147,7 +171,9 @@ test("a chat with nothing but system notices drops out of the digest entirely", 
   const group = "120363000000000004@g.us";
   sock.ev.emit("messages.upsert", {
     type: "notify",
-    messages: [{ ...message(group, undefined, { id: "H1" }), messageStubType: proto.WebMessageInfo.StubType.E2E_ENCRYPTED }],
+    messages: [
+      { ...message(group, undefined, { id: "H1" }), messageStubType: proto.WebMessageInfo.StubType.E2E_ENCRYPTED },
+    ],
   });
 
   assert.deepEqual((await svc.getRecentMessages(24, "all")).data, []);
@@ -163,5 +189,8 @@ test("a payload wazap does not model yet stays visible instead of hiding as syst
 
   const digest = (await svc.getRecentMessages(24, "all")).data;
   assert.equal(digest.length, 1, "an unmodelled payload must not drop out of the catch-up tool");
-  assert.deepEqual(digest[0].messages.map((m) => [m.type, m.text]), [["unknown", "[unsupported: eventMessage]"]]);
+  assert.deepEqual(
+    digest[0].messages.map((m) => [m.type, m.text]),
+    [["unknown", "[unsupported: eventMessage]"]]
+  );
 });

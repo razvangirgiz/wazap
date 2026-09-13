@@ -44,7 +44,7 @@ test("a call nobody picked up shows up in the peer's chat", async () => {
   assert.deepEqual(
     digest.map((chat) => chat.chat_id),
     [PEER],
-    "and the digest reports it like any other message",
+    "and the digest reports it like any other message"
   );
   await svc.stop();
 });
@@ -134,7 +134,7 @@ test("an ordinary message near a call is left alone", async () => {
   const messages = (await svc.readMessages(PEER, 10)).data;
   assert.deepEqual(
     messages.map((m) => m.type),
-    ["text", "call"],
+    ["text", "call"]
   );
   await svc.stop();
 });
@@ -153,7 +153,7 @@ test("a redial is a second call, not a duplicate of the first", async () => {
   assert.deepEqual(
     messages.map((m) => m.text),
     ["[missed voice call]", "[rejected voice call]"],
-    "calling back forty seconds later must not eat the call before it",
+    "calling back forty seconds later must not eat the call before it"
   );
   await svc.stop();
 });
@@ -205,13 +205,13 @@ test("types narrows a read to calls, and the limit counts the calls it kept", as
   assert.deepEqual(
     all.map((m) => m.type),
     ["text", "call", "text", "call", "text"],
-    "the unfiltered read keeps the interleaving",
+    "the unfiltered read keeps the interleaving"
   );
 
   const calls = (await svc.readMessages(PEER, 10, undefined, ["call"])).data;
   assert.deepEqual(
     calls.map((m) => m.type),
-    ["call", "call"],
+    ["call", "call"]
   );
 
   const capped = (await svc.readMessages(PEER, 2, undefined, ["call"])).data;

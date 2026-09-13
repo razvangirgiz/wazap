@@ -55,7 +55,7 @@ export function describeStatusAccount(row: StatusAccountRow): string {
 export function accountRows(config: Config): StatusAccountRow[] {
   const registry = AccountRegistry.load(config.dataDir);
   return registry.all().map((record) => {
-    let linked: LinkedAccount | null = null;
+    let linked: LinkedAccount | null;
     try {
       linked = readLinkedAccount(accountPaths(config.dataDir, record.id).authDir);
     } catch {
@@ -77,7 +77,8 @@ export async function runAccount(config: Config): Promise<void> {
   const verb = parseAccountVerb(rawVerb);
   switch (verb) {
     case "list":
-      if (id !== undefined) throw new WazapError("INVALID_ID", `Cannot run \`wazap account list ${id}\`.`, ACCOUNT_USAGE);
+      if (id !== undefined)
+        throw new WazapError("INVALID_ID", `Cannot run \`wazap account list ${id}\`.`, ACCOUNT_USAGE);
       listAccounts(config);
       return;
     case "add":
@@ -131,16 +132,12 @@ async function removeAccount(config: Config, id: string): Promise<void> {
     throw new WazapError(
       "INVALID_ID",
       `wazap is running (pid ${running}).`,
-      leftoverFix(running, serviceHolding(config.dataDir, running) !== null),
+      leftoverFix(running, serviceHolding(config.dataDir, running) !== null)
     );
   }
   if (!config.assumeYes) {
     if (process.stdin.isTTY !== true) {
-      throw new WazapError(
-        "INVALID_ID",
-        `Refusing to delete account "${id}" without --yes.`,
-        "Re-run with --yes",
-      );
+      throw new WazapError("INVALID_ID", `Refusing to delete account "${id}" without --yes.`, "Re-run with --yes");
     }
     const answer = await ask(`${brand("?")} Delete account "${id}" and its local data? [y/N] `);
     if (!/^y(es)?$/i.test(answer.trim())) {
@@ -169,11 +166,7 @@ function defaultAccount(config: Config, id: string): void {
 export function runMigrate(config: Config): void {
   const [verb] = config.args;
   if (verb !== "rollback") {
-    throw new WazapError(
-      "INVALID_ID",
-      `Cannot run \`wazap migrate ${config.args.join(" ")}\`.`,
-      MIGRATE_USAGE,
-    );
+    throw new WazapError("INVALID_ID", `Cannot run \`wazap migrate ${config.args.join(" ")}\`.`, MIGRATE_USAGE);
   }
   rollbackMigration(config.dataDir);
   say(ok("Rolled back the data-dir layout."));

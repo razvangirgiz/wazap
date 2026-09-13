@@ -387,10 +387,13 @@ test("an unknown WAZAP_WEBHOOK value is invalid rather than silently on", () => 
 });
 
 test("plain http is refused unless it points at this machine", () => {
-  assert.throws(() => requireWebhookUrl("http://example.com/hook"), (err) => {
-    assert.match(err.message, /non-https/);
-    return true;
-  });
+  assert.throws(
+    () => requireWebhookUrl("http://example.com/hook"),
+    (err) => {
+      assert.match(err.message, /non-https/);
+      return true;
+    }
+  );
   assert.equal(requireWebhookUrl("http://127.0.0.1:9/hook"), "http://127.0.0.1:9/hook");
   assert.equal(requireWebhookUrl("https://hooks.example/wazap"), "https://hooks.example/wazap");
 });
@@ -442,7 +445,7 @@ test("off delivers zero POSTs, even when a URL is set", async () => {
   await new WebhookSink({}, { post }).notify(samplePayload());
   await new WebhookSink(
     { WAZAP_WEBHOOK: "off", WAZAP_WEBHOOK_URL: "http://127.0.0.1:9/hook", WAZAP_WEBHOOK_SECRET: SECRET },
-    { post },
+    { post }
   ).notify(samplePayload());
   assert.equal(calls, 0);
 });
@@ -659,7 +662,7 @@ test("status --json carries webhook: off when it is unset", async () => {
   const report = JSON.parse(stdout);
   assert.deepEqual(
     report.checks.find((row) => row.name === "webhook"),
-    { name: "webhook", state: "info", detail: "off" },
+    { name: "webhook", state: "info", detail: "off" }
   );
 });
 
@@ -743,7 +746,7 @@ test("stub and system notices are not posted as message_received", async () => {
     const listed = await svc.readMessages(group, 10);
     assert.ok(
       listed.data.some((row) => row.type === "system"),
-      "the stub is still stored, just not posted",
+      "the stub is still stored, just not posted"
     );
   } finally {
     await svc.stop();
@@ -897,7 +900,10 @@ test("the self chat is marked is_self_chat, and timestamp is ts in UTC", async (
   const restoreEnv = saveWebhookEnv(server.url, "all");
   const { svc, sock } = connectedService(WhatsAppService, { prefix: "wazap-webhook-self-", id: ME, name: "Răzvan" });
   try {
-    sock.ev.emit("messages.upsert", { type: "notify", messages: [ownMessage("SELF", "notă pentru mine", { chat: ME })] });
+    sock.ev.emit("messages.upsert", {
+      type: "notify",
+      messages: [ownMessage("SELF", "notă pentru mine", { chat: ME })],
+    });
     await waitFor(() => received.length > 0, 3_000, "the self-chat webhook POST");
     const self = received[0];
     assert.equal(self.event, "message_sent");
@@ -907,7 +913,11 @@ test("the self chat is marked is_self_chat, and timestamp is ts in UTC", async (
     assert.equal(self.kind, "text");
     assert.equal(self.truncated, false);
     assert.match(self.timestamp, /Z$/);
-    assert.equal(Date.parse(self.timestamp), Date.parse(self.ts), "the same instant as ts, not a second look at the clock");
+    assert.equal(
+      Date.parse(self.timestamp),
+      Date.parse(self.ts),
+      "the same instant as ts, not a second look at the clock"
+    );
 
     sock.ev.emit("messages.upsert", { type: "notify", messages: [textMessage("IN", "salut")] });
     await waitFor(() => received.length > 1, 3_000, "the inbound webhook POST");
@@ -1083,7 +1093,7 @@ test("connection changes post linked, disconnected and expired, once per mapped 
 
     assert.deepEqual(
       received.map((hit) => hit.body.status),
-      ["linked", "disconnected", "expired"],
+      ["linked", "disconnected", "expired"]
     );
     assert.equal(received.length, 3, "session_corrupt is expired too, and a consumer hears that once");
     for (const hit of received) {
@@ -1137,7 +1147,7 @@ test("a connection event the consumer never received is announced by the next ch
     assert.deepEqual(
       received.map((hit) => hit.status),
       ["expired", "linked"],
-      "expired is said again, and one chain keeps the pair in the order the link moved in",
+      "expired is said again, and one chain keeps the pair in the order the link moved in"
     );
   } finally {
     await svc.stop();
@@ -1172,7 +1182,7 @@ test("a filtered connection change does not count as announced", async () => {
 
     assert.deepEqual(
       received.map((hit) => hit.status),
-      ["expired"],
+      ["expired"]
     );
   } finally {
     await svc.stop();
@@ -1301,12 +1311,14 @@ test("wazap webhook test --event posts that event, and refuses an unknown one", 
   const dir = dataDir();
   const asSent = await wazap(dir, ["webhook", "test", "--event", "message_sent"], { env: readyEnv(server.url, "all") });
   assert.equal(asSent.code, 0, asSent.stderr);
-  const asConnection = await wazap(dir, ["webhook", "test", "--event", "connection"], { env: readyEnv(server.url, "all") });
+  const asConnection = await wazap(dir, ["webhook", "test", "--event", "connection"], {
+    env: readyEnv(server.url, "all"),
+  });
   assert.equal(asConnection.code, 0, asConnection.stderr);
 
   assert.deepEqual(
     received.map((hit) => hit.event),
-    ["message_sent", "connection"],
+    ["message_sent", "connection"]
   );
   const sent = JSON.parse(received[0].body);
   assert.equal(sent.event, "message_sent");
@@ -1340,7 +1352,7 @@ test("wazap webhook test --event refuses an event the filter drops, and posts it
   assert.match(filtered.stderr, /Webhook event "message_sent" is not enabled/);
   assert.ok(
     filtered.stderr.includes("set WAZAP_WEBHOOK_EVENTS=message_received,message_sent, or all"),
-    filtered.stderr,
+    filtered.stderr
   );
   assert.equal(received.length, 0, "a filtered event must not POST");
 
@@ -1437,7 +1449,7 @@ test("config webhook off --account drops the override; the account follows the g
   assert.equal(code, 0, stderr);
   assert.match(stderr, /override removed for work/);
   const work = JSON.parse(readFileSync(join(dir, "accounts.json"), "utf8")).accounts.find(
-    (account) => account.id === "work",
+    (account) => account.id === "work"
   );
   assert.equal(work.webhook_url, undefined);
   assert.equal(work.webhook_secret, undefined);

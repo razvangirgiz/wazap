@@ -76,7 +76,7 @@ test("preview bodies cover every draft kind", () => {
       asVoice: false,
       caption: "actele",
     }),
-    `To: Ana (+40 722 123 456)\n[document] contract.pdf\n"actele"`,
+    `To: Ana (+40 722 123 456)\n[document] contract.pdf\n"actele"`
   );
   assert.equal(
     formatDraftPreview(BLOC, {
@@ -86,7 +86,7 @@ test("preview bodies cover every draft kind", () => {
       options: ["Pizza", "Pasta"],
       multiSelect: false,
     }),
-    "To: Bloc 12 (group)\n[poll] Pizza or pasta?\nPizza / Pasta",
+    "To: Bloc 12 (group)\n[poll] Pizza or pasta?\nPizza / Pasta"
   );
   assert.equal(
     formatDraftPreview(ANA, {
@@ -97,11 +97,11 @@ test("preview bodies cover every draft kind", () => {
       name: "Notar",
       address: "Str. Lunii 14",
     }),
-    "To: Ana (+40 722 123 456)\n[location] Notar\nStr. Lunii 14",
+    "To: Ana (+40 722 123 456)\n[location] Notar\nStr. Lunii 14"
   );
   assert.equal(
     formatDraftPreview(ANA, { kind: "forward", chatId: ANA.chat_id, messageId: "m1", text: "factura" }),
-    `To: Ana (+40 722 123 456)\nForward: "factura"`,
+    `To: Ana (+40 722 123 456)\nForward: "factura"`
   );
 });
 
@@ -118,7 +118,7 @@ test("draft rejects a missing local file before it touches the socket", async ()
         asDocument: false,
         asVoice: false,
       }),
-    (err) => err.code === "FILE_NOT_FOUND",
+    (err) => err.code === "FILE_NOT_FOUND"
   );
   await svc.stop();
 });
@@ -155,6 +155,9 @@ test("beginWrite spends the session write bucket", async () => {
   sock.chatModify = async () => {};
   await svc.manageChat(PEER, "pin");
   await svc.manageChat(PEER, "unpin");
-  await assert.rejects(() => svc.manageChat(PEER, "pin"), (err) => err.code === "RATE_LIMITED");
+  await assert.rejects(
+    () => svc.manageChat(PEER, "pin"),
+    (err) => err.code === "RATE_LIMITED"
+  );
   await svc.stop();
 });

@@ -93,17 +93,20 @@ test("OPENAI_API_KEY is the fallback, and WAZAP_TRANSCRIBE_API_KEY wins", () => 
   assert.equal(readTranscribeSettings({ OPENAI_API_KEY: "from-openai" }, dir).apiKey, "from-openai");
   assert.equal(
     readTranscribeSettings({ OPENAI_API_KEY: "from-openai", WAZAP_TRANSCRIBE_API_KEY: "from-wazap" }, dir).apiKey,
-    "from-wazap",
+    "from-wazap"
   );
 });
 
 test("readTranscribeSettings refuses a provider name it does not know", () => {
   const dir = scratch("settings");
-  assert.throws(() => readTranscribeSettings({ WAZAP_TRANSCRIBE: "whisper" }, dir), (err) => {
-    assert.equal(err.code, "INVALID_ID");
-    assert.match(err.fix, /local, openai or off/);
-    return true;
-  });
+  assert.throws(
+    () => readTranscribeSettings({ WAZAP_TRANSCRIBE: "whisper" }, dir),
+    (err) => {
+      assert.equal(err.code, "INVALID_ID");
+      assert.match(err.fix, /local, openai or off/);
+      return true;
+    }
+  );
 });
 
 test("readTranscribeSettings refuses a whisper model it does not know", () => {
@@ -119,7 +122,10 @@ test("a key pasted with quotes and spaces is stored bare", () => {
 
 test("trailing slashes are stripped from WAZAP_TRANSCRIBE_URL", () => {
   const dir = scratch("settings");
-  assert.equal(readTranscribeSettings({ WAZAP_TRANSCRIBE_URL: "https://llm.example/v1///" }, dir).baseUrl, "https://llm.example/v1");
+  assert.equal(
+    readTranscribeSettings({ WAZAP_TRANSCRIBE_URL: "https://llm.example/v1///" }, dir).baseUrl,
+    "https://llm.example/v1"
+  );
 });
 
 test("requireSafeUrl allows https and loopback http, and nothing else", () => {
@@ -133,11 +139,14 @@ test("requireSafeUrl allows https and loopback http, and nothing else", () => {
 
 test("readTranscribeSettings refuses a plain-http remote URL at the boundary", () => {
   const dir = scratch("settings");
-  assert.throws(() => readTranscribeSettings({ WAZAP_TRANSCRIBE_URL: "http://example.com/v1" }, dir), (err) => {
-    assert.equal(err.code, "INVALID_ID");
-    assert.match(err.message, /non-https/);
-    return true;
-  });
+  assert.throws(
+    () => readTranscribeSettings({ WAZAP_TRANSCRIBE_URL: "http://example.com/v1" }, dir),
+    (err) => {
+      assert.equal(err.code, "INVALID_ID");
+      assert.match(err.message, /non-https/);
+      return true;
+    }
+  );
 });
 
 test("maskKey shows the tail and never the key", () => {
@@ -195,7 +204,7 @@ test("downloadFile verifies, renames, and leaves no .part behind", async () => {
   const target = join(scratch("download"), "model.bin");
   const ranges = [];
   const result = await withServer(payloadHandler(ranges), (url) =>
-    downloadFile({ url: `${url}/model.bin`, path: target, sha256: PAYLOAD_SHA, bytes: PAYLOAD.length }),
+    downloadFile({ url: `${url}/model.bin`, path: target, sha256: PAYLOAD_SHA, bytes: PAYLOAD.length })
   );
   assert.deepEqual(result, { path: target, bytes: PAYLOAD.length, resumed: false, alreadyPresent: false });
   assert.deepEqual(ranges, [null]);
@@ -208,7 +217,7 @@ test("downloadFile resumes from a partial file instead of refetching it", async 
   writeFileSync(`${target}.part`, PAYLOAD.subarray(0, 2000));
   const ranges = [];
   const result = await withServer(payloadHandler(ranges), (url) =>
-    downloadFile({ url: `${url}/model.bin`, path: target, sha256: PAYLOAD_SHA, bytes: PAYLOAD.length }),
+    downloadFile({ url: `${url}/model.bin`, path: target, sha256: PAYLOAD_SHA, bytes: PAYLOAD.length })
   );
   assert.deepEqual(ranges, ["bytes=2000-"]);
   assert.equal(result.resumed, true);
@@ -222,14 +231,14 @@ test("downloadFile drops a digest mismatch instead of keeping it", async () => {
   const expected = "0".repeat(64);
   await assert.rejects(
     withServer(payloadHandler([]), (url) =>
-      downloadFile({ url: `${url}/model.bin`, path: target, sha256: expected, bytes: PAYLOAD.length }),
+      downloadFile({ url: `${url}/model.bin`, path: target, sha256: expected, bytes: PAYLOAD.length })
     ),
     (err) => {
       assert.equal(err.code, "TRANSCRIBE_FAILED");
       assert.ok(err.message.includes(PAYLOAD_SHA), err.message);
       assert.ok(err.message.includes(expected), err.message);
       return true;
-    },
+    }
   );
   assert.equal(existsSync(`${target}.part`), false);
   assert.equal(existsSync(target), false);
@@ -240,7 +249,7 @@ test("downloadFile does not hit the network when the file is already correct", a
   writeFileSync(target, PAYLOAD);
   const ranges = [];
   const result = await withServer(payloadHandler(ranges), (url) =>
-    downloadFile({ url: `${url}/model.bin`, path: target, sha256: PAYLOAD_SHA, bytes: PAYLOAD.length }),
+    downloadFile({ url: `${url}/model.bin`, path: target, sha256: PAYLOAD_SHA, bytes: PAYLOAD.length })
   );
   assert.deepEqual(result, { path: target, bytes: PAYLOAD.length, resumed: false, alreadyPresent: true });
   assert.deepEqual(ranges, []);
@@ -256,7 +265,7 @@ test("downloadFile restarts when the server ignores the Range header", async () 
       res.writeHead(200, { "content-type": "application/octet-stream" });
       res.end(PAYLOAD);
     },
-    (url) => downloadFile({ url: `${url}/model.bin`, path: target, sha256: PAYLOAD_SHA, bytes: PAYLOAD.length }),
+    (url) => downloadFile({ url: `${url}/model.bin`, path: target, sha256: PAYLOAD_SHA, bytes: PAYLOAD.length })
   );
   assert.deepEqual(ranges, ["bytes=2000-"]);
   assert.equal(result.resumed, false);
@@ -272,9 +281,9 @@ test("downloadFile drops a .part the server refuses to resume from", async () =>
         res.writeHead(416, { "content-range": `bytes */${PAYLOAD.length}` });
         res.end();
       },
-      (url) => downloadFile({ url: `${url}/model.bin`, path: target, sha256: PAYLOAD_SHA, bytes: PAYLOAD.length }),
+      (url) => downloadFile({ url: `${url}/model.bin`, path: target, sha256: PAYLOAD_SHA, bytes: PAYLOAD.length })
     ),
-    { code: "TRANSCRIBE_FAILED" },
+    { code: "TRANSCRIBE_FAILED" }
   );
   assert.equal(existsSync(`${target}.part`), false, "a 416 would repeat forever with the part still there");
 });
@@ -288,13 +297,13 @@ test("downloadFile refuses a 206 that starts at the wrong offset", async () => {
         res.writeHead(206, { "content-range": `bytes 500-${PAYLOAD.length - 1}/${PAYLOAD.length}` });
         res.end(PAYLOAD.subarray(500));
       },
-      (url) => downloadFile({ url: `${url}/model.bin`, path: target, sha256: PAYLOAD_SHA, bytes: PAYLOAD.length }),
+      (url) => downloadFile({ url: `${url}/model.bin`, path: target, sha256: PAYLOAD_SHA, bytes: PAYLOAD.length })
     ),
     (err) => {
       assert.equal(err.code, "TRANSCRIBE_FAILED");
       assert.match(err.message, /wrong offset/);
       return true;
-    },
+    }
   );
   assert.equal(existsSync(`${target}.part`), false);
 });
@@ -308,7 +317,7 @@ function audioFile() {
 function openaiSettings(url) {
   return readTranscribeSettings(
     { WAZAP_TRANSCRIBE: "openai", WAZAP_TRANSCRIBE_URL: `${url}/v1`, WAZAP_TRANSCRIBE_API_KEY: KEY },
-    scratch("openai"),
+    scratch("openai")
   );
 }
 
@@ -321,7 +330,7 @@ test("openaiProvider posts the audio and parses the transcript", async () => {
       res.writeHead(200, { "content-type": "application/json" });
       res.end(JSON.stringify({ text: "  hello   there\n", language: "en", duration: 3.7 }));
     },
-    (url) => openaiProvider.transcribe(openaiSettings(url), file, {}),
+    (url) => openaiProvider.transcribe(openaiSettings(url), file, {})
   );
 
   assert.deepEqual(transcript, { text: "hello there", language: "en", duration_seconds: 4 });
@@ -342,7 +351,7 @@ test("openaiProvider sends the language when one is configured", async () => {
       res.writeHead(200, { "content-type": "application/json" });
       res.end(JSON.stringify({ text: "salut" }));
     },
-    (url) => openaiProvider.transcribe({ ...openaiSettings(url), language: "ro" }, file, {}),
+    (url) => openaiProvider.transcribe({ ...openaiSettings(url), language: "ro" }, file, {})
   );
   assert.ok(bodies[0].includes('name="language"'));
   assert.ok(bodies[0].includes("ro"));
@@ -357,7 +366,7 @@ test("the language argument overrides the configured one", async () => {
       res.writeHead(200, { "content-type": "application/json" });
       res.end(JSON.stringify({ text: "hallo" }));
     },
-    (url) => openaiProvider.transcribe({ ...openaiSettings(url), language: "ro" }, file, { language: "de" }),
+    (url) => openaiProvider.transcribe({ ...openaiSettings(url), language: "ro" }, file, { language: "de" })
   );
   assert.ok(bodies[0].includes("de"));
   assert.equal(bodies[0].includes("\r\nro\r\n"), false);
@@ -378,7 +387,7 @@ test("openaiProvider retries a 429 once and then succeeds", async () => {
       res.writeHead(200, { "content-type": "application/json" });
       res.end(JSON.stringify({ text: "second try" }));
     },
-    (url) => openaiProvider.transcribe(openaiSettings(url), file, {}),
+    (url) => openaiProvider.transcribe(openaiSettings(url), file, {})
   );
   assert.equal(hits, 2);
   assert.deepEqual(transcript, { text: "second try" });
@@ -395,7 +404,7 @@ test("a 401 that echoes the key back never carries it outward", async () => {
         res.writeHead(401, { "content-type": "application/json" });
         res.end(JSON.stringify({ error: { message: `Incorrect API key provided: ${KEY}` } }));
       },
-      (url) => openaiProvider.transcribe(openaiSettings(url), file, {}),
+      (url) => openaiProvider.transcribe(openaiSettings(url), file, {})
     ),
     (err) => {
       assert.equal(err.code, "TRANSCRIBE_FAILED");
@@ -406,7 +415,7 @@ test("a 401 that echoes the key back never carries it outward", async () => {
       assert.equal(err.fix.includes("Z9x7"), false);
       assert.match(err.fix, /wazap config transcribe openai/);
       return true;
-    },
+    }
   );
   assert.equal(hits, 1, "a 401 must not be retried");
 });
@@ -512,6 +521,6 @@ test("the model table is pinned by file, size and digest", () => {
   assert.throws(() => modelSpec("nope"), { code: "INVALID_ID" });
   assert.equal(
     modelUrl(modelSpec("turbo")),
-    "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3-turbo-q5_0.bin",
+    "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3-turbo-q5_0.bin"
   );
 });

@@ -51,7 +51,7 @@ export function requireSafeUrl(url: string): string {
   throw new WazapError(
     "INVALID_ID",
     `Refusing a non-https transcription URL: ${url}`,
-    "Use an https:// URL, or http:// on 127.0.0.1 for a local server",
+    "Use an https:// URL, or http:// on 127.0.0.1 for a local server"
   );
 }
 
@@ -62,7 +62,7 @@ function parseProvider(raw: string | undefined): ProviderName | null {
   throw new WazapError(
     "INVALID_ID",
     `Unknown transcription provider "${value}".`,
-    "Set WAZAP_TRANSCRIBE to local, openai or off",
+    "Set WAZAP_TRANSCRIBE to local, openai or off"
   );
 }
 
@@ -73,7 +73,7 @@ function parseModel(raw: string | undefined): ModelAlias {
   throw new WazapError(
     "INVALID_ID",
     `Unknown whisper model "${value}".`,
-    `Set WAZAP_WHISPER_MODEL to one of: ${MODEL_ALIASES.join(", ")}`,
+    `Set WAZAP_WHISPER_MODEL to one of: ${MODEL_ALIASES.join(", ")}`
   );
 }
 

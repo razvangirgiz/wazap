@@ -21,7 +21,11 @@ const FFMPEG_FIX =
 export async function gifToMp4(gif: Buffer): Promise<Buffer> {
   const ffmpeg = which("ffmpeg");
   if (ffmpeg === null) {
-    throw new WazapError("MEDIA_UNAVAILABLE", "Sending a .gif needs ffmpeg to turn it into the mp4 WhatsApp plays.", FFMPEG_FIX);
+    throw new WazapError(
+      "MEDIA_UNAVAILABLE",
+      "Sending a .gif needs ffmpeg to turn it into the mp4 WhatsApp plays.",
+      FFMPEG_FIX
+    );
   }
   const dir = await mkdtemp(join(tmpdir(), "wazap-gif-"));
   try {
@@ -29,11 +33,18 @@ export async function gifToMp4(gif: Buffer): Promise<Buffer> {
     const output = join(dir, "out.mp4");
     await writeFile(input, gif);
     const args = [
-      "-nostdin", "-loglevel", "error", "-y",
-      "-i", input,
-      "-movflags", "faststart",
-      "-pix_fmt", "yuv420p",
-      "-vf", "scale=trunc(iw/2)*2:trunc(ih/2)*2",
+      "-nostdin",
+      "-loglevel",
+      "error",
+      "-y",
+      "-i",
+      input,
+      "-movflags",
+      "faststart",
+      "-pix_fmt",
+      "yuv420p",
+      "-vf",
+      "scale=trunc(iw/2)*2:trunc(ih/2)*2",
       "-an",
       output,
     ];

@@ -21,7 +21,9 @@ const hour = 3_600_000;
 function setup(config = {}) {
   const { svc, sock } = connectedService(WhatsAppService, { prefix: "wazap-daily-", id: ME, name: "Răzvan", config });
   const tools = new Map();
-  registerTools({ registerTool: (name, meta, handler) => tools.set(name, { meta, handler }) }, asToolSource(svc), { allowWrite: false });
+  registerTools({ registerTool: (name, meta, handler) => tools.set(name, { meta, handler }) }, asToolSource(svc), {
+    allowWrite: false,
+  });
   const call = (name, args = {}) => {
     const { meta, handler } = tools.get(name);
     return handler(z.object(meta.inputSchema).parse(args));
@@ -31,11 +33,20 @@ function setup(config = {}) {
     const id = `M${++seq}`;
     sock.ev.emit("messages.upsert", {
       type: "notify",
-      messages: [{ key: { remoteJid: chat, fromMe, id, ...(participant ? { participant } : {}) }, message: typeof text === "string" ? { conversation: text } : text, messageTimestamp: Math.floor(at / 1000) }],
+      messages: [
+        {
+          key: { remoteJid: chat, fromMe, id, ...(participant ? { participant } : {}) },
+          message: typeof text === "string" ? { conversation: text } : text,
+          messageTimestamp: Math.floor(at / 1000),
+        },
+      ],
     });
     return id;
   };
-  sock.ev.emit("contacts.upsert", [{ id: ANA, name: "Ana" }, { id: DAN, name: "Dan" }]);
+  sock.ev.emit("contacts.upsert", [
+    { id: ANA, name: "Ana" },
+    { id: DAN, name: "Dan" },
+  ]);
   sock.fetchStatus = async () => [];
   sock.profilePictureUrl = async () => null;
   return { svc, sock, call, arrive, tools };
@@ -46,7 +57,10 @@ test("a note on a contact rides along wherever the person shows, and lives in no
   arrive(DAN, "salut");
   const noted = await call("set_contact_note", { contact_id: "+40 700 000 003", note: "Hermi, my own agent" });
   assert.match(noted.content[0].text, /Noted for Dan: Hermi, my own agent/);
-  assert.match((await call("search_contacts", { query: "dan" })).content[0].text, /\*\*Dan\*\* \[saved\] · Hermi, my own agent/);
+  assert.match(
+    (await call("search_contacts", { query: "dan" })).content[0].text,
+    /\*\*Dan\*\* \[saved\] · Hermi, my own agent/
+  );
   assert.match((await call("list_chats", {})).content[0].text, /## Dan · Hermi, my own agent/);
   assert.match((await call("get_recent_messages", { hours: 1 })).content[0].text, /## Dan · Hermi, my own agent —/);
   assert.match((await call("get_contact", { contact_id: DAN })).content[0].text, /\*\*note\*\*: Hermi, my own agent/);
@@ -63,7 +77,10 @@ test("a note on a contact rides along wherever the person shows, and lives in no
 test("mark_handled takes a chat off the waiting list until the other side writes again", async () => {
   const { call, arrive } = setup();
   arrive(ANA, "poți să mă suni?", { at: Date.now() - 2 * hour });
-  assert.deepEqual((await call("get_unanswered", {})).structuredContent.chats.map((c) => c.name), ["Ana"]);
+  assert.deepEqual(
+    (await call("get_unanswered", {})).structuredContent.chats.map((c) => c.name),
+    ["Ana"]
+  );
 
   const marked = await call("mark_handled", { chat_id: ANA });
   assert.match(marked.content[0].text, /Ana is off the waiting list until they write again/);
@@ -71,7 +88,11 @@ test("mark_handled takes a chat off the waiting list until the other side writes
   assert.deepEqual((await call("get_unanswered", {})).structuredContent.chats, []);
 
   arrive(ANA, "și mâine?", { at: Date.now() - hour });
-  assert.deepEqual((await call("get_unanswered", {})).structuredContent.chats.map((c) => c.ask.text), ["și mâine?"], "a new ask reopens it");
+  assert.deepEqual(
+    (await call("get_unanswered", {})).structuredContent.chats.map((c) => c.ask.text),
+    ["și mâine?"],
+    "a new ask reopens it"
+  );
 
   const nothing = await call("mark_handled", { chat_id: DAN });
   assert.match(nothing.content[0].text, /had nothing open/);
@@ -86,13 +107,25 @@ test("search_messages narrows by time and by sender", async () => {
   const since = new Date(Date.now() - 3 * day).toISOString().slice(0, 10);
 
   const recent = await call("search_messages", { query: "rca", since });
-  assert.deepEqual(recent.structuredContent.messages.map((m) => m.text), ["am plătit RCA", "RCA e gata"]);
+  assert.deepEqual(
+    recent.structuredContent.messages.map((m) => m.text),
+    ["am plătit RCA", "RCA e gata"]
+  );
   const theirs = await call("search_messages", { query: "rca", from: ANA });
-  assert.deepEqual(theirs.structuredContent.messages.map((m) => m.text), ["RCA e gata", "RCA expiră luni"]);
+  assert.deepEqual(
+    theirs.structuredContent.messages.map((m) => m.text),
+    ["RCA e gata", "RCA expiră luni"]
+  );
   const mine = await call("search_messages", { query: "rca", from: "me" });
-  assert.deepEqual(mine.structuredContent.messages.map((m) => m.text), ["am plătit RCA"]);
+  assert.deepEqual(
+    mine.structuredContent.messages.map((m) => m.text),
+    ["am plătit RCA"]
+  );
   const until = await call("search_messages", { query: "rca", until: new Date(Date.now() - 5 * day).toISOString() });
-  assert.deepEqual(until.structuredContent.messages.map((m) => m.text), ["RCA expiră luni"]);
+  assert.deepEqual(
+    until.structuredContent.messages.map((m) => m.text),
+    ["RCA expiră luni"]
+  );
   assert.match(recent.content[0].text, new RegExp(`since ${since}`));
 
   const bad = await call("search_messages", { query: "rca", since: "luni" });
@@ -107,7 +140,11 @@ test("compact keeps the words, folds a run into one line, and counts what it lef
   arrive(GROUP, "mai avem 2 ore", { participant: DAN, at: t + 120_000 });
   arrive(GROUP, "😘😘", { participant: DAN, at: t + 130_000 });
   arrive(GROUP, { imageMessage: { mimetype: "image/jpeg" } }, { participant: DAN, at: t + 140_000 });
-  arrive(GROUP, { imageMessage: { mimetype: "image/jpeg", caption: "autostrada" } }, { participant: DAN, at: t + 150_000 });
+  arrive(
+    GROUP,
+    { imageMessage: { mimetype: "image/jpeg", caption: "autostrada" } },
+    { participant: DAN, at: t + 150_000 }
+  );
   arrive(GROUP, "?", { participant: ANA, at: t + 20 * 60_000 });
   arrive(GROUP, "am ajuns", { participant: DAN, at: t + 60 * 60_000 });
 
@@ -116,7 +153,12 @@ test("compact keeps the words, folds a run into one line, and counts what it lef
   const [c] = compact.structuredContent.conversations;
   assert.deepEqual(
     c.lines.map((l) => [l.text, l.message_ids.length]),
-    [["ați pornit?", 1], ["da, de la 8 · mai avem 2 ore · [image] autostrada", 3], ["?", 1], ["am ajuns", 1]],
+    [
+      ["ați pornit?", 1],
+      ["da, de la 8 · mai avem 2 ore · [image] autostrada", 3],
+      ["?", 1],
+      ["am ajuns", 1],
+    ]
   );
   assert.deepEqual(c.dropped, { media: 1, wordless: 1 });
   assert.match(compact.content[0].text, /left out: 1 media without a word, 1 wordless/);

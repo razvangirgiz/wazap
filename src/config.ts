@@ -182,7 +182,8 @@ const COMMAND_USAGE: Partial<Record<Command, string>> = {
   service: "Run `wazap service install|status|start|stop|restart|logs|uninstall`",
   transcribe: "Run `wazap transcribe download` or `wazap transcribe test <audio file>`",
   contacts: "Run `wazap contacts resync`",
-  config: "Run `wazap config`, `wazap config writes on|off`, `wazap config transcribe local|openai|off`, or `wazap config webhook on|off`",
+  config:
+    "Run `wazap config`, `wazap config writes on|off`, `wazap config transcribe local|openai|off`, or `wazap config webhook on|off`",
   webhook: "Run `wazap webhook test`",
   account: ACCOUNT_USAGE,
   migrate: MIGRATE_USAGE,
@@ -226,7 +227,7 @@ export const WRITE_TOKEN_NOTE =
 /** Operator-facing lines for status, doctor, setup and HTTP connect. */
 export function writesHints(
   config: Pick<Config, "readOnly" | "transport" | "publicUrl">,
-  remote: boolean = isRemoteHttp(config),
+  remote: boolean = isRemoteHttp(config)
 ): string[] {
   const hints: string[] = [];
   if (config.readOnly) hints.push(WRITES_ENABLE_HINT);
@@ -259,7 +260,7 @@ export type DefaultAction = "serve" | "greet";
 export function pickDefaultAction(
   config: Pick<Config, "command" | "explicitCommand" | "transport">,
   stdinTTY: boolean,
-  stderrTTY: boolean,
+  stderrTTY: boolean
 ): DefaultAction {
   const human =
     config.command === "serve" && !config.explicitCommand && config.transport === "stdio" && stdinTTY && stderrTTY;
@@ -322,7 +323,7 @@ export function parseCli(argv: string[] = process.argv.slice(2)): CliInvocation 
     throw new WazapError(
       "INVALID_ID",
       `Wrong arguments for \`wazap ${command}\`.`,
-      COMMAND_USAGE[command] ?? "Run `wazap --help`",
+      COMMAND_USAGE[command] ?? "Run `wazap --help`"
     );
   }
 

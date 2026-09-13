@@ -29,7 +29,12 @@ export interface PreviewImage {
 
 /** Decode a JPEG, shrink it with a box filter, encode it small. Throws on a file that is not a JPEG. */
 export function makePreview(input: Buffer, maxEdge = PREVIEW_MAX_EDGE): PreviewImage {
-  const source = jpeg.decode(input, { useTArray: true, formatAsRGBA: true, maxResolutionInMP: 50, maxMemoryUsageInMB: 512 });
+  const source = jpeg.decode(input, {
+    useTArray: true,
+    formatAsRGBA: true,
+    maxResolutionInMP: 50,
+    maxMemoryUsageInMB: 512,
+  });
   const scale = Math.min(1, maxEdge / Math.max(source.width, source.height));
   const width = Math.max(1, Math.round(source.width * scale));
   const height = Math.max(1, Math.round(source.height * scale));
@@ -81,11 +86,20 @@ export async function videoFrame(video: Buffer, maxEdge = PREVIEW_MAX_EDGE): Pro
     await writeFile(input, video);
     for (const at of ["1", "0"]) {
       const args = [
-        "-nostdin", "-loglevel", "error", "-y",
-        "-ss", at, "-i", input,
-        "-frames:v", "1",
-        "-vf", `scale='min(${maxEdge},iw)':-2`,
-        "-q:v", "6",
+        "-nostdin",
+        "-loglevel",
+        "error",
+        "-y",
+        "-ss",
+        at,
+        "-i",
+        input,
+        "-frames:v",
+        "1",
+        "-vf",
+        `scale='min(${maxEdge},iw)':-2`,
+        "-q:v",
+        "6",
         output,
       ];
       try {

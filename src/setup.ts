@@ -44,15 +44,7 @@ import { applyTranscribe } from "./settings.js";
 import { installSkills, skillTargetFor } from "./skills.js";
 import { MODELS, findWhisper, localProvider, readTranscribeSettings, which } from "./transcribe/index.js";
 import { brand, fail, fix, humanLayout, info, ok, warn } from "./ui.js";
-import {
-  maybeWizard,
-  setupWizardSteps,
-  wizFail,
-  wizInfo,
-  wizOk,
-  wizWarn,
-  type Wizard,
-} from "./wizard.js";
+import { maybeWizard, setupWizardSteps, wizFail, wizInfo, wizOk, wizWarn, type Wizard } from "./wizard.js";
 
 export async function runSetup(config: Config): Promise<void> {
   // The whole output is the document and this command never serves, so stdout is
@@ -64,7 +56,7 @@ export async function runSetup(config: Config): Promise<void> {
   }
 
   if (!humanLayout()) say(banner());
-  let install = whereInstalled();
+  const install = whereInstalled();
   const announce = stepper(install.kind === "npx" ? 6 : 5);
 
   const account = readLinkedAccount(resolveAccount(config.dataDir, config.accountId).paths.authDir);
@@ -81,7 +73,7 @@ export async function runSetup(config: Config): Promise<void> {
       npx: install.kind === "npx",
       askWrites,
       loginCode,
-    }),
+    })
   );
 
   try {
@@ -98,7 +90,7 @@ async function runSetupSteps(
     install: Install;
     announce: ReturnType<typeof stepper>;
     w: Wizard | null;
-  },
+  }
 ): Promise<void> {
   let { install } = ctx;
   const { account, announce, w } = ctx;
@@ -217,7 +209,8 @@ async function runSetupSteps(
   if (failing) process.exit(1);
 }
 
-const NO_GLOBAL_NOTE = "Claude Desktop and `wazap service install` need a global install; run `npm i -g wazap-mcp` before either.";
+const NO_GLOBAL_NOTE =
+  "Claude Desktop and `wazap service install` need a global install; run `npm i -g wazap-mcp` before either.";
 
 /**
  * npx keeps no stable copy on disk, so Claude Desktop and the background service
@@ -296,14 +289,26 @@ async function proveSession(config: Config, w: Wizard | null = null, buf: string
   if (running !== null) {
     const served = await serviceLive(config, running);
     if (served === null) {
-      put(w ? wizInfo(`A server already holds the session (pid ${running}); skipping the live check.`) : info(`A server already holds the session (pid ${running}); skipping the live check.`));
+      put(
+        w
+          ? wizInfo(`A server already holds the session (pid ${running}); skipping the live check.`)
+          : info(`A server already holds the session (pid ${running}); skipping the live check.`)
+      );
       return true;
     }
     if (served.reachable) {
-      put(w ? wizOk("Connected · the wazap service holds the session") : ok("Connected · the wazap service holds the session"));
+      put(
+        w
+          ? wizOk("Connected · the wazap service holds the session")
+          : ok("Connected · the wazap service holds the session")
+      );
       return true;
     }
-    put(w ? wizFail(`the service reports ${served.reason ?? "no connection"}`) : fail(`the service reports ${served.reason ?? "no connection"}`));
+    put(
+      w
+        ? wizFail(`the service reports ${served.reason ?? "no connection"}`)
+        : fail(`the service reports ${served.reason ?? "no connection"}`)
+    );
     put(w ? `  → run \`wazap service logs\`` : fix("run `wazap service logs`"));
     return false;
   }
@@ -333,7 +338,7 @@ const KEEP_OPTIONS: readonly { choice: KeepRunning; describe: string }[] = [
  */
 export function keepRunningOptions(
   providers: readonly TunnelProvider[] = PROVIDERS,
-  probes: Probes = REAL_PROBES,
+  probes: Probes = REAL_PROBES
 ): typeof KEEP_OPTIONS {
   const reachable = providers.some((provider) => provider.available()) || probes.onPath("brew");
   return reachable ? KEEP_OPTIONS : KEEP_OPTIONS.slice(0, 2);
@@ -414,7 +419,11 @@ const TRANSCRIBE_CHOICES = TRANSCRIBE_OPTIONS.map((option) => option.choice);
 async function chooseTranscribe(config: Config, w: Wizard | null = null, preface: string[] = []): Promise<void> {
   const flagged = config.transcribeChoice;
   if (flagged !== undefined && !TRANSCRIBE_CHOICES.includes(flagged)) {
-    throw new WazapError("INVALID_ID", `Unknown --transcribe ${flagged}.`, `Use --transcribe ${TRANSCRIBE_CHOICES.join("|")}`);
+    throw new WazapError(
+      "INVALID_ID",
+      `Unknown --transcribe ${flagged}.`,
+      `Use --transcribe ${TRANSCRIBE_CHOICES.join("|")}`
+    );
   }
 
   if (flagged !== undefined && w) await w.next("Transcribe", preface);
@@ -453,7 +462,8 @@ async function askTranscribe(config: Config, w: Wizard | null = null, preface: s
       return TRANSCRIBE_OPTIONS[picked - 1]!.choice;
     }
     if (attempt === CHOICE_ATTEMPTS) return null;
-    if (w) await w.paint([...menu, wizFail(`Type a number from 1 to ${TRANSCRIBE_OPTIONS.length}.`)], { reveal: false });
+    if (w)
+      await w.paint([...menu, wizFail(`Type a number from 1 to ${TRANSCRIBE_OPTIONS.length}.`)], { reveal: false });
     else say(fail(`Type a number from 1 to ${TRANSCRIBE_OPTIONS.length}.`));
   }
 }
@@ -484,7 +494,7 @@ async function chooseClients(config: Config, w: Wizard | null = null): Promise<C
   if (config.assumeYes || process.stdin.isTTY !== true) return detected;
 
   const menu = CLIENTS.map(
-    (spec, index) => `  ${index + 1}. [${detected.includes(spec) ? "x" : " "}] ${spec.describe}`,
+    (spec, index) => `  ${index + 1}. [${detected.includes(spec) ? "x" : " "}] ${spec.describe}`
   );
   const suggested = detected.map((spec) => CLIENTS.indexOf(spec) + 1).join(",");
   if (w) await w.next("Connect", menu);

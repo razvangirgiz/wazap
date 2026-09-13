@@ -159,14 +159,19 @@ export async function startHttpEndpoint(hub: AccountSource, config: Config, endp
 
   app.use((req: Request, res: Response, next: NextFunction) => {
     const start = Date.now();
-    const rpc = (req.body && typeof req.body === "object" ? (req.body as { method?: string }).method : undefined) ?? "-";
+    const rpc =
+      (req.body && typeof req.body === "object" ? (req.body as { method?: string }).method : undefined) ?? "-";
     const hasAuth = req.headers.authorization ? "auth" : "noauth";
     res.on("finish", () => {
-      log(`HTTP ${req.method} ${req.originalUrl} rpc=${rpc} ${hasAuth} accept="${req.headers.accept ?? ""}" -> ${res.statusCode} (${Date.now() - start}ms)`);
+      log(
+        `HTTP ${req.method} ${req.originalUrl} rpc=${rpc} ${hasAuth} accept="${req.headers.accept ?? ""}" -> ${res.statusCode} (${Date.now() - start}ms)`
+      );
     });
     res.on("close", () => {
       if (!res.writableEnded) {
-        log(`HTTP ${req.method} ${req.originalUrl} rpc=${rpc} -> client closed before response (${Date.now() - start}ms)`);
+        log(
+          `HTTP ${req.method} ${req.originalUrl} rpc=${rpc} -> client closed before response (${Date.now() - start}ms)`
+        );
       }
     });
     next();
@@ -175,7 +180,7 @@ export async function startHttpEndpoint(hub: AccountSource, config: Config, endp
   if (endpoint.openRead && !endpoint.oauth) {
     log(
       "WARNING: no WAZAP_READ_TOKEN set, the /mcp endpoint is UNAUTHENTICATED. " +
-        "Set WAZAP_READ_TOKEN before exposing this server beyond localhost.",
+        "Set WAZAP_READ_TOKEN before exposing this server beyond localhost."
     );
   }
 
@@ -198,13 +203,13 @@ export async function startHttpEndpoint(hub: AccountSource, config: Config, endp
         // A confidential client's secret would otherwise expire after thirty
         // days and its refresh token with it, which is a monthly password.
         clientRegistrationOptions: { clientSecretExpirySeconds: 0 },
-      }),
+      })
     );
     app.post(
       APPROVE_PATH,
       rateLimit({ windowMs: 15 * 60 * 1000, limit: 30, standardHeaders: true, legacyHeaders: false }),
       express.urlencoded({ extended: false }),
-      oauth.approve,
+      oauth.approve
     );
     log(`OAuth on: agents sign in at ${oauth.issuerUrl.href}`);
   }

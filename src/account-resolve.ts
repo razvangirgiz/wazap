@@ -46,14 +46,14 @@ function pickFromMatches(
   matches: AccountBinding[],
   write: boolean,
   hub: AccountSource,
-  what: "chat" | "message" | "draft",
+  what: "chat" | "message" | "draft"
 ): AccountBinding {
   if (matches.length === 1) return matches[0]!;
   if (matches.length > 1) {
     throw new WazapError(
       "AMBIGUOUS_ACCOUNT",
       `Several accounts have that ${what}: ${matches.map((row) => row.id).join(", ")}.`,
-      FIX_PASS_ACCOUNT,
+      FIX_PASS_ACCOUNT
     );
   }
   if (write) {
@@ -69,7 +69,7 @@ function resolveGivenId(hub: AccountSource, requested: string, toolName: string)
     throw new WazapError(
       "ACCOUNT_DISABLED",
       `Account "${requested}" is disabled.`,
-      `Run \`wazap account enable ${requested}\` and restart the server`,
+      `Run \`wazap account enable ${requested}\` and restart the server`
     );
   }
   if (live === undefined) {
@@ -82,7 +82,7 @@ function resolveGivenId(hub: AccountSource, requested: string, toolName: string)
         `Account "${requested}" was added after this server started.`,
         onDisk.enabled
           ? "Restart the server so it picks up the account (`wazap service restart`, or restart your client)"
-          : `Run \`wazap account enable ${requested}\`, then restart the server`,
+          : `Run \`wazap account enable ${requested}\`, then restart the server`
       );
     }
     const fix = toolName === "link_account" ? FIX_ADD_ACCOUNT : `${FIX_ADD_ACCOUNT}, or call list_accounts`;
@@ -94,7 +94,7 @@ function resolveGivenId(hub: AccountSource, requested: string, toolName: string)
 export function resolveToolAccount(
   hub: AccountSource,
   args: Record<string, unknown>,
-  tool: ResolveTool,
+  tool: ResolveTool
 ): AccountBinding {
   if (tool.name === "list_accounts") return hub.defaultBinding();
 
@@ -153,7 +153,9 @@ export function renderListAccounts(hub: AccountSource): ToolPayload {
   const accounts: ListedAccount[] = [];
   for (const record of hub.records()) {
     const live = hub.binding(record.id);
-    accounts.push(live === undefined ? listedFromRecord(record) : listedFromStatus(live.wa.getStatus(), record.enabled, live.id));
+    accounts.push(
+      live === undefined ? listedFromRecord(record) : listedFromStatus(live.wa.getStatus(), record.enabled, live.id)
+    );
   }
   const text = [`# Accounts (${accounts.length})`, "", ...renderAccountLines(accounts)].join("\n");
   return ok(text, { count: accounts.length, default: hub.defaultBinding().id, accounts });
@@ -181,7 +183,9 @@ export function renderGetStatus(s: StatusInfo, writeTools: boolean, hub: Account
     `- **contacts named**: ${s.contacts_named}`,
     `- **data dir**: ${s.data_dir} · **read-only**: ${s.read_only} · **write tools**: ${writeLine} · **rate limit**: ${s.rate_limit}/min`,
     `- **versions**: wazap ${s.wazap_version}, baileys ${s.baileys_version}`,
-    s.pairing ? `- **pairing code**: ${s.pairing.code} for ${s.pairing.phone_masked}, until ${s.pairing.expires_at}` : null,
+    s.pairing
+      ? `- **pairing code**: ${s.pairing.code} for ${s.pairing.phone_masked}, until ${s.pairing.expires_at}`
+      : null,
     webhookStatusLine(s.webhook),
     s.last_error ? `- **last error**: ${s.last_error}` : null,
     s.hint ? `- **hint**: ${s.hint}` : null,

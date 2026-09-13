@@ -38,7 +38,7 @@ test("--help explains every command and exits 0", async () => {
 test("--version prints the package version and exits 0", async () => {
   const { stderr } = await wazap("--version");
   const { version } = JSON.parse(
-    await import("node:fs").then((fs) => fs.readFileSync(join(dirname(binary), "..", "package.json"), "utf8")),
+    await import("node:fs").then((fs) => fs.readFileSync(join(dirname(binary), "..", "package.json"), "utf8"))
   );
   assert.equal(stderr.trim(), version);
 });

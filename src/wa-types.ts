@@ -296,15 +296,7 @@ export interface TranscribeResult {
   cached: boolean;
 }
 
-export type ChatAction =
-  | "archive"
-  | "unarchive"
-  | "pin"
-  | "unpin"
-  | "mute"
-  | "unmute"
-  | "mark_read"
-  | "mark_unread";
+export type ChatAction = "archive" | "unarchive" | "pin" | "unpin" | "mute" | "unmute" | "mark_read" | "mark_unread";
 
 export type GroupAction =
   | "add"
@@ -364,9 +356,14 @@ export interface WhatsAppApi {
     hours: number,
     filter: Exclude<ChatFilter, "archived">,
     includeSystem?: boolean,
-    types?: MessageType[],
+    types?: MessageType[]
   ): Promise<Synced<RecentConversation[]>>;
-  searchMessages(query: string, chatId: string | undefined, limit: number, opts?: SearchOptions): Promise<Synced<MessageView[]>>;
+  searchMessages(
+    query: string,
+    chatId: string | undefined,
+    limit: number,
+    opts?: SearchOptions
+  ): Promise<Synced<MessageView[]>>;
   getMessage(messageId: string): Promise<MessageView>;
   searchContacts(query: string, limit: number): Promise<ContactSummary[]>;
   getContact(contactId: string): Promise<ContactDetails>;
@@ -386,7 +383,7 @@ export interface WhatsAppApi {
   sendMedia(
     chatId: string,
     source: MediaSource,
-    opts: { caption?: string; asDocument: boolean; asVoice: boolean; asGif: boolean },
+    opts: { caption?: string; asDocument: boolean; asVoice: boolean; asGif: boolean }
   ): Promise<SentMessage>;
   sendPoll(chatId: string, question: string, options: string[], multiSelect: boolean): Promise<SentMessage>;
   sendLocation(
@@ -394,7 +391,7 @@ export interface WhatsAppApi {
     latitude: number,
     longitude: number,
     name?: string,
-    address?: string,
+    address?: string
   ): Promise<SentMessage>;
   editMessage(messageId: string, text: string): Promise<SentMessage>;
   reactToMessage(messageId: string, emoji: string): Promise<{ message_id: string; emoji: string }>;
@@ -407,6 +404,6 @@ export interface WhatsAppApi {
     groupId: string,
     action: GroupAction,
     participantIds?: string[],
-    value?: string,
+    value?: string
   ): Promise<GroupActionResult>;
 }

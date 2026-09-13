@@ -116,7 +116,21 @@ export const localProvider: Provider = {
     try {
       const wav = join(dir, "audio.wav");
       const out = join(dir, "out");
-      const ffmpegArgs = ["-nostdin", "-loglevel", "error", "-y", "-i", file, "-ar", "16000", "-ac", "1", "-f", "wav", wav];
+      const ffmpegArgs = [
+        "-nostdin",
+        "-loglevel",
+        "error",
+        "-y",
+        "-i",
+        file,
+        "-ar",
+        "16000",
+        "-ac",
+        "1",
+        "-f",
+        "wav",
+        wav,
+      ];
       await spawnStep("ffmpeg", ffmpeg, ffmpegArgs);
       const language = opts.language ?? settings.language;
       const whisperArgs = ["-m", model, "-f", wav, "-l", language, "-nt", "-np", "-oj", "-of", out];
@@ -128,7 +142,7 @@ export const localProvider: Provider = {
       } catch (err) {
         throw new WazapError(
           "TRANSCRIBE_FAILED",
-          `whisper.cpp wrote no readable JSON: ${err instanceof Error ? err.message : String(err)}`,
+          `whisper.cpp wrote no readable JSON: ${err instanceof Error ? err.message : String(err)}`
         );
       }
 

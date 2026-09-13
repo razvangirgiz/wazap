@@ -55,7 +55,7 @@ export function modelSpec(name: string): ModelSpec {
     throw new WazapError(
       "INVALID_ID",
       `Unknown whisper model "${name}".`,
-      `Pick one of: ${Object.keys(MODELS).join(", ")}`,
+      `Pick one of: ${Object.keys(MODELS).join(", ")}`
     );
   }
   return spec;
@@ -148,7 +148,7 @@ export async function downloadFile(opts: DownloadOpts): Promise<DownloadResult> 
     throw new WazapError(
       "TRANSCRIBE_FAILED",
       `Model download failed: HTTP ${response.status} ${response.statusText}`.trim(),
-      "Check the network and run `wazap transcribe download` again",
+      "Check the network and run `wazap transcribe download` again"
     );
   }
 
@@ -166,7 +166,7 @@ export async function downloadFile(opts: DownloadOpts): Promise<DownloadResult> 
     throw new WazapError(
       "TRANSCRIBE_FAILED",
       `Model download resumed at the wrong offset: ${response.headers.get("content-range") ?? "no content-range"}.`,
-      "Run `wazap transcribe download` again",
+      "Run `wazap transcribe download` again"
     );
   }
 
@@ -209,7 +209,7 @@ export async function downloadFile(opts: DownloadOpts): Promise<DownloadResult> 
     throw new WazapError(
       "TRANSCRIBE_FAILED",
       `Model download did not verify: got ${problem}.`,
-      "Run `wazap transcribe download` again",
+      "Run `wazap transcribe download` again"
     );
   }
 
@@ -221,7 +221,7 @@ export async function downloadModel(
   modelsDir: string,
   spec: ModelSpec,
   onProgress?: (progress: DownloadProgress) => void,
-  signal?: AbortSignal,
+  signal?: AbortSignal
 ): Promise<DownloadResult> {
   await mkdir(modelsDir, { recursive: true });
   return downloadFile({

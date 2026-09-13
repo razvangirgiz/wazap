@@ -39,7 +39,10 @@ test("the description fits the registry's 100-character limit", () => {
 });
 
 test("server.json names a dated registry schema", () => {
-  assert.match(server.$schema, /^https:\/\/static\.modelcontextprotocol\.io\/schemas\/\d{4}-\d{2}-\d{2}\/server\.schema\.json$/);
+  assert.match(
+    server.$schema,
+    /^https:\/\/static\.modelcontextprotocol\.io\/schemas\/\d{4}-\d{2}-\d{2}\/server\.schema\.json$/
+  );
 });
 
 test("the bundle manifest carries every field mcpb requires", () => {
@@ -61,7 +64,11 @@ test("the bundle manifest carries every field mcpb requires", () => {
 test("the bundle's user_config reaches the server through its own settings", () => {
   assert.deepEqual(Object.keys(manifest.user_config), ["read_only", "data_dir"]);
   assert.equal(manifest.user_config.read_only.type, "boolean");
-  assert.equal(manifest.user_config.read_only.default, true, "a bundle that could message people by default is the wrong default");
+  assert.equal(
+    manifest.user_config.read_only.default,
+    true,
+    "a bundle that could message people by default is the wrong default"
+  );
   assert.equal(manifest.user_config.data_dir.type, "directory");
   assert.equal(manifest.user_config.data_dir.default, undefined);
   assert.deepEqual(manifest.server.mcp_config.env, {

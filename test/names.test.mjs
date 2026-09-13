@@ -67,7 +67,11 @@ test("a group learns its participants' names and numbers from its metadata", () 
   assert.equal(svc.displayName("999888777666555@lid"), "Elena", "the saved contact behind the lid");
   assert.equal(svc.displayName("555666777888999@lid"), "Florin", "the name the metadata carried");
   assert.equal(svc.lidPhones.get("999888777666555@lid"), "40700000007@s.whatsapp.net");
-  assert.equal(svc.lidToPn.get("999888777666555@lid"), "40700000007@s.whatsapp.net", "and the number is canonical from here on");
+  assert.equal(
+    svc.lidToPn.get("999888777666555@lid"),
+    "40700000007@s.whatsapp.net",
+    "and the number is canonical from here on"
+  );
 });
 
 test("a group message renders its sender as a name, not as a LID", async () => {
@@ -88,7 +92,11 @@ test("a group message renders its sender as a name, not as a LID", async () => {
   const { data } = await svc.readMessages(group, 10);
   assert.equal(data.length, 1);
   assert.equal(data[0].sender.name, "Gigi");
-  assert.equal(data[0].sender.id, "40700000010@s.whatsapp.net", "the sender is the person, by number, once the pairing is known");
+  assert.equal(
+    data[0].sender.id,
+    "40700000010@s.whatsapp.net",
+    "the sender is the person, by number, once the pairing is known"
+  );
   assert.equal(data[0].sender.phone, "40700000010");
 });
 
@@ -114,7 +122,10 @@ test("search_contacts finds someone by the name the chat list shows them under",
 
   assert.equal(svc.displayName("40700000012@s.whatsapp.net"), "Ioana");
   const found = await svc.searchContacts("ioana", 10);
-  assert.deepEqual(found.map((c) => c.name), ["Ioana"]);
+  assert.deepEqual(
+    found.map((c) => c.name),
+    ["Ioana"]
+  );
 });
 
 test("a lid WhatsApp never paired on a chat is still named from Baileys' own table", async () => {
@@ -122,7 +133,10 @@ test("a lid WhatsApp never paired on a chat is still named from Baileys' own tab
   const lid = "273520764416235@lid";
   sock.ev.emit("contacts.upsert", [{ id: "447535707769@s.whatsapp.net", name: "Vlad" }]);
   // Vlad also has an older chat under his number; the lookup must not leave him listed twice.
-  sock.ev.emit("messages.upsert", { type: "notify", messages: [message("447535707769@s.whatsapp.net", { text: "hei", id: "V0" })] });
+  sock.ev.emit("messages.upsert", {
+    type: "notify",
+    messages: [message("447535707769@s.whatsapp.net", { text: "hei", id: "V0" })],
+  });
   sock.ev.emit("messages.upsert", { type: "notify", messages: [message(lid, { text: "salut" })] });
   assert.equal(svc.displayName(lid), "unknown (lid …6235)", "nothing to go on before the lookup");
 
@@ -138,9 +152,17 @@ test("a lid WhatsApp never paired on a chat is still named from Baileys' own tab
 
   const chats = (await svc.listChats("all", 10)).data;
   assert.deepEqual(asked, [lid]);
-  assert.deepEqual(chats.map((c) => [c.name, c.chat_id]), [["Vlad", "447535707769@s.whatsapp.net"]], "one row, under the number");
+  assert.deepEqual(
+    chats.map((c) => [c.name, c.chat_id]),
+    [["Vlad", "447535707769@s.whatsapp.net"]],
+    "one row, under the number"
+  );
   const history = (await svc.readMessages("447535707769@s.whatsapp.net", 10)).data;
-  assert.deepEqual(history.map((m) => m.text), ["hei", "salut"], "both halves of the history");
+  assert.deepEqual(
+    history.map((m) => m.text),
+    ["hei", "salut"],
+    "both halves of the history"
+  );
 });
 
 test("a sender's own name is used even when only this message carries it", () => {
@@ -156,7 +178,11 @@ test("reading a group fetches its metadata once and then stops asking", async ()
   let fetches = 0;
   svc.sockClient.groupMetadata = async (id) => {
     fetches++;
-    return { id, subject: "Munte", participants: [{ id: "321321321321321@lid", phoneNumber: "40700000014@s.whatsapp.net" }] };
+    return {
+      id,
+      subject: "Munte",
+      participants: [{ id: "321321321321321@lid", phoneNumber: "40700000014@s.whatsapp.net" }],
+    };
   };
   sock.ev.emit("messages.upsert", {
     type: "notify",
@@ -236,7 +262,7 @@ test("search_contacts still finds a masked contact by number, and never by dots"
   const byNumber = await svc.searchContacts("40700000041", 10);
   assert.deepEqual(
     byNumber.map((c) => [c.name, c.is_my_contact]),
-    [["40700000041", false]],
+    [["40700000041", false]]
   );
 });
 
@@ -255,7 +281,11 @@ test("a contact filed under both a lid chat and a phone chat is listed once", as
   sock.ev.emit("contacts.upsert", [{ id: phone, name: "Mama", lid, phoneNumber: phone }]);
 
   const chats = (await svc.listChats("all", 10)).data;
-  assert.deepEqual(chats.map((chat) => chat.chat_id), [phone], "one row for the person, not one per alias");
+  assert.deepEqual(
+    chats.map((chat) => chat.chat_id),
+    [phone],
+    "one row for the person, not one per alias"
+  );
   assert.equal(chats[0].name, "Mama");
   assert.equal(chats[0].unread_count, 2, "the unread count survives the merge");
 });
@@ -267,7 +297,10 @@ test("a contact WhatsApp filed under a lid and under a phone is one search resul
   sock.ev.emit("contacts.upsert", [{ id: lid, notify: "Eliza ♌︎" }]);
   sock.ev.emit("contacts.upsert", [{ id: phone, name: "Eliza ♌︎", lid, phoneNumber: phone }]);
   const found = await svc.searchContacts("eliza", 10);
-  assert.deepEqual(found.map((c) => c.contact_id), [phone]);
+  assert.deepEqual(
+    found.map((c) => c.contact_id),
+    [phone]
+  );
   assert.equal(svc.store.contacts.has(lid), false, "the lid entry moved in with the phone entry");
 });
 
@@ -285,7 +318,10 @@ test("a name that arrived on a lid message still names the number once the pairi
   const lid = "606060606060606@lid";
   const phone = "40700000060@s.whatsapp.net";
   const group = "120363000000000060@g.us";
-  sock.ev.emit("messages.upsert", { type: "notify", messages: [message(group, { participant: lid, pushName: "Gigi", text: "hei" })] });
+  sock.ev.emit("messages.upsert", {
+    type: "notify",
+    messages: [message(group, { participant: lid, pushName: "Gigi", text: "hei" })],
+  });
   assert.equal(svc.displayName(lid), "Gigi");
   sock.ev.emit("lid-mapping.update", { lid, pn: phone });
   assert.equal(svc.displayName(phone), "Gigi", "the number wears the name the lid brought");
@@ -293,7 +329,10 @@ test("a name that arrived on a lid message still names the number once the pairi
   const lid2 = "707070707070707@lid";
   const phone2 = "40700000070@s.whatsapp.net";
   sock.ev.emit("lid-mapping.update", { lid: lid2, pn: phone2 });
-  sock.ev.emit("messages.upsert", { type: "notify", messages: [message(group, { participant: lid2, pushName: "Vali", text: "hei", id: "M9" })] });
+  sock.ev.emit("messages.upsert", {
+    type: "notify",
+    messages: [message(group, { participant: lid2, pushName: "Vali", text: "hei", id: "M9" })],
+  });
   assert.equal(svc.displayName(phone2), "Vali");
   assert.equal(svc.displayName(lid2), "Vali");
 });

@@ -17,7 +17,7 @@ const OFF_FIX = "Run `wazap config transcribe local` or `wazap config transcribe
 export async function transcribeFile(
   settings: TranscribeSettings,
   file: string,
-  opts: TranscribeOpts = {},
+  opts: TranscribeOpts = {}
 ): Promise<Transcript> {
   if (settings.provider === null) {
     throw new WazapError("TRANSCRIBE_UNAVAILABLE", "Transcription is not configured.", OFF_FIX);
@@ -33,13 +33,7 @@ export async function transcribeReady(settings: TranscribeSettings): Promise<Rea
 export { findWhisper, localProvider, which } from "./local.js";
 export { openaiProvider } from "./openai.js";
 export { TranscribeQueue } from "./queue.js";
-export {
-  maskKey,
-  readTranscribeSettings,
-  redact,
-  requireSafeUrl,
-  stripPasted,
-} from "./settings.js";
+export { maskKey, readTranscribeSettings, redact, requireSafeUrl, stripPasted } from "./settings.js";
 export {
   downloadFile,
   downloadModel,

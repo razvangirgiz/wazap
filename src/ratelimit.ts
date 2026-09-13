@@ -13,7 +13,7 @@ export class RateLimiter {
     private readonly perMinute: number,
     private readonly now: () => number = Date.now,
     /** What ran out, so a tool with a bucket of its own does not blame the writes. */
-    private readonly what: string = "Write",
+    private readonly what: string = "Write"
   ) {
     this.tokens = perMinute;
     this.last = now();
@@ -37,7 +37,7 @@ export class RateLimiter {
     throw new WazapError(
       "RATE_LIMITED",
       `${this.what} rate limit reached (${this.perMinute}/minute).`,
-      `Wait ${seconds} seconds`,
+      `Wait ${seconds} seconds`
     );
   }
 }

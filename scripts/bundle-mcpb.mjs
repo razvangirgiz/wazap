@@ -25,7 +25,16 @@ rmSync(outDir, { recursive: true, force: true });
 mkdirSync(stage, { recursive: true });
 // `skills` is here because the server reads it at runtime to serve the
 // workflows as MCP prompts, which is the only way they reach Claude Desktop.
-for (const name of ["manifest.json", "icon.png", "package.json", "package-lock.json", "README.md", "LICENSE", "dist", "skills"]) {
+for (const name of [
+  "manifest.json",
+  "icon.png",
+  "package.json",
+  "package-lock.json",
+  "README.md",
+  "LICENSE",
+  "dist",
+  "skills",
+]) {
   cpSync(join(root, name), join(stage, name), { recursive: true });
 }
 

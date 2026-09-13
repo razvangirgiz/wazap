@@ -34,7 +34,7 @@ for formula in "$@"; do
 done
 exit 0
 `,
-      { mode: 0o755 },
+      { mode: 0o755 }
     );
   }
   return { bin, calls: () => (existsSync(log) ? readFileSync(log, "utf8").trim().split("\n") : []) };
@@ -131,6 +131,6 @@ test("the table names the binary each formula puts on PATH", () => {
       ["ffmpeg", "ffmpeg"],
       ["tailscale", "tailscale"],
       ["cloudflared", "cloudflared"],
-    ],
+    ]
   );
 });

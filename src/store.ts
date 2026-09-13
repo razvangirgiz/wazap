@@ -262,4 +262,3 @@ export function decodeChat(b64: string): BaileysChat | null {
     return null;
   }
 }
-

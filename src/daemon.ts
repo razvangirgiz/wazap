@@ -75,9 +75,7 @@ export async function daemonHealthy(port: number, timeoutMs: number): Promise<bo
 
 /** What a `serve` invocation should do about the session another process may already own. */
 export type ServeRole =
-  | { kind: "daemon" }
-  | { kind: "bridge"; daemon: DaemonInfo }
-  | { kind: "refuse"; message: string };
+  { kind: "daemon" } | { kind: "bridge"; daemon: DaemonInfo } | { kind: "refuse"; message: string };
 
 const ROLE_TIMEOUT_MS = 3_000;
 const ROLE_POLL_MS = 100;

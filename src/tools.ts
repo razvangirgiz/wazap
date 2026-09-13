@@ -65,7 +65,7 @@ const ACCOUNT_ID = z
   .string()
   .min(1)
   .describe(
-    "Registry account id (default, work, …). Omit to resolve from chat_id or message_id, or the default account.",
+    "Registry account id (default, work, …). Omit to resolve from chat_id or message_id, or the default account."
   );
 
 function tool<S extends z.ZodRawShape>(def: {
@@ -100,32 +100,51 @@ export function toolError(err: WazapError): ToolResult {
   return { content: [{ type: "text", text: JSON.stringify(payload) }], structuredContent: payload, isError: true };
 }
 
-const READ_ONLY_HINTS = { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true } as const;
-const WRITE_HINTS = { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true } as const;
-const LOCAL_HINTS = { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false } as const;
+const READ_ONLY_HINTS = {
+  readOnlyHint: true,
+  destructiveHint: false,
+  idempotentHint: true,
+  openWorldHint: true,
+} as const;
+const WRITE_HINTS = {
+  readOnlyHint: false,
+  destructiveHint: false,
+  idempotentHint: false,
+  openWorldHint: true,
+} as const;
+const LOCAL_HINTS = {
+  readOnlyHint: false,
+  destructiveHint: false,
+  idempotentHint: true,
+  openWorldHint: false,
+} as const;
 
 const chatId = z
   .string()
   .min(1)
-  .describe('Chat id as returned by another tool ("<digits>@s.whatsapp.net" or "<id>@g.us"), or a phone number in international format');
+  .describe(
+    'Chat id as returned by another tool ("<digits>@s.whatsapp.net" or "<id>@g.us"), or a phone number in international format'
+  );
 
 const messageId = z
   .string()
   .min(5)
-  .describe('Message id from read_messages / search_messages / get_message, e.g. "false_4072...@s.whatsapp.net_3EB0..."');
+  .describe(
+    'Message id from read_messages / search_messages / get_message, e.g. "false_4072...@s.whatsapp.net_3EB0..."'
+  );
 
 const messageTypes = z
   .array(z.enum([...MESSAGE_TYPES]))
   .optional()
   .describe(
-    'Keep only these message types; omit for every type. The limit counts matching messages, so ["call"] returns that many calls, not that many messages of which some are calls.',
+    'Keep only these message types; omit for every type. The limit counts matching messages, so ["call"] returns that many calls, not that many messages of which some are calls.'
   );
 
 const includePreviews = z
   .boolean()
   .default(false)
   .describe(
-    "Attach a small JPEG of each photo, newest first, up to 12 per call, so you can see what was sent: the preview WhatsApp shipped when there is one, otherwise the photo is downloaded once and shrunk on the machine running wazap",
+    "Attach a small JPEG of each photo, newest first, up to 12 per call, so you can see what was sent: the preview WhatsApp shipped when there is one, otherwise the photo is downloaded once and shrunk on the machine running wazap"
   );
 
 /** Previews are 5-15 KB each; a dozen keep one answer small and the first call under the client's timeout. */
@@ -304,7 +323,10 @@ from_me}, archived, pinned, muted_until, and left (groups you are no longer in).
     write: false,
     handler: async ({ filter, limit }, { wa }) => {
       const result = await wa.listChats(filter, limit);
-      return ok(renderChats(result.data, filter), synced(result, { filter, count: result.data.length, chats: result.data }));
+      return ok(
+        renderChats(result.data, filter),
+        synced(result, { filter, count: result.data.length, chats: result.data })
+      );
     },
   }),
 
@@ -328,9 +350,20 @@ older history when the local store runs out, which takes a few seconds.`,
       const result = await wa.readMessages(chat_id, limit, before, types);
       const previews = include_previews ? await wa.previews(newestFirst(result.data), MAX_PREVIEWS) : [];
       return ok(
-        renderMessages(`Messages in ${chat_id}`, result.data, previewLabels(previews), previewNote(result.data, previews, include_previews)),
-        synced(result, { chat_id, types, count: result.data.length, preview_count: previews.length, messages: result.data }),
-        previewBlocks(previews),
+        renderMessages(
+          `Messages in ${chat_id}`,
+          result.data,
+          previewLabels(previews),
+          previewNote(result.data, previews, include_previews)
+        ),
+        synced(result, {
+          chat_id,
+          types,
+          count: result.data.length,
+          preview_count: previews.length,
+          messages: result.data,
+        }),
+        previewBlocks(previews)
       );
     },
   }),
@@ -351,14 +384,16 @@ out so the counts are conversation; pass include_system to see them.`,
       include_system: z
         .boolean()
         .default(false)
-        .describe("Include WhatsApp's own system notices, which are excluded from the bodies and the counts by default"),
+        .describe(
+          "Include WhatsApp's own system notices, which are excluded from the bodies and the counts by default"
+        ),
       types: messageTypes,
       include_previews: includePreviews,
       compact: z
         .boolean()
         .default(false)
         .describe(
-          "Leave out media without a caption and messages with no words in them, fold what one person sent in a row into one line, and say per chat what was left out. About half the size; use it for a routine catch-up",
+          "Leave out media without a caption and messages with no words in them, fold what one person sent in a row into one line, and say per chat what was left out. About half the size; use it for a routine catch-up"
         ),
     },
     write: false,
@@ -368,7 +403,7 @@ out so the counts are conversation; pass include_system to see them.`,
         const conversations = compactConversations(result.data);
         return ok(
           renderCompact(conversations, hours),
-          synced(result, { hours, filter, compact: true, conversation_count: conversations.length, conversations }),
+          synced(result, { hours, filter, compact: true, conversation_count: conversations.length, conversations })
         );
       }
       const messageCount = result.data.reduce((n, c) => n + c.messages.length, 0);
@@ -386,7 +421,7 @@ out so the counts are conversation; pass include_system to see them.`,
           preview_count: previews.length,
           conversations: result.data,
         }),
-        previewBlocks(previews),
+        previewBlocks(previews)
       );
     },
   }),
@@ -426,7 +461,7 @@ get_recent_messages for what happened, and this for who is still waiting.`,
       const result = await wa.getUnanswered(min_age_hours, max_age_hours, limit);
       return ok(
         renderUnanswered(result.data, min_age_hours),
-        synced(result, { min_age_hours, max_age_hours, count: result.data.length, chats: result.data }),
+        synced(result, { min_age_hours, max_age_hours, count: result.data.length, chats: result.data })
       );
     },
   }),
@@ -449,9 +484,14 @@ chats, catch-ups or waits; this is the only place they show.`,
       const result = await wa.getStories(hours);
       const previews = include_previews ? await wa.previews(newestFirst(result.data), MAX_PREVIEWS) : [];
       return ok(
-        renderStories(result.data, hours, previewLabels(previews), previewNote(result.data, previews, include_previews)),
+        renderStories(
+          result.data,
+          hours,
+          previewLabels(previews),
+          previewNote(result.data, previews, include_previews)
+        ),
         synced(result, { hours, count: result.data.length, preview_count: previews.length, stories: result.data }),
-        previewBlocks(previews),
+        previewBlocks(previews)
       );
     },
   }),
@@ -472,7 +512,10 @@ An empty note removes it.`,
     local: true,
     handler: async ({ contact_id, note }, { wa }) => {
       const c = await wa.setContactNote(contact_id, note);
-      return ok(c.note ? `Noted for ${c.name}: ${c.note}` : `Removed the note on ${c.name}.`, c as unknown as Record<string, unknown>);
+      return ok(
+        c.note ? `Noted for ${c.name}: ${c.note}` : `Removed the note on ${c.name}.`,
+        c as unknown as Record<string, unknown>
+      );
     },
   }),
 
@@ -542,9 +585,17 @@ or one chat. It cannot reach messages the phone never synced to this device.`,
       query: z.string().min(1).describe("Text to search for"),
       chat_id: chatId.optional().describe("Restrict the search to this chat"),
       limit: z.number().int().min(1).max(50).default(20).describe("Maximum number of results (1-50)"),
-      since: z.string().min(4).optional().describe('Only messages from this moment on: a date ("2026-09-01") or an ISO timestamp'),
+      since: z
+        .string()
+        .min(4)
+        .optional()
+        .describe('Only messages from this moment on: a date ("2026-09-01") or an ISO timestamp'),
       until: z.string().min(4).optional().describe("Only messages up to this moment: a date or an ISO timestamp"),
-      from: z.string().min(1).optional().describe('Only messages this person sent: "me", a contact id or a phone number'),
+      from: z
+        .string()
+        .min(1)
+        .optional()
+        .describe('Only messages this person sent: "me", a contact id or a phone number'),
     },
     write: false,
     handler: async ({ query, chat_id, limit, since, until, from }, { wa }) => {
@@ -553,12 +604,25 @@ or one chat. It cannot reach messages the phone never synced to this device.`,
         untilMs: parseMoment(until, "until", true),
         from,
       });
-      const scope = [chat_id ? `in ${chat_id}` : null, from ? `from ${from}` : null, since ? `since ${since}` : null, until ? `until ${until}` : null]
+      const scope = [
+        chat_id ? `in ${chat_id}` : null,
+        from ? `from ${from}` : null,
+        since ? `since ${since}` : null,
+        until ? `until ${until}` : null,
+      ]
         .filter(Boolean)
         .join(", ");
       return ok(
         renderMessages(`Search results for "${query}"${scope ? ` (${scope})` : ""}`, result.data),
-        synced(result, { query, chat_id: chat_id ?? null, since: since ?? null, until: until ?? null, from: from ?? null, count: result.data.length, messages: result.data }),
+        synced(result, {
+          query,
+          chat_id: chat_id ?? null,
+          since: since ?? null,
+          until: until ?? null,
+          from: from ?? null,
+          count: result.data.length,
+          messages: result.data,
+        })
       );
     },
   }),
@@ -624,7 +688,7 @@ the phone has no saved contacts for these people.`,
     description: `Full details for one contact: name, number, about text, profile picture URL,
 whether they are a saved contact, a business, or blocked.`,
     schema: {
-      contact_id: chatId.describe('Contact id from search_contacts / list_chats, or a phone number'),
+      contact_id: chatId.describe("Contact id from search_contacts / list_chats, or a phone number"),
     },
     write: false,
     handler: async ({ contact_id }, { wa }) => {
@@ -691,9 +755,7 @@ Fails with MEDIA_UNAVAILABLE when WhatsApp has expired the file.`,
     handler: async ({ message_id, save_to }, { wa }) => {
       const media = await wa.downloadMedia(message_id, save_to);
       const { inline_base64, ...structured } = media;
-      const extra: ContentBlock[] = inline_base64
-        ? [{ type: "image", data: inline_base64, mimeType: media.mime }]
-        : [];
+      const extra: ContentBlock[] = inline_base64 ? [{ type: "image", data: inline_base64, mimeType: media.mime }] : [];
       const text =
         `Saved ${media.mime} (${Math.round(media.size / 1024)} KB) to:\n${media.path}` +
         (inline_base64 ? "\n(image attached inline)" : "");
@@ -723,7 +785,9 @@ the fix names the command the user has to run. Do not retry it.`,
         .min(2)
         .max(16)
         .optional()
-        .describe('ISO 639-1 code of what is spoken, e.g. "ro"; "auto" detects it. Omit to use the configured default.'),
+        .describe(
+          'ISO 639-1 code of what is spoken, e.g. "ro"; "auto" detects it. Omit to use the configured default.'
+        ),
     },
     write: false,
     rate: 10,
@@ -753,7 +817,9 @@ call confirm_send. A draft lasts 15 minutes.`,
     },
     write: true,
     handler: async ({ chat_id, text, reply_to, mention_ids }, { wa }) => {
-      return drafted(await wa.draft({ kind: "text", chatId: chat_id, text, replyTo: reply_to, mentionIds: mention_ids }));
+      return drafted(
+        await wa.draft({ kind: "text", chatId: chat_id, text, replyTo: reply_to, mentionIds: mention_ids })
+      );
     },
   }),
 
@@ -788,7 +854,7 @@ first (needs ffmpeg on the machine running wazap).`,
           asDocument: as_document,
           asVoice: as_voice,
           asGif: as_gif,
-        }),
+        })
       );
     },
   }),
@@ -847,7 +913,7 @@ this within 15 minutes of sending; after that send a correction instead.`,
   tool({
     name: "react_to_message",
     title: "React to a WhatsApp message",
-    description: 'Add an emoji reaction to a message, or pass an empty string to remove your reaction.',
+    description: "Add an emoji reaction to a message, or pass an empty string to remove your reaction.",
     schema: {
       message_id: messageId,
       emoji: z.string().max(8).describe('A single emoji such as "👍", or "" to remove your reaction'),
@@ -898,7 +964,10 @@ with the user first. Only works on messages the linked account sent, and only
 within 2 days of sending.`,
     schema: {
       message_id: messageId,
-      for_everyone: z.boolean().default(false).describe("Retract for all participants (WhatsApp supports no other kind of delete here)"),
+      for_everyone: z
+        .boolean()
+        .default(false)
+        .describe("Retract for all participants (WhatsApp supports no other kind of delete here)"),
     },
     write: true,
     destructive: true,
@@ -961,7 +1030,9 @@ privacy settings require an invite link) or failed.`,
     write: true,
     handler: async ({ name, participant_ids }, { wa }) => {
       const result = await wa.createGroup(name, participant_ids);
-      const text = [`Group "${name}" created: ${result.chat_id}`, ...renderParticipants(result.participants)].join("\n");
+      const text = [`Group "${name}" created: ${result.chat_id}`, ...renderParticipants(result.participants)].join(
+        "\n"
+      );
       return ok(text, { name, ...result });
     },
   }),
@@ -1025,8 +1096,8 @@ function rateLabel(name: string): string {
  */
 const RATE_BUCKETS = new Map<string, RateLimiter>(
   TOOLS.flatMap((def) =>
-    def.rate === undefined ? [] : [[def.name, new RateLimiter(def.rate, undefined, rateLabel(def.name))] as const],
-  ),
+    def.rate === undefined ? [] : [[def.name, new RateLimiter(def.rate, undefined, rateLabel(def.name))] as const]
+  )
 );
 
 export function registerTools(server: McpServer, hub: AccountSource, opts: RegisterOpts): void {
@@ -1063,7 +1134,7 @@ export function registerTools(server: McpServer, hub: AccountSource, opts: Regis
           const id = resolved?.id ?? stringArg(parsed, "account_id");
           return id === undefined ? result : attachAccountId(result, id);
         }
-      },
+      }
     );
   }
 }
@@ -1083,7 +1154,9 @@ function renderChats(chats: ChatSummary[], filter: string): string {
     lines.push(`## ${c.name}${flags.length ? ` [${flags.join(", ")}]` : ""}${c.note ? ` · ${c.note}` : ""}`);
     lines.push(`- **chat_id**: \`${c.chat_id}\``);
     if (c.last_message) {
-      lines.push(`- **last**: ${c.last_message.from_me ? "me: " : ""}${truncate(c.last_message.text, 160)} (${c.last_message.timestamp})`);
+      lines.push(
+        `- **last**: ${c.last_message.from_me ? "me: " : ""}${truncate(c.last_message.text, 160)} (${c.last_message.timestamp})`
+      );
     }
     lines.push("");
   }
@@ -1096,7 +1169,11 @@ function parseMoment(value: string | undefined, field: string, endOfDay = false)
   const bareDate = /^\d{4}-\d{2}-\d{2}$/.test(value.trim());
   const ms = Date.parse(bareDate ? `${value.trim()}T${endOfDay ? "23:59:59.999" : "00:00:00"}` : value);
   if (Number.isNaN(ms)) {
-    throw new WazapError("INVALID_ID", `${field} is not a date: "${value}".`, 'Pass "2026-09-01" or an ISO timestamp like "2026-09-01T14:00:00+03:00"');
+    throw new WazapError(
+      "INVALID_ID",
+      `${field} is not a date: "${value}".`,
+      'Pass "2026-09-01" or an ISO timestamp like "2026-09-01T14:00:00+03:00"'
+    );
   }
   return ms;
 }
@@ -1120,8 +1197,12 @@ function previewNote(messages: MessageView[], previews: Preview[], asked: boolea
   const photos = messages.filter((m) => m.type === "image").length;
   const missing = photos - previews.length;
   const parts = [
-    previews.length > 0 ? `${previews.length} preview${previews.length === 1 ? "" : "s"} attached, numbered in the order of the image blocks` : null,
-    missing > 0 ? `${missing} photo${missing === 1 ? "" : "s"} without a preview (over the ${MAX_PREVIEWS} per call, expired, not JPEG, or out of time; call again for more)` : null,
+    previews.length > 0
+      ? `${previews.length} preview${previews.length === 1 ? "" : "s"} attached, numbered in the order of the image blocks`
+      : null,
+    missing > 0
+      ? `${missing} photo${missing === 1 ? "" : "s"} without a preview (over the ${MAX_PREVIEWS} per call, expired, not JPEG, or out of time; call again for more)`
+      : null,
   ].filter((part): part is string => part !== null);
   return parts.length > 0 ? `${parts.join("; ")}.` : null;
 }
@@ -1138,7 +1219,7 @@ function renderMessages(
   title: string,
   messages: MessageView[],
   labels: Map<string, string> = new Map(),
-  note: string | null = null,
+  note: string | null = null
 ): string {
   if (messages.length === 0) return `${title}: no messages found.`;
   const lines = [`# ${title} (${messages.length})`, ""];
@@ -1153,7 +1234,9 @@ function renderMessages(
       m.quoted ? "reply" : null,
       m.reactions?.length ? m.reactions.map((r) => r.emoji).join("") : null,
     ].filter(Boolean);
-    lines.push(`- **${senderLabel(m, introduced)}** · ${m.age}${tags.length ? ` [${tags.join(", ")}]` : ""} · id: \`${m.message_id}\``);
+    lines.push(
+      `- **${senderLabel(m, introduced)}** · ${m.age}${tags.length ? ` [${tags.join(", ")}]` : ""} · id: \`${m.message_id}\``
+    );
     if (m.quoted) lines.push(`  > ${truncate(m.quoted.text, 160)}`);
     lines.push(`  ${truncate(m.text, 500)}`);
   }
@@ -1164,25 +1247,34 @@ function renderConversations(
   conversations: RecentConversation[],
   hours: number,
   labels: Map<string, string> = new Map(),
-  note: string | null = null,
+  note: string | null = null
 ): string {
   if (conversations.length === 0) return `No WhatsApp conversations in the last ${hours}h.`;
   const total = conversations.reduce((n, c) => n + c.messages.length, 0);
   const lines = [`# WhatsApp · last ${hours}h (${conversations.length} chats, ${total} messages)`, ""];
   if (note) lines.splice(1, 0, note);
   for (const c of conversations) {
-    lines.push(`## ${c.chat_name}${c.type === "group" ? " [group]" : ""}${c.note ? ` · ${c.note}` : ""} — \`${c.chat_id}\``);
+    lines.push(
+      `## ${c.chat_name}${c.type === "group" ? " [group]" : ""}${c.note ? ` · ${c.note}` : ""} — \`${c.chat_id}\``
+    );
     const introduced = new Set<string>();
     for (const m of c.messages) {
       const label = labels.get(m.message_id);
-      lines.push(`- [${m.timestamp}] ${senderLabel(m, introduced)}: ${truncate(m.text, 500)}${label ? ` (${label})` : ""}`);
+      lines.push(
+        `- [${m.timestamp}] ${senderLabel(m, introduced)}: ${truncate(m.text, 500)}${label ? ` (${label})` : ""}`
+      );
     }
     lines.push("");
   }
   return lines.join("\n");
 }
 
-function renderStories(stories: MessageView[], hours: number, labels: Map<string, string>, note: string | null): string {
+function renderStories(
+  stories: MessageView[],
+  hours: number,
+  labels: Map<string, string>,
+  note: string | null
+): string {
   if (stories.length === 0) return `No stories in the last ${hours}h.`;
   const lines = [`# Stories · last ${hours}h (${stories.length})`, ""];
   if (note) lines.splice(1, 0, note);
@@ -1203,7 +1295,10 @@ function renderUnanswered(chats: UnansweredChat[], minAgeHours: number): string 
   if (chats.length === 0) return `Nobody is waiting on you${since}.`;
   const lines = [`# Waiting on you${since} (${chats.length})`, ""];
   chats.forEach((c, i) => {
-    const who = (c.type === "group" ? `${c.name} [group] — ${c.ask.sender.name}` : `${c.name}${c.business ? " [business]" : ""}`) + (c.note ? ` · ${c.note}` : "");
+    const who =
+      (c.type === "group"
+        ? `${c.name} [group] — ${c.ask.sender.name}`
+        : `${c.name}${c.business ? " [business]" : ""}`) + (c.note ? ` · ${c.note}` : "");
     const more = c.messages_since_you > 1 ? `, ${c.messages_since_you} messages since yours` : "";
     lines.push(`${i + 1}. **${who}** · ${c.age}${more} — \`${c.chat_id}\``);
     lines.push(`   > ${truncate(c.ask.text, 300)}`);
@@ -1213,7 +1308,10 @@ function renderUnanswered(chats: UnansweredChat[], minAgeHours: number): string 
 }
 
 function renderWait(result: WaitResult): string {
-  const tail = [`cursor: \`${result.cursor}\``, result.cursor_reset ? "The cursor was from another run; this wait started from now." : null]
+  const tail = [
+    `cursor: \`${result.cursor}\``,
+    result.cursor_reset ? "The cursor was from another run; this wait started from now." : null,
+  ]
     .filter(Boolean)
     .join("\n");
   if (result.messages.length === 0) return `Nothing arrived before the timeout.\n${tail}`;
@@ -1236,7 +1334,9 @@ function renderContacts(query: string, contacts: ContactSummary[]): string {
   const lines = [`# Contacts matching "${query}" (${contacts.length})`, ""];
   for (const c of contacts) {
     const flags = [c.is_my_contact ? "saved" : null, c.is_business ? "business" : null].filter(Boolean);
-    lines.push(`- **${c.name}**${flags.length ? ` [${flags.join(", ")}]` : ""}${c.note ? ` · ${c.note}` : ""} — \`${c.contact_id}\`${c.number ? ` (${c.number})` : ""}`);
+    lines.push(
+      `- **${c.name}**${flags.length ? ` [${flags.join(", ")}]` : ""}${c.note ? ` · ${c.note}` : ""} — \`${c.contact_id}\`${c.number ? ` (${c.number})` : ""}`
+    );
   }
   return lines.join("\n");
 }

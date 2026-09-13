@@ -1,7 +1,15 @@
 import { accessSync, constants, statSync } from "node:fs";
 import { AccountRegistry, accountPolicy, anyAccountLinked, resolveAccount } from "./accounts.js";
 import { readLinkedAccount } from "./auth-state.js";
-import { WAZAP_VERSION, WRITES_ENABLE_FIX, WRITE_TOKEN_NOTE, accountPaths, isRemoteHttp, paths, type Config } from "./config.js";
+import {
+  WAZAP_VERSION,
+  WRITES_ENABLE_FIX,
+  WRITE_TOKEN_NOTE,
+  accountPaths,
+  isRemoteHttp,
+  paths,
+  type Config,
+} from "./config.js";
 import { WazapError, asWazapError } from "./errors.js";
 import { lockHolder, lockPid } from "./lock.js";
 import { oauthProblem, readGrants } from "./oauth.js";
@@ -62,7 +70,7 @@ const OPTIONAL_UNTIL_LINKED = new Set(["service", "skills", "transcribe"]);
 export async function runChecks(config: Config): Promise<Check[]> {
   const checks: Check[] = [];
   for (const check of CHECKS) checks.push(...[await check(config)].flat());
-  let linked = false;
+  let linked: boolean;
   try {
     linked = anyAccountLinked(config.dataDir);
   } catch {
@@ -109,7 +117,12 @@ function checkDataDir(config: Config): Check {
     return { name: "data dir", state: "info", detail: `${dir} does not exist yet (login creates it)` };
   }
   if (!stat.isDirectory()) {
-    return { name: "data dir", state: "fail", detail: `${dir} is not a directory`, fix: "move it aside or use --data-dir" };
+    return {
+      name: "data dir",
+      state: "fail",
+      detail: `${dir} is not a directory`,
+      fix: "move it aside or use --data-dir",
+    };
   }
 
   const mode = stat.mode & 0o777;
@@ -124,7 +137,12 @@ function checkDataDir(config: Config): Check {
   try {
     accessSync(dir, constants.W_OK);
   } catch {
-    return { name: "data dir", state: "fail", detail: `${dir} is not writable`, fix: "fix its ownership or permissions" };
+    return {
+      name: "data dir",
+      state: "fail",
+      detail: `${dir} is not writable`,
+      fix: "fix its ownership or permissions",
+    };
   }
   return { name: "data dir", state: "ok", detail: `${dir} (0700, writable)` };
 }
@@ -191,7 +209,11 @@ function checkCredentials(config: Config): Check {
   }
   if (linkedIds.length === 0) return { name: "credentials", state: "info", detail: "no account linked yet" };
   // The number is deliberately absent: status is the thing people screenshot.
-  return { name: "credentials", state: "ok", detail: records.length > 1 ? `readable (${linkedIds.join(", ")})` : "readable" };
+  return {
+    name: "credentials",
+    state: "ok",
+    detail: records.length > 1 ? `readable (${linkedIds.join(", ")})` : "readable",
+  };
 }
 
 function checkWrites(config: Config): Check {
@@ -342,7 +364,8 @@ function openaiChecks(settings: TranscribeSettings): Check[] {
 
 /** Version comparison over the numeric release fields; prereleases sort as their release. */
 export function isNewer(candidate: string, current: string): boolean {
-  const parts = (version: string): number[] => version.split(/[.\-+]/, 3).map((piece) => Number.parseInt(piece, 10) || 0);
+  const parts = (version: string): number[] =>
+    version.split(/[.\-+]/, 3).map((piece) => Number.parseInt(piece, 10) || 0);
   const [a, b] = [parts(candidate), parts(current)];
   for (let i = 0; i < 3; i++) {
     if ((a[i] ?? 0) !== (b[i] ?? 0)) return (a[i] ?? 0) > (b[i] ?? 0);
@@ -372,6 +395,11 @@ async function checkUpdate(): Promise<Check> {
   const latest = await latestVersion();
   if (latest === null) return { name: "update", state: "info", detail: "update check skipped (no answer)" };
   return isNewer(latest, WAZAP_VERSION)
-    ? { name: "update", state: "info", detail: `${latest} is out (running ${WAZAP_VERSION})`, fix: "run `wazap update`" }
+    ? {
+        name: "update",
+        state: "info",
+        detail: `${latest} is out (running ${WAZAP_VERSION})`,
+        fix: "run `wazap update`",
+      }
     : { name: "update", state: "ok", detail: `${WAZAP_VERSION} is current` };
 }

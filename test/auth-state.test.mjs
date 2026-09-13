@@ -26,7 +26,10 @@ test("saveCreds writes creds.json with 0600 and leaves no temp file behind", asy
   const { saveCreds } = await useAtomicAuthState(dir);
   await saveCreds();
   assert.equal(statSync(join(dir, "creds.json")).mode & 0o777, 0o600);
-  assert.deepEqual(readdirSync(dir).filter((f) => f.endsWith(".tmp")), []);
+  assert.deepEqual(
+    readdirSync(dir).filter((f) => f.endsWith(".tmp")),
+    []
+  );
 });
 
 test("a failed write leaves the previous file byte-for-byte intact", async () => {
@@ -41,7 +44,11 @@ test("a failed write leaves the previous file byte-for-byte intact", async () =>
   await assert.rejects(state.keys.set({ "pre-key": { 1: circular } }));
 
   assert.deepEqual(readFileSync(file), before, "the old key survived the failed write");
-  assert.deepEqual(readdirSync(dir).filter((f) => f.endsWith(".tmp")), [], "no partial file left behind");
+  assert.deepEqual(
+    readdirSync(dir).filter((f) => f.endsWith(".tmp")),
+    [],
+    "no partial file left behind"
+  );
 });
 
 test("concurrent writes to one key never leave torn JSON", async () => {
@@ -49,8 +56,8 @@ test("concurrent writes to one key never leave torn JSON", async () => {
   const { state } = await useAtomicAuthState(dir);
   await Promise.all(
     Array.from({ length: 200 }, (_, i) =>
-      state.keys.set({ "pre-key": { 1: { public: Buffer.alloc(i + 1, i % 256), private: Buffer.alloc(64, 7) } } }),
-    ),
+      state.keys.set({ "pre-key": { 1: { public: Buffer.alloc(i + 1, i % 256), private: Buffer.alloc(64, 7) } } })
+    )
   );
   const text = readFileSync(join(dir, "pre-key-1.json"), "utf8");
   assert.doesNotThrow(() => JSON.parse(text), "every observable state of the file is valid JSON");
@@ -85,7 +92,7 @@ test("unreadable creds surface as SESSION_CORRUPT with a fix", async () => {
       assert.equal(err.code, "SESSION_CORRUPT");
       assert.match(err.fix, /wazap-mcp logout/);
       return true;
-    },
+    }
   );
 });
 
@@ -115,7 +122,7 @@ test("withoutAppStateSync drops app-state-sync-version writes and reads", async 
   assert.deepEqual(await guarded.keys.get("app-state-sync-version", ["critical_unblock_low"]), {});
   assert.ok(
     readdirSync(dir).includes("app-state-sync-version-critical_unblock_low.json"),
-    "a version the real service saved is left alone",
+    "a version the real service saved is left alone"
   );
 });
 

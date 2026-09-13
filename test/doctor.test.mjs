@@ -83,7 +83,9 @@ const SUPERVISOR_STUB =
     darwin: {
       name: "launchd",
       label: "com.wazap.server",
-      binaries: { launchctl: (pid) => `#!/bin/sh\n[ "$1" = "print" ] && printf '\\tpid = ${pid}\\n' && exit 0\nexit 113\n` },
+      binaries: {
+        launchctl: (pid) => `#!/bin/sh\n[ "$1" = "print" ] && printf '\\tpid = ${pid}\\n' && exit 0\nexit 113\n`,
+      },
     },
     linux: {
       name: "systemd",
@@ -115,7 +117,7 @@ test(
     mkdirSync(join(dir, "auth"), { recursive: true });
     writeFileSync(
       join(dir, "auth", "creds.json"),
-      JSON.stringify({ registered: true, me: { id: "15550100:1@s.whatsapp.net", name: "Test" } }),
+      JSON.stringify({ registered: true, me: { id: "15550100:1@s.whatsapp.net", name: "Test" } })
     );
     const env = { PATH: `${bin}${delimiter}${process.env.PATH ?? ""}` };
 
@@ -129,13 +131,10 @@ test(
     assert.match(newer.stderr, /wazap update/);
     assert.doesNotMatch(newer.stderr, /service restart/);
 
-    writeFileSync(
-      join(dir, "service.json"),
-      `${JSON.stringify({ ...record, installedVersion: WAZAP_VERSION })}\n`,
-    );
+    writeFileSync(join(dir, "service.json"), `${JSON.stringify({ ...record, installedVersion: WAZAP_VERSION })}\n`);
     const same = await status(dir, [], env);
     assert.match(same.stderr, /✓ service: running \(pid 4242/);
-  },
+  }
 );
 
 test("unreadable credentials fail the check and carry the repair", async () => {
@@ -176,7 +175,7 @@ test("status --json prints one parseable object carrying the same checks", async
   assert.equal(report.server_pid, null);
   assert.deepEqual(
     report.checks.map((check) => check.name),
-    ["node", "data dir", "lock", "service", "credentials", "writes", "skills", "transcribe", "webhook", "update"],
+    ["node", "data dir", "lock", "service", "credentials", "writes", "skills", "transcribe", "webhook", "update"]
   );
   assert.equal(report.checks.find((check) => check.name === "writes").detail, "on (default)");
   assert.ok(["global", "checkout", "npx"].includes(report.install.kind), `install: ${JSON.stringify(report.install)}`);
