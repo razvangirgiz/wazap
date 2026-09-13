@@ -25,6 +25,7 @@ export type Command =
   | "service"
   | "expose"
   | "transcribe"
+  | "embed"
   | "update"
   | "webhook"
   | "account"
@@ -162,6 +163,7 @@ const COMMAND_ARGS: Record<Command, readonly number[]> = {
   // No positional means the first available provider; `off` takes the tunnel down.
   expose: [0, 1],
   transcribe: [1, 2],
+  embed: [1],
   update: [0],
   webhook: [1],
   account: [1, 2],
@@ -184,6 +186,7 @@ const COMMAND_USAGE: Partial<Record<Command, string>> = {
   skills: "Run `wazap skills install [<harness>]`",
   service: "Run `wazap service install|status|start|stop|restart|logs|uninstall`",
   transcribe: "Run `wazap transcribe download` or `wazap transcribe test <audio file>`",
+  embed: "Run `wazap embed download`",
   contacts: "Run `wazap contacts resync`",
   config:
     "Run `wazap config`, `wazap config writes on|off`, `wazap config transcribe local|openai|off`, `wazap config recall local|off`, or `wazap config webhook on|off`",

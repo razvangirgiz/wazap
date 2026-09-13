@@ -29,6 +29,8 @@ export type ErrorCode =
   | "RATE_LIMITED"
   | "TRANSCRIBE_UNAVAILABLE"
   | "TRANSCRIBE_FAILED"
+  | "RECALL_UNAVAILABLE"
+  | "RECALL_FAILED"
   | "TIMEOUT"
   | "SERVICE_ERROR"
   | "DRAFT_NOT_FOUND"
@@ -94,6 +96,9 @@ export const ERROR_GUIDE: Record<ErrorCode, string> = {
   TRANSCRIBE_UNAVAILABLE:
     "Transcription is off, or its binaries or model are missing. Tell the user to run the command in the fix; do not retry.",
   TRANSCRIBE_FAILED: "The transcription provider ran and failed. Read the message; retry once at most.",
+  RECALL_UNAVAILABLE:
+    "Semantic recall is off, or llama.cpp or the embedding model is missing. Tell the user to run the command in the fix; do not retry.",
+  RECALL_FAILED: "The embedding backend ran and failed. Read the message; retry once at most.",
   TIMEOUT: "WhatsApp did not answer in time. Retry once; if it fails again, call get_status.",
   SERVICE_ERROR:
     "wazap's own background service could not be managed. This is a machine problem, not a WhatsApp one: read the fix and tell the user.",

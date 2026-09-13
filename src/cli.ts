@@ -23,6 +23,12 @@ import { lockHolder, releaseLock, writeLock } from "./lock.js";
 import { log, logError, say } from "./logger.js";
 import { clockLabel, formatAge } from "./messages.js";
 import { oauthProblem } from "./oauth.js";
+import {
+  downloadEmbed,
+  embedModelSpec,
+  readRecallSettings,
+  type RecallSettings,
+} from "./recall/index.js";
 import { PAIRING_TIMEOUT_MS, linkSession, prettyCode, settledAccount, startPairing } from "./pairing.js";
 import { runHttp, runStdio, startLoopbackEndpoint } from "./server.js";
 import { fetchHealth, serviceHolding } from "./service.js";
@@ -408,6 +414,37 @@ export async function downloadTranscribeModel(settings: TranscribeSettings, spec
   const spin = spinner(`Checking ${spec.file}…`);
   try {
     const result = await downloadModel(settings.modelsDir, spec, (progress) => {
+      const percent = Math.floor((progress.received / progress.total) * 100);
+      spin.update(`Downloading ${spec.file} — ${mib(progress.received)} / ${mib(progress.total)} MiB (${percent}%)`);
+    });
+    spin.stop(ok(`${spec.file} (${mib(spec.bytes)} MiB) ${result.alreadyPresent ? "already present" : "verified"}`));
+  } catch (err) {
+    spin.stop();
+    throw err;
+  }
+}
+
+/** `wazap embed download`. */
+export async function runEmbed(config: Config): Promise<void> {
+  const [verb] = config.args;
+  if (verb !== "download") {
+    throw new WazapError(
+      "INVALID_ID",
+      `Cannot run \`wazap embed ${config.args.join(" ")}\`.`,
+      "Run `wazap embed download`"
+    );
+  }
+  await ensureDeps([DEPS.llama], config);
+  const settings = readRecallSettings(process.env, config.dataDir);
+  await downloadEmbedModel(settings, config.modelName);
+}
+
+/** The same check-then-fetch dance downloadTranscribeModel does, for the embed table. */
+export async function downloadEmbedModel(settings: RecallSettings, modelName?: string): Promise<void> {
+  const spec = embedModelSpec(modelName ?? settings.model);
+  const spin = spinner(`Checking ${spec.file}…`);
+  try {
+    const result = await downloadEmbed(settings.modelsDir, spec, (progress) => {
       const percent = Math.floor((progress.received / progress.total) * 100);
       spin.update(`Downloading ${spec.file} — ${mib(progress.received)} / ${mib(progress.total)} MiB (${percent}%)`);
     });
