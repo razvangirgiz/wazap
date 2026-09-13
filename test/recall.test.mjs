@@ -564,3 +564,103 @@ test("a bad since is INVALID_ID, same as search_messages", async () => {
     stub.server.close();
   }
 });
+
+test("a one-chat cluster cannot fill the list — another chat's relevant hit surfaces", async () => {
+  const OTHER = "40700000003@s.whatsapp.net";
+  const stub = await stubEmbedServer();
+  const { svc, sock } = await serviceWith({ WAZAP_RECALL: "local", WAZAP_EMBED_URL: stub.url });
+  try {
+    // Four PEER hits all outscore the OTHER one semantically; the cap is what
+    // keeps the fourth from taking its slot.
+    deliver(sock, [
+      text("M1", "medicamentul copilului dimineata"),
+      text("M2", "medicamentul copilului la pranz"),
+      text("M3", "medicamentul copilului seara"),
+      text("M4", "medicamentul copilului in weekend"),
+      { ...text("X1", "medicamentul e in dulap"), key: { remoteJid: OTHER, fromMe: false, id: "X1" } },
+    ]);
+    await svc.recallIdle();
+    const { data } = await svc.recall("medicamentul copilului", undefined, 10);
+    assert.deepEqual(
+      data.hits.map((h) => h.message.chat_id),
+      [PEER, PEER, PEER, OTHER, PEER],
+      "the chat cap demotes the fourth cluster hit below the other chat's"
+    );
+    assert.equal(data.hits.length, 5, "demotion keeps every relevant hit reachable");
+  } finally {
+    await svc.stop();
+    stub.server.close();
+  }
+});
+
+test("a near-duplicate in a second chat trails the list instead of taking a slot", async () => {
+  const OTHER = "40700000003@s.whatsapp.net";
+  const THIRD = "40700000004@s.whatsapp.net";
+  const stub = await stubEmbedServer();
+  const { svc, sock } = await serviceWith({ WAZAP_RECALL: "local", WAZAP_EMBED_URL: stub.url });
+  try {
+    deliver(sock, [
+      text("M1", "confirmat petrecerea de sambata"),
+      { ...text("X1", "confirmat petrecerea de sambata"), key: { remoteJid: OTHER, fromMe: false, id: "X1" } },
+      { ...text("Y1", "confirmat intalnirea de luni dimineata"), key: { remoteJid: THIRD, fromMe: false, id: "Y1" } },
+    ]);
+    await svc.recallIdle();
+    const { data } = await svc.recall("confirmat petrecerea", undefined, 10);
+    assert.deepEqual(
+      data.hits.map((h) => h.message.chat_id),
+      [PEER, THIRD, OTHER],
+      "the forwarded copy yields to the distinct answer"
+    );
+  } finally {
+    await svc.stop();
+    stub.server.close();
+  }
+});
+
+test("a rare literal token lifts the exact-name hit above an equisimilar one", async () => {
+  const stub = await stubEmbedServer();
+  const { svc, sock } = await serviceWith({ WAZAP_RECALL: "local", WAZAP_EMBED_URL: stub.url });
+  try {
+    // All five share one query concept, so the stub scores them alike; only
+    // A repeats "cata" verbatim, while "medic" sits in four of five and is
+    // too common to count.
+    deliver(sock, [
+      text("B", "medic dentist"),
+      text("A", "cata vizita"),
+      text("C", "medic ieri"),
+      text("D", "medic azi"),
+      text("E", "medic mereu"),
+    ]);
+    await svc.recallIdle();
+    const { data } = await svc.recall("cata medic", undefined, 10);
+    assert.equal(data.hits[0].message.message_id, `false_${PEER}_A`, "the rare token wins the tie");
+    assert.equal(data.hits[0].similarity, data.hits[1].similarity, "similarity stays the raw cosine");
+    assert.ok(data.hits[0].score > data.hits[1].score, "the bonus is what orders them");
+  } finally {
+    await svc.stop();
+    stub.server.close();
+  }
+});
+
+test("a hit under the floor stays out even when it carries the query token", async () => {
+  const stub = await stubEmbedServer();
+  const { svc, sock } = await serviceWith({
+    WAZAP_RECALL: "local",
+    WAZAP_EMBED_URL: stub.url,
+    WAZAP_RECALL_MIN_SIMILARITY: "0.25",
+  });
+  try {
+    deliver(sock, [text("GOOD", "cata medic"), text("NOISE", "cata pelerina rucsac munte cort saci")]);
+    await svc.recallIdle();
+    assert.equal(svc.recallStore.count, 2);
+    const { data } = await svc.recall("cata medic", undefined, 10);
+    assert.deepEqual(
+      data.hits.map((h) => h.message.message_id),
+      [`false_${PEER}_GOOD`],
+      "the bonus reorders survivors; it never rescues noise"
+    );
+  } finally {
+    await svc.stop();
+    stub.server.close();
+  }
+});

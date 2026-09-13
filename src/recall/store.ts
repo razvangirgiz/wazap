@@ -32,6 +32,18 @@ const DIR_MODE = 0o700;
 const FILE_MODE = 0o600;
 /** Owner call: fresh matches rank first. 0.5^(age/half-life) scales similarity. */
 const RECENCY_HALF_LIFE_MS = 30 * 24 * 60 * 60 * 1000;
+/** A literal query token shorter than this is too common to name anything. */
+const MIN_TOKEN_LEN = 4;
+/** What one matched rare token adds, before its document frequency scales it down. */
+const TOKEN_BOOST = 0.02;
+/** All token bonuses together may add at most this — a neighbour reorder, never a rescue. */
+const TOKEN_BOOST_MAX = 0.05;
+/** Reranking costs a text pass per candidate; only the top of the list gets it. */
+const RERANK_WINDOW = 100;
+/** One chat holds at most this many leading slots; further hits yield to other chats first. */
+const CHAT_SLOT_CAP = 3;
+/** Word overlap at or above this marks a candidate a near-duplicate of a picked hit. */
+const NEAR_DUP_JACCARD = 0.8;
 
 interface MetaPut extends RecallItem {
   op: "put";
@@ -80,6 +92,50 @@ function quantize(vector: number[], dims: number): Int8Array {
 
 function recencyDecay(ageMs: number): number {
   return Math.pow(0.5, Math.max(0, ageMs) / RECENCY_HALF_LIFE_MS);
+}
+
+/** Case- and diacritic-insensitive fold, so "Cata" and "cată" are one token. */
+function fold(text: string): string {
+  return text
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "");
+}
+
+interface TextProfile {
+  /** Folded, whitespace-collapsed text — the exact-duplicate key. */
+  norm: string;
+  /** Every folded word; the near-duplicate overlap check. */
+  words: Set<string>;
+  /**
+   * Folded word runs of ≥4 chars, plus whitespace chunks of ≥4 once inner
+   * punctuation is stripped — "17:30" and "1730" land on the same token.
+   * Membership only: "cata" never matches "catalin".
+   */
+  literals: Set<string>;
+}
+
+function textProfile(text: string): TextProfile {
+  const folded = fold(text);
+  const words = new Set<string>();
+  const literals = new Set<string>();
+  for (const match of folded.matchAll(/[\p{L}\p{N}]+/gu)) {
+    words.add(match[0]);
+    if (match[0].length >= MIN_TOKEN_LEN) literals.add(match[0]);
+  }
+  for (const chunk of folded.split(/\s+/)) {
+    const compact = chunk.replace(/[^\p{L}\p{N}]+/gu, "");
+    if (compact.length >= MIN_TOKEN_LEN) literals.add(compact);
+  }
+  return { norm: folded.replace(/\s+/g, " ").trim(), words, literals };
+}
+
+/** Word Jaccard — two texts sharing most of their words are one answer. */
+function nearDuplicate(a: Set<string>, b: Set<string>): boolean {
+  if (a.size === 0 || b.size === 0) return false;
+  let shared = 0;
+  for (const token of a) if (b.has(token)) shared++;
+  return shared / (a.size + b.size - shared) >= NEAR_DUP_JACCARD;
 }
 
 export class RecallStore {
@@ -365,7 +421,9 @@ export class RecallStore {
   /**
    * Brute-force cosine over live rows, filtered the way search_messages
    * filters, then ranked by similarity × recency decay. Exact, zero-dep and
-   * fast enough at living-memory sizes (50k × 768d int8).
+   * fast enough at living-memory sizes (50k × 768d int8). The floor applies
+   * to raw similarity — rerank() then reorders the survivors, never rescues
+   * what the floor dropped.
    */
   query(q: RecallQuery, nowMs = Date.now()): RankedHit[] {
     const unit = normalize(q.vector);
@@ -384,7 +442,72 @@ export class RecallStore {
       hits.push({ record, similarity, score: similarity * recencyDecay(nowMs - record.ts) });
     }
     hits.sort((a, b) => b.score - a.score);
-    return hits.slice(0, q.limit);
+    return this.rerank(hits, q);
+  }
+
+  /**
+   * The bounded reordering pass over the strongest candidates, run after the
+   * similarity floor has already decided what counts as an answer.
+   *
+   * First, literal tokens: embeddings are weak on names and identifiers, so a
+   * query token a hit carries verbatim earns a small bonus. A token's weight
+   * fades with its document frequency in the candidate set — a token in every
+   * candidate is common and adds nothing — and the total is capped, so the
+   * bonus reorders near-equal scores and can never lift a weak hit over a
+   * strong semantic one.
+   *
+   * Then diversity: a greedy walk picks in score order, but a near-duplicate
+   * of a picked hit, or a hit from a chat that already holds CHAT_SLOT_CAP
+   * slots, trails the list instead of filling it. Nothing is dropped and no
+   * score is invented — demoted hits keep their score and sit behind the
+   * picked ones, so a query scoped to a single chat comes back unchanged.
+   */
+  private rerank(sorted: RankedHit[], q: RecallQuery): RankedHit[] {
+    // A raw caller may omit limit; then the window itself is the cap.
+    const cap = Number.isFinite(q.limit) ? q.limit : sorted.length;
+    const candidates = sorted.slice(0, Math.max(cap, RERANK_WINDOW)).map((hit) => ({ hit, ...textProfile(hit.record.text) }));
+    if (candidates.length === 0) return [];
+
+    const wanted = q.text === undefined ? new Set<string>() : textProfile(q.text).literals;
+    if (wanted.size > 0) {
+      const df = new Map<string, number>();
+      for (const token of wanted) {
+        let count = 0;
+        for (const c of candidates) if (c.literals.has(token)) count++;
+        if (count > 0 && count < candidates.length) df.set(token, count);
+      }
+      if (df.size > 0) {
+        for (const c of candidates) {
+          let bonus = 0;
+          for (const [token, count] of df) {
+            if (c.literals.has(token)) bonus += TOKEN_BOOST * (1 - count / candidates.length);
+          }
+          c.hit = { ...c.hit, score: c.hit.score + Math.min(TOKEN_BOOST_MAX, bonus) };
+        }
+        candidates.sort((a, b) => b.hit.score - a.hit.score);
+      }
+    }
+
+    const picked: RankedHit[] = [];
+    const overflow: RankedHit[] = [];
+    const dups: RankedHit[] = [];
+    const perChat = new Map<string, number>();
+    const chosen: TextProfile[] = [];
+    for (const c of candidates) {
+      if (chosen.some((p) => p.norm === c.norm || nearDuplicate(p.words, c.words))) {
+        dups.push(c.hit);
+        continue;
+      }
+      const held = perChat.get(c.hit.record.jid) ?? 0;
+      if (held >= CHAT_SLOT_CAP) {
+        overflow.push(c.hit);
+        continue;
+      }
+      perChat.set(c.hit.record.jid, held + 1);
+      picked.push(c.hit);
+      chosen.push(c);
+    }
+    return [...picked, ...overflow, ...dups].slice(0, cap);
   }
 
   private async maybeCompact(): Promise<void> {
