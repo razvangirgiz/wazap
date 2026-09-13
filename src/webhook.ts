@@ -1,7 +1,7 @@
 /**
- * W1 outbound webhook: one live event (`message_received`). Global URL and
- * secret live in `.env`; an account may override either. Delivery never throws
- * into the WhatsApp or MCP path.
+ * W1 outbound webhook: three live events (`message_received`, `message_sent`
+ * and `connection`). Global URL and secret live in `.env`; an account may
+ * override either. Delivery never throws into the WhatsApp or MCP path.
  */
 import { createHmac, timingSafeEqual } from "node:crypto";
 import { setTimeout as sleep } from "node:timers/promises";
@@ -9,15 +9,25 @@ import { WAZAP_VERSION } from "./config.js";
 import { WazapError, asWazapError } from "./errors.js";
 import { logError } from "./logger.js";
 import { redact, stripPasted } from "./transcribe/index.js";
-import type { MessageView, WebhookInfo } from "./wa-types.js";
+import type { ConnectionStatus, MessageType, MessageView, WebhookInfo } from "./wa-types.js";
 
+export const WEBHOOK_EVENTS = ["message_received", "message_sent", "connection"] as const;
+export type WebhookEvent = (typeof WEBHOOK_EVENTS)[number];
+
+/** What `webhook test` posts when `--event` does not name another one. */
 export const WEBHOOK_EVENT = "message_received" as const;
 export const WEBHOOK_TIMEOUT_MS = 10_000;
-export const WEBHOOK_TEXT_MAX = 500;
+export const WEBHOOK_TEXT_MAX = 2000;
 export const WEBHOOK_RETRY_DELAYS_MS = [200, 500] as const;
 export const WEBHOOK_ON_FIX = "run `wazap config webhook on`";
 export const WEBHOOK_URL_FIX = "set WAZAP_WEBHOOK_URL to an https:// URL, or http:// on 127.0.0.1";
 export const WEBHOOK_TEST_FIX = "run `wazap webhook test`";
+export const WEBHOOK_EVENT_FIX = `pass one of ${WEBHOOK_EVENTS.join(", ")}`;
+
+export const WEBHOOK_KINDS = ["text", "audio", "image", "other"] as const;
+export type WebhookKind = (typeof WEBHOOK_KINDS)[number];
+
+export type WebhookConnectionStatus = "linked" | "disconnected" | "expired";
 
 const OFF = new Set(["", "off", "0", "no", "none", "false"]);
 const ON = new Set(["on", "1", "true", "yes"]);
@@ -42,16 +52,51 @@ export interface WebhookAccount {
   webhook_secret?: string;
 }
 
-/** The JSON body. HMAC is over this exact UTF-8 string. */
-export interface WebhookPayload {
-  event: typeof WEBHOOK_EVENT;
+/** The JSON body of a message event. HMAC is over this exact UTF-8 string. */
+export interface WebhookMessagePayload {
+  event: "message_received" | "message_sent";
   from: string;
   chat_id: string;
   ts: string;
+  timestamp: string;
   text: string;
+  truncated: boolean;
+  kind: WebhookKind;
+  from_me: boolean;
+  is_self_chat: boolean;
   message_id: string;
   account_id: string;
   account_name: string;
+}
+
+export interface WebhookConnectionPayload {
+  event: "connection";
+  status: WebhookConnectionStatus;
+  timestamp: string;
+  account_id: string;
+  account_name: string;
+}
+
+export type WebhookPayload = WebhookMessagePayload | WebhookConnectionPayload;
+
+/** The preview and whether it had to be cut, so the payload never decides twice. */
+export interface WebhookText {
+  text: string;
+  truncated: boolean;
+}
+
+/** A message event, as the service knows it at the moment it posts. */
+export interface WebhookMessageEvent {
+  event: "message_received" | "message_sent";
+  view: MessageView;
+  account: Pick<WebhookAccount, "id" | "name">;
+  isSelfChat: boolean;
+}
+
+export interface WebhookConnectionEvent {
+  status: WebhookConnectionStatus;
+  account: Pick<WebhookAccount, "id" | "name">;
+  at: number;
 }
 
 export type WebhookTestResult = { ok: true } | { ok: false; error: string; fix: string };
@@ -130,19 +175,108 @@ export function webhookSignatureMatches(body: string, secret: string, header: st
   return expected.length === received.length && timingSafeEqual(expected, received);
 }
 
-export function previewText(text: string): string {
-  if (text.length <= WEBHOOK_TEXT_MAX) return text;
-  return `${text.slice(0, WEBHOOK_TEXT_MAX - 1)}…`;
+export function previewText(text: string): WebhookText {
+  if (text.length <= WEBHOOK_TEXT_MAX) return { text, truncated: false };
+  return { text: `${text.slice(0, WEBHOOK_TEXT_MAX - 1)}…`, truncated: true };
 }
 
-export function asWebhookPayload(view: MessageView, account: Pick<WebhookAccount, "id" | "name">): WebhookPayload {
+/**
+ * Every message type collapses into one of four buckets a consumer can switch
+ * on. A recorded note (`voice`) and an attached file (`audio`) share `audio`,
+ * because both carry speech and both can arrive transcribed.
+ */
+const KIND_BY_TYPE: Record<MessageType, WebhookKind> = {
+  text: "text",
+  image: "image",
+  audio: "audio",
+  voice: "audio",
+  video: "other",
+  document: "other",
+  sticker: "other",
+  location: "other",
+  contact: "other",
+  poll: "other",
+  reaction: "other",
+  deleted: "other",
+  view_once: "other",
+  call: "other",
+  system: "other",
+  unknown: "other",
+};
+
+/**
+ * `--event` as typed on the command line. The one place a string becomes an
+ * event, so nothing downstream has to widen the union back to `string`.
+ */
+export function parseWebhookEvent(raw: string | undefined): WebhookEvent {
+  if (raw === undefined) return WEBHOOK_EVENT;
+  const value = raw.trim();
+  const known = WEBHOOK_EVENTS.find((event) => event === value);
+  if (known === undefined) {
+    throw new WazapError("INVALID_ID", `Unknown webhook event "${raw}".`, WEBHOOK_EVENT_FIX);
+  }
+  return known;
+}
+
+export function webhookKind(type: MessageType): WebhookKind {
+  return KIND_BY_TYPE[type];
+}
+
+/**
+ * `null` is a state nobody outside wazap can act on, so it posts nothing:
+ * `linking` and `connecting` are steps on the way to `connected`, and
+ * `not_linked` is the state before any credentials exist. Every credential
+ * failure collapses to `expired`, the one thing a consumer does something about.
+ */
+const CONNECTION_STATUS: Record<ConnectionStatus, WebhookConnectionStatus | null> = {
+  not_linked: null,
+  linking: null,
+  connecting: null,
+  connected: "linked",
+  disconnected: "disconnected",
+  logged_out: "expired",
+  session_corrupt: "expired",
+  auth_failure: "expired",
+};
+
+export function webhookConnectionStatus(status: ConnectionStatus): WebhookConnectionStatus | null {
+  return CONNECTION_STATUS[status];
+}
+
+/**
+ * The same instant as the local-offset `ts`, never a fresh read of the clock. The
+ * instant is the sender's to state, and a peer that states a nonsense one would
+ * otherwise cost the whole delivery, so an unparseable `ts` costs this one field.
+ */
+function utcTimestamp(iso: string): string {
+  const at = new Date(iso);
+  return Number.isNaN(at.getTime()) ? new Date().toISOString() : at.toISOString();
+}
+
+export function asWebhookPayload({ event, view, account, isSelfChat }: WebhookMessageEvent): WebhookMessagePayload {
+  const { text, truncated } = previewText(view.transcript ?? view.text);
   return {
-    event: WEBHOOK_EVENT,
+    event,
     from: view.sender.phone ?? view.sender.id,
     chat_id: view.chat_id,
     ts: view.timestamp,
-    text: previewText(view.text),
+    timestamp: utcTimestamp(view.timestamp),
+    text,
+    truncated,
+    kind: webhookKind(view.type),
+    from_me: view.from_me,
+    is_self_chat: isSelfChat,
     message_id: view.message_id,
+    account_id: account.id,
+    account_name: account.name,
+  };
+}
+
+export function asConnectionPayload({ status, account, at }: WebhookConnectionEvent): WebhookConnectionPayload {
+  return {
+    event: "connection",
+    status,
+    timestamp: new Date(at).toISOString(),
     account_id: account.id,
     account_name: account.name,
   };
@@ -163,7 +297,7 @@ export function webhookInfo(settings: WebhookSettings, lastError: string | null)
   }
 }
 
-/** Posts `message_received` when the webhook is on and valid. Never throws. */
+/** Posts an event when the webhook is on and valid. Never throws. */
 export class WebhookSink {
   lastError: string | null = null;
   private readonly post: WebhookFetch;
@@ -190,20 +324,26 @@ export class WebhookSink {
     return webhookInfo(this.settings(), this.lastError);
   }
 
-  async notify(payload: WebhookPayload): Promise<void> {
+  /**
+   * True only when the consumer accepted the POST, so a caller whose event has no
+   * later transition to recover with can tell a delivery from a drop. Still never
+   * throws.
+   */
+  async notify(payload: WebhookPayload): Promise<boolean> {
     try {
       const settings = this.settings();
-      if (settings.kind !== "ready") return;
-      await this.postEvent(payload, settings);
+      if (settings.kind !== "ready") return false;
+      return (await this.postEvent(payload, settings)).ok;
     } catch (err) {
       const settings = this.settings();
       const secret = settings.kind === "ready" ? settings.secret : "";
       this.lastError = redact(err instanceof Error ? err.message : String(err), secret);
       logError("webhook", this.lastError);
+      return false;
     }
   }
 
-  async sendTest(): Promise<WebhookTestResult> {
+  async sendTest(event: WebhookEvent = WEBHOOK_EVENT): Promise<WebhookTestResult> {
     const settings = this.settings();
     switch (settings.kind) {
       case "off":
@@ -211,7 +351,7 @@ export class WebhookSink {
       case "invalid":
         return { ok: false, error: settings.detail, fix: settings.fix };
       case "ready":
-        return this.postEvent(testPayload(this.account), settings);
+        return this.postEvent(testPayload(event, this.account), settings);
       default: {
         const _exhaustive: never = settings;
         return _exhaustive;
@@ -227,7 +367,7 @@ export class WebhookSink {
     const attempts = 1 + this.retryDelays.length;
     let last: WebhookTestResult = { ok: false, error: "webhook POST failed", fix: "check the webhook URL is reachable and returns 2xx" };
     for (let i = 0; i < attempts; i++) {
-      last = await this.postOnce(body, settings);
+      last = await this.postOnce(body, payload.event, settings);
       if (last.ok) {
         this.lastError = null;
         return last;
@@ -245,6 +385,7 @@ export class WebhookSink {
 
   private async postOnce(
     body: string,
+    event: WebhookEvent,
     settings: Extract<WebhookSettings, { kind: "ready" }>,
   ): Promise<WebhookTestResult> {
     try {
@@ -253,7 +394,7 @@ export class WebhookSink {
         headers: {
           "content-type": "application/json",
           "user-agent": `wazap/${WAZAP_VERSION}`,
-          "x-wazap-event": WEBHOOK_EVENT,
+          "x-wazap-event": event,
           "x-wazap-signature": webhookSignature(body, settings.secret),
         },
         body,
@@ -268,16 +409,23 @@ export class WebhookSink {
   }
 }
 
-function testPayload(account?: Pick<WebhookAccount, "id" | "name">): WebhookPayload {
+function testPayload(event: WebhookEvent, account?: Pick<WebhookAccount, "id" | "name">): WebhookPayload {
+  const now = new Date().toISOString();
+  const named = { account_id: account?.id ?? "default", account_name: account?.name ?? "default" };
+  if (event === "connection") return { event, status: "linked", timestamp: now, ...named };
   return {
-    event: WEBHOOK_EVENT,
+    event,
     from: "wazap",
     chat_id: "test@s.whatsapp.net",
-    ts: new Date().toISOString(),
+    ts: now,
+    timestamp: now,
     text: "wazap webhook test",
+    truncated: false,
+    kind: "text",
+    from_me: event === "message_sent",
+    is_self_chat: false,
     message_id: "test",
-    account_id: account?.id ?? "default",
-    account_name: account?.name ?? "default",
+    ...named,
   };
 }
 

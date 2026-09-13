@@ -84,6 +84,8 @@ export interface Config {
   accountId?: string;
   /** `--name` on `account add`. */
   accountName?: string;
+  /** `--event` on `webhook test`, as typed. `parseWebhookEvent` narrows it. */
+  webhookEvent?: string;
 }
 
 export interface Paths {
@@ -294,6 +296,7 @@ export function parseCli(argv: string[] = process.argv.slice(2)): CliInvocation 
         service: { type: "boolean" },
         expose: { type: "boolean" },
         yes: { type: "boolean", short: "y" },
+        event: { type: "string" },
         account: { type: "string" },
         name: { type: "string" },
         help: { type: "boolean", short: "h" },
@@ -382,6 +385,7 @@ export function parseCli(argv: string[] = process.argv.slice(2)): CliInvocation 
       keepRunning: values.expose === true ? "expose" : values.service === true ? "service" : null,
       accountId: values.account,
       accountName: values.name,
+      webhookEvent: values.event,
     },
   };
 }

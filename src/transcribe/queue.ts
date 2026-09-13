@@ -9,14 +9,29 @@ export class TranscribeQueue {
   private readonly pending: string[] = [];
   private inFlight: string | null = null;
   private waiters: Array<() => void> = [];
+  /** One entry per id queued or in flight, which is also how a repeat enqueue is spotted. */
+  private readonly settling = new Map<string, { promise: Promise<void>; settle: () => void }>();
 
   constructor(private readonly run: (id: string) => Promise<void>) {}
 
-  /** Ignores an id already queued or in flight. */
-  enqueue(id: string): void {
-    if (this.inFlight === id || this.pending.includes(id)) return;
+  /**
+   * Settles when this id's own run settles, so a caller can wait for one
+   * transcript without waiting for the queue behind it. It never rejects: a run
+   * that failed settles like one that worked, because ingestion must never see a
+   * transcription fail. An id already queued or in flight hands back the promise
+   * already outstanding, so two enqueues of one id share one settle.
+   */
+  enqueue(id: string): Promise<void> {
+    const outstanding = this.settling.get(id);
+    if (outstanding !== undefined) return outstanding.promise;
+    let settle!: () => void;
+    const promise = new Promise<void>((resolve) => {
+      settle = resolve;
+    });
+    this.settling.set(id, { promise, settle });
     this.pending.push(id);
     if (this.inFlight === null) void this.drain();
+    return promise;
   }
 
   get size(): number {
@@ -43,6 +58,9 @@ export class TranscribeQueue {
         logError(`transcribe ${id}`, err);
       }
       this.inFlight = null;
+      const done = this.settling.get(id);
+      this.settling.delete(id);
+      done?.settle();
     }
     const waiters = this.waiters;
     this.waiters = [];

@@ -20,6 +20,7 @@ import {
   WEBHOOK_ON_FIX,
   WEBHOOK_TEST_FIX,
   WebhookSink,
+  parseWebhookEvent,
   readWebhookSettings,
   requireWebhookUrl,
   type WebhookOverride,
@@ -233,7 +234,7 @@ async function applyWebhook(config: Config, value: string): Promise<void> {
       return;
     }
     setWebhookFlag(config, "off");
-    say(ok("webhook: off — live inbound messages are not posted anywhere. Turn it on with `wazap config webhook on`."));
+    say(ok("webhook: off — nothing is posted anywhere. Turn it on with `wazap config webhook on`."));
     say(dim(`Stored in ${shortPath(paths(config.dataDir).envFile)}.`));
     warnIfServerRunning(config);
     return;
@@ -282,7 +283,7 @@ async function enableWebhook(config: Config): Promise<void> {
     // The switch stays global; the URL and secret are this account's override.
     AccountRegistry.load(config.dataDir).setWebhook(config.accountId, { url, secret });
     setEnvSetting(p.envFile, "WAZAP_WEBHOOK", "on");
-    say(ok(`webhook: on for ${config.accountId} — live inbound messages POST to ${new URL(url).host} as message_received.`));
+    say(ok(`webhook: on for ${config.accountId} — messages both ways and link changes POST to ${new URL(url).host}.`));
     say(dim(`URL and secret stored in ${shortPath(p.accountsFile)}; WAZAP_WEBHOOK=on in ${shortPath(p.envFile)}.`));
     warnIfServerRunning(config);
     return;
@@ -290,7 +291,7 @@ async function enableWebhook(config: Config): Promise<void> {
   setEnvSetting(p.envFile, "WAZAP_WEBHOOK", "on");
   setEnvSetting(p.envFile, "WAZAP_WEBHOOK_URL", url);
   setEnvSetting(p.envFile, "WAZAP_WEBHOOK_SECRET", secret);
-  say(ok(`webhook: on — live inbound messages POST to ${new URL(url).host} as message_received.`));
+  say(ok(`webhook: on — messages both ways and link changes POST to ${new URL(url).host}.`));
   say(dim(`Stored in ${shortPath(p.envFile)}.`));
   warnIfServerRunning(config);
 }
@@ -300,8 +301,9 @@ function setWebhookFlag(config: Config, value: "on" | "off"): void {
 }
 
 async function testWebhook(config: Config): Promise<void> {
+  const event = parseWebhookEvent(config.webhookEvent);
   const selected = resolveAccount(config.dataDir, config.accountId);
-  const result = await new WebhookSink(process.env, { account: selected.account }).sendTest();
+  const result = await new WebhookSink(process.env, { account: selected.account }).sendTest(event);
   if (result.ok) {
     say(ok("webhook: test delivered"));
     return;

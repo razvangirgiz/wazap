@@ -1,6 +1,7 @@
 /**
- * W1 outbound webhook: config validation, HMAC of the raw body, and a failed
- * POST that must not take down the WhatsApp path.
+ * W1 outbound webhook: config validation, the three events and the payload they
+ * carry, HMAC of the raw body, and a failed POST that must not take down the
+ * WhatsApp path.
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -13,21 +14,28 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { parse } from "dotenv";
-import { proto } from "baileys";
+import { DisconnectReason, proto } from "baileys";
 
 import { AccountRegistry } from "../dist/accounts.js";
 import { webhookCheck } from "../dist/doctor.js";
+import { SentIds } from "../dist/sent-ids.js";
+import { MESSAGE_TYPES } from "../dist/wa-types.js";
 import {
+  WEBHOOK_EVENTS,
+  WEBHOOK_KINDS,
+  WEBHOOK_TEXT_MAX,
   WebhookSink,
   asWebhookPayload,
   previewText,
   readWebhookSettings,
   requireWebhookUrl,
+  webhookConnectionStatus,
+  webhookKind,
   webhookSignature,
   webhookSignatureMatches,
 } from "../dist/webhook.js";
 import { WhatsAppService } from "../dist/whatsapp.js";
-import { connectedService, waitFor } from "./helpers.mjs";
+import { connectedService, fakeSocket, offlineConfig, openService, waitFor } from "./helpers.mjs";
 
 const run = promisify(execFile);
 const binary = join(dirname(fileURLToPath(import.meta.url)), "..", "dist", "index.js");
@@ -94,13 +102,76 @@ function textMessage(id, body, at = Date.now()) {
   };
 }
 
+/** What another linked device, or wazap itself, sends: the same chat, `fromMe`. */
+function ownMessage(id, body, { chat = PEER, at = Date.now() } = {}) {
+  return {
+    key: { remoteJid: chat, fromMe: true, id },
+    messageTimestamp: Math.floor(at / 1000),
+    message: { conversation: body },
+  };
+}
+
+function voiceNote(id, seconds, at = Date.now()) {
+  return {
+    key: { remoteJid: PEER, fromMe: false, id },
+    messageTimestamp: Math.floor(at / 1000),
+    message: { audioMessage: { mimetype: "audio/ogg; codecs=opus", ptt: true, seconds } },
+  };
+}
+
+/** The close Baileys reports, carrying the status code the handler reads. */
+const closedWith = (statusCode) => ({
+  connection: "close",
+  lastDisconnect: { error: { message: "Connection Terminated", output: { statusCode } } },
+});
+
+/** Point the in-process sink at `url`, and hand back the restore the test owes. */
+function saveWebhookEnv(url) {
+  const saved = WEBHOOK_KEYS.map((key) => [key, process.env[key]]);
+  Object.assign(process.env, readyEnv(url));
+  return () => {
+    for (const [key, value] of saved) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  };
+}
+
+/**
+ * The transcription environment is read in the constructor, so it is set around
+ * that call and put straight back. The openai provider is the one whose
+ * readiness is a key, which keeps whisper.cpp and its model out of this file.
+ */
+function transcribingService(prefix) {
+  const keys = ["WAZAP_TRANSCRIBE", "WAZAP_TRANSCRIBE_API_KEY", "WAZAP_TRANSCRIBE_AUTO"];
+  const saved = keys.map((key) => [key, process.env[key]]);
+  Object.assign(process.env, {
+    WAZAP_TRANSCRIBE: "openai",
+    WAZAP_TRANSCRIBE_API_KEY: "sk-test-key",
+    WAZAP_TRANSCRIBE_AUTO: "1",
+  });
+  try {
+    return connectedService(WhatsAppService, { prefix, id: ME, name: "Răzvan", config: { readOnly: false } });
+  } finally {
+    for (const [key, value] of saved) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  }
+}
+
 function samplePayload(overrides = {}) {
   return {
     event: "message_received",
     from: PEER,
     chat_id: PEER,
     ts: "2026-09-08T14:00:00+00:00",
+    timestamp: "2026-09-08T14:00:00.000Z",
     text: "salut",
+    truncated: false,
+    kind: "text",
+    from_me: false,
+    is_self_chat: false,
     message_id: "false_40700000002@s.whatsapp.net_ABC",
     account_id: "default",
     account_name: "default",
@@ -150,8 +221,9 @@ test("an account can override only the URL and still use the global secret", () 
 });
 
 test("asWebhookPayload names the account", () => {
-  const payload = asWebhookPayload(
-    {
+  const payload = asWebhookPayload({
+    event: "message_received",
+    view: {
       message_id: "false_40700000002@s.whatsapp.net_ABC",
       chat_id: PEER,
       from_me: false,
@@ -160,12 +232,96 @@ test("asWebhookPayload names the account", () => {
       text: "salut",
       sender: { id: PEER, phone: "40700000002" },
     },
-    { id: "work", name: "Work" },
-  );
+    account: { id: "work", name: "Work" },
+    isSelfChat: false,
+  });
   assert.equal(payload.account_id, "work");
   assert.equal(payload.account_name, "Work");
   assert.equal(payload.event, "message_received");
   assert.equal(payload.text, "salut");
+});
+
+test("an audio payload carries the transcription instead of the placeholder", () => {
+  const payload = asWebhookPayload({
+    event: "message_received",
+    view: {
+      message_id: "false_40700000002@s.whatsapp.net_V1",
+      chat_id: PEER,
+      from_me: false,
+      timestamp: "2026-09-08T14:00:00+00:00",
+      type: "voice",
+      text: '[voice message · 0:06] "am uitat umbrela acasă"',
+      transcript: "am uitat umbrela acasă",
+      sender: { id: PEER, phone: "40700000002" },
+    },
+    account: { id: "default", name: "default" },
+    isSelfChat: false,
+  });
+  assert.equal(payload.text, "am uitat umbrela acasă");
+  assert.equal(payload.kind, "audio");
+  assert.equal(payload.truncated, false);
+});
+
+/**
+ * The instant is the sender's to state, and `messageTimestamp` is a protobuf field
+ * nobody bounds, so a junk one must cost one field and not the delivery.
+ */
+test("an unparseable ts falls back to now instead of throwing the event away", () => {
+  const payload = asWebhookPayload({
+    event: "message_received",
+    view: {
+      message_id: "false_40700000002@s.whatsapp.net_JUNK",
+      chat_id: PEER,
+      from_me: false,
+      timestamp: "NaN-NaN-NaNTNaN:NaN:NaN+NaN:NaN",
+      type: "text",
+      text: "salut",
+      sender: { id: PEER, phone: "40700000002" },
+    },
+    account: { id: "default", name: "default" },
+    isSelfChat: false,
+  });
+  assert.equal(payload.ts, "NaN-NaN-NaNTNaN:NaN:NaN+NaN:NaN", "what the peer said is still reported");
+  assert.match(payload.timestamp, /Z$/);
+  assert.ok(Number.isFinite(Date.parse(payload.timestamp)));
+  assert.equal(payload.text, "salut");
+});
+
+test("webhookKind gives every message type a bucket, and both audio types the same one", () => {
+  const kinds = new Set(WEBHOOK_KINDS);
+  for (const type of MESSAGE_TYPES) {
+    assert.ok(kinds.has(webhookKind(type)), `${type} has no webhook kind`);
+  }
+  assert.equal(webhookKind("text"), "text");
+  assert.equal(webhookKind("image"), "image");
+  assert.equal(webhookKind("voice"), "audio", "a recorded note");
+  assert.equal(webhookKind("audio"), "audio", "an attached file");
+  assert.equal(webhookKind("video"), "other");
+  assert.equal(webhookKind("unknown"), "other");
+});
+
+test("webhookConnectionStatus maps only what a consumer can act on", () => {
+  assert.equal(webhookConnectionStatus("connected"), "linked");
+  assert.equal(webhookConnectionStatus("disconnected"), "disconnected");
+  assert.equal(webhookConnectionStatus("logged_out"), "expired");
+  assert.equal(webhookConnectionStatus("session_corrupt"), "expired");
+  assert.equal(webhookConnectionStatus("auth_failure"), "expired");
+  for (const transient of ["not_linked", "linking", "connecting"]) {
+    assert.equal(webhookConnectionStatus(transient), null, `${transient} is nothing to announce`);
+  }
+});
+
+test("SentIds remembers an id until its ttl runs out, then forgets it", () => {
+  let now = 1_000;
+  const ids = new SentIds({ ttlMs: 60_000, now: () => now });
+  ids.note("true_40700000002@s.whatsapp.net_OWN");
+  assert.equal(ids.has("true_40700000002@s.whatsapp.net_OWN"), true);
+  assert.equal(ids.size, 1);
+  now += 59_000;
+  assert.equal(ids.has("true_40700000002@s.whatsapp.net_OWN"), true, "an echo can take a while to come back");
+  now += 2_000;
+  assert.equal(ids.has("true_40700000002@s.whatsapp.net_OWN"), false);
+  assert.equal(ids.size, 0, "nothing is left for a long-running service to carry");
 });
 
 test("on with a URL and a secret is ready, and a trailing slash is stripped", () => {
@@ -244,10 +400,14 @@ test("off delivers zero POSTs, even when a URL is set", async () => {
   assert.equal(calls, 0);
 });
 
-test("a long body is posted as a preview, not the whole text", () => {
-  assert.equal(previewText("short"), "short");
-  assert.equal(previewText("x".repeat(500)).length, 500);
-  assert.equal(previewText("x".repeat(501)), `${"x".repeat(499)}…`);
+test("a long body is posted as a preview that says it was cut", () => {
+  assert.equal(WEBHOOK_TEXT_MAX, 2000);
+  assert.deepEqual(previewText("short"), { text: "short", truncated: false });
+  assert.deepEqual(previewText("x".repeat(2000)), { text: "x".repeat(2000), truncated: false });
+  const cut = previewText("x".repeat(2001));
+  assert.equal(cut.text.length, 2000);
+  assert.equal(cut.text, `${"x".repeat(1999)}…`);
+  assert.equal(cut.truncated, true);
 });
 
 test("a 5xx is retried, then last_error is set and nothing is thrown", async () => {
@@ -522,6 +682,358 @@ test("a live notify posts to the account webhook_url and names that account", as
   }
 });
 
+/**
+ * The echo is driven as `notify` on purpose, which is the id backstop and not the
+ * path production takes. The test after this one covers the `append` Baileys
+ * really emits for a local send.
+ */
+test("a message typed on the phone posts message_sent, and the noted id keeps wazap's own echo quiet", async () => {
+  const received = [];
+  const server = await listen(async (req, res) => {
+    received.push(JSON.parse(await readBody(req)));
+    res.writeHead(204);
+    res.end();
+  });
+  const restoreEnv = saveWebhookEnv(server.url);
+  const { svc, sock } = connectedService(WhatsAppService, {
+    prefix: "wazap-webhook-sent-",
+    id: ME,
+    name: "Răzvan",
+    config: { readOnly: false },
+  });
+  sock.onWhatsApp = async (jid) => [{ jid, exists: true }];
+  sock.sendMessage = async (jid, content) => ({
+    key: { remoteJid: jid, fromMe: true, id: "OWN" },
+    messageTimestamp: Math.floor(Date.now() / 1000),
+    message: { conversation: content.text },
+  });
+  try {
+    sock.ev.emit("messages.upsert", { type: "notify", messages: [textMessage("IN", "salut")] });
+    await waitFor(() => received.length > 0, 3_000, "the inbound webhook POST");
+
+    const sent = await svc.sendMessage(PEER, "răspuns");
+    sock.ev.emit("messages.upsert", { type: "notify", messages: [ownMessage("OWN", "răspuns")] });
+    sock.ev.emit("messages.upsert", { type: "notify", messages: [ownMessage("PHONE", "răspuns")] });
+    await waitFor(() => received.length > 1, 3_000, "the message_sent webhook POST");
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    assert.equal(sent.message_id, `true_${PEER}_OWN`);
+    assert.equal(received.length, 2, "the echo of wazap's own send must not come back as an event");
+    assert.equal(received[1].event, "message_sent");
+    assert.equal(received[1].from_me, true);
+    assert.equal(received[1].text, "răspuns", "the same text as wazap sent, so only the id can tell them apart");
+    assert.equal(received[1].message_id, `true_${PEER}_PHONE`);
+    assert.equal(received[1].is_self_chat, false);
+  } finally {
+    await svc.stop();
+    await server.close();
+    restoreEnv();
+  }
+});
+
+/**
+ * What Baileys does with this socket's own send: it re-emits it as an `append`,
+ * which the notify gate drops. That gate, not the noted id, is what keeps wazap
+ * from answering itself in production.
+ */
+test("wazap's own send is quiet as the append Baileys emits for it", async () => {
+  const received = [];
+  const server = await listen(async (req, res) => {
+    received.push(JSON.parse(await readBody(req)));
+    res.writeHead(204);
+    res.end();
+  });
+  const restoreEnv = saveWebhookEnv(server.url);
+  const { svc, sock } = connectedService(WhatsAppService, {
+    prefix: "wazap-webhook-append-",
+    id: ME,
+    name: "Răzvan",
+    config: { readOnly: false },
+  });
+  sock.onWhatsApp = async (jid) => [{ jid, exists: true }];
+  sock.sendMessage = async (jid, content) => ({
+    key: { remoteJid: jid, fromMe: true, id: "OWN" },
+    messageTimestamp: Math.floor(Date.now() / 1000),
+    message: { conversation: content.text },
+  });
+  try {
+    sock.ev.emit("messages.upsert", { type: "append", messages: [ownMessage("NEVER_NOTED", "răspuns")] });
+    const sent = await svc.sendMessage(PEER, "răspuns");
+    sock.ev.emit("messages.upsert", { type: "notify", messages: [ownMessage("OWN", "răspuns")] });
+    sock.ev.emit("messages.upsert", { type: "notify", messages: [textMessage("IN", "salut")] });
+    await waitFor(() => received.length > 0, 3_000, "the inbound webhook POST");
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    assert.equal(sent.message_id, `true_${PEER}_OWN`);
+    assert.equal(received.length, 1, "an append is not an event, whether its id was noted or not");
+    assert.equal(received[0].event, "message_received");
+    assert.equal(received[0].text, "salut");
+  } finally {
+    await svc.stop();
+    await server.close();
+    restoreEnv();
+  }
+});
+
+test("the self chat is marked is_self_chat, and timestamp is ts in UTC", async () => {
+  const received = [];
+  const server = await listen(async (req, res) => {
+    received.push(JSON.parse(await readBody(req)));
+    res.writeHead(204);
+    res.end();
+  });
+  const restoreEnv = saveWebhookEnv(server.url);
+  const { svc, sock } = connectedService(WhatsAppService, { prefix: "wazap-webhook-self-", id: ME, name: "Răzvan" });
+  try {
+    sock.ev.emit("messages.upsert", { type: "notify", messages: [ownMessage("SELF", "notă pentru mine", { chat: ME })] });
+    await waitFor(() => received.length > 0, 3_000, "the self-chat webhook POST");
+    const self = received[0];
+    assert.equal(self.event, "message_sent");
+    assert.equal(self.from_me, true);
+    assert.equal(self.is_self_chat, true);
+    assert.equal(self.chat_id, ME);
+    assert.equal(self.kind, "text");
+    assert.equal(self.truncated, false);
+    assert.match(self.timestamp, /Z$/);
+    assert.equal(Date.parse(self.timestamp), Date.parse(self.ts), "the same instant as ts, not a second look at the clock");
+
+    sock.ev.emit("messages.upsert", { type: "notify", messages: [textMessage("IN", "salut")] });
+    await waitFor(() => received.length > 1, 3_000, "the inbound webhook POST");
+    assert.equal(received[1].event, "message_received");
+    assert.equal(received[1].from_me, false);
+    assert.equal(received[1].is_self_chat, false);
+  } finally {
+    await svc.stop();
+    await server.close();
+    restoreEnv();
+  }
+});
+
+test("an image posts kind image, and a sticker falls through to other", async () => {
+  const received = [];
+  const server = await listen(async (req, res) => {
+    received.push(JSON.parse(await readBody(req)));
+    res.writeHead(204);
+    res.end();
+  });
+  const restoreEnv = saveWebhookEnv(server.url);
+  const { svc, sock } = connectedService(WhatsAppService, { prefix: "wazap-webhook-kind-", id: ME, name: "Răzvan" });
+  try {
+    sock.ev.emit("messages.upsert", {
+      type: "notify",
+      messages: [
+        {
+          key: { remoteJid: PEER, fromMe: false, id: "IMG" },
+          messageTimestamp: Math.floor(Date.now() / 1000),
+          message: { imageMessage: { mimetype: "image/jpeg" } },
+        },
+      ],
+    });
+    await waitFor(() => received.length > 0, 3_000, "the image webhook POST");
+    assert.equal(received[0].kind, "image");
+
+    sock.ev.emit("messages.upsert", {
+      type: "notify",
+      messages: [
+        {
+          key: { remoteJid: PEER, fromMe: false, id: "STK" },
+          messageTimestamp: Math.floor(Date.now() / 1000),
+          message: { stickerMessage: { mimetype: "image/webp" } },
+        },
+      ],
+    });
+    await waitFor(() => received.length > 1, 3_000, "the sticker webhook POST");
+    assert.equal(received[1].kind, "other");
+  } finally {
+    await svc.stop();
+    await server.close();
+    restoreEnv();
+  }
+});
+
+test("a voice note waits for its transcript, and posts the words as the text", async () => {
+  const received = [];
+  const server = await listen(async (req, res) => {
+    received.push(JSON.parse(await readBody(req)));
+    res.writeHead(204);
+    res.end();
+  });
+  const restoreEnv = saveWebhookEnv(server.url);
+  const { svc, sock } = transcribingService("wazap-webhook-voice-");
+  svc.transcriber = async () => ({ text: "am uitat umbrela acasă", language: "ro", duration_seconds: 6 });
+  svc.mediaBuffer = async () => Buffer.from("not really an ogg file");
+  try {
+    sock.ev.emit("messages.upsert", { type: "notify", messages: [voiceNote("V1", 6)] });
+    await waitFor(() => received.length > 0, 5_000, "the voice note webhook POST");
+    assert.equal(received[0].text, "am uitat umbrela acasă", "the wait is the only reason the words are here");
+    assert.equal(received[0].kind, "audio");
+    assert.equal(received[0].event, "message_received");
+    assert.equal(received[0].truncated, false);
+  } finally {
+    await svc.stop();
+    await server.close();
+    restoreEnv();
+  }
+});
+
+/**
+ * The queue is single file, so note two is still running when note one is done.
+ * Note one must not pay for it: the wait is per message, and the second
+ * transcript is released by hand rather than by a sleep.
+ */
+test("a voice note waits for its own transcript, not for the notes behind it", async () => {
+  const received = [];
+  const server = await listen(async (req, res) => {
+    received.push(JSON.parse(await readBody(req)));
+    res.writeHead(204);
+    res.end();
+  });
+  const restoreEnv = saveWebhookEnv(server.url);
+  const { svc, sock } = transcribingService("wazap-webhook-per-note-");
+  let releaseSecond = () => {};
+  const second = new Promise((resolve) => {
+    releaseSecond = resolve;
+  });
+  let calls = 0;
+  svc.mediaBuffer = async () => Buffer.from("not really an ogg file");
+  svc.transcriber = async () => {
+    calls += 1;
+    if (calls > 1) await second;
+    return { text: calls === 1 ? "prima notă" : "a doua notă", language: "ro", duration_seconds: 6 };
+  };
+  try {
+    sock.ev.emit("messages.upsert", { type: "notify", messages: [voiceNote("V1", 6), voiceNote("V2", 6)] });
+    await waitFor(() => received.length > 0, 5_000, "the first voice note webhook POST");
+    assert.equal(received.length, 1, "the second note is still being transcribed");
+    assert.equal(received[0].text, "prima notă");
+
+    releaseSecond();
+    await waitFor(() => received.length > 1, 5_000, "the second voice note webhook POST");
+    assert.equal(received[1].text, "a doua notă");
+  } finally {
+    releaseSecond();
+    await svc.stop();
+    await server.close();
+    restoreEnv();
+  }
+});
+
+test("a transcription that fails still posts the event, carrying the placeholder", async () => {
+  const received = [];
+  const server = await listen(async (req, res) => {
+    received.push(JSON.parse(await readBody(req)));
+    res.writeHead(204);
+    res.end();
+  });
+  const restoreEnv = saveWebhookEnv(server.url);
+  const { svc, sock } = transcribingService("wazap-webhook-voice-fail-");
+  svc.mediaBuffer = async () => Buffer.from("not really an ogg file");
+  svc.transcriber = async () => {
+    throw new Error("whisper exploded");
+  };
+  const realError = console.error;
+  console.error = () => {};
+  try {
+    sock.ev.emit("messages.upsert", { type: "notify", messages: [voiceNote("VF", 6)] });
+    await waitFor(() => received.length > 0, 5_000, "the failed voice note webhook POST");
+    assert.equal(received[0].text, "[voice message · 0:06]");
+    assert.equal(received[0].kind, "audio");
+    assert.equal(received[0].event, "message_received");
+  } finally {
+    console.error = realError;
+    await svc.stop();
+    await server.close();
+    restoreEnv();
+  }
+});
+
+test("connection changes post linked, disconnected and expired, once per mapped status", async () => {
+  const received = [];
+  const server = await listen(async (req, res) => {
+    received.push({ header: req.headers["x-wazap-event"], body: JSON.parse(await readBody(req)) });
+    res.writeHead(204);
+    res.end();
+  });
+  const restoreEnv = saveWebhookEnv(server.url);
+  const svc = openService(WhatsAppService, offlineConfig("wazap-webhook-conn-"));
+  const sock = fakeSocket();
+  svc.start = async () => {};
+  svc.wireEvents(sock, ++svc.generation);
+  try {
+    sock.ev.emit("connection.update", { connection: "open" });
+    await waitFor(() => received.length > 0, 3_000, "the linked webhook POST");
+    sock.ev.emit("connection.update", closedWith(DisconnectReason.connectionClosed));
+    await waitFor(() => received.length > 1, 3_000, "the disconnected webhook POST");
+    sock.ev.emit("connection.update", closedWith(DisconnectReason.loggedOut));
+    await waitFor(() => received.length > 2, 3_000, "the expired webhook POST");
+    svc.setStatus("session_corrupt");
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    assert.deepEqual(
+      received.map((hit) => hit.body.status),
+      ["linked", "disconnected", "expired"],
+    );
+    assert.equal(received.length, 3, "session_corrupt is expired too, and a consumer hears that once");
+    for (const hit of received) {
+      assert.equal(hit.header, "connection");
+      assert.equal(hit.body.event, "connection");
+      assert.equal(hit.body.account_id, "default");
+      assert.equal(hit.body.account_name, "default");
+      assert.match(hit.body.timestamp, /^\d{4}-\d{2}-\d{2}T[\d:.]+Z$/);
+    }
+  } finally {
+    await svc.stop();
+    await server.close();
+    restoreEnv();
+  }
+});
+
+/**
+ * `expired` has no later transition to recover with, because re-linking needs a
+ * human. So a status the consumer never received must not count as announced: the
+ * next change that means the same thing says it again.
+ */
+test("a connection event the consumer never received is announced by the next change", async () => {
+  const received = [];
+  let attempts = 0;
+  let accepting = false;
+  const server = await listen(async (req, res) => {
+    const body = JSON.parse(await readBody(req));
+    attempts += 1;
+    if (!accepting) {
+      res.writeHead(500, { "content-type": "text/plain" });
+      res.end("no");
+      return;
+    }
+    received.push(body);
+    res.writeHead(204);
+    res.end();
+  });
+  const restoreEnv = saveWebhookEnv(server.url);
+  const svc = openService(WhatsAppService, offlineConfig("wazap-webhook-conn-fail-"));
+  try {
+    svc.setStatus("logged_out");
+    await waitFor(() => attempts >= 3, 5_000, "the expired POST and its two retries");
+    assert.equal(received.length, 0, "nothing was delivered");
+
+    accepting = true;
+    svc.setStatus("session_corrupt");
+    svc.setStatus("connected");
+    await waitFor(() => received.length > 1, 5_000, "the re-announced expired POST and the linked one");
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    assert.deepEqual(
+      received.map((hit) => hit.status),
+      ["expired", "linked"],
+      "expired is said again, and one chain keeps the pair in the order the link moved in",
+    );
+  } finally {
+    await svc.stop();
+    await server.close();
+    restoreEnv();
+  }
+});
+
 test("a down webhook does not break ingest or get_status", async () => {
   const saved = WEBHOOK_KEYS.map((key) => [key, process.env[key]]);
   Object.assign(process.env, {
@@ -625,6 +1137,46 @@ test("wazap webhook test delivers, and refuses when the webhook is off", async (
   const off = await wazap(dir, ["webhook", "test"]);
   assert.equal(off.code, 1);
   assert.match(off.stderr, /Webhook is off/);
+  await server.close();
+});
+
+test("wazap webhook test --event posts that event, and refuses an unknown one", async () => {
+  const received = [];
+  const server = await listen(async (req, res) => {
+    received.push({
+      event: req.headers["x-wazap-event"],
+      signature: req.headers["x-wazap-signature"],
+      body: await readBody(req),
+    });
+    res.writeHead(204);
+    res.end();
+  });
+  const dir = dataDir();
+  const asSent = await wazap(dir, ["webhook", "test", "--event", "message_sent"], { env: readyEnv(server.url) });
+  assert.equal(asSent.code, 0, asSent.stderr);
+  const asConnection = await wazap(dir, ["webhook", "test", "--event", "connection"], { env: readyEnv(server.url) });
+  assert.equal(asConnection.code, 0, asConnection.stderr);
+
+  assert.deepEqual(
+    received.map((hit) => hit.event),
+    ["message_sent", "connection"],
+  );
+  const sent = JSON.parse(received[0].body);
+  assert.equal(sent.event, "message_sent");
+  assert.equal(sent.from_me, true);
+  assert.equal(sent.text, "wazap webhook test");
+  assert.equal(webhookSignatureMatches(received[0].body, SECRET, received[0].signature), true);
+  const connection = JSON.parse(received[1].body);
+  assert.equal(connection.event, "connection");
+  assert.equal(connection.status, "linked");
+  assert.match(connection.timestamp, /Z$/);
+  assert.equal(webhookSignatureMatches(received[1].body, SECRET, received[1].signature), true);
+
+  const unknown = await wazap(dir, ["webhook", "test", "--event", "frobnicate"], { env: readyEnv(server.url) });
+  assert.equal(unknown.code, 1);
+  assert.match(unknown.stderr, /Unknown webhook event "frobnicate"/);
+  assert.ok(unknown.stderr.includes(WEBHOOK_EVENTS.join(", ")), unknown.stderr);
+  assert.equal(received.length, 2, "a refused event must not POST");
   await server.close();
 });
 

@@ -376,11 +376,10 @@ export function isStubEvent(raw: WAMessage): boolean {
 }
 
 /**
- * A person sent this inbound. Stubs, protocol machinery and system notices
- * are not `message_received`.
+ * Something a person sent or received, as opposed to a control notice, a stub
+ * or a system line. The webhook posts these in both directions.
  */
-export function isUserInboundMessage(raw: WAMessage): boolean {
-  if (raw.key.fromMe) return false;
+export function isUserMessage(raw: WAMessage): boolean {
   if (isControlMessage(raw) || isStubEvent(raw)) return false;
   return messageType(raw) !== "system";
 }
