@@ -781,7 +781,7 @@ export class WhatsAppService implements WhatsAppApi {
       const store = this.readyRecall();
       const scope = chatId === undefined ? undefined : this.resolveId(chatId);
       const from = opts.from === undefined ? undefined : opts.from === "me" ? this.ownJid() : this.resolveId(opts.from);
-      const [vector] = await this.recallEmbed([query]);
+      const [vector] = await this.recallEmbed([query], "query");
       const minSimilarity = this.recallEnv instanceof WazapError ? undefined : this.recallEnv.minSimilarity;
       const hits = store
         .query({ vector: vector!, chatId: scope, sinceMs: opts.sinceMs, untilMs: opts.untilMs, from, minSimilarity, limit })
@@ -1415,7 +1415,7 @@ export class WhatsAppService implements WhatsAppApi {
     try {
       const spec = EMBED_MODELS[this.recallEnv.model];
       this.recallStore = await RecallStore.open(join(this.paths.root, "recall"), spec, this.recallEnv.maxRows);
-      this.recallQueue = new RecallQueue(this.recallStore, (texts) => this.recallEmbed(texts));
+      this.recallQueue = new RecallQueue(this.recallStore, (texts) => this.recallEmbed(texts, "document"));
       if (this.recallStore.count > 0) log(`recall index: ${this.recallStore.count} messages`);
     } catch (err) {
       logError("recall index", err);
@@ -1448,9 +1448,9 @@ export class WhatsAppService implements WhatsAppApi {
     return this.recallEngineP;
   }
 
-  private async recallEmbed(texts: string[]): Promise<number[][]> {
+  private async recallEmbed(texts: string[], kind: "query" | "document"): Promise<number[][]> {
     const engine = await this.recallEngine();
-    return engine.embed(texts);
+    return engine.embed(texts, kind);
   }
 
   /**

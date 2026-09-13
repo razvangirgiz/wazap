@@ -15,12 +15,14 @@ import { proto } from "baileys";
 
 import { WhatsAppService } from "../dist/whatsapp.js";
 import { registerTools } from "../dist/tools.js";
+import { EMBED_MODELS } from "../dist/recall/index.js";
 import { asToolSource, connectedService } from "./helpers.mjs";
 import { accountPaths } from "../dist/config.js";
 
 const ME = "40700000001@s.whatsapp.net";
 const PEER = "40700000002@s.whatsapp.net";
 const DIMS = 768;
+const PROMPTS = EMBED_MODELS["embeddinggemma-300m"].prompts;
 
 const RECALL_ENV = [
   "WAZAP_RECALL",
@@ -142,6 +144,10 @@ test("live messages land in the index; placeholders do not", async () => {
     await svc.recallIdle();
     assert.equal(svc.recallStore.count, 2);
     assert.equal(svc.recallStore.record(`false_${PEER}_M1`).text, "ți-am trimis factura pe e-mail ieri");
+    assert.ok(
+      stub.seen.every((t) => t.startsWith(PROMPTS.document)),
+      "documents are embedded under the model's document prompt"
+    );
   } finally {
     await svc.stop();
     stub.server.close();
@@ -283,6 +289,10 @@ test("recall answers a Romanian paraphrase, ranked by score, with the date on th
     ]);
     await svc.recallIdle();
     const { data } = await svc.recall("when did she send the invoice?", undefined, 10);
+    assert.ok(
+      stub.seen.at(-1).startsWith(PROMPTS.query),
+      "the query is embedded under the model's query prompt"
+    );
     assert.equal(data.hits[0].message.message_id, `false_${PEER}_M1`);
     assert.equal(data.hits[0].from_index, false);
     assert.ok(data.hits[0].similarity > 0);
