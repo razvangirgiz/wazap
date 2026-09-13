@@ -14,6 +14,7 @@ const ON = new Set(["local", "on", "1", "yes", "true"]);
 const MODEL_ALIASES: readonly EmbedModelAlias[] = ["embeddinggemma-300m", "e5-base-multilingual"];
 const DEFAULT_MAX_ROWS = 50_000;
 const MIN_MAX_ROWS = 100;
+const DEFAULT_EMBED_IDLE_MINUTES = 30;
 
 function parseEnabled(raw: string | undefined): boolean {
   const value = stripPasted(raw ?? "").toLowerCase();
@@ -61,6 +62,18 @@ function parseMinSimilarity(raw: string | undefined, fallback: number): number {
   );
 }
 
+function parseEmbedIdle(raw: string | undefined): number {
+  const value = stripPasted(raw ?? "");
+  if (value === "") return DEFAULT_EMBED_IDLE_MINUTES * 60_000;
+  const minutes = Number(value);
+  if (Number.isFinite(minutes) && minutes >= 0) return Math.round(minutes * 60_000);
+  throw new WazapError(
+    "INVALID_ID",
+    `WAZAP_EMBED_IDLE_MINUTES must be a number of minutes >= 0, got "${value}".`,
+    "Fix WAZAP_EMBED_IDLE_MINUTES or remove it"
+  );
+}
+
 function parseUrl(raw: string | undefined): string | null {
   const value = stripPasted(raw ?? "");
   if (value === "") return null;
@@ -82,6 +95,7 @@ export function readRecallSettings(env: NodeJS.ProcessEnv, dataDir: string): Rec
     embedBin: embedBin === "" ? null : embedBin,
     embedUrl: parseUrl(env.WAZAP_EMBED_URL),
     modelsDir: join(dataDir, "models"),
+    embedIdleMs: parseEmbedIdle(env.WAZAP_EMBED_IDLE_MINUTES),
     maxRows: parseMaxRows(env.WAZAP_RECALL_MAX),
     minSimilarity: parseMinSimilarity(env.WAZAP_RECALL_MIN_SIMILARITY, EMBED_MODELS[model].defaultMinSimilarity),
   };

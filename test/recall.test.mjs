@@ -517,6 +517,24 @@ test("a min-similarity outside 0..1 is refused at parse, whichever model is pick
   }
 });
 
+test("the idle window parses to ms; 0 disables and bad input is refused", () => {
+  const dir = mkdtempSync(join(tmpdir(), "wazap-recall-"));
+  assert.equal(readRecallSettings({}, dir).embedIdleMs, 30 * 60_000);
+  assert.equal(readRecallSettings({ WAZAP_EMBED_IDLE_MINUTES: "0" }, dir).embedIdleMs, 0);
+  assert.equal(readRecallSettings({ WAZAP_EMBED_IDLE_MINUTES: "1.5" }, dir).embedIdleMs, 90_000);
+  for (const bad of ["-1", "soon"]) {
+    assert.throws(
+      () => readRecallSettings({ WAZAP_EMBED_IDLE_MINUTES: bad }, dir),
+      (err) => {
+        assert.equal(err.code, "INVALID_ID");
+        assert.match(err.message, /IDLE/);
+        return true;
+      },
+      bad
+    );
+  }
+});
+
 test("weak matches are flagged, not sold as answers", async () => {
   const stub = await stubEmbedServer();
   const { svc, sock } = await serviceWith({ WAZAP_RECALL: "local", WAZAP_EMBED_URL: stub.url });
