@@ -1,5 +1,34 @@
 # Changelog
 
+## 0.18.3
+### Added
+
+- **One llama-server for every account.** Recall used to spawn an embedding
+  sidecar per account — ~330 MB of model and runtime RAM each. The
+  /embedding API is stateless, so accounts on the same binary and model now
+  share a single server through a refcounted registry; the last account to
+  stop is the one that kills it. Concurrent boot backfills join the same
+  spawn, never two.
+- **`scripts/recall-eval.mjs`: a fixed case set scored against the live
+  daemon.** Each case pairs a query with an expected hit or `expectNone`;
+  the run reports rank, raw similarity and the floor band between worst
+  expected hit and best noise hit, exiting non-zero on any failure — so a
+  prompt, model or floor change gets measured instead of eyeballed.
+
+### Fixed
+
+- **The similarity floor is per-model now.** It travels with the model spec:
+  embeddinggemma-300m keeps its measured 0.35, e5-base-multilingual gets a
+  conservative 0.7 flagged `uncalibrated` in `wazap status` — e5's prompted
+  cosines sit in a higher band and silently inheriting gemma's floor would
+  pass noise as answers. `WAZAP_RECALL_MIN_SIMILARITY` still overrides both.
+- **The daemon stdin-shutdown test no longer flakes under load.** A spawned
+  child pays Node boot plus the whole module graph before it can write
+  daemon.json — under a second idle, several seconds when the suite runs
+  children in parallel. Startup/shutdown budgets widened to 30s/10s, and a
+  timeout now carries the child's last stderr lines instead of an opaque
+  wait.
+
 ## 0.18.2
 ### Fixed
 
