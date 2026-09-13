@@ -386,6 +386,7 @@ export class RecallStore {
       let dot = 0;
       for (let i = 0; i < this.spec.dims; i++) dot += unit[i]! * this.vectors[offset + i]!;
       const similarity = dot / 127;
+      if (similarity <= 0) continue;
       hits.push({ record, similarity, score: similarity * recencyDecay(nowMs - record.ts) });
     }
     hits.sort((a, b) => b.score - a.score);

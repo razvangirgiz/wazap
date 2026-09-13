@@ -14,7 +14,8 @@ import { join } from "node:path";
 import { proto } from "baileys";
 
 import { WhatsAppService } from "../dist/whatsapp.js";
-import { connectedService } from "./helpers.mjs";
+import { registerTools } from "../dist/tools.js";
+import { asToolSource, connectedService } from "./helpers.mjs";
 import { accountPaths } from "../dist/config.js";
 
 const ME = "40700000001@s.whatsapp.net";
@@ -248,5 +249,196 @@ test("a recall setting wazap does not know degrades to a line, not a crash", asy
     assert.equal(svc.status, "connected");
   } finally {
     await svc.stop();
+  }
+});
+
+/** Stand-in for McpServer: records what got registered and lets us call it. */
+function fakeServer() {
+  const tools = new Map();
+  return {
+    tools,
+    registerTool(name, meta, handler) {
+      tools.set(name, { meta, handler });
+    },
+  };
+}
+
+test("recall answers a Romanian paraphrase, ranked by score, with the date on the hit", async () => {
+  const stub = await stubEmbedServer();
+  const { svc, sock } = await serviceWith({ WAZAP_RECALL: "local", WAZAP_EMBED_URL: stub.url });
+  try {
+    deliver(sock, [
+      text("M1", "ți-am trimis factura pe e-mail ieri"),
+      text("M2", "la ce ora e programarea la doctor?"),
+    ]);
+    await svc.recallIdle();
+    const { data } = await svc.recall("when did she send the invoice?", undefined, 10);
+    assert.equal(data.hits[0].message.message_id, `false_${PEER}_M1`);
+    assert.equal(data.hits[0].from_index, false);
+    assert.ok(data.hits[0].similarity > 0);
+    assert.match(data.hits[0].message.timestamp, /^\d{4}-\d{2}-\d{2}T/);
+    assert.equal(data.index.state, "ready");
+    assert.equal(data.index.indexed, 2);
+    const only = await svc.recall("invoice", undefined, 1);
+    assert.equal(only.data.hits.length, 1, "limit caps the ranked list");
+  } finally {
+    await svc.stop();
+    stub.server.close();
+  }
+});
+
+test("chat, since/until and from narrow recall the way they narrow search_messages", async () => {
+  const OTHER = "40700000003@s.whatsapp.net";
+  const stub = await stubEmbedServer();
+  const { svc, sock } = await serviceWith({ WAZAP_RECALL: "local", WAZAP_EMBED_URL: stub.url });
+  try {
+    const nowS = Math.floor(Date.now() / 1000);
+    deliver(sock, [
+      text("M1", "factura pe e-mail"),
+      text("M2", "factura veche", { messageTimestamp: nowS - 10 * 86_400 }),
+      { ...text("X1", "factura de la altcineva"), key: { remoteJid: OTHER, fromMe: false, id: "X1" } },
+      { ...text("ME1", "factura trimisa de mine"), key: { remoteJid: PEER, fromMe: true, id: "ME1" } },
+    ]);
+    await svc.recallIdle();
+    assert.equal(svc.recallStore.count, 4);
+
+    const inChat = await svc.recall("invoice", PEER, 10);
+    assert.equal(inChat.data.hits.length, 3);
+    assert.ok(inChat.data.hits.every((h) => h.message.chat_id === PEER));
+
+    const since = await svc.recall("invoice", undefined, 10, { sinceMs: Date.now() - 86_400_000 });
+    assert.ok(!since.data.hits.some((h) => h.message.message_id === `false_${PEER}_M2`), "the old one is before since");
+
+    const until = await svc.recall("invoice", undefined, 10, { untilMs: Date.now() - 86_400_000 });
+    assert.deepEqual(until.data.hits.map((h) => h.message.message_id), [`false_${PEER}_M2`]);
+
+    const mine = await svc.recall("invoice", undefined, 10, { from: "me" });
+    assert.deepEqual(mine.data.hits.map((h) => h.message.message_id), [`true_${PEER}_ME1`]);
+  } finally {
+    await svc.stop();
+    stub.server.close();
+  }
+});
+
+test("a message that fell out of the store still answers from the index", async () => {
+  const stub = await stubEmbedServer();
+  const { svc, sock } = await serviceWith({ WAZAP_RECALL: "local", WAZAP_EMBED_URL: stub.url });
+  try {
+    deliver(sock, [text("M1", "factura din august, plătită integral")]);
+    await svc.recallIdle();
+    const sid = `false_${PEER}_M1`;
+    // What eviction does: the raw message leaves the live store.
+    svc.store.messages.delete(sid);
+    svc.store.chatOf.delete(sid);
+    const { data } = await svc.recall("the paid invoice", undefined, 5);
+    const hit = data.hits.find((h) => h.message.message_id === sid);
+    assert.ok(hit, "the index still holds it");
+    assert.equal(hit.from_index, true);
+    assert.equal(hit.message.text, "factura din august, plătită integral");
+    assert.equal(hit.message.chat_id, PEER);
+    assert.equal(hit.message.sender.id, PEER);
+    assert.match(hit.message.timestamp, /^\d{4}-\d{2}-\d{2}T/);
+  } finally {
+    await svc.stop();
+    stub.server.close();
+  }
+});
+
+test("recall off answers RECALL_UNAVAILABLE with the fix, through the tool too", async () => {
+  const { svc } = await serviceWith({});
+  try {
+    await assert.rejects(() => svc.recall("anything", undefined, 5), (err) => {
+      assert.equal(err.code, "RECALL_UNAVAILABLE");
+      assert.match(err.fix, /wazap config recall local/);
+      return true;
+    });
+    const server = fakeServer();
+    registerTools(server, asToolSource(svc), { allowWrite: true });
+    const result = await server.tools.get("recall").handler({ query: "anything" });
+    assert.equal(result.isError, true);
+    assert.equal(result.structuredContent.error, "RECALL_UNAVAILABLE");
+    assert.match(result.structuredContent.fix, /wazap config recall local/);
+  } finally {
+    await svc.stop();
+  }
+});
+
+test("recall on but history off names the missing piece, not the feature", async () => {
+  const stub = await stubEmbedServer();
+  const { svc } = await serviceWith(
+    { WAZAP_RECALL: "local", WAZAP_EMBED_URL: stub.url },
+    { persistHistory: false }
+  );
+  try {
+    await assert.rejects(() => svc.recall("x", undefined, 5), (err) => {
+      assert.equal(err.code, "RECALL_UNAVAILABLE");
+      assert.match(err.fix, /WAZAP_PERSIST_HISTORY/);
+      return true;
+    });
+  } finally {
+    await svc.stop();
+    stub.server.close();
+  }
+});
+
+test("a recall env wazap cannot parse answers RECALL_UNAVAILABLE, not a crash", async () => {
+  const { svc } = await serviceWith({ WAZAP_RECALL: "cloud-please" });
+  try {
+    await assert.rejects(() => svc.recall("x", undefined, 5), (err) => {
+      assert.equal(err.code, "RECALL_UNAVAILABLE");
+      assert.match(err.message, /Unknown recall mode/);
+      return true;
+    });
+  } finally {
+    await svc.stop();
+  }
+});
+
+test("the tool renders each hit with its date, score and the index-only mark", async () => {
+  const stub = await stubEmbedServer();
+  const { svc, sock } = await serviceWith({ WAZAP_RECALL: "local", WAZAP_EMBED_URL: stub.url });
+  try {
+    deliver(sock, [
+      text("M1", "ți-am trimis factura pe e-mail ieri"),
+      text("M2", "factura veche din index"),
+    ]);
+    await svc.recallIdle();
+    // M2 fell out of the live store; the index is all that still holds it.
+    svc.store.messages.delete(`false_${PEER}_M2`);
+    svc.store.chatOf.delete(`false_${PEER}_M2`);
+
+    const server = fakeServer();
+    registerTools(server, asToolSource(svc), { allowWrite: false });
+    const result = await server.tools.get("recall").handler({ query: "the invoice" });
+    assert.equal(result.isError, undefined);
+    const out = result.content[0].text;
+    assert.match(out, /# Recall results for "the invoice" \(2\)/);
+    assert.match(out, /score \d\.\d{2}/);
+    assert.match(out, /\[\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/);
+    assert.match(out, /index only/);
+    assert.match(out, /factura veche din index/);
+    assert.equal(result.structuredContent.count, 2);
+    assert.equal(result.structuredContent.index.state, "ready");
+    const evicted = result.structuredContent.hits.find((h) => h.from_index);
+    assert.equal(evicted.message.message_id, `false_${PEER}_M2`);
+    assert.equal(evicted.message.text, "factura veche din index");
+  } finally {
+    await svc.stop();
+    stub.server.close();
+  }
+});
+
+test("a bad since is INVALID_ID, same as search_messages", async () => {
+  const stub = await stubEmbedServer();
+  const { svc } = await serviceWith({ WAZAP_RECALL: "local", WAZAP_EMBED_URL: stub.url });
+  try {
+    const server = fakeServer();
+    registerTools(server, asToolSource(svc), { allowWrite: true });
+    const result = await server.tools.get("recall").handler({ query: "x", since: "last Tuesdayish" });
+    assert.equal(result.isError, true);
+    assert.equal(result.structuredContent.error, "INVALID_ID");
+  } finally {
+    await svc.stop();
+    stub.server.close();
   }
 });

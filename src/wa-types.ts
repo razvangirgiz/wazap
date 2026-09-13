@@ -218,6 +218,23 @@ export interface SearchOptions {
   from?: string;
 }
 
+/** One recall hit: the message plus the score it ranked by. */
+export interface RecallHit {
+  /** Cosine similarity × recency decay; hits are sorted by it, so fresh matches win. */
+  score: number;
+  /** Raw cosine similarity before the recency decay. */
+  similarity: number;
+  message: MessageView;
+  /** The message left the live store; text and date come from the index itself. */
+  from_index: boolean;
+}
+
+export interface RecallAnswer {
+  hits: RecallHit[];
+  /** The index at query time; "indexing" means more matches may still land. */
+  index: RecallStatus;
+}
+
 export interface HandledResult {
   chat_id: string;
   name: string;
@@ -367,6 +384,12 @@ export interface WhatsAppApi {
     limit: number,
     opts?: SearchOptions
   ): Promise<Synced<MessageView[]>>;
+  recall(
+    query: string,
+    chatId: string | undefined,
+    limit: number,
+    opts?: SearchOptions
+  ): Promise<Synced<RecallAnswer>>;
   getMessage(messageId: string): Promise<MessageView>;
   searchContacts(query: string, limit: number): Promise<ContactSummary[]>;
   getContact(contactId: string): Promise<ContactDetails>;

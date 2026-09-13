@@ -583,7 +583,7 @@ function senderJid(raw: WAMessage, ctx: MessageViewContext): string {
   return from ? ctx.canonical(from) : ctx.ownId;
 }
 
-function phoneOf(jid: string): string | undefined {
+export function phoneOf(jid: string): string | undefined {
   const [user = "", domain] = jid.split("@");
   return domain === "s.whatsapp.net" && /^\d+$/.test(user) ? user : undefined;
 }

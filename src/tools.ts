@@ -18,6 +18,7 @@ import type {
   ChatSummary,
   ContactSummary,
   MessageView,
+  RecallAnswer,
   RecentConversation,
   SentMessage,
   Synced,
@@ -196,7 +197,9 @@ link_account when it says no account is linked yet.
 - Find a person: search_contacts → get_contact. Names come from the phone's own
   address book; if they are missing (get_status shows contacts_named: 0), call
   sync_contacts once.
-- Find something said: search_messages(query[, chat_id]).
+- Find something said: search_messages(query[, chat_id]) for the exact words,
+  or recall(query[, chat_id]) for what was meant — a paraphrase or another
+  language still hits, and it reaches messages too old for the live store.
 - Send: send_message / send_media / send_poll / send_location / forward_message
   draft only. They return a draft_id and a preview. Show the preview to the
   user; after they say yes, call confirm_send({ draft_id }). That is the only
@@ -622,6 +625,70 @@ or one chat. It cannot reach messages the phone never synced to this device.`,
           from: from ?? null,
           count: result.data.length,
           messages: result.data,
+        })
+      );
+    },
+  }),
+
+  tool({
+    name: "recall",
+    title: "Semantically search WhatsApp history",
+    description: `Semantic search over the whole indexed WhatsApp history — answers "the
+invoice Dan mentioned", "the address Ana sent", "what did they say about the
+trip". It matches by meaning rather than exact words, so a paraphrase or
+another language still hits, and it keeps finding messages too old for
+search_messages to see. For an exact string — an id, a phone number, a URL —
+search_messages is the better tool.
+
+Each result carries its date and a score: semantic similarity scaled by
+recency, so fresh matches rank first. chat_id, since, until and from narrow
+the search exactly like search_messages. A hit marked "index only" lives in
+the index alone: quote it, but get_message and download_media cannot see it.
+
+RECALL_UNAVAILABLE means recall is off or the embedding setup is missing; the
+fix names the command the user has to run. Do not retry it.`,
+    schema: {
+      query: z.string().min(1).describe("What to find, said any way — the meaning is what matches"),
+      chat_id: chatId.optional().describe("Restrict the search to this chat"),
+      limit: z.number().int().min(1).max(50).default(20).describe("Maximum number of results (1-50)"),
+      since: z
+        .string()
+        .min(4)
+        .optional()
+        .describe('Only messages from this moment on: a date ("2026-09-01") or an ISO timestamp'),
+      until: z.string().min(4).optional().describe("Only messages up to this moment: a date or an ISO timestamp"),
+      from: z
+        .string()
+        .min(1)
+        .optional()
+        .describe('Only messages this person sent: "me", a contact id or a phone number'),
+    },
+    write: false,
+    handler: async ({ query, chat_id, limit, since, until, from }, { wa }) => {
+      const result = await wa.recall(query, chat_id, limit, {
+        sinceMs: parseMoment(since, "since"),
+        untilMs: parseMoment(until, "until", true),
+        from,
+      });
+      const scope = [
+        chat_id ? `in ${chat_id}` : null,
+        from ? `from ${from}` : null,
+        since ? `since ${since}` : null,
+        until ? `until ${until}` : null,
+      ]
+        .filter(Boolean)
+        .join(", ");
+      return ok(
+        renderRecall(`Recall results for "${query}"${scope ? ` (${scope})` : ""}`, result.data),
+        synced(result, {
+          query,
+          chat_id: chat_id ?? null,
+          since: since ?? null,
+          until: until ?? null,
+          from: from ?? null,
+          count: result.data.hits.length,
+          index: result.data.index,
+          hits: result.data.hits,
         })
       );
     },
@@ -1236,6 +1303,41 @@ function renderMessages(
     ].filter(Boolean);
     lines.push(
       `- **${senderLabel(m, introduced)}** · ${m.age}${tags.length ? ` [${tags.join(", ")}]` : ""} · id: \`${m.message_id}\``
+    );
+    if (m.quoted) lines.push(`  > ${truncate(m.quoted.text, 160)}`);
+    lines.push(`  ${truncate(m.text, 500)}`);
+  }
+  return lines.join("\n");
+}
+
+/**
+ * Ranked hits with the date always on the line and the score that ordered
+ * them. "index only" warns that the message left the live store, so
+ * get_message and download_media can no longer see it.
+ */
+function renderRecall(title: string, answer: RecallAnswer): string {
+  const { hits, index } = answer;
+  const catchingUp =
+    index.state === "indexing"
+      ? `The index is still catching up: ${index.indexed} indexed, ${index.pending} pending — more matches may appear.`
+      : null;
+  if (hits.length === 0) {
+    return `${title}: no messages found.${catchingUp ? ` ${catchingUp}` : ""}`;
+  }
+  const lines = [`# ${title} (${hits.length})`, ""];
+  if (catchingUp) lines.push(catchingUp, "");
+  const introduced = new Set<string>();
+  for (const hit of hits) {
+    const m = hit.message;
+    const tags = [
+      `score ${hit.score.toFixed(2)}`,
+      hit.from_index ? "index only" : null,
+      m.type !== "text" ? m.type : null,
+      m.quoted ? "reply" : null,
+      m.edited ? "edited" : null,
+    ].filter(Boolean);
+    lines.push(
+      `- [${m.timestamp}] **${senderLabel(m, introduced)}** · \`${m.chat_id}\` [${tags.join(", ")}] · id: \`${m.message_id}\``
     );
     if (m.quoted) lines.push(`  > ${truncate(m.quoted.text, 160)}`);
     lines.push(`  ${truncate(m.text, 500)}`);
