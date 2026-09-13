@@ -189,7 +189,16 @@ export function whereInstalled(
 ): Install {
   const script = binPath === "" ? "" : resolve(binPath);
   if (isNpxPath(binPath)) return { kind: "npx", script };
-  if (commandOnPath("wazap", pathEnv, exists)) return { kind: "global", script };
+  const onPath = commandPath("wazap", pathEnv, exists);
+  if (onPath) {
+    try {
+      if (realpathSync(onPath) === realpathSync(script)) return { kind: "global", script };
+    } catch {
+      // A package path or a direct launcher can still be classified when inspecting another host.
+      if (/[/\\]node_modules[/\\]wazap(?:-mcp)?[/\\]/.test(script) || resolve(onPath) === script)
+        return { kind: "global", script };
+    }
+  }
   return { kind: "checkout", script };
 }
 
@@ -299,8 +308,9 @@ export const GUI_PATH = "/usr/bin:/bin:/usr/sbin:/sbin:/usr/local/bin";
 export function mcpEntry(config: Config, spec: ClientSpec, install: Install = whereInstalled()): McpEntry {
   const entry = entryFor(install);
   // The global `wazap` bin is a symlink into the package, and launchd's PATH has
-  // neither it nor npx, so a GUI client gets this Node and the script behind it.
-  if (spec.gui && entry.command === "wazap") {
+  // neither it, nor npx, nor the bare `node` a checkout entry would name, so a
+  // GUI client gets this Node and the script behind it.
+  if (spec.gui && (entry.command === "wazap" || install.kind === "checkout")) {
     entry.command = process.execPath;
     entry.args = [realpathSync(install.script)];
   }
