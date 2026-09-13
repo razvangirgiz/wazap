@@ -1,5 +1,44 @@
 # Changelog
 
+## 0.18.4
+### Added
+
+- **The embedding sidecar now sleeps when unused.** An idle `llama-server`
+  held ~330-500 MB of RAM for the life of the service even when recall was
+  queried once a week. `WAZAP_EMBED_IDLE_MINUTES` (default 30, `0` keeps it
+  resident) reaps a quiet server; the next embed re-spawns it transparently.
+  The shared registry from 0.18.3 means one clock and one respawn for every
+  account on the same model.
+- **Recall results are diversified and keyword-aware.** A single chat used
+  to fill every slot of a clustered answer; now it holds at most three
+  leading slots and near-duplicates trail the list. A query token a hit
+  carries verbatim — a name, a number, a time — earns a small bounded bonus,
+  since embeddings are weakest exactly where `search_messages` is strongest.
+  Raw `similarity` and the similarity floor are untouched; only `score`
+  carries the bonus, capped so it reorders neighbours and never rescues
+  noise.
+
+### Fixed
+
+- **One unembeddable message no longer stalls the index.** A text over the
+  model's context window gets a deterministic 400 from llama-server, which
+  the queue used to retry until it declared the whole backend dead — and
+  every restart re-fed the same poison. A 4xx now surfaces as
+  `RECALL_BAD_INPUT`; the queue bisects the batch, drops the offending
+  message, and keeps going.
+- **e5 is honestly calibrated instead of a guess.** Measured on a real 12k
+  index, e5's noise and real hits overlap (~0.84 vs 0.82-0.88), so its floor
+  moves to 0.85 — erring toward silence — and `wazap status` no longer
+  flags it uncalibrated. A per-model `maxChars` (e5's window is 512 tokens)
+  keeps over-context messages out of the server entirely. Gemma stays the
+  recommended model.
+
+### Changed
+
+- **Faster boots.** OAuth, express, QR and bridge modules load lazily —
+  spawn to ready is ~14% faster on a warm machine, and bridge-mode children
+  skip the HTTP stack entirely.
+
 ## 0.18.3
 ### Added
 
