@@ -117,7 +117,9 @@ class LlamaSidecar implements EmbeddingTarget {
     const port = new URL(this.base).port;
     const child = spawn(
       this.bin,
-      ["-m", this.model, "--host", "127.0.0.1", "--port", port, "--embedding", "-c", "8192"],
+      // -b/-ub at the context size: the default 512-token physical batch
+      // rejects any single text over ~512 tokens, and capped texts run longer.
+      ["-m", this.model, "--host", "127.0.0.1", "--port", port, "--embedding", "-c", "8192", "-b", "8192", "-ub", "8192"],
       { stdio: ["ignore", "ignore", "pipe"], windowsHide: true }
     );
     this.child = child;

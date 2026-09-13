@@ -16,6 +16,11 @@ import type { RecallItem } from "./types.js";
 
 /** Texts per embedding request; llama.cpp pools them in one pass. */
 const BATCH = 32;
+/**
+ * And at most this many characters per request — a conservative token bound
+ * (≤1 token/char) that keeps one call inside the sidecar's physical batch.
+ */
+const BATCH_CHARS = 8_192;
 const RETRY_INIT_MS = 500;
 const RETRY_MAX_MS = 8_000;
 /** Consecutive batch failures after which indexing is declared dead. */
@@ -124,7 +129,14 @@ export class RecallQueue {
     this.draining = true;
     try {
       while (this.pending.size > 0 && !this.stopped && this.deadReason === null) {
-        const batch = [...this.pending.entries()].slice(0, BATCH);
+        const batch: [string, { seq: number; op: RecallOp }][] = [];
+        let chars = 0;
+        for (const entry of this.pending) {
+          const len = entry[1].op.item?.text.length ?? 0;
+          if (batch.length >= BATCH || (batch.length > 0 && chars + len > BATCH_CHARS)) break;
+          batch.push(entry);
+          chars += len;
+        }
         for (const [sid] of batch) this.pending.delete(sid);
         try {
           await this.commit(batch.map(([, entry]) => entry.op));

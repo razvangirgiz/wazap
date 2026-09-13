@@ -447,7 +447,9 @@ export function searchableText(raw: WAMessage, transcript?: TranscriptRecord): s
   if (type === "reaction" || type === "deleted" || type === "system") return null;
   const own =
     rule.text?.(node)?.trim() || rule.caption?.(node)?.trim() || rule.detail?.(node)?.trim() || "";
-  if (own === "" && spoken === undefined) return null;
+  // No letter or digit means no words to embed — a "🥰🥰" or "..." only adds
+  // noise that outranks real hits on short queries.
+  if (!/[\p{L}\p{N}]/u.test(own) && spoken === undefined) return null;
   return viewText(raw, transcript);
 }
 

@@ -128,6 +128,7 @@ test("live messages land in the index; placeholders do not", async () => {
       text("M1", "ți-am trimis factura pe e-mail ieri"),
       text("M2", "la ce ora e programarea la doctor?"),
       { ...text("M3"), message: { stickerMessage: { mimetype: "image/webp" } } },
+      text("M4", "🥰🥰😘"),
     ]);
     await svc.recallIdle();
     assert.equal(svc.recallStore.count, 2);

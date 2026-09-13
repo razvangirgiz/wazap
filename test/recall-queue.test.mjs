@@ -54,6 +54,23 @@ test("a feed lands in the index in batches of one embedding call per 32 texts", 
   await store.close();
 });
 
+test("a batch also splits on its character budget, not only on count", async () => {
+  const store = await openStore();
+  const calls = [];
+  const queue = new RecallQueue(store, fakeEmbed(calls));
+  const big = "x".repeat(5000);
+  queue.feed([
+    { sid: "a", item: item("a", big) },
+    { sid: "b", item: item("b", big) },
+    { sid: "c", item: item("c", "mic") },
+  ]);
+  await queue.idle();
+  // 5k + 5k does not fit one 8192-char call, but 5k + small does.
+  assert.deepEqual(calls, [1, 2]);
+  assert.equal(store.count, 3);
+  await store.close();
+});
+
 test("a sid re-queued before its batch runs lands once, with the latest text", async () => {
   const store = await openStore();
   const calls = [];
