@@ -1,7 +1,17 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  realpathSync,
+  statSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -13,10 +23,12 @@ import {
   isNpxPath,
   launchCheck,
   launcher,
+  mcpEntry,
   relaunch,
   stableWazap,
   whereInstalled,
 } from "../dist/connect.js";
+import { defaultDataDir } from "../dist/config.js";
 
 const run = promisify(execFile);
 const binary = join(dirname(fileURLToPath(import.meta.url)), "..", "dist", "index.js");
@@ -26,7 +38,9 @@ function sandbox() {
   const cwd = mkdtempSync(join(tmpdir(), "wazap-cwd-"));
   const bin = join(home, "bin");
   mkdirSync(bin);
-  writeFileSync(join(bin, "wazap"), "", { mode: 0o755 });
+  // A global install's bin is a symlink into its package: realpath says whether
+  // the wazap on PATH is this script or an unrelated one.
+  symlinkSync(binary, join(bin, "wazap"));
   return { home, cwd, bin };
 }
 
@@ -235,6 +249,32 @@ for (const [binPath, pathEnv, present, kind] of INSTALLS) {
 test("the npx cache wins over a wazap on PATH: this process is still the throwaway copy", () => {
   const npx = "/Users/x/.npm/_npx/8a1b/node_modules/wazap/dist/index.js";
   assert.equal(whereInstalled(npx, "/usr/local/bin", () => true).kind, "npx");
+});
+
+test("a wazap on PATH is only a global install when it resolves to this script", () => {
+  const root = mkdtempSync(join(tmpdir(), "wazap-realpath-"));
+  const pkg = join(root, "pkg");
+  const bin = join(root, "bin");
+  mkdirSync(pkg);
+  mkdirSync(bin);
+  const script = join(pkg, "index.js");
+  writeFileSync(script, "");
+  symlinkSync(script, join(bin, "wazap"));
+  assert.equal(whereInstalled(script, bin).kind, "global");
+
+  const other = join(root, "other.js");
+  writeFileSync(other, "");
+  const otherBin = join(root, "other-bin");
+  mkdirSync(otherBin);
+  symlinkSync(other, join(otherBin, "wazap"));
+  assert.equal(whereInstalled(script, otherBin).kind, "checkout");
+});
+
+test("a GUI client gets an absolute node even from a checkout", () => {
+  const config = { dataDir: defaultDataDir(), readOnly: false };
+  const entry = mcpEntry(config, findClient("claude-desktop"), { kind: "checkout", script: binary });
+  assert.equal(entry.command, process.execPath, "a bare `node` is not on launchd's PATH");
+  assert.deepEqual(entry.args, [realpathSync(binary)]);
 });
 
 test("stableWazap prefers npm's prefix over an npx shim that npx put first on PATH", () => {

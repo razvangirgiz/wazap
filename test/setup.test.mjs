@@ -131,7 +131,7 @@ function sandbox({ wazap = true } = {}) {
   const cwd = mkdtempSync(join(tmpdir(), "wazap-cwd-"));
   const bin = join(home, "bin");
   mkdirSync(bin);
-  if (wazap) writeFileSync(join(bin, "wazap"), "", { mode: 0o755 });
+  if (wazap) symlinkSync(binary, join(bin, "wazap"));
   return { home, cwd, bin };
 }
 
