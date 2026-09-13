@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.17.0
 ### Added
 
 - **The new webhook events are opt-in.** `WAZAP_WEBHOOK_EVENTS` names what
