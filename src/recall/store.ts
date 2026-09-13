@@ -24,7 +24,8 @@ import type { RankedHit, RecallItem, RecallQuery, RecallRecord } from "./types.j
 export const TEXT_CAP = 2048;
 /** Rewrite meta+vectors when more than this share of rows is dead. */
 const COMPACT_DEAD_RATIO = 0.3;
-const STATE_VERSION = 1;
+/** v2: model task prompts — a raw-embedded index belongs to a different world. */
+const STATE_VERSION = 2;
 const QUANT = "int8";
 /** The index holds message text; it gets history's permissions, not the defaults. */
 const DIR_MODE = 0o700;

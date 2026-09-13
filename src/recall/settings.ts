@@ -14,10 +14,12 @@ const MODEL_ALIASES: readonly EmbedModelAlias[] = ["embeddinggemma-300m", "e5-ba
 const DEFAULT_MAX_ROWS = 50_000;
 const MIN_MAX_ROWS = 100;
 /**
- * Cosine floor for embeddinggemma-300m, measured on real history: noise sits
- * at ~0.45-0.54, real matches start ~0.5. e5-base needs its own calibration.
+ * Cosine floor for embeddinggemma-300m under its task prompts, measured on a
+ * real index: noise tops out ~0.31, real paraphrases start ~0.35. The prompts
+ * widened the noise/signal gap enough for the floor to mean something.
+ * e5-base needs its own calibration.
  */
-const DEFAULT_MIN_SIMILARITY = 0.5;
+const DEFAULT_MIN_SIMILARITY = 0.35;
 
 function parseEnabled(raw: string | undefined): boolean {
   const value = stripPasted(raw ?? "").toLowerCase();

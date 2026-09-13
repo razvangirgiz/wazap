@@ -235,7 +235,10 @@ class UrlBackend implements EmbeddingTarget {
  * sidecar stalls indexing rather than dropping messages.
  */
 export class EmbedEngine {
-  private constructor(private readonly target: EmbeddingTarget) {}
+  private constructor(
+    private readonly target: EmbeddingTarget,
+    private readonly spec: EmbedModelSpec
+  ) {}
 
   static async start(
     settings: RecallSettings,
@@ -244,7 +247,7 @@ export class EmbedEngine {
   ): Promise<EmbedEngine> {
     if (settings.embedUrl !== null) {
       const base = settings.embedUrl.replace(/\/+$/, "");
-      return new EmbedEngine(new UrlBackend(base));
+      return new EmbedEngine(new UrlBackend(base), spec);
     }
     const bin = findLlama(settings);
     if (bin === null) {
@@ -256,18 +259,24 @@ export class EmbedEngine {
     }
     const sidecar = new LlamaSidecar(bin, embedModelPath(settings.modelsDir, spec), onLog);
     await sidecar.start();
-    return new EmbedEngine(sidecar);
+    return new EmbedEngine(sidecar, spec);
   }
 
-  async embed(texts: string[]): Promise<number[][]> {
+  /**
+   * `kind` picks the model's task prefix: the index holds "document" texts,
+   * searches embed "query". The prefix is the model's side of a retrieval
+   * pair, not part of what the index stores.
+   */
+  async embed(texts: string[], kind: "query" | "document"): Promise<number[][]> {
     if (texts.length === 0) return [];
     await this.target.waitReady();
+    const input = texts.map((text) => `${this.spec.prompts[kind]}${text}`);
     let response: Response;
     try {
       response = await fetch(`${this.target.base}${EMBED_PATH}`, {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ content: texts.length === 1 ? texts[0] : texts }),
+        body: JSON.stringify({ content: input.length === 1 ? input[0] : input }),
         signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
       });
     } catch (err) {
@@ -285,7 +294,7 @@ export class EmbedEngine {
     if (!Array.isArray(reply)) {
       throw new WazapError("RECALL_FAILED", `embedding server refused: ${reply.error?.message ?? "bad reply"}`);
     }
-    if (reply.length !== texts.length) {
+    if (reply.length !== input.length) {
       throw new WazapError(
         "RECALL_FAILED",
         `embedding server returned ${reply.length} vectors for ${texts.length} texts`

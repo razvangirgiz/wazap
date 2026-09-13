@@ -21,6 +21,12 @@ export interface EmbedModelSpec {
   /** Vector length this model emits; a mismatch against the index forces a rebuild. */
   dims: number;
   url: string;
+  /**
+   * The task prefixes the model was trained with, prepended at embed time.
+   * Queries and documents live on different sides of a retrieval pair — the
+   * prefix is what tells the model which side a text is on.
+   */
+  prompts: { query: string; document: string };
 }
 
 /**
@@ -38,6 +44,8 @@ export const EMBED_MODELS: Record<EmbedModelAlias, EmbedModelSpec> = {
     sha256: "b5ce9d77a3fc4b3b39ccb5643c36777911cc4eb46a66962eadfa3f5f60490d63",
     dims: 768,
     url: "https://huggingface.co/ggml-org/embeddinggemma-300M-GGUF/resolve/main/embeddinggemma-300M-Q8_0.gguf",
+    // EmbeddingGemma's own retrieval task, from its model card.
+    prompts: { query: "task: search result | query: ", document: "title: none | text: " },
   },
   "e5-base-multilingual": {
     alias: "e5-base-multilingual",
@@ -46,6 +54,8 @@ export const EMBED_MODELS: Record<EmbedModelAlias, EmbedModelSpec> = {
     sha256: "548c31b068947aa26b86c8bbfc1f2fabe5233f6d0e1241319832b20a01e5968a",
     dims: 768,
     url: "https://huggingface.co/dinab/multilingual-e5-base-Q8_0-GGUF/resolve/main/multilingual-e5-base-q8_0.gguf",
+    // e5's documented asymmetric prefixes.
+    prompts: { query: "query: ", document: "passage: " },
   },
 };
 
