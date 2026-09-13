@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.18.2
+### Fixed
+
+- **Recall embeds with the model's own task prompts.** llama-server was fed
+  raw text while embeddinggemma was trained on asymmetric retrieval prompts
+  (`task: search result | query:` for the query, `title: none | text:` for
+  documents). A/B on a real index: noise drops from 0.45-0.54 cosine to
+  under 0.31, nonsense queries return nothing, and true paraphrases surface
+  again — so `WAZAP_RECALL_MIN_SIMILARITY` is recalibrated to 0.35. e5 gets
+  its documented `query:`/`passage:` prefixes too. Existing indexes are
+  wiped and rebuilt on first boot: mixed embedding spaces would rank
+  garbage.
+
 ## 0.18.1
 ### Fixed
 
