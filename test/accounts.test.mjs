@@ -167,6 +167,26 @@ test("a bad webhook_url in accounts.json is refused", () => {
   });
 });
 
+test("an unknown webhook_events in accounts.json is refused, naming the account and the token", () => {
+  const dir = dataDir();
+  const registry = AccountRegistry.load(dir);
+  registry.add("work", "Work");
+  writeFileSync(
+    paths(dir).accountsFile,
+    JSON.stringify({
+      v: 2,
+      default: "default",
+      accounts: [{ id: "work", name: "Work", enabled: true, owner: null, webhook_events: "connection,frobnicate" }],
+    }),
+  );
+  assert.throws(() => AccountRegistry.load(dir), (err) => {
+    assert.equal(err.code, "INVALID_ID");
+    assert.match(err.message, /Account "work".*webhook_events.*frobnicate/);
+    assert.match(err.fix, /accounts\.json/);
+    return true;
+  });
+});
+
 test("config writes --account stores the override in accounts.json, not .env", async () => {
   const dir = dataDir();
   await wazap(dir, ["account", "add", "work"]);

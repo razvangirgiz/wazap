@@ -43,7 +43,7 @@ const binary = join(dirname(fileURLToPath(import.meta.url)), "..", "dist", "inde
 const ME = "40700000001@s.whatsapp.net";
 const PEER = "40700000002@s.whatsapp.net";
 const SECRET = "webhook-test-secret";
-const WEBHOOK_KEYS = ["WAZAP_WEBHOOK", "WAZAP_WEBHOOK_URL", "WAZAP_WEBHOOK_SECRET"];
+const WEBHOOK_KEYS = ["WAZAP_WEBHOOK", "WAZAP_WEBHOOK_URL", "WAZAP_WEBHOOK_SECRET", "WAZAP_WEBHOOK_EVENTS"];
 
 function dataDir() {
   return mkdtempSync(join(tmpdir(), "wazap-webhook-"), { mode: 0o700 });
@@ -126,9 +126,10 @@ const closedWith = (statusCode) => ({
 });
 
 /** Point the in-process sink at `url`, and hand back the restore the test owes. */
-function saveWebhookEnv(url) {
+function saveWebhookEnv(url, events) {
   const saved = WEBHOOK_KEYS.map((key) => [key, process.env[key]]);
-  Object.assign(process.env, readyEnv(url));
+  for (const key of WEBHOOK_KEYS) delete process.env[key];
+  Object.assign(process.env, readyEnv(url, events));
   return () => {
     for (const [key, value] of saved) {
       if (value === undefined) delete process.env[key];
@@ -179,8 +180,20 @@ function samplePayload(overrides = {}) {
   };
 }
 
-function readyEnv(url) {
-  return { WAZAP_WEBHOOK: "on", WAZAP_WEBHOOK_URL: url, WAZAP_WEBHOOK_SECRET: SECRET };
+function connectionPayload(overrides = {}) {
+  return {
+    event: "connection",
+    status: "linked",
+    timestamp: "2026-09-08T14:00:00.000Z",
+    account_id: "default",
+    account_name: "default",
+    ...overrides,
+  };
+}
+
+function readyEnv(url, events) {
+  const env = { WAZAP_WEBHOOK: "on", WAZAP_WEBHOOK_URL: url, WAZAP_WEBHOOK_SECRET: SECRET };
+  return events === undefined ? env : { ...env, WAZAP_WEBHOOK_EVENTS: events };
 }
 
 test("webhook is off unless WAZAP_WEBHOOK is an on-value", () => {
@@ -210,14 +223,43 @@ test("an account webhook_url and webhook_secret win over the environment", () =>
     url: "https://hooks.example/work///",
     secret: "  work-secret  ",
   });
-  assert.deepEqual(settings, { kind: "ready", url: "https://hooks.example/work", secret: "work-secret" });
+  assert.deepEqual(settings, {
+    kind: "ready",
+    url: "https://hooks.example/work",
+    secret: "work-secret",
+    events: ["message_received"],
+  });
+});
+
+test("an account webhook_events wins over the environment, in canonical order", () => {
+  const settings = readWebhookSettings(readyEnv("https://hooks.example/global", "all"), {
+    events: "  connection , MESSAGE_RECEIVED , connection  ",
+  });
+  assert.deepEqual(settings, {
+    kind: "ready",
+    url: "https://hooks.example/global",
+    secret: SECRET,
+    events: ["message_received", "connection"],
+  });
+});
+
+test("an unknown webhook event is invalid rather than silently dropped", () => {
+  const settings = readWebhookSettings(readyEnv("https://hooks.example/wazap", "message_received,message_recieved"));
+  assert.equal(settings.kind, "invalid");
+  assert.match(settings.detail, /message_recieved/);
+  assert.match(settings.fix, /WAZAP_WEBHOOK_EVENTS/);
 });
 
 test("an account can override only the URL and still use the global secret", () => {
   const settings = readWebhookSettings(readyEnv("https://hooks.example/global"), {
     url: "http://127.0.0.1:9/work",
   });
-  assert.deepEqual(settings, { kind: "ready", url: "http://127.0.0.1:9/work", secret: SECRET });
+  assert.deepEqual(settings, {
+    kind: "ready",
+    url: "http://127.0.0.1:9/work",
+    secret: SECRET,
+    events: ["message_received"],
+  });
 });
 
 test("asWebhookPayload names the account", () => {
@@ -330,7 +372,12 @@ test("on with a URL and a secret is ready, and a trailing slash is stripped", ()
     WAZAP_WEBHOOK_URL: "https://hooks.example/wazap///",
     WAZAP_WEBHOOK_SECRET: `  "${SECRET}"  `,
   });
-  assert.deepEqual(settings, { kind: "ready", url: "https://hooks.example/wazap", secret: SECRET });
+  assert.deepEqual(settings, {
+    kind: "ready",
+    url: "https://hooks.example/wazap",
+    secret: SECRET,
+    events: ["message_received"],
+  });
 });
 
 test("an unknown WAZAP_WEBHOOK value is invalid rather than silently on", () => {
@@ -398,6 +445,53 @@ test("off delivers zero POSTs, even when a URL is set", async () => {
     { post },
   ).notify(samplePayload());
   assert.equal(calls, 0);
+});
+
+test("an unset WAZAP_WEBHOOK_EVENTS delivers message_received and drops the other two", async () => {
+  let calls = 0;
+  const post = async () => {
+    calls++;
+    return new Response(null, { status: 204 });
+  };
+  const sink = new WebhookSink(readyEnv("http://127.0.0.1:9/hook"), { post, retryDelays: [] });
+
+  assert.equal(await sink.notify(samplePayload({ event: "message_sent", from_me: true })), false);
+  assert.equal(await sink.notify(connectionPayload()), false);
+  assert.equal(calls, 0, "a filtered event is not a delivery attempt");
+
+  assert.equal(await sink.notify(samplePayload()), true);
+  assert.equal(calls, 1);
+});
+
+test("WAZAP_WEBHOOK_EVENTS=all delivers all three", async () => {
+  let calls = 0;
+  const post = async () => {
+    calls++;
+    return new Response(null, { status: 204 });
+  };
+  const sink = new WebhookSink(readyEnv("http://127.0.0.1:9/hook", "all"), { post, retryDelays: [] });
+
+  assert.equal(await sink.notify(samplePayload()), true);
+  assert.equal(await sink.notify(samplePayload({ event: "message_sent", from_me: true })), true);
+  assert.equal(await sink.notify(connectionPayload()), true);
+  assert.equal(calls, 3);
+});
+
+test("an explicit WAZAP_WEBHOOK_EVENTS list delivers only what it names", async () => {
+  let calls = 0;
+  const post = async () => {
+    calls++;
+    return new Response(null, { status: 204 });
+  };
+  const sink = new WebhookSink(readyEnv("http://127.0.0.1:9/hook", "message_received,connection"), {
+    post,
+    retryDelays: [],
+  });
+
+  assert.equal(await sink.notify(samplePayload()), true);
+  assert.equal(await sink.notify(connectionPayload()), true);
+  assert.equal(await sink.notify(samplePayload({ event: "message_sent", from_me: true })), false);
+  assert.equal(calls, 2);
 });
 
 test("a long body is posted as a preview that says it was cut", () => {
@@ -513,6 +607,24 @@ test("a sink prefers the account webhook_url and names that account on sendTest"
   assert.equal(payload.account_name, "Work");
   assert.equal(webhookSignatureMatches(received[0].body, workSecret, received[0].signature), true);
   await server.close();
+});
+
+test("an account with its own event list is sent to accounts.json, not to the environment", async () => {
+  let calls = 0;
+  const post = async () => {
+    calls++;
+    return new Response(null, { status: 204 });
+  };
+  const sink = new WebhookSink(readyEnv("https://hooks.example/global", "all"), {
+    post,
+    retryDelays: [],
+    account: { id: "work", name: "Work", webhook_events: "message_received" },
+  });
+  const result = await sink.sendTest("connection");
+  assert.equal(result.ok, false);
+  assert.match(result.error, /"connection" is not enabled/);
+  assert.equal(result.fix, 'set webhook_events for "work" in accounts.json to message_received,connection, or all');
+  assert.equal(calls, 0);
 });
 
 test("doctor marks on-without-url invalid, and off as an info check", () => {
@@ -694,7 +806,7 @@ test("a message typed on the phone posts message_sent, and the noted id keeps wa
     res.writeHead(204);
     res.end();
   });
-  const restoreEnv = saveWebhookEnv(server.url);
+  const restoreEnv = saveWebhookEnv(server.url, "all");
   const { svc, sock } = connectedService(WhatsAppService, {
     prefix: "wazap-webhook-sent-",
     id: ME,
@@ -743,7 +855,7 @@ test("wazap's own send is quiet as the append Baileys emits for it", async () =>
     res.writeHead(204);
     res.end();
   });
-  const restoreEnv = saveWebhookEnv(server.url);
+  const restoreEnv = saveWebhookEnv(server.url, "all");
   const { svc, sock } = connectedService(WhatsAppService, {
     prefix: "wazap-webhook-append-",
     id: ME,
@@ -782,7 +894,7 @@ test("the self chat is marked is_self_chat, and timestamp is ts in UTC", async (
     res.writeHead(204);
     res.end();
   });
-  const restoreEnv = saveWebhookEnv(server.url);
+  const restoreEnv = saveWebhookEnv(server.url, "all");
   const { svc, sock } = connectedService(WhatsAppService, { prefix: "wazap-webhook-self-", id: ME, name: "Răzvan" });
   try {
     sock.ev.emit("messages.upsert", { type: "notify", messages: [ownMessage("SELF", "notă pentru mine", { chat: ME })] });
@@ -954,7 +1066,7 @@ test("connection changes post linked, disconnected and expired, once per mapped 
     res.writeHead(204);
     res.end();
   });
-  const restoreEnv = saveWebhookEnv(server.url);
+  const restoreEnv = saveWebhookEnv(server.url, "connection");
   const svc = openService(WhatsAppService, offlineConfig("wazap-webhook-conn-"));
   const sock = fakeSocket();
   svc.start = async () => {};
@@ -1009,7 +1121,7 @@ test("a connection event the consumer never received is announced by the next ch
     res.writeHead(204);
     res.end();
   });
-  const restoreEnv = saveWebhookEnv(server.url);
+  const restoreEnv = saveWebhookEnv(server.url, "connection");
   const svc = openService(WhatsAppService, offlineConfig("wazap-webhook-conn-fail-"));
   try {
     svc.setStatus("logged_out");
@@ -1026,6 +1138,41 @@ test("a connection event the consumer never received is announced by the next ch
       received.map((hit) => hit.status),
       ["expired", "linked"],
       "expired is said again, and one chain keeps the pair in the order the link moved in",
+    );
+  } finally {
+    await svc.stop();
+    await server.close();
+    restoreEnv();
+  }
+});
+
+/**
+ * A filtered event is not a delivery, so it must leave the "only on change"
+ * guard where it was. Both statuses here map to `expired`: the second one can
+ * only arrive if the filtered first never counted as announced.
+ */
+test("a filtered connection change does not count as announced", async () => {
+  const received = [];
+  const server = await listen(async (req, res) => {
+    received.push(JSON.parse(await readBody(req)));
+    res.writeHead(204);
+    res.end();
+  });
+  const restoreEnv = saveWebhookEnv(server.url, "message_received");
+  const svc = openService(WhatsAppService, offlineConfig("wazap-webhook-conn-filtered-"));
+  try {
+    svc.setStatus("logged_out");
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    assert.equal(received.length, 0, "connection is not an enabled event");
+
+    process.env.WAZAP_WEBHOOK_EVENTS = "all";
+    svc.setStatus("session_corrupt");
+    await waitFor(() => received.length > 0, 5_000, "the expired webhook POST");
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    assert.deepEqual(
+      received.map((hit) => hit.status),
+      ["expired"],
     );
   } finally {
     await svc.stop();
@@ -1152,9 +1299,9 @@ test("wazap webhook test --event posts that event, and refuses an unknown one", 
     res.end();
   });
   const dir = dataDir();
-  const asSent = await wazap(dir, ["webhook", "test", "--event", "message_sent"], { env: readyEnv(server.url) });
+  const asSent = await wazap(dir, ["webhook", "test", "--event", "message_sent"], { env: readyEnv(server.url, "all") });
   assert.equal(asSent.code, 0, asSent.stderr);
-  const asConnection = await wazap(dir, ["webhook", "test", "--event", "connection"], { env: readyEnv(server.url) });
+  const asConnection = await wazap(dir, ["webhook", "test", "--event", "connection"], { env: readyEnv(server.url, "all") });
   assert.equal(asConnection.code, 0, asConnection.stderr);
 
   assert.deepEqual(
@@ -1172,11 +1319,38 @@ test("wazap webhook test --event posts that event, and refuses an unknown one", 
   assert.match(connection.timestamp, /Z$/);
   assert.equal(webhookSignatureMatches(received[1].body, SECRET, received[1].signature), true);
 
-  const unknown = await wazap(dir, ["webhook", "test", "--event", "frobnicate"], { env: readyEnv(server.url) });
+  const unknown = await wazap(dir, ["webhook", "test", "--event", "frobnicate"], { env: readyEnv(server.url, "all") });
   assert.equal(unknown.code, 1);
   assert.match(unknown.stderr, /Unknown webhook event "frobnicate"/);
   assert.ok(unknown.stderr.includes(WEBHOOK_EVENTS.join(", ")), unknown.stderr);
   assert.equal(received.length, 2, "a refused event must not POST");
+  await server.close();
+});
+
+test("wazap webhook test --event refuses an event the filter drops, and posts it once it is enabled", async () => {
+  const received = [];
+  const server = await listen(async (req, res) => {
+    received.push({ event: req.headers["x-wazap-event"], body: await readBody(req) });
+    res.writeHead(204);
+    res.end();
+  });
+  const dir = dataDir();
+  const filtered = await wazap(dir, ["webhook", "test", "--event", "message_sent"], { env: readyEnv(server.url) });
+  assert.equal(filtered.code, 1);
+  assert.match(filtered.stderr, /Webhook event "message_sent" is not enabled/);
+  assert.ok(
+    filtered.stderr.includes("set WAZAP_WEBHOOK_EVENTS=message_received,message_sent, or all"),
+    filtered.stderr,
+  );
+  assert.equal(received.length, 0, "a filtered event must not POST");
+
+  const enabled = await wazap(dir, ["webhook", "test", "--event", "message_sent"], {
+    env: readyEnv(server.url, "all"),
+  });
+  assert.equal(enabled.code, 0, enabled.stderr);
+  assert.equal(received.length, 1);
+  assert.equal(received[0].event, "message_sent");
+  assert.equal(JSON.parse(received[0].body).event, "message_sent");
   await server.close();
 });
 
