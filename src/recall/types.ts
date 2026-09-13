@@ -25,6 +25,11 @@ export interface RecallRecord extends RecallItem {
 /** What a search is narrowed by — the same filters search_messages takes. */
 export interface RecallQuery {
   vector: number[];
+  /**
+   * The raw query text. When present, a rare literal token in it — a name, a
+   * number, a time — earns a hit carrying it verbatim a small bounded bonus.
+   */
+  text?: string;
   chatId?: string;
   sinceMs?: number;
   untilMs?: number;
@@ -37,9 +42,9 @@ export interface RecallQuery {
 
 export interface RankedHit {
   record: RecallRecord;
-  /** Raw cosine similarity against the query vector. */
+  /** Raw cosine similarity against the query vector; the floor applies to this. */
   similarity: number;
-  /** Similarity after recency decay; what the hits are sorted by. */
+  /** Similarity after recency decay plus the bounded rare-token bonus; what the hits are sorted by. */
   score: number;
 }
 

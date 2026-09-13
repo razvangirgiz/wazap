@@ -641,7 +641,9 @@ search_messages to see. For an exact string — an id, a phone number, a URL —
 search_messages is the better tool.
 
 Each result carries its date and a score: semantic similarity scaled by
-recency, so fresh matches rank first. chat_id, since, until and from narrow
+recency, plus a small bonus when the hit repeats a rare query token
+verbatim — a name, a number — so fresh and exact matches rank first.
+chat_id, since, until and from narrow
 the search exactly like search_messages. A hit marked "index only" lives in
 the index alone: quote it, but get_message and download_media cannot see it.
 Results under the similarity floor are dropped rather than listed; when only

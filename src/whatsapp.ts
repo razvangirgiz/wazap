@@ -784,7 +784,16 @@ export class WhatsAppService implements WhatsAppApi {
       const [vector] = await this.recallEmbed([query], "query");
       const minSimilarity = this.recallEnv instanceof WazapError ? undefined : this.recallEnv.minSimilarity;
       const hits = store
-        .query({ vector: vector!, chatId: scope, sinceMs: opts.sinceMs, untilMs: opts.untilMs, from, minSimilarity, limit })
+        .query({
+          vector: vector!,
+          text: query,
+          chatId: scope,
+          sinceMs: opts.sinceMs,
+          untilMs: opts.untilMs,
+          from,
+          minSimilarity,
+          limit,
+        })
         .map((hit) => {
           const live = this.store.messages.has(hit.record.sid);
           return {
