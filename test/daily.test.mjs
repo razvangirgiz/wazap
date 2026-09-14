@@ -5,13 +5,15 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { existsSync, readFileSync } from "node:fs";
+import { join } from "node:path";
+import { proto } from "baileys";
 import { z } from "zod";
 
 import { WhatsAppService } from "../dist/whatsapp.js";
 import { registerTools } from "../dist/tools.js";
 import { compactConversations } from "../dist/compact.js";
 import { decodeMessage } from "../dist/store.js";
-import { asToolSource, connectedService, offlineConfig, openService } from "./helpers.mjs";
+import { asToolSource, connectedService, offlineConfig, openService, waitFor } from "./helpers.mjs";
 
 const ME = "40700000001@s.whatsapp.net";
 const ANA = "40700000002@s.whatsapp.net";
@@ -224,6 +226,54 @@ test("compact keeps the words, folds a run into one line, and counts what it lef
   assert.match(compact.content[0].text, /Dan: da, de la 8 · mai avem 2 ore · \[image\] autostrada \(3 msgs\)/);
   assert.ok(compact.content[0].text.length < full.content[0].text.length * 0.7, "well under the full size");
   assert.equal(compactConversations([]).length, 0);
+});
+
+test("a revoked message leaves the store, the search, and the history file on reload", async () => {
+  const { svc, sock, call, arrive } = setup({ persistHistory: true });
+  const id = arrive(ANA, "parola e hunter2");
+  const sid = `false_${ANA}_${id}`;
+  assert.ok(svc.store.messages.has(sid));
+
+  sock.ev.emit("messages.upsert", {
+    type: "notify",
+    messages: [
+      {
+        key: { remoteJid: ANA, fromMe: false, id: "R1" },
+        message: {
+          protocolMessage: {
+            type: proto.Message.ProtocolMessage.Type.REVOKE,
+            key: { remoteJid: ANA, fromMe: false, id },
+          },
+        },
+        messageTimestamp: Math.floor(Date.now() / 1000),
+      },
+    ],
+  });
+
+  assert.equal(svc.store.messages.has(sid), false, "the target is gone from the store");
+  assert.deepEqual((await call("search_messages", { query: "hunter2" })).structuredContent.messages, []);
+  const read = (await call("read_messages", { chat_id: ANA })).content[0].text;
+  assert.doesNotMatch(read, /hunter2/);
+  assert.match(read, /\[deleted\]/, "the placeholder stays, the way the phone shows it");
+
+  // The file keeps the line until the next load compacts it away; the
+  // tombstone must win over it there, or a restart resurrects the message.
+  const file = join(svc.paths.historyDir, `${ANA}.jsonl`);
+  const lines = () => (existsSync(file) ? readFileSync(file, "utf8").trim().split("\n").filter(Boolean) : []);
+  await waitFor(() => lines().length >= 2, 5_000, "the history lines to land");
+  await svc.flushStore();
+  const again = openService(WhatsAppService, { ...offlineConfig("x"), dataDir: svc.config.dataDir, persistHistory: true });
+  await again.loadPersisted();
+  assert.equal(again.store.messages.has(sid), false, "the reload honours the tombstone");
+  assert.deepEqual(
+    lines().map((line) => decodeMessage(JSON.parse(line).raw)?.message?.protocolMessage?.type ?? null),
+    [proto.Message.ProtocolMessage.Type.REVOKE],
+    "compaction drops the target's bytes and keeps only the tombstone"
+  );
+
+  const second = arrive(ANA, "al doilea secret");
+  sock.ev.emit("messages.delete", { keys: [{ remoteJid: ANA, fromMe: false, id: second }] });
+  assert.equal(svc.store.messages.has(`false_${ANA}_${second}`), false, "messages.delete drops it too");
 });
 
 test("in a group the note introduces the sender once, then the name alone", async () => {

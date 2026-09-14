@@ -21,6 +21,7 @@ import makeWASocket, {
   type GroupMetadata,
   type GroupParticipant,
   type WAMessage,
+  type WAMessageKey,
   type WASocket,
 } from "baileys";
 import type { ILogger } from "baileys/lib/Utils/logger.js";
@@ -1490,6 +1491,8 @@ export class WhatsAppService implements WhatsAppApi {
       provider,
       at: Date.now(),
     };
+    // A message revoked while the transcription ran keeps nothing behind.
+    if (!this.store.messages.has(messageId)) return transcribeResult(record, false);
     this.store.setTranscript(messageId, record);
     this.markStoreDirty();
     // The newest line for a sid wins on reload, so re-appending is what makes
@@ -1568,6 +1571,18 @@ export class WhatsAppService implements WhatsAppApi {
   }
 
   /**
+   * Every sid a revoke or delete target may have been filed under: the
+   * canonical chat jid, and the raw one — which differs for a message that
+   * arrived under a lid before the pairing was learned and the chat folded.
+   */
+  private targetSids(target: WAMessageKey, fallbackJid: string): string[] {
+    const jid = target.remoteJid ?? fallbackJid;
+    const raw = messageIdFor(target, jid);
+    const canonical = messageIdFor(target, this.canonical(jid));
+    return canonical === raw ? [raw] : [raw, canonical];
+  }
+
+  /**
    * The ops one raw message turns into: the tombstone a revoke carries for the
    * message it takes back, and a put for whatever searchable text it carries.
    * Most messages produce one or the other; plenty produce neither.
@@ -1575,7 +1590,7 @@ export class WhatsAppService implements WhatsAppApi {
   private recallOpsFor(raw: WAMessage, jid: string, transcript?: TranscriptRecord): RecallOp[] {
     const ops: RecallOp[] = [];
     const target = revokedTargetKey(raw);
-    if (target !== undefined) ops.push({ sid: messageIdFor(target, this.canonical(target.remoteJid ?? jid)) });
+    if (target !== undefined) for (const sid of this.targetSids(target, jid)) ops.push({ sid });
     const sid = messageIdFor(raw.key, jid);
     const text = searchableText(raw, transcript ?? this.store.transcripts.get(sid));
     if (text !== null) {
@@ -2166,6 +2181,24 @@ export class WhatsAppService implements WhatsAppApi {
       }
       void this.appendHistory(stored);
       this.markStoreDirty();
+    });
+
+    sock.ev.on("messages.delete", (item) => {
+      // The other side asked that these go; the store honours it the way the
+      // phone does, ring and index included.
+      const sids: string[] = [];
+      if ("all" in item) {
+        const ring = this.store.byChat.get(this.canonical(item.jid)) ?? [];
+        sids.push(...ring);
+      } else {
+        for (const key of item.keys) {
+          if (!key.remoteJid) continue;
+          sids.push(...this.targetSids(key, key.remoteJid));
+        }
+      }
+      for (const sid of sids) this.store.dropMessage(sid);
+      this.recallForget(sids);
+      if (sids.length > 0) this.markStoreDirty();
     });
 
     sock.ev.on("messages.update", (updates) => {
@@ -3057,6 +3090,14 @@ export class WhatsAppService implements WhatsAppApi {
 
   private ingestMessages(messages: WAMessage[]): WAMessage[] {
     const stored: WAMessage[] = [];
+    // A revoke deletes its target wherever the target landed first: an earlier
+    // batch, or later in this one — delivery order is not guaranteed.
+    const revoked = new Set<string>();
+    for (const raw of messages) {
+      const target = revokedTargetKey(raw);
+      if (target) for (const sid of this.targetSids(target, raw.key.remoteJid ?? "")) revoked.add(sid);
+    }
+    for (const sid of revoked) this.store.dropMessage(sid);
     for (const raw of messages) {
       if (!raw.key?.remoteJid || (!raw.message && !isStubEvent(raw))) continue;
       if (isStatusJid(raw.key.remoteJid)) {
@@ -3068,6 +3109,7 @@ export class WhatsAppService implements WhatsAppApi {
       this.learnPushName(raw, jid);
       if (this.applyReaction(raw, jid)) continue;
       const sid = messageIdFor(raw.key, jid);
+      if (revoked.has(sid)) continue;
       if (!this.keepOverEarlierCall(raw, jid, sid)) continue;
       this.store.putMessage(sid, jid, raw);
       this.noteInbound(raw);
@@ -3086,6 +3128,12 @@ export class WhatsAppService implements WhatsAppApi {
    */
   private ingestStory(raw: WAMessage): void {
     if (raw.key.fromMe || isControlMessage(raw) || messageType(raw) === "system") return;
+    // A revoked status leaves nothing behind — not even the "[deleted]" stub.
+    const target = revokedTargetKey(raw);
+    if (target) {
+      for (const sid of this.targetSids(target, STATUS_JID)) this.store.dropMessage(sid);
+      return;
+    }
     this.learnPushName(raw, STATUS_JID);
     this.store.putStory(messageIdFor(raw.key, STATUS_JID), STATUS_JID, raw);
     this.noteInbound(raw);
@@ -3283,6 +3331,24 @@ export class WhatsAppService implements WhatsAppApi {
         continue;
       }
     }
+
+    // A revoke's tombstone line wins over the line its target wrote, wherever
+    // each sits in the file — and taking the target out of `newest` both keeps
+    // it off the store and lets the compaction below drop its bytes from disk.
+    const decoded = new Map<string, WAMessage>();
+    const revoked = new Set<string>();
+    for (const record of newest.values()) {
+      const raw = decodeMessage(record.raw);
+      if (!raw) continue;
+      decoded.set(record.sid, raw);
+      const target = revokedTargetKey(raw);
+      if (target) for (const sid of this.targetSids(target, raw.key?.remoteJid ?? "")) revoked.add(sid);
+    }
+    for (const sid of revoked) {
+      newest.delete(sid);
+      this.store.dropMessage(sid);
+    }
+
     const kept = [...newest.values()].sort((a, b) => a.ts - b.ts).slice(-HISTORY_STORE_CAP_PER_CHAT);
 
     // Rewrite compacted, so the file stays bounded across restarts — but only
@@ -3302,7 +3368,7 @@ export class WhatsAppService implements WhatsAppApi {
 
     let loaded = 0;
     for (const record of kept) {
-      const raw = decodeMessage(record.raw);
+      const raw = decoded.get(record.sid);
       if (!raw?.key?.remoteJid || (!raw.message && !isStubEvent(raw))) continue;
       const jid = this.canonical(raw.key.remoteJid);
       if (isNoiseJid(jid) || isControlMessage(raw)) continue;
