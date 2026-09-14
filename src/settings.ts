@@ -178,8 +178,13 @@ export async function runConfig(config: Config): Promise<void> {
     return;
   }
 
+  // `send` is the only one-positional form; every other is a missing value,
+  // the arity complaint parseCli gave before `send` existed.
+  if (value === undefined) {
+    throw new WazapError("INVALID_ID", "Wrong arguments for `wazap config`.", USAGE_FIX);
+  }
   const spec = setting === undefined ? undefined : COMMANDS[setting];
-  if (spec === undefined || value === undefined || extra !== undefined || !spec.values.includes(value)) {
+  if (spec === undefined || extra !== undefined || !spec.values.includes(value)) {
     throw new WazapError("INVALID_ID", `Cannot set "${config.args.join(" ")}".`, USAGE_FIX);
   }
   await spec.apply(config, value);
