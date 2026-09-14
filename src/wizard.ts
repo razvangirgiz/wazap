@@ -194,7 +194,7 @@ class WizardImpl implements Wizard {
   #spinRow: number | null = null;
   #gen = 0;
   #onResize = (): void => {
-    void this.#render({ reveal: false });
+    void this.#render({ reveal: false }).catch(() => {});
   };
 
   constructor(readonly total: number) {}
@@ -227,13 +227,13 @@ class WizardImpl implements Wizard {
     this.#footer = null;
     this.#ensureTimer();
     if (same && this.#spinRow !== null) this.#paintSpinLine();
-    else void this.#render({ reveal: false });
+    else void this.#render({ reveal: false }).catch(() => {});
   }
 
   stopSpin(final?: string): void {
     this.#haltSpin();
     if (final !== undefined) this.#footer = final;
-    void this.#render({ reveal: false });
+    void this.#render({ reveal: false }).catch(() => {});
   }
 
   tick(line: string): void {
@@ -302,7 +302,7 @@ class WizardImpl implements Wizard {
 
   #paintSpinLine(): void {
     if (this.#spinText === null || this.#spinRow === null) {
-      void this.#render({ reveal: false });
+      void this.#render({ reveal: false }).catch(() => {});
       return;
     }
     const placed = centerBlock(this.#content(), cols(), rows());

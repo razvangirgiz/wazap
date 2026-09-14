@@ -276,6 +276,21 @@ test("a revoked message leaves the store, the search, and the history file on re
   assert.equal(svc.store.messages.has(`false_${ANA}_${second}`), false, "messages.delete drops it too");
 });
 
+test("a creds save that fails is logged, not left as an unhandled rejection", async () => {
+  const { svc, sock } = setup();
+  svc.saveCreds = () => Promise.reject(new Error("ENOSPC"));
+  let unhandled = false;
+  const spy = () => (unhandled = true);
+  process.on("unhandledRejection", spy);
+  try {
+    sock.ev.emit("creds.update", {});
+    await new Promise((r) => setTimeout(r, 50));
+    assert.equal(unhandled, false, "the rejection is caught and logged");
+  } finally {
+    process.off("unhandledRejection", spy);
+  }
+});
+
 test("download_media refuses a file over the cap before touching the network", async () => {
   const { call, arrive } = setup();
   const id = arrive(ANA, {

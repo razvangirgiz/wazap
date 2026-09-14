@@ -4,6 +4,7 @@ import { setTimeout as sleep } from "node:timers/promises";
 import makeWASocket, { Browsers, DisconnectReason, type UserFacingSocketConfig, type WASocket } from "baileys";
 import { readLinkedAccount, useAtomicAuthState, withoutAppStateSync, type LinkedAccount } from "./auth-state.js";
 import { RELINK_FIX, WazapError, asWazapError } from "./errors.js";
+import { logError } from "./logger.js";
 
 /**
  * The browser identity sent at handshake. WhatsApp closes the socket with 428
@@ -76,7 +77,7 @@ export async function linkSession(authDir: string, opts: LinkOptions): Promise<W
         logger: SILENT_LOGGER,
       });
       current = sock;
-      sock.ev.on("creds.update", () => void saveCreds());
+      sock.ev.on("creds.update", () => void saveCreds().catch((err: unknown) => logError("creds save", err)));
 
       const attempt = await new Promise<Attempt>((resolve) => {
         sock.ev.on("connection.update", (update) => {

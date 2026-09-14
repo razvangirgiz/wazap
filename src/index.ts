@@ -22,8 +22,17 @@ import { runSetup } from "./setup.js";
 import { runUpdate } from "./update.js";
 import { runConfig, runWebhook } from "./settings.js";
 import { WazapError } from "./errors.js";
-import { say } from "./logger.js";
+import { logError, say } from "./logger.js";
 import { fail, fix } from "./ui.js";
+
+// A promise that fails with nobody listening must still be seen. A thrown
+// exception outside any await means the process state is no longer
+// trustworthy, so it goes down loudly for its supervisor to bring back.
+process.on("unhandledRejection", (err) => logError("unhandled rejection", err));
+process.on("uncaughtException", (err) => {
+  logError("uncaught exception", err);
+  process.exit(1);
+});
 
 const USAGE = `${BANNER}
 

@@ -1109,9 +1109,13 @@ export class WhatsAppService implements WhatsAppApi {
       return;
     }
     const keep = new Set([...this.store.messages.keys()].map((sid) => `${safeFilename(sid)}.jpg`));
-    await Promise.all(
-      names.filter((name) => !keep.has(name)).map((name) => rm(join(this.paths.previewsDir, name), { force: true }))
-    );
+    try {
+      await Promise.all(
+        names.filter((name) => !keep.has(name)).map((name) => rm(join(this.paths.previewsDir, name), { force: true }))
+      );
+    } catch (err) {
+      logError("preview prune", err);
+    }
   }
 
   /**
@@ -2083,7 +2087,10 @@ export class WhatsAppService implements WhatsAppApi {
   }
 
   private wireEvents(sock: WASocket, generation: number): void {
-    sock.ev.on("creds.update", () => void this.saveCreds?.());
+    sock.ev.on("creds.update", () => {
+      const save = this.saveCreds;
+      if (save) void save().catch((err: unknown) => logError("creds save", err));
+    });
 
     sock.ev.on("connection.update", (update) => {
       if (generation !== this.generation) return;

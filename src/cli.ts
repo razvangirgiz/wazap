@@ -622,7 +622,10 @@ export async function runServe(config: Config): Promise<void> {
     log(`received ${reason}, shutting down`);
     // A wedged socket must not cost the user a kill -9; the lock goes on "exit".
     setTimeout(() => process.exit(0), 3_000).unref();
-    void hub.stop().finally(() => process.exit(0));
+    void hub
+      .stop()
+      .catch((err: unknown) => logError("shutdown", err))
+      .finally(() => process.exit(0));
   };
   process.on("SIGINT", () => shutdown("SIGINT"));
   process.on("SIGTERM", () => shutdown("SIGTERM"));

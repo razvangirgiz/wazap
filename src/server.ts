@@ -333,7 +333,8 @@ export async function startHttpEndpoint(hub: AccountSource, config: Config, endp
 
   const server = createServer(app);
   const onAbort = (): void => {
-    for (const transport of transports.values()) void transport.close();
+    for (const transport of transports.values())
+      void transport.close().catch((err: unknown) => logError("session close", err));
     server.closeAllConnections();
     server.close();
   };

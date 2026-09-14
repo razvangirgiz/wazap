@@ -167,11 +167,13 @@ export class RecallQueue {
         }
         for (const [, entry] of batch) this.committed = entry.seq;
         this.failures = 0;
-        await this.applySeals();
+        // A seal that fails to land stays queued and retries on the next feed.
+        await this.applySeals().catch((err: unknown) => logError("recall index seal", err));
       }
       // A seal that arrived behind an empty queue has nothing to wait for and
       // still owes the file its offset.
-      if (!this.stopped && this.deadReason === null) await this.applySeals();
+      if (!this.stopped && this.deadReason === null)
+        await this.applySeals().catch((err: unknown) => logError("recall index seal", err));
     } finally {
       this.draining = false;
       if (this.settled()) this.wake();
@@ -213,8 +215,8 @@ export class RecallQueue {
   private async applySeals(): Promise<void> {
     for (const [file, seal] of this.seals) {
       if (seal.mark > this.committed) continue;
-      this.seals.delete(file);
       await this.store.advanceOffset(file, seal.bytes);
+      this.seals.delete(file);
     }
   }
 }
