@@ -276,6 +276,15 @@ test("a revoked message leaves the store, the search, and the history file on re
   assert.equal(svc.store.messages.has(`false_${ANA}_${second}`), false, "messages.delete drops it too");
 });
 
+test("download_media refuses a file over the cap before touching the network", async () => {
+  const { call, arrive } = setup();
+  const id = arrive(ANA, {
+    documentMessage: { mimetype: "video/mp4", fileLength: 250_000_000, fileName: "big.mp4" },
+  });
+  const res = await call("download_media", { message_id: `false_${ANA}_${id}` });
+  assert.equal(res.structuredContent.error, "FILE_TOO_LARGE");
+});
+
 test("in a group the note introduces the sender once, then the name alone", async () => {
   const { call, arrive } = setup();
   await call("set_contact_note", { contact_id: DAN, note: "Hermi" });

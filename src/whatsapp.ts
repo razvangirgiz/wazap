@@ -189,6 +189,8 @@ const CALL_SWEEP_MS = 30_000;
 const CALL_DEDUPE_WINDOW_MS = 60_000;
 const CALL_DEDUPE_SCAN = 20;
 const HISTORY_STORE_CAP_PER_CHAT = 2_000;
+/** A download is buffered in memory, so the biggest file it may pull is bounded. */
+const MEDIA_DOWNLOAD_MAX_BYTES = 100_000_000;
 /** Ten minutes of speech. Past that, auto-transcribing is a bill nobody asked for. */
 const AUTO_TRANSCRIBE_MAX_SECONDS = 600;
 /** How long a message event waits for the transcript of the voice note it carries. */
@@ -2768,19 +2770,41 @@ export class WhatsAppService implements WhatsAppApi {
     return jid.endsWith("@lid") ? `unknown (lid …${digits.slice(-4)})` : jid;
   }
 
-  /** The bytes behind a message's media. Saving them and transcribing them share it. */
+  /**
+   * The bytes behind a message's media — saving them and transcribing them
+   * share this. Media arrives whole in memory, so the size is checked twice:
+   * the declared length before the download starts, and the stream itself
+   * while it lands — a sender can understate the first, not the second.
+   */
   private async mediaBuffer(sock: WASocket, messageId: string, raw: WAMessage): Promise<Buffer> {
-    try {
-      return await downloadMediaMessage(
-        raw,
-        "buffer",
-        {},
-        {
-          logger: silentLogger,
-          reuploadRequest: sock.updateMediaMessage,
-        }
+    const declared = mediaInfo(raw)?.size;
+    if (declared !== undefined && declared > MEDIA_DOWNLOAD_MAX_BYTES) {
+      throw new WazapError(
+        "FILE_TOO_LARGE",
+        `The media of ${messageId} is ${Math.ceil(declared / 1_000_000)} MB; downloads are capped at ${MEDIA_DOWNLOAD_MAX_BYTES / 1_000_000} MB.`
       );
+    }
+    try {
+      const stream = await downloadMediaMessage(raw, "stream", {}, {
+        logger: silentLogger,
+        reuploadRequest: sock.updateMediaMessage,
+      });
+      const chunks: Buffer[] = [];
+      let bytes = 0;
+      for await (const chunk of stream) {
+        bytes += (chunk as Buffer).length;
+        if (bytes > MEDIA_DOWNLOAD_MAX_BYTES) {
+          stream.destroy();
+          throw new WazapError(
+            "FILE_TOO_LARGE",
+            `The media of ${messageId} exceeds the ${MEDIA_DOWNLOAD_MAX_BYTES / 1_000_000} MB download cap.`
+          );
+        }
+        chunks.push(chunk as Buffer);
+      }
+      return Buffer.concat(chunks);
     } catch (err) {
+      if (err instanceof WazapError) throw err;
       throw new WazapError(
         "MEDIA_UNAVAILABLE",
         `Could not download the media of ${messageId}: ${describe(err)}`,
