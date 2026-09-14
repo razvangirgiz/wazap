@@ -2705,7 +2705,13 @@ export class WhatsAppService implements WhatsAppApi {
       this.namedContactsDirty = true;
     }
     // Notes, tags and details filed under the lid belong to the same person.
-    this.notes.mergeInto(lid, jid);
+    // mergeInto can only fail on the disk write — the in-memory merge already
+    // happened — and a throw here would take the event handler down with it.
+    try {
+      this.notes.mergeInto(lid, jid);
+    } catch (err) {
+      logError("notes merge", err);
+    }
     if (ring || alias || contact) this.markStoreDirty();
   }
 

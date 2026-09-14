@@ -4,7 +4,7 @@
  * take a chat off the waiting list until the other side writes again.
  * Nothing here is sent to WhatsApp.
  */
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 
 export interface ContactNote {
@@ -72,10 +72,13 @@ export class Notes {
       fields: Object.fromEntries(this.fields),
     };
     mkdirSync(dirname(this.file), { recursive: true, mode: 0o700 });
+    const tmp = `${this.file}.tmp`;
     try {
-      writeFileSync(this.file, `${JSON.stringify(data, null, 2)}\n`, { mode: 0o600 });
+      writeFileSync(tmp, `${JSON.stringify(data, null, 2)}\n`, { mode: 0o600 });
+      renameSync(tmp, this.file);
       this.error = null;
     } catch (error) {
+      rmSync(tmp, { force: true });
       this.error = error instanceof Error ? error.message : String(error);
       throw error;
     }

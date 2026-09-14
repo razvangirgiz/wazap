@@ -4,7 +4,7 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { proto } from "baileys";
 import { z } from "zod";
@@ -289,6 +289,20 @@ test("a creds save that fails is logged, not left as an unhandled rejection", as
   } finally {
     process.off("unhandledRejection", spy);
   }
+});
+
+test("a notes write that fails inside a contact fold is logged, not thrown into the handler", async () => {
+  const { svc, sock } = setup();
+  const lid = "808080808080808@lid";
+  const phone = "40700000008@s.whatsapp.net";
+  svc.notes.setNote(lid, "nota sub lid");
+  // rename(tmp, file) cannot succeed when file is a directory.
+  rmSync(svc.paths.notesFile);
+  mkdirSync(svc.paths.notesFile);
+  assert.throws(() => svc.notes.setNote(DAN, "y"), /ENOTDIR|EISDIR|EPERM/);
+  sock.ev.emit("contacts.upsert", [{ id: phone, lid }]);
+  assert.equal(svc.notes.noteFor(phone), "nota sub lid", "the in-memory merge still landed");
+  rmSync(svc.paths.notesFile, { recursive: true, force: true });
 });
 
 test("download_media refuses a file over the cap before touching the network", async () => {
