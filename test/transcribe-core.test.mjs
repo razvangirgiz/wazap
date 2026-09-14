@@ -265,7 +265,7 @@ test("search_messages finds a word that exists only in a transcript", async () =
   const { svc, sock } = serviceWith();
   const at = Date.now() - 60_000;
   deliver(sock, [voiceNote("V1", { seconds: 6, at }), textMessage("T1", "nimic aici", at + 1000)]);
-  svc.store.transcripts.set(sidOf("V1"), { text: "am uitat umbrela acasă", provider: "local", at: Date.now() });
+  svc.store.setTranscript(sidOf("V1"), { text: "am uitat umbrela acasă", provider: "local", at: Date.now() });
 
   const spoken = (await svc.searchMessages("umbrela", undefined, 10)).data;
   assert.deepEqual(

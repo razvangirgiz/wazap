@@ -132,6 +132,41 @@ test("search_messages narrows by time and by sender", async () => {
   assert.equal(bad.structuredContent.error, "INVALID_ID");
 });
 
+test("search follows an edit and a late transcript, not the words it cached first", async () => {
+  const { svc, sock, call, arrive } = setup();
+  arrive(ANA, "RCA expiră luni");
+  const before = await call("search_messages", { query: "zebra" });
+  assert.deepEqual(before.structuredContent.messages, []);
+
+  sock.ev.emit("messages.update", [
+    {
+      key: { remoteJid: ANA, fromMe: false, id: "M1" },
+      update: { message: { editedMessage: { message: { conversation: "zebra e a mea" } } } },
+    },
+  ]);
+  const after = await call("search_messages", { query: "zebra" });
+  assert.deepEqual(
+    after.structuredContent.messages.map((m) => m.text),
+    ["zebra e a mea"],
+    "the edit replaces what the search matches"
+  );
+  assert.deepEqual(
+    (await call("search_messages", { query: "rca" })).structuredContent.messages,
+    [],
+    "and the words it replaced no longer match"
+  );
+
+  const vid = arrive(ANA, { audioMessage: { ptt: true, seconds: 4 } });
+  const sid = `false_${ANA}_${vid}`;
+  assert.deepEqual((await call("search_messages", { query: "umbrela" })).structuredContent.messages, []);
+  svc.store.setTranscript(sid, { text: "am uitat umbrela", provider: "local", at: Date.now() });
+  assert.deepEqual(
+    (await call("search_messages", { query: "umbrela" })).structuredContent.messages.map((m) => m.message_id),
+    [sid],
+    "a transcript that lands after the first search is still found"
+  );
+});
+
 test("compact keeps the words, folds a run into one line, and counts what it left out", async () => {
   const { call, arrive } = setup();
   const t = Date.now() - hour;

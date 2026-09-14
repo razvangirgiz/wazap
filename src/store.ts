@@ -6,7 +6,7 @@
  */
 import { proto, type Chat as BaileysChat, type Contact as BaileysContact, type WAMessage } from "baileys";
 import { isNoiseJid } from "./ids.js";
-import { isControlMessage, messageTimestampMs } from "./messages.js";
+import { isControlMessage, messageTimestampMs, viewText } from "./messages.js";
 import type { TranscriptRecord } from "./transcribe/index.js";
 
 const MAX_MESSAGES_PER_CHAT = 1_000;
@@ -57,6 +57,12 @@ export class Store {
   readonly pushNames = new Map<string, string>();
   /** What a voice note said, keyed by message id. Transcribing is slow and can cost money. */
   readonly transcripts = new Map<string, TranscriptRecord>();
+  /**
+   * The rendered, lowercased text searchMessages matches on, filled lazily.
+   * A message's words change on edit and when its transcript lands, and its
+   * entry dies with it in `forget`.
+   */
+  private readonly searchText = new Map<string, string>();
   /** Stories (status updates), newest last. Not a chat: they never join a ring and expire after a day. */
   readonly stories: string[] = [];
   /** lid → phone jid, every pairing learned, so a restart still knows who a lid-filed message is from. */
@@ -72,6 +78,7 @@ export class Store {
 
   putMessage(sid: string, chatJid: string, raw: WAMessage): void {
     const known = this.messages.has(sid);
+    if (known) this.searchText.delete(sid);
     this.messages.set(sid, raw);
     this.chatOf.set(sid, chatJid);
     let ring = this.byChat.get(chatJid);
@@ -162,6 +169,34 @@ export class Store {
     this.edited.delete(sid);
     this.reactions.delete(sid);
     this.transcripts.delete(sid);
+    this.searchText.delete(sid);
+  }
+
+  /** Set a message's transcript — the words it searches by change with it. */
+  setTranscript(sid: string, record: TranscriptRecord): void {
+    this.transcripts.set(sid, record);
+    this.searchText.delete(sid);
+  }
+
+  /** The content under an existing sid was swapped (an edit landed). */
+  noteMessageChanged(sid: string): void {
+    this.searchText.delete(sid);
+  }
+
+  /**
+   * What searchMessages matches against: the rendered view text, lowercased
+   * once and held until the message or its transcript changes. Undefined when
+   * the sid names nothing the store holds.
+   */
+  searchLower(sid: string): string | undefined {
+    const raw = this.messages.get(sid);
+    if (!raw) return undefined;
+    let text = this.searchText.get(sid);
+    if (text === undefined) {
+      text = viewText(raw, this.transcripts.get(sid)).toLowerCase();
+      this.searchText.set(sid, text);
+    }
+    return text;
   }
 
   /** Set or withdraw one author's reaction on a message. */
@@ -237,7 +272,7 @@ export class Store {
     }
     // A transcript of a message the snapshot no longer carries is a leak, not a cache.
     for (const [sid, transcript] of Object.entries(snapshot.transcripts ?? {})) {
-      if (this.messages.has(sid)) this.transcripts.set(sid, transcript);
+      if (this.messages.has(sid)) this.setTranscript(sid, transcript);
     }
     for (const [sid, byAuthor] of Object.entries(snapshot.reactions ?? {})) {
       if (this.messages.has(sid)) this.reactions.set(sid, new Map(Object.entries(byAuthor)));

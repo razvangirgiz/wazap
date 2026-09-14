@@ -771,8 +771,8 @@ export class WhatsAppService implements WhatsAppApi {
         if ((opts.sinceMs !== undefined && at < opts.sinceMs) || (opts.untilMs !== undefined && at > opts.untilMs))
           continue;
         // The rendered text, not the bare placeholder, so a transcript is findable
-        // by the words a reader can see.
-        if (needle && !viewText(raw, this.store.transcripts.get(sid)).toLowerCase().includes(needle)) continue;
+        // by the words a reader can see — lowercased once, then held by the store.
+        if (needle && !(this.store.searchLower(sid) ?? "").includes(needle)) continue;
         hits.push({ sid, jid, at });
       }
 
@@ -1490,7 +1490,7 @@ export class WhatsAppService implements WhatsAppApi {
       provider,
       at: Date.now(),
     };
-    this.store.transcripts.set(messageId, record);
+    this.store.setTranscript(messageId, record);
     this.markStoreDirty();
     // The newest line for a sid wins on reload, so re-appending is what makes
     // the transcript outlive the process.
@@ -2179,6 +2179,7 @@ export class WhatsAppService implements WhatsAppApi {
         if (edited) {
           this.store.edited.add(sid);
           raw.message = edited;
+          this.store.noteMessageChanged(sid);
           // New words for a sid the index may already hold: a re-feed writes
           // a fresh row and tombstones the old one.
           this.recallFeedRaw([raw]);
@@ -3308,7 +3309,7 @@ export class WhatsAppService implements WhatsAppApi {
       if (!this.keepOverEarlierCall(raw, jid, record.sid)) continue;
       this.store.putMessage(record.sid, jid, raw);
       this.noteInbound(raw);
-      if (record.tr) this.store.transcripts.set(record.sid, record.tr);
+      if (record.tr) this.store.setTranscript(record.sid, record.tr);
       loaded++;
     }
     return loaded;
