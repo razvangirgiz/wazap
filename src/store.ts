@@ -63,6 +63,12 @@ export class Store {
    * entry dies with it in `forget`.
    */
   private readonly searchText = new Map<string, string>();
+  /**
+   * The base64 proto encoding serialize() writes per message, computed once.
+   * Encoding every persisted message on every flush was the bulk of the
+   * snapshot's cost; a message's bytes change only when the raw does.
+   */
+  private readonly encoded = new Map<string, string>();
   /** Stories (status updates), newest last. Not a chat: they never join a ring and expire after a day. */
   readonly stories: string[] = [];
   /** lid → phone jid, every pairing learned, so a restart still knows who a lid-filed message is from. */
@@ -78,7 +84,10 @@ export class Store {
 
   putMessage(sid: string, chatJid: string, raw: WAMessage): void {
     const known = this.messages.has(sid);
-    if (known) this.searchText.delete(sid);
+    if (known) {
+      this.searchText.delete(sid);
+      this.encoded.delete(sid);
+    }
     this.messages.set(sid, raw);
     this.chatOf.set(sid, chatJid);
     let ring = this.byChat.get(chatJid);
@@ -116,6 +125,10 @@ export class Store {
 
   putStory(sid: string, chatJid: string, raw: WAMessage): void {
     const known = this.messages.has(sid);
+    if (known) {
+      this.searchText.delete(sid);
+      this.encoded.delete(sid);
+    }
     this.messages.set(sid, raw);
     this.chatOf.set(sid, chatJid);
     if (!known || !this.stories.includes(sid)) this.stories.push(sid);
@@ -170,6 +183,7 @@ export class Store {
     this.reactions.delete(sid);
     this.transcripts.delete(sid);
     this.searchText.delete(sid);
+    this.encoded.delete(sid);
   }
 
   /** Set a message's transcript — the words it searches by change with it. */
@@ -178,9 +192,22 @@ export class Store {
     this.searchText.delete(sid);
   }
 
-  /** The content under an existing sid was swapped (an edit landed). */
+  /** Anything under an existing sid was swapped or touched (an edit, a new timestamp). */
   noteMessageChanged(sid: string): void {
     this.searchText.delete(sid);
+    this.encoded.delete(sid);
+  }
+
+  /** The base64 the snapshot writes for a message, encoded once per version of it. */
+  private encodeMessage(sid: string, raw: WAMessage): string | null {
+    let b64 = this.encoded.get(sid);
+    if (b64 === undefined) {
+      const fresh = encode(() => proto.WebMessageInfo.encode(raw).finish());
+      if (fresh === null) return null;
+      b64 = fresh;
+      this.encoded.set(sid, b64);
+    }
+    return b64;
   }
 
   /**
@@ -242,7 +269,7 @@ export class Store {
     for (const sid of keep) {
       const raw = this.messages.get(sid);
       if (!raw) continue;
-      const encoded = encode(() => proto.WebMessageInfo.encode(raw).finish());
+      const encoded = this.encodeMessage(sid, raw);
       if (encoded) snapshot.messages[sid] = encoded;
       const transcript = this.transcripts.get(sid);
       if (transcript) transcripts[sid] = transcript;
@@ -268,7 +295,11 @@ export class Store {
     this.contactsResyncedAt = snapshot.contactsResyncedAt ?? null;
     for (const [sid, b64] of Object.entries(snapshot.messages ?? {})) {
       const raw = decodeMessage(b64);
-      if (raw && !isControlMessage(raw)) this.messages.set(sid, raw);
+      if (raw && !isControlMessage(raw)) {
+        this.searchText.delete(sid);
+        this.encoded.delete(sid);
+        this.messages.set(sid, raw);
+      }
     }
     // A transcript of a message the snapshot no longer carries is a leak, not a cache.
     for (const [sid, transcript] of Object.entries(snapshot.transcripts ?? {})) {

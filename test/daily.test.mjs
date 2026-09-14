@@ -10,6 +10,7 @@ import { z } from "zod";
 import { WhatsAppService } from "../dist/whatsapp.js";
 import { registerTools } from "../dist/tools.js";
 import { compactConversations } from "../dist/compact.js";
+import { decodeMessage } from "../dist/store.js";
 import { asToolSource, connectedService, offlineConfig, openService } from "./helpers.mjs";
 
 const ME = "40700000001@s.whatsapp.net";
@@ -165,6 +166,29 @@ test("search follows an edit and a late transcript, not the words it cached firs
     [sid],
     "a transcript that lands after the first search is still found"
   );
+});
+
+test("a snapshot re-encodes the message an edit touched and keeps the rest", async () => {
+  const { svc, sock, arrive } = setup();
+  arrive(ANA, "prima versiune");
+  arrive(DAN, "nemișcat");
+  const sid = `false_${ANA}_M1`;
+  const still = `false_${DAN}_M2`;
+
+  const first = svc.store.serialize();
+  const second = svc.store.serialize();
+  assert.equal(second.messages[sid], first.messages[sid], "an untouched message keeps its encoding");
+
+  sock.ev.emit("messages.update", [
+    {
+      key: { remoteJid: ANA, fromMe: false, id: "M1" },
+      update: { message: { editedMessage: { message: { conversation: "a doua versiune" } } } },
+    },
+  ]);
+  const third = svc.store.serialize();
+  assert.notEqual(third.messages[sid], first.messages[sid], "the edit re-encodes");
+  assert.equal(third.messages[still], first.messages[still], "the neighbour is not re-encoded");
+  assert.equal(decodeMessage(third.messages[sid]).message.conversation, "a doua versiune");
 });
 
 test("compact keeps the words, folds a run into one line, and counts what it left out", async () => {

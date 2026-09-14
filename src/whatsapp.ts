@@ -2184,7 +2184,10 @@ export class WhatsAppService implements WhatsAppApi {
           // a fresh row and tombstones the old one.
           this.recallFeedRaw([raw]);
         }
-        if (update.messageTimestamp) raw.messageTimestamp = update.messageTimestamp;
+        if (update.messageTimestamp) {
+          raw.messageTimestamp = update.messageTimestamp;
+          this.store.noteMessageChanged(sid);
+        }
         this.markStoreDirty();
       }
     });
