@@ -180,19 +180,24 @@ export type SkillState = "installed" | "stale" | "missing";
 
 /**
  * Compared by content, because an upgrade that rewrote a skill leaves a copy
- * that exists and is wrong. Absent beats different: install fixes both.
+ * that exists and is wrong. `missing` means none of them is there, which is
+ * either a harness that never got them or a user who removed them; a copy
+ * with some skills absent, such as one a release added since, is `stale`.
  */
 export function skillState(target: SkillTarget): SkillState {
   const dir = target.dir();
   const packaged = packagedSkills();
-  let state: SkillState = "installed";
-  for (const skill of loadSkills()) {
+  let present = 0;
+  let same = 0;
+  const skills = loadSkills();
+  for (const skill of skills) {
     const installed = join(dir, skill.name, "SKILL.md");
-    if (!existsSync(installed)) return "missing";
-    if (readFileSync(installed, "utf8") !== readFileSync(join(packaged, skill.name, "SKILL.md"), "utf8"))
-      state = "stale";
+    if (!existsSync(installed)) continue;
+    present += 1;
+    if (readFileSync(installed, "utf8") === readFileSync(join(packaged, skill.name, "SKILL.md"), "utf8")) same += 1;
   }
-  return state;
+  if (present === 0 && skills.length > 0) return "missing";
+  return same === skills.length ? "installed" : "stale";
 }
 
 export function runSkills(config: Config): void {

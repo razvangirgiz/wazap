@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { chmodSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -241,4 +241,20 @@ test("the skills check passes once they are installed, and calls an edited copy 
   writeFileSync(join(box.home, ".cursor", "skills", "whatsapp-send", "SKILL.md"), "what an older wazap shipped\n");
   const stale = await status(dataDir(), [], box.env);
   assert.match(skillsLine(stale.stderr), /– skills: stale for cursor$/);
+});
+
+test("the skills check calls a partial copy stale, and an emptied one missing", async () => {
+  const box = skillsBox();
+  mkdirSync(join(box.home, ".cursor"), { recursive: true });
+  await run(process.execPath, [binary, "skills", "install", "cursor"], {
+    env: { ...process.env, ...box.env, PATH: `${box.env.PATH}${delimiter}${process.env.PATH ?? ""}` },
+  });
+
+  rmSync(join(box.home, ".cursor", "skills", "whatsapp-send"), { recursive: true });
+  const partial = await status(dataDir(), [], box.env);
+  assert.match(skillsLine(partial.stderr), /– skills: stale for cursor$/, "a release that adds a skill must still refresh");
+
+  rmSync(join(box.home, ".cursor", "skills"), { recursive: true });
+  const emptied = await status(dataDir(), [], box.env);
+  assert.match(skillsLine(emptied.stderr), /– skills: missing for cursor$/);
 });

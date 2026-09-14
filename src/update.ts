@@ -40,6 +40,8 @@ function upgradeNote(install: Install, latest: string): string {
 /**
  * What an upgrade takes here, in execution order. An npm step makes every
  * installed copy of the skills stale, so it drags the rest of the plan with it.
+ * A harness holding none of them is left alone: installing is `setup` and
+ * `skills install`, and a user who removed the copies means it.
  */
 export function planUpdate(probes: UpdateProbes, registryLatest: string | null): UpdatePlan {
   const current = WAZAP_VERSION;
@@ -60,7 +62,9 @@ export function planUpdate(probes: UpdateProbes, registryLatest: string | null):
     steps.push({ kind: "service-restart" });
   }
 
-  const behind = probes.targets.filter((probe) => upgrading || probe.state !== "installed");
+  const behind = probes.targets.filter(
+    (probe) => probe.state !== "missing" && (upgrading || probe.state === "stale")
+  );
   if (behind.length > 0) steps.push({ kind: "skills", targets: behind.map((probe) => probe.target) });
 
   return { current, latest: registryLatest, install: probes.install, steps };

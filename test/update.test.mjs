@@ -44,7 +44,10 @@ test("a current wazap with nothing stale has nothing to do", () => {
 
 test("a newer release upgrades, restarts the service and refreshes the skills, in that order", () => {
   const plan = planUpdate(
-    probes({ service: service(), targets: [target("cursor", "stale"), target("codex", "installed")] }),
+    probes({
+      service: service(),
+      targets: [target("cursor", "stale"), target("codex", "installed"), target("claude-code", "missing")],
+    }),
     NEWER
   );
   assert.deepEqual(
@@ -55,7 +58,7 @@ test("a newer release upgrades, restarts the service and refreshes the skills, i
   assert.deepEqual(
     plan.steps[2].targets.map((entry) => entry.name),
     ["cursor", "codex"],
-    "the new package ships new skills, so every detected harness is behind"
+    "the new package ships new skills, so every harness holding a copy is behind, and none other"
   );
 });
 
@@ -97,12 +100,22 @@ test("a silent registry plans no npm step, only a note", () => {
   assert.match(plan.steps[0].text, /registry did not answer/);
 });
 
-test("a missing skill target is installed even when the version is current", () => {
-  const plan = planUpdate(probes({ targets: [target("cursor", "missing")] }), WAZAP_VERSION);
+test("a stale skill copy is refreshed even when the version is current", () => {
+  const plan = planUpdate(probes({ targets: [target("cursor", "stale")] }), WAZAP_VERSION);
   assert.deepEqual(
     plan.steps.map((step) => step.kind),
     ["skills"]
   );
+});
+
+test("a harness holding no skills is left alone, current or upgrading", () => {
+  for (const latest of [WAZAP_VERSION, NEWER]) {
+    const plan = planUpdate(probes({ install: CHECKOUT, targets: [target("cursor", "missing")] }), latest);
+    assert.ok(
+      plan.steps.every((step) => step.kind !== "skills"),
+      `${latest}: update must not install skills the user removed or never asked for`
+    );
+  }
 });
 
 test("update --dry-run prints the plan and runs nothing", async () => {
