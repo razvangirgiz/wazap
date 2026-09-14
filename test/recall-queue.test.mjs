@@ -6,7 +6,7 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
@@ -221,6 +221,41 @@ test("a seal waits for everything enqueued before it, not only its own feed", as
   await queue.idle();
   assert.equal(store.offsets()["h.jsonl"], 42);
   await store.close();
+});
+
+test("a compaction leaves no tmp files behind and reopens with the same live rows", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "wazap-recall-compact-"));
+  const spec = embedModelSpec("embeddinggemma-300m");
+  const store = await RecallStore.open(dir, spec, 100);
+  const vec = [1, ...new Array(DIMS - 1).fill(0)];
+  await store.add([item("a", "unu"), item("b", "doi"), item("c", "trei"), item("d", "patru")], [vec, vec, vec, vec]);
+  await store.remove(["a", "b"]); // 2 dead of 4 rows crosses the 30% ratio
+  assert.equal(store.count, 2);
+  await store.advanceOffset("h.jsonl", 7); // open() only replays a dir with state.json
+  assert.equal(readdirSync(dir).some((name) => name.endsWith(".tmp")), false, "no tmp files left");
+  await store.close();
+  const again = await RecallStore.open(dir, spec, 100);
+  assert.equal(again.count, 2);
+  assert.equal(again.record("c").text, "trei");
+  await again.close();
+});
+
+test("a kill between the compaction renames rebuilds instead of pairing wrong vectors", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "wazap-recall-compact-"));
+  const spec = embedModelSpec("embeddinggemma-300m");
+  const store = await RecallStore.open(dir, spec, 100);
+  const vec = [1, ...new Array(DIMS - 1).fill(0)];
+  await store.add([item("a", "unu"), item("b", "doi"), item("c", "trei")], [vec, vec, vec]);
+  await store.close();
+  // What a crash after the vectors rename but before the meta rename leaves:
+  // meta.jsonl still names row 2 while vectors.bin holds only two rows.
+  const vecPath = join(dir, "vectors.bin");
+  writeFileSync(vecPath, readFileSync(vecPath).subarray(0, 2 * DIMS));
+  const again = await RecallStore.open(dir, spec, 100);
+  assert.equal(again.count, 0, "the mismatched index is wiped, not replayed");
+  await again.add([item("z", "reconstruit")], [vec]);
+  assert.equal(again.count, 1, "the store takes writes again after the wipe");
+  await again.close();
 });
 
 test("stop drops the backlog and lets an in-flight commit finish", async () => {

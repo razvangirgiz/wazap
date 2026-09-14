@@ -14,7 +14,7 @@
  * only lose the tail, and the per-file byte offsets are what boot
  * reconciliation walks forward from.
  */
-import { mkdir, open, readFile, rm, writeFile, type FileHandle } from "node:fs/promises";
+import { mkdir, open, readFile, rename, rm, writeFile, type FileHandle } from "node:fs/promises";
 import { join } from "node:path";
 import { WazapError } from "../errors.js";
 import type { EmbedModelSpec } from "./models.js";
@@ -402,7 +402,9 @@ export class RecallStore {
       if (this.closed) return;
       this.state.offsets[file] = bytes;
       await mkdir(this.dir, { recursive: true, mode: DIR_MODE });
-      await writeFile(this.statePath, `${JSON.stringify(this.state)}\n`, { mode: FILE_MODE });
+      const tmp = `${this.statePath}.tmp`;
+      await writeFile(tmp, `${JSON.stringify(this.state)}\n`, { mode: FILE_MODE });
+      await rename(tmp, this.statePath);
     });
   }
 
@@ -551,16 +553,23 @@ export class RecallStore {
         i * this.spec.dims
       );
     }
-    await writeFile(this.vectorsPath, Buffer.from(packed.buffer, packed.byteOffset, packed.byteLength), {
+    const vecTmp = `${this.vectorsPath}.tmp`;
+    const metaTmp = `${this.metaPath}.tmp`;
+    await writeFile(vecTmp, Buffer.from(packed.buffer, packed.byteOffset, packed.byteLength), {
       mode: FILE_MODE,
     });
-    await writeFile(this.metaPath, lines.join("\n") + (lines.length > 0 ? "\n" : ""), { mode: FILE_MODE });
-    const fh = await open(this.metaPath, "r");
+    await writeFile(metaTmp, lines.join("\n") + (lines.length > 0 ? "\n" : ""), { mode: FILE_MODE });
+    const fhs = await Promise.all([open(vecTmp, "r"), open(metaTmp, "r")]);
     try {
-      await fh.sync();
+      await Promise.all([fhs[0].sync(), fhs[1].sync()]);
     } finally {
-      await fh.close();
+      await Promise.all([fhs[0].close(), fhs[1].close()]);
     }
+    // vectors first: a crash between the renames leaves old meta (which names
+    // rows past the new file) — replay throws and the index rebuilds — while
+    // new meta over old vectors would silently pair wrong vectors to sids.
+    await rename(vecTmp, this.vectorsPath);
+    await rename(metaTmp, this.metaPath);
     this.vectors = packed;
     this.order = newOrder;
     this.nextRow = row;
