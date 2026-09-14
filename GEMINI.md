@@ -238,7 +238,7 @@ If more than one WhatsApp account is linked, call `list_accounts` first and pass
 
 ### Resolve the recipient
 
-1. `search_contacts` with the name. Exactly one match: use its `chat_id`. Several: list them with numbers and ask. None: ask for the number in international format; `NOT_ON_WHATSAPP` means the number is wrong, not that you should retry.
+1. `search_contacts` with the name. Exactly one match: use its `chat_id`. Several: list them with numbers and ask. None: ask for the number in international format; `NOT_ON_WHATSAPP` means the number is wrong, not that you should retry. When the user names a number that is not in contacts yet, `save_contact` puts it in the account's WhatsApp contacts so it reads as a name next time; `remove_contact` drops an entry.
 2. Groups come from `list_chats` with `filter: "groups"`. Before posting, `get_group_info`; if `announcement_only` is true and the user is not admin, say so instead of trying.
 3. A reply to a specific message needs its `message_id` from `read_messages`; pass it as `reply_to` so the quote shows.
 

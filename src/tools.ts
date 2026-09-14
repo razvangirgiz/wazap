@@ -212,7 +212,8 @@ link_account when it says no account is linked yet.
 - Go back further: read_messages(chat_id, before: <oldest message_id you have>).
 - Find a person: search_contacts → get_contact. Names come from the phone's own
   address book; if they are missing (get_status shows contacts_named: 0), call
-  sync_contacts once.
+  sync_contacts once. save_contact adds a number to the account's WhatsApp
+  contacts or renames an entry; remove_contact drops the entry, not the chat.
 - Find something said: search_messages(query[, chat_id]) for the exact words,
   or recall(query[, chat_id]) for what was meant — a paraphrase or another
   language still hits, and it reaches messages too old for the live store.
@@ -798,6 +799,46 @@ whether they are a saved contact, a business, or blocked.`,
         .filter((line): line is string => line !== null)
         .join("\n");
       return ok(text, c as unknown as Record<string, unknown>);
+    },
+  }),
+
+  tool({
+    name: "save_contact",
+    title: "Add or rename a WhatsApp contact",
+    description: `Save a person in the account's WhatsApp contacts: a new entry for a phone
+number, or a new name for an existing one. The name syncs to every linked
+device, and with save_on_phone (default) also into the phone's own address
+book. WhatsApp keeps no other fields — email, "my accountant" and the like go
+to set_contact_note, which stays on this machine.`,
+    schema: {
+      contact_id: chatId.describe("Contact id from search_contacts / get_contact, or a phone number"),
+      name: z.string().min(1).max(100).describe("Full name to save the contact under"),
+      first_name: z.string().min(1).max(100).optional().describe("First name, when it differs from the full name"),
+      save_on_phone: z
+        .boolean()
+        .default(true)
+        .describe("Also write the contact into the phone's address book; false keeps it inside WhatsApp"),
+    },
+    write: true,
+    handler: async ({ contact_id, name, first_name, save_on_phone }, { wa }) => {
+      const c = await wa.saveContact(contact_id, name, { firstName: first_name, saveOnPhone: save_on_phone });
+      return ok(`Saved ${c.name} (${c.contact_id}) to contacts.`, c as unknown as Record<string, unknown>);
+    },
+  }),
+
+  tool({
+    name: "remove_contact",
+    title: "Remove a WhatsApp contact",
+    description: `Take a person out of the account's WhatsApp contacts: the saved entry and its
+name go, the chat and its history stay. Nothing is sent to the contact.`,
+    schema: {
+      contact_id: chatId.describe("Contact id from search_contacts / get_contact, or a phone number"),
+    },
+    write: true,
+    destructive: true,
+    handler: async ({ contact_id }, { wa }) => {
+      const c = await wa.removeContact(contact_id);
+      return ok(`Removed ${c.contact_id} from contacts; the chat is untouched.`, c as unknown as Record<string, unknown>);
     },
   }),
 

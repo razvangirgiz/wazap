@@ -394,6 +394,12 @@ export interface WhatsAppApi {
   searchContacts(query: string, limit: number): Promise<ContactSummary[]>;
   getContact(contactId: string): Promise<ContactDetails>;
   syncContacts(): Promise<ContactSyncResult>;
+  saveContact(
+    contactId: string,
+    name: string,
+    opts?: { firstName?: string; saveOnPhone?: boolean }
+  ): Promise<ContactSummary>;
+  removeContact(contactId: string): Promise<ContactSummary>;
   getGroupInfo(groupId: string): Promise<GroupInfo>;
   downloadMedia(messageId: string, saveTo?: string): Promise<MediaResult>;
   transcribeAudio(messageId: string, language?: string): Promise<TranscribeResult>;
