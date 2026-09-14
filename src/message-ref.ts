@@ -8,6 +8,7 @@
  * stanza id — or an id a view reported before the pairing must still reach it:
  * unresolved identity is not a reason to refuse a read.
  */
+import type { AccountBinding, AccountSource } from "./account-hub.js";
 import { asWazapError } from "./errors.js";
 import type { MessageView, WhatsAppApi } from "./wa-types.js";
 
@@ -97,4 +98,59 @@ export async function getMessageView(wa: WhatsAppApi, messageId: string): Promis
     if (found) return found;
     throw err;
   }
+}
+
+/**
+ * The bindings a message_id lookup walks, in order: the account the call
+ * resolved to first — it is where an explicit account_id or a findByMessage
+ * hit put it — then every other live one. Pairings and filings are
+ * per-account, so a miss on the first says nothing about the rest.
+ */
+function bindingsInOrder(hub: AccountSource, resolved: AccountBinding): AccountBinding[] {
+  return [resolved, ...hub.bindings().filter((row) => row.id !== resolved.id)];
+}
+
+/**
+ * getMessageView walked across every binding in turn. A message_id that names
+ * nothing on the account the call resolved to can still live in another one's
+ * store, under a spelling only that account resolves — the lid↔number pairing
+ * that maps it is not shared between accounts, and findByMessage probes the
+ * raw id alone. The resolved binding's own error comes back when no binding
+ * answers, so a true miss reads the way it always did.
+ */
+export async function getMessageViewAcross(
+  hub: AccountSource,
+  resolved: AccountBinding,
+  messageId: string
+): Promise<{ binding: AccountBinding; message: MessageView }> {
+  let miss: unknown;
+  for (const binding of bindingsInOrder(hub, resolved)) {
+    try {
+      return { binding, message: await getMessageView(binding.wa, messageId) };
+    } catch (err) {
+      miss ??= err;
+    }
+  }
+  throw miss;
+}
+
+/**
+ * resolveMessageId walked across every binding in turn, for callers that need
+ * the store key itself — downloadMedia reads the raw message by it, so the
+ * probe is what the store confirms, not what a view could report. The first
+ * binding whose store answers wins; when none does, the resolved binding and
+ * its own resolution come back and the caller fails the way it always has.
+ */
+export async function resolveMessageIdAcross(
+  hub: AccountSource,
+  resolved: AccountBinding,
+  messageId: string
+): Promise<{ binding: AccountBinding; sid: string }> {
+  let first: { binding: AccountBinding; sid: string } | undefined;
+  for (const binding of bindingsInOrder(hub, resolved)) {
+    const sid = await resolveMessageId(binding.wa, messageId).catch(() => messageId);
+    first ??= { binding, sid };
+    if (binding.wa.hasMessage?.(sid) === true) return { binding, sid };
+  }
+  return first ?? { binding: resolved, sid: messageId };
 }

@@ -35,7 +35,11 @@ export function stringArg(args: Record<string, unknown>, key: string): string | 
 }
 
 export function attachAccountId(result: ToolPayload, accountId: string): ToolPayload {
-  return { ...result, structuredContent: { ...(result.structuredContent ?? {}), account_id: accountId } };
+  const structured = result.structuredContent ?? {};
+  // A read that had to walk the bindings stamps the account that answered;
+  // anything else reports the one the call resolved to.
+  const answered = typeof structured.account_id === "string" && structured.account_id ? structured.account_id : accountId;
+  return { ...result, structuredContent: { ...structured, account_id: answered } };
 }
 
 /** Write tools register when any live account allows writes. */

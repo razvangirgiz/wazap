@@ -14,7 +14,7 @@ import { renderDraft, type DraftView } from "./drafts.js";
 import { asWazapError, ERROR_GUIDE, WazapError } from "./errors.js";
 import { freshnessNote, readFreshness } from "./freshness.js";
 import { mediaCaptionOf } from "./media-details.js";
-import { getMessageView, resolveMessageId } from "./message-ref.js";
+import { getMessageView, getMessageViewAcross, resolveMessageId, resolveMessageIdAcross } from "./message-ref.js";
 import { clockLabel } from "./messages.js";
 import { RateLimiter } from "./ratelimit.js";
 import {
@@ -837,7 +837,11 @@ or read_messages when you need the context around a single message.
 
 The id also resolves in its raw form: \`false_<lid>@lid_<stanza>\` works even
 when the chat's number was never learned, and an id that names the same
-message under the lid or the paired number finds it either way.
+message under the lid or the paired number finds it either way. With several
+accounts linked and no \`account_id\`, an id the resolved account cannot find
+is tried on each of the others in turn before MESSAGE_NOT_FOUND comes back,
+and the answer's \`account_id\` names the one that had it; pass \`account_id\`
+to keep the lookup on one account.
 
 The \`sender\` carries the same identity fields as search_messages: \`id\` (the
 canonical jid — a \`…@lid\` only while WhatsApp has never revealed the paired
@@ -846,13 +850,22 @@ number), \`phone\` (the number, or null for an unresolved lid), \`is_saved\`
 saved there, or null), \`pushname\` (the name the sender publishes, when that
 is the name \`name\` shows) and \`name_source\` ("contact", "pushname" or
 "none" — which of those \`name\` came from).`,
-    schema: { message_id: messageId },
+    // account_id is named again here so the handler sees it typed: an explicit
+    // id keeps the lookup on that one account instead of walking the bindings.
+    schema: { message_id: messageId, account_id: ACCOUNT_ID.optional() },
     write: false,
-    handler: async ({ message_id }, { wa }) => {
-      const message = await getMessageView(wa, message_id);
-      const [identified] = await withSenderIdentity(wa, [message]);
+    handler: async ({ message_id, account_id }, { wa, hub, accountId }) => {
+      const resolved = { id: accountId, wa };
+      const { binding, message } =
+        account_id === undefined
+          ? await getMessageViewAcross(hub, resolved, message_id)
+          : { binding: resolved, message: await getMessageView(wa, message_id) };
+      const [identified] = await withSenderIdentity(binding.wa, [message]);
       const view = identified ?? message;
-      return ok(renderMessages("Message", [view]), view as unknown as Record<string, unknown>);
+      return ok(renderMessages("Message", [view]), {
+        ...(view as unknown as Record<string, unknown>),
+        account_id: binding.id,
+      });
     },
   }),
 
@@ -977,20 +990,28 @@ can no longer be read back).
 The id resolves in its raw form too: \`false_<lid>@lid_<stanza>\` works whether
 or not the chat's number was ever learned — when it was, the lid spelling finds
 the same message filed under the paired number. An unresolved sender never
-blocks the file.
+blocks the file. Without \`account_id\` the same lookup walks every linked
+account's store in turn before failing, and the result's \`account_id\` names
+the one that served the file.
 
 Fails with MEDIA_UNAVAILABLE when WhatsApp has expired the file.`,
     schema: {
       message_id: messageId.describe("A message with has_media=true"),
       save_to: z.string().min(1).optional().describe("Absolute directory to save into (default: <data-dir>/media)"),
+      // Same reason as get_message: the handler branches on whether it was given.
+      account_id: ACCOUNT_ID.optional(),
     },
     write: false,
-    handler: async ({ message_id, save_to }, { wa }) => {
-      const resolved = await resolveMessageId(wa, message_id);
-      const media = await wa.downloadMedia(resolved, save_to);
+    handler: async ({ message_id, save_to, account_id }, { wa, hub, accountId }) => {
+      const resolved = { id: accountId, wa };
+      const found =
+        account_id === undefined
+          ? await resolveMessageIdAcross(hub, resolved, message_id)
+          : { binding: resolved, sid: await resolveMessageId(wa, message_id) };
+      const media = await found.binding.wa.downloadMedia(found.sid, save_to);
       // The envelope's caption, filename and sender live on the message, not the file.
-      const view = await getMessageView(wa, resolved).catch(() => undefined);
-      const [identified] = view === undefined ? [] : await withSenderIdentity(wa, [view]);
+      const view = await getMessageView(found.binding.wa, found.sid).catch(() => undefined);
+      const [identified] = view === undefined ? [] : await withSenderIdentity(found.binding.wa, [view]);
       const { inline_base64, ...structured } = media;
       const extra: ContentBlock[] = inline_base64 ? [{ type: "image", data: inline_base64, mimeType: media.mime }] : [];
       const text =
@@ -1001,6 +1022,7 @@ Fails with MEDIA_UNAVAILABLE when WhatsApp has expired the file.`,
         {
           ...structured,
           message_id,
+          account_id: found.binding.id,
           caption: view === undefined ? null : mediaCaptionOf(view),
           original_filename: view?.media?.filename ?? null,
           sender: identified?.sender ?? null,
