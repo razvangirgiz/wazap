@@ -9,6 +9,7 @@ import {
   stringArg,
 } from "./account-resolve.js";
 import { compactConversations, renderCompact } from "./compact.js";
+import { coverageNote, indexCoverageNote, searchCoverage } from "./coverage.js";
 import { renderDraft, type DraftView } from "./drafts.js";
 import { asWazapError, ERROR_GUIDE, WazapError } from "./errors.js";
 import { freshnessNote, readFreshness } from "./freshness.js";
@@ -595,9 +596,16 @@ The timeout is capped at 55 seconds because MCP clients give up at 60.`,
     name: "search_messages",
     title: "Search WhatsApp messages",
     description: `Case-insensitive text search over the messages wazap holds locally — all chats,
-or one chat, including history synced on first link. The store keeps the newest
-1000 messages of each chat searchable; older history is what recall's index is
-for. It cannot reach messages the phone never synced to this device.
+or one chat, including history synced on first link. Each chat keeps its newest
+2000 messages searchable, on disk and in memory alike; anything the phone sent
+before that window is what recall's index is for. It cannot reach messages the
+phone never synced to this device.
+
+Every answer declares the window it searched: \`coverage.searched\` counts the
+held messages the scan ran over (the chat scope and time filters applied),
+\`coverage.oldest_at\`/\`newest_at\` bound that window and \`coverage.per_chat_cap\`
+names the 2000-message boundary — so "no messages found" always says how much
+history was actually scanned.
 
 \`from\` accepts "me", a phone number, a contact/chat id, or a name: a name must
 resolve to exactly one person — it matches contact names, notify names and
@@ -639,13 +647,16 @@ search \`freshness.chat\` is the newest message wazap holds for that chat.`,
     write: false,
     handler: async ({ query, chat_id, limit, since, until, from }, { wa }) => {
       const resolvedFrom = await resolveSenderFilter(wa, from);
+      const sinceMs = parseMoment(since, "since");
+      const untilMs = parseMoment(until, "until", true);
       const result = await wa.searchMessages(query, chat_id, limit, {
-        sinceMs: parseMoment(since, "since"),
-        untilMs: parseMoment(until, "until", true),
+        sinceMs,
+        untilMs,
         from: resolvedFrom,
       });
       const messages = await withSenderIdentity(wa, result.data);
       const fresh = await readFreshness(wa, chat_id);
+      const cov = searchCoverage(wa, chat_id, { sinceMs, untilMs });
       const scope = [
         chat_id ? `in ${chat_id}` : null,
         from ? `from ${from}` : null,
@@ -654,13 +665,9 @@ search \`freshness.chat\` is the newest message wazap holds for that chat.`,
       ]
         .filter(Boolean)
         .join(", ");
+      const note = [coverageNote(cov, chat_id !== undefined), freshnessNote(fresh)].filter(Boolean).join(" ");
       return ok(
-        renderMessages(
-          `Search results for "${query}"${scope ? ` (${scope})` : ""}`,
-          messages,
-          new Map(),
-          freshnessNote(fresh)
-        ),
+        renderMessages(`Search results for "${query}"${scope ? ` (${scope})` : ""}`, messages, new Map(), note),
         synced(result, {
           query,
           chat_id: chat_id ?? null,
@@ -670,6 +677,7 @@ search \`freshness.chat\` is the newest message wazap holds for that chat.`,
           from_resolved: resolvedFrom ?? null,
           count: messages.length,
           messages,
+          coverage: cov,
           freshness: fresh,
         })
       );
@@ -703,7 +711,10 @@ that turns semantic recall on. An error remains only when even the fallback
 cannot run.
 
 Each hit's \`sender\` carries the same identity fields as search_messages, and
-\`freshness\` says whether the local history may be partial or stale.`,
+\`freshness\` says whether the local history may be partial or stale. Every
+answer also declares its window: the semantic path reports how many messages
+the index covers, and a keyword fallback carries the same \`coverage\` block
+search_messages does.`,
     schema: {
       query: z.string().min(1).describe("What to find, said any way — the meaning is what matches"),
       chat_id: chatId.optional().describe("Restrict the search to this chat"),
@@ -756,9 +767,15 @@ Each hit's \`sender\` carries the same identity fields as search_messages, and
           from: resolvedFrom,
         });
         const messages = await withSenderIdentity(wa, fallback.data);
+        const cov = searchCoverage(wa, chat_id, { sinceMs, untilMs });
         const note = `Semantic recall is unavailable (${unavailable!.message}) — these are keyword results over the local history.${unavailable!.fix ? ` ${unavailable!.fix}` : ""}`;
         return ok(
-          renderMessages(title, messages, new Map(), [note, freshnessNote(fresh)].filter(Boolean).join(" ")),
+          renderMessages(
+            title,
+            messages,
+            new Map(),
+            [note, coverageNote(cov, chat_id !== undefined), freshnessNote(fresh)].filter(Boolean).join(" ")
+          ),
           synced(fallback, {
             query,
             chat_id: chat_id ?? null,
@@ -773,6 +790,7 @@ Each hit's \`sender\` carries the same identity fields as search_messages, and
             },
             count: messages.length,
             messages,
+            coverage: cov,
             freshness: fresh,
           })
         );
@@ -784,7 +802,14 @@ Each hit's \`sender\` carries the same identity fields as search_messages, and
       );
       const hits = result.data.hits.map((hit, i) => ({ ...hit, message: identified[i]! }));
       const answer: IdentifiedRecallAnswer = { hits, index: result.data.index };
-      const note = freshnessNote(fresh);
+      // While the index is still catching up renderRecall says so itself; the
+      // coverage line only repeats it.
+      const note = [
+        result.data.index.state === "indexing" ? null : indexCoverageNote(result.data.index),
+        freshnessNote(fresh),
+      ]
+        .filter(Boolean)
+        .join(" ");
       return ok(
         `${renderRecall(title, answer)}${note ? `\n${note}` : ""}`,
         synced(result, {

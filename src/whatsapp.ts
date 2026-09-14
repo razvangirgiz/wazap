@@ -179,6 +179,8 @@ const CALL_SWEEP_MS = 30_000;
 /** The same call reaches the store up to three ways; only nearness in time tells them apart. */
 const CALL_DEDUPE_WINDOW_MS = 60_000;
 const CALL_DEDUPE_SCAN = 20;
+// Kept equal to MAX_MESSAGES_PER_CHAT in store.ts: the disk window and the
+// in-memory window are the same, so keyword search covers all wazap keeps.
 const HISTORY_STORE_CAP_PER_CHAT = 2_000;
 /** Ten minutes of speech. Past that, auto-transcribing is a bill nobody asked for. */
 const AUTO_TRANSCRIBE_MAX_SECONDS = 600;

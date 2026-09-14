@@ -9,7 +9,10 @@ import { isNoiseJid } from "./ids.js";
 import { isControlMessage, messageTimestampMs } from "./messages.js";
 import type { TranscriptRecord } from "./transcribe/index.js";
 
-const MAX_MESSAGES_PER_CHAT = 1_000;
+// One window for memory and disk: this must stay equal to
+// HISTORY_STORE_CAP_PER_CHAT in whatsapp.ts, so keyword search covers
+// everything the history files keep.
+export const MAX_MESSAGES_PER_CHAT = 2_000;
 const PERSIST_MESSAGES_PER_CHAT = 120;
 
 export interface HistoryRecord {

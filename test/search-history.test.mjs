@@ -2,8 +2,13 @@
  * search_messages and the whole local history. A chat's history file — the
  * synced backfill, reloaded from disk at boot — answers the same keyword the
  * live ring does, old and new side by side, across chats. The one boundary is
- * the store's own: the newest 1000 messages per chat stay in memory; anything
- * older is still on disk for the recall index, not for keyword search.
+ * the store's own: the newest 2000 messages per chat stay in memory, the same
+ * slice the history files keep; anything older is still on disk for the recall
+ * index, not for keyword search.
+ *
+ * Every answer declares the window it searched: the coverage block counts the
+ * held messages the scan ran over and dates the window's bounds, so a miss
+ * never reads as an empty history.
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -93,11 +98,27 @@ test("search_messages reaches the synced backfill and the live ring alike, acros
     const texts = new Set(all.structuredContent.messages.map((m) => m.text));
     assert.ok(texts.has("cheltuială cu chiria de acum șase luni"), "the oldest line is searched, not just held");
 
+    // The answer declares its window: every held message, over their real span.
+    assert.deepEqual(
+      {
+        searched: all.structuredContent.coverage.searched,
+        chats: all.structuredContent.coverage.chats,
+        per_chat_cap: all.structuredContent.coverage.per_chat_cap,
+      },
+      { searched: 5, chats: 3, per_chat_cap: 2_000 }
+    );
+    assert.equal(Date.parse(all.structuredContent.coverage.oldest_at), oldS * 1000);
+    assert.match(all.content[0].text, /Searched 5 held messages across 3 chats, \d{4}-\d{2}-\d{2} → \d{4}-\d{2}-\d{2}/);
+    assert.match(all.content[0].text, /each chat keeps its newest 2,000/);
+
     const scoped = await call("search_messages", { query: "cheltuială", chat_id: ANA });
     assert.deepEqual(
       scoped.structuredContent.messages.map((m) => m.message_id).sort(),
       [`false_${ANA}_H1`, `false_${ANA}_H2`, `false_${ANA}_L1`].sort()
     );
+    assert.equal(scoped.structuredContent.coverage.searched, 3, "a scoped search counts that chat's window alone");
+    assert.equal(scoped.structuredContent.coverage.chats, 1);
+    assert.match(scoped.content[0].text, /Searched 3 held messages of this chat/);
 
     // The group hit is attributable too — its sender is the participant, not the chat.
     const groupHit = all.structuredContent.messages.find((m) => m.message_id === `false_${GROUP}_H3`);
@@ -108,11 +129,40 @@ test("search_messages reaches the synced backfill and the live ring alike, acros
   }
 });
 
-test("the in-memory cap is the boundary: a chat keeps its newest 1000 searchable", async () => {
+test("a backfill deeper than the old 1000 cap answers keyword search", async () => {
   const dataDir = mkdtempSync(join(tmpdir(), "wazap-search-hist-"));
   const baseS = Math.floor((Date.now() - 300 * day) / 1000);
   const lines = [];
-  for (let i = 0; i < 1_100; i++) {
+  for (let i = 0; i < 1_500; i++) {
+    const body = i === 0 ? "vechime în capul listei" : i === 400 ? "mijlocul unic al istoriei" : `mesaj curent ${i}`;
+    lines.push(historyLine(raw(ANA, `B${i}`, body, baseS + i), `false_${ANA}_B${i}`));
+  }
+  seedHistory(dataDir, ANA, lines);
+
+  const { svc, call } = setup(dataDir);
+  try {
+    await svc.loadPersisted();
+    assert.equal(svc.store.byChat.get(ANA).length, 1_500, "the whole file fits under the new cap");
+
+    // Both markers sat beyond the old cap — positions 0 and 400 of a 1500-line
+    // file were dropped from memory before the bump, and the query missed them.
+    const oldest = await call("search_messages", { query: "vechime" });
+    assert.equal(oldest.structuredContent.count, 1);
+    assert.equal(oldest.structuredContent.messages[0].message_id, `false_${ANA}_B0`);
+
+    const middle = await call("search_messages", { query: "mijlocul unic", chat_id: ANA });
+    assert.equal(middle.structuredContent.count, 1);
+    assert.equal(middle.structuredContent.messages[0].message_id, `false_${ANA}_B400`);
+  } finally {
+    await svc.stop();
+  }
+});
+
+test("the in-memory cap is the boundary: a chat keeps its newest 2000 searchable", async () => {
+  const dataDir = mkdtempSync(join(tmpdir(), "wazap-search-hist-"));
+  const baseS = Math.floor((Date.now() - 300 * day) / 1000);
+  const lines = [];
+  for (let i = 0; i < 2_100; i++) {
     const body = i === 0 ? "vechime unică" : `mesaj curent ${i}`;
     lines.push(historyLine(raw(ANA, `B${i}`, body, baseS + i), `false_${ANA}_B${i}`));
   }
@@ -121,16 +171,32 @@ test("the in-memory cap is the boundary: a chat keeps its newest 1000 searchable
   const { svc, call } = setup(dataDir);
   try {
     await svc.loadPersisted();
-    assert.equal(svc.store.byChat.get(ANA).length, 1_000, "the ring keeps the newest slice of the file");
+    assert.equal(svc.store.byChat.get(ANA).length, 2_000, "the ring keeps the newest slice of the file");
     assert.equal(svc.store.messages.has(`false_${ANA}_B0`), false, "the oldest were let go");
 
     const oldest = await call("search_messages", { query: "vechime" });
     assert.equal(oldest.structuredContent.count, 0, "past the cap — the recall index's reach, not keyword's");
 
+    // A miss still declares what it scanned: the newest 2000, bounds dated.
+    const cov = oldest.structuredContent.coverage;
+    assert.equal(cov.searched, 2_000);
+    assert.equal(cov.per_chat_cap, 2_000);
+    assert.equal(Date.parse(cov.oldest_at), (baseS + 100) * 1000, "the window starts where the file was cut");
+    assert.match(oldest.content[0].text, /no messages found\. Searched 2,000 held messages/);
+    assert.match(oldest.content[0].text, /each chat keeps its newest 2,000/);
+
     const current = await call("search_messages", { query: "mesaj curent", limit: 50 });
     assert.equal(current.structuredContent.count, 50);
     const indexes = current.structuredContent.messages.map((m) => Number(m.message_id.split("_").at(-1).slice(1)));
     assert.ok(Math.min(...indexes) >= 100, "only the retained window answers");
+
+    // Time filters narrow the declared window, not just the hits.
+    const narrowed = await call("search_messages", {
+      query: "mesaj curent",
+      chat_id: ANA,
+      since: new Date((baseS + 2_000) * 1000).toISOString(),
+    });
+    assert.equal(narrowed.structuredContent.coverage.searched, 100, "since cuts the scanned window too");
   } finally {
     await svc.stop();
   }
