@@ -110,6 +110,7 @@ import type {
   ChatSummary,
   ConnectionStatus,
   ContactDetails,
+  ContactDetailsEdit,
   ContactSyncResult,
   ContactSummary,
   GroupAction,
@@ -166,6 +167,13 @@ const PREVIEW_SOURCE_MAX_BYTES = 6_000_000;
 const PREVIEW_VIDEO_MAX_BYTES = 25_000_000;
 /** How many active groups one catch-up fetches metadata for, to name their senders. */
 const RECENT_GROUP_META_MAX = 12;
+/** Local contact filing caps: enough to describe anyone, small enough to stay a note. */
+const MAX_CONTACT_TAGS = 30;
+const MAX_CONTACT_FIELDS = 30;
+/** A detail value is a line, like a note — not a document. */
+const MAX_FIELD_VALUE_CHARS = 200;
+const MAX_TAG_CHARS = 40;
+const MAX_FIELD_KEY_CHARS = 40;
 /** How long one call may spend downloading and shrinking photos before it returns with what it has. */
 const PREVIEW_BUDGET_MS = 20_000;
 /** WhatsApp shows a story for a day; so does wazap. */
@@ -868,29 +876,53 @@ export class WhatsAppService implements WhatsAppApi {
     });
   }
 
-  searchContacts(query: string, limit: number): Promise<ContactSummary[]> {
+  /**
+   * Name and number matches, plus the local filing: a tag or a detail's key or
+   * value hits too, which is how "contabil" finds the person filed under
+   * `role: contabil`. With `tag` only contacts carrying it come back, so
+   * "everyone tagged furnizori" is one call. People known only through their
+   * local filing — never synced as contacts — are candidates as well.
+   */
+  searchContacts(query: string, limit: number, opts: { tag?: string } = {}): Promise<ContactSummary[]> {
     return this.guarded(async () => {
       this.ensureConnected();
       await this.waitForSync();
       const needle = query.trim().toLowerCase();
       // "0734…" typed the way a number is dialled at home matches "40734…".
       const digits = needle.replace(/\D/g, "").replace(/^0+/, "");
+      const tag = opts.tag === undefined ? undefined : normalizeTag(opts.tag);
+      if (tag === "") {
+        throw new WazapError("INVALID_ID", `"${opts.tag}" is not a usable tag.`, 'Pass a label like "client"');
+      }
       const matches: ContactSummary[] = [];
       const seen = new Set<string>();
 
-      for (const [jid, contact] of this.store.contacts) {
+      for (const jid of [...this.store.contacts.keys(), ...this.notes.fields.keys()]) {
         // A lid entry whose number is known is the same person as the phone entry.
         const person = this.canonical(jid);
         if (seen.has(person)) continue;
         seen.add(person);
+        const contact = this.store.contacts.get(jid);
+        const details = this.notes.fieldsFor(person) ?? this.notes.fieldsFor(jid);
+        if (tag !== undefined && !(details?.tags ?? []).includes(tag)) continue;
         // Every name we might show, or someone the chat list calls "Carmen"
         // would not be findable by that name here.
-        const known = [contact.name, contact.verifiedName, contact.notify, this.store.pushNames.get(jid)].map(realName);
-        const number = jid.split("@")[0] ?? "";
+        const known = [
+          contact?.name,
+          contact?.verifiedName,
+          contact?.notify,
+          this.store.pushNames.get(jid),
+          this.store.pushNames.get(person),
+        ].map(realName);
+        const number = person.split("@")[0] ?? "";
         const hit =
           needle === "" ||
           known.some((name) => name?.toLowerCase().includes(needle)) ||
-          (digits.length >= 5 && number.includes(digits));
+          (digits.length >= 5 && number.includes(digits)) ||
+          (details?.tags ?? []).some((t) => t.includes(needle)) ||
+          Object.entries(details?.fields ?? {}).some(
+            ([key, value]) => key.includes(needle) || value.toLowerCase().includes(needle)
+          );
         if (!hit) continue;
         matches.push(this.contactSummary(jid, contact));
         if (matches.length >= limit) break;
@@ -1138,6 +1170,60 @@ export class WhatsAppService implements WhatsAppApi {
     return this.guarded(async () => {
       const jid = this.resolveId(contactId);
       this.notes.setNote(jid, note);
+      return this.contactSummary(jid, this.store.contacts.get(jid));
+    });
+  }
+
+  /**
+   * The local contact file: tags and key-value details the agent files a
+   * person under, searchable by search_contacts. Nothing reaches WhatsApp —
+   * the protocol stores only a name — so this is how "my accountant" and
+   * "the guys from the depot" stay attached to people. The person need not
+   * be a saved contact; filing a chat partner works too.
+   */
+  updateContactDetails(contactId: string, edit: ContactDetailsEdit): Promise<ContactSummary> {
+    return this.guarded(async () => {
+      const jid = this.personJid(contactId);
+      const addTags = (edit.addTags ?? []).map((t) => requireTag(t));
+      const removeTags = (edit.removeTags ?? []).map((t) => requireTag(t));
+      const set: Record<string, string> = {};
+      const removeFields = new Set((edit.removeFields ?? []).map((k) => requireFieldKey(k)));
+      for (const [key, value] of Object.entries(edit.fields ?? {})) {
+        const normalized = requireFieldKey(key);
+        const trimmed = value.trim();
+        if (trimmed === "") removeFields.add(normalized);
+        else {
+          if (trimmed.length > MAX_FIELD_VALUE_CHARS) {
+            throw new WazapError("TEXT_TOO_LONG", `Detail "${normalized}" is over ${MAX_FIELD_VALUE_CHARS} characters.`);
+          }
+          set[normalized] = trimmed;
+        }
+      }
+      if (
+        addTags.length === 0 &&
+        removeTags.length === 0 &&
+        Object.keys(set).length === 0 &&
+        removeFields.size === 0
+      ) {
+        throw new WazapError(
+          "INVALID_ID",
+          "Nothing to update.",
+          "Pass add_tags, remove_tags, fields or remove_fields"
+        );
+      }
+      const current = this.notes.fieldsFor(jid);
+      const tagCount =
+        new Set([...(current?.tags ?? []), ...addTags].filter((t) => !removeTags.includes(t))).size;
+      const fieldCount = new Set(
+        [...Object.keys(current?.fields ?? {}), ...Object.keys(set)].filter((k) => !removeFields.has(k))
+      ).size;
+      if (tagCount > MAX_CONTACT_TAGS) {
+        throw new WazapError("TEXT_TOO_LONG", `A contact holds at most ${MAX_CONTACT_TAGS} tags.`);
+      }
+      if (fieldCount > MAX_CONTACT_FIELDS) {
+        throw new WazapError("TEXT_TOO_LONG", `A contact holds at most ${MAX_CONTACT_FIELDS} details.`);
+      }
+      this.notes.updateFields(jid, { addTags, removeTags, set, removeFields: [...removeFields] });
       return this.contactSummary(jid, this.store.contacts.get(jid));
     });
   }
@@ -2551,6 +2637,8 @@ export class WhatsAppService implements WhatsAppApi {
       this.store.contacts.set(jid, { ...definedOnly(contact), ...definedOnly(existing ?? {}), id: jid });
       this.store.contacts.delete(lid);
     }
+    // Notes, tags and details filed under the lid belong to the same person.
+    this.notes.mergeInto(lid, jid);
     if (ring || alias || contact) this.markStoreDirty();
   }
 
@@ -2898,10 +2986,13 @@ export class WhatsAppService implements WhatsAppApi {
   private contactSummary(jid: string, contact?: BaileysContact): ContactSummary {
     const phoneJid = jid.endsWith("@lid") ? (this.lidPhones.get(jid) ?? jid) : jid;
     const number = phoneJid.endsWith("@s.whatsapp.net") ? (phoneJid.split("@")[0] ?? null) : null;
+    const details = this.notes.fieldsFor(jid) ?? this.notes.fieldsFor(this.canonical(jid));
     return {
       contact_id: jid,
       name: this.displayName(jid),
       ...(this.notes.noteFor(jid) ? { note: this.notes.noteFor(jid) } : {}),
+      ...(details?.tags?.length ? { tags: details.tags } : {}),
+      ...(details?.fields && Object.keys(details.fields).length > 0 ? { fields: details.fields } : {}),
       number,
       is_my_contact: realName(contact?.name) !== "",
       is_business: Boolean(contact?.verifiedName),
@@ -3315,6 +3406,27 @@ function statusTextOf(entry: { [protocol: string]: unknown } | undefined): strin
     return (status as { status?: string | null }).status ?? null;
   }
   return typeof status === "string" ? status : null;
+}
+
+/** A tag is a lowercase token: "#Client  Ro" files as "client-ro". */
+function normalizeTag(raw: string): string {
+  return raw.trim().toLowerCase().replace(/^#+/, "").replace(/\s+/g, "-");
+}
+
+function requireTag(raw: string): string {
+  const tag = normalizeTag(raw);
+  if (tag === "" || tag.length > MAX_TAG_CHARS) {
+    throw new WazapError("INVALID_ID", `"${raw}" is not a usable tag.`, 'Pass a short label like "client"');
+  }
+  return tag;
+}
+
+function requireFieldKey(raw: string): string {
+  const key = raw.trim().toLowerCase();
+  if (key === "" || key.length > MAX_FIELD_KEY_CHARS) {
+    throw new WazapError("INVALID_ID", `"${raw}" is not a usable detail key.`, 'Pass a short key like "role"');
+  }
+  return key;
 }
 
 function safeFilename(jid: string): string {

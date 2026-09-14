@@ -369,3 +369,208 @@ test("save_contact and remove_contact are write tools; only removal is destructi
   assert.deepEqual(calls[1], ["remove", "40700000099@s.whatsapp.net"]);
   assert.match(dropped.content[0].text, /Removed 40700000099@s\.whatsapp\.net/);
 });
+
+test("updateContactDetails files tags and details, normalized to lowercase tokens", async () => {
+  const { svc } = makeService();
+  const c = await svc.updateContactDetails("40700000061@s.whatsapp.net", {
+    addTags: ["#Client", "Echipa  Ro"],
+    fields: { Role: "contabil", "  Oras ": "Cluj" },
+  });
+  assert.deepEqual(c.tags, ["client", "echipa-ro"]);
+  assert.deepEqual(c.fields, { oras: "Cluj", role: "contabil" });
+});
+
+test("the filing survives on disk and reloads with the notes file", async () => {
+  const { svc } = makeService();
+  await svc.updateContactDetails("40700000061@s.whatsapp.net", {
+    addTags: ["client"],
+    fields: { role: "contabil" },
+  });
+  const revived = openService(WhatsAppService, svc.config);
+  const stored = revived.notes.fieldsFor("40700000061@s.whatsapp.net");
+  assert.deepEqual(stored.tags, ["client"]);
+  assert.deepEqual(stored.fields, { role: "contabil" });
+});
+
+test("search_contacts resolves a role and a tag word, not just names", async () => {
+  const { svc, sock } = makeService();
+  sock.ev.emit("contacts.upsert", [{ id: "40700000061@s.whatsapp.net", name: "Ionut" }]);
+  await svc.updateContactDetails("40700000061@s.whatsapp.net", {
+    addTags: ["furnizori"],
+    fields: { role: "contabil" },
+  });
+
+  assert.deepEqual((await svc.searchContacts("contabil", 10)).map((c) => c.name), ["Ionut"]);
+  assert.deepEqual((await svc.searchContacts("furnizor", 10)).map((c) => c.name), ["Ionut"]);
+  assert.deepEqual((await svc.searchContacts("role", 10)).map((c) => c.name), ["Ionut"], "the key hits too");
+  assert.deepEqual(await svc.searchContacts("necunoscut", 10), []);
+});
+
+test("search_contacts with only a tag lists everyone filed under it", async () => {
+  const { svc, sock } = makeService();
+  sock.ev.emit("contacts.upsert", [
+    { id: "40700000061@s.whatsapp.net", name: "Ionut" },
+    { id: "40700000062@s.whatsapp.net", name: "Ana" },
+    { id: "40700000063@s.whatsapp.net", name: "Mara" },
+  ]);
+  await svc.updateContactDetails("40700000061@s.whatsapp.net", { addTags: ["furnizori"] });
+  await svc.updateContactDetails("40700000062@s.whatsapp.net", { addTags: ["#Furnizori", "client"] });
+
+  const found = await svc.searchContacts("", 10, { tag: "furnizori" });
+  assert.deepEqual(
+    found.map((c) => c.name).sort(),
+    ["Ana", "Ionut"]
+  );
+  assert.deepEqual(await svc.searchContacts("", 10, { tag: "client" }).then((r) => r.map((c) => c.name)), ["Ana"]);
+});
+
+test("a person known only through the local filing is still found", async () => {
+  const { svc } = makeService();
+  await svc.updateContactDetails("40700000099@s.whatsapp.net", { fields: { role: "curier" } });
+  const found = await svc.searchContacts("curier", 10);
+  assert.equal(found.length, 1);
+  assert.equal(found[0].contact_id, "40700000099@s.whatsapp.net");
+  assert.equal(found[0].is_my_contact, false, "never saved on WhatsApp");
+});
+
+test("removals take keys and tags off; a person left bare loses the entry", async () => {
+  const { svc } = makeService();
+  const jid = "40700000061@s.whatsapp.net";
+  await svc.updateContactDetails(jid, { addTags: ["client", "vip"], fields: { role: "contabil", oras: "Cluj" } });
+
+  let c = await svc.updateContactDetails(jid, { removeTags: ["vip"], removeFields: ["oras"] });
+  assert.deepEqual(c.tags, ["client"]);
+  assert.deepEqual(c.fields, { role: "contabil" });
+
+  c = await svc.updateContactDetails(jid, { fields: { role: "" }, removeTags: ["client"] });
+  assert.equal(c.tags, undefined);
+  assert.equal(c.fields, undefined);
+  assert.equal(svc.notes.fieldsFor(jid), undefined, "nothing left, nothing stored");
+});
+
+test("a note and the filing live side by side without touching each other", async () => {
+  const { svc, sock } = makeService();
+  sock.fetchStatus = async () => [];
+  sock.profilePictureUrl = async () => undefined;
+  const jid = "40700000061@s.whatsapp.net";
+  await svc.updateContactDetails(jid, { addTags: ["client"] });
+  await svc.setContactNote(jid, "răspunde rar");
+  const c = await svc.getContact(jid);
+  assert.equal(c.note, "răspunde rar");
+  assert.deepEqual(c.tags, ["client"]);
+  await svc.setContactNote(jid, "");
+  assert.deepEqual((await svc.getContact(jid)).tags, ["client"], "clearing the note keeps the filing");
+});
+
+test("the filing follows the person when a lid turns out to be their number", async () => {
+  const { svc } = makeService();
+  await svc.updateContactDetails("12345678901234@lid", { addTags: ["client"], fields: { role: "contabil" } });
+  svc.learnLid("12345678901234@lid", "40700000077@s.whatsapp.net");
+  assert.equal(svc.notes.fieldsFor("12345678901234@lid"), undefined);
+  assert.deepEqual(svc.notes.fieldsFor("40700000077@s.whatsapp.net").tags, ["client"]);
+  const found = await svc.searchContacts("contabil", 10);
+  assert.deepEqual(found.map((c) => c.contact_id), ["40700000077@s.whatsapp.net"]);
+});
+
+test("a group id cannot be filed as a person", async () => {
+  const { svc } = makeService();
+  await assert.rejects(
+    () => svc.updateContactDetails("12345@g.us", { addTags: ["echipa"] }),
+    (err) => err.code === "INVALID_ID"
+  );
+});
+
+test("empty edits and unusable labels are refused before anything is filed", async () => {
+  const { svc } = makeService();
+  const jid = "40700000061@s.whatsapp.net";
+  await assert.rejects(() => svc.updateContactDetails(jid, {}), (err) => err.code === "INVALID_ID");
+  await assert.rejects(
+    () => svc.updateContactDetails(jid, { addTags: ["  # "] }),
+    (err) => err.code === "INVALID_ID"
+  );
+  await assert.rejects(
+    () => svc.updateContactDetails(jid, { fields: { "   ": "x" } }),
+    (err) => err.code === "INVALID_ID"
+  );
+  assert.equal(svc.notes.fieldsFor(jid), undefined, "nothing was filed");
+});
+
+test("the filing is capped, like a note, not a document", async () => {
+  const { svc } = makeService();
+  const jid = "40700000061@s.whatsapp.net";
+  await assert.rejects(
+    () =>
+      svc.updateContactDetails(jid, {
+        addTags: Array.from({ length: 31 }, (_, i) => `t${i}`),
+      }),
+    (err) => err.code === "TEXT_TOO_LONG"
+  );
+  await assert.rejects(
+    () => svc.updateContactDetails(jid, { fields: { bio: "x".repeat(201) } }),
+    (err) => err.code === "TEXT_TOO_LONG"
+  );
+});
+
+test("update_contact_details is a local tool: registered without writes, off WhatsApp entirely", async () => {
+  const calls = [];
+  const server = fakeServer();
+  registerTools(
+    server,
+    asToolSource({
+      updateContactDetails: async (...args) => {
+        calls.push(args);
+        return {
+          contact_id: "40700000061@s.whatsapp.net",
+          name: "Ionut",
+          number: "40700000061",
+          tags: ["client"],
+          fields: { role: "contabil" },
+          is_my_contact: true,
+          is_business: false,
+        };
+      },
+    }),
+    { allowWrite: false }
+  );
+  const tool = server.tools.get("update_contact_details");
+  assert.ok(tool, "local tools register in read-only sessions");
+  assert.equal(tool.meta.annotations.openWorldHint, false, "it reaches nothing outside this machine");
+
+  const result = await tool.handler({
+    contact_id: "40700000061@s.whatsapp.net",
+    add_tags: ["#Client"],
+    fields: { role: "contabil" },
+  });
+  assert.deepEqual(calls[0], [
+    "40700000061@s.whatsapp.net",
+    { addTags: ["#Client"], removeTags: undefined, fields: { role: "contabil" }, removeFields: undefined },
+  ]);
+  assert.match(result.content[0].text, /#client/);
+  assert.match(result.content[0].text, /\*\*role\*\*: contabil/);
+});
+
+test("search_contacts asks for a query or a tag, and reports a tag listing as one", async () => {
+  const server = fakeServer();
+  const calls = [];
+  registerTools(
+    server,
+    asToolSource({
+      searchContacts: async (...args) => {
+        calls.push(args);
+        return [];
+      },
+    }),
+    { allowWrite: false }
+  );
+  const tool = server.tools.get("search_contacts");
+
+  const bare = await tool.handler({});
+  assert.equal(bare.isError, true);
+  assert.equal(bare.structuredContent.error, "INVALID_ID");
+
+  await tool.handler({ tag: "#Furnizori", limit: 10 });
+  assert.deepEqual(calls[0], ["", 10, { tag: "#Furnizori" }]);
+
+  const none = await tool.handler({ tag: "client" });
+  assert.match(none.content[0].text, /No contacts matching tag #client/);
+});

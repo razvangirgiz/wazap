@@ -187,6 +187,9 @@ link_account when it says no account is linked yet.
   off the list until they write again.
 - Who is who: set_contact_note(contact_id, note) remembers what the user
   says about a person, locally; the note then shows next to their name.
+  update_contact_details files tags and key-value details ("role": "contabil"),
+  which search_contacts matches — so "the accountant" resolves, and tag:
+  "furnizori" lists everyone filed under it. All of it stays on this machine.
 - Stories: get_stories lists the status updates received in the last day, by
   author; they show nowhere else.
 - Stay on the line: wait_for_messages blocks up to 55 s until something arrives,
@@ -198,6 +201,8 @@ link_account when it says no account is linked yet.
   address book; if they are missing (get_status shows contacts_named: 0), call
   sync_contacts once. save_contact adds a number to the account's WhatsApp
   contacts or renames an entry; remove_contact drops the entry, not the chat.
+  A word from a tag or a detail also finds them ("contabil" → role: contabil),
+  and search_contacts({tag: "client"}) lists everyone filed under a tag.
 - Find something said: search_messages(query[, chat_id]) for the exact words,
   or recall(query[, chat_id]) for what was meant — a paraphrase or another
   language still hits, and it reaches messages too old for the live store.
@@ -524,6 +529,43 @@ An empty note removes it.`,
   }),
 
   tool({
+    name: "update_contact_details",
+    title: "Tag and annotate a contact",
+    description: `File local, searchable details on a person: tags like "client" or "echipa",
+and key-value fields like {"role": "contabil", "oras": "Cluj"}. This is how
+"the accountant" or "all suppliers" resolve later — search_contacts matches
+tag and field text, and its tag filter lists everyone carrying one. Nothing
+is sent to WhatsApp: the contact never sees it and the phone is unchanged.
+A field set to "" is deleted; remove_tags / remove_fields take keys away.
+Pass at least one of the four edits. The person need not be a saved contact.`,
+    schema: {
+      contact_id: chatId.describe("Contact id or phone number"),
+      add_tags: z
+        .array(z.string().min(1).max(40))
+        .max(30)
+        .optional()
+        .describe('Tags to file under, e.g. ["client", "echipa"]; lowercase tokens, "#" optional'),
+      remove_tags: z.array(z.string().min(1).max(40)).optional().describe("Tags to take off"),
+      fields: z
+        .record(z.string().max(200))
+        .optional()
+        .describe('Details to set, e.g. {"role": "contabil"}; an empty value deletes the key'),
+      remove_fields: z.array(z.string().min(1).max(40)).optional().describe("Detail keys to delete"),
+    },
+    write: false,
+    local: true,
+    handler: async ({ contact_id, add_tags, remove_tags, fields, remove_fields }, { wa }) => {
+      const c = await wa.updateContactDetails(contact_id, {
+        addTags: add_tags,
+        removeTags: remove_tags,
+        fields,
+        removeFields: remove_fields,
+      });
+      return ok(renderContactCard(c), c as unknown as Record<string, unknown>);
+    },
+  }),
+
+  tool({
     name: "mark_handled",
     title: "Take a chat off the waiting list",
     description: `The user dealt with what this chat was asking, outside WhatsApp or by a
@@ -716,16 +758,34 @@ or read_messages when you need the context around a single message.`,
   tool({
     name: "search_contacts",
     title: "Search WhatsApp contacts",
-    description: `Find contacts by name or phone number (substring match on the name, digit match
-on the number). Returns contact_id values usable as chat_id.`,
+    description: `Find contacts by name, phone number, tag or detail: a substring match on the
+name, a digit match on the number, or a word from a local tag or detail — so
+"contabil" finds the person filed under role: contabil by update_contact_details.
+With only tag it lists everyone carrying that tag. Returns contact_id values
+usable as chat_id.`,
     schema: {
-      query: z.string().min(2).describe("Name fragment or phone number (at least 2 characters)"),
+      query: z
+        .string()
+        .min(2)
+        .optional()
+        .describe(
+          'Name fragment, phone number, or tag/detail text (at least 2 characters). Omit with tag to list everyone carrying it.'
+        ),
+      tag: z.string().min(1).optional().describe('Only contacts filed under this tag ("client"); "#" optional'),
       limit: z.number().int().min(1).max(50).default(10).describe("Maximum number of results (1-50)"),
     },
     write: false,
-    handler: async ({ query, limit }, { wa }) => {
-      const contacts = await wa.searchContacts(query, limit);
-      return ok(renderContacts(query, contacts), { query, count: contacts.length, contacts });
+    handler: async ({ query, tag, limit }, { wa }) => {
+      if (query === undefined && tag === undefined) {
+        throw new WazapError(
+          "INVALID_ID",
+          "Pass a query or a tag.",
+          'search_contacts({ query: "ion" }) or search_contacts({ tag: "client" })'
+        );
+      }
+      const contacts = await wa.searchContacts(query ?? "", limit, { tag });
+      const what = tag !== undefined ? `tag #${tag.replace(/^#+/, "")}` : `"${query}"`;
+      return ok(renderContacts(what, contacts), { query: query ?? null, tag: tag ?? null, count: contacts.length, contacts });
     },
   }),
 
@@ -770,6 +830,8 @@ whether they are a saved contact, a business, or blocked.`,
         `- **contact_id**: \`${c.contact_id}\``,
         c.number ? `- **number**: ${c.number}` : null,
         c.note ? `- **note**: ${c.note}` : null,
+        c.tags?.length ? `- **tags**: ${c.tags.map((t) => `#${t}`).join(" ")}` : null,
+        ...Object.entries(c.fields ?? {}).map(([key, value]) => `- **${key}**: ${value}`),
         c.about ? `- **about**: ${c.about}` : null,
         c.profile_pic_url ? `- **profile picture**: ${c.profile_pic_url}` : null,
         `- **saved**: ${c.is_my_contact} · **business**: ${c.is_business} · **blocked**: ${c.is_blocked}`,
@@ -1485,11 +1547,29 @@ function renderWait(result: WaitResult): string {
   return lines.join("\n");
 }
 
-function renderContacts(query: string, contacts: ContactSummary[]): string {
-  if (contacts.length === 0) return `No contacts matching "${query}".`;
-  const lines = [`# Contacts matching "${query}" (${contacts.length})`, ""];
+/** The card a contact mutation answers with: who it is plus the local filing. */
+function renderContactCard(c: ContactSummary): string {
+  const lines = [
+    `# ${c.name}`,
+    `- **contact_id**: \`${c.contact_id}\``,
+    c.number ? `- **number**: ${c.number}` : null,
+    c.note ? `- **note**: ${c.note}` : null,
+    c.tags?.length ? `- **tags**: ${c.tags.map((t) => `#${t}`).join(" ")}` : null,
+    ...Object.entries(c.fields ?? {}).map(([key, value]) => `- **${key}**: ${value}`),
+    `- **saved**: ${c.is_my_contact} · **business**: ${c.is_business}`,
+  ].filter((line): line is string => line !== null);
+  return lines.join("\n");
+}
+
+function renderContacts(what: string, contacts: ContactSummary[]): string {
+  if (contacts.length === 0) return `No contacts matching ${what}.`;
+  const lines = [`# Contacts matching ${what} (${contacts.length})`, ""];
   for (const c of contacts) {
-    const flags = [c.is_my_contact ? "saved" : null, c.is_business ? "business" : null].filter(Boolean);
+    const flags = [
+      c.is_my_contact ? "saved" : null,
+      c.is_business ? "business" : null,
+      ...(c.tags ?? []).map((t) => `#${t}`),
+    ].filter(Boolean);
     lines.push(
       `- **${c.name}**${flags.length ? ` [${flags.join(", ")}]` : ""}${c.note ? ` · ${c.note}` : ""} — \`${c.contact_id}\`${c.number ? ` (${c.number})` : ""}`
     );

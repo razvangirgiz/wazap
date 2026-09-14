@@ -8,7 +8,7 @@
 ```
 
 **WhatsApp for your AI agent.** An MCP server that puts your WhatsApp account —
-chats, messages, media, contacts, groups — behind 36 tools any MCP client can
+chats, messages, media, contacts, groups — behind 37 tools any MCP client can
 call. Pairing-code login, no browser, no phone-number reseller, ~20 MB of RAM.
 
 Built on [Baileys](https://github.com/WhiskeySockets/Baileys), which speaks the
@@ -280,13 +280,14 @@ them. `--dry-run` prints the plan and touches nothing.
 | `get_recent_messages` | read | Everything from the last N hours, grouped by chat. The catch-up tool. `include_system` adds WhatsApp's own notices, `types` narrows to one or more message types, `include_previews` attaches a small image of each photo, `compact` halves it for a routine catch-up. |
 | `get_unanswered` | read | Who is waiting on the user: chats whose last word is theirs and asks for something, with the ask quoted. Groups only when the user was @-mentioned or replied to. |
 | `set_contact_note` | local | Remember something about a person, on this machine only; it then shows next to their name everywhere. |
+| `update_contact_details` | local | File tags and key-value details on a person ("role": "contabil", tag "client"); `search_contacts` matches them, so roles and groups of people resolve. |
 | `mark_handled` | local | Take a chat off `get_unanswered` until the other side writes again. Nothing changes on WhatsApp. |
 | `get_stories` | read | The stories (status updates) received in the last day, by author, with previews on request. They show nowhere else. |
 | `wait_for_messages` | read | Block up to 55 s until a message arrives, then return it with a cursor for the next call. `addressed_to_me` wakes only for direct messages, @-mentions and replies. |
 | `search_messages` | read | Text search across the locally held messages; `since`, `until` and `from` narrow it. |
 | `recall` | read | Semantic search over the whole indexed history: matches by meaning, so a paraphrase or another language still hits, and it finds messages too old for `search_messages`. Off until [turned on](#semantic-recall). |
 | `get_message` | read | One message in full, with its quoted message and reactions. |
-| `search_contacts` | read | Find contacts by name or number. |
+| `search_contacts` | read | Find contacts by name, number, tag or detail; `tag` alone lists everyone filed under it. |
 | `sync_contacts` | read | Fetch the phone's address book from WhatsApp again, when names are missing. |
 | `get_contact` | read | Name, number, about text, profile picture. |
 | `get_group_info` | read | Participants, admins, announcement mode, invite link (when you are admin). |

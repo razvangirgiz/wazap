@@ -12,6 +12,13 @@ export interface ContactNote {
   updated_at: string;
 }
 
+/** The agent's filing on a person: tags ("client") and key-value details ("role": "contabil"). */
+export interface ContactFields {
+  tags?: string[];
+  fields?: Record<string, string>;
+  updated_at: string;
+}
+
 export interface HandledMark {
   /** The ask that was open when the user said they had handled it. A newer ask reopens the chat. */
   ask_id: string;
@@ -22,6 +29,7 @@ interface NotesFile {
   v: 1;
   contacts?: Record<string, ContactNote>;
   handled?: Record<string, HandledMark>;
+  fields?: Record<string, ContactFields>;
 }
 
 export class Notes {
@@ -30,6 +38,7 @@ export class Notes {
   private loadError: string | null = null;
   readonly contacts = new Map<string, ContactNote>();
   readonly handled = new Map<string, HandledMark>();
+  readonly fields = new Map<string, ContactFields>();
 
   constructor(private readonly file: string) {
     this.load();
@@ -50,6 +59,7 @@ export class Notes {
     }
     for (const [jid, note] of Object.entries(parsed.contacts ?? {})) this.contacts.set(jid, note);
     for (const [jid, mark] of Object.entries(parsed.handled ?? {})) this.handled.set(jid, mark);
+    for (const [jid, fields] of Object.entries(parsed.fields ?? {})) this.fields.set(jid, fields);
   }
 
   private save(): void {
@@ -59,6 +69,7 @@ export class Notes {
       v: 1,
       contacts: Object.fromEntries(this.contacts),
       handled: Object.fromEntries(this.handled),
+      fields: Object.fromEntries(this.fields),
     };
     mkdirSync(dirname(this.file), { recursive: true, mode: 0o700 });
     try {
@@ -84,6 +95,68 @@ export class Notes {
 
   markHandled(jid: string, askId: string): void {
     this.handled.set(jid, { ask_id: askId, at: new Date().toISOString() });
+    this.save();
+  }
+
+  fieldsFor(jid: string): ContactFields | undefined {
+    return this.fields.get(jid);
+  }
+
+  /**
+   * Apply tag/field edits (already normalized by the caller). A person left
+   * with no tags and no fields loses the entry, like an emptied note.
+   */
+  updateFields(
+    jid: string,
+    edit: { addTags?: string[]; removeTags?: string[]; set?: Record<string, string>; removeFields?: string[] }
+  ): ContactFields | undefined {
+    const current = this.fields.get(jid);
+    const tags = new Set(current?.tags ?? []);
+    for (const tag of edit.removeTags ?? []) tags.delete(tag);
+    for (const tag of edit.addTags ?? []) tags.add(tag);
+    const fields = { ...(current?.fields ?? {}) };
+    for (const key of edit.removeFields ?? []) delete fields[key];
+    for (const [key, value] of Object.entries(edit.set ?? {})) fields[key] = value;
+    if (tags.size === 0 && Object.keys(fields).length === 0) {
+      this.fields.delete(jid);
+    } else {
+      const next: ContactFields = { updated_at: new Date().toISOString() };
+      if (tags.size > 0) next.tags = [...tags].sort();
+      if (Object.keys(fields).length > 0) next.fields = fields;
+      this.fields.set(jid, next);
+    }
+    this.save();
+    return this.fields.get(jid);
+  }
+
+  /**
+   * Everything remembered about `from` moves to `to` — for when a lid turns
+   * out to be a phone jid already known. What `to` holds wins a conflict.
+   */
+  mergeInto(from: string, to: string): void {
+    if (from === to) return;
+    const note = this.contacts.get(from);
+    const mark = this.handled.get(from);
+    const details = this.fields.get(from);
+    if (!note && !mark && !details) return;
+    if (note) {
+      if (!this.contacts.has(to)) this.contacts.set(to, note);
+      this.contacts.delete(from);
+    }
+    if (mark) {
+      if (!this.handled.has(to)) this.handled.set(to, mark);
+      this.handled.delete(from);
+    }
+    if (details) {
+      const existing = this.fields.get(to);
+      const next: ContactFields = { updated_at: details.updated_at };
+      const tags = [...new Set([...(details.tags ?? []), ...(existing?.tags ?? [])])].sort();
+      const merged = { ...(details.fields ?? {}), ...(existing?.fields ?? {}) };
+      if (tags.length > 0) next.tags = tags;
+      if (Object.keys(merged).length > 0) next.fields = merged;
+      this.fields.set(to, next);
+      this.fields.delete(from);
+    }
     this.save();
   }
 

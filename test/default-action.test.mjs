@@ -44,12 +44,12 @@ for (const { name, config, stdin, stderr, expect } of CASES) {
 
 test("bare wazap with piped stdio serves rather than greeting", async () => {
   const { toolNames } = await runSmoke();
-  assert.equal(toolNames.length, 36);
+  assert.equal(toolNames.length, 37);
 });
 
 test("explicit `wazap serve` with piped stdio still answers initialize", async () => {
   const { toolNames, status } = await runSmoke({ args: ["serve"] });
-  assert.equal(toolNames.length, 36);
+  assert.equal(toolNames.length, 37);
   assert.equal(status.status, "not_linked");
 });
 
@@ -74,14 +74,14 @@ test("child env drops a shell WAZAP_TRANSPORT unless the test sets it", () => {
   }
 });
 
-test("writes off in .env leaves the server with the 21 read tools only", async () => {
+test("writes off in .env leaves the server with the 22 read tools only", async () => {
   const dataDir = mkdtempSync(join(tmpdir(), "wazap-readonly-"));
   await run(process.execPath, [binary, "config", "writes", "off", "--data-dir", dataDir], { env: childEnv() });
   const { toolNames } = await runSmoke({
     args: ["serve"],
     dataDir,
     keepDataDir: true,
-    expectedTools: 21,
+    expectedTools: 22,
     expectReadOnly: true,
   });
   assert.ok(!toolNames.includes("send_message"));

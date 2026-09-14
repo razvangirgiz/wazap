@@ -248,9 +248,22 @@ export interface ContactSummary {
   name: string;
   /** What the user told wazap about this person; kept locally, never sent. */
   note?: string;
+  /** Local labels the agent filed this person under ("client", "echipa"); searchable. */
+  tags?: string[];
+  /** Local key-value details ("role": "contabil"); searchable. */
+  fields?: Record<string, string>;
   number: string | null;
   is_my_contact: boolean;
   is_business: boolean;
+}
+
+/** What updateContactDetails applies; all four are optional but at least one must do something. */
+export interface ContactDetailsEdit {
+  addTags?: string[];
+  removeTags?: string[];
+  /** Keys set to the given value; an empty value deletes the key. */
+  fields?: Record<string, string>;
+  removeFields?: string[];
 }
 
 export interface ContactDetails extends ContactSummary {
@@ -391,9 +404,10 @@ export interface WhatsAppApi {
     opts?: SearchOptions
   ): Promise<Synced<RecallAnswer>>;
   getMessage(messageId: string): Promise<MessageView>;
-  searchContacts(query: string, limit: number): Promise<ContactSummary[]>;
+  searchContacts(query: string, limit: number, opts?: { tag?: string }): Promise<ContactSummary[]>;
   getContact(contactId: string): Promise<ContactDetails>;
   syncContacts(): Promise<ContactSyncResult>;
+  updateContactDetails(contactId: string, edit: ContactDetailsEdit): Promise<ContactSummary>;
   saveContact(
     contactId: string,
     name: string,
