@@ -159,7 +159,7 @@ export function formatToLine(to: OutgoingTarget): string {
 export function looksUnnamed(to: OutgoingTarget): boolean {
   const name = to.name.trim();
   if (name === "" || name === "unknown" || name.startsWith("unknown (")) return true;
-  return /^[\d\s+().\-]+$/.test(name);
+  return /^[\d\s+().-]+$/.test(name);
 }
 
 export function formatDraftPreview(to: OutgoingTarget, payload: DraftPayload): string {
