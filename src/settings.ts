@@ -1,12 +1,13 @@
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
-import { AccountRegistry, accountPolicy, resolveAccount } from "./accounts.js";
+import { AccountRegistry, accountPolicy, resolveAccount, type AccountRecord } from "./accounts.js";
 import { ask, askSecret, warnIfServerRunning } from "./cli.js";
 import { paths, writesHints, type Config } from "./config.js";
 import { WazapError, asWazapError } from "./errors.js";
 import { lockHolder } from "./lock.js";
 import { say } from "./logger.js";
 import { readRecallSettings } from "./recall/index.js";
+import { normalizeSendRule } from "./send-guard.js";
 import {
   maskKey,
   readTranscribeSettings,
@@ -133,7 +134,10 @@ const COMMANDS: Record<string, { values: readonly string[]; apply: (config: Conf
   };
 
 const USAGE_FIX =
-  "Run `wazap config writes on|off`, `wazap config transcribe local|openai|off`, `wazap config recall local|off`, or `wazap config webhook on|off`";
+  "Run `wazap config writes on|off`, `wazap config transcribe local|openai|off`, `wazap config recall local|off`, `wazap config webhook on|off`, or `wazap config send allow|deny <list>|open`";
+
+const SEND_USAGE_FIX =
+  'Run `wazap config send` to see the rules, `wazap config send allow <list>` or `wazap config send deny <list>` with numbers and chat ids comma-separated (`none` empties the list), or `wazap config send open` to lift every restriction';
 
 export async function runConfig(config: Config): Promise<void> {
   if (config.args.length === 0) {
@@ -144,10 +148,11 @@ export async function runConfig(config: Config): Promise<void> {
     for (const line of transcribeRows(config)) say(line);
     for (const line of recallRows(config)) say(line);
     for (const line of webhookRows(config)) say(line);
+    for (const line of sendRuleRows(config)) say(line);
     say("");
     say(
       dim(
-        "Change writes with `wazap config writes on|off`, transcription with `wazap config transcribe`, recall with `wazap config recall`, webhook with `wazap config webhook on|off`. Probe it with `wazap webhook test`."
+        "Change writes with `wazap config writes on|off`, transcription with `wazap config transcribe`, recall with `wazap config recall`, webhook with `wazap config webhook on|off`, send rules with `wazap config send`. Probe it with `wazap webhook test`."
       )
     );
     const selected = resolveAccount(config.dataDir, config.accountId);
@@ -168,11 +173,74 @@ export async function runConfig(config: Config): Promise<void> {
     );
   }
 
+  if (setting === "send") {
+    runSendRules(config, value, extra);
+    return;
+  }
+
   const spec = setting === undefined ? undefined : COMMANDS[setting];
   if (spec === undefined || value === undefined || extra !== undefined || !spec.values.includes(value)) {
     throw new WazapError("INVALID_ID", `Cannot set "${config.args.join(" ")}".`, USAGE_FIX);
   }
   await spec.apply(config, value);
+}
+
+/**
+ * `wazap config send …` edits the account's send rules in accounts.json.
+ * `allow <list>` makes the list exhaustive — `allow none` allows nobody —
+ * `deny <list>` refuses its entries no matter what the allowlist says, and
+ * `open` clears both. The tools re-read the file on every send, so the rules
+ * apply to the next call, drafts already waiting included; no restart needed.
+ */
+function runSendRules(config: Config, verb: string | undefined, list: string | undefined): void {
+  const selected = resolveAccount(config.dataDir, config.accountId);
+  const id = selected.account.id;
+
+  const parse = (raw: string | undefined): string[] => {
+    if (raw === undefined) {
+      throw new WazapError("INVALID_ID", `Cannot set \`wazap config send ${verb}\` without a list.`, SEND_USAGE_FIX);
+    }
+    return raw === "none" ? [] : raw.split(",").map((entry) => normalizeSendRule(entry));
+  };
+
+  switch (verb) {
+    case undefined:
+      say(`send rules (${id}): ${describeSendRules(selected.account)} (accounts.json)`);
+      return;
+    case "open":
+      if (list !== undefined) {
+        throw new WazapError("INVALID_ID", `Cannot set "${config.args.join(" ")}".`, SEND_USAGE_FIX);
+      }
+      selected.registry.setSendRules(id, { allow: null, deny: null });
+      break;
+    case "allow":
+      selected.registry.setSendRules(id, { allow: parse(list) });
+      break;
+    case "deny":
+      selected.registry.setSendRules(id, { deny: parse(list) });
+      break;
+    default:
+      throw new WazapError("INVALID_ID", `Cannot set "${config.args.join(" ")}".`, SEND_USAGE_FIX);
+  }
+  say(ok(`send rules (${id}): ${describeSendRules(selected.registry.get(id)!)}.`));
+  say(dim(`Stored in ${shortPath(paths(config.dataDir).accountsFile)} — applies to the next send call.`));
+}
+
+/** What `wazap config` prints: who the selected account may still message. */
+function sendRuleRows(config: Config): string[] {
+  const selected = resolveAccount(config.dataDir, config.accountId);
+  return [`send rules (${selected.account.id}): ${describeSendRules(selected.account)} (accounts.json)`];
+}
+
+function describeSendRules(account: AccountRecord): string {
+  const allow = account.send_allow;
+  const deny = account.send_deny ?? [];
+  const parts: string[] = [];
+  if (allow === undefined) parts.push("open — anyone may be messaged");
+  else if (allow.length === 0) parts.push("allowlist empty — nobody may be messaged");
+  else parts.push(`allowlist: ${allow.join(", ")}`);
+  if (deny.length > 0) parts.push(`denylist: ${deny.join(", ")}`);
+  return parts.join(" · ");
 }
 
 /**

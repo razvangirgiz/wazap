@@ -152,10 +152,11 @@ const COMMAND_ARGS: Record<Command, readonly number[]> = {
   status: [0],
   logout: [0],
   connect: [1],
-  // A third positional is only ever someone typing the API key after
-  // `config transcribe openai`. It is accepted here so runConfig can refuse it
-  // with the reason, rather than with a generic arity complaint.
-  config: [0, 2, 3],
+  // A third positional is either someone typing the API key after
+  // `config transcribe openai` — accepted so runConfig can refuse it with the
+  // reason — or the list after `config send allow|deny`. One positional is
+  // `config send`, which prints the rules.
+  config: [0, 1, 2, 3],
   contacts: [1],
   // One positional is `skills install`, which finds the harnesses itself.
   skills: [1, 2],
@@ -189,7 +190,7 @@ const COMMAND_USAGE: Partial<Record<Command, string>> = {
   embed: "Run `wazap embed download`",
   contacts: "Run `wazap contacts resync`",
   config:
-    "Run `wazap config`, `wazap config writes on|off`, `wazap config transcribe local|openai|off`, `wazap config recall local|off`, or `wazap config webhook on|off`",
+    "Run `wazap config`, `wazap config writes on|off`, `wazap config transcribe local|openai|off`, `wazap config recall local|off`, `wazap config webhook on|off`, or `wazap config send allow|deny <list>|open`",
   webhook: "Run `wazap webhook test`",
   account: ACCOUNT_USAGE,
   migrate: MIGRATE_USAGE,
