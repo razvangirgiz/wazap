@@ -364,7 +364,7 @@ test("a message that fell out of the store still answers from the index", async 
   }
 });
 
-test("recall off answers RECALL_UNAVAILABLE with the fix, through the tool too", async () => {
+test("recall off answers RECALL_UNAVAILABLE with the fix, and the tool falls back to keyword search", async () => {
   const { svc } = await serviceWith({});
   try {
     await assert.rejects(() => svc.recall("anything", undefined, 5), (err) => {
@@ -374,10 +374,13 @@ test("recall off answers RECALL_UNAVAILABLE with the fix, through the tool too",
     });
     const server = fakeServer();
     registerTools(server, asToolSource(svc), { allowWrite: true });
+    // The tool does not dead-end: it answers from the local history and says
+    // semantic recall is off, with the command that turns it on.
     const result = await server.tools.get("recall").handler({ query: "anything" });
-    assert.equal(result.isError, true);
-    assert.equal(result.structuredContent.error, "RECALL_UNAVAILABLE");
-    assert.match(result.structuredContent.fix, /wazap config recall local/);
+    assert.equal(result.isError, undefined);
+    assert.equal(result.structuredContent.mode, "keyword_fallback");
+    assert.match(result.structuredContent.recall_unavailable.fix, /wazap config recall local/);
+    assert.match(result.content[0].text, /keyword results over the local history/);
   } finally {
     await svc.stop();
   }

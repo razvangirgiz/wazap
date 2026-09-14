@@ -15,7 +15,12 @@ import { freshnessNote, readFreshness } from "./freshness.js";
 import { mediaCaptionOf } from "./media-details.js";
 import { clockLabel } from "./messages.js";
 import { RateLimiter } from "./ratelimit.js";
-import { resolveSenderFilter, withSenderIdentity } from "./sender-identity.js";
+import {
+  resolveSenderFilter,
+  withSenderIdentity,
+  type IdentifiedMessage,
+  type IdentifiedRecallAnswer,
+} from "./sender-identity.js";
 import { MESSAGE_TYPES } from "./wa-types.js";
 import type {
   ChatSummary,
@@ -770,7 +775,7 @@ Each hit's \`sender\` carries the same identity fields as search_messages, and
         result.data.hits.map((hit) => hit.message)
       );
       const hits = result.data.hits.map((hit, i) => ({ ...hit, message: identified[i]! }));
-      const answer: RecallAnswer = { hits, index: result.data.index };
+      const answer: IdentifiedRecallAnswer = { hits, index: result.data.index };
       const note = freshnessNote(fresh);
       return ok(
         `${renderRecall(title, answer)}${note ? `\n${note}` : ""}`,
@@ -795,12 +800,20 @@ Each hit's \`sender\` carries the same identity fields as search_messages, and
     title: "Get one WhatsApp message in full",
     description: `The complete message behind a message_id, including the quoted message it
 replies to, its reactions, and its media metadata. Use it after search_messages
-or read_messages when you need the context around a single message.`,
+or read_messages when you need the context around a single message.
+
+The \`sender\` carries the same identity fields as search_messages: \`id\` (the
+canonical jid — a \`…@lid\` only while WhatsApp has never revealed the paired
+number), \`phone\` (the number, or null for an unresolved lid), \`contact_name\`
+(the name saved in the user's address book, or null) and \`pushname\` (the name
+the sender publishes, when that is the name \`name\` shows).`,
     schema: { message_id: messageId },
     write: false,
     handler: async ({ message_id }, { wa }) => {
       const message = await wa.getMessage(message_id);
-      return ok(renderMessages("Message", [message]), message as unknown as Record<string, unknown>);
+      const [identified] = await withSenderIdentity(wa, [message]);
+      const view = identified ?? message;
+      return ok(renderMessages("Message", [view]), view as unknown as Record<string, unknown>);
     },
   }),
 
@@ -906,8 +919,16 @@ Call this before manage_group: most group actions need admin rights.`,
     name: "download_media",
     title: "Download media from a WhatsApp message",
     description: `Download the photo/video/audio/document attached to a message and save it to
-disk on the machine running wazap. Images of 1 MB or less are also returned
-inline so you can look at them.
+disk on the machine running wazap. The file at \`path\` is already decrypted —
+open or process it as is; nothing else is needed. Images of 1 MB or less are
+also returned inline so you can look at them.
+
+The structured result carries: \`path\` (the saved file), \`mime\`, \`size\`
+(bytes), \`filename\` (the name it was saved under — a timestamped name wazap
+made, not the sender's), \`original_filename\` (the name the sender's file had,
+or null when the envelope carried none), \`caption\` (the text the sender wrote
+under the media, or null — audio and voice notes cannot carry one) and
+\`message_id\`.
 
 Fails with MEDIA_UNAVAILABLE when WhatsApp has expired the file.`,
     schema: {
@@ -917,12 +938,23 @@ Fails with MEDIA_UNAVAILABLE when WhatsApp has expired the file.`,
     write: false,
     handler: async ({ message_id, save_to }, { wa }) => {
       const media = await wa.downloadMedia(message_id, save_to);
+      // The envelope's caption and filename live on the message, not the file.
+      const view = await wa.getMessage(message_id).catch(() => undefined);
       const { inline_base64, ...structured } = media;
       const extra: ContentBlock[] = inline_base64 ? [{ type: "image", data: inline_base64, mimeType: media.mime }] : [];
       const text =
         `Saved ${media.mime} (${Math.round(media.size / 1024)} KB) to:\n${media.path}` +
         (inline_base64 ? "\n(image attached inline)" : "");
-      return ok(text, structured as unknown as Record<string, unknown>, extra);
+      return ok(
+        text,
+        {
+          ...structured,
+          message_id,
+          caption: view === undefined ? null : mediaCaptionOf(view),
+          original_filename: view?.media?.filename ?? null,
+        },
+        extra
+      );
     },
   }),
 
@@ -1371,20 +1403,23 @@ function previewNote(messages: MessageView[], previews: Preview[], asked: boolea
 }
 
 /** The sender's name, with the user's note on them the first time they appear in this rendering. */
-function senderLabel(m: MessageView, introduced: Set<string>): string {
+function senderLabel(m: AnyMessage, introduced: Set<string>): string {
   if (m.from_me) return "me";
   if (!m.sender.note || introduced.has(m.sender.id)) return m.sender.name;
   introduced.add(m.sender.id);
   return `${m.sender.name} · ${m.sender.note}`;
 }
 
+/** A rendered message, with or without the resolved sender identity fields. */
+type AnyMessage = MessageView | IdentifiedMessage;
+
 function renderMessages(
   title: string,
-  messages: MessageView[],
+  messages: ReadonlyArray<AnyMessage>,
   labels: Map<string, string> = new Map(),
   note: string | null = null
 ): string {
-  if (messages.length === 0) return `${title}: no messages found.`;
+  if (messages.length === 0) return `${title}: no messages found.${note ? ` ${note}` : ""}`;
   const lines = [`# ${title} (${messages.length})`, ""];
   if (note) lines.splice(1, 0, note);
   const introduced = new Set<string>();
@@ -1411,7 +1446,7 @@ function renderMessages(
  * them. "index only" warns that the message left the live store, so
  * get_message and download_media can no longer see it.
  */
-function renderRecall(title: string, answer: RecallAnswer): string {
+function renderRecall(title: string, answer: RecallAnswer | IdentifiedRecallAnswer): string {
   const { hits, index } = answer;
   const catchingUp =
     index.state === "indexing"

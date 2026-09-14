@@ -11,7 +11,14 @@ import { WazapError } from "./errors.js";
 import { isGroupId } from "./ids.js";
 import { phoneOf } from "./messages.js";
 import { realName } from "./whatsapp.js";
-import type { ContactSummary, MessageSender, MessageView, WhatsAppApi } from "./wa-types.js";
+import type {
+  ContactSummary,
+  MessageSender,
+  MessageView,
+  RecallAnswer,
+  RecallHit,
+  WhatsAppApi,
+} from "./wa-types.js";
 
 /**
  * The sender contract of every read tool: `id` is the canonical WhatsApp id —
@@ -21,15 +28,28 @@ import type { ContactSummary, MessageSender, MessageView, WhatsAppApi } from "./
  * the sender publishes, when that is the name `name` shows. For a saved
  * contact `name` already is the address-book name, so `pushname` stays null:
  * wazap keeps the sender's own pushname but the service does not surface it.
+ *
+ * `phone` is null rather than absent — the field must always be there, so an
+ * agent can tell "no number exists" apart from "the field was not filled in".
+ * MessageSender.phone is `string | undefined`, so the override needs Omit.
  */
-export interface SenderIdentity extends MessageSender {
+export interface SenderIdentity extends Omit<MessageSender, "phone"> {
   phone: string | null;
   contact_name: string | null;
   pushname: string | null;
 }
 
-export interface IdentifiedMessage extends MessageView {
+export interface IdentifiedMessage extends Omit<MessageView, "sender"> {
   sender: SenderIdentity;
+}
+
+/** Recall hits and answers whose messages went through withSenderIdentity. */
+export interface IdentifiedHit extends Omit<RecallHit, "message"> {
+  message: IdentifiedMessage;
+}
+
+export interface IdentifiedRecallAnswer extends Omit<RecallAnswer, "hits"> {
+  hits: IdentifiedHit[];
 }
 
 const UNKNOWN_LID = /^unknown \(lid …\d+\)$/;
