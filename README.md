@@ -8,7 +8,7 @@
 ```
 
 **WhatsApp for your AI agent.** An MCP server that puts your WhatsApp account —
-chats, messages, media, contacts, groups — behind 34 tools any MCP client can
+chats, messages, media, contacts, groups — behind 36 tools any MCP client can
 call. Pairing-code login, no browser, no phone-number reseller, ~20 MB of RAM.
 
 Built on [Baileys](https://github.com/WhiskeySockets/Baileys), which speaks the
@@ -305,6 +305,8 @@ them. `--dry-run` prints the plan and touches nothing.
 | `manage_chat` | write | Archive, pin, mute (8h by default), mark read/unread. |
 | `create_group` | write | Create a group and add participants. |
 | `manage_group` | write | Add, remove, promote, demote, leave, rename, invite links. |
+| `save_contact` | write | Add a number to the account's WhatsApp contacts, or rename an entry; `save_on_phone` (default) also writes the phone's own address book. |
+| `remove_contact` | write | Drop a contact entry; the chat and its history stay. |
 
 ### Seeing, waiting, following up
 

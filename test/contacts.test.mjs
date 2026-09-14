@@ -227,3 +227,145 @@ test("search_contacts finds a number typed with the national leading zero", asyn
     ["Ana"]
   );
 });
+
+/** The contact mutation tools need writes on; makeService stays read-only. */
+const makeWritable = () =>
+  connectedService(WhatsAppService, { prefix: "wazap-contacts-", id: ME, name: "Răzvan", config: { readOnly: false } });
+
+test("saveContact files a new number under its name and tells WhatsApp", async () => {
+  const { svc, sock } = makeWritable();
+  const saved = [];
+  sock.addOrEditContact = async (jid, contact) => saved.push({ jid, contact });
+
+  const c = await svc.saveContact("+40 700 000 099", "Ana Pop", { firstName: "Ana" });
+
+  assert.deepEqual(saved, [
+    {
+      jid: "40700000099@s.whatsapp.net",
+      contact: {
+        fullName: "Ana Pop",
+        firstName: "Ana",
+        saveOnPrimaryAddressbook: true,
+        pnJid: "40700000099@s.whatsapp.net",
+      },
+    },
+  ]);
+  assert.equal(c.contact_id, "40700000099@s.whatsapp.net");
+  assert.equal(c.name, "Ana Pop");
+  assert.equal(c.is_my_contact, true);
+});
+
+test("saveContact renames an entry and keeps it WhatsApp-only when asked", async () => {
+  const { svc, sock } = makeWritable();
+  const saved = [];
+  sock.addOrEditContact = async (jid, contact) => saved.push({ jid, contact });
+  sock.ev.emit("contacts.upsert", [{ id: "40700000061@s.whatsapp.net", name: "Ionut" }]);
+
+  const c = await svc.saveContact("40700000061@s.whatsapp.net", "Ionut Fox", { saveOnPhone: false });
+
+  assert.equal(saved[0].contact.saveOnPrimaryAddressbook, false);
+  assert.equal(c.name, "Ionut Fox");
+  assert.equal(svc.displayName("40700000061@s.whatsapp.net"), "Ionut Fox");
+});
+
+test("saveContact on a paired lid carries both jids and files under the phone one", async () => {
+  const { svc, sock } = makeWritable();
+  const saved = [];
+  sock.addOrEditContact = async (jid, contact) => saved.push({ jid, contact });
+  svc.learnLid("12345678901234@lid", "40700000077@s.whatsapp.net");
+
+  await svc.saveContact("12345678901234@lid", "Lid Guy");
+
+  assert.equal(saved[0].jid, "40700000077@s.whatsapp.net");
+  assert.equal(saved[0].contact.pnJid, "40700000077@s.whatsapp.net");
+  assert.equal(saved[0].contact.lidJid, "12345678901234@lid");
+});
+
+test("removeContact drops the saved name; the entry and its push name stay", async () => {
+  const { svc, sock } = makeWritable();
+  const removed = [];
+  sock.removeContact = async (jid) => removed.push(jid);
+  sock.ev.emit("contacts.upsert", [{ id: "40700000061@s.whatsapp.net", name: "Ionut", notify: "ionutz" }]);
+
+  const c = await svc.removeContact("40700000061@s.whatsapp.net");
+
+  assert.deepEqual(removed, ["40700000061@s.whatsapp.net"]);
+  assert.equal(c.is_my_contact, false);
+  assert.equal(c.name, "ionutz");
+});
+
+test("a group id is not a contact, in either direction", async () => {
+  const { svc, sock } = makeWritable();
+  sock.addOrEditContact = async () => assert.fail("must not reach WhatsApp");
+  sock.removeContact = async () => assert.fail("must not reach WhatsApp");
+  await assert.rejects(() => svc.saveContact("12345@g.us", "Nope"), (err) => err.code === "INVALID_ID");
+  await assert.rejects(() => svc.removeContact("12345@g.us"), (err) => err.code === "INVALID_ID");
+});
+
+test("a blank name never becomes a contact mutation", async () => {
+  const { svc, sock } = makeWritable();
+  sock.addOrEditContact = async () => assert.fail("must not reach WhatsApp");
+  await assert.rejects(
+    () => svc.saveContact("40700000099@s.whatsapp.net", "   "),
+    (err) => err.code === "INVALID_ID"
+  );
+});
+
+test("a read-only account refuses the mutation before WhatsApp sees it", async () => {
+  const { svc, sock } = makeService();
+  sock.addOrEditContact = async () => assert.fail("must not reach WhatsApp");
+  await assert.rejects(
+    () => svc.saveContact("40700000099@s.whatsapp.net", "Ana"),
+    (err) => err.code === "READ_ONLY"
+  );
+});
+
+test("save_contact and remove_contact are write tools; only removal is destructive", async () => {
+  const calls = [];
+  const server = fakeServer();
+  registerTools(
+    server,
+    asToolSource({
+      saveContact: async (...args) => {
+        calls.push(["save", ...args]);
+        return {
+          contact_id: "40700000099@s.whatsapp.net",
+          name: "Ana Pop",
+          number: "40700000099",
+          is_my_contact: true,
+          is_business: false,
+        };
+      },
+      removeContact: async (...args) => {
+        calls.push(["remove", ...args]);
+        return {
+          contact_id: "40700000099@s.whatsapp.net",
+          name: "40700000099",
+          number: "40700000099",
+          is_my_contact: false,
+          is_business: false,
+        };
+      },
+    }),
+    { allowWrite: true }
+  );
+
+  const save = server.tools.get("save_contact");
+  const drop = server.tools.get("remove_contact");
+  assert.equal(save.meta.annotations.readOnlyHint, false);
+  assert.equal(save.meta.annotations.destructiveHint, false);
+  assert.equal(drop.meta.annotations.destructiveHint, true);
+
+  const saved = await save.handler({
+    contact_id: "+40700000099",
+    name: "Ana Pop",
+    first_name: "Ana",
+    save_on_phone: false,
+  });
+  assert.deepEqual(calls[0], ["save", "+40700000099", "Ana Pop", { firstName: "Ana", saveOnPhone: false }]);
+  assert.match(saved.content[0].text, /Saved Ana Pop/);
+
+  const dropped = await drop.handler({ contact_id: "40700000099@s.whatsapp.net" });
+  assert.deepEqual(calls[1], ["remove", "40700000099@s.whatsapp.net"]);
+  assert.match(dropped.content[0].text, /Removed 40700000099@s\.whatsapp\.net/);
+});
