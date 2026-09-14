@@ -90,9 +90,11 @@ export function freshnessNote(fresh: HistoryFreshness | null, now = Date.now()):
 export function historyLine(fresh: HistoryFreshness, now = Date.now()): string {
   const at = fresh.last_message_age_ms === null ? null : now - fresh.last_message_age_ms;
   const inbound =
-    fresh.last_message_received_at === null || at === null
-      ? "nothing received yet"
-      : `${fresh.last_message_received_at} (${formatAge(at, now)})`;
+    fresh.last_message_received_at === null
+      ? "nothing inbound yet"
+      : at === null
+        ? `last inbound ${fresh.last_message_received_at}`
+        : `last inbound ${fresh.last_message_received_at} (${formatAge(at, now)})`;
   const flag = fresh.stale ? " · stale" : "";
-  return `sync ${fresh.sync} · last inbound ${inbound}${flag}`;
+  return `sync ${fresh.sync} · ${inbound}${flag}`;
 }

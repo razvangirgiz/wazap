@@ -258,8 +258,10 @@ code with what to do about it. Takes no arguments and never touches WhatsApp.`,
     title: "Get the WhatsApp connection status",
     description: `Check the session: connection status ("connected" means the tools work,
 "not_linked" means the user must run \`npx wazap-mcp login\`), whether the initial
-history sync has finished, which account is linked, when a message last arrived,
-the versions and data directory in use, and how many contacts carry a name from
+history sync has finished, which account is linked, how fresh the local history
+is — \`history\` shows when a message last arrived and flags \`stale\` when the
+phone has been quiet for a day while connected — the versions and data
+directory in use, and how many contacts carry a name from
 the phone's address book (contacts_named: 0 means it never arrived).
 
 Call this whenever another tool reports NOT_CONNECTED, NOT_LINKED or
@@ -591,8 +593,9 @@ The timeout is capped at 55 seconds because MCP clients give up at 60.`,
     name: "search_messages",
     title: "Search WhatsApp messages",
     description: `Case-insensitive text search over the messages wazap holds locally — all chats,
-or one chat, including history synced on first link. It cannot reach messages
-the phone never synced to this device.
+or one chat, including history synced on first link. The store keeps the newest
+1000 messages of each chat searchable; older history is what recall's index is
+for. It cannot reach messages the phone never synced to this device.
 
 \`from\` accepts "me", a phone number, a contact/chat id, or a name: a name must
 resolve to exactly one person — it matches contact names, notify names and

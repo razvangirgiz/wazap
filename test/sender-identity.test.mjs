@@ -160,6 +160,22 @@ test("the `from` filter takes a name when it picks out exactly one person", asyn
   );
 });
 
+test("the `from` filter also finds a person only ever known by pushname", async () => {
+  const { call, arrive } = setup();
+  // Carmen never landed in the address book — the pushname her messages carry
+  // is all wazap has, and it is what her one-to-one chat is called.
+  const CARMEN = "40700000005@s.whatsapp.net";
+  arrive(CARMEN, "salut de la carmen", { pushName: "Carmen" });
+  arrive(ANA, "salut de la ana");
+
+  const result = await call("search_messages", { query: "salut", from: "carmen" });
+  assert.equal(result.structuredContent.from_resolved, CARMEN);
+  assert.deepEqual(
+    result.structuredContent.messages.map((m) => m.sender.id),
+    [CARMEN]
+  );
+});
+
 test("an ambiguous `from` names its candidates, an unknown one says so", async () => {
   const { sock, call, arrive } = setup();
   sock.ev.emit("contacts.upsert", [
