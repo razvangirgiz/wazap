@@ -286,6 +286,9 @@ export class WhatsAppService implements WhatsAppApi {
   private linking: Promise<PairingInfo> | null = null;
   private pairing: PairingInfo | null = null;
   private lastInboundAt: number | null = null;
+  /** Invalidated by every write on store.contacts; see namedContacts. */
+  private namedContactsDirty = true;
+  private namedContactsCache = 0;
   private initialSyncDone = false;
   private historyReceived = false;
   private syncDeadline: ReturnType<typeof setTimeout> | null = null;
@@ -538,11 +541,15 @@ export class WhatsAppService implements WhatsAppApi {
    * book ever arrived.
    */
   namedContacts(): number {
-    let named = 0;
-    for (const [jid, contact] of this.store.contacts) {
-      if (!isGroupId(jid) && realName(contact.name)) named++;
+    if (this.namedContactsDirty) {
+      let named = 0;
+      for (const [jid, contact] of this.store.contacts) {
+        if (!isGroupId(jid) && realName(contact.name)) named++;
+      }
+      this.namedContactsCache = named;
+      this.namedContactsDirty = false;
     }
-    return named;
+    return this.namedContactsCache;
   }
 
   /** The one writer of `status`, so `status_since` can never drift from it. */
@@ -624,18 +631,19 @@ export class WhatsAppService implements WhatsAppApi {
   }
 
   /**
-   * Live upserts set `lastInboundAt`. After a restart that field is empty even
-   * when the store or history already holds messages, so status also looks at
-   * those.
+   * `lastInboundAt` is maintained as messages land — live upserts, history
+   * replay and the on-disk reload all feed it — so status is a read, not a
+   * scan of the whole store. A dropped newest message can leave it a touch
+   * stale, which only ever delays the "phone may be offline" hint.
    */
   private latestInboundAt(): number | null {
-    let latest = this.lastInboundAt;
-    for (const raw of this.store.messages.values()) {
-      if (raw.key.fromMe) continue;
-      const at = messageTimestampMs(raw);
-      if (latest === null || at > latest) latest = at;
-    }
-    return latest;
+    return this.lastInboundAt;
+  }
+
+  /** Every stored inbound message is evidence the phone link is alive. */
+  private noteInbound(raw: WAMessage): void {
+    if (raw.key.fromMe) return;
+    this.lastInboundAt = Math.max(this.lastInboundAt ?? 0, messageTimestampMs(raw));
   }
 
   listChats(filter: ChatFilter, limit: number): Promise<Synced<ChatSummary[]>> {
@@ -649,8 +657,12 @@ export class WhatsAppService implements WhatsAppApi {
       // under its lid could render under its number and sit next to the row
       // that already had that number.
       await this.learnLidPhones(candidates.map((chat) => this.canonical(chat.id ?? "")));
-      const chats = this.mergeAliases(candidates)
-        .sort((a, b) => this.chatActivity(b) - this.chatActivity(a))
+      const merged = this.mergeAliases(candidates);
+      // chatActivity resolves the ring's tail each time; a sort would run it
+      // once per comparison, so it is priced once per chat instead.
+      const activity = new Map(merged.map((chat) => [chat, this.chatActivity(chat)]));
+      const chats = merged
+        .sort((a, b) => activity.get(b)! - activity.get(a)!)
         .slice(0, limit)
         .map((chat) => this.chatSummary(chat));
       return this.synced(chats);
@@ -707,10 +719,16 @@ export class WhatsAppService implements WhatsAppApi {
         if (chat && !this.matchesChatFilter(chat, filter)) continue;
         if (!chat && (filter === "unread" || filter === (isGroupId(jid) ? "individual" : "groups"))) continue;
 
-        const recent = ring.filter((sid) => {
-          const raw = this.store.messages.get(sid);
-          return raw !== undefined && messageTimestampMs(raw) >= cutoff;
-        });
+        // Rings are kept newest-last, so the window is a suffix: walk back to
+        // its start instead of scanning a ring that can hold a thousand sids.
+        const recent: string[] = [];
+        for (let i = ring.length - 1; i >= 0; i--) {
+          const raw = this.store.messages.get(ring[i]!);
+          if (!raw) continue;
+          if (messageTimestampMs(raw) < cutoff) break;
+          recent.push(ring[i]!);
+        }
+        recent.reverse();
         if (recent.length === 0) continue;
 
         const messages = this.viewsFor(this.ofTypes(recent, types), jid).filter(
@@ -1901,6 +1919,7 @@ export class WhatsAppService implements WhatsAppApi {
       // The patch echo takes a moment; file the name now so the store is right.
       const previous = this.store.contacts.get(jid);
       this.store.contacts.set(jid, { ...(previous ?? {}), id: jid, name: fullName });
+      this.namedContactsDirty = true;
       this.markStoreDirty();
       return this.contactSummary(jid, this.store.contacts.get(jid));
     });
@@ -1915,6 +1934,7 @@ export class WhatsAppService implements WhatsAppApi {
       const stored = this.store.contacts.get(jid);
       if (stored?.name !== undefined) {
         delete stored.name;
+        this.namedContactsDirty = true;
         this.markStoreDirty();
       }
       return this.contactSummary(jid, stored);
@@ -2636,6 +2656,7 @@ export class WhatsAppService implements WhatsAppApi {
       const existing = this.store.contacts.get(jid);
       this.store.contacts.set(jid, { ...definedOnly(contact), ...definedOnly(existing ?? {}), id: jid });
       this.store.contacts.delete(lid);
+      this.namedContactsDirty = true;
     }
     // Notes, tags and details filed under the lid belong to the same person.
     this.notes.mergeInto(lid, jid);
@@ -3027,6 +3048,7 @@ export class WhatsAppService implements WhatsAppApi {
     // Baileys sends a contact with the fields it does not know set to
     // undefined; spread as they are, they would erase a name learned earlier.
     this.store.contacts.set(jid, { ...(previous ?? {}), ...definedOnly(contact), id: jid });
+    this.namedContactsDirty = true;
   }
 
   private ingestMessages(messages: WAMessage[]): WAMessage[] {
@@ -3044,6 +3066,7 @@ export class WhatsAppService implements WhatsAppApi {
       const sid = messageIdFor(raw.key, jid);
       if (!this.keepOverEarlierCall(raw, jid, sid)) continue;
       this.store.putMessage(sid, jid, raw);
+      this.noteInbound(raw);
       stored.push(raw);
     }
     // Everything that reached the store is indexable work; the feed itself
@@ -3061,6 +3084,7 @@ export class WhatsAppService implements WhatsAppApi {
     if (raw.key.fromMe || isControlMessage(raw) || messageType(raw) === "system") return;
     this.learnPushName(raw, STATUS_JID);
     this.store.putStory(messageIdFor(raw.key, STATUS_JID), STATUS_JID, raw);
+    this.noteInbound(raw);
     this.recallForget(this.store.pruneStories(Date.now() - STORY_TTL_MS));
   }
 
@@ -3182,6 +3206,10 @@ export class WhatsAppService implements WhatsAppApi {
     try {
       const text = await readFile(this.paths.storeFile, "utf8");
       this.store.hydrate(JSON.parse(text) as StoreSnapshot);
+      this.namedContactsDirty = true;
+      // Hydrated messages bypass ingest, so their timestamps are folded in
+      // here — once per boot, which is the whole point of the field.
+      for (const raw of this.store.messages.values()) this.noteInbound(raw);
       for (const contact of this.store.contacts.values()) this.relearnLid(contact);
       for (const [lid, pn] of this.store.lids) this.learnLid(lid, pn);
       for (const key of [...this.store.byChat.keys(), ...this.store.chats.keys(), ...this.store.contacts.keys()]) {
@@ -3253,12 +3281,16 @@ export class WhatsAppService implements WhatsAppApi {
     }
     const kept = [...newest.values()].sort((a, b) => a.ts - b.ts).slice(-HISTORY_STORE_CAP_PER_CHAT);
 
-    // Rewrite compacted, so the file stays bounded across restarts.
+    // Rewrite compacted, so the file stays bounded across restarts — but only
+    // when dedup or the cap actually dropped lines; an identical rewrite on
+    // every boot is pure write I/O.
     const compacted = kept.map((record) => JSON.stringify(record)).join("\n");
     const written = kept.length > 0 ? `${compacted}\n` : "";
-    const tmp = `${path}.tmp`;
-    await writeFile(tmp, written, { mode: FILE_MODE });
-    await rename(tmp, path);
+    if (written !== text) {
+      const tmp = `${path}.tmp`;
+      await writeFile(tmp, written, { mode: FILE_MODE });
+      await rename(tmp, path);
+    }
 
     // `newest`, not `kept`: a record the cap just dropped is exactly what the
     // index is for. The seal marks the file as it now stands on disk.
@@ -3275,6 +3307,7 @@ export class WhatsAppService implements WhatsAppApi {
       if (this.applyReaction(raw, jid)) continue;
       if (!this.keepOverEarlierCall(raw, jid, record.sid)) continue;
       this.store.putMessage(record.sid, jid, raw);
+      this.noteInbound(raw);
       if (record.tr) this.store.transcripts.set(record.sid, record.tr);
       loaded++;
     }

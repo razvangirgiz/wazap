@@ -79,13 +79,28 @@ export class Store {
       ring = [];
       this.byChat.set(chatJid, ring);
     }
+    // A sid can sit in more than one ring (an old snapshot filed it under both
+    // the lid and the phone chat), so membership is the ring's business —
+    // chatOf only says where it landed last.
     if (known && ring.includes(sid)) return;
     // Live messages arrive newest-last, so appending is enough; a history sync
-    // delivers older ones out of order and only then is a re-sort needed.
+    // delivers older ones out of order, and the ring stays sorted either way.
     const ts = messageTimestampMs(raw) / 1000;
     const last = ring.length > 0 ? this.seconds(ring[ring.length - 1]!) : Number.NEGATIVE_INFINITY;
-    ring.push(sid);
-    if (ts < last) ring.sort((a, b) => this.seconds(a) - this.seconds(b));
+    if (ts >= last) {
+      ring.push(sid);
+    } else {
+      let lo = 0;
+      let hi = ring.length;
+      while (lo < hi) {
+        const mid = (lo + hi) >> 1;
+        // <= keeps the stable-sort semantics the old code had: a same-second
+        // message lands after the ones already there.
+        if (this.seconds(ring[mid]!) <= ts) lo = mid + 1;
+        else hi = mid;
+      }
+      ring.splice(lo, 0, sid);
+    }
     while (ring.length > MAX_MESSAGES_PER_CHAT) {
       const dropped = ring.shift();
       if (dropped) this.forget(dropped);
