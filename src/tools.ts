@@ -11,8 +11,11 @@ import {
 import { compactConversations, renderCompact } from "./compact.js";
 import { renderDraft, type DraftView } from "./drafts.js";
 import { asWazapError, ERROR_GUIDE, WazapError } from "./errors.js";
+import { freshnessNote, readFreshness } from "./freshness.js";
+import { mediaCaptionOf } from "./media-details.js";
 import { clockLabel } from "./messages.js";
 import { RateLimiter } from "./ratelimit.js";
+import { resolveSenderFilter, withSenderIdentity } from "./sender-identity.js";
 import { MESSAGE_TYPES } from "./wa-types.js";
 import type {
   ChatSummary,
@@ -583,7 +586,25 @@ The timeout is capped at 55 seconds because MCP clients give up at 60.`,
     name: "search_messages",
     title: "Search WhatsApp messages",
     description: `Case-insensitive text search over the messages wazap holds locally — all chats,
-or one chat. It cannot reach messages the phone never synced to this device.`,
+or one chat, including history synced on first link. It cannot reach messages
+the phone never synced to this device.
+
+\`from\` accepts "me", a phone number, a contact/chat id, or a name: a name must
+resolve to exactly one person — it matches contact names, notify names and
+last-seen pushnames, then one-to-one chat display names — or the error lists
+the candidates it found.
+
+Every message's \`sender\` carries \`id\` (the canonical jid — a \`…@lid\` only
+while WhatsApp has never revealed the paired number), \`phone\` (the number, or
+null for an unresolved lid), \`contact_name\` (the name saved in the user's
+address book, or null) and \`pushname\` (the name the sender publishes, when
+that is the name \`name\` shows; null for saved contacts and unnamed senders).
+A sender wazap knows nothing about reads "unknown (lid …1234)" — never bare
+lid digits, which look like a phone number and are not one.
+
+\`freshness\` says whether the history this searched may be partial (sync still
+running) or stale (nothing inbound for 24h while connected); on a scoped
+search \`freshness.chat\` is the newest message wazap holds for that chat.`,
     schema: {
       query: z.string().min(1).describe("Text to search for"),
       chat_id: chatId.optional().describe("Restrict the search to this chat"),
@@ -598,15 +619,20 @@ or one chat. It cannot reach messages the phone never synced to this device.`,
         .string()
         .min(1)
         .optional()
-        .describe('Only messages this person sent: "me", a contact id or a phone number'),
+        .describe(
+          'Only messages this person sent: "me", a phone number, a contact/chat id, or a name that resolves to exactly one person (the error names the candidates when it does not)'
+        ),
     },
     write: false,
     handler: async ({ query, chat_id, limit, since, until, from }, { wa }) => {
+      const resolvedFrom = await resolveSenderFilter(wa, from);
       const result = await wa.searchMessages(query, chat_id, limit, {
         sinceMs: parseMoment(since, "since"),
         untilMs: parseMoment(until, "until", true),
-        from,
+        from: resolvedFrom,
       });
+      const messages = await withSenderIdentity(wa, result.data);
+      const fresh = await readFreshness(wa, chat_id);
       const scope = [
         chat_id ? `in ${chat_id}` : null,
         from ? `from ${from}` : null,
@@ -616,15 +642,22 @@ or one chat. It cannot reach messages the phone never synced to this device.`,
         .filter(Boolean)
         .join(", ");
       return ok(
-        renderMessages(`Search results for "${query}"${scope ? ` (${scope})` : ""}`, result.data),
+        renderMessages(
+          `Search results for "${query}"${scope ? ` (${scope})` : ""}`,
+          messages,
+          new Map(),
+          freshnessNote(fresh)
+        ),
         synced(result, {
           query,
           chat_id: chat_id ?? null,
           since: since ?? null,
           until: until ?? null,
           from: from ?? null,
-          count: result.data.length,
-          messages: result.data,
+          from_resolved: resolvedFrom ?? null,
+          count: messages.length,
+          messages,
+          freshness: fresh,
         })
       );
     },
@@ -644,13 +677,20 @@ Each result carries its date and a score: semantic similarity scaled by
 recency, plus a small bonus when the hit repeats a rare query token
 verbatim — a name, a number — so fresh and exact matches rank first.
 chat_id, since, until and from narrow
-the search exactly like search_messages. A hit marked "index only" lives in
-the index alone: quote it, but get_message and download_media cannot see it.
+the search exactly like search_messages — including a name that resolves to
+exactly one person. A hit marked "index only" lives in the index alone: quote
+it, but get_message and download_media cannot see it.
 Results under the similarity floor are dropped rather than listed; when only
 weak matches survive, the output says so — do not present them as found facts.
 
-RECALL_UNAVAILABLE means recall is off or the embedding setup is missing; the
-fix names the command the user has to run. Do not retry it.`,
+When semantic recall is off or its embedding setup is missing, the tool does
+not dead-end: it falls back to a keyword search over the local history, marked
+\`mode: "keyword_fallback"\`, and \`recall_unavailable.fix\` names the command
+that turns semantic recall on. An error remains only when even the fallback
+cannot run.
+
+Each hit's \`sender\` carries the same identity fields as search_messages, and
+\`freshness\` says whether the local history may be partial or stale.`,
     schema: {
       query: z.string().min(1).describe("What to find, said any way — the meaning is what matches"),
       chat_id: chatId.optional().describe("Restrict the search to this chat"),
@@ -665,15 +705,15 @@ fix names the command the user has to run. Do not retry it.`,
         .string()
         .min(1)
         .optional()
-        .describe('Only messages this person sent: "me", a contact id or a phone number'),
+        .describe(
+          'Only messages this person sent: "me", a phone number, a contact/chat id, or a name that resolves to exactly one person (the error names the candidates when it does not)'
+        ),
     },
     write: false,
     handler: async ({ query, chat_id, limit, since, until, from }, { wa }) => {
-      const result = await wa.recall(query, chat_id, limit, {
-        sinceMs: parseMoment(since, "since"),
-        untilMs: parseMoment(until, "until", true),
-        from,
-      });
+      const resolvedFrom = await resolveSenderFilter(wa, from);
+      const sinceMs = parseMoment(since, "since");
+      const untilMs = parseMoment(until, "until", true);
       const scope = [
         chat_id ? `in ${chat_id}` : null,
         from ? `from ${from}` : null,
@@ -682,17 +722,69 @@ fix names the command the user has to run. Do not retry it.`,
       ]
         .filter(Boolean)
         .join(", ");
+      const title = `Recall results for "${query}"${scope ? ` (${scope})` : ""}`;
+      const fresh = await readFreshness(wa, chat_id);
+
+      let result: Synced<RecallAnswer> | null = null;
+      let unavailable: WazapError | null = null;
+      try {
+        result = await wa.recall(query, chat_id, limit, { sinceMs, untilMs, from: resolvedFrom });
+      } catch (err) {
+        if (!(err instanceof WazapError) || err.code !== "RECALL_UNAVAILABLE") throw err;
+        unavailable = err;
+      }
+
+      if (result === null) {
+        // The setup cliff: no embeddings means the index never existed, but the
+        // local history is still searchable — answer with it and say so.
+        const fallback = await wa.searchMessages(query, chat_id, limit, {
+          sinceMs,
+          untilMs,
+          from: resolvedFrom,
+        });
+        const messages = await withSenderIdentity(wa, fallback.data);
+        const note = `Semantic recall is unavailable (${unavailable!.message}) — these are keyword results over the local history.${unavailable!.fix ? ` ${unavailable!.fix}` : ""}`;
+        return ok(
+          renderMessages(title, messages, new Map(), [note, freshnessNote(fresh)].filter(Boolean).join(" ")),
+          synced(fallback, {
+            query,
+            chat_id: chat_id ?? null,
+            since: since ?? null,
+            until: until ?? null,
+            from: from ?? null,
+            from_resolved: resolvedFrom ?? null,
+            mode: "keyword_fallback",
+            recall_unavailable: {
+              message: unavailable!.message,
+              ...(unavailable!.fix ? { fix: unavailable!.fix } : {}),
+            },
+            count: messages.length,
+            messages,
+            freshness: fresh,
+          })
+        );
+      }
+
+      const identified = await withSenderIdentity(
+        wa,
+        result.data.hits.map((hit) => hit.message)
+      );
+      const hits = result.data.hits.map((hit, i) => ({ ...hit, message: identified[i]! }));
+      const answer: RecallAnswer = { hits, index: result.data.index };
+      const note = freshnessNote(fresh);
       return ok(
-        renderRecall(`Recall results for "${query}"${scope ? ` (${scope})` : ""}`, result.data),
+        `${renderRecall(title, answer)}${note ? `\n${note}` : ""}`,
         synced(result, {
           query,
           chat_id: chat_id ?? null,
           since: since ?? null,
           until: until ?? null,
           from: from ?? null,
-          count: result.data.hits.length,
+          from_resolved: resolvedFrom ?? null,
+          count: hits.length,
           index: result.data.index,
-          hits: result.data.hits,
+          hits,
+          freshness: fresh,
         })
       );
     },
