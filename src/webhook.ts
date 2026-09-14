@@ -21,6 +21,10 @@ export const WEBHOOK_EVENT = "message_received" as const;
 export const WEBHOOK_TIMEOUT_MS = 10_000;
 export const WEBHOOK_TEXT_MAX = 2000;
 export const WEBHOOK_RETRY_DELAYS_MS = [200, 500] as const;
+/** Parallel POSTs a busy chat may hold; the rest queue behind them in order. */
+export const WEBHOOK_MAX_INFLIGHT = 4;
+/** A dead consumer must not grow memory: past this many queued events, new ones drop. */
+export const WEBHOOK_MAX_BACKLOG = 256;
 export const WEBHOOK_ON_FIX = "run `wazap config webhook on`";
 export const WEBHOOK_URL_FIX = "set WAZAP_WEBHOOK_URL to an https:// URL, or http:// on 127.0.0.1";
 export const WEBHOOK_TEST_FIX = "run `wazap webhook test`";
@@ -114,6 +118,8 @@ export interface WebhookSinkOptions {
   post?: WebhookFetch;
   retryDelays?: readonly number[];
   account?: WebhookAccount;
+  maxInflight?: number;
+  maxBacklog?: number;
 }
 
 /** The one place the webhook environment becomes typed. */
@@ -338,6 +344,10 @@ export class WebhookSink {
   private readonly post: WebhookFetch;
   private readonly retryDelays: readonly number[];
   private readonly account?: WebhookAccount;
+  private readonly maxInflight: number;
+  private readonly maxBacklog: number;
+  private inFlight = 0;
+  private readonly backlog: Array<() => void> = [];
 
   constructor(
     private readonly env: NodeJS.ProcessEnv = process.env,
@@ -346,6 +356,8 @@ export class WebhookSink {
     this.post = opts.post ?? fetch;
     this.retryDelays = opts.retryDelays ?? WEBHOOK_RETRY_DELAYS_MS;
     this.account = opts.account;
+    this.maxInflight = opts.maxInflight ?? WEBHOOK_MAX_INFLIGHT;
+    this.maxBacklog = opts.maxBacklog ?? WEBHOOK_MAX_BACKLOG;
   }
 
   settings(): WebhookSettings {
@@ -366,6 +378,19 @@ export class WebhookSink {
    * throws.
    */
   async notify(payload: WebhookPayload): Promise<boolean> {
+    // A busy chat used to open one POST per message, unbounded. Slots beyond
+    // maxInflight wait in FIFO order; a full backlog drops the event rather
+    // than letting a dead consumer grow memory inside a live process.
+    while (this.inFlight >= this.maxInflight) {
+      if (this.backlog.length >= this.maxBacklog) {
+        this.lastError = `backlog full (${this.maxBacklog} queued); dropped ${payload.event}`;
+        logError("webhook", this.lastError);
+        return false;
+      }
+      // A woken waiter re-checks: a fresh notify may have taken the freed slot.
+      await new Promise<void>((resolve) => this.backlog.push(resolve));
+    }
+    this.inFlight++;
     try {
       const settings = this.settings();
       if (settings.kind !== "ready") return false;
@@ -377,6 +402,9 @@ export class WebhookSink {
       this.lastError = redact(err instanceof Error ? err.message : String(err), secret);
       logError("webhook", this.lastError);
       return false;
+    } finally {
+      this.inFlight--;
+      this.backlog.shift()?.();
     }
   }
 

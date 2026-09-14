@@ -15,6 +15,11 @@ import { log, logError } from "./logger.js";
 import type { ConnectionStatus } from "./wa-types.js";
 
 const UNHEALTHY_AFTER_MS = 2 * 60 * 1000;
+/** A session nobody has touched in an hour is abandoned, not kept. */
+const MCP_SESSION_TTL_MS = 60 * 60 * 1000;
+/** A client that never closes can still pile up sessions; past this, the idlest goes. */
+const MCP_SESSION_MAX = 64;
+const MCP_SESSION_SWEEP_MS = 5 * 60 * 1000;
 
 function isAuthorized(header: string | undefined, expected: string): boolean {
   const prefix = "Bearer ";
@@ -95,6 +100,10 @@ export interface Endpoint {
   oauth?: WazapOAuthProvider;
   /** Aborting it closes the listener and every session on it. */
   signal?: AbortSignal;
+  /** Test seams for the session bounds below; production takes the constants. */
+  sessionTtlMs?: number;
+  sessionMax?: number;
+  sessionSweepMs?: number;
 }
 
 const TAKEN_PROBE_MS = 500;
@@ -263,11 +272,29 @@ export async function startHttpEndpoint(hub: AccountSource, config: Config, endp
   // GET SSE stream and DELETE that full MCP clients open; a stateless server
   // 404s the GET and makes such clients hang until they time out.
   const transports = new Map<string, StreamableHTTPServerTransport>();
+  const lastSeen = new Map<string, number>();
+  const sessionTtlMs = endpoint.sessionTtlMs ?? MCP_SESSION_TTL_MS;
+  const sessionMax = endpoint.sessionMax ?? MCP_SESSION_MAX;
+
+  const dropSession = (sid: string): void => {
+    lastSeen.delete(sid);
+    const transport = transports.get(sid);
+    if (transport !== undefined) {
+      void transport.close().catch((err: unknown) => logError("session close", err));
+    }
+  };
+
+  const sweep = setInterval(() => {
+    const cutoff = Date.now() - sessionTtlMs;
+    for (const [sid, at] of lastSeen) if (at < cutoff) dropSession(sid);
+  }, endpoint.sessionSweepMs ?? MCP_SESSION_SWEEP_MS);
+  sweep.unref();
 
   const handleMcp = async (req: Request, res: Response): Promise<void> => {
     try {
       const sessionId = req.headers["mcp-session-id"];
       let transport = typeof sessionId === "string" ? transports.get(sessionId) : undefined;
+      if (transport && typeof sessionId === "string") lastSeen.set(sessionId, Date.now());
 
       if (!transport && req.method === "POST" && isInitializeRequest(req.body)) {
         // Session state is only needed when a client actually posts initialize;
@@ -279,11 +306,28 @@ export async function startHttpEndpoint(hub: AccountSource, config: Config, endp
           sessionIdGenerator: () => randomUUID(),
           onsessioninitialized: (sid: string) => {
             transports.set(sid, newTransport);
+            lastSeen.set(sid, Date.now());
+            // Over the cap, the idlest session dies — a live client hit by that
+            // gets a 400 and re-initializes; an abandoned one is what we wanted gone.
+            if (transports.size > sessionMax) {
+              let oldest: string | undefined;
+              let oldestAt = Infinity;
+              for (const [other, at] of lastSeen) {
+                if (at < oldestAt) {
+                  oldest = other;
+                  oldestAt = at;
+                }
+              }
+              if (oldest !== undefined && oldest !== sid) dropSession(oldest);
+            }
           },
         });
         newTransport.onclose = () => {
           const sid = newTransport.sessionId;
-          if (sid) transports.delete(sid);
+          if (sid) {
+            transports.delete(sid);
+            lastSeen.delete(sid);
+          }
         };
         // The session's tools are fixed at init by the token it authenticated with.
         const server = buildMcpServer(hub, config, (req as AuthedRequest).mcpWrite === true);
@@ -333,8 +377,10 @@ export async function startHttpEndpoint(hub: AccountSource, config: Config, endp
 
   const server = createServer(app);
   const onAbort = (): void => {
+    clearInterval(sweep);
     for (const transport of transports.values())
       void transport.close().catch((err: unknown) => logError("session close", err));
+    lastSeen.clear();
     server.closeAllConnections();
     server.close();
   };

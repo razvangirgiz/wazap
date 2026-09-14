@@ -1471,3 +1471,42 @@ test("config rejects a webhook secret on the command line", async () => {
   assert.match(stderr, /never a command-line argument/);
   assert.ok(!stderr.includes(SECRET) || stderr.includes("never a command-line argument"));
 });
+
+test("a busy chat posts at most maxInflight at once, the rest wait in order", async () => {
+  let inFlight = 0;
+  let peak = 0;
+  const order = [];
+  const post = (url, init) =>
+    new Promise((resolve) => {
+      inFlight++;
+      peak = Math.max(peak, inFlight);
+      const id = JSON.parse(init.body).message_id;
+      setTimeout(() => {
+        inFlight--;
+        order.push(id);
+        resolve(new Response(null, { status: 204 }));
+      }, 5);
+    });
+  const sink = new WebhookSink(readyEnv("http://127.0.0.1:9/hook"), { post, retryDelays: [], maxInflight: 4 });
+  const results = await Promise.all(
+    Array.from({ length: 30 }, (_, i) => sink.notify(samplePayload({ message_id: `m${i}` })))
+  );
+  assert.ok(peak <= 4, `peak ${peak} never exceeds the inflight cap`);
+  assert.equal(results.filter(Boolean).length, 30, "every queued event was still delivered");
+  assert.equal(order.length, 30);
+});
+
+test("a full backlog drops new events instead of growing memory for a dead consumer", async () => {
+  const post = () => new Promise(() => {}); // the consumer never answers
+  const sink = new WebhookSink(readyEnv("http://127.0.0.1:9/hook"), {
+    post,
+    retryDelays: [],
+    maxInflight: 2,
+    maxBacklog: 3,
+  });
+  const pending = Array.from({ length: 9 }, (_, i) => sink.notify(samplePayload({ message_id: `m${i}` })));
+  // 2 in flight + 3 queued are accepted; the 4 beyond the backlog refuse at once.
+  const late = await Promise.all(pending.slice(5));
+  assert.deepEqual(late, [false, false, false, false]);
+  assert.match(sink.lastError, /backlog full/);
+});

@@ -390,6 +390,45 @@ test("an already-aborted signal does not leave a listener", async () => {
   }
 });
 
+test("an abandoned MCP session is reaped, and over the cap the idlest is", async () => {
+  const port = await closedPort();
+  const stop = new AbortController();
+  await startHttpEndpoint(silentHub(), offlineConfig("wazap-sessions-"), {
+    host: "127.0.0.1",
+    port,
+    credentials: [],
+    openRead: true,
+    signal: stop.signal,
+    sessionTtlMs: 60,
+    sessionSweepMs: 20,
+    sessionMax: 2,
+  });
+  const open = async () => (await mcpPost(port)).headers.get("mcp-session-id");
+  const ping = (sid) =>
+    fetch(`http://127.0.0.1:${port}/mcp`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        accept: "application/json, text/event-stream",
+        "mcp-session-id": sid,
+      },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 9, method: "ping", params: {} }),
+      signal: AbortSignal.timeout(5_000),
+    }).then((res) => res.status);
+  try {
+    const s1 = await open();
+    await open();
+    const s3 = await open(); // the third over a cap of 2 evicts s1, the idlest
+    assert.equal(await ping(s3), 200, "the newest session lives");
+    await waitFor(async () => (await ping(s1)) === 400, 5_000, "the evicted session to answer 400");
+    // TTL: left untouched past 60ms, the sweep closes s3 too.
+    await new Promise((r) => setTimeout(r, 250));
+    assert.equal(await ping(s3), 400, "an idle session is reaped by the sweep");
+  } finally {
+    stop.abort();
+  }
+});
+
 test("WAZAP_NO_SHARE serves stdio with no sidecar at all", async () => {
   await withDaemon({ WAZAP_NO_SHARE: "1" }, async ({ child, daemonFile, lockFile }) => {
     await waitFor(() => existsSync(lockFile), STARTUP_MS, "server.lock to appear");
