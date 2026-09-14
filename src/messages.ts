@@ -226,9 +226,11 @@ function unwrapEnvelopes(content: WAMessageContent | null | undefined): WAMessag
   return current;
 }
 
-function ruleFor(content: WAMessageContent | undefined): { rule: Rule; content: WAMessageContent } {
+function ruleFor(
+  content: WAMessageContent | undefined,
+  key = content ? getContentType(content) : undefined,
+): { rule: Rule; content: WAMessageContent } {
   if (!content) return { rule: UNKNOWN, content: {} };
-  const key = getContentType(content);
   const rule = key ? RULES[key] : undefined;
   if (rule) return { rule, content };
   // Only when the control keys are all there is. A payload wazap does not model
@@ -280,9 +282,8 @@ function settle(outcome: CallOutcome | Unanswered, direction: CallDirection): Ca
  * reports undefined and a call arriving next to messageContextInfo would render
  * as "[system message]". Hence this runs before the table, not inside it.
  */
-export function callInfo(raw: WAMessage): CallInfo | undefined {
+function callFrom(raw: WAMessage, content: WAMessageContent | undefined): CallInfo | undefined {
   const direction: CallDirection = raw.key?.fromMe ? "outgoing" : "incoming";
-  const content = unwrapEnvelopes(raw.message);
   const logged = content?.callLogMesssage;
   if (logged) {
     const outcome = settle(CALL_OUTCOMES[logged.callOutcome ?? -1] ?? "no answer", direction);
@@ -302,25 +303,10 @@ export function callInfo(raw: WAMessage): CallInfo | undefined {
   return undefined;
 }
 
-/**
- * Baileys' own stand-in for a group call offer. It says a call happened and
- * nothing else, so anything that names an outcome outranks it.
- */
-export function isCallPlaceholder(raw: WAMessage): boolean {
-  const content = unwrapEnvelopes(raw.message);
-  return content?.call != null && content.callLogMesssage == null;
-}
-
 /** A duration WhatsApp attached to a recording. Zero means it said nothing. */
 function audioSeconds(content: WAMessageContent): number | undefined {
   const seconds = protoNumber(content.audioMessage?.seconds);
   return seconds === undefined || seconds <= 0 ? undefined : seconds;
-}
-
-/** How long a voice note or audio message runs, when WhatsApp said so. */
-export function voiceSeconds(raw: WAMessage): number | undefined {
-  const content = unwrapEnvelopes(raw.message);
-  return content === undefined ? undefined : audioSeconds(content);
 }
 
 /** 0:06, 3:05, 1:02:03 — a recording reads as a clock, unlike a call's "6 min". */
@@ -357,21 +343,133 @@ function resolve<T>(value: T | ((m: WAMessageContent) => T), content: WAMessageC
 }
 
 /**
+ * Everything the helpers below read out of one message, parsed once. A message
+ * goes through several of them on every path — ingest checks isControlMessage
+ * and reactionOf, a render reads type, text, media and context — and each one
+ * used to unwrap the envelope and classify the payload on its own. The WeakMap
+ * keys on the message object, so a later pass over the same store row is free.
+ * `raw.message` is replaced (not mutated) when an edit lands, so the entry
+ * carries it and recomputes when it no longer matches.
+ */
+interface Analysis {
+  /** unwrapEnvelopes(raw.message). */
+  content: WAMessageContent | undefined;
+  /** getContentType(content). */
+  key: keyof WAMessageContent | undefined;
+  /** The RULES entry the content matched, UNKNOWN when none did. */
+  rule: Rule;
+  /** The view-once body when the message is one, else the content itself. */
+  inner: WAMessageContent | undefined;
+  stub: MessageType | undefined;
+  call: CallInfo | undefined;
+  context: proto.IContextInfo | undefined;
+  media: { mime: string; size?: number; filename?: string } | undefined;
+  type: MessageType;
+  /** Filled on the first messageText/viewText; not part of the parse. */
+  text?: string;
+}
+
+const ANALYSES = new WeakMap<
+  WAMessage,
+  { message: WAMessage["message"]; stubType: WAMessage["messageStubType"]; a: Analysis }
+>();
+
+function analyze(raw: WAMessage): Analysis {
+  const hit = ANALYSES.get(raw);
+  if (hit && hit.message === raw.message && hit.stubType === raw.messageStubType) return hit.a;
+
+  const content = unwrapEnvelopes(raw.message);
+  const key = content ? getContentType(content) : undefined;
+  const { rule } = ruleFor(content, key);
+  const stub = stubKind(raw);
+  const call = callFrom(raw, content);
+  const node = key === undefined ? undefined : (content?.[key] as { contextInfo?: proto.IContextInfo | null } | null);
+  const inner = content ? (viewOnceInner(content) ?? content) : undefined;
+  let media: Analysis["media"];
+  if (inner) {
+    for (const mediaKey of MEDIA_KEYS) {
+      const m = inner[mediaKey] as MediaNode | null | undefined;
+      if (!m) continue;
+      media = {
+        mime: m.mimetype ?? "application/octet-stream",
+        size: protoNumber(m.fileLength),
+        filename: m.fileName ?? undefined,
+      };
+      break;
+    }
+  }
+
+  const a: Analysis = {
+    content,
+    key,
+    rule,
+    inner,
+    stub,
+    call,
+    context: node?.contextInfo ?? undefined,
+    media,
+    type: "unknown",
+  };
+  a.type =
+    call !== undefined
+      ? "call"
+      : stub === "deleted"
+        ? "deleted"
+        : rule === UNKNOWN && stub !== undefined
+          ? stub
+          : resolve(rule.type, content ?? {});
+  ANALYSES.set(raw, { message: raw.message, stubType: raw.messageStubType, a });
+  return a;
+}
+
+/** The same walk isControlMessage always did, over the parsed analysis. */
+function controlFrom(a: Analysis): boolean {
+  if (a.stub !== undefined) return false;
+  const content = a.content;
+  if (!content) return true;
+  if (a.key === "protocolMessage") return !REPORTABLE_PROTOCOL_TYPES.has(content.protocolMessage?.type ?? -1);
+  if (a.key !== undefined) return false;
+  // getContentType ignores the control keys, so reaching here means the payload
+  // is either nothing at all or nothing but control keys.
+  const present = Object.keys(content).filter((name) => content[name as keyof WAMessageContent] != null);
+  return present.length === 0 || present.every((name) => CONTROL_KEYS.includes(name as keyof WAMessageContent));
+}
+
+/** The same walk messageText always did, over the parsed analysis. */
+function textFrom(a: Analysis): string {
+  // The placeholder only says a group call was offered, so naming an outcome
+  // ("missed") would claim something the payload never carried.
+  if (a.call) {
+    return a.content?.call != null && a.content.callLogMesssage == null ? "[group call]" : callText(a.call);
+  }
+  const node = a.content ?? {};
+  if (a.rule === UNKNOWN) {
+    if (a.stub === "deleted") return DELETED_TEXT;
+    if (a.stub === "system") return SYSTEM_TEXT;
+  }
+
+  const text = a.rule.text?.(node)?.trim();
+  if (text) return text;
+  const tag = resolve(a.rule.tag, node);
+  const caption = a.rule.caption?.(node)?.trim();
+  if (caption) return `${tag} ${caption}`;
+  const detail = a.rule.detail?.(node)?.trim();
+  return detail ? `${tag} ${detail}` : tag;
+}
+
+/** A transcript belongs to a recording and to nothing else. */
+function spokenFrom(a: Analysis, transcript: TranscriptRecord | undefined): string | undefined {
+  if (!transcript?.text) return undefined;
+  return a.type === "voice" || a.type === "audio" ? transcript.text : undefined;
+}
+
+/**
  * True for the machinery WhatsApp runs between devices: history-sync notices,
  * app-state and peer-data responses, sender-key distribution, bare context
  * info. They carry nothing a person did, so they are dropped rather than shown.
  */
 export function isControlMessage(raw: WAMessage): boolean {
-  if (isStubEvent(raw)) return false;
-  const content = unwrapEnvelopes(raw.message);
-  if (!content) return true;
-  const key = getContentType(content);
-  if (key === "protocolMessage") return !REPORTABLE_PROTOCOL_TYPES.has(content.protocolMessage?.type ?? -1);
-  if (key !== undefined) return false;
-  // getContentType ignores the control keys, so reaching here means the payload
-  // is either nothing at all or nothing but control keys.
-  const present = Object.keys(content).filter((name) => content[name as keyof WAMessageContent] != null);
-  return present.length === 0 || present.every((name) => CONTROL_KEYS.includes(name as keyof WAMessageContent));
+  return controlFrom(analyze(raw));
 }
 
 /**
@@ -381,7 +479,7 @@ export function isControlMessage(raw: WAMessage): boolean {
  * "no content, nothing to store" guard throws them away.
  */
 export function isStubEvent(raw: WAMessage): boolean {
-  return stubKind(raw) !== undefined;
+  return analyze(raw).stub !== undefined;
 }
 
 /**
@@ -389,48 +487,38 @@ export function isStubEvent(raw: WAMessage): boolean {
  * or a system line. The webhook posts these in both directions.
  */
 export function isUserMessage(raw: WAMessage): boolean {
-  if (isControlMessage(raw) || isStubEvent(raw)) return false;
-  return messageType(raw) !== "system";
+  const a = analyze(raw);
+  if (controlFrom(a) || a.stub !== undefined) return false;
+  return a.type !== "system";
 }
 
 export function messageType(raw: WAMessage): MessageType {
-  if (callInfo(raw)) return "call";
-  const stub = stubKind(raw);
-  if (stub === "deleted") return "deleted";
-  const content = unwrapEnvelopes(raw.message);
-  const { rule, content: node } = ruleFor(content);
-  if (rule === UNKNOWN && stub) return stub;
-  return resolve(rule.type, node);
+  return analyze(raw).type;
 }
 
 /** Never empty: media and system messages get a placeholder like "[sticker]". */
 export function messageText(raw: WAMessage): string {
-  const call = callInfo(raw);
-  // The placeholder only says a group call was offered, so naming an outcome
-  // ("missed") would claim something the payload never carried.
-  if (call) return isCallPlaceholder(raw) ? "[group call]" : callText(call);
-  const content = unwrapEnvelopes(raw.message);
-  const { rule, content: node } = ruleFor(content);
-  if (rule === UNKNOWN) {
-    const stub = stubKind(raw);
-    if (stub === "deleted") return DELETED_TEXT;
-    if (stub === "system") return SYSTEM_TEXT;
-  }
-
-  const text = rule.text?.(node)?.trim();
-  if (text) return text;
-  const tag = resolve(rule.tag, node);
-  const caption = rule.caption?.(node)?.trim();
-  if (caption) return `${tag} ${caption}`;
-  const detail = rule.detail?.(node)?.trim();
-  return detail ? `${tag} ${detail}` : tag;
+  const a = analyze(raw);
+  return (a.text ??= textFrom(a));
 }
 
-/** A transcript belongs to a recording and to nothing else. */
-function spokenTranscript(raw: WAMessage, transcript: TranscriptRecord | undefined): string | undefined {
-  if (!transcript?.text) return undefined;
-  const type = messageType(raw);
-  return type === "voice" || type === "audio" ? transcript.text : undefined;
+export function callInfo(raw: WAMessage): CallInfo | undefined {
+  return analyze(raw).call;
+}
+
+/**
+ * Baileys' own stand-in for a group call offer. It says a call happened and
+ * nothing else, so anything that names an outcome outranks it.
+ */
+export function isCallPlaceholder(raw: WAMessage): boolean {
+  const content = analyze(raw).content;
+  return content?.call != null && content.callLogMesssage == null;
+}
+
+/** How long a voice note or audio message runs, when WhatsApp said so. */
+export function voiceSeconds(raw: WAMessage): number | undefined {
+  const content = analyze(raw).content;
+  return content === undefined ? undefined : audioSeconds(content);
 }
 
 /**
@@ -440,23 +528,23 @@ function spokenTranscript(raw: WAMessage, transcript: TranscriptRecord | undefin
  * search by; a voice note becomes indexable once its transcript exists.
  */
 export function searchableText(raw: WAMessage, transcript?: TranscriptRecord): string | null {
-  const spoken = spokenTranscript(raw, transcript);
-  const content = unwrapEnvelopes(raw.message);
-  const { rule, content: node } = ruleFor(content);
-  const type = resolve(rule.type, node);
+  const a = analyze(raw);
+  const spoken = spokenFrom(a, transcript);
+  const node = a.content ?? {};
+  const type = resolve(a.rule.type, node);
   if (type === "reaction" || type === "deleted" || type === "system") return null;
   const own =
-    rule.text?.(node)?.trim() || rule.caption?.(node)?.trim() || rule.detail?.(node)?.trim() || "";
+    a.rule.text?.(node)?.trim() || a.rule.caption?.(node)?.trim() || a.rule.detail?.(node)?.trim() || "";
   // Under five letters or digits there is no meaning to embed — a "🥰🥰", a
   // "Da" or a "..." only adds noise that outranks real hits on short queries.
   if ((own.match(/[\p{L}\p{N}]/gu)?.length ?? 0) < 5 && spoken === undefined) return null;
-  return viewText(raw, transcript);
+  const text = (a.text ??= textFrom(a));
+  return spoken === undefined ? text : `${text} "${spoken}"`;
 }
 
 /** The message a REVOKE protocol message takes back, when there is one. */
 export function revokedTargetKey(raw: WAMessage): WAMessageKey | undefined {
-  const content = unwrapEnvelopes(raw.message);
-  const proto_ = content?.protocolMessage;
+  const proto_ = analyze(raw).content?.protocolMessage;
   if (proto_?.type !== proto.Message.ProtocolMessage.Type.REVOKE) return undefined;
   const key = proto_.key;
   return key?.id ? (key as WAMessageKey) : undefined;
@@ -467,33 +555,21 @@ export function revokedTargetKey(raw: WAMessage): WAMessageKey | undefined {
  * placeholder, so a transcript is findable by the words it puts on the screen.
  */
 export function viewText(raw: WAMessage, transcript?: TranscriptRecord): string {
-  const text = messageText(raw);
-  const spoken = spokenTranscript(raw, transcript);
+  const a = analyze(raw);
+  const text = (a.text ??= textFrom(a));
+  const spoken = spokenFrom(a, transcript);
   return spoken === undefined ? text : `${text} "${spoken}"`;
 }
 
 /** The reaction a message is, if it is one: what was reacted with, and to which message key. An empty text withdraws. */
 export function reactionOf(raw: WAMessage): { text: string; targetKey: WAMessageKey } | undefined {
-  const content = unwrapEnvelopes(raw.message);
-  const reaction = content?.reactionMessage;
+  const reaction = analyze(raw).content?.reactionMessage;
   if (!reaction?.key?.remoteJid) return undefined;
   return { text: reaction.text ?? "", targetKey: reaction.key as WAMessageKey };
 }
 
 export function mediaInfo(raw: WAMessage): { mime: string; size?: number; filename?: string } | undefined {
-  const outer = unwrapEnvelopes(raw.message);
-  const content = outer ? (viewOnceInner(outer) ?? outer) : undefined;
-  if (!content) return undefined;
-  for (const key of MEDIA_KEYS) {
-    const node = content[key] as MediaNode | null | undefined;
-    if (!node) continue;
-    return {
-      mime: node.mimetype ?? "application/octet-stream",
-      size: protoNumber(node.fileLength),
-      filename: node.fileName ?? undefined,
-    };
-  }
-  return undefined;
+  return analyze(raw).media;
 }
 
 /**
@@ -501,8 +577,7 @@ export function mediaInfo(raw: WAMessage): { mime: string; size?: number; filena
  * of a few KB, there before any download. Enough to tell a receipt from a baby.
  */
 export function thumbnailOf(raw: WAMessage): { mime: string; base64: string } | undefined {
-  const outer = unwrapEnvelopes(raw.message);
-  const content = outer ? (viewOnceInner(outer) ?? outer) : undefined;
+  const content = analyze(raw).inner;
   if (!content) return undefined;
   for (const key of THUMBNAIL_KEYS) {
     const node = content[key] as MediaNode | null | undefined;
@@ -527,12 +602,7 @@ export function quotedSenderJid(raw: WAMessage): string | undefined {
 }
 
 function contextInfo(raw: WAMessage): proto.IContextInfo | undefined {
-  const content = unwrapEnvelopes(raw.message);
-  if (!content) return undefined;
-  const key = getContentType(content);
-  if (!key) return undefined;
-  const node = content[key] as { contextInfo?: proto.IContextInfo | null } | null | undefined;
-  return node?.contextInfo ?? undefined;
+  return analyze(raw).context;
 }
 
 /** "just now", "5m ago", "2h ago", "3d ago" — largest whole unit. */
@@ -591,12 +661,13 @@ export function phoneOf(jid: string): string | undefined {
 }
 
 export function buildMessageView(raw: WAMessage, ctx: MessageViewContext): MessageView {
+  const a = analyze(raw);
   const timestamp = messageTimestampMs(raw);
   const sender = senderJid(raw, ctx);
-  const media = mediaInfo(raw);
-  const context = contextInfo(raw);
+  const context = a.context;
   const quoted = context?.quotedMessage ? quotedView(context, ctx) : undefined;
-  const call = callInfo(raw);
+  const text = (a.text ??= textFrom(a));
+  const spoken = spokenFrom(a, ctx.transcript);
 
   const view: MessageView = {
     message_id: messageIdFor(raw.key, ctx.chatId),
@@ -608,22 +679,21 @@ export function buildMessageView(raw: WAMessage, ctx: MessageViewContext): Messa
       ...(phoneOf(sender) ? { phone: phoneOf(sender) } : {}),
       ...(ctx.noteFor?.(sender) ? { note: ctx.noteFor(sender) } : {}),
     },
-    type: messageType(raw),
-    text: viewText(raw, ctx.transcript),
+    type: a.type,
+    text: spoken === undefined ? text : `${text} "${spoken}"`,
     timestamp: isoWithOffset(timestamp),
     age: formatAge(timestamp, ctx.now),
-    has_media: media !== undefined,
+    has_media: a.media !== undefined,
     forwarded: Boolean(context?.isForwarded) || (protoNumber(context?.forwardingScore) ?? 0) > 0,
     edited: ctx.edited,
   };
-  if (media) view.media = media;
+  if (a.media) view.media = a.media;
   if (quoted) view.quoted = quoted;
-  const spoken = spokenTranscript(raw, ctx.transcript);
   if (spoken !== undefined) view.transcript = spoken;
-  if (call) {
-    view.call = call.participants
-      ? { ...call, participants: call.participants.map((jid) => ctx.canonical(jid)) }
-      : call;
+  if (a.call) {
+    view.call = a.call.participants
+      ? { ...a.call, participants: a.call.participants.map((jid) => ctx.canonical(jid)) }
+      : a.call;
   }
   if (ctx.reactions.length > 0) view.reactions = ctx.reactions;
   return view;
