@@ -20,6 +20,9 @@ import type {
   WhatsAppApi,
 } from "./wa-types.js";
 
+/** Where the shown `name` came from: the user's address book, the sender's own published name, or no name at all. */
+export type NameSource = "contact" | "pushname" | "none";
+
 /**
  * The sender contract of every read tool: `id` is the canonical WhatsApp id —
  * a `<digits>@s.whatsapp.net`, or a `…@lid` only while WhatsApp has never
@@ -29,6 +32,12 @@ import type {
  * contact `name` already is the address-book name, so `pushname` stays null:
  * wazap keeps the sender's own pushname but the service does not surface it.
  *
+ * `is_saved` says whether the sender is in the user's address book, and
+ * `name_source` says which of the two names `name` shows — `contact` for the
+ * saved name, `pushname` for the one the sender's side publishes, `none` when
+ * only a number, an "unknown (lid …NNNN)" placeholder or the user's own name
+ * is there to show. `!is_saved` means treat the name as claimed, not known.
+ *
  * `phone` is null rather than absent — the field must always be there, so an
  * agent can tell "no number exists" apart from "the field was not filled in".
  * MessageSender.phone is `string | undefined`, so the override needs Omit.
@@ -37,6 +46,8 @@ export interface SenderIdentity extends Omit<MessageSender, "phone"> {
   phone: string | null;
   contact_name: string | null;
   pushname: string | null;
+  is_saved: boolean;
+  name_source: NameSource;
 }
 
 export interface IdentifiedMessage extends Omit<MessageView, "sender"> {
@@ -178,13 +189,23 @@ export async function withSenderIdentity(wa: WhatsAppApi, messages: MessageView[
       const contact = phone === undefined ? undefined : await lookup(phone);
       const published =
         realName(m.sender.name) !== "" && !UNKNOWN_LID.test(m.sender.name) ? m.sender.name : null;
+      const contactName = contact?.is_my_contact ? contact.name : null;
+      const pushname = m.from_me || contact?.is_my_contact ? null : published;
       const sender: SenderIdentity = {
         ...m.sender,
         phone: phone ?? null,
-        contact_name: contact?.is_my_contact ? contact.name : null,
-        pushname: m.from_me || contact?.is_my_contact ? null : published,
+        contact_name: contactName,
+        pushname,
+        is_saved: contact?.is_my_contact === true,
+        name_source: contactName !== null ? "contact" : pushname !== null ? "pushname" : "none",
       };
       return { ...m, sender };
     })
   );
+}
+
+/** The same name-source question for a contact row: its own saved name, the name it publishes, or no usable name. */
+export function nameSourceOf(contact: Pick<ContactSummary, "is_my_contact" | "name">): NameSource {
+  if (contact.is_my_contact) return "contact";
+  return realName(contact.name) !== "" && !UNKNOWN_LID.test(contact.name) ? "pushname" : "none";
 }

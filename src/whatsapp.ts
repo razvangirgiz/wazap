@@ -740,7 +740,7 @@ export class WhatsAppService implements WhatsAppApi {
 
       for (const [sid, raw] of this.store.messages) {
         const jid = this.store.chatOf.get(sid);
-        if (!jid || (scope !== undefined && jid !== scope)) continue;
+        if (!jid || isNoiseJid(jid) || (scope !== undefined && jid !== scope)) continue;
         const at = messageTimestampMs(raw);
         if ((opts.sinceMs !== undefined && at < opts.sinceMs) || (opts.untilMs !== undefined && at > opts.untilMs))
           continue;

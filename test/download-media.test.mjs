@@ -53,7 +53,7 @@ function setup() {
     });
     return `false_${chat}_${id}`;
   };
-  return { svc, call, arrive, saveTo: mkdtempSync(join(tmpdir(), "wazap-dl-")) };
+  return { svc, sock, call, arrive, saveTo: mkdtempSync(join(tmpdir(), "wazap-dl-")) };
 }
 
 test("a group photo lands on disk as usable bytes, with its caption and mime", async () => {
@@ -131,6 +131,62 @@ test("a message without media is MEDIA_UNAVAILABLE, not a file of nothing", asyn
   const result = await call("download_media", { message_id: sid, save_to: saveTo });
   assert.equal(result.isError, true);
   assert.equal(result.structuredContent.error, "MEDIA_UNAVAILABLE");
+});
+
+test("a voice note in an unmapped lid chat downloads by its raw id, sender honestly unresolved", async () => {
+  const { svc, call, arrive, saveTo } = setup();
+  const LID = "4226298167515@lid";
+  const ogg = Buffer.from("OggS fake voice");
+  svc.mediaBuffer = async () => ogg;
+  const sid = arrive(LID, {
+    audioMessage: { mimetype: "audio/ogg; codecs=opus", fileLength: ogg.length, seconds: 4, ptt: true },
+  });
+
+  const out = (await call("download_media", { message_id: sid, save_to: saveTo })).structuredContent;
+  assert.equal(out.mime, "audio/ogg; codecs=opus");
+  assert.deepEqual(readFileSync(out.path), ogg, "the attachment came down even with no identity behind it");
+  assert.equal(out.sender.id, LID, "the sender stays the unpaired lid");
+  assert.equal(out.sender.phone, null);
+  assert.equal(out.sender.is_saved, false);
+  assert.equal(out.sender.name_source, "none");
+  assert.match(out.sender.name, /^unknown \(lid …7515\)$/);
+});
+
+test("a message filed under the paired number answers to its raw lid id", async () => {
+  const { svc, sock, call, arrive, saveTo } = setup();
+  const LID = "999888777666555@lid";
+  const OWNER = "40700000007@s.whatsapp.net";
+  sock.fetchStatus = async () => [];
+  sock.profilePictureUrl = async () => null;
+  // The pairing lands first, so the arrival files under the number.
+  sock.ev.emit("lid-mapping.update", { lid: LID, pn: OWNER });
+  const ogg = Buffer.from("OggS mapped");
+  svc.mediaBuffer = async () => ogg;
+  const lidSid = arrive(LID, { audioMessage: { mimetype: "audio/ogg", fileLength: ogg.length } });
+  const stanza = lidSid.split("_").at(-1);
+  assert.equal(svc.store.hasMessage(lidSid), false, "the store keys it by the number");
+  assert.equal(svc.store.hasMessage(`false_${OWNER}_${stanza}`), true);
+
+  const out = (await call("download_media", { message_id: lidSid, save_to: saveTo })).structuredContent;
+  assert.equal(out.mime, "audio/ogg");
+  assert.deepEqual(readFileSync(out.path), ogg);
+  assert.equal(out.sender.id, OWNER, "the sender resolves through the same pairing");
+});
+
+test("get_message answers the id a view reports after the lid pairs with a number", async () => {
+  const { svc, sock, call, arrive } = setup();
+  const LID = "999888777666555@lid";
+  const OWNER = "40700000007@s.whatsapp.net";
+  const sid = arrive(LID, { conversation: "de pe lid" });
+  sock.ev.emit("lid-mapping.update", { lid: LID, pn: OWNER });
+  // The ring moved to the number but the store still keys the lid spelling, so
+  // the id read_messages now reports is not the store key.
+  const reported = `false_${OWNER}_${sid.split("_").at(-1)}`;
+  assert.equal(svc.store.hasMessage(reported), false);
+
+  const out = (await call("get_message", { message_id: reported })).structuredContent;
+  assert.equal(out.text, "de pe lid");
+  assert.equal(out.sender.id, OWNER);
 });
 
 test("the saved file lands in the media dir when save_to is omitted", async () => {

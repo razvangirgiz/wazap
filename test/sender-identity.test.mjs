@@ -98,12 +98,16 @@ test("search_messages resolves a group's senders — number, address-book name, 
   assert.equal(dan.id, DAN, "the lid resolved to the person once the metadata paired it");
   assert.equal(dan.phone, "40700000003");
   assert.equal(dan.name, "Dan");
+  assert.equal(dan.is_saved, true);
+  assert.equal(dan.name_source, "contact");
   assert.equal(dan.contact_name, "Dan", "the saved address-book name");
   assert.equal(dan.pushname, null, "a saved contact's own pushname stays out of the way");
 
   const vlad = byText.get("rulaj și la mine");
   assert.equal(vlad.id, VLAD);
   assert.equal(vlad.phone, "40700000004");
+  assert.equal(vlad.is_saved, false, "not in the address book — the name is his claim");
+  assert.equal(vlad.name_source, "pushname");
   assert.equal(vlad.contact_name, null, "not in the address book");
   assert.equal(vlad.pushname, "Vlăduț", "the name he publishes is what shows");
 
@@ -111,6 +115,8 @@ test("search_messages resolves a group's senders — number, address-book name, 
   assert.equal(nobody.id, LID_NOBODY, "WhatsApp never paired this lid — the id stays honest about it");
   assert.equal(nobody.phone, null);
   assert.equal(nobody.name, "unknown (lid …7515)", "reads as unknown, not as digits posing as a number");
+  assert.equal(nobody.is_saved, false);
+  assert.equal(nobody.name_source, "none");
   assert.equal(nobody.contact_name, null);
   assert.equal(nobody.pushname, null);
 
@@ -193,4 +199,46 @@ test("an ambiguous `from` names its candidates, an unknown one says so", async (
   const unknown = await call("search_messages", { query: "salut", from: "Nimeni" });
   assert.equal(unknown.isError, true);
   assert.equal(unknown.structuredContent.error, "CONTACT_NOT_FOUND");
+});
+
+test("a sender with no name at all shows the number, source none", async () => {
+  const { call, arrive } = setup();
+  const STRANGER = "40700000009@s.whatsapp.net";
+  arrive(STRANGER, "cine e asta");
+  const result = await call("search_messages", { query: "cine e asta" });
+  const sender = result.structuredContent.messages[0].sender;
+  assert.equal(sender.name, "40700000009", "the digits are a number, not a name");
+  assert.equal(sender.phone, "40700000009");
+  assert.equal(sender.is_saved, false);
+  assert.equal(sender.name_source, "none");
+  assert.equal(sender.contact_name, null);
+  assert.equal(sender.pushname, null);
+});
+
+test("the user's own messages carry the same triplet, honestly unnamed", async () => {
+  const { call, arrive } = setup();
+  arrive(ANA, "salut", { fromMe: true });
+  const result = await call("search_messages", { query: "salut" });
+  const sender = result.structuredContent.messages[0].sender;
+  assert.equal(sender.name, "Răzvan", "the account's own name");
+  assert.equal(sender.is_saved, false, "the user is not a saved contact of themselves");
+  assert.equal(sender.name_source, "none", "an account name is neither contact nor pushname");
+});
+
+test("get_contact reports name_source alongside is_my_contact", async () => {
+  const { sock, call } = setup();
+  sock.fetchStatus = async () => [];
+  sock.profilePictureUrl = async () => null;
+  sock.ev.emit("contacts.upsert", [
+    { id: ANA, name: "Ana" },
+    { id: DAN, notify: "danu" },
+  ]);
+
+  const saved = (await call("get_contact", { contact_id: ANA })).structuredContent;
+  assert.equal(saved.is_my_contact, true);
+  assert.equal(saved.name_source, "contact");
+
+  const unsaved = (await call("get_contact", { contact_id: DAN })).structuredContent;
+  assert.equal(unsaved.is_my_contact, false);
+  assert.equal(unsaved.name_source, "pushname", "a notify name is what the person publishes");
 });

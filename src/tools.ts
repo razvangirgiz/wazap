@@ -13,9 +13,11 @@ import { renderDraft, type DraftView } from "./drafts.js";
 import { asWazapError, ERROR_GUIDE, WazapError } from "./errors.js";
 import { freshnessNote, readFreshness } from "./freshness.js";
 import { mediaCaptionOf } from "./media-details.js";
+import { getMessageView, resolveMessageId } from "./message-ref.js";
 import { clockLabel } from "./messages.js";
 import { RateLimiter } from "./ratelimit.js";
 import {
+  nameSourceOf,
   resolveSenderFilter,
   withSenderIdentity,
   type IdentifiedMessage,
@@ -604,11 +606,14 @@ the candidates it found.
 
 Every message's \`sender\` carries \`id\` (the canonical jid — a \`…@lid\` only
 while WhatsApp has never revealed the paired number), \`phone\` (the number, or
-null for an unresolved lid), \`contact_name\` (the name saved in the user's
-address book, or null) and \`pushname\` (the name the sender publishes, when
-that is the name \`name\` shows; null for saved contacts and unnamed senders).
-A sender wazap knows nothing about reads "unknown (lid …1234)" — never bare
-lid digits, which look like a phone number and are not one.
+null for an unresolved lid), \`is_saved\` (the sender is in the user's address
+book — when false, treat the shown name as claimed, not known),
+\`contact_name\` (the name saved there, or null), \`pushname\` (the name the
+sender publishes, when that is the name \`name\` shows; null for saved
+contacts and unnamed senders) and \`name_source\` ("contact", "pushname" or
+"none" — which of those \`name\` came from). A sender wazap knows nothing
+about reads "unknown (lid …1234)" — never bare lid digits, which look like a
+phone number and are not one.
 
 \`freshness\` says whether the history this searched may be partial (sync still
 running) or stale (nothing inbound for 24h while connected); on a scoped
@@ -805,15 +810,21 @@ Each hit's \`sender\` carries the same identity fields as search_messages, and
 replies to, its reactions, and its media metadata. Use it after search_messages
 or read_messages when you need the context around a single message.
 
+The id also resolves in its raw form: \`false_<lid>@lid_<stanza>\` works even
+when the chat's number was never learned, and an id that names the same
+message under the lid or the paired number finds it either way.
+
 The \`sender\` carries the same identity fields as search_messages: \`id\` (the
 canonical jid — a \`…@lid\` only while WhatsApp has never revealed the paired
-number), \`phone\` (the number, or null for an unresolved lid), \`contact_name\`
-(the name saved in the user's address book, or null) and \`pushname\` (the name
-the sender publishes, when that is the name \`name\` shows).`,
+number), \`phone\` (the number, or null for an unresolved lid), \`is_saved\`
+(whether the sender is in the user's address book), \`contact_name\` (the name
+saved there, or null), \`pushname\` (the name the sender publishes, when that
+is the name \`name\` shows) and \`name_source\` ("contact", "pushname" or
+"none" — which of those \`name\` came from).`,
     schema: { message_id: messageId },
     write: false,
     handler: async ({ message_id }, { wa }) => {
-      const message = await wa.getMessage(message_id);
+      const message = await getMessageView(wa, message_id);
       const [identified] = await withSenderIdentity(wa, [message]);
       const view = identified ?? message;
       return ok(renderMessages("Message", [view]), view as unknown as Record<string, unknown>);
@@ -865,7 +876,10 @@ the phone has no saved contacts for these people.`,
     name: "get_contact",
     title: "Get WhatsApp contact details",
     description: `Full details for one contact: name, number, about text, profile picture URL,
-whether they are a saved contact, a business, or blocked.`,
+whether they are a saved contact, a business, or blocked. \`name_source\` says
+where the shown name comes from — "contact" when it is the saved address-book
+name (is_my_contact), "pushname" when it is a name the person publishes, or
+"none" when there is no usable name.`,
     schema: {
       contact_id: chatId.describe("Contact id from search_contacts / list_chats, or a phone number"),
     },
@@ -879,11 +893,11 @@ whether they are a saved contact, a business, or blocked.`,
         c.note ? `- **note**: ${c.note}` : null,
         c.about ? `- **about**: ${c.about}` : null,
         c.profile_pic_url ? `- **profile picture**: ${c.profile_pic_url}` : null,
-        `- **saved**: ${c.is_my_contact} · **business**: ${c.is_business} · **blocked**: ${c.is_blocked}`,
+        `- **saved**: ${c.is_my_contact} · **business**: ${c.is_business} · **blocked**: ${c.is_blocked} · **name source**: ${nameSourceOf(c)}`,
       ]
         .filter((line): line is string => line !== null)
         .join("\n");
-      return ok(text, c as unknown as Record<string, unknown>);
+      return ok(text, { ...c, name_source: nameSourceOf(c) } as unknown as Record<string, unknown>);
     },
   }),
 
@@ -930,8 +944,15 @@ The structured result carries: \`path\` (the saved file), \`mime\`, \`size\`
 (bytes), \`filename\` (the name it was saved under — a timestamped name wazap
 made, not the sender's), \`original_filename\` (the name the sender's file had,
 or null when the envelope carried none), \`caption\` (the text the sender wrote
-under the media, or null — audio and voice notes cannot carry one) and
-\`message_id\`.
+under the media, or null — audio and voice notes cannot carry one),
+\`message_id\` and \`sender\` (the same identity fields as search_messages —
+is_saved, contact_name, pushname, name_source — or null when even the message
+can no longer be read back).
+
+The id resolves in its raw form too: \`false_<lid>@lid_<stanza>\` works whether
+or not the chat's number was ever learned — when it was, the lid spelling finds
+the same message filed under the paired number. An unresolved sender never
+blocks the file.
 
 Fails with MEDIA_UNAVAILABLE when WhatsApp has expired the file.`,
     schema: {
@@ -940,9 +961,11 @@ Fails with MEDIA_UNAVAILABLE when WhatsApp has expired the file.`,
     },
     write: false,
     handler: async ({ message_id, save_to }, { wa }) => {
-      const media = await wa.downloadMedia(message_id, save_to);
-      // The envelope's caption and filename live on the message, not the file.
-      const view = await wa.getMessage(message_id).catch(() => undefined);
+      const resolved = await resolveMessageId(wa, message_id);
+      const media = await wa.downloadMedia(resolved, save_to);
+      // The envelope's caption, filename and sender live on the message, not the file.
+      const view = await getMessageView(wa, resolved).catch(() => undefined);
+      const [identified] = view === undefined ? [] : await withSenderIdentity(wa, [view]);
       const { inline_base64, ...structured } = media;
       const extra: ContentBlock[] = inline_base64 ? [{ type: "image", data: inline_base64, mimeType: media.mime }] : [];
       const text =
@@ -955,6 +978,7 @@ Fails with MEDIA_UNAVAILABLE when WhatsApp has expired the file.`,
           message_id,
           caption: view === undefined ? null : mediaCaptionOf(view),
           original_filename: view?.media?.filename ?? null,
+          sender: identified?.sender ?? null,
         },
         extra
       );

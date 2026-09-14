@@ -76,6 +76,28 @@ test("stories are listed by author, newest first, and show nowhere else", async 
   );
 });
 
+test("a story never leaks into search_messages either", async () => {
+  const { sock, call, story } = setup();
+  story(ANA, "la mare 🌊");
+  sock.ev.emit("messages.upsert", {
+    type: "notify",
+    messages: [
+      {
+        key: { remoteJid: DAN, fromMe: false, id: "D1" },
+        message: { conversation: "ne vedem la mare" },
+        messageTimestamp: Math.floor(Date.now() / 1000),
+      },
+    ],
+  });
+
+  const result = await call("search_messages", { query: "mare" });
+  assert.deepEqual(
+    result.structuredContent.messages.map((m) => m.chat_id),
+    [DAN],
+    "the chat message hits, the status pseudo-chat does not"
+  );
+});
+
 test("a story's photo gets a preview and its message id works with the media tools", async () => {
   const { svc, call, story } = setup();
   const jpeg = new Uint8Array([0xff, 0xd8, 0xff, 0xe0, 9, 9, 9, 9]);
