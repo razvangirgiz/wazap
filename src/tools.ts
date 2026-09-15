@@ -43,6 +43,7 @@ import { MESSAGE_TYPES } from "./wa-types.js";
 import type {
   ChatSummary,
   ContactSummary,
+  JoinRequest,
   MessageView,
   OutgoingTarget,
   RecallAnswer,
@@ -248,6 +249,15 @@ link_account when it says no account is linked yet.
   and wait for a yes first; these calls hit WhatsApp immediately.
 - Media: a message with has_media=true → download_media(message_id).
 - Groups: get_group_info before manage_group; most actions need admin rights.
+  get_group_info also says who may edit the info (info_locked), who may add
+  members (member_add_mode), whether joins need approval (join_approval) and
+  how long messages last (disappearing_seconds, 0 when off). As an admin,
+  manage_group list_join_requests shows who is waiting, approve_join_requests /
+  reject_join_requests decide, and set_announcement_only, set_info_locked,
+  set_add_mode, set_join_approval and set_disappearing change the settings.
+  Every change is visible to all members at once: say what will change and
+  wait for an explicit yes. delete_message takes someone else's message only
+  in a group where the linked account is an admin.
 
 ## Message shape
 Every message has non-empty \`text\`: media and system messages carry a
@@ -1111,7 +1121,10 @@ name go, the chat and its history stay. Nothing is sent to the contact.`,
     description: `Details of a group: name, description, owner, creation date, whether only admins
 may post, whether the linked account is an admin, and the participant list (up
 to 500; participant_count is always the true total). The invite link is included
-only when the linked account is an admin.
+only when the linked account is an admin. The settings come too: info_locked
+(only admins edit the name, description and photo), member_add_mode ("admins"
+or "all"), join_approval, disappearing_seconds (0 when off), and community
+({is_community, parent_group_id}) when the group is a community or belongs to one.
 
 Call this before manage_group: most group actions need admin rights.`,
     schema: { group_id: chatId.describe('Group chat id ("<id>@g.us")') },
@@ -1125,6 +1138,9 @@ Call this before manage_group: most group actions need admin rights.`,
         info.owner ? `- **owner**: ${info.owner}` : null,
         info.created_at ? `- **created**: ${info.created_at}` : null,
         `- **admins only can post**: ${info.announcement_only} · **you are admin**: ${info.i_am_admin}`,
+        `- **admins only can edit info**: ${info.info_locked} · **who can add members**: ${info.member_add_mode} · **join approval**: ${info.join_approval} · **disappearing messages**: ${disappearingLabel(info.disappearing_seconds)}`,
+        info.community?.is_community ? "- **community**: this group is a community" : null,
+        info.community?.parent_group_id ? `- **in community**: \`${info.community.parent_group_id}\`` : null,
         info.invite_link ? `- **invite link**: ${info.invite_link}` : null,
         "",
         "## Participants",
@@ -1417,8 +1433,9 @@ preview before calling this.`,
     name: "delete_message",
     title: "Delete a WhatsApp message",
     description: `Retract a message. DESTRUCTIVE and visible to everyone in the chat — confirm
-with the user first. Only works on messages the linked account sent, and only
-within 2 days of sending.`,
+with the user first. Works on messages the linked account sent, within 2 days of
+sending. In a group where the linked account is an admin it also takes someone
+else's message, deleted as an admin; anywhere else that is NOT_OWN_MESSAGE.`,
     schema: {
       message_id: messageId,
       for_everyone: z
@@ -1507,9 +1524,16 @@ privacy settings require an invite link) or failed.`,
     image and wait for a yes first
   - remove_picture — takes the group photo down; ask first the same way
   - get_invite_link / revoke_invite_link
+  - list_join_requests — who is waiting for approval, with when and how they asked
+  - approve_join_requests / reject_join_requests — need participant_ids from
+    list_join_requests; each comes back with status ok or failed
+  - set_announcement_only / set_info_locked / set_join_approval — value "on" or "off"
+  - set_add_mode — value "admins" or "all"
+  - set_disappearing — value "off", "24h", "7d" or "90d"
 
 Everything except leave requires the linked account to be a group admin; call
-get_group_info first to check.`,
+get_group_info first to check. Every change is visible to all members at once:
+say what will change and wait for a yes before calling it.`,
     schema: {
       group_id: chatId.describe('Group chat id ("<id>@g.us")'),
       action: z
@@ -1525,10 +1549,28 @@ get_group_info first to check.`,
           "remove_picture",
           "get_invite_link",
           "revoke_invite_link",
+          "list_join_requests",
+          "approve_join_requests",
+          "reject_join_requests",
+          "set_announcement_only",
+          "set_info_locked",
+          "set_add_mode",
+          "set_join_approval",
+          "set_disappearing",
         ])
         .describe("Group action to perform"),
-      participant_ids: z.array(z.string().min(1)).max(256).optional().describe("Targets of add/remove/promote/demote"),
-      value: z.string().max(2048).optional().describe("New subject or description"),
+      participant_ids: z
+        .array(z.string().min(1))
+        .max(256)
+        .optional()
+        .describe("Targets of add/remove/promote/demote/approve_join_requests/reject_join_requests"),
+      value: z
+        .string()
+        .max(2048)
+        .optional()
+        .describe(
+          'New subject or description; "on"/"off" for set_announcement_only, set_info_locked, set_join_approval; "admins"/"all" for set_add_mode; "off"/"24h"/"7d"/"90d" for set_disappearing'
+        ),
       file_path: z.string().min(1).optional().describe("set_picture: absolute path of a local JPEG, PNG or WebP"),
       url: z.string().url().optional().describe("set_picture: public http(s) URL to fetch and use as the photo"),
     },
@@ -1536,7 +1578,11 @@ get_group_info first to check.`,
     destructive: true,
     handler: async ({ group_id, action, participant_ids, value, file_path, url }, { wa }) => {
       const result = await wa.manageGroup(group_id, action, participant_ids, value, { file_path, url });
-      const text = [result.applied, ...renderParticipants(result.participants ?? [])].join("\n");
+      const text = [
+        result.applied,
+        ...renderParticipants(result.participants ?? []),
+        ...renderJoinRequests(result.join_requests ?? []),
+      ].join("\n");
       return ok(text, result as unknown as Record<string, unknown>);
     },
   }),
@@ -1937,6 +1983,23 @@ function renderContacts(what: string, contacts: ContactSummary[]): string {
 
 function renderParticipants(participants: Array<{ id: string; status: string; reason?: string }>): string[] {
   return participants.map((p) => `- ${p.id}: ${p.status}${p.reason ? ` (${p.reason})` : ""}`);
+}
+
+function renderJoinRequests(requests: JoinRequest[]): string[] {
+  return requests.map((r) => {
+    const details = [r.requested_at ? `asked ${r.requested_at}` : null, r.method ? `via ${r.method}` : null]
+      .filter((part): part is string => part !== null)
+      .join(", ");
+    return `- ${r.name} — \`${r.id}\`${details ? ` (${details})` : ""}`;
+  });
+}
+
+/** 86400 reads as "24h" and 604800 as "7d", the way manage_group set_disappearing takes them. */
+function disappearingLabel(seconds: number): string {
+  if (!seconds) return "off";
+  if (seconds % 86_400 !== 0) return `${seconds}s`;
+  const days = seconds / 86_400;
+  return days === 1 ? "24h" : `${days}d`;
 }
 
 function truncate(text: string, max: number): string {
