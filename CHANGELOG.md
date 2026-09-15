@@ -1,5 +1,30 @@
 # Changelog
 
+## 0.18.6
+### Added
+
+- **Group notices say who did what.** A group's system messages used to
+  read as `[system message]`, so nobody could tell who added whom.
+  Additions, removals, leaves, promotions, renames, description, photo and
+  invite-link changes, the admin-only settings and member label changes
+  now read as `[Medeea added Ana (40723124956)]`, and carry
+  `system: {action, actor, targets, value}` with the people put to names
+  and numbers. A stub wazap does not spell out yet names its type instead
+  of hiding behind `[system message]`.
+- **Reactions name who left them.** `read_messages` tags them as
+  `❤️×2 😍` instead of a run of emoji, `get_message` lists each one with
+  its author, and every reaction in a view carries `name`.
+- **`manage_group` sets and removes the group photo.** `set_picture` takes
+  `file_path` or `url` under the same JPEG, PNG or WebP, 10 MB rules as
+  `set_profile_picture`; `remove_picture` takes the photo down. Both need
+  admin rights and reach WhatsApp at once, so the agent shows the image and
+  waits for a yes.
+
+### Changed
+
+- **`NOT_ADMIN` carries a fix** on every group action: ask an admin to make
+  the linked account an admin, or to make the change themselves.
+
 ## 0.18.5
 ### Added
 
