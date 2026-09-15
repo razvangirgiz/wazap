@@ -352,6 +352,18 @@ const memberLabel = (label) => ({
   messageTimestamp: 1_789_460_812,
 });
 
+/** A disappearing-messages timer change, a protocol message in a group and a one-to-one chat alike. */
+const disappearing = (seconds, { chat = GROUP_JID, participant = MEDEEA, fromMe = false } = {}) => ({
+  key: { fromMe, remoteJid: chat, id: "EPH1", ...(participant ? { participant } : {}) },
+  message: {
+    protocolMessage: {
+      type: proto.Message.ProtocolMessage.Type.EPHEMERAL_SETTING,
+      ...(seconds === undefined ? {} : { ephemeralExpiration: seconds }),
+    },
+  },
+  messageTimestamp: 1_789_460_900,
+});
+
 /** A participant as a live notice carries them. */
 const party = (id, phoneNumber) => JSON.stringify({ id, ...(phoneNumber ? { phoneNumber } : {}), admin: null });
 
@@ -422,6 +434,43 @@ const GROUP_NOTICE_CASES = [
     "[40711111111 cleared their member label]",
   ],
   ["member label set", memberLabel("șofer"), '[40711111111 set their member label to "șofer"]'],
+  [
+    "a request to join, created",
+    groupStub(Stub.GROUP_MEMBERSHIP_JOIN_APPROVAL_REQUEST_NON_ADMIN_ADD, [
+      JSON.stringify({ lid: "111222333444555@lid", pn: "40723124956@s.whatsapp.net" }),
+      "created",
+      "invite_link",
+    ]),
+    "[40723124956 asked to join]",
+  ],
+  [
+    "a request to join, withdrawn",
+    groupStub(Stub.GROUP_MEMBERSHIP_JOIN_APPROVAL_REQUEST_NON_ADMIN_ADD, [
+      JSON.stringify({ lid: "111222333444555@lid", pn: "40723124956@s.whatsapp.net" }),
+      "revoked",
+    ]),
+    "[40723124956 withdrew their request to join]",
+  ],
+  [
+    "a request to join, rejected by an admin",
+    groupStub(Stub.GROUP_MEMBERSHIP_JOIN_APPROVAL_REQUEST_NON_ADMIN_ADD, [
+      JSON.stringify({ lid: "111222333444555@lid", pn: "40723124956@s.whatsapp.net" }),
+      "rejected",
+    ]),
+    "[40711111111 rejected 40723124956's request to join]",
+  ],
+  ["disappearing messages on in a group", disappearing(86_400), "[40711111111 turned on disappearing messages: 1 day]"],
+  ["disappearing messages off in a group", disappearing(0), "[40711111111 turned off disappearing messages]"],
+  [
+    "disappearing messages on in a one-to-one chat",
+    disappearing(604_800, { chat: "40723124956@s.whatsapp.net", participant: null }),
+    "[40723124956 turned on disappearing messages: 7 days]",
+  ],
+  [
+    "disappearing messages turned off by the linked account",
+    disappearing(undefined, { fromMe: true }),
+    "[You turned off disappearing messages]",
+  ],
 ];
 
 test("a group notice says who made which change, to whom", () => {
