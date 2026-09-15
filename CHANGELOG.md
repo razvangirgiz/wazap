@@ -1,5 +1,68 @@
 # Changelog
 
+## 0.20.0
+### Added
+
+- **Poll votes and event responses land on their poll or event.** A vote is
+  encrypted under the poll's secret and bound to the creator's and voter's
+  jids exactly as WhatsApp spelled them, lid or number; wazap tries the
+  spellings it knows until one authenticates and matches the option hashes to
+  the poll's options. A poll carries `poll: {question, options: [{name, votes,
+  voters}], voters}`, read_messages tags it "3 votes" and get_message lists who
+  chose each option; an event carries `event_responses: {going, maybe,
+  not_going}`. A newer vote replaces an older one, a withdrawal sticks, votes
+  survive a restart, and votes stored before as lines of their own fold onto
+  their poll. A vote whose poll is not loaded reads as "[vote on a poll that is
+  not loaded]" until the poll arrives. `send_poll` no longer says votes cannot
+  be read.
+- **The user's own messages say how far they got.** One-to-one receipts raise
+  `delivery.status` from sent to delivered, read and played and never lower
+  it; in a group each member's receipt is kept, and `delivery.read_by` and
+  `delivery.delivered_to` name who, with the time. A synced message's own
+  status and receipts are the floor. read_messages tags "read" or "read by 3",
+  get_message lists who.
+- **Group admins run the group from wazap.** `manage_group` lists pending join
+  requests and approves or rejects them, and sets announcement-only, locked
+  info, who adds members, join approval and disappearing messages (`off`,
+  `24h`, `7d`, `90d`). `get_group_info` reports those settings and whether the
+  group is or belongs to a community. `delete_message` takes someone else's
+  message in a group where the linked account is an admin.
+
+- **`join_group` joins a group from an invite.** It takes a link, a code, or
+  the `message_id` of an invite someone sent; without `confirm: true` it only
+  previews the group (name, description, size, whether an admin must approve),
+  and with it joins, or says the request waits for an admin. The invite code
+  never reaches the logs. wazap now has 38 tools.
+- **More of what the phone does, from `manage_chat`.** Pin and unpin a message
+  for everyone (24 hours, 7 days or 30 days), star and unstar a message, clear a
+  chat, delete a chat, and block or unblock a contact. The blocklist is read
+  when the account connects, so `get_contact`'s `is_blocked` is right from the
+  start.
+- **Mentions are visible and actually mention.** A message that @-mentions
+  people carries `mentions: [{id, name}]`. `send_message` with `mention_ids`
+  puts the `@<number>` token WhatsApp needs into the text when it is missing,
+  and the draft preview shows exactly the text that will be sent.
+
+### Changed
+
+- **`delete_message` needs `for_everyone`.** `true` retracts the message for
+  everyone; `false` now deletes it only for the linked account instead of
+  failing. There is no default, so an agent always says which one it means.
+
+### Fixed
+
+- **A deleted chat is gone, and stays gone.** Deleting or clearing a chat,
+  from wazap or from the phone, removes its messages instead of leaving the chat
+  in `list_chats`; they no longer come back when the server restarts, and
+  `recall` forgets the whole chat, older indexed messages included. A message
+  deleted only for the linked account stays deleted after a restart too.
+- **A mentioned person, a reactor or a voter no longer borrows the sender's
+  name** when wazap knows no name for them.
+- **A receipt no longer moves a message in time.** A delivery or read receipt
+  carries the moment it happened, and wazap wrote it over the message's own
+  timestamp: a sent message jumped to when it was read, and a received one to
+  when the phone read it, which reordered chats and aged asks wrongly.
+
 ## 0.19.1
 ### Fixed
 
