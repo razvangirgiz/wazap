@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 #
-# Publishes server.json to the official MCP Registry. A human runs this, once
-# per release, after `npm publish` — the registry reads `mcpName` off the exact
-# published version, so a version that is not on npm yet cannot be published
-# here.
+# Publishes server.json to the official MCP Registry by hand. The publish
+# workflow does this on every tag through GitHub OIDC; this is the fallback
+# when that step fails. It needs `npm publish` done first — the registry reads
+# `mcpName` off the exact published version, so a version that is not on npm
+# yet cannot be published here.
 #
 # Docs: https://modelcontextprotocol.io/registry/quickstart
 set -euo pipefail

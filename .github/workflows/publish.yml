@@ -10,6 +10,11 @@ on:
 jobs:
   publish:
     runs-on: ubuntu-latest
+    permissions:
+      # The MCP Registry login below proves who is publishing with the run's
+      # OIDC token, so there is no registry secret to store or let expire.
+      id-token: write
+      contents: read
     steps:
       - uses: actions/checkout@v4
 
@@ -36,3 +41,39 @@ jobs:
       - run: npm publish --access public
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      # The registry reads mcpName off the exact npm version, and a fresh
+      # publish takes a minute or two to show up there.
+      - name: Wait for the version on npm
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          version=$(node -p "require('./package.json').version")
+          mcp_name=$(node -p "require('./package.json').mcpName")
+          for attempt in $(seq 1 30); do
+            published=$(node -e "
+              fetch('https://registry.npmjs.org/wazap-mcp/$version')
+                .then((r) => (r.ok ? r.json() : {}))
+                .then((meta) => console.log(meta.mcpName ?? ''))
+            ")
+            [ "$published" = "$mcp_name" ] && exit 0
+            sleep 20
+          done
+          echo "wazap-mcp@$version did not show up on npm with mcpName $mcp_name within 10 minutes"
+          exit 1
+
+      # Pinned, so a new publisher release cannot change what a tag does.
+      - name: Install mcp-publisher
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          curl -fsSL https://github.com/modelcontextprotocol/registry/releases/download/v1.8.1/mcp-publisher_linux_amd64.tar.gz \
+            | tar xz mcp-publisher
+
+      # github-oidc works because this repository's owner owns the
+      # io.github.razvangirgiz/* namespace. scripts/release-registry.sh is
+      # the manual fallback when this step fails.
+      - name: Publish to the MCP Registry
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          node scripts/validate-server-json.mjs
+          ./mcp-publisher login github-oidc
+          ./mcp-publisher publish
