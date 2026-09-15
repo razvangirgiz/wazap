@@ -9,7 +9,7 @@
  * and in memory.
  */
 
-import { isNoiseJid, resolveChatId } from "./ids.js";
+import { isNoiseJid } from "./ids.js";
 import { isoWithOffset, messageTimestampMs } from "./messages.js";
 import type { RecallStatus } from "./recall/index.js";
 import { MAX_MESSAGES_PER_CHAT, Store } from "./store.js";
@@ -41,7 +41,7 @@ export function searchCoverage(
   try {
     const store = (wa as unknown as { store?: Store }).store;
     if (!(store instanceof Store)) return null;
-    const scope = chatId === undefined ? undefined : resolveChatId(chatId, (lid) => store.lids.get(lid));
+    const scope = chatId === undefined ? undefined : store.lids.resolve(chatId);
 
     let searched = 0;
     let oldest = Number.POSITIVE_INFINITY;
