@@ -252,6 +252,7 @@ export type SystemEventAction =
   | "set_add_mode"
   | "set_join_approval"
   | "set_member_label"
+  | "set_disappearing"
   | "pin_message"
   | "unpin_message"
   | "keep_message"

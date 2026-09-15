@@ -643,6 +643,18 @@ const MEMBER_LABEL: GroupStub = {
     value ? `${actor} set their member label to "${value}"` : `${actor} cleared their member label`,
 };
 
+/**
+ * The disappearing-messages timer, which WhatsApp sends as a protocol message
+ * in a group and in a one-to-one chat alike. `value` is the new timer in
+ * seconds; none, or zero, turned it off.
+ */
+const DISAPPEARING: GroupStub = {
+  action: "set_disappearing",
+  params: "value",
+  say: (actor, _targets, value) =>
+    value ? `${actor} turned on disappearing messages: ${timerLabel(Number(value))}` : `${actor} turned off disappearing messages`,
+};
+
 /** Payloads that are a notice about something a person did, spelled out by groupEventOf. */
 const EVENT_PAYLOADS: ReadonlySet<keyof WAMessageContent> = new Set([
   "protocolMessage",
@@ -666,6 +678,10 @@ function groupEventOf(raw: WAMessage, content: WAMessageContent | undefined): Gr
   const protocol = content?.protocolMessage;
   if (protocol?.type === proto.Message.ProtocolMessage.Type.GROUP_MEMBER_LABEL_CHANGE) {
     return { spec: MEMBER_LABEL, actor, fromMe, targets: [], value: protocol.memberLabel?.label || undefined };
+  }
+  if (protocol?.type === proto.Message.ProtocolMessage.Type.EPHEMERAL_SETTING) {
+    const seconds = protoNumber(protocol.ephemeralExpiration) ?? 0;
+    return { spec: DISAPPEARING, actor, fromMe, targets: [], value: seconds > 0 ? String(seconds) : undefined };
   }
   const pin = content?.pinInChatMessage;
   if (pin) {
