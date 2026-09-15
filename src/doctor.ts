@@ -46,7 +46,7 @@ const GLYPH: Record<CheckState, (text: string) => string> = { ok, fail, info };
 const TINT: Record<CheckState, (text: string) => string> = { ok: green, fail: red, info: dim };
 
 const UPDATE_TIMEOUT_MS = 2_000;
-const MIN_NODE_MAJOR = 20;
+const MIN_NODE_MAJOR = 22;
 
 /** A check function may answer with a group, the way transcription does. */
 type CheckFn = (config: Config) => Check | Check[] | Promise<Check | Check[]>;
