@@ -261,7 +261,12 @@ include_system: true.
 A group notice says who made which change: "[Medeea added Ana (40723124956)]",
 with \`system: {action, actor, targets, value}\` naming the same people. Report
 a membership change from there; never pair a new member with whoever posted
-nearby.
+nearby. A pin reads as "[Medeea pinned a message]", and \`system.value\` is the
+message_id of the message pinned.
+An event has \`type: "event"\` and reads as "[event] Botez · 2026-09-20T12:00:00+03:00 ·
+Biserica" with its description after it, or "[canceled event] …". A group invite
+has \`type: "invite"\` and reads as "[group invite] Familia"; the invite code is
+never shown.
 Reactions ride on the message they answer: read_messages tags them as
 "❤️×2 😍", and get_message lists each one with who left it.
 A voice note reads as "[voice message · 0:42]"; once transcribed, what was said

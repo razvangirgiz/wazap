@@ -184,13 +184,13 @@ test("a payload wazap does not model yet stays visible instead of hiding as syst
   const { svc, sock } = makeService();
   sock.ev.emit("messages.upsert", {
     type: "notify",
-    messages: [message(REAL, { eventMessage: { name: "Botez" }, messageContextInfo: {} }, { id: "E1" })],
+    messages: [message(REAL, { someFutureMessage: {}, messageContextInfo: {} }, { id: "E1" })],
   });
 
   const digest = (await svc.getRecentMessages(24, "all")).data;
   assert.equal(digest.length, 1, "an unmodelled payload must not drop out of the catch-up tool");
   assert.deepEqual(
     digest[0].messages.map((m) => [m.type, m.text]),
-    [["unknown", "[unsupported: eventMessage]"]]
+    [["unknown", "[unsupported: someFutureMessage]"]]
   );
 });

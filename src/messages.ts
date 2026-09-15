@@ -118,6 +118,90 @@ const REPORTABLE_PROTOCOL_TYPES: ReadonlySet<number> = new Set([
   proto.Message.ProtocolMessage.Type.GROUP_MEMBER_LABEL_CHANGE,
 ]);
 
+/** The parts that are there, as one line: "order · 2 items", "Pisici · caption". */
+function joined(...parts: Array<string | null | undefined>): string | undefined {
+  const kept = parts.map((part) => part?.trim()).filter((part): part is string => Boolean(part));
+  return kept.length > 0 ? kept.join(" · ") : undefined;
+}
+
+/**
+ * A business message as the person reads it: title, body and footer, then what
+ * they can tap. Only the labels: a button also carries the URL, number or
+ * one-time code it acts on, and none of that is something anyone wrote.
+ */
+function tappable(
+  lines: Array<string | null | undefined>,
+  kind: "buttons" | "options",
+  labels: Array<string | null | undefined>
+): string | undefined {
+  const text = lines
+    .map((line) => line?.trim())
+    .filter(Boolean)
+    .join("\n");
+  const choices = joined(...labels);
+  return [text, choices ? `(${kind}: ${choices})` : ""].filter(Boolean).join("\n") || undefined;
+}
+
+/** A native-flow button keeps its label in JSON, beside the link or the code to copy. */
+function flowLabel(json: string | null | undefined): string | undefined {
+  if (!json) return undefined;
+  try {
+    const params = JSON.parse(json) as Record<string, unknown>;
+    return typeof params.display_text === "string" ? params.display_text : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function interactiveText(message: proto.Message.IInteractiveMessage | null | undefined): string | undefined {
+  if (!message) return undefined;
+  return tappable(
+    [message.header?.title, message.header?.subtitle, message.body?.text, message.footer?.text],
+    "buttons",
+    (message.nativeFlowMessage?.buttons ?? []).map((button) => flowLabel(button.buttonParamsJson))
+  );
+}
+
+/** A template arrives hydrated or as an interactive message; banks and couriers send both. */
+function templateText(m: WAMessageContent): string | undefined {
+  const template = m.templateMessage;
+  const hydrated = template?.hydratedFourRowTemplate ?? template?.hydratedTemplate;
+  if (!hydrated) return interactiveText(template?.interactiveMessageTemplate);
+  return tappable(
+    [hydrated.hydratedTitleText, hydrated.hydratedContentText, hydrated.hydratedFooterText],
+    "buttons",
+    (hydrated.hydratedButtons ?? []).map(
+      (button) => (button.quickReplyButton ?? button.urlButton ?? button.callButton)?.displayText
+    )
+  );
+}
+
+function orderTag(m: WAMessageContent): string {
+  const order = m.orderMessage;
+  const items = order?.itemCount ?? 0;
+  const total = protoNumber(order?.totalAmount1000);
+  return `[${joined(
+    "order",
+    items > 0 ? `${items} item${items === 1 ? "" : "s"}` : undefined,
+    total !== undefined && order?.totalCurrencyCode ? `${(total / 1000).toFixed(2)} ${order.totalCurrencyCode}` : undefined
+  )}]`;
+}
+
+function scheduledCallTag(m: WAMessageContent): string {
+  const call = m.scheduledCallCreationMessage;
+  const kind = call?.callType === proto.Message.ScheduledCallCreationMessage.CallType.VIDEO ? "video" : "voice";
+  const at = protoNumber(call?.scheduledTimestampMs);
+  return `[${joined(`scheduled ${kind} call`, at ? isoWithOffset(at) : undefined)}]`;
+}
+
+function pollResults(m: WAMessageContent): string | undefined {
+  const poll = m.pollResultSnapshotMessage;
+  const votes = (poll?.pollVotes ?? []).map((vote) =>
+    vote.optionName ? `${vote.optionName}: ${protoNumber(vote.optionVoteCount) ?? 0}` : undefined
+  );
+  return joined(poll?.name, ...votes);
+}
+
 /**
  * One table drives both messageType and messageText, so the reported type and
  * the placeholder can never disagree.
@@ -187,6 +271,106 @@ const RULES: Partial<Record<keyof WAMessageContent, Rule>> = {
   pollCreationMessageV4: POLL,
   pollCreationMessageV5: POLL,
   reactionMessage: { type: "reaction", tag: "[reaction]", detail: (m) => m.reactionMessage?.text },
+  // What a business or a bot sends is still words for the person reading it,
+  // so it reads and searches as text rather than hiding as a system line.
+  templateMessage: { type: "text", tag: "[template]", text: templateText },
+  interactiveMessage: {
+    type: "text",
+    tag: "[interactive message]",
+    text: (m) => interactiveText(m.interactiveMessage),
+  },
+  buttonsMessage: {
+    type: "text",
+    tag: "[buttons]",
+    text: (m) =>
+      tappable(
+        [m.buttonsMessage?.text, m.buttonsMessage?.contentText, m.buttonsMessage?.footerText],
+        "buttons",
+        (m.buttonsMessage?.buttons ?? []).map((button) => button.buttonText?.displayText)
+      ),
+  },
+  listMessage: {
+    type: "text",
+    tag: "[list]",
+    text: (m) =>
+      tappable(
+        [m.listMessage?.title, m.listMessage?.description, m.listMessage?.footerText],
+        "options",
+        (m.listMessage?.sections ?? []).flatMap((section) => (section.rows ?? []).map((row) => row.title))
+      ),
+  },
+  // A tap is the person's answer, in the words that were on the button.
+  buttonsResponseMessage: {
+    type: "text",
+    tag: "[button reply]",
+    text: (m) => m.buttonsResponseMessage?.selectedDisplayText,
+  },
+  listResponseMessage: { type: "text", tag: "[list reply]", text: (m) => m.listResponseMessage?.title },
+  templateButtonReplyMessage: {
+    type: "text",
+    tag: "[button reply]",
+    text: (m) => m.templateButtonReplyMessage?.selectedDisplayText,
+  },
+  // WhatsApp keeps this one off linked devices on purpose; the phone is the
+  // only place it can be read, and saying so beats a bare "unsupported".
+  placeholderMessage: { type: "unknown", tag: "[message not shown on linked devices; read it on the phone]" },
+  requestPhoneNumberMessage: { type: "text", tag: "[asked for your phone number]" },
+  // The order's id, token and seller stay out: they are keys, not something said.
+  orderMessage: {
+    type: "text",
+    tag: orderTag,
+    caption: (m) => m.orderMessage?.message,
+    detail: (m) => m.orderMessage?.orderTitle,
+  },
+  productMessage: {
+    type: "text",
+    tag: "[product]",
+    caption: (m) => joined(m.productMessage?.product?.title, m.productMessage?.body),
+  },
+  statusMentionMessage: { type: "text", tag: "[mentioned you in their status]" },
+  scheduledCallCreationMessage: {
+    type: "text",
+    tag: scheduledCallTag,
+    detail: (m) => m.scheduledCallCreationMessage?.title,
+  },
+  pollResultSnapshotMessage: { type: "poll", tag: "[poll results]", detail: pollResults },
+  newsletterAdminInviteMessage: {
+    type: "text",
+    tag: "[channel admin invite]",
+    caption: (m) => joined(m.newsletterAdminInviteMessage?.newsletterName, m.newsletterAdminInviteMessage?.caption),
+  },
+  stickerPackMessage: {
+    type: "sticker",
+    tag: (m) => {
+      const count = m.stickerPackMessage?.stickers?.length ?? 0;
+      return `[${joined("sticker pack", count > 0 ? `${count} stickers` : undefined)}]`;
+    },
+    caption: (m) => joined(m.stickerPackMessage?.name, m.stickerPackMessage?.caption),
+  },
+  eventMessage: {
+    type: "event",
+    tag: (m) => (m.eventMessage?.isCanceled ? "[canceled event]" : "[event]"),
+    // Name, start and place on one line, the description under it. The join
+    // link is a way into the call, as good as an invite code, and stays out.
+    caption: (m) => {
+      const event = m.eventMessage;
+      const start = protoNumber(event?.startTime);
+      const place = event?.location?.name ?? event?.location?.address;
+      const header = joined(event?.name, start ? isoWithOffset(start * 1000) : undefined, place);
+      return [header, event?.description?.trim()].filter(Boolean).join("\n") || undefined;
+    },
+  },
+  // The invite code lets anyone who holds it into the group, so only the
+  // group's name and the caption are shown.
+  groupInviteMessage: {
+    type: "invite",
+    tag: "[group invite]",
+    caption: (m) => joined(m.groupInviteMessage?.groupName, m.groupInviteMessage?.caption),
+  },
+  // Notices about something a person did; groupEventOf puts the name in front.
+  pinInChatMessage: { type: "system", tag: "[pinned a message]" },
+  keepInChatMessage: { type: "system", tag: "[kept a message]" },
+  messageHistoryBundle: { type: "system", tag: "[shared the chat history]" },
   viewOnceMessage: VIEW_ONCE,
   viewOnceMessageV2: VIEW_ONCE,
   viewOnceMessageV2Extension: VIEW_ONCE,
@@ -283,6 +467,8 @@ interface GroupEvent {
   fromMe: boolean;
   targets: string[];
   value: string | undefined;
+  /** The message a pin or a keep points at; its message_id needs the chat, so the view builds it. */
+  target?: WAMessageKey;
 }
 
 /** A setting WhatsApp reports as on/off in a live notice and as true/false in synced history. */
@@ -295,7 +481,25 @@ function toggle(on: string, off: string, unclear: string): Say {
 
 const StubType = proto.WebMessageInfo.StubType;
 
+const PIN: GroupStub = { action: "pin_message", params: "none", say: (actor) => `${actor} pinned a message` };
+const UNPIN: GroupStub = { action: "unpin_message", params: "none", say: (actor) => `${actor} unpinned a message` };
+const KEEP: GroupStub = { action: "keep_message", params: "none", say: (actor) => `${actor} kept a message` };
+const UNKEEP: GroupStub = { action: "unkeep_message", params: "none", say: (actor) => `${actor} unkept a message` };
+
+/** What an admin hands a new member: the messages from before they joined. */
+const SHARE_HISTORY: GroupStub = {
+  action: "share_history",
+  params: "participants",
+  say: (actor, targets, value) => {
+    const count = value === undefined ? "" : ` (${value} message${value === "1" ? "" : "s"})`;
+    return `${actor} shared the chat history${count}${targets ? ` with ${targets}` : ""}`;
+  },
+};
+
 const GROUP_STUBS: Partial<Record<number, GroupStub>> = {
+  // The one parameter is whoever pinned, the same jid the key names; the stub
+  // says neither which message nor whether it was an unpin.
+  [StubType.PINNED_MESSAGE_IN_CHAT]: PIN,
   [StubType.GROUP_CREATE]: {
     action: "create",
     params: "value",
@@ -428,23 +632,61 @@ const MEMBER_LABEL: GroupStub = {
     value ? `${actor} set their member label to "${value}"` : `${actor} cleared their member label`,
 };
 
+/** Payloads that are a notice about something a person did, spelled out by groupEventOf. */
+const EVENT_PAYLOADS: ReadonlySet<keyof WAMessageContent> = new Set([
+  "protocolMessage",
+  "pinInChatMessage",
+  "keepInChatMessage",
+  "messageHistoryBundle",
+]);
+
+/** Baileys types the parameters as any; only strings are ever a jid or a value. */
+function stubParams(raw: WAMessage): string[] {
+  return (Array.isArray(raw.messageStubParameters) ? raw.messageStubParameters : []).filter(
+    (param: unknown): param is string => typeof param === "string"
+  );
+}
+
 function groupEventOf(raw: WAMessage, content: WAMessageContent | undefined): GroupEvent | undefined {
-  const actor = raw.key.participant || raw.participant || undefined;
+  // A pin in a one-to-one chat has no participant: the other side made it.
+  const chat = raw.key.remoteJid ?? "";
+  const actor = raw.key.participant || raw.participant || (chat && !chat.endsWith("@g.us") ? chat : undefined);
   const fromMe = Boolean(raw.key.fromMe);
   const protocol = content?.protocolMessage;
   if (protocol?.type === proto.Message.ProtocolMessage.Type.GROUP_MEMBER_LABEL_CHANGE) {
     return { spec: MEMBER_LABEL, actor, fromMe, targets: [], value: protocol.memberLabel?.label || undefined };
   }
+  const pin = content?.pinInChatMessage;
+  if (pin) {
+    const unpin = pin.type === proto.Message.PinInChatMessage.Type.UNPIN_FOR_ALL;
+    const target = pin.key?.id ? (pin.key as WAMessageKey) : undefined;
+    return { spec: unpin ? UNPIN : PIN, actor, fromMe, targets: [], value: undefined, target };
+  }
+  const keep = content?.keepInChatMessage;
+  if (keep) {
+    const undo = keep.keepType === proto.KeepType.UNDO_KEEP_FOR_ALL;
+    const target = keep.key?.id ? (keep.key as WAMessageKey) : undefined;
+    return { spec: undo ? UNKEEP : KEEP, actor, fromMe, targets: [], value: undefined, target };
+  }
+  const bundle = content?.messageHistoryBundle;
+  if (bundle) {
+    const history = bundle.messageHistoryMetadata;
+    const count = protoNumber(history?.messageCount);
+    return {
+      spec: SHARE_HISTORY,
+      actor,
+      fromMe,
+      targets: (history?.historyReceivers ?? []).filter((jid) => jid.includes("@")),
+      value: count ? String(count) : undefined,
+    };
+  }
   const spec = GROUP_STUBS[raw.messageStubType ?? -1];
   if (!spec) return undefined;
-  // Baileys types the parameters as any; only strings are ever a jid or a value.
-  const params: string[] = (Array.isArray(raw.messageStubParameters) ? raw.messageStubParameters : []).filter(
-    (param: unknown): param is string => typeof param === "string"
-  );
+  const params = stubParams(raw);
   return {
     spec,
-    actor: raw.key.participant || raw.participant || undefined,
-    fromMe: Boolean(raw.key.fromMe),
+    actor,
+    fromMe,
     targets:
       spec.params === "participants"
         ? params.flatMap((param) => {
@@ -472,6 +714,45 @@ function eventText(event: GroupEvent): string {
   const self = event.targets.length === 1 && event.targets[0] === event.actor;
   return eventLine(event, actor, event.targets.map(bareLabel), self);
 }
+
+/** Whole days, the way WhatsApp offers the timer; anything else as a duration. */
+function timerLabel(seconds: number): string {
+  const days = seconds / 86_400;
+  return Number.isInteger(days) ? `${days} day${days === 1 ? "" : "s"}` : durationLabel(seconds);
+}
+
+/**
+ * Notices with nobody to put a name to, spelled out. A stub in neither this
+ * table nor GROUP_STUBS still names its type.
+ */
+const STUB_NOTICES: Partial<Record<number, (params: string[]) => string>> = {
+  // Live, the parameter is Baileys' decryption error; from synced history there
+  // is none. Either way nothing of the message reached this device, and the
+  // phone may not have it either, so the line promises no more than "may".
+  [StubType.CIPHERTEXT]: () =>
+    "[missing message: it could not be decrypted on this device; it may still be on the phone]",
+  // The second parameter is a lid: whose default timer it is, not shown.
+  [StubType.DISAPPEARING_MODE]: ([seconds]) => {
+    const value = Number(seconds);
+    return value > 0
+      ? `[disappearing messages on by default: new messages disappear after ${timerLabel(value)}]`
+      : "[default disappearing messages changed]";
+  },
+  [StubType.BLOCK_CONTACT]: ([blocked]) =>
+    blocked === "true"
+      ? "[you blocked this contact]"
+      : blocked === "false"
+        ? "[you unblocked this contact]"
+        : "[this contact's block status changed]",
+  // The parameters carry the usernames; which one is old and which new is not
+  // documented, so neither is printed.
+  [StubType.CHANGE_USERNAME]: () => "[this contact changed their username]",
+  // The linked group's jid, then what reads as its name.
+  [StubType.COMMUNITY_LINK_SUB_GROUP]: ([, name]) =>
+    name ? `[the group "${name}" was added to the community]` : "[a group was added to the community]",
+  [StubType.BIZ_PRIVACY_MODE_INIT_FB]: () => "[this business uses a secure service from Meta to manage this chat]",
+  [StubType.BIZ_PRIVACY_MODE_TO_FB]: () => "[this business now uses a secure service from Meta to manage this chat]",
+};
 
 /** Nobody picked up. Which word that is depends on which end of the call you were. */
 type Unanswered = "no answer";
@@ -588,6 +869,8 @@ interface Analysis {
   event: GroupEvent | undefined;
   /** The stub type's name, for a notice that is not spelled out. */
   stubName: string | undefined;
+  /** The line for a stub STUB_NOTICES spells out. */
+  notice: string | undefined;
   call: CallInfo | undefined;
   context: proto.IContextInfo | undefined;
   media: { mime: string; size?: number; filename?: string } | undefined;
@@ -606,7 +889,11 @@ function analyze(raw: WAMessage): Analysis {
   if (hit && hit.message === raw.message && hit.stubType === raw.messageStubType) return hit.a;
 
   const content = unwrapEnvelopes(raw.message);
-  const key = content ? getContentType(content) : undefined;
+  // getContentType looks for a key containing "Message", and the history bundle
+  // is spelled with a lowercase one, so it would never reach the table.
+  const key = content
+    ? (getContentType(content) ?? (content.messageHistoryBundle ? "messageHistoryBundle" : undefined))
+    : undefined;
   const { rule } = ruleFor(content, key);
   const stub = stubKind(raw);
   const call = callFrom(raw, content);
@@ -633,8 +920,11 @@ function analyze(raw: WAMessage): Analysis {
     inner,
     stub,
     event:
-      (rule === UNKNOWN && stub === "system") || key === "protocolMessage" ? groupEventOf(raw, content) : undefined,
+      (rule === UNKNOWN && stub === "system") || (key !== undefined && EVENT_PAYLOADS.has(key))
+        ? groupEventOf(raw, content)
+        : undefined,
     stubName: stub === "system" ? stubTypeName(raw) : undefined,
+    notice: stub === "system" && rule === UNKNOWN ? STUB_NOTICES[raw.messageStubType ?? -1]?.(stubParams(raw)) : undefined,
     call,
     context: node?.contextInfo ?? undefined,
     media,
@@ -676,7 +966,7 @@ function textFrom(a: Analysis): string {
   const node = a.content ?? {};
   if (a.rule === UNKNOWN) {
     if (a.stub === "deleted") return DELETED_TEXT;
-    if (a.stub === "system") return a.stubName ? `[system message · ${a.stubName}]` : SYSTEM_TEXT;
+    if (a.stub === "system") return a.notice ?? (a.stubName ? `[system message · ${a.stubName}]` : SYSTEM_TEXT);
   }
 
   const text = a.rule.text?.(node)?.trim();
@@ -950,12 +1240,14 @@ function eventView(event: GroupEvent, ctx: MessageViewContext): { system: System
   const actor = event.fromMe ? eventParty(ctx.ownId, ctx) : event.actor ? eventParty(event.actor, ctx) : undefined;
   const targets = event.targets.map((jid) => eventParty(jid, ctx));
   const self = targets.length === 1 && targets[0]?.id === actor?.id;
+  // Built the way a reaction finds its target, so it matches read_messages' id.
+  const value = event.target ? messageIdFor(event.target, ctx.chatId) : event.value;
   return {
     system: {
       action: event.spec.action,
       ...(actor ? { actor } : {}),
       targets,
-      ...(event.value === undefined ? {} : { value: event.value }),
+      ...(value === undefined ? {} : { value }),
     },
     text: eventLine(event, actor?.name ?? "Someone", targets.map(partyLabel), self),
   };
