@@ -3,8 +3,9 @@ name: Publish
 on:
   push:
     tags: ["v*"]
-  # Manual run for a re-publish or a smoke test: publishing a version that
-  # is already on npm fails at the upload step after auth succeeds.
+  # Manual run to retry a release from its tag. It refuses any other ref, and
+  # publishing a version that is already on npm fails at the upload step after
+  # auth succeeds.
   workflow_dispatch:
 
 jobs:
@@ -13,12 +14,22 @@ jobs:
     permissions:
       # The MCP Registry login below proves who is publishing with the run's
       # OIDC token, so there is no registry secret to store or let expire.
+      # npm provenance signs the package with the same token.
       id-token: write
       contents: read
     steps:
-      - uses: actions/checkout@v4
+      # "Run workflow" defaults to a branch. From a branch the version check
+      # below would have nothing to compare, and everything after it would
+      # publish whatever that branch's package.json says.
+      - name: Refuse a ref that is not a tag
+        if: github.ref_type != 'tag'
+        run: |
+          echo "::error::Publish runs from a v* tag, not $GITHUB_REF. Pick the tag under Run workflow."
+          exit 1
 
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
         with:
           node-version: 22
           cache: npm
@@ -29,23 +40,33 @@ jobs:
       # Refuse a tag that does not match package.json, so a v0.16.1 tag can
       # never publish 0.16.0 again.
       - name: Check tag matches package.json version
-        if: startsWith(github.ref, 'refs/tags/')
         run: |
           tag="${GITHUB_REF_NAME#v}"
           version=$(node -p "require('./package.json').version")
           [ "$tag" = "$version" ] || { echo "tag $GITHUB_REF_NAME but package.json is $version"; exit 1; }
 
+      # The GitHub Release at the end takes its notes from here. Checked before
+      # anything is published, so a missing section cannot leave npm and the
+      # registry on a version that then has no release.
+      - name: Check CHANGELOG has notes for this version
+        run: node scripts/changelog-notes.mjs "$(node -p "require('./package.json').version")" > /dev/null
+
+      # prepublishOnly builds and tests but does not lint or typecheck, and a
+      # tag can be pushed without CI having run on its commit.
+      - run: npm run lint
+      - run: npm run typecheck
+
       # prepublishOnly runs `npm run build && npm test`.
       # Needs an NPM_TOKEN repository secret (npm granular access token with
-      # publish rights on wazap-mcp).
-      - run: npm publish --access public
+      # publish rights on wazap-mcp). --provenance links the npm page to this
+      # run and commit; it needs the id-token permission above.
+      - run: npm publish --provenance --access public
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
       # The registry reads mcpName off the exact npm version, and a fresh
       # publish takes a minute or two to show up there.
       - name: Wait for the version on npm
-        if: startsWith(github.ref, 'refs/tags/')
         run: |
           version=$(node -p "require('./package.json').version")
           mcp_name=$(node -p "require('./package.json').mcpName")
@@ -61,19 +82,61 @@ jobs:
           echo "wazap-mcp@$version did not show up on npm with mcpName $mcp_name within 10 minutes"
           exit 1
 
-      # Pinned, so a new publisher release cannot change what a tag does.
+      # Pinned by version and by hash, so neither a new publisher release nor a
+      # replaced download can change what a tag runs with the OIDC token. The
+      # hash is the linux_amd64 line of registry_1.8.1_checksums.txt on the
+      # same release; update both together.
       - name: Install mcp-publisher
-        if: startsWith(github.ref, 'refs/tags/')
         run: |
-          curl -fsSL https://github.com/modelcontextprotocol/registry/releases/download/v1.8.1/mcp-publisher_linux_amd64.tar.gz \
-            | tar xz mcp-publisher
+          curl -fsSL -o mcp-publisher.tar.gz \
+            https://github.com/modelcontextprotocol/registry/releases/download/v1.8.1/mcp-publisher_linux_amd64.tar.gz
+          echo "a06c9096dcb9727c13555b6be26c7effa707b01f06a4c561ba7a3635443cf2cc  mcp-publisher.tar.gz" | sha256sum -c -
+          tar xzf mcp-publisher.tar.gz mcp-publisher
 
       # github-oidc works because this repository's owner owns the
       # io.github.razvangirgiz/* namespace. scripts/release-registry.sh is
       # the manual fallback when this step fails.
       - name: Publish to the MCP Registry
-        if: startsWith(github.ref, 'refs/tags/')
         run: |
           node scripts/validate-server-json.mjs
           ./mcp-publisher login github-oidc
           ./mcp-publisher publish
+
+  # Its own job so that only these steps hold a token that can write to the
+  # repository: the publish job installs and runs npm packages with the OIDC
+  # token, and does not need to be able to push as well.
+  release:
+    needs: publish
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      # No token left in .git/config for npm install scripts to find; only
+      # the gh step below is handed one.
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      # README sends Claude Desktop users to Releases for this file. The
+      # script builds, stages production node_modules and packs with
+      # @anthropic-ai/mcpb, all over the network, into dist-bundle/.
+      - name: Build the Claude Desktop bundle
+        run: npm run bundle:mcpb
+
+      - name: Create the GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version=$(node -p "require('./package.json').version")
+          node scripts/changelog-notes.mjs "$version" > "$RUNNER_TEMP/notes.md"
+          gh release create "$GITHUB_REF_NAME" "dist-bundle/wazap-$version.mcpb" \
+            --verify-tag \
+            --title "wazap $version" \
+            --notes-file "$RUNNER_TEMP/notes.md"
