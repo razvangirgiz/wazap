@@ -1,6 +1,6 @@
 ---
 name: whatsapp-send
-description: Send, reply, forward, share a file, react, create a poll, or change the linked account's profile picture on WhatsApp on the user's behalf. Use for any request that results in an outgoing WhatsApp message or a new profile photo. Messages draft first; a profile picture has no draft. Show the image, wait for a yes, then call set_profile_picture.
+description: Send, reply, forward, share a file, react, create a poll, or change the linked account's profile picture on WhatsApp on the user's behalf. Use for any request that results in an outgoing WhatsApp message or a new profile photo. Messages draft first; a profile picture has no draft. Show the image, wait for a yes, then call set_profile_picture (manage_group set_picture for a group).
 ---
 
 # WhatsApp send
@@ -41,7 +41,7 @@ Approval is per message, even after "just send it" for a batch, when the recipie
 
 ## Profile picture
 
-`set_profile_picture` changes the linked account's photo. It is not a chat message and there is no draft. Show the image (`file_path` or `url`) and wait for a yes, then call it. JPEG, PNG or WebP only, at most 10 MB. It does not remove the photo and does not change a group avatar.
+`set_profile_picture` changes the linked account's photo; `manage_group` with `action: "set_picture"` changes a group's, and `action: "remove_picture"` takes a group's down (both need admin rights). None of them is a chat message and there is no draft: every contact or member sees the change at once. Show the image (`file_path` or `url`) and wait for a yes, then call it. JPEG, PNG or WebP only, at most 10 MB. `set_profile_picture` does not remove the account's own photo.
 
 ## Out of scope
 

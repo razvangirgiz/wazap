@@ -1986,7 +1986,8 @@ export class WhatsAppService implements WhatsAppApi {
     groupId: string,
     action: GroupAction,
     participantIds?: string[],
-    value?: string
+    value?: string,
+    source?: MediaSource
   ): Promise<GroupActionResult> {
     return this.guarded(async () => {
       const sock = this.beginWrite();
@@ -2031,6 +2032,16 @@ export class WhatsAppService implements WhatsAppApi {
           this.groupCache.delete(jid);
           return { group_id: jid, action, applied: "description updated" };
         }
+        case "set_picture": {
+          // The same loader as the account's own photo, so a bad file fails the same way.
+          const media = await loadProfilePicture(source ?? {});
+          await sock.updateProfilePicture(jid, media.buffer);
+          const picture = await orNullAfter(sock.profilePictureUrl(jid, "image"), PROFILE_LOOKUP_MS);
+          return { group_id: jid, action, applied: "group photo updated", profile_pic_url: picture ?? null };
+        }
+        case "remove_picture":
+          await sock.removeProfilePicture(jid);
+          return { group_id: jid, action, applied: "group photo removed" };
         case "get_invite_link": {
           const link = await this.inviteLink(jid);
           return { group_id: jid, action, applied: "invite link fetched", invite_link: link };
@@ -2595,7 +2606,11 @@ export class WhatsAppService implements WhatsAppApi {
     const mine = this.myParticipation(meta);
     if (!mine) throw new WazapError("NOT_A_PARTICIPANT", `The linked account is not in ${jid}.`);
     if (!isAdmin(mine)) {
-      throw new WazapError("NOT_ADMIN", `"${action}" needs admin rights in "${meta.subject}".`);
+      throw new WazapError(
+        "NOT_ADMIN",
+        `"${action}" needs admin rights in "${meta.subject}".`,
+        "Ask an admin of the group to make the linked account an admin, or to make this change themselves"
+      );
     }
   }
 
@@ -3463,6 +3478,8 @@ const ADMIN_ACTIONS = new Set<GroupAction>([
   "demote",
   "set_subject",
   "set_description",
+  "set_picture",
+  "remove_picture",
   "get_invite_link",
   "revoke_invite_link",
 ]);

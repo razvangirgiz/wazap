@@ -116,6 +116,7 @@ Work through the messages once and collect:
 - **Asks of the user**: every mention or reply to them, plus open questions nobody answered that fall on the user. A `call` message in the group after one of these, with `call.outcome` `answered`, means the user was on that group call: say so and treat the ask as probably handled, the way `whatsapp-inbox` does.
 - **Open threads**: questions still without an answer, for anyone.
 - **Polls**: the question and options (`[poll] …`); wazap cannot read votes, so say that if the user asks who voted.
+- **Who joined, left or changed what**: group notices read as `[Medeea added Ana (40723124956)]`, with `system.actor` and `system.targets` naming the people. Report them from there; a notice that names no target says so, and a new member is never paired with whoever happened to post nearby.
 
 Skip greetings, reactions, stickers, and messages that only acknowledge.
 
@@ -266,7 +267,7 @@ Approval is per message, even after "just send it" for a batch, when the recipie
 
 ### Profile picture
 
-`set_profile_picture` changes the linked account's photo. It is not a chat message and there is no draft. Show the image (`file_path` or `url`) and wait for a yes, then call it. JPEG, PNG or WebP only, at most 10 MB. It does not remove the photo and does not change a group avatar.
+`set_profile_picture` changes the linked account's photo; `manage_group` with `action: "set_picture"` changes a group's, and `action: "remove_picture"` takes a group's down (both need admin rights). None of them is a chat message and there is no draft: every contact or member sees the change at once. Show the image (`file_path` or `url`) and wait for a yes, then call it. JPEG, PNG or WebP only, at most 10 MB. `set_profile_picture` does not remove the account's own photo.
 
 ### Out of scope
 

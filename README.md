@@ -286,7 +286,7 @@ them. `--dry-run` prints the plan and touches nothing.
 | `wait_for_messages` | read | Block up to 55 s until a message arrives, then return it with a cursor for the next call. `addressed_to_me` wakes only for direct messages, @-mentions and replies. |
 | `search_messages` | read | Text search across the locally held messages; `since`, `until` and `from` narrow it. |
 | `recall` | read | Semantic search over the whole indexed history: matches by meaning, so a paraphrase or another language still hits, and it finds messages too old for `search_messages`. Off until [turned on](#semantic-recall). |
-| `get_message` | read | One message in full, with its quoted message and reactions. |
+| `get_message` | read | One message in full, with its quoted message and each reaction with who left it. |
 | `search_contacts` | read | Find contacts by name, number, tag or detail; `tag` alone lists everyone filed under it. |
 | `sync_contacts` | read | Fetch the phone's address book from WhatsApp again, when names are missing. |
 | `get_contact` | read | Name, number, about text, profile picture. |
@@ -305,7 +305,7 @@ them. `--dry-run` prints the plan and touches nothing.
 | `set_profile_picture` | write | Set the linked account's own profile photo from a local path or URL. Hits WhatsApp immediately. |
 | `manage_chat` | write | Archive, pin, mute (8h by default), mark read/unread. |
 | `create_group` | write | Create a group and add participants. |
-| `manage_group` | write | Add, remove, promote, demote, leave, rename, invite links. |
+| `manage_group` | write | Add, remove, promote, demote, leave, rename, set or remove the group photo, invite links. |
 | `save_contact` | write | Add a number to the account's WhatsApp contacts, or rename an entry; `save_on_phone` (default) also writes the phone's own address book. |
 | `remove_contact` | write | Drop a contact entry; the chat and its history stay. |
 

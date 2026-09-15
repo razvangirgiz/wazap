@@ -155,8 +155,48 @@ export interface MessageView {
   /** What a voice note or audio message says, once it has been transcribed. */
   transcript?: string;
   forwarded: boolean;
-  reactions?: Array<{ emoji: string; sender: string }>;
+  /** One per person who reacted; `name` resolves `sender` the way a message's sender is. */
+  reactions?: Array<{ emoji: string; sender: string; name: string }>;
+  /** A group notice spelled out: who made which change, to whom. */
+  system?: SystemEvent;
   edited: boolean;
+}
+
+/** Someone a group notice names, resolved the way a sender is. */
+export interface EventParty {
+  id: string;
+  name: string;
+  phone?: string;
+}
+
+/** The change behind a group notice, in manage_group's words where it has one. */
+export type SystemEventAction =
+  | "create"
+  | "add"
+  | "remove"
+  | "promote"
+  | "demote"
+  | "leave"
+  | "join_via_link"
+  | "change_number"
+  | "set_subject"
+  | "set_description"
+  | "set_picture"
+  | "reset_invite_link"
+  | "set_announcement_only"
+  | "set_info_locked"
+  | "set_add_mode"
+  | "set_join_approval"
+  | "set_member_label";
+
+export interface SystemEvent {
+  action: SystemEventAction;
+  /** Absent when WhatsApp did not say who made the change. */
+  actor?: EventParty;
+  /** Whom the change was made to; empty for a change to the group itself. */
+  targets: EventParty[];
+  /** The new subject or description, or the new state of a setting. */
+  value?: string;
 }
 
 export interface RecentConversation {
@@ -339,6 +379,8 @@ export type GroupAction =
   | "leave"
   | "set_subject"
   | "set_description"
+  | "set_picture"
+  | "remove_picture"
   | "get_invite_link"
   | "revoke_invite_link";
 
@@ -354,6 +396,8 @@ export interface GroupActionResult {
   applied: string;
   participants?: ParticipantResult[];
   invite_link?: string;
+  /** After set_picture: the new photo's URL, or null while WhatsApp has not published one. */
+  profile_pic_url?: string | null;
 }
 
 export interface MediaSource {
@@ -450,6 +494,7 @@ export interface WhatsAppApi {
     groupId: string,
     action: GroupAction,
     participantIds?: string[],
-    value?: string
+    value?: string,
+    source?: MediaSource
   ): Promise<GroupActionResult>;
 }

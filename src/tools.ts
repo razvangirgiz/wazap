@@ -243,8 +243,9 @@ link_account when it says no account is linked yet.
   do not retry or route around it, tell the user. A draft flagged
   unnamed_recipient goes to someone outside the address book: the name shown
   is their public profile name, not a saved contact — say so to the user.
-- Profile picture: set_profile_picture changes the linked account's photo.
-  Show the image and wait for a yes first; the call hits WhatsApp immediately.
+- Profile picture: set_profile_picture changes the linked account's photo;
+  manage_group set_picture / remove_picture changes a group's. Show the image
+  and wait for a yes first; these calls hit WhatsApp immediately.
 - Media: a message with has_media=true → download_media(message_id).
 - Groups: get_group_info before manage_group; most actions need admin rights.
 
@@ -257,6 +258,12 @@ which look like a phone number and are not one.
 WhatsApp's own notices (device linking, group membership, encryption) have
 \`type: "system"\` and are left out of get_recent_messages unless you pass
 include_system: true.
+A group notice says who made which change: "[Medeea added Ana (40723124956)]",
+with \`system: {action, actor, targets, value}\` naming the same people. Report
+a membership change from there; never pair a new member with whoever posted
+nearby.
+Reactions ride on the message they answer: read_messages tags them as
+"❤️×2 😍", and get_message lists each one with who left it.
 A voice note reads as "[voice message · 0:42]"; once transcribed, what was said
 follows the placeholder in quotes and is carried bare in \`transcript\`.
 Call transcribe_audio(message_id) on a voice note that has no transcript yet.
@@ -897,7 +904,7 @@ search_messages does.`,
     name: "get_message",
     title: "Get one WhatsApp message in full",
     description: `The complete message behind a message_id, including the quoted message it
-replies to, its reactions, and its media metadata. Use it after search_messages
+replies to, each reaction with who left it, and its media metadata. Use it after search_messages
 or read_messages when you need the context around a single message.
 
 The id also resolves in its raw form: \`false_<lid>@lid_<stanza>\` works even
@@ -927,7 +934,8 @@ is the name \`name\` shows) and \`name_source\` ("contact", "pushname" or
           : { binding: resolved, message: await getMessageView(wa, message_id) };
       const [identified] = await withSenderIdentity(binding.wa, [message]);
       const view = identified ?? message;
-      return ok(renderMessages("Message", [view]), {
+      const text = [renderMessages("Message", [view]), reactionLine(view)].filter(Boolean).join("\n");
+      return ok(text, {
         ...(view as unknown as Record<string, unknown>),
         account_id: binding.id,
       });
@@ -1460,6 +1468,10 @@ privacy settings require an invite link) or failed.`,
     comes back with status ok, invite_needed or failed
   - leave — DESTRUCTIVE, rejoining needs an invite
   - set_subject / set_description — need value
+  - set_picture — needs exactly one of file_path / url: JPEG, PNG or WebP, at
+    most 10 MB. Every member sees it at once and there is no draft: show the
+    image and wait for a yes first
+  - remove_picture — takes the group photo down; ask first the same way
   - get_invite_link / revoke_invite_link
 
 Everything except leave requires the linked account to be a group admin; call
@@ -1475,17 +1487,21 @@ get_group_info first to check.`,
           "leave",
           "set_subject",
           "set_description",
+          "set_picture",
+          "remove_picture",
           "get_invite_link",
           "revoke_invite_link",
         ])
         .describe("Group action to perform"),
       participant_ids: z.array(z.string().min(1)).max(256).optional().describe("Targets of add/remove/promote/demote"),
       value: z.string().max(2048).optional().describe("New subject or description"),
+      file_path: z.string().min(1).optional().describe("set_picture: absolute path of a local JPEG, PNG or WebP"),
+      url: z.string().url().optional().describe("set_picture: public http(s) URL to fetch and use as the photo"),
     },
     write: true,
     destructive: true,
-    handler: async ({ group_id, action, participant_ids, value }, { wa }) => {
-      const result = await wa.manageGroup(group_id, action, participant_ids, value);
+    handler: async ({ group_id, action, participant_ids, value, file_path, url }, { wa }) => {
+      const result = await wa.manageGroup(group_id, action, participant_ids, value, { file_path, url });
       const text = [result.applied, ...renderParticipants(result.participants ?? [])].join("\n");
       return ok(text, result as unknown as Record<string, unknown>);
     },
@@ -1633,6 +1649,19 @@ function senderLabel(m: AnyMessage, introduced: Set<string>): string {
 /** A rendered message, with or without the resolved sender identity fields. */
 type AnyMessage = MessageView | IdentifiedMessage;
 
+/** "❤️×2 😍": each emoji once, in the order it first came, counted when more than one person chose it. */
+function reactionTag(reactions: ReadonlyArray<{ emoji: string }>): string {
+  const counts = new Map<string, number>();
+  for (const { emoji } of reactions) counts.set(emoji, (counts.get(emoji) ?? 0) + 1);
+  return [...counts].map(([emoji, n]) => (n > 1 ? `${emoji}×${n}` : emoji)).join(" ");
+}
+
+/** Who left which reaction, for the one message get_message renders: "reactions: ❤️ Medeea, 😍 Lory". */
+function reactionLine(m: AnyMessage): string | null {
+  if (!m.reactions?.length) return null;
+  return `  reactions: ${m.reactions.map((r) => `${r.emoji} ${r.name}`).join(", ")}`;
+}
+
 function renderMessages(
   title: string,
   messages: ReadonlyArray<AnyMessage>,
@@ -1650,7 +1679,7 @@ function renderMessages(
       m.forwarded ? "forwarded" : null,
       m.edited ? "edited" : null,
       m.quoted ? "reply" : null,
-      m.reactions?.length ? m.reactions.map((r) => r.emoji).join("") : null,
+      m.reactions?.length ? reactionTag(m.reactions) : null,
     ].filter(Boolean);
     lines.push(
       `- **${senderLabel(m, introduced)}** · ${m.age}${tags.length ? ` [${tags.join(", ")}]` : ""} · id: \`${m.message_id}\``

@@ -362,7 +362,7 @@ test("a reaction lands on the message it answers, never as a line of its own, an
       ["👍", ME],
     ]
   );
-  assert.match(read.content[0].text, /\[❤️👍\]/);
+  assert.match(read.content[0].text, /\[❤️ 👍\]/);
 
   react("");
   read = await call("read_messages", { chat_id: ANA });
@@ -375,4 +375,45 @@ test("a reaction lands on the message it answers, never as a line of its own, an
   const recent = await call("wait_for_messages", { timeout_seconds: 1 });
   assert.equal(recent.structuredContent.timed_out, true, "a reaction wakes no wait");
   assert.equal(svc.store.serialize().reactions[`false_${ANA}_${target}`][ME], "👍", "and it is written to disk");
+});
+
+test("in a group, read_messages counts the reactions and get_message says who left each one", async () => {
+  const { call, arrive } = setup();
+  const photo = arrive(GROUP, { imageMessage: { mimetype: "image/jpeg" } }, { participant: ANA });
+  const react = (text, from) =>
+    arrive(
+      GROUP,
+      { reactionMessage: { key: { remoteJid: GROUP, fromMe: false, id: photo, participant: ANA }, text } },
+      from === ME ? { fromMe: true } : { participant: from }
+    );
+  react("❤️", ANA);
+  react("😍", DAN);
+  react("❤️", ME);
+
+  const read = await call("read_messages", { chat_id: GROUP });
+  assert.match(read.content[0].text, /\[image, ❤️×2 😍\]/);
+
+  const id = `false_${GROUP}_${photo}`;
+  let one = await call("get_message", { message_id: id });
+  assert.match(one.content[0].text, /reactions: ❤️ Ana, 😍 Dan, ❤️ Răzvan/);
+  assert.deepEqual(
+    one.structuredContent.reactions.map((r) => [r.emoji, r.name]),
+    [
+      ["❤️", "Ana"],
+      ["😍", "Dan"],
+      ["❤️", "Răzvan"],
+    ]
+  );
+
+  react("👍", DAN);
+  react("", ANA);
+  one = await call("get_message", { message_id: id });
+  assert.deepEqual(
+    one.structuredContent.reactions.map((r) => [r.emoji, r.name]),
+    [
+      ["👍", "Dan"],
+      ["❤️", "Răzvan"],
+    ],
+    "a changed reaction updates in place, a withdrawn one is gone"
+  );
 });
