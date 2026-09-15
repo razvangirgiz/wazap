@@ -14,7 +14,6 @@ import makeWASocket, {
   ALL_WA_PATCH_NAMES,
   DisconnectReason,
   downloadMediaMessage,
-  jidNormalizedUser,
   normalizeMessageContent,
   proto,
   type Chat as BaileysChat,
@@ -31,7 +30,8 @@ import { clearSession, readLinkedAccount, useAtomicAuthState, type LinkedAccount
 import { CallTracker, callMessage, isTrackedCall, type CallEntry } from "./calls.js";
 import { BAILEYS_VERSION, WAZAP_VERSION, writesHints, type AccountPaths, type Config } from "./config.js";
 import { asWazapError, RELINK_FIX, RESET_FIX, WazapError } from "./errors.js";
-import { isGroupId, isNoiseJid, isStatusJid, normalizePhone, resolveChatId, STATUS_JID } from "./ids.js";
+import { lidKey } from "./identity.js";
+import { isGroupId, isNoiseJid, isStatusJid, normalizePhone, STATUS_JID } from "./ids.js";
 import { log, logError } from "./logger.js";
 import { Notes } from "./notes.js";
 import {
@@ -322,12 +322,6 @@ export class WhatsAppService implements WhatsAppApi {
   private readonly groupCache = new Map<string, GroupMetadata>();
   /** Groups whose metadata WhatsApp refused, so we stop asking on every read. */
   private readonly unreadableGroups = new Set<string>();
-  /** `<user>@lid` to the phone-number jid, so ids we hand out stay canonical. */
-  private readonly lidToPn = new Map<string, string>();
-  /** The same, for naming only, and it holds more. See `learnLidPhone`. */
-  private readonly lidPhones = new Map<string, string>();
-  /** The other way round, so a phone jid can be named from what was learned under its lid. */
-  private readonly phoneLids = new Map<string, string>();
   private readonly store = new Store();
   private readonly calls = new CallTracker();
   private readonly paths: AccountPaths;
@@ -1721,7 +1715,7 @@ export class WhatsAppService implements WhatsAppApi {
    */
   private async forgetChat(jid: string, deleted: boolean): Promise<void> {
     // Lines and rows filed before the chat's number was learned sit under its lid.
-    const lid = this.phoneLids.get(jid);
+    const lid = this.store.lids.lidOf(jid);
     const jids = lid ? [jid, lid] : [jid];
     this.forgetMessages([...(this.store.byChat.get(jid) ?? [])]);
     if (!this.stopped) this.recallQueue?.forgetChats(jids);
@@ -2583,11 +2577,7 @@ export class WhatsAppService implements WhatsAppApi {
   }
 
   private isMe(jid: string): boolean {
-    const own = this.ownJid();
-    if (!own) return false;
-    if (this.canonical(jid) === own) return true;
-    const lid = this.sockClient?.user?.lid;
-    return lid !== undefined && jidNormalizedUser(lid) === jidNormalizedUser(jid);
+    return this.store.lids.isSelf(jid, this.ownJid(), this.sockClient?.user?.lid);
   }
 
   private armSyncDeadline(): void {
@@ -2952,7 +2942,7 @@ export class WhatsAppService implements WhatsAppApi {
   }
 
   private resolveId(input: string): string {
-    return resolveChatId(input, (lid) => this.lidToPn.get(lid));
+    return this.store.lids.resolve(input);
   }
 
   /** A contact mutation keys on a person: groups and noise jids are caller errors, not contacts. */
@@ -2966,23 +2956,28 @@ export class WhatsAppService implements WhatsAppApi {
 
   /** The pn/lid fields a ContactAction carries, from the id itself and the lid table. */
   private contactJids(jid: string): Pick<proto.SyncActionValue.IContactAction, "lidJid" | "pnJid"> {
-    if (jid.endsWith("@lid")) {
-      const pn = this.lidToPn.get(jid);
-      return pn ? { lidJid: jid, pnJid: pn } : { lidJid: jid };
-    }
-    const lid = this.phoneLids.get(jid);
-    return lid ? { pnJid: jid, lidJid: lid } : { pnJid: jid };
+    const alias = this.store.lids.aliasOf(jid);
+    if (jid.endsWith("@lid")) return alias ? { lidJid: jid, pnJid: alias } : { lidJid: jid };
+    return alias ? { pnJid: jid, lidJid: alias } : { pnJid: jid };
   }
 
   /** Canonical form, or the input unchanged for jids wazap does not address
    * (status broadcasts, newsletters). */
   private canonical(jid: string): string {
-    if (!jid) return "";
-    try {
-      return resolveChatId(jid, (lid) => this.lidToPn.get(lid));
-    } catch {
-      return jid;
-    }
+    return this.store.lids.canonical(jid);
+  }
+
+  /**
+   * The lid → number table under the two names it had while ids and naming
+   * kept separate copies of it; tests still read both. A copy, so nothing
+   * writes a pairing past learnLid.
+   */
+  private get lidToPn(): ReadonlyMap<string, string> {
+    return new Map(this.store.lids);
+  }
+
+  private get lidPhones(): ReadonlyMap<string, string> {
+    return this.lidToPn;
   }
 
   /**
@@ -2996,17 +2991,22 @@ export class WhatsAppService implements WhatsAppApi {
     else if (contact.id?.endsWith("@s.whatsapp.net")) this.learnLid(contact.lid, contact.id);
   }
 
-  /** A pairing WhatsApp stated in a field meant for it, so ids may follow it. */
+  /**
+   * A pairing WhatsApp stated in a field meant for it, so ids may follow it:
+   * the number becomes canonical, a pushname seen under either id names the
+   * other too, and any chat or contact filed under the lid folds into the
+   * phone one, history included, so nothing splits.
+   */
   private learnLid(lid: string, pn: string): void {
     if (!lid || !pn) return;
+    if (this.store.lids.learn(lid, pn)) this.markStoreDirty();
     const key = lidKey(lid);
-    const phone = jidNormalizedUser(pn);
-    this.lidToPn.set(key, phone);
-    if (this.store.lids.get(key) !== phone) {
-      this.store.lids.set(key, phone);
-      this.markStoreDirty();
+    const phone = this.store.lids.phoneOf(key)!;
+    const pushed = this.store.pushNames.get(key) ?? this.store.pushNames.get(phone);
+    if (pushed) {
+      this.store.pushNames.set(key, pushed);
+      this.store.pushNames.set(phone, pushed);
     }
-    this.learnLidPhone(lid, pn);
     this.foldAlias(key);
   }
 
@@ -3054,30 +3054,12 @@ export class WhatsAppService implements WhatsAppApi {
   }
 
   /**
-   * The naming half of a pairing: who a lid is, for display. `learnLid` calls
-   * it and also makes the number canonical, folding any chat or contact filed
-   * under the lid into the phone one, history included, so nothing splits.
-   */
-  private learnLidPhone(lid: string, pn: string): void {
-    if (!lid || !pn) return;
-    const key = lidKey(lid);
-    const phone = jidNormalizedUser(pn);
-    this.lidPhones.set(key, phone);
-    this.phoneLids.set(phone, key);
-    const pushed = this.store.pushNames.get(key) ?? this.store.pushNames.get(phone);
-    if (pushed) {
-      this.store.pushNames.set(key, pushed);
-      this.store.pushNames.set(phone, pushed);
-    }
-  }
-
-  /**
    * Ask Baileys for the numbers behind the LIDs we are about to name. It answers
    * from the table the account has already synced, so this is a lookup and not a
    * fetch, and it covers LIDs no chat, contact or group ever paired.
    */
   private async learnLidPhones(jids: Iterable<string>): Promise<void> {
-    const missing = [...new Set(jids)].filter((jid) => jid.endsWith("@lid") && !this.lidPhones.has(jid));
+    const missing = [...new Set(jids)].filter((jid) => jid.endsWith("@lid") && this.store.lids.phoneOf(jid) === undefined);
     if (missing.length === 0) return;
     const mappings = await this.sockClient?.signalRepository.lidMapping.getPNsForLIDs(missing).catch(() => null);
     // A pairing from WhatsApp's own table is as good as one from a contact:
@@ -3101,7 +3083,7 @@ export class WhatsAppService implements WhatsAppApi {
       return this.store.chats.get(jid)?.name || this.groupCache.get(jid)?.subject || jid;
     }
 
-    const alias = jid.endsWith("@lid") ? this.lidPhones.get(jid) : this.phoneLids.get(jid);
+    const alias = this.store.lids.aliasOf(jid);
     for (const known of alias ? [jid, alias] : [jid]) {
       const contact = this.store.contacts.get(known);
       const name =
@@ -3426,7 +3408,7 @@ export class WhatsAppService implements WhatsAppApi {
   }
 
   private contactSummary(jid: string, contact?: BaileysContact): ContactSummary {
-    const phoneJid = jid.endsWith("@lid") ? (this.lidPhones.get(jid) ?? jid) : jid;
+    const phoneJid = jid.endsWith("@lid") ? (this.store.lids.phoneOf(jid) ?? jid) : jid;
     const number = phoneJid.endsWith("@s.whatsapp.net") ? (phoneJid.split("@")[0] ?? null) : null;
     const details = this.notes.fieldsFor(jid) ?? this.notes.fieldsFor(this.canonical(jid));
     return {
@@ -3579,7 +3561,8 @@ export class WhatsAppService implements WhatsAppApi {
    */
   private voteTarget(vote: EncryptedVote, chatJid: string): { sid: string; raw: WAMessage } | undefined {
     const remote = vote.targetKey.remoteJid;
-    const chats = [chatJid, remote ? this.canonical(remote) : "", this.lidPhones.get(chatJid), this.phoneLids.get(chatJid)];
+    const lids = this.store.lids;
+    const chats = [chatJid, remote ? this.canonical(remote) : "", lids.phoneOf(chatJid), lids.lidOf(chatJid)];
     const mine = Boolean(vote.targetKey.fromMe);
     for (const chat of new Set(chats)) {
       if (!chat) continue;
@@ -3600,19 +3583,11 @@ export class WhatsAppService implements WhatsAppApi {
    */
   private voteSpellings(raw: WAMessage): string[] {
     const key = raw.key;
-    const seeds = key.fromMe
-      ? [this.ownJid(), this.sockClient?.user?.id, this.sockClient?.user?.lid]
-      : [key.participant, key.participantAlt, raw.participant, key.remoteJid, key.remoteJidAlt];
-    const spellings: string[] = [];
-    for (const seed of seeds) {
-      if (!seed || isGroupId(seed) || isStatusJid(seed)) continue;
-      const jid = jidNormalizedUser(seed);
-      const canonical = this.canonical(jid);
-      for (const one of [jid, canonical, this.lidPhones.get(jid), this.phoneLids.get(jid), this.phoneLids.get(canonical)]) {
-        if (one && !spellings.includes(one)) spellings.push(one);
-      }
-    }
-    return spellings;
+    return this.store.lids.spellings(
+      key.fromMe
+        ? [this.ownJid(), this.sockClient?.user?.id, this.sockClient?.user?.lid]
+        : [key.participant, key.participantAlt, raw.participant, key.remoteJid, key.remoteJidAlt]
+    );
   }
 
   /** Votes and responses that arrived before their poll or event fold onto it the moment it lands. */
@@ -4092,10 +4067,6 @@ function callDetail(raw: WAMessage, info: CallInfo): number {
 /** The own enumerable fields whose value is not undefined, so a spread cannot erase with "unknown". */
 function definedOnly<T extends object>(value: T): Partial<T> {
   return Object.fromEntries(Object.entries(value).filter(([, v]) => v !== undefined)) as Partial<T>;
-}
-
-function lidKey(lid: string): string {
-  return `${jidNormalizedUser(lid).split("@")[0]}@lid`;
 }
 
 function isAdmin(participant: GroupParticipant): boolean {

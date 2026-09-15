@@ -5,6 +5,7 @@
  * snapshot under the data dir so a restart does not start blind.
  */
 import { proto, type Chat as BaileysChat, type Contact as BaileysContact, type WAMessage } from "baileys";
+import { LidRegistry } from "./identity.js";
 import { isNoiseJid } from "./ids.js";
 import { isControlMessage, messageTimestampMs, protoNumber, viewText } from "./messages.js";
 import type { TranscriptRecord } from "./transcribe/index.js";
@@ -159,8 +160,8 @@ export class Store {
   private readonly encoded = new Map<string, string>();
   /** Stories (status updates), newest last. Not a chat: they never join a ring and expire after a day. */
   readonly stories: string[] = [];
-  /** lid → phone jid, every pairing learned, so a restart still knows who a lid-filed message is from. */
-  readonly lids = new Map<string, string>();
+  /** Every lid ↔ number pairing learned, so a restart still knows who a lid-filed message is from. */
+  readonly lids = new LidRegistry();
 
   /** See `needsContactResync`: it keeps a full resync from repeating forever. */
   contactsResyncedAt: number | null = null;
@@ -392,7 +393,7 @@ export class Store {
       messages: {},
       byChat: {},
       pushNames: Object.fromEntries(this.pushNames),
-      lids: Object.fromEntries(this.lids),
+      lids: this.lids.toJSON(),
       ...(this.contactsResyncedAt === null ? {} : { contactsResyncedAt: this.contactsResyncedAt }),
     };
     for (const [jid, chat] of this.chats) {
@@ -442,7 +443,7 @@ export class Store {
     }
     for (const [jid, contact] of Object.entries(snapshot.contacts ?? {})) this.contacts.set(jid, contact);
     for (const [jid, name] of Object.entries(snapshot.pushNames ?? {})) this.pushNames.set(jid, name);
-    for (const [lid, pn] of Object.entries(snapshot.lids ?? {})) this.lids.set(lid, pn);
+    this.lids.hydrate(snapshot.lids ?? {});
     this.contactsResyncedAt = snapshot.contactsResyncedAt ?? null;
     for (const [sid, b64] of Object.entries(snapshot.messages ?? {})) {
       const raw = decodeMessage(b64);
