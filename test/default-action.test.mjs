@@ -44,12 +44,12 @@ for (const { name, config, stdin, stderr, expect } of CASES) {
 
 test("bare wazap with piped stdio serves rather than greeting", async () => {
   const { toolNames } = await runSmoke();
-  assert.equal(toolNames.length, 37);
+  assert.equal(toolNames.length, 38);
 });
 
 test("explicit `wazap serve` with piped stdio still answers initialize", async () => {
   const { toolNames, status } = await runSmoke({ args: ["serve"] });
-  assert.equal(toolNames.length, 37);
+  assert.equal(toolNames.length, 38);
   assert.equal(status.status, "not_linked");
 });
 

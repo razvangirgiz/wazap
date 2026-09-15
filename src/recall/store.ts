@@ -356,6 +356,16 @@ export class RecallStore {
     return this.tombstone(sids);
   }
 
+  /**
+   * Tombstone every row filed under these chats: a cleared or deleted chat
+   * leaves the index whole, rows the live store no longer holds included.
+   */
+  removeChats(jids: string[]): Promise<void> {
+    const chats = new Set(jids);
+    const sids = [...this.live.values()].filter((record) => chats.has(record.jid)).map((record) => record.sid);
+    return this.tombstone(sids);
+  }
+
   private tombstone(sids: string[]): Promise<void> {
     return this.enqueue(async () => {
       if (this.closed) return;

@@ -1296,6 +1296,8 @@ export function buildMessageView(raw: WAMessage, ctx: MessageViewContext): Messa
   if (ctx.reactions.length > 0) {
     view.reactions = ctx.reactions.map((r) => ({ ...r, name: ctx.nameFor(ctx.canonical(r.sender)) }));
   }
+  const mentions = mentionsView(context, ctx);
+  if (mentions.length > 0) view.mentions = mentions;
   if (event) view.system = event.system;
   const poll = pollOf(raw);
   if (poll) view.poll = pollView(poll, ctx);
@@ -1342,6 +1344,15 @@ function deliveryView(receipt: Receipt, ctx: MessageViewContext): Delivery | und
   if (read.length > 0) delivery.read_by = receivers(read);
   if (delivered.length > 0) delivery.delivered_to = receivers(delivered);
   return delivery;
+}
+
+/** Each person the message @-mentions, once and in the order named: a lid and its number are the same person. */
+function mentionsView(context: proto.IContextInfo | undefined, ctx: MessageViewContext): Voter[] {
+  const ids = new Set<string>();
+  for (const jid of context?.mentionedJid ?? []) {
+    if (typeof jid === "string" && jid.length > 0) ids.add(ctx.canonical(jid));
+  }
+  return [...ids].map((id) => ({ id, name: ctx.nameFor(id) }));
 }
 
 function voterOf(jid: string, ctx: MessageViewContext): Voter {

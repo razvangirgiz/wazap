@@ -176,6 +176,8 @@ export interface MessageView {
   forwarded: boolean;
   /** One per person who reacted; `name` resolves `sender` the way a message's sender is. */
   reactions?: Array<{ emoji: string; sender: string; name: string }>;
+  /** Who the message @-mentions, each once, resolved the way a reaction's sender is. */
+  mentions?: Array<{ id: string; name: string }>;
   /** A group notice spelled out: who made which change, to whom. */
   system?: SystemEvent;
   /** On a poll: its options, each with who chose it. */
@@ -458,7 +460,31 @@ export interface TranscribeResult {
   cached: boolean;
 }
 
-export type ChatAction = "archive" | "unarchive" | "pin" | "unpin" | "mute" | "unmute" | "mark_read" | "mark_unread";
+export type ChatAction =
+  | "archive"
+  | "unarchive"
+  | "pin"
+  | "unpin"
+  | "mute"
+  | "unmute"
+  | "mark_read"
+  | "mark_unread"
+  | "pin_message"
+  | "unpin_message"
+  | "star_message"
+  | "unstar_message"
+  | "clear"
+  | "delete"
+  | "block"
+  | "unblock";
+
+/** What some chat actions need beside the chat: the hours of a mute or a pin, the message a pin or a star is on. */
+export interface ChatActionOptions {
+  muteHours?: number;
+  messageId?: string;
+  /** How long a pinned message stays pinned: 24, 168 or 720 hours, the choices WhatsApp offers. */
+  pinHours?: number;
+}
 
 export type GroupAction =
   | "add"
@@ -485,6 +511,20 @@ export interface ChatActionResult {
   chat_id: string;
   action: ChatAction;
   applied: string;
+  /** On the actions that take a message: the message acted on. */
+  message_id?: string;
+}
+
+/** A group invite looked at, or acted on. The invite code itself is never part of it. */
+export interface JoinGroupResult {
+  /** "preview": nothing joined yet; "joined": the account is in; "pending_approval": an admin must let it in. */
+  status: "preview" | "joined" | "pending_approval";
+  group_id: string | null;
+  name: string | null;
+  description: string | null;
+  participant_count: number | null;
+  /** New members wait for an admin to approve them; null when WhatsApp did not say. */
+  join_approval: boolean | null;
 }
 
 export interface GroupActionResult {
@@ -587,8 +627,9 @@ export interface WhatsAppApi {
   forwardMessage(messageId: string, toChatId: string): Promise<SentMessage>;
   deleteMessage(messageId: string, forEveryone: boolean): Promise<{ message_id: string; for_everyone: boolean }>;
   setOwnProfilePicture(source: MediaSource): Promise<{ profile_pic_url: string | null }>;
-  manageChat(chatId: string, action: ChatAction, muteHours?: number): Promise<ChatActionResult>;
+  manageChat(chatId: string, action: ChatAction, opts?: ChatActionOptions): Promise<ChatActionResult>;
   createGroup(name: string, participantIds: string[]): Promise<{ chat_id: string; participants: ParticipantResult[] }>;
+  joinGroup(opts: { invite?: string; messageId?: string; confirm: boolean }): Promise<JoinGroupResult>;
   manageGroup(
     groupId: string,
     action: GroupAction,

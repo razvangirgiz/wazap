@@ -27,10 +27,12 @@ const RETRY_MAX_MS = 8_000;
 /** Consecutive batch failures after which indexing is declared dead. */
 const MAX_FAILURES = 5;
 
-/** One queue entry: an index write when `item` is set, a tombstone when not. */
+/** One queue entry: an index write when `item` is set, a whole chat's tombstone when `chats` is, a tombstone otherwise. */
 export interface RecallOp {
   sid: string;
   item?: RecallItem;
+  /** The jids of a cleared or deleted chat; `sid` is then only the queue key. */
+  chats?: string[];
 }
 
 /**
@@ -85,6 +87,20 @@ export class RecallQueue {
     this.pending.delete(op.sid);
     this.pending.set(op.sid, { seq: ++this.seq, op });
     void this.drain();
+  }
+
+  /**
+   * A chat cleared or deleted. Puts still waiting for it are older than that,
+   * so they go now; one entry then tombstones every row the index holds for
+   * it, in its turn, and a put queued after it still lands.
+   */
+  forgetChats(jids: string[]): void {
+    if (this.stopped || this.deadReason !== null || jids.length === 0) return;
+    const chats = new Set(jids);
+    for (const [key, entry] of this.pending) {
+      if (entry.op.item !== undefined && chats.has(entry.op.item.jid)) this.pending.delete(key);
+    }
+    this.enqueue({ sid: `chats:${jids.join(",")}`, chats: jids });
   }
 
   /**
@@ -182,8 +198,11 @@ export class RecallQueue {
 
   /** One batch's puts share an embedding call; tombstones cost no vectors. */
   private async commit(ops: RecallOp[]): Promise<void> {
-    const dels = ops.filter((op) => op.item === undefined).map((op) => op.sid);
+    // Chats first: a put in the same batch was queued after the chat was forgotten.
+    const chats = ops.flatMap((op) => op.chats ?? []);
+    const dels = ops.filter((op) => op.item === undefined && op.chats === undefined).map((op) => op.sid);
     const puts = ops.flatMap((op) => (op.item === undefined ? [] : [op.item]));
+    if (chats.length > 0) await this.store.removeChats(chats);
     if (dels.length > 0) await this.store.remove(dels);
     await this.commitPuts(puts);
   }

@@ -8,7 +8,7 @@
 ```
 
 **WhatsApp for your AI agent.** An MCP server that puts your WhatsApp account —
-chats, messages, media, contacts, groups — behind 37 tools any MCP client can
+chats, messages, media, contacts, groups — behind 38 tools any MCP client can
 call. Pairing-code login, no browser, no phone-number reseller, ~20 MB of RAM.
 
 Built on [Baileys](https://github.com/WhiskeySockets/Baileys), which speaks the
@@ -301,10 +301,11 @@ them. `--dry-run` prints the plan and touches nothing.
 | `react_to_message` | write | Add or remove an emoji reaction. |
 | `forward_message` | write | Draft a forward to another chat. Does not send. |
 | `confirm_send` | write | Send a draft after the user has seen the preview and said yes. |
-| `delete_message` | write | Retract your own message, within WhatsApp's 2-day window; in a group where you are admin, someone else's message too. |
+| `delete_message` | write | `for_everyone: true` retracts your own message, within WhatsApp's 2-day window, and in a group where you are admin someone else's message too. `for_everyone: false` deletes any message for the linked account only, at any age. |
 | `set_profile_picture` | write | Set the linked account's own profile photo from a local path or URL. Hits WhatsApp immediately. |
-| `manage_chat` | write | Archive, pin, mute (8h by default), mark read/unread. |
+| `manage_chat` | write | Archive, pin, mute (8h by default), mark read/unread; pin a message for everyone (24h, 7 days or 30 days) or star it; clear or delete the chat for the linked account; block or unblock a person. |
 | `create_group` | write | Create a group and add participants. |
+| `join_group` | write | Join a group from an invite link or an invite message. Without `confirm: true` it only shows the group's name, description, size and whether an admin must approve; with it, it joins, or leaves the request waiting for an admin. |
 | `manage_group` | write | Add, remove, promote, demote, leave, rename, set or remove the group photo, invite links, list, approve or reject join requests, and change the settings: only admins post, only admins edit the info, who adds members, join approval, disappearing messages. Every member sees a change at once. |
 | `save_contact` | write | Add a number to the account's WhatsApp contacts, or rename an entry; `save_on_phone` (default) also writes the phone's own address book. |
 | `remove_contact` | write | Drop a contact entry; the chat and its history stay. |
