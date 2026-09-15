@@ -41,6 +41,15 @@ export interface StoreSnapshot {
   stories?: string[];
   /** Added in 0.13.0. Pairings learned from WhatsApp's lid table: lid → phone jid. Contacts carry their own; these are the ones only the table knew. */
   lids?: Record<string, string>;
+  /** Added in 0.20.0. Poll votes and event responses on the messages this snapshot keeps: message id → voter jid → vote. */
+  votes?: Record<string, Record<string, Vote>>;
+}
+
+/** One person's standing vote on a poll or answer to an event. An empty choice is a withdrawn vote. */
+export interface Vote {
+  choice: string[];
+  /** When it was cast, epoch ms. */
+  at: number;
 }
 
 /** In-memory state fed from Baileys events, keyed by canonical jid. */
@@ -52,6 +61,11 @@ export class Store {
   readonly byChat = new Map<string, string[]>();
   readonly edited = new Set<string>();
   readonly reactions = new Map<string, Map<string, string>>();
+  /**
+   * Votes on a poll or answers to an event, per voter. A withdrawal stays as an
+   * empty choice, so an older vote that arrives after it cannot bring it back.
+   */
+  readonly votes = new Map<string, Map<string, Vote>>();
   /**
    * The name a sender publishes on their own profile, as WhatsApp attaches it
    * to their messages. It is the only name we get for someone the user has not
@@ -184,6 +198,7 @@ export class Store {
     this.chatOf.delete(sid);
     this.edited.delete(sid);
     this.reactions.delete(sid);
+    this.votes.delete(sid);
     this.transcripts.delete(sid);
     this.searchText.delete(sid);
     this.encoded.delete(sid);
@@ -244,6 +259,22 @@ export class Store {
     return [...map].map(([sender, emoji]) => ({ emoji, sender }));
   }
 
+  /** Set one voter's choice on a poll or event, unless what is there was cast later. */
+  vote(target: string, voter: string, choice: string[], at: number): void {
+    const map = this.votes.get(target) ?? new Map<string, Vote>();
+    const standing = map.get(voter);
+    if (standing && standing.at > at) return;
+    map.set(voter, { choice, at });
+    this.votes.set(target, map);
+  }
+
+  /** The votes that stand, withdrawals left out. */
+  votesFor(sid: string): Array<{ voter: string; choice: string[] }> {
+    const map = this.votes.get(sid);
+    if (!map) return [];
+    return [...map].flatMap(([voter, vote]) => (vote.choice.length > 0 ? [{ voter, choice: vote.choice }] : []));
+  }
+
   serialize(): StoreSnapshot {
     const snapshot: StoreSnapshot = {
       v: 1,
@@ -269,6 +300,7 @@ export class Store {
     }
     const transcripts: Record<string, TranscriptRecord> = {};
     const reactions: Record<string, Record<string, string>> = {};
+    const votes: Record<string, Record<string, Vote>> = {};
     for (const sid of keep) {
       const raw = this.messages.get(sid);
       if (!raw) continue;
@@ -278,9 +310,12 @@ export class Store {
       if (transcript) transcripts[sid] = transcript;
       const reacted = this.reactions.get(sid);
       if (reacted && reacted.size > 0) reactions[sid] = Object.fromEntries(reacted);
+      const voted = this.votes.get(sid);
+      if (voted && voted.size > 0) votes[sid] = Object.fromEntries(voted);
     }
     snapshot.transcripts = transcripts;
     snapshot.reactions = reactions;
+    snapshot.votes = votes;
     return snapshot;
   }
 
@@ -310,6 +345,9 @@ export class Store {
     }
     for (const [sid, byAuthor] of Object.entries(snapshot.reactions ?? {})) {
       if (this.messages.has(sid)) this.reactions.set(sid, new Map(Object.entries(byAuthor)));
+    }
+    for (const [sid, byVoter] of Object.entries(snapshot.votes ?? {})) {
+      if (this.messages.has(sid)) this.votes.set(sid, new Map(Object.entries(byVoter)));
     }
     for (const sid of snapshot.stories ?? []) {
       if (!this.messages.has(sid) || this.stories.includes(sid)) continue;

@@ -115,7 +115,7 @@ Work through the messages once and collect:
 - **Dates and deadlines**: any concrete day, time, or "by Friday", with what it is for.
 - **Asks of the user**: every mention or reply to them, plus open questions nobody answered that fall on the user. A `call` message in the group after one of these, with `call.outcome` `answered`, means the user was on that group call: say so and treat the ask as probably handled, the way `whatsapp-inbox` does.
 - **Open threads**: questions still without an answer, for anyone.
-- **Polls**: the question and options (`[poll] …`); wazap cannot read votes, so say that if the user asks who voted.
+- **Polls and events**: the question and the result from `poll.options`, each option with its `votes` and its `voters` by name; for an event, who is going, maybe or not going from `event_responses`. These are the votes that reached this device, so a result reads as "so far", never as final.
 - **Who joined, left or changed what**: group notices read as `[Medeea added Ana (40723124956)]`, with `system.actor` and `system.targets` naming the people. Report them from there; a notice that names no target says so, and a new member is never paired with whoever happened to post nearby.
 
 Skip greetings, reactions, stickers, and messages that only acknowledge.
@@ -157,7 +157,7 @@ Done collecting when every chat with unread messages appears in exactly one buck
 
 Sort each chat into one bucket:
 
-- **Needs you**: a direct question to the user, a request, a mention of the user in a group (`sender` is not the user and the text addresses them or quotes one of their messages), or money/dates/decisions awaiting them.
+- **Needs you**: a direct question to the user, a request, a mention of the user in a group (`sender` is not the user and the text addresses them or quotes one of their messages), money/dates/decisions awaiting them, or a group poll asking for a decision where the user is not yet among the `voters` in `poll.options`.
 - **Probably handled by call**: a *Needs you* candidate the user has since called. See *Calls* below.
 - **FYI**: information with no ask. Shipping updates, "ok thanks", group chatter that reached a conclusion.
 - **Noise**: promotions, broadcast lists, groups the user is muted in (`muted_until` in the future), forwards without a question.
@@ -189,7 +189,7 @@ One line for all of them, never one per item, and never a repeat of the offer.
 ```
 Needs you (3)
 1. Ana — asks if Thursday 10:00 works for the notary. 5h ago.
-2. Bloc 12 group — Mihai needs your vote on the roof quote by Friday. 1d ago.
+2. Bloc 12 group — Mihai needs your vote on the roof quote by Friday; 9 voted, you have not. 1d ago.
 3. Dan — sent the contract PDF, waiting for your comments. 2d ago.
 
 Probably handled by call (1)

@@ -21,7 +21,7 @@ Work through the messages once and collect:
 - **Dates and deadlines**: any concrete day, time, or "by Friday", with what it is for.
 - **Asks of the user**: every mention or reply to them, plus open questions nobody answered that fall on the user. A `call` message in the group after one of these, with `call.outcome` `answered`, means the user was on that group call: say so and treat the ask as probably handled, the way `whatsapp-inbox` does.
 - **Open threads**: questions still without an answer, for anyone.
-- **Polls**: the question and options (`[poll] …`); wazap cannot read votes, so say that if the user asks who voted.
+- **Polls and events**: the question and the result from `poll.options`, each option with its `votes` and its `voters` by name; for an event, who is going, maybe or not going from `event_responses`. These are the votes that reached this device, so a result reads as "so far", never as final.
 - **Who joined, left or changed what**: group notices read as `[Medeea added Ana (40723124956)]`, with `system.actor` and `system.targets` naming the people. Report them from there; a notice that names no target says so, and a new member is never paired with whoever happened to post nearby.
 
 Skip greetings, reactions, stickers, and messages that only acknowledge.

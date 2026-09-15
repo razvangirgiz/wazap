@@ -286,7 +286,7 @@ them. `--dry-run` prints the plan and touches nothing.
 | `wait_for_messages` | read | Block up to 55 s until a message arrives, then return it with a cursor for the next call. `addressed_to_me` wakes only for direct messages, @-mentions and replies. |
 | `search_messages` | read | Text search across the locally held messages; `since`, `until` and `from` narrow it. |
 | `recall` | read | Semantic search over the whole indexed history: matches by meaning, so a paraphrase or another language still hits, and it finds messages too old for `search_messages`. Off until [turned on](#semantic-recall). |
-| `get_message` | read | One message in full, with its quoted message and each reaction with who left it. |
+| `get_message` | read | One message in full, with its quoted message, each reaction with who left it, and who voted for each option of a poll or answered an event. |
 | `search_contacts` | read | Find contacts by name, number, tag or detail; `tag` alone lists everyone filed under it. |
 | `sync_contacts` | read | Fetch the phone's address book from WhatsApp again, when names are missing. |
 | `get_contact` | read | Name, number, about text, profile picture. |
@@ -295,7 +295,7 @@ them. `--dry-run` prints the plan and touches nothing.
 | `transcribe_audio` | read | Turn a voice note or audio message into text, with the local or the API provider. |
 | `send_message` | write | Draft text, optionally as a reply, with @-mentions. Does not send. |
 | `send_media` | write | Draft an image, video, audio, voice note, document or GIF (`as_gif`: an mp4 loops, a .gif is converted with ffmpeg) from a path or URL. Does not send. |
-| `send_poll` | write | Draft a poll with 2–12 options. Does not send. |
+| `send_poll` | write | Draft a poll with 2–12 options. Does not send. The votes then show on the poll message. |
 | `send_location` | write | Draft a map pin. Does not send. |
 | `edit_message` | write | Edit your own message, within WhatsApp's 15-minute window. |
 | `react_to_message` | write | Add or remove an emoji reaction. |
@@ -339,7 +339,8 @@ often automatic replies.
 
 Every message comes back with a non-empty `text`: media and system messages
 carry a placeholder such as `[image] caption`, `[voice message · 0:42]`, `[deleted]` or
-`[poll] Pizza or pasta?`. Timestamps are ISO 8601 with the machine's UTC offset,
+`[poll] Pizza or pasta?`. A poll also carries each option with who voted for it,
+and an event who answered going, maybe or not going. Timestamps are ISO 8601 with the machine's UTC offset,
 alongside a human `age` like `2h ago`.
 
 ## Voice messages
