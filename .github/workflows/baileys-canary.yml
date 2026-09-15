@@ -1,0 +1,52 @@
+name: Baileys canary
+
+# package.json pins Baileys to one release. This installs the newest version
+# Baileys has published, release candidates included, and runs typecheck and
+# the suite against it, so a Baileys release that breaks wazap shows up here
+# before anyone moves the pin. It saves nothing and gates nothing: a red run is
+# the signal, and main, PRs and tags are unaffected.
+on:
+  schedule:
+    # Mondays, off the top of the hour when scheduled runs queue up.
+    - cron: "23 5 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  canary:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      # The most recently published version on the pinned major line or above.
+      # Not semver precedence: Baileys numbers release candidates rc9, rc10…
+      # with no dot, which semver compares as text, so rc10 sorts below rc9.
+      # Not the `latest` dist-tag, which is whatever Baileys last labelled. And
+      # not plain publish time, because the 6.x legacy line keeps getting
+      # patches after 7.x release candidates.
+      - name: Install the newest Baileys
+        run: |
+          newest=$(npm view baileys time --json | node -e '
+            const times = JSON.parse(require("fs").readFileSync(0, "utf8"));
+            const major = (version) => Number(version.split(".")[0]);
+            const pinned = major(require("./package.json").dependencies.baileys);
+            const [newest] = Object.entries(times)
+              .filter(([version]) => /^\d+\.\d+\.\d+/.test(version) && major(version) >= pinned)
+              .sort((a, b) => Date.parse(b[1]) - Date.parse(a[1]))[0] ?? [];
+            console.log(newest ?? "");
+          ')
+          [ -n "$newest" ] || { echo "no Baileys version on the pinned major line found on npm"; exit 1; }
+          echo "pinned: $(node -p "require('./package.json').dependencies.baileys"), newest: $newest"
+          npm install --no-save "baileys@$newest"
+
+      - run: npm run typecheck
+      - run: npm test

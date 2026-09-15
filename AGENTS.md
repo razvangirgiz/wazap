@@ -30,10 +30,14 @@ user.
 
 ## The gate and the hook
 
-`npm run check` covers what CI runs (`npm ci` then `typecheck` then `npm test`)
-plus lint. The one CI step you cannot run in place is `npm ci`, because it
-wipes `node_modules`; `check` assumes a working install and CI proves the
-clean-install path.
+`npm run check` covers what CI runs on each Node (`npm ci`, then lint,
+typecheck and `npm test`, on Node 22 and 24). The one CI step you cannot run in
+place is `npm ci`, because it wipes `node_modules`; `check` assumes a working
+install and CI proves the clean-install path. CI also runs
+`npm audit --omit=dev --audit-level=high` as its own job, and a weekly
+`Baileys canary` workflow runs typecheck and the suite against the newest
+Baileys on npm; a red canary blocks nothing, it says the pin has a problem
+coming.
 
 A pre-push hook (`scripts/git-hooks/pre-push`) runs the fast part of the gate:
 lint, typecheck, test. `npm run hooks:install` points `core.hooksPath` at that
@@ -54,6 +58,33 @@ and are not committed; `scripts/recall-eval.example.json` shows the shape.
 `Webhook: make message_sent and connection opt-in`, `Docs: the new webhook
 events are opt-in`, `CI: test on every PR`. Releases are `Release X.Y.Z:`.
 Small commits per logical step.
+
+## Releases
+
+A release is one commit and one tag; CI does the publishing.
+
+1. Bump the version in `package.json`, `package-lock.json` (both root
+   entries), `server.json` (top level and the npm package), `manifest.json`,
+   `gemini-extension.json` and `.claude-plugin/plugin.json`.
+   `test/distribution.test.mjs` fails when `server.json`, `manifest.json` or
+   `gemini-extension.json` drift from `package.json`.
+2. Add a `## X.Y.Z` section at the top of `CHANGELOG.md`. It becomes the
+   GitHub Release notes, and publishing refuses a version without one.
+3. Commit as `Release X.Y.Z: <what is in it>`, tag `vX.Y.Z`, push the commit
+   and the tag.
+
+The tag runs `.github/workflows/publish.yml`. The `publish` job checks the tag
+against `package.json` and the CHANGELOG section, lints, typechecks, runs
+`npm publish --provenance` (whose `prepublishOnly` builds and tests), waits
+for the version on npm and publishes `server.json` to the MCP Registry through
+GitHub OIDC. The `release` job then builds `wazap-X.Y.Z.mcpb` and creates the
+GitHub Release with it attached. Run by hand, the workflow refuses anything
+but a tag.
+
+When a step fails after `npm publish`, do not re-run the whole workflow: npm
+refuses the same version twice. `scripts/release-registry.sh` is the manual
+fallback for the registry step. A failed `release` job alone can be re-run
+from the Actions page, since that re-runs only the failed job.
 
 ## Rules that must never break
 
