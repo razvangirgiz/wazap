@@ -398,7 +398,26 @@ export interface GroupInfo {
   participants: GroupParticipantInfo[];
   announcement_only: boolean;
   i_am_admin: boolean;
+  /** Only admins may change the name, description and photo. */
+  info_locked: boolean;
+  /** Who may add members. */
+  member_add_mode: "admins" | "all";
+  /** New members wait for an admin to approve them. */
+  join_approval: boolean;
+  /** How long messages last before they disappear; 0 when disappearing messages are off. */
+  disappearing_seconds: number;
+  /** Present when the group is a community, or belongs to one. */
+  community?: { is_community: boolean; parent_group_id: string | null };
   invite_link?: string;
+}
+
+/** Someone waiting for an admin to let them into a group. */
+export interface JoinRequest {
+  id: string;
+  name: string;
+  requested_at: string | null;
+  /** How they asked, in WhatsApp's words ("invite_link", "linked_group_join", "non_admin_add"), when it says. */
+  method: string | null;
 }
 
 export interface ParticipantResult {
@@ -452,7 +471,15 @@ export type GroupAction =
   | "set_picture"
   | "remove_picture"
   | "get_invite_link"
-  | "revoke_invite_link";
+  | "revoke_invite_link"
+  | "list_join_requests"
+  | "approve_join_requests"
+  | "reject_join_requests"
+  | "set_announcement_only"
+  | "set_info_locked"
+  | "set_add_mode"
+  | "set_join_approval"
+  | "set_disappearing";
 
 export interface ChatActionResult {
   chat_id: string;
@@ -468,6 +495,8 @@ export interface GroupActionResult {
   invite_link?: string;
   /** After set_picture: the new photo's URL, or null while WhatsApp has not published one. */
   profile_pic_url?: string | null;
+  /** After list_join_requests: who is waiting, as WhatsApp listed them. */
+  join_requests?: JoinRequest[];
 }
 
 export interface MediaSource {

@@ -45,4 +45,4 @@ Approval is per message, even after "just send it" for a batch, when the recipie
 
 ## Out of scope
 
-`delete_message` with `for_everyone` and `manage_group` remove/leave run only on an explicit ask naming the message or person. Bulk sends to people who did not write first are the user's account at risk of a WhatsApp ban; say that once and let them decide.
+`delete_message` with `for_everyone` and `manage_group` remove/leave run only on an explicit ask naming the message or person. `delete_message` takes someone else's message only in a group where the linked account is an admin. The same holds for group administration: `manage_group` with `action: "approve_join_requests"` or `"reject_join_requests"` (ids from `"list_join_requests"`), and the settings `"set_announcement_only"`, `"set_info_locked"`, `"set_add_mode"`, `"set_join_approval"` and `"set_disappearing"`, change the group for every member at once. Say what will change and wait for a yes. Bulk sends to people who did not write first are the user's account at risk of a WhatsApp ban; say that once and let them decide.

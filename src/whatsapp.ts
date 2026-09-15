@@ -122,6 +122,7 @@ import type {
   GroupAction,
   GroupActionResult,
   GroupInfo,
+  JoinRequest,
   MediaResult,
   MediaSource,
   MessageType,
@@ -1391,7 +1392,17 @@ export class WhatsAppService implements WhatsAppApi {
         }),
         announcement_only: Boolean(meta.announce),
         i_am_admin: iAmAdmin,
+        info_locked: Boolean(meta.restrict),
+        member_add_mode: meta.memberAddMode ? "all" : "admins",
+        join_approval: Boolean(meta.joinApprovalMode),
+        disappearing_seconds: meta.ephemeralDuration ?? 0,
       };
+      if (meta.isCommunity || meta.linkedParent) {
+        info.community = {
+          is_community: Boolean(meta.isCommunity),
+          parent_group_id: meta.linkedParent ? this.canonical(meta.linkedParent) : null,
+        };
+      }
 
       if (iAmAdmin) {
         const link = await this.inviteLink(jid).catch(() => null);
@@ -1857,14 +1868,30 @@ export class WhatsAppService implements WhatsAppApi {
           "Call delete_message again with for_everyone=true"
         );
       }
-      if (!raw.key.fromMe) {
+      const chat = this.chatOfOrThrow(messageId);
+      let key = raw.key;
+      if (raw.key.fromMe) {
+        if (Date.now() - messageTimestampMs(raw) > RETRACT_WINDOW_MS) {
+          throw new WazapError("RETRACT_WINDOW_EXPIRED", `Message ${messageId} is older than 2 days.`);
+        }
+      } else if (isGroupId(chat)) {
+        // Someone else's message comes down only by a group admin's hand. Baileys
+        // sends it as an admin revoke, and the key must name who sent it. Baileys
+        // documents no time limit for that, so the 2-day window is not assumed here.
+        await this.assertGroupAdmin(chat, "delete_message");
+        const participant = raw.key.participant || raw.participant;
+        if (!participant) {
+          throw new WazapError(
+            "WHATSAPP_ERROR",
+            `WhatsApp did not say who sent ${messageId}, so it cannot be deleted as an admin.`
+          );
+        }
+        key = { ...raw.key, participant };
+      } else {
         throw new WazapError("NOT_OWN_MESSAGE", `Message ${messageId} was not sent by the linked account.`);
       }
-      if (Date.now() - messageTimestampMs(raw) > RETRACT_WINDOW_MS) {
-        throw new WazapError("RETRACT_WINDOW_EXPIRED", `Message ${messageId} is older than 2 days.`);
-      }
-      const { sock, jid } = await this.prepareSend(this.chatOfOrThrow(messageId));
-      await sock.sendMessage(jid, { delete: raw.key });
+      const { sock, jid } = await this.prepareSend(chat);
+      await sock.sendMessage(jid, { delete: key });
       // Deleted means out of the index too — the text does not get to linger on.
       this.recallForget([messageId]);
       return { message_id: messageId, for_everyone: true };
@@ -2002,6 +2029,9 @@ export class WhatsAppService implements WhatsAppApi {
         throw new WazapError("GROUP_NOT_FOUND", `"${groupId}" is not a group id.`, "Group ids end in @g.us");
       }
 
+      // A setting's value is checked first, so a bad one never reaches WhatsApp, not even the admin lookup.
+      const choices = GROUP_SETTINGS[action];
+      const setting = choices ? settingFor(action, value, choices) : undefined;
       if (ADMIN_ACTIONS.has(action)) await this.assertGroupAdmin(jid, action);
       const ids = (participantIds ?? []).map((id) => this.resolveId(id));
       if (PARTICIPANT_ACTIONS.has(action) && ids.length === 0) {
@@ -2061,6 +2091,39 @@ export class WhatsAppService implements WhatsAppApi {
             applied: "invite link revoked",
             ...(link ? { invite_link: link } : {}),
           };
+        }
+        case "list_join_requests": {
+          const listed = await sock.groupRequestParticipantsList(jid);
+          const requests = listed.filter((attrs) => attrs.jid).map((attrs) => this.joinRequest(attrs));
+          return {
+            group_id: jid,
+            action,
+            applied: `${requests.length} pending join request(s)`,
+            join_requests: requests,
+          };
+        }
+        case "approve_join_requests":
+        case "reject_join_requests": {
+          const verdict = action === "approve_join_requests" ? "approve" : "reject";
+          const results = await sock.groupRequestParticipantsUpdate(jid, ids, verdict);
+          this.groupCache.delete(jid);
+          return {
+            group_id: jid,
+            action,
+            applied: `${verdict} ${ids.length} join request(s)`,
+            // A refused approval is not a cue to send an invite, so no invite_needed here.
+            participants: results.map((entry, index) => this.participantResult(entry, ids[index], false)),
+          };
+        }
+        case "set_announcement_only":
+        case "set_info_locked":
+        case "set_add_mode":
+        case "set_join_approval":
+        case "set_disappearing": {
+          if (!setting) throw new WazapError("INVALID_ID", `The "${action}" action needs a value.`);
+          await setting.apply(sock, jid);
+          this.groupCache.delete(jid);
+          return { group_id: jid, action, applied: setting.applied };
         }
       }
     });
@@ -2625,7 +2688,7 @@ export class WhatsAppService implements WhatsAppApi {
     return meta.participants.find((p) => this.isMe(p.id) || (p.phoneNumber && this.isMe(p.phoneNumber)));
   }
 
-  private async assertGroupAdmin(jid: string, action: GroupAction): Promise<void> {
+  private async assertGroupAdmin(jid: string, action: GroupAction | "delete_message"): Promise<void> {
     const meta = await this.groupMeta(jid);
     const mine = this.myParticipation(meta);
     if (!mine) throw new WazapError("NOT_A_PARTICIPANT", `The linked account is not in ${jid}.`);
@@ -2645,13 +2708,32 @@ export class WhatsAppService implements WhatsAppApi {
     return `https://chat.whatsapp.com/${code}`;
   }
 
-  private participantResult(entry: { status: string; jid: string | undefined }, fallback?: string): ParticipantResult {
+  private participantResult(
+    entry: { status: string; jid: string | undefined },
+    fallback?: string,
+    inviteable = true
+  ): ParticipantResult {
     const id = entry.jid ? this.canonical(entry.jid) : (fallback ?? "");
     if (entry.status === "200") return { id, status: "ok" };
-    if (INVITE_NEEDED_CODES.has(entry.status)) {
+    if (inviteable && INVITE_NEEDED_CODES.has(entry.status)) {
       return { id, status: "invite_needed", reason: entry.status };
     }
     return { id, status: "failed", reason: entry.status };
+  }
+
+  /**
+   * One pending join request. Baileys hands over the raw attributes of WhatsApp's
+   * node untyped: `jid`, and `request_time` (seconds) and `request_method` when sent.
+   */
+  private joinRequest(attrs: { [key: string]: string }): JoinRequest {
+    const id = this.canonical(attrs.jid ?? "");
+    const seconds = Number(attrs.request_time);
+    return {
+      id,
+      name: this.displayName(id),
+      requested_at: seconds > 0 ? isoWithOffset(seconds * 1000) : null,
+      method: attrs.request_method || null,
+    };
   }
 
   private resolveId(input: string): string {
@@ -3608,9 +3690,87 @@ const ADMIN_ACTIONS = new Set<GroupAction>([
   "remove_picture",
   "get_invite_link",
   "revoke_invite_link",
+  "list_join_requests",
+  "approve_join_requests",
+  "reject_join_requests",
+  "set_announcement_only",
+  "set_info_locked",
+  "set_add_mode",
+  "set_join_approval",
+  "set_disappearing",
 ]);
 
-const PARTICIPANT_ACTIONS = new Set<GroupAction>(["add", "remove", "promote", "demote"]);
+const PARTICIPANT_ACTIONS = new Set<GroupAction>([
+  "add",
+  "remove",
+  "promote",
+  "demote",
+  "approve_join_requests",
+  "reject_join_requests",
+]);
+
+interface GroupSetting {
+  applied: string;
+  apply: (sock: WASocket, jid: string) => Promise<void>;
+}
+
+const DAY_SECONDS = 86_400;
+
+/** The values each setting action takes, what each asks WhatsApp for, and how the result reads. */
+const GROUP_SETTINGS: Partial<Record<GroupAction, Record<string, GroupSetting>>> = {
+  set_announcement_only: {
+    on: { applied: "only admins can send messages", apply: (sock, jid) => sock.groupSettingUpdate(jid, "announcement") },
+    off: {
+      applied: "every member can send messages",
+      apply: (sock, jid) => sock.groupSettingUpdate(jid, "not_announcement"),
+    },
+  },
+  set_info_locked: {
+    on: { applied: "only admins can edit the group info", apply: (sock, jid) => sock.groupSettingUpdate(jid, "locked") },
+    off: {
+      applied: "every member can edit the group info",
+      apply: (sock, jid) => sock.groupSettingUpdate(jid, "unlocked"),
+    },
+  },
+  set_add_mode: {
+    admins: { applied: "only admins can add members", apply: (sock, jid) => sock.groupMemberAddMode(jid, "admin_add") },
+    all: { applied: "every member can add members", apply: (sock, jid) => sock.groupMemberAddMode(jid, "all_member_add") },
+  },
+  set_join_approval: {
+    on: { applied: "admins approve new members", apply: (sock, jid) => sock.groupJoinApprovalMode(jid, "on") },
+    off: { applied: "new members join without approval", apply: (sock, jid) => sock.groupJoinApprovalMode(jid, "off") },
+  },
+  // The durations WhatsApp offers; 0 is what Baileys turns into "off".
+  set_disappearing: {
+    off: { applied: "disappearing messages off", apply: (sock, jid) => sock.groupToggleEphemeral(jid, 0) },
+    "24h": {
+      applied: "disappearing messages set to 24h",
+      apply: (sock, jid) => sock.groupToggleEphemeral(jid, DAY_SECONDS),
+    },
+    "7d": {
+      applied: "disappearing messages set to 7d",
+      apply: (sock, jid) => sock.groupToggleEphemeral(jid, 7 * DAY_SECONDS),
+    },
+    "90d": {
+      applied: "disappearing messages set to 90d",
+      apply: (sock, jid) => sock.groupToggleEphemeral(jid, 90 * DAY_SECONDS),
+    },
+  },
+};
+
+/** The setting a value names, or INVALID_ID with a fix listing the values the action takes. */
+function settingFor(action: GroupAction, value: string | undefined, choices: Record<string, GroupSetting>): GroupSetting {
+  const key = (value ?? "").trim().toLowerCase();
+  if (Object.hasOwn(choices, key)) return choices[key];
+  const allowed = Object.keys(choices)
+    .map((choice) => `"${choice}"`)
+    .join(", ");
+  throw new WazapError(
+    "INVALID_ID",
+    key ? `"${value}" is not a value the "${action}" action takes.` : `The "${action}" action needs a value.`,
+    `Pass value as one of ${allowed}`
+  );
+}
 
 /** WhatsApp answers "cannot add, invite them instead" with these codes. */
 const INVITE_NEEDED_CODES = new Set(["403", "409"]);
