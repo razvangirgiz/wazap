@@ -43,7 +43,7 @@ import {
   mediaFilename,
 } from "./outgoing-media.js";
 import { makePreview, videoFrame } from "./previews.js";
-import { decodeMessage, encode, Store, type HistoryRecord, type StoreSnapshot } from "./store.js";
+import { decodeMessage, encode, momentsOf, Store, type HistoryRecord, type StoreSnapshot } from "./store.js";
 import {
   buildMessageView,
   callInfo,
@@ -2245,12 +2245,30 @@ export class WhatsAppService implements WhatsAppApi {
           // a fresh row and tombstones the old one.
           this.recallFeedRaw([raw]);
         }
-        if (update.messageTimestamp) {
+        // A receipt on a one-to-one message: sent, delivered, read, played.
+        if (typeof update.status === "number" && raw.key.fromMe) this.store.markStatus(sid, update.status);
+        // A receipt's messageTimestamp is when it was delivered or read, not when
+        // the message was sent: taking it moved a message to the moment it was
+        // read, the user's own on a receipt and theirs when read on the phone.
+        if (update.messageTimestamp && typeof update.status !== "number") {
           raw.messageTimestamp = update.messageTimestamp;
           this.store.noteMessageChanged(sid);
         }
         this.markStoreDirty();
       }
+    });
+
+    // In a group, each member's receipt arrives on its own; the status is theirs combined.
+    sock.ev.on("message-receipt.update", (items) => {
+      for (const { key, receipt } of items) {
+        const jid = key.remoteJid ? this.canonical(key.remoteJid) : undefined;
+        // The account's other devices confirm its messages too; they are not members.
+        if (!jid || !receipt.userJid || this.isMe(receipt.userJid)) continue;
+        const sid = messageIdFor(key, jid);
+        if (!this.store.messages.get(sid)?.key.fromMe) continue;
+        this.store.markReceipt(sid, this.canonical(receipt.userJid), momentsOf(receipt));
+      }
+      this.markStoreDirty();
     });
 
     sock.ev.on("messages.reaction", (items) => {
@@ -2968,6 +2986,11 @@ export class WhatsAppService implements WhatsAppApi {
       edited: this.store.edited.has(sid),
       reactions: this.store.reactionsFor(sid),
       votes: this.store.votesFor(sid),
+      receipt: this.store.receiptFor(
+        sid,
+        (jid) => this.canonical(jid),
+        (jid) => this.isMe(jid)
+      ),
       transcript: this.store.transcripts.get(sid),
     });
   }

@@ -183,6 +183,26 @@ export interface MessageView {
   /** On an event: who answered going, maybe and not going. */
   event_responses?: EventResponses;
   edited: boolean;
+  /** On the account's own messages: how far it got. Absent while WhatsApp has confirmed nothing. */
+  delivery?: Delivery;
+}
+
+export type DeliveryStatus = "error" | "pending" | "sent" | "delivered" | "read" | "played";
+
+export interface Delivery {
+  /** In a group, the furthest any one member got. */
+  status: DeliveryStatus;
+  /** Group members who read it, earliest first. */
+  read_by?: Receiver[];
+  /** Group members it reached who have not read it yet, earliest first. */
+  delivered_to?: Receiver[];
+}
+
+/** A group member a message reached, resolved the way a reaction's sender is; `at` in timestamp's format. */
+export interface Receiver {
+  id: string;
+  name: string;
+  at: string;
 }
 
 /** Someone who voted or answered, resolved the way a reaction's sender is. */

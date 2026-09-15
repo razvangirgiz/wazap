@@ -4,12 +4,15 @@
  */
 
 import { getContentType, proto, type WAMessage, type WAMessageContent, type WAMessageKey } from "baileys";
+import type { Receipt } from "./store.js";
 import type { TranscriptRecord } from "./transcribe/index.js";
 import type {
   CallDirection,
   CallInfo,
   CallKind,
   CallOutcome,
+  Delivery,
+  DeliveryStatus,
   EventParty,
   EventResponses,
   MessageType,
@@ -1233,6 +1236,8 @@ export interface MessageViewContext {
   reactions: Array<{ emoji: string; sender: string }>;
   /** On a poll, the option names each voter chose; on an event, "going", "maybe" or "not_going". */
   votes?: Array<{ voter: string; choice: string[] }>;
+  /** On the account's own messages, how far it got; group members by jid. */
+  receipt?: Receipt;
   transcript?: TranscriptRecord;
   now?: number;
 }
@@ -1295,7 +1300,48 @@ export function buildMessageView(raw: WAMessage, ctx: MessageViewContext): Messa
   const poll = pollOf(raw);
   if (poll) view.poll = pollView(poll, ctx);
   if (a.content?.eventMessage != null) view.event_responses = responsesView(ctx);
+  const delivery = raw.key.fromMe && ctx.receipt ? deliveryView(ctx.receipt, ctx) : undefined;
+  if (delivery) view.delivery = delivery;
   return view;
+}
+
+const DELIVERY_STATUS: Record<number, DeliveryStatus> = {
+  [proto.WebMessageInfo.Status.ERROR]: "error",
+  [proto.WebMessageInfo.Status.PENDING]: "pending",
+  [proto.WebMessageInfo.Status.SERVER_ACK]: "sent",
+  [proto.WebMessageInfo.Status.DELIVERY_ACK]: "delivered",
+  [proto.WebMessageInfo.Status.READ]: "read",
+  [proto.WebMessageInfo.Status.PLAYED]: "played",
+};
+
+/**
+ * The status in words, and in a group who has it: a member who read it is in
+ * `read_by` only, the way the phone's message info lists them. Played counts
+ * as read. A one-to-one message synced from the phone carries receipts too,
+ * but the only person they can name is the chat itself, so they stay out.
+ */
+function deliveryView(receipt: Receipt, ctx: MessageViewContext): Delivery | undefined {
+  const status = receipt.status === undefined ? undefined : DELIVERY_STATUS[receipt.status];
+  if (status === undefined) return undefined;
+  const delivery: Delivery = { status };
+  if (!ctx.chatId.endsWith("@g.us")) return delivery;
+  const read: Array<[string, number]> = [];
+  const delivered: Array<[string, number]> = [];
+  for (const [jid, moments] of Object.entries(receipt.users ?? {})) {
+    const readAt = moments.read ?? moments.played;
+    if (readAt !== undefined) read.push([jid, readAt]);
+    else if (moments.delivered !== undefined) delivered.push([jid, moments.delivered]);
+  }
+  const receivers = (list: Array<[string, number]>) =>
+    list
+      .sort((x, y) => x[1] - y[1])
+      .map(([jid, at]) => {
+        const id = ctx.canonical(jid);
+        return { id, name: ctx.nameFor(id), at: isoWithOffset(at) };
+      });
+  if (read.length > 0) delivery.read_by = receivers(read);
+  if (delivered.length > 0) delivery.delivered_to = receivers(delivered);
+  return delivery;
 }
 
 function voterOf(jid: string, ctx: MessageViewContext): Voter {
