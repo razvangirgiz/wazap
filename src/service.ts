@@ -1,5 +1,17 @@
 import { spawnSync } from "node:child_process";
-import { copyFileSync, existsSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  closeSync,
+  copyFileSync,
+  existsSync,
+  mkdirSync,
+  openSync,
+  readFileSync,
+  readdirSync,
+  realpathSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { homedir, userInfo } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -245,6 +257,65 @@ export const TUNNEL_LABELS: Record<SupervisorName, string> = {
   systemd: "wazap-tunnel.service",
 };
 
+/** A unit on this machine that holds a tunnel open to the server's port. */
+export interface TunnelUnit {
+  label: string;
+  unitFile: string;
+  /** What stops it for good: the unit has to leave the supervisor's directory too. */
+  stop: string;
+}
+
+/** `127.0.0.1:8766` or `localhost:8766`, never `:87660`. */
+function reachesPort(command: string, port: number): boolean {
+  return new RegExp(`(?:127\\.0\\.0\\.1|localhost):${port}(?!\\d)`).test(command);
+}
+
+/** The command a unit file runs: a plist's ProgramArguments, a unit's ExecStart lines. */
+function unitCommand(supervisor: SupervisorName, text: string): string {
+  if (supervisor === "launchd")
+    return /<key>ProgramArguments<\/key>\s*<array>([\s\S]*?)<\/array>/.exec(text)?.[1] ?? "";
+  return text
+    .split("\n")
+    .filter((line) => /^\s*ExecStart\s*=/.test(line))
+    .join("\n");
+}
+
+/**
+ * Every unit in the supervisor's own directory whose command reaches `port` on
+ * loopback: wazap's tunnel, or one set up by hand, which wazap did not write
+ * and never stops. Loopback is only private while this finds nothing.
+ */
+export function tunnelsTo(supervisor: Supervisor, port: number): TunnelUnit[] {
+  const dir = dirname(supervisor.unitFile(TUNNEL_LABELS[supervisor.name]));
+  const extension = supervisor.name === "launchd" ? ".plist" : ".service";
+  let names: string[];
+  try {
+    names = readdirSync(dir)
+      .filter((name) => name.endsWith(extension))
+      .sort();
+  } catch {
+    return [];
+  }
+  const found: TunnelUnit[] = [];
+  for (const name of names) {
+    const unitFile = join(dir, name);
+    let text: string;
+    try {
+      text = readFileSync(unitFile, "utf8");
+    } catch {
+      continue;
+    }
+    if (!reachesPort(unitCommand(supervisor.name, text), port)) continue;
+    if (supervisor.name === "launchd") {
+      const label = /<key>Label<\/key>\s*<string>([^<]+)<\/string>/.exec(text)?.[1] ?? basename(name, extension);
+      found.push({ label, unitFile, stop: `launchctl bootout ${guiDomain()}/${label}; rm ${unitFile}` });
+    } else {
+      found.push({ label: name, unitFile, stop: `systemctl --user disable --now ${name}; rm ${unitFile}` });
+    }
+  }
+  return found;
+}
+
 const UNSUPPORTED_FIX =
   "wazap needs launchd (macOS) or a systemd user session (Linux). On Windows, run `wazap serve --http` from a Task Scheduler task instead";
 
@@ -403,6 +474,24 @@ export function writeUnit(unitFile: string, text: string): void {
   writeFileSync(unitFile, text);
 }
 
+/**
+ * launchd creates a job's log files world-readable, and a log holds whatever
+ * the process printed. The directory and both files are the owner's alone:
+ * created here before the job starts, and tightened when they already exist.
+ * systemd has no log dir; the journal is already per user.
+ */
+export function secureLogs(logDir: string, label: string): void {
+  if (logDir === "") return;
+  mkdirSync(logDir, { recursive: true, mode: 0o700 });
+  chmodSync(logDir, 0o700);
+  for (const stream of ["out", "err"]) {
+    const file = join(logDir, `${label}.${stream}.log`);
+    // The mode argument only applies on creation; the chmod covers a log launchd made.
+    closeSync(openSync(file, "a", 0o600));
+    chmodSync(file, 0o600);
+  }
+}
+
 /** The pid listening on `port`, or null when nothing is or lsof cannot say. */
 function portHolder(port: number): number | null {
   const result = run(["lsof", "-nP", `-iTCP:${port}`, "-sTCP:LISTEN", "-t"]);
@@ -461,7 +550,7 @@ export async function installService(
   }
 
   mkdirSync(config.dataDir, { recursive: true, mode: 0o700 });
-  if (record.logDir !== "") mkdirSync(record.logDir, { recursive: true });
+  secureLogs(record.logDir, record.label);
   writeUnit(record.unitFile, text);
   writeService(config.dataDir, record);
   if (existing === null) supervisor.start(record);
@@ -530,6 +619,7 @@ const VERBS: Record<string, Verb> = {
   status: serviceStatus,
   start: (config, registry) => {
     const { supervisor, record } = requireService(config, registry);
+    secureLogs(record.logDir, record.label);
     supervisor.start(record);
     say(ok(`Started ${record.label}`));
   },
@@ -540,6 +630,7 @@ const VERBS: Record<string, Verb> = {
   },
   restart: (config, registry) => {
     const { supervisor, record } = requireService(config, registry);
+    secureLogs(record.logDir, record.label);
     supervisor.restart(record);
     // The unit runs whatever dist/ holds now, so the record says so too.
     if (record.installedVersion !== WAZAP_VERSION)

@@ -7,6 +7,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import {
+  chmodSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
@@ -96,6 +97,31 @@ test("install writes an absolute unit and a 0600 service.json", async () => {
   assert.ok(unit.includes(`argv ${process.execPath} /`), `the unit must launch this node: ${unit}`);
   assert.match(unit, /dist\/index\.js serve --http --host 127\.0\.0\.1 --port \d+/);
   assert.deepEqual(supervisor.calls, ["start com.wazap.server"]);
+});
+
+test("the service logs are the owner's alone, including the ones launchd already created", async () => {
+  const dir = dataDir();
+  const supervisor = fakeSupervisor(dir);
+  const logs = supervisor.logDir();
+  const out = join(logs, "com.wazap.server.out.log");
+  const err = join(logs, "com.wazap.server.err.log");
+  const mode = (file) => statSync(file).mode & 0o777;
+  mkdirSync(logs);
+  chmodSync(logs, 0o755);
+  writeFileSync(out, "an old line\n");
+  chmodSync(out, 0o644);
+
+  await captured(() => installService(config(dir), supervisor, 0));
+  assert.equal(mode(logs), 0o700, "the log dir must not be listable by others");
+  assert.equal(mode(out), 0o600, "an existing log is tightened");
+  assert.equal(mode(err), 0o600, "a log launchd has not made yet is created private");
+  assert.equal(readFileSync(out, "utf8"), "an old line\n", "tightening a log must not truncate it");
+
+  chmodSync(out, 0o644);
+  chmodSync(err, 0o644);
+  await captured(() => runService(config(dir, { args: ["restart"] }), [supervisor]));
+  assert.equal(mode(out), 0o600, "restart tightens the log again");
+  assert.equal(mode(err), 0o600);
 });
 
 test("a second install rewrites the same files and restarts instead of starting", async () => {

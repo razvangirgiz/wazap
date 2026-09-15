@@ -1,13 +1,15 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { existsSync, mkdtempSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 
-import { greetNext, leftoverFix, leftoverRefusal, parseLinkChoice } from "../dist/cli.js";
+import { greetNext, leftoverFix, leftoverRefusal, parseLinkChoice, tunnelRefusal } from "../dist/cli.js";
+import { SUPERVISORS } from "../dist/service.js";
+import { childEnv } from "./helpers.mjs";
 import { runSmoke } from "./smoke-stdio.mjs";
 
 const run = promisify(execFile);
@@ -50,6 +52,68 @@ test("status on an empty data dir reports nothing linked, without touching Whats
   assert.match(stderr, new RegExp(`data dir: ${dataDir}`));
   assert.match(stderr, /server: not running/);
 });
+
+test("an HTTP server with no token and no sign-in is refused while a unit tunnels to its port", () => {
+  const dir = mkdtempSync(join(tmpdir(), "wazap-tunnel-refusal-"));
+  const supervisor = { name: "systemd", available: () => true, unitFile: (label) => join(dir, label) };
+  writeFileSync(
+    join(dir, "tunnel.service"),
+    "[Service]\nExecStart=/usr/bin/cloudflared tunnel --url http://127.0.0.1:8766 run\n"
+  );
+  const open = { httpHost: "127.0.0.1", httpPort: 8766, readToken: null, publicUrl: null, oauthPassword: null };
+
+  const refusal = tunnelRefusal(open, [supervisor]);
+  assert.equal(refusal.message, "Refusing to serve 127.0.0.1:8766 without a token: tunnel.service tunnels to it.");
+  assert.match(refusal.fix, /^Set WAZAP_READ_TOKEN, or WAZAP_PUBLIC_URL and WAZAP_OAUTH_PASSWORD for sign-in/);
+  assert.ok(refusal.fix.includes(`systemctl --user disable --now tunnel.service; rm ${join(dir, "tunnel.service")}`));
+
+  assert.equal(tunnelRefusal({ ...open, readToken: "r".repeat(32) }, [supervisor]), null, "a read token closes it");
+  const signIn = { ...open, publicUrl: "https://wazap.example", oauthPassword: "x".repeat(12) };
+  assert.equal(tunnelRefusal(signIn, [supervisor]), null, "so does sign-in");
+  assert.equal(tunnelRefusal({ ...open, httpPort: 8767 }, [supervisor]), null, "a tunnel to another port is not ours");
+  assert.equal(tunnelRefusal({ ...open, httpPort: 0 }, [supervisor]), null, "an ephemeral port has no tunnel");
+  assert.equal(tunnelRefusal(open, [{ ...supervisor, available: () => false }]), null);
+});
+
+test(
+  "serve --http refuses to start, and takes no lock, while a tunnel in its HOME reaches the port",
+  { skip: SUPERVISORS.some((supervisor) => supervisor.available()) ? false : "no launchd or systemd here" },
+  async () => {
+    const home = mkdtempSync(join(tmpdir(), "wazap-tunnel-home-"));
+    const dataDir = mkdtempSync(join(tmpdir(), "wazap-tunnel-data-"));
+    const port = 41_877;
+    // One of each, so whichever supervisor this machine has finds its own kind.
+    const agents = join(home, "Library", "LaunchAgents");
+    mkdirSync(agents, { recursive: true });
+    writeFileSync(
+      join(agents, "com.example.tunnel.plist"),
+      `<?xml version="1.0" encoding="UTF-8"?>\n<plist version="1.0">\n<dict>\n\t<key>Label</key>\n\t<string>com.example.tunnel</string>\n\t<key>ProgramArguments</key>\n\t<array>\n\t\t<string>cloudflared</string>\n\t\t<string>--url</string>\n\t\t<string>http://127.0.0.1:${port}</string>\n\t</array>\n</dict>\n</plist>\n`
+    );
+    const units = join(home, ".config", "systemd", "user");
+    mkdirSync(units, { recursive: true });
+    writeFileSync(
+      join(units, "example-tunnel.service"),
+      `[Service]\nExecStart=/usr/bin/cloudflared tunnel --url http://localhost:${port} run\n`
+    );
+
+    const serving = run(process.execPath, [binary, "serve", "--http", "--port", String(port), "--data-dir", dataDir], {
+      env: childEnv({ HOME: home }),
+      timeout: 30_000,
+    });
+    await assert.rejects(serving, (err) => {
+      assert.equal(err.code, 1, err.stderr);
+      assert.match(
+        err.stderr,
+        new RegExp(
+          `Refusing to serve 127\\.0\\.0\\.1:${port} without a token: (com\\.example\\.tunnel|example-tunnel\\.service) tunnels to it\\.`
+        )
+      );
+      assert.match(err.stderr, /WAZAP_READ_TOKEN/);
+      return true;
+    });
+    assert.equal(existsSync(join(dataDir, "server.lock")), false, "a refused server must not hold the session");
+  }
+);
 
 test("an unknown command fails with a pointer to --help", async () => {
   await assert.rejects(wazap("frobnicate"), (err) => {

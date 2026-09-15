@@ -28,7 +28,7 @@ import {
 } from "./recall/index.js";
 import { PAIRING_TIMEOUT_MS, linkSession, prettyCode, settledAccount, startPairing } from "./pairing.js";
 import { runHttp, runStdio, startLoopbackEndpoint } from "./server.js";
-import { fetchHealth, serviceHolding } from "./service.js";
+import { SUPERVISORS, fetchHealth, serviceHolding, tunnelsTo, type Supervisor } from "./service.js";
 import { applyWrites } from "./settings.js";
 import {
   MODELS,
@@ -548,6 +548,26 @@ export async function runGreet(config: Config): Promise<void> {
   for (const line of greetNext(report)) say(line);
 }
 
+/**
+ * Loopback is only private while nothing tunnels to it. With no read token and
+ * no sign-in, a tunnel on this machine hands the read tools to whoever finds
+ * its URL, so that is refused the way an open non-loopback bind is.
+ */
+export function tunnelRefusal(
+  config: Pick<Config, "httpHost" | "httpPort" | "readToken" | "publicUrl" | "oauthPassword">,
+  registry: readonly Supervisor[] = SUPERVISORS
+): { message: string; fix: string } | null {
+  if (config.readToken || (config.publicUrl && config.oauthPassword) || config.httpPort === 0) return null;
+  const supervisor = registry.find((entry) => entry.available());
+  if (supervisor === undefined) return null;
+  const tunnels = tunnelsTo(supervisor, config.httpPort);
+  if (tunnels.length === 0) return null;
+  return {
+    message: `Refusing to serve ${config.httpHost}:${config.httpPort} without a token: ${tunnels.map((unit) => unit.label).join(", ")} ${tunnels.length === 1 ? "tunnels" : "tunnel"} to it.`,
+    fix: `Set WAZAP_READ_TOKEN, or WAZAP_PUBLIC_URL and WAZAP_OAUTH_PASSWORD for sign-in, or stop the tunnel with \`${tunnels.map((unit) => unit.stop).join("; ")}\``,
+  };
+}
+
 export async function runServe(config: Config): Promise<void> {
   if (config.accountId !== undefined) {
     throw new WazapError(
@@ -585,6 +605,12 @@ export async function runServe(config: Config): Promise<void> {
       const problem = oauthProblem(config);
       if (problem) {
         say(fail(problem));
+        process.exit(1);
+      }
+      const tunnel = tunnelRefusal(config);
+      if (tunnel) {
+        say(fail(tunnel.message));
+        say(fix(tunnel.fix));
         process.exit(1);
       }
     }
