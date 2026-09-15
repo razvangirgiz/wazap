@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.20.2
+### Fixed
+
+- **A number WhatsApp moved away from no longer answers as someone else.**
+  When WhatsApp pairs a lid with a new number, the old number kept pointing at
+  that lid, so it could be named as the other person and deleting its chat
+  reached their history too. The old number is now let go, while a number that
+  gains a new lid keeps working for the older one, as WhatsApp's own table does.
+
+### Changed
+
+- **One table decides who a lid is.** The lid-to-number pairings lived in
+  three maps plus the snapshot copy, and each resolver read a different one.
+  They now live in one registry (`src/identity.ts`) with one set of rules for
+  ids, names, votes and the account itself. A run comparing the old and new
+  code over 400 scenarios found no other change in behavior.
+
 ## 0.20.1
 ### Fixed
 
