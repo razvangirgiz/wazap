@@ -675,7 +675,7 @@ export async function runServe(config: Config): Promise<void> {
   const token = config.share ? randomBytes(32).toString("hex") : null;
 
   if (config.transport === "http") {
-    const port = await runHttp(hub, config, token === null ? undefined : { token, write: true });
+    const port = await runHttp(hub, config, token === null ? undefined : { token, write: true, localFiles: true });
     // Off-loopback binds get no sidecar: a bridge on this machine could not reach them.
     if (token !== null && SHAREABLE_HOSTS.includes(config.httpHost)) {
       writeDaemon(p.daemonFile, { pid: process.pid, port, token, version: WAZAP_VERSION });

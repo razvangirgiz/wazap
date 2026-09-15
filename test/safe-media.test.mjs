@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { Readable } from "node:stream";
 
-import { loadMedia } from "../dist/outgoing-media.js";
+import { loadMedia, mediaFilename } from "../dist/outgoing-media.js";
 import { publicAddress, publicMedia } from "../dist/safe-media.js";
 
 const PRIVATE_V4 = [
@@ -89,7 +89,10 @@ test("loadMedia refuses a URL with credentials in it", async () => {
 test("a hostname that resolves to a private address is refused (DNS rebinding)", async () => {
   const http = fakeHttp();
   await assert.rejects(
-    publicMedia("http://attacker.example/pic.jpg", { ...http, resolve: resolving([{ address: "10.1.2.3", family: 4 }]) }),
+    publicMedia("http://attacker.example/pic.jpg", {
+      ...http,
+      resolve: resolving([{ address: "10.1.2.3", family: 4 }]),
+    }),
     { code: "MEDIA_ACCESS_DENIED" }
   );
   assert.equal(http.calls.length, 0, "nothing was fetched once the answer was private");
@@ -130,6 +133,101 @@ test("a redirect to another public URL is followed and the final URL is reported
   });
   assert.equal(media.buffer.toString(), "img");
   assert.equal(media.url, "https://cdn.example/final.jpg");
+});
+
+test("untrusted MIME subtypes never become filename path separators", () => {
+  for (const mime of ["image/..\\..\\private", "image/../../private", "image/" + "x".repeat(1000)]) {
+    const filename = mediaFilename({ mime });
+    assert.ok(!/[\\/\\\\]/.test(filename));
+    assert.ok(filename.length < 100);
+  }
+});
+
+for (const url of [
+  "http://2130706433/x",
+  "http://0x7f000001/x",
+  "http://[::ffff:127.0.0.1]/x",
+  "http://[::ffff:7f00:1]/x",
+]) {
+  test(`alternate loopback representation is blocked: ${url}`, async () => {
+    const http = fakeHttp();
+    await assert.rejects(publicMedia(url, http), { code: "MEDIA_ACCESS_DENIED" });
+    assert.equal(http.calls.length, 0);
+  });
+}
+
+test("mixed public/private DNS answers are refused before connecting", async () => {
+  const http = fakeHttp();
+  await assert.rejects(
+    publicMedia("https://example.com/pic", {
+      ...http,
+      resolve: resolving([
+        { address: "93.184.216.34", family: 4 },
+        { address: "10.0.0.1", family: 4 },
+      ]),
+    }),
+    { code: "MEDIA_ACCESS_DENIED" }
+  );
+  assert.equal(http.calls.length, 0);
+});
+
+test("the socket lookup is pinned to the validated DNS answer", async () => {
+  const http = fakeHttp({ body: "test" });
+  let resolved = 0;
+  let pinned = false;
+  await publicMedia("https://example.com/pic", {
+    resolve: async () => {
+      resolved++;
+      return [{ address: "93.184.216.34", family: 4 }];
+    },
+    requestTls: (url, options, callback) => {
+      options.lookup("example.com", {}, (err, address, family) => {
+        assert.equal(err, null);
+        assert.equal(address, "93.184.216.34");
+        assert.equal(family, 4);
+        pinned = true;
+      });
+      options.lookup("example.com", { all: true }, (err, addresses) => {
+        assert.equal(err, null);
+        assert.deepEqual(addresses, [{ address: "93.184.216.34", family: 4 }]);
+      });
+      return http.requestTls(url, options, callback);
+    },
+  });
+  assert.equal(resolved, 1);
+  assert.equal(pinned, true);
+});
+
+test("chunked bodies cannot bypass the size cap", async () => {
+  const http = fakeHttp({ body: "12345" });
+  await assert.rejects(publicMedia("https://example.com/pic", { ...http, resolve: publicDns, maxBytes: 4 }), {
+    code: "FILE_TOO_LARGE",
+  });
+});
+
+test("media errors never echo signed URL paths/queries or resolver details", async () => {
+  const http = fakeHttp({ status: 403 });
+  await assert.rejects(
+    publicMedia("https://example.com/PATH_SECRET?token=QUERY_SECRET", { ...http, resolve: publicDns }),
+    (err) => {
+      assert.equal(err.code, "URL_FETCH_FAILED");
+      assert.match(err.message, /HTTP 403/);
+      assert.doesNotMatch(err.message, /SECRET/);
+      return true;
+    }
+  );
+  await assert.rejects(
+    publicMedia("https://example.com/pic", {
+      resolve: async () => {
+        throw Error("RESOLVER_SECRET");
+      },
+    }),
+    (err) => {
+      assert.equal(err.code, "URL_FETCH_FAILED");
+      assert.doesNotMatch(err.message, /SECRET/);
+      return true;
+    }
+  );
 });
 
 test("a content-length over the cap fails before the body is read", async () => {

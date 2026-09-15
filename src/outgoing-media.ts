@@ -17,9 +17,12 @@ const PROFILE_PICTURE_MIMES = new Set(["image/jpeg", "image/png", "image/webp"])
 
 export function mediaFilename(info: { mime: string; filename?: string }): string {
   const original = (info.filename ?? "").replace(/[^\w.-]/g, "_");
-  const fromName = original.includes(".") ? original.slice(original.lastIndexOf(".")) : "";
+  const fromName = original.includes(".") ? original.slice(original.lastIndexOf(".") + 1) : "";
   const subtype = info.mime.split("/")[1]?.split(";")[0] ?? "bin";
-  return `${Date.now()}-${randomUUID().slice(0, 8)}${fromName || `.${subtype}`}`;
+  // Both filename and MIME came from a message, not from a trusted filesystem.
+  // A MIME subtype containing backslashes is a path on Windows; cap it too.
+  const extension = [fromName, subtype].find((value) => /^[a-z0-9]{1,16}$/i.test(value)) ?? "bin";
+  return `${Date.now()}-${randomUUID().slice(0, 8)}.${extension}`;
 }
 
 export interface LoadedMedia {
@@ -68,10 +71,7 @@ export async function loadMedia(
 }
 
 /** JPEG, PNG or WebP, capped at 10 MB before Baileys sees the buffer. */
-export async function loadProfilePicture(
-  source: MediaSource,
-  io: Partial<MediaNetwork> = {}
-): Promise<LoadedMedia> {
+export async function loadProfilePicture(source: MediaSource, io: Partial<MediaNetwork> = {}): Promise<LoadedMedia> {
   const media = await loadMedia(source, PROFILE_PICTURE_MAX_BYTES, io);
   if (!PROFILE_PICTURE_MIMES.has(media.mimetype)) {
     throw new WazapError(

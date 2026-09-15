@@ -1,28 +1,23 @@
-import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import type { AccountSource } from "./account-hub.js";
+import { renderGetStatus, renderListAccounts } from "./account-resolve.js";
 import {
-  attachAccountId,
-  renderGetStatus,
-  renderListAccounts,
-  resolveToolAccount,
-  stringArg,
-} from "./account-resolve.js";
+  createToolRegistrar,
+  type ContentBlock,
+  type ToolArgs,
+  type ToolCtx,
+  type ToolDef,
+  type ToolResult,
+} from "./tool-runtime.js";
+export { toolError, type ToolCtx, type RegisterOpts } from "./tool-runtime.js";
 import { compactConversations, renderCompact } from "./compact.js";
 import { coverageNote, indexCoverageNote, searchCoverage } from "./coverage.js";
-import {
-  describeTarget,
-  looksUnnamed,
-  renderDraft,
-  type DraftPayload,
-  type DraftView,
-} from "./drafts.js";
-import { asWazapError, ERROR_GUIDE, WazapError } from "./errors.js";
+import { describeTarget, looksUnnamed, renderDraft, type DraftPayload, type DraftView } from "./drafts.js";
+import { ERROR_GUIDE, WazapError } from "./errors.js";
 import { freshnessNote, readFreshness } from "./freshness.js";
 import { mediaCaptionOf } from "./media-details.js";
 import { getMessageView, getMessageViewAcross, resolveMessageId, resolveMessageIdAcross } from "./message-ref.js";
 import { clockLabel } from "./messages.js";
-import { RateLimiter } from "./ratelimit.js";
 import {
   assertSendable,
   draftTargetOf,
@@ -59,38 +54,6 @@ import type {
 
 export { anyAccountAllowsWrites } from "./account-resolve.js";
 
-type ContentBlock = { type: "text"; text: string } | { type: "image"; data: string; mimeType: string };
-
-interface ToolResult {
-  content: ContentBlock[];
-  structuredContent?: Record<string, unknown>;
-  isError?: boolean;
-  [key: string]: unknown;
-}
-
-type ToolArgs = Record<string, unknown>;
-
-export interface ToolCtx {
-  wa: WhatsAppApi;
-  hub: AccountSource;
-  allowWrite: boolean;
-  accountId: string;
-}
-
-interface ToolDef {
-  name: string;
-  title: string;
-  description: string;
-  schema: z.ZodRawShape;
-  write: boolean;
-  destructive?: boolean;
-  /** Changes wazap's own notes on this machine and nothing on WhatsApp, so it is there in read-only mode too. */
-  local?: boolean;
-  /** Calls a minute allowed to this tool alone. The session write bucket is separate. */
-  rate?: number;
-  handler: (args: ToolArgs, ctx: ToolCtx) => Promise<ToolResult>;
-}
-
 const ACCOUNT_ID = z
   .string()
   .min(1)
@@ -123,31 +86,6 @@ function ok(text: string, structured: Record<string, unknown>, extra: ContentBlo
 function synced<T>(result: Synced<T>, rest: Record<string, unknown>): Record<string, unknown> {
   return { ...rest, sync: result.sync };
 }
-
-export function toolError(err: WazapError): ToolResult {
-  const payload: Record<string, unknown> = { error: err.code, message: err.message };
-  if (err.fix) payload.fix = err.fix;
-  return { content: [{ type: "text", text: JSON.stringify(payload) }], structuredContent: payload, isError: true };
-}
-
-const READ_ONLY_HINTS = {
-  readOnlyHint: true,
-  destructiveHint: false,
-  idempotentHint: true,
-  openWorldHint: true,
-} as const;
-const WRITE_HINTS = {
-  readOnlyHint: false,
-  destructiveHint: false,
-  idempotentHint: false,
-  openWorldHint: true,
-} as const;
-const LOCAL_HINTS = {
-  readOnlyHint: false,
-  destructiveHint: false,
-  idempotentHint: true,
-  openWorldHint: false,
-} as const;
 
 const chatId = z
   .string()
@@ -1018,7 +956,7 @@ usable as chat_id.`,
         .min(2)
         .optional()
         .describe(
-          'Name fragment, phone number, or tag/detail text (at least 2 characters). Omit with tag to list everyone carrying it.'
+          "Name fragment, phone number, or tag/detail text (at least 2 characters). Omit with tag to list everyone carrying it."
         ),
       tag: z.string().min(1).optional().describe('Only contacts filed under this tag ("client"); "#" optional'),
       limit: z.number().int().min(1).max(50).default(10).describe("Maximum number of results (1-50)"),
@@ -1034,7 +972,12 @@ usable as chat_id.`,
       }
       const contacts = await wa.searchContacts(query ?? "", limit, { tag });
       const what = tag !== undefined ? `tag #${tag.replace(/^#+/, "")}` : `"${query}"`;
-      return ok(renderContacts(what, contacts), { query: query ?? null, tag: tag ?? null, count: contacts.length, contacts });
+      return ok(renderContacts(what, contacts), {
+        query: query ?? null,
+        tag: tag ?? null,
+        count: contacts.length,
+        contacts,
+      });
     },
   }),
 
@@ -1130,7 +1073,10 @@ name go, the chat and its history stay. Nothing is sent to the contact.`,
     destructive: true,
     handler: async ({ contact_id }, { wa }) => {
       const c = await wa.removeContact(contact_id);
-      return ok(`Removed ${c.contact_id} from contacts; the chat is untouched.`, c as unknown as Record<string, unknown>);
+      return ok(
+        `Removed ${c.contact_id} from contacts; the chat is untouched.`,
+        c as unknown as Record<string, unknown>
+      );
     },
   }),
 
@@ -1295,10 +1241,7 @@ that goes out.`,
     },
     write: true,
     handler: async ({ chat_id, text, reply_to, mention_ids }, ctx) => {
-      return draftAndGuard(
-        { kind: "text", chatId: chat_id, text, replyTo: reply_to, mentionIds: mention_ids },
-        ctx
-      );
+      return draftAndGuard({ kind: "text", chatId: chat_id, text, replyTo: reply_to, mentionIds: mention_ids }, ctx);
     },
   }),
 
@@ -1353,10 +1296,7 @@ chose each option. Show the preview; after the user says yes, call confirm_send.
     },
     write: true,
     handler: async ({ chat_id, question, options, multi_select }, ctx) => {
-      return draftAndGuard(
-        { kind: "poll", chatId: chat_id, question, options, multiSelect: multi_select },
-        ctx
-      );
+      return draftAndGuard({ kind: "poll", chatId: chat_id, question, options, multiSelect: multi_select }, ctx);
     },
   }),
 
@@ -1428,8 +1368,10 @@ says yes, call confirm_send.`,
     title: "Send a drafted WhatsApp message",
     description: `Send a draft created by send_message, send_media, send_poll, send_location or
 forward_message. This is the only call that reaches WhatsApp. The draft is
-consumed. A missing or expired draft_id means draft again and show the new
-preview before calling this.`,
+consumed. Only the MCP session that created the draft may confirm it. After
+reinitializing or reconnecting with a new session, draft again and obtain fresh
+user approval. A missing or expired draft_id also means draft again and show
+the new preview before calling this.`,
     schema: {
       draft_id: z.string().min(1).describe("The draft_id returned by a send_* tool"),
     },
@@ -1687,65 +1629,7 @@ say what will change and wait for a yes before calling it.`,
 
 export const TOOL_NAMES: readonly string[] = TOOLS.map((t) => t.name);
 
-export interface RegisterOpts {
-  allowWrite: boolean;
-}
-
-/** Derived, so a second rated tool cannot inherit a message naming the wrong budget. */
-function rateLabel(name: string): string {
-  const verb = name.split("_")[0] ?? name;
-  return verb.charAt(0).toUpperCase() + verb.slice(1);
-}
-
-/**
- * One bucket per rated tool for the whole process: an HTTP client
- * re-initializing gets a new McpServer on every session, and a cap that
- * resets with it would be no cap at all.
- */
-const RATE_BUCKETS = new Map<string, RateLimiter>(
-  TOOLS.flatMap((def) =>
-    def.rate === undefined ? [] : [[def.name, new RateLimiter(def.rate, undefined, rateLabel(def.name))] as const]
-  )
-);
-
-export function registerTools(server: McpServer, hub: AccountSource, opts: RegisterOpts): void {
-  for (const def of TOOLS) {
-    if (def.write && !opts.allowWrite) continue;
-    const own = RATE_BUCKETS.get(def.name);
-    server.registerTool(
-      def.name,
-      {
-        title: def.title,
-        description: def.description,
-        inputSchema: def.schema,
-        annotations: def.write
-          ? { ...WRITE_HINTS, destructiveHint: def.destructive === true }
-          : def.local
-            ? LOCAL_HINTS
-            : { ...READ_ONLY_HINTS, openWorldHint: def.name !== "learn" },
-      },
-      async (args: unknown): Promise<ToolResult> => {
-        const parsed = (args ?? {}) as ToolArgs;
-        let resolved: { id: string; wa: WhatsAppApi } | undefined;
-        try {
-          own?.take();
-          resolved = resolveToolAccount(hub, parsed, def);
-          const result = await def.handler(parsed, {
-            wa: resolved.wa,
-            hub,
-            allowWrite: opts.allowWrite,
-            accountId: resolved.id,
-          });
-          return attachAccountId(result, resolved.id);
-        } catch (err) {
-          const result = toolError(asWazapError(err));
-          const id = resolved?.id ?? stringArg(parsed, "account_id");
-          return id === undefined ? result : attachAccountId(result, id);
-        }
-      }
-    );
-  }
-}
+export const registerTools = createToolRegistrar(TOOLS);
 
 function renderChats(chats: ChatSummary[], filter: string): string {
   if (chats.length === 0) return `No chats found (filter: ${filter}).`;
@@ -2155,9 +2039,7 @@ async function flagUnnamed(view: DraftView, wa: WhatsAppApi): Promise<void> {
       if (own !== undefined && own === to.number) return;
     }
     const hits = await wa.searchContacts(to.number ?? to.chat_id, 10);
-    const hit = hits.find(
-      (c) => c.contact_id === to.chat_id || (to.number !== undefined && c.number === to.number)
-    );
+    const hit = hits.find((c) => c.contact_id === to.chat_id || (to.number !== undefined && c.number === to.number));
     if (hit === undefined || !hit.is_my_contact) view.unnamed_recipient = true;
   } catch {
     /* the shape-based answer stands */
@@ -2177,7 +2059,7 @@ async function draftAndGuard(payload: DraftPayload, ctx: ToolCtx): Promise<ToolR
   assertSendable(pre, { chat_id: payload.chatId }, ctx.accountId);
   const view = await ctx.wa.draft(payload);
   assertSendable(policy, view.to, ctx.accountId);
-  noteDraftTarget(view, ctx.accountId);
+  noteDraftTarget(view, ctx.accountId, ctx.draftOwner);
   await flagUnnamed(view, ctx.wa);
   return drafted(view);
 }

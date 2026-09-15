@@ -44,6 +44,7 @@ import {
   mediaFilename,
 } from "./outgoing-media.js";
 import { makePreview, videoFrame } from "./previews.js";
+import { safeLinkPreview } from "./link-preview.js";
 import { decodeMessage, encode, momentsOf, Store, type HistoryRecord, type StoreSnapshot } from "./store.js";
 import {
   buildMessageView,
@@ -318,6 +319,7 @@ export class WhatsAppService implements WhatsAppApi {
   private callSweepTimer: ReturnType<typeof setInterval> | null = null;
   private persistedLoaded = false;
   private contactResyncTried = false;
+  private readonly previewLink = safeLinkPreview;
   private readonly blocked = new Set<string>();
   private readonly groupCache = new Map<string, GroupMetadata>();
   /** Groups whose metadata WhatsApp refused, so we stop asking on every read. */
@@ -1807,7 +1809,8 @@ export class WhatsAppService implements WhatsAppApi {
       const quoted = replyTo === undefined ? undefined : this.messageOrThrow(replyTo);
       const sent = await sock.sendMessage(
         jid,
-        mentions.length > 0 ? { text, mentions } : { text },
+        // Explicit null on failure prevents Baileys from using its own fetcher.
+        { text, linkPreview: await this.previewLink(text), ...(mentions.length > 0 ? { mentions } : {}) },
         quoted ? { quoted } : {}
       );
       return this.sentResult(sent, jid, text);
@@ -1823,6 +1826,11 @@ export class WhatsAppService implements WhatsAppApi {
       const { sock, jid } = await this.prepareSend(chatId);
       const media = await asGifMedia(await loadMedia(source), opts.asGif);
       const content = mediaContent(media, opts);
+      if ("video" in content) {
+        // Do not fall back to Baileys's unrestricted, shell-spawned ffmpeg.
+        // Even an empty thumbnail suppresses its implicit decoder invocation.
+        content.jpegThumbnail = (await videoFrame(media.buffer, 32))?.toString("base64") ?? "";
+      }
       const sent = await sock.sendMessage(jid, content);
       return this.sentResult(sent, jid, opts.caption ?? `[${media.mimetype}]`);
     });
@@ -1871,7 +1879,7 @@ export class WhatsAppService implements WhatsAppApi {
         throw new WazapError("EDIT_WINDOW_EXPIRED", `Message ${messageId} is older than 15 minutes.`);
       }
       const { sock, jid } = await this.prepareSend(this.chatOfOrThrow(messageId));
-      await sock.sendMessage(jid, { text, edit: raw.key });
+      await sock.sendMessage(jid, { text, edit: raw.key, linkPreview: await this.previewLink(text) });
       return { message_id: messageId, chat_id: jid, text, timestamp: isoWithOffset(Date.now()) };
     });
   }

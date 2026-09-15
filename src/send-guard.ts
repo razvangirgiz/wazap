@@ -80,8 +80,7 @@ function ruleMatches(entry: string, target: SendTarget): boolean {
   return candidates.some((candidate) => {
     const form = matchForms(candidate);
     return (
-      (rule.jid !== undefined && form.jid === rule.jid) ||
-      (rule.digits !== undefined && form.digits === rule.digits)
+      (rule.jid !== undefined && form.jid === rule.jid) || (rule.digits !== undefined && form.digits === rule.digits)
     );
   });
 }
@@ -128,12 +127,14 @@ interface DraftRef {
   accountId: string;
   target: OutgoingTarget;
   at: number;
+  /** Opaque identity of the MCP server that created this draft; never supplied by a caller. */
+  owner?: symbol;
 }
 
 const draftTargets = new Map<string, DraftRef>();
 const DRAFT_TARGETS_CAP = 500;
 
-export function noteDraftTarget(view: DraftView, accountId: string): void {
+export function noteDraftTarget(view: DraftView, accountId: string, owner?: symbol): void {
   const now = Date.now();
   for (const [id, ref] of draftTargets) {
     if (ref.at + DRAFT_TTL_MS <= now) draftTargets.delete(id);
@@ -143,11 +144,24 @@ export function noteDraftTarget(view: DraftView, accountId: string): void {
     if (oldest === undefined) break;
     draftTargets.delete(oldest);
   }
-  draftTargets.set(view.draft_id, { accountId, target: view.to, at: now });
+  draftTargets.set(view.draft_id, { accountId, target: view.to, at: now, owner });
 }
 
 export function draftTargetOf(draftId: string): DraftRef | undefined {
   return draftTargets.get(draftId);
+}
+
+/** Unknown and foreign drafts are indistinguishable, before account lookup or policy checks. */
+export function requireDraftOwner(draftId: string, owner: symbol, accountId?: string): DraftRef {
+  const ref = draftTargets.get(draftId);
+  if (ref === undefined || ref.owner !== owner || (accountId !== undefined && ref.accountId !== accountId)) {
+    throw new WazapError(
+      "DRAFT_NOT_FOUND",
+      "No draft available in this MCP session.",
+      "Call send_message (or another send tool) again in this session, show the new preview and ask the user to confirm before calling confirm_send"
+    );
+  }
+  return ref;
 }
 
 export function forgetDraftTarget(draftId: string): void {

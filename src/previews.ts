@@ -12,6 +12,7 @@ import { join } from "node:path";
 import { promisify } from "node:util";
 import jpeg from "jpeg-js";
 import { which } from "./transcribe/local.js";
+import { LOCAL_MEDIA_INPUT_ARGS } from "./media-process.js";
 
 const run = promisify(execFile);
 const FRAME_TIMEOUT_MS = 30_000;
@@ -28,12 +29,15 @@ export interface PreviewImage {
 }
 
 /** Decode a JPEG, shrink it with a box filter, encode it small. Throws on a file that is not a JPEG. */
-export function makePreview(input: Buffer, maxEdge = PREVIEW_MAX_EDGE): PreviewImage {
+export function makePreview(
+  input: Buffer,
+  maxEdge = PREVIEW_MAX_EDGE,
+  limits = { maxResolutionInMP: 50, maxMemoryUsageInMB: 512 }
+): PreviewImage {
   const source = jpeg.decode(input, {
     useTArray: true,
     formatAsRGBA: true,
-    maxResolutionInMP: 50,
-    maxMemoryUsageInMB: 512,
+    ...limits,
   });
   const scale = Math.min(1, maxEdge / Math.max(source.width, source.height));
   const width = Math.max(1, Math.round(source.width * scale));
@@ -92,6 +96,7 @@ export async function videoFrame(video: Buffer, maxEdge = PREVIEW_MAX_EDGE): Pro
         "-y",
         "-ss",
         at,
+        ...LOCAL_MEDIA_INPUT_ARGS,
         "-i",
         input,
         "-frames:v",

@@ -10,6 +10,7 @@ import { join } from "node:path";
 import { promisify } from "node:util";
 import { WazapError } from "./errors.js";
 import { which } from "./transcribe/local.js";
+import { LOCAL_MEDIA_INPUT_ARGS } from "./media-process.js";
 
 const run = promisify(execFile);
 const CONVERT_TIMEOUT_MS = 60_000;
@@ -37,6 +38,9 @@ export async function gifToMp4(gif: Buffer): Promise<Buffer> {
       "-loglevel",
       "error",
       "-y",
+      ...LOCAL_MEDIA_INPUT_ARGS,
+      "-f",
+      "gif",
       "-i",
       input,
       "-movflags",
@@ -50,9 +54,8 @@ export async function gifToMp4(gif: Buffer): Promise<Buffer> {
     ];
     try {
       await run(ffmpeg, args, { timeout: CONVERT_TIMEOUT_MS, windowsHide: true });
-    } catch (err) {
-      const detail = (err as { stderr?: string; message?: string }).stderr?.trim() || (err as Error).message;
-      throw new WazapError("MEDIA_UNAVAILABLE", `ffmpeg could not convert the GIF: ${detail.slice(-300)}`);
+    } catch {
+      throw new WazapError("MEDIA_UNAVAILABLE", "ffmpeg could not convert the GIF.");
     }
     return await readFile(output);
   } finally {

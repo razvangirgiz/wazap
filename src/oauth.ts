@@ -21,6 +21,7 @@ import {
   InvalidGrantError,
   InvalidScopeError,
   InvalidTokenError,
+  InvalidTargetError,
 } from "@modelcontextprotocol/sdk/server/auth/errors.js";
 import type {
   OAuthClientInformationFull,
@@ -29,6 +30,7 @@ import type {
 } from "@modelcontextprotocol/sdk/shared/auth.js";
 import { WAZAP_VERSION } from "./config.js";
 import { log } from "./logger.js";
+import { logLabel } from "./http-log.js";
 
 export const OAUTH_SCOPES = ["read", "write"] as const;
 export type OAuthScope = (typeof OAUTH_SCOPES)[number];
@@ -159,8 +161,8 @@ function loadState(file: string): OAuthState {
       access: parsed.access ?? {},
       refresh: parsed.refresh ?? {},
     };
-  } catch (err) {
-    log(`oauth.json unreadable (${err instanceof Error ? err.message : String(err)}), starting with no grants`);
+  } catch {
+    log("oauth.json unreadable, starting with no grants");
     return emptyState();
   }
 }
@@ -267,7 +269,7 @@ export class WazapOAuthProvider implements OAuthServerProvider {
         };
         this.state.clients[full.client_id] = full;
         this.persist();
-        log(`oauth: registered client "${full.client_name ?? full.client_id}"`);
+        log(`oauth: registered client "${logLabel(full.client_name ?? full.client_id)}"`);
         return full;
       },
     };
@@ -340,8 +342,16 @@ export class WazapOAuthProvider implements OAuthServerProvider {
 
   // --- authorization -------------------------------------------------------
 
+  /** One protected resource. Omission remains compatible with older clients. */
+  private assertResource(resource?: URL): void {
+    if (resource !== undefined && resource.href !== this.resourceUrl.href) {
+      throw new InvalidTargetError("The requested resource is not this server's MCP endpoint");
+    }
+  }
+
   /** The SDK has validated client and redirect_uri; park the request and show the page. */
   async authorize(client: OAuthClientInformationFull, params: AuthorizationParams, res: Response): Promise<void> {
+    this.assertResource(params.resource);
     this.sweep();
     const id = randomBytes(24).toString("hex");
     this.pending.set(id, { client, params, createdAt: this.now(), misses: 0 });
@@ -384,7 +394,7 @@ export class WazapOAuthProvider implements OAuthServerProvider {
     if (!sameSecret(password, this.options.password)) {
       this.lockout.miss(caller);
       entry.misses += 1;
-      log(`oauth: wrong password from ${caller}`);
+      log(`oauth: wrong password from ${logLabel(caller)}`);
       if (entry.misses >= PENDING_MISSES) {
         this.pending.delete(id);
         sendPage(res, 401, this.messagePage("Wrong password, three times. Go back to the agent and connect again."));
@@ -405,7 +415,7 @@ export class WazapOAuthProvider implements OAuthServerProvider {
       scopes,
       createdAt: this.now(),
     });
-    log(`oauth: granted ${scopes.join("+")} to "${client.client_name ?? client.client_id}"`);
+    log(`oauth: granted ${scopes.join("+")} to "${logLabel(client.client_name ?? client.client_id)}"`);
 
     const url = new URL(params.redirectUri);
     url.searchParams.set("code", code);
@@ -423,8 +433,10 @@ export class WazapOAuthProvider implements OAuthServerProvider {
     client: OAuthClientInformationFull,
     code: string,
     _codeVerifier?: string,
-    redirectUri?: string
+    redirectUri?: string,
+    resource?: URL
   ): Promise<OAuthTokens> {
+    this.assertResource(resource);
     this.sweep();
     const entry = this.codes.get(code);
     if (!entry || entry.clientId !== client.client_id) throw new InvalidGrantError("Unknown authorization code");
@@ -438,14 +450,18 @@ export class WazapOAuthProvider implements OAuthServerProvider {
   async exchangeRefreshToken(
     client: OAuthClientInformationFull,
     refreshToken: string,
-    scopes?: string[]
+    scopes?: string[],
+    resource?: URL
   ): Promise<OAuthTokens> {
+    this.assertResource(resource);
     this.sweep();
     const entry = this.state.refresh[sha256(refreshToken)];
     if (!entry || entry.clientId !== client.client_id) throw new InvalidGrantError("Unknown refresh token");
     // A refresh may narrow the grant, never widen it.
-    const granted = scopes && scopes.length > 0 ? scopes.filter((s) => entry.scopes.includes(s)) : entry.scopes;
-    if (granted.length === 0) throw new InvalidScopeError("Requested scopes exceed the grant");
+    if (scopes?.some((scope) => !entry.scopes.includes(scope))) {
+      throw new InvalidScopeError("Requested scopes exceed the grant");
+    }
+    const granted = scopes && scopes.length > 0 ? scopes : entry.scopes;
     return this.issue(client.client_id, granted, refreshToken);
   }
 
@@ -481,7 +497,7 @@ export class WazapOAuthProvider implements OAuthServerProvider {
     this.sync();
     const entry = this.state.access[sha256(token)];
     if (!entry) throw new InvalidTokenError("Unknown access token");
-    if (entry.expiresAt !== undefined && entry.expiresAt < this.now())
+    if (entry.expiresAt !== undefined && entry.expiresAt <= this.now())
       throw new InvalidTokenError("Access token expired");
     return {
       token,
@@ -568,21 +584,9 @@ ${error ? `<p class="error">${escapeHtml(error)}</p>` : ""}
   }
 }
 
-/**
- * Who a wrong password counts against. Behind a proxy on this machine Express
- * already takes the caller from X-Forwarded-For. When none came through,
- * cloudflared still names the caller in CF-Connecting-IP; without either,
- * every caller would be loopback and one stranger would lock the owner out.
- */
+/** All limiters use Express's configured proxy trust, never an independent client header. */
 function callerOf(req: Request): string {
-  const socket = req.socket.remoteAddress ?? "";
-  const loopback = /^(?:127\.|::ffff:127\.|::1$)/.test(socket);
-  const connecting = req.headers["cf-connecting-ip"];
-  if (loopback && req.headers["x-forwarded-for"] === undefined && typeof connecting === "string") {
-    const named = connecting.trim();
-    if (named !== "") return named;
-  }
-  return req.ip ?? "unknown";
+  return req.ip ?? req.socket.remoteAddress ?? "unknown";
 }
 
 function inMinutes(ms: number): string {

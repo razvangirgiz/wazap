@@ -1,4 +1,6 @@
-import { randomUUID, timingSafeEqual } from "node:crypto";
+import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
+import { HttpSessions } from "./http-sessions.js";
+import { httpError, httpRequestLog } from "./http-log.js";
 import { createServer, type Server } from "node:http";
 import { createConnection } from "node:net";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
@@ -11,7 +13,7 @@ import { WAZAP_VERSION, paths, writesHints, type Config } from "./config.js";
 import { APPROVE_PATH, OAUTH_SCOPES, WazapOAuthProvider } from "./oauth.js";
 import { loadSkills, registerSkillPrompts, skillInstructions } from "./skills.js";
 import { anyAccountAllowsWrites, registerTools } from "./tools.js";
-import { log, logError } from "./logger.js";
+import { log } from "./logger.js";
 import type { ConnectionStatus } from "./wa-types.js";
 
 const UNHEALTHY_AFTER_MS = 2 * 60 * 1000;
@@ -33,33 +35,33 @@ function isAuthorized(header: string | undefined, expected: string): boolean {
  * The one place a session is built, so the workflows reach stdio and HTTP alike:
  * a client that never installed the skill files still gets them here.
  */
-function buildMcpServer(hub: AccountSource, config: Config, allowWrite: boolean): McpServer {
+function buildMcpServer(hub: AccountSource, config: Config, allowWrite: boolean, allowLocalFiles: boolean): McpServer {
   const skills = loadSkills();
   const server = new McpServer({ name: "wazap", version: WAZAP_VERSION }, { instructions: skillInstructions(skills) });
   registerTools(server, hub, {
     allowWrite: allowWrite && !config.readOnly && anyAccountAllowsWrites(hub),
+    allowLocalFiles,
   });
   registerSkillPrompts(server, skills);
   return server;
 }
 
-type AuthedRequest = Request & { mcpWrite?: boolean; oauthClient?: string };
+type AuthedRequest = Request & {
+  mcpWrite?: boolean;
+  oauthClient?: string;
+  sessionOwner?: string;
+  localFiles?: boolean;
+};
 
-/**
- * Who is calling, for the request log: the User-Agent a client names itself by,
- * cut short and stripped of quotes and control characters so it cannot forge a
- * field, and the client an OAuth token was issued to. Never a credential.
+/** Bind to the exact authenticated credential, never retain the raw token in session state.
+ * Rotated OAuth tokens initialize a new MCP session. Shared tokens share an identity.
  */
-function callerTag(req: AuthedRequest): string {
-  // eslint-disable-next-line no-control-regex -- control characters are what is stripped
-  const agent = (req.headers["user-agent"] ?? "").replace(/["\x00-\x1f\x7f]/g, "").slice(0, 60);
-  let tag = agent === "" ? "" : ` client="${agent}"`;
-  if (req.oauthClient !== undefined) tag += ` oauth_client=${req.oauthClient}`;
-  return tag;
+function sessionOwner(auth: string, write: boolean, localFiles: boolean): string {
+  return `${write ? "write" : "read"}:${localFiles ? "local" : "remote"}:${createHash("sha256").update(auth.slice("Bearer ".length).trim()).digest("hex")}`;
 }
 
 export async function runStdio(hub: AccountSource, config: Config): Promise<void> {
-  const server = buildMcpServer(hub, config, true);
+  const server = buildMcpServer(hub, config, true, true);
   const transport = new StdioServerTransport();
   await server.connect(transport);
   log("MCP server ready on stdio.");
@@ -100,6 +102,8 @@ export function healthBody(hub: AccountSource): HealthBody {
 export interface Credential {
   token: string;
   write: boolean;
+  /** Only the private daemon/bridge credential is granted host file access. Never inferred from peer IP. */
+  localFiles?: boolean;
 }
 
 /** A Streamable HTTP listener: where it binds and who may talk to it. */
@@ -178,27 +182,8 @@ export async function startHttpEndpoint(hub: AccountSource, config: Config, endp
   // with sharing off and a bridge onto a running daemon never reach here.
   const { default: express } = await import("express");
   const app = express();
+  app.use(httpRequestLog);
   app.use(express.json());
-
-  app.use((req: Request, res: Response, next: NextFunction) => {
-    const start = Date.now();
-    const rpc =
-      (req.body && typeof req.body === "object" ? (req.body as { method?: string }).method : undefined) ?? "-";
-    const hasAuth = req.headers.authorization ? "auth" : "noauth";
-    res.on("finish", () => {
-      log(
-        `HTTP ${req.method} ${req.originalUrl} rpc=${rpc} ${hasAuth} accept="${req.headers.accept ?? ""}" -> ${res.statusCode} (${Date.now() - start}ms)${callerTag(req)}`
-      );
-    });
-    res.on("close", () => {
-      if (!res.writableEnded) {
-        log(
-          `HTTP ${req.method} ${req.originalUrl} rpc=${rpc} -> client closed before response (${Date.now() - start}ms)`
-        );
-      }
-    });
-    next();
-  });
 
   if (endpoint.openRead && !endpoint.oauth) {
     log(
@@ -218,10 +203,9 @@ export async function startHttpEndpoint(hub: AccountSource, config: Config, endp
       import("@modelcontextprotocol/sdk/server/auth/router.js"),
       import("express-rate-limit"),
     ]);
-    // Reached through a TLS proxy: on this machine, or the Docker bridge when
-    // the container binds 0.0.0.0. The proxy's idea of the caller is the one
-    // the password lockout and the SDK's limiters should count.
-    app.set("trust proxy", "loopback, linklocal, uniquelocal");
+    // A private/LAN address is not automatically a proxy. Trust only configured
+    // peers and use Express's same right-to-left XFF resolution for every limiter.
+    app.set("trust proxy", config.trustedProxies ?? ["loopback"]);
     app.use(
       mcpAuthRouter({
         provider: oauth,
@@ -248,13 +232,15 @@ export async function startHttpEndpoint(hub: AccountSource, config: Config, endp
   // The first credential the bearer token matches decides the session's tools,
   // so a leaked read token can never message anyone. An OAuth token carries
   // the scope the person picked on the consent page.
-  const bearerAccess = async (auth: string | undefined): Promise<{ write: boolean; oauthClient?: string } | null> => {
+  const bearerAccess = async (
+    auth: string | undefined
+  ): Promise<{ write: boolean; localFiles: boolean; oauthClient?: string } | null> => {
     const credential = endpoint.credentials.find((entry) => isAuthorized(auth, entry.token));
-    if (credential) return { write: credential.write };
+    if (credential) return { write: credential.write, localFiles: credential.localFiles === true };
     if (oauth && auth?.startsWith("Bearer ")) {
       try {
         const info = await oauth.verifyAccessToken(auth.slice("Bearer ".length).trim());
-        return { write: info.scopes.includes("write"), oauthClient: info.clientId };
+        return { write: info.scopes.includes("write"), localFiles: false, oauthClient: info.clientId };
       } catch {
         // An unknown or expired token opens nothing.
       }
@@ -267,11 +253,14 @@ export async function startHttpEndpoint(hub: AccountSource, config: Config, endp
     if (access) {
       (req as AuthedRequest).mcpWrite = access.write;
       (req as AuthedRequest).oauthClient = access.oauthClient;
+      (req as AuthedRequest).localFiles = access.localFiles;
+      (req as AuthedRequest).sessionOwner = sessionOwner(req.headers.authorization!, access.write, access.localFiles);
       next();
       return;
     }
     if (openRead) {
       (req as AuthedRequest).mcpWrite = false;
+      (req as AuthedRequest).sessionOwner = "anonymous";
       next();
       return;
     }
@@ -293,69 +282,46 @@ export async function startHttpEndpoint(hub: AccountSource, config: Config, endp
   // Session-based Streamable HTTP (the SDK's canonical pattern). It serves the
   // GET SSE stream and DELETE that full MCP clients open; a stateless server
   // 404s the GET and makes such clients hang until they time out.
-  const transports = new Map<string, StreamableHTTPServerTransport>();
-  const lastSeen = new Map<string, number>();
+  const sessions = new HttpSessions(endpoint.sessionMax ?? MCP_SESSION_MAX);
   const sessionTtlMs = endpoint.sessionTtlMs ?? MCP_SESSION_TTL_MS;
-  const sessionMax = endpoint.sessionMax ?? MCP_SESSION_MAX;
-
-  // The map forgets the session before its transport starts closing, so a
-  // request that lands mid-close is told the session is gone, by us.
-  const dropSession = (sid: string): void => {
-    lastSeen.delete(sid);
-    const transport = transports.get(sid);
-    transports.delete(sid);
-    if (transport !== undefined) {
-      void transport.close().catch((err: unknown) => logError("session close", err));
-    }
-  };
-
   const sweep = setInterval(() => {
-    const cutoff = Date.now() - sessionTtlMs;
-    for (const [sid, at] of lastSeen) if (at < cutoff) dropSession(sid);
+    sessions.sweep(Date.now() - sessionTtlMs);
   }, endpoint.sessionSweepMs ?? MCP_SESSION_SWEEP_MS);
   sweep.unref();
 
   const handleMcp = async (req: Request, res: Response): Promise<void> => {
     try {
       const sessionId = req.headers["mcp-session-id"];
-      let transport = typeof sessionId === "string" ? transports.get(sessionId) : undefined;
-      if (transport && typeof sessionId === "string") lastSeen.set(sessionId, Date.now());
+      const owner = (req as AuthedRequest).sessionOwner;
+      if (owner === undefined) throw new Error("MCP request bypassed authentication");
+      let transport = typeof sessionId === "string" ? sessions.get(sessionId, owner) : undefined;
+      // Do not reveal whether a foreign session exists, or permit reinitializing it.
+      if (!transport && typeof sessionId === "string" && sessions.has(sessionId)) {
+        res.status(404).json({ jsonrpc: "2.0", error: { code: -32001, message: "Session not found" }, id: null });
+        return;
+      }
 
       if (!transport && req.method === "POST" && isInitializeRequest(req.body)) {
         // Session state is only needed when a client actually posts initialize;
         // loading it here keeps it off the bind path that daemon.json waits on.
-        const { StreamableHTTPServerTransport } = await import(
-          "@modelcontextprotocol/sdk/server/streamableHttp.js"
-        );
+        const { StreamableHTTPServerTransport } = await import("@modelcontextprotocol/sdk/server/streamableHttp.js");
         const newTransport: StreamableHTTPServerTransport = new StreamableHTTPServerTransport({
           sessionIdGenerator: () => randomUUID(),
           onsessioninitialized: (sid: string) => {
-            transports.set(sid, newTransport);
-            lastSeen.set(sid, Date.now());
-            // Over the cap, the idlest session dies — a live client hit by that
-            // gets a 404 and re-initializes; an abandoned one is what we wanted gone.
-            if (transports.size > sessionMax) {
-              let oldest: string | undefined;
-              let oldestAt = Infinity;
-              for (const [other, at] of lastSeen) {
-                if (at < oldestAt) {
-                  oldest = other;
-                  oldestAt = at;
-                }
-              }
-              if (oldest !== undefined && oldest !== sid) dropSession(oldest);
-            }
+            sessions.add(sid, newTransport, owner);
           },
         });
         newTransport.onclose = () => {
           const sid = newTransport.sessionId;
-          if (sid) {
-            transports.delete(sid);
-            lastSeen.delete(sid);
-          }
+          if (sid) sessions.forget(sid);
         };
         // The session's tools are fixed at init by the token it authenticated with.
-        const server = buildMcpServer(hub, config, (req as AuthedRequest).mcpWrite === true);
+        const server = buildMcpServer(
+          hub,
+          config,
+          (req as AuthedRequest).mcpWrite === true,
+          (req as AuthedRequest).localFiles === true
+        );
         await server.connect(newTransport);
         transport = newTransport;
       }
@@ -377,8 +343,8 @@ export async function startHttpEndpoint(hub: AccountSource, config: Config, endp
       }
 
       await transport.handleRequest(req, res, req.body);
-    } catch (err) {
-      logError("http request", err);
+    } catch {
+      log("HTTP MCP handler failed");
       if (!res.headersSent) {
         res.status(500).json({
           jsonrpc: "2.0",
@@ -412,12 +378,11 @@ export async function startHttpEndpoint(hub: AccountSource, config: Config, endp
       .catch(next);
   });
 
+  app.use(httpError);
   const server = createServer(app);
   const onAbort = (): void => {
     clearInterval(sweep);
-    for (const transport of transports.values())
-      void transport.close().catch((err: unknown) => logError("session close", err));
-    lastSeen.clear();
+    sessions.close();
     server.closeAllConnections();
     server.close();
   };
@@ -431,6 +396,8 @@ export async function startHttpEndpoint(hub: AccountSource, config: Config, endp
     return await listenHttp(server, endpoint.host, endpoint.port);
   } catch (err) {
     signal?.removeEventListener("abort", onAbort);
+    clearInterval(sweep);
+    sessions.close();
     server.close();
     throw err;
   }
@@ -469,7 +436,7 @@ export async function startLoopbackEndpoint(hub: AccountSource, config: Config, 
   const port = await startHttpEndpoint(hub, config, {
     host: "127.0.0.1",
     port: 0,
-    credentials: [{ token, write: true }],
+    credentials: [{ token, write: true, localFiles: true }],
     openRead: false,
   });
   log(`sharing this session on 127.0.0.1:${port}`);

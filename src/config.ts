@@ -4,6 +4,7 @@ import { join, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import dotenv from "dotenv";
 import { WazapError } from "./errors.js";
+import { trustedProxies } from "./proxy-trust.js";
 
 const require = createRequire(import.meta.url);
 export const WAZAP_VERSION: string = (require("../package.json") as { version: string }).version;
@@ -40,6 +41,8 @@ export interface Config {
   transport: "stdio" | "http";
   httpHost: string;
   httpPort: number;
+  /** Proxy addresses allowed to supply X-Forwarded-For; default loopback only. */
+  trustedProxies?: string[];
   readToken: string | null;
   writeToken: string | null;
   /** Where clients reach the HTTP endpoint from outside; with the password, turns OAuth on. */
@@ -49,10 +52,7 @@ export interface Config {
   share: boolean;
   /** Write-tool token bucket, per minute. 0 disables the limit. */
   rateLimitPerMinute: number;
-  sources: Record<
-    "dataDir" | "readOnly" | "transport" | "rateLimit" | "transcribe" | "webhook" | "recall",
-    Source
-  >;
+  sources: Record<"dataDir" | "readOnly" | "transport" | "rateLimit" | "transcribe" | "webhook" | "recall", Source>;
   command: Command;
   /** The command was named on the command line rather than defaulted to serve. */
   explicitCommand: boolean;
@@ -361,6 +361,7 @@ export function parseCli(argv: string[] = process.argv.slice(2)): CliInvocation 
       transport: values.http === true || httpFromEnv ? "http" : "stdio",
       httpHost: values.host ?? (process.env.WAZAP_HOST?.trim() || "127.0.0.1"),
       httpPort: values.port ? asInt(values.port, 8766) : asInt(process.env.WAZAP_PORT, 8766),
+      trustedProxies: trustedProxies(process.env.WAZAP_TRUST_PROXY),
       readToken: (process.env.WAZAP_READ_TOKEN ?? "").trim() || null,
       writeToken: (process.env.WAZAP_WRITE_TOKEN ?? "").trim() || null,
       publicUrl: (process.env.WAZAP_PUBLIC_URL ?? "").trim().replace(/\/+$/, "") || null,

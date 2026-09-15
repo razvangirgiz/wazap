@@ -1,0 +1,162 @@
+import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import type { z } from "zod";
+import type { AccountSource } from "./account-hub.js";
+import { attachAccountId, resolveToolAccount, stringArg } from "./account-resolve.js";
+import { asWazapError, WazapError } from "./errors.js";
+import { RateLimiter } from "./ratelimit.js";
+import { requireDraftOwner } from "./send-guard.js";
+import type { WhatsAppApi } from "./wa-types.js";
+
+export type ContentBlock = { type: "text"; text: string } | { type: "image"; data: string; mimeType: string };
+
+export interface ToolResult {
+  content: ContentBlock[];
+  structuredContent?: Record<string, unknown>;
+  isError?: boolean;
+  [key: string]: unknown;
+}
+
+export type ToolArgs = Record<string, unknown>;
+
+export interface ToolCtx {
+  wa: WhatsAppApi;
+  hub: AccountSource;
+  allowWrite: boolean;
+  accountId: string;
+  draftOwner: symbol;
+}
+
+export interface ToolDef {
+  name: string;
+  title: string;
+  description: string;
+  schema: z.ZodRawShape;
+  write: boolean;
+  destructive?: boolean;
+  /** Changes only local notes, so available in read-only mode too. */
+  local?: boolean;
+  /** Per-tool budget, separate from the account's write budget. */
+  rate?: number;
+  handler: (args: ToolArgs, ctx: ToolCtx) => Promise<ToolResult>;
+}
+
+export interface RegisterOpts {
+  allowWrite: boolean;
+  /** Trusted local stdio defaults to true; every HTTP session explicitly sets its capability. */
+  allowLocalFiles?: boolean;
+}
+
+export function toolError(err: WazapError): ToolResult {
+  const payload: Record<string, unknown> = { error: err.code, message: err.message };
+  if (err.fix) payload.fix = err.fix;
+  return { content: [{ type: "text", text: JSON.stringify(payload) }], structuredContent: payload, isError: true };
+}
+
+const READ_ONLY_HINTS = {
+  readOnlyHint: true,
+  destructiveHint: false,
+  idempotentHint: true,
+  openWorldHint: true,
+} as const;
+const WRITE_HINTS = {
+  readOnlyHint: false,
+  destructiveHint: false,
+  idempotentHint: false,
+  openWorldHint: true,
+} as const;
+const LOCAL_HINTS = {
+  readOnlyHint: false,
+  destructiveHint: false,
+  idempotentHint: true,
+  openWorldHint: false,
+} as const;
+
+function rateLabel(name: string): string {
+  const verb = name.split("_")[0] ?? name;
+  return verb.charAt(0).toUpperCase() + verb.slice(1);
+}
+
+/** Built once for the tool catalogue: reconnects never reset the process-wide rate buckets. */
+export function createToolRegistrar(defs: readonly ToolDef[]) {
+  const buckets = new Map<string, RateLimiter>(
+    defs.flatMap((def) =>
+      def.rate === undefined ? [] : [[def.name, new RateLimiter(def.rate, undefined, rateLabel(def.name))] as const]
+    )
+  );
+  return function registerTools(server: McpServer, hub: AccountSource, opts: RegisterOpts): void {
+    // Each stdio server / HTTP session / upstream bridge session owns its drafts.
+    // New initialization intentionally requires re-drafting, even with the same token.
+    const draftOwner = Symbol("MCP draft owner");
+    for (const def of defs) {
+      if (def.write && !opts.allowWrite) continue;
+      const own = buckets.get(def.name);
+      server.registerTool(
+        def.name,
+        {
+          title: def.title,
+          description:
+            def.description +
+            (opts.allowLocalFiles === false && (def.schema.file_path || def.schema.save_to)
+              ? "\nThis remote session cannot use file_path or save_to. Use public HTTP(S) URLs, forward existing messages, or download_media with its default directory."
+              : ""),
+          inputSchema: def.schema,
+          annotations: def.write
+            ? { ...WRITE_HINTS, destructiveHint: def.destructive === true }
+            : def.local
+              ? LOCAL_HINTS
+              : { ...READ_ONLY_HINTS, openWorldHint: def.name !== "learn" },
+        },
+        async (args: unknown): Promise<ToolResult> => {
+          const parsed = (args ?? {}) as ToolArgs;
+          let resolved: { id: string; wa: WhatsAppApi } | undefined;
+          try {
+            // Reject before any lookup/stat/read/write, including directory overrides on read tools.
+            if (opts.allowLocalFiles === false && (parsed.file_path !== undefined || parsed.save_to !== undefined)) {
+              throw new WazapError(
+                "MEDIA_ACCESS_DENIED",
+                "This MCP session cannot access arbitrary host files or choose download directories.",
+                "Use a public HTTP(S) media URL, forward an existing WhatsApp message, or download_media without save_to"
+              );
+            }
+            own?.take();
+            let resolveArgs = parsed;
+            if (def.name === "confirm_send") {
+              const ref = requireDraftOwner(
+                stringArg(parsed, "draft_id") ?? "",
+                draftOwner,
+                stringArg(parsed, "account_id")
+              );
+              // Resolve using the recorded account even if its service has evicted the draft.
+              resolveArgs = { ...parsed, account_id: ref.accountId };
+            }
+            resolved = resolveToolAccount(hub, resolveArgs, def);
+            // A writable account registers tools for the session, not permission to
+            // touch every account. Gate before draft/media/group preflight work.
+            if (
+              def.write &&
+              (hub.record(resolved.id)?.writes === false || resolved.wa.getStatus?.().read_only === true)
+            ) {
+              throw new WazapError(
+                "READ_ONLY",
+                `Account "${resolved.id}" is read-only, so this write is refused.`,
+                `Check global and account writes settings with the user; enable deliberately and restart the server (account: ${resolved.id})`
+              );
+            }
+            const result = await def.handler(parsed, {
+              wa: resolved.wa,
+              hub,
+              allowWrite: opts.allowWrite,
+              accountId: resolved.id,
+              draftOwner,
+            });
+            return attachAccountId(result, resolved.id);
+          } catch (err) {
+            const result = toolError(asWazapError(err));
+            const id = resolved?.id ?? stringArg(parsed, "account_id");
+            return id === undefined ? result : attachAccountId(result, id);
+          }
+        }
+      );
+    }
+  };
+}

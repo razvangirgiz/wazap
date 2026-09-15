@@ -695,7 +695,7 @@ test("send_message with mention_ids: the draft preview shows the final text, and
   const [method, jid, content] = calls[0];
   assert.equal(method, "sendMessage");
   assert.equal(jid, GROUP);
-  assert.deepEqual(content, { text: finalText, mentions: [ANA, DAN] });
+  assert.deepEqual(content, { text: finalText, linkPreview: null, mentions: [ANA, DAN] });
   for (const mentioned of content.mentions) {
     assert.ok(content.text.includes(`@${mentioned.split("@")[0]}`), `the token for ${mentioned} is in the text`);
   }

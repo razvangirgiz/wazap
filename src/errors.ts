@@ -81,7 +81,7 @@ export const ERROR_GUIDE: Record<ErrorCode, string> = {
   MEDIA_UNAVAILABLE:
     "The media expired on WhatsApp's servers or was never synced. Do not retry; ask the sender to resend.",
   MEDIA_ACCESS_DENIED:
-    "The URL is not a public http(s) address, or resolves to a private or internal one. Pass a public URL or download the file and use file_path.",
+    "This session cannot access host paths/directories, or the media URL is not public HTTP(S). Do not route around the restriction. Use a public URL, forward an existing WhatsApp message, or download_media without save_to.",
   FILE_NOT_FOUND: "The local path does not exist on the machine running wazap. Check the path with the user.",
   FILE_TOO_LARGE:
     "The file is too large. Chat media may be 100 MB; a profile picture may be 10 MB. Send a smaller file.",
@@ -107,7 +107,7 @@ export const ERROR_GUIDE: Record<ErrorCode, string> = {
   SERVICE_ERROR:
     "wazap's own background service could not be managed. This is a machine problem, not a WhatsApp one: read the fix and tell the user.",
   DRAFT_NOT_FOUND:
-    "That draft_id is unknown or was already sent. Call the send tool again to draft, show the new preview, then confirm_send.",
+    "That draft_id is unavailable in this MCP session (unknown, already sent, or created in another session). Draft again here, show the new preview and obtain fresh user approval before confirm_send.",
   DRAFT_EXPIRED:
     "The draft expired (15 minutes). Call the send tool again to draft, show the new preview, then confirm_send.",
   SEND_BLOCKED:

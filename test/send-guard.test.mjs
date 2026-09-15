@@ -314,7 +314,7 @@ test("default-deny refuses an unlisted recipient and says how to lift it", async
   assert.equal(calls.drafts, 0);
 });
 
-test("with rules on, a draft confirm cannot re-check fails closed", async () => {
+test("with rules on, an unowned draft is rejected before policy lookup", async () => {
   const server = fakeServer();
   const calls = { drafts: 0, confirms: 0 };
   const wa = draftApi(calls);
@@ -322,8 +322,8 @@ test("with rules on, a draft confirm cannot re-check fails closed", async () => 
 
   const orphan = await wa.draft({ kind: "text", chatId: ANA.chat_id, text: "hi" });
   const result = await server.tools.get("confirm_send").handler({ draft_id: orphan.draft_id });
-  assert.equal(result.structuredContent.error, "SEND_BLOCKED");
-  assert.match(result.structuredContent.message, /not on record/);
+  assert.equal(result.structuredContent.error, "DRAFT_NOT_FOUND");
+  assert.match(result.structuredContent.message, /this MCP session/);
   assert.equal(calls.confirms, 0);
 });
 

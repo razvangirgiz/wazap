@@ -43,14 +43,21 @@ export function requireSafeUrl(url: string): string {
   try {
     parsed = new URL(url);
   } catch {
-    throw new WazapError("INVALID_ID", `Not a URL: ${url}`, "Set WAZAP_TRANSCRIBE_URL to an https:// URL");
+    throw new WazapError("INVALID_ID", "Invalid transcription URL.", "Set WAZAP_TRANSCRIBE_URL to an https:// URL");
+  }
+  if (parsed.username || parsed.password || parsed.search || parsed.hash) {
+    throw new WazapError(
+      "INVALID_ID",
+      "Transcription base URLs must not contain credentials, a query or a fragment.",
+      "Use a base endpoint URL and set WAZAP_TRANSCRIBE_API_KEY separately"
+    );
   }
   if (parsed.protocol === "https:") return url;
   const host = parsed.hostname.replace(/^\[/, "").replace(/\]$/, "");
   if (parsed.protocol === "http:" && LOOPBACK.has(host)) return url;
   throw new WazapError(
     "INVALID_ID",
-    `Refusing a non-https transcription URL: ${url}`,
+    "Refusing a non-https transcription URL.",
     "Use an https:// URL, or http:// on 127.0.0.1 for a local server"
   );
 }

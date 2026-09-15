@@ -8,6 +8,7 @@ import { tmpdir } from "node:os";
 import { delimiter, isAbsolute, join } from "node:path";
 import { promisify } from "node:util";
 import { WazapError } from "../errors.js";
+import { LOCAL_MEDIA_INPUT_ARGS } from "../media-process.js";
 import { modelPath, MODELS } from "./models.js";
 import type { Provider, Readiness, TranscribeOpts, TranscribeSettings, Transcript } from "./types.js";
 
@@ -73,21 +74,20 @@ function installFix(): string {
   return "Build whisper.cpp from https://github.com/ggml-org/whisper.cpp#quick-start and install ffmpeg from your package manager";
 }
 
-function tail(text: string): string {
-  const lines = text.trimEnd().split("\n");
-  return lines.slice(-4).join("\n").slice(-600);
-}
-
 async function spawnStep(what: string, bin: string, args: string[]): Promise<void> {
   try {
     await run(bin, args, { timeout: TIMEOUT_MS, maxBuffer: MAX_OUTPUT, windowsHide: true });
   } catch (err) {
-    const failure = err as { killed?: boolean; stderr?: string; message?: string };
+    const failure = err as { killed?: boolean };
     if (failure.killed === true) {
       throw new WazapError("TRANSCRIBE_FAILED", `${what} timed out after 5 minutes.`, "Try a shorter recording");
     }
-    const detail = tail(failure.stderr ?? failure.message ?? "");
-    throw new WazapError("TRANSCRIBE_FAILED", `${what} failed: ${detail}`);
+    // Decoder stderr can echo attacker-controlled metadata, URLs or speech.
+    throw new WazapError(
+      "TRANSCRIBE_FAILED",
+      `${what} failed.`,
+      "Check that the recording is a supported, valid media file"
+    );
   }
 }
 
@@ -121,6 +121,7 @@ export const localProvider: Provider = {
         "-loglevel",
         "error",
         "-y",
+        ...LOCAL_MEDIA_INPUT_ARGS,
         "-i",
         file,
         "-ar",
@@ -139,11 +140,8 @@ export const localProvider: Provider = {
       let parsed: WhisperJson;
       try {
         parsed = JSON.parse(await readFile(`${out}.json`, "utf8")) as WhisperJson;
-      } catch (err) {
-        throw new WazapError(
-          "TRANSCRIBE_FAILED",
-          `whisper.cpp wrote no readable JSON: ${err instanceof Error ? err.message : String(err)}`
-        );
+      } catch {
+        throw new WazapError("TRANSCRIBE_FAILED", "whisper.cpp wrote no readable JSON.");
       }
 
       const segments = parsed.transcription ?? [];

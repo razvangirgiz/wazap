@@ -13,6 +13,7 @@ import { WAZAP_VERSION } from "./config.js";
 import { WazapError, asWazapError } from "./errors.js";
 import { log, logError } from "./logger.js";
 import { redact, stripPasted } from "./transcribe/index.js";
+import { discardResponse } from "./http-response.js";
 import type { ConnectionStatus, MessageType, MessageView, WebhookDelivery, WebhookInfo } from "./wa-types.js";
 
 export const WEBHOOK_EVENTS = ["message_received", "message_sent", "connection"] as const;
@@ -185,12 +186,19 @@ export function requireWebhookUrl(url: string): string {
   try {
     parsed = new URL(url);
   } catch {
-    throw new WazapError("INVALID_ID", `Not a URL: ${url}`, WEBHOOK_URL_FIX);
+    throw new WazapError("INVALID_ID", "Invalid webhook URL.", WEBHOOK_URL_FIX);
+  }
+  if (parsed.username || parsed.password || parsed.hash) {
+    throw new WazapError(
+      "INVALID_ID",
+      "Webhook URLs must not contain userinfo credentials or a fragment.",
+      WEBHOOK_URL_FIX
+    );
   }
   if (parsed.protocol === "https:") return url;
   const host = parsed.hostname.replace(/^\[/, "").replace(/\]$/, "");
   if (parsed.protocol === "http:" && LOOPBACK.has(host)) return url;
-  throw new WazapError("INVALID_ID", `Refusing a non-https webhook URL: ${url}`, WEBHOOK_URL_FIX);
+  throw new WazapError("INVALID_ID", "Refusing a non-https webhook URL.", WEBHOOK_URL_FIX);
 }
 
 /** `sha256=<hex>` of the exact UTF-8 body, the value of `X-Wazap-Signature`. */
@@ -530,10 +538,8 @@ export class WebhookSink {
       if (result.ok) this.recordSuccess();
       else this.recordFailure(result.error);
       return result.ok;
-    } catch (err) {
-      const settings = this.settings();
-      const secret = settings.kind === "ready" ? settings.secret : "";
-      this.lastError = redact(err instanceof Error ? err.message : String(err), secret);
+    } catch {
+      this.lastError = "Webhook delivery failed.";
       this.recordFailure(this.lastError);
       return false;
     } finally {
@@ -618,6 +624,7 @@ export class WebhookSink {
         redirect: "error",
         signal: AbortSignal.timeout(WEBHOOK_TIMEOUT_MS),
       });
+      await discardResponse(response);
       if (response.ok) return { ok: true };
       const host = hostOf(settings.url);
       if (retryableStatus(response.status)) {
@@ -631,12 +638,7 @@ export class WebhookSink {
         false
       );
     } catch (err) {
-      return failAttempt(
-        describePostError(err, settings.url, settings.secret),
-        settings.secret,
-        WEBHOOK_REACH_FIX,
-        true
-      );
+      return failAttempt(describePostError(err, settings.url), settings.secret, WEBHOOK_REACH_FIX, true);
     }
   }
 }
@@ -672,15 +674,15 @@ function hostOf(url: string): string {
   try {
     return new URL(url).host;
   } catch {
-    return url;
+    return "configured webhook endpoint";
   }
 }
 
-function describePostError(err: unknown, url: string, secret: string): string {
+function describePostError(err: unknown, url: string): string {
   const host = hostOf(url);
-  if (err instanceof Error && err.name === "TimeoutError") return `timed out reaching ${host}`;
-  const cause = redact(err instanceof Error ? err.message : String(err), secret);
-  return `could not reach ${host} (${cause})`;
+  if (err instanceof Error && (err.name === "TimeoutError" || err.name === "AbortError"))
+    return `timed out reaching ${host}`;
+  return `could not reach ${host}`;
 }
 
 function failAttempt(error: string, secret: string, fix: string, retry: boolean): WebhookAttempt {

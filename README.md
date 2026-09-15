@@ -415,10 +415,15 @@ The key is treated as a secret rather than as a setting:
 - It is stored only in `<data-dir>/.env`, mode `0600`.
 - `status`, `status --json`, `config` and `get_status` show at most
   `api key: set (…abcd)`.
-- A provider's own error message has the key stripped out of it before wazap
-  prints it.
+- Provider error bodies, transport exception details and malformed-JSON excerpts
+  are not printed. Errors retain HTTP status, timeouts and actionable fixes.
 - A plain-`http` `WAZAP_TRANSCRIBE_URL` is refused unless it points back at this
-  machine.
+  machine. Userinfo credentials, queries and fragments are not allowed in this
+  base URL; set the API key separately.
+- Redirects are refused, including same-origin redirects: configure the final
+  base endpoint directly. This keeps audio and credentials on the intended route.
+- Successful JSON responses are capped at 1 MiB, including chunked responses.
+  Error response bodies are discarded without being read.
 
 ### Without being asked
 
@@ -628,6 +633,38 @@ sees them, so it cannot message anyone from your number even by mistake.
 Writes are also rate limited to `WAZAP_RATE_LIMIT` per minute (default 20, `0`
 disables). Sending faster than a human is how accounts get banned.
 
+## Link previews and media processing
+
+Text sent or edited by wazap can include a controlled preview of the first
+explicit HTTP(S) URL. Fetching happens at send/confirm or edit, never while
+creating an MCP draft. Pages and thumbnail URLs both go through the public-media
+checks: public DNS answers only, a pinned socket lookup, a public connected peer,
+and validation at every redirect. HTTPS downgrades are refused. Baileys's own
+page/thumbnail fetcher stays disabled, including when our preview fails.
+
+The page and image share a four-second network budget, with at most three
+redirects each. Pages are capped at 256 KiB and images at 2 MiB. At most four
+previews run concurrently; excess requests send without one. Only HTML metadata
+is scanned (Open Graph, Twitter or title/description), with no JavaScript,
+embeds, cookies, authentication headers or Referer. Sites can still observe the
+server's preview request/IP. There is no cross-message URL cache.
+
+Thumbnail decoding currently supports JPEG only, capped at 4 megapixels and
+32 MiB decoder memory. An unsafe, oversized, unavailable or unsupported image
+leaves a text card. An invalid/missing page preview leaves the original message
+unchanged, without a card. URLs and provider errors are not logged. Forwarding
+an existing message may retain its embedded preview without fetching it again.
+
+Photo previews are decoded locally. Video frames, outgoing video thumbnails,
+GIF conversion and local transcription use restricted ffmpeg inputs: local-file
+protocol only, with a media-format allowlist that excludes playlists and image
+sequences. GIF conversion also requires the GIF demuxer. An unavailable video
+thumbnail does not fall back to Baileys's unrestricted ffmpeg command.
+
+These checks are not a codec sandbox. Keep ffmpeg and image decoders updated;
+exotic formats outside the allowlist may no longer work. Decoder errors omit
+raw stderr, which can contain untrusted metadata or private content.
+
 ## Send rules
 
 An account can also be limited in *who* it may message — the case where the
@@ -667,6 +704,60 @@ token session has no write tools. `get_status` says so and how to turn
 writes on. wazap refuses to bind a non-loopback address without a read
 token. Agents that cannot carry a header sign in with
 [OAuth](#hosted-agents-oauth) instead.
+
+### Client isolation
+
+HTTP MCP sessions are bound to the exact bearer credential that initialized
+them (stored in memory as a SHA-256 fingerprint), including its read/write
+permissions. Another credential cannot use that session's POST, GET or DELETE
+endpoint, even if it knows the session id; it receives `404 Session not found`.
+Each request still validates the token, so expiry or revocation returns 401.
+After an OAuth access token rotates, initialize a new MCP session when the old
+session returns 404.
+
+Clients sharing a static token share an identity, and unauthenticated readers
+share an anonymous identity. Use distinct credentials/OAuth grants for isolation;
+do not enable anonymous access on a sensitive endpoint. This is not per-client
+account isolation: authorized clients still share account data and account-level
+policies.
+
+Drafts are owned by the MCP session that created them, including stdio servers
+and each bridge's upstream session. Another session cannot confirm a draft even
+if it knows its id; it receives `DRAFT_NOT_FOUND`, without consuming the draft.
+Resuming the same authenticated session preserves its drafts. A new initialize
+(after eviction, reconnect with a new session, or OAuth token rotation) requires
+a new draft and fresh user approval. Two sessions using the same token have
+separate drafts, but sharing that token is still sharing an identity: anyone
+holding both that token and the owner's session id can act as that session.
+Draft/confirm is a workflow, not independent proof of human consent; the agent
+can call both tools unless a trusted harness enforces approval.
+
+### Host files and remote media
+
+HTTP clients — static read/write tokens and OAuth grants — cannot use
+`file_path` or override `download_media` with `save_to`. This applies even on
+loopback: a reverse proxy or tunnel also reaches the server from localhost.
+The tools return `MEDIA_ACCESS_DENIED` before looking up a path or touching a
+file. A write token grants WhatsApp writes, not access to the host filesystem.
+
+Remote clients can use public HTTP(S) media URLs, forward existing WhatsApp
+messages, and download attachments into the account's default media directory.
+Small downloaded images still return inline. Other attachments are saved on the
+server; there is no arbitrary-file upload/download endpoint.
+
+Local stdio clients retain local file access. A local bridge gets it only through
+the private daemon credential stored in `daemon.json`, never through a public
+read/write token or OAuth grant. Keep that credential private; it is a local
+filesystem capability as well as a WhatsApp credential. No client-provided flag
+or argument enables it.
+
+URL media fetches check every DNS answer and redirect, pin the validated address
+for the connection, check the peer address, and cap response size. Fetch errors
+do not echo signed URLs. HTTP request logs omit queries, arbitrary URL paths,
+request bodies and raw Accept headers; malformed-request errors are sanitized.
+Client labels are bounded and stripped of log/terminal control characters. Do
+not place secrets in client names or User-Agent labels, which remain diagnostic
+metadata.
 
 ## Self-host
 
@@ -727,6 +818,22 @@ Claude Code, Claude Desktop, Cursor, Codex, VS Code, Poke and any client with an
 
 claude.ai Connectors, ChatGPT and some hosted agents will not take a static header. They want OAuth, which is the next section.
 
+### Reverse proxy trust
+
+With OAuth enabled, `WAZAP_TRUST_PROXY` controls which peers may supply
+`X-Forwarded-For` for password lockouts and request limits. The default is
+`loopback`, not every private or Docker address. Set it to `none` for direct
+connections without a proxy, or to a comma-separated list of exact proxy IPs
+or CIDRs, for example `loopback,172.20.0.2/32`. Restart after changing it.
+Do not trust a whole LAN just because the proxy runs there.
+
+The trusted proxy must remove or sanitize incoming `X-Forwarded-For` and append
+the actual client address. `CF-Connecting-IP` alone is ignored; configure a
+Cloudflare/tunnel ingress to produce a trustworthy `X-Forwarded-For` chain.
+Otherwise callers behind that ingress share the proxy's rate-limit identity.
+Check the real header chain before exposing the service. Proxy trust does not
+grant authentication, write permissions, or local-file access.
+
 ### Hosted agents (OAuth)
 
 Two more lines in the same `.env` turn wazap into its own OAuth 2.1 server:
@@ -754,8 +861,8 @@ What to know before exposing it:
   endpoints live at its root. The password travels to it.
 - The password is the whole identity layer. Use a long one. A consent page
   takes three wrong guesses and is gone; five from one address lock that
-  address out for fifteen minutes; twenty from anywhere close the page for
-  everyone for fifteen minutes.
+  address out for fifteen minutes; twenty from anywhere pause consent for
+  everyone for one minute.
 - With OAuth on, `/mcp` never answers an unauthenticated request, whether or
   not a read token is set.
 - Grants live in `<data-dir>/oauth.json` as hashes. Delete the file to sign
@@ -764,7 +871,16 @@ What to know before exposing it:
   every access token it minted. A refresh token unused for ninety days is
   dropped.
 - A read grant never sees a write tool, whatever scope the agent requested.
-  The radio button on the consent page is the only thing that decides.
+  The radio button on the consent page is the only thing that decides. Refresh
+  requests may narrow scopes, but any scope outside that grant is rejected.
+- A supplied OAuth `resource` must be this server's exact MCP URL, including
+  `/mcp`. A different path, origin, query or fragment is rejected at authorization,
+  code exchange and refresh. Older clients may omit `resource`.
+- Write tools may be visible because one linked account allows them. Each write
+  still checks the resolved account's read-only policy before draft creation or
+  media preparation, as well as the existing service-level send check. This is
+  account policy enforcement, not per-client account ACLs; policy changes still
+  require the documented server restart.
 
 ## Outbound webhook
 
@@ -799,6 +915,14 @@ delivery never stops WhatsApp or MCP. A timeout, an unreachable URL, or a
 `4xx`, such as the `401` of a receiver whose API key changed, is a refusal: it
 is posted once, and the error names the status with a hint. Either way the
 failure sets `webhook.last_error`, which the next delivery clears.
+
+Redirects are never followed. Response bodies are cancelled without being read,
+including successful ones. Diagnostics retain the destination host, status and
+failure category, not URL paths/queries, response bodies or transport exception
+excerpts. URL query tokens remain supported, but userinfo credentials and
+fragments are refused. Webhook and transcription destinations are trusted
+operator configuration, not agent-supplied public-media URLs: configure only
+receivers allowed to see this account's data.
 
 `get_status` counts events since the server started in `webhook.delivery`:
 `delivered`, `failed` (a retried event that never got through counts once),
@@ -912,6 +1036,7 @@ mean the link is up. Poll `get_status` when you need to know that.
 | `WAZAP_READ_TOKEN` / `WAZAP_WRITE_TOKEN` | unset | HTTP bearer tokens. |
 | `WAZAP_PUBLIC_URL` | unset | The `https` address agents reach the server at. With the password, turns OAuth on. |
 | `WAZAP_OAUTH_PASSWORD` | unset | What the consent page asks for. At least 8 characters. |
+| `WAZAP_TRUST_PROXY` | `loopback` | OAuth proxy IPs/CIDRs trusted for X-Forwarded-For, comma-separated; `none` disables proxy trust. |
 | `WAZAP_NO_UPDATE_CHECK` | `0` | `1` stops `status` asking npm for a newer version. |
 | `WAZAP_TRANSCRIBE` | `off` | `local`, `openai` or `off`. |
 | `WAZAP_TRANSCRIBE_AUTO` | `1` | Transcribe incoming voice notes in the background. |

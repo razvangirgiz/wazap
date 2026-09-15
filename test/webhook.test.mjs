@@ -548,7 +548,7 @@ test("notify never rejects, even when building the POST throws", async () => {
     },
   };
   await sink.notify(payload);
-  assert.match(sink.lastError ?? "", /cannot serialize/);
+  assert.equal(sink.lastError, "Webhook delivery failed.");
   assert.ok(!(sink.lastError ?? "").includes(SECRET), "the secret must not appear in last_error");
 });
 
@@ -1656,7 +1656,7 @@ test("a retried event that finally fails is one failed, and a throw while postin
   const delivery = sink.info().delivery;
   assert.equal(delivery.failed, 2);
   assert.equal(delivery.consecutive_failures, 2);
-  assert.match(delivery.last_failure, /cannot serialize/);
+  assert.equal(delivery.last_failure, "Webhook delivery failed.");
   assert.ok(!delivery.last_failure.includes(SECRET), "the secret must not appear in last_failure");
 });
 

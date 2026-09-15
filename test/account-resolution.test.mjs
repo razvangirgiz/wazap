@@ -224,7 +224,9 @@ test("download_media walks the accounts until a store files the id", async () =>
   assert.equal(out.account_id, "work");
   assert.equal(out.sender.id, OWNER, "sender identity is resolved on the account that served the file");
 
-  const scoped = await tools.get("download_media").handler({ message_id: lidSid, save_to: saveTo, account_id: "default" });
+  const scoped = await tools
+    .get("download_media")
+    .handler({ message_id: lidSid, save_to: saveTo, account_id: "default" });
   assert.equal(scoped.structuredContent.error, "MESSAGE_NOT_FOUND");
 });
 
@@ -395,6 +397,78 @@ test("write tools stay unregistered when every enabled account is read-only", ()
 
 test("ACCOUNT_NOT_CONNECTED is not an error code", () => {
   assert.equal("ACCOUNT_NOT_CONNECTED" in ERROR_GUIDE, false);
+});
+
+for (const [name, args] of [
+  ["send_message", { chat_id: DAN, text: "test" }],
+  ["send_media", { chat_id: DAN, file_path: "/synthetic-missing/private.txt" }],
+  ["set_profile_picture", { file_path: "/synthetic-missing/private.png" }],
+]) {
+  test(`${name} rejects a read-only account before draft creation or media access`, async () => {
+    const { hub, workSock } = twoAccountHub({ workWrites: false });
+    workSock.ev.emit("chats.upsert", [{ id: DAN }]);
+    const result = await toolsOf(hub)
+      .get(name)
+      .handler({ ...args, account_id: "work" });
+    assert.equal(result.structuredContent.error, "READ_ONLY");
+    assert.equal(result.structuredContent.account_id, "work");
+  });
+}
+
+test("implicit chat routing cannot borrow another account's write permission", async () => {
+  const { hub, workSock } = twoAccountHub({ workWrites: false });
+  workSock.ev.emit("chats.upsert", [{ id: DAN }]);
+  const tools = toolsOf(hub);
+  const result = await tools.get("send_message").handler({ chat_id: DAN, text: "test" });
+  assert.equal(result.structuredContent.error, "READ_ONLY");
+  assert.equal(result.structuredContent.account_id, "work");
+  assert.equal((await tools.get("read_messages").handler({ chat_id: DAN, limit: 20 })).isError, undefined);
+});
+
+test("an owned draft cannot reach confirm while its effective account policy is read-only", async () => {
+  const { hub, home, homeSock } = twoAccountHub();
+  homeSock.ev.emit("chats.upsert", [{ id: ANA }]);
+  homeSock.sendMessage = async () => undefined;
+  const tools = toolsOf(hub);
+  const draft = await tools.get("send_message").handler({ account_id: "default", chat_id: ANA, text: "test" });
+  const args = { draft_id: draft.structuredContent.draft_id };
+  const original = home.confirm.bind(home);
+  let calls = 0;
+  home.confirm = (...args) => {
+    calls++;
+    return original(...args);
+  };
+  // Test the effective service policy, not an unsupported live config reload.
+  home.effectiveReadOnly = true;
+  assert.equal((await tools.get("confirm_send").handler(args)).structuredContent.error, "READ_ONLY");
+  assert.equal(calls, 0);
+  assert.equal(home.hasDraft(args.draft_id), true);
+  home.effectiveReadOnly = false;
+  assert.equal((await tools.get("confirm_send").handler(args)).isError, undefined);
+  assert.equal(calls, 1);
+});
+
+test("every non-confirm write is stopped at the resolved account, not just at the socket", async () => {
+  const { hub, work } = twoAccountHub({ workWrites: false });
+  const tools = toolsOf(hub);
+  // Replace operations with traps: the runtime gate must run before any handler.
+  let touched = 0;
+  const trapped = new Proxy(work, {
+    get(target, key, receiver) {
+      if (["getStatus", "hasChat", "hasMessage", "hasDraft"].includes(key))
+        return Reflect.get(target, key, receiver).bind(target);
+      touched++;
+      throw Error(`read-only service operation reached: ${String(key)}`);
+    },
+  });
+  const original = hub.binding.bind(hub);
+  hub.binding = (id) => (id === "work" ? { id, wa: trapped } : original(id));
+  for (const [name, { meta, handler }] of tools) {
+    if (meta.annotations.readOnlyHint || meta.annotations.idempotentHint || name === "confirm_send") continue;
+    const result = await handler({ account_id: "work" });
+    assert.equal(result.structuredContent.error, "READ_ONLY", name);
+  }
+  assert.equal(touched, 0);
 });
 
 test("write tools register when any account allows writes; beginWrite names the read-only one", async () => {

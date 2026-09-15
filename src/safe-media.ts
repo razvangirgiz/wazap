@@ -41,6 +41,8 @@ export interface MediaNetwork {
   requestTls: typeof httpsRequest;
   timeoutMs: number;
   maxBytes: number;
+  maxRedirects: number;
+  allowHttpsDowngrade: boolean;
 }
 
 const network: MediaNetwork = {
@@ -49,26 +51,28 @@ const network: MediaNetwork = {
   requestTls: httpsRequest,
   timeoutMs: 30_000,
   maxBytes: MEDIA_MAX,
+  maxRedirects: 5,
+  allowHttpsDowngrade: true,
 };
 
 function tooLarge(size: number, maxBytes: number): WazapError {
   return new WazapError(
     "FILE_TOO_LARGE",
-    `The file is ${Math.round(size / 1_048_576)} MB; the limit is ${Math.round(maxBytes / 1_048_576)} MB.`,
+    `The file is ${Math.round(size / 1_048_576)} MB; the limit is ${Math.round(maxBytes / 1_048_576)} MB.`
   );
 }
 
 /** Dependency injection is only a test seam; callers cannot set it through an MCP tool. */
 export async function publicMedia(
   urlText: string,
-  io: Partial<MediaNetwork> = {},
+  io: Partial<MediaNetwork> = {}
 ): Promise<{ buffer: Buffer; mime: string | null; url: string }> {
   const net: MediaNetwork = { ...network, ...io };
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), net.timeoutMs);
   try {
     let url = new URL(urlText);
-    for (let redirects = 0; redirects <= 5; redirects++) {
+    for (let redirects = 0; redirects <= net.maxRedirects; redirects++) {
       if (!["http:", "https:"].includes(url.protocol) || url.username || url.password)
         denied("Use a public HTTP(S) URL without credentials.");
       const host = url.hostname.replace(/^\[|\]$/g, "");
@@ -100,7 +104,7 @@ export async function publicMedia(
             signal: controller.signal,
             lookup: pinned,
           },
-          resolve,
+          resolve
         );
         req.on("error", reject);
         req.end();
@@ -111,12 +115,16 @@ export async function publicMedia(
       }
       if ([301, 302, 303, 307, 308].includes(response.statusCode ?? 0) && response.headers.location) {
         response.destroy();
-        url = new URL(response.headers.location, url);
+        const next = new URL(response.headers.location, url);
+        if (!net.allowHttpsDowngrade && url.protocol === "https:" && next.protocol !== "https:") {
+          denied("HTTPS downgrade redirects are not allowed.");
+        }
+        url = next;
         continue;
       }
-      if ((response.statusCode ?? 500) >= 400) {
+      if ((response.statusCode ?? 500) < 200 || (response.statusCode ?? 500) >= 300) {
         response.destroy();
-        throw new WazapError("URL_FETCH_FAILED", `Fetching ${url.href} returned HTTP ${response.statusCode}.`);
+        throw new WazapError("URL_FETCH_FAILED", `Media server returned HTTP ${response.statusCode}.`);
       }
       const declared = Number(response.headers["content-length"]);
       if (declared > net.maxBytes) {
@@ -139,10 +147,14 @@ export async function publicMedia(
         url: url.href,
       };
     }
-    throw new WazapError("URL_FETCH_FAILED", "Media URL exceeded 5 redirects.");
+    throw new WazapError("URL_FETCH_FAILED", `Media URL exceeded ${net.maxRedirects} redirects.`);
   } catch (e) {
     if (e instanceof WazapError) throw e;
-    throw new WazapError("URL_FETCH_FAILED", e instanceof Error ? e.message : String(e));
+    // Resolver/HTTP errors may embed signed URLs, credentials or internal paths.
+    throw new WazapError(
+      "URL_FETCH_FAILED",
+      controller.signal.aborted ? "Media download timed out." : "Media download failed."
+    );
   } finally {
     clearTimeout(timer);
   }

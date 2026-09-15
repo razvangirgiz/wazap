@@ -11,6 +11,8 @@ import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { extractWWWAuthenticateParams } from "@modelcontextprotocol/sdk/client/auth.js";
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { startHttpEndpoint } from "../dist/server.js";
 import { WazapOAuthProvider, oauthProblem } from "../dist/oauth.js";
 import { offlineConfig, stubAccountSource, waitFor } from "./helpers.mjs";
@@ -47,13 +49,19 @@ function form(fields) {
 /** One server, one provider, torn down by the caller. */
 async function boot(
   t,
-  { password = PASSWORD, credentials = [{ token: "static-read", write: false }], readOnly = false, now } = {}
+  {
+    password = PASSWORD,
+    credentials = [{ token: "static-read", write: false }],
+    readOnly = false,
+    now,
+    trustedProxies,
+  } = {}
 ) {
   const dataDir = mkdtempSync(join(tmpdir(), "wazap-oauth-"));
   const port = await freePort();
   const publicUrl = new URL(`http://127.0.0.1:${port}`);
   const oauth = new WazapOAuthProvider({ publicUrl, password, stateFile: join(dataDir, "oauth.json"), now });
-  const config = offlineConfig("wazap-oauth-cfg-", { readOnly, transport: "http", dataDir });
+  const config = offlineConfig("wazap-oauth-cfg-", { readOnly, transport: "http", dataDir, trustedProxies });
   const stop = new AbortController();
   await startHttpEndpoint(stubAccountSource(stubWa), config, {
     host: "127.0.0.1",
@@ -130,7 +138,7 @@ async function grant(ctx, { access = "write", password = PASSWORD, ...rest } = {
   return { ...started, redirect };
 }
 
-async function exchange(ctx, { client, redirectUri, verifier, code }) {
+async function exchange(ctx, { client, redirectUri, verifier, code, resource }) {
   return ctx.fetchJson("/token", {
     method: "POST",
     headers: { "content-type": "application/x-www-form-urlencoded" },
@@ -141,6 +149,7 @@ async function exchange(ctx, { client, redirectUri, verifier, code }) {
       client_id: client.client_id,
       ...(client.client_secret ? { client_secret: client.client_secret } : {}),
       redirect_uri: redirectUri,
+      ...(resource ? { resource } : {}),
     }),
   });
 }
@@ -190,6 +199,67 @@ async function listTools(ctx, token) {
   const names = JSON.parse(data).result.tools.map((tool) => tool.name);
   return { status: res.status, names };
 }
+
+test("OAuth sessions reject other grants and require reinitialization after token rotation", async (t) => {
+  const ctx = await boot(t);
+  const owner = await signIn(ctx, { access: "write", clientName: "Owner" });
+  const other = await signIn(ctx, { access: "write", clientName: "Other" });
+  const reader = await signIn(ctx, { access: "read", clientName: "Reader" });
+  async function call(token, sid, method = "ping") {
+    const res = await fetch(`${ctx.base}/mcp`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        accept: "application/json, text/event-stream",
+        authorization: `Bearer ${token}`,
+        ...(sid ? { "mcp-session-id": sid } : {}),
+      },
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        id: 1,
+        method,
+        ...(method === "initialize"
+          ? {
+              params: {
+                protocolVersion: "2025-03-26",
+                capabilities: {},
+                clientInfo: { name: "isolation", version: "1" },
+              },
+            }
+          : {}),
+      }),
+      signal: AbortSignal.timeout(5000),
+    });
+    await res.text();
+    return { status: res.status, sid: res.headers.get("mcp-session-id") };
+  }
+  const session = await call(owner.tokens.access_token, undefined, "initialize");
+  assert.equal(session.status, 200);
+  for (const token of [other.tokens.access_token, reader.tokens.access_token, "static-read"]) {
+    assert.equal((await call(token, session.sid)).status, 404);
+  }
+  assert.equal((await call(owner.tokens.access_token, session.sid)).status, 200);
+  const { body: rotated, res } = await ctx.fetchJson("/token", {
+    method: "POST",
+    headers: { "content-type": "application/x-www-form-urlencoded" },
+    body: form({
+      grant_type: "refresh_token",
+      refresh_token: owner.tokens.refresh_token,
+      client_id: owner.client.client_id,
+    }),
+  });
+  assert.equal(res.status, 200);
+  assert.equal((await call(rotated.access_token, session.sid)).status, 404);
+  const fresh = await call(rotated.access_token, undefined, "initialize");
+  assert.equal(fresh.status, 200);
+  assert.equal((await call(rotated.access_token, fresh.sid)).status, 200);
+  await ctx.fetchJson("/revoke", {
+    method: "POST",
+    headers: { "content-type": "application/x-www-form-urlencoded" },
+    body: form({ token: owner.tokens.refresh_token, client_id: owner.client.client_id }),
+  });
+  assert.equal((await call(rotated.access_token, fresh.sid)).status, 401);
+});
 
 test("an unauthenticated call is told where to sign in", async (t) => {
   const ctx = await boot(t);
@@ -297,6 +367,36 @@ test("the request log names the caller by User-Agent and OAuth client, never by 
   }
 });
 
+test("OAuth write grants never authorize host file access, and consent labels cannot inject log lines", async (t) => {
+  const ctx = await boot(t);
+  const lines = [];
+  const original = console.error;
+  console.error = (...args) => lines.push(args.join(" "));
+  try {
+    const { tokens } = await signIn(ctx, { access: "write", clientName: 'Test"\nFORGED\u001b[31m' });
+    const client = new Client({ name: "oauth-files", version: "1" });
+    t.after(() => client.close());
+    await client.connect(
+      new StreamableHTTPClientTransport(new URL(`${ctx.base}/mcp`), {
+        requestInit: { headers: { authorization: `Bearer ${tokens.access_token}` } },
+      })
+    );
+    const result = await client.callTool({
+      name: "set_profile_picture",
+      arguments: { file_path: "/synthetic/private.png" },
+    });
+    assert.equal(result.structuredContent.error, "MEDIA_ACCESS_DENIED");
+    assert.ok(lines.some((line) => line.includes("oauth: registered client")));
+    assert.ok(
+      lines.every((line) => !["\n", "\r", "\u001b"].some((control) => line.includes(control))),
+      "no injected line or terminal escape"
+    );
+    assert.ok(lines.every((line) => !line.includes(tokens.access_token) && !line.includes(tokens.refresh_token)));
+  } finally {
+    console.error = original;
+  }
+});
+
 test("the static token still works with OAuth on", async (t) => {
   const ctx = await boot(t);
   const { status, names } = await listTools(ctx, "static-read");
@@ -388,6 +488,162 @@ test("a wrong password stays on the page twice, the third throws the page away, 
   assert.equal((await again((await begin(ctx)).request)).res.status, 429);
 });
 
+test("untrusted proxy headers cannot rotate the password-lockout identity", async (t) => {
+  const ctx = await boot(t, { trustedProxies: [] });
+  const wrong = { password: "nope", access: "read", decision: "allow" };
+  let page = await begin(ctx);
+  for (let miss = 0; miss < 5; miss++) {
+    if (miss === 3) page = await begin(ctx);
+    const { res } = await approveWith(
+      ctx,
+      { "x-forwarded-for": `203.0.113.${miss + 1}`, "cf-connecting-ip": `198.51.100.${miss + 1}` },
+      page.request,
+      wrong
+    );
+    assert.equal(res.status, 401);
+  }
+  const next = await begin(ctx);
+  const { res } = await approveWith(
+    ctx,
+    { "x-forwarded-for": "203.0.113.99", "cf-connecting-ip": "198.51.100.99" },
+    next.request,
+    { ...wrong, password: PASSWORD }
+  );
+  assert.equal(res.status, 429);
+});
+
+test("CF-Connecting-IP alone cannot rotate the caller behind a trusted local proxy", async (t) => {
+  const ctx = await boot(t);
+  const wrong = { password: "nope", access: "read", decision: "allow" };
+  let page = await begin(ctx);
+  for (let miss = 0; miss < 5; miss++) {
+    if (miss === 3) page = await begin(ctx);
+    assert.equal(
+      (await approveWith(ctx, { "cf-connecting-ip": `203.0.113.${miss + 1}` }, page.request, wrong)).res.status,
+      401
+    );
+  }
+  assert.equal(
+    (await approveWith(ctx, { "cf-connecting-ip": "203.0.113.99" }, (await begin(ctx)).request, wrong)).res.status,
+    429
+  );
+});
+
+test("the default proxy chain stops at a private client instead of trusting its spoofed prefix", async (t) => {
+  const ctx = await boot(t);
+  const wrong = { password: "nope", access: "read", decision: "allow" };
+  let page = await begin(ctx);
+  for (let miss = 0; miss < 5; miss++) {
+    if (miss === 3) page = await begin(ctx);
+    const headers = { "x-forwarded-for": `198.51.100.${miss + 1}, 10.9.0.3` };
+    assert.equal((await approveWith(ctx, headers, page.request, wrong)).res.status, 401);
+  }
+  assert.equal(
+    (await approveWith(ctx, { "x-forwarded-for": "198.51.100.99, 10.9.0.3" }, (await begin(ctx)).request, wrong)).res
+      .status,
+    429
+  );
+});
+
+test("OAuth metadata never takes its issuer/resource from forwarded Host or scheme", async (t) => {
+  const ctx = await boot(t);
+  const { body } = await ctx.fetchJson("/.well-known/oauth-protected-resource/mcp", {
+    headers: { host: "other.example", "x-forwarded-host": "other.example", "x-forwarded-proto": "https" },
+  });
+  assert.equal(body.resource, `${ctx.base}/mcp`);
+  assert.deepEqual(body.authorization_servers, [`${ctx.base}/`]);
+});
+
+test("OAuth codes and refresh grants cannot be exchanged or revoked by another client", async (t) => {
+  const ctx = await boot(t);
+  const g = await grant(ctx);
+  const other = await begin(ctx);
+  const code = new URL(g.redirect.headers.get("location")).searchParams.get("code");
+  assert.equal((await exchange(ctx, { ...g, code, client: other.client })).res.status, 400);
+  assert.equal((await exchange(ctx, { ...g, code, redirectUri: "https://other.example/callback" })).res.status, 400);
+  const valid = await exchange(ctx, { ...g, code });
+  assert.equal(valid.res.status, 200);
+  const tokens = valid.body;
+  const wrongRefresh = await ctx.fetchJson("/token", {
+    method: "POST",
+    headers: { "content-type": "application/x-www-form-urlencoded" },
+    body: form({ grant_type: "refresh_token", client_id: other.client.client_id, refresh_token: tokens.refresh_token }),
+  });
+  assert.equal(wrongRefresh.res.status, 400);
+  for (const token of [tokens.access_token, tokens.refresh_token]) {
+    const revoke = await ctx.fetchJson("/revoke", {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: form({ client_id: other.client.client_id, token }),
+    });
+    assert.equal(revoke.res.status, 200);
+    assert.equal((await listTools(ctx, tokens.access_token)).status, 200);
+  }
+});
+
+test("access token is invalid at its exact expiration instant", async (t) => {
+  let now = Date.now();
+  const ctx = await boot(t, { now: () => now });
+  const { tokens } = await signIn(ctx);
+  now += tokens.expires_in * 1000;
+  assert.equal((await listTools(ctx, tokens.access_token)).status, 401);
+});
+
+test("authorization rejects a resource other than this MCP endpoint", async (t) => {
+  const ctx = await boot(t);
+  const started = await begin(ctx);
+  for (const resource of ["https://other.example/mcp", `${ctx.base}/other`, `${ctx.base}/mcp?extra=1`]) {
+    const query = new URLSearchParams({
+      client_id: started.client.client_id,
+      redirect_uri: started.redirectUri,
+      response_type: "code",
+      code_challenge: started.challenge,
+      code_challenge_method: "S256",
+      resource,
+    });
+    const { res } = await ctx.fetchJson(`/authorize?${query}`);
+    assert.equal(res.status, 302);
+    assert.equal(new URL(res.headers.get("location")).searchParams.get("error"), "invalid_target");
+  }
+});
+
+test("token exchange rejects a different resource without consuming the valid code", async (t) => {
+  const ctx = await boot(t);
+  const g = await grant(ctx);
+  const code = new URL(g.redirect.headers.get("location")).searchParams.get("code");
+  const bad = await exchange(ctx, { ...g, code, resource: "https://other.example/mcp" });
+  assert.equal(bad.res.status, 400);
+  assert.equal(bad.body.error, "invalid_target");
+  assert.equal((await exchange(ctx, { ...g, code, resource: `${ctx.base}/mcp` })).res.status, 200);
+});
+
+test("refresh refuses foreign resources and any scope outside the consent grant", async (t) => {
+  const ctx = await boot(t);
+  const { client, tokens } = await signIn(ctx, { access: "read" });
+  for (const [extra, error] of [
+    [{ resource: "https://other.example/mcp" }, "invalid_target"],
+    [{ scope: "read write" }, "invalid_scope"],
+  ]) {
+    const { res, body } = await ctx.fetchJson("/token", {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: form({
+        grant_type: "refresh_token",
+        refresh_token: tokens.refresh_token,
+        client_id: client.client_id,
+        ...extra,
+      }),
+    });
+    assert.equal(res.status, 400);
+    assert.equal(body.error, error);
+  }
+  assert.equal(
+    (await listTools(ctx, tokens.access_token)).status,
+    200,
+    "invalid refresh requests do not revoke the valid grant"
+  );
+});
+
 test("behind a tunnel on this machine, the forwarded address is the caller a lockout counts", async (t) => {
   const ctx = await boot(t);
   const wrong = { password: "nope", access: "read", decision: "allow" };
@@ -413,7 +669,7 @@ function approveWith(ctx, headers, request, fields) {
   });
 }
 
-test("with no X-Forwarded-For, CF-Connecting-IP is the caller; X-Forwarded-For still wins over it", async (t) => {
+test("CF-Connecting-IP is ignored; trusted X-Forwarded-For chooses the caller", async (t) => {
   const ctx = await boot(t);
   const wrong = { password: "nope", access: "read", decision: "allow" };
   const right = { ...wrong, password: PASSWORD };
@@ -431,7 +687,7 @@ test("with no X-Forwarded-For, CF-Connecting-IP is the caller; X-Forwarded-For s
   const locked = await approveWith(ctx, { "cf-connecting-ip": "203.0.113.9" }, (await begin(ctx)).request, right);
   assert.equal(locked.res.status, 429, "that address is locked out");
   const owner = await approveWith(ctx, { "cf-connecting-ip": "198.51.100.7" }, (await begin(ctx)).request, right);
-  assert.equal(owner.res.status, 302, "another address behind the same tunnel is not");
+  assert.equal(owner.res.status, 429, "changing only a CF header cannot change the caller");
 
   await lockOut({ "x-forwarded-for": "203.0.113.20" });
   const spoofed = await approveWith(
