@@ -439,6 +439,35 @@ test(
 );
 
 test(
+  "a launchd restart reloads the plist, so a rewritten unit takes effect",
+  { skip: STUB?.name === "launchd" ? false : `launchctl only runs on macOS, not ${process.platform}` },
+  () => {
+    const dir = dataDir();
+    const bin = mkdtempSync(join(tmpdir(), "wazap-bin-"));
+    const state = join(dir, "loaded");
+    const record = join(dir, "calls");
+    writeFileSync(state, "");
+    writeFileSync(record, "");
+    writeFileSync(join(bin, "launchctl"), STUB.script(state, join(dir, "lock"), process.pid, record), { mode: 0o755 });
+    const launchd = SUPERVISORS.find((supervisor) => supervisor.name === "launchd");
+
+    const originalPath = process.env.PATH;
+    process.env.PATH = `${bin}${delimiter}${originalPath ?? ""}`;
+    try {
+      launchd.restart({ label: "com.wazap.server", unitFile: join(dir, "com.wazap.server.plist") });
+    } finally {
+      process.env.PATH = originalPath;
+    }
+
+    const calls = readFileSync(record, "utf8");
+    assert.doesNotMatch(calls, /kickstart/, `kickstart reruns the plist launchd already read: ${calls}`);
+    assert.match(calls, /^bootout /m, "the loaded job was never booted out");
+    assert.match(calls, /^bootstrap .*com\.wazap\.server\.plist$/m, "the unit file was never loaded again");
+    assert.ok(calls.search(/^bootout /m) < calls.search(/^bootstrap /m), `booted out before loaded again: ${calls}`);
+  }
+);
+
+test(
   "login stops the wazap service for pairing and starts it again",
   { skip: STUB === null ? `no launchd or systemd on ${process.platform}` : false },
   async () => {

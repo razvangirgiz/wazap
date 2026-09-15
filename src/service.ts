@@ -123,6 +123,14 @@ function launchctlPrint(ref: UnitRef): string | null {
 
 const LAUNCHD_FIX = "check `launchctl print gui/$(id -u)` and the log in ~/Library/Logs/wazap";
 
+/** bootout can return before launchd lets go of the label, and a bootstrap then fails. */
+function waitUntilUnloaded(ref: UnitRef, timeoutMs = 10_000): void {
+  const deadline = Date.now() + timeoutMs;
+  while (launchctlPrint(ref) !== null && Date.now() < deadline) {
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 200);
+  }
+}
+
 const launchd: Supervisor = {
   name: "launchd",
   available: () => process.platform === "darwin" && commandOnPath("launchctl"),
@@ -165,9 +173,14 @@ ${plistEnv(unit.env)}
   stop: (ref) => {
     if (launchctlPrint(ref) !== null) runOrThrow(["launchctl", "bootout", `${guiDomain()}/${ref.label}`], LAUNCHD_FIX);
   },
+  // kickstart -k reruns the job as launchd loaded it, and launchd keeps the plist
+  // it read at bootstrap: a rewritten unit, pointing at another install or
+  // another node, would never take effect. Booting the job out and back in
+  // reads the file again.
   restart: (ref) => {
-    if (launchctlPrint(ref) === null) launchd.start(ref);
-    else runOrThrow(["launchctl", "kickstart", "-k", `${guiDomain()}/${ref.label}`], LAUNCHD_FIX);
+    launchd.stop(ref);
+    waitUntilUnloaded(ref);
+    runOrThrow(["launchctl", "bootstrap", guiDomain(), ref.unitFile], LAUNCHD_FIX);
   },
   remove: (ref) => {
     launchd.stop(ref);
