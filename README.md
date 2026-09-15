@@ -533,6 +533,7 @@ trace, so an agent can decide whether to retry, ask the user, or stop.
 | `READ_ONLY` | wazap is running read-only. |
 | `RATE_LIMITED` | Too many writes; `fix` says how long to wait. |
 | `DRAFT_NOT_FOUND` / `DRAFT_EXPIRED` | The preview was already sent, unknown, or older than 15 minutes. Draft again. |
+| `SEND_BLOCKED` | The account's send rules refuse this recipient. `wazap config send` changes them; the agent must not route around. |
 | `AMBIGUOUS_ACCOUNT` | More than one account could handle this, or a write named a chat no account knows. Pass `account_id`. |
 | `ACCOUNT_NOT_FOUND` | No account with that id. Run `wazap account add`, or call `list_accounts`. |
 | `ACCOUNT_DISABLED` | That account is disabled. `wazap account enable <id>` and restart. |
@@ -623,6 +624,25 @@ sees them, so it cannot message anyone from your number even by mistake.
 
 Writes are also rate limited to `WAZAP_RATE_LIMIT` per minute (default 20, `0`
 disables). Sending faster than a human is how accounts get banned.
+
+## Send rules
+
+An account can also be limited in *who* it may message — the case where the
+agent may send, but only to the people you run it for. The rules live on the
+account record in `accounts.json` and are edited per account with
+`wazap config send` (`--account` picks which; run without a verb to print them).
+Entries are chat ids or numbers in international format, comma-separated:
+
+- `wazap config send deny 40722123456,120363000000000001@g.us` refuses those
+  recipients, whatever else is allowed.
+- `wazap config send allow +15550100,40722123456` makes the list exhaustive —
+  only those may be messaged. `allow none` locks the account to nobody.
+- `wazap config send open` lifts every restriction.
+
+The send tools check the rules when a message is drafted and again at
+`confirm_send`, so a rule written while a draft waits still applies to it. A
+refused send fails `SEND_BLOCKED` naming the rule that fired; the agent is
+told to tell you, not to retry or route around it.
 
 ## HTTP mode
 

@@ -45,6 +45,13 @@ export interface DraftView {
   draft_id: string;
   to: OutgoingTarget;
   preview: string;
+  /**
+   * The recipient is not in the phone's address book: the name shown is a
+   * public profile name or just the number, not a saved contact. Set when the
+   * name is already visibly not a name; the send tools also set it after the
+   * address-book check.
+   */
+  unnamed_recipient?: boolean;
   expires_at: string;
   kind: DraftKind;
 }
@@ -104,7 +111,7 @@ export class DraftStore {
   }
 
   view(draft: Draft): DraftView {
-    return {
+    const view: DraftView = {
       status: "draft",
       draft_id: draft.id,
       to: draft.to,
@@ -112,6 +119,8 @@ export class DraftStore {
       expires_at: isoWithOffset(draft.expiresAt),
       kind: draft.payload.kind,
     };
+    if (looksUnnamed(draft.to)) view.unnamed_recipient = true;
+    return view;
   }
 
   private sweep(): void {
@@ -130,10 +139,27 @@ export class DraftStore {
   }
 }
 
+/** The resolved recipient the way the preview and the sent line show it. */
+export function describeTarget(to: OutgoingTarget): string {
+  if (to.number) return `${to.name} (${formatNumber(to.number)})`;
+  if (to.chat_id.endsWith("@g.us")) return `${to.name} (group)`;
+  return to.name;
+}
+
 export function formatToLine(to: OutgoingTarget): string {
-  if (to.number) return `To: ${to.name} (${formatNumber(to.number)})`;
-  if (to.chat_id.endsWith("@g.us")) return `To: ${to.name} (group)`;
-  return `To: ${to.name}`;
+  return `To: ${describeTarget(to)}`;
+}
+
+/**
+ * True when the name shown is not a name at all: the bare digits displayName
+ * falls back to, or the "unknown (lid …)" an unmapped LID gets. A public
+ * profile name does not trip it — that check needs the address book, which the
+ * send tools run.
+ */
+export function looksUnnamed(to: OutgoingTarget): boolean {
+  const name = to.name.trim();
+  if (name === "" || name === "unknown" || name.startsWith("unknown (")) return true;
+  return /^[\d\s+().-]+$/.test(name);
 }
 
 export function formatDraftPreview(to: OutgoingTarget, payload: DraftPayload): string {
@@ -141,23 +167,25 @@ export function formatDraftPreview(to: OutgoingTarget, payload: DraftPayload): s
 }
 
 export function renderDraft(view: DraftView): string {
-  return [
-    `Draft ${view.draft_id}. Not sent.`,
-    "",
-    view.preview,
-    "",
-    "Show this to the user. After they say yes, call confirm_send with this draft_id.",
-  ].join("\n");
+  const lines = [`Draft ${view.draft_id}. Not sent.`, "", view.preview];
+  if (view.unnamed_recipient === true) {
+    lines.push(
+      "",
+      "Note: the recipient is not a saved contact — the name shown is their public WhatsApp name, or only their number."
+    );
+  }
+  lines.push("", "Show this to the user. After they say yes, call confirm_send with this draft_id.");
+  return lines.join("\n");
 }
 
 function formatBody(payload: DraftPayload): string {
   switch (payload.kind) {
     case "text":
-      return `"${payload.text}"`;
+      return payload.replyTo ? `[reply] "${payload.text}"` : `"${payload.text}"`;
     case "media":
       return mediaBody(payload);
     case "poll":
-      return `[poll] ${payload.question}\n${payload.options.join(" / ")}`;
+      return `[poll] ${payload.question}${payload.multiSelect ? " (multiple answers)" : ""}\n${payload.options.join(" / ")}`;
     case "location": {
       const label = payload.name ?? `${payload.latitude}, ${payload.longitude}`;
       const extra = payload.address ? `\n${payload.address}` : "";

@@ -10,13 +10,28 @@ import {
 } from "./account-resolve.js";
 import { compactConversations, renderCompact } from "./compact.js";
 import { coverageNote, indexCoverageNote, searchCoverage } from "./coverage.js";
-import { renderDraft, type DraftView } from "./drafts.js";
+import {
+  describeTarget,
+  looksUnnamed,
+  renderDraft,
+  type DraftPayload,
+  type DraftView,
+} from "./drafts.js";
 import { asWazapError, ERROR_GUIDE, WazapError } from "./errors.js";
 import { freshnessNote, readFreshness } from "./freshness.js";
 import { mediaCaptionOf } from "./media-details.js";
 import { getMessageView, getMessageViewAcross, resolveMessageId, resolveMessageIdAcross } from "./message-ref.js";
 import { clockLabel } from "./messages.js";
 import { RateLimiter } from "./ratelimit.js";
+import {
+  assertSendable,
+  draftTargetOf,
+  forgetDraftTarget,
+  hasSendRules,
+  noteDraftTarget,
+  sendPolicyOf,
+  type SendPolicy,
+} from "./send-guard.js";
 import {
   nameSourceOf,
   resolveSenderFilter,
@@ -29,6 +44,7 @@ import type {
   ChatSummary,
   ContactSummary,
   MessageView,
+  OutgoingTarget,
   RecallAnswer,
   RecentConversation,
   SentMessage,
@@ -221,6 +237,12 @@ link_account when it says no account is linked yet.
   draft only. They return a draft_id and a preview. Show the preview to the
   user; after they say yes, call confirm_send({ draft_id }). That is the only
   call that reaches WhatsApp. A draft lasts 15 minutes.
+- Send rules: an account may restrict who it messages (wazap config send) —
+  an allowlist limits sends to its entries, a deny list refuses its own. A
+  refused recipient fails SEND_BLOCKED at draft time and again at confirm_send;
+  do not retry or route around it, tell the user. A draft flagged
+  unnamed_recipient goes to someone outside the address book: the name shown
+  is their public profile name, not a saved contact — say so to the user.
 - Profile picture: set_profile_picture changes the linked account's photo.
   Show the image and wait for a yes first; the call hits WhatsApp immediately.
 - Media: a message with has_media=true → download_media(message_id).
@@ -1065,7 +1087,10 @@ Call this before manage_group: most group actions need admin rights.`,
         info.invite_link ? `- **invite link**: ${info.invite_link}` : null,
         "",
         "## Participants",
-        ...info.participants.map((p) => `- ${p.name}${p.is_admin ? " (admin)" : ""} — \`${p.contact_id}\``),
+        ...info.participants.map(
+          (p) =>
+            `- ${p.name}${p.is_admin ? " (admin)" : ""}${looksUnnamed({ chat_id: p.contact_id, name: p.name }) ? " [unnamed]" : ""} — \`${p.contact_id}\``
+        ),
       ]
         .filter((line): line is string => line !== null)
         .join("\n");
@@ -1188,9 +1213,10 @@ call confirm_send. A draft lasts 15 minutes.`,
         .describe("Chat ids to @-mention; include their names in the text yourself"),
     },
     write: true,
-    handler: async ({ chat_id, text, reply_to, mention_ids }, { wa }) => {
-      return drafted(
-        await wa.draft({ kind: "text", chatId: chat_id, text, replyTo: reply_to, mentionIds: mention_ids })
+    handler: async ({ chat_id, text, reply_to, mention_ids }, ctx) => {
+      return draftAndGuard(
+        { kind: "text", chatId: chat_id, text, replyTo: reply_to, mentionIds: mention_ids },
+        ctx
       );
     },
   }),
@@ -1216,9 +1242,9 @@ first (needs ffmpeg on the machine running wazap).`,
         .describe("Send a .gif or an mp4 as a looping GIF, the way WhatsApp plays them"),
     },
     write: true,
-    handler: async ({ chat_id, file_path, url, caption, as_document, as_voice, as_gif }, { wa }) => {
-      return drafted(
-        await wa.draft({
+    handler: async ({ chat_id, file_path, url, caption, as_document, as_voice, as_gif }, ctx) => {
+      return draftAndGuard(
+        {
           kind: "media",
           chatId: chat_id,
           source: { file_path, url },
@@ -1226,7 +1252,8 @@ first (needs ffmpeg on the machine running wazap).`,
           asDocument: as_document,
           asVoice: as_voice,
           asGif: as_gif,
-        })
+        },
+        ctx
       );
     },
   }),
@@ -1243,8 +1270,11 @@ the votes back. Show the preview; after the user says yes, call confirm_send.`,
       multi_select: z.boolean().default(false).describe("Allow voters to pick more than one option"),
     },
     write: true,
-    handler: async ({ chat_id, question, options, multi_select }, { wa }) => {
-      return drafted(await wa.draft({ kind: "poll", chatId: chat_id, question, options, multiSelect: multi_select }));
+    handler: async ({ chat_id, question, options, multi_select }, ctx) => {
+      return draftAndGuard(
+        { kind: "poll", chatId: chat_id, question, options, multiSelect: multi_select },
+        ctx
+      );
     },
   }),
 
@@ -1261,8 +1291,8 @@ send. Show the preview; after the user says yes, call confirm_send.`,
       address: z.string().max(500).optional().describe("Street address shown under the name"),
     },
     write: true,
-    handler: async ({ chat_id, latitude, longitude, name, address }, { wa }) => {
-      return drafted(await wa.draft({ kind: "location", chatId: chat_id, latitude, longitude, name, address }));
+    handler: async ({ chat_id, latitude, longitude, name, address }, ctx) => {
+      return draftAndGuard({ kind: "location", chatId: chat_id, latitude, longitude, name, address }, ctx);
     },
   }),
 
@@ -1306,8 +1336,8 @@ recipient will see it marked as forwarded. Show the preview; after the user
 says yes, call confirm_send.`,
     schema: { message_id: messageId, to_chat_id: chatId.describe("Destination chat") },
     write: true,
-    handler: async ({ message_id, to_chat_id }, { wa }) => {
-      return drafted(await wa.draft({ kind: "forward", chatId: to_chat_id, messageId: message_id }));
+    handler: async ({ message_id, to_chat_id }, ctx) => {
+      return draftAndGuard({ kind: "forward", chatId: to_chat_id, messageId: message_id }, ctx);
     },
   }),
 
@@ -1322,9 +1352,22 @@ preview before calling this.`,
       draft_id: z.string().min(1).describe("The draft_id returned by a send_* tool"),
     },
     write: true,
-    handler: async ({ draft_id }, { wa }) => {
+    handler: async ({ draft_id }, { wa, hub, accountId }) => {
+      const policy = liveSendPolicy(hub, accountId);
+      const ref = draftTargetOf(draft_id);
+      if (hasSendRules(policy)) {
+        if (ref === undefined) {
+          throw new WazapError(
+            "SEND_BLOCKED",
+            `The recipient of draft ${draft_id} is not on record, so the send rules of account "${accountId}" cannot be checked.`,
+            "Draft the message again with a send tool, then confirm_send"
+          );
+        }
+        assertSendable(policy, ref.target, accountId);
+      }
       const sent = await wa.confirm(draft_id);
-      return ok(sentText(sent), sent as unknown as Record<string, unknown>);
+      forgetDraftTarget(draft_id);
+      return ok(sentText(sent, ref?.target), sent as unknown as Record<string, unknown>);
     },
   }),
 
@@ -1790,6 +1833,59 @@ function drafted(view: DraftView): ToolResult {
   return ok(renderDraft(view), { ...view });
 }
 
-function sentText(sent: SentMessage): string {
-  return `Sent to ${sent.chat_id} at ${sent.timestamp} (message_id: ${sent.message_id}):\n> ${sent.text}`;
+/**
+ * The account's send rules, read fresh from accounts.json: a rule written
+ * while a draft waits must still fire when confirm_send comes, so the record
+ * is re-read rather than trusted from registry memory.
+ */
+function liveSendPolicy(hub: AccountSource, accountId: string): SendPolicy {
+  return sendPolicyOf(hub.recordOnDisk(accountId) ?? hub.record(accountId));
+}
+
+/**
+ * is_my_contact is the only name with the address book behind it: a pushname
+ * or a chat title is self-published, so a recipient known only that way is
+ * flagged for the agent. The lookup is local; if it cannot run, the flag the
+ * name's own shape set stands.
+ */
+async function flagUnnamed(view: DraftView, wa: WhatsAppApi): Promise<void> {
+  const to = view.to;
+  if (view.unnamed_recipient === true || to.chat_id.endsWith("@g.us")) return;
+  if (typeof wa.searchContacts !== "function") return;
+  try {
+    if (typeof wa.getStatus === "function" && to.number !== undefined) {
+      const own = wa.getStatus().account?.number;
+      if (own !== undefined && own === to.number) return;
+    }
+    const hits = await wa.searchContacts(to.number ?? to.chat_id, 10);
+    const hit = hits.find(
+      (c) => c.contact_id === to.chat_id || (to.number !== undefined && c.number === to.number)
+    );
+    if (hit === undefined || !hit.is_my_contact) view.unnamed_recipient = true;
+  } catch {
+    /* the shape-based answer stands */
+  }
+}
+
+/**
+ * Every outbound draft passes here: the account's send rules are checked on
+ * the id as typed and again on the resolved recipient, and the draft's target
+ * is recorded so confirm_send can re-check rules written after the draft.
+ */
+async function draftAndGuard(payload: DraftPayload, ctx: ToolCtx): Promise<ToolResult> {
+  const policy = liveSendPolicy(ctx.hub, ctx.accountId);
+  // A bare @lid may still resolve to an allowed phone inside the service; only
+  // the deny list can fire on it before that resolution.
+  const pre = payload.chatId.trim().endsWith("@lid") ? { allow: null, deny: policy.deny } : policy;
+  assertSendable(pre, { chat_id: payload.chatId }, ctx.accountId);
+  const view = await ctx.wa.draft(payload);
+  assertSendable(policy, view.to, ctx.accountId);
+  noteDraftTarget(view, ctx.accountId);
+  await flagUnnamed(view, ctx.wa);
+  return drafted(view);
+}
+
+function sentText(sent: SentMessage, to?: OutgoingTarget): string {
+  const who = to === undefined ? sent.chat_id : describeTarget(to);
+  return `Sent to ${who} at ${sent.timestamp} (message_id: ${sent.message_id}):\n> ${sent.text}`;
 }

@@ -36,6 +36,7 @@ export type ErrorCode =
   | "SERVICE_ERROR"
   | "DRAFT_NOT_FOUND"
   | "DRAFT_EXPIRED"
+  | "SEND_BLOCKED"
   | "AMBIGUOUS_ACCOUNT"
   | "ACCOUNT_NOT_FOUND"
   | "ACCOUNT_DISABLED"
@@ -108,6 +109,8 @@ export const ERROR_GUIDE: Record<ErrorCode, string> = {
     "That draft_id is unknown or was already sent. Call the send tool again to draft, show the new preview, then confirm_send.",
   DRAFT_EXPIRED:
     "The draft expired (15 minutes). Call the send tool again to draft, show the new preview, then confirm_send.",
+  SEND_BLOCKED:
+    "The account's send rules refuse this recipient. Do not retry or route around it; tell the user, who can change the rules with `wazap config send` if the send is wanted.",
   AMBIGUOUS_ACCOUNT:
     "More than one account could handle this, or a write named a chat no account knows. Pass account_id. Call list_accounts to see the ids.",
   ACCOUNT_NOT_FOUND: "No account with that id. Run `wazap account add` first, or call list_accounts.",

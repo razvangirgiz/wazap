@@ -3,6 +3,7 @@ import { dirname } from "node:path";
 import { readLinkedAccount } from "./auth-state.js";
 import { accountPaths, paths, type AccountPaths, type Config } from "./config.js";
 import { WazapError, asWazapError } from "./errors.js";
+import { normalizeSendRule } from "./send-guard.js";
 import { parseWebhookEvents } from "./webhook.js";
 
 export const DEFAULT_ACCOUNT_ID = "default";
@@ -18,6 +19,10 @@ export interface AccountRecord {
   webhook_url?: string;
   webhook_secret?: string;
   webhook_events?: string;
+  /** When present — even empty — only these recipients may be sent to. */
+  send_allow?: string[];
+  /** Refused no matter what send_allow says. Entries are chat ids or phone numbers. */
+  send_deny?: string[];
 }
 
 export interface AccountsFile {
@@ -129,10 +134,31 @@ function parseAccountRecord(value: unknown, file: string): AccountRecord {
     }
     record.rate_limit = value.rate_limit;
   }
+  for (const field of ["send_allow", "send_deny"] as const) {
+    if (value[field] !== undefined) record[field] = sendRuleList(value.id, field, value[field], ` in ${file}`);
+  }
   return {
     ...record,
     ...webhookFields(value.id, value.webhook_url, value.webhook_secret, value.webhook_events, ` in ${file}`),
   };
+}
+
+/** Every entry must be a chat id or a phone number; what load refuses, a writer cannot persist either. */
+function sendRuleList(id: string, field: "send_allow" | "send_deny", value: unknown, where = ""): string[] {
+  const fix = "Fix or remove accounts.json";
+  if (!Array.isArray(value) || value.length > 200) {
+    throw new WazapError("INVALID_ID", `Account "${id}"${where} has a bad ${field}.`, fix);
+  }
+  return value.map((entry) => {
+    if (typeof entry !== "string") {
+      throw new WazapError("INVALID_ID", `Account "${id}"${where} has a bad ${field} entry.`, fix);
+    }
+    try {
+      return normalizeSendRule(entry);
+    } catch {
+      throw new WazapError("INVALID_ID", `Account "${id}"${where} has a bad ${field} entry: "${entry}".`, fix);
+    }
+  });
 }
 
 /** Shared by load and `setWebhook` so a writer cannot persist what load refuses. */
@@ -292,6 +318,28 @@ export class AccountRegistry {
 
   setWrites(id: string, writes: boolean): void {
     this.commit(this.withAccount(id, (account) => ({ ...account, writes })));
+  }
+
+  /**
+   * Send rules gate who the account may address: `send_deny` refuses its
+   * entries; a present `send_allow` — even empty — refuses everyone else. Pass
+   * a list to replace it, null to drop it, undefined to leave it alone.
+   */
+  setSendRules(id: string, rules: { allow?: string[] | null; deny?: string[] | null }): void {
+    this.commit(
+      this.withAccount(id, (account) => {
+        const next = { ...account };
+        for (const [key, list] of [
+          ["send_allow", rules.allow],
+          ["send_deny", rules.deny],
+        ] as const) {
+          if (list === undefined) continue;
+          if (list === null) delete next[key];
+          else next[key] = sendRuleList(id, key, list);
+        }
+        return next;
+      })
+    );
   }
 
   setWebhook(id: string, webhook: { url?: string; secret?: string }): void {
