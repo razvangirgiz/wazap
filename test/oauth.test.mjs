@@ -10,9 +10,10 @@ import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { extractWWWAuthenticateParams } from "@modelcontextprotocol/sdk/client/auth.js";
 import { startHttpEndpoint } from "../dist/server.js";
 import { WazapOAuthProvider, oauthProblem } from "../dist/oauth.js";
-import { offlineConfig, stubAccountSource } from "./helpers.mjs";
+import { offlineConfig, stubAccountSource, waitFor } from "./helpers.mjs";
 
 // The SDK refuses a plain-http issuer unless told this is a test.
 process.env.MCP_DANGEROUSLY_ALLOW_INSECURE_ISSUER_URL = "1";
@@ -211,6 +212,89 @@ test("an unauthenticated call is told where to sign in", async (t) => {
   assert.equal(as.registration_endpoint, `${ctx.base}/register`);
   assert.deepEqual(as.scopes_supported, ["read", "write"]);
   assert.deepEqual(as.code_challenge_methods_supported, ["S256"]);
+});
+
+test("a refused token is told invalid_token, and still where to sign in", async (t) => {
+  let now = Date.now();
+  const ctx = await boot(t, { now: () => now });
+  const metadata = `${ctx.base}/.well-known/oauth-protected-resource/mcp`;
+  const refused = `Bearer error="invalid_token", error_description="The bearer token is unknown or has expired", resource_metadata="${metadata}"`;
+  const call = (token) =>
+    fetch(`${ctx.base}/mcp`, {
+      method: "POST",
+      headers: { "content-type": "application/json", authorization: `Bearer ${token}` },
+      body: "{}",
+    });
+
+  const unknown = await call("not-a-token");
+  assert.equal(unknown.status, 401);
+  assert.equal(unknown.headers.get("www-authenticate"), refused, "an unknown token");
+
+  const { tokens } = await signIn(ctx);
+  assert.equal((await listTools(ctx, tokens.access_token)).status, 200);
+  now += 25 * 60 * 60 * 1000;
+  const expired = await call(tokens.access_token);
+  assert.equal(expired.status, 401);
+  assert.equal(expired.headers.get("www-authenticate"), refused, "an expired token");
+
+  // The SDK's own client still reads where to sign in next to the error.
+  const params = extractWWWAuthenticateParams(expired);
+  assert.equal(params.error, "invalid_token");
+  assert.equal(params.resourceMetadataUrl?.href, metadata);
+});
+
+test("the request log names the caller by User-Agent and OAuth client, never by its token", async (t) => {
+  const ctx = await boot(t);
+  const { client, tokens } = await signIn(ctx);
+  const lines = [];
+  const original = console.error;
+  console.error = (...args) => lines.push(args.join(" "));
+  try {
+    const signedIn = await fetch(`${ctx.base}/mcp`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        accept: "application/json, text/event-stream",
+        authorization: `Bearer ${tokens.access_token}`,
+        "user-agent": `Claude-User "quoted"\tagent/${"x".repeat(80)}`,
+      },
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "initialize",
+        params: { protocolVersion: "2025-03-26", capabilities: {}, clientInfo: { name: "t", version: "0" } },
+      }),
+    });
+    assert.equal(signedIn.status, 200);
+    await signedIn.text();
+    const oauthLine = await waitFor(
+      () => lines.find((line) => line.includes("rpc=initialize") && line.includes("-> 200")),
+      5_000,
+      "the initialize log line"
+    );
+    const agent = "Claude-User quotedagent/".padEnd(60, "x");
+    assert.ok(oauthLine.endsWith(` client="${agent}" oauth_client=${client.client_id}`), oauthLine);
+
+    const staticRes = await fetch(`${ctx.base}/mcp`, {
+      method: "POST",
+      headers: { "content-type": "application/json", authorization: "Bearer static-read", "user-agent": "curl/8.7.1" },
+      body: "{}",
+    });
+    await staticRes.text();
+    const staticLine = await waitFor(
+      () => lines.find((line) => line.includes("rpc=-") && line.includes(`-> ${staticRes.status}`)),
+      5_000,
+      "the static token's log line"
+    );
+    assert.ok(staticLine.endsWith(' client="curl/8.7.1"'), `a static token has no OAuth client: ${staticLine}`);
+
+    assert.ok(
+      lines.every((line) => !line.includes(tokens.access_token) && !line.includes("static-read")),
+      "no token reaches a log line"
+    );
+  } finally {
+    console.error = original;
+  }
 });
 
 test("the static token still works with OAuth on", async (t) => {
