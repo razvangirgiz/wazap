@@ -19,7 +19,7 @@ Run `npx wazap-mcp status` and branch on its output. It never contacts WhatsApp,
 
 | `status` says | Do |
 | --- | --- |
-| `wazap: command not found` / npx fails | Node 20+ is required. `node --version`; install from nodejs.org if older. |
+| `wazap: command not found` / npx fails | Node 22+ is required. `node --version`; install from nodejs.org if older. |
 | `linked: no` | Go to **Link**. |
 | `linked: yes`, `server: running` | The server is up. If tools still fail, call `get_status` and follow its `fix`. |
 | `linked: yes`, `server: not running` | Go to **Connect a client**. |
