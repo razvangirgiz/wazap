@@ -275,6 +275,16 @@ tags it "3 votes" and get_message lists each option as "Da (2): Ana, Dan". An
 event carries \`event_responses: {going, maybe, not_going}\`, tagged "2 going".
 The votes are the ones that reached this device. A vote whose poll is not
 loaded reads as "[vote on a poll that is not loaded]" until the poll arrives.
+The user's own messages carry \`delivery: {status, read_by, delivered_to}\`.
+\`status\` is "sent" (WhatsApp's server has it), "delivered" (it reached the
+other phone), "read", "played" (a voice note or video was played), "pending"
+(not yet on the server) or "error" (it failed to send). In a group it is the
+furthest any one member got, and \`read_by\` / \`delivered_to\` name each member
+with the time. read_messages tags it "read", or "read by 3" in a group, and
+get_message lists who. Only receipts that reached this device count: with read
+receipts off on either side a message stops at "delivered", a large group may
+send no receipts at all, and a message WhatsApp said nothing about has no
+\`delivery\`.
 A voice note reads as "[voice message · 0:42]"; once transcribed, what was said
 follows the placeholder in quotes and is carried bare in \`transcript\`.
 Call transcribe_audio(message_id) on a voice note that has no transcript yet.
@@ -922,6 +932,12 @@ replies to, each reaction with who left it, who chose each option of a poll or
 answered an event, and its media metadata. Use it after search_messages
 or read_messages when you need the context around a single message.
 
+On the user's own messages, \`delivery.status\` says how far it got ("sent",
+"delivered", "read", "played", "pending" or "error"), and in a group
+\`read_by\` and \`delivered_to\` name who, with the time. It stops at "delivered"
+or is missing when read receipts are off on either side, and large groups may
+send none.
+
 The id also resolves in its raw form: \`false_<lid>@lid_<stanza>\` works even
 when the chat's number was never learned, and an id that names the same
 message under the lid or the paired number finds it either way. With several
@@ -949,7 +965,9 @@ is the name \`name\` shows) and \`name_source\` ("contact", "pushname" or
           : { binding: resolved, message: await getMessageView(wa, message_id) };
       const [identified] = await withSenderIdentity(binding.wa, [message]);
       const view = identified ?? message;
-      const text = [renderMessages("Message", [view]), reactionLine(view), voteLines(view)].filter(Boolean).join("\n");
+      const text = [renderMessages("Message", [view]), reactionLine(view), voteLines(view), deliveryLines(view)]
+        .filter(Boolean)
+        .join("\n");
       return ok(text, {
         ...(view as unknown as Record<string, unknown>),
         account_id: binding.id,
@@ -1712,6 +1730,21 @@ function voteLines(m: AnyMessage): string | null {
   return parts.length > 0 ? `  ${parts.join(" · ")}` : null;
 }
 
+/** "read", "delivered", "sent" on the user's own messages; "read by 3" in a group once members did. */
+function deliveryTag(m: AnyMessage): string | null {
+  if (!m.delivery) return null;
+  const readers = m.delivery.read_by?.length ?? 0;
+  return readers > 0 ? `read by ${readers}` : m.delivery.status;
+}
+
+/** Who has it, for the one message get_message renders: "read by: Ana (14:02), Dan (14:05)". */
+function deliveryLines(m: AnyMessage): string | null {
+  const who = (label: string, receivers?: ReadonlyArray<{ name: string; at: string }>): string | null =>
+    receivers?.length ? `  ${label}: ${receivers.map((r) => `${r.name} (${r.at.slice(11, 16)})`).join(", ")}` : null;
+  const lines = [who("read by", m.delivery?.read_by), who("delivered to", m.delivery?.delivered_to)].filter(Boolean);
+  return lines.length > 0 ? lines.join("\n") : null;
+}
+
 function renderMessages(
   title: string,
   messages: ReadonlyArray<AnyMessage>,
@@ -1731,6 +1764,7 @@ function renderMessages(
       m.quoted ? "reply" : null,
       m.reactions?.length ? reactionTag(m.reactions) : null,
       voteTag(m),
+      deliveryTag(m),
     ].filter(Boolean);
     lines.push(
       `- **${senderLabel(m, introduced)}** · ${m.age}${tags.length ? ` [${tags.join(", ")}]` : ""} · id: \`${m.message_id}\``

@@ -6,7 +6,7 @@
  */
 import { proto, type Chat as BaileysChat, type Contact as BaileysContact, type WAMessage } from "baileys";
 import { isNoiseJid } from "./ids.js";
-import { isControlMessage, messageTimestampMs, viewText } from "./messages.js";
+import { isControlMessage, messageTimestampMs, protoNumber, viewText } from "./messages.js";
 import type { TranscriptRecord } from "./transcribe/index.js";
 
 // One window for memory and disk: this must stay equal to
@@ -43,6 +43,65 @@ export interface StoreSnapshot {
   lids?: Record<string, string>;
   /** Added in 0.20.0. Poll votes and event responses on the messages this snapshot keeps: message id → voter jid → vote. */
   votes?: Record<string, Record<string, Vote>>;
+  /** Added in 0.20.0. How far the account's own messages this snapshot keeps got: message id → receipt. */
+  receipts?: Record<string, Receipt>;
+}
+
+/** How far one of the account's own messages got, as WhatsApp confirmed it. */
+export interface Receipt {
+  /** proto.WebMessageInfo.Status: 0 error, 1 pending, 2 sent, 3 delivered, 4 read, 5 played. */
+  status?: number;
+  /** In a group, per participant jid: when it reached them. */
+  users?: Record<string, UserMoments>;
+}
+
+/** When a message was delivered to, read and played by one person, epoch ms. */
+export interface UserMoments {
+  delivered?: number;
+  read?: number;
+  played?: number;
+}
+
+const STATUS = proto.WebMessageInfo.Status;
+
+/**
+ * A status only climbs. ERROR is the one out of order: it can only follow a
+ * send still pending, so it outranks that and nothing WhatsApp confirmed.
+ */
+function statusRank(status: number): number {
+  return status === STATUS.ERROR ? STATUS.PENDING + 0.5 : status;
+}
+
+function raiseStatus(receipt: Receipt, status: number): void {
+  if (receipt.status === undefined || statusRank(status) > statusRank(receipt.status)) receipt.status = status;
+}
+
+/** Each moment keeps its latest; the message's status climbs to the furthest any one person got. */
+function raiseUser(receipt: Receipt, user: string, moments: UserMoments): void {
+  const users = (receipt.users ??= {});
+  const standing = (users[user] ??= {});
+  for (const field of ["delivered", "read", "played"] as const) {
+    const at = moments[field];
+    if (at !== undefined && at > (standing[field] ?? 0)) standing[field] = at;
+  }
+  if (standing.read !== undefined || standing.played !== undefined) raiseStatus(receipt, STATUS.READ);
+  else if (standing.delivered !== undefined) raiseStatus(receipt, STATUS.DELIVERY_ACK);
+}
+
+/** A receipt's timestamps, which WhatsApp sends in seconds, as epoch ms. */
+export function momentsOf(receipt: proto.IUserReceipt): UserMoments {
+  const ms = (value: typeof receipt.readTimestamp): number | undefined => {
+    const seconds = protoNumber(value);
+    return seconds ? seconds * 1000 : undefined;
+  };
+  const moments: UserMoments = {};
+  const delivered = ms(receipt.receiptTimestamp);
+  const read = ms(receipt.readTimestamp);
+  const played = ms(receipt.playedTimestamp);
+  if (delivered !== undefined) moments.delivered = delivered;
+  if (read !== undefined) moments.read = read;
+  if (played !== undefined) moments.played = played;
+  return moments;
 }
 
 /** One person's standing vote on a poll or answer to an event. An empty choice is a withdrawn vote. */
@@ -66,6 +125,12 @@ export class Store {
    * empty choice, so an older vote that arrives after it cannot bring it back.
    */
   readonly votes = new Map<string, Map<string, Vote>>();
+  /**
+   * What WhatsApp confirmed about the account's own messages since they were
+   * stored. The status a synced message carried in its proto is the floor
+   * `receiptFor` starts from; nothing here ever lowers it.
+   */
+  readonly receipts = new Map<string, Receipt>();
   /**
    * The name a sender publishes on their own profile, as WhatsApp attaches it
    * to their messages. It is the only name we get for someone the user has not
@@ -199,6 +264,7 @@ export class Store {
     this.edited.delete(sid);
     this.reactions.delete(sid);
     this.votes.delete(sid);
+    this.receipts.delete(sid);
     this.transcripts.delete(sid);
     this.searchText.delete(sid);
     this.encoded.delete(sid);
@@ -275,6 +341,43 @@ export class Store {
     return [...map].flatMap(([voter, vote]) => (vote.choice.length > 0 ? [{ voter, choice: vote.choice }] : []));
   }
 
+  /** A status WhatsApp reported for one of the account's own messages; a late, lower one changes nothing. */
+  markStatus(sid: string, status: number): void {
+    const receipt = this.receipts.get(sid) ?? {};
+    raiseStatus(receipt, status);
+    this.receipts.set(sid, receipt);
+  }
+
+  /** One participant's receipt on one of the account's own messages. */
+  markReceipt(sid: string, user: string, moments: UserMoments): void {
+    const receipt = this.receipts.get(sid) ?? {};
+    raiseUser(receipt, user, moments);
+    this.receipts.set(sid, receipt);
+  }
+
+  /**
+   * How far one of the account's own messages got: what its proto carried when
+   * it was synced, raised by whatever arrived since. The account itself is no
+   * recipient — its other devices confirm the message too, and a synced proto
+   * lists them. Undefined for someone else's message, and when WhatsApp has
+   * said nothing.
+   */
+  receiptFor(sid: string, canonical: (jid: string) => string, isMe: (jid: string) => boolean): Receipt | undefined {
+    const raw = this.messages.get(sid);
+    if (!raw?.key.fromMe) return undefined;
+    const merged: Receipt = {};
+    if (typeof raw.status === "number") raiseStatus(merged, raw.status);
+    for (const synced of raw.userReceipt ?? []) {
+      if (synced.userJid && !isMe(synced.userJid)) raiseUser(merged, canonical(synced.userJid), momentsOf(synced));
+    }
+    const kept = this.receipts.get(sid);
+    if (kept?.status !== undefined) raiseStatus(merged, kept.status);
+    for (const [user, moments] of Object.entries(kept?.users ?? {})) {
+      if (!isMe(user)) raiseUser(merged, canonical(user), moments);
+    }
+    return merged.status === undefined ? undefined : merged;
+  }
+
   serialize(): StoreSnapshot {
     const snapshot: StoreSnapshot = {
       v: 1,
@@ -301,6 +404,7 @@ export class Store {
     const transcripts: Record<string, TranscriptRecord> = {};
     const reactions: Record<string, Record<string, string>> = {};
     const votes: Record<string, Record<string, Vote>> = {};
+    const receipts: Record<string, Receipt> = {};
     for (const sid of keep) {
       const raw = this.messages.get(sid);
       if (!raw) continue;
@@ -312,10 +416,13 @@ export class Store {
       if (reacted && reacted.size > 0) reactions[sid] = Object.fromEntries(reacted);
       const voted = this.votes.get(sid);
       if (voted && voted.size > 0) votes[sid] = Object.fromEntries(voted);
+      const receipt = this.receipts.get(sid);
+      if (receipt) receipts[sid] = receipt;
     }
     snapshot.transcripts = transcripts;
     snapshot.reactions = reactions;
     snapshot.votes = votes;
+    snapshot.receipts = receipts;
     return snapshot;
   }
 
@@ -348,6 +455,9 @@ export class Store {
     }
     for (const [sid, byVoter] of Object.entries(snapshot.votes ?? {})) {
       if (this.messages.has(sid)) this.votes.set(sid, new Map(Object.entries(byVoter)));
+    }
+    for (const [sid, receipt] of Object.entries(snapshot.receipts ?? {})) {
+      if (this.messages.has(sid)) this.receipts.set(sid, receipt);
     }
     for (const sid of snapshot.stories ?? []) {
       if (!this.messages.has(sid) || this.stories.includes(sid)) continue;
