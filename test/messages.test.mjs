@@ -71,6 +71,161 @@ const CASES = [
   ["key distribution", { senderKeyDistributionMessage: { groupId: "g" } }, "system", "[system message]"],
   ["something new", { someFutureMessage: {} }, "unknown", "[unsupported: someFutureMessage]"],
   ["ephemeral wrapper", { ephemeralMessage: { message: { conversation: "disappearing" } } }, "text", "disappearing"],
+  [
+    "template, four-row: title, body, footer, then the buttons",
+    {
+      templateMessage: {
+        hydratedFourRowTemplate: {
+          hydratedTitleText: "Comanda ta",
+          hydratedContentText: "A fost livrată.",
+          hydratedFooterText: "Curier",
+          hydratedButtons: [
+            { urlButton: { displayText: "Urmărește", url: "https://example.test/t/1" }, index: 0 },
+            { quickReplyButton: { displayText: "OK", id: "1" }, index: 1 },
+          ],
+        },
+      },
+    },
+    "text",
+    "Comanda ta\nA fost livrată.\nCurier\n(buttons: Urmărește · OK)",
+  ],
+  [
+    "template, interactive: the label shows, the code to copy does not",
+    {
+      templateMessage: {
+        interactiveMessageTemplate: {
+          header: { title: "Cod" },
+          body: { text: "Folosește codul" },
+          nativeFlowMessage: {
+            buttons: [
+              { name: "cta_copy", buttonParamsJson: JSON.stringify({ display_text: "Copiază", copy_code: "123456" }) },
+              { name: "cta_url", buttonParamsJson: "not json" },
+            ],
+          },
+        },
+      },
+    },
+    "text",
+    "Cod\nFolosește codul\n(buttons: Copiază)",
+  ],
+  ["template with nothing to read", { templateMessage: { templateId: "1" } }, "text", "[template]"],
+  [
+    "interactive message",
+    {
+      interactiveMessage: {
+        body: { text: "Alege" },
+        footer: { text: "Banca" },
+        nativeFlowMessage: {
+          buttons: [{ name: "quick_reply", buttonParamsJson: JSON.stringify({ display_text: "Da", id: "y" }) }],
+        },
+      },
+    },
+    "text",
+    "Alege\nBanca\n(buttons: Da)",
+  ],
+  [
+    "buttons message",
+    {
+      buttonsMessage: {
+        contentText: "Confirmi?",
+        footerText: "Clinica",
+        buttons: [
+          { buttonId: "a", buttonText: { displayText: "Da" } },
+          { buttonId: "b", buttonText: { displayText: "Nu" } },
+        ],
+      },
+    },
+    "text",
+    "Confirmi?\nClinica\n(buttons: Da · Nu)",
+  ],
+  [
+    "list message",
+    {
+      listMessage: {
+        title: "Programare",
+        description: "Alege o oră",
+        buttonText: "Vezi",
+        sections: [{ title: "Dimineața", rows: [{ title: "9:00", rowId: "1" }, { title: "10:00", rowId: "2" }] }],
+      },
+    },
+    "text",
+    "Programare\nAlege o oră\n(options: 9:00 · 10:00)",
+  ],
+  ["button reply", { buttonsResponseMessage: { selectedButtonId: "a", selectedDisplayText: "Da" } }, "text", "Da"],
+  ["list reply", { listResponseMessage: { title: "10:00", singleSelectReply: { selectedRowId: "2" } } }, "text", "10:00"],
+  [
+    "template button reply",
+    { templateButtonReplyMessage: { selectedId: "1", selectedDisplayText: "Urmărește", selectedIndex: 0 } },
+    "text",
+    "Urmărește",
+  ],
+  [
+    "a message kept off linked devices",
+    { placeholderMessage: { type: 0 } },
+    "unknown",
+    "[message not shown on linked devices; read it on the phone]",
+  ],
+  ["phone number request", { requestPhoneNumberMessage: {} }, "text", "[asked for your phone number]"],
+  [
+    "order: count and total, never the token",
+    {
+      orderMessage: {
+        itemCount: 2,
+        totalAmount1000: 150000,
+        totalCurrencyCode: "RON",
+        orderTitle: "Pizza",
+        token: "secret-token",
+        orderId: "o1",
+      },
+    },
+    "text",
+    "[order · 2 items · 150.00 RON] Pizza",
+  ],
+  [
+    "product",
+    { productMessage: { product: { title: "Tricou", productId: "p1" }, body: "Mai e pe stoc?" } },
+    "text",
+    "[product] Tricou · Mai e pe stoc?",
+  ],
+  [
+    "status mention",
+    { statusMentionMessage: { quotedStatus: { conversation: "x" } } },
+    "text",
+    "[mentioned you in their status]",
+  ],
+  [
+    "scheduled call",
+    { scheduledCallCreationMessage: { scheduledTimestampMs: 1_789_500_000_000, callType: 2, title: "Sincron" } },
+    "text",
+    `[scheduled video call · ${isoWithOffset(1_789_500_000_000)}] Sincron`,
+  ],
+  [
+    "poll result snapshot",
+    {
+      pollResultSnapshotMessage: {
+        name: "Pizza?",
+        pollVotes: [
+          { optionName: "Da", optionVoteCount: 3 },
+          { optionName: "Nu", optionVoteCount: 1 },
+        ],
+      },
+    },
+    "poll",
+    "[poll results] Pizza? · Da: 3 · Nu: 1",
+  ],
+  [
+    "channel admin invite",
+    { newsletterAdminInviteMessage: { newsletterJid: "1@newsletter", newsletterName: "Știri", caption: "Te fac admin" } },
+    "text",
+    "[channel admin invite] Știri · Te fac admin",
+  ],
+  ["sticker pack", { stickerPackMessage: { name: "Pisici", stickers: [{}, {}] } }, "sticker", "[sticker pack · 2 stickers] Pisici"],
+  [
+    "pin in a direct chat, by the other side",
+    { pinInChatMessage: { key: { remoteJid: "4072@s.whatsapp.net", fromMe: true, id: "T" }, type: 1 } },
+    "system",
+    "[4072 pinned a message]",
+  ],
 ];
 
 test("every message type maps to a type and a non-empty text", () => {
@@ -503,4 +658,256 @@ test("an album child is the photo or video it wraps, and an encrypted edit is a 
   const edit = wrap({ secretEncryptedMessage: { targetMessageKey: { id: "X" }, secretEncType: 2 } });
   assert.equal(messageType(edit), "system");
   assert.equal(messageText(edit), "[edited a message]");
+});
+
+const PINNED = { remoteJid: GROUP_JID, fromMe: false, id: "3A1B2C3D", participant: "40723124956@s.whatsapp.net" };
+
+/** A notice WhatsApp sends as a payload of its own rather than a stub: a pin, a keep, a shared history. */
+const groupPayload = (message, { participant = MEDEEA, fromMe = false } = {}) => ({
+  key: { fromMe, remoteJid: GROUP_JID, id: "3EB0A1", participant },
+  message,
+  messageTimestamp: 1_789_460_900,
+});
+
+const historyBundle = (messageCount) => ({
+  messageHistoryBundle: {
+    mimetype: "application/x-protobuf",
+    messageHistoryMetadata: {
+      historyReceivers: ["40723124956@s.whatsapp.net"],
+      oldestMessageTimestamp: 1_789_000_000,
+      messageCount,
+    },
+  },
+});
+
+/** [label, notice, expected text] */
+const PAYLOAD_NOTICE_CASES = [
+  [
+    "pin",
+    groupPayload({ pinInChatMessage: { key: PINNED, type: 1 }, messageContextInfo: {} }),
+    "[40711111111 pinned a message]",
+  ],
+  [
+    "unpin by the linked account",
+    groupPayload({ pinInChatMessage: { key: PINNED, type: 2 } }, { fromMe: true }),
+    "[You unpinned a message]",
+  ],
+  ["keep", groupPayload({ keepInChatMessage: { key: PINNED, keepType: 1 } }), "[40711111111 kept a message]"],
+  ["undo a keep", groupPayload({ keepInChatMessage: { key: PINNED, keepType: 2 } }), "[40711111111 unkept a message]"],
+  ["pin, as the stub that names who pinned", groupStub(Stub.PINNED_MESSAGE_IN_CHAT, [MEDEEA]), "[40711111111 pinned a message]"],
+  [
+    "chat history shared with a new member",
+    groupPayload(historyBundle(25), { fromMe: true }),
+    "[You shared the chat history (25 messages) with 40723124956]",
+  ],
+  ["one message of history", groupPayload(historyBundle(1)), "[40711111111 shared the chat history (1 message) with 40723124956]"],
+];
+
+test("a pin, a keep and a shared history say who did it, and are not messages to post", () => {
+  for (const [label, raw, text] of PAYLOAD_NOTICE_CASES) {
+    assert.equal(messageType(raw), "system", label);
+    assert.equal(isControlMessage(raw), false, label);
+    assert.equal(isUserMessage(raw), false, label);
+    assert.equal(messageText(raw), text, label);
+  }
+});
+
+const MISSING = "[missing message: it could not be decrypted on this device; it may still be on the phone]";
+
+/** A notice in a direct chat, the way synced history files one. */
+const dmStub = (messageStubType, messageStubParameters = []) => ({
+  key: { fromMe: false, remoteJid: "4072@s.whatsapp.net", id: "S1" },
+  messageStubType,
+  messageStubParameters,
+  messageTimestamp: 1_789_460_615,
+});
+
+/** [label, notice, expected text] */
+const STUB_NOTICE_CASES = [
+  ["undecryptable, from synced history", groupStub(Stub.CIPHERTEXT, []), MISSING],
+  ["undecryptable, live: the error is the parameter and stays out", dmStub(Stub.CIPHERTEXT, ["Bad MAC"]), MISSING],
+  [
+    "default disappearing timer",
+    dmStub(Stub.DISAPPEARING_MODE, ["604800", "111222333444555@lid"]),
+    "[disappearing messages on by default: new messages disappear after 7 days]",
+  ],
+  [
+    "a one-day timer",
+    dmStub(Stub.DISAPPEARING_MODE, ["86400"]),
+    "[disappearing messages on by default: new messages disappear after 1 day]",
+  ],
+  ["blocked", dmStub(Stub.BLOCK_CONTACT, ["true"]), "[you blocked this contact]"],
+  ["unblocked", dmStub(Stub.BLOCK_CONTACT, ["false"]), "[you unblocked this contact]"],
+  [
+    "username change, the names kept out",
+    dmStub(Stub.CHANGE_USERNAME, ["", "ana.pop", "111222333444555@lid", "abcdef"]),
+    "[this contact changed their username]",
+  ],
+  [
+    "a group linked into a community",
+    groupStub(Stub.COMMUNITY_LINK_SUB_GROUP, ["120363000000000009@g.us", "Părinți clasa a V-a"]),
+    '[the group "Părinți clasa a V-a" was added to the community]',
+  ],
+  [
+    "business chat managed by Meta, from the start",
+    dmStub(Stub.BIZ_PRIVACY_MODE_INIT_FB, [""]),
+    "[this business uses a secure service from Meta to manage this chat]",
+  ],
+  [
+    "business chat moved to Meta",
+    dmStub(Stub.BIZ_PRIVACY_MODE_TO_FB, [""]),
+    "[this business now uses a secure service from Meta to manage this chat]",
+  ],
+];
+
+test("a notice with nobody to name is spelled out instead of naming its stub type", () => {
+  for (const [label, raw, text] of STUB_NOTICE_CASES) {
+    assert.equal(messageType(raw), "system", label);
+    assert.equal(isControlMessage(raw), false, label);
+    assert.equal(isUserMessage(raw), false, label);
+    assert.equal(messageText(raw), text, label);
+  }
+});
+
+test("a pin view names who pinned and carries the pinned message's id", () => {
+  const LID_MEDEEA = "999888777666555@lid";
+  const ctx = {
+    canonical: (jid) => (jid === LID_MEDEEA ? MEDEEA : jid),
+    nameFor: (jid) => (jid === MEDEEA ? "Medeea" : jid.split("@")[0]),
+    ownId: "40700000001@s.whatsapp.net",
+    chatId: GROUP_JID,
+    edited: false,
+    reactions: [],
+  };
+  const medeea = { id: MEDEEA, name: "Medeea", phone: "40711111111" };
+
+  const pinned = buildMessageView(
+    groupPayload(
+      { pinInChatMessage: { key: PINNED, type: 1, senderTimestampMs: 1_789_460_899_000 }, messageContextInfo: {} },
+      { participant: LID_MEDEEA }
+    ),
+    ctx
+  );
+  assert.equal(pinned.type, "system");
+  assert.equal(pinned.text, "[Medeea pinned a message]");
+  assert.deepEqual(pinned.system, {
+    action: "pin_message",
+    actor: medeea,
+    targets: [],
+    value: `false_${GROUP_JID}_3A1B2C3D`,
+  });
+
+  const unpinned = buildMessageView(
+    groupPayload({ pinInChatMessage: { key: { ...PINNED, fromMe: true }, type: 2 } }, { fromMe: true }),
+    ctx
+  );
+  assert.equal(unpinned.system.action, "unpin_message");
+  assert.equal(unpinned.system.value, `true_${GROUP_JID}_3A1B2C3D`, "the pinned message's own id, as read_messages lists it");
+
+  const shared = buildMessageView(groupPayload(historyBundle(25), { participant: LID_MEDEEA }), ctx);
+  assert.equal(shared.text, "[Medeea shared the chat history (25 messages) with 40723124956]");
+  assert.deepEqual(shared.system, {
+    action: "share_history",
+    actor: medeea,
+    targets: [{ id: "40723124956@s.whatsapp.net", name: "40723124956", phone: "40723124956" }],
+    value: "25",
+  });
+});
+
+test("a business message is found by its words; a message kept off this device is not", async () => {
+  const { searchableText } = await import("../dist/messages.js");
+  const template = wrap({
+    templateMessage: { hydratedFourRowTemplate: { hydratedContentText: "Coletul tău a ajuns la easybox" } },
+  });
+  assert.equal(searchableText(template), "Coletul tău a ajuns la easybox");
+  assert.equal(isUserMessage(template), true, "a person's inbox gets it like any other message");
+  assert.equal(searchableText(wrap({ placeholderMessage: { type: 0 } })), null);
+});
+
+test("an event says what, when and where, and a canceled one says so", async () => {
+  const { searchableText } = await import("../dist/messages.js");
+  // WhatsApp sends the start in seconds; it reads in local time, like every timestamp.
+  const start = 1_789_900_000;
+  const when = isoWithOffset(start * 1000);
+  const event = (fields) => wrap({ eventMessage: { name: "Botez", startTime: start, ...fields } });
+
+  /** [label, message, expected text] */
+  const cases = [
+    [
+      "with a place and a description",
+      event({
+        location: { name: "Biserica Sf. Nicolae", degreesLatitude: 45.6, degreesLongitude: 25.6 },
+        description: "Vă așteptăm",
+      }),
+      `[event] Botez · ${when} · Biserica Sf. Nicolae\nVă așteptăm`,
+    ],
+    ["without a place", event({}), `[event] Botez · ${when}`],
+    ["a place known only by its address", event({ location: { address: "Str. Lungă 1" } }), `[event] Botez · ${when} · Str. Lungă 1`],
+    [
+      "canceled",
+      event({ isCanceled: true, location: { name: "Biserica" } }),
+      `[canceled event] Botez · ${when} · Biserica`,
+    ],
+    [
+      "a call link stays out",
+      event({ joinLink: "https://call.whatsapp.com/video/Zq8TokenForTheCall", isScheduleCall: true }),
+      `[event] Botez · ${when}`,
+    ],
+  ];
+  for (const [label, raw, text] of cases) {
+    assert.equal(messageType(raw), "event", label);
+    assert.equal(messageText(raw), text, label);
+    assert.equal(isUserMessage(raw), true, label);
+  }
+  assert.match(searchableText(event({ description: "Vă așteptăm la ora 12" })) ?? "", /Vă așteptăm la ora 12/);
+});
+
+test("a group invite names the group and never carries its invite code", async () => {
+  const { searchableText } = await import("../dist/messages.js");
+  const { asWebhookPayload } = await import("../dist/webhook.js");
+  const CODE = "Kx7QpZ2mN4vB9aL1";
+  const CHAT = "40723124956@s.whatsapp.net";
+  const invite = (fields) => ({
+    key: { fromMe: false, remoteJid: CHAT, id: "3EB0INV" },
+    message: {
+      groupInviteMessage: {
+        groupJid: "120363000000000007@g.us",
+        inviteCode: CODE,
+        inviteExpiration: 1_790_000_000,
+        groupName: "Familia",
+        jpegThumbnail: new Uint8Array([1, 2, 3]),
+        ...fields,
+      },
+    },
+    messageTimestamp: 1_789_460_900,
+  });
+
+  const raw = invite({ caption: "Intră în grupul familiei" });
+  assert.equal(messageType(raw), "invite");
+  assert.equal(messageText(raw), "[group invite] Familia · Intră în grupul familiei");
+  assert.equal(messageText(invite({})), "[group invite] Familia");
+
+  const view = buildMessageView(raw, {
+    canonical: (jid) => jid,
+    nameFor: (jid) => jid.split("@")[0],
+    ownId: "40700000001@s.whatsapp.net",
+    chatId: CHAT,
+    edited: false,
+    reactions: [],
+  });
+  assert.equal(view.type, "invite");
+  assert.equal(messageText(raw).includes(CODE), false, "not in the text");
+  assert.equal(JSON.stringify(view).includes(CODE), false, "not anywhere in the view");
+  const searchable = searchableText(raw);
+  assert.match(searchable ?? "", /Familia/);
+  assert.equal(searchable.includes(CODE), false, "not in what recall indexes");
+
+  const payload = asWebhookPayload({
+    event: "message_received",
+    view,
+    account: { id: "default", name: "Default" },
+    isSelfChat: false,
+  });
+  assert.equal(payload.kind, "other");
+  assert.equal(JSON.stringify(payload).includes(CODE), false, "not in what the webhook posts");
 });

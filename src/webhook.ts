@@ -230,6 +230,8 @@ const KIND_BY_TYPE: Record<MessageType, WebhookKind> = {
   deleted: "other",
   view_once: "other",
   call: "other",
+  event: "other",
+  invite: "other",
   system: "other",
   unknown: "other",
 };

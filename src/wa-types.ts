@@ -37,6 +37,8 @@ export const MESSAGE_TYPES = [
   "deleted",
   "view_once",
   "call",
+  "event",
+  "invite",
   "system",
   "unknown",
 ] as const;
@@ -204,7 +206,12 @@ export type SystemEventAction =
   | "set_info_locked"
   | "set_add_mode"
   | "set_join_approval"
-  | "set_member_label";
+  | "set_member_label"
+  | "pin_message"
+  | "unpin_message"
+  | "keep_message"
+  | "unkeep_message"
+  | "share_history";
 
 export interface SystemEvent {
   action: SystemEventAction;
@@ -212,7 +219,10 @@ export interface SystemEvent {
   actor?: EventParty;
   /** Whom the change was made to; empty for a change to the group itself. */
   targets: EventParty[];
-  /** The new subject or description, or the new state of a setting. */
+  /**
+   * The new subject or description, the new state of a setting, the message_id
+   * a pin or a keep points at, or how many messages a shared history holds.
+   */
   value?: string;
 }
 

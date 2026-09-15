@@ -219,3 +219,40 @@ test("types narrows a read to calls, and the limit counts the calls it kept", as
 
   await svc.stop();
 });
+
+test("types narrows a read to events and to group invites the same way", async () => {
+  const { svc, sock } = makeService();
+  const t0 = Math.floor((Date.now() - 600_000) / 1000);
+  const message = (id, offset, content) => ({
+    key: { remoteJid: PEER, fromMe: false, id },
+    messageTimestamp: t0 + offset,
+    message: content,
+  });
+
+  sock.ev.emit("messages.upsert", {
+    type: "notify",
+    messages: [
+      message("T1", 0, { conversation: "salut" }),
+      message("E1", 60, { eventMessage: { name: "Botez", startTime: t0 + 86_400 } }),
+      message("I1", 120, { groupInviteMessage: { groupName: "Familia", inviteCode: "Kx7QpZ2mN4vB9aL1", groupJid: GROUP } }),
+    ],
+  });
+
+  const events = (await svc.readMessages(PEER, 10, undefined, ["event"])).data;
+  assert.deepEqual(
+    events.map((m) => m.type),
+    ["event"]
+  );
+  const invites = (await svc.readMessages(PEER, 10, undefined, ["invite"])).data;
+  assert.deepEqual(
+    invites.map((m) => m.type),
+    ["invite"]
+  );
+  const recent = (await svc.getRecentMessages(24, "all", false, ["event", "invite"])).data;
+  assert.deepEqual(
+    recent.flatMap((c) => c.messages.map((m) => m.type)),
+    ["event", "invite"]
+  );
+
+  await svc.stop();
+});
