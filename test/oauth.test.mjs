@@ -46,12 +46,12 @@ function form(fields) {
 /** One server, one provider, torn down by the caller. */
 async function boot(
   t,
-  { password = PASSWORD, credentials = [{ token: "static-read", write: false }], readOnly = false } = {}
+  { password = PASSWORD, credentials = [{ token: "static-read", write: false }], readOnly = false, now } = {}
 ) {
   const dataDir = mkdtempSync(join(tmpdir(), "wazap-oauth-"));
   const port = await freePort();
   const publicUrl = new URL(`http://127.0.0.1:${port}`);
-  const oauth = new WazapOAuthProvider({ publicUrl, password, stateFile: join(dataDir, "oauth.json") });
+  const oauth = new WazapOAuthProvider({ publicUrl, password, stateFile: join(dataDir, "oauth.json"), now });
   const config = offlineConfig("wazap-oauth-cfg-", { readOnly, transport: "http", dataDir });
   const stop = new AbortController();
   await startHttpEndpoint(stubAccountSource(stubWa), config, {
@@ -102,13 +102,22 @@ async function begin(ctx, { scope, clientName = "Poke", authMethod = "none" } = 
   assert.equal(page.status, 200);
   const request = /name="request" value="([0-9a-f]+)"/.exec(html)?.[1];
   assert.ok(request, "consent page carries the pending request id");
-  return { client, redirectUri, verifier, challenge, html, request };
+  return { client, redirectUri, verifier, challenge, html, request, page };
 }
 
 function approve(ctx, request, fields) {
   return ctx.fetchJson("/oauth/approve", {
     method: "POST",
     headers: { "content-type": "application/x-www-form-urlencoded" },
+    body: form({ request, ...fields }),
+  });
+}
+
+/** The approve POST the way a tunnel on this machine forwards it: from loopback, naming the real caller. */
+function approveFrom(ctx, address, request, fields) {
+  return ctx.fetchJson("/oauth/approve", {
+    method: "POST",
+    headers: { "content-type": "application/x-www-form-urlencoded", "x-forwarded-for": address },
     body: form({ request, ...fields }),
   });
 }
@@ -295,6 +304,118 @@ test("a wrong password stays on the page twice, the third throws the page away, 
   assert.equal((await again((await begin(ctx)).request)).res.status, 429);
 });
 
+test("behind a tunnel on this machine, the forwarded address is the caller a lockout counts", async (t) => {
+  const ctx = await boot(t);
+  const wrong = { password: "nope", access: "read", decision: "allow" };
+  let page = await begin(ctx);
+  for (let miss = 0; miss < 5; miss++) {
+    if (miss === 3) page = await begin(ctx);
+    assert.equal((await approveFrom(ctx, "203.0.113.9", page.request, wrong)).res.status, 401, `miss ${miss + 1}`);
+  }
+  const locked = await approveFrom(ctx, "203.0.113.9", (await begin(ctx)).request, wrong);
+  assert.equal(locked.res.status, 429, "that caller is locked out");
+
+  const owner = await begin(ctx);
+  const { res } = await approveFrom(ctx, "198.51.100.7", owner.request, { ...wrong, password: PASSWORD });
+  assert.equal(res.status, 302, "the owner, reaching the same tunnel from elsewhere, is not");
+});
+
+/** The approve POST from loopback, carrying whatever headers a tunnel on this machine added. */
+function approveWith(ctx, headers, request, fields) {
+  return ctx.fetchJson("/oauth/approve", {
+    method: "POST",
+    headers: { "content-type": "application/x-www-form-urlencoded", ...headers },
+    body: form({ request, ...fields }),
+  });
+}
+
+test("with no X-Forwarded-For, CF-Connecting-IP is the caller; X-Forwarded-For still wins over it", async (t) => {
+  const ctx = await boot(t);
+  const wrong = { password: "nope", access: "read", decision: "allow" };
+  const right = { ...wrong, password: PASSWORD };
+
+  /** Five misses from these headers, over two pages, since a page takes three. */
+  const lockOut = async (headers) => {
+    let page = await begin(ctx);
+    for (let miss = 0; miss < 5; miss++) {
+      if (miss === 3) page = await begin(ctx);
+      assert.equal((await approveWith(ctx, headers, page.request, wrong)).res.status, 401, `miss ${miss + 1}`);
+    }
+  };
+
+  await lockOut({ "cf-connecting-ip": "203.0.113.9" });
+  const locked = await approveWith(ctx, { "cf-connecting-ip": "203.0.113.9" }, (await begin(ctx)).request, right);
+  assert.equal(locked.res.status, 429, "that address is locked out");
+  const owner = await approveWith(ctx, { "cf-connecting-ip": "198.51.100.7" }, (await begin(ctx)).request, right);
+  assert.equal(owner.res.status, 302, "another address behind the same tunnel is not");
+
+  await lockOut({ "x-forwarded-for": "203.0.113.20" });
+  const spoofed = await approveWith(
+    ctx,
+    { "x-forwarded-for": "203.0.113.20", "cf-connecting-ip": "198.51.100.8" },
+    (await begin(ctx)).request,
+    right
+  );
+  assert.equal(spoofed.res.status, 429, "a CF-Connecting-IP next to X-Forwarded-For does not choose the caller");
+});
+
+test("twenty wrong passwords from strangers pause consent for a minute, not the owner for fifteen", async (t) => {
+  let now = Date.now();
+  const ctx = await boot(t, { now: () => now });
+  const wrong = { password: "nope", access: "read", decision: "allow" };
+  let page = null;
+  for (let miss = 0; miss < 20; miss++) {
+    // A page takes three wrong passwords, and every stranger comes from a different address.
+    if (miss % 3 === 0) page = await begin(ctx);
+    const { res } = await approveFrom(ctx, `203.0.113.${miss + 1}`, page.request, wrong);
+    assert.equal(res.status, 401, `miss ${miss + 1}`);
+  }
+
+  const owner = await begin(ctx);
+  const right = { ...wrong, password: PASSWORD };
+  const paused = await approveFrom(ctx, "198.51.100.7", owner.request, right);
+  assert.equal(paused.res.status, 429, "everyone waits out the brake");
+  assert.match(paused.body, /Try again in a minute\./);
+
+  now += 61_000;
+  const { res } = await approveFrom(ctx, "198.51.100.7", owner.request, right);
+  assert.equal(res.status, 302, "a minute later the owner signs in");
+  assert.ok(new URL(res.headers.get("location")).searchParams.get("code"));
+});
+
+test("the consent page names the host the code goes to, and the client's name only as its claim", async (t) => {
+  const ctx = await boot(t);
+  const { html } = await begin(ctx, { clientName: "Claude" });
+  assert.match(html, /<h1>An agent wants to connect from <strong>agent\.example<\/strong><\/h1>/);
+  assert.match(
+    html,
+    /It calls itself <strong>Claude<\/strong>\. The agent chose that name; wazap has not checked it\./
+  );
+});
+
+test("every OAuth page refuses to be framed, loads nothing of its own, and sends no referrer", async (t) => {
+  const ctx = await boot(t);
+  const started = await begin(ctx);
+  const wrong = await approve(ctx, started.request, { password: "nope", access: "read", decision: "allow" });
+  const expired = await approve(ctx, "0".repeat(48), { password: PASSWORD, access: "read", decision: "allow" });
+  assert.equal(wrong.res.status, 401);
+  assert.equal(expired.res.status, 400);
+
+  const policy = (formAction) =>
+    `default-src 'none'; style-src 'unsafe-inline'; form-action ${formAction}; frame-ancestors 'none'; base-uri 'none'`;
+  for (const [what, res, csp] of [
+    // Approving redirects to the agent, and a browser checks that redirect against form-action too.
+    ["the consent page", started.page, policy("'self' https://agent.example")],
+    ["the consent page after a wrong password", wrong.res, policy("'self' https://agent.example")],
+    ["a message page", expired.res, policy("'self'")],
+  ]) {
+    assert.equal(res.headers.get("content-security-policy"), csp, what);
+    assert.equal(res.headers.get("x-frame-options"), "DENY", what);
+    assert.equal(res.headers.get("referrer-policy"), "no-referrer", what);
+    assert.equal(res.headers.get("cache-control"), "no-store", what);
+  }
+});
+
 test("cancel sends the agent back with access_denied and no code", async (t) => {
   const ctx = await boot(t);
   const started = await begin(ctx);
@@ -426,7 +547,7 @@ test("a confidential client keeps its secret for good", async (t) => {
 test("a client name with markup is shown, not run, and escaped once", async (t) => {
   const ctx = await boot(t);
   const { html } = await begin(ctx, { clientName: "Poke & <Co>" });
-  assert.match(html, /<title>Connect Poke &amp; &lt;Co&gt; · wazap<\/title>/);
+  assert.match(html, /<title>Connect agent\.example · wazap<\/title>/);
   assert.match(html, /<strong>Poke &amp; &lt;Co&gt;<\/strong>/);
   assert.ok(!html.includes("<Co>"));
 });

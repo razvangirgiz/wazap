@@ -13,7 +13,9 @@ import {
   SUPERVISORS,
   TUNNEL_LABELS,
   installedService,
+  secureLogs,
   servicePath,
+  tunnelsTo,
   writeService,
   type Installed,
   type Supervisor,
@@ -223,6 +225,7 @@ async function exposeOn(config: Config, provider: TunnelProvider, { supervisor, 
   const label = TUNNEL_LABELS[supervisor.name];
   const ref = { label, unitFile: supervisor.unitFile(label) };
   if (argv !== null) {
+    secureLogs(record.logDir, label);
     writeUnit(ref.unitFile, supervisor.render(tunnelUnit(label, argv, record.logDir)));
     supervisor.restart(ref);
   }
@@ -263,9 +266,21 @@ async function exposeOff(
   if (record.tunnel) {
     providers.find((provider) => provider.name === record.tunnel?.provider)?.close(record.port);
   }
+  const { tunnel: _dropped, ...kept } = record;
+
+  // A tunnel wazap did not open still reaches the port, and sign-in is all that
+  // stands in front of it, so sign-in stays on until that tunnel is gone too.
+  const others = tunnelsTo(supervisor, record.port);
+  if (others.length > 0) {
+    writeService(config.dataDir, kept);
+    throw new WazapError(
+      "SERVICE_ERROR",
+      `wazap's tunnel is off, but ${others.map((unit) => unit.label).join(", ")} ${others.length === 1 ? "still tunnels" : "still tunnel"} to port ${record.port}, so sign-in stays on.`,
+      `stop it and remove its unit with \`${others.map((unit) => unit.stop).join("; ")}\`, then run \`wazap expose off\` again`
+    );
+  }
 
   setEnvSetting(paths(config.dataDir).envFile, "WAZAP_PUBLIC_URL", "");
-  const { tunnel: _dropped, ...kept } = record;
   writeService(config.dataDir, kept);
   supervisor.restart(kept);
 

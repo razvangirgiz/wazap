@@ -45,8 +45,10 @@ const REFRESH_IDLE_MS = 90 * 24 * 60 * 60 * 1000;
 const CLIENT_ORPHAN_MS = 60 * 60 * 1000;
 const LOCKOUT_AFTER = 5;
 const LOCKOUT_MS = 15 * 60 * 1000;
-/** Wrong passwords from everywhere, together, before the page closes for a while. */
-const GLOBAL_LOCKOUT_AFTER = 20;
+/** Wrong passwords from everywhere, together, before the page pauses for everyone. */
+const GLOBAL_BRAKE_AFTER = 20;
+/** Short on purpose: the owner shares that pause with every stranger guessing. */
+const GLOBAL_BRAKE_MS = 60 * 1000;
 /** Wrong passwords one consent page takes before it is thrown away. */
 const PENDING_MISSES = 3;
 
@@ -174,10 +176,11 @@ function saveState(file: string, state: OAuthState): void {
 
 /**
  * Failed passwords, per caller and in total. Five misses lock that caller out
- * for fifteen minutes; twenty misses from anywhere lock the page for everyone,
- * so rotating addresses buys an attacker nothing. A consent page itself takes
- * three wrong passwords and is then gone, which makes every further guess cost
- * a fresh /authorize, an endpoint the SDK rate-limits.
+ * for fifteen minutes. Twenty misses from anywhere pause the page for everyone
+ * for a minute: rotating addresses still buys an attacker little, and a
+ * stranger's guesses never lock the owner out for long. A consent page itself
+ * takes three wrong passwords and is then gone, which makes every further guess
+ * cost a fresh /authorize, an endpoint the SDK rate-limits.
  */
 class Lockout {
   private readonly misses = new Map<string, { count: number; at: number; until: number }>();
@@ -185,11 +188,10 @@ class Lockout {
 
   constructor(private readonly now: () => number) {}
 
-  locked(key: string): boolean {
-    const now = this.now();
-    if (this.global.until > now) return true;
-    const entry = this.misses.get(key);
-    return entry !== undefined && entry.until > now;
+  /** How long this caller must wait before the next try, 0 when it may try now. */
+  lockedFor(key: string): number {
+    const until = Math.max(this.global.until, this.misses.get(key)?.until ?? 0);
+    return Math.max(0, until - this.now());
   }
 
   miss(key: string): void {
@@ -205,9 +207,9 @@ class Lockout {
 
     if (now - this.global.at > LOCKOUT_MS) this.global = { count: 0, at: now, until: 0 };
     this.global.count += 1;
-    if (this.global.count >= GLOBAL_LOCKOUT_AFTER) {
-      this.global = { count: 0, at: now, until: now + LOCKOUT_MS };
-      log("oauth: too many wrong passwords from everywhere, consent closed for fifteen minutes");
+    if (this.global.count >= GLOBAL_BRAKE_AFTER) {
+      this.global = { count: 0, at: now, until: now + GLOBAL_BRAKE_MS };
+      log("oauth: too many wrong passwords from everywhere, consent paused for a minute");
     }
   }
 
@@ -343,11 +345,7 @@ export class WazapOAuthProvider implements OAuthServerProvider {
     this.sweep();
     const id = randomBytes(24).toString("hex");
     this.pending.set(id, { client, params, createdAt: this.now(), misses: 0 });
-    res.setHeader("Cache-Control", "no-store");
-    res
-      .status(200)
-      .type("html")
-      .send(this.consentPage(id, client, params));
+    sendPage(res, 200, this.consentPage(id, client, params), params.redirectUri);
   }
 
   /** Express handler for the consent form. Mount with urlencoded parsing. */
@@ -357,10 +355,7 @@ export class WazapOAuthProvider implements OAuthServerProvider {
     const id = typeof body.request === "string" ? body.request : "";
     const entry = this.pending.get(id);
     if (!entry) {
-      res
-        .status(400)
-        .type("html")
-        .send(this.messagePage("This sign-in link has expired. Go back to the agent and connect again."));
+      sendPage(res, 400, this.messagePage("This sign-in link has expired. Go back to the agent and connect again."));
       return;
     }
 
@@ -379,9 +374,10 @@ export class WazapOAuthProvider implements OAuthServerProvider {
       return;
     }
 
-    const caller = req.ip ?? "unknown";
-    if (this.lockout.locked(caller)) {
-      res.status(429).type("html").send(this.messagePage("Too many wrong passwords. Try again in fifteen minutes."));
+    const caller = callerOf(req);
+    const wait = this.lockout.lockedFor(caller);
+    if (wait > 0) {
+      sendPage(res, 429, this.messagePage(`Too many wrong passwords. Try again in ${inMinutes(wait)}.`));
       return;
     }
     const password = typeof body.password === "string" ? body.password : "";
@@ -391,16 +387,10 @@ export class WazapOAuthProvider implements OAuthServerProvider {
       log(`oauth: wrong password from ${caller}`);
       if (entry.misses >= PENDING_MISSES) {
         this.pending.delete(id);
-        res
-          .status(401)
-          .type("html")
-          .send(this.messagePage("Wrong password, three times. Go back to the agent and connect again."));
+        sendPage(res, 401, this.messagePage("Wrong password, three times. Go back to the agent and connect again."));
         return;
       }
-      res
-        .status(401)
-        .type("html")
-        .send(this.consentPage(id, client, params, "Wrong password."));
+      sendPage(res, 401, this.consentPage(id, client, params, "Wrong password."), params.redirectUri);
       return;
     }
     this.lockout.clear(caller);
@@ -541,14 +531,19 @@ export class WazapOAuthProvider implements OAuthServerProvider {
     params: AuthorizationParams,
     error?: string
   ): string {
-    const rawName = client.client_name ?? new URL(params.redirectUri).hostname;
-    const name = escapeHtml(rawName);
+    // The code goes back to the redirect's host, so that host is who is asking.
+    // Registration is open to anyone, so the client's name is only its own claim.
+    const host = redirectHost(params.redirectUri);
+    const claim = client.client_name
+      ? `<p>It calls itself <strong>${escapeHtml(client.client_name)}</strong>. The agent chose that name; wazap has not checked it.</p>`
+      : "";
     const wantsWrite = normalizeScopes(params.scopes).includes("write");
     return page(
-      `Connect ${rawName}`,
+      `Connect ${host}`,
       `
-<h1>Connect <strong>${name}</strong> to WhatsApp?</h1>
-<p>This agent wants to use the WhatsApp account behind this wazap.</p>
+<h1>An agent wants to connect from <strong>${escapeHtml(host)}</strong></h1>
+<p>It asks to use the WhatsApp account behind this wazap. Connect only if you started this on ${escapeHtml(host)}.</p>
+${claim}
 ${error ? `<p class="error">${escapeHtml(error)}</p>` : ""}
 <form method="post" action="${APPROVE_PATH}">
   <input type="hidden" name="request" value="${id}">
@@ -571,6 +566,62 @@ ${error ? `<p class="error">${escapeHtml(error)}</p>` : ""}
   private messagePage(text: string): string {
     return page("wazap", `<h1>wazap</h1><p>${escapeHtml(text)}</p>`);
   }
+}
+
+/**
+ * Who a wrong password counts against. Behind a proxy on this machine Express
+ * already takes the caller from X-Forwarded-For. When none came through,
+ * cloudflared still names the caller in CF-Connecting-IP; without either,
+ * every caller would be loopback and one stranger would lock the owner out.
+ */
+function callerOf(req: Request): string {
+  const socket = req.socket.remoteAddress ?? "";
+  const loopback = /^(?:127\.|::ffff:127\.|::1$)/.test(socket);
+  const connecting = req.headers["cf-connecting-ip"];
+  if (loopback && req.headers["x-forwarded-for"] === undefined && typeof connecting === "string") {
+    const named = connecting.trim();
+    if (named !== "") return named;
+  }
+  return req.ip ?? "unknown";
+}
+
+function inMinutes(ms: number): string {
+  const minutes = Math.ceil(ms / 60_000);
+  return minutes === 1 ? "a minute" : `${minutes} minutes`;
+}
+
+/** Who is asking: the host the code is sent back to, or the scheme of an app's own URL. */
+function redirectHost(redirectUri: string): string {
+  const url = new URL(redirectUri);
+  return url.hostname || url.protocol.replace(/:$/, "");
+}
+
+/**
+ * Where a consent form may send the browser. Approving answers with a redirect
+ * to the agent, and browsers hold that redirect to form-action as well, so the
+ * agent's origin is allowed next to this one. An app's own scheme, or an IPv6
+ * literal CSP cannot spell as a host, is allowed as a scheme.
+ */
+function formTarget(redirectUri: string): string {
+  const url = new URL(redirectUri);
+  return url.origin === "null" || url.hostname.startsWith("[") ? url.protocol : url.origin;
+}
+
+/**
+ * Every OAuth page goes out through here: never framed, so another site cannot
+ * lay it under a decoy and have the person click Connect; nothing loads but its
+ * own inline styles; no Referer and no cache, so the request id stays put.
+ */
+function sendPage(res: Response, status: number, html: string, redirectUri?: string): void {
+  const formAction = redirectUri === undefined ? "'self'" : `'self' ${formTarget(redirectUri)}`;
+  res.setHeader(
+    "Content-Security-Policy",
+    `default-src 'none'; style-src 'unsafe-inline'; form-action ${formAction}; frame-ancestors 'none'; base-uri 'none'`
+  );
+  res.setHeader("X-Frame-Options", "DENY");
+  res.setHeader("Referrer-Policy", "no-referrer");
+  res.setHeader("Cache-Control", "no-store");
+  res.status(status).type("html").send(html);
 }
 
 function page(title: string, body: string): string {

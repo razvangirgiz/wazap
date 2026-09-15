@@ -12,17 +12,20 @@ export function lockPid(lockFile: string): number | null {
   return Number.isInteger(pid) && pid > 0 ? pid : null;
 }
 
+function alive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (err) {
+    // EPERM means the pid exists but belongs to another user, so it is alive.
+    return (err as NodeJS.ErrnoException).code === "EPERM";
+  }
+}
+
 /** Pid of the live process holding the lock, or null if free (missing or stale). */
 export function lockHolder(lockFile: string): number | null {
   const pid = lockPid(lockFile);
-  if (pid === null) return null;
-  try {
-    process.kill(pid, 0);
-    return pid;
-  } catch (err) {
-    // EPERM means the pid exists but belongs to another user, so it is alive.
-    return (err as NodeJS.ErrnoException).code === "EPERM" ? pid : null;
-  }
+  return pid !== null && alive(pid) ? pid : null;
 }
 
 /** Create the lock file, or false if it already existed. */
@@ -36,17 +39,25 @@ function claim(lockFile: string): boolean {
   }
 }
 
-/** Take the lock, or false if another live process holds it. */
+/**
+ * Take the lock, or false if another live process holds it. Two processes can
+ * find the same stale lock. Each removes it only while it still names the pid
+ * found dead, and a claim counts only if the file then names this process, so
+ * the second one never deletes the first one's fresh lock and holds it too.
+ */
 export function writeLock(lockFile: string): boolean {
   mkdirSync(dirname(lockFile), { recursive: true, mode: 0o700 });
   if (claim(lockFile)) return true;
-  if (lockHolder(lockFile) !== null) return false;
-  try {
-    unlinkSync(lockFile);
-  } catch {
-    /* someone else cleared the stale lock first */
+  const stale = lockPid(lockFile);
+  if (stale !== null && alive(stale)) return false;
+  if (lockPid(lockFile) === stale) {
+    try {
+      unlinkSync(lockFile);
+    } catch {
+      /* someone else cleared the stale lock first */
+    }
   }
-  return claim(lockFile);
+  return claim(lockFile) && lockPid(lockFile) === process.pid;
 }
 
 /** Remove the lock, but only if it is still ours. */

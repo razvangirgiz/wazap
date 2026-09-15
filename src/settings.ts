@@ -1,4 +1,4 @@
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { AccountRegistry, accountPolicy, resolveAccount, type AccountRecord } from "./accounts.js";
 import { ask, askSecret, warnIfServerRunning } from "./cli.js";
@@ -73,7 +73,13 @@ export function setEnvSetting(envFile: string, key: string, value: string): void
   }
 
   mkdirSync(dirname(envFile), { recursive: true, mode: 0o700 });
-  writeFileSync(envFile, text, { mode: 0o600 });
+  // Replaced in one step: a write that fails halfway leaves the old .env whole,
+  // never half of it. The mode argument only applies on creation; the chmod
+  // covers a leftover temp file.
+  const tmp = `${envFile}.${process.pid}.tmp`;
+  writeFileSync(tmp, text, { mode: 0o600 });
+  chmodSync(tmp, 0o600);
+  renameSync(tmp, envFile);
 }
 
 interface SettingRow {

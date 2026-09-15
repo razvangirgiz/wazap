@@ -10,7 +10,7 @@ import { join } from "node:path";
 
 import { paths } from "../dist/config.js";
 import { PROVIDERS, runExpose } from "../dist/expose.js";
-import { installService, readService } from "../dist/service.js";
+import { SUPERVISORS, installService, readService, serverUnit, tunnelsTo } from "../dist/service.js";
 
 const URL_LINE = "https://box.example.ts.net";
 
@@ -143,6 +143,104 @@ test("expose off clears the URL, keeps the password, and takes the tunnel unit w
   assert.equal(existsSync(unitFile), false, "the tunnel unit outlived `expose off`");
   assert.ok(provider.calls.includes(`close ${readService(dir).port}`));
   assert.match(output, /consent password is kept/);
+});
+
+/** A launchd agent someone wrote by hand, holding cloudflared open to `target`. */
+function tunnelPlist(dir, label, target) {
+  const file = join(dir, `${label}.plist`);
+  writeFileSync(
+    file,
+    `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+\t<key>Label</key>
+\t<string>${label}</string>
+\t<key>ProgramArguments</key>
+\t<array>
+\t\t<string>/opt/homebrew/bin/cloudflared</string>
+\t\t<string>tunnel</string>
+\t\t<string>--url</string>
+\t\t<string>${target}</string>
+\t\t<string>run</string>
+\t</array>
+</dict>
+</plist>
+`
+  );
+  return file;
+}
+
+test("expose off keeps sign-in on while a tunnel wazap did not open still reaches the port", async () => {
+  const { dir, supervisor } = await exposable();
+  const provider = fakeProvider({ command: ["/opt/bin/faketunnel", "run"] });
+  await captured(() => runExpose(config(dir), [provider], [supervisor]));
+  const { WAZAP_PUBLIC_URL: url, WAZAP_OAUTH_PASSWORD: password } = env(dir);
+  const port = readService(dir).port;
+  const theirs = tunnelPlist(dir, "com.example.wazap.tunnel", `http://127.0.0.1:${port}`);
+  tunnelPlist(dir, "com.example.elsewhere", `http://127.0.0.1:${port + 1}`);
+  supervisor.calls.length = 0;
+
+  await assert.rejects(
+    captured(() => runExpose(config(dir, { args: ["off"], oauthPassword: password }), [provider], [supervisor])),
+    (err) => {
+      assert.equal(
+        err.message,
+        `wazap's tunnel is off, but com.example.wazap.tunnel still tunnels to port ${port}, so sign-in stays on.`
+      );
+      assert.match(err.fix, /launchctl bootout gui\/\d+\/com\.example\.wazap\.tunnel; rm /);
+      assert.ok(err.fix.includes(theirs), `the fix names the unit file: ${err.fix}`);
+      return true;
+    }
+  );
+
+  assert.equal(env(dir).WAZAP_PUBLIC_URL, url, "sign-in must stay on while the port is still reachable from outside");
+  assert.equal(existsSync(theirs), true, "a unit wazap did not write is never removed");
+  assert.ok(
+    !supervisor.calls.some((call) => call.includes("com.example")),
+    `stopped a unit it does not own: ${supervisor.calls}`
+  );
+  assert.equal(existsSync(supervisor.unitFile("com.wazap.tunnel")), false, "wazap's own tunnel still goes");
+  assert.equal(readService(dir).tunnel, undefined);
+});
+
+test("tunnelsTo finds the units whose command reaches the port on loopback, and nothing else", () => {
+  const port = 8766;
+  const dir = dataDir();
+  const launchd = fakeSupervisor(dir);
+  tunnelPlist(dir, "com.example.tunnel", `http://127.0.0.1:${port}`);
+  tunnelPlist(dir, "com.example.localhost", `http://localhost:${port}/`);
+  tunnelPlist(dir, "com.example.longer-port", `http://127.0.0.1:${port}0`);
+  tunnelPlist(dir, "com.example.remote", `http://10.0.0.2:${port}`);
+  // wazap's own server unit names the host and the port apart; it is not a tunnel.
+  const server = serverUnit({ label: "com.wazap.server", node: "/n", script: "/s", dataDir: "/d", port, logDir: "/l" });
+  writeFileSync(join(dir, "com.wazap.server.plist"), SUPERVISORS.find((s) => s.name === "launchd").render(server));
+
+  const found = tunnelsTo(launchd, port);
+  assert.deepEqual(
+    found.map((unit) => unit.label),
+    ["com.example.localhost", "com.example.tunnel"]
+  );
+  assert.match(found[1].stop, /^launchctl bootout gui\/\d+\/com\.example\.tunnel; rm .*com\.example\.tunnel\.plist$/);
+
+  const unitDir = dataDir();
+  const systemd = { ...fakeSupervisor(unitDir), name: "systemd" };
+  writeFileSync(
+    join(unitDir, "tunnel.service"),
+    `[Service]\nExecStart=/usr/bin/cloudflared tunnel --url http://127.0.0.1:${port} run\n`
+  );
+  writeFileSync(
+    join(unitDir, "noted.service"),
+    `[Unit]\nDescription=forwards 127.0.0.1:${port}\n[Service]\nExecStart=/usr/bin/true\n`
+  );
+  assert.deepEqual(tunnelsTo(systemd, port), [
+    {
+      label: "tunnel.service",
+      unitFile: join(unitDir, "tunnel.service"),
+      stop: `systemctl --user disable --now tunnel.service; rm ${join(unitDir, "tunnel.service")}`,
+    },
+  ]);
+  assert.deepEqual(tunnelsTo(fakeSupervisor(join(dir, "missing")), port), [], "no unit dir is no tunnel");
 });
 
 test("a provider that is not ready fails with its own repair, and changes nothing", async () => {

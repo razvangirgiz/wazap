@@ -1,11 +1,16 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { mkdtempSync, readdirSync, readFileSync } from "node:fs";
+import { Console } from "node:console";
+import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { dirname, join } from "node:path";
+import { Writable } from "node:stream";
 import { promisify } from "node:util";
+
+import { installConsoleGuard } from "../dist/console-guard.js";
+import { spawnWazap, waitFor } from "./helpers.mjs";
 
 const run = promisify(execFile);
 
@@ -30,6 +35,116 @@ function sourceFiles(dir) {
 test("no console.log in src: stdout is the MCP JSON-RPC channel", () => {
   const offenders = sourceFiles(srcDir).filter((file) => readFileSync(file, "utf8").includes("console.log("));
   assert.deepEqual(offenders, [], "these files would corrupt the stdio protocol stream");
+});
+
+/** A libsignal session record, the shape it hands to console.info: every key in the clear. */
+function sessionRecord() {
+  return {
+    registrationId: 4242,
+    currentRatchet: {
+      ephemeralKeyPair: { pubKey: Buffer.alloc(33, 1), privKey: Buffer.alloc(32, 2) },
+      lastRemoteEphemeralKey: Buffer.alloc(33, 3),
+      rootKey: Buffer.alloc(32, 4),
+    },
+    indexInfo: { baseKey: Buffer.alloc(33, 5), baseKeyType: 1, closed: -1, used: 1, created: 1 },
+  };
+}
+
+/** Anything of a session record that made it into a printed line. */
+const SESSION_LEAK = /privKey|pubKey|rootKey|baseKey|ephemeralKeyPair|registrationId|<Buffer/;
+
+function sink() {
+  const stream = new Writable({
+    write(chunk, _encoding, done) {
+      stream.text += chunk;
+      done();
+    },
+  });
+  stream.text = "";
+  return stream;
+}
+
+test("the console guard keeps stdout empty and cuts a session record down to its phrase", () => {
+  const stdout = sink();
+  const stderr = sink();
+  const target = new Console({ stdout, stderr, colorMode: false });
+  installConsoleGuard(target);
+
+  target.info("Closing session:", sessionRecord());
+  target.info("Opening session:", sessionRecord());
+  target.info("Removing old closed session:", sessionRecord());
+  target.info("Migrating session to:", 1);
+  target.warn("Session already closed", sessionRecord());
+  target.warn("Closing open session in favor of incoming prekey bundle");
+  target.log("[wazap] still", "here");
+  target.debug("a debug line");
+  target.dir({ shown: true });
+
+  assert.equal(stdout.text, "", "stdout is the MCP channel");
+  assert.doesNotMatch(stderr.text, SESSION_LEAK);
+  assert.deepEqual(stderr.text.trimEnd().split("\n"), [
+    "Closing session",
+    "Opening session",
+    "Removing old closed session",
+    "Migrating session to",
+    "Session already closed",
+    "Closing open session",
+    "[wazap] still here",
+    "a debug line",
+    "{ shown: true }",
+  ]);
+});
+
+test("a session record printed while serve runs over stdio never reaches either stream", async () => {
+  const box = mkdtempSync(join(tmpdir(), "wazap-guard-"));
+  const preload = join(box, "print-sessions.mjs");
+  // What libsignal does mid-session. It prints only once the guard is in: before
+  // that none of wazap has loaded, and the guard not coming is what fails below.
+  writeFileSync(
+    preload,
+    `const original = console.info;
+const record = (${sessionRecord.toString()})();
+const wait = setInterval(() => {
+  if (console.info === original) return;
+  clearInterval(wait);
+  console.info("Closing session:", record);
+  console.log("Opening session:", record);
+}, 5);
+wait.unref();
+`
+  );
+  const { child, stderr } = spawnWazap({
+    dataDir: join(box, "data"),
+    env: { WAZAP_NO_SHARE: "1", NODE_OPTIONS: `--import=${pathToFileURL(preload).href}` },
+  });
+  const exited = new Promise((resolve) => child.once("exit", resolve));
+  let stdout = "";
+  child.stdout.on("data", (chunk) => (stdout += chunk));
+  const send = (id, method, params) => child.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", id, method, params })}\n`);
+  const answered = (id) => stdout.split("\n").some((line) => line.includes(`"id":${id}`));
+
+  try {
+    send(1, "initialize", {
+      protocolVersion: "2024-11-05",
+      capabilities: {},
+      clientInfo: { name: "wazap-guard", version: "0" },
+    });
+    await waitFor(() => answered(1), 30_000, "initialize to answer");
+    await waitFor(() => stderr.join("").includes("Opening session"), 30_000, "the session lines on stderr");
+    send(2, "tools/list", {});
+    await waitFor(() => answered(2), 30_000, "tools/list to answer");
+
+    for (const line of stdout.split("\n").filter(Boolean)) {
+      assert.equal(JSON.parse(line).jsonrpc, "2.0", `not JSON-RPC on stdout: ${line.slice(0, 80)}`);
+    }
+    assert.doesNotMatch(stdout, SESSION_LEAK);
+    assert.doesNotMatch(stderr.join(""), SESSION_LEAK);
+    assert.match(stderr.join(""), /^Closing session$/m);
+  } finally {
+    child.kill("SIGKILL");
+    await exited;
+    rmSync(box, { recursive: true, force: true });
+  }
 });
 
 test("AGENT.md ships, because `setup --agent` reads it out of the package root", () => {
