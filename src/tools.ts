@@ -258,6 +258,10 @@ which look like a phone number and are not one.
 WhatsApp's own notices (device linking, group membership, encryption) have
 \`type: "system"\` and are left out of get_recent_messages unless you pass
 include_system: true.
+A group notice says who made which change: "[Medeea added Ana (40723124956)]",
+with \`system: {action, actor, targets, value}\` naming the same people. Report
+a membership change from there; never pair a new member with whoever posted
+nearby.
 Reactions ride on the message they answer: read_messages tags them as
 "❤️×2 😍", and get_message lists each one with who left it.
 A voice note reads as "[voice message · 0:42]"; once transcribed, what was said

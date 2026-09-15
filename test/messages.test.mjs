@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { proto } from "baileys";
 
 import {
+  buildMessageView,
   callInfo,
   formatAge,
   isControlMessage,
@@ -170,6 +171,153 @@ test("a stub message is an event to report, not machinery to drop", () => {
   const stub = { ...wrap({}), messageStubType: proto.WebMessageInfo.StubType.GROUP_PARTICIPANT_ADD };
   assert.equal(isControlMessage(stub), false);
   assert.equal(messageType(stub), "system");
+});
+
+const Stub = proto.WebMessageInfo.StubType;
+const GROUP_JID = "120363414132891692@g.us";
+const MEDEEA = "40711111111@s.whatsapp.net";
+
+/** A group notice the way Baileys builds one: no message, a stub type, the key naming who made the change. */
+const groupStub = (messageStubType, messageStubParameters, { participant = MEDEEA, fromMe = false } = {}) => ({
+  key: { fromMe, remoteJid: GROUP_JID, id: "2904102002", participant },
+  messageStubType,
+  messageStubParameters,
+  messageTimestamp: 1_789_460_615,
+});
+
+/** A member label change, which WhatsApp sends as a protocol message rather than a stub. */
+const memberLabel = (label) => ({
+  key: { fromMe: false, remoteJid: GROUP_JID, id: "3A0F56CBF8F7D459AD5A", participant: MEDEEA },
+  message: {
+    protocolMessage: {
+      type: proto.Message.ProtocolMessage.Type.GROUP_MEMBER_LABEL_CHANGE,
+      memberLabel: { label, labelTimestamp: 1_789_460_811 },
+    },
+  },
+  messageTimestamp: 1_789_460_812,
+});
+
+/** A participant as a live notice carries them. */
+const party = (id, phoneNumber) => JSON.stringify({ id, ...(phoneNumber ? { phoneNumber } : {}), admin: null });
+
+/** [label, notice, expected text] */
+const GROUP_NOTICE_CASES = [
+  [
+    "add, live: a lid with its number",
+    groupStub(Stub.GROUP_PARTICIPANT_ADD, [party("111222333444555@lid", "40723124956@s.whatsapp.net")]),
+    "[40711111111 added 40723124956]",
+  ],
+  [
+    "add, synced history: bare jids",
+    groupStub(Stub.GROUP_PARTICIPANT_ADD, ["40723124956@s.whatsapp.net", "40722827322@s.whatsapp.net"]),
+    "[40711111111 added 40723124956, 40722827322]",
+  ],
+  [
+    "add of a lid nobody paired",
+    groupStub(Stub.GROUP_PARTICIPANT_ADD, [party("111222333444555@lid")]),
+    "[40711111111 added unknown (lid …4555)]",
+  ],
+  [
+    "add by the linked account",
+    groupStub(Stub.GROUP_PARTICIPANT_ADD, [party("40723124956@s.whatsapp.net")], { fromMe: true }),
+    "[You added 40723124956]",
+  ],
+  [
+    "remove",
+    groupStub(Stub.GROUP_PARTICIPANT_REMOVE, [party("40722827322@s.whatsapp.net")]),
+    "[40711111111 removed 40722827322]",
+  ],
+  ["remove of oneself", groupStub(Stub.GROUP_PARTICIPANT_REMOVE, [party(MEDEEA)]), "[40711111111 left]"],
+  ["leave", groupStub(Stub.GROUP_PARTICIPANT_LEAVE, [party(MEDEEA)]), "[40711111111 left]"],
+  [
+    "promote",
+    groupStub(Stub.GROUP_PARTICIPANT_PROMOTE, [party("40723124956@s.whatsapp.net")]),
+    "[40711111111 made 40723124956 admin]",
+  ],
+  [
+    "demote",
+    groupStub(Stub.GROUP_PARTICIPANT_DEMOTE, [party("40723124956@s.whatsapp.net")]),
+    "[40711111111 dismissed 40723124956 as admin]",
+  ],
+  [
+    "subject",
+    groupStub(Stub.GROUP_CHANGE_SUBJECT, ["Râșnov 18-20 septembrie"]),
+    '[40711111111 renamed the group to "Râșnov 18-20 septembrie"]',
+  ],
+  [
+    "announcement mode, live",
+    groupStub(Stub.GROUP_CHANGE_ANNOUNCE, ["on"]),
+    "[40711111111 allowed only admins to send messages]",
+  ],
+  [
+    "info lock, synced history",
+    groupStub(Stub.GROUP_CHANGE_RESTRICT, ["false"]),
+    "[40711111111 allowed every member to edit the group info]",
+  ],
+  ["new invite link, code kept out", groupStub(Stub.GROUP_CHANGE_INVITE_LINK, ["AbCdEf123"]), "[40711111111 reset the invite link]"],
+  [
+    "photo change nobody is named for",
+    groupStub(Stub.GROUP_CHANGE_ICON, [], { participant: null }),
+    "[Someone changed the group photo]",
+  ],
+  ["a stub wazap does not spell out", groupStub(Stub.E2E_ENCRYPTED, []), "[system message · E2E_ENCRYPTED]"],
+  [
+    "member label cleared, a protocol message and not a stub",
+    memberLabel(""),
+    "[40711111111 cleared their member label]",
+  ],
+  ["member label set", memberLabel("șofer"), '[40711111111 set their member label to "șofer"]'],
+];
+
+test("a group notice says who made which change, to whom", () => {
+  for (const [label, raw, text] of GROUP_NOTICE_CASES) {
+    assert.equal(messageType(raw), "system", label);
+    assert.equal(isControlMessage(raw), false, label);
+    assert.equal(messageText(raw), text, label);
+  }
+});
+
+test("a group notice view puts names to the actor and the targets, and carries them structured", () => {
+  const LID_MEDEEA = "999888777666555@lid";
+  const ANA = "40723124956@s.whatsapp.net";
+  const names = { [MEDEEA]: "Medeea", [ANA]: "Ana" };
+  const ctx = {
+    canonical: (jid) => (jid === LID_MEDEEA ? MEDEEA : jid),
+    nameFor: (jid) => names[jid] ?? jid.split("@")[0],
+    ownId: "40700000001@s.whatsapp.net",
+    chatId: GROUP_JID,
+    edited: false,
+    reactions: [],
+  };
+
+  const added = buildMessageView(
+    groupStub(Stub.GROUP_PARTICIPANT_ADD, [party("111222333444555@lid", ANA), party("40722827322@s.whatsapp.net")], {
+      participant: LID_MEDEEA,
+    }),
+    ctx
+  );
+  assert.equal(added.type, "system");
+  assert.equal(added.text, "[Medeea added Ana (40723124956), 40722827322]");
+  assert.deepEqual(added.system, {
+    action: "add",
+    actor: { id: MEDEEA, name: "Medeea", phone: "40711111111" },
+    targets: [
+      { id: ANA, name: "Ana", phone: "40723124956" },
+      { id: "40722827322@s.whatsapp.net", name: "40722827322", phone: "40722827322" },
+    ],
+  });
+
+  const renamed = buildMessageView(groupStub(Stub.GROUP_CHANGE_SUBJECT, ["Râșnov"]), ctx);
+  assert.equal(renamed.text, '[Medeea renamed the group to "Râșnov"]');
+  assert.deepEqual(renamed.system, {
+    action: "set_subject",
+    actor: { id: MEDEEA, name: "Medeea", phone: "40711111111" },
+    targets: [],
+    value: "Râșnov",
+  });
+
+  const plain = buildMessageView(wrap({ conversation: "salut" }), { ...ctx, chatId: "4072@s.whatsapp.net" });
+  assert.equal(plain.system, undefined, "a message a person sent carries no notice");
 });
 
 test("isUserMessage is a person sending something, either way", () => {

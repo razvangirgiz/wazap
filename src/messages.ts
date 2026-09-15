@@ -5,7 +5,17 @@
 
 import { getContentType, proto, type WAMessage, type WAMessageContent, type WAMessageKey } from "baileys";
 import type { TranscriptRecord } from "./transcribe/index.js";
-import type { CallDirection, CallInfo, CallKind, CallOutcome, MessageType, MessageView } from "./wa-types.js";
+import type {
+  CallDirection,
+  CallInfo,
+  CallKind,
+  CallOutcome,
+  EventParty,
+  MessageType,
+  MessageView,
+  SystemEvent,
+  SystemEventAction,
+} from "./wa-types.js";
 
 /** protobuf 64-bit fields arrive as a number or a Long. */
 type ProtoLong = number | { toNumber?: () => number } | null | undefined;
@@ -250,6 +260,219 @@ function stubKind(raw: WAMessage): MessageType | undefined {
   return stub === proto.WebMessageInfo.StubType.UNKNOWN ? undefined : "system";
 }
 
+/** The name a stub type goes by, so a notice wazap does not spell out still says which one it is. */
+function stubTypeName(raw: WAMessage): string | undefined {
+  return proto.WebMessageInfo.StubType[raw.messageStubType ?? -1];
+}
+
+/** The sentence for one notice. `self` is a change someone made to themselves: joining, leaving. */
+type Say = (actor: string, targets: string, value: string | undefined, self: boolean) => string;
+
+interface GroupStub {
+  action: SystemEventAction;
+  /** What messageStubParameters holds: everyone the change touched, the new value, or nothing to show. */
+  params: "participants" | "value" | "none";
+  say: Say;
+}
+
+/** A group notice before any name is looked up: the jids exactly as the stub carries them. */
+interface GroupEvent {
+  spec: GroupStub;
+  /** Who made the change, as the key names them; undefined when WhatsApp did not say. */
+  actor: string | undefined;
+  fromMe: boolean;
+  targets: string[];
+  value: string | undefined;
+}
+
+/** A setting WhatsApp reports as on/off in a live notice and as true/false in synced history. */
+function toggle(on: string, off: string, unclear: string): Say {
+  return (actor, _targets, value) => {
+    const state = value === "on" || value === "true" ? on : value === "off" || value === "false" ? off : unclear;
+    return `${actor} ${state}`;
+  };
+}
+
+const StubType = proto.WebMessageInfo.StubType;
+
+const GROUP_STUBS: Partial<Record<number, GroupStub>> = {
+  [StubType.GROUP_CREATE]: {
+    action: "create",
+    params: "value",
+    say: (actor, _targets, value) => (value ? `${actor} created the group "${value}"` : `${actor} created the group`),
+  },
+  [StubType.GROUP_PARTICIPANT_ADD]: {
+    action: "add",
+    params: "participants",
+    say: (actor, targets, _value, self) => (self ? `${targets} joined` : `${actor} added ${targets}`),
+  },
+  [StubType.GROUP_PARTICIPANT_ADD_REQUEST_JOIN]: {
+    action: "add",
+    params: "participants",
+    say: (actor, targets) => `${actor} added ${targets} after a request to join`,
+  },
+  [StubType.GROUP_PARTICIPANT_INVITE]: {
+    action: "join_via_link",
+    params: "participants",
+    say: (actor, targets) => `${targets || actor} joined using the invite link`,
+  },
+  [StubType.GROUP_PARTICIPANT_REMOVE]: {
+    action: "remove",
+    params: "participants",
+    say: (actor, targets, _value, self) => (self ? `${targets} left` : `${actor} removed ${targets}`),
+  },
+  [StubType.GROUP_PARTICIPANT_LEAVE]: {
+    action: "leave",
+    params: "participants",
+    say: (actor, targets) => `${targets || actor} left`,
+  },
+  [StubType.GROUP_PARTICIPANT_PROMOTE]: {
+    action: "promote",
+    params: "participants",
+    say: (actor, targets) => `${actor} made ${targets} admin`,
+  },
+  [StubType.GROUP_PARTICIPANT_DEMOTE]: {
+    action: "demote",
+    params: "participants",
+    say: (actor, targets) => `${actor} dismissed ${targets} as admin`,
+  },
+  [StubType.GROUP_PARTICIPANT_CHANGE_NUMBER]: {
+    action: "change_number",
+    params: "participants",
+    say: (actor) => `${actor} changed their phone number`,
+  },
+  [StubType.GROUP_CHANGE_SUBJECT]: {
+    action: "set_subject",
+    params: "value",
+    say: (actor, _targets, value) => (value ? `${actor} renamed the group to "${value}"` : `${actor} renamed the group`),
+  },
+  [StubType.GROUP_CHANGE_DESCRIPTION]: {
+    action: "set_description",
+    params: "value",
+    say: (actor) => `${actor} changed the group description`,
+  },
+  // A removed photo and a synced one both arrive without the new photo's id, so
+  // "removed" cannot be told apart from "changed" and is not claimed.
+  [StubType.GROUP_CHANGE_ICON]: {
+    action: "set_picture",
+    params: "none",
+    say: (actor) => `${actor} changed the group photo`,
+  },
+  // The parameter is the new invite code, and the code lets anyone in: not a thing to print.
+  [StubType.GROUP_CHANGE_INVITE_LINK]: {
+    action: "reset_invite_link",
+    params: "none",
+    say: (actor) => `${actor} reset the invite link`,
+  },
+  [StubType.GROUP_CHANGE_ANNOUNCE]: {
+    action: "set_announcement_only",
+    params: "value",
+    say: toggle(
+      "allowed only admins to send messages",
+      "allowed every member to send messages",
+      "changed who can send messages"
+    ),
+  },
+  [StubType.GROUP_CHANGE_RESTRICT]: {
+    action: "set_info_locked",
+    params: "value",
+    say: toggle(
+      "allowed only admins to edit the group info",
+      "allowed every member to edit the group info",
+      "changed who can edit the group info"
+    ),
+  },
+  [StubType.GROUP_MEMBERSHIP_JOIN_APPROVAL_MODE]: {
+    action: "set_join_approval",
+    params: "value",
+    say: toggle(
+      "turned on admin approval for new members",
+      "turned off admin approval for new members",
+      "changed admin approval for new members"
+    ),
+  },
+  [StubType.GROUP_MEMBER_ADD_MODE]: {
+    action: "set_add_mode",
+    params: "value",
+    say: (actor, _targets, value) =>
+      value === "all_member_add"
+        ? `${actor} allowed every member to add others`
+        : value === "admin_add"
+          ? `${actor} allowed only admins to add members`
+          : `${actor} changed who can add members`,
+  },
+};
+
+/**
+ * A participant as a group notice names them. A live notice carries JSON with
+ * a lid and, when WhatsApp sent one, the number; synced history a bare jid.
+ * The number wins, since a lid alone often cannot be put to a name.
+ */
+function stubParty(param: string): string | undefined {
+  if (!param.startsWith("{")) return param.includes("@") ? param : undefined;
+  try {
+    const party = JSON.parse(param) as Record<string, unknown>;
+    return [party.phoneNumber, party.pn, party.id, party.lid].find(
+      (jid): jid is string => typeof jid === "string" && jid.includes("@")
+    );
+  } catch {
+    return undefined;
+  }
+}
+
+/** A member label arrives as a protocol message rather than a stub, but it is the same kind of notice. */
+const MEMBER_LABEL: GroupStub = {
+  action: "set_member_label",
+  params: "value",
+  say: (actor, _targets, value) =>
+    value ? `${actor} set their member label to "${value}"` : `${actor} cleared their member label`,
+};
+
+function groupEventOf(raw: WAMessage, content: WAMessageContent | undefined): GroupEvent | undefined {
+  const actor = raw.key.participant || raw.participant || undefined;
+  const fromMe = Boolean(raw.key.fromMe);
+  const protocol = content?.protocolMessage;
+  if (protocol?.type === proto.Message.ProtocolMessage.Type.GROUP_MEMBER_LABEL_CHANGE) {
+    return { spec: MEMBER_LABEL, actor, fromMe, targets: [], value: protocol.memberLabel?.label || undefined };
+  }
+  const spec = GROUP_STUBS[raw.messageStubType ?? -1];
+  if (!spec) return undefined;
+  // Baileys types the parameters as any; only strings are ever a jid or a value.
+  const params: string[] = (Array.isArray(raw.messageStubParameters) ? raw.messageStubParameters : []).filter(
+    (param: unknown): param is string => typeof param === "string"
+  );
+  return {
+    spec,
+    actor: raw.key.participant || raw.participant || undefined,
+    fromMe: Boolean(raw.key.fromMe),
+    targets:
+      spec.params === "participants"
+        ? params.flatMap((param) => {
+            const jid = stubParty(param);
+            return jid ? [jid] : [];
+          })
+        : [],
+    value: spec.params === "value" ? params[0] || undefined : undefined,
+  };
+}
+
+/** Bracketed like every other placeholder, so a notice never reads as words someone typed. */
+function eventLine(event: GroupEvent, actor: string, targets: string[], self: boolean): string {
+  return `[${event.spec.say(actor, targets.join(", "), event.value, self)}]`;
+}
+
+/** A jid on a line with no address book behind it: the number, never a lid's digits. */
+function bareLabel(jid: string): string {
+  const digits = jid.split("@")[0] ?? "";
+  return jid.endsWith("@lid") ? `unknown (lid …${digits.slice(-4)})` : digits || jid;
+}
+
+function eventText(event: GroupEvent): string {
+  const actor = event.fromMe ? "You" : event.actor ? bareLabel(event.actor) : "Someone";
+  const self = event.targets.length === 1 && event.targets[0] === event.actor;
+  return eventLine(event, actor, event.targets.map(bareLabel), self);
+}
+
 /** Nobody picked up. Which word that is depends on which end of the call you were. */
 type Unanswered = "no answer";
 
@@ -361,6 +584,10 @@ interface Analysis {
   /** The view-once body when the message is one, else the content itself. */
   inner: WAMessageContent | undefined;
   stub: MessageType | undefined;
+  /** The group notice a stub spells out, when wazap models that stub. */
+  event: GroupEvent | undefined;
+  /** The stub type's name, for a notice that is not spelled out. */
+  stubName: string | undefined;
   call: CallInfo | undefined;
   context: proto.IContextInfo | undefined;
   media: { mime: string; size?: number; filename?: string } | undefined;
@@ -405,6 +632,9 @@ function analyze(raw: WAMessage): Analysis {
     rule,
     inner,
     stub,
+    event:
+      (rule === UNKNOWN && stub === "system") || key === "protocolMessage" ? groupEventOf(raw, content) : undefined,
+    stubName: stub === "system" ? stubTypeName(raw) : undefined,
     call,
     context: node?.contextInfo ?? undefined,
     media,
@@ -442,10 +672,11 @@ function textFrom(a: Analysis): string {
   if (a.call) {
     return a.content?.call != null && a.content.callLogMesssage == null ? "[group call]" : callText(a.call);
   }
+  if (a.event) return eventText(a.event);
   const node = a.content ?? {};
   if (a.rule === UNKNOWN) {
     if (a.stub === "deleted") return DELETED_TEXT;
-    if (a.stub === "system") return SYSTEM_TEXT;
+    if (a.stub === "system") return a.stubName ? `[system message · ${a.stubName}]` : SYSTEM_TEXT;
   }
 
   const text = a.rule.text?.(node)?.trim();
@@ -666,7 +897,8 @@ export function buildMessageView(raw: WAMessage, ctx: MessageViewContext): Messa
   const sender = senderJid(raw, ctx);
   const context = a.context;
   const quoted = context?.quotedMessage ? quotedView(context, ctx) : undefined;
-  const text = (a.text ??= textFrom(a));
+  const event = a.event ? eventView(a.event, ctx) : undefined;
+  const text = event?.text ?? (a.text ??= textFrom(a));
   const spoken = spokenFrom(a, ctx.transcript);
 
   const view: MessageView = {
@@ -698,7 +930,35 @@ export function buildMessageView(raw: WAMessage, ctx: MessageViewContext): Messa
   if (ctx.reactions.length > 0) {
     view.reactions = ctx.reactions.map((r) => ({ ...r, name: ctx.nameFor(ctx.canonical(r.sender)) }));
   }
+  if (event) view.system = event.system;
   return view;
+}
+
+function eventParty(jid: string, ctx: MessageViewContext): EventParty {
+  const id = ctx.canonical(jid);
+  const phone = phoneOf(id);
+  return { id, name: ctx.nameFor(id), ...(phone ? { phone } : {}) };
+}
+
+/** A target by name, with the number beside it unless the name already is the number. */
+function partyLabel(party: EventParty): string {
+  return party.phone && party.phone !== party.name ? `${party.name} (${party.phone})` : party.name;
+}
+
+/** The notice with names looked up: the structured event, and the line that says it. */
+function eventView(event: GroupEvent, ctx: MessageViewContext): { system: SystemEvent; text: string } {
+  const actor = event.fromMe ? eventParty(ctx.ownId, ctx) : event.actor ? eventParty(event.actor, ctx) : undefined;
+  const targets = event.targets.map((jid) => eventParty(jid, ctx));
+  const self = targets.length === 1 && targets[0]?.id === actor?.id;
+  return {
+    system: {
+      action: event.spec.action,
+      ...(actor ? { actor } : {}),
+      targets,
+      ...(event.value === undefined ? {} : { value: event.value }),
+    },
+    text: eventLine(event, actor?.name ?? "Someone", targets.map(partyLabel), self),
+  };
 }
 
 function quotedView(
