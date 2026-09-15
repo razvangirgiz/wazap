@@ -6,6 +6,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { createServer } from "node:net";
 import { existsSync, mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -420,10 +421,141 @@ test("an abandoned MCP session is reaped, and over the cap the idlest is", async
     await open();
     const s3 = await open(); // the third over a cap of 2 evicts s1, the idlest
     assert.equal(await ping(s3), 200, "the newest session lives");
-    await waitFor(async () => (await ping(s1)) === 400, 5_000, "the evicted session to answer 400");
+    await waitFor(async () => (await ping(s1)) === 404, 5_000, "the evicted session to answer 404");
     // TTL: left untouched past 60ms, the sweep closes s3 too.
     await new Promise((r) => setTimeout(r, 250));
-    assert.equal(await ping(s3), 400, "an idle session is reaped by the sweep");
+    assert.equal(await ping(s3), 404, "an idle session is reaped by the sweep");
+  } finally {
+    stop.abort();
+  }
+});
+
+const PING = { jsonrpc: "2.0", id: 9, method: "ping", params: {} };
+const SESSION_NOT_FOUND = { jsonrpc: "2.0", error: { code: -32001, message: "Session not found" }, id: null };
+
+/** An open endpoint for the session cases; `stop` tears it down. */
+async function sessionEndpoint(prefix, bounds = {}) {
+  const port = await closedPort();
+  const stop = new AbortController();
+  await startHttpEndpoint(silentHub(), offlineConfig(prefix), {
+    host: "127.0.0.1",
+    port,
+    credentials: [],
+    openRead: true,
+    signal: stop.signal,
+    ...bounds,
+  });
+  return { port, stop: () => stop.abort() };
+}
+
+/** One call to /mcp, carrying `sid` the way a client that holds a session does. */
+function mcpCall(port, method, sid, body) {
+  const headers = { accept: "application/json, text/event-stream" };
+  if (sid !== undefined) headers["mcp-session-id"] = sid;
+  if (body !== undefined) headers["content-type"] = "application/json";
+  return fetch(`http://127.0.0.1:${port}/mcp`, {
+    method,
+    headers,
+    body: body === undefined ? undefined : JSON.stringify(body),
+    signal: AbortSignal.timeout(5_000),
+  });
+}
+
+test("a session id the server does not hold is a 404 on POST, GET and DELETE; no id at all stays a 400", async () => {
+  const { port, stop } = await sessionEndpoint("wazap-unknown-session-");
+  try {
+    const stale = randomUUID();
+    for (const [method, body] of [["POST", PING], ["GET"], ["DELETE"]]) {
+      const lost = await mcpCall(port, method, stale, body);
+      assert.equal(lost.status, 404, `${method} with a session id nobody holds`);
+      assert.deepEqual(await lost.json(), SESSION_NOT_FOUND, method);
+      const bare = await mcpCall(port, method, undefined, body);
+      assert.equal(bare.status, 400, `${method} with no session id and no initialize`);
+      assert.equal((await bare.json()).error.code, -32000, method);
+    }
+  } finally {
+    stop();
+  }
+});
+
+test("a client told 404 starts over with initialize and carries on", async () => {
+  const { port, stop } = await sessionEndpoint("wazap-reinit-");
+  try {
+    const stale = randomUUID();
+    assert.equal((await mcpCall(port, "POST", stale, PING)).status, 404);
+
+    const init = await mcpPost(port);
+    assert.equal(init.status, 200);
+    const fresh = init.headers.get("mcp-session-id");
+    await init.text();
+    assert.ok(fresh && fresh !== stale, "a new session, not the lost one");
+    const pong = await mcpCall(port, "POST", fresh, PING);
+    assert.equal(pong.status, 200);
+    assert.match(await pong.text(), /"result":\{\}/);
+
+    // A client that still sends the dead id along with its initialize is not held to it.
+    const stubborn = await mcpCall(port, "POST", stale, {
+      jsonrpc: "2.0",
+      id: 1,
+      method: "initialize",
+      params: {
+        protocolVersion: "2024-11-05",
+        capabilities: {},
+        clientInfo: { name: "wazap-daemon-test", version: "0" },
+      },
+    });
+    assert.equal(stubborn.status, 200);
+    await stubborn.text();
+  } finally {
+    stop();
+  }
+});
+
+test("an evicted session leaves the map before it closes, so a racing request sees 200 or 404 and nothing else", async () => {
+  const { port, stop } = await sessionEndpoint("wazap-evict-race-", { sessionMax: 1 });
+  const open = async () => {
+    const res = await mcpPost(port);
+    await res.text();
+    return res.headers.get("mcp-session-id");
+  };
+  const ping = async (sid) => {
+    const res = await mcpCall(port, "POST", sid, PING);
+    await res.text();
+    return res.status;
+  };
+  try {
+    const s1 = await open();
+    // The initialize that evicts s1 over a cap of 1 races a burst of pings on it.
+    const [s2, ...racing] = await Promise.all([open(), ...Array.from({ length: 8 }, () => ping(s1))]);
+    for (const status of racing) assert.ok(status === 200 || status === 404, `a racing ping answered ${status}`);
+    assert.equal(await ping(s1), 404, "evicted, and told so on the very next request");
+    assert.equal(await ping(s2), 200, "the session that evicted it lives");
+  } finally {
+    stop();
+  }
+});
+
+test("without OAuth, a refused token is told invalid_token and a missing one gets no challenge", async () => {
+  const port = await closedPort();
+  const stop = new AbortController();
+  await startHttpEndpoint(silentHub(), offlineConfig("wazap-refused-"), {
+    host: "127.0.0.1",
+    port,
+    credentials: [{ token: "right", write: false }],
+    openRead: false,
+    signal: stop.signal,
+  });
+  try {
+    const none = await mcpPost(port, null);
+    assert.equal(none.status, 401);
+    assert.equal(none.headers.get("www-authenticate"), null, "no token, no OAuth: nothing to say");
+    const wrong = await mcpPost(port, "wrong");
+    assert.equal(wrong.status, 401);
+    assert.equal(
+      wrong.headers.get("www-authenticate"),
+      'Bearer error="invalid_token", error_description="The bearer token is unknown or has expired"'
+    );
+    assert.equal((await mcpPost(port, "right")).status, 200);
   } finally {
     stop.abort();
   }

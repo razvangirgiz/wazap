@@ -43,7 +43,20 @@ function buildMcpServer(hub: AccountSource, config: Config, allowWrite: boolean)
   return server;
 }
 
-type AuthedRequest = Request & { mcpWrite?: boolean };
+type AuthedRequest = Request & { mcpWrite?: boolean; oauthClient?: string };
+
+/**
+ * Who is calling, for the request log: the User-Agent a client names itself by,
+ * cut short and stripped of quotes and control characters so it cannot forge a
+ * field, and the client an OAuth token was issued to. Never a credential.
+ */
+function callerTag(req: AuthedRequest): string {
+  // eslint-disable-next-line no-control-regex -- control characters are what is stripped
+  const agent = (req.headers["user-agent"] ?? "").replace(/["\x00-\x1f\x7f]/g, "").slice(0, 60);
+  let tag = agent === "" ? "" : ` client="${agent}"`;
+  if (req.oauthClient !== undefined) tag += ` oauth_client=${req.oauthClient}`;
+  return tag;
+}
 
 export async function runStdio(hub: AccountSource, config: Config): Promise<void> {
   const server = buildMcpServer(hub, config, true);
@@ -174,7 +187,7 @@ export async function startHttpEndpoint(hub: AccountSource, config: Config, endp
     const hasAuth = req.headers.authorization ? "auth" : "noauth";
     res.on("finish", () => {
       log(
-        `HTTP ${req.method} ${req.originalUrl} rpc=${rpc} ${hasAuth} accept="${req.headers.accept ?? ""}" -> ${res.statusCode} (${Date.now() - start}ms)`
+        `HTTP ${req.method} ${req.originalUrl} rpc=${rpc} ${hasAuth} accept="${req.headers.accept ?? ""}" -> ${res.statusCode} (${Date.now() - start}ms)${callerTag(req)}`
       );
     });
     res.on("close", () => {
@@ -235,13 +248,13 @@ export async function startHttpEndpoint(hub: AccountSource, config: Config, endp
   // The first credential the bearer token matches decides the session's tools,
   // so a leaked read token can never message anyone. An OAuth token carries
   // the scope the person picked on the consent page.
-  const bearerAccess = async (auth: string | undefined): Promise<{ write: boolean } | null> => {
+  const bearerAccess = async (auth: string | undefined): Promise<{ write: boolean; oauthClient?: string } | null> => {
     const credential = endpoint.credentials.find((entry) => isAuthorized(auth, entry.token));
     if (credential) return { write: credential.write };
     if (oauth && auth?.startsWith("Bearer ")) {
       try {
         const info = await oauth.verifyAccessToken(auth.slice("Bearer ".length).trim());
-        return { write: info.scopes.includes("write") };
+        return { write: info.scopes.includes("write"), oauthClient: info.clientId };
       } catch {
         // An unknown or expired token opens nothing.
       }
@@ -253,6 +266,7 @@ export async function startHttpEndpoint(hub: AccountSource, config: Config, endp
     const access = await bearerAccess(req.headers.authorization);
     if (access) {
       (req as AuthedRequest).mcpWrite = access.write;
+      (req as AuthedRequest).oauthClient = access.oauthClient;
       next();
       return;
     }
@@ -261,9 +275,14 @@ export async function startHttpEndpoint(hub: AccountSource, config: Config, endp
       next();
       return;
     }
-    if (resourceMetadataUrl) {
-      res.setHeader("WWW-Authenticate", `Bearer resource_metadata="${resourceMetadataUrl}"`);
+    // RFC 6750: a token that came and was refused is invalid_token, so the client
+    // knows to refresh or sign in again; a request that sent none gets no error.
+    const challenge: string[] = [];
+    if (req.headers.authorization) {
+      challenge.push('error="invalid_token"', 'error_description="The bearer token is unknown or has expired"');
     }
+    if (resourceMetadataUrl) challenge.push(`resource_metadata="${resourceMetadataUrl}"`);
+    if (challenge.length > 0) res.setHeader("WWW-Authenticate", `Bearer ${challenge.join(", ")}`);
     res.status(401).json({
       jsonrpc: "2.0",
       error: { code: -32001, message: "Unauthorized: missing or invalid bearer token" },
@@ -279,9 +298,12 @@ export async function startHttpEndpoint(hub: AccountSource, config: Config, endp
   const sessionTtlMs = endpoint.sessionTtlMs ?? MCP_SESSION_TTL_MS;
   const sessionMax = endpoint.sessionMax ?? MCP_SESSION_MAX;
 
+  // The map forgets the session before its transport starts closing, so a
+  // request that lands mid-close is told the session is gone, by us.
   const dropSession = (sid: string): void => {
     lastSeen.delete(sid);
     const transport = transports.get(sid);
+    transports.delete(sid);
     if (transport !== undefined) {
       void transport.close().catch((err: unknown) => logError("session close", err));
     }
@@ -311,7 +333,7 @@ export async function startHttpEndpoint(hub: AccountSource, config: Config, endp
             transports.set(sid, newTransport);
             lastSeen.set(sid, Date.now());
             // Over the cap, the idlest session dies — a live client hit by that
-            // gets a 400 and re-initializes; an abandoned one is what we wanted gone.
+            // gets a 404 and re-initializes; an abandoned one is what we wanted gone.
             if (transports.size > sessionMax) {
               let oldest: string | undefined;
               let oldestAt = Infinity;
@@ -339,6 +361,13 @@ export async function startHttpEndpoint(hub: AccountSource, config: Config, endp
       }
 
       if (!transport) {
+        // An id we do not hold (expired, evicted, or lost to a restart) is a 404,
+        // which the spec tells a client to answer with a fresh initialize. No id
+        // at all means initialize never happened, and that stays a 400.
+        if (typeof sessionId === "string" && sessionId !== "") {
+          res.status(404).json({ jsonrpc: "2.0", error: { code: -32001, message: "Session not found" }, id: null });
+          return;
+        }
         res.status(400).json({
           jsonrpc: "2.0",
           error: { code: -32000, message: "Bad Request: no valid session ID (send initialize first)" },
