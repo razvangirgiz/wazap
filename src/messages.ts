@@ -695,7 +695,9 @@ export function buildMessageView(raw: WAMessage, ctx: MessageViewContext): Messa
       ? { ...a.call, participants: a.call.participants.map((jid) => ctx.canonical(jid)) }
       : a.call;
   }
-  if (ctx.reactions.length > 0) view.reactions = ctx.reactions;
+  if (ctx.reactions.length > 0) {
+    view.reactions = ctx.reactions.map((r) => ({ ...r, name: ctx.nameFor(ctx.canonical(r.sender)) }));
+  }
   return view;
 }
 

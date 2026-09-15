@@ -258,6 +258,8 @@ which look like a phone number and are not one.
 WhatsApp's own notices (device linking, group membership, encryption) have
 \`type: "system"\` and are left out of get_recent_messages unless you pass
 include_system: true.
+Reactions ride on the message they answer: read_messages tags them as
+"❤️×2 😍", and get_message lists each one with who left it.
 A voice note reads as "[voice message · 0:42]"; once transcribed, what was said
 follows the placeholder in quotes and is carried bare in \`transcript\`.
 Call transcribe_audio(message_id) on a voice note that has no transcript yet.
@@ -898,7 +900,7 @@ search_messages does.`,
     name: "get_message",
     title: "Get one WhatsApp message in full",
     description: `The complete message behind a message_id, including the quoted message it
-replies to, its reactions, and its media metadata. Use it after search_messages
+replies to, each reaction with who left it, and its media metadata. Use it after search_messages
 or read_messages when you need the context around a single message.
 
 The id also resolves in its raw form: \`false_<lid>@lid_<stanza>\` works even
@@ -928,7 +930,8 @@ is the name \`name\` shows) and \`name_source\` ("contact", "pushname" or
           : { binding: resolved, message: await getMessageView(wa, message_id) };
       const [identified] = await withSenderIdentity(binding.wa, [message]);
       const view = identified ?? message;
-      return ok(renderMessages("Message", [view]), {
+      const text = [renderMessages("Message", [view]), reactionLine(view)].filter(Boolean).join("\n");
+      return ok(text, {
         ...(view as unknown as Record<string, unknown>),
         account_id: binding.id,
       });
@@ -1642,6 +1645,19 @@ function senderLabel(m: AnyMessage, introduced: Set<string>): string {
 /** A rendered message, with or without the resolved sender identity fields. */
 type AnyMessage = MessageView | IdentifiedMessage;
 
+/** "❤️×2 😍": each emoji once, in the order it first came, counted when more than one person chose it. */
+function reactionTag(reactions: ReadonlyArray<{ emoji: string }>): string {
+  const counts = new Map<string, number>();
+  for (const { emoji } of reactions) counts.set(emoji, (counts.get(emoji) ?? 0) + 1);
+  return [...counts].map(([emoji, n]) => (n > 1 ? `${emoji}×${n}` : emoji)).join(" ");
+}
+
+/** Who left which reaction, for the one message get_message renders: "reactions: ❤️ Medeea, 😍 Lory". */
+function reactionLine(m: AnyMessage): string | null {
+  if (!m.reactions?.length) return null;
+  return `  reactions: ${m.reactions.map((r) => `${r.emoji} ${r.name}`).join(", ")}`;
+}
+
 function renderMessages(
   title: string,
   messages: ReadonlyArray<AnyMessage>,
@@ -1659,7 +1675,7 @@ function renderMessages(
       m.forwarded ? "forwarded" : null,
       m.edited ? "edited" : null,
       m.quoted ? "reply" : null,
-      m.reactions?.length ? m.reactions.map((r) => r.emoji).join("") : null,
+      m.reactions?.length ? reactionTag(m.reactions) : null,
     ].filter(Boolean);
     lines.push(
       `- **${senderLabel(m, introduced)}** · ${m.age}${tags.length ? ` [${tags.join(", ")}]` : ""} · id: \`${m.message_id}\``

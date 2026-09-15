@@ -286,7 +286,7 @@ them. `--dry-run` prints the plan and touches nothing.
 | `wait_for_messages` | read | Block up to 55 s until a message arrives, then return it with a cursor for the next call. `addressed_to_me` wakes only for direct messages, @-mentions and replies. |
 | `search_messages` | read | Text search across the locally held messages; `since`, `until` and `from` narrow it. |
 | `recall` | read | Semantic search over the whole indexed history: matches by meaning, so a paraphrase or another language still hits, and it finds messages too old for `search_messages`. Off until [turned on](#semantic-recall). |
-| `get_message` | read | One message in full, with its quoted message and reactions. |
+| `get_message` | read | One message in full, with its quoted message and each reaction with who left it. |
 | `search_contacts` | read | Find contacts by name, number, tag or detail; `tag` alone lists everyone filed under it. |
 | `sync_contacts` | read | Fetch the phone's address book from WhatsApp again, when names are missing. |
 | `get_contact` | read | Name, number, about text, profile picture. |

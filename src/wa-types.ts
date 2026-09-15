@@ -155,7 +155,8 @@ export interface MessageView {
   /** What a voice note or audio message says, once it has been transcribed. */
   transcript?: string;
   forwarded: boolean;
-  reactions?: Array<{ emoji: string; sender: string }>;
+  /** One per person who reacted; `name` resolves `sender` the way a message's sender is. */
+  reactions?: Array<{ emoji: string; sender: string; name: string }>;
   edited: boolean;
 }
 
