@@ -320,6 +320,45 @@ test("behind a tunnel on this machine, the forwarded address is the caller a loc
   assert.equal(res.status, 302, "the owner, reaching the same tunnel from elsewhere, is not");
 });
 
+/** The approve POST from loopback, carrying whatever headers a tunnel on this machine added. */
+function approveWith(ctx, headers, request, fields) {
+  return ctx.fetchJson("/oauth/approve", {
+    method: "POST",
+    headers: { "content-type": "application/x-www-form-urlencoded", ...headers },
+    body: form({ request, ...fields }),
+  });
+}
+
+test("with no X-Forwarded-For, CF-Connecting-IP is the caller; X-Forwarded-For still wins over it", async (t) => {
+  const ctx = await boot(t);
+  const wrong = { password: "nope", access: "read", decision: "allow" };
+  const right = { ...wrong, password: PASSWORD };
+
+  /** Five misses from these headers, over two pages, since a page takes three. */
+  const lockOut = async (headers) => {
+    let page = await begin(ctx);
+    for (let miss = 0; miss < 5; miss++) {
+      if (miss === 3) page = await begin(ctx);
+      assert.equal((await approveWith(ctx, headers, page.request, wrong)).res.status, 401, `miss ${miss + 1}`);
+    }
+  };
+
+  await lockOut({ "cf-connecting-ip": "203.0.113.9" });
+  const locked = await approveWith(ctx, { "cf-connecting-ip": "203.0.113.9" }, (await begin(ctx)).request, right);
+  assert.equal(locked.res.status, 429, "that address is locked out");
+  const owner = await approveWith(ctx, { "cf-connecting-ip": "198.51.100.7" }, (await begin(ctx)).request, right);
+  assert.equal(owner.res.status, 302, "another address behind the same tunnel is not");
+
+  await lockOut({ "x-forwarded-for": "203.0.113.20" });
+  const spoofed = await approveWith(
+    ctx,
+    { "x-forwarded-for": "203.0.113.20", "cf-connecting-ip": "198.51.100.8" },
+    (await begin(ctx)).request,
+    right
+  );
+  assert.equal(spoofed.res.status, 429, "a CF-Connecting-IP next to X-Forwarded-For does not choose the caller");
+});
+
 test("twenty wrong passwords from strangers pause consent for a minute, not the owner for fifteen", async (t) => {
   let now = Date.now();
   const ctx = await boot(t, { now: () => now });
@@ -508,7 +547,7 @@ test("a confidential client keeps its secret for good", async (t) => {
 test("a client name with markup is shown, not run, and escaped once", async (t) => {
   const ctx = await boot(t);
   const { html } = await begin(ctx, { clientName: "Poke & <Co>" });
-  assert.match(html, /<title>Connect Poke &amp; &lt;Co&gt; · wazap<\/title>/);
+  assert.match(html, /<title>Connect agent\.example · wazap<\/title>/);
   assert.match(html, /<strong>Poke &amp; &lt;Co&gt;<\/strong>/);
   assert.ok(!html.includes("<Co>"));
 });

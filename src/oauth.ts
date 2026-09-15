@@ -374,7 +374,7 @@ export class WazapOAuthProvider implements OAuthServerProvider {
       return;
     }
 
-    const caller = req.ip ?? "unknown";
+    const caller = callerOf(req);
     const wait = this.lockout.lockedFor(caller);
     if (wait > 0) {
       sendPage(res, 429, this.messagePage(`Too many wrong passwords. Try again in ${inMinutes(wait)}.`));
@@ -534,13 +534,12 @@ export class WazapOAuthProvider implements OAuthServerProvider {
     // The code goes back to the redirect's host, so that host is who is asking.
     // Registration is open to anyone, so the client's name is only its own claim.
     const host = redirectHost(params.redirectUri);
-    const rawName = client.client_name ?? host;
     const claim = client.client_name
       ? `<p>It calls itself <strong>${escapeHtml(client.client_name)}</strong>. The agent chose that name; wazap has not checked it.</p>`
       : "";
     const wantsWrite = normalizeScopes(params.scopes).includes("write");
     return page(
-      `Connect ${rawName}`,
+      `Connect ${host}`,
       `
 <h1>An agent wants to connect from <strong>${escapeHtml(host)}</strong></h1>
 <p>It asks to use the WhatsApp account behind this wazap. Connect only if you started this on ${escapeHtml(host)}.</p>
@@ -567,6 +566,23 @@ ${error ? `<p class="error">${escapeHtml(error)}</p>` : ""}
   private messagePage(text: string): string {
     return page("wazap", `<h1>wazap</h1><p>${escapeHtml(text)}</p>`);
   }
+}
+
+/**
+ * Who a wrong password counts against. Behind a proxy on this machine Express
+ * already takes the caller from X-Forwarded-For. When none came through,
+ * cloudflared still names the caller in CF-Connecting-IP; without either,
+ * every caller would be loopback and one stranger would lock the owner out.
+ */
+function callerOf(req: Request): string {
+  const socket = req.socket.remoteAddress ?? "";
+  const loopback = /^(?:127\.|::ffff:127\.|::1$)/.test(socket);
+  const connecting = req.headers["cf-connecting-ip"];
+  if (loopback && req.headers["x-forwarded-for"] === undefined && typeof connecting === "string") {
+    const named = connecting.trim();
+    if (named !== "") return named;
+  }
+  return req.ip ?? "unknown";
 }
 
 function inMinutes(ms: number): string {
