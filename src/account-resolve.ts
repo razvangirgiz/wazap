@@ -166,10 +166,26 @@ export function renderListAccounts(hub: AccountSource): ToolPayload {
   return ok(text, { count: accounts.length, default: hub.defaultBinding().id, accounts });
 }
 
+/**
+ * A receiver that refuses every event clears nothing, so `last_error` alone went
+ * unread for days. The counters and the failing run say it on the line itself.
+ */
 function webhookStatusLine(webhook: StatusInfo["webhook"]): string {
   if (!webhook.enabled) return "- **webhook**: off";
   if (!webhook.valid) return `- **webhook**: invalid${webhook.last_error ? ` · ${webhook.last_error}` : ""}`;
-  return `- **webhook**: on${webhook.last_error ? ` · last error: ${webhook.last_error}` : ""}`;
+  const parts = ["on"];
+  const delivery = webhook.delivery;
+  if (delivery !== undefined && delivery.delivered + delivery.failed + delivery.dropped > 0) {
+    parts.push(`${delivery.delivered} delivered, ${delivery.failed} failed, ${delivery.dropped} dropped`);
+    if (delivery.consecutive_failures > 0) parts.push(`failing: ${delivery.consecutive_failures} in a row`);
+    if (delivery.last_failure !== null) {
+      parts.push(`last failure at ${delivery.last_failure_at}: ${delivery.last_failure}`);
+    }
+  }
+  if (webhook.last_error && webhook.last_error !== delivery?.last_failure) {
+    parts.push(`last error: ${webhook.last_error}`);
+  }
+  return `- **webhook**: ${parts.join(" · ")}`;
 }
 
 /**

@@ -557,6 +557,7 @@ accounts moves into `accounts/default/` the first time a wazap command runs.
     notes.json      notes on contacts and "handled" marks; never sent anywhere
     store.json      chat-list snapshot
     qr.png          last QR, when login showed one
+    webhook.json    webhook delivery counters, once the server has posted an event
   models/           whisper.cpp and embedding models, when transcription or recall run locally
   server.lock       pid of the running server
   daemon.json       loopback endpoint a second wazap bridges to
@@ -791,8 +792,25 @@ npx wazap-mcp config webhook off
 ```
 
 On without a URL or secret fails `wazap status`, doctor and setup. A failed
-delivery retries twice (200 ms, then 500 ms), then sets `webhook.last_error`
-and leaves WhatsApp and MCP running. An account may set `webhook_url`,
+delivery never stops WhatsApp or MCP. A timeout, an unreachable URL, or a
+`408`, `425`, `429` or `5xx` is retried twice (200 ms, then 500 ms). Any other
+`4xx`, such as the `401` of a receiver whose API key changed, is a refusal: it
+is posted once, and the error names the status with a hint. Either way the
+failure sets `webhook.last_error`, which the next delivery clears.
+
+`get_status` counts events since the server started in `webhook.delivery`:
+`delivered`, `failed` (a retried event that never got through counts once),
+`dropped` (turned away by a full backlog of 256), `consecutive_failures`,
+`last_success_at`, `last_failure_at`, `last_failure` and `last_dropped_at`.
+The server also keeps them in `accounts/<id>/webhook.json`, written at most
+every 5 s, so `wazap status` in another terminal sees them: three failed
+events in a row fail the webhook check with the fix, a failure since the last
+delivery or a drop in the last day warns, and the check passes again with the
+server's next delivery. `webhook test` runs in a process of its own and does
+not clear it. The log says the first failure of a run, a count every 100
+failures, and one line when delivery comes back, not a line per event.
+
+An account may set `webhook_url`,
 `webhook_secret` and `webhook_events` in `accounts.json`; those win over the
 global URL, secret and event list, and `config webhook off --account work`
 clears all three.

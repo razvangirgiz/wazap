@@ -114,6 +114,23 @@ export interface WebhookInfo {
   enabled: boolean;
   valid: boolean;
   last_error: string | null;
+  /** Only while the webhook is on and valid: what this server delivered since it started. */
+  delivery?: WebhookDelivery;
+}
+
+/** Events, not POSTs: a retried event that finally fails is one `failed`. */
+export interface WebhookDelivery {
+  delivered: number;
+  /** Refused with a 4xx, or still failing once the retries ran out. */
+  failed: number;
+  /** Turned away by a full backlog, so never posted. */
+  dropped: number;
+  /** Failed events since the last delivery; zero once one gets through. */
+  consecutive_failures: number;
+  last_success_at: string | null;
+  last_failure_at: string | null;
+  last_failure: string | null;
+  last_dropped_at: string | null;
 }
 
 export interface ChatSummary {

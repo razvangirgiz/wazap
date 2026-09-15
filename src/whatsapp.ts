@@ -357,7 +357,7 @@ export class WhatsAppService implements WhatsAppApi {
     paths: AccountPaths
   ) {
     this.accountRecord = account;
-    this.webhook = new WebhookSink(process.env, { account });
+    this.webhook = new WebhookSink(process.env, { account, statsFile: paths.webhookFile });
     const policy = accountPolicy(account, config);
     this.effectiveReadOnly = policy.readOnly;
     this.effectiveRateLimit = policy.rateLimit;
@@ -425,6 +425,7 @@ export class WhatsAppService implements WhatsAppApi {
     this.stopCallSweep();
     this.releaseWaiters();
     this.wakeArrivalWaiters();
+    this.webhook.flushStats();
     await this.flushStore();
     this.teardownSocket();
     await this.stopRecall();
