@@ -1,7 +1,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import fs, { existsSync, mkdtempSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
+import { syncBuiltinESMExports } from "node:module";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -39,6 +40,33 @@ test("setEnvSetting replaces its own line and keeps every other one", () => {
     readFileSync(envFile, "utf8"),
     "# notes\nWAZAP_READ_TOKEN=abc\nWAZAP_READ_ONLY=0\nWAZAP_RATE_LIMIT=5\nWAZAP_HOST=0.0.0.0\n"
   );
+});
+
+test("setEnvSetting replaces .env in one step, so a write that fails halfway leaves the old file whole", () => {
+  const dir = dataDir();
+  const envFile = join(dir, ".env");
+  const before = "WAZAP_READ_TOKEN=abc\nWAZAP_READ_ONLY=1\n";
+  writeFileSync(envFile, before, { mode: 0o644 });
+
+  const write = fs.writeFileSync;
+  // A few bytes land, then the disk is full.
+  fs.writeFileSync = (file, data, options) => {
+    write(file, String(data).slice(0, 10), options);
+    throw Object.assign(new Error("ENOSPC: no space left on device, write"), { code: "ENOSPC" });
+  };
+  syncBuiltinESMExports();
+  try {
+    assert.throws(() => setEnvSetting(envFile, "WAZAP_READ_ONLY", "0"), /ENOSPC/);
+  } finally {
+    fs.writeFileSync = write;
+    syncBuiltinESMExports();
+  }
+  assert.equal(readFileSync(envFile, "utf8"), before, "a failed write must not truncate the settings");
+
+  setEnvSetting(envFile, "WAZAP_READ_ONLY", "0");
+  assert.equal(readFileSync(envFile, "utf8"), "WAZAP_READ_TOKEN=abc\nWAZAP_READ_ONLY=0\n");
+  assert.equal(statSync(envFile).mode & 0o777, 0o600, "the replaced .env is the owner's alone");
+  assert.deepEqual(readdirSync(dir), [".env"], "no temp file is left next to it");
 });
 
 test("setEnvSetting matches a line however it was spaced, instead of adding a second one", () => {
