@@ -1,5 +1,70 @@
 # Changelog
 
+## 0.19.0
+### Security
+
+- **Private encryption keys no longer reach stdout or the logs.** The Signal
+  library prints whole session records, private and root keys included, with
+  `console.info`. Over stdio that corrupted the MCP stream; under the service
+  it landed in a world-readable log. Every console line from a dependency now
+  goes to stderr, and a session record is cut down to the phrase that
+  announced it. The service's log directory is `0700` and its logs `0600`,
+  including logs launchd already created. Delete old `*.out.log` files that
+  may still hold keys.
+- **The OAuth consent page names who is really asking.** Client registration
+  is open, so a client's name is only its own claim: the page and its tab now
+  name the host the code goes back to, and show the client's name as unchecked.
+  OAuth pages cannot be framed (`frame-ancestors 'none'`, `X-Frame-Options`),
+  send no referrer and are never cached.
+- **A stranger's wrong passwords no longer lock the owner out.** Behind a
+  tunnel, the caller is taken from `X-Forwarded-For`, or `CF-Connecting-IP`
+  when that is all cloudflared sends, and twenty misses from everywhere pause
+  consent for a minute instead of fifteen.
+- **A tunnel keeps sign-in on.** `wazap expose off` leaves `WAZAP_PUBLIC_URL`
+  set while any unit still tunnels to the port, naming it and how to stop it,
+  and `serve --http` refuses to start with no token and no sign-in when a
+  tunnel reaches its port.
+- **`/healthz` tells a stranger only whether wazap is up.** Without a token it
+  answers `{ ok, status, since }`; the account list needs a read or write token.
+- **Dependencies.** `npm audit fix` for sharp, express, body-parser, qs,
+  fast-uri and hono; `npm audit --omit=dev` reports nothing, and CI now checks it.
+
+### Fixed
+
+- **A lost MCP session is a 404.** An `Mcp-Session-Id` wazap no longer holds,
+  expired, evicted or lost to a restart, now gets `404`, which tells a client
+  to start a fresh session, instead of a `400` it could not recover from.
+- **A refused token says so.** A `401` for a token that was sent and refused
+  carries `error="invalid_token"`, so a client knows to refresh or sign in
+  again, and the request log names the client's User-Agent and OAuth client id.
+- **A webhook receiver that refuses is no longer hammered or ignored.** A `4xx`
+  other than `408`, `425` and `429` is posted once, with the status and a hint
+  in the error, instead of three times per event. Events nobody subscribed to
+  no longer take a place in the backlog.
+- **The server lock holds under a race.** Two servers that find the same stale
+  lock no longer both take it.
+- **`.env` is written in one step**, so a failed write never leaves half of it.
+
+### Added
+
+- **Webhook delivery is visible.** `get_status` reports `webhook.delivery`:
+  delivered, failed and dropped events, the failing run and the last failure.
+  The server keeps them in `accounts/<id>/webhook.json`, so `wazap status`
+  fails the webhook check after three failed events in a row and warns on a
+  recent failure or drop. A run of identical failures logs a few lines, not one
+  per event.
+- **Releases ship everywhere from the tag.** The publish workflow checks the
+  tag and the CHANGELOG, lints and typechecks, publishes to npm with
+  provenance, publishes to the MCP Registry through GitHub OIDC with a
+  hash-pinned publisher, and creates the GitHub Release with the Claude Desktop
+  bundle `wazap-X.Y.Z.mcpb` attached.
+
+### Changed
+
+- **Node 22 is the minimum** (`engines`, the Claude Desktop manifest, doctor
+  and the setup skill). CI tests Node 22 and 24, and a weekly canary runs the
+  suite against the newest Baileys.
+
 ## 0.18.6
 ### Added
 
