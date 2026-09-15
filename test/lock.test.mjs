@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, writeFileSync, existsSync } from "node:fs";
+import fs, { mkdtempSync, readFileSync, writeFileSync, existsSync } from "node:fs";
+import { syncBuiltinESMExports } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -66,4 +67,48 @@ test("a stale lock is taken", () => {
   writeFileSync(file, "2147483646\n");
   assert.equal(writeLock(file), true);
   assert.equal(readFileSync(file, "utf8").trim(), String(process.pid));
+});
+
+const DEAD = 2147483646;
+
+test("a stale lock another process takes between the check and the delete stays that process's", () => {
+  const file = lockPath();
+  writeFileSync(file, `${DEAD}\n`);
+  const kill = process.kill;
+  // The dead pid is found dead, and before this process acts on it another one
+  // clears the stale lock and writes its own: the interleaving that let two win.
+  process.kill = (pid, signal) => {
+    try {
+      return kill.call(process, pid, signal);
+    } catch (err) {
+      if (pid === DEAD) writeFileSync(file, `${process.ppid}\n`);
+      throw err;
+    }
+  };
+  try {
+    assert.equal(writeLock(file), false);
+  } finally {
+    process.kill = kill;
+  }
+  assert.equal(readFileSync(file, "utf8").trim(), String(process.ppid), "the new holder's lock was deleted");
+});
+
+test("a claim another process deletes and replaces right after does not count as held", () => {
+  const file = lockPath();
+  writeFileSync(file, `${DEAD}\n`);
+  const write = fs.writeFileSync;
+  // Our claim lands, then the other process that also found the stale lock
+  // removes it and claims its own.
+  fs.writeFileSync = (path, data, options) => {
+    write(path, data, options);
+    if (path === file && options?.flag === "wx") write(file, `${process.ppid}\n`);
+  };
+  syncBuiltinESMExports();
+  try {
+    assert.equal(writeLock(file), false);
+  } finally {
+    fs.writeFileSync = write;
+    syncBuiltinESMExports();
+  }
+  assert.equal(readFileSync(file, "utf8").trim(), String(process.ppid));
 });
