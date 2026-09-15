@@ -466,7 +466,7 @@ type Say = (actor: string, targets: string, value: string | undefined, self: boo
 interface GroupStub {
   action: SystemEventAction;
   /** What messageStubParameters holds: everyone the change touched, the new value, or nothing to show. */
-  params: "participants" | "value" | "none";
+  params: "participants" | "value" | "none" | "request";
   say: Say;
 }
 
@@ -616,6 +616,20 @@ const GROUP_STUBS: Partial<Record<number, GroupStub>> = {
           ? `${actor} allowed only admins to add members`
           : `${actor} changed who can add members`,
   },
+  // A request to join a group that needs an admin's approval: who asked, then
+  // what became of the request. The request method that follows is not shown.
+  [StubType.GROUP_MEMBERSHIP_JOIN_APPROVAL_REQUEST_NON_ADMIN_ADD]: {
+    action: "join_request",
+    params: "request",
+    say: (actor, targets, value) =>
+      value === "created"
+        ? `${targets} asked to join`
+        : value === "revoked"
+          ? `${targets} withdrew their request to join`
+          : value === "rejected"
+            ? `${actor} rejected ${targets}'s request to join`
+            : `${targets}'s request to join changed`,
+  },
 };
 
 /**
@@ -720,8 +734,11 @@ function groupEventOf(raw: WAMessage, content: WAMessageContent | undefined): Gr
             const jid = stubParty(param);
             return jid ? [jid] : [];
           })
-        : [],
-    value: spec.params === "value" ? params[0] || undefined : undefined,
+        : spec.params === "request"
+          ? [stubParty(params[0] ?? "")].filter((jid): jid is string => jid !== undefined)
+          : [],
+    // A request carries who asked first and the request's state second.
+    value: spec.params === "value" ? params[0] || undefined : spec.params === "request" ? params[1] || undefined : undefined,
   };
 }
 

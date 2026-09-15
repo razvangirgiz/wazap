@@ -253,6 +253,7 @@ export type SystemEventAction =
   | "set_join_approval"
   | "set_member_label"
   | "set_disappearing"
+  | "join_request"
   | "pin_message"
   | "unpin_message"
   | "keep_message"

@@ -434,6 +434,31 @@ const GROUP_NOTICE_CASES = [
     "[40711111111 cleared their member label]",
   ],
   ["member label set", memberLabel("șofer"), '[40711111111 set their member label to "șofer"]'],
+  [
+    "a request to join, created",
+    groupStub(Stub.GROUP_MEMBERSHIP_JOIN_APPROVAL_REQUEST_NON_ADMIN_ADD, [
+      JSON.stringify({ lid: "111222333444555@lid", pn: "40723124956@s.whatsapp.net" }),
+      "created",
+      "invite_link",
+    ]),
+    "[40723124956 asked to join]",
+  ],
+  [
+    "a request to join, withdrawn",
+    groupStub(Stub.GROUP_MEMBERSHIP_JOIN_APPROVAL_REQUEST_NON_ADMIN_ADD, [
+      JSON.stringify({ lid: "111222333444555@lid", pn: "40723124956@s.whatsapp.net" }),
+      "revoked",
+    ]),
+    "[40723124956 withdrew their request to join]",
+  ],
+  [
+    "a request to join, rejected by an admin",
+    groupStub(Stub.GROUP_MEMBERSHIP_JOIN_APPROVAL_REQUEST_NON_ADMIN_ADD, [
+      JSON.stringify({ lid: "111222333444555@lid", pn: "40723124956@s.whatsapp.net" }),
+      "rejected",
+    ]),
+    "[40711111111 rejected 40723124956's request to join]",
+  ],
   ["disappearing messages on in a group", disappearing(86_400), "[40711111111 turned on disappearing messages: 1 day]"],
   ["disappearing messages off in a group", disappearing(0), "[40711111111 turned off disappearing messages]"],
   [
