@@ -1,4 +1,6 @@
 #!/usr/bin/env node
+// First, so no module below it can print to stdout while it loads.
+import "./console-guard-install.js";
 import { BANNER } from "./banner.js";
 import {
   runAccount,
