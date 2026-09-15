@@ -235,23 +235,26 @@ export async function startHttpEndpoint(hub: AccountSource, config: Config, endp
   // The first credential the bearer token matches decides the session's tools,
   // so a leaked read token can never message anyone. An OAuth token carries
   // the scope the person picked on the consent page.
-  const requireAuth = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
-    const auth = req.headers.authorization;
+  const bearerAccess = async (auth: string | undefined): Promise<{ write: boolean } | null> => {
     const credential = endpoint.credentials.find((entry) => isAuthorized(auth, entry.token));
-    if (credential) {
-      (req as AuthedRequest).mcpWrite = credential.write;
-      next();
-      return;
-    }
+    if (credential) return { write: credential.write };
     if (oauth && auth?.startsWith("Bearer ")) {
       try {
         const info = await oauth.verifyAccessToken(auth.slice("Bearer ".length).trim());
-        (req as AuthedRequest).mcpWrite = info.scopes.includes("write");
-        next();
-        return;
+        return { write: info.scopes.includes("write") };
       } catch {
-        // Falls through to the 401 below, which tells the client how to sign in.
+        // An unknown or expired token opens nothing.
       }
+    }
+    return null;
+  };
+
+  const requireAuth = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+    const access = await bearerAccess(req.headers.authorization);
+    if (access) {
+      (req as AuthedRequest).mcpWrite = access.write;
+      next();
+      return;
     }
     if (openRead) {
       (req as AuthedRequest).mcpWrite = false;
@@ -364,15 +367,20 @@ export async function startHttpEndpoint(hub: AccountSource, config: Config, endp
   app.get("/mcp", authed, handleMcp);
   app.delete("/mcp", authed, handleMcp);
 
-  // Unauthenticated, so it carries liveness only; names, phone and data dir
-  // stay behind the token in get_status. A socket that has been anything but
-  // connected for two minutes is a real outage, and a 503 is what a tunnel or a
-  // monitor can act on; a reconnect in progress is not. One dead account does
-  // not 503 the process while another is still up. `ok` is process liveness;
-  // `status` / `since` stay the default socket's.
-  app.get("/healthz", (_req, res) => {
+  // Open to anyone, so a stranger gets liveness only: `ok`, and the default
+  // socket's `status` / `since`. Which accounts exist is behind a token, read or
+  // write, and names, phone and data dir stay behind it in get_status. A socket
+  // that has been anything but connected for two minutes is a real outage, and
+  // a 503 is what a tunnel or a monitor can act on; a reconnect in progress is
+  // not. One dead account does not 503 the process while another is still up.
+  app.get("/healthz", (req: Request, res: Response, next: NextFunction) => {
     const body = healthBody(hub);
-    res.status(body.ok ? 200 : 503).json(body);
+    bearerAccess(req.headers.authorization)
+      .then((access) => {
+        const { ok, status, since } = body;
+        res.status(ok ? 200 : 503).json(access === null ? { ok, status, since } : body);
+      })
+      .catch(next);
   });
 
   const server = createServer(app);

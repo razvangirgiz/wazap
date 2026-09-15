@@ -653,7 +653,8 @@ npx wazap-mcp serve --http --host 0.0.0.0 --port 8766
 ```
 
 Streamable HTTP at `/mcp`, with a health check at `/healthz`. That check answers
-`{ ok, status, since }`. It turns 503 once the socket has been anything but
+`{ ok, status, since }`; the list of accounts and their status needs a read or write token.
+It turns 503 once the socket has been anything but
 connected for two minutes, so a tunnel or a monitor sees a real outage rather
 than a reconnect in progress. Two bearer tokens:
 the read token gets the read tools, the write token can unlock the write

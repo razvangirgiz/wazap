@@ -1,6 +1,6 @@
 /**
  * AccountHub: one process, one service per enabled account. Status, give-up
- * and store lookup stay independent. /healthz lists every live account.
+ * and store lookup stay independent. /healthz lists every live account to a token holder.
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -176,19 +176,33 @@ test("no enabled account refuses to construct", () => {
   );
 });
 
-test("/healthz lists the default account and every live account", async () => {
+test("/healthz tells a stranger only whether it is up, and a token holder every live account", async () => {
   const { hub, config } = twoAccountHub();
   const port = await closedPort();
   const stop = new AbortController();
   await startHttpEndpoint(hub, config, {
     host: "127.0.0.1",
     port,
-    credentials: [],
+    credentials: [{ token: "health-read", write: false }],
     openRead: false,
     signal: stop.signal,
   });
+  const health = (token) =>
+    fetch(`http://127.0.0.1:${port}/healthz`, {
+      headers: token === undefined ? {} : { authorization: `Bearer ${token}` },
+      signal: AbortSignal.timeout(5_000),
+    });
   try {
-    const res = await fetch(`http://127.0.0.1:${port}/healthz`, { signal: AbortSignal.timeout(5_000) });
+    for (const token of [undefined, "not-the-token"]) {
+      const anonymous = await health(token);
+      const bare = await anonymous.json();
+      assert.equal(anonymous.status, 200);
+      assert.deepEqual(Object.keys(bare).sort(), ["ok", "since", "status"], `token ${token}: ${JSON.stringify(bare)}`);
+      assert.equal(bare.ok, true);
+      assert.equal(bare.status, "connected");
+    }
+
+    const res = await health("health-read");
     const body = await res.json();
     assert.equal(res.status, 200);
     assert.equal(body.ok, true);
