@@ -1,5 +1,32 @@
 # Changelog
 
+## 0.19.1
+### Fixed
+
+- **Reinstalling or restarting the macOS service now runs what the unit
+  says.** launchd keeps the plist it read when the job was loaded, and a
+  restart used `kickstart -k`, which reruns that copy. So `wazap service
+  install` over an existing service, `wazap service restart` after an update
+  and `wazap expose` rewrote the unit and kept running the old command — an
+  upgrade to a global install could go on serving the previous build. A
+  restart now boots the job out, waits for launchd to release it, and loads
+  the unit file again. If `wazap status` reports a version older than the one
+  you installed, run `wazap service restart` once.
+
+### Added
+
+- **Group notices, pins and business messages read as what they are.**
+  Templates, buttons, lists and interactive messages from businesses read and
+  search as text, with their button labels; a tap reads as the choice. Pins,
+  keeps and a shared chat history say who did it, and a pin carries the pinned
+  message's id. Events and group invites have types of their own (`event`,
+  `invite`); an invite's code and an event's call link never show. Orders,
+  products, status mentions, scheduled calls, poll results, channel admin
+  invites and sticker packs get short tags, a message kept off linked devices
+  says to read it on the phone, and undecryptable, disappearing-mode, block,
+  username, community and business-privacy notices are spelled out instead of
+  `[system message · …]`.
+
 ## 0.19.0
 ### Security
 
