@@ -21,6 +21,12 @@ export interface HistoryRecord {
   raw: string;
   /** Added in 0.9.8. The transcript held for this message when the line was written. */
   tr?: TranscriptRecord;
+  /**
+   * Added in 0.20.0. A tombstone, not a message: `sid` was deleted for the
+   * linked account alone, so the replay leaves it out the way it leaves out a
+   * revoke's target. Its `raw` is empty.
+   */
+  deleted?: true;
 }
 
 export interface StoreSnapshot {

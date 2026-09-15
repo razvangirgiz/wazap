@@ -43,6 +43,7 @@ import { MESSAGE_TYPES } from "./wa-types.js";
 import type {
   ChatSummary,
   ContactSummary,
+  JoinGroupResult,
   JoinRequest,
   MessageView,
   OutgoingTarget,
@@ -191,7 +192,9 @@ link_account when it says no account is linked yet.
   ids back exactly as a tool returned them.
 - message_id — the full id from read_messages / search_messages. Needed for
   get_message, download_media, react_to_message, edit_message, forward_message,
-  delete_message, and the reply_to of send_message.
+  delete_message, manage_chat's pin_message / unpin_message / star_message /
+  unstar_message, join_group on an invite message, and the reply_to of
+  send_message.
 - account_id — registry slug (\`default\`, \`work\`). Optional on every tool.
   Several accounts: call list_accounts first and pass account_id. A send
   to a chat no account knows, with two or more accounts, fails
@@ -238,6 +241,9 @@ link_account when it says no account is linked yet.
   draft only. They return a draft_id and a preview. Show the preview to the
   user; after they say yes, call confirm_send({ draft_id }). That is the only
   call that reaches WhatsApp. A draft lasts 15 minutes.
+- Mention someone: pass mention_ids to send_message and write @<number> in the
+  text where the mention belongs (the digits of their id). A mention the text
+  lacks gets its @<number> added at the end, and the preview shows the result.
 - Send rules: an account may restrict who it messages (wazap config send) —
   an allowlist limits sends to its entries, a deny list refuses its own. A
   refused recipient fails SEND_BLOCKED at draft time and again at confirm_send;
@@ -256,8 +262,19 @@ link_account when it says no account is linked yet.
   reject_join_requests decide, and set_announcement_only, set_info_locked,
   set_add_mode, set_join_approval and set_disappearing change the settings.
   Every change is visible to all members at once: say what will change and
-  wait for an explicit yes. delete_message takes someone else's message only
-  in a group where the linked account is an admin.
+  wait for an explicit yes. delete_message takes someone else's message for
+  everyone only in a group where the linked account is an admin.
+- Join a group: join_group with the invite link, or with the message_id of an
+  "invite" message, previews the group (name, description, members, whether an
+  admin must approve). Show it; after a yes, call it again with confirm: true.
+- Tidy a chat: manage_chat pin_message / unpin_message pins a message for
+  everyone in the chat (pin_hours 24, 168 or 720), star_message / unstar_message
+  stars it for the account only, clear empties the chat and delete removes it
+  for the linked account only, and block / unblock take a person's chat. They
+  hit WhatsApp at once: say what will happen and wait for a yes.
+- Delete a message: delete_message with for_everyone: true retracts it for
+  everyone; for_everyone: false removes it from the linked account's devices
+  only, anyone's message at any age, and nobody else sees a change.
 
 ## Message shape
 Every message has non-empty \`text\`: media and system messages carry a
@@ -276,7 +293,9 @@ message_id of the message pinned.
 An event has \`type: "event"\` and reads as "[event] Botez · 2026-09-20T12:00:00+03:00 ·
 Biserica" with its description after it, or "[canceled event] …". A group invite
 has \`type: "invite"\` and reads as "[group invite] Familia"; the invite code is
-never shown.
+never shown, and join_group takes the message_id instead.
+A message that @-mentions people carries \`mentions: [{id, name}]\`, each person
+once; read_messages tags it "mentions Ana, Dan".
 Reactions ride on the message they answer: read_messages tags them as
 "❤️×2 😍", and get_message lists each one with who left it.
 Votes ride on their poll the same way: a poll carries
@@ -1258,7 +1277,12 @@ the fix names the command the user has to run. Do not retry it.`,
     title: "Draft a WhatsApp text message",
     description: `Draft a text message. Does not send. Returns a draft_id and a preview of the
 recipient and exact text. Show that preview to the user; after they say yes,
-call confirm_send. A draft lasts 15 minutes.`,
+call confirm_send. A draft lasts 15 minutes.
+
+To @-mention people, pass mention_ids and write @<number> in the text where
+each mention belongs, the digits of their id (@40722123456). A mention the
+text lacks gets its @<number> added at the end, so the preview is the text
+that goes out.`,
     schema: {
       chat_id: chatId,
       text: z.string().min(1).max(65536).describe("The message text"),
@@ -1267,7 +1291,7 @@ call confirm_send. A draft lasts 15 minutes.`,
         .array(z.string().min(1))
         .max(50)
         .optional()
-        .describe("Chat ids to @-mention; include their names in the text yourself"),
+        .describe("Chat ids to @-mention; write @<number> in the text for each, or wazap adds it at the end"),
     },
     write: true,
     handler: async ({ chat_id, text, reply_to, mention_ids }, ctx) => {
@@ -1432,22 +1456,26 @@ preview before calling this.`,
   tool({
     name: "delete_message",
     title: "Delete a WhatsApp message",
-    description: `Retract a message. DESTRUCTIVE and visible to everyone in the chat — confirm
-with the user first. Works on messages the linked account sent, within 2 days of
-sending. In a group where the linked account is an admin it also takes someone
-else's message, deleted as an admin; anywhere else that is NOT_OWN_MESSAGE.`,
+    description: `Delete a message. DESTRUCTIVE — confirm with the user first. for_everyone is
+required, and picks one of two different deletes; tell the user which:
+  - for_everyone: true retracts it for everyone in the chat. Works on messages
+    the linked account sent, within 2 days of sending. In a group where the
+    linked account is an admin it also takes someone else's message, deleted
+    as an admin; anywhere else that is NOT_OWN_MESSAGE.
+  - for_everyone: false removes it from the linked account's own devices only:
+    anyone's message, at any age. Nobody else sees a change.`,
     schema: {
       message_id: messageId,
       for_everyone: z
         .boolean()
-        .default(false)
-        .describe("Retract for all participants (WhatsApp supports no other kind of delete here)"),
+        .describe("Required. true retracts it for everyone in the chat; false deletes it for the linked account only"),
     },
     write: true,
     destructive: true,
     handler: async ({ message_id, for_everyone }, { wa }) => {
       const result = await wa.deleteMessage(message_id, for_everyone);
-      return ok(`Deleted ${message_id} for everyone`, result as unknown as Record<string, unknown>);
+      const scope = result.for_everyone ? "for everyone" : "for the linked account only";
+      return ok(`Deleted ${message_id} ${scope}`, result as unknown as Record<string, unknown>);
     },
   }),
 
@@ -1475,18 +1503,59 @@ there is no draft.`,
   tool({
     name: "manage_chat",
     title: "Manage a WhatsApp chat",
-    description: `Change the state of a chat: archive/unarchive, pin/unpin, mute/unmute
-(mute_hours defaults to 8), mark_read (sends read receipts) or mark_unread.`,
+    description: `Change a chat, or a message in it. Actions:
+  - archive / unarchive, pin / unpin (the chat), mute / unmute (mute_hours
+    defaults to 8), mark_read (sends read receipts) / mark_unread
+  - pin_message / unpin_message — need message_id; pins it for everyone in the
+    chat, for pin_hours 24, 168 (default) or 720
+  - star_message / unstar_message — need message_id; the star is the linked
+    account's own
+  - clear — DESTRUCTIVE, empties the chat for the linked account only
+  - delete — DESTRUCTIVE, deletes the chat for the linked account only
+  - block / unblock — a person's chat only; a blocked person can no longer
+    message or call the account
+
+A message_id must belong to chat_id. Every action hits WhatsApp at once and
+there is no draft: say what will change and wait for a yes before calling it.`,
     schema: {
       chat_id: chatId,
       action: z
-        .enum(["archive", "unarchive", "pin", "unpin", "mute", "unmute", "mark_read", "mark_unread"])
+        .enum([
+          "archive",
+          "unarchive",
+          "pin",
+          "unpin",
+          "mute",
+          "unmute",
+          "mark_read",
+          "mark_unread",
+          "pin_message",
+          "unpin_message",
+          "star_message",
+          "unstar_message",
+          "clear",
+          "delete",
+          "block",
+          "unblock",
+        ])
         .describe("What to do with the chat"),
       mute_hours: z.number().int().min(1).max(720).optional().describe('Hours to mute, default 8; only used by "mute"'),
+      message_id: messageId
+        .optional()
+        .describe("The message for pin_message, unpin_message, star_message and unstar_message; it must be in chat_id"),
+      pin_hours: z
+        .union([z.literal(24), z.literal(168), z.literal(720)])
+        .optional()
+        .describe("How long pin_message keeps the message pinned: 24, 168 (default) or 720 hours"),
     },
     write: true,
-    handler: async ({ chat_id, action, mute_hours }, { wa }) => {
-      const result = await wa.manageChat(chat_id, action, mute_hours);
+    destructive: true,
+    handler: async ({ chat_id, action, mute_hours, message_id, pin_hours }, { wa }) => {
+      const result = await wa.manageChat(chat_id, action, {
+        muteHours: mute_hours,
+        messageId: message_id,
+        pinHours: pin_hours,
+      });
       return ok(result.applied, result as unknown as Record<string, unknown>);
     },
   }),
@@ -1508,6 +1577,34 @@ privacy settings require an invite link) or failed.`,
         "\n"
       );
       return ok(text, { name, ...result });
+    },
+  }),
+
+  tool({
+    name: "join_group",
+    title: "Join a WhatsApp group from an invite",
+    description: `Join a group from an invite: a link (https://chat.whatsapp.com/<code>, or the
+code alone) as invite, or the message_id of an invite message someone sent
+(type "invite"). Exactly one of invite / message_id.
+
+Without confirm: true it joins nothing and returns the group's name,
+description, member count and whether an admin must approve new members.
+Show that to the user and wait for an explicit yes, then call again with the
+same invite or message_id and confirm: true. Every member sees the account
+join. The answer is the group's chat_id, or pending_approval when an admin
+must let the account in first.`,
+    schema: {
+      invite: z.string().min(1).max(512).optional().describe("A https://chat.whatsapp.com/ link, or its code"),
+      message_id: messageId.optional().describe('An invite message (type "invite") from read_messages'),
+      confirm: z
+        .boolean()
+        .default(false)
+        .describe("true joins, only after the user said yes to the preview; omit to preview"),
+    },
+    write: true,
+    handler: async ({ invite, message_id, confirm }, { wa }) => {
+      const result = await wa.joinGroup({ invite, messageId: message_id, confirm });
+      return ok(renderJoin(result), result as unknown as Record<string, unknown>);
     },
   }),
 
@@ -1726,6 +1823,28 @@ function senderLabel(m: AnyMessage, introduced: Set<string>): string {
   return `${m.sender.name} · ${m.sender.note}`;
 }
 
+/** A join_group answer: the preview and the step after it, or where the join landed. */
+function renderJoin(r: JoinGroupResult): string {
+  const name = r.name ? `"${r.name}"` : "the group";
+  if (r.status === "joined") return `Joined ${name}${r.group_id ? `: \`${r.group_id}\`` : ""}.`;
+  if (r.status === "pending_approval") {
+    return `Asked to join ${name}. An admin of the group must approve the request before the account is in.`;
+  }
+  const facts = [
+    r.participant_count === null ? null : `${r.participant_count} members`,
+    r.join_approval === null ? null : r.join_approval ? "an admin must approve new members" : "no approval needed",
+  ].filter(Boolean);
+  return [
+    `Group invite: ${name}${facts.length ? ` (${facts.join(", ")})` : ""}. Not joined.`,
+    r.description ? `Description: ${r.description}` : null,
+    r.group_id ? `group_id: \`${r.group_id}\`` : null,
+    "",
+    "Show this to the user. After they say yes, call join_group again with the same invite or message_id and confirm: true.",
+  ]
+    .filter((line) => line !== null)
+    .join("\n");
+}
+
 /** A rendered message, with or without the resolved sender identity fields. */
 type AnyMessage = MessageView | IdentifiedMessage;
 
@@ -1809,6 +1928,7 @@ function renderMessages(
       m.edited ? "edited" : null,
       m.quoted ? "reply" : null,
       m.reactions?.length ? reactionTag(m.reactions) : null,
+      m.mentions?.length ? `mentions ${m.mentions.map((person) => person.name).join(", ")}` : null,
       voteTag(m),
       deliveryTag(m),
     ].filter(Boolean);

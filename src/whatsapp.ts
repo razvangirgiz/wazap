@@ -15,6 +15,7 @@ import makeWASocket, {
   DisconnectReason,
   downloadMediaMessage,
   jidNormalizedUser,
+  normalizeMessageContent,
   proto,
   type Chat as BaileysChat,
   type Contact as BaileysContact,
@@ -97,7 +98,7 @@ import {
   type TranscribeSettings,
   type TranscriptRecord,
 } from "./transcribe/index.js";
-import { DraftStore, type Draft, type DraftPayload, type DraftView } from "./drafts.js";
+import { DraftStore, withMentionTokens, type Draft, type DraftPayload, type DraftView } from "./drafts.js";
 import { RateLimiter } from "./ratelimit.js";
 import { maskNumber } from "./ui.js";
 import { SentIds } from "./sent-ids.js";
@@ -111,6 +112,7 @@ import {
 import type {
   CallInfo,
   ChatAction,
+  ChatActionOptions,
   ChatActionResult,
   ChatFilter,
   ChatSummary,
@@ -122,6 +124,7 @@ import type {
   GroupAction,
   GroupActionResult,
   GroupInfo,
+  JoinGroupResult,
   JoinRequest,
   MediaResult,
   MediaSource,
@@ -1701,6 +1704,40 @@ export class WhatsAppService implements WhatsAppApi {
     this.recallFeed(sids.map((sid) => ({ sid })));
   }
 
+  /** Messages gone for this account: out of the store, their chat and the index, the way the phone lets them go. */
+  private forgetMessages(sids: string[]): void {
+    for (const sid of sids) this.store.dropMessage(sid);
+    this.recallForget(sids);
+    if (sids.length > 0) this.markStoreDirty();
+  }
+
+  /**
+   * A chat cleared or deleted for this account, by manage_chat or on the phone.
+   * Its messages leave the store, and every row the index holds for it goes
+   * too, rows older than the store included; a deleted chat also loses its
+   * entry and its message ring, or list_chats would still show it. Its history
+   * files go last, so a restart has nothing of it to replay. All but that
+   * removal is done before the first await, so an event handler need not wait.
+   */
+  private async forgetChat(jid: string, deleted: boolean): Promise<void> {
+    // Lines and rows filed before the chat's number was learned sit under its lid.
+    const lid = this.phoneLids.get(jid);
+    const jids = lid ? [jid, lid] : [jid];
+    this.forgetMessages([...(this.store.byChat.get(jid) ?? [])]);
+    if (!this.stopped) this.recallQueue?.forgetChats(jids);
+    if (deleted) {
+      this.store.chats.delete(jid);
+      this.store.byChat.delete(jid);
+    }
+    this.markStoreDirty();
+    if (!this.config.persistHistory) return;
+    try {
+      await Promise.all(jids.map((id) => rm(this.historyFile(id), { force: true })));
+    } catch (err) {
+      logError("history drop", err);
+    }
+  }
+
   private recallStatus(): RecallStatus {
     if (this.recallEnv instanceof WazapError) {
       return { state: "degraded", indexed: 0, pending: 0, detail: this.recallEnv.message, fix: this.recallEnv.fix };
@@ -1738,10 +1775,15 @@ export class WhatsAppService implements WhatsAppApi {
       if (payload.kind === "media") await assertMediaSource(payload.source);
       const sock = this.ensureConnected();
       const jid = await this.assertOutgoing(payload.chatId, sock);
-      const stored: DraftPayload =
-        payload.kind === "forward"
-          ? { ...payload, chatId: jid, text: (await this.getMessage(payload.messageId)).text }
-          : { ...payload, chatId: jid };
+      let stored: DraftPayload = { ...payload, chatId: jid };
+      if (payload.kind === "forward") {
+        stored = { ...payload, chatId: jid, text: (await this.getMessage(payload.messageId)).text };
+      } else if (payload.kind === "text" && payload.mentionIds?.length) {
+        // Mentions resolve here, and the text gains each @<user> it lacks, so the
+        // preview is the text that leaves and each token matches its mentionedJid.
+        const mentionIds = payload.mentionIds.map((id) => this.resolveId(id));
+        stored = { ...payload, chatId: jid, mentionIds, text: withMentionTokens(payload.text, mentionIds) };
+      }
       return this.drafts.view(this.drafts.put(this.outgoingOf(jid), stored));
     });
   }
@@ -1861,14 +1903,18 @@ export class WhatsAppService implements WhatsAppApi {
   deleteMessage(messageId: string, forEveryone: boolean): Promise<{ message_id: string; for_everyone: boolean }> {
     return this.guarded(async () => {
       const raw = this.messageOrThrow(messageId);
-      if (!forEveryone) {
-        throw new WazapError(
-          "WHATSAPP_ERROR",
-          "WhatsApp only supports delete-for-everyone from a linked device; deleting for yourself alone is not available.",
-          "Call delete_message again with for_everyone=true"
-        );
-      }
       const chat = this.chatOfOrThrow(messageId);
+      if (!forEveryone) {
+        // Only the linked account's copy goes, whoever sent it and however old:
+        // WhatsApp syncs that to the account's other devices, and nobody else
+        // sees a change.
+        const sock = this.beginWrite();
+        const timestamp = Math.floor(messageTimestampMs(raw) / 1000);
+        await sock.chatModify({ deleteForMe: { deleteMedia: false, key: raw.key, timestamp } }, chat);
+        this.forgetMessages([messageId]);
+        await this.appendTombstone(messageId, chat);
+        return { message_id: messageId, for_everyone: false };
+      }
       let key = raw.key;
       if (raw.key.fromMe) {
         if (Date.now() - messageTimestampMs(raw) > RETRACT_WINDOW_MS) {
@@ -1909,12 +1955,15 @@ export class WhatsAppService implements WhatsAppApi {
     });
   }
 
-  manageChat(chatId: string, action: ChatAction, muteHours?: number): Promise<ChatActionResult> {
+  manageChat(chatId: string, action: ChatAction, opts: ChatActionOptions = {}): Promise<ChatActionResult> {
     return this.guarded(async () => {
       const sock = this.beginWrite();
       const jid = this.resolveId(chatId);
       const last = this.lastMessageOf(jid);
       const lastMessages = last ? [last] : [];
+      const muteHours = opts.muteHours ?? 8;
+      let detail = "";
+      let messageId: string | undefined;
 
       switch (action) {
         case "archive":
@@ -1926,7 +1975,8 @@ export class WhatsAppService implements WhatsAppApi {
           await sock.chatModify({ pin: action === "pin" }, jid);
           break;
         case "mute":
-          await sock.chatModify({ mute: (muteHours ?? 8) * 3_600_000 }, jid);
+          await sock.chatModify({ mute: muteHours * 3_600_000 }, jid);
+          detail = ` for ${muteHours}h`;
           break;
         case "unmute":
           await sock.chatModify({ mute: null }, jid);
@@ -1937,11 +1987,73 @@ export class WhatsAppService implements WhatsAppApi {
         case "mark_unread":
           await sock.chatModify({ markRead: false, lastMessages }, jid);
           break;
+        case "pin_message":
+        case "unpin_message": {
+          const hours = opts.pinHours ?? 168;
+          const time = PIN_SECONDS[hours];
+          if (time === undefined) {
+            throw new WazapError("INVALID_ID", `pin_hours must be 24, 168 or 720, not ${hours}.`, "Pass pin_hours as 24, 168 or 720");
+          }
+          const raw = this.messageInChat(opts.messageId, jid, action);
+          messageId = opts.messageId;
+          // A pin is a message to the chat, so every member sees it; WhatsApp ignores the time on an unpin.
+          const type = action === "pin_message" ? proto.PinInChat.Type.PIN_FOR_ALL : proto.PinInChat.Type.UNPIN_FOR_ALL;
+          await sock.sendMessage(jid, { pin: raw.key, type, time });
+          if (action === "pin_message") detail = ` for ${hours}h`;
+          break;
+        }
+        case "star_message":
+        case "unstar_message": {
+          const raw = this.messageInChat(opts.messageId, jid, action);
+          messageId = opts.messageId;
+          const starred = [{ id: raw.key.id ?? "", fromMe: Boolean(raw.key.fromMe) }];
+          await sock.chatModify({ star: { messages: starred, star: action === "star_message" } }, jid);
+          break;
+        }
+        case "clear":
+        case "delete":
+          await sock.chatModify(action === "clear" ? { clear: true, lastMessages } : { delete: true, lastMessages }, jid);
+          // The same forgetting the phone's own clear or delete gets, done now rather than on WhatsApp's echo.
+          await this.forgetChat(jid, action === "delete");
+          break;
+        case "block":
+        case "unblock":
+          if (isGroupId(jid) || isNoiseJid(jid)) {
+            throw new WazapError(
+              "INVALID_ID",
+              `"${action}" works only on a one-to-one chat, and ${jid} is not one.`,
+              "Pass the chat_id of a person"
+            );
+          }
+          await sock.updateBlockStatus(jid, action);
+          if (action === "block") this.blocked.add(jid);
+          else this.blocked.delete(jid);
+          break;
       }
 
-      const detail = action === "mute" ? ` for ${muteHours ?? 8}h` : "";
-      return { chat_id: jid, action, applied: `${action}${detail}` };
+      return { chat_id: jid, action, applied: `${action}${detail}`, ...(messageId ? { message_id: messageId } : {}) };
     });
+  }
+
+  /** A message named by a chat action must be in that chat, or the action would land on another one. */
+  private messageInChat(messageId: string | undefined, jid: string, action: ChatAction): WAMessage {
+    if (messageId === undefined) {
+      throw new WazapError(
+        "INVALID_ID",
+        `The "${action}" action needs a message_id.`,
+        "Pass a message_id from read_messages on this chat"
+      );
+    }
+    const raw = this.messageOrThrow(messageId);
+    const chat = this.chatOfOrThrow(messageId);
+    if (chat !== jid) {
+      throw new WazapError(
+        "MESSAGE_NOT_FOUND",
+        `Message ${messageId} is not in ${jid}; it belongs to ${chat}.`,
+        "Pass the chat_id the message belongs to, or a message_id from read_messages on this chat"
+      );
+    }
+    return raw;
   }
 
   /**
@@ -2012,6 +2124,64 @@ export class WhatsAppService implements WhatsAppApi {
             : { id, status: "failed" as const, reason: "WhatsApp did not add this participant" }
         ),
       };
+    });
+  }
+
+  /**
+   * Join a group from an invite: a chat.whatsapp.com link or its bare code, or
+   * an invite message someone sent. Without confirm it only looks the group up,
+   * so the user sees what they would join. The code goes to WhatsApp and
+   * nowhere else: not into a result, an error or a log line.
+   */
+  joinGroup(opts: { invite?: string; messageId?: string; confirm: boolean }): Promise<JoinGroupResult> {
+    return this.guarded(async () => {
+      if ((opts.invite === undefined) === (opts.messageId === undefined)) {
+        throw new WazapError(
+          "INVALID_ID",
+          "Pass exactly one of invite or message_id.",
+          'invite takes a https://chat.whatsapp.com/ link or its code; message_id an "invite" message from read_messages'
+        );
+      }
+      const invite = opts.messageId === undefined ? undefined : this.inviteMessageOf(opts.messageId);
+      const code = invite?.code ?? inviteCodeOf(opts.invite ?? "");
+      const unknown = { description: null, participant_count: null, join_approval: null };
+
+      if (!opts.confirm) {
+        const sock = this.ensureConnected();
+        let meta: GroupMetadata;
+        try {
+          meta = await sock.groupGetInviteInfo(code);
+        } catch (err) {
+          // An invite message still names its group when WhatsApp will not describe it.
+          if (invite === undefined) throw inviteRefused(err);
+          return { status: "preview", group_id: this.canonical(invite.groupJid), name: invite.name, ...unknown };
+        }
+        return {
+          status: "preview",
+          group_id: this.canonical(meta.id),
+          name: meta.subject || null,
+          description: meta.desc ?? null,
+          participant_count: meta.size ?? meta.participants.length,
+          join_approval: Boolean(meta.joinApprovalMode),
+        };
+      }
+
+      const sock = this.beginWrite();
+      if (invite !== undefined) {
+        const from: unknown = await sock.groupAcceptInviteV4(invite.raw.key, invite.message).catch((err: unknown) => {
+          throw inviteRefused(err);
+        });
+        const group = typeof from === "string" && isGroupId(from) ? from : invite.groupJid;
+        return { status: "joined", group_id: this.canonical(group), name: invite.name, ...unknown };
+      }
+      const group = await sock.groupAcceptInvite(code).catch((err: unknown) => {
+        throw inviteRefused(err);
+      });
+      // A group that asks for approval answers with the request, not the group,
+      // and Baileys hands back nothing: the account is not in yet.
+      return group
+        ? { status: "joined", group_id: this.canonical(group), name: null, ...unknown }
+        : { status: "pending_approval", group_id: null, name: null, ...unknown };
     });
   }
 
@@ -2185,6 +2355,7 @@ export class WhatsAppService implements WhatsAppApi {
         this.armSyncDeadline();
         log("connected to WhatsApp");
         void this.healContacts(sock, generation);
+        void this.loadBlocklist(sock, generation);
       } else if (connection === "close") {
         const code = statusCodeOf(lastDisconnect?.error);
         if (code === DisconnectReason.loggedOut) {
@@ -2242,7 +2413,7 @@ export class WhatsAppService implements WhatsAppApi {
     });
 
     sock.ev.on("chats.delete", (ids) => {
-      for (const id of ids) this.store.chats.delete(this.canonical(id));
+      for (const id of ids) void this.forgetChat(this.canonical(id), true);
     });
 
     sock.ev.on("contacts.upsert", (contacts) => {
@@ -2277,19 +2448,16 @@ export class WhatsAppService implements WhatsAppApi {
     sock.ev.on("messages.delete", (item) => {
       // The other side asked that these go; the store honours it the way the
       // phone does, ring and index included.
-      const sids: string[] = [];
       if ("all" in item) {
-        const ring = this.store.byChat.get(this.canonical(item.jid)) ?? [];
-        sids.push(...ring);
-      } else {
-        for (const key of item.keys) {
-          if (!key.remoteJid) continue;
-          sids.push(...this.targetSids(key, key.remoteJid));
-        }
+        void this.forgetChat(this.canonical(item.jid), false);
+        return;
       }
-      for (const sid of sids) this.store.dropMessage(sid);
-      this.recallForget(sids);
-      if (sids.length > 0) this.markStoreDirty();
+      const sids: string[] = [];
+      for (const key of item.keys) {
+        if (!key.remoteJid) continue;
+        sids.push(...this.targetSids(key, key.remoteJid));
+      }
+      this.forgetMessages(sids);
     });
 
     sock.ev.on("messages.update", (updates) => {
@@ -2496,6 +2664,24 @@ export class WhatsAppService implements WhatsAppApi {
     }
   }
 
+  /**
+   * Who the account has blocked, asked once per connection: WhatsApp pushes the
+   * list only when it changes, so get_contact would otherwise say "not blocked"
+   * for everyone until then. A failure costs only that answer, so it is logged.
+   */
+  private async loadBlocklist(sock: WASocket, generation: number): Promise<void> {
+    // A stand-in socket without the call has no blocklist to give, and nothing worth logging.
+    if (typeof sock.fetchBlocklist !== "function") return;
+    try {
+      const blocklist = await sock.fetchBlocklist();
+      if (generation !== this.generation || this.stopped) return;
+      this.blocked.clear();
+      for (const jid of blocklist) if (jid) this.blocked.add(this.canonical(jid));
+    } catch (err) {
+      logError("blocklist", err);
+    }
+  }
+
   /** Names still arriving mean the sync is working; only silence means it is not coming. */
   private async waitForNames(floor: number, deadline: number): Promise<number> {
     for (;;) {
@@ -2699,6 +2885,35 @@ export class WhatsAppService implements WhatsAppApi {
         "Ask an admin of the group to make the linked account an admin, or to make this change themselves"
       );
     }
+  }
+
+  /** The invite a message carries, checked before WhatsApp is asked about it. */
+  private inviteMessageOf(messageId: string): {
+    raw: WAMessage;
+    message: proto.Message.IGroupInviteMessage;
+    code: string;
+    groupJid: string;
+    name: string | null;
+  } {
+    const raw = this.messageOrThrow(messageId);
+    const message = normalizeMessageContent(raw.message)?.groupInviteMessage;
+    if (!message) {
+      throw new WazapError(
+        "INVALID_ID",
+        `Message ${messageId} is not a group invite.`,
+        'Pass a message_id whose type is "invite", or the invite link as invite'
+      );
+    }
+    const expires = protoNumber(message.inviteExpiration) ?? 0;
+    // Baileys empties the code of an invite once it has been accepted.
+    if (!message.inviteCode || !message.groupJid || (expires > 0 && expires * 1000 <= Date.now())) {
+      throw new WazapError(
+        "WHATSAPP_ERROR",
+        `The invite in ${messageId} has expired or was already used.`,
+        "Ask the sender for a fresh invite"
+      );
+    }
+    return { raw, message, code: message.inviteCode, groupJid: message.groupJid, name: message.groupName || null };
   }
 
   private async inviteLink(jid: string): Promise<string> {
@@ -3059,9 +3274,12 @@ export class WhatsAppService implements WhatsAppApi {
 
   private viewOf(sid: string, chatJid: string): MessageView {
     const raw = this.messageOrThrow(sid);
+    // The pushName is what the sender calls themselves: a person the message
+    // mentions, or who reacted or voted, must not borrow it.
+    const sender = this.recallSender(raw, chatJid);
     return buildMessageView(raw, {
       canonical: (jid) => this.canonical(jid),
-      nameFor: (jid) => this.displayName(jid, raw.pushName ?? undefined),
+      nameFor: (jid) => this.displayName(jid, jid === sender ? (raw.pushName ?? undefined) : undefined),
       noteFor: (jid) => this.notes.noteFor(jid),
       ownId: this.ownJid(),
       chatId: chatJid,
@@ -3583,11 +3801,13 @@ export class WhatsAppService implements WhatsAppApi {
     }
 
     const newest = new Map<string, HistoryRecord>();
+    const tombstones = new Map<string, HistoryRecord>();
     for (const line of text.split("\n")) {
       if (!line.trim()) continue;
       try {
         const record = JSON.parse(line) as HistoryRecord;
-        if (record.sid && record.raw) newest.set(record.sid, record);
+        if (record.sid && record.deleted) tombstones.set(record.sid, record);
+        else if (record.sid && record.raw) newest.set(record.sid, record);
       } catch {
         continue;
       }
@@ -3596,8 +3816,9 @@ export class WhatsAppService implements WhatsAppApi {
     // A revoke's tombstone line wins over the line its target wrote, wherever
     // each sits in the file — and taking the target out of `newest` both keeps
     // it off the store and lets the compaction below drop its bytes from disk.
+    // A message deleted for the linked account alone goes the same way.
     const decoded = new Map<string, WAMessage>();
-    const revoked = new Set<string>();
+    const revoked = new Set<string>(tombstones.keys());
     for (const record of newest.values()) {
       const raw = decodeMessage(record.raw);
       if (!raw) continue;
@@ -3614,9 +3835,11 @@ export class WhatsAppService implements WhatsAppApi {
 
     // Rewrite compacted, so the file stays bounded across restarts — but only
     // when dedup or the cap actually dropped lines; an identical rewrite on
-    // every boot is pure write I/O.
-    const compacted = kept.map((record) => JSON.stringify(record)).join("\n");
-    const written = kept.length > 0 ? `${compacted}\n` : "";
+    // every boot is pure write I/O. Tombstones stay, like a revoke's own line,
+    // so their message stays out even if a line of it is written again.
+    const onDisk = tombstones.size > 0 ? [...kept, ...tombstones.values()].sort((a, b) => a.ts - b.ts) : kept;
+    const compacted = onDisk.map((record) => JSON.stringify(record)).join("\n");
+    const written = onDisk.length > 0 ? `${compacted}\n` : "";
     if (written !== text) {
       const tmp = `${path}.tmp`;
       await writeFile(tmp, written, { mode: FILE_MODE });
@@ -3666,16 +3889,35 @@ export class WhatsAppService implements WhatsAppApi {
       bucket.push(JSON.stringify(record));
       lines.set(jid, bucket);
     }
+    await this.writeHistory(lines);
+  }
 
+  /**
+   * A message deleted for the linked account alone leaves a tombstone line in
+   * its chat's history file, so a restart replays it out the way it replays out
+   * a revoke's target. A revoke itself is not enough here: it loads as a
+   * "[deleted]" message, and a delete for the account alone leaves no trace.
+   */
+  private async appendTombstone(sid: string, chat: string): Promise<void> {
+    if (!this.config.persistHistory) return;
+    const record: HistoryRecord = { sid, ts: Math.floor(Date.now() / 1000), raw: "", deleted: true };
+    await this.writeHistory(new Map([[chat, [JSON.stringify(record)]]]));
+  }
+
+  /** History lines by chat, appended to each chat's file. */
+  private async writeHistory(lines: Map<string, string[]>): Promise<void> {
     try {
       await mkdir(this.paths.historyDir, { recursive: true, mode: DIR_MODE });
       for (const [jid, bucket] of lines) {
-        const path = join(this.paths.historyDir, `${safeFilename(jid)}.jsonl`);
-        await appendFile(path, `${bucket.join("\n")}\n`, { mode: FILE_MODE });
+        await appendFile(this.historyFile(jid), `${bucket.join("\n")}\n`, { mode: FILE_MODE });
       }
     } catch (err) {
       logError("history append", err);
     }
+  }
+
+  private historyFile(jid: string): string {
+    return join(this.paths.historyDir, `${safeFilename(jid)}.jsonl`);
   }
 }
 
@@ -3774,6 +4016,35 @@ function settingFor(action: GroupAction, value: string | undefined, choices: Rec
 
 /** WhatsApp answers "cannot add, invite them instead" with these codes. */
 const INVITE_NEEDED_CODES = new Set(["403", "409"]);
+
+/** How long a pinned message stays pinned, by the hours manage_chat takes: WhatsApp's 24 hours, 7 days and 30 days. */
+const PIN_SECONDS: Record<number, 86_400 | 604_800 | 2_592_000> = { 24: 86_400, 168: 604_800, 720: 2_592_000 };
+
+/** The code in a chat.whatsapp.com link, or a bare code. What is refused is not repeated back. */
+function inviteCodeOf(invite: string): string {
+  const trimmed = invite.trim();
+  const match =
+    /^(?:https?:\/\/)?chat\.whatsapp\.com\/(?:invite\/)?([A-Za-z0-9]{10,64})\/?(?:[?#].*)?$/i.exec(trimmed) ??
+    /^([A-Za-z0-9]{10,64})$/.exec(trimmed);
+  if (!match?.[1]) {
+    throw new WazapError(
+      "INVALID_ID",
+      "The invite is neither a https://chat.whatsapp.com/ link nor an invite code.",
+      "Pass the link exactly as it was shared"
+    );
+  }
+  return match[1];
+}
+
+/** WhatsApp's refusal of an invite. Baileys builds its message from WhatsApp's answer, which does not carry the code. */
+function inviteRefused(err: unknown): WazapError {
+  if (err instanceof WazapError) return err;
+  return new WazapError(
+    "WHATSAPP_ERROR",
+    `WhatsApp refused the invite: ${describe(err)}.`,
+    "The link may be reset, expired or mistyped: ask for a fresh invite"
+  );
+}
 
 /**
  * A wrong WAZAP_TRANSCRIBE_* value must not take a running server down with it.

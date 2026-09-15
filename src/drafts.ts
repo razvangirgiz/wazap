@@ -162,6 +162,24 @@ export function looksUnnamed(to: OutgoingTarget): boolean {
   return /^[\d\s+().-]+$/.test(name);
 }
 
+/**
+ * The text with an `@<user>` token for every mentioned jid it does not already
+ * name. WhatsApp highlights a mention only where the text carries the user part
+ * of the jid in mentionedJid, and sends the text as written, so a missing token
+ * goes at the end — before the draft, so the preview is the text that leaves.
+ */
+export function withMentionTokens(text: string, jids: readonly string[]): string {
+  let result = text;
+  for (const jid of jids) {
+    const user = jid.split("@")[0] ?? "";
+    const escaped = user.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    // A longer number that starts with these digits is someone else.
+    if (user === "" || new RegExp(`@${escaped}(?!\\d)`).test(result)) continue;
+    result = `${result}${/\s$/.test(result) ? "" : " "}@${user}`;
+  }
+  return result;
+}
+
 export function formatDraftPreview(to: OutgoingTarget, payload: DraftPayload): string {
   return `${formatToLine(to)}\n${formatBody(payload)}`;
 }
