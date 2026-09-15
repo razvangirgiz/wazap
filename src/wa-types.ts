@@ -339,6 +339,8 @@ export type GroupAction =
   | "leave"
   | "set_subject"
   | "set_description"
+  | "set_picture"
+  | "remove_picture"
   | "get_invite_link"
   | "revoke_invite_link";
 
@@ -354,6 +356,8 @@ export interface GroupActionResult {
   applied: string;
   participants?: ParticipantResult[];
   invite_link?: string;
+  /** After set_picture: the new photo's URL, or null while WhatsApp has not published one. */
+  profile_pic_url?: string | null;
 }
 
 export interface MediaSource {
@@ -450,6 +454,7 @@ export interface WhatsAppApi {
     groupId: string,
     action: GroupAction,
     participantIds?: string[],
-    value?: string
+    value?: string,
+    source?: MediaSource
   ): Promise<GroupActionResult>;
 }

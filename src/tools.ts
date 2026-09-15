@@ -243,8 +243,9 @@ link_account when it says no account is linked yet.
   do not retry or route around it, tell the user. A draft flagged
   unnamed_recipient goes to someone outside the address book: the name shown
   is their public profile name, not a saved contact — say so to the user.
-- Profile picture: set_profile_picture changes the linked account's photo.
-  Show the image and wait for a yes first; the call hits WhatsApp immediately.
+- Profile picture: set_profile_picture changes the linked account's photo;
+  manage_group set_picture / remove_picture changes a group's. Show the image
+  and wait for a yes first; these calls hit WhatsApp immediately.
 - Media: a message with has_media=true → download_media(message_id).
 - Groups: get_group_info before manage_group; most actions need admin rights.
 
@@ -1460,6 +1461,10 @@ privacy settings require an invite link) or failed.`,
     comes back with status ok, invite_needed or failed
   - leave — DESTRUCTIVE, rejoining needs an invite
   - set_subject / set_description — need value
+  - set_picture — needs exactly one of file_path / url: JPEG, PNG or WebP, at
+    most 10 MB. Every member sees it at once and there is no draft: show the
+    image and wait for a yes first
+  - remove_picture — takes the group photo down; ask first the same way
   - get_invite_link / revoke_invite_link
 
 Everything except leave requires the linked account to be a group admin; call
@@ -1475,17 +1480,21 @@ get_group_info first to check.`,
           "leave",
           "set_subject",
           "set_description",
+          "set_picture",
+          "remove_picture",
           "get_invite_link",
           "revoke_invite_link",
         ])
         .describe("Group action to perform"),
       participant_ids: z.array(z.string().min(1)).max(256).optional().describe("Targets of add/remove/promote/demote"),
       value: z.string().max(2048).optional().describe("New subject or description"),
+      file_path: z.string().min(1).optional().describe("set_picture: absolute path of a local JPEG, PNG or WebP"),
+      url: z.string().url().optional().describe("set_picture: public http(s) URL to fetch and use as the photo"),
     },
     write: true,
     destructive: true,
-    handler: async ({ group_id, action, participant_ids, value }, { wa }) => {
-      const result = await wa.manageGroup(group_id, action, participant_ids, value);
+    handler: async ({ group_id, action, participant_ids, value, file_path, url }, { wa }) => {
+      const result = await wa.manageGroup(group_id, action, participant_ids, value, { file_path, url });
       const text = [result.applied, ...renderParticipants(result.participants ?? [])].join("\n");
       return ok(text, result as unknown as Record<string, unknown>);
     },

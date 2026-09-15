@@ -177,3 +177,107 @@ test("the tool hits the service and learn names it", async () => {
   assert.match(guide, /profile picture may be 10 MB/);
   await svc.stop();
 });
+
+const GROUP = "120363414132891692@g.us";
+
+/** A group the linked account is in, as an admin or as a plain member. */
+function inGroup(sock, admin) {
+  sock.groupMetadata = async (id) => ({
+    id,
+    subject: "Râșnov 18-20 septembrie",
+    participants: [{ id: ME, admin: admin ? "admin" : null }],
+  });
+}
+
+test("manage_group set_picture sends the photo to the group's jid, and remove_picture takes it down", async () => {
+  const { svc, sock } = writableService();
+  inGroup(sock, true);
+  const calls = [];
+  sock.updateProfilePicture = async (jid, content) => {
+    calls.push(["set", jid, Buffer.isBuffer(content)]);
+  };
+  sock.removeProfilePicture = async (jid) => {
+    calls.push(["remove", jid]);
+  };
+  sock.profilePictureUrl = async () => PIC_URL;
+
+  const set = await svc.manageGroup(GROUP, "set_picture", undefined, undefined, { file_path: jpegPath() });
+  assert.deepEqual(set, {
+    group_id: GROUP,
+    action: "set_picture",
+    applied: "group photo updated",
+    profile_pic_url: PIC_URL,
+  });
+  const removed = await svc.manageGroup(GROUP, "remove_picture");
+  assert.equal(removed.applied, "group photo removed");
+  assert.deepEqual(calls, [
+    ["set", GROUP, true],
+    ["remove", GROUP],
+  ]);
+  await svc.stop();
+});
+
+test("set_picture where the account is not an admin is NOT_ADMIN with a fix, and nothing is uploaded", async () => {
+  const { svc, sock } = writableService();
+  inGroup(sock, false);
+  let called = false;
+  sock.updateProfilePicture = async () => {
+    called = true;
+  };
+  await assert.rejects(
+    () => svc.manageGroup(GROUP, "set_picture", undefined, undefined, { file_path: jpegPath() }),
+    (err) => err.code === "NOT_ADMIN" && /make the linked account an admin/.test(err.fix ?? "")
+  );
+  assert.equal(called, false);
+  await svc.stop();
+});
+
+test("set_picture refuses a bad file with set_profile_picture's errors, before anything is uploaded", async () => {
+  const { svc, sock } = writableService();
+  inGroup(sock, true);
+  let called = false;
+  sock.updateProfilePicture = async () => {
+    called = true;
+  };
+  const dir = mkdtempSync(join(tmpdir(), "wazap-group-pic-"));
+  const text = join(dir, "note.txt");
+  writeFileSync(text, "not an image");
+  const huge = join(dir, "huge.jpg");
+  writeFileSync(huge, Buffer.alloc(10 * 1024 * 1024 + 1));
+  const setPicture = (source) => svc.manageGroup(GROUP, "set_picture", undefined, undefined, source);
+
+  await assert.rejects(
+    () => setPicture({ file_path: text }),
+    (err) => err.code === "INVALID_IMAGE"
+  );
+  await assert.rejects(
+    () => setPicture({ file_path: huge }),
+    (err) => err.code === "FILE_TOO_LARGE" && /10 MB/.test(err.message)
+  );
+  await assert.rejects(
+    () => setPicture({}),
+    (err) => err.code === "FILE_NOT_FOUND" && /exactly one/i.test(err.message)
+  );
+  assert.equal(called, false);
+  await svc.stop();
+});
+
+test("the manage_group tool carries the photo through, and its description and learn say to ask first", async () => {
+  const { svc, sock } = writableService();
+  inGroup(sock, true);
+  sock.updateProfilePicture = async () => {};
+  sock.profilePictureUrl = async () => PIC_URL;
+  const server = fakeServer();
+  registerTools(server, asToolSource(svc), { allowWrite: true });
+  const tool = server.tools.get("manage_group");
+  assert.match(tool.meta.description, /set_picture/);
+  assert.match(tool.meta.description, /wait for a yes/);
+
+  const result = await tool.handler({ group_id: GROUP, action: "set_picture", file_path: jpegPath() });
+  assert.equal(result.structuredContent.profile_pic_url, PIC_URL);
+  assert.match(result.content[0].text, /group photo updated/);
+
+  const guide = (await server.tools.get("learn").handler({})).structuredContent.guide;
+  assert.match(guide, /manage_group set_picture/);
+  await svc.stop();
+});

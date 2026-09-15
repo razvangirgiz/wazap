@@ -305,7 +305,7 @@ them. `--dry-run` prints the plan and touches nothing.
 | `set_profile_picture` | write | Set the linked account's own profile photo from a local path or URL. Hits WhatsApp immediately. |
 | `manage_chat` | write | Archive, pin, mute (8h by default), mark read/unread. |
 | `create_group` | write | Create a group and add participants. |
-| `manage_group` | write | Add, remove, promote, demote, leave, rename, invite links. |
+| `manage_group` | write | Add, remove, promote, demote, leave, rename, set or remove the group photo, invite links. |
 | `save_contact` | write | Add a number to the account's WhatsApp contacts, or rename an entry; `save_on_phone` (default) also writes the phone's own address book. |
 | `remove_contact` | write | Drop a contact entry; the chat and its history stay. |
 
