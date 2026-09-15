@@ -8,7 +8,7 @@ import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import { spawn } from "node:child_process";
 import { execFile } from "node:child_process";
-import { mkdtempSync, readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -16,7 +16,9 @@ import { promisify } from "node:util";
 import { parse } from "dotenv";
 import { DisconnectReason, proto } from "baileys";
 
+import { renderGetStatus } from "../dist/account-resolve.js";
 import { AccountRegistry } from "../dist/accounts.js";
+import { accountPaths } from "../dist/config.js";
 import { webhookCheck } from "../dist/doctor.js";
 import { SentIds } from "../dist/sent-ids.js";
 import { MESSAGE_TYPES } from "../dist/wa-types.js";
@@ -27,6 +29,7 @@ import {
   WebhookSink,
   asWebhookPayload,
   previewText,
+  readWebhookDelivery,
   readWebhookSettings,
   requireWebhookUrl,
   webhookConnectionStatus,
@@ -35,7 +38,7 @@ import {
   webhookSignatureMatches,
 } from "../dist/webhook.js";
 import { WhatsAppService } from "../dist/whatsapp.js";
-import { connectedService, fakeSocket, offlineConfig, openService, waitFor } from "./helpers.mjs";
+import { connectedService, fakeSocket, offlineConfig, openService, stubAccountSource, waitFor } from "./helpers.mjs";
 
 const run = promisify(execFile);
 const binary = join(dirname(fileURLToPath(import.meta.url)), "..", "dist", "index.js");
@@ -1509,4 +1512,382 @@ test("a full backlog drops new events instead of growing memory for a dead consu
   const late = await Promise.all(pending.slice(5));
   assert.deepEqual(late, [false, false, false, false]);
   assert.match(sink.lastError, /backlog full/);
+});
+
+/**
+ * The consumer holds every POST until it is released by hand, so the one slot
+ * and the one backlog place stay taken for as long as the test needs them.
+ */
+test("an event nobody subscribed to takes no inflight slot and no backlog place", async () => {
+  let release = () => {};
+  const gate = new Promise((resolve) => {
+    release = resolve;
+  });
+  const posted = [];
+  const post = async (_url, init) => {
+    posted.push(JSON.parse(init.body).message_id);
+    await gate;
+    return new Response(null, { status: 204 });
+  };
+  const sink = new WebhookSink(readyEnv("http://127.0.0.1:9/hook"), {
+    post,
+    retryDelays: [],
+    maxInflight: 1,
+    maxBacklog: 1,
+  });
+  try {
+    const first = sink.notify(samplePayload({ message_id: "m0" }));
+    const filtered = Promise.all(
+      Array.from({ length: 5 }, (_, i) => sink.notify(samplePayload({ event: "message_sent", message_id: `s${i}` })))
+    );
+    // A filtered event that queued would wait on the gate, so it is raced rather than awaited.
+    const answered = await Promise.race([filtered, new Promise((resolve) => setTimeout(resolve, 200, "waiting"))]);
+    assert.deepEqual(answered, [false, false, false, false, false], "message_sent is not enabled, and did not queue");
+    assert.equal(sink.lastError, null, "a filtered event is never a backlog drop");
+
+    const queued = sink.notify(samplePayload({ message_id: "m1" }));
+    release();
+    assert.deepEqual(await Promise.all([first, queued]), [true, true], "the wanted event still had its backlog place");
+    assert.deepEqual(posted, ["m0", "m1"]);
+  } finally {
+    release();
+  }
+});
+
+/** A post that answers every call with `status`, and counts the calls. */
+function answering(status) {
+  const post = async () => {
+    post.calls++;
+    return new Response(status < 300 ? null : "Invalid API key", { status });
+  };
+  post.calls = 0;
+  return post;
+}
+
+test("a 4xx refusal is posted once, names the status and a hint, and never the secret", async () => {
+  for (const status of [400, 401, 403, 404, 410, 413, 422]) {
+    const post = answering(status);
+    const sink = new WebhookSink(readyEnv("http://127.0.0.1:9/hook"), { post, retryDelays: [0, 0] });
+    assert.equal(await sink.notify(samplePayload()), false);
+    assert.equal(post.calls, 1, `${status} is not retried`);
+    assert.match(sink.lastError ?? "", new RegExp(`^HTTP ${status} from 127\\.0\\.0\\.1:9, not retried: the receiver`));
+    assert.ok(!(sink.lastError ?? "").includes(SECRET), "the secret must not appear in last_error");
+  }
+
+  const post = answering(401);
+  const sink = new WebhookSink(readyEnv("http://127.0.0.1:9/hook"), { post, retryDelays: [0, 0] });
+  await sink.notify(samplePayload());
+  assert.match(sink.lastError ?? "", /check the API key or secret it expects/);
+
+  const probe = await sink.sendTest();
+  assert.equal(probe.ok, false);
+  assert.equal(post.calls, 2, "webhook test does not retry a refusal either");
+  assert.match(probe.fix, /API key or secret/);
+  assert.match(probe.fix, /wazap webhook test/);
+});
+
+test("408, 425, 429 and 5xx are retried as before", async () => {
+  for (const status of [408, 425, 429, 500, 503]) {
+    const post = answering(status);
+    const sink = new WebhookSink(readyEnv("http://127.0.0.1:9/hook"), { post, retryDelays: [0, 0] });
+    assert.equal(await sink.notify(samplePayload()), false);
+    assert.equal(post.calls, 3, `${status} is retried twice`);
+    assert.match(sink.lastError ?? "", new RegExp(`^HTTP ${status} from 127\\.0\\.0\\.1:9$`));
+  }
+});
+
+test("a 401 is one POST and one failed event, and a delivery ends the run", async () => {
+  let status = 401;
+  let calls = 0;
+  const post = async () => {
+    calls++;
+    return new Response(null, { status });
+  };
+  const sink = new WebhookSink(readyEnv("http://127.0.0.1:9/hook"), { post, retryDelays: [0, 0] });
+  assert.deepEqual(sink.info().delivery, {
+    delivered: 0,
+    failed: 0,
+    dropped: 0,
+    consecutive_failures: 0,
+    last_success_at: null,
+    last_failure_at: null,
+    last_failure: null,
+    last_dropped_at: null,
+  });
+
+  await sink.notify(samplePayload());
+  assert.equal(calls, 1);
+  assert.equal(sink.info().delivery.failed, 1);
+  await sink.notify(samplePayload());
+  const failing = sink.info().delivery;
+  assert.equal(calls, 2, "each refused event cost exactly one POST");
+  assert.equal(failing.failed, 2);
+  assert.equal(failing.consecutive_failures, 2);
+  assert.equal(failing.delivered, 0);
+  assert.match(failing.last_failure, /^HTTP 401 from 127\.0\.0\.1:9, not retried/);
+  assert.ok(Number.isFinite(Date.parse(failing.last_failure_at)));
+  assert.equal(failing.last_success_at, null);
+
+  status = 204;
+  await sink.notify(samplePayload());
+  const recovered = sink.info().delivery;
+  assert.equal(recovered.delivered, 1);
+  assert.equal(recovered.failed, 2, "failed is a total, not a run");
+  assert.equal(recovered.consecutive_failures, 0);
+  assert.ok(Number.isFinite(Date.parse(recovered.last_success_at)));
+  assert.equal(recovered.last_failure, failing.last_failure, "the last failure stays readable after recovery");
+  assert.equal(sink.lastError, null, "last_error keeps its meaning: a delivery clears it");
+});
+
+test("a retried event that finally fails is one failed, and a throw while posting counts too", async () => {
+  const post = answering(503);
+  const sink = new WebhookSink(readyEnv("http://127.0.0.1:9/hook"), { post, retryDelays: [0, 0] });
+  await sink.notify(samplePayload());
+  assert.equal(post.calls, 3);
+  assert.equal(sink.info().delivery.failed, 1);
+
+  const payload = {
+    ...samplePayload(),
+    get text() {
+      throw new Error(`cannot serialize ${SECRET}`);
+    },
+  };
+  await sink.notify(payload);
+  const delivery = sink.info().delivery;
+  assert.equal(delivery.failed, 2);
+  assert.equal(delivery.consecutive_failures, 2);
+  assert.match(delivery.last_failure, /cannot serialize/);
+  assert.ok(!delivery.last_failure.includes(SECRET), "the secret must not appear in last_failure");
+});
+
+test("dropped counts what a full backlog turns away, and a filtered or off event counts nowhere", async () => {
+  const sink = new WebhookSink(readyEnv("http://127.0.0.1:9/hook"), {
+    post: () => new Promise(() => {}),
+    retryDelays: [],
+    maxInflight: 2,
+    maxBacklog: 3,
+  });
+  const pending = Array.from({ length: 9 }, (_, i) => sink.notify(samplePayload({ message_id: `m${i}` })));
+  await Promise.all(pending.slice(5));
+  await sink.notify(samplePayload({ event: "connection" }));
+  const delivery = sink.info().delivery;
+  assert.equal(delivery.dropped, 4, "the connection event is not enabled, so it is no fifth drop");
+  assert.equal(delivery.failed, 0);
+  assert.equal(delivery.delivered, 0);
+  assert.equal(delivery.consecutive_failures, 0, "a drop is not a failed POST");
+  assert.ok(Number.isFinite(Date.parse(delivery.last_dropped_at)));
+
+  const off = new WebhookSink({}, { post: answering(204) });
+  await off.notify(samplePayload());
+  assert.deepEqual(off.info(), { enabled: false, valid: true, last_error: null }, "off carries no delivery block");
+});
+
+/** Every line the sink wrote to stderr while `body` ran. */
+async function webhookLogLines(body) {
+  const lines = [];
+  const realError = console.error;
+  console.error = (...args) => lines.push(args.join(" "));
+  try {
+    await body();
+  } finally {
+    console.error = realError;
+  }
+  return lines.filter((line) => line.includes("webhook"));
+}
+
+test("a run of 250 identical failures logs a few lines, and one line when delivery comes back", async () => {
+  let status = 401;
+  const post = async () => new Response(null, { status });
+  const refused = await webhookLogLines(async () => {
+    const sink = new WebhookSink(readyEnv("http://127.0.0.1:9/hook"), { post, retryDelays: [0, 0] });
+    for (let i = 0; i < 250; i++) await sink.notify(samplePayload({ message_id: `m${i}` }));
+    status = 204;
+    await sink.notify(samplePayload({ message_id: "back" }));
+  });
+  assert.equal(refused.length, 4, refused.join("\n"));
+  assert.match(refused[0], /ERROR \(webhook\): HTTP 401 from 127\.0\.0\.1:9, not retried/);
+  assert.match(refused[1], /HTTP 401 .*\(100 failures in a row\)/);
+  assert.match(refused[2], /HTTP 401 .*\(200 failures in a row\)/);
+  assert.match(refused[3], /webhook delivered again after 250 failures/);
+
+  status = 503;
+  const down = await webhookLogLines(async () => {
+    const sink = new WebhookSink(readyEnv("http://127.0.0.1:9/hook"), { post, retryDelays: [0, 0] });
+    for (let i = 0; i < 250; i++) await sink.notify(samplePayload({ message_id: `m${i}` }));
+    status = 204;
+    await sink.notify(samplePayload({ message_id: "back" }));
+  });
+  assert.ok(down.length <= 6, `only the first event's retries are logged:\n${down.join("\n")}`);
+  assert.equal(down.filter((line) => /retry \d\/2/.test(line)).length, 2);
+  assert.match(down.at(-1), /webhook delivered again after 250 failures/);
+  for (const line of [...refused, ...down]) assert.ok(!line.includes(SECRET), "the secret must not reach the log");
+});
+
+test("a run of drops from a full backlog logs a few lines, not one per event", async () => {
+  const lines = await webhookLogLines(async () => {
+    const sink = new WebhookSink(readyEnv("http://127.0.0.1:9/hook"), {
+      post: () => new Promise(() => {}),
+      retryDelays: [],
+      maxInflight: 1,
+      maxBacklog: 0,
+    });
+    const pending = Array.from({ length: 250 }, (_, i) => sink.notify(samplePayload({ message_id: `m${i}` })));
+    await Promise.all(pending.slice(1));
+    assert.equal(sink.info().delivery.dropped, 249);
+  });
+  assert.equal(lines.length, 3, lines.join("\n"));
+  assert.match(lines[0], /backlog full \(0 queued\); dropped message_received$/);
+  assert.match(lines[1], /\(100 dropped since the last delivery\)/);
+  assert.match(lines[2], /\(200 dropped since the last delivery\)/);
+});
+
+test("get_status and its webhook line carry the counters and the last failure, one POST per refused event", async () => {
+  let hits = 0;
+  const server = await listen(async (req, res) => {
+    await readBody(req);
+    hits++;
+    res.writeHead(401, { "content-type": "text/plain" });
+    res.end("Invalid API key");
+  });
+  const restoreEnv = saveWebhookEnv(server.url);
+  const { svc, sock } = connectedService(WhatsAppService, { prefix: "wazap-webhook-stats-", id: ME, name: "Răzvan" });
+  const statsFile = accountPaths(svc.getStatus().data_dir, "default").webhookFile;
+  try {
+    await webhookLogLines(async () => {
+      for (const id of ["R1", "R2", "R3"]) {
+        sock.ev.emit("messages.upsert", { type: "notify", messages: [textMessage(id, `refused ${id}`)] });
+      }
+      await waitFor(() => svc.getStatus().webhook.delivery?.failed === 3, 5_000, "three refused events");
+    });
+    assert.equal(hits, 3, "a refusal is not retried");
+
+    const result = renderGetStatus(svc.getStatus(), false, stubAccountSource(svc));
+    const { delivery } = result.structuredContent.webhook;
+    assert.equal(delivery.failed, 3);
+    assert.equal(delivery.consecutive_failures, 3);
+    assert.equal(delivery.delivered, 0);
+    const line = result.content[0].text.split("\n").find((row) => row.startsWith("- **webhook**"));
+    assert.match(
+      line,
+      /^- \*\*webhook\*\*: on · 0 delivered, 3 failed, 0 dropped · failing: 3 in a row · last failure at \S+: HTTP 401 from 127\.0\.0\.1:\d+, not retried: the receiver refuses the request/
+    );
+    assert.ok(!line.includes("last error"), "last_error is that same failure, said once");
+  } finally {
+    await svc.stop();
+    await server.close();
+    restoreEnv();
+  }
+  assert.equal(readWebhookDelivery(statsFile).failed, 3, "stop writes what the rate limit was still holding back");
+  assert.equal(statSync(statsFile).mode & 0o777, 0o600);
+  assert.ok(!readFileSync(statsFile, "utf8").includes(SECRET));
+});
+
+test("status fails the webhook check after a run of refusals and passes once delivery is back, read from another process", async () => {
+  const dir = dataDir();
+  const statsFile = accountPaths(dir, "default").webhookFile;
+  const env = readyEnv("http://127.0.0.1:9/hook");
+  let answer = 401;
+  const post = async () => new Response(null, { status: answer });
+  const sink = new WebhookSink(env, { post, retryDelays: [], statsFile, statsWriteMs: 0 });
+  await webhookLogLines(async () => {
+    for (let i = 0; i < 3; i++) await sink.notify(samplePayload({ message_id: `m${i}` }));
+  });
+  assert.equal(statSync(statsFile).mode & 0o777, 0o600);
+
+  const failing = await status(dir, ["--json"], env);
+  const check = JSON.parse(failing.stdout).checks.find((row) => row.name === "webhook");
+  assert.equal(check.state, "fail");
+  assert.match(
+    check.detail,
+    /^on \(127\.0\.0\.1:9\); 3 events failed in a row, the last at \S+: HTTP 401 from 127\.0\.0\.1:9, not retried/
+  );
+  assert.match(check.fix, /API key or secret it expects/);
+  assert.match(check.fix, /wazap webhook test/);
+  assert.ok(!failing.stdout.includes(SECRET));
+
+  const human = await status(dir, [], env);
+  assert.match(human.stderr, /✗ webhook: on \(127\.0\.0\.1:9\); 3 events failed in a row/);
+
+  answer = 204;
+  await webhookLogLines(() => sink.notify(samplePayload({ message_id: "back" })));
+  const recovered = await status(dir, ["--json"], env);
+  assert.deepEqual(
+    JSON.parse(recovered.stdout).checks.find((row) => row.name === "webhook"),
+    { name: "webhook", state: "ok", detail: "on (127.0.0.1:9); 1 delivered, 3 failed" }
+  );
+});
+
+test("doctor warns on a failure since the last delivery or a drop in the last day, naming the account", () => {
+  const env = readyEnv("https://hooks.example/wazap");
+  const now = Date.parse("2026-09-15T12:00:00.000Z");
+  const quiet = {
+    delivered: 5,
+    failed: 0,
+    dropped: 0,
+    consecutive_failures: 0,
+    last_success_at: "2026-09-15T11:00:00.000Z",
+    last_failure_at: null,
+    last_failure: null,
+    last_dropped_at: null,
+  };
+  assert.deepEqual(webhookCheck(env, [], now), { name: "webhook", state: "ok", detail: "on (hooks.example)" });
+  assert.deepEqual(webhookCheck(env, [{ account: "default", delivery: quiet }], now), {
+    name: "webhook",
+    state: "ok",
+    detail: "on (hooks.example); 5 delivered",
+  });
+
+  const once = {
+    ...quiet,
+    failed: 1,
+    consecutive_failures: 1,
+    last_failure_at: "2026-09-15T11:30:00.000Z",
+    last_failure: "timed out reaching hooks.example",
+  };
+  const flaky = webhookCheck(env, [{ account: "default", delivery: once }], now);
+  assert.equal(flaky.state, "warn");
+  assert.equal(
+    flaky.detail,
+    "on (hooks.example); the last event failed at 2026-09-15T11:30:00.000Z: timed out reaching hooks.example"
+  );
+  assert.match(flaky.fix, /reachable and answer 2xx/);
+
+  const dropped = { ...quiet, dropped: 12, last_dropped_at: "2026-09-15T09:00:00.000Z" };
+  const lost = webhookCheck(
+    env,
+    [
+      { account: "default", delivery: quiet },
+      { account: "work", delivery: dropped },
+    ],
+    now
+  );
+  assert.equal(lost.state, "warn");
+  assert.match(lost.detail, /; work: 12 events dropped with the backlog full, the last at 2026-09-15T09:00:00\.000Z$/);
+  assert.match(lost.fix, /answer sooner/);
+
+  const old = { ...dropped, last_dropped_at: "2026-09-13T09:00:00.000Z" };
+  assert.equal(
+    webhookCheck(env, [{ account: "work", delivery: old }], now).state,
+    "ok",
+    "a drop two days ago is history"
+  );
+});
+
+test("the counters reach disk at once, then at most once per statsWriteMs, and flushStats writes the rest", async () => {
+  const statsFile = accountPaths(dataDir(), "default").webhookFile;
+  const sink = new WebhookSink(readyEnv("http://127.0.0.1:9/hook"), {
+    post: answering(401),
+    retryDelays: [],
+    statsFile,
+    statsWriteMs: 60_000,
+  });
+  await webhookLogLines(async () => {
+    await sink.notify(samplePayload({ message_id: "m0" }));
+    await sink.notify(samplePayload({ message_id: "m1" }));
+  });
+  assert.equal(readWebhookDelivery(statsFile).failed, 1, "the second change waits out the interval");
+  sink.flushStats();
+  assert.equal(readWebhookDelivery(statsFile).failed, 2);
+  sink.flushStats();
+  assert.equal(readWebhookDelivery(statsFile).failed, 2, "nothing pending, nothing written");
 });
