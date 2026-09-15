@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.20.1
+### Fixed
+
+- **A disappearing-messages change says who made it and for how long.**
+  WhatsApp sends the timer as a protocol message, in a group and a one-to-one
+  chat alike, and it read as a bare `[system message]`. It now reads
+  "[Ana turned on disappearing messages: 7 days]" or "turned off", with
+  `system.action` `set_disappearing` and the seconds as its value.
+- **A request to join a group says who asked and what became of it.** It read
+  as `[system message · GROUP_MEMBERSHIP_JOIN_APPROVAL_REQUEST_NON_ADMIN_ADD]`
+  and now reads "[Ana asked to join]", "[Ana withdrew their request to join]"
+  or "[Dan rejected Ana's request to join]", with `system.action`
+  `join_request`.
+
+Both were found testing 0.20.0 on a real account: read receipts, group
+settings, join requests, poll votes from another number, admin deletes,
+mentions, pins, stars, delete-for-me, block and `join_group` all behaved as
+documented.
+
 ## 0.20.0
 ### Added
 
