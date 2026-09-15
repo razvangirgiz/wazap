@@ -1,6 +1,46 @@
 # Changelog
 
-## Unreleased
+## 0.18.5
+### Added
+
+- **Per-account send rules — `wazap config send`.** An account can now be
+  limited in who it may message: `send allow` makes a list exhaustive (and
+  `allow none` locks the account to nobody), `send deny` refuses its
+  entries whatever else is allowed, `send open` lifts every restriction.
+  The rules live on the account record and are re-read when a draft is made
+  and again at `confirm_send`, so one written while a draft waits still
+  applies to it. A refused send fails `SEND_BLOCKED` naming the rule that
+  fired, before the socket is touched — and the agent is told to tell you,
+  not to retry or route around it.
+- **Read tools say who the sender actually is.** `get_message`,
+  `search_messages`, recall and `download_media` add the number behind the
+  sender's id and a `name_source` — `contact` when the shown name is your
+  own address-book entry, `pushname` when it is the name the sender
+  publishes, `none` — with `is_saved` alongside, so a shown name is no
+  longer mistaken for a saved contact.
+- **Every `search_messages` answer reports its coverage.** How many held
+  messages were scanned, across how many chats, and the oldest/newest
+  bounds of the window — so "nothing found" no longer reads as "nothing
+  synced". The keyword scan covers the whole disk window, not only what
+  memory holds.
+- **`get_status` reports how fresh the local history is.** The initial-sync
+  state and the newest inbound message wazap holds, flagged stale past
+  24 h; a scoped query adds the newest message held for that chat.
+- **`download_media` returns the media contract.** The saved file now names
+  the caption and the original filename the envelope carried.
+- **A message id survives re-identification.** A chat first seen under a
+  lid keeps its messages findable under both spellings once the number
+  pairs, raw `<chat>_<stanza>` ids still reach the record, and an id the
+  resolved account cannot file is tried on every other binding before it
+  misses.
+- **Send drafts render the full preview.** Every send tool's draft shows
+  Not sent, the resolved recipient (name + number, or the group), the exact
+  body for its kind, and the `confirm_send` instruction. A draft to someone
+  known only by a pushName flags `unnamed_recipient` until `save_contact`
+  files them under a real name, and `get_group_info` marks digit-named and
+  unresolved-lid participants `[unnamed]`. `confirm_send` on a missing or
+  expired draft names the recovery instead of failing bare.
+
 ### Changed
 
 - **`wazap update` no longer puts back skills you removed.** It used to copy
@@ -10,6 +50,13 @@
   left alone. `wazap setup` and `wazap skills install` still install them, and
   a copy missing only some skills, such as one a release added, still counts
   as stale and is refreshed.
+
+### Fixed
+
+- **`wazap config <setting>` with no value is the arity complaint again.**
+  `config send` had widened the gate to one positional, so a bare
+  `wazap config writes` reached the setter and failed "Cannot set" instead
+  of being told a value is missing.
 
 ## 0.18.4
 ### Added
