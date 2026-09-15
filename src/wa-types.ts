@@ -178,7 +178,30 @@ export interface MessageView {
   reactions?: Array<{ emoji: string; sender: string; name: string }>;
   /** A group notice spelled out: who made which change, to whom. */
   system?: SystemEvent;
+  /** On a poll: its options, each with who chose it. */
+  poll?: PollResults;
+  /** On an event: who answered going, maybe and not going. */
+  event_responses?: EventResponses;
   edited: boolean;
+}
+
+/** Someone who voted or answered, resolved the way a reaction's sender is. */
+export interface Voter {
+  id: string;
+  name: string;
+}
+
+export interface PollResults {
+  question: string;
+  options: Array<{ name: string; votes: number; voters: Voter[] }>;
+  /** How many people voted; with multiple answers allowed, fewer than the votes. */
+  voters: number;
+}
+
+export interface EventResponses {
+  going: Voter[];
+  maybe: Voter[];
+  not_going: Voter[];
 }
 
 /** Someone a group notice names, resolved the way a sender is. */

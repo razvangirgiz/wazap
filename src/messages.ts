@@ -11,10 +11,13 @@ import type {
   CallKind,
   CallOutcome,
   EventParty,
+  EventResponses,
   MessageType,
   MessageView,
+  PollResults,
   SystemEvent,
   SystemEventAction,
+  Voter,
 } from "./wa-types.js";
 
 /** protobuf 64-bit fields arrive as a number or a Long. */
@@ -367,6 +370,11 @@ const RULES: Partial<Record<keyof WAMessageContent, Rule>> = {
     tag: "[group invite]",
     caption: (m) => joined(m.groupInviteMessage?.groupName, m.groupInviteMessage?.caption),
   },
+  // A vote lands on its poll and a response on its event, the way a reaction
+  // lands on its target. One still shown as a line of its own is waiting for a
+  // poll or event this device has not loaded, or could not read.
+  pollUpdateMessage: { type: "system", tag: "[vote on a poll that is not loaded]" },
+  encEventResponseMessage: { type: "system", tag: "[response to an event that is not loaded]" },
   // Notices about something a person did; groupEventOf puts the name in front.
   pinInChatMessage: { type: "system", tag: "[pinned a message]" },
   keepInChatMessage: { type: "system", tag: "[kept a message]" },
@@ -1089,6 +1097,67 @@ export function reactionOf(raw: WAMessage): { text: string; targetKey: WAMessage
   return { text: reaction.text ?? "", targetKey: reaction.key as WAMessageKey };
 }
 
+/** A poll's question and its options, in the order the poll lists them. A results snapshot is not a poll anyone votes on. */
+export function pollOf(raw: WAMessage): { question: string; options: string[] } | undefined {
+  const m = analyze(raw).content;
+  const poll =
+    m?.pollCreationMessage ??
+    m?.pollCreationMessageV2 ??
+    m?.pollCreationMessageV3 ??
+    m?.pollCreationMessageV5 ??
+    m?.pollCreationMessageV4?.message?.pollCreationMessage;
+  if (!poll) return undefined;
+  return { question: poll.name ?? "", options: (poll.options ?? []).map((option) => option.optionName ?? "") };
+}
+
+/** An event anyone can answer going, maybe or not going. */
+export function isEvent(raw: WAMessage): boolean {
+  return analyze(raw).content?.eventMessage != null;
+}
+
+/** A vote on a poll or a response to an event, still encrypted: what it points at and the bytes to open. */
+export interface EncryptedVote {
+  kind: "poll" | "event";
+  /** The poll or event, keyed the way the voter's device keyed it. */
+  targetKey: WAMessageKey;
+  payload: Uint8Array;
+  iv: Uint8Array;
+  /** When it was cast, epoch ms; a later one replaces an earlier one. */
+  at: number;
+}
+
+export function voteOf(raw: WAMessage): EncryptedVote | undefined {
+  const content = analyze(raw).content;
+  const poll = content?.pollUpdateMessage;
+  if (poll?.pollCreationMessageKey?.id && poll.vote?.encPayload && poll.vote.encIv) {
+    return {
+      kind: "poll",
+      targetKey: poll.pollCreationMessageKey as WAMessageKey,
+      payload: poll.vote.encPayload,
+      iv: poll.vote.encIv,
+      at: protoNumber(poll.senderTimestampMs) || messageTimestampMs(raw),
+    };
+  }
+  const event = content?.encEventResponseMessage;
+  if (event?.eventCreationMessageKey?.id && event.encPayload && event.encIv) {
+    return {
+      kind: "event",
+      targetKey: event.eventCreationMessageKey as WAMessageKey,
+      payload: event.encPayload,
+      iv: event.encIv,
+      at: messageTimestampMs(raw),
+    };
+  }
+  return undefined;
+}
+
+/** The secret a poll or event was created with, which every vote on it is encrypted under. */
+export function messageSecretOf(raw: WAMessage): Uint8Array | undefined {
+  const secret =
+    raw.message?.messageContextInfo?.messageSecret ?? analyze(raw).content?.messageContextInfo?.messageSecret;
+  return secret && secret.length > 0 ? secret : undefined;
+}
+
 export function mediaInfo(raw: WAMessage): { mime: string; size?: number; filename?: string } | undefined {
   return analyze(raw).media;
 }
@@ -1162,6 +1231,8 @@ export interface MessageViewContext {
   chatId: string;
   edited: boolean;
   reactions: Array<{ emoji: string; sender: string }>;
+  /** On a poll, the option names each voter chose; on an event, "going", "maybe" or "not_going". */
+  votes?: Array<{ voter: string; choice: string[] }>;
   transcript?: TranscriptRecord;
   now?: number;
 }
@@ -1221,7 +1292,34 @@ export function buildMessageView(raw: WAMessage, ctx: MessageViewContext): Messa
     view.reactions = ctx.reactions.map((r) => ({ ...r, name: ctx.nameFor(ctx.canonical(r.sender)) }));
   }
   if (event) view.system = event.system;
+  const poll = pollOf(raw);
+  if (poll) view.poll = pollView(poll, ctx);
+  if (a.content?.eventMessage != null) view.event_responses = responsesView(ctx);
   return view;
+}
+
+function voterOf(jid: string, ctx: MessageViewContext): Voter {
+  const id = ctx.canonical(jid);
+  return { id, name: ctx.nameFor(id) };
+}
+
+/** Every option, the ones nobody chose included, so the poll reads whole. */
+function pollView(poll: { question: string; options: string[] }, ctx: MessageViewContext): PollResults {
+  const votes = (ctx.votes ?? []).filter((vote) => vote.choice.length > 0);
+  return {
+    question: poll.question,
+    options: poll.options.map((name) => {
+      const voters = votes.filter((vote) => vote.choice.includes(name)).map((vote) => voterOf(vote.voter, ctx));
+      return { name, votes: voters.length, voters };
+    }),
+    voters: votes.length,
+  };
+}
+
+function responsesView(ctx: MessageViewContext): EventResponses {
+  const who = (answer: string): Voter[] =>
+    (ctx.votes ?? []).filter((vote) => vote.choice.includes(answer)).map((vote) => voterOf(vote.voter, ctx));
+  return { going: who("going"), maybe: who("maybe"), not_going: who("not_going") };
 }
 
 function eventParty(jid: string, ctx: MessageViewContext): EventParty {

@@ -269,6 +269,12 @@ has \`type: "invite"\` and reads as "[group invite] Familia"; the invite code is
 never shown.
 Reactions ride on the message they answer: read_messages tags them as
 "❤️×2 😍", and get_message lists each one with who left it.
+Votes ride on their poll the same way: a poll carries
+\`poll: {question, options: [{name, votes, voters}], voters}\`, read_messages
+tags it "3 votes" and get_message lists each option as "Da (2): Ana, Dan". An
+event carries \`event_responses: {going, maybe, not_going}\`, tagged "2 going".
+The votes are the ones that reached this device. A vote whose poll is not
+loaded reads as "[vote on a poll that is not loaded]" until the poll arrives.
 A voice note reads as "[voice message · 0:42]"; once transcribed, what was said
 follows the placeholder in quotes and is carried bare in \`transcript\`.
 Call transcribe_audio(message_id) on a voice note that has no transcript yet.
@@ -912,7 +918,8 @@ search_messages does.`,
     name: "get_message",
     title: "Get one WhatsApp message in full",
     description: `The complete message behind a message_id, including the quoted message it
-replies to, each reaction with who left it, and its media metadata. Use it after search_messages
+replies to, each reaction with who left it, who chose each option of a poll or
+answered an event, and its media metadata. Use it after search_messages
 or read_messages when you need the context around a single message.
 
 The id also resolves in its raw form: \`false_<lid>@lid_<stanza>\` works even
@@ -942,7 +949,7 @@ is the name \`name\` shows) and \`name_source\` ("contact", "pushname" or
           : { binding: resolved, message: await getMessageView(wa, message_id) };
       const [identified] = await withSenderIdentity(binding.wa, [message]);
       const view = identified ?? message;
-      const text = [renderMessages("Message", [view]), reactionLine(view)].filter(Boolean).join("\n");
+      const text = [renderMessages("Message", [view]), reactionLine(view), voteLines(view)].filter(Boolean).join("\n");
       return ok(text, {
         ...(view as unknown as Record<string, unknown>),
         account_id: binding.id,
@@ -1277,8 +1284,9 @@ first (needs ffmpeg on the machine running wazap).`,
   tool({
     name: "send_poll",
     title: "Draft a WhatsApp poll",
-    description: `Draft a poll. Does not send. Participants vote in WhatsApp; wazap cannot read
-the votes back. Show the preview; after the user says yes, call confirm_send.`,
+    description: `Draft a poll. Does not send. Participants vote in WhatsApp, and their votes
+show on the poll message: read_messages counts them and get_message says who
+chose each option. Show the preview; after the user says yes, call confirm_send.`,
     schema: {
       chat_id: chatId,
       question: z.string().min(1).max(255).describe("The poll question"),
@@ -1670,6 +1678,40 @@ function reactionLine(m: AnyMessage): string | null {
   return `  reactions: ${m.reactions.map((r) => `${r.emoji} ${r.name}`).join(", ")}`;
 }
 
+/** "3 votes" on a poll, "2 going · 1 maybe" on an event: how many, and who only in get_message. */
+function voteTag(m: AnyMessage): string | null {
+  if (m.poll) return m.poll.voters > 0 ? `${m.poll.voters} vote${m.poll.voters === 1 ? "" : "s"}` : null;
+  if (!m.event_responses) return null;
+  const { going, maybe, not_going } = m.event_responses;
+  const counts: Array<[number, string]> = [
+    [going.length, "going"],
+    [maybe.length, "maybe"],
+    [not_going.length, "not going"],
+  ];
+  const parts = counts.filter(([n]) => n > 0).map(([n, label]) => `${n} ${label}`);
+  return parts.length > 0 ? parts.join(" · ") : null;
+}
+
+/** Who chose what, for the one message get_message renders: "Da (2): Ana, Dan" per option, "going: Ana · maybe: Dan" for an event. */
+function voteLines(m: AnyMessage): string | null {
+  const names = (voters: ReadonlyArray<{ name: string }>): string => voters.map((v) => v.name).join(", ");
+  if (m.poll) {
+    const lines = m.poll.options.map(
+      (option) => `  ${option.name} (${option.votes})${option.voters.length > 0 ? `: ${names(option.voters)}` : ""}`
+    );
+    return lines.length > 0 ? lines.join("\n") : null;
+  }
+  if (!m.event_responses) return null;
+  const { going, maybe, not_going } = m.event_responses;
+  const groups: Array<[string, ReadonlyArray<{ name: string }>]> = [
+    ["going", going],
+    ["maybe", maybe],
+    ["not going", not_going],
+  ];
+  const parts = groups.filter(([, voters]) => voters.length > 0).map(([label, voters]) => `${label}: ${names(voters)}`);
+  return parts.length > 0 ? `  ${parts.join(" · ")}` : null;
+}
+
 function renderMessages(
   title: string,
   messages: ReadonlyArray<AnyMessage>,
@@ -1688,6 +1730,7 @@ function renderMessages(
       m.edited ? "edited" : null,
       m.quoted ? "reply" : null,
       m.reactions?.length ? reactionTag(m.reactions) : null,
+      voteTag(m),
     ].filter(Boolean);
     lines.push(
       `- **${senderLabel(m, introduced)}** · ${m.age}${tags.length ? ` [${tags.join(", ")}]` : ""} · id: \`${m.message_id}\``

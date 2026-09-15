@@ -50,6 +50,7 @@ import {
   formatAge,
   isCallPlaceholder,
   isControlMessage,
+  isEvent,
   isStubEvent,
   isUserMessage,
   isoWithOffset,
@@ -60,6 +61,7 @@ import {
   messageTimestampMs,
   messageType,
   phoneOf,
+  pollOf,
   protoNumber,
   quotedSenderJid,
   reactionOf,
@@ -68,7 +70,10 @@ import {
   thumbnailOf,
   viewText,
   voiceSeconds,
+  voteOf,
+  type EncryptedVote,
 } from "./messages.js";
+import { readVote } from "./polls.js";
 import { PAIRING_TIMEOUT_MS, WA_BROWSER, prettyCode, startPairing } from "./pairing.js";
 import {
   EMBED_MODELS,
@@ -2962,6 +2967,7 @@ export class WhatsAppService implements WhatsAppApi {
       chatId: chatJid,
       edited: this.store.edited.has(sid),
       reactions: this.store.reactionsFor(sid),
+      votes: this.store.votesFor(sid),
       transcript: this.store.transcripts.get(sid),
     });
   }
@@ -3163,11 +3169,13 @@ export class WhatsAppService implements WhatsAppApi {
       if (isNoiseJid(jid) || isControlMessage(raw)) continue;
       this.learnPushName(raw, jid);
       if (this.applyReaction(raw, jid)) continue;
+      if (this.applyVote(raw, jid)) continue;
       const sid = messageIdFor(raw.key, jid);
       if (revoked.has(sid)) continue;
       if (!this.keepOverEarlierCall(raw, jid, sid)) continue;
       this.store.putMessage(sid, jid, raw);
       this.noteInbound(raw);
+      this.foldVotesOnto(raw, jid);
       stored.push(raw);
     }
     // Everything that reached the store is indexable work; the feed itself
@@ -3218,6 +3226,98 @@ export class WhatsAppService implements WhatsAppApi {
         this.recallForget([sid]);
       }
     }
+  }
+
+  /**
+   * A vote on a poll, or a response to an event, is a mark on that message the
+   * way a reaction is: once it can be read it goes onto the poll and is never
+   * filed on its own. One that cannot be read yet — its poll is not loaded, or
+   * no spelling of the two jids opens it — stays a line of its own, and is
+   * tried again when the poll arrives. True when `raw` was folded.
+   */
+  private applyVote(raw: WAMessage, chatJid: string): boolean {
+    const vote = voteOf(raw);
+    if (!vote) return false;
+    const target = this.voteTarget(vote, chatJid);
+    if (!target) return false;
+    const reading = readVote(vote, target.raw, this.voteSpellings(target.raw), this.voteSpellings(raw));
+    if (!reading) return false;
+    const voter = raw.key.fromMe
+      ? this.ownJid()
+      : this.canonical(raw.key.participant || raw.participant || raw.key.remoteJid || chatJid);
+    if (voter) this.store.vote(target.sid, voter, reading.choice, vote.at);
+    return true;
+  }
+
+  /**
+   * The poll or event a vote points at, by its id, in the vote's chat under
+   * every name that chat goes by: the voter's device may key the poll under a
+   * lid where this store filed it under the number, or the other way round.
+   */
+  private voteTarget(vote: EncryptedVote, chatJid: string): { sid: string; raw: WAMessage } | undefined {
+    const remote = vote.targetKey.remoteJid;
+    const chats = [chatJid, remote ? this.canonical(remote) : "", this.lidPhones.get(chatJid), this.phoneLids.get(chatJid)];
+    const mine = Boolean(vote.targetKey.fromMe);
+    for (const chat of new Set(chats)) {
+      if (!chat) continue;
+      for (const fromMe of [mine, !mine]) {
+        const sid = messageIdFor({ ...vote.targetKey, fromMe }, chat);
+        const raw = this.store.messages.get(sid);
+        if (raw && (vote.kind === "poll" ? pollOf(raw) !== undefined : isEvent(raw))) return { sid, raw };
+      }
+    }
+    return undefined;
+  }
+
+  /**
+   * Every jid WhatsApp may have bound a vote to for the author of `raw`: the
+   * ones its key carries, device dropped, each with the number or lid it pairs
+   * with — ours in both forms when the message is our own. The order is fixed,
+   * so every retry tries the same spellings the same way.
+   */
+  private voteSpellings(raw: WAMessage): string[] {
+    const key = raw.key;
+    const seeds = key.fromMe
+      ? [this.ownJid(), this.sockClient?.user?.id, this.sockClient?.user?.lid]
+      : [key.participant, key.participantAlt, raw.participant, key.remoteJid, key.remoteJidAlt];
+    const spellings: string[] = [];
+    for (const seed of seeds) {
+      if (!seed || isGroupId(seed) || isStatusJid(seed)) continue;
+      const jid = jidNormalizedUser(seed);
+      const canonical = this.canonical(jid);
+      for (const one of [jid, canonical, this.lidPhones.get(jid), this.phoneLids.get(jid), this.phoneLids.get(canonical)]) {
+        if (one && !spellings.includes(one)) spellings.push(one);
+      }
+    }
+    return spellings;
+  }
+
+  /** Votes and responses that arrived before their poll or event fold onto it the moment it lands. */
+  private foldVotesOnto(raw: WAMessage, chatJid: string): void {
+    if (pollOf(raw) === undefined && !isEvent(raw)) return;
+    for (const waiting of this.store.recent(chatJid, HISTORY_STORE_CAP_PER_CHAT)) {
+      if (voteOf(waiting.raw)?.targetKey.id !== raw.key.id) continue;
+      if (!this.applyVote(waiting.raw, chatJid)) continue;
+      this.store.dropMessage(waiting.sid);
+      this.recallForget([waiting.sid]);
+    }
+  }
+
+  /**
+   * Votes filed as messages of their own — by a wazap that could not read them,
+   * or while their poll was not loaded — move onto their polls. Runs once the
+   * history has replayed, so every poll it could find is in.
+   */
+  private foldVotes(): void {
+    let folded = false;
+    for (const [sid, raw] of [...this.store.messages]) {
+      const jid = this.store.chatOf.get(sid);
+      if (jid === undefined || !this.applyVote(raw, jid)) continue;
+      this.store.dropMessage(sid);
+      this.recallForget([sid]);
+      folded = true;
+    }
+    if (folded) this.markStoreDirty();
   }
 
   /**
@@ -3307,6 +3407,7 @@ export class WhatsAppService implements WhatsAppApi {
     // The index opens before history replays, so the replay can feed it.
     await this.openRecall();
     await this.loadHistoryStore();
+    this.foldVotes();
   }
 
   private async loadStoreSnapshot(): Promise<void> {
@@ -3430,6 +3531,7 @@ export class WhatsAppService implements WhatsAppApi {
       // The snapshot's copy is newer than the line written when the message arrived.
       if (this.store.messages.has(record.sid)) continue;
       if (this.applyReaction(raw, jid)) continue;
+      if (this.applyVote(raw, jid)) continue;
       if (!this.keepOverEarlierCall(raw, jid, record.sid)) continue;
       this.store.putMessage(record.sid, jid, raw);
       this.noteInbound(raw);
