@@ -5,6 +5,9 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { mkdtempSync, readFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 import { AccountHub } from "../dist/account-hub.js";
 import { AccountRegistry } from "../dist/accounts.js";
@@ -165,6 +168,73 @@ test("a chat or message only one account knows selects that account", async () =
   assert.equal(homeMsg.structuredContent.account_id, "default");
   const workMsg = await tools.get("get_message").handler({ message_id: `false_${DAN}_W1` });
   assert.equal(workMsg.structuredContent.account_id, "work");
+});
+
+test("a message_id the default cannot resolve is tried on every account in turn", async () => {
+  const { hub, workSock } = twoAccountHub();
+  const LID = "999888777666555@lid";
+  // Arrived under the lid before the pairing: the ring folds to the number but
+  // the store key keeps the lid spelling, so the id views now report is a raw
+  // hasMessage miss on both accounts — only work's own mapping leads back.
+  workSock.ev.emit("messages.upsert", { type: "notify", messages: [message(LID, "din lid", { id: "W9" })] });
+  workSock.ev.emit("lid-mapping.update", { lid: LID, pn: DAN });
+  const reported = `false_${DAN}_W9`;
+  const tools = toolsOf(hub);
+
+  const found = await tools.get("get_message").handler({ message_id: reported });
+  assert.equal(found.isError, undefined);
+  assert.equal(found.structuredContent.text, "din lid");
+  assert.equal(found.structuredContent.sender.id, DAN);
+  assert.equal(found.structuredContent.account_id, "work", "the account that answered is the one reported");
+
+  const scoped = await tools.get("get_message").handler({ message_id: reported, account_id: "default" });
+  assert.equal(scoped.structuredContent.error, "MESSAGE_NOT_FOUND", "an explicit account_id keeps the lookup scoped");
+});
+
+test("download_media walks the accounts until a store files the id", async () => {
+  const { hub, work, workSock } = twoAccountHub();
+  const LID = "888777666555444@lid";
+  const OWNER = "40700000009@s.whatsapp.net";
+  workSock.fetchStatus = async () => [];
+  workSock.profilePictureUrl = async () => null;
+  // The pairing lands first, so the arrival files under the number and the
+  // lid-spelled id is no store key anywhere — only work can map it back.
+  workSock.ev.emit("lid-mapping.update", { lid: LID, pn: OWNER });
+  const ogg = Buffer.from("OggS across accounts");
+  work.mediaBuffer = async () => ogg;
+  workSock.ev.emit("messages.upsert", {
+    type: "notify",
+    messages: [
+      {
+        key: { remoteJid: LID, fromMe: false, id: "W8" },
+        message: { audioMessage: { mimetype: "audio/ogg", fileLength: ogg.length, seconds: 3 } },
+        messageTimestamp: Math.floor(Date.now() / 1000),
+      },
+    ],
+  });
+  const lidSid = `false_${LID}_W8`;
+  const saveTo = mkdtempSync(join(tmpdir(), "wazap-resolve-dl-"));
+  const tools = toolsOf(hub);
+
+  const result = await tools.get("download_media").handler({ message_id: lidSid, save_to: saveTo });
+  const out = result.structuredContent;
+  assert.equal(result.isError, undefined);
+  assert.equal(out.mime, "audio/ogg");
+  assert.deepEqual(readFileSync(out.path), ogg);
+  assert.equal(out.account_id, "work");
+  assert.equal(out.sender.id, OWNER, "sender identity is resolved on the account that served the file");
+
+  const scoped = await tools.get("download_media").handler({ message_id: lidSid, save_to: saveTo, account_id: "default" });
+  assert.equal(scoped.structuredContent.error, "MESSAGE_NOT_FOUND");
+});
+
+test("a message_id no account files keeps the resolved account's miss", async () => {
+  const { hub } = twoAccountHub();
+  const tools = toolsOf(hub);
+  const result = await tools.get("get_message").handler({ message_id: `false_${STRANGER}_GHOST` });
+  assert.equal(result.isError, true);
+  assert.equal(result.structuredContent.error, "MESSAGE_NOT_FOUND");
+  assert.equal(result.structuredContent.account_id, "default");
 });
 
 test("a chat both accounts know is AMBIGUOUS_ACCOUNT naming them", async () => {

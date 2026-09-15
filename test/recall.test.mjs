@@ -364,7 +364,7 @@ test("a message that fell out of the store still answers from the index", async 
   }
 });
 
-test("recall off answers RECALL_UNAVAILABLE with the fix, through the tool too", async () => {
+test("recall off answers RECALL_UNAVAILABLE with the fix, and the tool falls back to keyword search", async () => {
   const { svc } = await serviceWith({});
   try {
     await assert.rejects(() => svc.recall("anything", undefined, 5), (err) => {
@@ -374,10 +374,46 @@ test("recall off answers RECALL_UNAVAILABLE with the fix, through the tool too",
     });
     const server = fakeServer();
     registerTools(server, asToolSource(svc), { allowWrite: true });
+    // The tool does not dead-end: it answers from the local history and says
+    // semantic recall is off, with the command that turns it on.
     const result = await server.tools.get("recall").handler({ query: "anything" });
+    assert.equal(result.isError, undefined);
+    assert.equal(result.structuredContent.mode, "keyword_fallback");
+    assert.match(result.structuredContent.recall_unavailable.fix, /wazap config recall local/);
+    assert.match(result.content[0].text, /keyword results over the local history/);
+  } finally {
+    await svc.stop();
+  }
+});
+
+test("when even the keyword fallback cannot run, recall stays a hard error", async () => {
+  const { svc } = await serviceWith({});
+  // Nothing linked: recall refuses NOT_LINKED before the index question ever
+  // comes up, and the fallback's own search would refuse the same way.
+  svc.status = "not_linked";
+  try {
+    const server = fakeServer();
+    registerTools(server, asToolSource(svc), { allowWrite: true });
+    const dead = await server.tools.get("recall").handler({ query: "anything" });
+    assert.equal(dead.isError, true);
+    assert.equal(dead.structuredContent.error, "NOT_LINKED");
+    assert.equal(dead.structuredContent.mode, undefined, "no fallback was claimed");
+  } finally {
+    await svc.stop();
+  }
+});
+
+test("a fallback that itself fails stays a hard error, not a crash", async () => {
+  const { svc } = await serviceWith({});
+  try {
+    const server = fakeServer();
+    registerTools(server, asToolSource(svc), { allowWrite: true });
+    // Recall is off; the fallback then meets the same bad chat_id.
+    const result = await server.tools.get("recall").handler({ query: "x", chat_id: "x@nope.invalid" });
     assert.equal(result.isError, true);
-    assert.equal(result.structuredContent.error, "RECALL_UNAVAILABLE");
-    assert.match(result.structuredContent.fix, /wazap config recall local/);
+    assert.equal(result.structuredContent.error, "INVALID_ID");
+    assert.equal(result.structuredContent.mode, undefined);
+    assert.doesNotMatch(result.content[0].text, /keyword_fallback/);
   } finally {
     await svc.stop();
   }

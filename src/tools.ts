@@ -9,10 +9,21 @@ import {
   stringArg,
 } from "./account-resolve.js";
 import { compactConversations, renderCompact } from "./compact.js";
+import { coverageNote, indexCoverageNote, searchCoverage } from "./coverage.js";
 import { renderDraft, type DraftView } from "./drafts.js";
 import { asWazapError, ERROR_GUIDE, WazapError } from "./errors.js";
+import { freshnessNote, readFreshness } from "./freshness.js";
+import { mediaCaptionOf } from "./media-details.js";
+import { getMessageView, getMessageViewAcross, resolveMessageId, resolveMessageIdAcross } from "./message-ref.js";
 import { clockLabel } from "./messages.js";
 import { RateLimiter } from "./ratelimit.js";
+import {
+  nameSourceOf,
+  resolveSenderFilter,
+  withSenderIdentity,
+  type IdentifiedMessage,
+  type IdentifiedRecallAnswer,
+} from "./sender-identity.js";
 import { MESSAGE_TYPES } from "./wa-types.js";
 import type {
   ChatSummary,
@@ -256,8 +267,10 @@ code with what to do about it. Takes no arguments and never touches WhatsApp.`,
     title: "Get the WhatsApp connection status",
     description: `Check the session: connection status ("connected" means the tools work,
 "not_linked" means the user must run \`npx wazap-mcp login\`), whether the initial
-history sync has finished, which account is linked, when a message last arrived,
-the versions and data directory in use, and how many contacts carry a name from
+history sync has finished, which account is linked, how fresh the local history
+is — \`history\` shows when a message last arrived and flags \`stale\` when the
+phone has been quiet for a day while connected — the versions and data
+directory in use, and how many contacts carry a name from
 the phone's address book (contacts_named: 0 means it never arrived).
 
 Call this whenever another tool reports NOT_CONNECTED, NOT_LINKED or
@@ -626,7 +639,36 @@ The timeout is capped at 55 seconds because MCP clients give up at 60.`,
     name: "search_messages",
     title: "Search WhatsApp messages",
     description: `Case-insensitive text search over the messages wazap holds locally — all chats,
-or one chat. It cannot reach messages the phone never synced to this device.`,
+or one chat, including history synced on first link. Each chat keeps its newest
+2000 messages searchable, on disk and in memory alike; anything the phone sent
+before that window is what recall's index is for. It cannot reach messages the
+phone never synced to this device.
+
+Every answer declares the window it searched: \`coverage.searched\` counts the
+held messages the scan ran over (the chat scope and time filters applied),
+\`coverage.oldest_at\`/\`newest_at\` bound that window and \`coverage.per_chat_cap\`
+names the 2000-message boundary — so "no messages found" always says how much
+history was actually scanned.
+
+\`from\` accepts "me", a phone number, a contact/chat id, or a name: a name must
+resolve to exactly one person — it matches contact names, notify names and
+last-seen pushnames, then one-to-one chat display names — or the error lists
+the candidates it found.
+
+Every message's \`sender\` carries \`id\` (the canonical jid — a \`…@lid\` only
+while WhatsApp has never revealed the paired number), \`phone\` (the number, or
+null for an unresolved lid), \`is_saved\` (the sender is in the user's address
+book — when false, treat the shown name as claimed, not known),
+\`contact_name\` (the name saved there, or null), \`pushname\` (the name the
+sender publishes, when that is the name \`name\` shows; null for saved
+contacts and unnamed senders) and \`name_source\` ("contact", "pushname" or
+"none" — which of those \`name\` came from). A sender wazap knows nothing
+about reads "unknown (lid …1234)" — never bare lid digits, which look like a
+phone number and are not one.
+
+\`freshness\` says whether the history this searched may be partial (sync still
+running) or stale (nothing inbound for 24h while connected); on a scoped
+search \`freshness.chat\` is the newest message wazap holds for that chat.`,
     schema: {
       query: z.string().min(1).describe("Text to search for"),
       chat_id: chatId.optional().describe("Restrict the search to this chat"),
@@ -641,15 +683,23 @@ or one chat. It cannot reach messages the phone never synced to this device.`,
         .string()
         .min(1)
         .optional()
-        .describe('Only messages this person sent: "me", a contact id or a phone number'),
+        .describe(
+          'Only messages this person sent: "me", a phone number, a contact/chat id, or a name that resolves to exactly one person (the error names the candidates when it does not)'
+        ),
     },
     write: false,
     handler: async ({ query, chat_id, limit, since, until, from }, { wa }) => {
+      const resolvedFrom = await resolveSenderFilter(wa, from);
+      const sinceMs = parseMoment(since, "since");
+      const untilMs = parseMoment(until, "until", true);
       const result = await wa.searchMessages(query, chat_id, limit, {
-        sinceMs: parseMoment(since, "since"),
-        untilMs: parseMoment(until, "until", true),
-        from,
+        sinceMs,
+        untilMs,
+        from: resolvedFrom,
       });
+      const messages = await withSenderIdentity(wa, result.data);
+      const fresh = await readFreshness(wa, chat_id);
+      const cov = searchCoverage(wa, chat_id, { sinceMs, untilMs });
       const scope = [
         chat_id ? `in ${chat_id}` : null,
         from ? `from ${from}` : null,
@@ -658,16 +708,20 @@ or one chat. It cannot reach messages the phone never synced to this device.`,
       ]
         .filter(Boolean)
         .join(", ");
+      const note = [coverageNote(cov, chat_id !== undefined), freshnessNote(fresh)].filter(Boolean).join(" ");
       return ok(
-        renderMessages(`Search results for "${query}"${scope ? ` (${scope})` : ""}`, result.data),
+        renderMessages(`Search results for "${query}"${scope ? ` (${scope})` : ""}`, messages, new Map(), note),
         synced(result, {
           query,
           chat_id: chat_id ?? null,
           since: since ?? null,
           until: until ?? null,
           from: from ?? null,
-          count: result.data.length,
-          messages: result.data,
+          from_resolved: resolvedFrom ?? null,
+          count: messages.length,
+          messages,
+          coverage: cov,
+          freshness: fresh,
         })
       );
     },
@@ -687,13 +741,23 @@ Each result carries its date and a score: semantic similarity scaled by
 recency, plus a small bonus when the hit repeats a rare query token
 verbatim — a name, a number — so fresh and exact matches rank first.
 chat_id, since, until and from narrow
-the search exactly like search_messages. A hit marked "index only" lives in
-the index alone: quote it, but get_message and download_media cannot see it.
+the search exactly like search_messages — including a name that resolves to
+exactly one person. A hit marked "index only" lives in the index alone: quote
+it, but get_message and download_media cannot see it.
 Results under the similarity floor are dropped rather than listed; when only
 weak matches survive, the output says so — do not present them as found facts.
 
-RECALL_UNAVAILABLE means recall is off or the embedding setup is missing; the
-fix names the command the user has to run. Do not retry it.`,
+When semantic recall is off or its embedding setup is missing, the tool does
+not dead-end: it falls back to a keyword search over the local history, marked
+\`mode: "keyword_fallback"\`, and \`recall_unavailable.fix\` names the command
+that turns semantic recall on. An error remains only when even the fallback
+cannot run.
+
+Each hit's \`sender\` carries the same identity fields as search_messages, and
+\`freshness\` says whether the local history may be partial or stale. Every
+answer also declares its window: the semantic path reports how many messages
+the index covers, and a keyword fallback carries the same \`coverage\` block
+search_messages does.`,
     schema: {
       query: z.string().min(1).describe("What to find, said any way — the meaning is what matches"),
       chat_id: chatId.optional().describe("Restrict the search to this chat"),
@@ -708,15 +772,15 @@ fix names the command the user has to run. Do not retry it.`,
         .string()
         .min(1)
         .optional()
-        .describe('Only messages this person sent: "me", a contact id or a phone number'),
+        .describe(
+          'Only messages this person sent: "me", a phone number, a contact/chat id, or a name that resolves to exactly one person (the error names the candidates when it does not)'
+        ),
     },
     write: false,
     handler: async ({ query, chat_id, limit, since, until, from }, { wa }) => {
-      const result = await wa.recall(query, chat_id, limit, {
-        sinceMs: parseMoment(since, "since"),
-        untilMs: parseMoment(until, "until", true),
-        from,
-      });
+      const resolvedFrom = await resolveSenderFilter(wa, from);
+      const sinceMs = parseMoment(since, "since");
+      const untilMs = parseMoment(until, "until", true);
       const scope = [
         chat_id ? `in ${chat_id}` : null,
         from ? `from ${from}` : null,
@@ -725,17 +789,83 @@ fix names the command the user has to run. Do not retry it.`,
       ]
         .filter(Boolean)
         .join(", ");
+      const title = `Recall results for "${query}"${scope ? ` (${scope})` : ""}`;
+      const fresh = await readFreshness(wa, chat_id);
+
+      let result: Synced<RecallAnswer> | null = null;
+      let unavailable: WazapError | null = null;
+      try {
+        result = await wa.recall(query, chat_id, limit, { sinceMs, untilMs, from: resolvedFrom });
+      } catch (err) {
+        if (!(err instanceof WazapError) || err.code !== "RECALL_UNAVAILABLE") throw err;
+        unavailable = err;
+      }
+
+      if (result === null) {
+        // The setup cliff: no embeddings means the index never existed, but the
+        // local history is still searchable — answer with it and say so.
+        const fallback = await wa.searchMessages(query, chat_id, limit, {
+          sinceMs,
+          untilMs,
+          from: resolvedFrom,
+        });
+        const messages = await withSenderIdentity(wa, fallback.data);
+        const cov = searchCoverage(wa, chat_id, { sinceMs, untilMs });
+        const note = `Semantic recall is unavailable (${unavailable!.message}) — these are keyword results over the local history.${unavailable!.fix ? ` ${unavailable!.fix}` : ""}`;
+        return ok(
+          renderMessages(
+            title,
+            messages,
+            new Map(),
+            [note, coverageNote(cov, chat_id !== undefined), freshnessNote(fresh)].filter(Boolean).join(" ")
+          ),
+          synced(fallback, {
+            query,
+            chat_id: chat_id ?? null,
+            since: since ?? null,
+            until: until ?? null,
+            from: from ?? null,
+            from_resolved: resolvedFrom ?? null,
+            mode: "keyword_fallback",
+            recall_unavailable: {
+              message: unavailable!.message,
+              ...(unavailable!.fix ? { fix: unavailable!.fix } : {}),
+            },
+            count: messages.length,
+            messages,
+            coverage: cov,
+            freshness: fresh,
+          })
+        );
+      }
+
+      const identified = await withSenderIdentity(
+        wa,
+        result.data.hits.map((hit) => hit.message)
+      );
+      const hits = result.data.hits.map((hit, i) => ({ ...hit, message: identified[i]! }));
+      const answer: IdentifiedRecallAnswer = { hits, index: result.data.index };
+      // While the index is still catching up renderRecall says so itself; the
+      // coverage line only repeats it.
+      const note = [
+        result.data.index.state === "indexing" ? null : indexCoverageNote(result.data.index),
+        freshnessNote(fresh),
+      ]
+        .filter(Boolean)
+        .join(" ");
       return ok(
-        renderRecall(`Recall results for "${query}"${scope ? ` (${scope})` : ""}`, result.data),
+        `${renderRecall(title, answer)}${note ? `\n${note}` : ""}`,
         synced(result, {
           query,
           chat_id: chat_id ?? null,
           since: since ?? null,
           until: until ?? null,
           from: from ?? null,
-          count: result.data.hits.length,
+          from_resolved: resolvedFrom ?? null,
+          count: hits.length,
           index: result.data.index,
-          hits: result.data.hits,
+          hits,
+          freshness: fresh,
         })
       );
     },
@@ -746,12 +876,39 @@ fix names the command the user has to run. Do not retry it.`,
     title: "Get one WhatsApp message in full",
     description: `The complete message behind a message_id, including the quoted message it
 replies to, its reactions, and its media metadata. Use it after search_messages
-or read_messages when you need the context around a single message.`,
-    schema: { message_id: messageId },
+or read_messages when you need the context around a single message.
+
+The id also resolves in its raw form: \`false_<lid>@lid_<stanza>\` works even
+when the chat's number was never learned, and an id that names the same
+message under the lid or the paired number finds it either way. With several
+accounts linked and no \`account_id\`, an id the resolved account cannot find
+is tried on each of the others in turn before MESSAGE_NOT_FOUND comes back,
+and the answer's \`account_id\` names the one that had it; pass \`account_id\`
+to keep the lookup on one account.
+
+The \`sender\` carries the same identity fields as search_messages: \`id\` (the
+canonical jid — a \`…@lid\` only while WhatsApp has never revealed the paired
+number), \`phone\` (the number, or null for an unresolved lid), \`is_saved\`
+(whether the sender is in the user's address book), \`contact_name\` (the name
+saved there, or null), \`pushname\` (the name the sender publishes, when that
+is the name \`name\` shows) and \`name_source\` ("contact", "pushname" or
+"none" — which of those \`name\` came from).`,
+    // account_id is named again here so the handler sees it typed: an explicit
+    // id keeps the lookup on that one account instead of walking the bindings.
+    schema: { message_id: messageId, account_id: ACCOUNT_ID.optional() },
     write: false,
-    handler: async ({ message_id }, { wa }) => {
-      const message = await wa.getMessage(message_id);
-      return ok(renderMessages("Message", [message]), message as unknown as Record<string, unknown>);
+    handler: async ({ message_id, account_id }, { wa, hub, accountId }) => {
+      const resolved = { id: accountId, wa };
+      const { binding, message } =
+        account_id === undefined
+          ? await getMessageViewAcross(hub, resolved, message_id)
+          : { binding: resolved, message: await getMessageView(wa, message_id) };
+      const [identified] = await withSenderIdentity(binding.wa, [message]);
+      const view = identified ?? message;
+      return ok(renderMessages("Message", [view]), {
+        ...(view as unknown as Record<string, unknown>),
+        account_id: binding.id,
+      });
     },
   }),
 
@@ -818,7 +975,10 @@ the phone has no saved contacts for these people.`,
     name: "get_contact",
     title: "Get WhatsApp contact details",
     description: `Full details for one contact: name, number, about text, profile picture URL,
-whether they are a saved contact, a business, or blocked.`,
+whether they are a saved contact, a business, or blocked. \`name_source\` says
+where the shown name comes from — "contact" when it is the saved address-book
+name (is_my_contact), "pushname" when it is a name the person publishes, or
+"none" when there is no usable name.`,
     schema: {
       contact_id: chatId.describe("Contact id from search_contacts / list_chats, or a phone number"),
     },
@@ -834,11 +994,11 @@ whether they are a saved contact, a business, or blocked.`,
         ...Object.entries(c.fields ?? {}).map(([key, value]) => `- **${key}**: ${value}`),
         c.about ? `- **about**: ${c.about}` : null,
         c.profile_pic_url ? `- **profile picture**: ${c.profile_pic_url}` : null,
-        `- **saved**: ${c.is_my_contact} · **business**: ${c.is_business} · **blocked**: ${c.is_blocked}`,
+        `- **saved**: ${c.is_my_contact} · **business**: ${c.is_business} · **blocked**: ${c.is_blocked} · **name source**: ${nameSourceOf(c)}`,
       ]
         .filter((line): line is string => line !== null)
         .join("\n");
-      return ok(text, c as unknown as Record<string, unknown>);
+      return ok(text, { ...c, name_source: nameSourceOf(c) } as unknown as Record<string, unknown>);
     },
   }),
 
@@ -917,23 +1077,61 @@ Call this before manage_group: most group actions need admin rights.`,
     name: "download_media",
     title: "Download media from a WhatsApp message",
     description: `Download the photo/video/audio/document attached to a message and save it to
-disk on the machine running wazap. Images of 1 MB or less are also returned
-inline so you can look at them.
+disk on the machine running wazap. The file at \`path\` is already decrypted —
+open or process it as is; nothing else is needed. Images of 1 MB or less are
+also returned inline so you can look at them.
+
+The structured result carries: \`path\` (the saved file), \`mime\`, \`size\`
+(bytes), \`filename\` (the name it was saved under — a timestamped name wazap
+made, not the sender's), \`original_filename\` (the name the sender's file had,
+or null when the envelope carried none), \`caption\` (the text the sender wrote
+under the media, or null — audio and voice notes cannot carry one),
+\`message_id\` and \`sender\` (the same identity fields as search_messages —
+is_saved, contact_name, pushname, name_source — or null when even the message
+can no longer be read back).
+
+The id resolves in its raw form too: \`false_<lid>@lid_<stanza>\` works whether
+or not the chat's number was ever learned — when it was, the lid spelling finds
+the same message filed under the paired number. An unresolved sender never
+blocks the file. Without \`account_id\` the same lookup walks every linked
+account's store in turn before failing, and the result's \`account_id\` names
+the one that served the file.
 
 Fails with MEDIA_UNAVAILABLE when WhatsApp has expired the file.`,
     schema: {
       message_id: messageId.describe("A message with has_media=true"),
       save_to: z.string().min(1).optional().describe("Absolute directory to save into (default: <data-dir>/media)"),
+      // Same reason as get_message: the handler branches on whether it was given.
+      account_id: ACCOUNT_ID.optional(),
     },
     write: false,
-    handler: async ({ message_id, save_to }, { wa }) => {
-      const media = await wa.downloadMedia(message_id, save_to);
+    handler: async ({ message_id, save_to, account_id }, { wa, hub, accountId }) => {
+      const resolved = { id: accountId, wa };
+      const found =
+        account_id === undefined
+          ? await resolveMessageIdAcross(hub, resolved, message_id)
+          : { binding: resolved, sid: await resolveMessageId(wa, message_id) };
+      const media = await found.binding.wa.downloadMedia(found.sid, save_to);
+      // The envelope's caption, filename and sender live on the message, not the file.
+      const view = await getMessageView(found.binding.wa, found.sid).catch(() => undefined);
+      const [identified] = view === undefined ? [] : await withSenderIdentity(found.binding.wa, [view]);
       const { inline_base64, ...structured } = media;
       const extra: ContentBlock[] = inline_base64 ? [{ type: "image", data: inline_base64, mimeType: media.mime }] : [];
       const text =
         `Saved ${media.mime} (${Math.round(media.size / 1024)} KB) to:\n${media.path}` +
         (inline_base64 ? "\n(image attached inline)" : "");
-      return ok(text, structured as unknown as Record<string, unknown>, extra);
+      return ok(
+        text,
+        {
+          ...structured,
+          message_id,
+          account_id: found.binding.id,
+          caption: view === undefined ? null : mediaCaptionOf(view),
+          original_filename: view?.media?.filename ?? null,
+          sender: identified?.sender ?? null,
+        },
+        extra
+      );
     },
   }),
 
@@ -1382,20 +1580,23 @@ function previewNote(messages: MessageView[], previews: Preview[], asked: boolea
 }
 
 /** The sender's name, with the user's note on them the first time they appear in this rendering. */
-function senderLabel(m: MessageView, introduced: Set<string>): string {
+function senderLabel(m: AnyMessage, introduced: Set<string>): string {
   if (m.from_me) return "me";
   if (!m.sender.note || introduced.has(m.sender.id)) return m.sender.name;
   introduced.add(m.sender.id);
   return `${m.sender.name} · ${m.sender.note}`;
 }
 
+/** A rendered message, with or without the resolved sender identity fields. */
+type AnyMessage = MessageView | IdentifiedMessage;
+
 function renderMessages(
   title: string,
-  messages: MessageView[],
+  messages: ReadonlyArray<AnyMessage>,
   labels: Map<string, string> = new Map(),
   note: string | null = null
 ): string {
-  if (messages.length === 0) return `${title}: no messages found.`;
+  if (messages.length === 0) return `${title}: no messages found.${note ? ` ${note}` : ""}`;
   const lines = [`# ${title} (${messages.length})`, ""];
   if (note) lines.splice(1, 0, note);
   const introduced = new Set<string>();
@@ -1422,7 +1623,7 @@ function renderMessages(
  * them. "index only" warns that the message left the live store, so
  * get_message and download_media can no longer see it.
  */
-function renderRecall(title: string, answer: RecallAnswer): string {
+function renderRecall(title: string, answer: RecallAnswer | IdentifiedRecallAnswer): string {
   const { hits, index } = answer;
   const catchingUp =
     index.state === "indexing"

@@ -188,6 +188,8 @@ const CALL_SWEEP_MS = 30_000;
 /** The same call reaches the store up to three ways; only nearness in time tells them apart. */
 const CALL_DEDUPE_WINDOW_MS = 60_000;
 const CALL_DEDUPE_SCAN = 20;
+// Kept equal to MAX_MESSAGES_PER_CHAT in store.ts: the disk window and the
+// in-memory window are the same, so keyword search covers all wazap keeps.
 const HISTORY_STORE_CAP_PER_CHAT = 2_000;
 /** A download is buffered in memory, so the biggest file it may pull is bounded. */
 const MEDIA_DOWNLOAD_MAX_BYTES = 100_000_000;
@@ -769,7 +771,7 @@ export class WhatsAppService implements WhatsAppApi {
 
       for (const [sid, raw] of this.store.messages) {
         const jid = this.store.chatOf.get(sid);
-        if (!jid || (scope !== undefined && jid !== scope)) continue;
+        if (!jid || isNoiseJid(jid) || (scope !== undefined && jid !== scope)) continue;
         const at = messageTimestampMs(raw);
         if ((opts.sinceMs !== undefined && at < opts.sinceMs) || (opts.untilMs !== undefined && at > opts.untilMs))
           continue;

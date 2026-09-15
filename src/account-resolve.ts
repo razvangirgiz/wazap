@@ -6,6 +6,7 @@
 import type { AccountBinding, AccountSource } from "./account-hub.js";
 import { ownerNumber, type AccountRecord } from "./accounts.js";
 import { WazapError } from "./errors.js";
+import { historyFreshness, historyLine } from "./freshness.js";
 import { maskNumber } from "./ui.js";
 import type { ListedAccount, StatusInfo } from "./wa-types.js";
 
@@ -34,7 +35,11 @@ export function stringArg(args: Record<string, unknown>, key: string): string | 
 }
 
 export function attachAccountId(result: ToolPayload, accountId: string): ToolPayload {
-  return { ...result, structuredContent: { ...(result.structuredContent ?? {}), account_id: accountId } };
+  const structured = result.structuredContent ?? {};
+  // A read that had to walk the bindings stamps the account that answered;
+  // anything else reports the one the call resolved to.
+  const answered = typeof structured.account_id === "string" && structured.account_id ? structured.account_id : accountId;
+  return { ...result, structuredContent: { ...structured, account_id: answered } };
 }
 
 /** Write tools register when any live account allows writes. */
@@ -167,7 +172,11 @@ function webhookStatusLine(webhook: StatusInfo["webhook"]): string {
   return `- **webhook**: on${webhook.last_error ? ` · last error: ${webhook.last_error}` : ""}`;
 }
 
-/** The get_status body: `write_tools` is this session's, not the process default. */
+/**
+ * The get_status body: `write_tools` is this session's, not the process default.
+ * The `history` line is how an agent tells a stale store from a quiet one — the
+ * same freshness block search and recall attach to their results.
+ */
 export function renderGetStatus(s: StatusInfo, writeTools: boolean, hub: AccountSource): ToolPayload {
   const account = s.account ? `${s.account.name || "(no name)"} (${s.account.number})` : "none";
   const writeLine = writeTools
@@ -176,10 +185,11 @@ export function renderGetStatus(s: StatusInfo, writeTools: boolean, hub: Account
       ? "not registered (server is read-only; run `wazap config writes on` and restart)"
       : "not registered (this session used a read token)";
   const accounts = hub.bindings().map((row) => listedFromStatus(row.wa.getStatus(), true, row.id));
+  const freshness = historyFreshness(s);
   const text = [
     `# WhatsApp: ${s.status} (sync: ${s.sync})`,
     `- **account**: ${account}`,
-    `- **last message received**: ${s.last_message_received_at ?? "never"}`,
+    `- **history**: ${historyLine(freshness)}`,
     `- **contacts named**: ${s.contacts_named}`,
     `- **data dir**: ${s.data_dir} · **read-only**: ${s.read_only} · **write tools**: ${writeLine} · **rate limit**: ${s.rate_limit}/min`,
     `- **versions**: wazap ${s.wazap_version}, baileys ${s.baileys_version}`,
@@ -193,5 +203,5 @@ export function renderGetStatus(s: StatusInfo, writeTools: boolean, hub: Account
   ]
     .filter((line): line is string => line !== null)
     .join("\n");
-  return ok(text, { ...s, write_tools: writeTools, accounts } as unknown as Record<string, unknown>);
+  return ok(text, { ...s, write_tools: writeTools, accounts, freshness } as unknown as Record<string, unknown>);
 }
