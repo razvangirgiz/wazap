@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+### Changed
+
+- **`wazap update` no longer puts back skills you removed.** It used to copy
+  the skills into every detected client that lacked them, so deleting them
+  from `~/.claude/skills` lasted until the next update. Now it refreshes only
+  clients that already hold a copy, stale or upgraded; a client with none is
+  left alone. `wazap setup` and `wazap skills install` still install them, and
+  a copy missing only some skills, such as one a release added, still counts
+  as stale and is refreshed.
+
 ## 0.18.4
 ### Added
 

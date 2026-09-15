@@ -74,11 +74,14 @@ test("skillState reads missing, then installed, then stale as the packaged copie
   assert.equal(skillState(target), "stale");
 });
 
-test("skillState calls a harness missing one skill missing, not stale", () => {
+test("skillState calls a harness missing one skill stale, so update still refreshes it", () => {
   const dir = mkdtempSync(join(tmpdir(), "wazap-skillstate-gap-"));
   const target = { name: "temp", describe: "A throwaway harness", dir: () => dir, next: "" };
   installSkills(target, false);
   writeFileSync(join(dir, skillDirs[0], "SKILL.md"), "stale");
   rmSync(join(dir, skillDirs[1]), { recursive: true });
-  assert.equal(skillState(target), "missing");
+  assert.equal(skillState(target), "stale");
+
+  for (const name of skillDirs) rmSync(join(dir, name), { recursive: true, force: true });
+  assert.equal(skillState(target), "missing", "none left is a harness update leaves alone");
 });
