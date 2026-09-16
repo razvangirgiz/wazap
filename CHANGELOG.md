@@ -78,6 +78,18 @@
   `status --json` carries it as `storage`, and `get_status` as `storage`.
 - **A handled chat reopens only when the other side writes after the ask**
   that was marked, and a receipt keeps the latest time it was reported.
+- **Voice notes are transcribed from a durable queue.** The queue is kept in
+  the account database, so a restart or a crash resumes it instead of losing
+  what was waiting. A failed download, a provider answering 429 or 5xx, or a
+  whisper.cpp crash is retried after 10 s and a minute, three attempts in all;
+  expired media, audio the provider refuses and files too large give up at
+  once and record why. A note deleted or expired while it waits is dropped.
+  One transcriber serves every account in turn, and a note that just arrived
+  starts ahead of any backlog, so its webhook event carries the words. Notes a
+  history sync brings are now transcribed when less than a day old (before,
+  never). `get_status` has a `transcription` block and `wazap status` a
+  `voice queue` line: counts, the current run's age and the latest reason,
+  never content.
 
 - **Accounts come and go without a restart.** A running server follows
   `accounts.json`: `wazap account add`, `enable`, `disable`, `default` and

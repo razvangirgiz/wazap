@@ -480,11 +480,40 @@ The key is treated as a secret rather than as a setting:
 ### Without being asked
 
 With a provider configured, incoming voice notes of up to ten minutes are
-transcribed in the background as they arrive, one at a time, never holding up a
-message. The transcript is cached by message id and persisted, so a voice note is
-transcribed once and not again after a restart. Audio *files* are left alone,
-since one can be an hour long; call `transcribe_audio(message_id)` for those.
-`WAZAP_TRANSCRIBE_AUTO=0` keeps the tool and stops the background work.
+transcribed in the background as they arrive, never holding up a message. The
+transcript is stored with the message, so a voice note is transcribed once, and
+its words are searchable, recalled and carried by the webhook event.
+
+- **Durable.** The queue lives in the account database, in the same
+  moment the note is stored, so a restart or a crash resumes it instead
+  of dropping it. A note that just arrived starts at once, ahead of any
+  backlog, which is what lets its webhook event carry the words.
+- **One at a time for the whole server.** Every account shares one
+  transcriber and they take turns, so a backlog on one does not starve another
+  and two whisper.cpp runs never fight for the machine.
+- **Retried, then given up on.** A download that times out, a provider
+  answering 429 or 5xx, or whisper.cpp crashing is tried again after 10 s and
+  after a minute more, three attempts in all. Media WhatsApp no longer holds,
+  audio the provider refuses as input, or a file too large gives up at once.
+  A note that could not start because the account is disconnected or the
+  provider is not ready spends no attempt. A note given up on is not queued
+  again; `transcribe_audio(message_id)` still tries it on request.
+- **Deleted means dropped.** A note deleted, expired or cleared while it
+  waits leaves the queue and is never uploaded.
+- **History: the last day only.** A note that a history sync brings (a first
+  link, a relink) is queued only when it is less than 24 hours old, so linking
+  never transcribes the archive. A note WhatsApp delivers live is always
+  queued, however old its timestamp.
+
+Audio *files* are left alone, since one can be an hour long, and so are notes
+you recorded and notes WhatsApp gave no length for; call
+`transcribe_audio(message_id)` for those. `WAZAP_TRANSCRIBE_AUTO=0` keeps the
+tool and stops the background work; with it, or with the provider switched
+off, a queue already stored is kept and waits, and it continues under whichever
+provider is configured next. `get_status` shows the queue under `transcription`
+(how many wait, how long the current run has taken, how many were given up on,
+the latest reason, never content), and `wazap status` prints a `voice queue`
+line.
 
 ## Semantic recall
 
@@ -1244,7 +1273,8 @@ transcription when wazap auto-transcribed the note itself, which it does for
 incoming notes only; the event waits up to 60 seconds for those words. In
 every other case `text` is the `[voice message · 0:42]` placeholder: a note
 you recorded yourself, a note longer than 600 seconds, a note WhatsApp stated
-no duration for, and a transcription that failed. `ts` is the original local
+no duration for, and a transcription that failed every attempt or did not
+finish within the 60 seconds. `ts` is the original local
 time with a numeric offset, kept for consumers already reading it, and
 `timestamp` is the same instant in UTC.
 
