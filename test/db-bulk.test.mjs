@@ -272,3 +272,31 @@ test("finding 9: a checkpoint never waits for a reader holding a snapshot, and t
   assert.equal(statSync(`${path}-wal`).size, 0, "the retry truncated the WAL once the reader let go");
   db.close();
 });
+
+test("a second lid chat folding into the same number shares the barrier a first fold already carries", async () => {
+  const LID_A = "111111111111111@lid";
+  const LID_B = "222222222222222@lid";
+  const { db, path, clock } = openTemp({ chunkSize: 2 });
+  for (let i = 0; i < 6; i++) {
+    db.messages.upsert(textMessage(PEER, `P${i}`, T0 + i * 1000, `phone ${i}`));
+    db.messages.upsert(textMessage(LID_A, `A${i}`, T0 + i * 1000 + 100, `lid a ${i}`));
+    db.messages.upsert(textMessage(LID_B, `B${i}`, T0 + i * 1000 + 200, `lid b ${i}`));
+  }
+  const first = db.learnLidPhone(LID_B, PEER);
+  const clear = db.messages.clearChat(LID_A, T0 + 3500);
+  const second = db.learnLidPhone(LID_A, PEER);
+  for (const op of [first, clear, second]) op.catch(() => {});
+  db.close();
+  await Promise.allSettled([first, clear, second]);
+
+  const reopened = AccountDb.open(path, { now: () => clock.now, chunkSize: 2, checkpointDelayMs: 0 });
+  const visible = reopened.messages.chatPage(PEER, { limit: 100 }).items;
+  assert.deepEqual(visible.filter((m) => m.ts <= T0 + 3500).map((m) => m.keyId), [], "no row under the shared barrier is readable");
+  await reopened.resume();
+  assert.deepEqual(
+    reopened.messages.chatPage(PEER, { limit: 100 }).items.map((m) => m.keyId).sort(),
+    ["A4", "A5", "B4", "B5", "P4", "P5"]
+  );
+  assert.deepEqual(reopened.integrityCheck(), { ok: true, problems: [] });
+  reopened.close();
+});

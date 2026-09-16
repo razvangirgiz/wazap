@@ -124,19 +124,34 @@ export class Merger {
     const lidChat = this.c.get<ChatRow>("SELECT * FROM chats WHERE jid = ? AND merged_into IS NULL", lid);
     const phoneChat = this.c.get<ChatRow>("SELECT * FROM chats WHERE jid = ? AND merged_into IS NULL", phone);
     if (lidChat !== undefined && phoneChat !== undefined) {
-      const barrier = Math.max(lidChat.cleared_through_ts ?? 0, phoneChat.cleared_through_ts ?? 0);
       this.c.run("UPDATE chats SET merged_into = ? WHERE id = ? OR merged_into = ?", phoneChat.id, lidChat.id, lidChat.id);
-      if (barrier > 0) {
-        this.c.run("UPDATE chats SET cleared_through_ts = ? WHERE id IN (?, ?)", barrier, lidChat.id, phoneChat.id);
-        this.c.run(RECOMPUTE_LAST, phoneChat.id);
-        this.c.run(RECOMPUTE_LAST, lidChat.id);
-      }
+      this.shareBarrier(phoneChat.id);
     } else if (lidChat !== undefined) {
       this.c.run("UPDATE chats SET jid = ? WHERE id = ?", phone, lidChat.id);
     }
     const chatId = phoneChat?.id ?? lidChat?.id ?? null;
     if (chatId !== null) this.c.run("UPDATE chats SET contact_id = ? WHERE id = ?", contactId, chatId);
     return { contactId, chatId };
+  }
+
+  /**
+   * A chat and every chat folding into it read as one, so they share the
+   * latest clear barrier among them, and each one's last message is recomputed
+   * under it. Call inside write().
+   */
+  private shareBarrier(keepId: number): void {
+    const family = this.c.all<{ id: number; cleared_through_ts: number | null }>(
+      "SELECT id, cleared_through_ts FROM chats WHERE id = ? OR merged_into = ?",
+      keepId,
+      keepId
+    );
+    const barrier = Math.max(0, ...family.map((chat) => chat.cleared_through_ts ?? 0));
+    if (barrier === 0) return;
+    for (const chat of family) {
+      if (chat.cleared_through_ts === barrier) continue;
+      this.c.run("UPDATE chats SET cleared_through_ts = ? WHERE id = ?", barrier, chat.id);
+      this.c.run(RECOMPUTE_LAST, chat.id);
+    }
   }
 
   /** One person's two rows become one; references move later, in chunks. Returns the survivor. */
@@ -273,16 +288,7 @@ export class Merger {
    * number's and disappears.
    */
   private async foldChat(keepId: number, dropId: number, report: MergeReport): Promise<void> {
-    this.c.write(() => {
-      const barrier = this.c.get<{ through: number | null }>(
-        "SELECT max(coalesce(cleared_through_ts, 0)) AS through FROM chats WHERE id IN (?, ?)",
-        keepId,
-        dropId
-      )!.through;
-      if (barrier !== null && barrier > 0) {
-        this.c.run("UPDATE chats SET cleared_through_ts = ? WHERE id IN (?, ?)", barrier, keepId, dropId);
-      }
-    });
+    this.c.write(() => this.shareBarrier(keepId));
     for (const chatId of [keepId, dropId]) {
       report.mediaPaths.push(...(await this.messages.purgeCleared(chatId)).mediaPaths);
     }
