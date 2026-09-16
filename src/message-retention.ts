@@ -21,6 +21,7 @@ export class MessageRetention {
 
   /** The first/earliest observed deadline wins, including over stripped edits. */
   noteExpiry(sid: string, jid: string, at: number): boolean {
+    if (!Number.isSafeInteger(at) || at < 0) at = 0;
     if (this.deleted.has(sid) || (this.expires.get(sid)?.at ?? Infinity) <= at) return false;
     this.expires.set(sid, { jid, at });
     return true;
@@ -154,6 +155,14 @@ export class MessageRetention {
   /** Rewrite owned history files without deleted payloads, including old transcript versions. */
   async purgeHistory(dir: string, historyFile: (jid: string) => string, keep: (record: HistoryRecord) => boolean): Promise<void> {
     await mkdir(dir, { recursive: true, mode: 0o700 });
+    const deletedByFile = new Map<string, string[]>();
+    for (const [sid, jid] of this.deleted) {
+      const path = historyFile(jid);
+      const ids = deletedByFile.get(path) ?? [];
+      ids.push(sid);
+      deletedByFile.set(path, ids);
+    }
+    const clearedFiles = new Set([...this.cleared.keys()].map(historyFile));
     for (const name of await readdir(dir)) {
       const path = join(dir, name);
       if (name.endsWith(".jsonl.tmp")) {
@@ -171,10 +180,10 @@ export class MessageRetention {
           } else if (keep(record)) kept.set(record.sid, record);
         } catch { /* Malformed records cannot retain payload bytes in a rewrite. */ }
       }
-      for (const [sid, jid] of this.deleted) if (historyFile(jid) === path) {
-        kept.set(sid, { sid, ts: Math.floor(Date.now() / 1000), raw: "", deleted: true });
+      for (const sid of deletedByFile.get(path) ?? []) {
+        if (!kept.get(sid)?.deleted) kept.set(sid, { sid, ts: Math.floor(Date.now() / 1000), raw: "", deleted: true });
       }
-      const cleared = [...this.cleared.keys()].some((jid) => historyFile(jid) === path);
+      const cleared = clearedFiles.has(path);
       if (cleared && ![...kept.values()].some((record) => !record.deleted)) {
         await rm(path, { force: true });
       } else {

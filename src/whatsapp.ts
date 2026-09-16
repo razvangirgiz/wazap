@@ -35,6 +35,7 @@ import { isGroupId, isNoiseJid, isStatusJid, normalizePhone, STATUS_JID } from "
 import { log, logError } from "./logger.js";
 import { Notes } from "./notes.js";
 import { MessageRetention } from "./message-retention.js";
+import { historyRecords } from "./history-records.js";
 import { messageExpiry } from "./message-expiry.js";
 import {
   asGifMedia,
@@ -3939,23 +3940,13 @@ export class WhatsAppService implements WhatsAppApi {
       return 0;
     }
 
-    const newest = new Map<string, HistoryRecord>();
-    const tombstones = new Map<string, HistoryRecord>();
-    for (const line of text.split("\n")) {
-      if (!line.trim()) continue;
-      try {
-        const record = JSON.parse(line) as HistoryRecord;
-        if (record.sid && record.expiresAt !== undefined) this.savedExpiry(record.sid, record.expiresAt);
-        if (record.sid && record.raw) {
-          const raw = decodeMessage(record.raw);
-          if (raw) this.observeExpiry(raw, record.sid);
-        }
-        if (record.sid && record.deleted) tombstones.set(record.sid, record);
-        else if (record.sid && record.raw) newest.set(record.sid, record);
-      } catch {
-        continue;
+    const { newest, tombstones } = historyRecords(text, (record) => {
+      if (record.expiresAt !== undefined) this.savedExpiry(record.sid, record.expiresAt);
+      if (record.raw) {
+        const raw = decodeMessage(record.raw);
+        if (raw) this.observeExpiry(raw, record.sid);
       }
-    }
+    });
 
     // A revoke's tombstone line wins over the line its target wrote, wherever
     // each sits in the file — and taking the target out of `newest` both keeps
