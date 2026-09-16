@@ -153,6 +153,21 @@ test("finding 12a: a short query folds exactly like the trigram index, in Greek 
   db.close();
 });
 
+test("the short-query scan matches folded text without folding each message into a new string, and agrees with the fold", async () => {
+  const { foldText, foldedIncludes } = await import("../dist/db/fold.js");
+  let seed = 11;
+  const random = () => (seed = (seed * 1103515245 + 12345) % 2 ** 31) / 2 ** 31;
+  const alphabet = ["a", "A", "s", "Ș", "ș", "e", "É", "t", "Ț", "ё", "Ё", "θ", "ή", "𝒜", "😀", " ", "§", "x", "X", "1"];
+  const pick = (length) => Array.from({ length }, () => alphabet[Math.floor(random() * alphabet.length)]).join("");
+  for (let i = 0; i < 5_000; i++) {
+    const haystack = pick(Math.floor(random() * 30));
+    const needle = foldText(pick(1 + Math.floor(random() * 3)));
+    assert.equal(foldedIncludes(haystack, needle), foldText(haystack).includes(needle), JSON.stringify([haystack, needle]));
+  }
+  assert.equal(foldedIncludes("Ședința", "sedinta"), true);
+  assert.equal(foldedIncludes("abc", ""), true);
+});
+
 test("finding 12a: the JavaScript fold is the trigram index's fold for every code point up to U+1FFFF", async () => {
   const { foldTableFromSqlite } = await import("../dist/db/fold-probe.js");
   const { foldCodePoint } = await import("../dist/db/fold.js");

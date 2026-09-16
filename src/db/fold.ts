@@ -19,6 +19,17 @@ for (const [first, count, delta, step] of FOLD_RUNS) {
   }
 }
 
+/** Every code point that folds to `target`, itself included when it folds to itself. */
+function sourcesOf(target: number): number[] {
+  const out: number[] = [];
+  for (let cp = 0; cp < BMP.length; cp++) {
+    if (BMP[cp] === target && !(cp >= 0xd800 && cp <= 0xdfff)) out.push(cp);
+  }
+  for (const [cp, folded] of ASTRAL) if (folded === target) out.push(cp);
+  if (target >= 0x10000 && !ASTRAL.has(target)) out.push(target);
+  return out;
+}
+
 export function foldCodePoint(cp: number): number {
   return cp < 0x10000 ? BMP[cp]! : (ASTRAL.get(cp) ?? cp);
 }
@@ -40,4 +51,59 @@ export function foldText(text: string): string {
     out += folded === cp ? ch : String.fromCodePoint(folded);
   }
   return out;
+}
+
+/**
+ * A test for whether a text, folded, contains `foldedNeedle`, without
+ * building the folded text: code points are folded as they are read and
+ * matched against the needle's. What the short-query scan runs on every row.
+ */
+export function foldedMatcher(foldedNeedle: string): (text: string) => boolean {
+  const needle = Array.from(foldedNeedle, (ch) => ch.codePointAt(0)!);
+  const m = needle.length;
+  if (m === 0) return () => true;
+  const last = needle[m - 1]!;
+  const window = new Array<number>(m).fill(-1);
+  // A text can only match if it holds one of the characters that fold to the
+  // needle's rarest one; a native indexOf rules most texts out without a fold.
+  let hints: string[] | null = null;
+  for (const cp of new Set(needle)) {
+    const sources = sourcesOf(cp);
+    if (hints === null || sources.length < hints.length) hints = sources.map((source) => String.fromCodePoint(source));
+  }
+  const prefilter = hints !== null && hints.length <= 8 ? hints : null;
+  return (text: string): boolean => {
+    if (prefilter !== null && !prefilter.some((hint) => text.includes(hint))) return false;
+    let filled = 0;
+    let pos = 0;
+    for (let i = 0; i < text.length; i++) {
+      let cp = text.charCodeAt(i);
+      if (cp >= 0xd800 && cp < 0xdc00 && i + 1 < text.length) {
+        const low = text.charCodeAt(i + 1);
+        if (low >= 0xdc00 && low < 0xe000) {
+          cp = (cp - 0xd800) * 0x400 + (low - 0xdc00) + 0x10000;
+          i++;
+        }
+      }
+      const folded = foldCodePoint(cp);
+      window[pos] = folded;
+      pos = pos + 1 === m ? 0 : pos + 1;
+      if (filled < m) filled++;
+      if (filled === m && folded === last) {
+        let match = true;
+        for (let k = 0; k < m; k++) {
+          if (window[(pos + k) % m] !== needle[k]) {
+            match = false;
+            break;
+          }
+        }
+        if (match) return true;
+      }
+    }
+    return false;
+  };
+}
+
+export function foldedIncludes(text: string, foldedNeedle: string): boolean {
+  return foldedMatcher(foldedNeedle)(text);
 }

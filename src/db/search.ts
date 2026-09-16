@@ -8,7 +8,7 @@
 import type { Connection } from "./connection.js";
 import { idLowerBound, idUpperBound } from "./ids.js";
 import type { Identity } from "./identity.js";
-import { foldText } from "./fold.js";
+import { foldedMatcher, foldText } from "./fold.js";
 import { chatCondition, type Messages } from "./messages.js";
 import type { SQLInputValue } from "./sqlite.js";
 import type { ChatKind, MessageFilter, SearchCoverage, TextSearchInput, TextSearchResult } from "./types.js";
@@ -249,7 +249,7 @@ export class Search {
 
   /** The short-query path: recent messages newest first, matched in JavaScript, at most `cap` of them. */
   scanIds(query: string, filter: ResolvedFilter, upper: number, want: number, cap: number): { ids: number[]; cappedAt: number | null } {
-    const needle = foldText(query);
+    const matches = foldedMatcher(foldText(query));
     const ids: number[] = [];
     let examined = 0;
     const rows = this.c
@@ -261,8 +261,8 @@ export class Search {
     for (const row of rows) {
       examined++;
       if (
-        (row.text !== null && foldText(row.text).includes(needle)) ||
-        (row.transcript !== null && foldText(row.transcript).includes(needle))
+        (row.text !== null && matches(row.text)) ||
+        (row.transcript !== null && matches(row.transcript))
       ) {
         ids.push(row.id);
         if (ids.length >= want) return { ids, cappedAt: null };
