@@ -17,7 +17,7 @@ import { StorageError } from "./errors.js";
 import { secondOf, secondOfId } from "./ids.js";
 import type { Identity } from "./identity.js";
 import type { Messages } from "./messages.js";
-import { DEFAULT_TRIGRAM_CAP, foldText, ftsPhrase, type ResolvedFilter, type Search } from "./search.js";
+import { DEFAULT_TRIGRAM_CAP, foldText, type ResolvedFilter, type Search } from "./search.js";
 import type { SQLInputValue } from "./sqlite.js";
 import type { MessageFilter, Page, StoredMessage } from "./types.js";
 
@@ -412,23 +412,42 @@ export class Vectors {
     return { hits, semantic, lexicalCapped: lexical.capped };
   }
 
+  /**
+   * The lexical side of hybrid search. Each query word is looked up on its
+   * own, newest `want` matches per word, so a rare word's old match is not
+   * crowded out by newer messages that only share a common word. Candidates
+   * are scored by the words they carry, each weighted by its rarity among the
+   * matches seen (a word matching everything weighs little), plus a bonus
+   * when the whole query appears verbatim; ties go to the newest. `capped`
+   * says some word had more matches than were examined.
+   */
   private lexicalCandidates(query: string, filter: ResolvedFilter, want: number, scanCap: number | undefined): { ids: number[]; capped: boolean } {
     const tokens = hybridTokens(query);
     if (tokens.length === 0) return { ids: [], capped: false };
-    const expression = tokens.map(ftsPhrase).join(" OR ");
-    const found = this.search.trigramIds(query, filter, filter.upper, want, scanCap ?? DEFAULT_TRIGRAM_CAP, expression);
-    if (found.ids.length === 0) return { ids: [], capped: found.cappedAt !== null };
-    const texts = this.c.all<{ id: number; text: string | null; transcript: string | null }>(
+    const perWordCap = Math.max(1, Math.floor((scanCap ?? DEFAULT_TRIGRAM_CAP) / tokens.length));
+    const candidates = new Set<number>();
+    const weights = new Map<string, number>();
+    let capped = false;
+    for (const token of tokens) {
+      const found = this.search.trigramIds(token, filter, filter.upper, want + 1, perWordCap);
+      if (found.ids.length > want || found.cappedAt !== null) capped = true;
+      weights.set(token, 1 / Math.log2(2 + found.ids.length));
+      for (const id of found.ids.slice(0, want)) candidates.add(id);
+    }
+    if (candidates.size === 0) return { ids: [], capped };
+    const phrase = foldText(query).replace(/\s+/g, " ").trim();
+    const scores = new Map<number, number>();
+    for (const row of this.c.all<{ id: number; text: string | null; transcript: string | null }>(
       "SELECT id, text, transcript FROM messages WHERE id IN (SELECT value FROM json_each(?))",
-      JSON.stringify(found.ids)
-    );
-    const carried = new Map(
-      texts.map((row) => {
-        const haystack = foldText(`${row.text ?? ""}\n${row.transcript ?? ""}`);
-        return [row.id, tokens.filter((token) => haystack.includes(token)).length];
-      })
-    );
-    const ids = [...found.ids].sort((a, b) => (carried.get(b) ?? 0) - (carried.get(a) ?? 0) || b - a);
-    return { ids, capped: found.cappedAt !== null };
+      JSON.stringify([...candidates])
+    )) {
+      const haystack = foldText(`${row.text ?? ""}\n${row.transcript ?? ""}`);
+      let score = 0;
+      for (const token of tokens) if (haystack.includes(token)) score += weights.get(token)!;
+      if (tokens.length > 1 && haystack.replace(/\s+/g, " ").includes(phrase)) score += 1;
+      scores.set(row.id, score);
+    }
+    const ids = [...candidates].sort((a, b) => (scores.get(b) ?? 0) - (scores.get(a) ?? 0) || b - a).slice(0, want);
+    return { ids, capped };
   }
 }

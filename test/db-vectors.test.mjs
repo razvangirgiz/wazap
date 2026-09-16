@@ -204,6 +204,19 @@ test("hybrid search: both ways outranks either, meaning-only hits need the floor
   db.close();
 });
 
+test("finding 10: hybrid finds an exact multi-word match buried under newer messages that share only a common word", () => {
+  const { db } = openTemp();
+  db.messages.upsert(textMessage(PEER, "TARGET", T0, "factura Enel pentru luna august a venit"));
+  for (let i = 0; i < 150; i++) db.messages.upsert(textMessage(PEER, `N${i}`, T0 + 10_000 + i * 1000, `multumesc pentru tot ${i}`));
+  const result = db.vectors.hybrid({ query: "factura Enel pentru august", model: "m", limit: 10, minSimilarity: 0.5 });
+  assert.equal(result.hits[0]?.message.keyId, "TARGET");
+  assert.equal(result.lexicalCapped, true, "the common word had more matches than were examined");
+  const narrow = db.vectors.hybrid({ query: "factura Enel", model: "m", limit: 10, minSimilarity: 0.5 });
+  assert.deepEqual(narrow.hits.map((hit) => hit.message.keyId), ["TARGET"]);
+  assert.equal(narrow.lexicalCapped, false);
+  db.close();
+});
+
 test("hybrid lexical ranking prefers candidates carrying more of the query words", () => {
   const { db } = openTemp();
   db.messages.upsert(textMessage(PEER, "ONE", T0 + 2000, "contractul e gata"));
