@@ -20,10 +20,12 @@ export const LOGOUT_TIMEOUT_MS = 10_000;
  * - `already_unlinked`: the phone had removed the device first.
  * - `unlink_unconfirmed`: WhatsApp was not told; the device may still be listed.
  *
- * Every outcome but `not_linked` deleted the credentials and the snapshot. The
+ * Every outcome but `not_linked` deleted the credentials, and only them. The
  * account database (`wazap.sqlite`) stays: the same number linking again finds
  * its history, and a different number linking sets it aside (see
- * `WhatsAppService.claimDatabase`). `wazap account remove` is what deletes it.
+ * `WhatsAppService.claimDatabase`). Legacy files from before the database are
+ * not touched; they follow their own week (`src/legacy-files.ts`).
+ * `wazap account remove` is what deletes the folder.
  */
 export type LogoutOutcome = "not_linked" | "logged_out" | "already_unlinked" | "unlink_unconfirmed";
 
@@ -53,9 +55,10 @@ function withDeadline<T>(work: Promise<T>, deadline: number, message: string): P
 }
 
 /**
- * Tell WhatsApp to unlink the account, then delete its credentials and snapshot
- * and forget its owner, keeping the account database. Nothing else may hold a socket on these credentials:
- * the CLI holds the session lock, the server has stopped the account's service.
+ * Tell WhatsApp to unlink the account, then delete its credentials and forget
+ * its owner, keeping the account database. Nothing else may hold a socket on
+ * these credentials: the CLI holds the session lock, the server has stopped the
+ * account's service.
  */
 export async function logoutAccount(
   dataDir: string,

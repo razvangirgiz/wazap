@@ -424,7 +424,9 @@ test("logout --account of a linked account through a running server unlinks it a
   assert.equal(s.unlinked.length, 1, "WhatsApp was told");
   assert.equal(s.sockets.work.ended, true);
   assert.equal(existsSync(s.storage.work.authDir), false);
-  assert.equal(existsSync(s.storage.work.storeFile), false);
+  // The fresh service's boot may have moved it aside meanwhile; the logout deleted nothing.
+  const legacyStore = join(s.storage.work.root, "legacy", "store.json");
+  assert.equal(existsSync(s.storage.work.storeFile) || existsSync(legacyStore), true, "a legacy file is not the logout's to delete");
   assert.equal(AccountRegistry.load(s.dataDir).get("work").owner, null);
   await waitFor(() => s.hub.get("work").getStatus().status === "not_linked", 5_000, "work to be not_linked");
   assert.equal(s.hub.get("default").getStatus().status, "connected");

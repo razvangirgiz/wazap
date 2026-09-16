@@ -145,10 +145,13 @@ export function clearAuth(dir: string): void {
   rmSync(dir, { recursive: true, force: true });
 }
 
-/** Everything a logout deletes: the credentials, and the store they decrypt. */
-export function clearSession(p: { authDir: string; storeFile: string }): void {
+/**
+ * What a logout deletes: the credentials. The account database stays for the
+ * same number to link again, and an earlier wazap's `store.json` is a legacy
+ * file now, imported once and then moved aside on its own schedule.
+ */
+export function clearSession(p: { authDir: string }): void {
   clearAuth(p.authDir);
-  rmSync(p.storeFile, { force: true });
 }
 
 const APP_STATE_SYNC_VERSION = "app-state-sync-version";

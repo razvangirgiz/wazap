@@ -6,7 +6,7 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 import { AccountHub } from "../dist/account-hub.js";
@@ -263,7 +263,7 @@ test("logout of a connected account unlinks it and leaves a fresh not_linked ser
   assert.equal(work.stopped, true);
   assert.equal(workSock.ended, true, "the account's own socket closed first");
   assert.equal(existsSync(storage.authDir), false, "credentials deleted");
-  assert.equal(existsSync(storage.storeFile), false, "snapshot deleted");
+  assert.equal(existsSync(join(storage.root, "legacy", "store.json")), true, "the legacy snapshot the boot moved aside is left to its week");
   assert.equal(AccountRegistry.load(config.dataDir).get("work").owner, null);
   assert.equal(hub.record("work").owner, null);
 
@@ -396,17 +396,19 @@ async function assertServedAgain(hub, id, old) {
   assert.equal(fresh.getStatus().status, "linking");
 }
 
-test("a logout whose clear step throws propagates the error and leaves the account served by a live service", async (t) => {
+test("a logout whose clear step throws propagates the error and leaves the account served by a live service", { skip: process.getuid?.() === 0 ? "root deletes from a read-only folder" : false }, async (t) => {
   const { config, hub, work } = twoAccountHub(t, { linkedWork: true });
   unlinkSockets(t);
   const storage = accountPaths(config.dataDir, "work");
-  // A directory where the snapshot file should be: the credentials go, the snapshot delete throws.
+  // A read-only folder inside the credentials: the credentials delete throws.
+  const locked = join(storage.authDir, "locked");
   afterStop(work, () => {
-    rmSync(storage.storeFile, { force: true });
-    mkdirSync(storage.storeFile);
-    writeFileSync(join(storage.storeFile, "blocker"), "");
+    mkdirSync(locked, { recursive: true });
+    writeFileSync(join(locked, "blocker"), "");
+    chmodSync(locked, 0o500);
   });
-  await assert.rejects(hub.logout("work"), (err) => err.code === "ERR_FS_EISDIR");
+  t.after(() => chmodSync(locked, 0o700));
+  await assert.rejects(hub.logout("work"), (err) => err.code === "EACCES");
   assert.equal(work.stopped, true);
   await assertServedAgain(hub, "work", work);
 });
