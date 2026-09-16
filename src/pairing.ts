@@ -25,7 +25,7 @@ const SILENT_LOGGER: SocketLogger = {
   error: () => {},
 };
 
-/** The seam the tests replace; production always opens a real WhatsApp socket. */
+/** The seam the tests replace; production always opens a real WhatsApp socket, for pairing and for the service. */
 export const socketFactory = { open: makeWASocket };
 
 /** How long a pairing code stays good for, and how long a link attempt runs. */

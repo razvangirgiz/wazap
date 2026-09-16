@@ -12,7 +12,7 @@ import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promis
 import { tmpdir } from "node:os";
 import { isAbsolute, join, relative, sep } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
-import makeWASocket, {
+import {
   ALL_WA_PATCH_NAMES,
   DisconnectReason,
   downloadMediaMessage,
@@ -90,7 +90,7 @@ import {
   type EncryptedVote,
 } from "./messages.js";
 import { readVote } from "./polls.js";
-import { PAIRING_TIMEOUT_MS, WA_BROWSER, prettyCode, startPairing } from "./pairing.js";
+import { PAIRING_TIMEOUT_MS, WA_BROWSER, prettyCode, socketFactory, startPairing } from "./pairing.js";
 import {
   EMBED_MODELS,
   EmbedEngine,
@@ -504,7 +504,7 @@ export class WhatsAppService implements WhatsAppApi {
       this.initialSyncDone = false;
       this.setStatus("connecting");
       const generation = ++this.generation;
-      const sock = makeWASocket({
+      const sock = socketFactory.open({
         auth: state,
         logger: silentLogger,
         browser: WA_BROWSER,
