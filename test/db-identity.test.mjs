@@ -253,6 +253,28 @@ test("n8: an event or handled mark on the folded copy of a twin points at the su
   db.close();
 });
 
+test("n1: every spelling main resolves reaches the same chat and message: device, hosted, c.us, case", async () => {
+  const { db } = openTemp();
+  await db.learnLidPhone(PEER_LID, PEER);
+  const stored = db.messages.upsert(textMessage("40700000002@c.us", "D1", T0, "d1"));
+  assert.equal(stored.sid, sid(false, PEER, "D1"));
+  for (const spelling of [
+    PEER,
+    "40700000002@c.us",
+    "40700000002@C.US",
+    "40700000002:5@s.whatsapp.net",
+    "40700000002@hosted",
+    PEER_LID,
+    "123456789012345@hosted.lid",
+    "123456789012345:3@lid",
+  ]) {
+    assert.equal(db.messages.get(sid(false, spelling, "D1"))?.id, stored.id, spelling);
+    assert.equal(db.identity.chat(spelling)?.jid, PEER, spelling);
+  }
+  assert.deepEqual(db.search.text({ query: "d1", limit: 5, from: "40700000002@c.us" }).items.map((m) => m.keyId), ["D1"]);
+  db.close();
+});
+
 test("a number that gains a new lid keeps answering to its older lid too", async () => {
   const { db } = openTemp();
   await db.learnLidPhone(PEER_LID, PEER);

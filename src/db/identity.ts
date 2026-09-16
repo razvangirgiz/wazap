@@ -36,13 +36,19 @@ export function chatKindOf(jid: string): ChatKind {
   return "direct";
 }
 
-/** A user jid without its device (`40700000001:12@s.whatsapp.net`), and every lid server spelled `@lid`. */
+/**
+ * The one spelling of a jid the store keys by, as main's resolveChatId writes
+ * it: no device (`40700000001:12@s.whatsapp.net`), a lowercase server,
+ * `@c.us` and `@hosted` as `@s.whatsapp.net`, and every lid server as `@lid`.
+ */
 export function normalizeJid(jid: string): string {
-  const at = jid.lastIndexOf("@");
-  if (at === -1) return jid;
-  const user = jid.slice(0, at).split(":")[0]!;
-  const server = jid.slice(at + 1);
-  return `${user}@${server === "hosted.lid" ? "lid" : server === "hosted" ? "s.whatsapp.net" : server}`;
+  const trimmed = jid.trim();
+  const at = trimmed.lastIndexOf("@");
+  if (at === -1) return trimmed;
+  const user = trimmed.slice(0, at).split(":")[0]!;
+  const server = trimmed.slice(at + 1).toLowerCase();
+  const canonical = server === "hosted.lid" ? "lid" : server === "c.us" || server === "hosted" ? "s.whatsapp.net" : server;
+  return `${user}@${canonical}`;
 }
 
 export function sidOf(fromMe: boolean, chatJid: string, keyId: string): string {
