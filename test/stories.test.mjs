@@ -16,8 +16,8 @@ const ANA = "40700000002@s.whatsapp.net";
 const DAN = "40700000003@s.whatsapp.net";
 const STATUS = "status@broadcast";
 
-function setup() {
-  const { svc, sock } = connectedService(WhatsAppService, { prefix: "wazap-stories-", id: ME, name: "Răzvan" });
+function setup(config = {}) {
+  const { svc, sock } = connectedService(WhatsAppService, { prefix: "wazap-stories-", id: ME, name: "Răzvan", config });
   const tools = new Map();
   registerTools({ registerTool: (name, meta, handler) => tools.set(name, { meta, handler }) }, asToolSource(svc), {
     allowWrite: false,
@@ -108,11 +108,11 @@ test("a story's photo gets a preview and its message id works with the media too
   const id = result.structuredContent.stories[0].message_id;
   const one = await call("get_message", { message_id: id });
   assert.equal(one.structuredContent.sender.name, "Ana");
-  assert.equal(svc.store.chatOf.get(id), STATUS);
+  assert.equal(svc.db.messages.get(id).chatJid, STATUS);
 });
 
-test("stories survive a restart through the snapshot, and the user's own are not kept", async () => {
-  const { svc, story, sock } = setup();
+test("stories survive a restart through the database, go after their day, and the user's own are not kept", async () => {
+  const { svc, story, sock } = setup({ persistHistory: true });
   story(ANA, "ieri");
   sock.ev.emit("messages.upsert", {
     type: "notify",
@@ -124,15 +124,15 @@ test("stories survive a restart through the snapshot, and the user's own are not
       },
     ],
   });
-  const snapshot = svc.store.serialize();
-  assert.deepEqual(snapshot.stories, [`false_${STATUS}_S1`]);
-  assert.ok(snapshot.messages[`false_${STATUS}_S1`], "the message travels with it");
+  const stored = svc.db.messages.chatPage(STATUS, { limit: 10 }).items;
+  assert.deepEqual(stored.map((m) => m.sid), [`false_${STATUS}_S1`]);
+  assert.equal(stored[0].expiresAt, stored[0].ts + 24 * 3_600_000, "a story carries its day as its deadline");
 
-  const { svc: again } = connectedService(WhatsAppService, { prefix: "wazap-stories-", id: ME, name: "Răzvan" });
-  again.store.hydrate(JSON.parse(JSON.stringify(snapshot)));
+  const { svc: again } = connectedService(WhatsAppService, { prefix: "wazap-stories-", id: ME, name: "Răzvan", config: { dataDir: svc.config.dataDir, persistHistory: true } });
   const back = (await again.getStories(24)).data;
   assert.deepEqual(
     back.map((s) => s.text),
     ["ieri"]
   );
+  await again.stop();
 });
