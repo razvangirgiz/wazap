@@ -28,6 +28,13 @@ const DEFAULT_BACKLOG_SCAN = 20_000;
 /** A hybrid query word shorter than this names too much to be worth an index lookup. */
 const MIN_TOKEN_CHARS = 4;
 const MAX_TOKENS = 8;
+/**
+ * From this many query words up, a hit the words alone vouch for must carry
+ * LEXICAL_MIN_MATCHES of them: one shared word of a longer question is the
+ * noise a long message picks up, not an answer.
+ */
+const LEXICAL_PAIR_FROM = 3;
+const LEXICAL_MIN_MATCHES = 2;
 const NO_UPPER_BOUND = Number.MAX_SAFE_INTEGER;
 /** The model the embedding queue is kept for; the queue triggers test for this key. */
 const FEED_MODEL_META = "embed_model";
@@ -549,7 +556,9 @@ export class Vectors {
    * query word up in the trigram index and ranks the newest candidates by how
    * many words they carry; the semantic side ranks by cosine. Reciprocal Rank
    * Fusion merges the two. A hit only the semantic side found must clear
-   * `minSimilarity`, so a question with no answer comes back empty.
+   * `minSimilarity`, so a question with no answer comes back empty; so must a
+   * lexical hit carrying a single word of a query of three words or more,
+   * unless it holds the whole query.
    */
   hybrid(input: HybridSearchInput): HybridResult {
     const limit = Math.max(1, Math.floor(input.limit));
@@ -557,10 +566,10 @@ export class Vectors {
     const semantic = input.vector !== undefined && input.vector !== null;
     if (filter === null) return { hits: [], semantic, lexicalCapped: false };
 
+    const unit = semantic ? unitVector(input.vector!) : null;
     const lexical = this.lexicalCandidates(input.query, filter, input.lexicalCandidates ?? DEFAULT_CANDIDATES, input.scanCap);
-    const semanticRanked = semantic
-      ? this.rank(filter, input.model, unitVector(input.vector!), input.semanticCandidates ?? DEFAULT_CANDIDATES, 0, input.recencyHalfLifeMs)
-      : [];
+    const semanticRanked =
+      unit === null ? [] : this.rank(filter, input.model, unit, input.semanticCandidates ?? DEFAULT_CANDIDATES, 0, input.recencyHalfLifeMs);
 
     const fused = new Map<number, { score: number; lexicalRank: number | null; semanticRank: number | null; similarity: number | null }>();
     lexical.ids.forEach((id, index) => {
@@ -577,6 +586,16 @@ export class Vectors {
         fused.set(hit.id, { score: contribution, lexicalRank: null, semanticRank: index + 1, similarity: hit.similarity });
       }
     });
+    if (lexical.weak.length > 0) {
+      // A weak lexical hit stays only on its meaning, held to a meaning-only hit's bar: a positive cosine at the floor,
+      // whether or not the semantic side ranked it among its candidates.
+      const unranked = lexical.weak.filter((id) => fused.get(id)!.similarity === null);
+      const cosines = unit === null ? new Map<number, number>() : this.similarities(unranked, input.model, unit);
+      for (const id of lexical.weak) {
+        const similarity = fused.get(id)!.similarity ?? cosines.get(id) ?? 0;
+        if (similarity <= 0 || similarity < input.minSimilarity) fused.delete(id);
+      }
+    }
     const best = [...fused.entries()].sort((a, b) => b[1].score - a[1].score || b[0] - a[0]).slice(0, limit);
     const messages = new Map(this.messages.byIds(best.map(([id]) => id)).map((message) => [message.id, message]));
     const hits = best.flatMap(([id, entry]) => {
@@ -595,12 +614,20 @@ export class Vectors {
    * short-query scan. Candidates are scored by the words they carry, each
    * weighted by its rarity among the matches seen, plus a bonus when the whole
    * query appears verbatim; ties go to the newest. `capped` says some source had
-   * more matches than were examined.
+   * more matches than were examined. `weak` lists the returned candidates that
+   * carry fewer than LEXICAL_MIN_MATCHES distinct words of a query of
+   * LEXICAL_PAIR_FROM words or more and not the query verbatim: the words alone
+   * do not vouch for them.
    */
-  private lexicalCandidates(query: string, filter: ResolvedFilter, want: number, scanCap: number | undefined): { ids: number[]; capped: boolean } {
+  private lexicalCandidates(
+    query: string,
+    filter: ResolvedFilter,
+    want: number,
+    scanCap: number | undefined
+  ): { ids: number[]; weak: number[]; capped: boolean } {
     const { trigram, short } = hybridWords(query);
     const tokens = [...trigram, ...short];
-    if (tokens.length === 0) return { ids: [], capped: false };
+    if (tokens.length === 0) return { ids: [], weak: [], capped: false };
     const perWordCap = Math.max(1, Math.floor((scanCap ?? DEFAULT_TRIGRAM_CAP) / (trigram.length + 1)));
     const perShortCap = Math.max(1, Math.floor(Math.min(scanCap ?? DEFAULT_SCAN_CAP, DEFAULT_SCAN_CAP) / Math.max(1, short.length)));
     const candidates = new Set<number>();
@@ -621,20 +648,44 @@ export class Vectors {
       const everyWord = trigram.map(ftsPhrase).join(" AND ");
       take(this.search.trigramIds(query, filter, filter.upper, want + 1, perWordCap, everyWord));
     }
-    if (candidates.size === 0) return { ids: [], capped };
+    if (candidates.size === 0) return { ids: [], weak: [], capped };
     const phrase = foldText(query).replace(/\s+/g, " ").trim();
     const scores = new Map<number, number>();
+    const needsPair = tokens.length >= LEXICAL_PAIR_FROM;
+    const weak = new Set<number>();
     for (const row of this.c.all<{ id: number; text: string | null; transcript: string | null }>(
       "SELECT id, text, transcript FROM messages WHERE id IN (SELECT value FROM json_each(?))",
       JSON.stringify([...candidates])
     )) {
       const haystack = foldText(`${row.text ?? ""}\n${row.transcript ?? ""}`);
       let score = 0;
-      for (const token of tokens) if (haystack.includes(token)) score += weights.get(token)!;
-      if (tokens.length > 1 && haystack.replace(/\s+/g, " ").includes(phrase)) score += 1;
+      let matched = 0;
+      for (const token of tokens) {
+        if (!haystack.includes(token)) continue;
+        score += weights.get(token)!;
+        matched++;
+      }
+      const verbatim = tokens.length > 1 && haystack.replace(/\s+/g, " ").includes(phrase);
+      if (verbatim) score += 1;
       scores.set(row.id, score);
+      if (needsPair && matched < LEXICAL_MIN_MATCHES && !verbatim) weak.add(row.id);
     }
     const ids = [...candidates].sort((a, b) => (scores.get(b) ?? 0) - (scores.get(a) ?? 0) || b - a).slice(0, want);
-    return { ids, capped };
+    return { ids, weak: ids.filter((id) => weak.has(id)), capped };
+  }
+
+  /** Raw cosine of each message's stored vector from `model` against the unit query; a message without one is left out. */
+  private similarities(ids: readonly number[], model: string, unit: Float64Array): Map<number, number> {
+    const cosines = new Map<number, number>();
+    if (ids.length === 0) return cosines;
+    const rows = this.c
+      .arrayStmt("SELECT message_id, vec FROM embeddings WHERE model = ? AND message_id IN (SELECT value FROM json_each(?))")
+      .iterate(model, JSON.stringify(ids)) as Iterable<unknown[]>;
+    for (const row of rows) {
+      const bytes = row[1] as Uint8Array;
+      if (bytes.byteLength !== unit.length) continue;
+      cosines.set(row[0] as number, int8Similarity(unit, new Int8Array(bytes.buffer, bytes.byteOffset, bytes.byteLength)));
+    }
+    return cosines;
   }
 }

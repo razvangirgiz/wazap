@@ -731,6 +731,43 @@ test("a hit under the floor is listed only when its words match the query", asyn
   }
 });
 
+test("a Romanian question of three words or more: a paraphrase or two shared words answer it, one shared word does not", async () => {
+  const stub = await stubEmbedServer();
+  // Over every one-word neighbour's stub similarity (≤ 0.19) and under the paraphrase's (0.27).
+  const { svc, sock } = await serviceWith({ WAZAP_RECALL: "local", WAZAP_EMBED_URL: stub.url, WAZAP_RECALL_MIN_SIMILARITY: "0.25" });
+  try {
+    deliver(sock, [
+      // A paraphrase: no word of the question, its meaning through the concept table.
+      text("PARA", "Rent paid azi"),
+      // Two words of the question in a long message the stub finds far in meaning.
+      text("LEX", "Am sunat cabinetul: programarea la dentist s-a mutat pe joi după-amiază, fiindcă doamna are o urgență și nu mai primește pe nimeni dimineață până vineri"),
+      // Long messages carrying one word of some question each.
+      text("PLASMA", "Am citit azi un articol lung despre donarea de plasma la centrul de transfuzii, apoi am trecut pe la piață după roșii și brânză pentru cina de sâmbătă seara"),
+      text("CONTAIN", "Echipa de la bloc a pus un containment provizoriu în jurul țevii sparte din subsol, dar apa tot a ajuns în boxele vecinilor până a venit instalatorul spre seară"),
+      text("FIELD", "Meciul copiilor s-a mutat pe field-ul din spatele școlii, fiindcă terenul mare e închis toată săptămâna pentru gazon nou și un gard refăcut de primărie"),
+      text("CALIB", "Tehnicianul vine mâine dimineață pentru calibration la imprimanta cea nouă de la birou, deci ajung mai târziu și nu mai prind ședința de la nouă"),
+      text("PROC", "Procedure-ul băncii pentru cardul nou durează două săptămâni, așa că le-am cerut să mi-l trimită prin curier acasă, nu la sucursala din centru"),
+      text("CHIRIA", "Proprietarul ne-a scris că de anul viitor chiria o să crească puțin, dar ne lasă să plătim la fel până în martie dacă semnăm contractul pe încă doi ani"),
+      text("COPIL", "Am dus copilul la bunici o săptămână, iar noi plecăm la mare cu prietenii din facultate dacă prindem vreme bună"),
+    ]);
+    await svc.recallIdle();
+    assert.equal(svc.db.vectors.count(MODEL), 9);
+    const answer = async (query) => (await svc.recall(query, undefined, 10)).data.hits;
+    const keys = (hits) => hits.map((h) => h.message.message_id.split("_").pop());
+
+    const paraphrase = await answer("Ai plătit chiria lunii asta?");
+    assert.deepEqual(keys(paraphrase), ["PARA"], "CHIRIA shares one word and nothing else");
+    assert.equal(paraphrase[0].matched, "meaning");
+    const words = await answer("Când e programarea la dentist pentru copil?");
+    assert.deepEqual(keys(words), ["LEX"], "the one-word neighbours through „pentru” and „copil” are dropped");
+    assert.ok(words[0].similarity < 0.25, "LEX is there for its two words, not its meaning");
+    assert.deepEqual(keys(await answer("plasma containment field calibration procedure")), []);
+  } finally {
+    await svc.stop();
+    stub.server.close();
+  }
+});
+
 test("a one-chat cluster cannot fill the list — another chat's relevant hit surfaces", async () => {
   const OTHER = "40700000003@s.whatsapp.net";
   const stub = await stubEmbedServer();

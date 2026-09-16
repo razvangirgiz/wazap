@@ -318,6 +318,48 @@ test("n6: hybrid finds a message made only of common words, and looks up digits 
   db.close();
 });
 
+test("hybrid: a hit sharing one word of a three-word query is noise unless its meaning clears the floor", () => {
+  const { db } = openTemp();
+  const put = (key, ts, text, vector) => {
+    db.messages.upsert(textMessage(PEER, key, ts, text));
+    assert.equal(db.vectors.put(sid(false, PEER, key), MODEL, vector, wordsOf(db, sid(false, PEER, key))), true);
+  };
+  // Long messages, each carrying exactly one word of the query and nothing of its meaning.
+  put("PLASMA", T0, "Am citit azi un articol lung despre donarea de plasma la centrul de transfuzii, apoi am trecut pe la piață după roșii și brânză pentru cina de sâmbătă seara", direction(1));
+  put("CONTAIN", T0 + 1000, "Echipa de la bloc a pus un containment provizoriu în jurul țevii sparte din subsol, dar apa tot a ajuns în boxele vecinilor până a venit instalatorul spre seară", direction(2));
+  put("FIELD", T0 + 2000, "Meciul copiilor s-a mutat pe field-ul din spatele școlii, fiindcă terenul mare e închis toată săptămâna pentru gazon nou și un gard refăcut de primărie", direction(3));
+  put("CALIB", T0 + 3000, "Tehnicianul vine mâine dimineață pentru calibration la imprimanta cea nouă de la birou, deci ajung mai târziu și nu mai prind ședința de la nouă", direction(4));
+  put("PROC", T0 + 4000, "Procedure-ul băncii pentru cardul nou durează două săptămâni, așa că le-am cerut să mi-l trimită prin curier acasă, nu la sucursala din centru", direction(5));
+  const query = "plasma containment field calibration procedure";
+  const search = (over = {}) => db.vectors.hybrid({ query, vector: direction(0), model: MODEL, limit: 10, minSimilarity: 0.35, ...over });
+  const keys = (result) => result.hits.map((hit) => hit.message.keyId);
+
+  assert.deepEqual(keys(search()), [], "five one-word matches of a five-word query are not an answer");
+  assert.deepEqual(keys(search({ vector: null })), [], "nor are they without a query vector");
+  assert.deepEqual(keys(search({ query: "plasma field" })), ["FIELD", "PLASMA"], "a two-word query keeps its one-word matches");
+  assert.deepEqual(keys(search({ query: "calibration" })), ["CALIB"]);
+
+  // Two words of the query, or the whole of it, stand on their own.
+  put("PAIR", T0 + 5000, "Am primit procedure-ul de calibration pentru cântar, îl citesc diseară", direction(6));
+  put("PHRASE", T0 + 6000, "Pe tablă scria plasma containment field calibration procedure și nimeni nu știa de unde vine", direction(7));
+  assert.deepEqual(keys(search()).sort(), ["PAIR", "PHRASE"]);
+
+  // One word whose message is close in meaning stays, under the floor it does not.
+  put("NEAR", T0 + 7000, "Ți-am trimis procedure-ul", direction(0, 1, 0.3));
+  put("BELOW", T0 + 8000, "Am găsit plasma veche în frigider", direction(0, 2, 4));
+  const near = search().hits.find((hit) => hit.message.keyId === "NEAR");
+  assert.ok(near && near.similarity > 0.9, "a one-word hit its meaning vouches for is kept, as both");
+  assert.ok(!keys(search()).includes("BELOW"), "a one-word hit whose meaning ranked it under the floor is dropped");
+  // Its meaning counts even when the semantic side ranked closer messages ahead of it.
+  put("TOP", T0 + 9000, "Nimic din cuvintele căutate aici", direction(0));
+  const narrow = search({ semanticCandidates: 1 });
+  const kept = narrow.hits.find((hit) => hit.message.keyId === "NEAR");
+  assert.ok(kept, "NEAR is kept though only TOP was a semantic candidate");
+  assert.deepEqual([kept.semanticRank, kept.similarity], [null, null], "and it reads as a match by words, as before");
+  assert.ok(!keys(narrow).includes("BELOW"));
+  db.close();
+});
+
 test("hybrid lexical ranking prefers candidates carrying more of the query words", () => {
   const { db } = openTemp();
   db.messages.upsert(textMessage(PEER, "ONE", T0 + 2000, "contractul e gata"));
