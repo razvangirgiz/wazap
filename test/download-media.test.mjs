@@ -164,8 +164,7 @@ test("a message filed under the paired number answers to its raw lid id", async 
   svc.mediaBuffer = async () => ogg;
   const lidSid = arrive(LID, { audioMessage: { mimetype: "audio/ogg", fileLength: ogg.length } });
   const stanza = lidSid.split("_").at(-1);
-  assert.equal(svc.store.hasMessage(lidSid), false, "the store keys it by the number");
-  assert.equal(svc.store.hasMessage(`false_${OWNER}_${stanza}`), true);
+  assert.equal(svc.db.messages.get(lidSid).sid, `false_${OWNER}_${stanza}`, "the database files it under the number");
 
   const out = (await call("download_media", { message_id: lidSid, save_to: saveTo })).structuredContent;
   assert.equal(out.mime, "audio/ogg");
@@ -179,10 +178,9 @@ test("get_message answers the id a view reports after the lid pairs with a numbe
   const OWNER = "40700000007@s.whatsapp.net";
   const sid = arrive(LID, { conversation: "de pe lid" });
   sock.ev.emit("lid-mapping.update", { lid: LID, pn: OWNER });
-  // The ring moved to the number but the store still keys the lid spelling, so
-  // the id read_messages now reports is not the store key.
+  // The message was filed under the lid; the id read_messages now reports is the number's.
   const reported = `false_${OWNER}_${sid.split("_").at(-1)}`;
-  assert.equal(svc.store.hasMessage(reported), false);
+  assert.equal((await svc.readMessages(OWNER, 5)).data[0].message_id, reported);
 
   const out = (await call("get_message", { message_id: reported })).structuredContent;
   assert.equal(out.text, "de pe lid");

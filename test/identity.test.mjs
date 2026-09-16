@@ -52,7 +52,7 @@ test("a lid moved to another number stops answering for the old one, and every r
   assert.deepEqual(ids.spellings([NEW]), [NEW, LID]);
 });
 
-test("a number a lid moved away from is no longer named, or forgotten, through that lid", () => {
+test("a number a lid moved away from is no longer named, or forgotten, through that lid", async () => {
   const { svc, sock } = connectedService(WhatsAppService, { prefix: "wazap-identity-", id: ME, name: "Răzvan" });
   const OLD = PHONE;
   const NEW = "40700000008@s.whatsapp.net";
@@ -74,12 +74,11 @@ test("a number a lid moved away from is no longer named, or forgotten, through t
   assert.equal(svc.displayName(NEW), "Nou");
   assert.equal(svc.displayName(OLD), "40700000002", "the old number is not named after whoever holds the lid now");
 
-  // The index is null on a service without recall; this stands in for it just for the delete.
-  const forgotten = [];
-  svc.recallQueue = { forgetChats: (jids) => forgotten.push(...jids) };
   sock.ev.emit("chats.delete", [OLD]);
-  svc.recallQueue = null;
-  assert.deepEqual(forgotten, [OLD], "deleting the old number's chat leaves the lid's rows alone");
+  await svc.storageIdle();
+  assert.notEqual(svc.db.identity.chat(OLD).clearedThroughTs, null, "the old number's chat is cleared");
+  assert.equal(svc.db.identity.chat(NEW).clearedThroughTs, null, "and the chat the lid now answers for is not");
+  assert.equal(svc.hasMessage(`false_${NEW}_N1`), true, "deleting the old number's chat leaves the lid's person alone");
 });
 
 test("a number that gains a new lid keeps the older lid's pairing, and moving the older lid leaves the number alone", () => {

@@ -212,8 +212,12 @@ test("a photo that shipped no preview is downloaded once, shrunk here, and remem
   assert.equal(again.structuredContent.preview_count, 1);
   const { existsSync } = await import("node:fs");
   const { join } = await import("node:path");
-  assert.ok(existsSync(join(svc.paths.previewsDir, `false_${ANA}_M1.jpg`)), "and lives on disk, outside the snapshot");
-  assert.equal(svc.store.serialize().previews, undefined, "the snapshot carries no image bytes");
+  assert.ok(existsSync(join(svc.paths.previewsDir, `false_${ANA}_M1.jpg`)), "and lives on disk, outside the database");
+  assert.deepEqual(
+    svc.db.messages.media(`false_${ANA}_M1`).map((m) => [m.kind, m.path]),
+    [["preview", join(svc.paths.previewsDir, `false_${ANA}_M1.jpg`)]],
+    "the database records the file against its message, so a delete takes it too"
+  );
 });
 
 test("a video gets one frame as its preview when ffmpeg is there", async (t) => {
@@ -336,7 +340,7 @@ test("a voice note nobody has heard is an ask; a transcribed one is judged on it
     ["voice"]
   );
 
-  svc.store.transcripts.set(`false_${ANA}_${id}`, { text: "gata, am rezolvat, mersi", provider: "local" });
+  svc.db.messages.setTranscript(`false_${ANA}_${id}`, "gata, am rezolvat, mersi");
   result = await call("get_unanswered", {});
   assert.deepEqual(result.structuredContent.chats, [], "the words say nothing was asked");
 });
@@ -374,7 +378,11 @@ test("a reaction lands on the message it answers, never as a line of its own, an
 
   const recent = await call("wait_for_messages", { timeout_seconds: 1 });
   assert.equal(recent.structuredContent.timed_out, true, "a reaction wakes no wait");
-  assert.equal(svc.store.serialize().reactions[`false_${ANA}_${target}`][ME], "👍", "and it is written to disk");
+  assert.deepEqual(
+    svc.db.messages.reactions(`false_${ANA}_${target}`).map((r) => [r.jid, r.emoji]),
+    [[ME, "👍"]],
+    "and it is stored"
+  );
 });
 
 test("in a group, read_messages counts the reactions and get_message says who left each one", async () => {

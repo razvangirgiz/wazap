@@ -137,10 +137,10 @@ test("save_contact on a pushname-only sender merges into the same entry", async 
 
   await svc.saveContact(peer, "Florentina M");
 
-  const entry = svc.store.contacts.get(peer);
+  const entry = svc.db.identity.contact(peer);
   assert.equal(entry.name, "Florentina M");
-  assert.equal(entry.notify, "flor", "the public name stays as fallback data");
-  assert.equal(svc.store.contacts.size, 1, "one entry, not a duplicate");
+  assert.equal(entry.pushName, "flor", "the public name stays as fallback data");
+  assert.equal(svc.db.identity.listContacts().filter(({ contact }) => contact.phoneJid === peer).length, 1, "one entry, not a duplicate");
   assert.equal(svc.displayName(peer), "Florentina M");
   await svc.stop();
 });
