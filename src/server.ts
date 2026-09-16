@@ -2,6 +2,7 @@ import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
 import { HttpSessions } from "./http-sessions.js";
 import { httpPostBudget } from "./http-budget.js";
 import { httpError, httpRequestLog } from "./http-log.js";
+import { withCode } from "./error-code.js";
 import { createServer, type Server } from "node:http";
 import { createConnection } from "node:net";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
@@ -356,8 +357,8 @@ export async function startHttpEndpoint(hub: AccountSource, config: Config, endp
       }
 
       await transport.handleRequest(req, res, req.body);
-    } catch {
-      log("HTTP MCP handler failed");
+    } catch (err) {
+      log(`HTTP MCP handler failed${withCode(err)}`);
       if (!res.headersSent) {
         res.status(500).json({
           jsonrpc: "2.0",

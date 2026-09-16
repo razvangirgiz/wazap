@@ -3,6 +3,7 @@ import { request as httpRequest } from "node:http";
 import { request as httpsRequest } from "node:https";
 import { isIP, type LookupFunction } from "node:net";
 import { WazapError } from "./errors.js";
+import { withCode } from "./error-code.js";
 
 const MEDIA_MAX = 100 * 1024 * 1024;
 
@@ -153,7 +154,7 @@ export async function publicMedia(
     // Resolver/HTTP errors may embed signed URLs, credentials or internal paths.
     throw new WazapError(
       "URL_FETCH_FAILED",
-      controller.signal.aborted ? "Media download timed out." : "Media download failed."
+      controller.signal.aborted ? "Media download timed out." : `Media download failed${withCode(e)}.`
     );
   } finally {
     clearTimeout(timer);

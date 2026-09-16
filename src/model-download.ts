@@ -8,6 +8,7 @@ import type { ReadableStream } from "node:stream/web";
 import { WazapError } from "./errors.js";
 import { discardResponse } from "./http-response.js";
 import { log } from "./logger.js";
+import { withCode } from "./error-code.js";
 import { acquireModelDownloadLock, type ModelDownloadLock } from "./model-download-lock.js";
 
 export interface DownloadProgress {
@@ -252,7 +253,7 @@ export async function downloadFile(opts: DownloadOpts): Promise<DownloadResult> 
     throw failure(
       code && IO_CODES.has(code)
         ? `Model download could not access or write its files (${code}).`
-        : "Model download failed."
+        : `Model download failed${withCode(err)}.`
     );
   } finally {
     clearTimeout(totalTimer);

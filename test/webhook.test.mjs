@@ -559,6 +559,16 @@ test("an unreachable URL is a soft fail that sets last_error", async () => {
   assert.ok(!(sink.lastError ?? "").includes(SECRET), "the secret must not appear in last_error");
 });
 
+test("a refused connection says so in last_error, without the URL around it", async () => {
+  const server = createServer();
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const { port } = server.address();
+  await new Promise((resolve) => server.close(resolve));
+  const sink = new WebhookSink(readyEnv(`http://127.0.0.1:${port}/hook?token=${SECRET}`), { retryDelays: [] });
+  await sink.notify(samplePayload({ text: "x" }));
+  assert.equal(sink.lastError, `could not reach 127.0.0.1:${port} (ECONNREFUSED)`);
+});
+
 test("sendTest refuses off and invalid config, and posts the same event when ready", async () => {
   const off = await new WebhookSink({}).sendTest();
   assert.equal(off.ok, false);

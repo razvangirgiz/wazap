@@ -133,8 +133,14 @@ class LlamaSidecar implements EmbeddingTarget {
     // A restart rejects a promise nobody may be awaiting; that is normal, so
     // the rejection must not count as unhandled.
     this.readyPromise.catch(() => {});
-    // Decoder diagnostics can include indexed text; drain without retaining it.
-    child.stderr?.resume();
+    // Boot output is llama.cpp's own (model load, Metal, a bad flag) and is the
+    // only record of why a start failed. Once the server is ready it can echo
+    // indexed text, so the tail is kept only until then, and only ever logged.
+    let bootTail: string | null = "";
+    child.stderr?.on("data", (chunk: Buffer) => {
+      if (bootTail !== null) bootTail = (bootTail + chunk.toString("utf8")).slice(-2000);
+    });
+    this.readyPromise.then(() => { bootTail = null; }, () => {});
     child.on("error", () => { if (this.child === child) this.childFailed(); });
     child.on("exit", (code, signal) => {
       if (this.child !== child) return;
@@ -144,6 +150,8 @@ class LlamaSidecar implements EmbeddingTarget {
         return;
       }
       const reason = code !== null ? `exit ${code}` : `signal ${signal}`;
+      if (bootTail) this.onLog(`recall: llama-server output before it stopped:\n${bootTail.trimEnd()}`);
+      bootTail = null;
       this.onLog(`recall: llama-server ${reason}; restarting in ${Math.round(this.backoff / 1000)}s`);
       this.readyReject?.(new WazapError("RECALL_FAILED", `llama-server ${reason}.`));
       this.restartTimer = setTimeout(() => {

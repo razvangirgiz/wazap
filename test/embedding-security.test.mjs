@@ -126,3 +126,29 @@ test("embedding child diagnostics never include raw decoder stderr", { skip: pro
   try { await assert.rejects(child.readyPromise, safeError); }
   finally { await child.stop(); }
 });
+
+test("a llama-server that dies while starting logs why, and only while starting", { skip: process.platform === "win32" }, async (t) => {
+  const dir = await mkdtemp(join(tmpdir(), "wazap-embedding-boot-"));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const boot = join(dir, "boot-llama");
+  await writeFile(boot, "#!/bin/sh\nprintf 'error: failed to load model synthetic-model\\n' >&2\nexit 1\n", { mode: 0o700 });
+  const logs = [];
+  const failing = sidecarFactory.open(boot, "synthetic-model", (line) => logs.push(line));
+  failing.base = "http://127.0.0.1:9";
+  failing.spawnChild();
+  try {
+    await assert.rejects(failing.readyPromise, (err) => { assert.doesNotMatch(err.message, /failed to load/); return true; });
+  } finally { await failing.stop(); }
+  assert.ok(logs.some((line) => line.includes("failed to load model synthetic-model")), "the boot reason reaches the log");
+
+  const later = join(dir, "later-llama");
+  await writeFile(later, `#!/bin/sh\nsleep 0.3\nprintf '%s\\n' '${SECRET}' >&2\nexit 2\n`, { mode: 0o700 });
+  const ready = [];
+  const serving = sidecarFactory.open(later, "synthetic-model", (line) => ready.push(line));
+  serving.base = "http://127.0.0.1:9";
+  serving.spawnChild();
+  serving.readyResolve();
+  const exited = new Promise((resolve) => serving.child.once("exit", resolve));
+  try { await exited; } finally { await serving.stop(); }
+  assert.ok(ready.every((line) => !line.includes(SECRET)), "output after ready is never retained");
+});

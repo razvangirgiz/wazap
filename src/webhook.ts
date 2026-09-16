@@ -14,6 +14,7 @@ import { WazapError, asWazapError } from "./errors.js";
 import { log, logError } from "./logger.js";
 import { redact, stripPasted } from "./transcribe/index.js";
 import { discardResponse } from "./http-response.js";
+import { withCode } from "./error-code.js";
 import type { ConnectionStatus, MessageType, MessageView, WebhookDelivery, WebhookInfo } from "./wa-types.js";
 
 export const WEBHOOK_EVENTS = ["message_received", "message_sent", "connection"] as const;
@@ -543,8 +544,8 @@ export class WebhookSink {
       if (result.ok) this.recordSuccess();
       else this.recordFailure(result.error);
       return result.ok;
-    } catch {
-      this.lastError = "Webhook delivery failed.";
+    } catch (err) {
+      this.lastError = `Webhook delivery failed${withCode(err)}.`;
       this.recordFailure(this.lastError);
       return false;
     } finally {
@@ -690,7 +691,9 @@ function describePostError(err: unknown, url: string): string {
   const host = hostOf(url);
   if (err instanceof Error && (err.name === "TimeoutError" || err.name === "AbortError"))
     return `timed out reaching ${host}`;
-  return `could not reach ${host}`;
+  // ECONNREFUSED, ENOTFOUND or CERT_HAS_EXPIRED is the whole diagnosis; the
+  // message around it may quote the URL, and the URL may carry a token.
+  return `could not reach ${host}${withCode(err)}`;
 }
 
 function failAttempt(error: string, secret: string, fix: string, retry: boolean): WebhookAttempt {

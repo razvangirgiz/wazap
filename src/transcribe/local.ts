@@ -8,6 +8,7 @@ import { tmpdir } from "node:os";
 import { delimiter, isAbsolute, join } from "node:path";
 import { promisify } from "node:util";
 import { WazapError } from "../errors.js";
+import { withCode } from "../error-code.js";
 import { LOCAL_MEDIA_INPUT_ARGS } from "../media-process.js";
 import { modelPath, MODELS } from "./models.js";
 import type { Provider, Readiness, TranscribeOpts, TranscribeSettings, Transcript } from "./types.js";
@@ -82,10 +83,13 @@ async function spawnStep(what: string, bin: string, args: string[]): Promise<voi
     if (failure.killed === true) {
       throw new WazapError("TRANSCRIBE_FAILED", `${what} timed out after 5 minutes.`, "Try a shorter recording");
     }
-    // Decoder stderr can echo attacker-controlled metadata, URLs or speech.
+    // Decoder stderr can echo attacker-controlled metadata, URLs or speech. The
+    // exit code or signal cannot, and it tells a crash from a rejected file.
+    const signal = (err as { signal?: unknown }).signal;
+    const cause = typeof signal === "string" && /^SIG[A-Z0-9]+$/.test(signal) ? ` (${signal})` : withCode(err);
     throw new WazapError(
       "TRANSCRIBE_FAILED",
-      `${what} failed.`,
+      `${what} failed${cause}.`,
       "Check that the recording is a supported, valid media file"
     );
   }
