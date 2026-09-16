@@ -28,6 +28,7 @@ import {
   type ProviderName,
   type TranscribeSettings,
 } from "./transcribe/index.js";
+import { checkTranscribeQueue } from "./transcribe-status.js";
 import { dim, fail, fix, green, info, ok, red, warn, yellow } from "./ui.js";
 import type { WebhookDelivery } from "./wa-types.js";
 import {
@@ -83,6 +84,7 @@ const CHECKS: readonly CheckFn[] = [
   checkSkills,
   checkOAuth,
   checkTranscribe,
+  checkTranscribeQueue,
   checkRecall,
   checkWebhook,
   checkUpdate,

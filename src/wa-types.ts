@@ -99,6 +99,8 @@ export interface StatusInfo {
   recall: RecallStatus;
   /** The account database: preparing, ready or failed, and the earlier message files it was imported from. */
   storage?: StorageInfo;
+  /** Voice notes transcribed without being asked: the durable queue, without content. */
+  transcription: TranscriptionStatus;
   /** Present only while `status` is "linking". */
   pairing?: PairingInfo;
   hint?: string;
@@ -119,6 +121,23 @@ export interface StorageInfo {
    * are kept — the import is unverified, or this database did not move them.
    */
   legacy_files?: { deleted_after: string } | { kept: "unverified" | "inherited" };
+}
+
+/**
+ * The account's voice-note queue. `auto` is `off` when no provider is set,
+ * `WAZAP_TRANSCRIBE_AUTO=0`, or read-only forbids the API provider; `degraded`
+ * when the settings do not parse. A queue kept while auto is off stays, idle.
+ */
+export interface TranscriptionStatus {
+  auto: "on" | "off" | "degraded";
+  /** Notes waiting or being transcribed. */
+  queued: number;
+  /** How long the run under way has been going, or null. */
+  running_for_seconds: number | null;
+  /** Notes given up on (media gone, audio refused, attempts used up). */
+  failed: number;
+  /** The latest failure on a note still queued or given up on: a short reason, never content. */
+  last_error: { reason: string; at: string; final: boolean } | null;
 }
 
 /** One row of `get_status.accounts` / `list_accounts`. Policy `write_tools`, not the session bit. */

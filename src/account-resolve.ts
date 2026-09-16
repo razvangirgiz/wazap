@@ -7,6 +7,7 @@ import type { AccountBinding, AccountSource } from "./account-hub.js";
 import { ownerNumber, type AccountRecord } from "./accounts.js";
 import { WazapError } from "./errors.js";
 import { historyFreshness, historyLine } from "./freshness.js";
+import { transcriptionStatusLine } from "./transcribe-status.js";
 import { maskNumber } from "./ui.js";
 import type { ListedAccount, StatusInfo } from "./wa-types.js";
 
@@ -220,6 +221,7 @@ export function renderGetStatus(s: StatusInfo, writeTools: boolean, hub: Account
       : null,
     webhookStatusLine(s.webhook),
     storageStatusLine(s),
+    s.transcription === undefined ? null : transcriptionStatusLine(s.transcription),
     s.last_error ? `- **last error**: ${s.last_error}` : null,
     s.hint ? `- **hint**: ${s.hint}` : null,
     accounts.length > 1 ? `- **accounts**: ${accounts.map((row) => row.id).join(", ")}` : null,

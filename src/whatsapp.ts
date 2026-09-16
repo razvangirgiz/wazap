@@ -188,6 +188,7 @@ import type {
   SentMessage,
   StatusInfo,
   StorageInfo,
+  TranscriptionStatus,
   SyncState,
   Synced,
   TranscribeResult,
@@ -1252,6 +1253,7 @@ export class WhatsAppService implements WhatsAppApi {
       webhook: this.webhook.info(),
       recall: this.recallStatus(),
       storage: this.storageInfo(),
+      transcription: this.transcriptionStatus(),
     };
     const hints: string[] = [];
     if (this.storageState === "preparing") {
@@ -4253,6 +4255,32 @@ export class WhatsAppService implements WhatsAppApi {
       throw markFailure(new WazapError("MEDIA_UNAVAILABLE", "Not a short incoming voice note."), "gone", "not a voice note to transcribe");
     }
     await this.transcribeAudio(sid);
+  }
+
+  /**
+   * The account's transcription queue for get_status, without a word of any
+   * note: how many wait, how long the run under way has been going, how many
+   * were given up on, and the latest reason.
+   */
+  private transcriptionStatus(): TranscriptionStatus {
+    const settings = this.transcribe;
+    const auto: TranscriptionStatus["auto"] =
+      settings instanceof WazapError ? "degraded" : this.autoTranscribe ? "on" : "off";
+    const status: TranscriptionStatus = { auto, queued: 0, running_for_seconds: null, failed: 0, last_error: null };
+    const db = this.readyDb();
+    if (db === null) return status;
+    try {
+      const stats = db.transcripts.stats();
+      status.queued = stats.queued;
+      status.failed = stats.failed;
+      if (stats.startedAt !== null) status.running_for_seconds = Math.max(0, Math.round((Date.now() - stats.startedAt) / 1000));
+      if (stats.lastError !== null) {
+        status.last_error = { reason: stats.lastError.reason, at: isoWithOffset(stats.lastError.at), final: stats.lastError.final };
+      }
+    } catch (err) {
+      logError("transcribe status", err);
+    }
+    return status;
   }
 
   /** The stored message a reader may see under any spelling of its id, or MESSAGE_NOT_FOUND. */

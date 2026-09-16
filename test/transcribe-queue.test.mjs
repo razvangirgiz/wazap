@@ -12,6 +12,7 @@ import { setTimeout as sleep } from "node:timers/promises";
 import { AccountDb } from "../dist/db/index.js";
 import { WazapError } from "../dist/errors.js";
 import { TranscribeWorker, transcribeWorker } from "../dist/transcribe/worker.js";
+import { checkTranscribeQueue, transcriptionStatusLine } from "../dist/transcribe-status.js";
 import { WhatsAppService } from "../dist/whatsapp.js";
 import { PEER, T0, openTemp, sid } from "./db-fixtures.mjs";
 import { connectedService, storageRows } from "./helpers.mjs";
@@ -336,15 +337,21 @@ test("the queue survives a restart: a note that arrived while the account could 
   deliver(before.sock, [voiceNote("V1")]);
   await before.svc.transcribeIdle();
   assert.equal(idle.calls, 0);
-  assert.equal(before.svc.db.transcripts.stats().queued, 1);
+  const status = before.svc.getStatus().transcription;
+  assert.deepEqual(status, { auto: "on", queued: 1, running_for_seconds: null, failed: 0, last_error: null });
+  assert.match(transcriptionStatusLine(status), /voice transcription queue\*\*: 1 waiting/);
   await before.svc.stop();
+  const statusChecks = withEnv(CONFIGURED, () => checkTranscribeQueue({ dataDir: before.svc.config.dataDir }));
+  assert.deepEqual(statusChecks, [{ name: "voice queue", state: "info", detail: "1 waiting" }], "wazap status reads it with no server running");
+  const offChecks = withEnv({}, () => checkTranscribeQueue({ dataDir: before.svc.config.dataDir }));
+  assert.equal(offChecks[0].state, "warn", "a queue nothing will run is worth a warning");
 
   const after = serviceWith(CONFIGURED, { dataDir: before.svc.config.dataDir });
   const provider = stub(after.svc);
   await after.svc.transcribeIdle();
   assert.equal(provider.calls, 1, "the restart found the note where it was");
   assert.equal(after.svc.db.messages.get(sidOf("V1")).transcript, "am uitat umbrela acasă");
-  assert.equal(after.svc.db.transcripts.stats().queued, 0);
+  assert.equal(after.svc.getStatus().transcription.queued, 0);
   await after.svc.stop();
 });
 
@@ -408,6 +415,7 @@ test("WAZAP_TRANSCRIBE_AUTO=0 and no provider queue nothing, and a queue kept wh
   await manual.svc.transcribeIdle();
   assert.equal(manual.svc.db.transcripts.state(sidOf("M1")), null);
   assert.equal(manualCalls.calls, 0);
+  assert.equal(manual.svc.getStatus().transcription.auto, "off");
   await manual.svc.stop();
 
   const queued = serviceWith(CONFIGURED);
@@ -422,6 +430,7 @@ test("WAZAP_TRANSCRIBE_AUTO=0 and no provider queue nothing, and a queue kept wh
   assert.equal(offCalls.calls, 0, "switched off, nothing runs");
   assert.equal(off.svc.db.transcripts.state(sidOf("O1")), null, "and nothing new is queued");
   assert.equal(off.svc.db.transcripts.state(sidOf("Q1")).state, "queued", "but the queue is kept for when it is switched on");
+  assert.match(transcriptionStatusLine(off.svc.getStatus().transcription), /1 waiting \(automatic transcription is off/);
   await off.svc.stop();
 });
 
