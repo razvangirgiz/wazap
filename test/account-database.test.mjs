@@ -355,6 +355,19 @@ test("a large history batch is stored in bounded transactions: the event loop ru
   assert.equal(svc.hasHistory(), true, "history counts as received once the batch is stored");
 });
 
+test("a history batch arriving once a stop began is refused, as every other event is", async () => {
+  const dataDir = mkdtempSync(join(tmpdir(), "wazap-accountdb-"));
+  const { svc, sock } = serviceOn(dataDir);
+  await svc.bootStorage();
+  const stopping = svc.stop();
+  const base = Math.floor(Date.now() / 1000) - 3600;
+  sock.ev.emit("messaging-history.set", { chats: [], contacts: [], messages: Array.from({ length: 10 }, (_, i) => text(PEER, `LATE${i}`, `după oprire ${i}`, base + i)), isLatest: true });
+  await stopping;
+  const db = AccountDb.open(join(accountPaths(dataDir, "default").root, "wazap.sqlite"), { readOnly: true });
+  assert.equal(db.counts().messages, 0, "nothing was stored after the stop began");
+  db.close();
+});
+
 test("edits, reactions, statuses and receipts arriving while a history batch is still being stored land on its messages", async (t) => {
   const dataDir = mkdtempSync(join(tmpdir(), "wazap-accountdb-"));
   const { svc, sock } = serviceOn(dataDir);

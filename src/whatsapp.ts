@@ -2967,7 +2967,7 @@ export class WhatsAppService implements WhatsAppApi {
     });
 
     sock.ev.on("messages.upsert", ({ messages, type }) => {
-      if (this.historyPending === 0) {
+      if (this.historyPending === 0 || this.stopped) {
         this.receiveMessages(messages, type);
         return;
       }
@@ -4219,6 +4219,8 @@ export class WhatsAppService implements WhatsAppApi {
   }
 
   private ingestHistory(batch: HistorySetEvent): void {
+    // A batch received before the stop is stored; one arriving after it began is not.
+    if (this.stopped) return;
     this.afterHistory(() => this.storeHistory(batch).catch((err: unknown) => logError("history sync", err)));
   }
 
@@ -4247,6 +4249,7 @@ export class WhatsAppService implements WhatsAppApi {
    * stored when there is one.
    */
   private markLater(what: string, work: () => void): void {
+    if (this.stopped) return;
     if (this.historyPending === 0) {
       this.handling(what, work, undefined);
       return;
