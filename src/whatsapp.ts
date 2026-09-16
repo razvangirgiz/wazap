@@ -730,7 +730,15 @@ export class WhatsAppService implements WhatsAppApi {
     await this.reconcilePreviews(db).catch((err: unknown) => logError("preview reconcile", err));
     await this.scheduleFileCleanup().catch(() => {});
     this.armExpiry();
-    this.embedFeed?.kick(true);
+    if (this.embedFeed !== null) this.embedFeed.kick();
+    else if (!(this.recallEnv instanceof WazapError)) {
+      // Recall is off: no queue is kept for it. Turning it on refills the queue once.
+      try {
+        db.vectors.unfeed();
+      } catch (err) {
+        logError("recall index", err);
+      }
+    }
   }
 
   /** Logs how the import went; an import with unexplained differences still serves, and says so for doctor. */
@@ -1961,7 +1969,7 @@ export class WhatsAppService implements WhatsAppApi {
     if (!this.db.messages.setTranscript(sid, record.text)) throw missingMessage(messageId);
     this.rememberTranscript(sid, record);
     // With the transcript on it, the voice note finally carries searchable words.
-    this.embedFeed?.touch(sid);
+    this.embedFeed?.kick();
     this.messageOrThrow(messageId);
     return transcribeResult(record, false);
   }
@@ -3067,7 +3075,7 @@ export class WhatsAppService implements WhatsAppApi {
       const next: WAMessage = { ...raw, ...(edited ? { message: edited } : {}), ...(redated === undefined ? {} : { messageTimestamp: redated }) };
       const editedAt = edited ? (protoNumber(update.messageTimestamp) ?? 0) * 1000 || Date.now() : stored.editedAt;
       this.writeVersion(next, stored, editedAt);
-      if (edited) this.embedFeed?.touch(stored.sid);
+      if (edited) this.embedFeed?.kick();
     }
     // A receipt on a one-to-one message: sent, delivered, read, played.
     if (typeof update.status === "number" && stored.fromMe) db.messages.setStatus(stored.sid, update.status);

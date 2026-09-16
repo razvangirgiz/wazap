@@ -1,15 +1,17 @@
 /**
  * The embedding feed in isolation, over a real account database: it walks the
- * backlog in bounded batches, retries a sick backend and gives up on a dead
+ * queue in bounded batches, retries a sick backend and gives up on a dead
  * one, is never held by its own backoff when stopped, walks only what is new
- * once it has seen the history, and re-embeds a message whose words changed.
+ * once it has seen the history — wherever in time it lands — and re-embeds a
+ * message whose words changed; a walk over a large history yields to the
+ * event loop.
  * The embed call is a fake that never leaves the process.
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
 import { EmbedFeed } from "../dist/recall/index.js";
-import { PEER, T0, openTemp, sid, textMessage } from "./db-fixtures.mjs";
+import { PEER, T0, openTemp, sid, textMessage, wordsOf } from "./db-fixtures.mjs";
 
 const MODEL = "embeddinggemma-300m";
 const DIMS = 8;
@@ -40,7 +42,7 @@ test("the backlog is embedded in batches of at most 32 texts and 8,192 character
   db.messages.upsert(textMessage(PEER, "STICKER", T0 + 102_000, "[sticker]"));
   const { calls, embed } = fakeEmbed();
   const feed = feedOver(db, embed, (message) => (message.text.startsWith("[") ? null : message.text));
-  feed.kick(true);
+  feed.kick();
   await feed.idle();
   assert.equal(db.vectors.count(MODEL), 72);
   assert.equal(db.vectors.get(sid(false, PEER, "STICKER")), null, "a placeholder is nothing to embed");
@@ -60,7 +62,7 @@ test("a failing backend is retried, and the batch lands once it answers", async 
     if (failures-- > 0) throw new Error("llama-server restarting");
     return embed(texts);
   });
-  feed.kick(true);
+  feed.kick();
   await feed.idle();
   assert.equal(feed.dead, null);
   assert.equal(calls.length, 1);
@@ -76,7 +78,7 @@ test("five failures in a row stop the feed and say why, without holding a stop",
     attempts++;
     throw new Error("model file is corrupt");
   });
-  feed.kick(true);
+  feed.kick();
   await feed.idle();
   assert.equal(attempts, 5);
   assert.match(feed.dead, /indexing stopped after 5 failed embedding calls: model file is corrupt/);
@@ -86,7 +88,7 @@ test("five failures in a row stop the feed and say why, without holding a stop",
   const again = feedOver(db, async () => {
     throw new Error("down");
   });
-  again.kick(true);
+  again.kick();
   await new Promise((resolve) => setTimeout(resolve, 50));
   const started = Date.now();
   await again.stop();
@@ -103,7 +105,7 @@ test("once the history is walked, a new message costs a walk of what is new, and
     examined++;
     return message.text;
   });
-  feed.kick(true);
+  feed.kick();
   await feed.idle();
   assert.equal(db.vectors.count(MODEL), 50);
 
@@ -118,7 +120,7 @@ test("once the history is walked, a new message costs a walk of what is new, and
   calls.length = 0;
   db.messages.upsert(textMessage(PEER, "M3", T0 + 3000, "mesajul 3, editat", { editedAt: T0 + 70_000 }));
   assert.equal(db.vectors.get(sid(false, PEER, "M3")), null, "the edit dropped the stale vector");
-  feed.touch(sid(false, PEER, "M3"));
+  feed.kick();
   await feed.idle();
   assert.deepEqual(calls, [["mesajul 3, editat"]]);
   assert.ok(db.vectors.get(sid(false, PEER, "M3")));
@@ -129,20 +131,64 @@ test("a vector made from words the message no longer says is refused, and the ne
   const { db } = openTemp();
   db.messages.upsert(textMessage(PEER, "M1", T0, "prima formă"));
   let release;
+  let entered;
   const gate = new Promise((resolve) => (release = resolve));
+  const reached = new Promise((resolve) => (entered = resolve));
   const { embed } = fakeEmbed();
   const feed = feedOver(db, async (texts) => {
+    entered();
     await gate;
     return embed(texts);
   });
-  feed.kick(true);
-  await new Promise((resolve) => setImmediate(resolve));
+  feed.kick();
+  await reached;
   db.messages.upsert(textMessage(PEER, "M1", T0, "a doua formă", { editedAt: T0 + 5_000 }));
   release();
   await feed.idle();
   assert.equal(db.vectors.get(sid(false, PEER, "M1")), null, "the in-flight vector described the old words");
-  feed.kick(true);
+  feed.kick();
   await feed.idle();
   assert.ok(db.vectors.get(sid(false, PEER, "M1")));
+  db.close();
+});
+
+test("a message stored below what a finished walk covered — later history, an older page — is embedded without a restart", async () => {
+  const { db } = openTemp();
+  for (let i = 0; i < 50; i++) db.messages.upsert(textMessage(PEER, `M${i}`, T0 + i * 1000, `mesajul ${i}`));
+  const { embed } = fakeEmbed();
+  const feed = feedOver(db, embed);
+  feed.kick();
+  await feed.idle();
+  assert.equal(db.vectors.count(MODEL), 50);
+
+  db.messages.upsert(textMessage(PEER, "OLD", T0 - 86_400_000, "factura din iulie"));
+  feed.kick();
+  await feed.idle();
+  assert.ok(db.vectors.get(sid(false, PEER, "OLD")), "the older message got its vector");
+  assert.equal(feed.pending, 0);
+});
+
+test("a first walk over a history whose vectors all came with the import yields to the event loop between pages", async () => {
+  const { db } = openTemp();
+  const COUNT = 12_000;
+  for (let batch = 0; batch < COUNT / 2000; batch++) {
+    db.messages.upsertMany(Array.from({ length: 2000 }, (_, i) => textMessage(PEER, `M${batch}_${i}`, T0 + (batch * 2000 + i) * 1000, `mesajul ${batch} ${i}`)));
+  }
+  db.transaction(() => {
+    for (let batch = 0; batch < COUNT / 2000; batch++) {
+      for (let i = 0; i < 2000; i++) {
+        const key = sid(false, PEER, `M${batch}_${i}`);
+        db.vectors.put(key, MODEL, [1, (i % 7) + 1, 0, 0, 0, 0, 0, 1], wordsOf(db, key));
+      }
+    }
+  });
+  const { calls, embed } = fakeEmbed();
+  const feed = feedOver(db, embed);
+  let busyMeanwhile = null;
+  feed.kick();
+  setImmediate(() => (busyMeanwhile = feed.busy));
+  await feed.idle();
+  assert.equal(busyMeanwhile, true, "a timer or a message gets a turn while the history is walked");
+  assert.equal(calls.length, 0, "nothing needed embedding");
   db.close();
 });

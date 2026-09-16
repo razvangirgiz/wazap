@@ -1,20 +1,21 @@
 /**
- * The embedding feed of one account: it walks the account database's backlog
- * — visible messages with words and no vector from the model — embeds them in
- * batches and stores each vector with the content hash of the words it was
- * made from, so a message edited or transcribed meanwhile is simply refused
- * and picked up again. Ingestion never waits on it and never sees it fail: a
- * sick backend is retried with backoff, and a dead one stops the feed and says
- * why.
+ * The embedding feed of one account: it walks the account database's
+ * embedding queue — messages stored with words, or whose words changed, since
+ * the feed last looked — embeds them in batches and stores each vector with
+ * the content hash of the words it was made from, so a message edited or
+ * transcribed meanwhile is simply refused and queued again. Ingestion never
+ * waits on it and never sees it fail: a sick backend is retried with backoff,
+ * and a dead one stops the feed and says why.
  *
- * A walk goes from the newest message down. Once a walk has reached the
- * bottom, later walks stop at the newest id the previous one started from, so
- * a new message costs a short walk, not a scan of the history; a message
- * below that line whose vector went stale (an edit, a transcript) is named
- * with touch().
+ * The queue lives in the database, so a restart resumes it instead of walking
+ * the history again, and a message stored below the newest one (a history
+ * batch, an older page) is queued like any other. The first time a model is
+ * fed, a refill queues the messages already stored, in bounded steps whose
+ * place survives a restart. The feed yields to the event loop between steps
+ * and pages.
  */
 import { setTimeout as sleep } from "node:timers/promises";
-import { contentHash, type AccountDb, type StoredMessage } from "../db/index.js";
+import { contentHash, type AccountDb, type BacklogItem, type StoredMessage } from "../db/index.js";
 import { WazapError } from "../errors.js";
 import { logError } from "../logger.js";
 
@@ -22,14 +23,12 @@ import { logError } from "../logger.js";
 const BATCH = 32;
 /** And at most this many characters per request, a conservative token bound. */
 const BATCH_CHARS = 8_192;
-/** Rows the backlog examines per call before it hands back a cursor. */
+/** Stored messages one refill step looks at, and queue rows one page looks at. */
 const SCAN = 2_000;
 const RETRY_INIT_MS = 500;
 const RETRY_MAX_MS = 8_000;
 /** Consecutive batch failures after which the feed is declared dead. */
 const MAX_FAILURES = 5;
-/** Stale messages named by touch() kept at once; past it the next full walk finds them. */
-const TOUCHED_MAX = 1_000;
 
 export interface EmbedFeedOptions {
   /** The open database, or null while it is not ready (preparing, stopped). */
@@ -43,19 +42,19 @@ export interface EmbedFeedOptions {
   embed: (texts: string[]) => Promise<number[][]>;
 }
 
+interface Work {
+  message: StoredMessage;
+  words: string;
+}
+
 export class EmbedFeed {
   /** Why the feed stopped for good, or null while it runs. */
   dead: string | null = null;
   private draining: Promise<void> | null = null;
   private again = false;
   private stopped = false;
-  /** Ids at or below this were walked by a finished walk. */
-  private watermark = 0;
-  private readonly touched = new Set<string>();
   private failures = 0;
   private wake: (() => void) | null = null;
-  /** Unembedded messages the current walk has in hand; what status reports as pending. */
-  private inHand = 0;
 
   constructor(private readonly options: EmbedFeedOptions) {}
 
@@ -64,34 +63,33 @@ export class EmbedFeed {
     return this.draining !== null;
   }
 
+  /** Messages queued and not yet embedded or skipped. */
   get pending(): number {
-    return this.inHand + this.touched.size;
+    const db = this.options.db();
+    if (db === null) return 0;
+    try {
+      return db.vectors.queueSize();
+    } catch {
+      return 0;
+    }
   }
 
-  /** New words somewhere above the watermark, or `full` for a walk from the top to the bottom. */
-  kick(full = false): void {
+  /** Something may have been queued: walk the queue, now or right after the walk under way. */
+  kick(): void {
     if (this.stopped || this.dead !== null) return;
-    if (full) this.watermark = 0;
     if (this.draining !== null) {
       this.again = true;
       return;
     }
-    this.draining = this.drain().finally(() => {
-      this.draining = null;
-      this.inHand = 0;
-      if (this.again && !this.stopped && this.dead === null) {
-        this.again = false;
-        this.kick();
-      }
-    });
-  }
-
-  /** A message whose vector went stale below the watermark: an edit or a transcript. */
-  touch(sid: string): void {
-    if (this.stopped || this.dead !== null) return;
-    if (this.touched.size < TOUCHED_MAX) this.touched.add(sid);
-    else this.watermark = 0;
-    this.kick();
+    this.draining = this.drain()
+      .catch((err: unknown) => logError("recall index", err))
+      .finally(() => {
+        this.draining = null;
+        if (this.again && !this.stopped && this.dead === null) {
+          this.again = false;
+          this.kick();
+        }
+      });
   }
 
   /** Settles once nothing is left to embed or every attempt stopped. */
@@ -105,49 +103,48 @@ export class EmbedFeed {
     await this.idle();
   }
 
-  private async drain(): Promise<void> {
-    await this.drainTouched();
+  private current(): AccountDb | null {
+    if (this.stopped || this.dead !== null) return null;
     const db = this.options.db();
-    if (db === null || this.stopped) return;
-    const top = db.messages.recent({ since: 0, limit: 1 }).items[0]?.id ?? 0;
-    let before: number | undefined;
-    for (;;) {
-      const current = this.options.db();
-      if (current === null || this.stopped || this.dead !== null) return;
-      const page = current.vectors.backlog({ model: this.options.model, limit: BATCH, scanCap: SCAN, ...(before === undefined ? {} : { before }) });
-      const floor = this.watermark;
-      const items = page.items.filter((item) => item.id > floor);
-      this.inHand = items.length;
-      if (items.length > 0 && !(await this.embedItems(current, items))) return;
-      const reachedFloor = page.nextBefore === null || page.nextBefore <= floor || items.length < page.items.length;
-      if (!page.hasMore || reachedFloor) break;
-      // A retry keeps its place: only a batch that landed moves the cursor down.
-      before = page.nextBefore ?? undefined;
-      await this.drainTouched();
-    }
-    this.watermark = Math.max(this.watermark, top);
+    return db !== null && db.isOpen ? db : null;
   }
 
-  private async drainTouched(): Promise<void> {
-    while (this.touched.size > 0 && !this.stopped && this.dead === null) {
-      const db = this.options.db();
+  private async drain(): Promise<void> {
+    let db = this.current();
+    if (db === null) return;
+    let refilling = db.vectors.feed(this.options.model).refilling;
+    while (refilling) {
+      await turn();
+      db = this.current();
       if (db === null) return;
-      const sids = [...this.touched].slice(0, BATCH);
-      const stale = sids.filter((sid) => db.vectors.get(sid)?.model !== this.options.model);
-      if (stale.length > 0 && !(await this.embedItems(db, stale.map((sid) => ({ sid }))))) return;
-      for (const sid of sids) this.touched.delete(sid);
+      refilling = db.vectors.refill(SCAN);
+    }
+    let before: number | undefined;
+    for (;;) {
+      await turn();
+      db = this.current();
+      if (db === null) return;
+      const page = db.vectors.queued({ model: this.options.model, limit: BATCH, scanCap: SCAN, ...(before === undefined ? {} : { before }) });
+      if (page.items.length > 0 && !(await this.embedItems(db, page.items))) return;
+      if (!page.hasMore || page.nextBefore === null) return;
+      // A page keeps its place only once its batch landed: a retry happens inside embedBatch.
+      before = page.nextBefore;
     }
   }
 
   /** Embeds what has words and stores each vector; false when the feed stopped or died on the way. */
-  private async embedItems(db: AccountDb, items: ReadonlyArray<{ sid: string }>): Promise<boolean> {
-    const work: Array<{ message: StoredMessage; words: string }> = [];
+  private async embedItems(db: AccountDb, items: readonly BacklogItem[]): Promise<boolean> {
+    const work: Work[] = [];
+    const nothing: number[] = [];
     let chars = 0;
     for (const item of items) {
       const message = db.messages.get(item.sid);
       if (message === null) continue;
       const words = this.options.words(message);
-      if (words === null) continue;
+      if (words === null) {
+        nothing.push(item.id);
+        continue;
+      }
       if (work.length > 0 && chars + words.length > BATCH_CHARS) {
         if (!(await this.embedBatch(db, work.splice(0)))) return false;
         chars = 0;
@@ -155,21 +152,24 @@ export class EmbedFeed {
       work.push({ message, words });
       chars += words.length;
     }
+    if (nothing.length > 0 && db.isOpen) db.vectors.dequeue(nothing);
     return work.length === 0 || this.embedBatch(db, work);
   }
 
-  private async embedBatch(db: AccountDb, work: Array<{ message: StoredMessage; words: string }>): Promise<boolean> {
+  private async embedBatch(db: AccountDb, work: Work[]): Promise<boolean> {
     for (;;) {
       if (this.stopped || this.dead !== null) return false;
       try {
         const vectors = await this.options.embed(work.map((entry) => entry.words));
         if (!db.isOpen || this.stopped) return false;
-        work.forEach((entry, i) => {
-          const vector = vectors[i];
-          if (vector === undefined) return;
-          const { message } = entry;
-          // Refused when the message was deleted, expired, edited or transcribed meanwhile.
-          db.vectors.put(message.sid, this.options.model, vector, contentHash(message.text, message.transcript));
+        db.transaction(() => {
+          work.forEach((entry, i) => {
+            const vector = vectors[i];
+            if (vector === undefined) return;
+            const { message } = entry;
+            // Refused when the message was deleted, expired, edited or transcribed meanwhile.
+            db.vectors.put(message.sid, this.options.model, vector, contentHash(message.text, message.transcript));
+          });
         });
         this.failures = 0;
         return true;
@@ -193,6 +193,11 @@ export class EmbedFeed {
       }
     }
   }
+}
+
+/** One turn of the event loop, so a timer or a message is not held up by a walk. */
+function turn(): Promise<void> {
+  return new Promise((resolve) => setImmediate(resolve));
 }
 
 function describeError(err: unknown): string {
