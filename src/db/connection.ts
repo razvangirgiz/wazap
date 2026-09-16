@@ -27,6 +27,7 @@ export const DEFAULT_CHUNK_SIZE = 200;
  */
 const DEFAULT_CHUNK_BUDGET_MS = 15;
 const DEFAULT_CHECKPOINT_DELAY_MS = 2_000;
+const MAX_CHECKPOINT_RETRIES = 6;
 
 export interface ConnectionOptions {
   /** status and doctor: never migrates, never writes, refuses a schema it would have to change. */
@@ -42,8 +43,8 @@ export interface ConnectionOptions {
   /**
    * After a single delete, a WAL checkpoint runs this long later, so the
    * deleted bytes leave the write-ahead log soon without a checkpoint per
-   * message. 0 turns the delayed checkpoint off; bulk deletes always
-   * checkpoint when they finish.
+   * message; a checkpoint a reader kept busy retries after it, backing off.
+   * 0 turns the timer off; bulk deletes always try a checkpoint when they finish.
    */
   checkpointDelayMs?: number;
 }
@@ -92,6 +93,8 @@ export class Connection {
   private readonly statements = new Map<string, StatementSync>();
   private bulkTail: Promise<unknown> = Promise.resolve();
   private checkpointTimer: NodeJS.Timeout | null = null;
+  private checkpointRetries = 0;
+  private readonly timeoutMs: number;
   private closed = false;
 
   private constructor(
@@ -104,6 +107,7 @@ export class Connection {
     this.chunkSize = Math.max(1, Math.floor(options.chunkSize ?? DEFAULT_CHUNK_SIZE));
     this.chunkBudgetMs = Math.max(1, options.chunkBudgetMs ?? DEFAULT_CHUNK_BUDGET_MS);
     this.checkpointDelayMs = Math.max(0, options.checkpointDelayMs ?? DEFAULT_CHECKPOINT_DELAY_MS);
+    this.timeoutMs = Math.max(0, Math.floor(options.timeoutMs ?? DEFAULT_TIMEOUT_MS));
   }
 
   static open(path: string, options: ConnectionOptions = {}): Connection {
@@ -295,25 +299,56 @@ export class Connection {
     }
   }
 
-  /** Moves the WAL into the main file and truncates it, so deleted bytes leave the log. */
+  /**
+   * Moves the WAL into the main file and truncates it, so deleted bytes leave
+   * the log — without ever waiting. A reader holding an older snapshot (status,
+   * doctor, a search worker) would make a TRUNCATE checkpoint wait for the whole
+   * busy timeout on the calling thread; here the busy timeout is 0 for the
+   * duration, so a busy log is checkpointed as far as it can be (what PASSIVE
+   * does), reported with `busy: 1`, and retried later on a timer.
+   */
   checkpoint(): CheckpointResult {
     this.assertWritable();
-    const row = this.db.prepare("PRAGMA wal_checkpoint(TRUNCATE)").get() as CheckpointResult | undefined;
-    return row ?? { busy: 0, log: 0, checkpointed: 0 };
+    if (this.db.isTransaction) return { busy: 1, log: -1, checkpointed: -1 };
+    this.db.exec("PRAGMA busy_timeout = 0");
+    let row: CheckpointResult | undefined;
+    try {
+      row = this.db.prepare("PRAGMA wal_checkpoint(TRUNCATE)").get() as CheckpointResult | undefined;
+    } finally {
+      this.db.exec(`PRAGMA busy_timeout = ${this.timeoutMs}`);
+    }
+    const result = row ?? { busy: 0, log: 0, checkpointed: 0 };
+    if (result.busy !== 0) {
+      this.scheduleCheckpoint(true);
+    } else {
+      this.checkpointRetries = 0;
+    }
+    return result;
   }
 
-  /** The delayed checkpoint after a single delete; several deletes in a row share one. */
-  scheduleCheckpoint(): void {
+  /**
+   * A later truncating checkpoint: after a single delete, or again when a
+   * reader kept the log busy. Several requests share one timer; retries back
+   * off to a minute and give up after a few, until the next delete asks again.
+   */
+  scheduleCheckpoint(retry = false): void {
     if (this.readOnly || this.closed || this.checkpointDelayMs === 0 || this.checkpointTimer !== null) return;
+    if (retry) {
+      if (this.checkpointRetries >= MAX_CHECKPOINT_RETRIES) return;
+      this.checkpointRetries++;
+    } else {
+      this.checkpointRetries = 0;
+    }
+    const delay = Math.min(60_000, this.checkpointDelayMs * 2 ** this.checkpointRetries);
     this.checkpointTimer = setTimeout(() => {
       this.checkpointTimer = null;
       if (this.closed) return;
       try {
         this.checkpoint();
       } catch {
-        // A busy reader only postpones it; the next delete or bulk operation tries again.
+        // The next delete or bulk operation asks again.
       }
-    }, this.checkpointDelayMs);
+    }, delay);
     this.checkpointTimer.unref();
   }
 

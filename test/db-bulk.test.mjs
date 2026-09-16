@@ -245,3 +245,30 @@ test("finding 2: a delete under a barrier whose purge has not run yet never make
   assert.equal(db.identity.chat(PEER).lastMessageId, null);
   return clearing.then(() => db.close());
 });
+
+test("finding 9: a checkpoint never waits for a reader holding a snapshot, and the WAL is truncated once it lets go", async () => {
+  const { db, path } = openTemp({ checkpointDelayMs: 20 });
+  for (let i = 0; i < 50; i++) db.messages.upsert(textMessage(PEER, `K${i}`, T0 + i * 1000, `text ${i}`));
+  const { sqlite } = await import("../dist/db/sqlite.js");
+  const reader = new (sqlite().DatabaseSync)(path, { readOnly: true });
+  reader.exec("BEGIN");
+  reader.prepare("SELECT count(*) AS n FROM messages").get();
+  db.messages.upsert(textMessage(PEER, "late", T0 + 60_000, "after the reader's snapshot"));
+
+  let started = performance.now();
+  const cleared = await db.messages.clearChat(PEER, T0 + 10_000);
+  assert.equal(cleared.count, 11);
+  assert.ok(performance.now() - started < 1000, `clear with its checkpoint took ${Math.round(performance.now() - started)} ms`);
+  started = performance.now();
+  const busy = db.checkpoint();
+  assert.ok(performance.now() - started < 200, `an explicit checkpoint took ${Math.round(performance.now() - started)} ms`);
+  assert.equal(busy.busy, 1);
+  assert.equal(db.settings().busyTimeoutMs, 5000, "the busy timeout is restored");
+
+  reader.exec("COMMIT");
+  reader.close();
+  const deadline = Date.now() + 3000;
+  while (statSync(`${path}-wal`).size !== 0 && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.equal(statSync(`${path}-wal`).size, 0, "the retry truncated the WAL once the reader let go");
+  db.close();
+});
