@@ -25,8 +25,10 @@ import { logError } from "../logger.js";
 const BATCH = 32;
 /** And at most this many characters per request, a conservative token bound. */
 const BATCH_CHARS = 8_192;
-/** Stored messages one refill step looks at, and queue rows one page looks at. */
+/** Queue rows one page looks at. */
 const SCAN = 2_000;
+/** Stored messages one refill step looks at: a few milliseconds of the event loop, even with a cold page cache. */
+const REFILL_STEP = 500;
 const RETRY_INIT_MS = 500;
 const RETRY_MAX_MS = 8_000;
 /** Consecutive batch failures after which the feed is declared dead. */
@@ -119,7 +121,7 @@ export class EmbedFeed {
       await turn();
       db = this.current();
       if (db === null) return;
-      refilling = db.vectors.refill(SCAN);
+      refilling = db.vectors.refill(REFILL_STEP);
     }
     let before: number | undefined;
     for (;;) {
