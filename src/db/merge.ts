@@ -166,14 +166,18 @@ export class Merger {
     this.c.run("UPDATE contacts SET phone_jid = NULL, lid = NULL, merged_into = ?, updated_at = ? WHERE id = ?", keep, now, drop);
     this.c.run("UPDATE contacts SET merged_into = ? WHERE merged_into = ?", keep, drop);
     this.c.run(
-      `UPDATE contacts SET phone_jid = ?, lid = ?, name = ?, push_name = ?, verified_name = ?, is_business = ?, updated_at = ?
+      `UPDATE contacts SET phone_jid = ?, lid = ?, name = ?, notify = ?, push_name = ?, verified_name = ?, is_business = ?,
+         listed = ?, updated_at = ?
        WHERE id = ?`,
       phone,
       lid,
       byPhone.name ?? byLid.name,
+      byPhone.notify ?? byLid.notify,
       byPhone.push_name ?? byLid.push_name,
       byPhone.verified_name ?? byLid.verified_name,
       byPhone.is_business ?? byLid.is_business,
+      // The earlier of the two places in the address book.
+      byPhone.listed === null || byLid.listed === null ? (byPhone.listed ?? byLid.listed) : Math.min(byPhone.listed, byLid.listed),
       now,
       keep
     );

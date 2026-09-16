@@ -587,3 +587,26 @@ test("search_contacts asks for a query or a tag, and reports a tag listing as on
   const none = await tool.handler({ tag: "client" });
   assert.match(none.content[0].text, /No contacts matching tag #client/);
 });
+
+test("search_contacts matches every name a person goes by, lists the address book in the order it arrived, and leaves out the account and strangers", async () => {
+  const { svc, sock } = makeService();
+  const BOGDAN = "40700000071@s.whatsapp.net";
+  const ANA = "40700000072@s.whatsapp.net";
+  const STRANGER = "40700000073@s.whatsapp.net";
+  const say = (from, id, pushName) =>
+    sock.ev.emit("messages.upsert", {
+      type: "notify",
+      messages: [{ key: { remoteJid: from, fromMe: false, id }, pushName, messageTimestamp: Math.floor(Date.now() / 1000), message: { conversation: "salut" } }],
+    });
+  // Bogdan writes before the address book arrives, under the name he publishes; a stranger only ever writes.
+  say(BOGDAN, "B1", "Bogdan B.");
+  say(STRANGER, "S1", "Elena Pushname");
+  sock.ev.emit("contacts.upsert", [{ id: ANA, name: "Ana Pop" }, { id: BOGDAN, notify: "Bogdan" }, { id: ME, notify: "Răzvan" }]);
+
+  assert.deepEqual((await svc.searchContacts("Bogdan B.", 10)).map((c) => c.contact_id), [BOGDAN], "the name on his messages finds him");
+  assert.deepEqual((await svc.searchContacts("Bogdan", 10)).map((c) => c.name), ["Bogdan"], "the address book's name is the one shown");
+  assert.deepEqual((await svc.searchContacts("Elena", 10)).map((c) => c.contact_id), [], "someone who only wrote is not a contact");
+  const everyone = (await svc.searchContacts("", 10)).map((c) => c.contact_id);
+  assert.deepEqual(everyone, [ANA, BOGDAN], "the address book in the order it arrived, without the account itself");
+  assert.deepEqual((await svc.searchContacts("", 1)).map((c) => c.contact_id), [ANA], "a limit keeps the first ones");
+});

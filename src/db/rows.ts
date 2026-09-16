@@ -6,9 +6,11 @@ export interface ContactRow {
   phone_jid: string | null;
   lid: string | null;
   name: string | null;
+  notify: string | null;
   push_name: string | null;
   verified_name: string | null;
   is_business: number | null;
+  listed: number | null;
   updated_at: number;
   merged_into: number | null;
 }
@@ -99,9 +101,11 @@ export function contactFromRow(row: ContactRow): ContactRecord {
     phoneJid: row.phone_jid,
     lid: row.lid,
     name: row.name,
+    notify: row.notify,
     pushName: row.push_name,
     verifiedName: row.verified_name,
     isBusiness: row.is_business === null ? null : row.is_business === 1,
+    listed: row.listed,
     updatedAt: row.updated_at,
   };
 }

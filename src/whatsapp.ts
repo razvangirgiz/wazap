@@ -1404,12 +1404,14 @@ export class WhatsAppService implements WhatsAppApi {
       const matches: ContactSummary[] = [];
       for (const { contact, notes } of this.db.identity.listContacts()) {
         const person = contact.phoneJid ?? contact.lid;
-        if (person === null || isGroupId(person) || isNoiseJid(person)) continue;
+        if (person === null || isGroupId(person) || isNoiseJid(person) || this.isMe(person)) continue;
+        // The address book and the people the user filed: not everyone who ever wrote.
+        if (contact.listed === null && notes === null) continue;
         const tags = notes?.tags ?? [];
         if (tag !== undefined && !tags.includes(tag)) continue;
         // Every name we might show, or someone the chat list calls "Carmen"
         // would not be findable by that name here.
-        const known = [contact.name, contact.verifiedName, contact.pushName].map(realName);
+        const known = [contact.name, contact.verifiedName, contact.notify, contact.pushName].map(realName);
         const number = person.split("@")[0] ?? "";
         const hit =
           needle === "" ||
@@ -2598,7 +2600,7 @@ export class WhatsAppService implements WhatsAppApi {
       if (firstName) contact.firstName = firstName;
       await sock.addOrEditContact(jid, contact);
       // The patch echo takes a moment; file the name now so the store is right.
-      this.db.identity.upsertContact({ jid, name: fullName });
+      this.db.identity.upsertContact({ jid, name: fullName, listed: true });
       this.namedContactsCache = null;
       return this.contactSummary(jid);
     });
@@ -3649,6 +3651,7 @@ export class WhatsAppService implements WhatsAppApi {
     const name =
       realName(contact?.name) ||
       realName(contact?.verifiedName) ||
+      realName(contact?.notify) ||
       realName(contact?.pushName) ||
       realName(chat?.name);
     if (name) return name;
@@ -4142,14 +4145,11 @@ export class WhatsAppService implements WhatsAppApi {
     const fields = definedOnly(contact);
     const input = {
       ...(fields.name === undefined ? {} : { name: fields.name ?? null }),
-      ...(fields.notify === undefined ? {} : { pushName: fields.notify ?? null }),
+      ...(fields.notify === undefined ? {} : { notify: fields.notify ?? null }),
       ...(fields.verifiedName === undefined ? {} : { verifiedName: fields.verifiedName ?? null }),
     };
-    if (Object.keys(input).length === 0) {
-      this.db.identity.ensureContact(jid);
-      return;
-    }
-    this.db.identity.upsertContact({ jid, ...input });
+    // A contact event puts the person in the address book, even one that names nothing.
+    this.db.identity.upsertContact({ jid, ...input, listed: true });
     if ("name" in input) this.namedContactsCache = null;
   }
 

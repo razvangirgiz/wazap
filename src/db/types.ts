@@ -11,9 +11,14 @@ export interface ContactRecord {
   phoneJid: string | null;
   lid: string | null;
   name: string | null;
+  /** The name WhatsApp's contact sync gives. */
+  notify: string | null;
+  /** The name the person publishes on their own messages. */
   pushName: string | null;
   verifiedName: string | null;
   isBusiness: boolean | null;
+  /** The address book's order: when a contact event first named them. Null for someone known only from messages. */
+  listed: number | null;
   updatedAt: number;
 }
 
@@ -22,9 +27,16 @@ export interface ContactInput {
   jid: string;
   /** undefined keeps the stored value, null clears it. */
   name?: string | null;
+  notify?: string | null;
   pushName?: string | null;
   verifiedName?: string | null;
   isBusiness?: boolean | null;
+  /**
+   * A contact event named this person: true puts them at the end of the
+   * address book's order, once; a number is an explicit place (an import
+   * keeping the order it read), and the earlier place wins.
+   */
+  listed?: true | number;
 }
 
 export interface ChatRecord {

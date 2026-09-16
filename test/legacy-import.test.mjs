@@ -192,6 +192,14 @@ test("the newest edit wins, lids fold into their number, notes and marks carry o
     assert.deepEqual(bogdan.tags, ["furnizor"]);
     assert.deepEqual(bogdan.fields, { oras: "Cluj" });
     assert.equal(db.identity.notes(ANA).note, "Colegă de proiect");
+    // The address book's names and order, and the push name a message carried, each where the service kept them.
+    const named = (jid) => {
+      const { name, notify, pushName, listed } = db.identity.contact(jid);
+      return { name, notify, pushName, listed };
+    };
+    assert.deepEqual(named(ANA), { name: "Ana Pop", notify: null, pushName: "Ana", listed: 1 });
+    assert.deepEqual(named("40700000005@s.whatsapp.net"), { name: null, notify: "Dana", pushName: null, listed: 3 });
+    assert.equal(named(BOGDAN).listed, 2);
     assert.equal(db.identity.handled(ANA).askSid, r.a4);
 
     assert.deepEqual(db.messages.reactions(r.g1).map((x) => [x.jid, x.emoji]), [[ANA, "👍"]]);

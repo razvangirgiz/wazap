@@ -42,9 +42,16 @@ CREATE TABLE contacts(
   phone_jid TEXT UNIQUE,
   lid TEXT UNIQUE,
   name TEXT,
+  -- The name WhatsApp's contact sync gives (notify), and the one the person
+  -- publishes on their own messages (push_name): both are searched, and a
+  -- contact's notify is shown before a message's push name.
+  notify TEXT,
   push_name TEXT,
   verified_name TEXT,
   is_business INTEGER,
+  -- The order a contact event first named this person: the address book's
+  -- order. NULL for someone known only from their messages or a group.
+  listed INTEGER,
   updated_at INTEGER NOT NULL,
   merged_into INTEGER REFERENCES contacts(id)
 ) STRICT;

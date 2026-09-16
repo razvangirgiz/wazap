@@ -125,13 +125,17 @@ export class Identity {
       .map((row) => [row.lid, row.phone_jid]);
   }
 
-  /** Every person, with what the user filed about them; a merging row is not listed twice. Bounded by people, not messages. */
+  /**
+   * Every person, with what the user filed about them, in the address book's
+   * order (then everyone else, by when they were first seen); a merging row
+   * is not listed twice. Bounded by people, not messages.
+   */
   listContacts(): Array<{ contact: ContactRecord; notes: ContactNotes | null }> {
     return this.c
       .all<ContactRow & { note: string | null; tags: string | null; fields: string | null; notes_updated_at: number | null }>(
         `SELECT k.*, n.note, n.tags, n.fields, n.updated_at AS notes_updated_at
          FROM contacts k LEFT JOIN contact_notes n ON n.contact_id = k.id
-         WHERE k.merged_into IS NULL ORDER BY k.id`
+         WHERE k.merged_into IS NULL ORDER BY k.listed IS NULL, k.listed, k.id`
       )
       .map((row) => ({
         contact: contactFromRow(row),
@@ -195,9 +199,15 @@ export class Identity {
         values.push(value);
       };
       assign("name", input.name);
+      assign("notify", input.notify);
       assign("push_name", input.pushName);
       assign("verified_name", input.verifiedName);
       assign("is_business", input.isBusiness === undefined ? undefined : input.isBusiness === null ? null : input.isBusiness ? 1 : 0);
+      if (input.listed === true) sets.push("listed = coalesce(listed, (SELECT coalesce(max(listed), 0) + 1 FROM contacts))");
+      else if (typeof input.listed === "number") {
+        sets.push("listed = min(coalesce(listed, ?), ?)");
+        values.push(input.listed, input.listed);
+      }
       if (sets.length > 0) {
         this.c.run(`UPDATE contacts SET ${sets.join(", ")}, updated_at = ? WHERE id = ?`, ...values, this.c.now(), id);
       }

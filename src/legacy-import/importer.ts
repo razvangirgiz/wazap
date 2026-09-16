@@ -153,6 +153,16 @@ interface HistoryItem {
 }
 
 /** Lid-keyed entries first, so the number's own entry is written last and wins, as foldAlias merges them. */
+interface ContactEntry {
+  jid: string;
+  /** The place in the address book, for an entry of the snapshot's contacts. */
+  listed?: number;
+  name?: string;
+  notify?: string;
+  pushName?: string;
+  verifiedName?: string;
+}
+
 function lidFirst<T>(entries: Array<[string, T]>): Array<[string, T]> {
   const lid = (jid: string): number => (jid.endsWith("@lid") ? 0 : 1);
   return entries.map((entry, i) => ({ entry, i })).sort((a, b) => lid(a.entry[0]) - lid(b.entry[0]) || a.i - b.i).map((x) => x.entry);
@@ -761,16 +771,26 @@ class ImportRun {
     detail(phase, "chats");
   }
 
-  private contactEntries(): Array<{ jid: string; name?: string; pushName?: string; verifiedName?: string }> {
+  /**
+   * The snapshot's contacts, each with its place in the address book the
+   * service kept (a lid entry and its number's share the earlier place), and
+   * the push names people published on their messages, kept apart from a
+   * contact's notify as the service kept them.
+   */
+  private contactEntries(): ContactEntry[] {
     const ctx = this.context;
-    const out: Array<{ jid: string; name?: string; pushName?: string; verifiedName?: string }> = [];
+    const out: ContactEntry[] = [];
+    const places = new Map([...ctx.store.contacts.keys()].map((jid, i) => [jid, i + 1]));
     const seen = new Set<string>();
     for (const [jid, contact] of lidFirst([...ctx.store.contacts])) {
       seen.add(jid);
+      const pushName = ctx.store.pushNames.get(jid);
       out.push({
         jid,
+        listed: places.get(jid)!,
         ...(contact.name ? { name: contact.name } : {}),
-        ...(contact.notify || ctx.store.pushNames.get(jid) ? { pushName: contact.notify || ctx.store.pushNames.get(jid) } : {}),
+        ...(contact.notify ? { notify: contact.notify } : {}),
+        ...(pushName ? { pushName } : {}),
         ...(contact.verifiedName ? { verifiedName: contact.verifiedName } : {}),
       });
     }
@@ -780,7 +800,7 @@ class ImportRun {
     return out;
   }
 
-  private importContact(phase: PhaseReport, entry: { jid: string; name?: string; pushName?: string; verifiedName?: string }): void {
+  private importContact(phase: PhaseReport, entry: ContactEntry): void {
     phase.read++;
     const jid = canonical(this.context, entry.jid);
     if (chatKindOf(jid) !== "direct" || isNoiseJid(jid)) {
@@ -789,7 +809,9 @@ class ImportRun {
     }
     this.db.identity.upsertContact({
       jid,
+      ...(entry.listed === undefined ? {} : { listed: entry.listed }),
       ...(entry.name === undefined ? {} : { name: entry.name }),
+      ...(entry.notify === undefined ? {} : { notify: entry.notify }),
       ...(entry.pushName === undefined ? {} : { pushName: entry.pushName }),
       ...(entry.verifiedName === undefined ? {} : { verifiedName: entry.verifiedName, isBusiness: true }),
     });
