@@ -3560,7 +3560,7 @@ export class WhatsAppService implements WhatsAppApi {
   private async learnLidPhones(jids: Iterable<string>): Promise<void> {
     const missing = [...new Set(jids)].filter((jid) => jid.endsWith("@lid") && this.lids.phoneOf(jid) === undefined);
     if (missing.length === 0) return;
-    const mappings = await this.sockClient?.signalRepository.lidMapping.getPNsForLIDs(missing).catch(() => null);
+    const mappings = await this.sockClient?.signalRepository?.lidMapping?.getPNsForLIDs(missing).catch(() => null);
     // A pairing from WhatsApp's own table is as good as one from a contact:
     // the chat moves in with the phone chat, history included.
     for (const { lid, pn } of mappings ?? []) this.learnLid(lid, pn);
