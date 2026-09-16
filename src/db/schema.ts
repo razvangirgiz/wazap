@@ -354,9 +354,12 @@ END;
 -- Files a removed media row pointed at, queued in the same transaction that
 -- removed it, until the service has unlinked them and says so. A path another
 -- row still references is not queued; one recorded again leaves the queue.
+-- claimed_at marks a path handed to the service to unlink; recording the path
+-- again deletes the row, which cancels the claim.
 CREATE TABLE pending_unlinks(
   path TEXT PRIMARY KEY,
-  queued_at INTEGER NOT NULL
+  queued_at INTEGER NOT NULL,
+  claimed_at INTEGER
 ) STRICT, WITHOUT ROWID;
 
 CREATE TRIGGER media_released AFTER DELETE ON media

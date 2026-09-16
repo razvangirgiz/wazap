@@ -213,7 +213,9 @@ test("finding 2: the file of a row purged before a stop stays queued for unlink 
   const reopened = AccountDb.open(path, { now: () => clock.now, checkpointDelayMs: 0 });
   assert.equal(reopened["connection"].get("SELECT count(*) AS n FROM messages WHERE key_id = 'K0'").n, 0, "K0's chunk committed");
   assert.deepEqual(reopened.pendingUnlinks(), ["/data/photo-K0.jpg"]);
-  assert.equal(reopened.ackUnlinks(["/data/photo-K0.jpg"]), 1);
+  const claimed = reopened.claimUnlinks();
+  assert.deepEqual(claimed, ["/data/photo-K0.jpg"]);
+  assert.deepEqual(reopened.ackUnlinks(claimed), { acked: ["/data/photo-K0.jpg"], rerecorded: [] });
   assert.deepEqual(reopened.pendingUnlinks(), []);
   reopened.close();
 });
@@ -326,4 +328,28 @@ test("n3: a row a stored barrier hides answers to no accessor and takes no write
   assert.equal(reopened.vectors.put(hidden, "m", [0, 1, 0], "any"), false);
   await reopened.resume();
   reopened.close();
+});
+
+test("n4: a path recorded again between claim and acknowledgement is reported, not acknowledged, and stale claims return", () => {
+  const { db, clock } = openTemp();
+  db.messages.upsert(textMessage(PEER, "C", T0, "c"));
+  db.messages.upsert(textMessage(PEER, "D", T0 + 1000, "d"));
+  const C = sid(false, PEER, "C");
+  db.messages.setMedia(C, "preview", "/p/1.jpg");
+  db.messages.setMedia(C, "preview", "/p/2.jpg");
+  db.messages.setMedia(C, "download", "/d/C.ogg");
+  db.messages.delete(C);
+  assert.deepEqual(db.pendingUnlinks().sort(), ["/d/C.ogg", "/p/1.jpg", "/p/2.jpg"]);
+
+  const claimed = db.claimUnlinks(2);
+  assert.equal(claimed.length, 2);
+  assert.deepEqual(db.claimUnlinks(10).length, 1, "claimed paths are not handed out twice");
+  const rerecorded = claimed[1];
+  db.messages.setMedia(sid(false, PEER, "D"), "preview", rerecorded);
+  assert.deepEqual(db.ackUnlinks(claimed), { acked: [claimed[0]], rerecorded: [rerecorded] });
+  assert.ok(!db.pendingUnlinks().includes(rerecorded));
+
+  clock.now += 11 * 60_000;
+  assert.equal(db.claimUnlinks(10).length, 1, "a claim older than ten minutes is handed out again");
+  db.close();
 });

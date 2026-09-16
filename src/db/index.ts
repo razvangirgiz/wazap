@@ -7,7 +7,8 @@
  *   db.messages.upsert({...});            // barriers enforced in the write
  *   db.search.text({ query: "factur", limit: 20 });
  *   await db.messages.clearChat(jid, Date.now());  // hidden at once, purged in chunks
- *   for (const path of db.pendingUnlinks()) unlink(path);  // then db.ackUnlinks(paths)
+ *   const paths = db.claimUnlinks();       // unlink each, then:
+ *   const { rerecorded } = db.ackUnlinks(paths);  // recorded again meanwhile: recreate them
  *   db.close();
  *
  * Not wired into the service yet (F1-a); the service keeps its JSON stores
@@ -170,8 +171,7 @@ export class AccountDb {
 
   /**
    * Files removed rows pointed at and no row references any more, oldest
-   * first. Unlink them, then acknowledge; a crash in between only repeats an
-   * unlink, it never forgets a file.
+   * first, whether claimed or not. A read-only view of the queue.
    */
   pendingUnlinks(limit = 1000): string[] {
     return this.connection
@@ -179,12 +179,53 @@ export class AccountDb {
       .map((row) => row.path);
   }
 
-  /** Takes unlinked files off the queue. */
-  ackUnlinks(paths: readonly string[]): number {
-    if (paths.length === 0) return 0;
-    return this.connection.write(() =>
-      this.connection.run("DELETE FROM pending_unlinks WHERE path IN (SELECT value FROM json_each(?))", JSON.stringify(paths))
-    );
+  /**
+   * Hands paths to unlink to the caller and marks them claimed: unclaimed
+   * ones, and claims older than `staleAfterMs` (a process that died between
+   * claiming and acknowledging). Recording a claimed path again before the
+   * acknowledgement cancels its claim.
+   */
+  claimUnlinks(limit = 1000, staleAfterMs = 10 * 60_000): string[] {
+    return this.connection.write(() => {
+      const now = this.connection.now();
+      const paths = this.connection
+        .all<{ path: string }>(
+          `SELECT path FROM pending_unlinks WHERE claimed_at IS NULL OR claimed_at <= ?
+           ORDER BY queued_at, path LIMIT ?`,
+          now - Math.max(0, staleAfterMs),
+          Math.max(1, Math.floor(limit))
+        )
+        .map((row) => row.path);
+      if (paths.length > 0) {
+        this.connection.run("UPDATE pending_unlinks SET claimed_at = ? WHERE path IN (SELECT value FROM json_each(?))", now, JSON.stringify(paths));
+      }
+      return paths;
+    });
+  }
+
+  /**
+   * Acknowledges claimed paths as unlinked and takes them off the queue.
+   * `rerecorded` are the ones a message recorded again after the claim: their
+   * claim was cancelled, they stay referenced, and the caller must not have
+   * unlinked them — or must recreate the file if it already did.
+   */
+  ackUnlinks(paths: readonly string[]): { acked: string[]; rerecorded: string[] } {
+    const result = { acked: [] as string[], rerecorded: [] as string[] };
+    if (paths.length === 0) return result;
+    this.connection.write(() => {
+      for (const path of new Set(paths)) {
+        const row = this.connection.get<{ claimed_at: number | null }>("SELECT claimed_at FROM pending_unlinks WHERE path = ?", path);
+        if (row !== undefined && row.claimed_at !== null) {
+          this.connection.run("DELETE FROM pending_unlinks WHERE path = ?", path);
+          result.acked.push(path);
+        } else if (row !== undefined || this.connection.get("SELECT 1 FROM media WHERE path = ?", path) !== undefined) {
+          result.rerecorded.push(path);
+        } else {
+          result.acked.push(path);
+        }
+      }
+    });
+    return result;
   }
 
   /**
