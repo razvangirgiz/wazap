@@ -338,8 +338,8 @@ test("two accounts on one data dir share one llama-server; the last stop kills i
       config: { dataDir, persistHistory: true },
       account: { id: "work", name: "Work", enabled: true, owner: null },
     });
-    await home.svc.loadPersisted();
-    await work.svc.loadPersisted();
+    await home.svc.bootStorage();
+    await work.svc.bootStorage();
 
     deliver(home.sock, [text("H1", "factura de acasă")]);
     deliver(work.sock, [text("W1", "factura de la muncă")]);
@@ -348,8 +348,8 @@ test("two accounts on one data dir share one llama-server; the last stop kills i
 
     assert.equal(spawned.length, 1, "one llama-server serves both accounts");
     assert.equal(spawned[0].starts, 1);
-    assert.equal(home.svc.recallStore.count, 1);
-    assert.equal(work.svc.recallStore.count, 1);
+    assert.equal(home.svc.db.vectors.count(), 1);
+    assert.equal(work.svc.db.vectors.count(), 1);
 
     await home.svc.stop();
     await sleep(20);
@@ -357,7 +357,7 @@ test("two accounts on one data dir share one llama-server; the last stop kills i
 
     deliver(work.sock, [text("W2", "chiria lunii")]);
     await work.svc.recallIdle();
-    assert.equal(work.svc.recallStore.count, 2, "the other account still embeds");
+    assert.equal(work.svc.db.vectors.count(), 2, "the other account still embeds");
 
     await work.svc.stop();
     // stopRecall releases the engine behind the stop() it does not await.
