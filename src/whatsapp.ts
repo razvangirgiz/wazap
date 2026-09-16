@@ -14,6 +14,7 @@ import { isAbsolute, join, relative, sep } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import {
   ALL_WA_PATCH_NAMES,
+  type BaileysEventMap,
   DisconnectReason,
   downloadMediaMessage,
   normalizeMessageContent,
@@ -223,6 +224,8 @@ const AUTO_TRANSCRIBE_MAX_SECONDS = 600;
 const WEBHOOK_TRANSCRIPT_WAIT_MS = 60_000;
 /** How long list_chats waits for a lid chat still folding into its number before it lists what it has. */
 const FOLD_SETTLE_MS = 2_000;
+/** How long one transaction of a history batch may hold the event loop. */
+const HISTORY_CHUNK_MS = 20;
 /** Transcript details the database does not keep (provider, language, length), for the latest few. */
 const TRANSCRIPT_DETAILS_KEPT = 500;
 /** How long the recall status reuses its count of stored vectors. */
@@ -343,6 +346,8 @@ function missingMessage(messageId: string): WazapError {
   );
 }
 
+type HistorySetEvent = BaileysEventMap["messaging-history.set"];
+
 export class WhatsAppService implements WhatsAppApi {
   private sockClient: WASocket | null = null;
   private saveCreds: (() => Promise<void>) | null = null;
@@ -376,6 +381,9 @@ export class WhatsAppService implements WhatsAppApi {
   private namedContactsCache: number | null = null;
   private initialSyncDone = false;
   private historyReceived = false;
+  /** History batches stored one after another; storageIdle waits on the chain. */
+  private historyWork: Promise<void> = Promise.resolve();
+  private historyBatches = 0;
   private syncDeadline: ReturnType<typeof setTimeout> | null = null;
   private syncWaiters: Array<() => void> = [];
   /** Inbound messages as they land, newest last, so a wait can resume from a cursor. */
@@ -554,6 +562,7 @@ export class WhatsAppService implements WhatsAppApi {
     this.webhook.flushStats();
     this.teardownSocket();
     await this.stopPairing();
+    await this.historyIdle();
     await this.stopRecall();
     const db = this.accountDb;
     if (db !== null && db.isOpen) {
@@ -2166,6 +2175,7 @@ export class WhatsAppService implements WhatsAppApi {
    * call is reported here, once. Deleting tools wait on it too.
    */
   async storageIdle(): Promise<void> {
+    await this.historyIdle();
     const db = this.accountDb;
     if (db !== null && db.isOpen) {
       await Promise.allSettled([...this.folds]);
@@ -2866,24 +2876,7 @@ export class WhatsAppService implements WhatsAppApi {
       }
     });
 
-    sock.ev.on("messaging-history.set", ({ chats, contacts, messages, lidPnMappings, isLatest, progress }) => {
-      this.handling(
-        "history sync",
-        () => {
-          for (const mapping of lidPnMappings ?? []) this.learnLid(mapping.lid, mapping.pn);
-          // One transaction for the batch: a history sync delivers thousands of rows at once.
-          this.db.transaction(() => {
-            for (const contact of contacts) this.ingestContact(contact);
-            for (const chat of chats) this.ingestChat(chat);
-            this.ingestMessages(messages ?? []);
-          });
-        },
-        undefined
-      );
-      this.historyReceived = true;
-      this.releaseHistoryWaiters();
-      if (isLatest === true || progress === 100) this.markSyncDone();
-    });
+    sock.ev.on("messaging-history.set", (batch) => this.ingestHistory(batch));
 
     sock.ev.on("call", ([call]) => {
       if (generation !== this.generation || !call) return;
@@ -4112,14 +4105,94 @@ export class WhatsAppService implements WhatsAppApi {
    * messages that were stored, which is what a webhook, a wait and the
    * transcription queue may act on.
    */
+  /**
+   * A history batch — thousands of messages — in transactions of a bounded
+   * duration, the event loop running between them, so live messages, timers
+   * and tool calls are not held for the whole batch. Contacts, chats and the
+   * batch's revokes go first; a revoke or a clear that lands between two
+   * transactions is a barrier the later ones honour. Batches are stored one
+   * after another, in the order they came, and history counts as received
+   * once a batch is stored.
+   */
+  private ingestHistory(batch: HistorySetEvent): void {
+    const run = (): Promise<void> => this.storeHistory(batch).catch((err: unknown) => logError("history sync", err));
+    // The first batch starts at once, so a small one is stored before emit returns.
+    if (this.historyBatches === 0) {
+      this.historyBatches++;
+      this.historyWork = run().finally(() => this.historyBatches--);
+    } else {
+      this.historyBatches++;
+      this.historyWork = this.historyWork.then(run).finally(() => this.historyBatches--);
+    }
+  }
+
+  private async storeHistory({ chats, contacts, messages, lidPnMappings, isLatest, progress }: HistorySetEvent): Promise<void> {
+    const all = messages ?? [];
+    // WhatsApp sends the history once: a stop waits for a batch it already
+    // received to be stored, so nothing here gives up on `stopped`.
+    const db = this.readyDb();
+    if (db === null) return;
+    try {
+      for (const mapping of lidPnMappings ?? []) this.learnLid(mapping.lid, mapping.pn);
+      db.transaction(() => {
+        for (const contact of contacts) this.ingestContact(contact);
+        for (const chat of chats) this.ingestChat(chat);
+        this.retractRevokes(all);
+      });
+    } catch (err) {
+      logError("history sync", err);
+    }
+    for (let next = 0; next < all.length; ) {
+      if (!db.isOpen) return;
+      const from = next;
+      try {
+        next = db.transaction(() => this.storeMessages(all, from, HISTORY_CHUNK_MS));
+      } catch (err) {
+        logError("history sync", err);
+        return;
+      }
+      if (next < all.length) await new Promise<void>((resolve) => setImmediate(resolve));
+    }
+    this.historyReceived = true;
+    this.releaseHistoryWaiters();
+    if (isLatest === true || progress === 100) this.markSyncDone();
+  }
+
+  /** Every history batch received so far is stored. */
+  private async historyIdle(): Promise<void> {
+    for (;;) {
+      const pending = this.historyWork;
+      await pending;
+      if (pending === this.historyWork) return;
+    }
+  }
+
   private ingestMessages(messages: WAMessage[]): WAMessage[] {
     if (this.stopped) return [];
+    this.retractRevokes(messages);
     const stored: WAMessage[] = [];
+    this.storeMessages(messages, 0, Infinity, stored);
+    return stored;
+  }
+
+  /** The revokes a batch carries, before any of its messages: a revoked message must not be stored for a moment. */
+  private retractRevokes(messages: readonly WAMessage[]): void {
     for (const raw of messages) {
       const targets = this.revokeTargets(raw);
       if (targets.length > 0 && !isStatusJid(raw.key.remoteJid ?? "")) this.retract(targets, messageTimestampMs(raw));
     }
-    for (const raw of messages) {
+  }
+
+  /**
+   * Stores `messages` from `from` on, until `budgetMs` have passed; returns
+   * the index to continue from. The revokes among them are already applied.
+   */
+  private storeMessages(messages: readonly WAMessage[], from: number, budgetMs: number, stored: WAMessage[] = []): number {
+    const started = performance.now();
+    let index = from;
+    for (; index < messages.length; index++) {
+      if (index > from && index % 32 === 0 && performance.now() - started > budgetMs) break;
+      const raw = messages[index]!;
       try {
         if (!raw.key?.remoteJid || (!raw.message && !isStubEvent(raw))) continue;
         if (isStatusJid(raw.key.remoteJid)) {
@@ -4143,7 +4216,7 @@ export class WhatsAppService implements WhatsAppApi {
       }
     }
     if (stored.length > 0) this.embedFeed?.kick();
-    return stored;
+    return index;
   }
 
   private kept(result: UpsertResult): boolean {

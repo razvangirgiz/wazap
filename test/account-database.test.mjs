@@ -330,6 +330,31 @@ test("a different number linking sets the previous owner's database aside instea
   old.close();
 });
 
+test("a large history batch is stored in bounded transactions: the event loop runs between them, and a revoke or a delete landing meanwhile holds", async (t) => {
+  const dataDir = mkdtempSync(join(tmpdir(), "wazap-accountdb-"));
+  const { svc, sock } = serviceOn(dataDir);
+  t.after(() => svc.stop());
+  await svc.bootStorage();
+  const base = Math.floor(Date.now() / 1000) - 7 * 86_400;
+  const messages = Array.from({ length: 6_000 }, (_, i) => text(i % 2 === 0 ? PEER : ANA, `H${i}`, `istoric ${i}`, base + i));
+  let midway = null;
+  sock.ev.emit("messaging-history.set", { chats: [], contacts: [], messages, isLatest: true, progress: 100 });
+  setImmediate(() => {
+    midway = { newest: svc.hasMessage(`false_${PEER}_H5998`), history: svc.hasHistory() };
+    // The other side revokes a message the batch has not stored yet, and the phone deletes the other chat.
+    sock.ev.emit("messages.delete", { keys: [{ remoteJid: PEER, fromMe: false, id: "H5996" }] });
+    sock.ev.emit("chats.delete", [ANA]);
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+  await svc.storageIdle();
+  assert.deepEqual(midway, { newest: false, history: false }, "the batch was still being stored when a timer ran");
+  assert.equal(svc.hasMessage(`false_${PEER}_H5998`), true);
+  assert.equal(svc.hasMessage(`false_${PEER}_H5996`), false, "the revoke that landed first holds");
+  assert.deepEqual(storedIds(svc, ANA), [], "the delete that landed first holds");
+  assert.equal(svc.db.search.coverage({ chat: PEER }).messages, 2_999);
+  assert.equal(svc.hasHistory(), true, "history counts as received once the batch is stored");
+});
+
 test("an account of 20,000 messages boots without holding its history in memory", async () => {
   const dataDir = mkdtempSync(join(tmpdir(), "wazap-accountdb-rss-"));
   const db = AccountDb.open(join(accountPaths(dataDir, "default").root, "wazap.sqlite"));
