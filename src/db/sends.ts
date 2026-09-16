@@ -82,23 +82,32 @@ export class Sends {
   constructor(private readonly c: Connection) {}
 
   /**
-   * Stores a draft. The owner keeps at most `cap` drafts: the oldest ones go
-   * first, in the same transaction. Only drafts count; a send under way or
-   * settled is never evicted.
+   * Stores a draft. The owner keeps at most `cap` drafts and the account at
+   * most `accountCap`, whoever drafted them: the oldest go first, in the same
+   * transaction. Only drafts count; a send under way or settled is never evicted.
    */
-  insertDraft(draft: NewDraft, cap: number): void {
+  insertDraft(draft: NewDraft, cap: number, accountCap: number): void {
     this.c.write(() => {
-      const held = this.c.get<{ n: number }>(
+      const owned = this.c.get<{ n: number }>(
         "SELECT count(*) AS n FROM sends WHERE owner IS ? AND state = 'draft'",
         draft.owner
       )!.n;
-      const excess = held - Math.max(0, cap - 1);
+      const excess = owned - Math.max(0, cap - 1);
       if (excess > 0) {
         this.c.run(
           `DELETE FROM sends WHERE draft_id IN (
              SELECT draft_id FROM sends WHERE owner IS ? AND state = 'draft' ORDER BY created_at, draft_id LIMIT ?)`,
           draft.owner,
           excess
+        );
+      }
+      const held = this.c.get<{ n: number }>("SELECT count(*) AS n FROM sends WHERE state = 'draft'")!.n;
+      const beyond = held - Math.max(0, accountCap - 1);
+      if (beyond > 0) {
+        this.c.run(
+          `DELETE FROM sends WHERE draft_id IN (
+             SELECT draft_id FROM sends WHERE state = 'draft' ORDER BY created_at, draft_id LIMIT ?)`,
+          beyond
         );
       }
       this.c.run(

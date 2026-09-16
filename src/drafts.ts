@@ -7,6 +7,8 @@ import type { MediaSource, OutgoingTarget, SentMessage } from "./wa-types.js";
 export const DRAFT_TTL_MS = 15 * 60_000;
 /** Drafts one MCP session keeps; its oldest go first. */
 export const DRAFT_CAP = 20;
+/** Drafts one account keeps across every session; the oldest go first. */
+export const DRAFT_ACCOUNT_CAP = 200;
 /** How long a confirmed send is remembered: its receipt, and its key for echoes and reconciliation. */
 export const SEND_RECORD_TTL_MS = 24 * 60 * 60_000;
 /** Rows one sweep deletes at most. */
@@ -106,17 +108,18 @@ export function sendOutcomeUnknown(id: string, cause?: string): WazapError {
  * number linked). The owner is the MCP session that drafted: every other
  * session is told there is no such draft.
  *
- * A draft lapses after 15 minutes and an owner keeps at most 20. Confirming
- * claims it atomically; a send that failed before its key reached the socket
- * gives it back (release), one that got further is settled as sent or as
- * unknown, and stays so. A sent draft answers its receipt again; an unknown
+ * A draft lapses after 15 minutes; an owner keeps at most 20 and an account
+ * 200. Confirming claims it atomically; a send that failed before its key
+ * reached the socket gives it back (release), one that got further is settled
+ * as sent or as unknown, and stays so. A sent draft answers its receipt again; an unknown
  * one answers SEND_OUTCOME_UNKNOWN until WhatsApp echoes its key.
  */
 export class DraftStore {
   constructor(
     private readonly now: () => number = Date.now,
     private readonly ttlMs: number = DRAFT_TTL_MS,
-    private readonly cap: number = DRAFT_CAP
+    private readonly cap: number = DRAFT_CAP,
+    private readonly accountCap: number = DRAFT_ACCOUNT_CAP
   ) {}
 
   put(sends: Sends, to: OutgoingTarget, payload: DraftPayload, keyId: string, owner: string | null = null): Draft {
@@ -142,7 +145,8 @@ export class DraftStore {
         createdAt: now,
         expiresAt: draft.expiresAt,
       },
-      this.cap
+      this.cap,
+      this.accountCap
     );
     return draft;
   }

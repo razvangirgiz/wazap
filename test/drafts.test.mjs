@@ -14,7 +14,7 @@ const ANA = { chat_id: "40722@s.whatsapp.net", name: "Ana", number: "40722123456
 const BLOC = { chat_id: "120363@g.us", name: "Bloc 12" };
 
 /** The store over a throwaway account database, on a clock the test moves. */
-function storeAt(t, ttlMs = 15 * 60_000, cap = 20) {
+function storeAt(t, ttlMs = 15 * 60_000, cap = 20, accountCap = 200) {
   let now = 1_700_000_000_000;
   const dir = mkdtempSync(join(tmpdir(), "wazap-drafts-"));
   const db = AccountDb.open(join(dir, "wazap.sqlite"));
@@ -22,7 +22,7 @@ function storeAt(t, ttlMs = 15 * 60_000, cap = 20) {
     db.close();
     rmSync(dir, { recursive: true, force: true });
   });
-  const store = new DraftStore(() => now, ttlMs, cap);
+  const store = new DraftStore(() => now, ttlMs, cap, accountCap);
   let keys = 0;
   return {
     store,
@@ -88,6 +88,23 @@ test("put sweeps expired drafts and evicts the owner's oldest at the cap, never 
   put(ANA, { ...textPayload, text: "fresh" }, "c");
   assert.equal(store.has(sends, other.id), false, "an expired draft is swept");
   assert.equal(store.has(sends, sending.id), true, "a send under way is never swept");
+});
+
+test("the account keeps at most its cap of drafts across sessions: the oldest goes, never a send", (t) => {
+  const { store, sends, put, advance } = storeAt(t, 10_000, 2, 3);
+  const oldest = put(ANA, textPayload, "a");
+  advance(1);
+  const claimed = put(ANA, textPayload, "b");
+  assert.equal(store.claim(sends, claimed.id, "b").state, "claimed");
+  advance(1);
+  const second = put(ANA, textPayload, "c");
+  advance(1);
+  const third = put(ANA, textPayload, "d");
+  advance(1);
+  const fourth = put(ANA, textPayload, "e");
+  assert.equal(store.has(sends, oldest.id), false, "the account's oldest draft made room, whoever drafted it");
+  assert.equal(store.has(sends, claimed.id), true, "a send under way is not a draft to evict");
+  for (const kept of [second, third, fourth]) assert.equal(store.has(sends, kept.id), true);
 });
 
 test("To: line names a group without a number, and a nameless jid without parens", () => {

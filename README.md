@@ -315,8 +315,8 @@ them. `--dry-run` prints the plan and touches nothing.
 
 Nothing reaches WhatsApp until `confirm_send`, and a draft goes out at most
 once, even across a crash. Drafts are kept in the account database for 15
-minutes, at most 20 per MCP session, each with the WhatsApp message id it will
-be sent under. Confirming a draft again answers the same receipt with
+minutes, at most 20 per MCP session and 200 per account, each with the WhatsApp
+message id it will be sent under. Confirming a draft again answers the same receipt with
 `already_sent: true`, and two confirms at once send it once. A failure while
 the message is still being prepared (not connected, the write budget, the
 number lookup, a missing file, a media upload) leaves the draft as it was, to
