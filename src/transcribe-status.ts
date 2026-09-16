@@ -7,8 +7,9 @@
 import { join } from "node:path";
 import { AccountRegistry, accountPolicy } from "./accounts.js";
 import { accountPaths, type Config } from "./config.js";
-import { AccountDb, type TranscribeQueueStats } from "./db/index.js";
+import type { AccountDb, TranscribeQueueStats } from "./db/index.js";
 import type { Check } from "./doctor.js";
+import { openForReading } from "./legacy-files.js";
 import { readTranscribeSettings } from "./transcribe/index.js";
 import type { TranscriptionStatus } from "./wa-types.js";
 
@@ -114,7 +115,8 @@ export function checkTranscribeQueue(config: Pick<Config, "dataDir" | "readOnly"
 function readStats(path: string): TranscribeQueueStats | null {
   let db: AccountDb;
   try {
-    db = AccountDb.open(path, { readOnly: true });
+    // Read-only while a server holds it, immutable otherwise: status leaves nothing beside a closed file.
+    db = openForReading(path);
   } catch {
     return null;
   }
