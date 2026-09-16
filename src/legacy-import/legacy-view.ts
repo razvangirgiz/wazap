@@ -78,6 +78,8 @@ export interface LegacyView {
 }
 
 export const MARKS_SAMPLE = 20;
+/** The private copy the replay runs on, beside the database. */
+const VERIFY_PREFIX = ".legacy-verify-";
 
 /** Copies what the boot replay reads: the snapshot, the history logs, the barriers and the notes. */
 function copyLegacyFiles(from: AccountPaths, to: AccountPaths): void {
@@ -105,7 +107,11 @@ export async function loadLegacyView(options: {
   workDir: string;
 }): Promise<LegacyView> {
   mkdirSync(options.workDir, { recursive: true, mode: 0o700 });
-  const temp = mkdtempSync(join(options.workDir, ".legacy-verify-"));
+  // A copy a crashed verification left behind holds message text: it goes first.
+  for (const name of readdirSync(options.workDir)) {
+    if (name.startsWith(VERIFY_PREFIX)) rmSync(join(options.workDir, name), { recursive: true, force: true });
+  }
+  const temp = mkdtempSync(join(options.workDir, VERIFY_PREFIX));
   try {
     const paths = accountPaths(temp, options.accountId);
     copyLegacyFiles(options.accountPaths, paths);

@@ -35,7 +35,7 @@ import type { WAMessage } from "baileys";
 import type { AccountPaths } from "../config.js";
 import { chatKindOf, contentHash, parseSid, StorageError, type AccountDb, type MessageInput, type UpsertResult } from "../db/index.js";
 import { isNoiseJid, STATUS_JID } from "../ids.js";
-import { chatMetadata, type HistoryRecord } from "../store.js";
+import { chatMetadata, momentsOf, type HistoryRecord } from "../store.js";
 import { isEvent, messageIdFor, messageTimestampMs, pollOf, protoNumber, voteOf } from "../messages.js";
 import { readVote } from "../polls.js";
 import { EMBED_MODELS, RECALL_TEXT_CAP } from "../recall/index.js";
@@ -51,6 +51,7 @@ import {
   classify,
   decodeRaw,
   FUTURE_SLACK_MS,
+  isMe,
   isTrackedCall,
   refSid,
   revokedRefs,
@@ -125,6 +126,8 @@ export interface ImportArgs {
 interface Progress {
   version: 1;
   startedAt: number;
+  /** The rules the first run imported under; a resumed run keeps them, whatever it was passed. */
+  retention: boolean;
   runs: number;
   phase: number;
   cursor: unknown;
@@ -204,7 +207,16 @@ class ImportRun {
     const stored = this.db.getMeta(IMPORT_META.progress);
     this.progress =
       stored === null
-        ? { version: 1, startedAt: this.now(), runs: 0, phase: 0, cursor: null, phases: emptyPhases(), malformedFiles: [] }
+        ? {
+            version: 1,
+            startedAt: this.now(),
+            retention: this.options.retention === true,
+            runs: 0,
+            phase: 0,
+            cursor: null,
+            phases: emptyPhases(),
+            malformedFiles: [],
+          }
         : (JSON.parse(stored) as Progress);
     this.progress.runs++;
   }
@@ -213,7 +225,7 @@ class ImportRun {
     this.context = buildContext({
       accountPaths: this.args.accountPaths,
       now: this.now(),
-      enforceExpiry: this.options.retention === true,
+      enforceExpiry: this.progress.retention,
     });
     if (this.context.owner !== null) this.db.bindOwner(this.context.owner.id);
     this.db.transaction(() => {
@@ -583,6 +595,19 @@ class ImportRun {
     }
     const result = this.db.messages.upsert(classified.input);
     this.count(phase, result);
+    // The receipts a synced message carries in its protobuf, as receiptFor reads them.
+    const synced = classified.raw.key.fromMe ? (classified.raw.userReceipt ?? []) : [];
+    if (synced.length > 0 && result.sid !== null && (result.outcome === "inserted" || result.outcome === "updated")) {
+      for (const receipt of synced) {
+        if (!receipt.userJid || isMe(this.context, receipt.userJid)) continue;
+        const moments = momentsOf(receipt);
+        this.db.messages.receipt(result.sid, canonical(this.context, receipt.userJid), {
+          deliveredAt: moments.delivered ?? null,
+          readAt: moments.read ?? null,
+          playedAt: moments.played ?? null,
+        });
+      }
+    }
     return result;
   }
 
@@ -1278,6 +1303,12 @@ class ImportRun {
   // finish ---------------------------------------------------------------------
 
   private async finish(): Promise<ImportReport> {
+    // The deferred marks were applied in their phase; what they held (vote payloads) has no reason to stay.
+    this.db.transaction(() => {
+      const count = Number(this.db.getMeta(IMPORT_META.deferredCount) ?? "0");
+      for (let n = 0; n < count; n++) this.db.setMeta(IMPORT_META.deferred(n), null);
+      this.db.setMeta(IMPORT_META.deferredCount, null);
+    });
     const report: ImportReport = {
       state: "imported",
       alreadyDone: false,
@@ -1297,7 +1328,7 @@ class ImportRun {
         accountPaths: this.args.accountPaths,
         db: this.db,
         options: {
-          retention: this.options.retention,
+          retention: this.progress.retention,
           workDir: this.options.workDir,
           now: this.options.now,
           betaArchive: this.betaPath(),
