@@ -6,7 +6,7 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { createHash } from "node:crypto";
 import { proto } from "baileys";
@@ -14,7 +14,7 @@ import { proto } from "baileys";
 import { AccountDb, contentHash } from "../dist/db/index.js";
 import { sqlite } from "../dist/db/sqlite.js";
 import { importLegacyAccount, verifyLegacyImport, scrubQuote, IMPORT_PHASES } from "../dist/legacy-import/index.js";
-import { ANA, BOGDAN, BOGDAN_LID, CRISTI, GROUP, ME, MODEL, buildLegacyAccount, roles, vectorRow } from "./legacy-fixtures.mjs";
+import { ANA, BOGDAN, BOGDAN_LID, CRISTI, DIMS, GROUP, ME, MODEL, buildLegacyAccount, roles, vectorRow } from "./legacy-fixtures.mjs";
 
 const r = roles();
 
@@ -253,6 +253,33 @@ test("recall vectors import only where the words still match, index-only rows be
     db.close();
   }
 });
+
+for (const [label, tear] of [
+  // Vectors appended and meta not: every later row would pair with its neighbour's vector.
+  ["vectors.bin one row longer than meta.jsonl says", (dir) => appendFileSync(join(dir, "vectors.bin"), Buffer.alloc(DIMS, 1))],
+  // A rewrite that got as far as the meta: a row points past the vectors.
+  ["a meta row past the end of vectors.bin", (dir) => appendFileSync(join(dir, "meta.jsonl"), `${JSON.stringify({ op: "put", sid: r.a4, jid: ANA, ts: 1, sender: ANA, type: "text", text: "x", model: MODEL, row: 99 })}\n`)],
+  ["vectors.bin cut in the middle of a row", (dir) => {
+    const path = join(dir, "vectors.bin");
+    writeFileSync(path, readFileSync(path).subarray(0, -3));
+  }],
+]) {
+  test(`a torn recall index — ${label} — imports its text rows and no vector, and says so`, async () => {
+    const fx = await buildLegacyAccount();
+    tear(join(fx.paths.root, "recall"));
+    const db = openDb(fx);
+    try {
+      const report = await run(fx, db, { verify: false });
+      assert.equal(db.vectors.count(), 0, "no vector is trusted when meta and vectors disagree");
+      assert.equal(report.phases.recall.imported, 0);
+      assert.equal(report.phases.recall.details.vectorsDiscarded, 1);
+      assert.equal(db.messages.get(r.indexOnly).text, "Mesaj vechi rămas doar în index", "the words only the index had still come");
+      assert.ok(db.vectors.backlog({ model: MODEL, limit: 100 }).items.some((item) => item.sid === r.a1), "everything waits to be embedded again");
+    } finally {
+      db.close();
+    }
+  });
+}
 
 test("malformed lines and a torn tail are reported, not fatal; a timestamp days ahead is left out", async () => {
   const fx = await buildLegacyAccount();

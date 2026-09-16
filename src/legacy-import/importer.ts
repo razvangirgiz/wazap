@@ -1218,23 +1218,27 @@ class ImportRun {
       return;
     }
     const cap = Math.min(spec.maxChars, RECALL_TEXT_CAP);
-    const vectors = new VectorFile(index.vectorsPath, index.state.dims);
+    // A torn index imports its words and no vector: the feed embeds them again.
+    const vectors = index.vectorsAligned ? new VectorFile(index.vectorsPath, index.state.dims) : null;
     try {
-      if (cursor.index === 0 && index.malformed > 0) {
-        await this.commit({ index: 0 }, () => skip(phase, "malformed", index.malformed));
+      if (cursor.index === 0 && (index.malformed > 0 || !index.vectorsAligned)) {
+        await this.commit({ index: 0 }, () => {
+          if (index.malformed > 0) skip(phase, "malformed", index.malformed);
+          if (!index.vectorsAligned) detail(phase, "vectorsDiscarded");
+        });
       }
       await this.batches(index.live, cursor.index, (end) => ({ index: end }), (live) =>
         this.importRecallRow(phase, index, vectors, live, cap)
       );
     } finally {
-      vectors.close();
+      vectors?.close();
     }
   }
 
   private importRecallRow(
     phase: PhaseReport,
     index: RecallIndex,
-    vectors: VectorFile,
+    vectors: VectorFile | null,
     live: RecallIndex["live"][number],
     cap: number
   ): void {
@@ -1247,7 +1251,7 @@ class ImportRun {
       skip(phase, "malformed");
       return;
     }
-    if (line.model !== index.state.model || !Number.isSafeInteger(line.row) || line.row < 0 || line.row >= vectors.rows) {
+    if (vectors !== null && (line.model !== index.state.model || !Number.isSafeInteger(line.row) || line.row < 0 || line.row >= vectors.rows)) {
       skip(phase, "unusable");
       return;
     }
@@ -1292,6 +1296,7 @@ class ImportRun {
       }
       detail(phase, "indexOnlyRows");
     }
+    if (vectors === null) return;
     const message = this.db.messages.get(view!);
     if (message === null) {
       skip(phase, "hidden");

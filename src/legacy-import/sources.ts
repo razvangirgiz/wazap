@@ -207,6 +207,14 @@ export interface RecallIndex {
   malformed: number;
   vectorsPath: string;
   vectorRows: number;
+  /**
+   * Whether meta.jsonl and vectors.bin agree: every put names this model and a
+   * row inside the file, the file holds whole rows, and exactly as many as the
+   * log numbered. The old index appended vectors before their meta lines and
+   * rewrote both on compaction, so a crash between the two leaves rows that
+   * pair a message with another message's vector; then no vector is trusted.
+   */
+  vectorsAligned: boolean;
 }
 
 export interface RecallLine {
@@ -242,21 +250,27 @@ export function readRecallIndex(dir: string): { index: RecallIndex | null; reaso
   } catch (err) {
     return { index: null, reason: missing(err) ? "absent" : "unreadable" };
   }
-  const vectorRows = Math.floor(statSync(vectorsPath).size / state.dims);
+  const vectorBytes = statSync(vectorsPath).size;
+  const vectorRows = Math.floor(vectorBytes / state.dims);
   const live = new Map<string, RecallLive>();
   let malformed = 0;
+  let aligned = vectorBytes % state.dims === 0;
+  let rowsNumbered = 0;
   let start = 0;
   while (start < meta.length) {
     let end = meta.indexOf(0x0a, start);
     if (end === -1) end = meta.length;
     if (end > start) {
       try {
-        const entry = JSON.parse(meta.toString("utf8", start, end)) as { op?: unknown; sid?: unknown };
+        const entry = JSON.parse(meta.toString("utf8", start, end)) as { op?: unknown; sid?: unknown; row?: unknown; model?: unknown };
         if (typeof entry.sid !== "string") throw new Error("no sid");
         if (entry.op === "del") live.delete(entry.sid);
         else if (entry.op === "put") {
           live.delete(entry.sid);
           live.set(entry.sid, { sid: entry.sid, offset: start, length: end - start });
+          const row = entry.row;
+          if (entry.model !== state.model || typeof row !== "number" || !Number.isSafeInteger(row) || row < 0 || row >= vectorRows) aligned = false;
+          else rowsNumbered = Math.max(rowsNumbered, row + 1);
         } else throw new Error("unknown op");
       } catch {
         malformed++;
@@ -264,7 +278,8 @@ export function readRecallIndex(dir: string): { index: RecallIndex | null; reaso
     }
     start = end + 1;
   }
-  return { index: { state, meta, live: [...live.values()], malformed, vectorsPath, vectorRows }, reason: null };
+  if (rowsNumbered !== vectorRows) aligned = false;
+  return { index: { state, meta, live: [...live.values()], malformed, vectorsPath, vectorRows, vectorsAligned: aligned }, reason: null };
 }
 
 export function recallLine(index: RecallIndex, live: RecallLive): RecallLine {
