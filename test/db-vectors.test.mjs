@@ -7,13 +7,10 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
 
 import { AccountDb, contentHash, hybridTokens, int8Similarity, quantizeVector, unitVector } from "../dist/db/index.js";
-import { RecallStore } from "../dist/recall/store.js";
 import { EMBED_MODELS } from "../dist/recall/models.js";
-import { GROUP, PEER, T0, openTemp, sid, tempDir, textMessage, wordsOf } from "./db-fixtures.mjs";
+import { GROUP, PEER, T0, openTemp, sid, textMessage, wordsOf } from "./db-fixtures.mjs";
 
 const MODEL = "embeddinggemma-300m";
 const OTHER = "40700000003@s.whatsapp.net";
@@ -27,30 +24,38 @@ function direction(axis, blend = null, w = 0) {
   return v;
 }
 
-test("quantization and similarity match recall's index byte for byte", async () => {
+/**
+ * The old recall index's quantization and similarity (src/recall/store.ts at
+ * 7ec2f93), written out: its vectors.bin rows import as they are only while
+ * the database quantizes and scores them byte for byte the same way.
+ */
+function recallQuantize(vector) {
+  let norm = 0;
+  for (const x of vector) norm += x * x;
+  const inv = 1 / Math.sqrt(norm);
+  return Int8Array.from(vector.map((x) => Math.round(Math.max(-1, Math.min(1, x * inv)) * 127)));
+}
+
+function recallSimilarity(query, row) {
+  let norm = 0;
+  for (const x of query) norm += x * x;
+  const inv = 1 / Math.sqrt(norm);
+  let dot = 0;
+  for (let i = 0; i < query.length; i++) dot += query[i] * inv * row[i];
+  return dot / 127;
+}
+
+test("quantization and similarity match the old recall index byte for byte", () => {
   const spec = EMBED_MODELS[MODEL];
-  const dir = tempDir();
-  const store = await RecallStore.open(join(dir, "recall"), spec, 100);
   let seed = 7;
   const rnd = () => ((seed = (seed * 1664525 + 1013904223) >>> 0) / 2 ** 32) * 2 - 1;
   const vectors = Array.from({ length: 5 }, () => Array.from({ length: spec.dims }, rnd));
-  await store.add(
-    vectors.map((_, i) => ({ sid: `false_${PEER}_V${i}`, jid: PEER, ts: T0 + i, sender: PEER, type: "text", text: `t${i}` })),
-    vectors
-  );
-  await store.close();
-  const bytes = readFileSync(join(dir, "recall", "vectors.bin"));
   const query = Array.from({ length: spec.dims }, rnd);
-  const recallHits = new Map();
-  const reopened = await RecallStore.open(join(dir, "recall"), spec, 100);
-  for (const hit of reopened.query({ vector: query, limit: 10 }, T0)) recallHits.set(hit.record.sid, hit.similarity);
-  await reopened.close();
   vectors.forEach((vector, i) => {
     const ours = quantizeVector(vector);
-    const theirs = new Int8Array(bytes.buffer, bytes.byteOffset + i * spec.dims, spec.dims);
+    const theirs = recallQuantize(vector);
     assert.deepEqual([...ours], [...theirs], `row ${i}`);
-    const expected = recallHits.get(`false_${PEER}_V${i}`);
-    if (expected !== undefined) assert.ok(Math.abs(int8Similarity(unitVector(query), ours) - expected) < 1e-12);
+    assert.ok(Math.abs(int8Similarity(unitVector(query), ours) - recallSimilarity(query, theirs)) < 1e-12);
   });
 });
 
