@@ -896,10 +896,27 @@ export class WhatsAppService implements WhatsAppApi {
   hasMessage(id: string): boolean {
     if (this.stopped) return false;
     try {
-      return this.readyDb()?.messages.get(id) != null;
+      const db = this.readyDb();
+      if (db === null) return false;
+      if (db.messages.get(id) !== null) return true;
+      this.settleExpired(db, id);
+      return false;
     } catch {
       return false;
     }
+  }
+
+  /**
+   * A message a read found past its deadline becomes a tombstone there and
+   * then, before the sweep reaches it: an expiry once observed stays, even if
+   * the clock moves back.
+   */
+  private settleExpired(db: AccountDb, id: string): void {
+    const row = db.messages.get(id, { includeHidden: true });
+    const now = Date.now();
+    if (row === null || row.deletedAt !== null || row.expiresAt === null || row.expiresAt > now) return;
+    db.messages.delete(row.sid, { at: now });
+    void this.scheduleFileCleanup().catch(() => {});
   }
 
   hasDraft(id: string): boolean {
@@ -2124,6 +2141,9 @@ export class WhatsAppService implements WhatsAppApi {
     if (db !== null && db.isOpen) {
       await Promise.allSettled([...this.folds]);
       await db.idle();
+      // A deadline that passed before its timer fired is due now: the sweep runs here too.
+      const next = this.readyDb()?.messages.nextExpiry() ?? null;
+      if (next !== null && next <= Date.now()) await this.sweepExpired();
     }
     await this.expirySweep;
     for (;;) {
@@ -3727,9 +3747,11 @@ export class WhatsAppService implements WhatsAppApi {
 
   /** The stored message a reader may see under any spelling of its id, or MESSAGE_NOT_FOUND. */
   private storedOrThrow(messageId: string): StoredMessage {
-    const message = this.db.messages.get(messageId);
-    if (message === null) throw missingMessage(messageId);
-    return message;
+    const db = this.db;
+    const message = db.messages.get(messageId);
+    if (message !== null) return message;
+    this.settleExpired(db, messageId);
+    throw missingMessage(messageId);
   }
 
   /**
