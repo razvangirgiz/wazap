@@ -332,6 +332,25 @@ test("a caller waiting on a note is let go when its run cannot go on, and while 
   }
 });
 
+test("an hourly round gives up on notes queued a day ago and forgets old failures, even while nothing runs", async () => {
+  const { db, clock } = queuedDb(["STALE", "FAILED"]);
+  db.transcripts.fail(db.transcripts.next("api").id, "media no longer on WhatsApp (HTTP 404)");
+  const worker = new TranscribeWorker({ maintainMs: 10 });
+  const { source, runs } = fakeSource(db, "default", async () => {}, { ready: () => false });
+  try {
+    worker.register(source);
+    await worker.idle();
+    clock.now += 31 * 24 * 3_600_000;
+    await sleep(40);
+    assert.equal(runs.length, 0);
+    assert.deepEqual(db.transcripts.state(sid(false, PEER, "STALE")), { state: "failed", attempts: 0, error: "too_old" });
+    assert.equal(db.transcripts.state(sid(false, PEER, "FAILED")), null, "a failure a month old is forgotten");
+  } finally {
+    worker.unregister(source);
+    db.close();
+  }
+});
+
 test("an account that is not connected keeps its notes until it is", async () => {
   const { db } = queuedDb(["V1"]);
   const worker = new TranscribeWorker();
@@ -585,6 +604,34 @@ test("WAZAP_TRANSCRIBE_AUTO=0 and no provider queue nothing, and a queue kept wh
   assert.equal(off.svc.db.transcripts.state(sidOf("Q1")).state, "queued", "but the queue is kept for when it is switched on");
   assert.match(transcriptionStatusLine(off.svc.getStatus().transcription), /1 waiting \(automatic transcription is off/);
   await off.svc.stop();
+});
+
+test("opening the database recovers a run a crash left marked as started, even where nothing transcribes", async () => {
+  const dataDir = mkdtempSync(join(tmpdir(), "wazap-transcribe-stale-"));
+  const path = join(accountPaths(dataDir, "default").root, "wazap.sqlite");
+  const crashed = AccountDb.open(path, { checkpointDelayMs: 0 });
+  crashed.messages.upsert(voiceRow("V1", Date.now() - 60_000));
+  crashed.transcripts.enqueue(sid(false, PEER, "V1"), "api");
+  crashed.transcripts.claim(crashed.transcripts.next("api").id);
+  crashed.close();
+
+  const { svc } = serviceWith({}, { dataDir });
+  assert.deepEqual(svc.db.transcripts.state(sid(false, PEER, "V1")), { state: "queued", attempts: 1, running: false, error: null });
+  assert.equal(svc.getStatus().transcription.running_for_seconds, null, "status reports no run that is not happening");
+  await svc.stop();
+});
+
+test("wazap status warns that a read-only account's queue never runs with an API provider", async () => {
+  const queued = serviceWith(CONFIGURED);
+  queued.svc.status = "disconnected";
+  deliver(queued.sock, [voiceNote("V1")]);
+  await queued.svc.stop();
+
+  const checks = withEnv(CONFIGURED, () => checkTranscribeQueue({ dataDir: queued.svc.config.dataDir, readOnly: true, rateLimitPerMinute: 20 }));
+  assert.equal(checks.length, 1);
+  assert.equal(checks[0].state, "warn");
+  assert.match(checks[0].detail, /read-only/);
+  assert.match(checks[0].fix, /wazap config writes on/);
 });
 
 test("a short-lived command queues arriving notes but leaves transcribing them to the server", async () => {

@@ -5,7 +5,7 @@
  * same whether or not a server is running.
  */
 import { join } from "node:path";
-import { AccountRegistry } from "./accounts.js";
+import { AccountRegistry, accountPolicy } from "./accounts.js";
 import { accountPaths, type Config } from "./config.js";
 import { AccountDb, type TranscribeQueueStats } from "./db/index.js";
 import type { Check } from "./doctor.js";
@@ -59,11 +59,13 @@ export function transcriptionStatusLine(status: TranscriptionStatus, now = Date.
  * waits. An account without a database yet, or one a newer wazap wrote, is
  * left out.
  */
-export function checkTranscribeQueue(config: Config): Check[] {
+export function checkTranscribeQueue(config: Pick<Config, "dataDir" | "readOnly" | "rateLimitPerMinute">): Check[] {
   let transcribing = false;
+  let uploads = false;
   try {
     const settings = readTranscribeSettings(process.env, config.dataDir);
     transcribing = settings.provider !== null && settings.auto;
+    uploads = settings.provider === "openai";
   } catch {
     // The transcribe check already reports settings that do not parse.
   }
@@ -78,8 +80,11 @@ export function checkTranscribeQueue(config: Config): Check[] {
   for (const account of accounts) {
     const stats = readStats(join(accountPaths(config.dataDir, account.id).root, DB_FILE));
     if (stats === null) continue;
+    // Read-only never uploads audio, so an API provider leaves this account's queue waiting for good.
+    const refused = transcribing && uploads && accountPolicy(account, config).readOnly;
+    const runs = transcribing && !refused;
     const quiet = stats.queued === 0 && stats.failed === 0;
-    if (quiet && !transcribing) continue;
+    if (quiet && !runs) continue;
     const now = Date.now();
     const detail = describeTranscribeQueue({
       queued: stats.queued,
@@ -91,12 +96,16 @@ export function checkTranscribeQueue(config: Config): Check[] {
           : { reason: stats.lastError.reason, agoSeconds: Math.max(0, Math.round((now - stats.lastError.at) / 1000)), final: stats.lastError.final },
     });
     const name = accounts.length > 1 ? `voice queue (${account.id})` : "voice queue";
-    const stalled = stats.queued > 0 && !transcribing;
+    const stalled = stats.queued > 0 && !runs;
+    const why = refused ? "the account is read-only, so audio is not uploaded and it waits" : "automatic transcription is off, so it waits";
+    const fix = refused
+      ? "run `wazap config writes on` and restart, or `wazap config transcribe local`"
+      : "run `wazap config transcribe local` or `wazap config transcribe openai`, then restart";
     checks.push({
       name,
       state: stalled ? "warn" : "info",
-      detail: stalled ? `${detail}; automatic transcription is off, so it waits` : detail,
-      ...(stalled ? { fix: "run `wazap config transcribe local` or `wazap config transcribe openai`, then restart" } : {}),
+      detail: stalled ? `${detail}; ${why}` : detail,
+      ...(stalled ? { fix } : {}),
     });
   }
   return checks;

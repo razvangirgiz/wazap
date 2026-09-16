@@ -57,7 +57,7 @@ export { contentHash, hybridTokens, hybridWords, int8Similarity, quantizeVector,
 export { isSqliteExperimentalWarning } from "./sqlite.js";
 export type { ScrubQuote } from "./messages.js";
 export type { NewDraft, SendRecord, SendState, Sends } from "./sends.js";
-export { TRANSCRIBE_QUEUE_MAX_AGE_MS } from "./transcripts.js";
+export { TRANSCRIBE_MAX_ATTEMPTS, TRANSCRIBE_QUEUE_MAX_AGE_MS } from "./transcripts.js";
 export type { ProviderClass, TranscribeItem, TranscribeQueueStats, TranscribeState } from "./transcripts.js";
 export type { CheckpointResult, ConnectionOptions, ConnectionSettings } from "./connection.js";
 export type {

@@ -749,6 +749,7 @@ export class WhatsAppService implements WhatsAppApi {
       this.accountDb = db;
       this.adoptDatabase(db);
       this.recoverSends(db);
+      this.recoverTranscriptions(db);
       if (this.legacyPending(db)) this.storageState = "preparing";
     } catch (err) {
       this.storageFail(err);
@@ -2295,6 +2296,19 @@ export class WhatsAppService implements WhatsAppApi {
    * WhatsAppApi on purpose: an agent has no business waiting on it, and a test
    * needs it so it can wait on the queue instead of sleeping.
    */
+  /**
+   * At open, whether or not this process transcribes: a run a stopped or
+   * crashed process left marked as started waits again (its attempt counted),
+   * so no status reports a run that is not happening.
+   */
+  private recoverTranscriptions(db: AccountDb): void {
+    try {
+      db.transcripts.recover();
+    } catch (err) {
+      logError("transcribe", err);
+    }
+  }
+
   /**
    * The account is being removed: its upload or whisper.cpp run under way ends
    * now instead of being waited for, and gives its attempt back.

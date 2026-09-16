@@ -21,6 +21,9 @@ const REASON_MAX = 120;
 /** A note still waiting this long after it was queued is given up on: its words are no longer news. */
 export const TRANSCRIBE_QUEUE_MAX_AGE_MS = 24 * 60 * 60_000;
 
+/** Runs a note gets before it is given up on; a run a crash interrupted counts. */
+export const TRANSCRIBE_MAX_ATTEMPTS = 3;
+
 /** Where the audio goes: stays on this machine, or is uploaded to an API. */
 export type ProviderClass = "local" | "api";
 
@@ -216,15 +219,15 @@ export class Transcripts {
   }
 
   /**
-   * After an open: a run a stopped or crashed process left marked as started
+   * Right after a writable open, before anything runs: a run a stopped or crashed process left marked as started
    * is waiting again, its attempt still counted, and one that has used
    * `maxAttempts` is given up on. Failures older than a month are forgotten.
    * How many runs were recovered.
    */
-  recover(maxAttempts: number): number {
+  recover(maxAttempts = TRANSCRIBE_MAX_ATTEMPTS): number {
     return this.c.write(() => {
       const now = this.c.now();
-      this.c.run("DELETE FROM transcribe_queue WHERE failed_at IS NOT NULL AND failed_at < ?", now - FAILED_KEPT_MS);
+      this.expire();
       this.c.run(
         `UPDATE transcribe_queue SET started_at = NULL, failed_at = ?, error = 'interrupted too often', error_at = ?
          WHERE failed_at IS NULL AND started_at IS NOT NULL AND attempts >= ?`,

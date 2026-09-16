@@ -6,9 +6,10 @@
  * another.
  *
  * The queue itself is each account's database (see db/transcripts.ts), so the
- * worker keeps no work of its own: a restart finds the queue where it was, and
- * a run a crash interrupted is recovered, its attempt counted, the first time
- * the worker sees that database. A note is tried at most three times, with a
+ * worker keeps no work of its own: a restart finds the queue where it was (the
+ * service recovers a run a crash interrupted when it opens the database, its
+ * attempt counted). An hourly round gives up on notes queued more than a day
+ * ago and forgets failures older than a month, even while nothing runs. A note is tried at most three times, with a
  * wait between attempts; a failure that another attempt cannot fix gives up at
  * once and says why (see failure.ts). A note whose account is not connected
  * spends no attempt and waits. A provider that cannot take any note — not
@@ -19,7 +20,7 @@
  * Ingestion never waits on the worker and never sees it fail. kick() is how a
  * new note is noticed at once; timers cover retries and accounts coming back.
  */
-import type { AccountDb, ProviderClass, TranscribeItem } from "../db/index.js";
+import { TRANSCRIBE_MAX_ATTEMPTS, type AccountDb, type ProviderClass, type TranscribeItem } from "../db/index.js";
 import { logError } from "../logger.js";
 import { classifyFailure, type Failure } from "./failure.js";
 
@@ -44,6 +45,8 @@ export interface TranscribeWorkerOptions {
   blockedDelayMs?: number;
   /** How often an account that cannot serve yet is looked at again. */
   pollMs?: number;
+  /** How often every account's queue drops what is too old to run or to remember. */
+  maintainMs?: number;
   /** The first pause of a provider that cannot take any note, doubled each time up to the second. */
   pauseMs?: number;
   pauseMaxMs?: number;
@@ -53,9 +56,10 @@ export interface TranscribeWorkerOptions {
 
 const DEFAULTS: Required<TranscribeWorkerOptions> = {
   retryDelaysMs: [10_000, 60_000],
-  maxAttempts: 3,
+  maxAttempts: TRANSCRIBE_MAX_ATTEMPTS,
   blockedDelayMs: 30_000,
   pollMs: 10_000,
+  maintainMs: 60 * 60_000,
   pauseMs: 30_000,
   pauseMaxMs: 15 * 60_000,
   now: Date.now,
@@ -79,8 +83,7 @@ interface Running {
 export class TranscribeWorker {
   private options: Required<TranscribeWorkerOptions>;
   private readonly sources: TranscribeSource[] = [];
-  /** Databases whose leftover runs were recovered. */
-  private readonly recovered = new WeakSet<AccountDb>();
+  private maintenance: NodeJS.Timeout | null = null;
   /** The source after the one served last. */
   private cursor = 0;
   private draining: Promise<void> | null = null;
@@ -107,7 +110,25 @@ export class TranscribeWorker {
 
   register(source: TranscribeSource): void {
     if (!this.sources.includes(source)) this.sources.push(source);
+    if (this.maintenance === null) {
+      this.maintenance = setInterval(() => this.maintain(), this.options.maintainMs);
+      this.maintenance.unref();
+    }
     this.kick();
+  }
+
+  /** Every account's queue drops notes queued more than a day ago and failures older than a month. */
+  private maintain(): void {
+    for (const source of this.sources) {
+      const db = this.open(source);
+      if (db === null) continue;
+      try {
+        db.transcripts.expire();
+      } catch (err) {
+        logError(`transcribe ${source.name}`, err);
+      }
+    }
+    this.releaseSettled();
   }
 
   /**
@@ -140,6 +161,10 @@ export class TranscribeWorker {
     if (index >= 0) {
       this.sources.splice(index, 1);
       if (this.cursor > index) this.cursor--;
+    }
+    if (this.sources.length === 0 && this.maintenance !== null) {
+      clearInterval(this.maintenance);
+      this.maintenance = null;
     }
     const running = this.running;
     if (running !== null && running.source === source && !running.abandoned) {
@@ -247,7 +272,7 @@ export class TranscribeWorker {
     return null;
   }
 
-  /** The source's database when open, with what a stopped process left under way recovered once. */
+  /** The source's database when it is open for writes. */
   private open(source: TranscribeSource): AccountDb | null {
     let db: AccountDb | null;
     try {
@@ -255,17 +280,7 @@ export class TranscribeWorker {
     } catch {
       return null;
     }
-    if (db === null || !db.isOpen || db.readOnly) return null;
-    if (!this.recovered.has(db)) {
-      try {
-        db.transcripts.recover(this.options.maxAttempts);
-        this.recovered.add(db);
-      } catch (err) {
-        logError(`transcribe ${source.name}`, err);
-        return null;
-      }
-    }
-    return db;
+    return db === null || !db.isOpen || db.readOnly ? null : db;
   }
 
   private async runOne(source: TranscribeSource, db: AccountDb, item: TranscribeItem): Promise<void> {
