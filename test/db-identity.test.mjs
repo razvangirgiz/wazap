@@ -195,6 +195,25 @@ test("finding 5: a message filed under both spellings folds into one row and kee
   db.close();
 });
 
+test("n2: a lid that moves while its old chat is still folding starts the new number's chat, not the old person's", async () => {
+  const { db } = openTemp({ chunkSize: 5 });
+  for (let i = 0; i < 300; i++) db.messages.upsert(textMessage(GROUP_A, `G${i}`, T0 + i, "g", { senderJid: OTHER }));
+  db.messages.upsert(textMessage(PEER, "X1", T0 + 1000, "X via phone"));
+  db.messages.upsert(textMessage(PEER_LID, "X2", T0 + 2000, "X via lid"));
+  const clear = db.messages.clearChat(GROUP_A, T0 + 500);
+  const fold = db.learnLidPhone(PEER_LID, PEER);
+  const move = db.learnLidPhone(PEER_LID, P2);
+  const written = db.messages.upsert(textMessage(PEER_LID, "Y1", T0 + 3000, "Y (the lid's new number) writes"));
+  assert.equal(written.sid, sid(false, P2, "Y1"));
+  await clear;
+  await fold;
+  await move;
+  assert.deepEqual(db.messages.chatPage(PEER, { limit: 10 }).items.map((m) => m.text), ["X via lid", "X via phone"]);
+  assert.deepEqual(db.messages.chatPage(P2, { limit: 10 }).items.map((m) => m.text), ["Y (the lid's new number) writes"]);
+  assert.equal(db.messages.get(sid(false, PEER_LID, "Y1"))?.sid, sid(false, P2, "Y1"));
+  db.close();
+});
+
 test("a number that gains a new lid keeps answering to its older lid too", async () => {
   const { db } = openTemp();
   await db.learnLidPhone(PEER_LID, PEER);

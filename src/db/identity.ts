@@ -174,17 +174,19 @@ export class Identity {
 
   /**
    * A chat by any spelling: the canonical jid first, then the jid as given. A
-   * chat folding into another answers as the chat it folds into.
+   * chat folding into another answers as the chat it folds into — but only
+   * under its own canonical jid: a lid that moved to another number while its
+   * old chat was still folding into the old number's chat no longer answers
+   * for that chat, so its new messages start the new number's chat instead.
    */
   chat(jid: string): ChatRecord | null {
     const normalized = normalizeJid(jid);
     const canonical = chatKindOf(normalized) === "direct" ? this.canonicalJid(normalized) : normalized;
-    for (const candidate of canonical === normalized ? [normalized] : [canonical, normalized]) {
-      const row = this.c.get<ChatRow>("SELECT * FROM chats WHERE jid = ?", candidate);
-      if (row === undefined) continue;
-      return row.merged_into === null ? chatFromRow(row) : this.chatById(row.merged_into);
-    }
-    return null;
+    const row = this.c.get<ChatRow>("SELECT * FROM chats WHERE jid = ?", canonical);
+    if (row !== undefined) return row.merged_into === null ? chatFromRow(row) : this.chatById(row.merged_into);
+    if (canonical === normalized) return null;
+    const spelled = this.c.get<ChatRow>("SELECT * FROM chats WHERE jid = ? AND merged_into IS NULL", normalized);
+    return spelled === undefined ? null : chatFromRow(spelled);
   }
 
   /** The chat and every chat still folding into it: where its messages may sit right now. */
