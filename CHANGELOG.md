@@ -46,8 +46,9 @@
   the account database, written with the message it announces, and is posted
   one at a time per account in the order it was queued. A timeout, an
   unreachable receiver, `408`, `425`, `429` or `5xx` is retried after 1 s, 5 s,
-  30 s, 2 min, 10 min, then hourly for up to 24 hours; any other `4xx` still
-  fails at once. A POST a crash interrupted is sent again, so a receiver may
+  30 s, 2 min, then every 5 min and a last time at 24 hours, and at once when
+  new traffic shows the receiver may be back; any other `4xx` still fails at
+  once. A POST a crash interrupted is sent again, so a receiver may
   see an event twice: dedupe on `message_id`. A message event carries the
   message as it is when posted, with an edit or transcript that arrived
   meanwhile, and is not posted at all once the message is deleted, expired or

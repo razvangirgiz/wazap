@@ -192,6 +192,24 @@ export class Events {
     );
   }
 
+  /**
+   * Makes every retry that waits and was last attempted at or before
+   * `lastAttemptBefore` due at `at`; returns how many. The last change of a
+   * waiting retry is when its attempt failed.
+   */
+  nudge(at: number, lastAttemptBefore: number): number {
+    return this.c.write(() =>
+      this.c.run(
+        `UPDATE events SET next_attempt_at = ?
+         WHERE seq IN (SELECT seq FROM events INDEXED BY events_open WHERE ${OPEN})
+           AND state = 'pending' AND next_attempt_at > ? AND updated_at <= ?`,
+        at,
+        at,
+        lastAttemptBefore
+      )
+    );
+  }
+
   /** Cancels up to `limit` open events, oldest first; returns how many. For a webhook turned off. */
   cancelOpen(reason: string, at: number, limit = 500): number {
     return this.c.write(() =>

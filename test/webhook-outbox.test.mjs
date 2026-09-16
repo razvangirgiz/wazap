@@ -143,12 +143,12 @@ test("an event being retried holds back every event behind it, so none overtakes
   assert.equal(state(h, second.seq).state, "delivered");
 });
 
-test("a retryable failure is tried again after 1 s, 5 s, 30 s, 2 min and 10 min, then hourly", async (t) => {
+test("a retryable failure is tried again after 1 s, 5 s, 30 s and 2 min, then every 5 min", async (t) => {
   const h = harness(t, { post: answering(503) });
   const { seq } = messageEvent(h, "RETRY");
   await h.run();
-  const expected = [...OUTBOX_RETRY_DELAYS_MS, OUTBOX_RETRY_EVERY_MS, OUTBOX_RETRY_EVERY_MS, OUTBOX_RETRY_EVERY_MS];
-  assert.deepEqual(expected.slice(0, 5), [1_000, 5_000, 30_000, 120_000, 600_000]);
+  const expected = [...OUTBOX_RETRY_DELAYS_MS, ...Array(4).fill(OUTBOX_RETRY_EVERY_MS)];
+  assert.deepEqual(expected, [1_000, 5_000, 30_000, 120_000, 300_000, 300_000, 300_000, 300_000]);
   for (const [index, delay] of expected.entries()) {
     const row = state(h, seq);
     assert.equal(row.state, "pending");
@@ -164,7 +164,7 @@ test("a retryable failure is tried again after 1 s, 5 s, 30 s, 2 min and 10 min,
     assert.equal(h.post.bodies.length, index + 2);
   }
   assert.equal(retryDelay(1), 1_000);
-  assert.equal(retryDelay(6), OUTBOX_RETRY_EVERY_MS);
+  assert.equal(retryDelay(5), OUTBOX_RETRY_EVERY_MS);
 });
 
 test("408, 425, 429 and 5xx are retried; any other 4xx fails at once, after one POST", async (t) => {
@@ -205,30 +205,81 @@ test("an unreachable receiver is retried like a 5xx, and the error names the hos
   assert.equal(row.lastError, `could not reach 127.0.0.1:${port} (ECONNREFUSED)`);
 });
 
-test("an event not delivered 24 hours after it was created has failed, whether it was retrying or never got a turn", async (t) => {
+test("an event is retried every 5 min, tried one last time at 24 hours, then fails; one that never got a turn fails unposted", async (t) => {
   const h = harness(t, { post: answering(503) });
   const { seq } = messageEvent(h, "OLD");
   const created = h.clock.now;
+  const deadline = created + OUTBOX_GIVE_UP_MS;
   await h.run();
-  // Into the hourly retries, as five more failed POSTs would have got it.
-  for (let i = 0; i < 5; i++) {
+  // Into the 5-minute retries, as four more failed POSTs would have got it.
+  for (let i = 0; i < 4; i++) {
     h.db.events.claim(seq, created);
     h.db.events.retry(seq, created, 503, "HTTP 503 from 127.0.0.1:9", created);
   }
-  // An hour from now is past the day: this attempt is the last one made.
-  h.clock.now = created + OUTBOX_GIVE_UP_MS - 30 * 60_000;
+  h.clock.now = deadline - 2 * 60_000;
+  await h.run();
+  assert.equal(state(h, seq).state, "pending");
+  assert.equal(state(h, seq).nextAttemptAt, deadline, "five minutes on is past the day: the last attempt is at its very end");
+  h.clock.now = deadline + 50;
   await h.run();
   const row = state(h, seq);
   assert.equal(row.state, "failed");
   assert.equal(row.attempts, 7);
   assert.equal(row.lastError, "HTTP 503 from 127.0.0.1:9; gave up 24 h after the event");
+  assert.equal(h.post.bodies.length, 3);
 
   const late = messageEvent(h, "NEVER");
   h.clock.now += OUTBOX_GIVE_UP_MS;
   await h.run();
   assert.equal(state(h, late.seq).state, "failed");
-  assert.equal(state(h, late.seq).attempts, 0, "a day-old event is not posted at all");
-  assert.equal(h.post.bodies.length, 2);
+  assert.equal(state(h, late.seq).attempts, 0, "a day-old event nobody tried is not posted at all");
+  assert.equal(h.post.bodies.length, 3);
+});
+
+test("new traffic brings a waiting retry forward once its last attempt is 30 s old: a receiver back after an outage hears it at once", async (t) => {
+  let upAt = Infinity;
+  const posts = [];
+  const post = async (_url, init) => {
+    posts.push([h.clock.now, JSON.parse(init.body).message_id]);
+    return new Response(null, { status: h.clock.now >= upAt ? 204 : 503 });
+  };
+  const h = harness(t, { post });
+  const t0 = h.clock.now;
+  upAt = t0 + 13 * 60_000;
+  const first = messageEvent(h, "A1");
+  await h.run();
+  // The receiver stays down for 13 minutes; the retries run on their schedule.
+  while (state(h, first.seq).nextAttemptAt < t0 + 14 * 60_000) {
+    h.clock.now = state(h, first.seq).nextAttemptAt;
+    await h.run();
+  }
+  const lastAttempt = posts.at(-1)[0];
+  assert.equal(lastAttempt - t0, 12 * 60_000 + 36_000, "0, 1 s, 6 s, 36 s, 2 min 36 s, 7 min 36 s, 12 min 36 s");
+  assert.equal(state(h, first.seq).nextAttemptAt - t0, 17 * 60_000 + 36_000);
+
+  h.clock.now = t0 + 14 * 60_000;
+  const client = messageEvent(h, "B1", "mai aveți loc azi?");
+  h.outbox.nudge();
+  await h.outbox.idle();
+  assert.deepEqual(posts.slice(-2), [
+    [t0 + 14 * 60_000, first.sid],
+    [t0 + 14 * 60_000, client.sid],
+  ], "both went out the moment the client wrote");
+
+  const fresh = messageEvent(h, "C1");
+  upAt = Infinity;
+  await h.run();
+  assert.equal(state(h, fresh.seq).nextAttemptAt, h.clock.now + 1_000);
+  for (const delay of [1_000, 5_000]) {
+    h.clock.now += delay;
+    await h.run();
+  }
+  assert.equal(state(h, fresh.seq).nextAttemptAt, h.clock.now + 30_000);
+  h.clock.now += 20_000;
+  messageEvent(h, "C2");
+  h.outbox.nudge();
+  await h.outbox.idle();
+  assert.equal(state(h, fresh.seq).attempts, 3, "an attempt 20 s old is not brought forward");
 });
 
 test("a message deleted, expired or cleared before its POST is cancelled and never posted, also before a retry", async (t) => {

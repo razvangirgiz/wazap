@@ -1262,7 +1262,7 @@ export class WhatsAppService implements WhatsAppApi {
       return;
     }
     this.lastWebhookStatus = mapped;
-    this.outbox.kick();
+    this.outbox.nudge();
   }
 
   getStatus(): StatusInfo {
@@ -4259,7 +4259,7 @@ export class WhatsAppService implements WhatsAppApi {
         this.outbox.kick();
       });
     }
-    this.outbox.kick();
+    this.outbox.nudge();
   }
 
   /**

@@ -1251,8 +1251,10 @@ Events wait in an outbox inside the account database, written in the same
 transaction as the message they announce, so a restart or a crash loses none.
 They are posted one at a time per account, oldest first, each POST bounded by
 10 seconds. A timeout, an unreachable URL, or a `408`, `425`, `429` or `5xx` is
-retried after 1 s, 5 s, 30 s, 2 min and 10 min, then hourly, until 24 hours
-after the event; then it has failed. Any other `4xx`, such as the `401` of a
+retried after 1 s, 5 s, 30 s and 2 min, then every 5 min, and one last time 24
+hours after the event; then it has failed. A new event, or a POST that gets
+through, retries at once every waiting event last tried 30 s ago or more, so a
+receiver that comes back hears the backlog within moments. Any other `4xx`, such as the `401` of a
 receiver whose API key changed, is a refusal: the event is posted once and
 fails, and the error names the status with a hint. Either way the failure sets
 `webhook.last_error`, which the next delivery clears. An event is posted at

@@ -12,8 +12,12 @@
  * - Order: nothing is posted while an older event waits, whether for its
  *   transcript (at most until ready_at) or for its next retry.
  * - Retries: a timeout, an unreachable host, 408, 425, 429 or 5xx is tried
- *   again after 1 s, 5 s, 30 s, 2 min and 10 min, then hourly, until 24 h after
- *   the event was created; then it has failed. Any other 4xx fails at once.
+ *   again after 1 s, 5 s, 30 s and 2 min, then every 5 min, and one last time
+ *   24 h after the event was created; then it has failed. Any other 4xx fails
+ *   at once. New traffic brings a waiting retry forward: an event queued, or a
+ *   POST that succeeded, retries at once every event whose last attempt is at
+ *   least 30 s old, so a receiver that came back hears everything within a
+ *   POST or two instead of at its next slot.
  * - At least once: a POST is marked as started before it is sent, and a crash
  *   during it leaves the event to be sent again. Receivers dedupe by
  *   message_id.
@@ -36,11 +40,13 @@ const MINUTE = 60_000;
 const HOUR = 60 * MINUTE;
 const DAY = 24 * HOUR;
 
-/** After the first failed POST of an event, the next waits this long; after the fifth, OUTBOX_RETRY_EVERY_MS. */
-export const OUTBOX_RETRY_DELAYS_MS: readonly number[] = [1_000, 5_000, 30_000, 2 * MINUTE, 10 * MINUTE];
-export const OUTBOX_RETRY_EVERY_MS = HOUR;
-/** An event not delivered this long after it was created has failed. */
+/** After the first failed POST of an event, the next waits this long; after the fourth, OUTBOX_RETRY_EVERY_MS. */
+export const OUTBOX_RETRY_DELAYS_MS: readonly number[] = [1_000, 5_000, 30_000, 2 * MINUTE];
+export const OUTBOX_RETRY_EVERY_MS = 5 * MINUTE;
+/** An event not delivered this long after it was created has failed, after one last attempt at that moment. */
 export const OUTBOX_GIVE_UP_MS = DAY;
+/** A waiting retry whose last attempt is at least this old is brought forward by new traffic. */
+export const OUTBOX_NUDGE_AFTER_MS = 30_000;
 /** How long an incoming voice note's event waits for the transcript wazap is making of it. */
 export const WEBHOOK_TRANSCRIPT_WAIT_MS = MINUTE;
 /** While an event waits for a transcript, the database is looked at again this often. */
@@ -120,6 +126,8 @@ export class WebhookOutbox {
   private loggedFailure: string | null = null;
   private drops = 0;
   private droppedAt: number | null = null;
+  /** New traffic since the last pass: bring stale retries forward before choosing. */
+  private nudged = false;
 
   constructor(
     private readonly host: OutboxHost,
@@ -149,7 +157,16 @@ export class WebhookOutbox {
     this.kick();
   }
 
-  /** Something may be ready to post: a new event, a transcript, a changed setting. */
+  /**
+   * An event was queued: the receiver may be back, so every retry whose last
+   * attempt is OUTBOX_NUDGE_AFTER_MS old or more is due now.
+   */
+  nudge(): void {
+    this.nudged = true;
+    this.kick();
+  }
+
+  /** Something may be ready to post: a transcript, a changed setting, a timer. */
   kick(): void {
     if (this.stopped) return;
     if (this.pass !== null) {
@@ -242,9 +259,13 @@ export class WebhookOutbox {
   private step(): Step {
     const db = this.host.db();
     if (db === null || !db.isOpen) return IDLE;
+    const now = this.now();
+    if (this.nudged) {
+      this.nudged = false;
+      db.events.nudge(now, now - OUTBOX_NUDGE_AFTER_MS);
+    }
     const event = db.events.head();
     if (event === null) return IDLE;
-    const now = this.now();
     const settings = this.host.sink().settings();
     if (settings.kind !== "ready") {
       // Off means post nothing anywhere; an event must not go out once the webhook is fixed or back on.
@@ -255,7 +276,9 @@ export class WebhookOutbox {
       db.events.cancel(event.seq, `${event.kind} is not an enabled event`, now);
       return NEXT;
     }
-    if (now >= event.createdAt + this.giveUpMs) {
+    const deadline = event.createdAt + this.giveUpMs;
+    // Past the day, only the last attempt scheduled for its very end is still made.
+    if (now >= deadline && (event.nextAttemptAt === null || event.nextAttemptAt < deadline)) {
       const error = event.lastError ?? "not posted";
       db.events.fail(event.seq, event.lastStatus, `${error}; gave up 24 h after the event`, now);
       this.noteFailure(`gave up on ${event.kind} after ${event.attempts} attempts: ${error}`);
@@ -296,12 +319,15 @@ export class WebhookOutbox {
     if (result.ok) {
       db.events.delivered(event.seq, result.status, now);
       this.noteDelivery();
+      // The receiver answers again: what waits for a retry need not wait for its slot.
+      this.nudged = true;
       return;
     }
     this.noteFailure(result.error);
     const failed = event.attempts + 1;
-    const next = now + retryDelay(failed, this.retryDelays, this.retryEveryMs);
-    if (result.retry && next < event.createdAt + this.giveUpMs) {
+    const deadline = event.createdAt + this.giveUpMs;
+    if (result.retry && now < deadline) {
+      const next = Math.min(now + retryDelay(failed, this.retryDelays, this.retryEveryMs), deadline);
       db.events.retry(event.seq, next, result.status, result.error, now);
     } else {
       db.events.fail(event.seq, result.status, result.retry ? `${result.error}; gave up 24 h after the event` : result.error, now);
