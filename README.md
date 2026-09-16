@@ -232,7 +232,8 @@ the same data directory becomes a bridge onto the session this one holds.
 runs the version you have installed. `service logs` tails it. `service restart`
 picks up an upgrade; `service uninstall` removes the unit and leaves your
 session and credentials alone. `wazap login` needs the session to itself, so it
-stops the service, pairs, and starts it again on its own.
+stops the service, pairs, and starts it again on its own. `wazap logout` and
+`wazap account` changes do not stop anything: the running server applies them.
 
 A sleeping Mac is an offline wazap. System Settings → Lock Screen, or Battery →
 Options, has the switch that keeps it awake on power.
@@ -580,7 +581,7 @@ trace, so an agent can decide whether to retry, ask the user, or stop.
 | `SEND_BLOCKED` | The account's send rules refuse this recipient. `wazap config send` changes them; the agent must not route around. |
 | `AMBIGUOUS_ACCOUNT` | More than one account could handle this, or a write named a chat no account knows. Pass `account_id`. |
 | `ACCOUNT_NOT_FOUND` | No account with that id. Run `wazap account add`, or call `list_accounts`. |
-| `ACCOUNT_DISABLED` | That account is disabled. `wazap account enable <id>` and restart. |
+| `ACCOUNT_DISABLED` | That account is disabled. Run `wazap account enable <id>`; a running server picks it up. |
 | `TIMEOUT` / `WHATSAPP_ERROR` | WhatsApp did not answer, or rejected the operation. |
 
 ## Data directory
@@ -607,6 +608,7 @@ accounts moves into `accounts/default/` the first time a wazap command runs.
   models/           whisper.cpp and embedding models, when transcription or recall run locally
   server.lock       pid of the running server
   daemon.json       loopback endpoint a second wazap bridges to
+  control.json      private loopback line the CLI uses to change the running server
   oauth.json        registered agents and hashed OAuth grants, when OAuth is on
   .env              optional settings, see .env.example
   migration.json    written once when a flat dir moved into accounts/default
@@ -681,6 +683,36 @@ Reads without a chat and without `account_id` use the default account; the
 response still carries `account_id`. `link_account` needs an account that
 already exists. Five accounts is advice, not a cap. One phone number is one
 account.
+
+A running server follows the registry; there is nothing to restart.
+`wazap account add`, `enable`, `disable`, `default` and `remove` tell it at
+once: an added or enabled account gets its socket, a disabled one is stopped
+and tools that name it answer `ACCOUNT_DISABLED`, a removed one is stopped
+before its folder is deleted. A tool that names an account the server has not
+seen yet reads `accounts.json` again before answering `ACCOUNT_NOT_FOUND`, so
+`account add` followed by `link_account` works even when nothing told the
+server. The last account a server runs stays up until the server stops,
+because a server with no enabled account refuses to start: `account disable`
+says so, and `account remove` refuses it.
+
+`wazap logout --account work` unlinks one account. With a server running it
+asks that server to do it: the account's socket closes (a pairing in flight is
+cancelled), WhatsApp is told to unlink the device, its credentials and chat
+snapshot are deleted, and the account stays in the registry, not linked, ready
+for `link_account` or `login`. The other accounts are not touched. Without
+`--account`, logout is for the default account. With no server running, logout
+does the same work itself.
+
+The CLI reaches the running server over a private line, not the MCP endpoint:
+a listener on an ephemeral `127.0.0.1` port and a random token, both written
+to `<data-dir>/control.json` (`0600`) by the server as it starts. Nothing else
+opens it — not `WAZAP_READ_TOKEN` or `WAZAP_WRITE_TOKEN`, not an OAuth grant,
+not the bridge token in `daemon.json`, not an anonymous caller — and no tool
+exposes it to an agent. A tunnel or proxy pointed at `WAZAP_PORT` never
+reaches it. It is there whether or not the session is shared. A server started
+by an older wazap has no such line: against it, account changes print a
+restart hint, and `logout` and `account remove` work as they used to (stop the
+`wazap service` around the logout, or refuse while another server runs).
 
 An account can override the global webhook URL, secret and event list in
 `accounts.json` (`webhook_url`, `webhook_secret`, `webhook_events`).
@@ -782,9 +814,11 @@ and marker; old flat-layout versions do not enforce per-account rules.
 
 Every write tool checks the current disk policy before preparing work. Corrupt,
 missing, disabled or newly read-only accounts refuse the write without consuming
-an owned draft. Cached rules are not a fallback. Restart is still required to
-change the running account roster or relax startup read-only settings; these
-checks cannot undo an already-started operation. Malformed `WAZAP_READ_ONLY`
+an owned draft. Cached rules are not a fallback. The running account roster
+follows the registry (see [Several accounts](#several-accounts)); relaxing
+startup read-only settings still needs a restart, and these checks cannot undo
+an already-started operation. A registry that is missing or malformed is never
+applied: the running roster stays as it was and the calls that need it fail. Malformed `WAZAP_READ_ONLY`
 values are refused. Unset global settings still mean writes on; for a durable
 account-level prohibition use `wazap config writes off --account <id>`.
 

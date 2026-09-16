@@ -562,8 +562,9 @@ default account. Synthetic fixtures reproduced these gaps without a real send.
   too, for one default account without send rules). Invalid recipient-rule contents are not echoed. Malformed
   `WAZAP_READ_ONLY` values are rejected rather than silently enabling writes.
 
-The account roster/read access and startup read-only restrictions still require
-a restart to change. This is next-call write admission, not cancellation of
+Startup read-only restrictions still require a restart to change; the account
+roster no longer does (section 19), and a roster reload reads the same
+fail-closed registry. This is next-call write admission, not cancellation of
 already-started work, transactional configuration updates or a per-client ACL.
 The marker is not tamper protection against an operator who can remove both
 files. It does not seal external environment variables or command-line flags:
@@ -658,6 +659,47 @@ index; this is not a production-scale throughput claim. Monitor ledger/history
 size and cleanup I/O, retain protected backups, and never truncate barriers as a
 space-saving shortcut. Large installations need a separately designed archival
 or indexed-ledger policy, not an arbitrary age limit in this patch.
+
+## 19. Account roster and logout against a running server
+
+A server read `accounts.json` once. A tenant added while it ran answered
+`ACCOUNT_NOT_FOUND` until a restart, and `wazap logout` refused any lock holder
+that was not the installed service. Both are now handled by the running process.
+
+- **Roster reload.** `AccountHub.reload` re-reads the registry through
+  `AccountRegistry.load`, so a missing policy behind its `.required` marker or a
+  malformed file throws before anything changes: the roster stays, and a tool
+  call that triggered the reload fails with that error instead of answering
+  `ACCOUNT_NOT_FOUND`. Write admission still reads the disk record on every
+  write. Disabled and removed accounts are stopped; a reload never stops the
+  last running account, whose record then reads disabled and refuses by id.
+- **Control line.** `src/control.ts` listens on `127.0.0.1`, port 0, separate
+  from the MCP listener, so a tunnel or proxy that forwards `WAZAP_PORT` cannot
+  reach it. One credential opens it: 32 random bytes, generated per process
+  and published only in `control.json` (`0600`, atomic write, removed on exit,
+  ignored when its pid is not the lock holder). Static read/write tokens, OAuth
+  grants, the bridge token and anonymous callers get 401 before the body is
+  read; any `Origin`, a non-loopback `Host`, a method other than POST, a body
+  that is not JSON or over 4 KiB, and an invalid account id are refused too.
+  There are three routes (reload, logout, remove) and no MCP tool calls them.
+  Logs name the route and the account id, never the token.
+- **Why a token file is enough.** Whoever can read `control.json` can already
+  read or delete the credentials and the registry it would act on, and signal
+  the process. The line adds no capability beyond that local file access; it
+  replaces "stop the server, edit, start again".
+- **Logout and removal ordering.** The account's service stops before anything
+  is deleted, cancelling a pairing in flight and waiting (bounded) for its
+  socket, so no credentials are written behind a logout or into a folder being
+  removed. Logout then runs the same code as the offline command
+  (`src/logout.ts`). Callbacks from a replaced service (owner, give-up) are
+  ignored.
+
+Not covered: registry writes from two processes at once are still
+last-writer-wins, as before. A live service keeps the rate limit, webhook
+override and relaxed writes setting it started with until it next starts;
+tightened writes and send rules are read from disk on every write, as before.
+Tests: `test/account-roster.test.mjs`, `test/control.test.mjs`, and the two
+running-server cases in `test/calfa-contract.test.mjs`.
 
 ## Pre-release review
 

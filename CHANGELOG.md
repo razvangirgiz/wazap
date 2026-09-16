@@ -1,5 +1,41 @@
 # Changelog
 
+## Unreleased
+### Changed
+
+- **Accounts come and go without a restart.** A running server follows
+  `accounts.json`: `wazap account add`, `enable`, `disable`, `default` and
+  `remove` apply to it at once, and a tool that names an account added since
+  it last looked reads the registry again before answering
+  `ACCOUNT_NOT_FOUND`. An added or enabled account gets its own socket; a
+  disabled or removed one is stopped, and calls that name it answer
+  `ACCOUNT_DISABLED` or `ACCOUNT_NOT_FOUND`. `account remove` stops the
+  account before its folder is deleted. The last account a server runs keeps
+  running until it stops, since a server with none refuses to start.
+- **`wazap logout` works while a server runs.** Instead of refusing with
+  `wazap is running (pid N)` unless the server was the `wazap service`, logout
+  asks the running server to log the account out: it closes that account's
+  socket and any pairing in flight, unlinks it from WhatsApp and deletes its
+  credentials and snapshot as an offline logout does, and keeps serving the
+  other accounts. The account comes back not linked, so `link_account` can
+  link it again. Output and exit codes are the offline ones.
+
+### Security
+
+- **The CLI reaches the running server over a private control line.** It is
+  its own listener on an ephemeral `127.0.0.1` port, opened only by a random
+  token the server writes to `<data-dir>/control.json` (`0600`). It is not the
+  MCP listener a tunnel or proxy points at; `WAZAP_READ_TOKEN`,
+  `WAZAP_WRITE_TOKEN`, OAuth grants, the bridge token and anonymous callers
+  are refused; requests with an `Origin` or a non-loopback `Host` are refused;
+  and no MCP tool reaches it. It exists with or without `WAZAP_NO_SHARE`.
+
+### Upgrade notes
+
+- A server started by an older wazap has no control line: against it,
+  `account` changes still say to restart, and `logout` and `account remove`
+  still refuse. Restart it once on the new version.
+
 ## 0.21.0
 ### Security
 
