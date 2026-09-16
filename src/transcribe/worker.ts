@@ -151,12 +151,14 @@ export class TranscribeWorker {
   }
 
   /**
-   * Settles once `sid` is no longer queued on `source`: transcribed, given up
-   * on, gone, or its account stopped. A retry scheduled for later keeps it
-   * queued. It never rejects.
+   * Settles once `sid` is no longer queued on `source` (transcribed, given up
+   * on, gone, its account stopped), or once no transcript can come soon: its
+   * run could not go on (account not connected, provider paused), or the
+   * worker is paused. A retry scheduled for later keeps it waiting. It never
+   * rejects.
    */
   settled(source: TranscribeSource, sid: string): Promise<void> {
-    if (!this.sources.includes(source) || !this.queued(source, sid)) return Promise.resolve();
+    if (this.paused() !== null || !this.sources.includes(source) || !this.queued(source, sid)) return Promise.resolve();
     return new Promise<void>((resolve) => {
       let bySid = this.waiters.get(source);
       if (bySid === undefined) this.waiters.set(source, (bySid = new Map()));
@@ -265,7 +267,8 @@ export class TranscribeWorker {
     } catch (err) {
       logError(`transcribe ${source.name}`, err);
     }
-    if (db.isOpen && db.transcripts.state(item.sid)?.state !== "queued") this.release(source, item.sid);
+    const stuck = failure?.kind === "waiting" || failure?.kind === "paused";
+    if (stuck || (db.isOpen && db.transcripts.state(item.sid)?.state !== "queued")) this.release(source, item.sid);
   }
 
   private settle(source: TranscribeSource, db: AccountDb, item: TranscribeItem, attempts: number, failure: Failure | null): void {
@@ -303,6 +306,8 @@ export class TranscribeWorker {
     this.pausedUntil = this.options.now() + delay;
     this.pauseReason = reason;
     logError("transcribe", `${reason}; pausing transcription for ${Math.round(delay / 1000)} s`);
+    // Nothing will be transcribed soon: whoever holds a message back for its words stops waiting.
+    for (const [source, bySid] of [...this.waiters]) for (const sid of [...bySid.keys()]) this.release(source, sid);
   }
 
   /** The provider took a note (or answered about one): pauses start from the shortest again. */

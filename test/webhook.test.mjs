@@ -37,6 +37,8 @@ import {
   webhookSignature,
   webhookSignatureMatches,
 } from "../dist/webhook.js";
+import { WazapError } from "../dist/errors.js";
+import { markFailure } from "../dist/transcribe/failure.js";
 import { transcribeWorker } from "../dist/transcribe/worker.js";
 import { WhatsAppService } from "../dist/whatsapp.js";
 import { connectedService, fakeSocket, offlineConfig, openService, stubAccountSource, waitFor } from "./helpers.mjs";
@@ -1121,6 +1123,41 @@ test("a voice note whose first transcription fails posts the words a retry got",
   } finally {
     transcribeWorker.configure(timings);
     console.error = realError;
+    await svc.stop();
+    await server.close();
+    restoreEnv();
+  }
+});
+
+test("a voice note posts its placeholder at once while the provider refuses the key, not after a minute", async () => {
+  const received = [];
+  const server = await listen(async (req, res) => {
+    received.push(JSON.parse(await readBody(req)));
+    res.writeHead(204);
+    res.end();
+  });
+  const restoreEnv = saveWebhookEnv(server.url);
+  const { svc, sock } = transcribingService("wazap-webhook-voice-paused-");
+  svc.mediaBuffer = async () => Buffer.from("not really an ogg file");
+  let calls = 0;
+  svc.transcriber = async () => {
+    calls += 1;
+    throw markFailure(new WazapError("TRANSCRIBE_FAILED", "Transcription API returned HTTP 401."), "paused", "provider refused the key (HTTP 401)");
+  };
+  const realError = console.error;
+  console.error = () => {};
+  try {
+    sock.ev.emit("messages.upsert", { type: "notify", messages: [voiceNote("K1", 6)] });
+    await waitFor(() => received.length > 0, 3_000, "the first note's webhook POST");
+    assert.equal(received[0].text, "[voice message · 0:06]");
+
+    sock.ev.emit("messages.upsert", { type: "notify", messages: [voiceNote("K2", 6)] });
+    await waitFor(() => received.length > 1, 3_000, "the webhook POST of a note arriving during the pause");
+    assert.equal(received[1].text, "[voice message · 0:06]");
+    assert.equal(calls, 1, "and the paused provider was not asked again");
+  } finally {
+    console.error = realError;
+    transcribeWorker.resume();
     await svc.stop();
     await server.close();
     restoreEnv();

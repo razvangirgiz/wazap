@@ -274,6 +274,31 @@ test("a provider refusing the key pauses the whole worker, longer each time, and
   }
 });
 
+test("a caller waiting on a note is let go when its run cannot go on, and while the worker is paused", async () => {
+  const { db } = queuedDb(["WAITS", "PAUSED", "LATER"]);
+  const worker = new TranscribeWorker();
+  const settledNow = async (promise) => Promise.race([promise.then(() => true), sleep(20).then(() => false)]);
+  const { source } = fakeSource(db, "default", async (note) => {
+    if (note.endsWith("LATER")) throw new WazapError("NOT_CONNECTED", "The socket closed.");
+    throw new WazapError("TRANSCRIBE_UNAVAILABLE", "whisper.cpp not found");
+  });
+  const realError = console.error;
+  console.error = () => {};
+  try {
+    worker.register(source);
+    const waits = worker.settled(source, sid(false, PEER, "LATER"));
+    await worker.idle();
+    assert.equal(await settledNow(waits), true, "a note its account could not serve leaves its waiter free to post");
+    assert.notEqual(worker.paused(), null);
+    assert.equal(await settledNow(worker.settled(source, sid(false, PEER, "WAITS"))), true, "no waiter is held while paused");
+    assert.equal(db.transcripts.state(sid(false, PEER, "WAITS")).state, "queued", "though the note stays queued");
+  } finally {
+    console.error = realError;
+    worker.unregister(source);
+    db.close();
+  }
+});
+
 test("an account that is not connected keeps its notes until it is", async () => {
   const { db } = queuedDb(["V1"]);
   const worker = new TranscribeWorker();
