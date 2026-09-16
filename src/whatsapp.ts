@@ -799,7 +799,7 @@ export class WhatsAppService implements WhatsAppApi {
         run();
       } catch (err) {
         const code = (err as NodeJS.ErrnoException)?.code ?? (err instanceof Error ? err.name : "error");
-        logError(`account ${id}`, `${what} failed (${code}); retried at the next start`);
+        logError(`account ${id}`, `${what} failed (${code}); tried again at the next pass`);
       }
     };
     step("moving the earlier message files into legacy/", () => {

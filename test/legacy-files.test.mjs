@@ -16,6 +16,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
 
+import { renderGetStatus } from "../dist/account-resolve.js";
 import { AccountRegistry } from "../dist/accounts.js";
 import { accountPaths } from "../dist/config.js";
 import { AccountDb } from "../dist/db/index.js";
@@ -32,7 +33,7 @@ import { logoutAccount } from "../dist/logout.js";
 import { socketFactory } from "../dist/pairing.js";
 import { WhatsAppService } from "../dist/whatsapp.js";
 import { ANA, ME, buildLegacyAccount } from "./legacy-fixtures.mjs";
-import { BINARY, childEnv, connectedService, fakeSocket } from "./helpers.mjs";
+import { BINARY, childEnv, connectedService, fakeSocket, stubAccountSource } from "./helpers.mjs";
 
 const run = promisify(execFile);
 const DAY = 24 * 60 * 60 * 1000;
@@ -116,6 +117,9 @@ test("the boot that imports an account moves its legacy files and the beta archi
   assert.ok((await svc.readMessages(ANA, 10)).data.length > 0, "the database serves without them");
   assert.equal(svc.getStatus().storage.state, "ready");
   assert.match(svc.getStatus().storage.legacy_files.deleted_after, /^\d{4}-\d{2}-\d{2}T/);
+  const rendered = renderGetStatus(svc.getStatus(), false, stubAccountSource(svc));
+  assert.match(rendered.content[0].text, /- \*\*storage\*\*: ready; earlier message files deleted after \d{4}-\d{2}-\d{2}T/);
+  assert.equal(rendered.structuredContent.storage.state, "ready");
   assert.equal(svc.legacyTimer.hasRef(), false, "the daily pass does not keep the process alive");
   await svc.stop();
   assert.equal(svc.legacyTimer, null);

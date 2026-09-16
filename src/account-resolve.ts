@@ -183,11 +183,6 @@ function webhookStatusLine(webhook: StatusInfo["webhook"]): string {
   return `- **webhook**: ${parts.join(" · ")}`;
 }
 
-/**
- * The get_status body: `write_tools` is this session's, not the process default.
- * The `history` line is how an agent tells a stale store from a quiet one — the
- * same freshness block search and recall attach to their results.
- */
 /** Only what is worth a line: a database not plainly ready, or legacy files still kept. */
 function storageStatusLine(s: StatusInfo): string | null {
   const storage = s.storage;
@@ -199,6 +194,11 @@ function storageStatusLine(s: StatusInfo): string | null {
   return `- **storage**: ${parts.join("; ")}`;
 }
 
+/**
+ * The get_status body: `write_tools` is this session's, not the process default.
+ * The `history` line is how an agent tells a stale store from a quiet one — the
+ * same freshness block search and recall attach to their results.
+ */
 export function renderGetStatus(s: StatusInfo, writeTools: boolean, hub: AccountSource): ToolPayload {
   const account = s.account ? `${s.account.name || "(no name)"} (${s.account.number})` : "none";
   const writeLine = writeTools
