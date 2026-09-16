@@ -21,7 +21,8 @@ import { AccountDb } from "../dist/db/index.js";
 import { accountPaths } from "../dist/config.js";
 import { WhatsAppService } from "../dist/whatsapp.js";
 import { ANA, BOGDAN, GROUP, ME, buildLegacyAccount, roles } from "./legacy-fixtures.mjs";
-import { BINARY, connectedService, offlineConfig, openService, storedIds } from "./helpers.mjs";
+import { socketFactory } from "../dist/pairing.js";
+import { BINARY, connectedService, fakeSocket, offlineConfig, openService, storedIds, stubSockets } from "./helpers.mjs";
 
 const r = roles();
 const PEER = "40700000009@s.whatsapp.net";
@@ -91,6 +92,31 @@ test("an import a stop cut off resumes at the next boot and finishes", async (t)
   const report = JSON.parse(svc.db.getMeta("import_report"));
   assert.ok(report.runs >= 2, `resumed, in ${report.runs} runs`);
   assert.equal((await svc.getMessage(r.g1)).text, "Ședința e la ora zece");
+});
+
+/** Waits, a turn of the event loop at a time, until the boot import is under way. */
+async function importRunning(svc) {
+  for (let turns = 0; svc.accountDb.getMeta("import_state") !== "running"; turns++) {
+    assert.ok(turns < 10_000, "the import started");
+    await new Promise((resolve) => setImmediate(resolve));
+  }
+}
+
+test("a stop while start() waits on the import opens no socket afterwards, and leaves the credentials folder alone", async (t) => {
+  const fx = await buildLegacyAccount();
+  t.mock.method(Date, "now", () => fx.now);
+  const sockets = stubSockets(socketFactory, [fakeSocket()]);
+  t.after(() => sockets.restore());
+  const svc = openService(WhatsAppService, offlineConfig("wazap-accountdb-", { dataDir: fx.dataDir, persistHistory: true }));
+  const starting = svc.start();
+  await importRunning(svc);
+  await svc.stop();
+  // What a logout does next: the credentials go.
+  fs.rmSync(fx.paths.authDir, { recursive: true, force: true });
+  await starting;
+  assert.equal(sockets.opened.length, 0, "a stopped service opens no WhatsApp socket");
+  assert.equal(svc.sockClient, null);
+  assert.equal(existsSync(fx.paths.authDir), false, "the removed credentials are not recreated");
 });
 
 test("an import whose verification finds a difference it cannot explain still serves, and says so for doctor", async (t) => {

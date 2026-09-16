@@ -490,6 +490,8 @@ export class WhatsAppService implements WhatsAppApi {
         this.claimDatabase(linked.id);
       }
       await this.bootStorage();
+      // A stop during the boot (a logout, a removal) must not be followed by a socket.
+      if (this.stopped) return;
       if (linked === "corrupt" || linked === null) return;
 
       let state;
@@ -499,6 +501,7 @@ export class WhatsAppService implements WhatsAppApi {
         this.markCorrupt(err);
         return;
       }
+      if (this.stopped) return;
 
       this.teardownSocket();
       this.initialSyncDone = false;
