@@ -37,6 +37,7 @@ import {
   webhookSignature,
   webhookSignatureMatches,
 } from "../dist/webhook.js";
+import { transcribeWorker } from "../dist/transcribe/worker.js";
 import { WhatsAppService } from "../dist/whatsapp.js";
 import { connectedService, fakeSocket, offlineConfig, openService, stubAccountSource, waitFor } from "./helpers.mjs";
 
@@ -1053,7 +1054,7 @@ test("a voice note waits for its own transcript, not for the notes behind it", a
   }
 });
 
-test("a transcription that fails still posts the event, carrying the placeholder", async () => {
+test("a transcription that fails every attempt still posts the event, carrying the placeholder", async () => {
   const received = [];
   const server = await listen(async (req, res) => {
     received.push(JSON.parse(await readBody(req)));
@@ -1063,18 +1064,62 @@ test("a transcription that fails still posts the event, carrying the placeholder
   const restoreEnv = saveWebhookEnv(server.url);
   const { svc, sock } = transcribingService("wazap-webhook-voice-fail-");
   svc.mediaBuffer = async () => Buffer.from("not really an ogg file");
+  let calls = 0;
   svc.transcriber = async () => {
+    calls += 1;
     throw new Error("whisper exploded");
   };
   const realError = console.error;
   console.error = () => {};
+  const timings = transcribeWorker.configure({ retryDelaysMs: [5, 5] });
   try {
     sock.ev.emit("messages.upsert", { type: "notify", messages: [voiceNote("VF", 6)] });
     await waitFor(() => received.length > 0, 5_000, "the failed voice note webhook POST");
+    assert.equal(calls, 3, "a crash is tried again, three times in all, before the event gives up waiting");
     assert.equal(received[0].text, "[voice message · 0:06]");
     assert.equal(received[0].kind, "audio");
     assert.equal(received[0].event, "message_received");
   } finally {
+    transcribeWorker.configure(timings);
+    console.error = realError;
+    await svc.stop();
+    await server.close();
+    restoreEnv();
+  }
+});
+
+/**
+ * The "Revin imediat." with nothing after it: a note whose first transcription
+ * failed must still reach the consumer with its words when a retry lands
+ * inside the minute the event waits.
+ */
+test("a voice note whose first transcription fails posts the words a retry got", async () => {
+  const received = [];
+  const server = await listen(async (req, res) => {
+    received.push(JSON.parse(await readBody(req)));
+    res.writeHead(204);
+    res.end();
+  });
+  const restoreEnv = saveWebhookEnv(server.url);
+  const { svc, sock } = transcribingService("wazap-webhook-voice-retry-");
+  svc.mediaBuffer = async () => Buffer.from("not really an ogg file");
+  let calls = 0;
+  svc.transcriber = async () => {
+    calls += 1;
+    if (calls === 1) throw new Error("whisper.cpp crashed");
+    return { text: "ajung în zece minute", language: "ro", duration_seconds: 6 };
+  };
+  const realError = console.error;
+  console.error = () => {};
+  const timings = transcribeWorker.configure({ retryDelaysMs: [20] });
+  try {
+    sock.ev.emit("messages.upsert", { type: "notify", messages: [voiceNote("VR", 6)] });
+    await waitFor(() => received.length > 0, 5_000, "the retried voice note webhook POST");
+    assert.equal(calls, 2);
+    assert.equal(received.length, 1, "one event, sent once the words were there");
+    assert.equal(received[0].text, "ajung în zece minute");
+  } finally {
+    transcribeWorker.configure(timings);
     console.error = realError;
     await svc.stop();
     await server.close();

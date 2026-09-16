@@ -128,10 +128,12 @@ import {
 import {
   readTranscribeSettings,
   transcribeFile,
-  TranscribeQueue,
   transcribeReady,
+  transcribeWorker,
+  markFailure,
   type Transcript,
   type TranscribeSettings,
+  type TranscribeSource,
   type TranscriptRecord,
 } from "./transcribe/index.js";
 import {
@@ -263,6 +265,12 @@ const SEND_RECOVERY_LIMIT = 500;
 const AUTO_TRANSCRIBE_MAX_SECONDS = 600;
 /** How long a message event waits for the transcript of the voice note it carries. */
 const WEBHOOK_TRANSCRIPT_WAIT_MS = 60_000;
+/**
+ * A voice note a history sync delivers is queued for transcription only when
+ * it is this recent: the notes of the last day, not the whole archive a first
+ * link brings.
+ */
+const HISTORY_TRANSCRIBE_WINDOW_MS = 24 * 60 * 60_000;
 /** How long list_chats waits for a lid chat still folding into its number before it lists what it has. */
 const FOLD_SETTLE_MS = 2_000;
 /** How long one transaction of a history batch may hold the event loop. */
@@ -497,8 +505,15 @@ export class WhatsAppService implements WhatsAppApi {
   private vectorCount: { at: number; count: number } | null = null;
   /** The sidecar starts on the first embedding call, never at boot. */
   private recallEngineP: Promise<EmbedEngine> | null = null;
-  /** Null unless a provider is configured and auto mode is on. */
-  private readonly transcribeQueue: TranscribeQueue | null;
+  /**
+   * Whether incoming voice notes are queued for transcription: a provider is
+   * configured, auto mode is on, and the provider may run in this mode.
+   */
+  private readonly autoTranscribe: boolean;
+  /** This account as the process's transcription worker sees it. */
+  private readonly transcribeSource: TranscribeSource;
+  /** The worker every account shares; a seam for tests. */
+  private readonly transcribeWorker = transcribeWorker;
   /** The seam the tests replace; production always runs the real providers. */
   private transcriber = transcribeFile;
   /** Transcriptions under way, so one recording is never uploaded twice at once. */
@@ -533,15 +548,18 @@ export class WhatsAppService implements WhatsAppApi {
     this.transcribe = readTranscribeConfig(config.dataDir);
     this.recallEnv = readRecallConfig(config.dataDir);
     const settings = this.transcribe;
-    this.transcribeQueue =
-      settings instanceof WazapError || settings.provider === null || !settings.auto
-        ? null
-        : new TranscribeQueue(async (sid) => {
-            // Whatever is still queued when the service stops is dropped rather
-            // than run against a socket that is already gone.
-            if (this.stopped) return;
-            await this.transcribeAudio(sid);
-          });
+    // Read-only refuses uploading audio to an API, so notes it would refuse are not queued.
+    this.autoTranscribe =
+      !(settings instanceof WazapError) &&
+      settings.provider !== null &&
+      settings.auto &&
+      !(this.effectiveReadOnly && settings.provider === "openai");
+    this.transcribeSource = {
+      name: account.id,
+      db: () => (this.stopped ? null : this.readyDb()),
+      ready: () => !this.stopped && this.status === "connected",
+      run: (sid) => this.transcribeQueued(sid),
+    };
     const recall = this.recallEnv;
     this.embedFeed =
       recall instanceof WazapError || !recall.enabled || !config.persistHistory
@@ -553,6 +571,7 @@ export class WhatsAppService implements WhatsAppApi {
             embed: (texts) => this.recallEmbed(texts, "document"),
           });
     this.openDatabase();
+    if (this.autoTranscribe) this.transcribeWorker.register(this.transcribeSource);
   }
 
   async start(): Promise<void> {
@@ -633,6 +652,8 @@ export class WhatsAppService implements WhatsAppApi {
     this.teardownSocket();
     await this.stopPairing();
     await this.historyIdle();
+    // Before the database closes: a run under way gives its claim back, so the note waits for the next start.
+    this.transcribeWorker.unregister(this.transcribeSource);
     await this.stopRecall();
     const db = this.accountDb;
     if (db !== null && db.isOpen) {
@@ -2256,7 +2277,7 @@ export class WhatsAppService implements WhatsAppApi {
    * needs it so it can wait on the queue instead of sleeping.
    */
   transcribeIdle(): Promise<void> {
-    return this.transcribeQueue?.idle() ?? Promise.resolve();
+    return this.transcribeWorker.idle();
   }
 
   /**
@@ -4178,28 +4199,60 @@ export class WhatsAppService implements WhatsAppApi {
   }
 
   /**
-   * Only what genuinely arrived, which is why this hangs off the notify branch
-   * rather than off ingestMessages: a history sync replays a backlog, and
-   * transcribing all of it is a bill nobody asked for. Incoming voice notes
-   * only, and only ones whose length WhatsApp stated and kept short, since an
-   * audio file is something the sender chose to attach and a recording of
-   * unknown length is unbounded. Anything skipped here is still one
-   * transcribe_audio call away. A service on its way out starts nothing. Each
-   * sid it enqueued carries the promise that settles when that one transcript
-   * does, which is what a held webhook event waits on.
+   * The voice notes that genuinely arrived, queued for transcription if the
+   * store did not already queue them: a note stamped more than a day ago that
+   * WhatsApp delivers only now is still an arrival. Only incoming voice notes
+   * whose length WhatsApp stated and kept short, since an audio file is
+   * something the sender chose to attach and a recording of unknown length is
+   * unbounded. Anything skipped here is still one transcribe_audio call away.
+   * A service on its way out queues nothing. Each sid on the queue carries the
+   * promise that settles when that note leaves it, which is what a held
+   * webhook event waits on; the worker is woken at once.
    */
   private queueTranscripts(arrived: readonly WAMessage[]): Map<string, Promise<void>> {
     const queued = new Map<string, Promise<void>>();
-    if (this.stopped || this.transcribeQueue === null) return queued;
+    const db = this.readyDb();
+    if (this.stopped || !this.autoTranscribe || db === null) return queued;
     for (const raw of arrived) {
-      if (raw.key.fromMe || messageType(raw) !== "voice") continue;
-      const seconds = voiceSeconds(raw);
-      if (seconds === undefined || seconds > AUTO_TRANSCRIBE_MAX_SECONDS) continue;
+      if (!transcribable(raw)) continue;
       const sid = messageIdFor(raw.key, this.canonical(raw.key.remoteJid ?? ""));
-      if ((this.readyDb()?.messages.get(sid)?.transcript ?? null) !== null) continue;
-      queued.set(sid, this.transcribeQueue.enqueue(sid));
+      try {
+        db.transcripts.enqueue(sid);
+        if (db.transcripts.state(sid)?.state === "queued") queued.set(sid, this.transcribeWorker.settled(this.transcribeSource, sid));
+      } catch (err) {
+        logError("transcribe", err);
+      }
     }
+    if (queued.size > 0) this.transcribeWorker.kick();
     return queued;
+  }
+
+  /**
+   * In the transaction that stores it, a new incoming voice note joins the
+   * durable queue: every one that arrives live, and one a history sync brings
+   * when it is less than a day old. A crash after the store cannot lose it.
+   * The worker is woken at once; it reads the queue a turn later, once the
+   * transaction has committed.
+   */
+  private queueTranscript(raw: WAMessage, result: UpsertResult): void {
+    if (!this.autoTranscribe || result.outcome !== "inserted" || result.sid === null || !transcribable(raw)) return;
+    if (messageTimestampMs(raw) <= Date.now() - HISTORY_TRANSCRIBE_WINDOW_MS) return;
+    if (this.db.transcripts.enqueue(result.sid)) this.transcribeWorker.kick();
+  }
+
+  /**
+   * One note off the queue, as the worker runs it: a message deleted, expired
+   * or transcribed meanwhile is done with, and so is one that is no longer a
+   * short incoming voice note. The rest is transcribe_audio's own path, so a
+   * tool call asking for the same note at the same moment shares the upload.
+   */
+  private async transcribeQueued(sid: string): Promise<void> {
+    const message = this.storedOrThrow(sid);
+    if (message.transcript !== null) return;
+    if (!transcribable(this.messageOrThrow(sid))) {
+      throw markFailure(new WazapError("MEDIA_UNAVAILABLE", "Not a short incoming voice note."), "gone", "not a voice note to transcribe");
+    }
+    await this.transcribeAudio(sid);
   }
 
   /** The stored message a reader may see under any spelling of its id, or MESSAGE_NOT_FOUND. */
@@ -4752,6 +4805,7 @@ export class WhatsAppService implements WhatsAppApi {
         if (result === null || !this.kept(result)) continue;
         this.noteInbound(Boolean(raw.key.fromMe), messageTimestampMs(raw));
         this.foldVotesOnto(raw, jid);
+        this.queueTranscript(raw, result);
         stored.push(raw);
       } catch (err) {
         // One message the database refuses must not cost the rest of its batch.
@@ -5272,6 +5326,17 @@ function readRecallConfig(dataDir: string): RecallSettings | WazapError {
     logError("recall settings", fault);
     return fault;
   }
+}
+
+/**
+ * A voice note the service transcribes without being asked: incoming, not a
+ * story, recorded as a voice note rather than attached as an audio file, and
+ * of a length WhatsApp stated and kept to ten minutes.
+ */
+function transcribable(raw: WAMessage): boolean {
+  if (raw.key.fromMe || isStatusJid(raw.key.remoteJid ?? "") || messageType(raw) !== "voice") return false;
+  const seconds = voiceSeconds(raw);
+  return seconds !== undefined && seconds <= AUTO_TRANSCRIBE_MAX_SECONDS;
 }
 
 /** Field by field, because `at` is the cache's bookkeeping and not the caller's business. */

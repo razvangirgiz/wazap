@@ -247,13 +247,22 @@ test("a provider that fails on one note does not stop the queue", async () => {
   };
 
   const at = Date.now() - 600_000;
-  deliver(sock, [voiceNote("V1", { seconds: 6, at }), voiceNote("V2", { seconds: 6, at: at + 1000 })]);
-  await svc.transcribeIdle();
+  const realError = console.error;
+  console.error = () => {};
+  try {
+    deliver(sock, [voiceNote("V1", { seconds: 6, at }), voiceNote("V2", { seconds: 6, at: at + 1000 })]);
+    await svc.transcribeIdle();
+  } finally {
+    console.error = realError;
+  }
 
+  const transcribed = ["V1", "V2"].map(sidOf).filter((sid) => svc.db.messages.get(sid)?.transcript != null);
+  assert.equal(transcribed.length, 1, "the other note still gets its turn");
+  const failed = ["V1", "V2"].map(sidOf).find((sid) => !transcribed.includes(sid));
   assert.deepEqual(
-    ["V1", "V2"].map(sidOf).filter((sid) => svc.db.messages.get(sid)?.transcript != null),
-    [sidOf("V2")],
-    "the second note still gets its turn"
+    svc.db.transcripts.state(failed),
+    { state: "queued", attempts: 1, running: false, error: "unexpected error" },
+    "and the one that failed waits for its retry"
   );
   await svc.stop();
 });
@@ -386,22 +395,34 @@ test("transcribe_audio spends a bucket of its own, ten a minute", async () => {
   assert.equal(again.structuredContent.error, "RATE_LIMITED", "a new session must not come with ten more");
 });
 
-test("a history sync is not an arrival, so its backlog is never billed", async () => {
+test("a history sync queues the voice notes of the last day, never the archive behind them", async () => {
   const { svc, sock } = serviceWith(CONFIGURED);
   const provider = stub(svc, mockProvider());
+  const now = Date.now();
 
   sock.ev.emit("messaging-history.set", {
     chats: [],
     contacts: [],
-    messages: [voiceNote("H1", { seconds: 8 }), voiceNote("H2", { seconds: 9 })],
+    messages: [
+      voiceNote("H1", { seconds: 8, at: now - 3_600_000 }),
+      voiceNote("H2", { seconds: 9, at: now - 25 * 3_600_000 }),
+      voiceNote("H3", { seconds: 9, at: now - 30 * 86_400_000 }),
+    ],
     isLatest: true,
   });
+  await svc.historyIdle();
   await svc.transcribeIdle();
-  assert.equal(provider.state.calls, 0, "a relink would otherwise transcribe every voice note in the window");
+  assert.equal(provider.state.calls, 1, "a relink would otherwise transcribe every voice note in the window");
+  assert.deepEqual(
+    ["H1", "H2", "H3"].filter((id) => svc.db.messages.get(sidOf(id))?.transcript != null),
+    ["H1"],
+    "the note of the last hour is read; the ones older than a day are left to transcribe_audio"
+  );
+  assert.equal(svc.db.transcripts.state(sidOf("H2")), null, "and nothing older waits on the queue either");
 
-  deliver(sock, [voiceNote("L1", { seconds: 8 })]);
+  deliver(sock, [voiceNote("L1", { seconds: 8, at: now - 3 * 86_400_000 })]);
   await svc.transcribeIdle();
-  assert.equal(provider.state.calls, 1, "one that actually arrived is still transcribed");
+  assert.equal(provider.state.calls, 2, "a note WhatsApp delivers live is an arrival, however old its stamp");
   await svc.stop();
 });
 

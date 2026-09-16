@@ -5,12 +5,10 @@ import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { setTimeout as sleep } from "node:timers/promises";
 
 import {
   MODELS,
   PROVIDERS,
-  TranscribeQueue,
   classifyFailure,
   markFailure,
   downloadFile,
@@ -421,73 +419,6 @@ test("a 401 that echoes the key back never carries it outward", async () => {
     }
   );
   assert.equal(hits, 1, "a 401 must not be retried");
-});
-
-test("TranscribeQueue runs one at a time, in order", async () => {
-  const seen = [];
-  let active = 0;
-  let overlap = 0;
-  const queue = new TranscribeQueue(async (id) => {
-    active += 1;
-    if (active > 1) overlap += 1;
-    seen.push(id);
-    await sleep(1);
-    active -= 1;
-  });
-
-  for (const id of ["a", "b", "c", "d"]) queue.enqueue(id);
-  assert.equal(queue.size, 4);
-  assert.equal(queue.busy, true);
-
-  await queue.idle();
-  assert.equal(overlap, 0);
-  assert.deepEqual(seen, ["a", "b", "c", "d"]);
-  assert.equal(queue.size, 0);
-  assert.equal(queue.busy, false);
-});
-
-test("TranscribeQueue ignores an id already queued or in flight", async () => {
-  const seen = [];
-  const queue = new TranscribeQueue(async (id) => {
-    seen.push(id);
-    await sleep(1);
-  });
-
-  queue.enqueue("a");
-  queue.enqueue("a");
-  queue.enqueue("b");
-  queue.enqueue("b");
-  assert.equal(queue.size, 2);
-
-  await queue.idle();
-  assert.deepEqual(seen, ["a", "b"]);
-});
-
-test("a failing run is logged and the queue keeps going", async () => {
-  const seen = [];
-  const logged = [];
-  const queue = new TranscribeQueue(async (id) => {
-    seen.push(id);
-    if (id === "boom") throw new Error("whisper exploded");
-  });
-
-  const realError = console.error;
-  console.error = (...args) => logged.push(args.join(" "));
-  try {
-    queue.enqueue("boom");
-    queue.enqueue("after");
-    await queue.idle();
-  } finally {
-    console.error = realError;
-  }
-
-  assert.deepEqual(seen, ["boom", "after"]);
-  assert.equal(logged.length, 1);
-  assert.match(logged[0], /transcribe boom.*whisper exploded/);
-});
-
-test("idle resolves on an untouched queue", async () => {
-  await new TranscribeQueue(async () => {}).idle();
 });
 
 test("an HTTP refusal says whether another attempt could help, and never names the key", async () => {
