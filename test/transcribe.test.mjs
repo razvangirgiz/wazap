@@ -11,6 +11,8 @@ import {
   MODELS,
   PROVIDERS,
   TranscribeQueue,
+  classifyFailure,
+  markFailure,
   downloadFile,
   maskKey,
   modelSpec,
@@ -23,6 +25,7 @@ import {
   transcribeFile,
   transcribeReady,
 } from "../dist/transcribe/index.js";
+import { WazapError } from "../dist/errors.js";
 
 const KEY = `sk-proj-${"a".repeat(40)}Z9x7`;
 
@@ -485,6 +488,53 @@ test("a failing run is logged and the queue keeps going", async () => {
 
 test("idle resolves on an untouched queue", async () => {
   await new TranscribeQueue(async () => {}).idle();
+});
+
+test("an HTTP refusal says whether another attempt could help, and never names the key", async () => {
+  const file = audioFile();
+  const cases = [
+    [400, "permanent", /refused the audio \(HTTP 400\)/],
+    [413, "permanent", /refused the audio \(HTTP 413\)/],
+    [401, "blocked", /refused the key \(HTTP 401\)/],
+    [403, "blocked", /refused the key \(HTTP 403\)/],
+  ];
+  for (const [status, kind, reason] of cases) {
+    await assert.rejects(
+      withServer(
+        (req, res) => {
+          req.resume();
+          res.writeHead(status, { "content-type": "application/json" });
+          res.end(JSON.stringify({ error: { message: `bad ${KEY}` } }));
+        },
+        (url) => openaiProvider.transcribe(openaiSettings(url), file, {})
+      ),
+      (err) => {
+        const failure = classifyFailure(err);
+        assert.equal(failure.kind, kind, `HTTP ${status}`);
+        assert.match(failure.reason, reason);
+        assert.equal(failure.reason.includes("Z9x7"), false);
+        return true;
+      }
+    );
+  }
+});
+
+test("a failure nobody marked is classified by what it is", () => {
+  const withCause = (cause) => Object.defineProperty(new WazapError("MEDIA_UNAVAILABLE", "x"), "cause", { value: cause });
+  assert.deepEqual(classifyFailure(withCause({ output: { statusCode: 404 } })), {
+    kind: "permanent",
+    reason: "media no longer on WhatsApp (HTTP 404)",
+  });
+  assert.equal(classifyFailure(withCause({ output: { statusCode: 410 } })).kind, "permanent");
+  assert.equal(classifyFailure(withCause({ output: { statusCode: 408 } })).kind, "transient", "a timed-out re-upload request");
+  assert.equal(classifyFailure(withCause(new Error("socket hang up"))).kind, "transient");
+  assert.equal(classifyFailure(new WazapError("MEDIA_UNAVAILABLE", "no media")).kind, "permanent");
+  assert.equal(classifyFailure(new WazapError("FILE_TOO_LARGE", "x")).kind, "permanent");
+  assert.equal(classifyFailure(new WazapError("MESSAGE_NOT_FOUND", "x")).kind, "gone");
+  assert.equal(classifyFailure(new WazapError("NOT_CONNECTED", "x")).kind, "blocked");
+  assert.equal(classifyFailure(new WazapError("TRANSCRIBE_UNAVAILABLE", "x")).kind, "blocked");
+  assert.equal(classifyFailure(new Error("whisper.cpp fell over")).kind, "transient", "a crash is worth another attempt");
+  assert.equal(classifyFailure(markFailure(new Error("x"), "permanent", "ffmpeg could not read the audio")).reason, "ffmpeg could not read the audio");
 });
 
 test("PROVIDERS is the only branch on the provider name", () => {

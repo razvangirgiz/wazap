@@ -9,6 +9,7 @@ import { basename, extname } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { WazapError } from "../errors.js";
 import { discardResponse, readBoundedJson, ResponseLimitError } from "../http-response.js";
+import { markFailure, type FailureKind } from "./failure.js";
 import { redact } from "./settings.js";
 import type { Provider, Readiness, TranscribeOpts, TranscribeSettings, Transcript } from "./types.js";
 
@@ -29,8 +30,22 @@ const MIME: Record<string, string> = {
   ".flac": "audio/flac",
 };
 
-function failed(message: string, key: string | null, fix?: string): WazapError {
-  return new WazapError("TRANSCRIBE_FAILED", redact(message, key), fix === undefined ? undefined : redact(fix, key));
+function failed(message: string, key: string | null, fix?: string, kind: FailureKind = "transient", reason = "provider failed"): WazapError {
+  const error = new WazapError("TRANSCRIBE_FAILED", redact(message, key), fix === undefined ? undefined : redact(fix, key));
+  return markFailure(error, kind, reason);
+}
+
+/**
+ * What an HTTP refusal means for another attempt: a refused key is not the
+ * note's fault, a busy or failing server may answer later, and any other 4xx
+ * is the provider refusing this audio as input.
+ */
+function refusal(status: number): { kind: FailureKind; reason: string } {
+  if (status === 401 || status === 403) return { kind: "blocked", reason: `provider refused the key (HTTP ${status})` };
+  if (status === 408 || status === 409 || status === 425 || status === 429 || status >= 500) {
+    return { kind: "transient", reason: `provider unavailable (HTTP ${status})` };
+  }
+  return { kind: "permanent", reason: `provider refused the audio (HTTP ${status})` };
 }
 
 async function post(settings: TranscribeSettings, key: string, file: string, language: string): Promise<Response> {
@@ -65,17 +80,23 @@ export const openaiProvider: Provider = {
         const timedOut = err instanceof Error && (err.name === "TimeoutError" || err.name === "AbortError");
         throw failed(
           timedOut ? "Transcription request timed out after 2 minutes." : "Transcription request failed.",
-          key
+          key,
+          undefined,
+          "transient",
+          timedOut ? "provider timed out" : "provider unreachable"
         );
       }
       if (response.ok) break;
       await discardResponse(response);
       const retryable = response.status === 429 || response.status >= 500;
       if (!retryable || attempt > 0) {
+        const meaning = refusal(response.status);
         throw failed(
           `Transcription API returned HTTP ${response.status}.`,
           key,
-          response.status === 401 || response.status === 403 ? KEY_FIX : undefined
+          response.status === 401 || response.status === 403 ? KEY_FIX : undefined,
+          meaning.kind,
+          meaning.reason
         );
       }
       await sleep(RETRY_AFTER_MS);
@@ -89,11 +110,14 @@ export const openaiProvider: Provider = {
         err instanceof ResponseLimitError
           ? "Transcription API response exceeded 1 MiB."
           : "Transcription API sent no readable JSON.",
-        key
+        key,
+        undefined,
+        "transient",
+        "provider answer unreadable"
       );
     }
     if (parsed === null || typeof parsed !== "object" || !("text" in parsed) || typeof parsed.text !== "string") {
-      throw failed("Transcription API sent no text field.", key);
+      throw failed("Transcription API sent no text field.", key, undefined, "transient", "provider answer unreadable");
     }
     return {
       text: parsed.text.replace(/\s+/g, " ").trim(),

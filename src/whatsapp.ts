@@ -4083,11 +4083,14 @@ export class WhatsAppService implements WhatsAppApi {
       return Buffer.concat(chunks);
     } catch (err) {
       if (err instanceof WazapError) throw err;
-      throw new WazapError(
+      const failure = new WazapError(
         "MEDIA_UNAVAILABLE",
         `Could not download the media of ${messageId}: ${describe(err)}`,
         "Ask the sender to resend it"
       );
+      // Not enumerable, so no answer serializes it: the transcription queue reads its status to tell expired media from a timeout.
+      Object.defineProperty(failure, "cause", { value: err, configurable: true, writable: true });
+      throw failure;
     }
   }
 

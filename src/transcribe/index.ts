@@ -33,6 +33,7 @@ export async function transcribeReady(settings: TranscribeSettings): Promise<Rea
 export { findWhisper, localProvider, which } from "./local.js";
 export { openaiProvider } from "./openai.js";
 export { TranscribeQueue } from "./queue.js";
+export { classifyFailure, markFailure, type Failure, type FailureKind } from "./failure.js";
 export { maskKey, readTranscribeSettings, redact, requireSafeUrl, stripPasted } from "./settings.js";
 export {
   downloadFile,
