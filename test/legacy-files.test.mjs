@@ -176,6 +176,18 @@ test("the boot that imports an account moves its legacy files and the beta archi
   assert.equal(svc.legacyTimer, null);
 });
 
+test("a stopped service's get_status repeats the storage it last reported, not a failure", async (t) => {
+  const fx = await legacyAccount();
+  t.mock.method(Date, "now", () => fx.now);
+  const svc = serviceOn(fx.dataDir);
+  await svc.bootStorage();
+  const running = svc.getStatus().storage;
+  await svc.stop();
+  const stopped = svc.getStatus();
+  assert.deepEqual(stopped.storage, running);
+  assert.doesNotMatch(renderGetStatus(stopped, false, stubAccountSource(svc)).content[0].text, /storage\*\*: failed/);
+});
+
 test("a crash between two renames leaves every destination recorded, and the next pass moves the rest", async (t) => {
   const root = mkdtempSync(join(tmpdir(), "wazap-legacy-crash-"));
   mkdirSync(join(root, "history"));

@@ -444,6 +444,8 @@ export class WhatsAppService implements WhatsAppApi {
    * with NOT_CONNECTED, which says "retry later" to every client.
    */
   private storageState: "ready" | "preparing" | "failed" = "ready";
+  /** What get_status said about storage while the database was open, for a stopped service to repeat. */
+  private lastStorageInfo: StorageInfo | undefined;
   private storageFault: WazapError | null = null;
   private storageBoot: Promise<void> | null = null;
   /** Lid chats still folding into their number's chat; list_chats lets them land. */
@@ -1210,10 +1212,16 @@ export class WhatsAppService implements WhatsAppApi {
   }
 
   /** What get_status says about the database; reads two meta rows. */
-  private storageInfo(): StorageInfo {
+  private storageInfo(): StorageInfo | undefined {
     const db = this.accountDb;
-    const open = db !== null && db.isOpen;
-    if (this.storageState === "failed" || !open) return { state: this.storageState === "preparing" ? "preparing" : "failed" };
+    if (this.storageState === "failed") return { state: "failed" };
+    // Stopped (a logout, a removal, a restart): what it last said, not a failure.
+    if (db === null || !db.isOpen) return this.lastStorageInfo;
+    this.lastStorageInfo = this.readStorageInfo(db);
+    return this.lastStorageInfo;
+  }
+
+  private readStorageInfo(db: AccountDb): StorageInfo {
     if (this.storageState === "preparing") {
       const progress = importProgress(db);
       return progress === null ? { state: "preparing" } : { state: "preparing", progress: `${progress.phase} (${progress.step} of ${progress.steps})` };
