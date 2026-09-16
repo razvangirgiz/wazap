@@ -101,10 +101,16 @@ export class Search {
 
   /**
    * What a search over `filter` runs across: how many visible messages, in how
-   * many chats, from when to when, leaving out the kinds of chat named. One
-   * pass over the filtered rows — the price of saying how much was searched.
+   * many chats, from when to when, leaving out the kinds of chat named. Without
+   * a time or sender filter the counts are the ones the triggers keep on each
+   * chat (less the few expired messages the sweep has not reached), and the
+   * bounds are read off the primary key: no pass over the rows. With one, it
+   * is one pass over the filtered rows. `exact` forces that pass, for checks.
    */
-  coverage(filter: MessageFilter & { excludeKinds?: readonly ChatKind[] }): SearchCoverage {
+  coverage(filter: MessageFilter & { excludeKinds?: readonly ChatKind[]; exact?: boolean }): SearchCoverage {
+    if (filter.exact !== true && filter.since === undefined && filter.until === undefined && filter.from === undefined) {
+      return this.keptCoverage(filter.chat, filter.excludeKinds ?? []);
+    }
     const resolved = this.resolveFilter(filter);
     const empty = { messages: 0, chats: 0, oldestTs: null, newestTs: null };
     if (resolved === null) return empty;
@@ -121,6 +127,60 @@ export class Search {
     );
     if (row === undefined || row.n === 0) return empty;
     return { messages: row.n, chats: row.chats, oldestTs: row.oldest, newestTs: row.newest };
+  }
+
+  private keptCoverage(chatJid: string | undefined, excluded: readonly ChatKind[]): SearchCoverage {
+    const empty = { messages: 0, chats: 0, oldestTs: null, newestTs: null };
+    let ids: number[] | null = null;
+    if (chatJid !== undefined) {
+      const chat = this.identity.chat(chatJid);
+      if (chat === null || excluded.includes(chat.kind)) return empty;
+      ids = this.identity.chatIdsOf(chat);
+    }
+    const scope =
+      ids === null
+        ? { sql: excluded.length === 0 ? "1" : "c.kind NOT IN (SELECT value FROM json_each(?))", params: excluded.length === 0 ? [] : [JSON.stringify(excluded)] }
+        : { sql: "c.id IN (SELECT value FROM json_each(?))", params: [JSON.stringify(ids)] };
+    const now = this.c.now();
+    // Expired messages the sweep has not tombstoned yet still count on their chat; reads already hide them.
+    const expired = new Map(
+      this.c
+        .all<{ chat: number; n: number }>(
+          `SELECT m.chat_id AS chat, count(*) AS n FROM messages m INDEXED BY messages_expiry CROSS JOIN chats c ON c.id = m.chat_id
+           WHERE m.expires_at IS NOT NULL AND m.deleted_at IS NULL AND m.expires_at <= ? AND m.ts > coalesce(c.cleared_through_ts, 0)
+           GROUP BY m.chat_id`,
+          now
+        )
+        .map((row) => [row.chat, row.n])
+    );
+    let messages = 0;
+    const canonical = new Set<number>();
+    for (const row of this.c.all<{ id: number; family: number; visible: number }>(
+      `SELECT c.id, coalesce(c.merged_into, c.id) AS family, c.visible FROM chats c WHERE c.visible > 0 AND ${scope.sql}`,
+      ...scope.params
+    )) {
+      const visible = row.visible - (expired.get(row.id) ?? 0);
+      if (visible <= 0) continue;
+      messages += visible;
+      canonical.add(row.family);
+    }
+    if (messages === 0) return empty;
+    // One chat walks its own index from either end; the account walks the primary key.
+    const edgeOf = (where: string, params: SQLInputValue[], order: "ASC" | "DESC"): number | null =>
+      this.c.get<{ ts: number }>(
+        `SELECT m.ts FROM messages m CROSS JOIN chats c ON c.id = m.chat_id
+         WHERE ${where} AND m.deleted_at IS NULL AND (m.expires_at IS NULL OR m.expires_at > ?) AND m.ts > coalesce(c.cleared_through_ts, 0)
+         ORDER BY m.id ${order} LIMIT 1`,
+        ...params,
+        now
+      )?.ts ?? null;
+    const edge = (order: "ASC" | "DESC"): number | null => {
+      if (ids === null) return edgeOf(scope.sql, scope.params, order);
+      const found = ids.map((id) => edgeOf("m.chat_id = ?", [id], order)).filter((ts): ts is number => ts !== null);
+      if (found.length === 0) return null;
+      return order === "ASC" ? Math.min(...found) : Math.max(...found);
+    };
+    return { messages, chats: canonical.size, oldestTs: edge("ASC"), newestTs: edge("DESC") };
   }
 
   text(input: TextSearchInput): TextSearchResult {

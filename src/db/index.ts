@@ -288,6 +288,11 @@ export class AccountDb {
         problems.push(`full-text index: ${err instanceof Error ? err.message : String(err)}`);
       }
     }
+    const drifted = this.connection.get<{ n: number }>(
+      `SELECT count(*) AS n FROM chats c WHERE c.visible != (
+         SELECT count(*) FROM messages m WHERE m.chat_id = c.id AND m.deleted_at IS NULL AND m.ts > coalesce(c.cleared_through_ts, 0))`
+    )!.n;
+    if (drifted > 0) problems.push(`visible message counts: ${drifted} chats disagree with their rows`);
     return { ok: problems.length === 0, problems };
   }
 

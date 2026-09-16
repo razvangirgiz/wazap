@@ -77,6 +77,9 @@ CREATE TABLE chats(
   last_message_id INTEGER,
   last_ts INTEGER,
   last_from_me INTEGER,
+  -- Visible messages filed under this row: not deleted, after the clear
+  -- barrier. Kept by the triggers on messages, so coverage never counts rows.
+  visible INTEGER NOT NULL DEFAULT 0,
   proto BLOB,
   merged_into INTEGER REFERENCES chats(id)
 ) STRICT;
@@ -301,6 +304,43 @@ CREATE TRIGGER messages_embed_insert AFTER INSERT ON messages
 WHEN (new.text IS NOT NULL OR new.transcript IS NOT NULL) AND EXISTS (SELECT 1 FROM meta WHERE key = 'embed_model')
 BEGIN
   INSERT INTO embed_queue(message_id) SELECT new.id WHERE NOT EXISTS (SELECT 1 FROM embed_queue WHERE message_id = new.id);
+END;
+
+-- chats.visible follows every way a message becomes visible or stops being:
+-- stored, tombstoned, physically deleted, moved to another chat, or hidden by
+-- a raised clear barrier (recounted then, once per clear).
+CREATE TRIGGER messages_visible_insert AFTER INSERT ON messages
+WHEN new.deleted_at IS NULL
+BEGIN
+  UPDATE chats SET visible = visible + 1 WHERE id = new.chat_id AND new.ts > coalesce(cleared_through_ts, 0);
+END;
+
+CREATE TRIGGER messages_visible_tombstone AFTER UPDATE OF deleted_at ON messages
+WHEN old.deleted_at IS NULL AND new.deleted_at IS NOT NULL
+BEGIN
+  UPDATE chats SET visible = visible - 1 WHERE id = new.chat_id AND new.ts > coalesce(cleared_through_ts, 0);
+END;
+
+CREATE TRIGGER messages_visible_delete AFTER DELETE ON messages
+WHEN old.deleted_at IS NULL
+BEGIN
+  UPDATE chats SET visible = visible - 1 WHERE id = old.chat_id AND old.ts > coalesce(cleared_through_ts, 0);
+END;
+
+CREATE TRIGGER messages_visible_move AFTER UPDATE OF chat_id ON messages
+WHEN old.chat_id IS NOT new.chat_id AND new.deleted_at IS NULL
+BEGIN
+  UPDATE chats SET visible = visible - 1 WHERE id = old.chat_id AND old.ts > coalesce(cleared_through_ts, 0);
+  UPDATE chats SET visible = visible + 1 WHERE id = new.chat_id AND new.ts > coalesce(cleared_through_ts, 0);
+END;
+
+CREATE TRIGGER chats_visible_barrier AFTER UPDATE OF cleared_through_ts ON chats
+WHEN new.cleared_through_ts IS NOT old.cleared_through_ts
+BEGIN
+  UPDATE chats SET visible = (
+    SELECT count(*) FROM messages m
+    WHERE m.chat_id = new.id AND m.deleted_at IS NULL AND m.ts > coalesce(new.cleared_through_ts, 0)
+  ) WHERE id = new.id;
 END;
 
 CREATE TRIGGER messages_embed_delete AFTER DELETE ON messages

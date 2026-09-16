@@ -165,3 +165,57 @@ test("finding 12a: the JavaScript fold is the trigram index's fold for every cod
   }
   assert.deepEqual(drift.slice(0, 20), [], "rerun scripts/gen-fold-table.mjs: the bundled SQLite folds differently");
 });
+
+test("coverage without a time or sender filter reads kept counts, which agree with a full count through every change, at a fraction of its cost", async () => {
+  const { db, clock } = openTemp({ chunkSize: 7 });
+  const STATUS = "status@broadcast";
+  const exact = (filter) => db.search.coverage({ ...filter, exact: true });
+  const agree = (label) => {
+    for (const filter of [{}, { excludeKinds: ["status"] }, { chat: PEER }, { chat: PEER_LID }, { chat: OTHER }, { chat: GROUP }]) {
+      assert.deepEqual(db.search.coverage(filter), exact(filter), `${label}: ${JSON.stringify(filter)}`);
+    }
+    assert.deepEqual(db.integrityCheck(), { ok: true, problems: [] }, label);
+  };
+  for (let i = 0; i < 30; i++) {
+    db.messages.upsert(textMessage([PEER, PEER_LID, OTHER, GROUP][i % 4], `M${i}`, T0 + i * 1000, `mesaj ${i}`, i % 4 === 3 ? { senderJid: OTHER } : {}));
+  }
+  db.messages.upsert(textMessage(STATUS, "S1", T0 + 40_000, "story", { senderJid: OTHER, expiresAt: T0 + 86_400_000 }));
+  db.messages.upsert(textMessage(OTHER, "SOON", T0 + 41_000, "expiră", { expiresAt: clock.now + 1000 }));
+  agree("inserted");
+  db.messages.upsert(textMessage(PEER, "M0", T0, "mesaj 0, editat", { editedAt: T0 + 50_000 }));
+  db.messages.delete(sid(false, OTHER, "M2"));
+  db.messages.delete(sid(false, PEER, "NEVER"), { ts: T0 + 3000 });
+  agree("edited, deleted, retracted");
+  clock.now += 2000;
+  agree("expired, not yet swept");
+  await db.messages.expireDue();
+  agree("swept");
+  await db.messages.clearChat(GROUP, T0 + 20_000);
+  agree("cleared");
+  await db.learnLidPhone(PEER_LID, PEER);
+  agree("folded");
+  await db.messages.deleteChat(OTHER, T0 + 60_000);
+  agree("chat deleted");
+  await db.messages.purgeLive();
+  agree("purged");
+
+  const { db: big } = openTemp();
+  for (let batch = 0; batch < 15; batch++) {
+    big.messages.upsertMany(Array.from({ length: 2000 }, (_, i) => textMessage([PEER, OTHER, GROUP][i % 3], `B${batch}_${i}`, T0 + (batch * 2000 + i) * 1000, `rând ${i}`)));
+  }
+  const cost = (fn) => {
+    let best = Infinity;
+    for (let run = 0; run < 5; run++) {
+      const started = performance.now();
+      fn();
+      best = Math.min(best, performance.now() - started);
+    }
+    return best;
+  };
+  assert.deepEqual(big.search.coverage({ excludeKinds: ["status"] }), big.search.coverage({ excludeKinds: ["status"], exact: true }));
+  const kept = cost(() => big.search.coverage({ excludeKinds: ["status"] }));
+  const counted = cost(() => big.search.coverage({ excludeKinds: ["status"], exact: true }));
+  assert.ok(kept * 4 < counted, `kept counts ${kept.toFixed(2)} ms against a full count of ${counted.toFixed(2)} ms`);
+  db.close();
+  big.close();
+});
