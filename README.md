@@ -484,20 +484,30 @@ transcribed in the background as they arrive, never holding up a message. The
 transcript is stored with the message, so a voice note is transcribed once, and
 its words are searchable, recalled and carried by the webhook event.
 
-- **Durable.** The queue lives in the account database, in the same
-  moment the note is stored, so a restart or a crash resumes it instead
-  of dropping it. A note that just arrived starts at once, ahead of any
-  backlog, which is what lets its webhook event carry the words.
+- **Durable.** The note is queued in the account database in the same
+  transaction that stores it, so a restart or a crash resumes the queue
+  instead of dropping it. A note that just arrived starts at once, ahead of any
+  backlog, which is what lets its webhook event carry the words. A stop waits
+  up to 30 s for a transcription under way to store its words, so a note is
+  not paid for twice; removing an account cancels it instead.
 - **One at a time for the whole server.** Every account shares one
   transcriber and they take turns, so a backlog on one does not starve another
-  and two whisper.cpp runs never fight for the machine.
+  and two whisper.cpp runs never fight for the machine. Only the server
+  (`wazap serve`, the service) transcribes; short commands such as
+  `wazap status --live` queue what arrives and leave it to the server.
 - **Retried, then given up on.** A download that times out, a provider
   answering 429 or 5xx, or whisper.cpp crashing is tried again after 10 s and
   after a minute more, three attempts in all. Media WhatsApp no longer holds,
   audio the provider refuses as input, or a file too large gives up at once.
-  A note that could not start because the account is disconnected or the
-  provider is not ready spends no attempt. A note given up on is not queued
-  again; `transcribe_audio(message_id)` still tries it on request.
+  A note given up on is not queued again; `transcribe_audio(message_id)`
+  still tries it on request.
+- **Waiting costs nothing.** A note whose account is disconnected spends no
+  attempt and runs within seconds of the connection opening. A provider that
+  cannot take any note — whisper.cpp or its model missing, an API refusing the
+  key — pauses all transcription for 30 s, then twice as long each time up to
+  15 minutes, and one note probes it before any other audio is downloaded.
+  Meanwhile webhook events post the `[voice message · 0:42]` placeholder at
+  once instead of waiting for words that are not coming.
 - **Deleted means dropped.** A note deleted, expired or cleared while it
   waits leaves the queue and is never uploaded.
 - **A day at most.** A note still waiting 24 hours after it was queued (the
@@ -517,10 +527,11 @@ you recorded and notes WhatsApp gave no length for; call
 `transcribe_audio(message_id)` for those. `WAZAP_TRANSCRIBE_AUTO=0` keeps the
 tool and stops the background work; with it, or with the provider switched
 off, a queue already stored is kept and waits, and it continues under the
-provider configured next, within the day and the local-stays-local rule. `get_status` shows the queue under `transcription`
-(how many wait, how long the current run has taken, how many were given up on,
-the latest reason, never content), and `wazap status` prints a `voice queue`
-line.
+provider configured next, within the day and the local-stays-local rule.
+`get_status` shows the queue under `transcription` (how many wait, how long
+the current run has taken, how many were given up on, the latest reason, a
+pause and until when, never content), and `wazap status` prints a
+`voice queue` line, a warning when notes wait and nothing will run them.
 
 ## Semantic recall
 
