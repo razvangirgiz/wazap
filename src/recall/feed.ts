@@ -182,8 +182,9 @@ export class EmbedFeed {
           return false;
         }
         const delay = Math.min(RETRY_MAX_MS, RETRY_INIT_MS * 2 ** (this.failures - 1));
+        // A referenced sleep, so a waiting caller keeps the process alive; stop() wakes it.
         await Promise.race([
-          sleep(delay, undefined, { ref: false }),
+          sleep(delay),
           new Promise<void>((resolve) => {
             this.wake = resolve;
           }),
