@@ -118,7 +118,3 @@ from the Actions page, since that re-runs only the failed job.
 - `dist/`, `dist-bundle/`, `node_modules/` — generated output.
 - `*.test.mjs` and `scripts/*.mjs` are linted as plain JS: they intentionally
   do not go through the TypeScript rules, since `tsc` does not check them.
-
-Dist-tags other than `latest` (`beta`, `next`) move without a release: run
-`.github/workflows/dist-tag.yml` by hand with the tag and a version, or with
-the version empty to remove the tag. It uses the same `NPM_TOKEN` as Publish.
