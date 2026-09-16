@@ -355,6 +355,29 @@ test("a large history batch is stored in bounded transactions: the event loop ru
   assert.equal(svc.hasHistory(), true, "history counts as received once the batch is stored");
 });
 
+test("a catch-up over a busy week reads each message's reactions, votes and receipts in a few queries, not a few per message", async (t) => {
+  const dataDir = mkdtempSync(join(tmpdir(), "wazap-accountdb-"));
+  const { svc, sock } = serviceOn(dataDir);
+  t.after(() => svc.stop());
+  await svc.bootStorage();
+  const base = Math.floor(Date.now() / 1000) - 3 * 86_400;
+  const messages = Array.from({ length: 600 }, (_, i) => text(i % 3 === 0 ? PEER : GROUP, `W${i}`, `săptămâna ${i}`, base + i * 60, i % 3 === 0 ? {} : { key: { participant: PEER } }));
+  messages.push({ key: { remoteJid: PEER, fromMe: true, id: "MINE" }, message: { conversation: "al meu" }, messageTimestamp: base + 40_000 });
+  sock.ev.emit("messaging-history.set", { chats: [], contacts: [], messages, isLatest: true });
+  await svc.storageIdle();
+  sock.ev.emit("messages.reaction", [{ key: { remoteJid: GROUP, fromMe: false, id: "W1", participant: PEER }, reaction: { key: { remoteJid: GROUP, fromMe: false, participant: ANA }, text: "👍", senderTimestampMs: (base + 100) * 1000 } }]);
+  sock.ev.emit("message-receipt.update", [{ key: { remoteJid: PEER, fromMe: true, id: "MINE" }, receipt: { userJid: PEER, readTimestamp: base + 40_100 } }]);
+
+  const lookups = ["reactions", "votes", "receipts"].map((name) => t.mock.method(svc.db.messages, name));
+  const recent = await svc.getRecentMessages(168, "all");
+  assert.equal(recent.data.reduce((n, chat) => n + chat.messages.length, 0), 601);
+  assert.deepEqual(lookups.map((lookup) => lookup.mock.callCount()), [0, 0, 0], "no lookup per message");
+  const all = recent.data.flatMap((chat) => chat.messages);
+  assert.deepEqual(all.find((m) => m.message_id === `false_${GROUP}_W1`).reactions.map((r) => [r.emoji, r.sender]), [["👍", ANA]]);
+  assert.deepEqual(all.find((m) => m.message_id === `true_${PEER}_MINE`).delivery, (await svc.getMessage(`true_${PEER}_MINE`)).delivery);
+  assert.equal(all.find((m) => m.message_id === `true_${PEER}_MINE`).delivery.status, "read");
+});
+
 test("an account of 20,000 messages boots without holding its history in memory", async () => {
   const dataDir = mkdtempSync(join(tmpdir(), "wazap-accountdb-rss-"));
   const db = AccountDb.open(join(accountPaths(dataDir, "default").root, "wazap.sqlite"));

@@ -40,6 +40,7 @@ import {
   type ChatKind,
   type ChatRecord,
   type MessageInput,
+  type Receipt as StoredReceipt,
   type StoredMessage,
   type UpsertResult,
 } from "./db/index.js";
@@ -347,6 +348,13 @@ function missingMessage(messageId: string): WazapError {
 }
 
 type HistorySetEvent = BaileysEventMap["messaging-history.set"];
+
+/** What viewsOfStored reads once for a whole list of messages. */
+interface ViewLookups {
+  marks: ReturnType<AccountDb["messages"]["marksOf"]>;
+  nameFor: (jid: string, pushName?: string) => string;
+  noteFor: (jid: string) => string | undefined;
+}
 
 export class WhatsAppService implements WhatsAppApi {
   private sockClient: WASocket | null = null;
@@ -1106,7 +1114,7 @@ export class WhatsAppService implements WhatsAppApi {
       await this.learnLidPhones([jid]);
 
       if (before === undefined) {
-        return this.synced(this.pageOf(jid, limit, undefined, types).map((message) => this.viewOfStored(message)));
+        return this.synced(this.viewsOfStored(this.pageOf(jid, limit, undefined, types)));
       }
 
       const anchor = this.storedOrThrow(before);
@@ -1116,7 +1124,7 @@ export class WhatsAppService implements WhatsAppApi {
         await this.fetchOlder(sock, anchor, limit);
         older = inChat ? this.pageOf(jid, limit, anchor.id, types) : [];
       }
-      return this.synced(older.map((message) => this.viewOfStored(message)));
+      return this.synced(this.viewsOfStored(older));
     });
   }
 
@@ -1178,15 +1186,19 @@ export class WhatsAppService implements WhatsAppApi {
       }
 
       const wanted = types === undefined || types.length === 0 ? null : new Set<string>(types);
-      const conversations: RecentConversation[] = [];
+      const chosen: Array<{ jid: string; stored: StoredMessage[] }> = [];
       for (const [chatId, newestFirst] of byChat) {
         const chat = db.identity.chatById(chatId);
         const jid = newestFirst[0]!.chatJid;
         if (chat === null || isNoiseJid(jid) || !this.matchesChatFilter(chat, filter)) continue;
-        const messages = newestFirst
-          .reverse()
-          .filter((message) => wanted === null || wanted.has(message.type))
-          .map((message) => this.viewOfStored(message))
+        chosen.push({ jid, stored: newestFirst.reverse().filter((message) => wanted === null || wanted.has(message.type)) });
+      }
+      // One read of every chosen message's reactions, votes and receipts, and each name once.
+      const lookups = this.viewLookups(chosen.flatMap((entry) => entry.stored));
+      const conversations: RecentConversation[] = [];
+      for (const { jid, stored } of chosen) {
+        const messages = stored
+          .map((message) => this.viewOfStored(message, lookups))
           .filter((view) => includeSystem || view.type !== "system");
         if (messages.length === 0) continue;
         const note = this.noteFor(jid);
@@ -1224,25 +1236,25 @@ export class WhatsAppService implements WhatsAppApi {
         ...(opts.sinceMs === undefined ? {} : { since: opts.sinceMs }),
         ...(opts.untilMs === undefined ? {} : { until: opts.untilMs }),
       };
-      const views: MessageView[] = [];
+      const found: StoredMessage[] = [];
       let capped: number | null = null;
-      for (let before: number | undefined; views.length < limit; ) {
+      for (let before: number | undefined; found.length < limit; ) {
         const page = db.search.text({ query, limit, ...filter, ...(before === undefined ? {} : { before }) });
         for (const message of page.items) {
           // The status feed is not a chat: a story never answers a search.
           if (message.chatJid === STATUS_JID) continue;
-          views.push(this.viewOfStored(message));
-          if (views.length >= limit) break;
+          found.push(message);
+          if (found.length >= limit) break;
         }
         // A page the scan limit stopped is the last one: another would scan as much again, and the answer says where it stopped.
         if (page.scanCapped) {
-          if (views.length < limit) capped = page.nextBefore;
+          if (found.length < limit) capped = page.nextBefore;
           break;
         }
         if (page.nextBefore === null) break;
         before = page.nextBefore;
       }
-      const answer: SearchAnswer = this.synced(views);
+      const answer: SearchAnswer = this.synced(this.viewsOfStored(found));
       if (capped !== null) answer.scanCapped = { searchedBackTo: isoWithOffset(secondOfId(capped) * 1000) };
       return answer;
     });
@@ -1310,16 +1322,15 @@ export class WhatsAppService implements WhatsAppApi {
         ...(opts.sinceMs === undefined ? {} : { since: opts.sinceMs }),
         ...(opts.untilMs === undefined ? {} : { until: opts.untilMs }),
       });
-      const hits = result.hits
-        .filter((hit) => hit.message.chatJid !== STATUS_JID)
-        .slice(0, limit)
-        .map((hit) => ({
-          score: hit.score,
-          similarity: hit.similarity,
-          matched: (hit.lexicalRank !== null && hit.semanticRank !== null ? "both" : hit.lexicalRank !== null ? "words" : "meaning") as RecallHit["matched"],
-          message: this.viewOfStored(hit.message),
-          from_index: hit.message.raw === null,
-        })) satisfies RecallAnswer["hits"];
+      const kept = result.hits.filter((hit) => hit.message.chatJid !== STATUS_JID).slice(0, limit);
+      const views = this.viewsOfStored(kept.map((hit) => hit.message));
+      const hits = kept.map((hit, i) => ({
+        score: hit.score,
+        similarity: hit.similarity,
+        matched: (hit.lexicalRank !== null && hit.semanticRank !== null ? "both" : hit.lexicalRank !== null ? "words" : "meaning") as RecallHit["matched"],
+        message: views[i]!,
+        from_index: hit.message.raw === null,
+      })) satisfies RecallAnswer["hits"];
       return this.synced({ hits, index: this.recallStatus() });
     });
   }
@@ -1494,7 +1505,7 @@ export class WhatsAppService implements WhatsAppApi {
         before = page.nextBefore;
       }
       await this.learnLidPhones(stories.flatMap((story) => (story.senderJid === null ? [] : [story.senderJid])));
-      return this.synced(stories.map((story) => this.viewOfStored(story)));
+      return this.synced(this.viewsOfStored(stories));
     });
   }
 
@@ -3847,10 +3858,45 @@ export class WhatsAppService implements WhatsAppApi {
     return message.transcript === null ? text : `${text} "${message.transcript}"`;
   }
 
-  private viewOfStored(message: StoredMessage): MessageView {
+  /**
+   * Views of many stored messages: their reactions, votes and receipts read in
+   * three queries for the lot, and each name and note looked up once.
+   */
+  private viewsOfStored(messages: readonly StoredMessage[]): MessageView[] {
+    if (messages.length <= 1) return messages.map((message) => this.viewOfStored(message));
+    const lookups = this.viewLookups(messages);
+    return messages.map((message) => this.viewOfStored(message, lookups));
+  }
+
+  private viewLookups(messages: readonly StoredMessage[]): ViewLookups {
+    const marks = this.db.messages.marksOf(messages.map((message) => message.id));
+    const names = new Map<string, string>();
+    const notes = new Map<string, string | undefined>();
+    const lookups: ViewLookups = {
+      marks,
+      nameFor: (jid, pushName) => {
+        const key = `${jid}\u0000${pushName ?? ""}`;
+        let name = names.get(key);
+        if (name === undefined) {
+          name = this.displayName(jid, pushName);
+          names.set(key, name);
+        }
+        return name;
+      },
+      noteFor: (jid) => {
+        if (!notes.has(jid)) notes.set(jid, this.noteFor(jid));
+        return notes.get(jid);
+      },
+    };
+    return lookups;
+  }
+
+  private viewOfStored(message: StoredMessage, lookups?: ViewLookups): MessageView {
     const raw = this.rawOf(message);
     if (raw === null) return this.textOnlyView(message);
     const db = this.db;
+    const nameOf = lookups?.nameFor ?? ((jid: string, pushName?: string) => this.displayName(jid, pushName));
+    const noteOf = lookups?.noteFor ?? ((jid: string) => this.noteFor(jid));
     const chatJid = message.chatJid;
     const sender = raw.key.fromMe
       ? this.ownJid()
@@ -3861,19 +3907,19 @@ export class WhatsAppService implements WhatsAppApi {
     // mentions, or who reacted or voted, must not borrow it.
     const view = buildMessageView(raw, {
       canonical: (jid) => this.canonical(jid),
-      nameFor: (jid) => this.displayName(jid, jid === sender ? (raw.pushName ?? undefined) : undefined),
-      noteFor: (jid) => this.noteFor(jid),
+      nameFor: (jid) => nameOf(jid, jid === sender ? (raw.pushName ?? undefined) : undefined),
+      noteFor: (jid) => noteOf(jid),
       ownId: this.ownJid(),
       chatId: chatJid,
       edited: message.editedAt !== null,
-      reactions: db.messages
-        .reactions(message.sid)
-        .flatMap((reaction) => (reaction.jid === null ? [] : [{ emoji: reaction.emoji, sender: reaction.jid }])),
-      votes: db.messages.votes(message.sid).flatMap((vote) => {
+      reactions: (lookups === undefined ? db.messages.reactions(message.sid) : (lookups.marks.reactions.get(message.id) ?? [])).flatMap(
+        (reaction) => (reaction.jid === null ? [] : [{ emoji: reaction.emoji, sender: reaction.jid }])
+      ),
+      votes: (lookups === undefined ? db.messages.votes(message.sid) : (lookups.marks.votes.get(message.id) ?? [])).flatMap((vote) => {
         const choice = parseChoice(vote.choice);
         return vote.jid === null || choice === null ? [] : [{ voter: vote.jid, choice }];
       }),
-      receipt: this.receiptOf(message),
+      receipt: this.receiptOf(message, lookups === undefined ? undefined : (lookups.marks.receipts.get(message.id) ?? [])),
       transcript: this.transcriptOf(message),
     });
     // A payload wazap does not model has no protobuf field to keep it: what it
@@ -3890,11 +3936,11 @@ export class WhatsAppService implements WhatsAppApi {
    * with, raised by every receipt since, each person's latest moments. The
    * account itself is no recipient.
    */
-  private receiptOf(message: StoredMessage): Receipt | undefined {
+  private receiptOf(message: StoredMessage, stored?: readonly StoredReceipt[]): Receipt | undefined {
     if (!message.fromMe) return undefined;
     const merged: Receipt = {};
     if (message.status !== null) raiseStatus(merged, message.status);
-    for (const receipt of this.db.messages.receipts(message.sid)) {
+    for (const receipt of stored ?? this.db.messages.receipts(message.sid)) {
       if (receipt.jid === null || this.isMe(receipt.jid)) continue;
       raiseUser(merged, receipt.jid, {
         ...(receipt.deliveredAt === null ? {} : { delivered: receipt.deliveredAt }),

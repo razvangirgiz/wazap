@@ -793,6 +793,63 @@ export class Messages {
       }));
   }
 
+  /**
+   * The reactions, votes and receipts of many messages at once, keyed by
+   * message id, in three queries: what a reader listing a page or a window of
+   * messages uses instead of three lookups per message. The ids come from a
+   * read that already checked they are visible.
+   */
+  marksOf(ids: readonly number[]): { reactions: Map<number, Reaction[]>; votes: Map<number, Vote[]>; receipts: Map<number, Receipt[]> } {
+    const reactions = new Map<number, Reaction[]>();
+    const votes = new Map<number, Vote[]>();
+    const receipts = new Map<number, Receipt[]>();
+    if (ids.length === 0) return { reactions, votes, receipts };
+    const list = JSON.stringify(ids);
+    const push = <T>(map: Map<number, T[]>, id: number, item: T): void => {
+      const items = map.get(id);
+      if (items === undefined) map.set(id, [item]);
+      else items.push(item);
+    };
+    for (const row of this.c.all<{ message_id: number; contact_id: number; jid: string | null; emoji: string; ts: number }>(
+      `SELECT r.message_id, r.contact_id, coalesce(k.phone_jid, k.lid) AS jid, r.emoji, r.ts
+       FROM reactions r JOIN contacts k ON k.id = r.contact_id
+       WHERE r.message_id IN (SELECT value FROM json_each(?)) ORDER BY r.message_id, r.ts, r.rowid`,
+      list
+    )) {
+      push(reactions, row.message_id, { contactId: row.contact_id, jid: row.jid, emoji: row.emoji, ts: row.ts });
+    }
+    for (const row of this.c.all<{ message_id: number; contact_id: number; jid: string | null; choice: string; ts: number }>(
+      `SELECT v.message_id, v.contact_id, coalesce(k.phone_jid, k.lid) AS jid, v.choice, v.ts
+       FROM votes v JOIN contacts k ON k.id = v.contact_id
+       WHERE v.message_id IN (SELECT value FROM json_each(?)) ORDER BY v.message_id, v.ts, v.rowid`,
+      list
+    )) {
+      push(votes, row.message_id, { contactId: row.contact_id, jid: row.jid, choice: row.choice, ts: row.ts });
+    }
+    for (const row of this.c.all<{
+      message_id: number;
+      contact_id: number;
+      jid: string | null;
+      delivered_at: number | null;
+      read_at: number | null;
+      played_at: number | null;
+    }>(
+      `SELECT r.message_id, r.contact_id, coalesce(k.phone_jid, k.lid) AS jid, r.delivered_at, r.read_at, r.played_at
+       FROM receipts r JOIN contacts k ON k.id = r.contact_id
+       WHERE r.message_id IN (SELECT value FROM json_each(?)) ORDER BY r.message_id, r.contact_id`,
+      list
+    )) {
+      push(receipts, row.message_id, {
+        contactId: row.contact_id,
+        jid: row.jid,
+        deliveredAt: row.delivered_at,
+        readAt: row.read_at,
+        playedAt: row.played_at,
+      });
+    }
+    return { reactions, votes, receipts };
+  }
+
   /** Records a derived file; returns the path it replaced, which the caller unlinks. */
   setMedia(sid: string, kind: string, path: string): { stored: boolean; replaced: string | null } {
     return this.c.write(() => {
