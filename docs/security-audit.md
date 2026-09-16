@@ -691,8 +691,9 @@ that was not the installed service. Both are now handled by the running process.
   is deleted, cancelling a pairing in flight and waiting (bounded) for its
   socket, so no credentials are written behind a logout or into a folder being
   removed. Logout then runs the same code as the offline command
-  (`src/logout.ts`). Callbacks from a replaced service (owner, give-up) are
-  ignored.
+  (`src/logout.ts`). If either fails half-way, the account is put back on a
+  fresh service before the error is returned, so a stopped service never keeps
+  answering. Callbacks from a replaced service (owner, give-up) are ignored.
 
 Not covered: registry writes from two processes at once are still
 last-writer-wins, as before. A live service keeps the rate limit, webhook

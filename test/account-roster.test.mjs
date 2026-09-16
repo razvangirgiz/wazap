@@ -6,10 +6,11 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 import { AccountHub } from "../dist/account-hub.js";
+import { resolveToolAccount } from "../dist/account-resolve.js";
 import { AccountRegistry } from "../dist/accounts.js";
 import { accountPaths, paths } from "../dist/config.js";
 import { socketFactory } from "../dist/pairing.js";
@@ -319,4 +320,106 @@ test("a give-up from a service that was replaced does not count toward exiting",
   home.reconnectAttempts = 10;
   home.scheduleReconnect("Connection Terminated");
   assert.equal(exited, 0, "the fresh work service is still up");
+});
+
+// ---------------------------------------------------------------------------
+// A logout or a removal that fails half-way leaves the account served, at once.
+// ---------------------------------------------------------------------------
+
+/** Run `after` once `svc` has finished stopping: the failure lands between the stop and the rest. */
+function afterStop(svc, after) {
+  const stop = svc.stop.bind(svc);
+  svc.stop = async () => {
+    await stop();
+    after();
+  };
+}
+
+/**
+ * What link_account does with an account: resolve it the way the tool does,
+ * then link on that service. The tool's own budget (two calls a minute, for
+ * the whole process) is spent by the tests above, so the handler is not the
+ * way in here.
+ */
+async function linkThrough(hub, id) {
+  const phoneSide = fakeSocket({ pairingCode: "K7PX3MQZ", user: { id: "40700000002:12@s.whatsapp.net" } });
+  const pairing = stubSockets(socketFactory, [phoneSide]);
+  try {
+    const { wa } = resolveToolAccount(hub, { account_id: id, phone: "+40700000002" }, { name: "link_account", write: false });
+    const linking = wa.link("+40700000002");
+    await waitFor(() => pairing.opened.length > 0, 5_000, "the pairing socket to open");
+    phoneSide.ev.emit("connection.update", { qr: "pairing-qr" });
+    return { wa, code: (await linking).code };
+  } finally {
+    pairing.restore();
+  }
+}
+
+/** The account answers from a live service that is not `old`: get_status through the tool, then a link. */
+async function assertServedAgain(hub, id, old) {
+  const fresh = hub.get(id);
+  assert.ok(fresh, "the account is on the roster");
+  assert.notEqual(fresh, old, "not the service the failed operation stopped");
+  assert.equal(fresh.stopped, false);
+  await waitFor(() => fresh.getStatus().status === "not_linked", 5_000, "the fresh service to settle");
+  const status = await toolsOf(hub).get("get_status")({ account_id: id });
+  assert.equal(status.isError, undefined, JSON.stringify(status.structuredContent));
+  assert.equal(status.structuredContent.account_id, id);
+  assert.equal(status.structuredContent.status, "not_linked");
+  const linked = await linkThrough(hub, id);
+  assert.equal(linked.wa, fresh);
+  assert.equal(linked.code, "K7PX-3MQZ");
+  assert.equal(fresh.getStatus().status, "linking");
+}
+
+test("a logout whose clear step throws propagates the error and leaves the account served by a live service", async (t) => {
+  const { config, hub, work } = twoAccountHub(t, { linkedWork: true });
+  unlinkSockets(t);
+  const storage = accountPaths(config.dataDir, "work");
+  // A directory where the snapshot file should be: the credentials go, the snapshot delete throws.
+  afterStop(work, () => {
+    rmSync(storage.storeFile, { force: true });
+    mkdirSync(storage.storeFile);
+    writeFileSync(join(storage.storeFile, "blocker"), "");
+  });
+  await assert.rejects(hub.logout("work"), (err) => err.code === "ERR_FS_EISDIR");
+  assert.equal(work.stopped, true);
+  await assertServedAgain(hub, "work", work);
+});
+
+test("a logout that cannot record the owner on an unreadable policy still leaves the account served", async (t) => {
+  const { config, hub, work } = twoAccountHub(t, { linkedWork: true });
+  unlinkSockets(t);
+  const file = paths(config.dataDir).accountsFile;
+  const policy = readFileSync(file, "utf8");
+  afterStop(work, () => writeFileSync(file, "{broken"));
+  await assert.rejects(hub.logout("work"), (err) => err.code === "INVALID_ID");
+  assert.ok(hub.get("work") && hub.get("work") !== work && !hub.get("work").stopped, "served again before repair");
+  writeFileSync(file, policy);
+  await assertServedAgain(hub, "work", work);
+});
+
+test("a removal whose registry write fails propagates the error and serves the account again at once", async (t) => {
+  const { config, hub, work } = twoAccountHub(t);
+  const file = paths(config.dataDir).accountsFile;
+  // A directory at the temp path the registry writes through: the rename never happens.
+  afterStop(work, () => mkdirSync(`${file}.${process.pid}.tmp`));
+  t.after(() => rmSync(`${file}.${process.pid}.tmp`, { recursive: true, force: true }));
+  await assert.rejects(hub.remove("work"), (err) => err.code === "EISDIR");
+  assert.equal(work.stopped, true);
+  assert.ok(AccountRegistry.load(config.dataDir).get("work"), "the registry still has the account");
+  assert.equal(existsSync(accountPaths(config.dataDir, "work").root), true, "and its folder");
+  rmSync(`${file}.${process.pid}.tmp`, { recursive: true, force: true });
+  await assertServedAgain(hub, "work", work);
+});
+
+test("a removal that finds the policy unreadable propagates the error and serves the account again at once", async (t) => {
+  const { config, hub, work } = twoAccountHub(t);
+  const file = paths(config.dataDir).accountsFile;
+  const policy = readFileSync(file, "utf8");
+  afterStop(work, () => writeFileSync(file, "{broken"));
+  await assert.rejects(hub.remove("work"), (err) => err.code === "INVALID_ID");
+  assert.ok(hub.get("work") && hub.get("work") !== work && !hub.get("work").stopped, "served again before repair");
+  writeFileSync(file, policy);
+  await assertServedAgain(hub, "work", work);
 });

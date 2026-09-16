@@ -256,26 +256,19 @@ export class AccountHub implements AccountSource {
         throw new WazapError("INVALID_ID", `No account "${id}".`, FIX_LIST);
       }
       this.held.add(id);
-      let outcome: LogoutOutcome;
+      const old = this.services.get(id);
       try {
-        const old = this.services.get(id);
         await old?.stop();
-        outcome = await logoutAccount(this.dataDir, id);
+        const outcome = await logoutAccount(this.dataDir, id);
         const record = this.known.get(id);
         if (record !== undefined && outcome !== "not_linked") record.owner = null;
-        if (old !== undefined && !this.closed) {
-          // The reload below takes it off again if the account went meanwhile.
-          const current = AccountRegistry.load(this.dataDir).get(id) ?? this.known.get(id);
-          if (current !== undefined) {
-            const fresh = this.spawn(current);
-            if (this.started) void this.startService(id, fresh);
-          }
-        }
+        return outcome;
       } finally {
+        // Also when the logout failed: a stopped service must not go on answering.
         this.held.delete(id);
+        this.restore(id, old);
+        this.reloadQuietly();
       }
-      this.reloadQuietly();
-      return outcome;
     });
   }
 
@@ -299,6 +292,7 @@ export class AccountHub implements AccountSource {
         );
       }
       this.held.add(id);
+      const old = this.services.get(id);
       try {
         this.retire(id);
         await this.settled();
@@ -306,9 +300,11 @@ export class AccountHub implements AccountSource {
         AccountRegistry.load(this.dataDir).remove(id);
         this.known.delete(id);
       } finally {
+        // A removal that failed leaves the account in the registry: serve it again now.
         this.held.delete(id);
+        this.restore(id, old);
+        this.reloadQuietly();
       }
-      this.reloadQuietly();
     });
   }
 
@@ -360,6 +356,43 @@ export class AccountHub implements AccountSource {
       .catch((err: unknown) => logError(`whatsapp stop ${id}`, err))
       .finally(() => this.stopping.delete(stopped));
     this.stopping.add(stopped);
+  }
+
+  /**
+   * After a logout or a removal stopped `old`, whether it worked or threw: the
+   * account is served by a fresh service if it is still meant to be, and a
+   * stopped service never stays on the roster. An unreadable registry cannot
+   * say the account went, so the snapshot decides; write admission still
+   * refuses on that registry. Never throws, so the original error is the one
+   * the caller sees.
+   */
+  private restore(id: string, old: WhatsAppService | undefined): void {
+    if (old === undefined || this.closed) return;
+    const current = this.services.get(id);
+    if (current !== undefined && current !== old) return;
+    try {
+      let record: AccountRecord | undefined;
+      let readable = true;
+      try {
+        record = AccountRegistry.load(this.dataDir).get(id);
+      } catch {
+        readable = false;
+      }
+      const wanted = readable ? record?.enabled === true : this.known.has(id);
+      const others = [...this.services.keys()].some((key) => key !== id);
+      if (!wanted && others) {
+        this.services.delete(id);
+        this.givenUp.delete(id);
+        return;
+      }
+      // The roster is never left empty, as a reload never empties it.
+      const source = record ?? this.known.get(id);
+      if (source === undefined) return;
+      const fresh = this.spawn(source);
+      if (this.started) void this.startService(id, fresh);
+    } catch (err) {
+      logError(`accounts restore ${id}`, err);
+    }
   }
 
   private reloadQuietly(): void {
