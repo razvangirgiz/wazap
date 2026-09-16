@@ -13,7 +13,7 @@ import { promisify } from "node:util";
 import { mediaContent } from "../dist/outgoing-media.js";
 import { gifToMp4 } from "../dist/gif.js";
 import { which } from "../dist/transcribe/local.js";
-import { DraftStore } from "../dist/drafts.js";
+import { draftStub } from "./helpers.mjs";
 
 const run = promisify(execFile);
 const ffmpeg = which("ffmpeg");
@@ -32,7 +32,7 @@ test("as_gif sends a video with gifPlayback, and nothing else changes", () => {
 });
 
 test("the draft preview says gif", () => {
-  const store = new DraftStore();
+  const store = draftStub();
   const to = { chat_id: "40722123456@s.whatsapp.net", name: "Ana", number: "40722123456" };
   const view = store.view(
     store.put(to, {

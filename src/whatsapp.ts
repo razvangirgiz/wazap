@@ -14,9 +14,12 @@ import { isAbsolute, join, relative, sep } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import {
   ALL_WA_PATCH_NAMES,
+  type AnyMessageContent,
   type BaileysEventMap,
   DisconnectReason,
   downloadMediaMessage,
+  generateMessageIDV2,
+  type MiscMessageGenerationOptions,
   normalizeMessageContent,
   proto,
   type Chat as BaileysChat,
@@ -41,6 +44,7 @@ import {
   type ChatRecord,
   type MessageInput,
   type Receipt as StoredReceipt,
+  type SendRecord,
   type StoredMessage,
   type UpsertResult,
 } from "./db/index.js";
@@ -129,7 +133,16 @@ import {
   type TranscribeSettings,
   type TranscriptRecord,
 } from "./transcribe/index.js";
-import { DraftStore, withMentionTokens, type Draft, type DraftPayload, type DraftView } from "./drafts.js";
+import {
+  DraftStore,
+  frozenReceiptText,
+  receiptText,
+  sendOutcomeUnknown,
+  withMentionTokens,
+  type Draft,
+  type DraftPayload,
+  type DraftView,
+} from "./drafts.js";
 import { RateLimiter } from "./ratelimit.js";
 import { IMPORT_UNVERIFIED_META, importProgress } from "./storage-status.js";
 import { maskNumber } from "./ui.js";
@@ -243,6 +256,8 @@ const EARLY_VOTE_SCAN = 2_000;
 const TYPE_FILTER_SCAN = 10_000;
 /** A download is buffered in memory, so the biggest file it may pull is bounded. */
 const MEDIA_DOWNLOAD_MAX_BYTES = 100_000_000;
+/** Unknown sends checked against the stored messages when the database opens. */
+const SEND_RECOVERY_LIMIT = 500;
 /** Ten minutes of speech. Past that, auto-transcribing is a bill nobody asked for. */
 const AUTO_TRANSCRIBE_MAX_SECONDS = 600;
 /** How long a message event waits for the transcript of the voice note it carries. */
@@ -261,6 +276,16 @@ const FILE_MODE = 0o600;
 const DB_FILE = "wazap.sqlite";
 /** How often a running service looks again at legacy files whose week may be up. */
 const LEGACY_SWEEP_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * One confirm of a draft: the key it goes out under, and whether the send got
+ * as far as handing it to the socket. Before that a failure is definite; after
+ * it, WhatsApp may have the message.
+ */
+interface SendAttempt {
+  readonly keyId: string;
+  dispatched: boolean;
+}
 
 /**
  * A contact WhatsApp will not name for us still arrives with a `name`: the
@@ -478,6 +503,8 @@ export class WhatsAppService implements WhatsAppApi {
   /** Transcriptions under way, so one recording is never uploaded twice at once. */
   private readonly transcribing = new Map<string, Promise<TranscribeResult>>();
   private readonly drafts = new DraftStore();
+  /** Confirms under way, by draft: a second confirm of the same draft by its owner waits for the first. */
+  private readonly confirming = new Map<string, { owner: string | null; work: Promise<SentMessage> }>();
   private readonly writes: RateLimiter;
   private readonly webhook: WebhookSink;
   /** Sends of our own, so their `fromMe` echo is never announced as `message_sent`. */
@@ -679,6 +706,7 @@ export class WhatsAppService implements WhatsAppApi {
       const db = AccountDb.open(this.databasePath, { scrubQuote, now: () => Date.now() });
       this.accountDb = db;
       this.adoptDatabase(db);
+      this.recoverSends(db);
       if (this.legacyPending(db)) this.storageState = "preparing";
     } catch (err) {
       this.storageFail(err);
@@ -1108,7 +1136,13 @@ export class WhatsAppService implements WhatsAppApi {
   }
 
   hasDraft(id: string): boolean {
-    return this.drafts.has(id);
+    const db = this.readyDb();
+    if (db === null) return false;
+    try {
+      return this.drafts.has(db.sends, id);
+    } catch {
+      return false;
+    }
   }
 
   /**
@@ -2443,7 +2477,7 @@ export class WhatsAppService implements WhatsAppApi {
     await feedStop;
   }
 
-  draft(payload: DraftPayload): Promise<DraftView> {
+  draft(payload: DraftPayload, owner?: string): Promise<DraftView> {
     return this.guarded(async () => {
       if (payload.kind === "media") await assertMediaSource(payload.source);
       const sock = this.ensureConnected();
@@ -2458,23 +2492,110 @@ export class WhatsAppService implements WhatsAppApi {
         const mentionIds = payload.mentionIds.map((id) => this.resolveId(id));
         stored = { ...payload, chatId: jid, mentionIds, text: withMentionTokens(payload.text, mentionIds) };
       }
-      return this.drafts.view(this.drafts.put(this.outgoingOf(jid), stored));
+      // The key is fixed now, so a confirm whose outcome is lost can still be recognised by it.
+      const keyId = generateMessageIDV2(this.ownJid());
+      return this.drafts.view(this.drafts.put(this.db.sends, this.outgoingOf(jid), stored, keyId, owner ?? null));
     });
   }
 
-  confirm(draftId: string): Promise<SentMessage> {
+  /**
+   * Sends a draft at most once. The claim is atomic, so a concurrent confirm by
+   * the same owner waits for the first and answers the same; a later one gets
+   * the stored receipt. A failure before the draft's key reached the socket
+   * gives the draft back, with the code that failure had; one after it leaves
+   * the send unknown (SEND_OUTCOME_UNKNOWN) until WhatsApp echoes the key.
+   */
+  confirm(draftId: string, owner?: string): Promise<SentMessage> {
     return this.guarded(async () => {
-      const draft = this.drafts.take(draftId);
+      const who = owner ?? null;
+      const running = this.confirming.get(draftId);
+      if (running !== undefined && running.owner === who) return running.work;
+      const claim = this.drafts.claim(this.db.sends, draftId, who);
+      if (claim.state === "sent") return claim.receipt;
+      const work = this.sendClaimed(claim.draft);
+      this.confirming.set(draftId, { owner: who, work });
       try {
-        return await this.dispatchDraft(draft);
-      } catch (err) {
-        this.drafts.putBack(draft);
-        throw err;
+        return await work;
+      } finally {
+        this.confirming.delete(draftId);
       }
     });
   }
 
-  sendMessage(chatId: string, text: string, replyTo?: string, mentionIds?: string[]): Promise<SentMessage> {
+  private async sendClaimed(draft: Draft): Promise<SentMessage> {
+    const attempt: SendAttempt = { keyId: draft.keyId, dispatched: false };
+    let sent: SentMessage;
+    try {
+      sent = await this.dispatchDraft(draft, attempt);
+    } catch (err) {
+      if (!attempt.dispatched) {
+        this.recordSend(() => this.drafts.release(this.db.sends, draft.id));
+        throw err;
+      }
+      const echoed = this.storedReceipt(this.db, draft.to.chat_id, draft.keyId, receiptText(draft.payload));
+      if (echoed !== null) {
+        this.recordSend(() => this.drafts.settle(this.db.sends, draft.id, echoed));
+        return echoed;
+      }
+      const cause = asWazapError(err);
+      this.recordSend(() => this.drafts.unsettle(this.db.sends, draft.id, cause.code));
+      throw sendOutcomeUnknown(draft.id, cause.message);
+    }
+    this.recordSend(() => this.drafts.settle(this.db.sends, draft.id, sent));
+    return sent;
+  }
+
+  /**
+   * A send's bookkeeping must not change what the caller is told: the send
+   * happened or it did not. A database that refuses (stopping, disk full)
+   * leaves the row as it was; a row left sending is unknown after a restart.
+   */
+  private recordSend(work: () => void): void {
+    try {
+      work();
+    } catch (err) {
+      if (!this.stopped) logError("send record", err);
+    }
+  }
+
+  /**
+   * The receipt of a send whose message is stored under its key, which only
+   * the send itself or WhatsApp's echo of it stores: the id and time WhatsApp gave it.
+   */
+  private storedReceipt(db: AccountDb, chatJid: string, keyId: string, text: string): SentMessage | null {
+    const stored = db.messages.get(messageIdFor({ remoteJid: chatJid, fromMe: true, id: keyId }, chatJid));
+    if (stored === null || !stored.fromMe || stored.keyId !== keyId) return null;
+    return { message_id: stored.sid, chat_id: stored.chatJid, text, timestamp: isoWithOffset(stored.ts) };
+  }
+
+  /**
+   * What a stop or a crash cut short: a send left under way is unknown, or
+   * sent when its message is stored under its key. Runs when the database
+   * opens, before any confirm can claim a row.
+   */
+  private recoverSends(db: AccountDb): void {
+    try {
+      this.drafts.recover(db.sends);
+      for (const row of db.sends.unknown(SEND_RECOVERY_LIMIT)) this.reconcileSend(db, row);
+    } catch (err) {
+      logError("send record", err);
+    }
+  }
+
+  /** An unknown send whose message is stored is sent. */
+  private reconcileSend(db: AccountDb, row: SendRecord): void {
+    const receipt = this.storedReceipt(db, row.chatJid, row.keyId, frozenReceiptText(row));
+    if (receipt !== null) this.drafts.settle(db.sends, row.draftId, receipt);
+  }
+
+  /** `attempt` is confirm_send's: the send goes out under the draft's key, and says when it left. */
+  sendMessage(
+    chatId: string,
+    text: string,
+    replyTo?: string,
+    mentionIds?: string[],
+    attempt?: SendAttempt
+  ): Promise<SentMessage> {
     return this.guarded(async () => {
       if (text.length > MAX_TEXT_CHARS) {
         throw new WazapError(
@@ -2487,11 +2608,13 @@ export class WhatsAppService implements WhatsAppApi {
       if (replyTo !== undefined) this.contentOrThrow(replyTo);
       const linkPreview = await this.previewLink(text);
       const quoted = replyTo === undefined ? undefined : this.contentOrThrow(replyTo);
-      const sent = await sock.sendMessage(
+      const sent = await this.dispatch(
+        sock,
         jid,
         // Explicit null on failure prevents Baileys from using its own fetcher.
         { text, linkPreview, ...(mentions.length > 0 ? { mentions } : {}) },
-        quoted ? { quoted } : {}
+        quoted ? { quoted } : {},
+        attempt
       );
       return this.sentResult(sent, jid, text);
     });
@@ -2500,7 +2623,8 @@ export class WhatsAppService implements WhatsAppApi {
   sendMedia(
     chatId: string,
     source: MediaSource,
-    opts: { caption?: string; asDocument: boolean; asVoice: boolean; asGif: boolean }
+    opts: { caption?: string; asDocument: boolean; asVoice: boolean; asGif: boolean },
+    attempt?: SendAttempt
   ): Promise<SentMessage> {
     return this.guarded(async () => {
       const { sock, jid } = await this.prepareSend(chatId);
@@ -2511,17 +2635,27 @@ export class WhatsAppService implements WhatsAppApi {
         // Even an empty thumbnail suppresses its implicit decoder invocation.
         content.jpegThumbnail = (await videoFrame(media.buffer, 32))?.toString("base64") ?? "";
       }
-      const sent = await sock.sendMessage(jid, content);
+      const sent = await this.dispatch(sock, jid, content, {}, attempt);
       return this.sentResult(sent, jid, opts.caption ?? `[${media.mimetype}]`);
     });
   }
 
-  sendPoll(chatId: string, question: string, options: string[], multiSelect: boolean): Promise<SentMessage> {
+  sendPoll(
+    chatId: string,
+    question: string,
+    options: string[],
+    multiSelect: boolean,
+    attempt?: SendAttempt
+  ): Promise<SentMessage> {
     return this.guarded(async () => {
       const { sock, jid } = await this.prepareSend(chatId);
-      const sent = await sock.sendMessage(jid, {
-        poll: { name: question, values: options, selectableCount: multiSelect ? options.length : 1 },
-      });
+      const sent = await this.dispatch(
+        sock,
+        jid,
+        { poll: { name: question, values: options, selectableCount: multiSelect ? options.length : 1 } },
+        {},
+        attempt
+      );
       return this.sentResult(sent, jid, `[poll] ${question}`);
     });
   }
@@ -2531,13 +2665,18 @@ export class WhatsAppService implements WhatsAppApi {
     latitude: number,
     longitude: number,
     name?: string,
-    address?: string
+    address?: string,
+    attempt?: SendAttempt
   ): Promise<SentMessage> {
     return this.guarded(async () => {
       const { sock, jid } = await this.prepareSend(chatId);
-      const sent = await sock.sendMessage(jid, {
-        location: { degreesLatitude: latitude, degreesLongitude: longitude, name, address },
-      });
+      const sent = await this.dispatch(
+        sock,
+        jid,
+        { location: { degreesLatitude: latitude, degreesLongitude: longitude, name, address } },
+        {},
+        attempt
+      );
       return this.sentResult(sent, jid, `[location] ${name ?? `${latitude}, ${longitude}`}`);
     });
   }
@@ -2576,12 +2715,12 @@ export class WhatsAppService implements WhatsAppApi {
     });
   }
 
-  forwardMessage(messageId: string, toChatId: string): Promise<SentMessage> {
+  forwardMessage(messageId: string, toChatId: string, attempt?: SendAttempt): Promise<SentMessage> {
     return this.guarded(async () => {
       const raw = this.contentOrThrow(messageId);
       const { sock, jid } = await this.prepareSend(toChatId);
       this.contentOrThrow(messageId);
-      const sent = await sock.sendMessage(jid, { forward: raw });
+      const sent = await this.dispatch(sock, jid, { forward: raw }, {}, attempt);
       return this.sentResult(sent, jid, messageText(raw));
     });
   }
@@ -3528,30 +3667,52 @@ export class WhatsAppService implements WhatsAppApi {
     return number ? { chat_id: jid, name, number } : { chat_id: jid, name };
   }
 
-  private dispatchDraft(draft: Draft): Promise<SentMessage> {
+  private dispatchDraft(draft: Draft, attempt: SendAttempt): Promise<SentMessage> {
     const chatId = draft.to.chat_id;
     const payload = draft.payload;
     switch (payload.kind) {
       case "text":
-        return this.sendMessage(chatId, payload.text, payload.replyTo, payload.mentionIds);
+        return this.sendMessage(chatId, payload.text, payload.replyTo, payload.mentionIds, attempt);
       case "media":
-        return this.sendMedia(chatId, payload.source, {
-          caption: payload.caption,
-          asDocument: payload.asDocument,
-          asVoice: payload.asVoice,
-          asGif: payload.asGif,
-        });
+        return this.sendMedia(
+          chatId,
+          payload.source,
+          {
+            caption: payload.caption,
+            asDocument: payload.asDocument,
+            asVoice: payload.asVoice,
+            asGif: payload.asGif,
+          },
+          attempt
+        );
       case "poll":
-        return this.sendPoll(chatId, payload.question, payload.options, payload.multiSelect);
+        return this.sendPoll(chatId, payload.question, payload.options, payload.multiSelect, attempt);
       case "location":
-        return this.sendLocation(chatId, payload.latitude, payload.longitude, payload.name, payload.address);
+        return this.sendLocation(chatId, payload.latitude, payload.longitude, payload.name, payload.address, attempt);
       case "forward":
-        return this.forwardMessage(payload.messageId, chatId);
+        return this.forwardMessage(payload.messageId, chatId, attempt);
       default: {
         const _exhaustive: never = payload;
         return _exhaustive;
       }
     }
+  }
+
+  /**
+   * The step past which a send may have reached WhatsApp. A confirmed draft
+   * goes out under the key it was drafted with, and is marked as handed over
+   * first: whatever fails from here on leaves its outcome unknown.
+   */
+  private dispatch(
+    sock: WASocket,
+    jid: string,
+    content: AnyMessageContent,
+    options: MiscMessageGenerationOptions,
+    attempt: SendAttempt | undefined
+  ): Promise<WAMessage | undefined> {
+    if (attempt === undefined) return sock.sendMessage(jid, content, options);
+    attempt.dispatched = true;
+    return sock.sendMessage(jid, content, { ...options, messageId: attempt.keyId });
   }
 
   /** The single gate every send path passes: writability, addressability, announce-only. */
@@ -3905,7 +4066,7 @@ export class WhatsAppService implements WhatsAppApi {
    * Live messages both ways, same notify gate as transcription: a history sync
    * must not POST the backlog, and stubs or system notices are not events. That
    * gate is also what keeps wazap's own sends quiet in production, since Baileys
-   * re-emits a local send as an `append`; `sentByWazap` is the id-level backstop
+   * re-emits a local send as an `append`; `isOwnSend` is the id-level backstop
    * for an echo that does arrive as `notify`. Failures stay on
    * `webhook.last_error` and never reject this path.
    */
@@ -3916,7 +4077,7 @@ export class WhatsAppService implements WhatsAppApi {
       try {
         const jid = this.canonical(raw.key.remoteJid ?? "");
         const sid = messageIdFor(raw.key, jid);
-        if (raw.key.fromMe && raw.key.id && this.sentByWazap.has(raw.key.id)) continue;
+        if (raw.key.fromMe && raw.key.id && this.isOwnSend(raw.key.id)) continue;
         const event = raw.key.fromMe ? "message_sent" : "message_received";
         void this.postMessageEvent({ sid, jid, event, transcript: transcribing.get(sid) }).catch((err) => {
           logError("webhook", err);
@@ -3924,6 +4085,19 @@ export class WhatsAppService implements WhatsAppApi {
       } catch (err) {
         logError("webhook", err);
       }
+    }
+  }
+
+  /**
+   * A key wazap sent under: noted by a send in this process, or recorded by a
+   * confirmed draft, which a restart does not forget.
+   */
+  private isOwnSend(keyId: string): boolean {
+    if (this.sentByWazap.has(keyId)) return true;
+    try {
+      return this.readyDb()?.sends.hasKey(keyId) ?? false;
+    } catch {
+      return false;
     }
   }
 
@@ -4634,7 +4808,26 @@ export class WhatsAppService implements WhatsAppApi {
     }
     if (prepared.input.expiresAt !== null && prepared.input.expiresAt !== undefined) this.armExpiry();
     if (result.outcome === "expired") void this.sweepExpired();
+    if (prepared.input.fromMe && result.sid !== null && this.kept(result)) {
+      this.settleEcho(db, prepared.input.keyId, result.sid, chatJid, prepared.input.ts);
+    }
     return result;
+  }
+
+  /** WhatsApp echoed the key of a send a confirm could not vouch for: that send arrived, as this message. */
+  private settleEcho(db: AccountDb, keyId: string, sid: string, chatJid: string, ts: number): void {
+    try {
+      const row = db.sends.unknownByKey(keyId);
+      if (row === null) return;
+      this.drafts.settle(db.sends, row.draftId, {
+        message_id: sid,
+        chat_id: chatJid,
+        text: frozenReceiptText(row),
+        timestamp: isoWithOffset(ts),
+      });
+    } catch (err) {
+      if (!this.stopped) logError("send record", err);
+    }
   }
 
   /** A new version of a stored message: an edit, or a new date; the row keeps its id and its place in time. */

@@ -9,10 +9,9 @@ import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/
 import { registerTools } from "../dist/tools.js";
 import { createToolRegistrar } from "../dist/tool-runtime.js";
 import { WazapError } from "../dist/errors.js";
-import { DraftStore } from "../dist/drafts.js";
 import { writeDaemon } from "../dist/daemon.js";
 import { startHttpEndpoint } from "../dist/server.js";
-import { asToolSource, childEnv, mcpClient, offlineConfig } from "./helpers.mjs";
+import { asToolSource, childEnv, draftStub, mcpClient, offlineConfig } from "./helpers.mjs";
 
 const CHAT = "40722123456@s.whatsapp.net";
 const CASES = [
@@ -24,16 +23,23 @@ const CASES = [
 ];
 
 function fixture({ now, beforeConfirm } = {}) {
-  const store = new DraftStore(now);
+  const store = draftStub(now);
+  const receipts = new Map();
   let confirms = 0;
+  let sends = 0;
   const wa = {
     getStatus: () => ({ status: "connected", status_since: new Date().toISOString(), read_only: false }),
     draft: async (payload) => store.view(store.put({ chat_id: CHAT, name: "Test" }, payload)),
+    // The service's contract: a draft is sent once, and confirming it again answers that send's receipt.
     confirm: async (id) => {
       confirms++;
       await beforeConfirm?.();
+      if (receipts.has(id)) return { ...receipts.get(id), already_sent: true };
       const draft = store.take(id);
-      return { chat_id: CHAT, message_id: "sent", text: draft.preview, timestamp: "now" };
+      sends++;
+      const receipt = { chat_id: CHAT, message_id: "sent", text: draft.preview, timestamp: "now" };
+      receipts.set(id, receipt);
+      return receipt;
     },
   };
   const hub = asToolSource(wa);
@@ -42,7 +48,7 @@ function fixture({ now, beforeConfirm } = {}) {
     registerTools({ registerTool: (name, _meta, handler) => tools.set(name, handler) }, hub, { allowWrite: true });
     return (name, args) => tools.get(name)(args);
   }
-  return { hub, wa, client, confirms: () => confirms };
+  return { hub, wa, client, confirms: () => confirms, sends: () => sends };
 }
 
 for (const [name, args] of CASES) {
@@ -60,8 +66,13 @@ for (const [name, args] of CASES) {
     }
     assert.equal((await owner("confirm_send", { draft_id: id })).structuredContent.message_id, "sent");
     assert.equal(f.confirms(), 1);
-    assert.equal((await owner("confirm_send", { draft_id: id })).structuredContent.error, "DRAFT_NOT_FOUND");
-    assert.equal(f.confirms(), 1, "replay does not reach the service");
+    const replay = await owner("confirm_send", { draft_id: id });
+    assert.equal(replay.structuredContent.message_id, "sent", "the owner's replay answers the receipt");
+    assert.equal(replay.structuredContent.already_sent, true);
+    assert.match(replay.content[0].text, /^Already sent to .*; nothing was sent again:/);
+    assert.equal(f.sends(), 1, "a replay sends nothing");
+    assert.equal((await other("confirm_send", { draft_id: id })).structuredContent.error, "DRAFT_NOT_FOUND");
+    assert.equal(f.confirms(), 2, "another registration's replay never reaches the service");
   });
 }
 

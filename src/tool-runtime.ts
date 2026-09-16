@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { z } from "zod";
 import type { AccountSource } from "./account-hub.js";
@@ -23,7 +24,8 @@ export interface ToolCtx {
   hub: AccountSource;
   allowWrite: boolean;
   accountId: string;
-  draftOwner: symbol;
+  /** Opaque, per MCP session; stored with the session's drafts, never shown to or taken from a caller. */
+  draftOwner: string;
 }
 
 export interface ToolDef {
@@ -96,8 +98,9 @@ export function createToolRegistrar(defs: readonly ToolDef[]) {
   );
   return function registerTools(server: McpServer, hub: AccountSource, opts: RegisterOpts): void {
     // Each stdio server / HTTP session / upstream bridge session owns its drafts.
-    // New initialization intentionally requires re-drafting, even with the same token.
-    const draftOwner = Symbol("MCP draft owner");
+    // New initialization intentionally requires re-drafting, even with the same token,
+    // and so does a restart: no later session is ever handed this id again.
+    const draftOwner = `session_${randomUUID()}`;
     let sessionInFlight = 0;
     for (const def of defs) {
       if (def.write && !opts.allowWrite) continue;

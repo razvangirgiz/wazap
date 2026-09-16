@@ -5,9 +5,9 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { AccountRegistry } from "../dist/accounts.js";
 import { AccountHub, singletonSource } from "../dist/account-hub.js";
-import { DraftStore } from "../dist/drafts.js";
 import { registerTools } from "../dist/tools.js";
 import { migrateLayout } from "../dist/migrate.js";
+import { draftStub } from "./helpers.mjs";
 
 const PEER = { chat_id: "40700000002@s.whatsapp.net", name: "Synthetic" };
 function fixture(t) {
@@ -58,7 +58,7 @@ test("the policy-presence marker contains no account data and is private", (t) =
 for (const change of ["missing", "corrupt", "disabled", "read-only", "removed"]) test(`${change} live policy blocks an owned confirmation without consuming it`, async (t) => {
   const { dir, registry, file } = fixture(t);
   const original = readFileSync(file, "utf8");
-  const store = new DraftStore(); let sent = 0;
+  const store = draftStub(); let sent = 0;
   const wa = {
     getStatus: () => ({ read_only: false, account_id: "default" }),
     draft: async (payload) => store.view(store.put(PEER, payload)),

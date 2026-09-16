@@ -1,10 +1,16 @@
 import { randomUUID } from "node:crypto";
+import type { SendRecord, Sends } from "./db/index.js";
 import { WazapError } from "./errors.js";
 import { isoWithOffset } from "./messages.js";
-import type { MediaSource, OutgoingTarget } from "./wa-types.js";
+import type { MediaSource, OutgoingTarget, SentMessage } from "./wa-types.js";
 
 export const DRAFT_TTL_MS = 15 * 60_000;
+/** Drafts one MCP session keeps; its oldest go first. */
 export const DRAFT_CAP = 20;
+/** How long a confirmed send is remembered: its receipt, and its key for echoes and reconciliation. */
+export const SEND_RECORD_TTL_MS = 24 * 60 * 60_000;
+/** Rows one sweep deletes at most. */
+const SWEEP_CHUNK = 200;
 
 export type DraftKind = "text" | "media" | "poll" | "location" | "forward";
 
@@ -38,6 +44,8 @@ export interface Draft {
   preview: string;
   expiresAt: number;
   payload: DraftPayload;
+  /** The WhatsApp key the draft goes out under, fixed when it is made. */
+  keyId: string;
 }
 
 export interface DraftView {
@@ -56,58 +64,138 @@ export interface DraftView {
   kind: DraftKind;
 }
 
-export class DraftStore {
-  private readonly drafts = new Map<string, Draft>();
+/** What confirm_send may do with a draft: send it, or answer the receipt of the send it already made. */
+export type Claim = { state: "claimed"; draft: Draft } | { state: "sent"; receipt: SentMessage };
 
+/** What a draft row keeps besides its columns. */
+interface FrozenDraft {
+  to: OutgoingTarget;
+  preview: string;
+  payload: DraftPayload;
+}
+
+export function draftNotFound(id: string): WazapError {
+  return new WazapError(
+    "DRAFT_NOT_FOUND",
+    `No draft ${id}.`,
+    "Call send_message (or send_media / send_poll / send_location / forward_message) again to draft, then confirm_send"
+  );
+}
+
+export function draftExpired(id: string): WazapError {
+  return new WazapError(
+    "DRAFT_EXPIRED",
+    `Draft ${id} expired.`,
+    "Call the send tool again to draft, show the new preview, then confirm_send"
+  );
+}
+
+/** A draft handed to WhatsApp whose arrival nobody can vouch for. Never retried. */
+export function sendOutcomeUnknown(id: string, cause?: string): WazapError {
+  return new WazapError(
+    "SEND_OUTCOME_UNKNOWN",
+    `Draft ${id} was handed to WhatsApp, but whether it arrived is unknown${cause ? `: ${cause}` : "."}`,
+    "Do not confirm or draft this message again. Check the conversation with read_messages; if the message is not there, tell the user and ask before sending it again"
+  );
+}
+
+/**
+ * Drafts as confirm_send sees them, kept in the account database (`sends`)
+ * so a confirm outlives a crash and never sends twice. Every call takes the
+ * account's table, since the service may swap its database (a different
+ * number linked). The owner is the MCP session that drafted: every other
+ * session is told there is no such draft.
+ *
+ * A draft lapses after 15 minutes and an owner keeps at most 20. Confirming
+ * claims it atomically; a send that failed before its key reached the socket
+ * gives it back (release), one that got further is settled as sent or as
+ * unknown, and stays so. A sent draft answers its receipt again; an unknown
+ * one answers SEND_OUTCOME_UNKNOWN until WhatsApp echoes its key.
+ */
+export class DraftStore {
   constructor(
     private readonly now: () => number = Date.now,
     private readonly ttlMs: number = DRAFT_TTL_MS,
     private readonly cap: number = DRAFT_CAP
   ) {}
 
-  get size(): number {
-    return this.drafts.size;
-  }
-
-  put(to: OutgoingTarget, payload: DraftPayload): Draft {
-    this.sweep();
-    if (this.drafts.size >= this.cap) this.evictOldest();
-    const id = `d_${randomUUID().replaceAll("-", "").slice(0, 16)}`;
-    const expiresAt = this.now() + this.ttlMs;
-    const draft: Draft = { id, to, preview: formatDraftPreview(to, payload), expiresAt, payload };
-    this.drafts.set(id, draft);
+  put(sends: Sends, to: OutgoingTarget, payload: DraftPayload, keyId: string, owner: string | null = null): Draft {
+    const now = this.now();
+    this.sweep(sends);
+    const draft: Draft = {
+      id: `d_${randomUUID().replaceAll("-", "").slice(0, 16)}`,
+      to,
+      preview: formatDraftPreview(to, payload),
+      expiresAt: now + this.ttlMs,
+      payload,
+      keyId,
+    };
+    const frozen: FrozenDraft = { to, preview: draft.preview, payload };
+    sends.insertDraft(
+      {
+        draftId: draft.id,
+        owner,
+        chatJid: to.chat_id,
+        kind: payload.kind,
+        payload: JSON.stringify(frozen),
+        keyId,
+        createdAt: now,
+        expiresAt: draft.expiresAt,
+      },
+      this.cap
+    );
     return draft;
   }
 
-  /** Peek without consuming. Expired drafts still count so confirm can throw DRAFT_EXPIRED. */
-  has(id: string): boolean {
-    return this.drafts.has(id);
+  /** Whether the database holds this draft in any state, so a repeated confirm finds its account. */
+  has(sends: Sends, id: string): boolean {
+    return sends.get(id) !== null;
   }
 
-  /** Consume a live draft. Missing and expired are different errors so the agent knows which. */
-  take(id: string): Draft {
-    const draft = this.drafts.get(id);
-    if (draft === undefined) {
-      throw new WazapError(
-        "DRAFT_NOT_FOUND",
-        `No draft ${id}.`,
-        "Call send_message (or send_media / send_poll / send_location / forward_message) again to draft, then confirm_send"
-      );
+  /**
+   * Takes a draft for sending, or answers what an earlier confirm made of it.
+   * Missing, and another session's, are the same DRAFT_NOT_FOUND; the owner's
+   * lapsed draft is DRAFT_EXPIRED once, then gone.
+   */
+  claim(sends: Sends, id: string, owner: string | null = null): Claim {
+    const now = this.now();
+    if (sends.claim(id, owner, now)) return { state: "claimed", draft: draftOf(sends.get(id)!) };
+    const row = sends.get(id);
+    if (row === null || row.owner !== owner) throw draftNotFound(id);
+    switch (row.state) {
+      case "draft":
+        sends.removeDraft(id);
+        throw draftExpired(id);
+      case "sent":
+        return { state: "sent", receipt: { ...(JSON.parse(row.receipt ?? "{}") as SentMessage), already_sent: true } };
+      case "sending":
+      case "unknown":
+        throw sendOutcomeUnknown(id);
     }
-    this.drafts.delete(id);
-    if (draft.expiresAt <= this.now()) {
-      throw new WazapError(
-        "DRAFT_EXPIRED",
-        `Draft ${id} expired.`,
-        "Call the send tool again to draft, show the new preview, then confirm_send"
-      );
-    }
-    return draft;
   }
 
-  /** Return a draft that `take` already consumed, so a failed send can be retried. */
-  putBack(draft: Draft): void {
-    this.drafts.set(draft.id, draft);
+  /** The claimed draft failed before its key reached the socket: it may be confirmed again. */
+  release(sends: Sends, id: string): void {
+    sends.release(id, this.now());
+  }
+
+  /** The claimed (or unknown) draft is known to be sent. */
+  settle(sends: Sends, id: string, receipt: SentMessage): void {
+    const now = this.now();
+    sends.settle(id, JSON.stringify(receipt), now, now + SEND_RECORD_TTL_MS);
+  }
+
+  /** The claimed draft reached the socket and then failed: it may or may not have arrived. */
+  unsettle(sends: Sends, id: string, errorCode: string): void {
+    const now = this.now();
+    sends.unsettle(id, errorCode, now, now + SEND_RECORD_TTL_MS);
+  }
+
+  /** Sends a crash or a stop left under way are unknown now; lapsed rows go. Before any confirm runs. */
+  recover(sends: Sends): void {
+    const now = this.now();
+    sends.interrupt(now, now + SEND_RECORD_TTL_MS);
+    this.sweep(sends);
   }
 
   view(draft: Draft): DraftView {
@@ -123,19 +211,52 @@ export class DraftStore {
     return view;
   }
 
-  private sweep(): void {
-    const now = this.now();
-    for (const [id, draft] of this.drafts) {
-      if (draft.expiresAt <= now) this.drafts.delete(id);
-    }
+  /** Lapsed drafts and forgotten sends, a bounded chunk at a time. */
+  private sweep(sends: Sends): void {
+    sends.sweep(this.now(), SWEEP_CHUNK);
   }
+}
 
-  private evictOldest(): void {
-    let oldest: Draft | undefined;
-    for (const draft of this.drafts.values()) {
-      if (oldest === undefined || draft.expiresAt < oldest.expiresAt) oldest = draft;
+/** The text a receipt shows for a stored send; empty once the message it sent was deleted. */
+export function frozenReceiptText(row: SendRecord): string {
+  const frozen = JSON.parse(row.payload) as Partial<FrozenDraft>;
+  return frozen.payload === undefined ? "" : receiptText(frozen.payload);
+}
+
+/** The draft a row froze. */
+function draftOf(row: SendRecord): Draft {
+  const frozen = JSON.parse(row.payload) as FrozenDraft;
+  return {
+    id: row.draftId,
+    to: frozen.to,
+    preview: frozen.preview,
+    expiresAt: row.expiresAt,
+    payload: frozen.payload,
+    keyId: row.keyId,
+  };
+}
+
+/**
+ * The text a receipt shows for a draft, as the send would have answered it;
+ * a media file's type is only known once loaded, so a captionless one is
+ * `[media]`.
+ */
+export function receiptText(payload: DraftPayload): string {
+  switch (payload.kind) {
+    case "text":
+      return payload.text;
+    case "media":
+      return payload.caption ?? "[media]";
+    case "poll":
+      return `[poll] ${payload.question}`;
+    case "location":
+      return `[location] ${payload.name ?? `${payload.latitude}, ${payload.longitude}`}`;
+    case "forward":
+      return payload.text ?? "";
+    default: {
+      const _exhaustive: never = payload;
+      return _exhaustive;
     }
-    if (oldest) this.drafts.delete(oldest.id);
   }
 }
 

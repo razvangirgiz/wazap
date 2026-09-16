@@ -21,7 +21,6 @@ import { clockLabel } from "./messages.js";
 import {
   assertSendable,
   draftTargetOf,
-  forgetDraftTarget,
   hasSendRules,
   noteDraftTarget,
   sendPolicyOf,
@@ -1389,16 +1388,19 @@ says yes, call confirm_send.`,
     name: "confirm_send",
     title: "Send a drafted WhatsApp message",
     description: `Send a draft created by send_message, send_media, send_poll, send_location or
-forward_message. This is the only call that reaches WhatsApp. The draft is
-consumed. Only the MCP session that created the draft may confirm it. After
-reinitializing or reconnecting with a new session, draft again and obtain fresh
-user approval. A missing or expired draft_id also means draft again and show
-the new preview before calling this.`,
+forward_message. This is the only call that reaches WhatsApp, and it sends a
+draft at most once: confirming it again answers the same receipt with
+already_sent: true. Only the MCP session that created the draft may confirm it.
+After reinitializing or reconnecting with a new session, draft again and obtain
+fresh user approval. A missing or expired draft_id also means draft again and
+show the new preview before calling this. SEND_OUTCOME_UNKNOWN means WhatsApp
+may have the message: check the chat with read_messages before anything else,
+and never draft it again without asking the user.`,
     schema: {
       draft_id: z.string().min(1).describe("The draft_id returned by a send_* tool"),
     },
     write: true,
-    handler: async ({ draft_id }, { wa, hub, accountId }) => {
+    handler: async ({ draft_id }, { wa, hub, accountId, draftOwner }) => {
       const policy = liveSendPolicy(hub, accountId);
       const ref = draftTargetOf(draft_id);
       if (hasSendRules(policy)) {
@@ -1411,8 +1413,7 @@ the new preview before calling this.`,
         }
         assertSendable(policy, ref.target, accountId);
       }
-      const sent = await wa.confirm(draft_id);
-      forgetDraftTarget(draft_id);
+      const sent = await wa.confirm(draft_id, draftOwner);
       return ok(sentText(sent, ref?.target), sent as unknown as Record<string, unknown>);
     },
   }),
@@ -2085,7 +2086,7 @@ async function draftAndGuard(payload: DraftPayload, ctx: ToolCtx): Promise<ToolR
   // the deny list can fire on it before that resolution.
   const pre = payload.chatId.trim().endsWith("@lid") ? { allow: null, deny: policy.deny } : policy;
   assertSendable(pre, { chat_id: payload.chatId }, ctx.accountId);
-  const view = await ctx.wa.draft(payload);
+  const view = await ctx.wa.draft(payload, ctx.draftOwner);
   assertSendable(policy, view.to, ctx.accountId);
   noteDraftTarget(view, ctx.accountId, ctx.draftOwner);
   await flagUnnamed(view, ctx.wa);
@@ -2094,5 +2095,8 @@ async function draftAndGuard(payload: DraftPayload, ctx: ToolCtx): Promise<ToolR
 
 function sentText(sent: SentMessage, to?: OutgoingTarget): string {
   const who = to === undefined ? sent.chat_id : describeTarget(to);
+  if (sent.already_sent === true) {
+    return `Already sent to ${who} at ${sent.timestamp} (message_id: ${sent.message_id}); nothing was sent again:\n> ${sent.text}`;
+  }
   return `Sent to ${who} at ${sent.timestamp} (message_id: ${sent.message_id}):\n> ${sent.text}`;
 }

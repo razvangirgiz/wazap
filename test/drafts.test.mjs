@@ -1,64 +1,93 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
+import { AccountDb } from "../dist/db/index.js";
 import { DraftStore, formatDraftPreview, formatToLine, looksUnnamed, renderDraft } from "../dist/drafts.js";
 import { registerTools } from "../dist/tools.js";
 import { WhatsAppService } from "../dist/whatsapp.js";
-import { asToolSource, connectedService, offlineConfig, openService } from "./helpers.mjs";
+import { asToolSource, connectedService, draftStub, offlineConfig, openService } from "./helpers.mjs";
 
 const ANA = { chat_id: "40722@s.whatsapp.net", name: "Ana", number: "40722123456" };
 const BLOC = { chat_id: "120363@g.us", name: "Bloc 12" };
 
-function storeAt(ttlMs = 15 * 60_000, cap = 20) {
-  let now = 0;
+/** The store over a throwaway account database, on a clock the test moves. */
+function storeAt(t, ttlMs = 15 * 60_000, cap = 20) {
+  let now = 1_700_000_000_000;
+  const dir = mkdtempSync(join(tmpdir(), "wazap-drafts-"));
+  const db = AccountDb.open(join(dir, "wazap.sqlite"));
+  t.after(() => {
+    db.close();
+    rmSync(dir, { recursive: true, force: true });
+  });
   const store = new DraftStore(() => now, ttlMs, cap);
-  return { store, advance: (ms) => (now += ms) };
+  let keys = 0;
+  return {
+    store,
+    sends: db.sends,
+    put: (to, payload, owner) => store.put(db.sends, to, payload, `KEY${++keys}`, owner),
+    advance: (ms) => (now += ms),
+  };
 }
 
 const textPayload = { kind: "text", chatId: ANA.chat_id, text: "Joi la 10 e perfect." };
+const RECEIPT = { message_id: `true_${ANA.chat_id}_KEY1`, chat_id: ANA.chat_id, text: "Joi la 10 e perfect.", timestamp: "now" };
 
-test("put returns a preview and take consumes it once", () => {
-  const { store } = storeAt();
-  const draft = store.put(ANA, textPayload);
+test("put returns a preview; a claim takes it once, a release gives it back, a settled one answers its receipt", (t) => {
+  const { store, sends, put } = storeAt(t);
+  const draft = put(ANA, textPayload, "session-a");
   assert.match(draft.id, /^d_[0-9a-f]{16}$/);
+  assert.equal(draft.keyId, "KEY1");
   assert.equal(draft.preview, `To: Ana (+40 722 123 456)\n"Joi la 10 e perfect."`);
   const view = store.view(draft);
   assert.equal(view.status, "draft");
   assert.equal(view.kind, "text");
   assert.equal(view.draft_id, draft.id);
+  assert.equal(store.has(sends, draft.id), true);
 
-  assert.equal(store.has(draft.id), true);
-  const taken = store.take(draft.id);
-  assert.equal(taken.id, draft.id);
-  assert.equal(store.has(draft.id), false);
-  assert.equal(store.size, 0);
-  store.putBack(taken);
-  assert.equal(store.take(draft.id).id, draft.id);
-  assert.throws(() => store.take(draft.id), { code: "DRAFT_NOT_FOUND" });
+  const claim = store.claim(sends, draft.id, "session-a");
+  assert.equal(claim.state, "claimed");
+  assert.deepEqual(claim.draft, draft, "the draft comes back as it was frozen");
+  assert.throws(() => store.claim(sends, draft.id, "session-a"), { code: "SEND_OUTCOME_UNKNOWN" });
+  store.release(sends, draft.id);
+  assert.equal(store.claim(sends, draft.id, "session-a").state, "claimed");
+  store.settle(sends, draft.id, RECEIPT);
+  assert.deepEqual(store.claim(sends, draft.id, "session-a"), { state: "sent", receipt: { ...RECEIPT, already_sent: true } });
+  assert.deepEqual(store.claim(sends, draft.id, "session-a"), { state: "sent", receipt: { ...RECEIPT, already_sent: true } });
+  assert.throws(() => store.claim(sends, draft.id, "session-b"), { code: "DRAFT_NOT_FOUND" });
+  assert.throws(() => store.claim(sends, draft.id), { code: "DRAFT_NOT_FOUND" });
 });
 
-test("an expired draft is DRAFT_EXPIRED, not NOT_FOUND", () => {
-  const { store, advance } = storeAt(1_000);
-  const draft = store.put(ANA, textPayload);
+test("an expired draft is DRAFT_EXPIRED, not NOT_FOUND, and only for its owner", (t) => {
+  const { store, sends, put, advance } = storeAt(t, 1_000);
+  const draft = put(ANA, textPayload, "session-a");
   advance(1_001);
-  assert.throws(() => store.take(draft.id), { code: "DRAFT_EXPIRED" });
-  assert.throws(() => store.take(draft.id), { code: "DRAFT_NOT_FOUND" });
+  assert.throws(() => store.claim(sends, draft.id, "session-b"), { code: "DRAFT_NOT_FOUND" });
+  assert.throws(() => store.claim(sends, draft.id, "session-a"), { code: "DRAFT_EXPIRED" });
+  assert.throws(() => store.claim(sends, draft.id, "session-a"), { code: "DRAFT_NOT_FOUND" });
 });
 
-test("put sweeps expired drafts and evicts the oldest at the cap", () => {
-  const { store, advance } = storeAt(10_000, 2);
-  const first = store.put(ANA, textPayload);
+test("put sweeps expired drafts and evicts the owner's oldest at the cap, never another owner's or a send", (t) => {
+  const { store, sends, put, advance } = storeAt(t, 10_000, 2);
+  const first = put(ANA, textPayload, "a");
+  const other = put(ANA, textPayload, "b");
   advance(1);
-  store.put(ANA, { ...textPayload, text: "second" });
-  assert.equal(store.size, 2);
+  const sending = put(ANA, { ...textPayload, text: "claimed" }, "a");
+  assert.equal(store.claim(sends, sending.id, "a").state, "claimed");
   advance(1);
-  store.put(ANA, { ...textPayload, text: "third" });
-  assert.equal(store.size, 2);
-  assert.throws(() => store.take(first.id), { code: "DRAFT_NOT_FOUND" });
+  put(ANA, { ...textPayload, text: "second" }, "a");
+  advance(1);
+  put(ANA, { ...textPayload, text: "third" }, "a");
+  assert.equal(store.has(sends, first.id), false, "the owner's oldest draft made room");
+  assert.equal(store.has(sends, other.id), true, "another session's draft is not the owner's to evict");
+  assert.equal(store.has(sends, sending.id), true, "a send under way is never evicted");
 
   advance(10_000);
-  store.put(ANA, { ...textPayload, text: "fresh" });
-  assert.equal(store.size, 1);
+  put(ANA, { ...textPayload, text: "fresh" }, "c");
+  assert.equal(store.has(sends, other.id), false, "an expired draft is swept");
+  assert.equal(store.has(sends, sending.id), true, "a send under way is never swept");
 });
 
 test("To: line names a group without a number, and a nameless jid without parens", () => {
@@ -116,7 +145,7 @@ test("looksUnnamed trips on digits and unresolved lids, not on real names", () =
 });
 
 test("renderDraft says it is not sent, shows the preview, and names the next step", () => {
-  const { store } = storeAt();
+  const store = draftStub();
   const draft = store.put(ANA, textPayload);
   const text = renderDraft(store.view(draft));
   assert.match(text, new RegExp(`^Draft ${draft.id}\\. Not sent\\.`));
@@ -125,7 +154,7 @@ test("renderDraft says it is not sent, shows the preview, and names the next ste
 });
 
 test("renderDraft calls out an unnamed recipient", () => {
-  const { store } = storeAt();
+  const store = draftStub();
   const nobody = { chat_id: "40700999888@s.whatsapp.net", name: "40700999888", number: "40700999888" };
   const text = renderDraft(store.view(store.put(nobody, { kind: "text", chatId: nobody.chat_id, text: "hi" })));
   assert.match(text, /not a saved contact/);
@@ -147,7 +176,7 @@ function fakeServer() {
  * is stored against the resolved recipient, and a forward carries the original
  * message's text the way WhatsAppService.draft fills it.
  */
-function previewApi(to, store = new DraftStore()) {
+function previewApi(to, store = draftStub()) {
   return {
     store,
     draft: async (payload) =>
@@ -222,7 +251,7 @@ test("confirm_send on a missing draft says to draft again first", async () => {
 
 test("confirm_send on an expired draft says to show the new preview", async () => {
   let now = 0;
-  const api = previewApi(ANA, new DraftStore(() => now, 1_000));
+  const api = previewApi(ANA, draftStub(() => now, 1_000));
   const server = fakeServer();
   registerTools(server, asToolSource(api), { allowWrite: true });
 
@@ -251,7 +280,7 @@ test("draft rejects a missing local file before it touches the socket", async ()
   await svc.stop();
 });
 
-test("a failed confirm puts the draft back", async () => {
+test("a confirm that fails before the send leaves gives the draft back; one that fails after it is never sent again", async () => {
   const { svc, sock } = connectedService(WhatsAppService, {
     prefix: "wazap-draft-putback-",
     id: "40700000000@s.whatsapp.net",
@@ -259,17 +288,19 @@ test("a failed confirm puts the draft back", async () => {
     config: { readOnly: false },
   });
   sock.onWhatsApp = async () => [{ exists: true }];
-  let blows = true;
+  let calls = 0;
   sock.sendMessage = async () => {
-    if (blows) throw new Error("still connecting");
-    return undefined;
+    calls++;
+    throw new Error("Connection Closed");
   };
   const view = await svc.draft({ kind: "text", chatId: PEER, text: "hi" });
-  await assert.rejects(() => svc.confirm(view.draft_id));
-  blows = false;
-  const sent = await svc.confirm(view.draft_id);
-  assert.equal(sent.chat_id, PEER);
-  assert.equal(sent.text, "hi");
+  svc.status = "connecting";
+  await assert.rejects(() => svc.confirm(view.draft_id), { code: "NOT_CONNECTED" });
+  assert.equal(calls, 0);
+  svc.status = "connected";
+  await assert.rejects(() => svc.confirm(view.draft_id), { code: "SEND_OUTCOME_UNKNOWN" });
+  await assert.rejects(() => svc.confirm(view.draft_id), { code: "SEND_OUTCOME_UNKNOWN" });
+  assert.equal(calls, 1, "a send that reached the socket is not tried again");
   await svc.stop();
 });
 

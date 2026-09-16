@@ -457,6 +457,8 @@ export interface SentMessage {
   chat_id: string;
   text: string;
   timestamp: string;
+  /** confirm_send of a draft an earlier confirm sent: this is that send's receipt, and nothing went out again. */
+  already_sent?: true;
 }
 
 /** Who a draft or send is aimed at, after jid resolution. Groups have no number. */
@@ -638,8 +640,13 @@ export interface WhatsAppApi {
   markHandled(chatId: string): Promise<HandledResult>;
   previews(messageIds: string[], max: number): Promise<Preview[]>;
   getUnanswered(minAgeHours: number, maxAgeHours: number, limit: number): Promise<Synced<UnansweredChat[]>>;
-  draft(payload: DraftPayload): Promise<DraftView>;
-  confirm(draftId: string): Promise<SentMessage>;
+  /** `owner` is the MCP session drafting; only the same owner may confirm. */
+  draft(payload: DraftPayload, owner?: string): Promise<DraftView>;
+  /**
+   * Sends a draft once. Confirming it again answers the same receipt; a send
+   * that reached WhatsApp and then failed is SEND_OUTCOME_UNKNOWN, and stays so.
+   */
+  confirm(draftId: string, owner?: string): Promise<SentMessage>;
   sendMessage(chatId: string, text: string, replyTo?: string, mentionIds?: string[]): Promise<SentMessage>;
   sendMedia(
     chatId: string,

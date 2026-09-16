@@ -121,20 +121,22 @@ export function assertSendable(policy: SendPolicy, target: SendTarget, accountId
  * draft_id → the resolved recipient and the account it was drafted under. Every
  * draft is born in a send tool, so this is what confirm_send re-checks the live
  * rules against — a draft taken through any other path would have no entry.
- * Entries age out with the drafts themselves.
+ * Entries age out with the drafts themselves, and a confirmed draft keeps its
+ * entry so confirming it again reaches the service and answers its receipt.
+ * A restart forgets them all, as it forgets every session that drafted.
  */
 interface DraftRef {
   accountId: string;
   target: OutgoingTarget;
   at: number;
-  /** Opaque identity of the MCP server that created this draft; never supplied by a caller. */
-  owner?: symbol;
+  /** Opaque identity of the MCP session that created this draft; never supplied by a caller. */
+  owner?: string;
 }
 
 const draftTargets = new Map<string, DraftRef>();
 const DRAFT_TARGETS_CAP = 500;
 
-export function noteDraftTarget(view: DraftView, accountId: string, owner?: symbol): void {
+export function noteDraftTarget(view: DraftView, accountId: string, owner?: string): void {
   const now = Date.now();
   for (const [id, ref] of draftTargets) {
     if (ref.at + DRAFT_TTL_MS <= now) draftTargets.delete(id);
@@ -152,7 +154,7 @@ export function draftTargetOf(draftId: string): DraftRef | undefined {
 }
 
 /** Unknown and foreign drafts are indistinguishable, before account lookup or policy checks. */
-export function requireDraftOwner(draftId: string, owner: symbol, accountId?: string): DraftRef {
+export function requireDraftOwner(draftId: string, owner: string, accountId?: string): DraftRef {
   const ref = draftTargets.get(draftId);
   if (ref === undefined || ref.owner !== owner || (accountId !== undefined && ref.accountId !== accountId)) {
     throw new WazapError(

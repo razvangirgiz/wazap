@@ -10,7 +10,6 @@ import { promisify } from "node:util";
 import { singletonSource } from "../dist/account-hub.js";
 import { AccountRegistry } from "../dist/accounts.js";
 import { paths } from "../dist/config.js";
-import { DraftStore } from "../dist/drafts.js";
 import {
   assertSendable,
   draftTargetOf,
@@ -21,7 +20,7 @@ import {
   sendPolicyOf,
 } from "../dist/send-guard.js";
 import { registerTools } from "../dist/tools.js";
-import { childEnv } from "./helpers.mjs";
+import { childEnv, draftStub } from "./helpers.mjs";
 
 const run = promisify(execFile);
 const binary = join(dirname(fileURLToPath(import.meta.url)), "..", "dist", "index.js");
@@ -121,7 +120,7 @@ test("sendPolicyOf maps an absent allowlist to open and a present one to exhaust
 });
 
 test("noteDraftTarget records the resolved recipient so confirm can re-check it", () => {
-  const store = new DraftStore();
+  const store = draftStub();
   const view = store.view(store.put(ANA, { kind: "text", chatId: ANA.chat_id, text: "hi" }));
   noteDraftTarget(view, "default");
   const ref = draftTargetOf(view.draft_id);
@@ -219,7 +218,7 @@ function ruledSource(wa, rules) {
 }
 
 function draftApi(calls, confirm) {
-  const store = new DraftStore();
+  const store = draftStub();
   return {
     draft: async (payload) => {
       calls.drafts += 1;

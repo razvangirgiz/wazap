@@ -36,6 +36,7 @@ export type ErrorCode =
   | "SERVICE_ERROR"
   | "DRAFT_NOT_FOUND"
   | "DRAFT_EXPIRED"
+  | "SEND_OUTCOME_UNKNOWN"
   | "SEND_BLOCKED"
   | "AMBIGUOUS_ACCOUNT"
   | "ACCOUNT_NOT_FOUND"
@@ -108,9 +109,11 @@ export const ERROR_GUIDE: Record<ErrorCode, string> = {
   SERVICE_ERROR:
     "wazap's own background service could not be managed. This is a machine problem, not a WhatsApp one: read the fix and tell the user.",
   DRAFT_NOT_FOUND:
-    "That draft_id is unavailable in this MCP session (unknown, already sent, or created in another session). Draft again here, show the new preview and obtain fresh user approval before confirm_send.",
+    "That draft_id is unavailable in this MCP session (unknown, sent too long ago, or created in another session). Draft again here, show the new preview and obtain fresh user approval before confirm_send.",
   DRAFT_EXPIRED:
     "The draft expired (15 minutes). Call the send tool again to draft, show the new preview, then confirm_send.",
+  SEND_OUTCOME_UNKNOWN:
+    "The message was handed to WhatsApp and then the link failed, so it may or may not have arrived. Do not confirm or draft it again blindly: check the conversation with read_messages, and if it is not there, tell the user and ask before sending again.",
   SEND_BLOCKED:
     "The account's send rules refuse this recipient. Do not retry or route around it; tell the user, who can change the rules with `wazap config send` if the send is wanted.",
   AMBIGUOUS_ACCOUNT:

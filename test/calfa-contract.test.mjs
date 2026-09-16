@@ -584,14 +584,19 @@ describe("Calfa tool calls on a linked tenant (wazap-client.ts)", () => {
     assert.equal(f.sent[0].content.text, text);
   });
 
-  test("a confirmed draft is spent: confirm_send again is DRAFT_NOT_FOUND and sends nothing", async (t) => {
+  test("a confirmed draft is spent: confirm_send again in the same session answers the same receipt and sends nothing", async (t) => {
+    // Calfa never confirms a draft twice in one session: sendText confirms once, and its
+    // transport retries confirm_send only after the session is gone. A receipt it did read
+    // would parse as the same SentText, with the same message_id.
     const f = await live(t);
     const client = calfaClient(f.url, WRITE_TOKEN);
     await client.initialize();
     const draft = answer(await client.tool("send_message", { chat_id: CLIENT, text: "salut", account_id: TENANT }), "draft");
     const args = { draft_id: draft.draft_id, account_id: TENANT };
-    answer(await client.tool("confirm_send", args), "confirm_send");
-    assert.equal(refusal(await client.tool("confirm_send", args)), "DRAFT_NOT_FOUND");
+    const first = answer(await client.tool("confirm_send", args), "confirm_send");
+    const again = answer(await client.tool("confirm_send", args), "confirm_send again");
+    for (const key of ["message_id", "chat_id", "text", "timestamp"]) assert.equal(again[key], first[key], key);
+    assert.equal(again.already_sent, true);
     assert.equal(f.sent.length, 1);
   });
 
@@ -621,6 +626,41 @@ describe("Calfa tool calls on a linked tenant (wazap-client.ts)", () => {
     f.svc.status = "connected";
     answer(await client.tool("confirm_send", args), "confirm_send after the socket came back");
     assert.equal(f.sent.length, 1);
+  });
+
+  test("a send that fails once handed to the socket is SEND_OUTCOME_UNKNOWN, which Calfa files as ambiguous, and is never sent again", async (t) => {
+    const f = await live(t);
+    const client = calfaClient(f.url, WRITE_TOKEN);
+    await client.initialize();
+    const draft = answer(await client.tool("send_message", { chat_id: CLIENT, text: "salut", account_id: TENANT }), "draft");
+    const args = { draft_id: draft.draft_id, account_id: TENANT };
+    const answers = f.sock.sendMessage;
+    let attempts = 0;
+    f.sock.sendMessage = async () => {
+      attempts++;
+      throw new Error("Timed Out");
+    };
+    const code = refusal(await client.tool("confirm_send", args));
+    assert.equal(code, "SEND_OUTCOME_UNKNOWN");
+    assert.ok(!DEFINITELY_UNSENT.includes(code), "Calfa must record it as unknown and never retry it");
+    f.sock.sendMessage = answers;
+    assert.equal(refusal(await client.tool("confirm_send", args)), "SEND_OUTCOME_UNKNOWN");
+    assert.equal(attempts, 1);
+    assert.equal(f.sent.length, 0);
+  });
+
+  test("a number lookup WhatsApp does not answer refuses the draft with NOT_CONNECTED, never NOT_ON_WHATSAPP", async (t) => {
+    const f = await live(t);
+    const client = calfaClient(f.url, WRITE_TOKEN);
+    await client.initialize();
+    f.sock.onWhatsApp = async () => {
+      throw new Error("Timed Out");
+    };
+    const stranger = "40733000999@s.whatsapp.net";
+    const code = refusal(await client.tool("send_message", { chat_id: stranger, text: "salut", account_id: TENANT }));
+    assert.equal(code, "NOT_CONNECTED");
+    assert.ok(DEFINITELY_UNSENT.includes(code), "Calfa retries it later instead of failing the message for good");
+    assert.equal(f.sent.length, 0);
   });
 
   test("the account's write budget refuses with RATE_LIMITED before anything is sent", async (t) => {

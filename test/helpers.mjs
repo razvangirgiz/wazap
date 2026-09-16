@@ -10,9 +10,12 @@ import { setTimeout as sleep } from "node:timers/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { randomUUID } from "node:crypto";
+
 import { singletonSource } from "../dist/account-hub.js";
 import { accountPaths } from "../dist/config.js";
 import { sqlite } from "../dist/db/sqlite.js";
+import { DRAFT_TTL_MS, DraftStore, draftExpired, draftNotFound, formatDraftPreview } from "../dist/drafts.js";
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
 export const BINARY = join(repoRoot, "dist", "index.js");
@@ -165,6 +168,33 @@ export function openService(WhatsAppService, config, account = DEFAULT_ACCOUNT) 
 /** Enough of an AccountHub for HTTP tests that only need one stub WhatsApp. */
 export function stubAccountSource(wa) {
   return singletonSource(wa);
+}
+
+/**
+ * The draft half of a WhatsAppApi stand-in, in memory: put a payload against a
+ * recipient, view it the way the service does, and take it once, with the
+ * service's DRAFT_NOT_FOUND and DRAFT_EXPIRED. The service's own drafts live in
+ * the account database; that store has its own tests.
+ */
+export function draftStub(now = Date.now, ttlMs = DRAFT_TTL_MS) {
+  const drafts = new Map();
+  const views = new DraftStore(now, ttlMs);
+  return {
+    put(to, payload) {
+      const id = `d_${randomUUID().replaceAll("-", "").slice(0, 16)}`;
+      const draft = { id, to, payload, preview: formatDraftPreview(to, payload), expiresAt: now() + ttlMs, keyId: id };
+      drafts.set(id, draft);
+      return draft;
+    },
+    view: (draft) => views.view(draft),
+    take(id) {
+      const draft = drafts.get(id);
+      if (draft === undefined) throw draftNotFound(id);
+      drafts.delete(id);
+      if (draft.expiresAt <= now()) throw draftExpired(id);
+      return draft;
+    },
+  };
 }
 
 /** registerTools takes an AccountSource. Stubs and live services go through here. */

@@ -2,10 +2,9 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 
 import { registerTools, toolError, TOOL_NAMES } from "../dist/tools.js";
-import { DraftStore } from "../dist/drafts.js";
 import { WazapError, ERROR_GUIDE } from "../dist/errors.js";
 import { WhatsAppService } from "../dist/whatsapp.js";
-import { asToolSource, connectedService } from "./helpers.mjs";
+import { asToolSource, connectedService, draftStub } from "./helpers.mjs";
 
 /** Stand-in for McpServer: records what got registered and lets us call it. */
 function fakeServer() {
@@ -116,7 +115,7 @@ test("a handler that throws a raw error is reported as WHATSAPP_ERROR, never as 
 });
 
 function draftApi(confirm) {
-  const store = new DraftStore();
+  const store = draftStub();
   const to = { chat_id: "40722123456@s.whatsapp.net", name: "Ana", number: "40722123456" };
   return {
     draft: async (payload) => store.view(store.put(to, payload)),

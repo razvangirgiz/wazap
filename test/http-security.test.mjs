@@ -7,8 +7,7 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { startHttpEndpoint } from "../dist/server.js";
 import { registerTools } from "../dist/tools.js";
-import { DraftStore } from "../dist/drafts.js";
-import { asToolSource, offlineConfig } from "./helpers.mjs";
+import { asToolSource, draftStub, offlineConfig } from "./helpers.mjs";
 
 const CHAT = "40722123456@s.whatsapp.net";
 function fixture(t) {
@@ -18,7 +17,7 @@ function fixture(t) {
   writeFileSync(file, "synthetic-private-data");
   let reads = 0;
   let downloads = 0;
-  const store = new DraftStore();
+  const store = draftStub();
   function read(source) {
     if (source?.file_path) {
       reads++;
