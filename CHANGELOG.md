@@ -42,6 +42,29 @@
   `transcription` block and `wazap status` a `voice queue` line: counts, the
   current run's age, a pause and the latest reason, never content.
 
+- **Webhook events survive a restart.** Each event waits in an outbox inside
+  the account database, written with the message it announces, and is posted
+  one at a time per account in the order it was queued. A timeout, an
+  unreachable receiver, `408`, `425`, `429` or `5xx` is retried after 1 s, 5 s,
+  30 s, 2 min, 10 min, then hourly for up to 24 hours; any other `4xx` still
+  fails at once. A POST a crash interrupted is sent again, so a receiver may
+  see an event twice: dedupe on `message_id`. A message event carries the
+  message as it is when posted, with an edit or transcript that arrived
+  meanwhile, and is not posted at all once the message is deleted, expired or
+  cleared. Nothing waits in memory any more, so no event is dropped for a full
+  backlog.
+- **Webhook message events carry `contact_id` and `phone`.** `contact_id` is
+  the sender's stable contact in the account database, and `phone` their
+  number in E.164, `null` while unknown. `read_messages` and the other message
+  views add `sender.contact_id`; `list_chats` adds `contact_id` and `phone`
+  for one-to-one chats. No existing field changed.
+- **`webhook.delivery` counts the outbox.** `delivered` covers the last 7
+  days, `failed` and `cancelled` the last 30; `cancelled`, `pending`,
+  `retrying`, `last_status` and `oldest_pending_at` are new. `wazap status` and
+  doctor read it from the account database, server running or not, and warn
+  while an event is being retried; `accounts/<id>/webhook.json` is no longer
+  written.
+
 ### Fixed
 
 - **`recall` no longer answers a long question with one-word coincidences.**

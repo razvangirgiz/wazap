@@ -675,10 +675,9 @@ accounts moves into `accounts/default/` the first time a wazap command runs.
     media/          downloads from download_media
     wazap.sqlite    the account database: chats, contacts, messages, reactions,
                     receipts, transcripts, notes, recall vectors, deletion
-                    barriers (plus -wal and -shm beside it)
+                    barriers, the webhook outbox (plus -wal and -shm beside it)
     previews/       one small JPEG per photo or video already previewed
     qr.png          last QR, when login showed one
-    webhook.json    webhook delivery counters, once the server has posted an event
     legacy/         an earlier wazap's store.json, history/, retention.json,
                     notes.json and recall/, once imported; deleted a week later
     wazap.<time>.previous-owner.sqlite
@@ -1246,11 +1245,24 @@ npx wazap-mcp config webhook off
 ```
 
 On without a URL or secret fails `wazap status`, doctor and setup. A failed
-delivery never stops WhatsApp or MCP. A timeout, an unreachable URL, or a
-`408`, `425`, `429` or `5xx` is retried twice (200 ms, then 500 ms). Any other
-`4xx`, such as the `401` of a receiver whose API key changed, is a refusal: it
-is posted once, and the error names the status with a hint. Either way the
-failure sets `webhook.last_error`, which the next delivery clears.
+delivery never stops WhatsApp or MCP.
+
+Events wait in an outbox inside the account database, written in the same
+transaction as the message they announce, so a restart or a crash loses none.
+They are posted one at a time per account, oldest first, each POST bounded by
+10 seconds. A timeout, an unreachable URL, or a `408`, `425`, `429` or `5xx` is
+retried after 1 s, 5 s, 30 s, 2 min and 10 min, then hourly, until 24 hours
+after the event; then it has failed. Any other `4xx`, such as the `401` of a
+receiver whose API key changed, is a refusal: the event is posted once and
+fails, and the error names the status with a hint. Either way the failure sets
+`webhook.last_error`, which the next delivery clears. An event is posted at
+least once: a POST a crash interrupted is sent again, so dedupe on
+`message_id`. Turning the webhook off, or dropping an event from
+`WAZAP_WEBHOOK_EVENTS`, cancels what waits; nothing is queued while it is off.
+
+A message event is built when it is posted, from the message as it is then: an
+edit or a transcript that arrived in the meantime goes with it, and a message
+deleted, expired or cleared first is not posted at all.
 
 Redirects are never followed. Response bodies are cancelled without being read,
 including successful ones. Diagnostics retain the destination host, status and
@@ -1260,17 +1272,20 @@ fragments are refused. Webhook and transcription destinations are trusted
 operator configuration, not agent-supplied public-media URLs: configure only
 receivers allowed to see this account's data.
 
-`get_status` counts events since the server started in `webhook.delivery`:
-`delivered`, `failed` (a retried event that never got through counts once),
-`dropped` (turned away by a full backlog of 256), `consecutive_failures`,
-`last_success_at`, `last_failure_at`, `last_failure` and `last_dropped_at`.
-The server also keeps them in `accounts/<id>/webhook.json`, written at most
-every 5 s, so `wazap status` in another terminal sees them: three failed
-events in a row fail the webhook check with the fix, a failure since the last
-delivery or a drop in the last day warns, and the check passes again with the
-server's next delivery. `webhook test` runs in a process of its own and does
-not clear it. The log says the first failure of a run, a count every 100
-failures, and one line when delivery comes back, not a line per event.
+`get_status` counts the outbox's events in `webhook.delivery`: `delivered`
+(kept 7 days), `failed` and `cancelled` (kept 30 days; a retried event that
+never got through counts once), `pending`, `dropped` (events the account
+database could not store), `consecutive_failures`, `retrying` (failed POSTs of
+the oldest waiting event), `last_success_at`, `last_failure_at`,
+`last_failure`, `last_status`, `last_dropped_at` and `oldest_pending_at`.
+`wazap status` and doctor read the same outbox read-only, whether or not the
+server runs: three failed events in a row, or three failed POSTs of the oldest
+waiting one, fail the webhook check with the fix; one failure since the last
+delivery, or an event being retried, warns; the check passes again with the
+next delivery. `webhook test` posts its probe directly, not through the
+outbox, and does not change the counters. The log says the first failure of a
+run, a count every 100 failures, and one line when delivery comes back, not a
+line per event.
 
 An account may set `webhook_url`,
 `webhook_secret` and `webhook_events` in `accounts.json`; those win over the
@@ -1285,6 +1300,12 @@ HMAC: `X-Wazap-Signature` is `sha256=<hex>`, HMAC-SHA256 of the exact raw
 JSON body with the secret that signed it. Verify that raw body, not a
 re-serialized object. HTTPS only, except `http://` on loopback.
 
+`contact_id` is the sender's contact in the account database: the same number
+for the same person however WhatsApp spells their id, including after the
+number behind a `@lid` becomes known. `phone` is the sender's number in E.164
+(`+15550100`), or `null` while WhatsApp has not revealed it; `from` keeps its
+old form. For `message_sent` both name the account itself.
+
 `text` is a preview, cut at 2000 characters and ending in a single `…`.
 `truncated` is true when it was cut. For `kind: "audio"`, `text` is the
 transcription when wazap auto-transcribed the note itself, which it does for
@@ -1296,10 +1317,11 @@ finish within the 60 seconds. `ts` is the original local
 time with a numeric offset, kept for consumers already reading it, and
 `timestamp` is the same instant in UTC.
 
-Events are not guaranteed to arrive in the order they happened. A message held
-for its transcript is overtaken by the messages behind it, so order by
-`timestamp` and not by arrival. Connection events are the exception: they are
-delivered in the order the link moved in.
+Events arrive in the order the account queued them: nothing is posted while an
+older event waits for its transcript or its next retry. That is the order
+WhatsApp delivered the messages in, which a late or retried delivery on its
+side can make differ from the order they were written, so order by `timestamp`
+when it matters.
 
 A message another person sent:
 
@@ -1307,6 +1329,8 @@ A message another person sent:
 {
   "event": "message_received",
   "from": "15550100",
+  "contact_id": 42,
+  "phone": "+15550100",
   "chat_id": "15550100@s.whatsapp.net",
   "ts": "2026-09-08T17:00:00+03:00",
   "timestamp": "2026-09-08T14:00:00.000Z",
@@ -1327,6 +1351,8 @@ A message sent from the phone, here in the "Message yourself" chat:
 {
   "event": "message_sent",
   "from": "15551234",
+  "contact_id": 1,
+  "phone": "+15551234",
   "chat_id": "15551234@s.whatsapp.net",
   "ts": "2026-09-08T17:04:12+03:00",
   "timestamp": "2026-09-08T14:04:12.000Z",
@@ -1357,7 +1383,9 @@ mean the same status post once.
 
 `connection` reports what the socket does while wazap is running. A clean
 shutdown posts nothing, and a crash posts nothing either, so silence does not
-mean the link is up. Poll `get_status` when you need to know that.
+mean the link is up. Poll `get_status` when you need to know that. A
+`connection` event the receiver did not take is retried like any other, and
+the next change waits behind it.
 
 ## Settings
 
