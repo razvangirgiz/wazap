@@ -429,7 +429,8 @@ older history when the local store runs out, which takes a few seconds.`,
     description: `Everything that happened recently, grouped by chat. This is the catch-up tool:
 one call instead of list_chats plus a read_messages per chat. WhatsApp's own
 notices — device linking, group membership changes, encryption notices — are left
-out so the counts are conversation; pass include_system to see them.`,
+out so the counts are conversation; pass include_system to see them. A chat
+lists at most its newest 2,000 messages of the window.`,
     schema: {
       hours: z.number().int().min(1).max(168).default(24).describe("Look-back window in hours (1-168)"),
       filter: z

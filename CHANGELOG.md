@@ -13,10 +13,16 @@
   answer `NOT_CONNECTED` and `get_status` says it is preparing. The legacy
   files stay where they are and are not read again.
 - **`search_messages` has no per-chat window.** Every kept message is
-  searched, and `coverage.per_chat_cap` is `null`.
+  searched, and `coverage.per_chat_cap` is `null`. A query so short or so
+  common that the search reaches its scan limit answers `scan_capped: true`
+  and `searched_back_to`, with a line saying to narrow it.
 - **`recall` matches by words and meaning at once**, fusing the two rankings;
   each hit says which matched, and `similarity` is `null` for a hit found by
-  its words alone. `WAZAP_RECALL_MAX` no longer caps anything.
+  its words alone. A match found by meaning still fades with age, one chat
+  still takes at most three leading places and a near-duplicate still trails.
+  The index is kept in the database and indexing resumes where it stopped; a
+  text the embedding server refuses is skipped until its words change.
+  `WAZAP_RECALL_MAX` no longer caps anything.
 - **`WAZAP_PERSIST_HISTORY=0` removes stored messages at every start and
   stop**, not only under `WAZAP_RETENTION=1`; barriers, chats, contacts and
   notes stay.
