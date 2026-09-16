@@ -191,6 +191,8 @@ export class Messages {
     const senderId = this.senderIdFor(input, chat);
 
     const gone = this.wasRetracted(chat, input.fromMe, input.keyId);
+    // The status feed keeps no tombstones: its retraction record is the barrier, and a story's day is a hard end.
+    if (gone !== null && chat.kind === "status") return { outcome: "deleted", id: null, sid };
     if (gone !== null) {
       // Its tombstone was purged with a clear, but the message stays gone.
       this.c.run(
@@ -207,6 +209,10 @@ export class Messages {
       return { outcome: "deleted", id, sid };
     }
 
+    if (expiresAt !== null && expiresAt <= now && chat.kind === "status") {
+      this.recordRetracted(chat.id, input.fromMe, input.keyId, now);
+      return { outcome: "expired", id: null, sid };
+    }
     if (expiresAt !== null && expiresAt <= now) {
       this.c.run(
         `INSERT INTO messages(id, chat_id, key_id, from_me, sender_id, ts, type, expires_at, deleted_at)
@@ -483,15 +489,19 @@ export class Messages {
     return row?.expires_at ?? null;
   }
 
-  /** Every message past its deadline becomes a tombstone, a chunk per transaction. */
+  /**
+   * Every message past its deadline becomes a tombstone, a chunk per
+   * transaction. An expired story leaves no row at all: its retraction record
+   * keeps a replay out, and the status feed is not walked past a day of them.
+   */
   expireDue(): Promise<BulkDeleteResult> {
     return this.c.bulk(async () => {
       const result: BulkDeleteResult = { count: 0, sids: [], mediaPaths: [] };
       await this.c.chunked(() => {
         const now = this.c.now();
         const started = performance.now();
-        const due = this.c.all<{ id: number; sid: string }>(
-          `SELECT m.id, ${SID_EXPR} AS sid FROM messages m INDEXED BY messages_expiry
+        const due = this.c.all<{ id: number; sid: string; kind: string }>(
+          `SELECT m.id, ${SID_EXPR} AS sid, c.kind FROM messages m INDEXED BY messages_expiry
              JOIN chats c ON c.id = m.chat_id LEFT JOIN chats ck ON ck.id = c.merged_into
            WHERE m.expires_at IS NOT NULL AND m.deleted_at IS NULL AND m.expires_at <= ? ORDER BY m.expires_at LIMIT ?`,
           now,
@@ -500,6 +510,7 @@ export class Messages {
         let done = 0;
         for (const row of due) {
           result.mediaPaths.push(...this.tombstone(row.id, now));
+          if (row.kind === "status") this.c.run("DELETE FROM messages WHERE id = ?", row.id);
           result.sids.push(row.sid);
           done++;
           if (performance.now() - started > this.c.chunkBudgetMs) break;

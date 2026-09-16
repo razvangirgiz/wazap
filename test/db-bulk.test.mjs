@@ -124,10 +124,10 @@ test("an expiry sweep over thousands of rows yields between chunks and hands bac
   const { db, clock } = openTemp();
   const rows = [];
   for (let i = 0; i < 2500; i++) {
-    rows.push(textMessage("status@broadcast", `S${i}`, T0 + i, `status ${i}`, { senderJid: OTHER, expiresAt: clock.now + 1000 + (i % 7) }));
+    rows.push(textMessage(PEER, `S${i}`, T0 + i, `mesaj ${i}`, { expiresAt: clock.now + 1000 + (i % 7) }));
   }
   db.messages.upsertMany(rows);
-  for (let i = 0; i < 40; i++) db.messages.setMedia(sid(false, "status@broadcast", `S${i}`), "download", `/media/S${i}`);
+  for (let i = 0; i < 40; i++) db.messages.setMedia(sid(false, PEER, `S${i}`), "download", `/media/S${i}`);
   clock.now += 2000;
   const { result, turns, longest } = await watchLoop(() => db.messages.expireDue());
   assert.equal(result.count, 2500);
@@ -136,6 +136,29 @@ test("an expiry sweep over thousands of rows yields between chunks and hands bac
   assert.ok(longest < MAX_BLOCK_MS, `longest stall ${longest.toFixed(1)} ms`);
   assert.equal(db.counts().tombstones, 2500);
   assert.equal(db.messages.nextExpiry(), null);
+  db.close();
+});
+
+test("expired stories leave the status feed for good: no tombstone left to walk, and a replay stays out", async () => {
+  const { db, clock } = openTemp();
+  const STATUS = "status@broadcast";
+  const story = (key, ts, expiresAt) => textMessage(STATUS, key, ts, `story ${key}`, { senderJid: OTHER, expiresAt });
+  db.messages.upsertMany(Array.from({ length: 300 }, (_, i) => story(`S${i}`, T0 + i, clock.now + 1000)));
+  db.messages.upsert(story("LIVE", T0 + 500, clock.now + 86_400_000));
+  db.messages.setMedia(sid(false, STATUS, "S0"), "preview", "/previews/S0.jpg");
+  assert.equal(db.messages.upsert(story("LATE", T0 - 86_400_000, clock.now - 1)).outcome, "expired", "a story synced after its day");
+  clock.now += 2000;
+  const swept = await db.messages.expireDue();
+  assert.equal(swept.count, 300);
+  assert.deepEqual(swept.mediaPaths, ["/previews/S0.jpg"]);
+  assert.equal(db.counts().tombstones, 0, "no expired story stays behind as a row");
+  assert.deepEqual(db.messages.chatPage(STATUS, { limit: 10 }).items.map((m) => m.keyId), ["LIVE"]);
+  for (const key of ["S0", "LATE"]) {
+    assert.notEqual(db.messages.upsert(story(key, T0, clock.now + 86_400_000)).outcome, "inserted", `${key} replayed stays gone`);
+    assert.equal(db.messages.get(sid(false, STATUS, key)), null);
+  }
+  assert.equal(db.counts().tombstones, 0, "a replay leaves no row either");
+  assert.deepEqual(db.integrityCheck(), { ok: true, problems: [] });
   db.close();
 });
 
