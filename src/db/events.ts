@@ -9,8 +9,12 @@
  *      └──────retry───────┘
  *   pending/sending ──cancel──▶ cancelled
  *
- * A `sending` row is the POST in flight, or one a crash interrupted: claim()
- * takes it again, so a receiver may see an event twice but never loses one.
+ * A `sending` row is a POST in flight, or one a crash interrupted. claim()
+ * takes one over only once it is older than a POST can run, so two
+ * dispatchers over one file (a service stopping while its successor starts)
+ * never post one event at once; a receiver may still see an event twice after
+ * a crash, but never loses one. The writes that record a POST's answer name
+ * the attempt they answer, so a dispatcher that was overtaken changes nothing.
  *
  * Every event is in a lane — its chat, or the account's connection — and only
  * the oldest open event of each lane may be posted (laneHeads).
@@ -167,25 +171,31 @@ export class Events {
     return this.c.get(`SELECT 1 FROM events INDEXED BY events_lane WHERE lane = ? AND seq > ? AND ${OPEN} LIMIT 1`, lane, seq) !== undefined;
   }
 
-  /** Marks the POST as started before it is sent, so a crash during it leaves a row that is sent again. */
-  claim(seq: number, at: number): boolean {
+  /**
+   * Marks the POST as started before it is sent, so a crash during it leaves a
+   * row that is sent again. A `sending` row is taken over only when it was
+   * claimed at or before `takeOverBefore`; null takes pending rows only.
+   */
+  claim(seq: number, at: number, takeOverBefore: number | null = null): boolean {
     return this.c.write(
       () =>
         this.c.run(
           `UPDATE events SET state = 'sending', attempts = attempts + 1, next_attempt_at = NULL, updated_at = ?
-           WHERE seq = ? AND ${OPEN}`,
+           WHERE seq = ? AND (state = 'pending' OR (state = 'sending' AND updated_at <= ?))`,
           at,
-          seq
+          seq,
+          takeOverBefore ?? -1
         ) > 0
     );
   }
 
-  delivered(seq: number, status: number | null, at: number): boolean {
-    return this.close(seq, "delivered", status, null, at);
+  /** `attempt`: the attempts count the POST's claim left, when this records its answer; otherwise any open event. */
+  delivered(seq: number, status: number | null, at: number, attempt?: number): boolean {
+    return this.close(seq, "delivered", status, null, at, attempt);
   }
 
-  fail(seq: number, status: number | null, error: string, at: number): boolean {
-    return this.close(seq, "failed", status, error, at);
+  fail(seq: number, status: number | null, error: string, at: number, attempt?: number): boolean {
+    return this.close(seq, "failed", status, error, at, attempt);
   }
 
   /** Why it will never be posted: the message is gone, or the webhook no longer wants it. */
@@ -201,18 +211,19 @@ export class Events {
     );
   }
 
-  /** Back to waiting after a POST that may succeed later. */
-  retry(seq: number, nextAttemptAt: number, status: number | null, error: string, at: number): boolean {
+  /** Back to waiting after a POST that may succeed later; `attempt` as for delivered(). */
+  retry(seq: number, nextAttemptAt: number, status: number | null, error: string, at: number, attempt?: number): boolean {
     return this.c.write(
       () =>
         this.c.run(
           `UPDATE events SET state = 'pending', next_attempt_at = ?, last_status = ?, last_error = ?, updated_at = ?
-           WHERE seq = ? AND state = 'sending'`,
+           WHERE seq = ? AND state = 'sending' AND attempts = coalesce(?, attempts)`,
           instant(nextAttemptAt, "nextAttemptAt"),
           status,
           error,
           at,
-          seq
+          seq,
+          attempt ?? null
         ) > 0
     );
   }
@@ -320,17 +331,26 @@ export class Events {
     };
   }
 
-  private close(seq: number, state: "delivered" | "failed", status: number | null, error: string | null, at: number): boolean {
+  private close(
+    seq: number,
+    state: "delivered" | "failed",
+    status: number | null,
+    error: string | null,
+    at: number,
+    attempt: number | undefined
+  ): boolean {
+    const guard = attempt === undefined ? OPEN : "state = 'sending' AND attempts = ?";
     return this.c.write(
       () =>
         this.c.run(
           `UPDATE events SET state = ?, next_attempt_at = NULL, last_status = ?, last_error = ?, updated_at = ?
-           WHERE seq = ? AND ${OPEN}`,
+           WHERE seq = ? AND ${guard}`,
           state,
           status,
           error,
           at,
-          seq
+          seq,
+          ...(attempt === undefined ? [] : [attempt])
         ) > 0
     );
   }

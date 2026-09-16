@@ -23,8 +23,8 @@
  *   least 30 s old, so a receiver that came back hears everything within a
  *   POST or two instead of at its next slot.
  * - At least once: a POST is marked as started before it is sent, and a crash
- *   during it leaves the event to be sent again. Receivers dedupe by
- *   message_id.
+ *   during it leaves the event to be sent again, once the claim is older than
+ *   a POST can run. Receivers dedupe by message_id.
  * - Delivered events are kept 7 days, failed and cancelled ones 30.
  */
 import { setImmediate as turn, setTimeout as sleep } from "node:timers/promises";
@@ -51,6 +51,12 @@ export const OUTBOX_RETRY_EVERY_MS = 5 * MINUTE;
 export const OUTBOX_GIVE_UP_MS = DAY;
 /** A waiting retry whose last attempt is at least this old is brought forward by new traffic. */
 export const OUTBOX_NUDGE_AFTER_MS = 30_000;
+/**
+ * A `sending` event claimed this long ago is no POST still running: its
+ * dispatcher crashed or was abandoned, and another may take it over. Until
+ * then another dispatcher over the same file leaves it, and its chat, alone.
+ */
+export const OUTBOX_SENDING_STALE_MS = WEBHOOK_TIMEOUT_MS + 5_000;
 /** How long an incoming voice note's event waits for the transcript wazap is making of it. */
 export const WEBHOOK_TRANSCRIPT_WAIT_MS = MINUTE;
 /** While an event waits for a transcript, the database is looked at again this often. */
@@ -158,7 +164,7 @@ export class WebhookOutbox {
   /**
    * Once the account database is ready: prunes what aged out, arms the daily
    * prune, and posts whatever an earlier run left, including a POST a crash
-   * interrupted.
+   * interrupted once its claim is older than a POST can run.
    */
   start(): void {
     if (this.started || this.stopped) return;
@@ -203,7 +209,7 @@ export class WebhookOutbox {
   /**
    * Posts nothing more, and waits for the POST in flight to be answered and
    * recorded, as long as its own timeout allows. One that outlives that stays
-   * `sending` and is posted again by the next start.
+   * `sending`, and the next dispatcher posts it again once the claim is stale.
    */
   async stop(): Promise<void> {
     this.stopped = true;
@@ -291,6 +297,11 @@ export class WebhookOutbox {
     }
     let wake = Infinity;
     for (const event of heads) {
+      if (event.state === "sending" && event.updatedAt > now - OUTBOX_SENDING_STALE_MS) {
+        // Another dispatcher's POST, still running: its chat waits for the answer.
+        wake = Math.min(wake, event.updatedAt + OUTBOX_SENDING_STALE_MS);
+        continue;
+      }
       if (!WEBHOOK_EVENTS.some((name) => name === event.kind && settings.events.includes(name))) {
         db.events.cancel(event.seq, `${event.kind} is not an enabled event`, now);
         return NEXT;
@@ -333,7 +344,7 @@ export class WebhookOutbox {
         this.noteFailure(error);
         return NEXT;
       }
-      if (!db.events.claim(event.seq, now)) return NEXT;
+      if (!db.events.claim(event.seq, now, now - OUTBOX_SENDING_STALE_MS)) return NEXT;
       return { kind: "post", event, payload, settings };
     }
     return wake === Infinity ? IDLE : { kind: "wait", until: wake };
@@ -342,24 +353,25 @@ export class WebhookOutbox {
   private async post({ event, payload, settings }: Extract<Step, { kind: "post" }>): Promise<void> {
     const result = await this.host.sink().attempt(payload, settings);
     const db = this.host.db();
-    // Stays `sending`: the next start posts it again.
+    // Stays `sending`: another dispatcher posts it again once the claim is stale.
     if (db === null || !db.isOpen) return;
     const now = this.now();
+    const attempt = event.attempts + 1;
     if (result.ok) {
-      db.events.delivered(event.seq, result.status, now);
+      db.events.delivered(event.seq, result.status, now, attempt);
       this.noteDelivery();
       // The receiver answers again: what waits for a retry need not wait for its slot.
       this.nudged = true;
       return;
     }
     this.noteFailure(result.error);
-    const failed = event.attempts + 1;
     const deadline = event.createdAt + this.giveUpMs;
     if (result.retry && now < deadline) {
-      const next = Math.min(now + retryDelay(failed, this.retryDelays, this.retryEveryMs), deadline);
-      db.events.retry(event.seq, next, result.status, result.error, now);
+      const next = Math.min(now + retryDelay(attempt, this.retryDelays, this.retryEveryMs), deadline);
+      db.events.retry(event.seq, next, result.status, result.error, now, attempt);
     } else {
-      db.events.fail(event.seq, result.status, result.retry ? `${result.error}; gave up 24 h after the event` : result.error, now);
+      const error = result.retry ? `${result.error}; gave up 24 h after the event` : result.error;
+      db.events.fail(event.seq, result.status, error, now, attempt);
     }
   }
 

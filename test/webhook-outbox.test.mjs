@@ -16,6 +16,7 @@ import { AccountDb } from "../dist/db/index.js";
 import {
   CONNECTION_LANE,
   OUTBOX_GIVE_UP_MS,
+  OUTBOX_SENDING_STALE_MS,
   OUTBOX_RETRY_DELAYS_MS,
   OUTBOX_RETRY_EVERY_MS,
   WEBHOOK_TRANSCRIPT_WAIT_MS,
@@ -478,9 +479,10 @@ test("stop waits for the POST in flight and records it; a POST a crash cut short
   await stopping;
   assert.equal(state(h, seq).state, "delivered", "stop recorded the answer before returning");
 
-  // A row left `sending`, as a process killed mid-POST leaves it, is due on the next start.
+  // A row left `sending`, as a process killed mid-POST leaves it, is taken over once no POST can still be running.
   const again = messageEvent(h, "CUT");
   h.db.events.claim(again.seq, h.clock.now);
+  h.clock.now += OUTBOX_SENDING_STALE_MS;
   const recorder = answering(204);
   const reopened = new WebhookOutbox(
     {
@@ -497,6 +499,73 @@ test("stop waits for the POST in flight and records it; a POST a crash cut short
   assert.deepEqual(recorder.bodies.map((body) => body.message_id), [again.sid]);
   assert.equal(state(h, again.seq).attempts, 2);
   assert.equal(state(h, again.seq).state, "delivered");
+});
+
+test("a dispatcher starting while another still posts over the same file leaves that POST and its chat alone until it is stale", async (t) => {
+  const old = harness(t);
+  const clock = old.clock;
+  let inFlight = 0;
+  let peak = 0;
+  const bodies = [];
+  let release = () => {};
+  const gate = new Promise((resolve) => {
+    release = resolve;
+  });
+  let started = () => {};
+  const posting = new Promise((resolve) => {
+    started = resolve;
+  });
+  const slow = new WebhookSink(readyEnv(), {
+    post: async (_url, init) => {
+      inFlight++;
+      peak = Math.max(peak, inFlight);
+      bodies.push(JSON.parse(init.body).message_id);
+      if (bodies.length === 1) {
+        started();
+        await gate;
+      }
+      inFlight--;
+      return new Response(null, { status: 204 });
+    },
+  });
+  const over = (db) =>
+    new WebhookOutbox(
+      { db: () => (db.isOpen ? db : null), sink: () => slow, payload: (event, message) => ({ event: event.kind, message_id: message.sid }), awaitingTranscript: () => false },
+      { now: () => clock.now }
+    );
+  const first = messageEvent(old, "A1");
+  const second = messageEvent(old, "A2");
+  const retiring = over(old.db);
+  retiring.start();
+  await posting;
+
+  const successor = AccountDb.open(old.path, { now: () => clock.now });
+  t.after(() => successor.close());
+  const next = over(successor);
+  next.start();
+  await next.idle();
+  assert.deepEqual(bodies, [first.sid], "the new dispatcher did not post the event in flight, nor the one behind it");
+
+  const stopping = retiring.stop();
+  release();
+  await stopping;
+  assert.equal(successor.events.get(first.seq).state, "delivered");
+  assert.equal(successor.events.get(first.seq).attempts, 1);
+
+  clock.now += 1;
+  next.kick();
+  await next.idle();
+  assert.deepEqual(bodies, [first.sid, second.sid]);
+  assert.equal(peak, 1, "never two POSTs at once");
+  await next.stop();
+
+  // A claim that outlived any POST is taken over; the overtaken dispatcher's late answer changes nothing.
+  const third = messageEvent(old, "A3");
+  successor.events.claim(third.seq, clock.now);
+  clock.now += OUTBOX_SENDING_STALE_MS;
+  assert.equal(successor.events.claim(third.seq, clock.now, clock.now - OUTBOX_SENDING_STALE_MS), true);
+  assert.equal(successor.events.delivered(third.seq, 204, clock.now, 1), false, "attempt 1 was overtaken by attempt 2");
+  assert.equal(successor.events.delivered(third.seq, 204, clock.now, 2), true);
 });
 
 test("a run of identical refusals logs a few lines, and one line when delivery comes back", async (t) => {
@@ -614,16 +683,20 @@ function child(args) {
   return { proc, exited };
 }
 
-/** A dispatcher in this process over the database the dead child left, until `done`. */
+/** A dispatcher in this process over the database the dead child left, started a little later, until `done`. */
 async function afterRestart(t, path, url, done) {
   const db = AccountDb.open(path);
   const sink = new WebhookSink(readyEnv("all", url));
-  const outbox = new WebhookOutbox({
-    db: () => db,
-    sink: () => sink,
-    payload: (event, message) => ({ event: event.kind, message_id: message.sid, text: message.text }),
-    awaitingTranscript: () => false,
-  });
+  const outbox = new WebhookOutbox(
+    {
+      db: () => db,
+      sink: () => sink,
+      payload: (event, message) => ({ event: event.kind, message_id: message.sid, text: message.text }),
+      awaitingTranscript: () => false,
+    },
+    // The restart comes after a POST started by the dead process could have run out.
+    { now: () => Date.now() + OUTBOX_SENDING_STALE_MS }
+  );
   t.after(async () => {
     await outbox.stop();
     db.close();
