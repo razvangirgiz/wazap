@@ -3,9 +3,10 @@
  * after ranking, now over the fused hybrid ranking: a greedy walk in rank
  * order where a near-duplicate of a picked hit, or a hit from a chat that
  * already holds CHAT_SLOT_CAP leading slots, trails the list instead of
- * filling it. Nothing is dropped and no score changes: demoted hits keep their
- * score and sit behind the picked ones, duplicates last, so a list scoped to
- * a single chat keeps its order.
+ * filling it. Demoted hits keep their score and sit behind the picked ones,
+ * duplicates last, so a list scoped to a single chat keeps its order. The one
+ * hit dropped is a copy of a better-ranked hit's exact words — a forward, a
+ * paste — since it would only repeat that answer.
  */
 
 /** One chat holds at most this many leading slots; further hits yield to other chats first. */
@@ -14,7 +15,7 @@ export const CHAT_SLOT_CAP = 3;
 export const NEAR_DUP_JACCARD = 0.8;
 
 interface Profile {
-  /** Folded, whitespace-collapsed text: the exact-duplicate key. */
+  /** Folded, whitespace-collapsed text: two hits equal here differ only in case, accents or spacing. */
   norm: string;
   words: Set<string>;
 }
@@ -45,8 +46,15 @@ export function diversify<T>(ranked: readonly T[], of: (hit: T) => { chat: strin
   const duplicates: T[] = [];
   const perChat = new Map<string, number>();
   const chosen: Profile[] = [];
+  /** The exact words of every hit walked so far, whitespace aside. */
+  const said = new Set<string>();
   for (const hit of ranked) {
     const { chat, text } = of(hit);
+    const exact = text.replace(/\s+/g, " ").trim();
+    if (exact !== "") {
+      if (said.has(exact)) continue;
+      said.add(exact);
+    }
     const current = profile(text);
     if (current.norm !== "" && chosen.some((p) => p.norm === current.norm || nearDuplicate(p.words, current.words))) {
       duplicates.push(hit);

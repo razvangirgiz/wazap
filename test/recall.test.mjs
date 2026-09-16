@@ -768,6 +768,26 @@ test("a Romanian question of three words or more: a paraphrase or two shared wor
   }
 });
 
+test("a forwarded copy with the same words is listed once", async () => {
+  const OTHER = "40700000003@s.whatsapp.net";
+  const THIRD = "40700000004@s.whatsapp.net";
+  const stub = await stubEmbedServer();
+  const { svc, sock } = await serviceWith({ WAZAP_RECALL: "local", WAZAP_EMBED_URL: stub.url });
+  try {
+    const forwarded = "Petrecerea de sâmbătă e la Ana acasă, adresa e strada Florilor 12, etajul 3, interfon 7; aduceți ceva de băut și veniți după ora opt";
+    deliver(sock, [
+      { ...text("X1", forwarded), key: { remoteJid: OTHER, fromMe: false, id: "X1" } },
+      { ...text("Y1", forwarded), key: { remoteJid: THIRD, fromMe: false, id: "Y1" } },
+    ]);
+    await svc.recallIdle();
+    const { data } = await svc.recall("Care e adresa pentru petrecerea de sâmbătă?", undefined, 10);
+    assert.deepEqual(data.hits.map((h) => h.message.text), [forwarded], "the second copy says nothing the first did not");
+  } finally {
+    await svc.stop();
+    stub.server.close();
+  }
+});
+
 test("a one-chat cluster cannot fill the list — another chat's relevant hit surfaces", async () => {
   const OTHER = "40700000003@s.whatsapp.net";
   const stub = await stubEmbedServer();
