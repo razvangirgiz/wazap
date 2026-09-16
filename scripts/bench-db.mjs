@@ -389,6 +389,7 @@ const BUDGETS_P99 = {
   "recent 24h (500)": 60,
   "list chats (50)": 25,
   "waiting 14d": 25,
+  counts: 10,
   "search common word (factur)": 50,
   "search mid-word substring (edin)": 50,
   "search rare word": 50,

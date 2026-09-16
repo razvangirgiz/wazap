@@ -195,7 +195,7 @@ export class AccountDb {
     const row = this.connection.get<Counts & { total: number; hidden: number }>(
       `SELECT (SELECT count(*) FROM messages) AS total,
               (SELECT count(*) FROM messages INDEXED BY messages_tombstones WHERE deleted_at IS NOT NULL) AS tombstones,
-              (SELECT count(*) FROM chats c JOIN messages m ON m.chat_id = c.id
+              (SELECT count(*) FROM chats c CROSS JOIN messages m ON m.chat_id = c.id
                  AND m.id < ((c.cleared_through_ts / 1000) + 1) * 1048576 AND m.ts <= c.cleared_through_ts
                  AND m.deleted_at IS NULL
                WHERE c.cleared_through_ts IS NOT NULL) AS hidden,
