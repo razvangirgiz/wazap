@@ -18,7 +18,7 @@ function message(id = "E1", duration = 10, content = { conversation: SECRET }) {
   return { key: { remoteJid: CHAT, fromMe: false, id }, messageTimestamp: START / 1000,
     ephemeralStartTimestamp: START / 1000, ephemeralDuration: duration, message: content };
 }
-async function fixture(t, { embed, timers = false } = {}) {
+async function fixture(t, { embed, timers = false, retention = true } = {}) {
   let now = START;
   if (timers) t.mock.timers.enable({ apis: ["Date", "setTimeout"], now });
   else t.mock.method(Date, "now", () => now);
@@ -32,7 +32,7 @@ async function fixture(t, { embed, timers = false } = {}) {
     let result;
     try {
       result = connectedService(WhatsAppService, { prefix: "wazap-expiry-", id: "40700000001@s.whatsapp.net", name: "Synthetic",
-        config: { dataDir: dir, persistHistory: true, readOnly: false, rateLimitPerMinute: 0, ...config } });
+        config: { dataDir: dir, persistHistory: true, readOnly: false, rateLimitPerMinute: 0, retention, ...config } });
     } finally {
       for (const key of Object.keys(process.env)) if (key.startsWith("WAZAP_")) delete process.env[key];
       for (const [key, value] of saved) process.env[key] = value;
@@ -72,6 +72,17 @@ test("already-expired messages never enter memory, history, snapshot or recall",
   assert.equal(svc.hasMessage(sid(raw)), false);
   assert.equal(svc.recallStore.count, 0);
   await noPayload(svc);
+});
+
+test("without WAZAP_RETENTION a disappearing message stays readable past its deadline", async (t) => {
+  const { svc, advance } = await fixture(t, { retention: false });
+  const raw = await seed(svc);
+  advance(60_000);
+  await svc.retentionIdle();
+  assert.equal((await svc.getMessage(sid(raw))).text, SECRET);
+  assert.equal(svc.hasMessage(sid(raw)), true);
+  const history = await readFile(join(svc.paths.historyDir, `${CHAT}.jsonl`), "utf8");
+  assert.ok(history.split("\n").filter(Boolean).every((line) => JSON.parse(line).expiresAt === undefined));
 });
 
 test("reads enforce the exact expiry instant even if a scheduled timer has not run", async (t) => {

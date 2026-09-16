@@ -618,35 +618,38 @@ Observed deletes/revokes remove the message from reads immediately and queue
 cleanup of history, snapshots, automatic previews, transcripts and recall rows.
 Successful delete/clear tools wait for local cleanup; a disk failure is reported
 even if WhatsApp already accepted the deletion. Pending preview/transcription
-results cannot restore a deleted message. Old history-sync chat metadata no
-longer keeps an extra embedded copy of the message.
+results cannot restore a deleted message. A revoke only ever removes a message
+in the chat it arrived in. Old history-sync chat metadata no longer keeps an
+extra embedded copy of the message.
 
-`retention.json` (`0600`) keeps account-local message IDs, expiry deadlines and
-chat-clear cutoffs, not bodies. These barriers prevent replay from resurrecting
-deleted/expired messages; **do not remove the file to bypass a load error**.
-They remain even with `WAZAP_PERSIST_HISTORY=0`. Starting with history off now
-invalidates inactive history/snapshot/recall caches from earlier enabled use;
-notes, auth, models and explicit downloads are untouched. Clearing a chat rejects
-backfill dated at or before the local clear time. WhatsApp timestamps have second
-precision, so a message in the same second can be suppressed.
+`retention.json` (`0600`) keeps account-local message IDs and chat-clear cutoffs,
+not bodies. These barriers prevent replay from resurrecting deleted messages;
+they remain even with `WAZAP_PERSIST_HISTORY=0`. Clearing a chat rejects backfill
+dated at or before the local clear time. WhatsApp timestamps have second
+precision, so a message in the same second can be suppressed. If the file is
+unreadable the account refuses to start rather than replay deleted messages;
+restore it from a backup, or move it aside knowingly (messages deleted earlier
+can reappear from local history).
 
-For messages carrying disappearing-message metadata, wazap keeps the earliest
-observed deadline across edits, aliases, backfill and restarts. Reads refuse the
-message at that instant; one background timer per account removes it from memory
-and queues the same disk/index cleanup as deletion. Preview/transcription results,
-forwards, quoted replies and queued/retried webhooks recheck retention before
-publication. Already-started operations cannot be recalled; in-flight jobs may
-hold temporary buffers/files until they settle. Provider-side retention is separate.
+#### Strict retention (`WAZAP_RETENTION=1`, off by default)
 
-The policy is conservative: a marked ephemeral message without a computable
-deadline is refused, and **keep-in-chat hints are not an indefinite exemption**.
-Current chat settings are not retroactively applied to unmarked messages; wazap
-cannot infer a missing per-message timer. Keep the system clock synchronized.
+Without it, wazap keeps what it has seen, as before 0.21: disappearing-message
+timers are not enforced locally. With it:
 
-**Upgrade:** the old semantic index is rebuilt because its index-only rows did
-not record expiry. Older rows absent from retained history need another WhatsApp
-sync to be recoverable. New history, snapshots and index rows also preserve the
-deadline when a later edit strips the original timer fields.
+- For messages carrying disappearing-message metadata, wazap keeps the earliest
+  observed deadline across edits, aliases, backfill and restarts. Reads refuse
+  the message at that instant; one background timer per account removes it from
+  memory and queues the same disk/index cleanup as deletion. Preview/transcription
+  results, forwards, quoted replies and queued/retried webhooks recheck retention
+  before publication. Already-started operations cannot be recalled.
+- The policy is conservative: a marked ephemeral message without a computable
+  deadline is refused, and **keep-in-chat hints are not an indefinite exemption**.
+  Current chat settings are not retroactively applied to unmarked messages. Keep
+  the system clock synchronized.
+- Starting with `WAZAP_PERSIST_HISTORY=0` discards history, snapshot and recall
+  caches left by an earlier history-on run; notes, auth, models and explicit
+  downloads are untouched. A delete observed while recall is unavailable also
+  clears the on-disk index, which is rebuildable.
 
 This is not secure erasure of heap pages, backups or filesystem snapshots.
 Explicit exports, independent quotes/forwards and data already returned or sent

@@ -329,7 +329,7 @@ export class WhatsAppService implements WhatsAppApi {
   /** Groups whose metadata WhatsApp refused, so we stop asking on every read. */
   private readonly unreadableGroups = new Set<string>();
   private readonly store = new Store();
-  private readonly retention = new MessageRetention();
+  private readonly retention: MessageRetention;
   private loadingPersisted = false;
   private stopPromise: Promise<void> | null = null;
   private expiryTimer: ReturnType<typeof setTimeout> | null = null;
@@ -371,6 +371,7 @@ export class WhatsAppService implements WhatsAppApi {
     paths: AccountPaths
   ) {
     this.accountRecord = account;
+    this.retention = new MessageRetention(config.retention === true);
     this.webhook = new WebhookSink(process.env, { account, statsFile: paths.webhookFile });
     const policy = accountPolicy(account, config);
     this.effectiveReadOnly = policy.readOnly;
@@ -4045,7 +4046,7 @@ export class WhatsAppService implements WhatsAppApi {
   }
 
   private retainsRecord(item: { sid: string; jid: string; ts: number; expiresAt?: number }): boolean {
-    if (Date.now() >= (item.expiresAt ?? Infinity)) return false;
+    if (this.config.retention === true && Date.now() >= (item.expiresAt ?? Infinity)) return false;
     const parts = /^(true|false)_([^_]+)_([\s\S]*)$/.exec(item.sid);
     const jid = this.canonical(item.jid);
     const sids = parts ? this.targetSids({ fromMe: parts[1] === "true", remoteJid: parts[2], id: parts[3] }, jid) : [item.sid];
@@ -4066,6 +4067,7 @@ export class WhatsAppService implements WhatsAppApi {
   }
 
   private expiryFor(raw: WAMessage, sid?: string): number | undefined {
+    if (this.config.retention !== true) return undefined;
     let deadline = messageExpiry(raw) ?? Infinity;
     const ids = [...this.targetSids(raw.key, raw.key.remoteJid ?? ""), ...(sid ? [sid] : [])];
     for (const id of ids) deadline = Math.min(deadline, this.retention.expires.get(id)?.at ?? Infinity);
@@ -4132,7 +4134,7 @@ export class WhatsAppService implements WhatsAppApi {
       await this.retention.save(join(this.paths.root, "retention.json"));
       for (const [sid, raw] of this.store.messages) if (!this.retains(raw, sid)) this.store.dropMessage(sid);
       await this.prunePreviews(true);
-      if (!this.config.persistHistory) {
+      if (!this.config.persistHistory && this.config.retention === true) {
         // History-off does not make caches left by an earlier configuration
         // exempt from deletion. Invalidate these inactive, derived caches;
         // never touch notes, explicit downloads, models or auth state.
@@ -4156,7 +4158,7 @@ export class WhatsAppService implements WhatsAppApi {
         await this.flushStoreNow();
       }
       if (this.recallStore) await this.recallStore.removeMatching((item) => !this.retainsRecord(item));
-      else {
+      else if (this.config.retention === true) {
         // Recall may be disabled or unavailable while its previous on-disk
         // index still contains the deleted text. It is rebuildable, not exempt.
         await RecallStore.clearFiles(join(this.paths.root, "recall"));

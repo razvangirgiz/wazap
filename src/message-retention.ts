@@ -14,6 +14,9 @@ export class MessageRetention {
   private error: WazapError | null = null;
   private cleanupQueued = false;
 
+  /** Without `WAZAP_RETENTION`, deadlines are neither recorded nor enforced; deletions always are. */
+  constructor(private readonly enforceExpiry = true) {}
+
   allows(sid: string, jid: string, timestamp: number): boolean {
     return !this.deleted.has(sid) && timestamp > (this.cleared.get(jid) ?? -Infinity) &&
       Date.now() < (this.expires.get(sid)?.at ?? Infinity);
@@ -21,6 +24,7 @@ export class MessageRetention {
 
   /** The first/earliest observed deadline wins, including over stripped edits. */
   noteExpiry(sid: string, jid: string, at: number): boolean {
+    if (!this.enforceExpiry) return false;
     if (!Number.isSafeInteger(at) || at < 0) at = 0;
     if (this.deleted.has(sid) || (this.expires.get(sid)?.at ?? Infinity) <= at) return false;
     this.expires.set(sid, { jid, at });
@@ -86,7 +90,11 @@ export class MessageRetention {
       await pending;
       if (pending === this.work) break;
     }
-    if (this.error) throw this.error;
+    // Report a failure to whoever waits for it, then let later work start clean:
+    // one full disk must not fail every delete until the process restarts.
+    const error = this.error;
+    this.error = null;
+    if (error) throw error;
   }
 
   /** Coalesce queued deletes, but not ones arriving while a rewrite is running. */
@@ -200,7 +208,7 @@ export class MessageRetention {
     return new WazapError(
       "WHATSAPP_ERROR",
       "Message retention state could not be loaded; refusing to replay message history.",
-      "Restore the account's retention.json from a trusted backup; do not remove deletion barriers to bypass this error"
+      "Restore the account's retention.json from a trusted backup, or move it aside knowingly: messages deleted earlier can then reappear from local history"
     );
   }
 }

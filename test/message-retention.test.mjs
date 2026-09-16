@@ -24,7 +24,7 @@ async function idle(svc) {
   await svc.flushStore();
   await svc.recallIdle();
 }
-async function fixture(t, embedding) {
+async function fixture(t, embedding, config = {}) {
   const dir = await mkdtemp(join(tmpdir(), "wazap-retention-"));
   const services = [];
   const boot = async (config = {}) => {
@@ -47,7 +47,7 @@ async function fixture(t, embedding) {
     return result;
   };
   t.after(async () => { for (const svc of services) await svc.stop(); await rm(dir, { recursive: true, force: true }); });
-  const result = await boot();
+  const result = await boot(config);
   return { ...result, boot };
 }
 async function seed(svc, raw = rawMessage()) {
@@ -338,7 +338,7 @@ for (const underLid of [true, false]) test(`a newly learned alias applies an ear
 });
 
 test("disabled recall and interrupted rewrite files are not exempt from cleanup", async (t) => {
-  const { svc, sock } = await fixture(t);
+  const { svc, sock } = await fixture(t, undefined, { retention: true });
   const raw = await seed(svc);
   const dir = join(svc.paths.root, "recall");
   await mkdir(dir, { recursive: true });
@@ -353,15 +353,35 @@ test("disabled recall and interrupted rewrite files are not exempt from cleanup"
 });
 
 test("deleting with history off invalidates inactive old caches and keeps deletion barriers", async (t) => {
-  const { svc, boot } = await fixture(t);
+  const { svc, boot } = await fixture(t, undefined, { retention: true });
   const raw = await seed(svc);
   await svc.stop();
-  const { svc: off, sock } = await boot({ persistHistory: false });
+  const { svc: off, sock } = await boot({ persistHistory: false, retention: true });
   off.ingestMessages([raw]);
   remove(sock, raw);
   await idle(off);
   await assert.rejects(readFile(historyPath(off)), { code: "ENOENT" });
   await assert.rejects(readFile(off.paths.storeFile), { code: "ENOENT" });
+  await off.stop();
+  const { svc: next } = await boot({ persistHistory: false, retention: true });
+  next.ingestMessages([raw]);
+  assert.equal(next.hasMessage(sidOf(raw)), false);
+});
+
+test("without WAZAP_RETENTION, history off and disabled recall keep earlier caches, and deletions still hold", async (t) => {
+  const { svc, boot } = await fixture(t);
+  const raw = await seed(svc);
+  const dir = join(svc.paths.root, "recall");
+  await mkdir(dir, { recursive: true });
+  const index = [join(dir, "meta.jsonl"), join(dir, "vectors.bin")];
+  for (const path of index) await writeFile(path, "earlier index");
+  await svc.stop();
+  const { svc: off, sock } = await boot({ persistHistory: false });
+  off.ingestMessages([raw]);
+  remove(sock, raw);
+  await idle(off);
+  for (const path of index) assert.equal(await readFile(path, "utf8"), "earlier index");
+  await readFile(off.paths.storeFile);
   await off.stop();
   const { svc: next } = await boot({ persistHistory: false });
   next.ingestMessages([raw]);
@@ -375,6 +395,11 @@ test("a failed automatic-cache cleanup is reported instead of acknowledging clea
   await assert.rejects(svc.deleteMessage(sidOf(raw), false), (err) =>
     err.code === "WHATSAPP_ERROR" && /cleanup failed/i.test(err.message) && !err.message.includes(SECRET));
   assert.equal(svc.hasMessage(sidOf(raw)), false);
+
+  // The failure is reported once; a later cleanup that succeeds is not failed by it.
+  await rm(svc.previewPath(sidOf(raw)), { recursive: true, force: true });
+  const next = await seed(svc, rawMessage("M2"));
+  assert.deepEqual(await svc.deleteMessage(sidOf(next), false), { message_id: sidOf(next), for_everyone: false });
 });
 
 test("opening an incomplete recall index clears leftover payload and stale staging bytes", async (t) => {

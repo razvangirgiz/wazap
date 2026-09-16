@@ -38,6 +38,11 @@ export interface Config {
   syncFullHistory: boolean;
   /** Persist chats and messages under the data dir so they survive a restart. */
   persistHistory: boolean;
+  /**
+   * Strict retention: disappearing messages expire locally, and starting with
+   * history off discards caches an earlier history-on run left. Off by default.
+   */
+  retention?: boolean;
   transport: "stdio" | "http";
   httpHost: string;
   httpPort: number;
@@ -362,6 +367,7 @@ export function parseCli(argv: string[] = process.argv.slice(2)): CliInvocation 
       readOnly: values["read-only"] === true || readOnlySetting(process.env.WAZAP_READ_ONLY),
       syncFullHistory: asBool(process.env.WAZAP_SYNC_FULL_HISTORY, false),
       persistHistory: asBool(process.env.WAZAP_PERSIST_HISTORY, true),
+      retention: asBool(process.env.WAZAP_RETENTION, false),
       transport: values.http === true || httpFromEnv ? "http" : "stdio",
       httpHost: values.host ?? (process.env.WAZAP_HOST?.trim() || "127.0.0.1"),
       httpPort: values.port ? asInt(values.port, 8766) : asInt(process.env.WAZAP_PORT, 8766),
