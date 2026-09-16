@@ -257,7 +257,7 @@ test("n8: an event or handled mark on the folded copy of a twin points at the su
   const history = db.messages.upsert(textMessage(PEER, "V", T0, "from history sync"));
   const live = db.messages.upsert(textMessage(PEER_LID, "V", T0, "live delivery"));
   conn.write(() =>
-    conn.run("INSERT INTO events(kind, message_id, payload, created_at, ready_at, state) VALUES ('message', ?, '{}', 0, 0, 'pending')", live.id)
+    conn.run("INSERT INTO events(kind, message_id, payload, created_at, ready_at, updated_at) VALUES ('message', ?, '{}', 0, 0, 0)", live.id)
   );
   db.identity.markHandled(PEER_LID, sid(false, PEER_LID, "V"));
   await db.learnLidPhone(PEER_LID, PEER);

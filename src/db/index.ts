@@ -27,6 +27,8 @@
  * - A timestamp is stored as given. One far in the future becomes the chat's
  *   last message until it is corrected; clamping implausible future
  *   timestamps is the service's job, before upsert.
+ * - A message event is enqueued with db.events in the transaction that stores
+ *   its message (db.transaction), and only the server process posts it.
  * - retracted makes a message key dead for good: a later upsert with that
  *   chat, direction and key is stored as a tombstone. sends therefore never
  *   stores a message before WhatsApp took it, and never retries a key once it
@@ -38,6 +40,7 @@
  */
 import { Connection, type CheckpointResult, type ConnectionOptions, type ConnectionSettings } from "./connection.js";
 import { StorageError } from "./errors.js";
+import { Events } from "./events.js";
 import { Identity } from "./identity.js";
 import { Merger } from "./merge.js";
 import { Messages, type ScrubQuote } from "./messages.js";
@@ -59,6 +62,7 @@ export type { ScrubQuote } from "./messages.js";
 export type { NewDraft, SendRecord, SendState, Sends } from "./sends.js";
 export { TRANSCRIBE_MAX_ATTEMPTS, TRANSCRIBE_QUEUE_MAX_AGE_MS } from "./transcripts.js";
 export type { ProviderClass, TranscribeItem, TranscribeQueueStats, TranscribeState } from "./transcripts.js";
+export type { EventInput, EventRecord, EventState, EventStats } from "./events.js";
 export type { CheckpointResult, ConnectionOptions, ConnectionSettings } from "./connection.js";
 export type {
   BacklogItem,
@@ -85,6 +89,8 @@ export class AccountDb {
   readonly vectors: Vectors;
   readonly sends: Sends;
   readonly transcripts: Transcripts;
+  /** The webhook outbox; see src/webhook-outbox.ts for who posts it. */
+  readonly events: Events;
   private readonly merger: Merger;
 
   private constructor(private readonly connection: Connection, options: AccountDbOptions) {
@@ -94,6 +100,7 @@ export class AccountDb {
     this.vectors = new Vectors(connection, this.identity, this.messages, this.search);
     this.sends = new Sends(connection);
     this.transcripts = new Transcripts(connection, this.messages);
+    this.events = new Events(connection);
     this.merger = new Merger(connection, this.identity, this.messages);
   }
 

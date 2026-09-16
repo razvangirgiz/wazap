@@ -226,9 +226,15 @@ CREATE TABLE handled(
 ) STRICT;
 CREATE INDEX handled_ask ON handled(ask_message_id) WHERE ask_message_id IS NOT NULL;
 
--- F1-d: the durable webhook outbox. Only the table exists until then. A
--- message deleted from under an event leaves message_id NULL: the outbox
--- treats that event as cancelled.
+-- The durable webhook outbox: one row per event, in the order the account
+-- produced it (seq, never handed out twice). A message event is written in the
+-- transaction that stores its message, and keeps only what the message row
+-- cannot say (payload); its body is built from the message when it is posted.
+-- A message deleted from under an event leaves message_id NULL, and the
+-- dispatcher cancels that event. state: pending (waiting for ready_at or
+-- next_attempt_at), sending (a POST started; one a crash interrupted is sent
+-- again), then delivered, failed or cancelled for good. updated_at is the last
+-- change, which is when a closed event is pruned from.
 CREATE TABLE events(
   seq INTEGER PRIMARY KEY AUTOINCREMENT,
   kind TEXT NOT NULL,
@@ -236,13 +242,15 @@ CREATE TABLE events(
   payload TEXT NOT NULL,
   created_at INTEGER NOT NULL,
   ready_at INTEGER NOT NULL,
-  state TEXT NOT NULL,
+  state TEXT NOT NULL DEFAULT 'pending' CHECK (state IN ('pending', 'sending', 'delivered', 'failed', 'cancelled')),
   attempts INTEGER NOT NULL DEFAULT 0,
   next_attempt_at INTEGER,
   last_status INTEGER,
-  last_error TEXT
+  last_error TEXT,
+  updated_at INTEGER NOT NULL
 ) STRICT;
-CREATE INDEX events_due ON events(state, next_attempt_at);
+CREATE INDEX events_open ON events(seq) WHERE state IN ('pending', 'sending');
+CREATE INDEX events_state ON events(state, updated_at);
 CREATE INDEX events_message ON events(message_id) WHERE message_id IS NOT NULL;
 
 -- F1-e: idempotent sends. Only the table exists until then. A key a
