@@ -250,14 +250,14 @@ test("last_* follows inserts, tombstones, deletes, clears and expiry, and drives
   db.messages.upsert(textMessage(PEER, "B", T0 + 1000, "b", { fromMe: true }));
   db.messages.upsert(textMessage(PEER, "C", T0 + 2000, "c?"));
   assert.deepEqual(last(), ["C", false]);
-  assert.deepEqual(db.messages.waiting({ since: T0, until: T0 + 10_000, limit: 5 }).map((w) => w.last.keyId), ["C"]);
+  assert.deepEqual(db.messages.waiting({ since: T0, until: T0 + 10_000, limit: 5 }).items.map((w) => w.last.keyId), ["C"]);
 
   db.messages.upsert(textMessage(PEER, "old", T0 - 60_000, "history"));
   assert.deepEqual(last(), ["C", false], "an older history message never becomes the last one");
 
   db.messages.delete(sid(false, PEER, "C"));
   assert.deepEqual(last(), ["B", true]);
-  assert.deepEqual(db.messages.waiting({ since: T0, until: T0 + 10_000, limit: 5 }), []);
+  assert.deepEqual(db.messages.waiting({ since: T0, until: T0 + 10_000, limit: 5 }).items, []);
 
   db.messages.upsert(textMessage(PEER, "D", T0 + 3000, "d", { expiresAt: T0 + 4_000_000 }));
   assert.deepEqual(last(), ["D", false]);
@@ -274,7 +274,7 @@ test("last_* follows inserts, tombstones, deletes, clears and expiry, and drives
   db.close();
 });
 
-test("waiting candidates: their last word inside the window, oldest first, archived left out, handled attached", () => {
+test("waiting candidates: their last word inside the window, oldest first, archived and handled left out unless asked", () => {
   const { db } = openTemp();
   db.messages.upsert(textMessage(PEER, "P1", T0 + 2000, "ai timp?"));
   db.messages.upsert(textMessage(OTHER, "O1", T0 + 1000, "factura?"));
@@ -282,15 +282,39 @@ test("waiting candidates: their last word inside the window, oldest first, archi
   db.messages.upsert(textMessage(ME, "M1", T0 + 4000, "notă", { fromMe: true }));
   db.identity.upsertChat({ jid: GROUP, archived: true });
   db.identity.markHandled(OTHER, sid(false, OTHER, "O1"), T0 + 1500);
-  const waiting = db.messages.waiting({ since: T0, until: T0 + 10_000, limit: 10 });
-  assert.deepEqual(waiting.map((w) => w.chat.jid), [OTHER, PEER]);
-  assert.equal(waiting[0].handled.askSid, sid(false, OTHER, "O1"));
-  assert.equal(waiting[1].handled, null);
-  assert.deepEqual(
-    db.messages.waiting({ since: T0, until: T0 + 10_000, limit: 10, includeArchived: true }).map((w) => w.chat.jid),
-    [OTHER, PEER, GROUP]
-  );
-  assert.deepEqual(db.messages.waiting({ since: T0 + 1500, until: T0 + 10_000, limit: 10 }).map((w) => w.chat.jid), [PEER]);
+  const jids = (options) => db.messages.waiting({ since: T0, until: T0 + 10_000, limit: 10, ...options }).items.map((w) => w.chat.jid);
+  assert.deepEqual(jids({}), [PEER]);
+  const all = db.messages.waiting({ since: T0, until: T0 + 10_000, limit: 10, includeHandled: true }).items;
+  assert.deepEqual(all.map((w) => w.chat.jid), [OTHER, PEER]);
+  assert.equal(all[0].handled.askSid, sid(false, OTHER, "O1"));
+  assert.equal(all[1].handled, null);
+  assert.deepEqual(jids({ includeArchived: true, includeHandled: true }), [OTHER, PEER, GROUP]);
+  assert.deepEqual(db.messages.waiting({ since: T0 + 1500, until: T0 + 10_000, limit: 10 }).items.map((w) => w.chat.jid), [PEER]);
+  db.close();
+});
+
+test("finding 11: waiting narrows kinds, archived and handled chats in SQL before the limit, and pages with a cursor", () => {
+  const { db, clock } = openTemp();
+  for (let i = 0; i < 5; i++) {
+    db.messages.upsert(textMessage(`1203630000000000${10 + i}@g.us`, `G${i}`, T0 + i * 1000, "group chatter", { senderJid: "40711111111@s.whatsapp.net" }));
+  }
+  db.messages.upsert(textMessage(STATUS, "S", T0 + 6000, "story", { senderJid: "40722222222@s.whatsapp.net", expiresAt: clock.now + 86_400_000 }));
+  db.messages.upsert(textMessage(PEER, "ASK", T0 + 7000, "poti sa-mi trimiti contractul?"));
+  const window = { since: T0 - 1, until: T0 + 3_600_000 };
+
+  assert.deepEqual(db.messages.waiting({ ...window, limit: 5, kinds: ["direct"] }).items.map((w) => w.last.keyId), ["ASK"]);
+  const first = db.messages.waiting({ ...window, limit: 5 });
+  assert.deepEqual(first.items.map((w) => w.last.keyId), ["G0", "G1", "G2", "G3", "G4"]);
+  assert.notEqual(first.next, null);
+  const second = db.messages.waiting({ ...window, limit: 5, after: first.next });
+  assert.deepEqual(second.items.map((w) => w.last.keyId), ["ASK"]);
+  assert.equal(second.next, null);
+  assert.deepEqual(db.messages.waiting({ ...window, limit: 10, kinds: ["status"] }).items.map((w) => w.last.keyId), ["S"]);
+
+  db.identity.markHandled(PEER, sid(false, PEER, "ASK"));
+  assert.deepEqual(db.messages.waiting({ ...window, limit: 10, kinds: ["direct"] }).items, []);
+  db.messages.upsert(textMessage(PEER, "AGAIN", T0 + 8000, "si inca ceva?"));
+  assert.deepEqual(db.messages.waiting({ ...window, limit: 10, kinds: ["direct"] }).items.map((w) => w.last.keyId), ["AGAIN"]);
   db.close();
 });
 

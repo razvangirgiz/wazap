@@ -174,7 +174,7 @@ test("finding 2: a clear hides everything under its barrier at once, stays hidde
     assert.deepEqual(store.search.text({ query: "se", limit: 5 }).items, []);
     assert.deepEqual(store.messages.listChats({ limit: 5 }).items, []);
     assert.deepEqual(store.messages.recent({ since: T0, limit: 5 }).items, []);
-    assert.deepEqual(store.messages.waiting({ since: T0, until: T0 + 200_000, limit: 5 }), []);
+    assert.deepEqual(store.messages.waiting({ since: T0, until: T0 + 200_000, limit: 5 }).items, []);
     assert.deepEqual(store.messages.coverage(PEER), { oldest: null, newest: null });
     assert.equal(store.counts().messages, 0);
     assert.deepEqual(store.messages.countInChat(PEER), { messages: 0, tombstones: 0 });

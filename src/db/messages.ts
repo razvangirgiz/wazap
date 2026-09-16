@@ -887,36 +887,65 @@ export class Messages {
 
   /**
    * Chats whose last word is theirs, with that word between `since` and
-   * `until`, oldest wait first — read off the denormalized columns. Whether
-   * the word asks for something is the caller's judgment.
+   * `until`, oldest wait first, read off the denormalized columns and paged
+   * with `after`. Everything that narrows the list happens in SQL before the
+   * limit: the kinds of chat a person waits in (direct and group unless told
+   * otherwise), archived chats (left out unless asked), and chats a handled
+   * mark still covers — the mark names the ask and no newer message has
+   * arrived since, or it names no message and nothing arrived after it.
+   * Whether the word asks for something stays the caller's judgment.
    */
-  waiting(options: { since: number; until: number; limit: number; includeArchived?: boolean }): WaitingCandidate[] {
+  waiting(options: {
+    since: number;
+    until: number;
+    limit: number;
+    kinds?: readonly ChatKind[];
+    includeArchived?: boolean;
+    includeHandled?: boolean;
+    after?: ChatCursor;
+  }): { items: WaitingCandidate[]; next: ChatCursor | null } {
     const limit = clampLimit(options.limit);
+    const kinds = options.kinds ?? ["direct", "group"];
     const archived = options.includeArchived === true ? "" : "AND ch.archived = 0";
+    const handled =
+      options.includeHandled === true
+        ? ""
+        : `AND NOT (h.chat_id IS NOT NULL AND (
+             (h.ask_message_id IS NOT NULL AND h.ask_message_id >= ch.last_message_id)
+             OR (h.ask_message_id IS NULL AND h.at >= ch.last_ts)))`;
     const rows = this.c.all<ChatRow>(
-      `SELECT ch.* FROM chats ch INDEXED BY chats_waiting
-       WHERE ch.last_from_me = 0 AND ch.last_ts >= ? AND ch.last_ts <= ? AND ch.merged_into IS NULL ${archived}
-       ORDER BY ch.last_ts ASC LIMIT ?`,
+      `SELECT ch.* FROM chats ch INDEXED BY chats_waiting LEFT JOIN handled h ON h.chat_id = ch.id
+       WHERE ch.last_from_me = 0 AND ch.last_ts >= ? AND ch.last_ts <= ? AND ch.merged_into IS NULL
+         AND ch.kind IN (SELECT value FROM json_each(?)) ${archived} ${handled}
+         AND (ch.last_ts > ? OR (ch.last_ts = ? AND ch.id > ?))
+       ORDER BY ch.last_ts ASC, ch.id ASC LIMIT ?`,
       options.since,
       options.until,
-      limit
+      JSON.stringify(kinds),
+      options.after?.lastTs ?? -1,
+      options.after?.lastTs ?? -1,
+      options.after?.id ?? -1,
+      limit + 1
     );
+    const hasMore = rows.length > limit;
+    const page = hasMore ? rows.slice(0, limit) : rows;
     const lasts = new Map(
       this.c
         .all<MessageRow>(
           `SELECT ${MESSAGE_COLUMNS} FROM ${MESSAGE_FROM} WHERE m.id IN (SELECT value FROM json_each(?))`,
-          idsJson(rows.map((row) => row.last_message_id!))
+          idsJson(page.map((row) => row.last_message_id!))
         )
         .map((row) => [row.id, row])
     );
-    const candidates: WaitingCandidate[] = [];
-    for (const row of rows) {
+    const items: WaitingCandidate[] = [];
+    for (const row of page) {
       const chat = chatFromRow(row);
       const last = this.lastOf(chat, lasts.get(row.last_message_id!));
       if (last === null || last.fromMe || last.ts < options.since || last.ts > options.until) continue;
-      candidates.push({ chat, last, handled: this.identity.handledByChatId(chat.id) });
+      items.push({ chat, last, handled: this.identity.handledByChatId(chat.id) });
     }
-    return candidates;
+    const tail = page[page.length - 1];
+    return { items, next: hasMore && tail !== undefined ? { lastTs: tail.last_ts!, id: tail.id } : null };
   }
 
   /** The oldest and newest visible message, of one chat or of the account, read off an index. */
