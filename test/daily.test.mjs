@@ -4,16 +4,13 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, readFileSync, rmSync } from "node:fs";
-import { join } from "node:path";
 import { proto } from "baileys";
 import { z } from "zod";
 
 import { WhatsAppService } from "../dist/whatsapp.js";
 import { registerTools } from "../dist/tools.js";
 import { compactConversations } from "../dist/compact.js";
-import { decodeMessage } from "../dist/store.js";
-import { asToolSource, connectedService, offlineConfig, openService } from "./helpers.mjs";
+import { asToolSource, connectedService, databaseHolds, offlineConfig, openService } from "./helpers.mjs";
 
 const ME = "40700000001@s.whatsapp.net";
 const ANA = "40700000002@s.whatsapp.net";
@@ -55,7 +52,7 @@ function setup(config = {}) {
   return { svc, sock, call, arrive, tools };
 }
 
-test("a note on a contact rides along wherever the person shows, and lives in notes.json", async () => {
+test("a note on a contact rides along wherever the person shows, and lives in the account database", async () => {
   const { svc, call, arrive } = setup();
   arrive(DAN, "salut");
   const noted = await call("set_contact_note", { contact_id: "+40 700 000 003", note: "Hermi, my own agent" });
@@ -67,11 +64,11 @@ test("a note on a contact rides along wherever the person shows, and lives in no
   assert.match((await call("list_chats", {})).content[0].text, /## Dan · Hermi, my own agent/);
   assert.match((await call("get_recent_messages", { hours: 1 })).content[0].text, /## Dan · Hermi, my own agent —/);
   assert.match((await call("get_contact", { contact_id: DAN })).content[0].text, /\*\*note\*\*: Hermi, my own agent/);
-  assert.ok(existsSync(svc.paths.notesFile));
-  assert.equal(JSON.parse(readFileSync(svc.paths.notesFile, "utf8")).contacts[DAN].note, "Hermi, my own agent");
+  assert.equal(svc.db.identity.notes(DAN).note, "Hermi, my own agent");
 
   const again = openService(WhatsAppService, { ...offlineConfig("x"), dataDir: svc.config.dataDir });
-  assert.equal(again.notes.noteFor(DAN), "Hermi, my own agent", "a restart reads it back");
+  assert.equal(again.db.identity.notes(DAN).note, "Hermi, my own agent", "a restart reads it back");
+  await again.stop();
 
   await call("set_contact_note", { contact_id: DAN, note: "" });
   assert.doesNotMatch((await call("search_contacts", { query: "dan" })).content[0].text, /Hermi/);
@@ -162,7 +159,7 @@ test("search follows an edit and a late transcript, not the words it cached firs
   const vid = arrive(ANA, { audioMessage: { ptt: true, seconds: 4 } });
   const sid = `false_${ANA}_${vid}`;
   assert.deepEqual((await call("search_messages", { query: "umbrela" })).structuredContent.messages, []);
-  svc.store.setTranscript(sid, { text: "am uitat umbrela", provider: "local", at: Date.now() });
+  svc.db.messages.setTranscript(sid, "am uitat umbrela");
   assert.deepEqual(
     (await call("search_messages", { query: "umbrela" })).structuredContent.messages.map((m) => m.message_id),
     [sid],
@@ -170,27 +167,25 @@ test("search follows an edit and a late transcript, not the words it cached firs
   );
 });
 
-test("a snapshot re-encodes the message an edit touched and keeps the rest", async () => {
+test("an edit rewrites the edited message's stored protobuf and leaves its neighbours as they were", async () => {
   const { svc, sock, arrive } = setup();
   arrive(ANA, "prima versiune");
   arrive(DAN, "nemișcat");
   const sid = `false_${ANA}_M1`;
   const still = `false_${DAN}_M2`;
 
-  const first = svc.store.serialize();
-  const second = svc.store.serialize();
-  assert.equal(second.messages[sid], first.messages[sid], "an untouched message keeps its encoding");
-
+  const first = { edited: Buffer.from(svc.db.messages.get(sid).raw), neighbour: Buffer.from(svc.db.messages.get(still).raw) };
   sock.ev.emit("messages.update", [
     {
       key: { remoteJid: ANA, fromMe: false, id: "M1" },
       update: { message: { editedMessage: { message: { conversation: "a doua versiune" } } } },
     },
   ]);
-  const third = svc.store.serialize();
-  assert.notEqual(third.messages[sid], first.messages[sid], "the edit re-encodes");
-  assert.equal(third.messages[still], first.messages[still], "the neighbour is not re-encoded");
-  assert.equal(decodeMessage(third.messages[sid]).message.conversation, "a doua versiune");
+  const edited = svc.db.messages.get(sid);
+  assert.notDeepEqual(Buffer.from(edited.raw), first.edited, "the edit re-encodes");
+  assert.deepEqual(Buffer.from(svc.db.messages.get(still).raw), first.neighbour, "the neighbour is not rewritten");
+  assert.equal(proto.WebMessageInfo.decode(edited.raw).message.conversation, "a doua versiune");
+  assert.notEqual(edited.editedAt, null);
 });
 
 test("compact keeps the words, folds a run into one line, and counts what it left out", async () => {
@@ -228,11 +223,11 @@ test("compact keeps the words, folds a run into one line, and counts what it lef
   assert.equal(compactConversations([]).length, 0);
 });
 
-test("a revoked message leaves the store, the search, and the history file on reload", async () => {
+test("a revoked message leaves the database, the search, and a restart", async () => {
   const { svc, sock, call, arrive } = setup({ persistHistory: true });
   const id = arrive(ANA, "parola e hunter2");
   const sid = `false_${ANA}_${id}`;
-  assert.ok(svc.store.messages.has(sid));
+  assert.ok(svc.hasMessage(sid));
 
   sock.ev.emit("messages.upsert", {
     type: "notify",
@@ -250,34 +245,30 @@ test("a revoked message leaves the store, the search, and the history file on re
     ],
   });
 
-  assert.equal(svc.store.messages.has(sid), false, "the target is gone from the store");
+  assert.equal(svc.hasMessage(sid), false, "the target is gone");
   assert.deepEqual((await call("search_messages", { query: "hunter2" })).structuredContent.messages, []);
   const read = (await call("read_messages", { chat_id: ANA })).content[0].text;
   assert.doesNotMatch(read, /hunter2/);
   assert.match(read, /\[deleted\]/, "the placeholder stays, the way the phone shows it");
 
-  // Cleanup now removes the payload before restart. A content-free barrier
+  // Cleanup takes the words off the disk at once. A content-free barrier
   // must still win if an older copy is replayed later.
-  const file = join(svc.paths.historyDir, `${ANA}.jsonl`);
-  const lines = () => (existsSync(file) ? readFileSync(file, "utf8").trim().split("\n").filter(Boolean) : []);
-  await svc.retentionIdle();
-  assert.ok(lines().length > 0);
-  assert.ok(lines().every((line) => !decodeMessage(JSON.parse(line).raw)?.message?.conversation?.includes("hunter2")));
-  await svc.flushStore();
+  await svc.storageIdle();
+  assert.equal(databaseHolds(svc, "hunter2"), false);
   const again = openService(WhatsAppService, { ...offlineConfig("x"), dataDir: svc.config.dataDir, persistHistory: true });
-  await again.loadPersisted();
-  assert.equal(again.store.messages.has(sid), false, "the reload honours the tombstone");
+  await again.bootStorage();
+  assert.equal(again.hasMessage(sid), false, "a restart honours the tombstone");
   assert.deepEqual(
-    lines().map((line) => JSON.parse(line)).filter((record) => !record.deleted)
-      .map((record) => decodeMessage(record.raw)?.message?.protocolMessage?.type ?? null),
-    [proto.Message.ProtocolMessage.Type.REVOKE],
-    "compaction drops the target's bytes and keeps only the revoke plus content-free barriers"
+    again.db.messages.chatPage(ANA, { limit: 10 }).items.map((m) => [m.keyId, m.type]),
+    [["R1", "deleted"]],
+    "the revoke stays as the placeholder; the target keeps only a content-free tombstone"
   );
+  assert.equal(again.db.messages.get(sid, { includeHidden: true }).text, null);
   await again.stop();
 
   const second = arrive(ANA, "al doilea secret");
   sock.ev.emit("messages.delete", { keys: [{ remoteJid: ANA, fromMe: false, id: second }] });
-  assert.equal(svc.store.messages.has(`false_${ANA}_${second}`), false, "messages.delete drops it too");
+  assert.equal(svc.hasMessage(`false_${ANA}_${second}`), false, "messages.delete drops it too");
 });
 
 test("a creds save that fails is logged, not left as an unhandled rejection", async () => {
@@ -295,18 +286,24 @@ test("a creds save that fails is logged, not left as an unhandled rejection", as
   }
 });
 
-test("a notes write that fails inside a contact fold is logged, not thrown into the handler", async () => {
+test("a storage failure inside a contact fold is logged, not thrown into the handler", async () => {
   const { svc, sock } = setup();
   const lid = "808080808080808@lid";
   const phone = "40700000008@s.whatsapp.net";
-  svc.notes.setNote(lid, "nota sub lid");
-  // rename(tmp, file) cannot succeed when file is a directory.
-  rmSync(svc.paths.notesFile);
-  mkdirSync(svc.paths.notesFile);
-  assert.throws(() => svc.notes.setNote(DAN, "y"), /ENOTDIR|EISDIR|EPERM/);
-  sock.ev.emit("contacts.upsert", [{ id: phone, lid }]);
-  assert.equal(svc.notes.noteFor(phone), "nota sub lid", "the in-memory merge still landed");
-  rmSync(svc.paths.notesFile, { recursive: true, force: true });
+  svc.db.identity.setNote(lid, "nota sub lid");
+  // A database that stopped answering: every write the handler tries fails.
+  svc.accountDb.close();
+  let unhandled = false;
+  const spy = () => (unhandled = true);
+  process.on("unhandledRejection", spy);
+  try {
+    assert.doesNotThrow(() => sock.ev.emit("contacts.upsert", [{ id: phone, lid }]));
+    assert.doesNotThrow(() => sock.ev.emit("lid-mapping.update", { lid, pn: phone }));
+    await new Promise((r) => setTimeout(r, 20));
+    assert.equal(unhandled, false, "nothing rejects behind the handler either");
+  } finally {
+    process.off("unhandledRejection", spy);
+  }
 });
 
 test("download_media refuses a file over the cap before touching the network", async () => {
