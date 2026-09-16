@@ -4,11 +4,24 @@ services:
     image: wazap
     restart: unless-stopped
     env_file: .env
+    environment:
+      # A host proxy reaches the container through the published port, so its
+      # address inside is this network's gateway, not loopback. Trust exactly that
+      # hop for X-Forwarded-For, or every OAuth caller shares one lockout. Set
+      # WAZAP_TRUST_PROXY in .env to override (none for no proxy).
+      WAZAP_TRUST_PROXY: ${WAZAP_TRUST_PROXY:-loopback,172.30.87.1/32}
     ports:
       - "127.0.0.1:8766:8766"
     volumes:
       - wazap-data:/data
     stop_grace_period: 15s
+
+networks:
+  default:
+    ipam:
+      config:
+        - subnet: 172.30.87.0/24
+          gateway: 172.30.87.1
 
 volumes:
   wazap-data:

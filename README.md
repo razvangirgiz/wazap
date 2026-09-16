@@ -909,6 +909,13 @@ curl -s http://127.0.0.1:8766/healthz
 
 The container publishes `8766` on loopback only; add the same TLS proxy in front. Upgrading is `git pull && docker compose up -d --build`; the volume keeps the session.
 
+A proxy on the host reaches the container through the published port, so inside
+the container its address is the compose network's gateway, not loopback. The
+compose file pins that network to `172.30.87.0/24` and trusts its gateway,
+`172.30.87.1`, for `X-Forwarded-For`; without that, every OAuth caller would
+share one password lockout. If the subnet clashes with one of yours, change both
+together, or set `WAZAP_TRUST_PROXY` in `.env`.
+
 ### From a machine without a public address
 
 A laptop or a box behind NAT can still serve hosted agents through a tunnel, with no port opened and TLS done at the edge. `npx wazap-mcp expose` does the whole thing with Tailscale Funnel or Cloudflare Tunnel, whichever is installed. See [Keep it running](#keep-it-running).
