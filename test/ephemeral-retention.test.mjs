@@ -1,11 +1,11 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { proto } from "baileys";
 import { WhatsAppService } from "../dist/whatsapp.js";
-import { connectedService } from "./helpers.mjs";
+import { connectedService, databaseHolds } from "./helpers.mjs";
 import { WebhookSink } from "../dist/webhook.js";
 
 const CHAT = "40700000002@s.whatsapp.net";
@@ -39,38 +39,32 @@ async function fixture(t, { embed, timers = false, retention = true } = {}) {
     }
     if (embed) result.svc.recallEmbed = embed;
     services.push(result.svc);
-    await result.svc.loadPersisted();
+    await result.svc.bootStorage();
     return result;
   };
   return { ...await boot(), boot, advance(ms) { now += ms; if (timers) t.mock.timers.tick(ms); } };
 }
 async function seed(svc, raw = message()) {
   svc.ingestMessages([raw]);
-  await svc.appendHistory([raw]);
-  svc.markStoreDirty();
-  await svc.flushStore();
   await svc.recallIdle();
   return raw;
 }
+/** The words are nowhere in the database files, and no row keeps them. */
 async function noPayload(svc) {
-  for (const path of [svc.paths.storeFile, join(svc.paths.historyDir, `${CHAT}.jsonl`), join(svc.paths.root, "recall", "meta.jsonl")]) {
-    const text = await readFile(path, "utf8").catch((err) => { if (err.code === "ENOENT") return ""; throw err; });
-    assert.ok(!text.includes(SECRET), `plain payload in ${path}`);
-    if (path === svc.paths.storeFile && text) {
-      for (const raw of Object.values(JSON.parse(text).messages ?? {})) assert.ok(!Buffer.from(raw, "base64").includes(Buffer.from(SECRET)));
-    } else if (path.endsWith(`${CHAT}.jsonl`)) {
-      for (const line of text.split("\n").filter(Boolean)) assert.ok(!Buffer.from(JSON.parse(line).raw, "base64").includes(Buffer.from(SECRET)));
-    }
-  }
+  await svc.storageIdle();
+  assert.equal(databaseHolds(svc, SECRET), false, "the words are gone from the database files");
 }
+/** A legacy history line, the shape main wrote. */
+const historyLine = (item) =>
+  JSON.stringify({ sid: sid(item), ts: item.messageTimestamp, raw: Buffer.from(proto.WebMessageInfo.encode(item).finish()).toString("base64") });
 
-test("already-expired messages never enter memory, history, snapshot or recall", async (t) => {
+test("already-expired messages never enter the database, the search or the embeddings", async (t) => {
   const { svc, advance } = await fixture(t, { embed: async (texts) => vectors(texts) });
   advance(10_000);
   const raw = await seed(svc);
-  await svc.retentionIdle();
+  await svc.storageIdle();
   assert.equal(svc.hasMessage(sid(raw)), false);
-  assert.equal(svc.recallStore.count, 0);
+  assert.equal(svc.db.vectors.count(), 0);
   await noPayload(svc);
 });
 
@@ -78,11 +72,10 @@ test("without WAZAP_RETENTION a disappearing message stays readable past its dea
   const { svc, advance } = await fixture(t, { retention: false });
   const raw = await seed(svc);
   advance(60_000);
-  await svc.retentionIdle();
+  await svc.storageIdle();
   assert.equal((await svc.getMessage(sid(raw))).text, SECRET);
   assert.equal(svc.hasMessage(sid(raw)), true);
-  const history = await readFile(join(svc.paths.historyDir, `${CHAT}.jsonl`), "utf8");
-  assert.ok(history.split("\n").filter(Boolean).every((line) => JSON.parse(line).expiresAt === undefined));
+  assert.equal(svc.db.messages.get(sid(raw)).expiresAt, null, "no deadline is recorded");
 });
 
 test("reads enforce the exact expiry instant even if a scheduled timer has not run", async (t) => {
@@ -100,8 +93,7 @@ test("an idle account expires payloads and automatic previews without another to
   const raw = await seed(svc);
   await svc.writePreview(sid(raw), Buffer.from("synthetic thumbnail"));
   advance(10_000);
-  assert.equal(svc.store.messages.has(sid(raw)), false, "timer removes memory synchronously");
-  await svc.retentionIdle();
+  assert.equal(svc.hasMessage(sid(raw)), false, "reads hide it at once");
   await noPayload(svc);
   await assert.rejects(readFile(svc.previewPath(sid(raw))), { code: "ENOENT" });
 });
@@ -141,12 +133,12 @@ test("an edit or replay without expiry metadata cannot extend the first observed
   raw.message = { extendedTextMessage: { text: SECRET, contextInfo: { expiration: 10 } } };
   await seed(svc, raw);
   sock.ev.emit("messages.update", [{ key: raw.key, update: { message: { editedMessage: { message: { conversation: SECRET } } } } }]);
-  await svc.appendHistory([svc.store.messages.get(sid(raw))]);
+  svc.ingestMessages([{ key: raw.key, messageTimestamp: raw.messageTimestamp, message: { conversation: SECRET } }]);
+  assert.equal(svc.db.messages.get(sid(raw)).expiresAt, START + 10_000);
   await svc.stop();
   const { svc: next } = await boot();
   advance(10_000);
   await assert.rejects(next.getMessage(sid(raw)), { code: "MESSAGE_NOT_FOUND" });
-  await next.retentionIdle();
   await noPayload(next);
 });
 
@@ -158,22 +150,21 @@ test("restart while a message is live preserves its deadline; expired replay sta
   const { svc: next } = await boot();
   assert.equal((await next.getMessage(sid(raw))).text, SECRET);
   advance(1_000);
-  await next.retentionIdle();
+  await next.storageIdle();
   next.ingestMessages([raw]);
   assert.equal(next.hasMessage(sid(raw)), false);
   await noPayload(next);
 });
 
-test("index-only messages expire even after their raw message has left the memory ring", async (t) => {
+test("an expired message leaves the semantic side too, before the sweep", async (t) => {
   const { svc, advance } = await fixture(t, { embed: async (texts) => vectors(texts) });
-  const raw = await seed(svc);
-  svc.store.dropMessage(sid(raw));
+  await seed(svc);
   assert.equal((await svc.recall(SECRET, undefined, 10)).data.hits.length, 1);
   advance(10_000);
-  assert.deepEqual(svc.recallStore.query({ vector: vectors([SECRET])[0], limit: 10 }), []);
+  assert.deepEqual(svc.db.vectors.vectorSearch({ model: "embeddinggemma-300m", vector: vectors([SECRET])[0], limit: 10 }), []);
   assert.deepEqual((await svc.recall(SECRET, undefined, 10)).data.hits, []);
-  await svc.retentionIdle();
-  assert.equal(svc.recallStore.count, 0);
+  await svc.storageIdle();
+  assert.equal(svc.db.vectors.count(), 0);
   await noPayload(svc);
 });
 
@@ -197,7 +188,7 @@ test("a transcription completing after expiry is neither returned nor re-cached"
   const rejected = assert.rejects(pending, { code: "MESSAGE_NOT_FOUND" });
   await started.promise; advance(10_000); finish.release({ text: SECRET });
   await rejected;
-  await svc.retentionIdle();
+  await svc.storageIdle();
   await noPayload(svc);
 });
 
@@ -245,10 +236,10 @@ test("an in-flight embedding cannot publish a message after expiry", async (t) =
   const { svc, advance } = await fixture(t, { embed: async (texts) => { started.release(); await finish.promise; return vectors(texts); } });
   const raw = message(); svc.ingestMessages([raw]);
   await started.promise;
-  try { await svc.appendHistory([raw]); advance(10_000); await svc.retentionIdle(); }
+  try { advance(10_000); await svc.storageIdle(); }
   finally { finish.release(); }
   await svc.recallIdle();
-  assert.equal(svc.recallStore.count, 0);
+  assert.equal(svc.db.vectors.count(), 0);
   await noPayload(svc);
 });
 
@@ -289,57 +280,16 @@ test("media finishing download after expiry is not newly exported or returned", 
   await assert.rejects(readFile(svc.paths.mediaDir), { code: "ENOENT" });
 });
 
-test("deadline-bearing index rows restore expiry independently of lost bounded history", async (t) => {
-  const { svc, advance, boot } = await fixture(t, { embed: async (texts) => vectors(texts) });
-  const raw = await seed(svc);
-  assert.equal(svc.recallStore.record(sid(raw)).expiresAt, START + 10_000);
-  await svc.recallStore.advanceOffset("synthetic.jsonl", 1);
-  await svc.stop();
-  for (const path of [svc.paths.storeFile, join(svc.paths.root, "retention.json"), join(svc.paths.historyDir, `${CHAT}.jsonl`)]) await rm(path, { force: true });
-  advance(9_000);
-  const { svc: next } = await boot();
-  assert.equal((await next.recall(SECRET, undefined, 10)).data.hits.length, 1);
-  advance(1_000);
-  await next.retentionIdle();
-  assert.equal(next.recallStore.count, 0);
-  await noPayload(next);
-});
-
-test("a v2 index migrates in place, and history deadlines still expire its rows", async (t) => {
-  const { svc, boot, advance } = await fixture(t, { embed: async (texts) => vectors(texts) });
-  const raw = message();
-  await svc.recallStore.add([
-    { sid: "legacy", jid: CHAT, ts: START, sender: CHAT, type: "text", text: "ordinary legacy row" },
-    { sid: sid(raw), jid: CHAT, ts: START, sender: CHAT, type: "text", text: SECRET },
-  ], vectors(["ordinary legacy row", SECRET]));
-  await svc.recallStore.advanceOffset("old.jsonl", 1);
-  await svc.stop();
-  await writeFile(join(svc.paths.historyDir, `${CHAT}.jsonl`), `${JSON.stringify({ sid: sid(raw), ts: raw.messageTimestamp,
-    raw: Buffer.from(proto.WebMessageInfo.encode(raw).finish()).toString("base64") })}\n`);
-  const file = join(svc.paths.root, "recall", "state.json");
-  const state = JSON.parse(await readFile(file, "utf8")); state.version = 2;
-  await writeFile(file, JSON.stringify(state));
-  const { svc: next } = await boot();
-  assert.equal(next.recallStore.count, 2, "no rows are lost to the version bump");
-  assert.equal(JSON.parse(await readFile(file, "utf8")).version, 3);
-  advance(10_000);
-  await next.retentionIdle();
-  assert.equal(next.recallStore.count, 1);
-  assert.equal(next.recallStore.record("legacy").text, "ordinary legacy row");
-  await noPayload(next);
-});
-
-test("boot discovers deadlines in all alias files before submitting any text for embedding", async (t) => {
+test("an import discovers deadlines in every alias file before anything is embedded", async (t) => {
   const seen = [];
   const { svc, advance, boot } = await fixture(t, { embed: async (texts) => { seen.push(...texts); return vectors(texts); } });
   const lid = "900001@lid";
-  svc.learnLid(lid, CHAT);
   await svc.stop();
   const raw = message(); raw.key.remoteJid = lid;
   const stripped = { key: { ...raw.key, remoteJid: CHAT }, messageTimestamp: raw.messageTimestamp, message: { conversation: SECRET } };
-  for (const item of [stripped, raw]) await writeFile(join(svc.paths.historyDir, `${item.key.remoteJid}.jsonl`), JSON.stringify({
-    sid: sid(item), ts: item.messageTimestamp, raw: Buffer.from(proto.WebMessageInfo.encode(item).finish()).toString("base64"),
-  }) + "\n");
+  await mkdir(svc.paths.historyDir, { recursive: true });
+  for (const item of [stripped, raw]) await writeFile(join(svc.paths.historyDir, `${item.key.remoteJid}.jsonl`), historyLine(item) + "\n");
+  await writeFile(svc.paths.storeFile, JSON.stringify({ v: 1, chats: {}, contacts: {}, messages: {}, byChat: {}, lids: { [lid]: CHAT } }));
   advance(10_000);
   const { svc: next } = await boot();
   await next.recallIdle();
@@ -348,25 +298,23 @@ test("boot discovers deadlines in all alias files before submitting any text for
   await noPayload(next);
 });
 
-for (const surviving of ["snapshot", "history"]) test(`a stripped edit keeps its deadline in ${surviving} independently of the ledger`, async (t) => {
-  const { svc, sock, advance, boot } = await fixture(t);
-  const raw = message(); delete raw.ephemeralStartTimestamp; delete raw.ephemeralDuration;
-  raw.message = { extendedTextMessage: { text: SECRET, contextInfo: { expiration: 10 } } };
-  await seed(svc, raw);
-  sock.ev.emit("messages.update", [{ key: raw.key, update: { message: { editedMessage: { message: { conversation: SECRET } } } } }]);
-  await svc.appendHistory([svc.store.messages.get(sid(raw))]);
+for (const surviving of ["snapshot", "history"]) test(`a stripped edit keeps the deadline its ${surviving} recorded through an import`, async (t) => {
+  const { svc, advance, boot } = await fixture(t);
   await svc.stop();
-  const history = join(svc.paths.historyDir, `${CHAT}.jsonl`);
-  const last = JSON.parse((await readFile(history, "utf8")).trim().split("\n").at(-1));
-  assert.equal(last.expiresAt, START + 10_000);
-  const snapshot = JSON.parse(await readFile(svc.paths.storeFile, "utf8"));
-  assert.equal(snapshot.expires[sid(raw)], START + 10_000);
-  await rm(join(svc.paths.root, "retention.json"));
-  if (surviving === "snapshot") await rm(history);
-  else { await rm(svc.paths.storeFile); await writeFile(history, JSON.stringify(last) + "\n"); }
+  const stripped = { key: { remoteJid: CHAT, fromMe: false, id: "E1" }, messageTimestamp: START / 1000, message: { conversation: SECRET } };
+  const b64 = Buffer.from(proto.WebMessageInfo.encode(stripped).finish()).toString("base64");
+  if (surviving === "snapshot") {
+    await writeFile(svc.paths.storeFile, JSON.stringify({
+      v: 1, chats: {}, contacts: {}, messages: { [sid(stripped)]: b64 }, byChat: { [CHAT]: [sid(stripped)] },
+      expires: { [sid(stripped)]: START + 10_000 },
+    }));
+  } else {
+    await mkdir(svc.paths.historyDir, { recursive: true });
+    await writeFile(join(svc.paths.historyDir, `${CHAT}.jsonl`), `${JSON.stringify({ sid: sid(stripped), ts: START / 1000, raw: b64, expiresAt: START + 10_000 })}\n`);
+  }
   advance(10_000);
   const { svc: next } = await boot();
-  assert.equal(next.hasMessage(sid(raw)), false);
+  assert.equal(next.hasMessage(sid(stripped)), false);
   await noPayload(next);
 });
 
@@ -387,8 +335,8 @@ test("long disappearing timers do not overflow Node's timer range", async (t) =>
   advance(2_147_483_647);
   assert.equal(svc.hasMessage(sid(raw)), true);
   advance(duration * 1000 - 2_147_483_647);
-  assert.equal(svc.store.messages.has(sid(raw)), false);
-  await svc.retentionIdle();
+  assert.equal(svc.hasMessage(sid(raw)), false);
+  await svc.storageIdle();
 });
 
 test("stop clears expiry scheduling and is idempotent, without a stale second cleanup", async (t) => {
@@ -400,11 +348,10 @@ test("stop clears expiry scheduling and is idempotent, without a stale second cl
   assert.equal(svc.stop(), stopping);
   await stopping;
   assert.equal(svc.expiryTimer, null);
-  const file = join(svc.paths.root, "retention.json");
-  const before = await readFile(file, "utf8");
+  const before = await readFile(svc.databasePath);
   advance(20_000);
   await svc.stop();
-  assert.equal(await readFile(file, "utf8"), before);
+  assert.deepEqual(await readFile(svc.databasePath), before, "nothing writes the database after the stop");
 });
 
 test("a marked outbound acknowledgement expires even without a later socket upsert", async (t) => {
@@ -412,24 +359,23 @@ test("a marked outbound acknowledgement expires even without a later socket upse
   const raw = message("ACK"); raw.key.fromMe = true; delete raw.key.remoteJid;
   const result = svc.sentResult(raw, CHAT, SECRET);
   assert.equal(svc.hasMessage(result.message_id), true);
-  await svc.flushStore();
   advance(10_000);
-  assert.equal(svc.store.messages.has(result.message_id), false);
-  await svc.retentionIdle();
+  assert.equal(svc.hasMessage(result.message_id), false);
   await noPayload(svc);
 });
 
-test("an outbound acknowledgement after shutdown does not reopen the old cache", async (t) => {
-  const { svc } = await fixture(t);
+test("an outbound acknowledgement after shutdown is not stored", async (t) => {
+  const { svc, boot } = await fixture(t);
   await svc.stop();
   svc.sentResult(message("LATE_ACK"), CHAT, SECRET);
-  assert.equal(svc.store.messages.size, 0);
-  assert.equal(svc.retention.expires.size, 0);
-  assert.equal(svc.storeDirty, false);
+  assert.equal(svc.expiryTimer, null);
+  const { svc: next } = await boot();
+  assert.equal(next.hasMessage(sid(message("LATE_ACK"))), false);
+  assert.equal(databaseHolds(next, SECRET), false);
 });
 
-test("shutdown during a remote delete cannot acknowledge local cleanup or overwrite a new owner's files", async (t) => {
-  const { svc, sock } = await fixture(t);
+test("shutdown during a remote delete cannot acknowledge local cleanup, and writes nothing a later service reads", async (t) => {
+  const { svc, sock, boot } = await fixture(t);
   const raw = await seed(svc);
   const started = gate(); const finish = gate();
   sock.chatModify = async () => { started.release(); await finish.promise; };
@@ -437,23 +383,19 @@ test("shutdown during a remote delete cannot acknowledge local cleanup or overwr
   const rejected = assert.rejects(pending, { code: "NOT_CONNECTED" });
   await started.promise;
   await svc.stop();
-  const file = join(svc.paths.root, "retention.json");
-  const before = await readFile(file, "utf8");
+  const { svc: next } = await boot();
   finish.release(); await rejected;
-  assert.equal(await readFile(file, "utf8"), before);
+  assert.equal(next.hasMessage(sid(raw)), true, "the stopped service did not delete behind the new one");
 });
 
-test("old history versions contribute deadlines before latest-version deduplication", async (t) => {
+test("an import takes the earliest deadline any version of a history line carried", async (t) => {
   const { svc, advance, boot } = await fixture(t);
-  const raw = await seed(svc);
-  const later = { key: raw.key, messageTimestamp: raw.messageTimestamp, message: { conversation: SECRET } };
-  // A pre-upgrade archive with an expiry-bearing original and a stripped edit.
   await svc.stop();
-  await rm(join(svc.paths.root, "retention.json"), { force: true });
-  await rm(svc.paths.storeFile, { force: true });
-  await writeFile(join(svc.paths.historyDir, `${CHAT}.jsonl`), [raw, later].map((item) => JSON.stringify({
-    sid: sid(item), ts: item.messageTimestamp, raw: Buffer.from(proto.WebMessageInfo.encode(item).finish()).toString("base64"),
-  })).join("\n") + "\n");
+  const raw = message();
+  const later = { key: raw.key, messageTimestamp: raw.messageTimestamp, message: { conversation: SECRET } };
+  // A pre-upgrade history with an expiry-bearing original and a stripped edit.
+  await mkdir(svc.paths.historyDir, { recursive: true });
+  await writeFile(join(svc.paths.historyDir, `${CHAT}.jsonl`), [raw, later].map(historyLine).join("\n") + "\n");
   advance(10_000);
   const { svc: next } = await boot();
   assert.equal(next.hasMessage(sid(raw)), false);
