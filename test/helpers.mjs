@@ -12,6 +12,7 @@ import { fileURLToPath } from "node:url";
 
 import { singletonSource } from "../dist/account-hub.js";
 import { accountPaths } from "../dist/config.js";
+import { sqlite } from "../dist/db/sqlite.js";
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
 export const BINARY = join(repoRoot, "dist", "index.js");
@@ -210,6 +211,21 @@ export function databaseHolds(svc, needle) {
     if (existsSync(path) && readFileSync(path).includes(bytes)) return true;
   }
   return false;
+}
+
+/**
+ * Rows straight off the account database's file, through a connection of
+ * their own: what is stored, whatever an accessor would hide. For asserting
+ * that a delete took a message's marks and vector, not that a reader skips them.
+ */
+export function storageRows(svc, sql, ...params) {
+  const { DatabaseSync } = sqlite();
+  const reader = new DatabaseSync(svc.databasePath ?? svc.path, { readOnly: true });
+  try {
+    return reader.prepare(sql).all(...params);
+  } finally {
+    reader.close();
+  }
 }
 
 /** The message ids a chat holds, newest first, as read_messages would page them. */

@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { proto } from "baileys";
 import { WhatsAppService } from "../dist/whatsapp.js";
-import { connectedService, databaseHolds } from "./helpers.mjs";
+import { connectedService, databaseHolds, storageRows } from "./helpers.mjs";
 import { WebhookSink } from "../dist/webhook.js";
 
 const CHAT = "40700000002@s.whatsapp.net";
@@ -92,10 +92,17 @@ test("an idle account expires payloads and automatic previews without another to
   const { svc, advance } = await fixture(t, { timers: true });
   const raw = await seed(svc);
   await svc.writePreview(sid(raw), Buffer.from("synthetic thumbnail"));
+  assert.ok(svc.expiryTimer, "a timer is armed for the deadline");
   advance(10_000);
-  assert.equal(svc.hasMessage(sid(raw)), false, "reads hide it at once");
-  await noPayload(svc);
+  // Only what the timer started is awaited: no read, and no storageIdle, which would sweep on its own.
+  await svc.expirySweep;
+  const [row] = storageRows(svc, "SELECT deleted_at, text, raw FROM messages WHERE key_id = ?", raw.key.id);
+  assert.notEqual(row.deleted_at, null, "the timer's sweep tombstoned it");
+  assert.deepEqual([row.text, row.raw], [null, null]);
+  assert.deepEqual(storageRows(svc, "SELECT path FROM pending_unlinks"), [], "its preview was unlinked and acknowledged");
   await assert.rejects(readFile(svc.previewPath(sid(raw))), { code: "ENOENT" });
+  assert.equal(svc.hasMessage(sid(raw)), false);
+  await noPayload(svc);
 });
 
 test("contextInfo expiration uses the message time, not the old chat-setting time", async (t) => {
@@ -360,6 +367,10 @@ test("a marked outbound acknowledgement expires even without a later socket upse
   const result = svc.sentResult(raw, CHAT, SECRET);
   assert.equal(svc.hasMessage(result.message_id), true);
   advance(10_000);
+  await svc.expirySweep;
+  const [row] = storageRows(svc, "SELECT deleted_at, text FROM messages WHERE key_id = ?", "ACK");
+  assert.notEqual(row.deleted_at, null, "the timer's sweep tombstoned it, with nothing reading it");
+  assert.equal(row.text, null);
   assert.equal(svc.hasMessage(result.message_id), false);
   await noPayload(svc);
 });
