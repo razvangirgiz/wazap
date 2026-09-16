@@ -1260,6 +1260,9 @@ fails, and the error names the status with a hint. Either way the failure sets
 least once: a POST a crash interrupted is sent again, so dedupe on
 `message_id`. Turning the webhook off, or dropping an event from
 `WAZAP_WEBHOOK_EVENTS`, cancels what waits; nothing is queued while it is off.
+With `WAZAP_PERSIST_HISTORY=0` the stored messages are removed at every stop
+and start, so a message event still waiting then is cancelled rather than
+posted after the restart; connection events still go out.
 
 A message event is built when it is posted, from the message as it is then: an
 edit or a transcript that arrived in the meantime goes with it, and a message

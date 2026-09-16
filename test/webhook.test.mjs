@@ -2053,3 +2053,45 @@ test("message events name the sender's contact_id and E.164 phone, and a lid who
     restoreEnv();
   }
 });
+
+test("with WAZAP_PERSIST_HISTORY=0 a message event still waiting at a stop is cancelled at the next start, and its connection event still goes out", async () => {
+  let up = false;
+  const server = await recorder(() => (up ? 204 : 503));
+  const restoreEnv = saveWebhookEnv(server.url, "all");
+  const config = offlineConfig("wazap-webhook-ephemeral-", { persistHistory: false });
+  const realError = console.error;
+  console.error = () => {};
+  try {
+    const first = openService(WhatsAppService, config);
+    const sock = fakeSocket();
+    first.sockClient = sock;
+    first.wireEvents(sock, ++first.generation);
+    first.account = { id: ME, name: "Răzvan", number: ME.split("@")[0] };
+    first.status = "connected";
+    first.setStatus("disconnected");
+    sock.ev.emit("messages.upsert", { type: "notify", messages: [textMessage("KEPT_NOWHERE", "salut")] });
+    await waitFor(() => server.received.length >= 2, 3_000, "both events tried once");
+    await first.stop();
+
+    up = true;
+    const second = openService(WhatsAppService, config);
+    try {
+      await second.bootStorage();
+      await waitFor(() => outboxRows(second).every((row) => row.state !== "pending"), 3_000, "the outbox to settle");
+      assert.deepEqual(
+        outboxRows(second).map((row) => [row.kind, row.state]),
+        [
+          ["connection", "delivered"],
+          ["message_received", "cancelled"],
+        ]
+      );
+      assert.deepEqual(server.received.slice(2).map((body) => body.event), ["connection"], "the purged message was not posted");
+    } finally {
+      await second.stop();
+    }
+  } finally {
+    console.error = realError;
+    await server.close();
+    restoreEnv();
+  }
+});
