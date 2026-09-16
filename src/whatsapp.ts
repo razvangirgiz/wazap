@@ -723,8 +723,9 @@ export class WhatsAppService implements WhatsAppApi {
     const imported = db.getMeta(IMPORT_META.state) !== null;
     const legacy = legacyRecordOf(db);
     db.close();
-    const now = Date.now();
-    const aside = join(this.paths.root, `wazap.${now}.previous-owner.sqlite`);
+    let at = Date.now();
+    while (["", "-wal", "-shm"].some((suffix) => existsSync(join(this.paths.root, `wazap.${at}.previous-owner.sqlite${suffix}`)))) at++;
+    const aside = join(this.paths.root, `wazap.${at}.previous-owner.sqlite`);
     try {
       const restore = setAsideFor(this.paths.root, owner);
       for (const suffix of ["", "-wal", "-shm"]) {
