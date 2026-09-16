@@ -127,9 +127,9 @@ function ownMessage(id, body, { chat = PEER, at = Date.now() } = {}) {
   };
 }
 
-function voiceNote(id, seconds, at = Date.now()) {
+function voiceNote(id, seconds, at = Date.now(), chat = PEER) {
   return {
-    key: { remoteJid: PEER, fromMe: false, id },
+    key: { remoteJid: chat, fromMe: false, id },
     messageTimestamp: Math.floor(at / 1000),
     message: { audioMessage: { mimetype: "audio/ogg; codecs=opus", ptt: true, seconds } },
   };
@@ -159,7 +159,7 @@ function saveWebhookEnv(url, events) {
  * that call and put straight back. The openai provider is the one whose
  * readiness is a key, which keeps whisper.cpp and its model out of this file.
  */
-function transcribingService(prefix) {
+function transcribingService(prefix, config = {}) {
   const keys = ["WAZAP_TRANSCRIBE", "WAZAP_TRANSCRIBE_API_KEY", "WAZAP_TRANSCRIBE_AUTO"];
   const saved = keys.map((key) => [key, process.env[key]]);
   Object.assign(process.env, {
@@ -168,7 +168,10 @@ function transcribingService(prefix) {
     WAZAP_TRANSCRIBE_AUTO: "1",
   });
   try {
-    return connectedService(WhatsAppService, { prefix, id: ME, name: "Răzvan", config: { readOnly: false } });
+    const connected = connectedService(WhatsAppService, { prefix, id: ME, name: "Răzvan", config: { readOnly: false, ...config } });
+    // Only the worker's word may end an event's wait for its transcript, never a look at the clock.
+    connected.svc.outbox.transcriptPollMs = 60_000;
+    return connected;
   } finally {
     for (const [key, value] of saved) {
       if (value === undefined) delete process.env[key];
@@ -1053,11 +1056,12 @@ test("a voice note waits for its transcript, and posts the words as the text", a
 });
 
 /**
- * The queue is single file, so note two is still running when note one is done.
- * Note one must not pay for it: the wait is per message, and the second
- * transcript is released by hand rather than by a sleep.
+ * The worker runs one note at a time, so one note is still being transcribed
+ * when the other is done. The finished one must not pay for it: the wait is per
+ * message, and the second transcript is released by hand rather than by a
+ * sleep. Two chats, since a chat keeps its own order.
  */
-test("a voice note waits for its own transcript, not for the notes behind it", async () => {
+test("a voice note waits for its own transcript, not for another chat's note being transcribed", async () => {
   const received = [];
   const server = await listen(async (req, res) => {
     received.push(JSON.parse(await readBody(req)));
@@ -1078,7 +1082,10 @@ test("a voice note waits for its own transcript, not for the notes behind it", a
     return { text: calls === 1 ? "prima notă" : "a doua notă", language: "ro", duration_seconds: 6 };
   };
   try {
-    sock.ev.emit("messages.upsert", { type: "notify", messages: [voiceNote("V1", 6), voiceNote("V2", 6)] });
+    sock.ev.emit("messages.upsert", {
+      type: "notify",
+      messages: [voiceNote("V1", 6), voiceNote("V2", 6, Date.now(), "40700000003@s.whatsapp.net")],
+    });
     await waitFor(() => received.length > 0, 5_000, "the first voice note webhook POST");
     assert.equal(received.length, 1, "the second note is still being transcribed");
     assert.equal(received[0].text, "prima notă");
@@ -2136,6 +2143,53 @@ test("the echo of a draft wazap confirmed writes no message_sent event, even whe
     await second.svc.outbox.idle();
     assert.deepEqual(server.received.map((body) => body.message_id), [`true_${PEER}_PHONE`]);
   } finally {
+    await first.svc.stop();
+    if (second !== null) await second.svc.stop();
+    await server.close();
+    restoreEnv();
+  }
+});
+
+
+test("a voice note's event whose wait a restart cut short goes out with the words the next run transcribes", async () => {
+  const dir = dataDir();
+  const server = await recorder();
+  const restoreEnv = saveWebhookEnv(server.url);
+  const first = transcribingService("wazap-webhook-voice-restart-", { dataDir: dir, persistHistory: true });
+  let releaseRun = () => {};
+  const gate = new Promise((resolve) => {
+    releaseRun = resolve;
+  });
+  first.svc.mediaBuffer = async () => Buffer.from("not really an ogg file");
+  first.svc.transcriber = async () => {
+    await gate;
+    return { text: "prea târziu", language: "ro", duration_seconds: 6 };
+  };
+  const sid = `false_${PEER}_MID`;
+  let second = null;
+  try {
+    first.sock.ev.emit("messages.upsert", { type: "notify", messages: [voiceNote("MID", 6)] });
+    await waitFor(() => first.svc.db.transcripts.state(sid)?.running === true, 3_000, "the transcription to start");
+    await first.svc.outbox.idle();
+    assert.equal(server.received.length, 0, "the event waits for the words");
+    // The process goes down mid-run: the note is still queued, its event still pending.
+    transcribeWorker.unregister(first.svc.transcribeSource);
+    await first.svc.stop();
+    releaseRun();
+    await transcribeWorker.idle();
+
+    second = transcribingService("wazap-webhook-voice-restart-", { dataDir: dir, persistHistory: true });
+    second.svc.mediaBuffer = async () => Buffer.from("not really an ogg file");
+    second.svc.transcriber = async () => ({ text: "am ajuns acasă", language: "ro", duration_seconds: 6 });
+    await second.svc.bootStorage();
+    await waitFor(() => server.received.length > 0, 5_000, "the event after the restart");
+    assert.deepEqual(
+      server.received.map((body) => [body.message_id, body.text]),
+      [[sid, "am ajuns acasă"]],
+      "once, with the words the second run got"
+    );
+  } finally {
+    releaseRun();
     await first.svc.stop();
     if (second !== null) await second.svc.stop();
     await server.close();

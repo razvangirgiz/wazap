@@ -543,8 +543,6 @@ export class WhatsAppService implements WhatsAppApi {
   private readonly webhook: WebhookSink;
   /** Posts the events the account database holds; see src/webhook-outbox.ts. */
   private readonly outbox: WebhookOutbox;
-  /** Voice notes this process is transcribing, whose events are worth holding for their words. */
-  private readonly webhookTranscripts = new Set<string>();
   /** Sends of our own, so their `fromMe` echo is never announced as `message_sent`. */
   private readonly sentByWazap = new SentIds();
   /** The last connection status queued for the consumer, so several internal states collapse into one event. */
@@ -587,6 +585,7 @@ export class WhatsAppService implements WhatsAppApi {
       db: () => (this.stopped ? null : this.readyDb()),
       ready: () => !this.stopped && this.status === "connected",
       run: (sid) => this.transcribeQueued(sid),
+      settled: (sid) => this.webhookTranscriptSettled(sid),
     };
     const recall = this.recallEnv;
     this.embedFeed =
@@ -4233,7 +4232,7 @@ export class WhatsAppService implements WhatsAppApi {
         messageId: message.id,
         payload: JSON.stringify({ is_self_chat: this.isMe(message.chatJid) }),
         createdAt: now,
-        readyAt: this.webhookReadyAt(raw, message, now),
+        readyAt: this.webhookReadyAt(message, now),
       });
     }
     return stored;
@@ -4263,38 +4262,42 @@ export class WhatsAppService implements WhatsAppApi {
   }
 
   /**
-   * Seam (F1-f): until when a message's event may wait for a transcript — a
-   * voice note that auto-transcription takes (incoming, short enough, not
-   * transcribed yet) — and the event is due at once otherwise. It must name
-   * the same notes the transcription queue takes.
+   * Until when a message's event may wait for its words: WEBHOOK_TRANSCRIPT_WAIT_MS
+   * for a voice note the transcription queue took, due at once otherwise. The
+   * queue row is written earlier in the same transaction by queueTranscript,
+   * so this is the queue's own rule (`transcribable`, the history window, the
+   * provider), not a copy of it.
    */
-  private webhookReadyAt(raw: WAMessage, message: StoredMessage, now: number): number {
-    if (!this.autoTranscribe || message.transcript !== null || !transcribable(raw)) return now;
-    return now + WEBHOOK_TRANSCRIPT_WAIT_MS;
-  }
-
-  /** Seam (F1-f): whether a transcript of this message is still being made; the durable queue's state should answer it. */
-  private webhookAwaitsTranscript(message: StoredMessage): boolean {
-    return this.webhookTranscripts.has(message.sid);
-  }
-
-  /** Seam (F1-f): a transcription finished or failed; its event, and its chat, need not wait any longer. */
-  private webhookTranscriptSettled(sid: string): void {
-    this.webhookTranscripts.delete(sid);
-    this.outbox.kick();
+  private webhookReadyAt(message: StoredMessage, now: number): number {
+    return this.transcriptQueued(message) ? now + WEBHOOK_TRANSCRIPT_WAIT_MS : now;
   }
 
   /**
-   * Starts posting what announced() queued. A voice note being transcribed is
-   * held until its transcript is stored or its run settles, however that went,
-   * and never for the notes behind it in the transcription queue.
+   * Whether an event is worth holding for a transcript right now: the note is
+   * on the durable queue, this process transcribes, the account can run it,
+   * and the provider is not paused. After a restart the queue still says so,
+   * and the worker takes the note up again.
    */
-  private postWebhookEvents(transcribing: ReadonlyMap<string, Promise<void>>): void {
-    for (const [sid, done] of transcribing) {
-      this.webhookTranscripts.add(sid);
-      void done.finally(() => this.webhookTranscriptSettled(sid));
+  private webhookAwaitsTranscript(message: StoredMessage): boolean {
+    if (!this.autoTranscribe || this.config.command !== "serve" || !this.transcribeSource.ready()) return false;
+    return this.transcribeWorker.paused() === null && this.transcriptQueued(message);
+  }
+
+  private transcriptQueued(message: StoredMessage): boolean {
+    try {
+      return this.readyDb()?.transcripts.state(message.sid)?.state === "queued";
+    } catch {
+      return false;
     }
-    this.outbox.nudge();
+  }
+
+  /**
+   * The transcription worker is done with a note — words stored, failed, given
+   * up on, or unable to run — or with every note (`null`: the provider paused):
+   * the events held for them look again now.
+   */
+  private webhookTranscriptSettled(_sid: string | null): void {
+    this.outbox.kick();
   }
 
   /**
@@ -4322,28 +4325,6 @@ export class WhatsAppService implements WhatsAppApi {
     if (this.webhook.settings().kind !== "ready") return this.webhook.info(undefined, null);
     const delivery = this.outbox.delivery(this.readyDb());
     return this.webhook.info(delivery, undeliveredFailure(delivery));
-  }
-
-  /**
-   * The voice notes that genuinely arrived and that the store queued: each sid
-   * on the queue carries the promise that settles when that note leaves it,
-   * which is what a held webhook event waits on. A service on its way out
-   * waits on nothing.
-   */
-  private queueTranscripts(arrived: readonly WAMessage[]): Map<string, Promise<void>> {
-    const queued = new Map<string, Promise<void>>();
-    const db = this.readyDb();
-    if (this.stopped || !this.autoTranscribe || db === null) return queued;
-    for (const raw of arrived) {
-      if (!transcribable(raw)) continue;
-      const sid = messageIdFor(raw.key, this.canonical(raw.key.remoteJid ?? ""));
-      try {
-        if (db.transcripts.state(sid)?.state === "queued") queued.set(sid, this.transcribeWorker.settled(this.transcribeSource, sid));
-      } catch (err) {
-        logError("transcribe", err);
-      }
-    }
-    return queued;
   }
 
   /**
@@ -4843,8 +4824,8 @@ export class WhatsAppService implements WhatsAppApi {
         if (raw.key.fromMe) continue;
         this.lastInboundAt = Math.max(this.lastInboundAt ?? 0, messageTimestampMs(raw));
       }
-      const transcribing = this.queueTranscripts(stored);
-      this.postWebhookEvents(transcribing);
+      // What announced() queued goes out now, and retries a receiver back up may take.
+      this.outbox.nudge();
       this.noteArrivals(stored);
     }
   }

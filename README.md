@@ -1313,7 +1313,9 @@ old form. For `message_sent` both name the account itself.
 `text` is a preview, cut at 2000 characters and ending in a single `…`.
 `truncated` is true when it was cut. For `kind: "audio"`, `text` is the
 transcription when wazap auto-transcribed the note itself, which it does for
-incoming notes only; the event waits up to 60 seconds for those words. In
+incoming notes only; the event waits up to 60 seconds for those words, a
+restart included, and goes at once when the transcription fails or the
+provider is paused. In
 every other case `text` is the `[voice message · 0:42]` placeholder: a note
 you recorded yourself, a note longer than 600 seconds, a note WhatsApp stated
 no duration for, and a transcription that failed every attempt or did not

@@ -35,6 +35,13 @@ export interface TranscribeSource {
   providerClass(): ProviderClass;
   /** Transcribes one queued note and stores the transcript; throws what went wrong. */
   run(sid: string): Promise<void>;
+  /**
+   * The worker is done with a note for now — its words stored, failed, given
+   * up on, or unable to run — or, with null, with every note of the source
+   * (the provider paused): whatever holds a message back for its words may
+   * stop waiting. Never allowed to throw into the worker.
+   */
+  settled?(sid: string | null): void;
 }
 
 export interface TranscribeWorkerOptions {
@@ -318,7 +325,18 @@ export class TranscribeWorker {
     }
     if (!db.isOpen) return;
     const stuck = failure?.kind === "waiting" || failure?.kind === "paused";
-    if (stuck || (db.isOpen && db.transcripts.state(item.sid)?.state !== "queued")) this.release(source, item.sid);
+    if (stuck || (db.isOpen && db.transcripts.state(item.sid)?.state !== "queued")) {
+      this.release(source, item.sid);
+      this.notify(source, item.sid);
+    }
+  }
+
+  private notify(source: TranscribeSource, sid: string | null): void {
+    try {
+      source.settled?.(sid);
+    } catch (err) {
+      logError(`transcribe ${source.name}`, err);
+    }
   }
 
   private settle(source: TranscribeSource, db: AccountDb, item: TranscribeItem, attempts: number, failure: Failure | null): void {
@@ -358,6 +376,7 @@ export class TranscribeWorker {
     logError("transcribe", `${reason}; pausing transcription for ${Math.round(delay / 1000)} s`);
     // Nothing will be transcribed soon: whoever holds a message back for its words stops waiting.
     for (const [source, bySid] of [...this.waiters]) for (const sid of [...bySid.keys()]) this.release(source, sid);
+    for (const source of this.sources) this.notify(source, null);
   }
 
   /** The provider took a note (or answered about one): pauses start from the shortest again. */
