@@ -5,11 +5,12 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, readdirSync, readFileSync, statSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { useAtomicAuthState, readLinkedAccount, clearAuth, withoutAppStateSync } from "../dist/auth-state.js";
+import { useAtomicAuthState, readLinkedAccount, clearAuth, clearSession, withoutAppStateSync } from "../dist/auth-state.js";
+import { AccountDb } from "../dist/db/index.js";
 
 function authDir() {
   return join(mkdtempSync(join(tmpdir(), "wazap-auth-")), "auth");
@@ -103,6 +104,32 @@ test("clearAuth removes the whole directory and is idempotent", async () => {
   clearAuth(dir);
   assert.throws(() => statSync(dir));
   clearAuth(dir);
+});
+
+test("clearSession ties the account database to the credentials' number before removing them, and touches nothing else", () => {
+  const root = mkdtempSync(join(tmpdir(), "wazap-auth-session-"));
+  const dir = join(root, "auth");
+  mkdirSync(dir);
+  writeFileSync(join(dir, "creds.json"), JSON.stringify({ me: { id: "40700000001:3@s.whatsapp.net" } }));
+  writeFileSync(join(root, "store.json"), "{}");
+  clearSession({ authDir: dir, root });
+  assert.throws(() => statSync(dir));
+  assert.equal(readFileSync(join(root, "store.json"), "utf8"), "{}");
+  const db = AccountDb.open(join(root, "wazap.sqlite"), { readOnly: true });
+  assert.equal(db.getMeta("owner"), "40700000001@s.whatsapp.net");
+  db.close();
+
+  // A database another number fills keeps its owner; unreadable credentials still go.
+  mkdirSync(dir);
+  writeFileSync(join(dir, "creds.json"), JSON.stringify({ me: { id: "40799999999:3@s.whatsapp.net" } }));
+  clearSession({ authDir: dir, root });
+  const kept = AccountDb.open(join(root, "wazap.sqlite"), { readOnly: true });
+  assert.equal(kept.getMeta("owner"), "40700000001@s.whatsapp.net");
+  kept.close();
+  mkdirSync(dir);
+  writeFileSync(join(dir, "creds.json"), "{ truncated");
+  clearSession({ authDir: dir, root });
+  assert.throws(() => statSync(dir));
 });
 
 /**

@@ -9,7 +9,9 @@ import {
   type AuthenticationState,
   type SignalDataTypeMap,
 } from "baileys";
+import { AccountDb, StorageError } from "./db/index.js";
 import { RESET_FIX, WazapError } from "./errors.js";
+import { logError } from "./logger.js";
 
 export interface LinkedAccount {
   /** Canonical `<digits>@s.whatsapp.net`. */
@@ -149,9 +151,36 @@ export function clearAuth(dir: string): void {
  * What a logout deletes: the credentials. The account database stays for the
  * same number to link again, and an earlier wazap's `store.json` is a legacy
  * file now, imported once and then moved aside on its own schedule.
+ *
+ * Given the account folder, the database is first tied to the number the
+ * credentials name, created when the account never started on this version:
+ * a different number linking later then sets it aside and marks the fresh one
+ * `skipped`, instead of importing the earlier number's legacy files into its
+ * own history. A database that already names another number keeps it. Not for
+ * a service holding the database open: it claimed it at start.
  */
-export function clearSession(p: { authDir: string }): void {
+export function clearSession(p: { authDir: string; root?: string }): void {
+  if (p.root !== undefined) bindAccountDatabase(p.root, p.authDir);
   clearAuth(p.authDir);
+}
+
+function bindAccountDatabase(root: string, authDir: string): void {
+  let owner: string | null;
+  try {
+    owner = readLinkedAccount(authDir)?.id ?? null;
+  } catch {
+    return;
+  }
+  if (owner === null) return;
+  let db: AccountDb | null = null;
+  try {
+    db = AccountDb.open(join(root, "wazap.sqlite"), { now: () => Date.now() });
+    db.bindOwner(owner);
+  } catch (err) {
+    if (!(err instanceof StorageError) || err.code !== "OWNER_MISMATCH") logError("bind the account database to its number", err);
+  } finally {
+    db?.close();
+  }
 }
 
 const APP_STATE_SYNC_VERSION = "app-state-sync-version";

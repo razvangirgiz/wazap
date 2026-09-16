@@ -3,12 +3,10 @@
  * when nothing holds the data dir, or the running server when it does.
  */
 
-import { join } from "node:path";
 import { DisconnectReason, type WASocket } from "baileys";
 import { AccountRegistry } from "./accounts.js";
 import { clearSession, readLinkedAccount } from "./auth-state.js";
 import { accountPaths } from "./config.js";
-import { AccountDb, StorageError } from "./db/index.js";
 import { WazapError } from "./errors.js";
 import { logError } from "./logger.js";
 import { linkSession } from "./pairing.js";
@@ -100,29 +98,9 @@ export async function logoutAccount(
     }
   }
 
-  if (linked) bindDatabase(storage.root, linked.id);
   clearSession(storage);
   AccountRegistry.load(dataDir).setOwner(id, null);
   return outcome;
-}
-
-/**
- * Ties the account database to the number logging out before its credentials
- * go, creating the file when the account never started on this version. A
- * different number linking later then sets it aside and starts a fresh one
- * marked `skipped`, instead of importing the earlier number's legacy files
- * into its own history. A database that already names another number keeps it.
- */
-function bindDatabase(root: string, owner: string): void {
-  let db: AccountDb | null = null;
-  try {
-    db = AccountDb.open(join(root, "wazap.sqlite"), { now: () => Date.now() });
-    db.bindOwner(owner);
-  } catch (err) {
-    if (!(err instanceof StorageError) || err.code !== "OWNER_MISMATCH") logError("bind the account database to its number", err);
-  } finally {
-    db?.close();
-  }
 }
 
 /** The lines a logout prints, the same whether the CLI or the running server did the work. */

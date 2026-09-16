@@ -29,7 +29,7 @@ import {
 } from "baileys";
 import type { ILogger } from "baileys/lib/Utils/logger.js";
 import { accountPolicy, type AccountRecord } from "./accounts.js";
-import { clearSession, readLinkedAccount, useAtomicAuthState, type LinkedAccount } from "./auth-state.js";
+import { clearAuth, readLinkedAccount, useAtomicAuthState, type LinkedAccount } from "./auth-state.js";
 import { CallTracker, callMessage, isTrackedCall, type CallEntry } from "./calls.js";
 import { BAILEYS_VERSION, WAZAP_VERSION, writesHints, type AccountPaths, type Config } from "./config.js";
 import {
@@ -971,7 +971,8 @@ export class WhatsAppService implements WhatsAppApi {
       if (this.linking) return this.linking;
       const number = normalizePhone(phone);
       this.requireUnlinked();
-      if (this.status !== "not_linked") clearSession(this.paths);
+      // The service claimed the database for these credentials at start; only they go.
+      if (this.status !== "not_linked") clearAuth(this.paths.authDir);
       this.linking = this.pair(number);
       return this.linking;
     });
