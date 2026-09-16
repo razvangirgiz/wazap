@@ -126,6 +126,8 @@ export class Merger {
     if (lidChat !== undefined && phoneChat !== undefined) {
       this.c.run("UPDATE chats SET merged_into = ? WHERE id = ? OR merged_into = ?", phoneChat.id, lidChat.id, lidChat.id);
       this.shareBarrier(phoneChat.id);
+      // The number's chat lists and waits as the whole fold from now on, not only its own rows.
+      this.c.run(RECOMPUTE_LAST, phoneChat.id);
     } else if (lidChat !== undefined) {
       this.c.run("UPDATE chats SET jid = ? WHERE id = ?", phone, lidChat.id);
     }

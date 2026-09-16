@@ -76,14 +76,21 @@ export const MESSAGE_FROM = `messages m CROSS JOIN chats c ON c.id = m.chat_id L
  */
 export const VISIBLE = `m.deleted_at IS NULL AND (m.expires_at IS NULL OR m.expires_at > ?) AND m.ts > coalesce(c.cleared_through_ts, 0)`;
 
-/** Recomputes a chat's last_* from what a reader may see; binds the chat id. */
+/**
+ * Recomputes a chat's last_* from what a reader may see in the chat and in
+ * every chat folding into it: the newest of each one's newest visible row,
+ * each found by walking its own (chat_id, id) index back. Binds the chat id.
+ */
 export const RECOMPUTE_LAST = `UPDATE chats SET (last_message_id, last_ts, last_from_me) = (
-    SELECT m.id, m.ts, m.from_me FROM messages m
-    WHERE m.chat_id = chats.id AND m.deleted_at IS NULL
-      AND m.id >= (coalesce(chats.cleared_through_ts, 0) / 1000) * 1048576
-      AND m.ts > coalesce(chats.cleared_through_ts, 0)
-    ORDER BY m.id DESC LIMIT 1
-  ) WHERE id = ?`;
+    SELECT m.id, m.ts, m.from_me FROM messages m WHERE m.id = (
+      SELECT max((
+        SELECT x.id FROM messages x
+        WHERE x.chat_id = k.id AND x.deleted_at IS NULL
+          AND x.id >= (coalesce(k.cleared_through_ts, 0) / 1000) * 1048576
+          AND x.ts > coalesce(k.cleared_through_ts, 0)
+        ORDER BY x.id DESC LIMIT 1))
+      FROM chats k WHERE k.id = chats.id OR k.merged_into = chats.id))
+  WHERE id = ?`;
 
 export function contactFromRow(row: ContactRow): ContactRecord {
   return {

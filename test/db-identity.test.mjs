@@ -214,6 +214,26 @@ test("n2: a lid that moves while its old chat is still folding starts the new nu
   db.close();
 });
 
+test("n10: while a lid chat is still folding, the number's chat lists and waits with the folding chat's newest message", async () => {
+  const { db } = openTemp({ chunkSize: 5 });
+  for (let i = 0; i < 300; i++) db.messages.upsert(textMessage(GROUP_A, `G${i}`, T0 + i, "g", { senderJid: OTHER }));
+  db.messages.upsert(textMessage(PEER, "OLD", T0 + 1000, "old reply", { fromMe: true }));
+  db.messages.upsert(textMessage(PEER_LID, "ASK", T0 + 50_000, "are you coming tomorrow?"));
+  const clear = db.messages.clearChat(GROUP_A, T0 + 400);
+  const learn = db.learnLidPhone(PEER_LID, PEER);
+  const window = { since: T0, until: T0 + 3_600_000, limit: 10, kinds: ["direct"] };
+  assert.deepEqual(db.messages.waiting(window).items.map((w) => w.last.text), ["are you coming tomorrow?"]);
+  assert.deepEqual(db.messages.listChats({ limit: 10 }).items.find((i) => i.chat.jid === PEER)?.last?.text, "are you coming tomorrow?");
+  db.messages.delete(sid(false, PEER_LID, "ASK"));
+  assert.equal(db.identity.chat(PEER).lastFromMe, true, "a tombstone in the folding chat updates the number's chat too");
+  assert.deepEqual(db.messages.waiting(window).items, []);
+  db.messages.upsert(textMessage(PEER, "NEW", T0 + 60_000, "still there?"));
+  await clear;
+  await learn;
+  assert.deepEqual(db.messages.waiting(window).items.map((w) => w.last.text), ["still there?"]);
+  db.close();
+});
+
 test("a number that gains a new lid keeps answering to its older lid too", async () => {
   const { db } = openTemp();
   await db.learnLidPhone(PEER_LID, PEER);

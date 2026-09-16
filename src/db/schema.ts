@@ -287,13 +287,16 @@ BEGIN
   ON CONFLICT(second) DO UPDATE SET top = max(top, excluded.top);
 END;
 
--- chats.last_* names the newest message a reader may see: never a tombstone,
--- never a row at or before the chat's clear barrier.
+-- chats.last_* names the newest message a reader may see in the chat and in
+-- every chat still folding into it: never a tombstone, never a row at or
+-- before the clear barrier. A change in a folding chat updates the chat it
+-- folds into as well.
 CREATE TRIGGER messages_last_insert AFTER INSERT ON messages
 WHEN new.deleted_at IS NULL
 BEGIN
   UPDATE chats SET last_message_id = new.id, last_ts = new.ts, last_from_me = new.from_me
-  WHERE id = new.chat_id AND new.ts > coalesce(cleared_through_ts, 0)
+  WHERE (id = new.chat_id OR id = (SELECT merged_into FROM chats WHERE id = new.chat_id))
+    AND new.ts > coalesce(cleared_through_ts, 0)
     AND (last_message_id IS NULL OR last_message_id < new.id);
 END;
 
@@ -305,38 +308,44 @@ BEGIN
   DELETE FROM votes WHERE message_id = new.id;
   DELETE FROM receipts WHERE message_id = new.id;
   UPDATE chats SET (last_message_id, last_ts, last_from_me) = (
-    SELECT m.id, m.ts, m.from_me FROM messages m
-    WHERE m.chat_id = new.chat_id AND m.deleted_at IS NULL
-      AND m.id >= (coalesce(chats.cleared_through_ts, 0) / 1000) * 1048576
-      AND m.ts > coalesce(chats.cleared_through_ts, 0)
-    ORDER BY m.id DESC LIMIT 1
-  )
-  WHERE id = new.chat_id AND last_message_id = new.id;
+    SELECT m.id, m.ts, m.from_me FROM messages m WHERE m.id = (
+      SELECT max((
+        SELECT x.id FROM messages x
+        WHERE x.chat_id = k.id AND x.deleted_at IS NULL
+          AND x.id >= (coalesce(k.cleared_through_ts, 0) / 1000) * 1048576
+          AND x.ts > coalesce(k.cleared_through_ts, 0)
+        ORDER BY x.id DESC LIMIT 1))
+      FROM chats k WHERE k.id = chats.id OR k.merged_into = chats.id))
+  WHERE (id = new.chat_id OR id = (SELECT merged_into FROM chats WHERE id = new.chat_id)) AND last_message_id = new.id;
 END;
 
 CREATE TRIGGER messages_last_delete AFTER DELETE ON messages
 BEGIN
   UPDATE chats SET (last_message_id, last_ts, last_from_me) = (
-    SELECT m.id, m.ts, m.from_me FROM messages m
-    WHERE m.chat_id = old.chat_id AND m.deleted_at IS NULL
-      AND m.id >= (coalesce(chats.cleared_through_ts, 0) / 1000) * 1048576
-      AND m.ts > coalesce(chats.cleared_through_ts, 0)
-    ORDER BY m.id DESC LIMIT 1
-  )
-  WHERE id = old.chat_id AND last_message_id = old.id;
+    SELECT m.id, m.ts, m.from_me FROM messages m WHERE m.id = (
+      SELECT max((
+        SELECT x.id FROM messages x
+        WHERE x.chat_id = k.id AND x.deleted_at IS NULL
+          AND x.id >= (coalesce(k.cleared_through_ts, 0) / 1000) * 1048576
+          AND x.ts > coalesce(k.cleared_through_ts, 0)
+        ORDER BY x.id DESC LIMIT 1))
+      FROM chats k WHERE k.id = chats.id OR k.merged_into = chats.id))
+  WHERE (id = old.chat_id OR id = (SELECT merged_into FROM chats WHERE id = old.chat_id)) AND last_message_id = old.id;
 END;
 
 CREATE TRIGGER messages_last_move AFTER UPDATE OF chat_id ON messages
 WHEN old.chat_id IS NOT new.chat_id
 BEGIN
   UPDATE chats SET (last_message_id, last_ts, last_from_me) = (
-    SELECT m.id, m.ts, m.from_me FROM messages m
-    WHERE m.chat_id = old.chat_id AND m.deleted_at IS NULL
-      AND m.id >= (coalesce(chats.cleared_through_ts, 0) / 1000) * 1048576
-      AND m.ts > coalesce(chats.cleared_through_ts, 0)
-    ORDER BY m.id DESC LIMIT 1
-  )
-  WHERE id = old.chat_id AND last_message_id = old.id;
+    SELECT m.id, m.ts, m.from_me FROM messages m WHERE m.id = (
+      SELECT max((
+        SELECT x.id FROM messages x
+        WHERE x.chat_id = k.id AND x.deleted_at IS NULL
+          AND x.id >= (coalesce(k.cleared_through_ts, 0) / 1000) * 1048576
+          AND x.ts > coalesce(k.cleared_through_ts, 0)
+        ORDER BY x.id DESC LIMIT 1))
+      FROM chats k WHERE k.id = chats.id OR k.merged_into = chats.id))
+  WHERE (id = old.chat_id OR id = (SELECT merged_into FROM chats WHERE id = old.chat_id)) AND last_message_id = old.id;
   UPDATE chats SET last_message_id = new.id, last_ts = new.ts, last_from_me = new.from_me
   WHERE id = new.chat_id AND new.deleted_at IS NULL AND new.ts > coalesce(cleared_through_ts, 0)
     AND (last_message_id IS NULL OR last_message_id < new.id);
