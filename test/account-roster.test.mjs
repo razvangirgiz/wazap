@@ -55,8 +55,8 @@ function seedCreds(dataDir, id, jid) {
  * started without starting anything: a real start on linked credentials would
  * open a Baileys socket.
  */
-function twoAccountHub(t, { linkedWork = false } = {}) {
-  const config = offlineConfig("wazap-roster-", { readOnly: false });
+function twoAccountHub(t, { linkedWork = false, persistHistory = false } = {}) {
+  const config = offlineConfig("wazap-roster-", { readOnly: false, persistHistory });
   const registry = AccountRegistry.load(config.dataDir);
   registry.add("work", "Work");
   if (linkedWork) {
@@ -200,19 +200,25 @@ for (const [label, damage] of [
   });
 }
 
-test("remove while connected stops the socket before the folder goes", async (t) => {
+test("remove while connected stops the socket and closes the database before the folder goes", async (t) => {
   const { config, hub, work, workSock } = twoAccountHub(t, { linkedWork: true });
+  await work.bootStorage();
   const root = accountPaths(config.dataDir, "work").root;
+  assert.equal(existsSync(join(root, "wazap.sqlite")), true);
   let stoppedBeforeDelete = null;
+  let closedBeforeDelete = null;
   const originalStop = work.stop.bind(work);
   work.stop = async () => {
+    const db = work.db;
     await originalStop();
     stoppedBeforeDelete = existsSync(root);
+    closedBeforeDelete = db.isOpen === false;
   };
   await hub.remove("work");
   assert.equal(stoppedBeforeDelete, true, "the folder was still there when the service finished stopping");
+  assert.equal(closedBeforeDelete, true, "the database was closed before its folder was deleted");
   assert.equal(workSock.ended, true);
-  assert.equal(existsSync(root), false);
+  assert.equal(existsSync(root), false, "the folder goes whole, the database with it");
   assert.equal(AccountRegistry.load(config.dataDir).get("work"), undefined);
   assert.equal(hub.get("work"), undefined);
   assert.equal(hub.record("work"), undefined);
@@ -235,7 +241,20 @@ test("remove refuses the only account being served, and an unknown one", async (
 });
 
 test("logout of a connected account unlinks it and leaves a fresh not_linked service", async (t) => {
-  const { config, hub, work, workSock } = twoAccountHub(t, { linkedWork: true });
+  const { config, hub, work, workSock } = twoAccountHub(t, { linkedWork: true, persistHistory: true });
+  await work.bootStorage();
+  workSock.ev.emit("messages.upsert", {
+    type: "notify",
+    messages: [
+      {
+        key: { remoteJid: DAN, fromMe: false, id: "KEPT" },
+        messageTimestamp: Math.floor(Date.now() / 1000),
+        message: { conversation: "istoric păstrat" },
+      },
+    ],
+  });
+  const kept = `false_${DAN}_KEPT`;
+  assert.equal(work.hasMessage(kept), true);
   const calls = unlinkSockets(t);
   const storage = accountPaths(config.dataDir, "work");
 
@@ -252,6 +271,11 @@ test("logout of a connected account unlinks it and leaves a fresh not_linked ser
   assert.notEqual(fresh, work);
   await waitFor(() => fresh.getStatus().status === "not_linked", 5_000, "the fresh service to settle");
   assert.equal(hub.get("default").getStatus().status, "connected", "the other account never noticed");
+
+  // A logout unlinks the device; the message history stays for the same number to link again.
+  assert.equal(existsSync(join(storage.root, "wazap.sqlite")), true, "the database is kept");
+  await fresh.bootStorage();
+  assert.equal(fresh.hasMessage(kept), true, "the fresh service reads the history the old one stored");
 });
 
 test("logout when the phone already removed the device still clears everything", async (t) => {
