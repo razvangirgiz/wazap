@@ -234,6 +234,25 @@ test("n10: while a lid chat is still folding, the number's chat lists and waits 
   db.close();
 });
 
+test("n8: an event or handled mark on the folded copy of a twin points at the surviving row afterwards", async () => {
+  const { db } = openTemp();
+  const conn = db["connection"];
+  const history = db.messages.upsert(textMessage(PEER, "V", T0, "from history sync"));
+  const live = db.messages.upsert(textMessage(PEER_LID, "V", T0, "live delivery"));
+  conn.write(() =>
+    conn.run("INSERT INTO events(kind, message_id, payload, created_at, ready_at, state) VALUES ('message', ?, '{}', 0, 0, 'pending')", live.id)
+  );
+  db.identity.markHandled(PEER_LID, sid(false, PEER_LID, "V"));
+  await db.learnLidPhone(PEER_LID, PEER);
+  assert.ok(db.messages.get(sid(false, PEER, "V")));
+  assert.equal(conn.get("SELECT message_id FROM events").message_id, history.id);
+  assert.deepEqual(
+    [db.identity.handled(PEER).askMessageId, db.identity.handled(PEER).askSid],
+    [history.id, sid(false, PEER, "V")]
+  );
+  db.close();
+});
+
 test("a number that gains a new lid keeps answering to its older lid too", async () => {
   const { db } = openTemp();
   await db.learnLidPhone(PEER_LID, PEER);

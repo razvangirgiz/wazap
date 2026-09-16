@@ -387,7 +387,7 @@ export class Merger {
 
     if (keep.deleted_at !== null || drop.deleted_at !== null) {
       if (keep.deleted_at === null) report.mediaPaths.push(...this.messages.tombstone(keepId, drop.deleted_at!));
-      this.dropTwin(dropId, report);
+      this.dropTwin(keepId, dropId, report);
       return;
     }
 
@@ -467,12 +467,19 @@ export class Merger {
       contentHash(merged.text, merged.transcript),
       keepId
     );
-    this.dropTwin(dropId, report);
+    this.dropTwin(keepId, dropId, report);
   }
 
-  /** Deletes the folded twin; a file only it referenced is handed back, one another row still uses is not. */
-  private dropTwin(dropId: number, report: MergeReport): void {
+  /**
+   * Deletes the folded twin after pointing events and handled marks at the
+   * survivor; a file only it referenced is handed back, one another row still
+   * uses is not.
+   */
+  private dropTwin(keepId: number, dropId: number, report: MergeReport): void {
     const paths = this.c.all<{ path: string }>("SELECT path FROM media WHERE message_id = ?", dropId).map((row) => row.path);
+    // The message survives in the kept row: what pointed at the folded copy points there, instead of going null.
+    this.c.run("UPDATE events SET message_id = ? WHERE message_id = ?", keepId, dropId);
+    this.c.run("UPDATE handled SET ask_message_id = ? WHERE ask_message_id = ?", keepId, dropId);
     this.c.run("DELETE FROM messages WHERE id = ?", dropId);
     for (const path of paths) {
       if (this.c.get("SELECT 1 FROM media WHERE path = ?", path) === undefined) report.mediaPaths.push(path);
