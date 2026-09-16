@@ -194,6 +194,8 @@ const PREVIEW_SOURCE_MAX_BYTES = 6_000_000;
 const PREVIEW_VIDEO_MAX_BYTES = 25_000_000;
 /** How many active groups one catch-up fetches metadata for, to name their senders. */
 const RECENT_GROUP_META_MAX = 12;
+/** Messages get_recent_messages returns per chat: the newest of its window, as many as main's per-chat ring held. */
+const RECENT_PER_CHAT_MAX = 2_000;
 /** Local contact filing caps: enough to describe anyone, small enough to stay a note. */
 const MAX_CONTACT_TAGS = 30;
 const MAX_CONTACT_FIELDS = 30;
@@ -1173,25 +1175,21 @@ export class WhatsAppService implements WhatsAppApi {
       await Promise.all(activeGroups.slice(0, RECENT_GROUP_META_MAX).map((jid) => this.learnParticipants(jid)));
 
       const db = this.db;
-      const byChat = new Map<number, StoredMessage[]>();
-      for (let before: number | undefined; ; ) {
-        const page = db.messages.recent({ since: cutoff, limit: 500, excludeKinds: ["status"], ...(before === undefined ? {} : { before }) });
-        for (const message of page.items) {
-          const list = byChat.get(message.chatId) ?? [];
-          list.push(message);
-          byChat.set(message.chatId, list);
-        }
-        if (page.nextBefore === null) break;
-        before = page.nextBefore;
-      }
-
       const wanted = types === undefined || types.length === 0 ? null : new Set<string>(types);
       const chosen: Array<{ jid: string; stored: StoredMessage[] }> = [];
-      for (const [chatId, newestFirst] of byChat) {
-        const chat = db.identity.chatById(chatId);
-        const jid = newestFirst[0]!.chatJid;
-        if (chat === null || isNoiseJid(jid) || !this.matchesChatFilter(chat, filter)) continue;
-        chosen.push({ jid, stored: newestFirst.reverse().filter((message) => wanted === null || wanted.has(message.type)) });
+      for (const chat of active) {
+        if (chat.kind === "status" || isNoiseJid(chat.jid) || !this.matchesChatFilter(chat, filter)) continue;
+        // Each chat's newest messages in the window, at most as many as main's per-chat ring held.
+        const newestFirst: StoredMessage[] = [];
+        for (let before: number | undefined; newestFirst.length < RECENT_PER_CHAT_MAX; ) {
+          const limit = Math.min(500, RECENT_PER_CHAT_MAX - newestFirst.length);
+          const page = db.messages.chatPage(chat.jid, { limit, since: cutoff, ...(before === undefined ? {} : { before }) });
+          newestFirst.push(...page.items);
+          if (page.nextBefore === null) break;
+          before = page.nextBefore;
+        }
+        const stored = newestFirst.reverse().filter((message) => wanted === null || wanted.has(message.type));
+        if (stored.length > 0) chosen.push({ jid: chat.jid, stored });
       }
       // One read of every chosen message's reactions, votes and receipts, and each name once.
       const lookups = this.viewLookups(chosen.flatMap((entry) => entry.stored));

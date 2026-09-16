@@ -909,16 +909,19 @@ export class Messages {
   }
 
   /** One page of a chat, newest first; `before` is the previous page's nextBefore. */
-  chatPage(chatJid: string, options: { before?: number; limit: number }): Page<StoredMessage> {
+  chatPage(chatJid: string, options: { before?: number; limit: number; since?: number }): Page<StoredMessage> {
     const limit = clampLimit(options.limit);
     const chat = this.identity.chat(chatJid);
     if (chat === null) return { items: [], hasMore: false, nextBefore: null };
     const inChat = chatCondition(this.identity.chatIdsOf(chat));
+    const since = options.since === undefined ? null : checkTimestamp(options.since, "since");
     const rows = this.c.all<MessageRow>(
       `SELECT ${MESSAGE_COLUMNS} FROM ${MESSAGE_FROM}
-       WHERE ${inChat.sql} AND m.id < ? AND ${VISIBLE} ORDER BY m.id DESC LIMIT ?`,
+       WHERE ${inChat.sql} AND m.id < ? AND m.id >= ? AND m.ts >= ? AND ${VISIBLE} ORDER BY m.id DESC LIMIT ?`,
       ...inChat.params,
       options.before ?? NO_UPPER_BOUND,
+      since === null ? 0 : idLowerBound(since),
+      since ?? 0,
       this.c.now(),
       limit + 1
     );

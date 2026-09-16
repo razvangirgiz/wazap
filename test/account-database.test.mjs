@@ -378,6 +378,24 @@ test("a catch-up over a busy week reads each message's reactions, votes and rece
   assert.equal(all.find((m) => m.message_id === `true_${PEER}_MINE`).delivery.status, "read");
 });
 
+test("a catch-up reads each active chat's newest 2,000 in its window, as main's per-chat ring held, and walks no other chat", async (t) => {
+  const dataDir = mkdtempSync(join(tmpdir(), "wazap-accountdb-"));
+  const { svc } = serviceOn(dataDir);
+  t.after(() => svc.stop());
+  await svc.bootStorage();
+  const now = Date.now();
+  svc.db.messages.upsertMany(Array.from({ length: 2_100 }, (_, i) => ({ chatJid: PEER, keyId: `B${i}`, fromMe: false, ts: now - 3_600_000 + i * 1000, type: "text", text: `rafală ${i}` })));
+  svc.db.messages.upsertMany(Array.from({ length: 300 }, (_, i) => ({ chatJid: ANA, keyId: `Q${i}`, fromMe: false, ts: now - 30 * 86_400_000 + i * 1000, type: "text", text: `vechi ${i}` })));
+  const recent = t.mock.method(svc.db.messages, "recent");
+  const result = await svc.getRecentMessages(24, "all");
+  assert.deepEqual(result.data.map((chat) => chat.chat_id), [PEER], "a quiet chat is not in the window");
+  const messages = result.data[0].messages;
+  assert.equal(messages.length, 2_000);
+  assert.equal(messages[0].message_id, `false_${PEER}_B100`, "the newest 2,000, oldest first");
+  assert.equal(messages.at(-1).message_id, `false_${PEER}_B2099`);
+  assert.equal(recent.mock.callCount(), 0, "the window is read chat by chat, not across the account");
+});
+
 test("an account of 20,000 messages boots without holding its history in memory", async () => {
   const dataDir = mkdtempSync(join(tmpdir(), "wazap-accountdb-rss-"));
   const db = AccountDb.open(join(accountPaths(dataDir, "default").root, "wazap.sqlite"));
