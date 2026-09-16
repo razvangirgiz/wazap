@@ -1,0 +1,287 @@
+/**
+ * The account database schema, as ordered migrations over `PRAGMA
+ * user_version`. Version N is reached by running migrations 1..N in order,
+ * each in its own transaction together with the version bump, so a crash
+ * leaves the file at a whole version. A migration, once released, never
+ * changes: a new shape is a new entry at the end.
+ *
+ * Units: every time column is epoch milliseconds. Message ids are
+ * chronological (see ids.ts), and the CHECK on `messages` holds the id's
+ * second to the timestamp's second, so an id range is a time range.
+ *
+ * Invariants the schema itself defends, whatever code writes to it:
+ * - a message keeps its id, sid, timestamp, key and direction forever;
+ * - a tombstone (deleted_at set) holds no text, transcript or raw bytes, and
+ *   stays a tombstone;
+ * - the full-text index and the embeddings follow text and transcript, and a
+ *   tombstone takes its embedding, reactions, votes and receipts with it;
+ * - chats.last_* names the newest non-tombstone message of the chat after any
+ *   insert, tombstone, delete or move.
+ */
+
+export interface Migration {
+  version: number;
+  sql: string;
+}
+
+const V1 = `
+CREATE TABLE meta(
+  key TEXT PRIMARY KEY,
+  value TEXT NOT NULL
+) STRICT;
+
+CREATE TABLE contacts(
+  id INTEGER PRIMARY KEY,
+  phone_jid TEXT UNIQUE,
+  lid TEXT UNIQUE,
+  name TEXT,
+  push_name TEXT,
+  verified_name TEXT,
+  is_business INTEGER,
+  updated_at INTEGER NOT NULL
+) STRICT;
+
+CREATE TABLE chats(
+  id INTEGER PRIMARY KEY,
+  jid TEXT NOT NULL UNIQUE,
+  kind TEXT NOT NULL,
+  contact_id INTEGER REFERENCES contacts(id),
+  name TEXT,
+  archived INTEGER NOT NULL DEFAULT 0,
+  pinned INTEGER,
+  muted_until INTEGER,
+  unread INTEGER NOT NULL DEFAULT 0,
+  cleared_through_ts INTEGER,
+  last_message_id INTEGER,
+  last_ts INTEGER,
+  last_from_me INTEGER,
+  proto BLOB
+) STRICT;
+CREATE INDEX chats_waiting ON chats(last_from_me, last_ts);
+CREATE INDEX chats_recent ON chats(last_ts);
+CREATE INDEX chats_contact ON chats(contact_id) WHERE contact_id IS NOT NULL;
+
+CREATE TABLE chat_aliases(
+  jid TEXT PRIMARY KEY,
+  chat_id INTEGER NOT NULL REFERENCES chats(id) ON DELETE CASCADE
+) STRICT;
+CREATE INDEX chat_aliases_chat ON chat_aliases(chat_id);
+
+-- Column order is deliberate: the small columns every filter reads come
+-- first, the large ones last, so checking deleted_at or expires_at never
+-- walks past a raw blob into its overflow pages.
+CREATE TABLE messages(
+  id INTEGER PRIMARY KEY,
+  sid TEXT NOT NULL UNIQUE,
+  chat_id INTEGER NOT NULL REFERENCES chats(id),
+  key_id TEXT NOT NULL,
+  from_me INTEGER NOT NULL CHECK (from_me IN (0, 1)),
+  sender_id INTEGER REFERENCES contacts(id),
+  ts INTEGER NOT NULL CHECK (ts > 0),
+  type TEXT NOT NULL,
+  quoted_sid TEXT,
+  status INTEGER,
+  edited_at INTEGER,
+  expires_at INTEGER,
+  deleted_at INTEGER,
+  text TEXT,
+  transcript TEXT,
+  raw BLOB,
+  CHECK ((id >> 20) = (ts / 1000)),
+  CHECK (deleted_at IS NULL OR (text IS NULL AND transcript IS NULL AND raw IS NULL))
+) STRICT;
+CREATE INDEX messages_chat ON messages(chat_id, id);
+CREATE INDEX messages_sender ON messages(sender_id, id) WHERE sender_id IS NOT NULL;
+CREATE INDEX messages_expiry ON messages(expires_at) WHERE expires_at IS NOT NULL AND deleted_at IS NULL;
+CREATE INDEX messages_quoted ON messages(quoted_sid) WHERE quoted_sid IS NOT NULL;
+CREATE INDEX messages_tombstones ON messages(deleted_at) WHERE deleted_at IS NOT NULL;
+
+CREATE TABLE message_aliases(
+  sid TEXT PRIMARY KEY,
+  message_id INTEGER NOT NULL REFERENCES messages(id) ON DELETE CASCADE
+) STRICT;
+CREATE INDEX message_aliases_message ON message_aliases(message_id);
+
+CREATE TABLE reactions(
+  message_id INTEGER NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
+  contact_id INTEGER NOT NULL REFERENCES contacts(id),
+  emoji TEXT NOT NULL,
+  ts INTEGER NOT NULL,
+  PRIMARY KEY (message_id, contact_id)
+) STRICT, WITHOUT ROWID;
+CREATE INDEX reactions_contact ON reactions(contact_id);
+
+CREATE TABLE votes(
+  message_id INTEGER NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
+  contact_id INTEGER NOT NULL REFERENCES contacts(id),
+  choice TEXT NOT NULL,
+  ts INTEGER NOT NULL,
+  PRIMARY KEY (message_id, contact_id)
+) STRICT, WITHOUT ROWID;
+CREATE INDEX votes_contact ON votes(contact_id);
+
+CREATE TABLE receipts(
+  message_id INTEGER NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
+  contact_id INTEGER NOT NULL REFERENCES contacts(id),
+  delivered_at INTEGER,
+  read_at INTEGER,
+  played_at INTEGER,
+  PRIMARY KEY (message_id, contact_id)
+) STRICT, WITHOUT ROWID;
+CREATE INDEX receipts_contact ON receipts(contact_id);
+
+CREATE TABLE media(
+  message_id INTEGER NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
+  kind TEXT NOT NULL,
+  path TEXT NOT NULL,
+  created_at INTEGER NOT NULL,
+  PRIMARY KEY (message_id, kind)
+) STRICT, WITHOUT ROWID;
+
+CREATE TABLE embeddings(
+  message_id INTEGER PRIMARY KEY REFERENCES messages(id) ON DELETE CASCADE,
+  model TEXT NOT NULL,
+  vec BLOB NOT NULL
+) STRICT;
+
+CREATE TABLE contact_notes(
+  contact_id INTEGER PRIMARY KEY REFERENCES contacts(id),
+  note TEXT,
+  tags TEXT,
+  fields TEXT,
+  updated_at INTEGER NOT NULL
+) STRICT;
+
+CREATE TABLE handled(
+  chat_id INTEGER PRIMARY KEY REFERENCES chats(id) ON DELETE CASCADE,
+  ask_message_id INTEGER,
+  at INTEGER NOT NULL
+) STRICT;
+
+-- F1-d: the durable webhook outbox. Only the table exists until then.
+CREATE TABLE events(
+  seq INTEGER PRIMARY KEY AUTOINCREMENT,
+  kind TEXT NOT NULL,
+  message_id INTEGER,
+  payload TEXT NOT NULL,
+  created_at INTEGER NOT NULL,
+  ready_at INTEGER NOT NULL,
+  state TEXT NOT NULL,
+  attempts INTEGER NOT NULL DEFAULT 0,
+  next_attempt_at INTEGER,
+  last_status INTEGER,
+  last_error TEXT
+) STRICT;
+CREATE INDEX events_due ON events(state, next_attempt_at);
+
+-- F1-e: idempotent sends. Only the table exists until then.
+CREATE TABLE sends(
+  draft_id TEXT PRIMARY KEY,
+  owner TEXT,
+  chat_id INTEGER,
+  kind TEXT NOT NULL,
+  payload TEXT NOT NULL,
+  key_id TEXT,
+  state TEXT NOT NULL,
+  error_code TEXT,
+  created_at INTEGER NOT NULL,
+  expires_at INTEGER,
+  updated_at INTEGER NOT NULL
+) STRICT;
+CREATE INDEX sends_key ON sends(key_id) WHERE key_id IS NOT NULL;
+
+-- Substring search over text and transcript: trigrams, case- and
+-- diacritic-insensitive. External content, kept in step by the triggers below.
+CREATE VIRTUAL TABLE messages_fts USING fts5(
+  text,
+  transcript,
+  content = 'messages',
+  content_rowid = 'id',
+  tokenize = 'trigram remove_diacritics 1'
+);
+-- A delete removes the entry from the index at once instead of leaving it
+-- for a later merge: deleted text must not stay readable in index pages.
+INSERT INTO messages_fts(messages_fts, rank) VALUES ('secure-delete', 1);
+
+CREATE TRIGGER messages_identity_fixed BEFORE UPDATE OF id, sid, ts, key_id, from_me ON messages
+WHEN old.id IS NOT new.id OR old.sid IS NOT new.sid OR old.ts IS NOT new.ts
+  OR old.key_id IS NOT new.key_id OR old.from_me IS NOT new.from_me
+BEGIN
+  SELECT RAISE(ABORT, 'a stored message keeps its id, sid, timestamp, key and direction');
+END;
+
+CREATE TRIGGER messages_tombstone_final BEFORE UPDATE OF deleted_at ON messages
+WHEN old.deleted_at IS NOT NULL AND new.deleted_at IS NOT old.deleted_at
+BEGIN
+  SELECT RAISE(ABORT, 'a deleted message stays deleted');
+END;
+
+-- Every row has exactly one index entry, an empty one for a row without
+-- words, so the index and the table always agree row for row and the
+-- external-content integrity check can prove it.
+CREATE TRIGGER messages_fts_insert AFTER INSERT ON messages
+BEGIN
+  INSERT INTO messages_fts(rowid, text, transcript) VALUES (new.id, new.text, new.transcript);
+END;
+
+CREATE TRIGGER messages_fts_delete AFTER DELETE ON messages
+BEGIN
+  INSERT INTO messages_fts(messages_fts, rowid, text, transcript) VALUES ('delete', old.id, old.text, old.transcript);
+END;
+
+CREATE TRIGGER messages_content_update AFTER UPDATE OF text, transcript ON messages
+WHEN old.text IS NOT new.text OR old.transcript IS NOT new.transcript
+BEGIN
+  INSERT INTO messages_fts(messages_fts, rowid, text, transcript) VALUES ('delete', old.id, old.text, old.transcript);
+  INSERT INTO messages_fts(rowid, text, transcript) VALUES (new.id, new.text, new.transcript);
+  -- A vector of words the message no longer says is stale; the backlog picks it up again.
+  DELETE FROM embeddings WHERE message_id = new.id;
+END;
+
+CREATE TRIGGER messages_last_insert AFTER INSERT ON messages
+WHEN new.deleted_at IS NULL
+BEGIN
+  UPDATE chats SET last_message_id = new.id, last_ts = new.ts, last_from_me = new.from_me
+  WHERE id = new.chat_id AND (last_message_id IS NULL OR last_message_id < new.id);
+END;
+
+CREATE TRIGGER messages_tombstone AFTER UPDATE OF deleted_at ON messages
+WHEN old.deleted_at IS NULL AND new.deleted_at IS NOT NULL
+BEGIN
+  DELETE FROM embeddings WHERE message_id = new.id;
+  DELETE FROM reactions WHERE message_id = new.id;
+  DELETE FROM votes WHERE message_id = new.id;
+  DELETE FROM receipts WHERE message_id = new.id;
+  UPDATE chats SET (last_message_id, last_ts, last_from_me) = (
+    SELECT id, ts, from_me FROM messages
+    WHERE chat_id = new.chat_id AND deleted_at IS NULL ORDER BY id DESC LIMIT 1
+  )
+  WHERE id = new.chat_id AND last_message_id = new.id;
+END;
+
+CREATE TRIGGER messages_last_delete AFTER DELETE ON messages
+BEGIN
+  UPDATE chats SET (last_message_id, last_ts, last_from_me) = (
+    SELECT id, ts, from_me FROM messages
+    WHERE chat_id = old.chat_id AND deleted_at IS NULL ORDER BY id DESC LIMIT 1
+  )
+  WHERE id = old.chat_id AND last_message_id = old.id;
+END;
+
+CREATE TRIGGER messages_last_move AFTER UPDATE OF chat_id ON messages
+WHEN old.chat_id IS NOT new.chat_id
+BEGIN
+  UPDATE chats SET (last_message_id, last_ts, last_from_me) = (
+    SELECT id, ts, from_me FROM messages
+    WHERE chat_id = old.chat_id AND deleted_at IS NULL ORDER BY id DESC LIMIT 1
+  )
+  WHERE id = old.chat_id AND last_message_id = old.id;
+  UPDATE chats SET last_message_id = new.id, last_ts = new.ts, last_from_me = new.from_me
+  WHERE id = new.chat_id AND new.deleted_at IS NULL AND (last_message_id IS NULL OR last_message_id < new.id);
+END;
+`;
+
+/** Every migration, in order. The schema version a build knows is the last one's. */
+export const MIGRATIONS: readonly Migration[] = [{ version: 1, sql: V1 }];
+
+export const SCHEMA_VERSION = MIGRATIONS[MIGRATIONS.length - 1]!.version;

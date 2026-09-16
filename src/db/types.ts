@@ -1,0 +1,263 @@
+/**
+ * The shapes the account database takes and returns. Every time is epoch
+ * milliseconds. A message's public identity is its sid,
+ * `<fromMe>_<chatJid>_<keyId>`; the numeric id is chronological and internal.
+ */
+
+export type ChatKind = "direct" | "group" | "status" | "newsletter" | "broadcast";
+
+export interface ContactRecord {
+  id: number;
+  phoneJid: string | null;
+  lid: string | null;
+  name: string | null;
+  pushName: string | null;
+  verifiedName: string | null;
+  isBusiness: boolean | null;
+  updatedAt: number;
+}
+
+export interface ContactInput {
+  /** A phone jid or a lid; the contact is created when unknown. */
+  jid: string;
+  /** undefined keeps the stored value, null clears it. */
+  name?: string | null;
+  pushName?: string | null;
+  verifiedName?: string | null;
+  isBusiness?: boolean | null;
+}
+
+export interface ChatRecord {
+  id: number;
+  /** The canonical spelling: the phone jid once a direct chat's number is known. */
+  jid: string;
+  kind: ChatKind;
+  contactId: number | null;
+  name: string | null;
+  archived: boolean;
+  pinned: number | null;
+  mutedUntil: number | null;
+  unread: number;
+  /** Messages at or before this instant are cleared and may not come back. */
+  clearedThroughTs: number | null;
+  lastMessageId: number | null;
+  lastTs: number | null;
+  lastFromMe: boolean | null;
+  proto: Uint8Array | null;
+}
+
+export interface ChatInput {
+  jid: string;
+  kind?: ChatKind;
+  name?: string | null;
+  archived?: boolean;
+  pinned?: number | null;
+  mutedUntil?: number | null;
+  unread?: number;
+  proto?: Uint8Array | null;
+}
+
+export interface MessageInput {
+  sid: string;
+  chatJid: string;
+  keyId: string;
+  fromMe: boolean;
+  /** Who wrote it. Omitted on an incoming direct message, the chat's contact is the sender. */
+  senderJid?: string | null;
+  /** The protocol timestamp; must be positive. */
+  ts: number;
+  type: string;
+  /** The searchable rendering of the message. */
+  text?: string | null;
+  transcript?: string | null;
+  /** The protobuf bytes. */
+  raw?: Uint8Array | null;
+  quotedSid?: string | null;
+  status?: number | null;
+  /** When this version was edited; a stored newer edit is never overwritten by an older version. */
+  editedAt?: number | null;
+  /** Absolute deadline; it can only ever move earlier. */
+  expiresAt?: number | null;
+}
+
+export type UpsertOutcome =
+  /** A new row. */
+  | "inserted"
+  /** An existing row took the new version. */
+  | "updated"
+  /** An older version of a message whose newer edit is stored: content kept, bookkeeping merged. */
+  | "stale"
+  /** The message is a tombstone; nothing was written. */
+  | "deleted"
+  /** The chat was cleared through this message's time; nothing was written. */
+  | "cleared"
+  /** Past its deadline: stored as a tombstone so a later replay cannot bring it back. */
+  | "expired";
+
+export interface UpsertResult {
+  outcome: UpsertOutcome;
+  /** The row the message lives in; null when nothing was stored. */
+  id: number | null;
+  /** The sid the row is filed under, which may differ from the input spelling. */
+  sid: string | null;
+}
+
+export interface StoredMessage {
+  id: number;
+  sid: string;
+  chatId: number;
+  chatJid: string;
+  keyId: string;
+  fromMe: boolean;
+  senderId: number | null;
+  /** The sender contact's phone jid, or its lid while the number is unknown. */
+  senderJid: string | null;
+  ts: number;
+  type: string;
+  text: string | null;
+  transcript: string | null;
+  raw: Uint8Array | null;
+  quotedSid: string | null;
+  status: number | null;
+  editedAt: number | null;
+  expiresAt: number | null;
+  deletedAt: number | null;
+}
+
+export interface Page<T> {
+  items: T[];
+  hasMore: boolean;
+  /** Pass as `before` for the next, older page; null when there is none. */
+  nextBefore: number | null;
+}
+
+export interface DeleteResult {
+  /** "deleted": a live row became a tombstone; "placeholder": an unseen message got a tombstone ahead of it. */
+  outcome: "deleted" | "already" | "placeholder" | "cleared";
+  id: number | null;
+  /** Derived files (previews, downloads) the caller unlinks now that the transaction committed. */
+  mediaPaths: string[];
+}
+
+export interface BulkDeleteResult {
+  /** Rows removed or tombstoned. */
+  count: number;
+  sids: string[];
+  mediaPaths: string[];
+}
+
+export interface ChatListItem {
+  chat: ChatRecord;
+  last: StoredMessage | null;
+}
+
+export interface ChatCursor {
+  lastTs: number;
+  id: number;
+}
+
+export interface WaitingCandidate {
+  chat: ChatRecord;
+  /** Their message that has the last word. */
+  last: StoredMessage;
+  handled: HandledRecord | null;
+}
+
+export interface HandledRecord {
+  askMessageId: number | null;
+  askSid: string | null;
+  at: number;
+}
+
+export interface ContactNotes {
+  note: string | null;
+  tags: string[];
+  fields: Record<string, string>;
+  updatedAt: number;
+}
+
+export interface FieldEdit {
+  addTags?: string[];
+  removeTags?: string[];
+  set?: Record<string, string>;
+  removeFields?: string[];
+}
+
+export interface Reaction {
+  contactId: number;
+  jid: string | null;
+  emoji: string;
+  ts: number;
+}
+
+export interface Vote {
+  contactId: number;
+  jid: string | null;
+  choice: string;
+  ts: number;
+}
+
+export interface Receipt {
+  contactId: number;
+  jid: string | null;
+  deliveredAt: number | null;
+  readAt: number | null;
+  playedAt: number | null;
+}
+
+export interface MediaRecord {
+  kind: string;
+  path: string;
+  createdAt: number;
+}
+
+export interface Coverage {
+  oldest: { id: number; sid: string; ts: number } | null;
+  newest: { id: number; sid: string; ts: number } | null;
+}
+
+export interface Counts {
+  messages: number;
+  tombstones: number;
+  chats: number;
+  contacts: number;
+  embeddings: number;
+}
+
+/** What narrows a search or a scan; every field is optional. */
+export interface MessageFilter {
+  /** A chat jid in any known spelling. */
+  chat?: string;
+  /** "me", or a sender jid in any known spelling. */
+  from?: string;
+  /** Inclusive, epoch ms. */
+  since?: number;
+  /** Inclusive, epoch ms. */
+  until?: number;
+}
+
+export interface TextSearchInput extends MessageFilter {
+  query: string;
+  limit: number;
+  before?: number;
+  /**
+   * Candidates examined before the search stops and says so: FTS rows on the
+   * trigram path, messages on the short-query scan.
+   */
+  scanCap?: number;
+}
+
+export interface TextSearchResult extends Page<StoredMessage> {
+  /** "trigram" for queries of 3+ characters, "scan" for shorter ones. */
+  mode: "trigram" | "scan";
+  /** The cap stopped the search before it ran out of candidates: absence of a hit proves nothing. */
+  scanCapped: boolean;
+}
+
+export interface MergeReport {
+  contactId: number;
+  chatId: number | null;
+  movedMessages: number;
+  aliasedMessages: number;
+  mediaPaths: string[];
+}
