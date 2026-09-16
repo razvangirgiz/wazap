@@ -326,3 +326,46 @@ test("reactions and votes list ties in the order they arrived, and a delete take
   assert.deepEqual(db.integrityCheck(), { ok: true, problems: [] });
   db.close();
 });
+
+test("version 1 is the schema 0.22.0 released, and a file at it migrates to the outbox table that takes and posts events", async () => {
+  const { MIGRATIONS } = await import("../dist/db/schema.js");
+  const { WebhookOutbox } = await import("../dist/webhook-outbox.js");
+  const { WebhookSink } = await import("../dist/webhook.js");
+  const v1 = MIGRATIONS.find((migration) => migration.version === 1).sql;
+  // A released migration never changes: this is version 1 as 0.22.0 shipped it.
+  assert.equal(createHash("sha256").update(v1).digest("hex"), "8c4c8fb88eb74dd9772b041f4ce4a806575ae862dcbb76aab4d35be2c9c136c9");
+
+  const path = join(tempDir(), "wazap.sqlite");
+  const { DatabaseSync } = (await import("../dist/db/sqlite.js")).sqlite();
+  const released = new DatabaseSync(path);
+  released.exec(v1);
+  released.exec("PRAGMA user_version = 1");
+  assert.deepEqual(
+    released.prepare("SELECT name FROM pragma_table_info('events') WHERE name = 'updated_at'").all(),
+    [],
+    "0.22.0's events table is the placeholder"
+  );
+  released.close();
+
+  const db = AccountDb.open(path);
+  assert.equal(db.schemaVersion, SCHEMA_VERSION);
+  const stored = db.messages.upsert(textMessage(PEER, "AFTER", T0, "after the upgrade"));
+  const seq = db.events.enqueue({ kind: "message_received", messageId: stored.id, payload: "{}", createdAt: Date.now() });
+  const bodies = [];
+  const sink = new WebhookSink(
+    { WAZAP_WEBHOOK: "on", WAZAP_WEBHOOK_URL: "http://127.0.0.1:9/hook", WAZAP_WEBHOOK_SECRET: "s" },
+    { post: async (_url, init) => (bodies.push(JSON.parse(init.body)), new Response(null, { status: 204 })) }
+  );
+  const outbox = new WebhookOutbox({
+    db: () => db,
+    sink: () => sink,
+    payload: (event, message) => ({ event: event.kind, message_id: message.sid }),
+    awaitingTranscript: () => false,
+  });
+  outbox.kick();
+  await outbox.idle();
+  await outbox.stop();
+  assert.deepEqual(bodies.map((body) => body.message_id), [stored.sid]);
+  assert.equal(db.events.get(seq).state, "delivered");
+  db.close();
+});
