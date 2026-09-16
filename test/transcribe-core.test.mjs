@@ -452,7 +452,8 @@ test("read-only refuses the API provider and nothing else", async () => {
   );
   await svc.stop();
 
-  const local = serviceWith({ WAZAP_TRANSCRIBE: "local" }, { readOnly: true });
+  // Manual only: an automatic run would find whisper.cpp missing here and pause the process's worker.
+  const local = serviceWith({ WAZAP_TRANSCRIBE: "local", WAZAP_TRANSCRIBE_AUTO: "0" }, { readOnly: true });
   stub(local.svc, mockProvider());
   deliver(local.sock, [voiceNote("R2", { seconds: 6 })]);
   await assert.rejects(
