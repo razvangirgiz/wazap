@@ -91,6 +91,8 @@ interface EventRow {
 }
 
 const OPEN = "state IN ('pending', 'sending')";
+/** The seq of the latest delivery, which pruning keeps. */
+const LATEST_DELIVERY = "SELECT seq FROM events WHERE state = 'delivered' ORDER BY updated_at DESC, seq DESC LIMIT 1";
 
 function eventFromRow(row: EventRow): EventRecord {
   return {
@@ -261,8 +263,10 @@ export class Events {
 
   /**
    * Removes closed events: delivered ones updated before `deliveredBefore`,
-   * failed and cancelled ones before `closedBefore`. Chunked, the event loop
-   * turning between chunks; resolves to how many rows went.
+   * failed and cancelled ones before `closedBefore`. The latest delivery is
+   * always kept, since it is what says the failures before it are over.
+   * Chunked, the event loop turning between chunks; resolves to how many rows
+   * went.
    */
   async prune(deliveredBefore: number, closedBefore: number, chunk = 500): Promise<number> {
     this.c.assertWritable();
@@ -275,7 +279,8 @@ export class Events {
       await this.c.chunked(() => {
         const n = this.c.run(
           `DELETE FROM events WHERE seq IN (
-             SELECT seq FROM events WHERE state IN (${states}) AND updated_at < ? LIMIT ?)`,
+             SELECT seq FROM events WHERE state IN (${states}) AND updated_at < ?
+               AND seq <> coalesce((${LATEST_DELIVERY}), -1) LIMIT ?)`,
           before,
           size
         );
@@ -293,18 +298,17 @@ export class Events {
       cancelled: number;
       pending: number;
       last_success_at: number | null;
-      last_delivered_seq: number | null;
     }>(
       `SELECT (SELECT count(*) FROM events WHERE state = 'delivered') AS delivered,
               (SELECT count(*) FROM events WHERE state = 'failed') AS failed,
               (SELECT count(*) FROM events WHERE state = 'cancelled') AS cancelled,
               (SELECT count(*) FROM events INDEXED BY events_open WHERE ${OPEN}) AS pending,
-              (SELECT max(updated_at) FROM events WHERE state = 'delivered') AS last_success_at,
-              (SELECT seq FROM events WHERE state = 'delivered' ORDER BY seq DESC LIMIT 1) AS last_delivered_seq`
+              (SELECT max(updated_at) FROM events WHERE state = 'delivered') AS last_success_at`
     )!;
+    // Chats post independently, so "since the last delivery" is a matter of time, not of seq.
     const consecutive = this.c.get<{ n: number }>(
-      "SELECT count(*) AS n FROM events WHERE state = 'failed' AND seq > ?",
-      counts.last_delivered_seq ?? 0
+      "SELECT count(*) AS n FROM events WHERE state = 'failed' AND updated_at > ?",
+      counts.last_success_at ?? -1
     )!.n;
     const failures = this.c.all<{ seq: number; updated_at: number; last_error: string; last_status: number | null }>(
       `SELECT * FROM (SELECT seq, updated_at, last_error, last_status FROM events

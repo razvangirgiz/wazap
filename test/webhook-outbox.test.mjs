@@ -28,6 +28,7 @@ import {
   undeliveredFailure,
 } from "../dist/webhook-outbox.js";
 import { WebhookSink } from "../dist/webhook.js";
+import { webhookCheck } from "../dist/doctor.js";
 import { GROUP, PEER, T0, openTemp, sid, textMessage } from "./db-fixtures.mjs";
 import { waitFor } from "./helpers.mjs";
 
@@ -610,11 +611,43 @@ test("delivered events are pruned after 7 days, failed and cancelled ones after 
   for (const seq of gone) assert.equal(state(h, seq), null, `event ${seq} was pruned`);
   for (const seq of kept) assert.notEqual(state(h, seq), null, `event ${seq} is kept`);
   assert.equal(state(h, waiting).state, "pending", "an open event is never pruned");
-  assert.equal(await h.db.events.prune(h.clock.now, h.clock.now, 1), 3, "the rest, one row per chunk");
+  assert.equal(await h.db.events.prune(h.clock.now, h.clock.now, 1), 2, "the rest, one row per chunk, but the latest delivery");
+});
+
+test("pruning keeps the latest delivery, so failures it ended do not read as current a week later", async (t) => {
+  let status = 401;
+  const h = harness(t, { post: async () => new Response(null, { status }) });
+  for (const key of ["F1", "F2", "F3"]) messageEvent(h, key);
+  await h.run();
+  status = 204;
+  h.clock.now += 60_000;
+  const ok = messageEvent(h, "OK1");
+  await h.run();
+  const env = readyEnv("message_received", "https://hooks.example/wazap");
+  const check = () => {
+    const delivery = readWebhookDelivery(h.path);
+    return [delivery.consecutive_failures, undeliveredFailure(delivery), webhookCheck(env, [{ account: "default", delivery }], h.clock.now).state];
+  };
+  assert.deepEqual(check(), [0, null, "ok"]);
+
+  h.clock.now += 8 * DAY;
+  assert.equal(await h.db.events.prune(h.clock.now - 7 * DAY, h.clock.now - 30 * DAY), 0, "the only delivery is the latest one");
+  assert.equal(state(h, ok.seq).state, "delivered");
+  assert.deepEqual(check(), [0, null, "ok"], "a week later the refusals are still over");
+
+  h.clock.now += 1_000;
+  const later = messageEvent(h, "OK2");
+  await h.run();
+  assert.equal(await h.db.events.prune(h.clock.now - 7 * DAY, h.clock.now - 30 * DAY), 1, "an older delivery goes once a newer one exists");
+  assert.equal(state(h, ok.seq), null);
+  assert.equal(state(h, later.seq).state, "delivered");
 });
 
 test("the counters status and doctor read: from the rows, read-only, with the server running and after it stopped", async (t) => {
-  const h = harness(t, { post: answering(204, 401, 401, 503) });
+  const answer = answering(204, 401, 401, 503);
+  // Each answer a millisecond after the last, so the failures come after the delivery.
+  const h = harness(t, { post: async (url, init) => ((h.clock.now += 1), answer(url, init)) });
+  const created = h.clock.now;
   messageEvent(h, "OK");
   const refused = [messageEvent(h, "R1"), messageEvent(h, "R2")];
   const retrying = messageEvent(h, "RETRY");
@@ -632,12 +665,12 @@ test("the counters status and doctor read: from the rows, read-only, with the se
     dropped: 0,
     consecutive_failures: 2,
     retrying: 1,
-    last_success_at: new Date(h.clock.now).toISOString(),
-    last_failure_at: new Date(h.clock.now).toISOString(),
+    last_success_at: new Date(created + 1).toISOString(),
+    last_failure_at: new Date(created + 4).toISOString(),
     last_failure: "HTTP 503 from 127.0.0.1:9",
     last_status: 503,
     last_dropped_at: null,
-    oldest_pending_at: new Date(h.clock.now).toISOString(),
+    oldest_pending_at: new Date(created).toISOString(),
   };
   assert.deepEqual(h.outbox.delivery(h.db), expected);
   assert.deepEqual(readWebhookDelivery(h.path), expected, "another process, while this one holds the database open");
