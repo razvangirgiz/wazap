@@ -3,11 +3,10 @@ import { once } from "node:events";
 import { mkdirSync } from "node:fs";
 import { createInterface } from "node:readline/promises";
 import { setTimeout as sleep } from "node:timers/promises";
-import { DisconnectReason } from "baileys";
 import { accountRows, describeAccount, describeStatusAccount, type StatusAccountRow } from "./account-cli.js";
 import { AccountHub } from "./account-hub.js";
 import { AccountRegistry, resolveAccount } from "./accounts.js";
-import { clearSession, readLinkedAccount, type LinkedAccount } from "./auth-state.js";
+import { readLinkedAccount, type LinkedAccount } from "./auth-state.js";
 import { banner } from "./banner.js";
 import { BAILEYS_VERSION, WAZAP_VERSION, paths, type AccountPaths, type Config } from "./config.js";
 import { connectNext, whereInstalled, type Install } from "./connect.js";
@@ -18,6 +17,7 @@ import { WazapError, asWazapError } from "./errors.js";
 import { normalizePhone } from "./ids.js";
 import { lockHolder, releaseLock, writeLock } from "./lock.js";
 import { log, logError, say } from "./logger.js";
+import { logoutAccount, logoutLines, type LogoutOutcome } from "./logout.js";
 import { clockLabel, formatAge } from "./messages.js";
 import { oauthProblem } from "./oauth.js";
 import {
@@ -77,7 +77,6 @@ const SETTLED_STATUSES: readonly ConnectionStatus[] = [
   "session_corrupt",
   "auth_failure",
 ];
-const LOGOUT_TIMEOUT_MS = 10_000;
 /** What `serve` exits with when WhatsApp keeps refusing the socket. */
 export const GAVE_UP_EXIT = 3;
 const LOOPBACK_HOSTS = ["127.0.0.1", "::1", "localhost"];
@@ -92,6 +91,7 @@ export interface LiveReport {
 }
 
 export { describeAccount, runAccount, runMigrate } from "./account-cli.js";
+export { alreadyUnlinked } from "./logout.js";
 
 interface StatusReport {
   data_dir: string;
@@ -1055,37 +1055,7 @@ export async function runLogout(config: Config): Promise<void> {
 
   const resumeService = await yieldSession(config, p.lockFile, "logout");
   try {
-    let linked: LinkedAccount | null = null;
-    let unreadable = false;
-    try {
-      linked = readLinkedAccount(selected.paths.authDir);
-    } catch {
-      // Unreadable creds are exactly what logout exists to clear, so keep going.
-      unreadable = true;
-    }
-    if (!linked && !unreadable) {
-      say(info("Not linked."));
-      return;
-    }
-
-    if (linked) {
-      const deadline = Date.now() + LOGOUT_TIMEOUT_MS;
-      try {
-        const sock = await linkSession(selected.paths.authDir, { deadline });
-        await withDeadline(sock.logout(), deadline, "WhatsApp did not confirm the unlink in time.");
-      } catch (err: unknown) {
-        if (alreadyUnlinked(err)) {
-          say(info("WhatsApp had already unlinked this device."));
-        } else {
-          logError("unlink from WhatsApp", err);
-          say(warn("Could not tell WhatsApp to unlink; remove this device from your phone if it is still listed."));
-        }
-      }
-    }
-
-    clearSession(selected.paths);
-    selected.registry.setOwner(selected.account.id, null);
-    say(ok("Logged out. Local credentials deleted."));
+    printLogout(await logoutAccount(config.dataDir, selected.account.id));
   } finally {
     releaseLock(p.lockFile);
     resumeService();
@@ -1093,14 +1063,8 @@ export async function runLogout(config: Config): Promise<void> {
   process.exit(0);
 }
 
-/**
- * WhatsApp answers 401 both when a pairing code was wrong and when the phone has
- * already removed this device. At logout the second reading is the true one, so
- * the pairing-time wording must not surface as an error here.
- */
-export function alreadyUnlinked(err: unknown): boolean {
-  if (err instanceof WazapError) return err.code === "SESSION_EXPIRED";
-  return (err as { output?: { statusCode?: number } } | null)?.output?.statusCode === DisconnectReason.loggedOut;
+function printLogout(outcome: LogoutOutcome): void {
+  for (const line of logoutLines(outcome)) say(line);
 }
 
 /**
@@ -1205,12 +1169,4 @@ async function askPhone(w: Wizard | null = null): Promise<string> {
       else say(fail("Use international format, e.g. +15550100"));
     }
   }
-}
-
-function withDeadline<T>(work: Promise<T>, deadline: number, message: string): Promise<T> {
-  let timer: NodeJS.Timeout | undefined;
-  const guard = new Promise<never>((_resolve, reject) => {
-    timer = setTimeout(() => reject(new WazapError("TIMEOUT", message)), Math.max(0, deadline - Date.now()));
-  });
-  return Promise.race([work, guard]).finally(() => clearTimeout(timer));
 }
