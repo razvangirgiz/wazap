@@ -294,6 +294,8 @@ export class AccountHub implements AccountSource {
       this.held.add(id);
       const old = this.services.get(id);
       try {
+        // Its folder is about to go: a transcription under way is cancelled, not waited for.
+        old?.abortTranscription();
         this.retire(id);
         await this.settled();
         // Loaded again: another command may have changed the registry while the service stopped.

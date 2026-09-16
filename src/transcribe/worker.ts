@@ -68,6 +68,10 @@ interface Running {
   item: TranscribeItem;
   /** Its source left while it ran: the claim was already given back. */
   abandoned: boolean;
+  /** Its account is stopping and waits for it: a failure now is the stop's, not the note's. */
+  stopping: boolean;
+  /** Settles when the run has ended and its outcome is stored. */
+  done: Promise<void>;
 }
 
 export class TranscribeWorker {
@@ -102,6 +106,26 @@ export class TranscribeWorker {
   register(source: TranscribeSource): void {
     if (!this.sources.includes(source)) this.sources.push(source);
     this.kick();
+  }
+
+  /**
+   * The account is stopping: waits, at most `timeoutMs`, for its run under way
+   * to end and store what it got, so a transcript already paid for is kept.
+   * A run that fails meanwhile gives its attempt back.
+   */
+  async finish(source: TranscribeSource, timeoutMs: number): Promise<void> {
+    const running = this.running;
+    if (running === null || running.source !== source || running.abandoned) return;
+    running.stopping = true;
+    let timer: NodeJS.Timeout | undefined;
+    await Promise.race([
+      running.done,
+      new Promise<void>((resolve) => {
+        timer = setTimeout(resolve, Math.max(0, timeoutMs));
+        timer.unref();
+      }),
+    ]);
+    clearTimeout(timer);
   }
 
   /**
@@ -251,7 +275,8 @@ export class TranscribeWorker {
       return;
     }
     if (attempts === null) return;
-    const running: Running = { source, db, item, abandoned: false };
+    let ended!: () => void;
+    const running: Running = { source, db, item, abandoned: false, stopping: false, done: new Promise<void>((resolve) => (ended = resolve)) };
     this.running = running;
     let failure: Failure | null = null;
     try {
@@ -261,12 +286,16 @@ export class TranscribeWorker {
     } finally {
       this.running = null;
     }
-    if (running.abandoned || !db.isOpen) return;
     try {
-      this.settle(source, db, item, attempts, failure);
+      if (running.abandoned || !db.isOpen) return;
+      if (failure !== null && running.stopping) db.transcripts.release(item.id, null, 0);
+      else this.settle(source, db, item, attempts, failure);
     } catch (err) {
       logError(`transcribe ${source.name}`, err);
+    } finally {
+      ended();
     }
+    if (!db.isOpen) return;
     const stuck = failure?.kind === "waiting" || failure?.kind === "paused";
     if (stuck || (db.isOpen && db.transcripts.state(item.sid)?.state !== "queued")) this.release(source, item.sid);
   }

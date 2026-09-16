@@ -76,10 +76,13 @@ function installFix(): string {
   return "Build whisper.cpp from https://github.com/ggml-org/whisper.cpp#quick-start and install ffmpeg from your package manager";
 }
 
-async function spawnStep(what: string, bin: string, args: string[]): Promise<void> {
+async function spawnStep(what: string, bin: string, args: string[], abort?: AbortSignal): Promise<void> {
   try {
-    await run(bin, args, { timeout: TIMEOUT_MS, maxBuffer: MAX_OUTPUT, windowsHide: true });
+    await run(bin, args, { timeout: TIMEOUT_MS, maxBuffer: MAX_OUTPUT, windowsHide: true, ...(abort === undefined ? {} : { signal: abort }) });
   } catch (err) {
+    if (abort?.aborted === true) {
+      throw markFailure(new WazapError("TRANSCRIBE_FAILED", `${what} was cancelled.`), "waiting", "stopping");
+    }
     const failure = err as { killed?: boolean };
     if (failure.killed === true) {
       const timedOut = new WazapError("TRANSCRIBE_FAILED", `${what} timed out after 5 minutes.`, "Try a shorter recording");
@@ -143,10 +146,10 @@ export const localProvider: Provider = {
         "wav",
         wav,
       ];
-      await spawnStep("ffmpeg", ffmpeg, ffmpegArgs);
+      await spawnStep("ffmpeg", ffmpeg, ffmpegArgs, opts.signal);
       const language = opts.language ?? settings.language;
       const whisperArgs = ["-m", model, "-f", wav, "-l", language, "-nt", "-np", "-oj", "-of", out];
-      await spawnStep("whisper.cpp", whisper, whisperArgs);
+      await spawnStep("whisper.cpp", whisper, whisperArgs, opts.signal);
 
       let parsed: WhisperJson;
       try {

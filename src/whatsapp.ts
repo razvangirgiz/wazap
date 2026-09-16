@@ -272,6 +272,8 @@ const WEBHOOK_TRANSCRIPT_WAIT_MS = 60_000;
  * link brings.
  */
 const HISTORY_TRANSCRIBE_WINDOW_MS = 24 * 60 * 60_000;
+/** How long a stop waits for a transcription under way to store what it got. */
+const STOP_TRANSCRIBE_WAIT_MS = 30_000;
 /** How long list_chats waits for a lid chat still folding into its number before it lists what it has. */
 const FOLD_SETTLE_MS = 2_000;
 /** How long one transaction of a history batch may hold the event loop. */
@@ -515,6 +517,8 @@ export class WhatsAppService implements WhatsAppApi {
   private readonly transcribeSource: TranscribeSource;
   /** The worker every account shares; a seam for tests. */
   private readonly transcribeWorker = transcribeWorker;
+  /** Cancels this account's uploads and whisper.cpp runs: it is being removed. */
+  private readonly transcribeAbort = new AbortController();
   /** The seam the tests replace; production always runs the real providers. */
   private transcriber = transcribeFile;
   /** Transcriptions under way, so one recording is never uploaded twice at once. */
@@ -653,7 +657,9 @@ export class WhatsAppService implements WhatsAppApi {
     this.teardownSocket();
     await this.stopPairing();
     await this.historyIdle();
-    // Before the database closes: a run under way gives its claim back, so the note waits for the next start.
+    // Before the database closes: a run under way gets a while to store the transcript it is paying for,
+    // then gives its claim back, so the note waits for the next start rather than being uploaded twice.
+    await this.transcribeWorker.finish(this.transcribeSource, STOP_TRANSCRIBE_WAIT_MS);
     this.transcribeWorker.unregister(this.transcribeSource);
     await this.stopRecall();
     const db = this.accountDb;
@@ -2223,7 +2229,10 @@ export class WhatsAppService implements WhatsAppApi {
       const file = join(dir, mediaFilename(info));
       await writeFile(file, buffer, { mode: FILE_MODE });
       this.messageOrThrow(messageId);
-      transcript = await this.transcriber(settings, file, language === undefined ? {} : { language });
+      transcript = await this.transcriber(settings, file, {
+        ...(language === undefined ? {} : { language }),
+        signal: this.transcribeAbort.signal,
+      });
     } finally {
       await rm(dir, { recursive: true, force: true });
     }
@@ -2278,6 +2287,14 @@ export class WhatsAppService implements WhatsAppApi {
    * WhatsAppApi on purpose: an agent has no business waiting on it, and a test
    * needs it so it can wait on the queue instead of sleeping.
    */
+  /**
+   * The account is being removed: its upload or whisper.cpp run under way ends
+   * now instead of being waited for, and gives its attempt back.
+   */
+  abortTranscription(): void {
+    this.transcribeAbort.abort();
+  }
+
   transcribeIdle(): Promise<void> {
     return this.transcribeWorker.idle();
   }

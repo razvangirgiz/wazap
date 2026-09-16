@@ -450,6 +450,27 @@ test("an HTTP refusal says whether another attempt could help, and never names t
   }
 });
 
+test("an upload cancelled because its account is being removed ends at once, and spends no attempt", async () => {
+  const file = audioFile();
+  const controller = new AbortController();
+  const started = Date.now();
+  await assert.rejects(
+    withServer(
+      (req) => {
+        req.resume();
+        setTimeout(() => controller.abort(), 20);
+      },
+      (url) => openaiProvider.transcribe(openaiSettings(url), file, { signal: controller.signal })
+    ),
+    (err) => {
+      assert.equal(err.code, "TRANSCRIBE_FAILED");
+      assert.deepEqual(classifyFailure(err), { kind: "waiting", reason: "stopping" });
+      return true;
+    }
+  );
+  assert.ok(Date.now() - started < 2_000, "not after the two-minute timeout");
+});
+
 test("a failure nobody marked is classified by what it is", () => {
   const withCause = (cause) => Object.defineProperty(new WazapError("MEDIA_UNAVAILABLE", "x"), "cause", { value: cause });
   assert.deepEqual(classifyFailure(withCause({ output: { statusCode: 404 } })), {

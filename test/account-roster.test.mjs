@@ -202,6 +202,23 @@ for (const [label, damage] of [
   });
 }
 
+test("remove cancels the account's transcription under way before its service stops", async (t) => {
+  const { hub, work } = twoAccountHub(t, { linkedWork: true });
+  const order = [];
+  const abort = work.abortTranscription.bind(work);
+  work.abortTranscription = () => {
+    order.push("abort");
+    abort();
+  };
+  const stop = work.stop.bind(work);
+  work.stop = async () => {
+    order.push("stop");
+    await stop();
+  };
+  await hub.remove("work");
+  assert.deepEqual(order, ["abort", "stop"]);
+});
+
 test("remove while connected stops the socket and closes the database before the folder goes", async (t) => {
   const { config, hub, work, workSock } = twoAccountHub(t, { linkedWork: true });
   await work.bootStorage();

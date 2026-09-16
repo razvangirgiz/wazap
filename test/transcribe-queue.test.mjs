@@ -410,6 +410,13 @@ const voiceNote = (id, { seconds = 6, at = Date.now(), ptt = true } = {}) => ({
   message: { audioMessage: { mimetype: "audio/ogg; codecs=opus", ptt, seconds } },
 });
 const sidOf = (id) => `false_${PEER}_${id}`;
+async function waitUntil(condition, ms = 3_000) {
+  const deadline = Date.now() + ms;
+  while (!condition()) {
+    if (Date.now() > deadline) throw new Error("timed out");
+    await sleep(2);
+  }
+}
 const deliver = (sock, messages) => sock.ev.emit("messages.upsert", { type: "notify", messages });
 
 test("the queue survives a restart: a note that arrived while the account could not run it is transcribed after", async () => {
@@ -528,6 +535,42 @@ test("a note queued under one provider is transcribed by the provider configured
   await api.svc.transcribeIdle();
   assert.equal(api.svc.db.messages.get(sidOf("V1")).transcriptInfo.provider, "openai");
   await api.svc.stop();
+});
+
+test("a stop in the middle of a transcription keeps the transcript it paid for, and does not upload it again", async () => {
+  const before = serviceWith(CONFIGURED);
+  const provider = stub(before.svc, { delayMs: 150 });
+  deliver(before.sock, [voiceNote("V1")]);
+  await waitUntil(() => provider.calls === 1);
+  await before.svc.stop();
+
+  const after = serviceWith(CONFIGURED, { dataDir: before.svc.config.dataDir });
+  const again = stub(after.svc);
+  await after.svc.transcribeIdle();
+  assert.equal(after.svc.db.messages.get(sidOf("V1")).transcript, "am uitat umbrela acasă", "the stop waited for the answer");
+  assert.equal(again.calls, 0, "so the restart has nothing to send");
+  await after.svc.stop();
+});
+
+test("removing an account cancels its transcription under way instead of waiting for it, and the note keeps its attempt", async () => {
+  const before = serviceWith(CONFIGURED);
+  before.svc.mediaBuffer = async () => Buffer.from("not really an ogg file");
+  let calls = 0;
+  before.svc.transcriber = (_settings, _file, opts) =>
+    new Promise((_resolve, reject) => {
+      calls++;
+      opts.signal.addEventListener("abort", () => reject(markFailure(new WazapError("TRANSCRIBE_FAILED", "cancelled"), "waiting", "stopping")));
+    });
+  deliver(before.sock, [voiceNote("V1")]);
+  await waitUntil(() => calls === 1);
+  const started = Date.now();
+  before.svc.abortTranscription();
+  await before.svc.stop();
+  assert.ok(Date.now() - started < 2_000, "the stop did not wait out the run");
+
+  const after = serviceWith({}, { dataDir: before.svc.config.dataDir });
+  assert.deepEqual(after.svc.db.transcripts.state(sidOf("V1")), { state: "queued", attempts: 0, running: false, error: null });
+  await after.svc.stop();
 });
 
 test("a voice note that just arrived starts at once, ahead of a history backlog", async (t) => {

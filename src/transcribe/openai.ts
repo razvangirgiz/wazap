@@ -35,6 +35,11 @@ function failed(message: string, key: string | null, fix?: string, kind: Failure
   return markFailure(error, kind, reason);
 }
 
+/** The caller gave up on the call (its account is being removed): not the note's fault. */
+function cancelled(): WazapError {
+  return markFailure(new WazapError("TRANSCRIBE_FAILED", "Transcription request was cancelled."), "waiting", "stopping");
+}
+
 /**
  * What an HTTP refusal means for another attempt: a refused key is not the
  * note's fault, a busy or failing server may answer later, and any other 4xx
@@ -48,7 +53,7 @@ function refusal(status: number): { kind: FailureKind; reason: string } {
   return { kind: "permanent", reason: `provider refused the audio (HTTP ${status})` };
 }
 
-async function post(settings: TranscribeSettings, key: string, file: string, language: string): Promise<Response> {
+async function post(settings: TranscribeSettings, key: string, file: string, language: string, signal?: AbortSignal): Promise<Response> {
   const bytes = await readFile(file);
   const type = MIME[extname(file).toLowerCase()] ?? "application/octet-stream";
   const form = new FormData();
@@ -61,7 +66,7 @@ async function post(settings: TranscribeSettings, key: string, file: string, lan
     headers: { Authorization: `Bearer ${key}` },
     body: form,
     redirect: "error",
-    signal: AbortSignal.timeout(TIMEOUT_MS),
+    signal: signal === undefined ? AbortSignal.timeout(TIMEOUT_MS) : AbortSignal.any([AbortSignal.timeout(TIMEOUT_MS), signal]),
   });
 }
 
@@ -75,8 +80,9 @@ export const openaiProvider: Provider = {
     let response: Response;
     for (let attempt = 0; ; attempt++) {
       try {
-        response = await post(settings, key, file, language);
+        response = await post(settings, key, file, language, opts.signal);
       } catch (err) {
+        if (opts.signal?.aborted === true) throw cancelled();
         const timedOut = err instanceof Error && (err.name === "TimeoutError" || err.name === "AbortError");
         throw failed(
           timedOut ? "Transcription request timed out after 2 minutes." : "Transcription request failed.",
@@ -99,7 +105,11 @@ export const openaiProvider: Provider = {
           meaning.reason
         );
       }
-      await sleep(RETRY_AFTER_MS);
+      try {
+        await sleep(RETRY_AFTER_MS, undefined, opts.signal === undefined ? {} : { signal: opts.signal });
+      } catch {
+        throw cancelled();
+      }
     }
 
     let parsed: unknown;

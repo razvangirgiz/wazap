@@ -14,6 +14,8 @@ export interface Transcript {
 export interface TranscribeOpts {
   /** Overrides the configured language for one call. "auto" detects. */
   language?: string;
+  /** Aborts the upload or the local run: the account is being removed. */
+  signal?: AbortSignal;
 }
 
 /** Why a provider cannot run right now, and what to type to fix it. */
