@@ -509,18 +509,23 @@ export class Messages {
     return this.c.bulk(() => this.purgeCleared(chat.id));
   }
 
-  /** Clear, then drop what made the chat a list entry: it leaves the chat list until a new message arrives. */
+  /**
+   * Clear, and drop what made the chat a list entry: it leaves the chat list
+   * until a new message arrives. The entry is reset with the barrier, in the
+   * same transaction, so what arrives while the purge runs — a new message, its
+   * unread count, a handled mark — is not wiped when the purge ends.
+   */
   deleteChat(chatJid: string, throughTs: number): Promise<BulkDeleteResult> {
     const through = checkTimestamp(throughTs, "throughTs");
-    const chat = this.raiseBarrier(chatJid, through);
-    return this.c.bulk(async () => {
-      const result = await this.purgeCleared(chat.id);
-      this.c.write(() => {
-        this.c.run("UPDATE chats SET archived = 0, pinned = NULL, unread = 0, proto = NULL WHERE id = ?", chat.id);
-        this.c.run("DELETE FROM handled WHERE chat_id = ?", chat.id);
-      });
-      return result;
+    const chat = this.c.write(() => {
+      const raised = this.raiseBarrier(chatJid, through);
+      for (const chatId of this.identity.chatIdsOf(raised)) {
+        this.c.run("UPDATE chats SET archived = 0, pinned = NULL, unread = 0, proto = NULL WHERE id = ?", chatId);
+        this.c.run("DELETE FROM handled WHERE chat_id = ?", chatId);
+      }
+      return raised;
     });
+    return this.c.bulk(() => this.purgeCleared(chat.id));
   }
 
   /**

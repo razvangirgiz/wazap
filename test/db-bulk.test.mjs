@@ -100,6 +100,26 @@ test("deleting a chat takes it off the list, keeps its barrier, and returns its 
   db.close();
 });
 
+test("a chat deleted while its purge runs keeps what arrives after the delete: its unread count, archive, handled mark and message", async () => {
+  const { db } = openTemp();
+  fill(db, PEER, 450);
+  db.identity.upsertChat({ jid: PEER, archived: true, pinned: 1, unread: 4 });
+  const purge = db.messages.deleteChat(PEER, T0 + 449_000);
+  // The chat's reset is part of the delete, so what lands between the purge's chunks is not wiped at its end.
+  const reset = db.identity.chat(PEER);
+  assert.deepEqual([reset.archived, reset.pinned, reset.unread], [false, null, 0], "the list entry is reset with the barrier");
+  await new Promise((resolve) => setImmediate(resolve));
+  db.messages.upsert(textMessage(PEER, "LATER", T0 + 500_000, "salut din nou"));
+  db.identity.upsertChat({ jid: PEER, archived: true, unread: 1 });
+  db.identity.markHandled(PEER, sid(false, PEER, "LATER"));
+  await purge;
+  const chat = db.identity.chat(PEER);
+  assert.deepEqual([chat.archived, chat.unread], [true, 1]);
+  assert.notEqual(db.identity.handled(PEER), null);
+  assert.deepEqual(db.messages.chatPage(PEER, { limit: 10 }).items.map((m) => m.keyId), ["LATER"]);
+  db.close();
+});
+
 test("an expiry sweep over thousands of rows yields between chunks and hands back files", async () => {
   const { db, clock } = openTemp();
   const rows = [];
