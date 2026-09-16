@@ -30,6 +30,7 @@
 import { setImmediate as turn, setTimeout as sleep } from "node:timers/promises";
 import { AccountDb, type EventRecord, type EventStats, type StoredMessage } from "./db/index.js";
 import { withCode } from "./error-code.js";
+import { openForReading } from "./legacy-files.js";
 import { log, logError } from "./logger.js";
 import type { WebhookDelivery } from "./wa-types.js";
 import {
@@ -457,14 +458,15 @@ export function undeliveredFailure(delivery: WebhookDelivery): string | null {
 }
 
 /**
- * What an account's outbox says, read through a read-only connection of its
- * own, whether or not the server is running. Null when the database is not
+ * What an account's outbox says, read through a connection of its own:
+ * read-only while a server holds the database, immutable otherwise, so a
+ * status leaves nothing beside a closed file. Null when the database is not
  * there or not readable yet, or holds no event.
  */
 export function readWebhookDelivery(databaseFile: string): WebhookDelivery | null {
   let db: AccountDb | null = null;
   try {
-    db = AccountDb.open(databaseFile, { readOnly: true });
+    db = openForReading(databaseFile);
     const stats = db.events.stats();
     if (stats.delivered + stats.failed + stats.cancelled + stats.pending === 0) return null;
     return deliveryOf(stats);
