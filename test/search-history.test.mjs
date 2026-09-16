@@ -200,3 +200,43 @@ test("there is no per-chat window: a chat past the old 2000 cap answers keyword 
     await svc.stop();
   }
 });
+
+test("a search the scan cap stops answers what it found, says how far back it searched, and pages no further", async () => {
+  const dataDir = mkdtempSync(join(tmpdir(), "wazap-search-hist-"));
+  const { svc, call } = setup(dataDir);
+  try {
+    await svc.bootStorage();
+    const baseMs = Date.now() - 30 * day;
+    for (let batch = 0; batch < 5; batch++) {
+      svc.db.messages.upsertMany(
+        Array.from({ length: 5_000 }, (_, i) => {
+          const n = batch * 5_000 + i;
+          return { chatJid: ANA, keyId: `C${n}`, fromMe: false, ts: baseMs + n * 60_000, type: "text", text: n === 0 ? "cod §x vechi" : `mesaj ${n}` };
+        })
+      );
+    }
+    const search = svc.db.search;
+    const text = search.text.bind(search);
+    let storageCalls = 0;
+    search.text = (input) => {
+      storageCalls++;
+      return text(input);
+    };
+
+    const result = await call("search_messages", { query: "§x" });
+    assert.equal(storageCalls, 1, "a capped page is the last page");
+    assert.equal(result.structuredContent.count, 0, "the one match lies past the cap");
+    assert.equal(result.structuredContent.scan_capped, true);
+    const back = Date.parse(result.structuredContent.searched_back_to);
+    assert.ok(back > baseMs && back < baseMs + 25_000 * 60_000, "it names where the scan stopped");
+    assert.match(result.content[0].text, /stopped at its scan limit/);
+
+    storageCalls = 0;
+    const narrowed = await call("search_messages", { query: "§x", until: new Date(baseMs + 60_000).toISOString() });
+    assert.equal(narrowed.structuredContent.count, 1, "narrowing the window reaches it");
+    assert.equal(narrowed.structuredContent.scan_capped, false);
+    assert.equal(narrowed.structuredContent.searched_back_to, undefined);
+  } finally {
+    await svc.stop();
+  }
+});

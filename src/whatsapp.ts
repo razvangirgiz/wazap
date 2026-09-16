@@ -34,6 +34,7 @@ import { BAILEYS_VERSION, WAZAP_VERSION, writesHints, type AccountPaths, type Co
 import {
   AccountDb,
   chatKindOf,
+  secondOfId,
   StorageError,
   type ChatKind,
   type ChatRecord,
@@ -157,6 +158,7 @@ import type {
   WhatsAppApi,
   HandledResult,
   Preview,
+  SearchAnswer,
   SearchOptions,
   UnansweredChat,
   WaitOptions,
@@ -1199,7 +1201,7 @@ export class WhatsAppService implements WhatsAppApi {
     chatId: string | undefined,
     limit: number,
     opts: SearchOptions = {}
-  ): Promise<Synced<MessageView[]>> {
+  ): Promise<SearchAnswer> {
     return this.guarded(async () => {
       this.ensureConnected();
       await this.waitForSync();
@@ -1214,6 +1216,7 @@ export class WhatsAppService implements WhatsAppApi {
         ...(opts.untilMs === undefined ? {} : { until: opts.untilMs }),
       };
       const views: MessageView[] = [];
+      let capped: number | null = null;
       for (let before: number | undefined; views.length < limit; ) {
         const page = db.search.text({ query, limit, ...filter, ...(before === undefined ? {} : { before }) });
         for (const message of page.items) {
@@ -1222,10 +1225,17 @@ export class WhatsAppService implements WhatsAppApi {
           views.push(this.viewOfStored(message));
           if (views.length >= limit) break;
         }
+        // A page the scan limit stopped is the last one: another would scan as much again, and the answer says where it stopped.
+        if (page.scanCapped) {
+          if (views.length < limit) capped = page.nextBefore;
+          break;
+        }
         if (page.nextBefore === null) break;
         before = page.nextBefore;
       }
-      return this.synced(views);
+      const answer: SearchAnswer = this.synced(views);
+      if (capped !== null) answer.scanCapped = { searchedBackTo: isoWithOffset(secondOfId(capped) * 1000) };
+      return answer;
     });
   }
 

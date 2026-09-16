@@ -45,6 +45,7 @@ import type {
   RecallAnswer,
   RecentConversation,
   SentMessage,
+  SearchAnswer,
   Synced,
   Preview,
   UnansweredChat,
@@ -85,6 +86,18 @@ function ok(text: string, structured: Record<string, unknown>, extra: ContentBlo
 
 function synced<T>(result: Synced<T>, rest: Record<string, unknown>): Record<string, unknown> {
   return { ...rest, sync: result.sync };
+}
+
+/** `scan_capped`, and how far back a capped search got: older messages were not searched, which is not "none exist". */
+function scanCapFields(result: SearchAnswer): Record<string, unknown> {
+  return result.scanCapped === undefined
+    ? { scan_capped: false }
+    : { scan_capped: true, searched_back_to: result.scanCapped.searchedBackTo };
+}
+
+function scanCapNote(result: SearchAnswer): string | null {
+  if (result.scanCapped === undefined) return null;
+  return `The search stopped at its scan limit; messages before ${result.scanCapped.searchedBackTo.slice(0, 10)} were not searched — narrow it with chat_id, since/until or a longer query.`;
 }
 
 const chatId = z
@@ -668,7 +681,10 @@ Every answer declares the window it searched: \`coverage.searched\` counts the
 held messages in scope (the chat scope and time filters applied) and
 \`coverage.oldest_at\`/\`newest_at\` bound that window, so "no messages found"
 always says how much history was searched. \`coverage.per_chat_cap\` is null:
-no chat is capped.
+no chat is capped. A query so short or so common that the search reaches its
+scan limit answers \`scan_capped: true\` and \`searched_back_to\`: messages
+older than that were not searched, so narrow it (chat_id, since/until, a longer
+query) before concluding nothing exists.
 
 \`from\` accepts "me", a phone number, a contact/chat id, or a name: a name must
 resolve to exactly one person — it matches contact names, notify names and
@@ -720,6 +736,7 @@ search \`freshness.chat\` is the newest message wazap holds for that chat.`,
       const messages = await withSenderIdentity(wa, result.data);
       const fresh = await readFreshness(wa, chat_id);
       const cov = searchCoverage(wa, chat_id, { sinceMs, untilMs });
+      const capped = scanCapNote(result);
       const scope = [
         chat_id ? `in ${chat_id}` : null,
         from ? `from ${from}` : null,
@@ -728,7 +745,7 @@ search \`freshness.chat\` is the newest message wazap holds for that chat.`,
       ]
         .filter(Boolean)
         .join(", ");
-      const note = [coverageNote(cov, chat_id !== undefined), freshnessNote(fresh)].filter(Boolean).join(" ");
+      const note = [capped, coverageNote(cov, chat_id !== undefined), freshnessNote(fresh)].filter(Boolean).join(" ");
       return ok(
         renderMessages(`Search results for "${query}"${scope ? ` (${scope})` : ""}`, messages, new Map(), note),
         synced(result, {
@@ -740,6 +757,7 @@ search \`freshness.chat\` is the newest message wazap holds for that chat.`,
           from_resolved: resolvedFrom ?? null,
           count: messages.length,
           messages,
+          ...scanCapFields(result),
           coverage: cov,
           freshness: fresh,
         })
@@ -837,7 +855,7 @@ search_messages does.`,
             title,
             messages,
             new Map(),
-            [note, coverageNote(cov, chat_id !== undefined), freshnessNote(fresh)].filter(Boolean).join(" ")
+            [note, scanCapNote(fallback), coverageNote(cov, chat_id !== undefined), freshnessNote(fresh)].filter(Boolean).join(" ")
           ),
           synced(fallback, {
             query,
@@ -853,6 +871,7 @@ search_messages does.`,
             },
             count: messages.length,
             messages,
+            ...scanCapFields(fallback),
             coverage: cov,
             freshness: fresh,
           })

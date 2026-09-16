@@ -555,6 +555,12 @@ export interface Synced<T> {
   sync: SyncState;
 }
 
+/** A keyword search's messages, and where the storage scan limit stopped it when it did. */
+export interface SearchAnswer extends Synced<MessageView[]> {
+  /** Set when the scan limit stopped the search before the history ran out: older messages were not searched. */
+  scanCapped?: { searchedBackTo: string };
+}
+
 export interface ContactSyncResult {
   requested: boolean;
   named_before: number;
@@ -586,7 +592,7 @@ export interface WhatsAppApi {
     chatId: string | undefined,
     limit: number,
     opts?: SearchOptions
-  ): Promise<Synced<MessageView[]>>;
+  ): Promise<SearchAnswer>;
   recall(
     query: string,
     chatId: string | undefined,
