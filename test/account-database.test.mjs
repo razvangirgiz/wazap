@@ -355,6 +355,44 @@ test("a large history batch is stored in bounded transactions: the event loop ru
   assert.equal(svc.hasHistory(), true, "history counts as received once the batch is stored");
 });
 
+test("edits, reactions, statuses and receipts arriving while a history batch is still being stored land on its messages", async (t) => {
+  const dataDir = mkdtempSync(join(tmpdir(), "wazap-accountdb-"));
+  const { svc, sock } = serviceOn(dataDir);
+  t.after(() => svc.stop());
+  await svc.bootStorage();
+  const base = Math.floor(Date.now() / 1000) - 3600;
+  const messages = Array.from({ length: 6_000 }, (_, i) =>
+    text(i % 3 === 0 ? GROUP : PEER, `H${i}`, `istoric ${i}`, base + Math.floor(i / 10), { key: { fromMe: i % 2 === 0, ...(i % 3 === 0 && i % 2 !== 0 ? { participant: ANA } : {}) }, raw: i % 2 === 0 ? { status: 2 } : {} })
+  );
+  const mine = `true_${PEER}_H5998`;
+  const liked = `true_${PEER}_H5996`;
+  const inGroup = `true_${GROUP}_H5994`;
+  sock.ev.emit("messaging-history.set", { chats: [], contacts: [], messages, isLatest: true, progress: 100 });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(svc.hasMessage(mine), false, "the batch is still being stored");
+  const now = Math.floor(Date.now() / 1000);
+  sock.ev.emit("messages.reaction", [{ key: { remoteJid: PEER, fromMe: true, id: "H5998" }, reaction: { key: { remoteJid: PEER, fromMe: false, id: "RX1" }, text: "👍", senderTimestampMs: Date.now() } }]);
+  sock.ev.emit("messages.update", [{ key: { remoteJid: PEER, fromMe: true, id: "H5998" }, update: { message: { editedMessage: { message: { conversation: "istoric EDITAT" } } }, messageTimestamp: now } }]);
+  sock.ev.emit("messages.update", [{ key: { remoteJid: PEER, fromMe: true, id: "H5998" }, update: { status: 4 } }]);
+  sock.ev.emit("message-receipt.update", [{ key: { remoteJid: GROUP, fromMe: true, id: "H5994" }, receipt: { userJid: ANA, readTimestamp: now } }]);
+  sock.ev.emit("messages.upsert", {
+    type: "notify",
+    messages: [
+      { key: { remoteJid: PEER, fromMe: false, id: "HEART" }, messageTimestamp: now, message: { reactionMessage: { key: { remoteJid: PEER, fromMe: true, id: "H5996" }, text: "❤️", senderTimestampMs: Date.now() } } },
+      { key: { remoteJid: PEER, fromMe: false, id: "LIVE1" }, messageTimestamp: now, message: { conversation: "scriu chiar acum" } },
+    ],
+  });
+  assert.equal(svc.hasMessage(`false_${PEER}_LIVE1`), true, "a live message is stored at once, history or not");
+  await svc.storageIdle();
+
+  const edited = await svc.getMessage(mine);
+  assert.deepEqual([edited.text, edited.edited], ["istoric EDITAT", true]);
+  assert.deepEqual(edited.reactions.map((r) => r.emoji), ["👍"]);
+  assert.equal(edited.delivery.status, "read");
+  assert.deepEqual((await svc.getMessage(liked)).reactions.map((r) => r.emoji), ["❤️"]);
+  assert.deepEqual((await svc.getMessage(inGroup)).delivery.read_by.map((reader) => reader.id), [ANA]);
+});
+
 test("a catch-up over a busy week reads each message's reactions, votes and receipts in a few queries, not a few per message", async (t) => {
   const dataDir = mkdtempSync(join(tmpdir(), "wazap-accountdb-"));
   const { svc, sock } = serviceOn(dataDir);
