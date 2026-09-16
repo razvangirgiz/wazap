@@ -86,7 +86,7 @@ test("keyset pages over one second lose and repeat nothing while rows are edited
   db.close();
 });
 
-test("a tombstone beats every replay: upsert, transcript, reaction, receipt and media", () => {
+test("a tombstone beats every replay: upsert, transcript, reaction, receipt, media and embedding", () => {
   const { db } = openTemp();
   const message = textMessage(PEER, "A", T0, "secret");
   const { id } = db.messages.upsert({ ...message, transcript: "vocea secretă" });
@@ -99,6 +99,7 @@ test("a tombstone beats every replay: upsert, transcript, reaction, receipt and 
   assert.equal(db.messages.react(message.sid, OTHER, "👍", T0 + 1), false);
   assert.equal(db.messages.receipt(message.sid, OTHER, { readAt: T0 + 1 }), false);
   assert.equal(db.messages.setMedia(message.sid, "preview", "/tmp/x.jpg").stored, false);
+  assert.equal(db.vectors.put(message.sid, "embeddinggemma-300m", new Array(8).fill(1)), false);
   assert.deepEqual(db.messages.delete(message.sid), { outcome: "already", id, mediaPaths: [] });
 
   assert.equal(db.messages.get(message.sid), null);

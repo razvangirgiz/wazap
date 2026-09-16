@@ -18,15 +18,25 @@ import { Merger } from "./merge.js";
 import { Messages, type ScrubQuote } from "./messages.js";
 import { Search } from "./search.js";
 import type { Counts, MergeReport } from "./types.js";
+import { Vectors } from "./vectors.js";
 
 export { StorageError, type StorageErrorCode } from "./errors.js";
 export { SCHEMA_VERSION } from "./schema.js";
 export { SEQ_SPAN, idLowerBound, idUpperBound, secondOfId } from "./ids.js";
 export { chatKindOf, isLidJid, parseSid, sidOf } from "./identity.js";
 export { foldText, DEFAULT_SCAN_CAP } from "./search.js";
+export { hybridTokens, int8Similarity, quantizeVector, unitVector, RRF_K } from "./vectors.js";
 export { isSqliteExperimentalWarning } from "./sqlite.js";
 export type { ScrubQuote } from "./messages.js";
 export type { CheckpointResult, ConnectionOptions, ConnectionSettings } from "./connection.js";
+export type {
+  BacklogItem,
+  HybridHit,
+  HybridResult,
+  HybridSearchInput,
+  VectorHit,
+  VectorSearchInput,
+} from "./vectors.js";
 export type * from "./types.js";
 
 /** Pages one incremental merge step writes; ~3 ms a step on a 100k-message index. */
@@ -41,12 +51,14 @@ export class AccountDb {
   readonly identity: Identity;
   readonly messages: Messages;
   readonly search: Search;
+  readonly vectors: Vectors;
   private readonly merger: Merger;
 
   private constructor(private readonly connection: Connection, options: AccountDbOptions) {
     this.identity = new Identity(connection);
     this.messages = new Messages(connection, this.identity, options.scrubQuote ?? null);
     this.search = new Search(connection, this.identity, this.messages);
+    this.vectors = new Vectors(connection, this.identity, this.messages, this.search);
     this.merger = new Merger(connection, this.identity, this.messages);
   }
 
