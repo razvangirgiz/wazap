@@ -1,13 +1,17 @@
 import { AccountRegistry, ownerNumber } from "./accounts.js";
 import { readLinkedAccount, type LinkedAccount } from "./auth-state.js";
-import { ask, leftoverFix, warnIfServerRunning } from "./cli.js";
+import { ask, leftoverFix } from "./cli.js";
 import { ACCOUNT_USAGE, MIGRATE_USAGE, accountPaths, paths, type Config } from "./config.js";
-import { WazapError } from "./errors.js";
+import { CONTROL_ROUTES, RELOAD_TIMEOUT_MS, askRunningServer, publishedControl } from "./control.js";
+import { WazapError, asWazapError } from "./errors.js";
 import { lockHolder } from "./lock.js";
 import { say } from "./logger.js";
 import { rollbackMigration } from "./migrate.js";
 import { serviceHolding } from "./service.js";
-import { brand, info, maskNumber, ok } from "./ui.js";
+import { brand, fix, info, maskNumber, ok, warn } from "./ui.js";
+
+/** How long `account remove` waits for the running server to stop the account and delete it. */
+const REMOVE_TIMEOUT_MS = 30_000;
 
 export interface StatusAccountRow {
   id: string;
@@ -83,7 +87,7 @@ export async function runAccount(config: Config): Promise<void> {
       return;
     case "add":
       if (id === undefined) throw new WazapError("INVALID_ID", "Missing account id.", ACCOUNT_USAGE);
-      addAccount(config, id);
+      await addAccount(config, id);
       return;
     case "remove":
       if (id === undefined) throw new WazapError("INVALID_ID", "Missing account id.", ACCOUNT_USAGE);
@@ -91,15 +95,15 @@ export async function runAccount(config: Config): Promise<void> {
       return;
     case "enable":
       if (id === undefined) throw new WazapError("INVALID_ID", "Missing account id.", ACCOUNT_USAGE);
-      enableAccount(config, id, true);
+      await enableAccount(config, id, true);
       return;
     case "disable":
       if (id === undefined) throw new WazapError("INVALID_ID", "Missing account id.", ACCOUNT_USAGE);
-      enableAccount(config, id, false);
+      await enableAccount(config, id, false);
       return;
     case "default":
       if (id === undefined) throw new WazapError("INVALID_ID", "Missing account id.", ACCOUNT_USAGE);
-      defaultAccount(config, id);
+      await defaultAccount(config, id);
       return;
     default: {
       const _exhaustive: never = verb;
@@ -114,10 +118,40 @@ function listAccounts(config: Config): void {
   }
 }
 
-function addAccount(config: Config, id: string): void {
+/**
+ * The registry changed on disk; a running server applies it now. Nothing here
+ * changes the exit code: the change itself is saved either way, and a server
+ * this line cannot reach (an older wazap) still needs the restart it names.
+ */
+async function applyToRunningServer(config: Config): Promise<void> {
+  const p = paths(config.dataDir);
+  try {
+    const answer = await askRunningServer<{ kept?: unknown }>(
+      p.controlFile,
+      p.lockFile,
+      CONTROL_ROUTES.reload,
+      {},
+      RELOAD_TIMEOUT_MS
+    );
+    if (answer.kind === "unreachable") {
+      say(warn(`A server is running (pid ${answer.pid}); restart it for this to apply.`));
+      return;
+    }
+    const kept = answer.kind === "answered" && Array.isArray(answer.body.kept) ? answer.body.kept : [];
+    if (kept.length > 0) {
+      say(warn(`The running server keeps serving ${kept.join(", ")}: it has no other enabled account.`));
+    }
+  } catch (err) {
+    const failure = asWazapError(err);
+    say(warn(`The running server did not apply it: ${failure.message}`));
+    if (failure.fix) say(fix(failure.fix));
+  }
+}
+
+async function addAccount(config: Config, id: string): Promise<void> {
   const record = AccountRegistry.load(config.dataDir).add(id, config.accountName);
   say(ok(`Account "${record.id}" added.`));
-  warnIfServerRunning(config);
+  await applyToRunningServer(config);
 }
 
 async function removeAccount(config: Config, id: string): Promise<void> {
@@ -125,16 +159,13 @@ async function removeAccount(config: Config, id: string): Promise<void> {
   if (registry.get(id) === undefined) {
     throw new WazapError("INVALID_ID", `No account "${id}".`, "Run `wazap account list`");
   }
-  // Removing an account under a live hub would orphan its socket; even the
-  // service must be stopped by hand, so the fix names whichever holder it is.
-  const running = lockHolder(paths(config.dataDir).lockFile);
-  if (running !== null) {
-    throw new WazapError(
-      "INVALID_ID",
-      `wazap is running (pid ${running}).`,
-      leftoverFix(running, serviceHolding(config.dataDir, running) !== null)
-    );
-  }
+  // Removing an account under a live hub would orphan its socket. A running
+  // server that answers stops the account and deletes it itself; one that does
+  // not (an older wazap) has to be stopped by hand, so the fix names whichever
+  // holder it is.
+  const p = paths(config.dataDir);
+  const running = lockHolder(p.lockFile);
+  if (running !== null && publishedControl(p.controlFile, running) === null) throw holderRefusal(config, running);
   if (!config.assumeYes) {
     if (process.stdin.isTTY !== true) {
       throw new WazapError("INVALID_ID", `Refusing to delete account "${id}" without --yes.`, "Re-run with --yes");
@@ -145,22 +176,44 @@ async function removeAccount(config: Config, id: string): Promise<void> {
       return;
     }
   }
+  if (running !== null) {
+    const answer = await askRunningServer(
+      p.controlFile,
+      p.lockFile,
+      CONTROL_ROUTES.remove,
+      { account_id: id },
+      REMOVE_TIMEOUT_MS
+    );
+    if (answer.kind === "answered") {
+      say(ok(`Account "${id}" removed.`));
+      return;
+    }
+    if (answer.kind === "unreachable") throw holderRefusal(config, answer.pid ?? running);
+  }
   registry.remove(id);
   say(ok(`Account "${id}" removed.`));
 }
 
-function enableAccount(config: Config, id: string, enabled: boolean): void {
+function holderRefusal(config: Config, pid: number): WazapError {
+  return new WazapError(
+    "INVALID_ID",
+    `wazap is running (pid ${pid}).`,
+    leftoverFix(pid, serviceHolding(config.dataDir, pid) !== null)
+  );
+}
+
+async function enableAccount(config: Config, id: string, enabled: boolean): Promise<void> {
   const registry = AccountRegistry.load(config.dataDir);
   if (enabled) registry.enable(id);
   else registry.disable(id);
   say(ok(`Account "${id}" ${enabled ? "enabled" : "disabled"}.`));
-  warnIfServerRunning(config);
+  await applyToRunningServer(config);
 }
 
-function defaultAccount(config: Config, id: string): void {
+async function defaultAccount(config: Config, id: string): Promise<void> {
   AccountRegistry.load(config.dataDir).setDefault(id);
   say(ok(`Default account: "${id}".`));
-  warnIfServerRunning(config);
+  await applyToRunningServer(config);
 }
 
 export function runMigrate(config: Config): void {

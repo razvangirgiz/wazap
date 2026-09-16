@@ -69,7 +69,7 @@ Tunnel providers for wazap expose: ${PROVIDER_NAMES}.
 Options:
   --data-dir <path>   Where wazap keeps its data (default ~/.wazap, or $WAZAP_DATA_DIR)
   --account <id>      With login, logout, status, contacts, config writes|webhook, webhook test:
-                      pick this account. account add|enable|disable|default apply on server restart
+                      pick this account. A running server applies account add|enable|disable|default|remove
   --event <name>      With webhook test: message_received (default), message_sent or connection
   --name <name>       With account add: a display name
   --read-only         Refuse every write; the write tools are not registered at all

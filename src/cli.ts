@@ -8,11 +8,13 @@ import { AccountHub } from "./account-hub.js";
 import { AccountRegistry, resolveAccount } from "./accounts.js";
 import { readLinkedAccount, type LinkedAccount } from "./auth-state.js";
 import { banner } from "./banner.js";
-import { BAILEYS_VERSION, WAZAP_VERSION, paths, type AccountPaths, type Config } from "./config.js";
+import { BAILEYS_VERSION, WAZAP_VERSION, paths, type AccountPaths, type Config, type Paths } from "./config.js";
 import { connectNext, whereInstalled, type Install } from "./connect.js";
+import { CONTROL_ROUTES, LOGOUT_WAIT_MS, askRunningServer, isLogoutOutcome, startControlEndpoint } from "./control.js";
 import { decideRole, readDaemon, removeDaemon, writeDaemon } from "./daemon.js";
 import { DEPS, ensureDeps } from "./deps.js";
 import { checkLine, checkLines, runChecks, type Check } from "./doctor.js";
+import { withCode } from "./error-code.js";
 import { WazapError, asWazapError } from "./errors.js";
 import { normalizePhone } from "./ids.js";
 import { lockHolder, releaseLock, writeLock } from "./lock.js";
@@ -498,7 +500,7 @@ export function leftoverFix(pid: number, heldByService = false): string {
   return heldByService ? "stop it first: `wazap service stop`" : `stop it first: kill ${pid}`;
 }
 
-/** A mutation the running server cannot see asks for a restart, on the spot. */
+/** A setting the running server reads only at start asks for a restart, on the spot. */
 export function warnIfServerRunning(config: Config): void {
   const running = lockHolder(paths(config.dataDir).lockFile);
   if (running !== null) say(warn(`A server is running (pid ${running}); restart it for this to apply.`));
@@ -628,6 +630,7 @@ export async function runServe(config: Config): Promise<void> {
 
   process.on("exit", () => {
     removeDaemon(p.daemonFile);
+    removeDaemon(p.controlFile);
     releaseLock(p.lockFile);
   });
 
@@ -672,6 +675,8 @@ export async function runServe(config: Config): Promise<void> {
   // tools answer NOT_LINKED until a session exists.
   hub.start().catch((err: unknown) => logError("whatsapp start", err));
 
+  await publishControl(hub, p);
+
   const token = config.share ? randomBytes(32).toString("hex") : null;
 
   if (config.transport === "http") {
@@ -696,6 +701,22 @@ export async function runServe(config: Config): Promise<void> {
   // transport is already reading and "end" fires.
   process.stdin.on("end", () => shutdown("stdin end"));
   process.stdin.on("close", () => shutdown("stdin close"));
+}
+
+/**
+ * The CLI's line to this process, whether or not the session is shared: `account`
+ * changes and `logout` reach the running roster through it instead of asking
+ * for a restart. A server that cannot open it still serves; those commands then
+ * behave as they do against an older wazap.
+ */
+async function publishControl(hub: AccountHub, p: Paths): Promise<void> {
+  const token = randomBytes(32).toString("hex");
+  try {
+    const port = await startControlEndpoint(hub, token);
+    writeDaemon(p.controlFile, { pid: process.pid, port, token, version: WAZAP_VERSION });
+  } catch (err) {
+    log(`control endpoint unavailable${withCode(err)}; account changes will need a restart`);
+  }
 }
 
 export interface Stepper {
@@ -1052,6 +1073,28 @@ class Countdown {
 export async function runLogout(config: Config): Promise<void> {
   const p = paths(config.dataDir);
   const selected = resolveAccount(config.dataDir, config.accountId);
+
+  // A server holding the data dir logs the account out itself: it closes the
+  // account's socket, runs the same logout, and keeps serving the rest.
+  const served = await askRunningServer<{ outcome?: unknown }>(
+    p.controlFile,
+    p.lockFile,
+    CONTROL_ROUTES.logout,
+    { account_id: selected.account.id },
+    LOGOUT_WAIT_MS
+  );
+  if (served.kind === "answered") {
+    const outcome = served.body.outcome;
+    if (!isLogoutOutcome(outcome)) {
+      throw new WazapError(
+        "SERVICE_ERROR",
+        `The running server (pid ${served.pid}) gave no logout result.`,
+        "Run `wazap status`"
+      );
+    }
+    printLogout(outcome);
+    process.exit(0);
+  }
 
   const resumeService = await yieldSession(config, p.lockFile, "logout");
   try {

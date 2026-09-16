@@ -481,38 +481,22 @@ describe("Calfa MCP transport: `wazap serve --http` with WAZAP_READ_TOKEN and WA
     assert.equal(answer(await client.tool("get_status", { account_id: TENANT }), "get_status").account_id, TENANT);
   });
 
-  test(
-    "an account added with `wazap account add` while serve runs can be linked without a restart",
-    {
-      skip:
-        "gap: wazap reads accounts.json once at start, so link_account answers ACCOUNT_NOT_FOUND (added after this " +
-        "server started) until a restart. Calfa's POST /whatsapp/link runs `account add` and then link_account in " +
-        "one request (apps/api/src/http/whatsapp.ts), so a new tenant cannot link on a running wazap.",
-    },
-    async () => {
-      const added = await cli(dataDir, ["account", "add", "late-tenant"]);
-      assert.equal(added.code, 0, added.stderr);
-      const client = calfaClient(url, WRITE_TOKEN);
-      await client.initialize();
-      // A malformed phone is refused before any socket opens, but only once the account resolved.
-      const result = await client.tool("link_account", { phone: "not-a-phone", account_id: "late-tenant" });
-      assert.notEqual(result.structuredContent?.error, "ACCOUNT_NOT_FOUND", result.structuredContent?.message);
-    }
-  );
+  test("an account added with `wazap account add` while serve runs can be linked without a restart", async () => {
+    // Calfa's POST /whatsapp/link runs `account add` and then link_account in one request (apps/api/src/http/whatsapp.ts).
+    const added = await cli(dataDir, ["account", "add", "late-tenant"]);
+    assert.equal(added.code, 0, added.stderr);
+    const client = calfaClient(url, WRITE_TOKEN);
+    await client.initialize();
+    // A malformed phone is refused before any socket opens, but only once the account resolved.
+    const result = await client.tool("link_account", { phone: "not-a-phone", account_id: "late-tenant" });
+    assert.notEqual(result.structuredContent?.error, "ACCOUNT_NOT_FOUND", result.structuredContent?.message);
+  });
 
-  test(
-    "`wazap logout --account <slug>` succeeds while serve holds the data dir",
-    {
-      skip:
-        "gap: logout takes the data-dir lock and only stops a server installed as `wazap service`; any other holder " +
-        "makes it exit 1 with `wazap is running (pid N)`. Calfa runs serve under its own launchd label and calls " +
-        "logout from DELETE /whatsapp (channel/cli.ts), which logs the failure and leaves the phone linked.",
-    },
-    async () => {
-      const out = await cli(dataDir, ["logout", "--account", TENANT]);
-      assert.equal(out.code, 0, out.stderr);
-    }
-  );
+  test("`wazap logout --account <slug>` succeeds while serve holds the data dir", async () => {
+    // Calfa runs serve under its own launchd label and calls logout from DELETE /whatsapp (channel/cli.ts).
+    const out = await cli(dataDir, ["logout", "--account", TENANT]);
+    assert.equal(out.code, 0, out.stderr);
+  });
 });
 
 // ---------------------------------------------------------------------------

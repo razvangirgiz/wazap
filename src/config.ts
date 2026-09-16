@@ -107,6 +107,8 @@ export interface Paths {
   dataDir: string;
   lockFile: string;
   daemonFile: string;
+  /** Where the running server tells the CLI how to reach its private control endpoint. */
+  controlFile: string;
   serviceFile: string;
   oauthFile: string;
   envFile: string;
@@ -131,6 +133,7 @@ export function paths(dataDir: string): Paths {
     dataDir,
     lockFile: join(dataDir, "server.lock"),
     daemonFile: join(dataDir, "daemon.json"),
+    controlFile: join(dataDir, "control.json"),
     serviceFile: join(dataDir, "service.json"),
     oauthFile: join(dataDir, "oauth.json"),
     envFile: join(dataDir, ".env"),

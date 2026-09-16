@@ -373,7 +373,7 @@ test("wazap account default refuses an unknown id", async () => {
   });
 });
 
-test("account add/enable/disable/default warn that a running server needs a restart", async () => {
+test("account add/enable/disable/default warn that a running server they cannot reach needs a restart", async () => {
   const dir = dataDir();
   writeFileSync(paths(dir).lockFile, `${process.pid}\n`, { mode: 0o600 });
   const running = new RegExp(`A server is running \\(pid ${process.pid}\\); restart it`);
