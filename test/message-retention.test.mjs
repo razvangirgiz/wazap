@@ -1,14 +1,17 @@
+/**
+ * Deleted stays deleted: a revoke, a delete for the account or for everyone, a
+ * cleared chat and a lid that turns out to be a number all take the message's
+ * words, protobuf, transcript, vector and preview off the disk, and no replay
+ * — a late sync, a restart, an old snapshot — brings any of it back.
+ */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, writeFile, rm, mkdir } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { proto } from "baileys";
 import { WhatsAppService } from "../dist/whatsapp.js";
-import { RecallStore } from "../dist/recall/store.js";
-import { RecallQueue } from "../dist/recall/queue.js";
-import { embedModelSpec } from "../dist/recall/models.js";
-import { connectedService } from "./helpers.mjs";
+import { connectedService, databaseHolds } from "./helpers.mjs";
 
 const CHAT = "40700000002@s.whatsapp.net";
 const SECRET = "synthetic-retention-secret-27182";
@@ -20,8 +23,7 @@ const rawMessage = (id = "M1", message = { conversation: SECRET }) => ({
 const sidOf = (raw) => `${!!raw.key.fromMe}_${raw.key.remoteJid}_${raw.key.id}`;
 const gate = () => { let release; const promise = new Promise((done) => { release = done; }); return { promise, release }; };
 async function idle(svc) {
-  await svc.retentionIdle?.();
-  await svc.flushStore();
+  await svc.storageIdle();
   await svc.recallIdle();
 }
 async function fixture(t, embedding, config = {}) {
@@ -43,7 +45,7 @@ async function fixture(t, embedding, config = {}) {
     if (embedding) result.svc.recallEmbed = embedding;
     result.sock.sendMessage = async () => ({});
     services.push(result.svc);
-    await result.svc.loadPersisted();
+    await result.svc.bootStorage();
     return result;
   };
   t.after(async () => { for (const svc of services) await svc.stop(); await rm(dir, { recursive: true, force: true }); });
@@ -52,41 +54,31 @@ async function fixture(t, embedding, config = {}) {
 }
 async function seed(svc, raw = rawMessage()) {
   svc.ingestMessages([raw]);
-  await svc.appendHistory([raw]);
-  svc.markStoreDirty();
   await idle(svc);
   return raw;
 }
 function remove(sock, raw) { sock.ev.emit("messages.delete", { keys: [raw.key] }); }
-const historyPath = (svc) => join(svc.paths.historyDir, `${CHAT}.jsonl`);
+/** Neither the words nor the protobuf are anywhere in the database's files, and the row keeps nothing. */
 async function assertNoPayload(svc, raw) {
-  const bytes = Buffer.from(proto.WebMessageInfo.encode(raw).finish()).toString("base64");
-  for (const path of [historyPath(svc), svc.paths.storeFile]) {
-    const text = await readFile(path, "utf8").catch((err) => { if (err.code === "ENOENT") return ""; throw err; });
-    assert.ok(!text.includes(bytes), `retained encoded payload in ${path}`);
-    assert.ok(!text.includes(SECRET), `retained transcript in ${path}`);
-    if (text) {
-      const snapshot = path === svc.paths.storeFile ? JSON.parse(text) : null;
-      const payloads = snapshot
-        ? [...Object.values(snapshot.messages ?? {}), ...Object.values(snapshot.chats ?? {})]
-        : text.trim().split("\n").map((line) => JSON.parse(line).raw);
-      for (const payload of payloads) assert.ok(!Buffer.from(payload, "base64").includes(Buffer.from(SECRET)), `retained nested payload in ${path}`);
-    }
-  }
+  await svc.storageIdle();
+  const bytes = Buffer.from(proto.WebMessageInfo.encode(raw).finish());
+  assert.equal(databaseHolds(svc, SECRET), false, "the words are gone from the database files");
+  assert.equal(databaseHolds(svc, bytes), false, "and so is the protobuf");
+  const row = svc.db.messages.get(sidOf(raw), { includeHidden: true });
+  if (row !== null) assert.deepEqual([row.text, row.transcript, row.raw], [null, null, null]);
 }
 
-test("phone deletion removes history, snapshot, transcript and cached preview bytes before restart", async (t) => {
+test("phone deletion removes the message, its transcript and its cached preview before restart", async (t) => {
   const { svc, sock, boot } = await fixture(t);
   const raw = await seed(svc);
   const sid = sidOf(raw);
-  svc.store.setTranscript(sid, { text: SECRET, provider: "local", at: Date.now() });
-  await svc.appendHistory([raw]);
+  svc.db.messages.setTranscript(sid, SECRET);
   await svc.writePreview(sid, Buffer.from(SECRET));
+  await readFile(svc.previewPath(sid));
   remove(sock, raw);
   await idle(svc);
   await assertNoPayload(svc, raw);
   await assert.rejects(readFile(svc.previewPath(sid)), { code: "ENOENT" });
-  assert.equal(svc.store.transcripts.has(sid), false);
   await svc.stop();
   const restarted = await boot();
   assert.equal(restarted.svc.hasMessage(sid), false);
@@ -125,11 +117,10 @@ for (const everyone of [false, true]) test(`successful local deletion (${everyon
   await assertNoPayload(svc, raw);
 });
 
-test("a stale append and later history sync cannot resurrect a deleted message", async (t) => {
+test("a late preview and a later history sync cannot resurrect a deleted message", async (t) => {
   const { svc, sock } = await fixture(t);
   const raw = await seed(svc);
   remove(sock, raw);
-  await svc.appendHistory([raw]);
   await svc.writePreview(sidOf(raw), Buffer.from(SECRET));
   svc.ingestMessages([raw]);
   await idle(svc);
@@ -138,13 +129,13 @@ test("a stale append and later history sync cannot resurrect a deleted message",
   await assert.rejects(readFile(svc.previewPath(sidOf(raw))), { code: "ENOENT" });
 });
 
-test("chat clear blocks old queued appends and unseen old history, but accepts newer messages", async (t) => {
+test("chat clear blocks unseen old history across a restart, but accepts newer messages", async (t) => {
   const { svc, sock, boot } = await fixture(t);
   const raw = await seed(svc);
   sock.ev.emit("messages.delete", { all: true, jid: CHAT });
-  await svc.appendHistory([raw]);
   await idle(svc);
-  await assert.rejects(readFile(historyPath(svc)), { code: "ENOENT" });
+  assert.deepEqual(svc.db.messages.chatPage(CHAT, { limit: 10 }).items, []);
+  await assertNoPayload(svc, raw);
   await svc.stop();
   const { svc: next } = await boot();
   const unseen = rawMessage("UNSEEN");
@@ -189,19 +180,6 @@ test("corrupt retention metadata fails closed without echoing its contents", asy
   await svc.stop();
   await writeFile(join(svc.paths.root, "retention.json"), `invalid-${SECRET}`);
   await assert.rejects(boot, (err) => !err.message.includes(SECRET) && /retention/i.test(err.message));
-});
-
-test("recall deletion physically rewrites text/vector rows below the old compaction threshold", async (t) => {
-  const dir = await mkdtemp(join(tmpdir(), "wazap-retention-index-"));
-  const spec = embedModelSpec("embeddinggemma-300m");
-  const store = await RecallStore.open(dir, spec, 100);
-  t.after(async () => { await store.close(); await rm(dir, { recursive: true, force: true }); });
-  const items = Array.from({ length: 12 }, (_, i) => ({ sid: `s${i}`, jid: CHAT, ts: Date.now(), sender: CHAT, type: "text", text: i ? `kept-${i}` : SECRET }));
-  await store.add(items, items.map((_, i) => Array.from({ length: spec.dims }, (_, col) => +(col === i))));
-  await store.remove(["s0"]);
-  assert.equal(store.count, 11);
-  assert.ok(!(await readFile(join(dir, "meta.jsonl"), "utf8")).includes(SECRET));
-  assert.equal((await readFile(join(dir, "vectors.bin"))).length, 11 * spec.dims);
 });
 
 for (const own of [false, true]) test(`protocol revoke normalizes the sender's perspective (own target: ${own})`, async (t) => {
@@ -249,22 +227,27 @@ test("history-sync chat metadata cannot retain a hidden second copy of a deleted
   assert.equal(chat.messages.length, 1, "the socket's source object is not mutated");
   remove(sock, raw);
   await idle(svc);
-  assert.equal(svc.store.chats.get(CHAT).messages, undefined);
+  const stored = proto.Conversation.decode(svc.db.identity.chat(CHAT).proto);
+  assert.deepEqual(stored.messages, [], "the chat's description keeps no message");
+  assert.equal(stored.name, chat.name);
   await assertNoPayload(svc, raw);
   await svc.stop();
-  // Also sanitize a legacy snapshot with the embedded copy, independently of its live ring.
-  const snapshot = JSON.parse(await readFile(svc.paths.storeFile, "utf8"));
-  snapshot.chats[CHAT] = Buffer.from(proto.Conversation.encode(chat).finish()).toString("base64");
-  await writeFile(svc.paths.storeFile, JSON.stringify(snapshot));
+  // A legacy snapshot with the embedded copy, imported after the delete, cannot bring it in either.
+  await writeFile(svc.paths.storeFile, JSON.stringify({
+    v: 1,
+    chats: { [CHAT]: Buffer.from(proto.Conversation.encode(chat).finish()).toString("base64") },
+    contacts: {}, messages: {}, byChat: {},
+  }));
   const { svc: next } = await boot();
-  assert.equal(next.store.chats.get(CHAT).messages, undefined);
-  assert.equal(next.store.chats.get(CHAT).name, chat.name);
+  const imported = proto.Conversation.decode(next.db.identity.chat(CHAT).proto);
+  assert.deepEqual(imported.messages, []);
+  assert.equal(imported.name, chat.name);
   await assertNoPayload(next, raw);
 });
 
 const directions = (texts) => texts.map(() => [1, ...new Array(767).fill(0)]);
 
-test("deletion wins over an in-flight embedding that has not reached the index", async (t) => {
+test("deletion wins over an in-flight embedding that has not reached the database", async (t) => {
   const started = gate(); const finish = gate();
   const { svc, sock } = await fixture(t, async (texts) => {
     started.release(); await finish.promise; return directions(texts);
@@ -273,52 +256,48 @@ test("deletion wins over an in-flight embedding that has not reached the index",
   svc.ingestMessages([raw]);
   await started.promise;
   try {
-    await svc.appendHistory([raw]);
     remove(sock, raw);
-    await svc.retentionIdle();
+    await svc.storageIdle();
   } finally { finish.release(); }
   await idle(svc);
-  assert.equal(svc.recallStore.count, 0);
-  const meta = await readFile(join(svc.paths.root, "recall", "meta.jsonl"), "utf8").catch((err) => {
-    if (err.code === "ENOENT") return "";
-    throw err;
-  });
-  assert.ok(!meta.includes(SECRET));
+  assert.equal(svc.db.vectors.count(), 0);
+  await assertNoPayload(svc, raw);
 });
 
-test("recall hides an index-only deleted message before asynchronous cleanup finishes", async (t) => {
+test("recall stops answering with a deleted message before its file cleanup finishes", async (t) => {
   const { svc, sock } = await fixture(t, async (texts) => directions(texts));
   const raw = await seed(svc);
   const sid = sidOf(raw);
-  assert.ok(svc.recallStore.record(sid));
-  svc.store.dropMessage(sid);
+  assert.ok(svc.db.vectors.get(sid));
   const finish = gate();
-  void svc.serializeStorage(() => finish.promise);
+  const unlink = svc.unlinkReleased.bind(svc);
+  svc.unlinkReleased = async () => { await finish.promise; return unlink(); };
   remove(sock, raw);
   try {
     const answer = await svc.recall(SECRET, undefined, 10);
     assert.deepEqual(answer.data.hits, []);
   } finally { finish.release(); }
   await idle(svc);
-  assert.equal(svc.recallStore.record(sid), undefined);
+  assert.equal(svc.db.vectors.get(sid), null);
 });
 
-test("phone-number deletion also removes LID-filed memory, history and index rows", async (t) => {
+test("phone-number deletion also removes the LID-filed message and its vector", async (t) => {
   const { svc, sock, boot } = await fixture(t, async (texts) => directions(texts));
   const raw = rawMessage();
   raw.key.remoteJid = "900001@lid";
   await seed(svc, raw);
   const oldSid = sidOf(raw);
-  assert.ok(svc.recallStore.record(oldSid));
+  assert.ok(svc.db.vectors.get(oldSid));
   svc.learnLid(raw.key.remoteJid, CHAT);
   remove(sock, { key: { ...raw.key, remoteJid: CHAT } });
   await idle(svc);
   assert.equal(svc.hasMessage(oldSid), false);
-  assert.equal(svc.recallStore.record(oldSid), undefined);
+  assert.equal(svc.db.vectors.count(), 0);
+  await assertNoPayload(svc, raw);
   await svc.stop();
   const { svc: next } = await boot();
   assert.equal(next.hasMessage(oldSid), false);
-  assert.equal(next.recallStore.record(oldSid), undefined);
+  assert.equal(next.hasMessage(`false_${CHAT}_M1`), false);
 });
 
 for (const underLid of [true, false]) test(`a newly learned alias applies an earlier deletion (stored under LID: ${underLid})`, async (t) => {
@@ -332,132 +311,76 @@ for (const underLid of [true, false]) test(`a newly learned alias applies an ear
   svc.learnLid(lid, CHAT);
   assert.equal(svc.hasMessage(sidOf(raw)), false);
   await idle(svc);
-  assert.equal(svc.recallStore.record(sidOf(raw)), undefined);
-  const text = await readFile(join(svc.paths.historyDir, `${raw.key.remoteJid}.jsonl`), "utf8");
-  assert.ok(!text.includes(Buffer.from(proto.WebMessageInfo.encode(raw).finish()).toString("base64")));
+  assert.equal(svc.db.vectors.count(), 0);
+  await assertNoPayload(svc, raw);
 });
 
-test("disabled recall and interrupted rewrite files are not exempt from cleanup", async (t) => {
-  const { svc, sock } = await fixture(t, undefined, { retention: true });
-  const raw = await seed(svc);
-  const dir = join(svc.paths.root, "recall");
-  await mkdir(dir, { recursive: true });
-  const stages = [join(dir, "meta.jsonl"), join(dir, "vectors.bin"), join(dir, "meta.jsonl.tmp"), `${historyPath(svc)}.tmp`];
-  for (const path of stages) await writeFile(path, SECRET);
-  const untouched = join(dir, "user-note.txt");
-  await writeFile(untouched, "not a managed cache file");
-  remove(sock, raw);
-  await idle(svc);
-  for (const path of stages) await assert.rejects(readFile(path), { code: "ENOENT" });
-  assert.equal(await readFile(untouched, "utf8"), "not a managed cache file");
-});
-
-test("deleting with history off invalidates inactive old caches and keeps deletion barriers", async (t) => {
+test("deleting with history off keeps the barrier, and a restart forgets every message it kept", async (t) => {
   const { svc, boot } = await fixture(t, undefined, { retention: true });
   const raw = await seed(svc);
   await svc.stop();
   const { svc: off, sock } = await boot({ persistHistory: false, retention: true });
+  assert.equal(off.hasMessage(sidOf(raw)), false, "history off forgets the messages a history-on run kept");
   off.ingestMessages([raw]);
+  assert.equal(off.hasMessage(sidOf(raw)), true);
   remove(sock, raw);
   await idle(off);
-  await assert.rejects(readFile(historyPath(off)), { code: "ENOENT" });
-  await assert.rejects(readFile(off.paths.storeFile), { code: "ENOENT" });
+  await assertNoPayload(off, raw);
   await off.stop();
   const { svc: next } = await boot({ persistHistory: false, retention: true });
   next.ingestMessages([raw]);
   assert.equal(next.hasMessage(sidOf(raw)), false);
 });
 
-test("without WAZAP_RETENTION, history off and disabled recall keep earlier caches, and deletions still hold", async (t) => {
+test("without WAZAP_RETENTION, history off still forgets messages at a restart, and deletions still hold", async (t) => {
   const { svc, boot } = await fixture(t);
+  const kept = await seed(svc, rawMessage("KEPT", { conversation: "synthetic kept words" }));
   const raw = await seed(svc);
-  const dir = join(svc.paths.root, "recall");
-  await mkdir(dir, { recursive: true });
-  const index = [join(dir, "meta.jsonl"), join(dir, "vectors.bin")];
-  for (const path of index) await writeFile(path, "earlier index");
   await svc.stop();
   const { svc: off, sock } = await boot({ persistHistory: false });
+  assert.equal(off.hasMessage(sidOf(kept)), false);
   off.ingestMessages([raw]);
   remove(sock, raw);
   await idle(off);
-  for (const path of index) assert.equal(await readFile(path, "utf8"), "earlier index");
-  await readFile(off.paths.storeFile);
   await off.stop();
   const { svc: next } = await boot({ persistHistory: false });
+  assert.equal(databaseHolds(next, "synthetic kept words"), false, "a stop with history off leaves no words behind");
   next.ingestMessages([raw]);
   assert.equal(next.hasMessage(sidOf(raw)), false);
 });
 
 test("a failed automatic-cache cleanup is reported instead of acknowledging cleanup completion", async (t) => {
   const { svc } = await fixture(t);
-  const raw = await seed(svc);
-  await mkdir(svc.previewPath(sidOf(raw)), { recursive: true });
-  await assert.rejects(svc.deleteMessage(sidOf(raw), false), (err) =>
+  const raw = await seed(svc, rawMessage("PHOTO", { imageMessage: { mimetype: "image/jpeg" } }));
+  const sid = sidOf(raw);
+  await svc.writePreview(sid, Buffer.from("synthetic thumbnail"));
+  // rm(path) cannot remove a directory: the unlink of the released preview fails.
+  await rm(svc.previewPath(sid));
+  await mkdir(svc.previewPath(sid), { recursive: true });
+  await assert.rejects(svc.deleteMessage(sid, false), (err) =>
     err.code === "WHATSAPP_ERROR" && /cleanup failed/i.test(err.message) && !err.message.includes(SECRET));
-  assert.equal(svc.hasMessage(sidOf(raw)), false);
+  assert.equal(svc.hasMessage(sid), false);
 
   // The failure is reported once; a later cleanup that succeeds is not failed by it.
-  await rm(svc.previewPath(sidOf(raw)), { recursive: true, force: true });
+  await rm(svc.previewPath(sid), { recursive: true, force: true });
   const next = await seed(svc, rawMessage("M2"));
   assert.deepEqual(await svc.deleteMessage(sidOf(next), false), { message_id: sidOf(next), for_everyone: false });
 });
 
-test("opening an incomplete recall index clears leftover payload and stale staging bytes", async (t) => {
-  const dir = await mkdtemp(join(tmpdir(), "wazap-retention-partial-"));
-  const files = ["meta.jsonl", "vectors.bin", "meta.jsonl.tmp", "vectors.bin.tmp"];
-  for (const name of files) await writeFile(join(dir, name), SECRET);
-  const store = await RecallStore.open(dir, embedModelSpec("embeddinggemma-300m"), 100);
-  t.after(async () => { await store.close(); await rm(dir, { recursive: true, force: true }); });
-  assert.equal(store.count, 0);
-  for (const name of files) await assert.rejects(readFile(join(dir, name)), { code: "ENOENT" });
-});
-
-test("a deletion arriving during the last seal is drained without needing another feed", async (t) => {
-  const dir = await mkdtemp(join(tmpdir(), "wazap-retention-seal-"));
-  const store = await RecallStore.open(dir, embedModelSpec("embeddinggemma-300m"), 100);
-  const queue = new RecallQueue(store, async () => assert.fail("tombstones need no embedding"));
-  t.after(async () => { await queue.stop(); await store.close(); await rm(dir, { recursive: true, force: true }); });
-  await store.add([{ sid: "sealed", jid: CHAT, ts: Date.now(), sender: CHAT, type: "text", text: SECRET }], directions([SECRET]));
-  const started = gate(); const finish = gate();
-  const advance = store.advanceOffset.bind(store);
-  store.advanceOffset = async (...args) => { started.release(); await finish.promise; return advance(...args); };
-  queue.feed([], { file: "synthetic.jsonl", bytes: 1 });
-  await started.promise;
-  queue.enqueue({ sid: "sealed" });
-  finish.release();
-  let timeout;
-  try {
-    await Promise.race([queue.idle(), new Promise((_, reject) => {
-      timeout = setTimeout(() => reject(new Error("delete stranded behind the last seal")), 2000);
-    })]);
-  } finally { clearTimeout(timeout); }
-  assert.equal(store.count, 0);
-});
-
-for (const method of ["removeMatching", "removeChats"]) test(`${method} evaluates the rows after earlier queued writes commit`, async (t) => {
-  const dir = await mkdtemp(join(tmpdir(), "wazap-retention-queued-index-"));
-  const store = await RecallStore.open(dir, embedModelSpec("embeddinggemma-300m"), 100);
-  t.after(async () => { await store.close(); await rm(dir, { recursive: true, force: true }); });
-  const item = { sid: "queued", jid: CHAT, ts: Date.now(), sender: CHAT, type: "text", text: SECRET };
-  const adding = store.add([item], directions([SECRET]));
-  const deleting = method === "removeChats" ? store.removeChats([CHAT]) : store.removeMatching((row) => row.sid === item.sid);
-  await Promise.all([adding, deleting]);
-  assert.equal(store.count, 0);
-  assert.ok(!(await readFile(join(dir, "meta.jsonl"), "utf8")).includes(SECRET));
-});
-
-test("deletion barriers reject an older snapshot even after bounded history loses the tombstone line", async (t) => {
+test("deletion barriers hold against a replay after a restart, and against an older snapshot imported later", async (t) => {
   const { svc, sock, boot } = await fixture(t);
   const raw = await seed(svc);
-  const oldSnapshot = await readFile(svc.paths.storeFile);
   remove(sock, raw);
   await idle(svc);
   await svc.stop();
-  await rm(historyPath(svc), { force: true });
-  await writeFile(svc.paths.storeFile, oldSnapshot);
+  await writeFile(svc.paths.storeFile, JSON.stringify({
+    v: 1, chats: {}, contacts: {}, byChat: { [CHAT]: [sidOf(raw)] },
+    messages: { [sidOf(raw)]: Buffer.from(proto.WebMessageInfo.encode(raw).finish()).toString("base64") },
+  }));
   const { svc: next } = await boot();
-  assert.equal(next.hasMessage(sidOf(raw)), false);
+  assert.equal(next.hasMessage(sidOf(raw)), false, "the snapshot's copy is not a way back");
   await seed(next, raw);
   assert.equal(next.hasMessage(sidOf(raw)), false);
   await assertNoPayload(next, raw);
+  assert.equal(await readFile(next.paths.storeFile, "utf8").then(() => true), true, "the legacy file is only read");
 });

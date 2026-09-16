@@ -4,7 +4,7 @@
  * condition instead of sleeping.
  */
 import { spawn } from "node:child_process";
-import { mkdtempSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { setTimeout as sleep } from "node:timers/promises";
 import { dirname, join } from "node:path";
@@ -184,4 +184,35 @@ export function connectedService(WhatsAppService, { prefix, id, name, config = {
   svc.status = "connected";
   svc.initialSyncDone = true;
   return { svc, sock };
+}
+
+/**
+ * A connected service that has also run what start() runs before the socket:
+ * the account database's boot, which imports legacy files the first time.
+ */
+export async function bootedService(WhatsAppService, options = {}) {
+  const connected = connectedService(WhatsAppService, options);
+  await connected.svc.bootStorage();
+  return connected;
+}
+
+/**
+ * Whether any byte of the account database — the file, its write-ahead log
+ * and its shared memory — still spells `needle`, after a checkpoint moved the
+ * log into the file. What "the payload is gone from the disk" means now.
+ */
+export function databaseHolds(svc, needle) {
+  const db = svc.db;
+  db.checkpoint();
+  const bytes = Buffer.from(needle);
+  for (const suffix of ["", "-wal", "-shm"]) {
+    const path = `${db.path}${suffix}`;
+    if (existsSync(path) && readFileSync(path).includes(bytes)) return true;
+  }
+  return false;
+}
+
+/** The message ids a chat holds, newest first, as read_messages would page them. */
+export function storedIds(svc, chat, limit = 1000) {
+  return svc.db.messages.chatPage(chat, { limit }).items.map((message) => message.sid);
 }

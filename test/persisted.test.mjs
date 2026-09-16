@@ -1,7 +1,9 @@
 /**
- * What a restart puts back together. A message that arrived under a lid was
- * written to the history file with the phone chat's id, and on reload it must
- * land in that one chat, not in a second ring under the lid.
+ * What a restart puts back together. An account upgraded from the legacy
+ * files imports them once, at boot, into its database: a message that arrived
+ * under a lid and was written to the history file with the phone chat's id
+ * lands in that one chat, not in a second one under the lid. From then on the
+ * database is what a restart reads.
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -10,13 +12,21 @@ import { join } from "node:path";
 import { proto } from "baileys";
 
 import { WhatsAppService } from "../dist/whatsapp.js";
-import { connectedService } from "./helpers.mjs";
+import { connectedService, openService, offlineConfig } from "./helpers.mjs";
 
 const ME = "40700000001@s.whatsapp.net";
 const PHONE = "40723321578@s.whatsapp.net";
 const LID = "117261398495351@lid";
 
-test("a history line filed under the phone reloads into one ring even though it arrived under the lid", async () => {
+/** The chats the database lists messages under, by jid. */
+function chatsWithMessages(svc) {
+  return svc.db.identity
+    .listChats()
+    .filter((chat) => chat.lastMessageId !== null)
+    .map((chat) => chat.jid);
+}
+
+test("a history line filed under the phone imports into one chat even though it arrived under the lid", async () => {
   const { svc } = connectedService(WhatsAppService, {
     prefix: "wazap-persisted-",
     id: ME,
@@ -52,9 +62,9 @@ test("a history line filed under the phone reloads into one ring even though it 
     })
   );
 
-  await svc.loadPersisted();
+  await svc.bootStorage();
 
-  assert.deepEqual([...svc.store.byChat.keys()], [PHONE], "one ring, under the phone");
+  assert.deepEqual(chatsWithMessages(svc), [PHONE], "one chat, under the phone");
   const recent = (await svc.getRecentMessages(24, "all")).data;
   assert.deepEqual(
     recent.map((c) => c.chat_id),
@@ -69,7 +79,7 @@ test("a history line filed under the phone reloads into one ring even though it 
   assert.equal(Date.parse(status.last_message_received_at), Number(raw.messageTimestamp) * 1000);
 });
 
-test("a snapshot that still holds a ring under the lid folds it into the phone chat on load", async () => {
+test("a snapshot that still holds a ring under the lid folds it into the phone chat on import", async () => {
   const { svc } = connectedService(WhatsAppService, {
     prefix: "wazap-persisted-",
     id: ME,
@@ -99,10 +109,14 @@ test("a snapshot that still holds a ring under the lid folds it into the phone c
     })
   );
 
-  await svc.loadPersisted();
+  await svc.bootStorage();
 
-  assert.deepEqual([...svc.store.byChat.keys()], [PHONE]);
-  assert.deepEqual(svc.store.byChat.get(PHONE), [sid], "the message is filed once");
+  assert.deepEqual(chatsWithMessages(svc), [PHONE]);
+  assert.deepEqual(
+    svc.db.messages.chatPage(PHONE, { limit: 10 }).items.map((m) => m.sid),
+    [sid],
+    "the message is filed once"
+  );
   const recent = (await svc.getRecentMessages(24, "all")).data;
   assert.deepEqual(
     recent.map((c) => c.chat_id),
@@ -126,13 +140,18 @@ test("a lid chat learned before its number folds in the moment the pairing arriv
       },
     ],
   });
-  assert.equal(svc.store.byChat.has(LID), true, "filed under the lid while nothing better is known");
+  assert.deepEqual(chatsWithMessages(svc), [LID], "filed under the lid while nothing better is known");
 
   sock.ev.emit("lid-mapping.update", { lid: LID, pn: PHONE });
 
-  assert.equal(svc.store.byChat.has(LID), false);
-  assert.equal(svc.store.chats.has(LID), false);
-  assert.equal(svc.store.chats.get(PHONE).unreadCount, 2);
+  assert.equal(svc.db.identity.chat(LID).jid, PHONE, "the lid answers as the phone chat at once");
+  await svc.storageIdle();
+  assert.deepEqual(
+    svc.db.identity.listChats().map((chat) => chat.jid),
+    [PHONE],
+    "and once the fold lands, one chat is left"
+  );
+  assert.equal(svc.db.identity.chat(PHONE).unread, 2);
   const messages = (await svc.readMessages(PHONE, 10)).data;
   assert.deepEqual(
     messages.map((m) => m.text),
@@ -141,7 +160,7 @@ test("a lid chat learned before its number folds in the moment the pairing arriv
   );
 });
 
-test("reactions come back after a restart, and a reaction an older snapshot filed as a message moves onto its target", async () => {
+test("reactions come back after an import, and a reaction an older snapshot filed as a message moves onto its target", async () => {
   const { svc } = connectedService(WhatsAppService, {
     prefix: "wazap-persisted-",
     id: ME,
@@ -179,9 +198,13 @@ test("reactions come back after a restart, and a reaction an older snapshot file
     })
   );
 
-  await svc.loadPersisted();
+  await svc.bootStorage();
 
-  assert.deepEqual(svc.store.byChat.get(PHONE), [target], "the loose reaction line is gone");
+  assert.deepEqual(
+    svc.db.messages.chatPage(PHONE, { limit: 10 }).items.map((m) => m.sid),
+    [target],
+    "the loose reaction line is gone"
+  );
   const [view] = (await svc.readMessages(PHONE, 10)).data;
   assert.deepEqual(
     view.reactions.map((r) => [r.emoji, r.sender]).sort(),
@@ -193,7 +216,7 @@ test("reactions come back after a restart, and a reaction an older snapshot file
   );
 });
 
-test("a pairing WhatsApp's table taught is written down, so after a restart a lid-filed message still has its sender", async () => {
+test("a pairing WhatsApp's table taught is kept, so after a restart a lid-filed message still has its sender", async () => {
   const { svc } = connectedService(WhatsAppService, {
     prefix: "wazap-persisted-",
     id: ME,
@@ -221,9 +244,60 @@ test("a pairing WhatsApp's table taught is written down, so after a restart a li
       contactsResyncedAt: null,
     })
   );
-  await svc.loadPersisted();
+  await svc.bootStorage();
   const [view] = (await svc.readMessages(PHONE, 10)).data;
   assert.equal(view.sender.id, PHONE);
   assert.equal(view.sender.name, "40723321578", "the number, not unknown (lid …)");
-  assert.equal(svc.store.serialize().lids[LID], PHONE, "and it is written again");
+  await svc.stop();
+
+  const again = openService(WhatsAppService, offlineConfig("x", { dataDir: svc.config.dataDir, persistHistory: true }));
+  assert.deepEqual(again.db.identity.lidPairs(), [[LID, PHONE]], "the database keeps it");
+  assert.equal(again.lidToPn.get(LID), PHONE, "and a restart reads it back");
+  await again.stop();
+});
+
+test("an import runs once: the next boot serves the database and never reads the legacy files again", async () => {
+  const { svc } = connectedService(WhatsAppService, {
+    prefix: "wazap-persisted-",
+    id: ME,
+    name: "Răzvan",
+    config: { persistHistory: true },
+  });
+  const raw = proto.WebMessageInfo.fromObject({
+    key: { remoteJid: PHONE, fromMe: false, id: "ONCE" },
+    message: { conversation: "o singură dată" },
+    messageTimestamp: Math.floor(Date.now() / 1000) - 60,
+  });
+  mkdirSync(svc.paths.historyDir, { recursive: true });
+  writeFileSync(
+    join(svc.paths.historyDir, `${PHONE}.jsonl`),
+    `${JSON.stringify({ sid: `false_${PHONE}_ONCE`, ts: Number(raw.messageTimestamp), raw: Buffer.from(proto.WebMessageInfo.encode(raw).finish()).toString("base64") })}\n`
+  );
+  await svc.bootStorage();
+  assert.equal(svc.db.getMeta("import_state"), "done");
+  await svc.stop();
+
+  // A line appended to the old file after the import is not the database's business.
+  const later = proto.WebMessageInfo.fromObject({
+    key: { remoteJid: PHONE, fromMe: false, id: "LATER" },
+    message: { conversation: "scris după import" },
+    messageTimestamp: Math.floor(Date.now() / 1000) - 30,
+  });
+  writeFileSync(
+    join(svc.paths.historyDir, `${PHONE}.jsonl`),
+    `${JSON.stringify({ sid: `false_${PHONE}_LATER`, ts: Number(later.messageTimestamp), raw: Buffer.from(proto.WebMessageInfo.encode(later).finish()).toString("base64") })}\n`,
+    { flag: "a" }
+  );
+  const { svc: next } = connectedService(WhatsAppService, {
+    prefix: "wazap-persisted-",
+    id: ME,
+    name: "Răzvan",
+    config: { persistHistory: true, dataDir: svc.config.dataDir },
+  });
+  await next.bootStorage();
+  assert.deepEqual(
+    (await next.readMessages(PHONE, 10)).data.map((m) => m.text),
+    ["o singură dată"]
+  );
+  await next.stop();
 });
