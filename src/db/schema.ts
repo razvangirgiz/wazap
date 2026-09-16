@@ -513,6 +513,25 @@ BEGIN
   UPDATE sends SET payload = '{}', receipt = CASE WHEN receipt IS NULL THEN NULL ELSE json_set(receipt, '$.text', '') END
   WHERE key_id = new.key_id;
 END;
+
+-- A chat cleared or deleted through a barrier does the same for its sends,
+-- in the transaction that stores the barrier: a send whose message the
+-- barrier hides, and an unknown send drafted at or before it, to the chat's
+-- jid or its person's other one. Every spelling of a chat raises its own
+-- barrier, so each row matches its own messages.
+CREATE TRIGGER chats_barrier_scrubs_sends AFTER UPDATE OF cleared_through_ts ON chats
+WHEN new.cleared_through_ts IS NOT NULL AND new.cleared_through_ts IS NOT old.cleared_through_ts
+BEGIN
+  UPDATE sends SET payload = '{}', receipt = CASE WHEN receipt IS NULL THEN NULL ELSE json_set(receipt, '$.text', '') END
+  WHERE state IN ('sent', 'unknown') AND (
+    EXISTS (
+      SELECT 1 FROM messages m
+      WHERE m.chat_id = new.id AND m.from_me = 1 AND m.key_id = sends.key_id AND m.ts <= new.cleared_through_ts)
+    OR (state = 'unknown' AND created_at <= new.cleared_through_ts AND (
+      chat_jid = new.jid
+      OR chat_jid IN (SELECT phone_jid FROM contacts WHERE id = new.contact_id AND phone_jid IS NOT NULL)
+      OR chat_jid IN (SELECT lid FROM contacts WHERE id = new.contact_id AND lid IS NOT NULL))));
+END;
 `;
 
 /** Every migration, in order. The schema version a build knows is the last one's. */

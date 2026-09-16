@@ -419,6 +419,55 @@ test("a number WhatsApp gave no answer about is NOT_CONNECTED; only an answer ma
   assert.equal((await draft()).to.chat_id, STRANGER);
 });
 
+for (const action of ["clear", "delete"]) {
+  test(`a chat ${action} takes the words out of the chat's sends, and a repeated confirm still sends nothing`, async (t) => {
+    const { svc, sock, sent } = serviceOn(t, dataDirFor(t));
+    sock.chatModify = async () => {};
+    const sentView = await svc.draft({ kind: "text", chatId: PEER, text: "cuvinte trimise" }, OWNER);
+    const receipt = await svc.confirm(sentView.draft_id, OWNER);
+    const unknownView = await svc.draft({ kind: "text", chatId: PEER, text: "cuvinte poate" }, OWNER);
+    const relay = sock.relayMessage;
+    sock.relayMessage = async () => {
+      throw new Error("Timed Out");
+    };
+    await assert.rejects(svc.confirm(unknownView.draft_id, OWNER), { code: "SEND_OUTCOME_UNKNOWN" });
+    sock.relayMessage = relay;
+    const otherChat = await svc.draft({ kind: "text", chatId: STRANGER, text: "cuvinte altundeva" }, OWNER);
+    await svc.confirm(otherChat.draft_id, OWNER);
+
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    await svc.manageChat(PEER, action);
+
+    for (const id of [sentView.draft_id, unknownView.draft_id]) {
+      const row = sendRow(svc, id);
+      assert.doesNotMatch(`${row.payload}${row.receipt}`, /cuvinte/, `${row.state} send`);
+    }
+    assert.match(sendRow(svc, otherChat.draft_id).receipt, /cuvinte altundeva/, "another chat's send keeps its words");
+    const again = await svc.confirm(sentView.draft_id, OWNER);
+    assert.equal(again.message_id, receipt.message_id);
+    assert.equal(again.text, "");
+    await assert.rejects(svc.confirm(unknownView.draft_id, OWNER), { code: "SEND_OUTCOME_UNKNOWN" });
+    assert.equal(sent.length, 2);
+  });
+}
+
+test("a chat clear reaches an unknown send drafted to the person's lid before their number was known", async (t) => {
+  const { svc, sock } = serviceOn(t, dataDirFor(t));
+  sock.chatModify = async () => {};
+  const LID = "123456789012345@lid";
+  const view = await svc.draft({ kind: "text", chatId: LID, text: "cuvinte prin lid" }, OWNER);
+  assert.equal(view.to.chat_id, LID);
+  sock.relayMessage = async () => {
+    throw new Error("Timed Out");
+  };
+  await assert.rejects(svc.confirm(view.draft_id, OWNER), { code: "SEND_OUTCOME_UNKNOWN" });
+  sock.ev.emit("lid-mapping.update", { lid: LID, pn: PEER });
+  await svc.db.learnLidPhone(LID, PEER);
+  await new Promise((resolve) => setTimeout(resolve, 5));
+  await svc.manageChat(PEER, "clear");
+  assert.doesNotMatch(sendRow(svc, view.draft_id).payload, /cuvinte/);
+});
+
 test("deleting a sent message takes its words out of the send record, and a repeated confirm still sends nothing", async (t) => {
   const { svc, sock, sent } = serviceOn(t, dataDirFor(t));
   sock.chatModify = async () => {};

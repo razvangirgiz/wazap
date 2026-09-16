@@ -326,8 +326,8 @@ up the recipient's devices and encrypts it before writing), a failure answers
 sent again. The agent checks the chat instead. When WhatsApp later echoes that
 message id, the send is recorded as sent, and the session that confirmed it gets
 the receipt from then on. For 24 hours a confirmed draft answers its receipt or
-`SEND_OUTCOME_UNKNOWN` to that session, and deleting the sent message removes
-its words from the record. MCP sessions do not survive a restart: after one, no
+`SEND_OUTCOME_UNKNOWN` to that session; deleting the sent message, or clearing
+or deleting its chat, removes its words from the record. MCP sessions do not survive a restart: after one, no
 session can confirm a draft made before it, sent or not, though a send the
 restart interrupted is still recorded as unknown and still settles when its id
 is echoed.
