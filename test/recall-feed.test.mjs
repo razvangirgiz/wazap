@@ -12,7 +12,9 @@ import assert from "node:assert/strict";
 
 import { AccountDb } from "../dist/db/index.js";
 import { WazapError } from "../dist/errors.js";
-import { EmbedFeed } from "../dist/recall/index.js";
+import http from "node:http";
+
+import { EMBED_MODELS, EmbedEngine, EmbedFeed } from "../dist/recall/index.js";
 import { PEER, T0, openTemp, sid, textMessage, wordsOf } from "./db-fixtures.mjs";
 
 const MODEL = "embeddinggemma-300m";
@@ -66,13 +68,13 @@ test("a failing backend is retried, and the batch lands once it answers", async 
   });
   feed.kick();
   await feed.idle();
-  assert.equal(feed.dead, null);
+  assert.equal(feed.failing, null);
   assert.equal(calls.length, 1);
   assert.ok(db.vectors.get(sid(false, PEER, "M1")));
   db.close();
 });
 
-test("five failures in a row stop the feed and say why, without holding a stop", async () => {
+test("five failures in a row pause the feed and say why, keep the queue, and never hold a stop", async () => {
   const { db } = openTemp();
   db.messages.upsert(textMessage(PEER, "M1", T0, "factura"));
   let attempts = 0;
@@ -83,9 +85,9 @@ test("five failures in a row stop the feed and say why, without holding a stop",
   feed.kick();
   await feed.idle();
   assert.equal(attempts, 5);
-  assert.match(feed.dead, /indexing stopped after 5 failed embedding calls: model file is corrupt/);
-  feed.kick();
-  assert.equal(feed.busy, false, "a dead feed takes no more work");
+  assert.match(feed.failing, /indexing paused after 5 failed embedding calls: model file is corrupt/);
+  assert.equal(db.vectors.queueSize(), 1, "the queue is kept for when the server answers");
+  await feed.stop();
 
   const again = feedOver(db, async () => {
     throw new Error("down");
@@ -170,7 +172,7 @@ test("a text the embedding server refuses is skipped alone, the rest lands, and 
   const feed = feedOver(db, refusing(calls));
   feed.kick();
   await feed.idle();
-  assert.equal(feed.dead, null, "one bad text does not stop the feed");
+  assert.equal(feed.failing, null, "one bad text does not stop the feed");
   for (const key of ["M1", "M3", "M4"]) assert.ok(db.vectors.get(sid(false, PEER, key)), `${key} is embedded`);
   assert.equal(db.vectors.get(sid(false, PEER, "M2")), null);
   db.close();
@@ -181,7 +183,7 @@ test("a text the embedding server refuses is skipped alone, the rest lands, and 
   again.kick();
   await again.idle();
   assert.equal(later.flat().some((text) => text.includes("POISON")), false, "the refused text is not sent again after a restart");
-  assert.equal(again.dead, null);
+  assert.equal(again.failing, null);
 
   // New words are a new chance.
   reopened.messages.upsert(textMessage(PEER, "M2", T0 + 1000, "acum se poate citi", { editedAt: T0 + 90_000 }));
@@ -231,3 +233,64 @@ test("a first walk over a history whose vectors all came with the import yields 
   assert.equal(calls.length, 0, "nothing needed embedding");
   db.close();
 });
+
+test("only a 400, 413 or 422 names the input as refused; any other 4xx is the server failing", async () => {
+  let status = 400;
+  const server = http.createServer((req, res) => {
+    req.resume();
+    req.on("end", () => res.writeHead(status).end("no"));
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  try {
+    const engine = await EmbedEngine.start({ embedUrl: `http://127.0.0.1:${server.address().port}` }, EMBED_MODELS[MODEL]);
+    for (const [code, statuses] of [
+      ["RECALL_BAD_INPUT", [400, 413, 422]],
+      ["RECALL_FAILED", [401, 403, 404, 405, 408, 425, 429, 500, 503]],
+    ]) {
+      for (status of statuses) {
+        await assert.rejects(engine.embed(["text"], "document"), (err) => err.code === code, `HTTP ${status}`);
+      }
+    }
+  } finally {
+    server.close();
+  }
+});
+
+for (const [label, failure] of [
+  ["a 429", () => new WazapError("RECALL_FAILED", "Embedding server returned HTTP 429.")],
+  ["a 400 for every text", () => new WazapError("RECALL_BAD_INPUT", "Embedding server returned HTTP 400.")],
+]) {
+  test(`an endpoint answering ${label} for a while keeps the whole queue, says why, and everything is embedded once it answers`, async () => {
+    const { db } = openTemp();
+    for (let i = 0; i < 40; i++) db.messages.upsert(textMessage(PEER, `M${i}`, T0 + i * 1000, `mesajul bun ${i}`));
+    let broken = true;
+    const { embed } = fakeEmbed();
+    const feed = new EmbedFeed({
+      db: () => (db.isOpen ? db : null),
+      model: MODEL,
+      words: (message) => message.text,
+      embed: async (texts) => {
+        if (broken) throw failure();
+        return embed(texts);
+      },
+      retry: { initMs: 1, maxMs: 2, laterMs: 30, laterMaxMs: 30 },
+    });
+    feed.kick();
+    await feed.idle();
+    assert.equal(db.vectors.queueSize(), 40, "nothing left the queue");
+    assert.equal(db.vectors.count(MODEL), 0);
+    assert.match(feed.failing ?? "", /HTTP 4\d\d/, "the failure is reported");
+
+    broken = false;
+    // No new message: the retry the feed scheduled is what recovers.
+    for (let polls = 0; db.vectors.count(MODEL) < 40; polls++) {
+      assert.ok(polls < 200, "the feed retried on its own");
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    await feed.idle();
+    assert.equal(db.vectors.queueSize(), 0);
+    assert.equal(feed.failing, null);
+    await feed.stop();
+    db.close();
+  });
+}

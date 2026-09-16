@@ -400,6 +400,9 @@ class SharedSidecar implements EmbeddingTarget {
  * START_TIMEOUT_MS, then fails the batch — the queue retries, so a dying
  * sidecar stalls indexing rather than dropping messages.
  */
+/** The statuses that may refuse the input rather than the request. */
+const INPUT_REFUSALS = new Set([400, 413, 422]);
+
 export class EmbedEngine {
   private constructor(
     private readonly target: EmbeddingTarget,
@@ -462,10 +465,11 @@ export class EmbedEngine {
     }
     if (!response.ok) {
       await discardResponse(response);
-      // A 4xx means the input itself is unembeddable — over the model's
-      // context, malformed — and no retry will change that, so the queue
-      // treats it differently from a sick backend.
-      const code = response.status >= 400 && response.status < 500 ? "RECALL_BAD_INPUT" : "RECALL_FAILED";
+      // A 400, 413 or 422 can name the input itself — over the model's
+      // context, malformed — which no retry changes, so the feed bisects the
+      // batch for it. Every other status, 4xx included (a 404 route, a 401 or
+      // 403 proxy, 408, 425, 429), is the server or the way to it failing.
+      const code = INPUT_REFUSALS.has(response.status) ? "RECALL_BAD_INPUT" : "RECALL_FAILED";
       throw new WazapError(code, `Embedding server returned HTTP ${response.status}.`);
     }
     let reply: unknown;

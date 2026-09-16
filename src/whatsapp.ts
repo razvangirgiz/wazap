@@ -2233,8 +2233,14 @@ export class WhatsAppService implements WhatsAppApi {
     const db = this.readyDb();
     const indexed = this.indexedCount(db, this.recallEnv.model);
     const pending = this.embedFeed.pending;
-    if (this.embedFeed.dead !== null) {
-      return { state: "degraded", indexed, pending, detail: this.embedFeed.dead, fix: "Restart the wazap server" };
+    if (this.embedFeed.failing !== null) {
+      return {
+        state: "degraded",
+        indexed,
+        pending,
+        detail: this.embedFeed.failing,
+        fix: "Check that the embedding server answers; indexing resumes on its own, with nothing lost",
+      };
     }
     if (db === null) {
       if (this.storageState === "preparing") return { state: "indexing", indexed, pending };
