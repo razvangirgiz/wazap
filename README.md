@@ -839,17 +839,20 @@ can call both tools unless a trusted harness enforces approval.
 ### Request budgets
 
 MCP POSTs authenticate before JSON parsing, accept at most 100 KiB and refuse
-compressed bodies. Each credential has 120 POSTs/minute across its sessions;
+compressed bodies. Each credential has 240 POSTs/minute across its sessions
+(`WAZAP_HTTP_BUDGET`);
 429 responses include `Retry-After`. The session registry holds at most 128
 sessions overall and 32 per credential, evicting that credential's oldest first.
-Tool work is capped at four concurrent operations per MCP session and sixteen
-across the process, including stdio/bridges. Slots remain held until work settles,
+Tool work is capped at eight concurrent operations per MCP session and 32
+across the process, including stdio/bridges (`WAZAP_MAX_INFLIGHT`,
+`WAZAP_MAX_INFLIGHT_TOTAL`). Slots remain held until work settles,
 not merely until a client disconnects. Retry once after pending work completes.
 
 The HTTP listener caps connections at 256, header receipt at ten seconds and
 request-body receipt at thirty seconds; this does not time out legitimate SSE
 streams or long-running tools. Anonymous loopback requests must have a loopback
-Host and, when supplied, a matching Origin; browser rebinding/cross-origin
+Host name (on any port, so a mapped container port works) and, when supplied, a
+matching Origin; browser rebinding/cross-origin
 requests are refused. Always configure credentials for a proxy/tunnel. These
 bounds are not a DDoS shield or per-tenant fairness guarantee.
 
@@ -997,14 +1000,16 @@ What to know before exposing it:
   every agent out at once, running server included; `wazap status` lists who
   holds one. Disconnecting an agent on its side revokes its refresh token and
   every access token in that grant family. Refresh tokens rotate on every use:
-  clients must save the returned token and serialize refresh calls. Replaying
-  one of the last 32 consumed tokens revokes the family; older tokens are simply
-  invalid. At most eight access tokens per grant remain active. A refresh token
-  unused for ninety days is dropped. Damaged persisted grants require sign-in
+  clients must save the returned token. A consumed token still works for 60
+  seconds from its rotation, so two refreshes at once or a lost response do not
+  sign the agent out; replaying it later, within the last 32 consumed tokens,
+  revokes the family, and older tokens are simply invalid. At most eight access
+  tokens per grant remain active. A refresh token unused for ninety days is dropped. Damaged persisted grants require sign-in
   again rather than becoming unexpiring.
 - A read grant never sees a write tool, whatever scope the agent requested.
   The radio button on the consent page is the only thing that decides. Refresh
-  requests may narrow scopes, but any scope outside that grant is rejected.
+  requests may narrow scopes; asking for more gets the grant's scopes, and a
+  request with none of them is rejected.
 - A supplied OAuth `resource` must be this server's exact MCP URL, including
   `/mcp`. A different path, origin, query or fragment is rejected at authorization,
   code exchange and refresh. Older clients may omit `resource`.

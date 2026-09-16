@@ -146,8 +146,9 @@ chain or accept a shared proxy identity. No deployed configuration was changed.
 
 OAuth now rejects a supplied resource different from its configured `/mcp` URL
 at authorization, code exchange and refresh; omission stays compatible with
-older clients. Refresh requests with any ungranted scope are rejected rather
-than silently intersected (the previous behavior did not elevate scopes).
+older clients. A refresh asking for scopes beyond the grant is narrowed to the
+grant, as before; one with nothing in the grant is rejected. (This pass first
+rejected any ungranted scope; see "Pre-release review" below.)
 Access tokens now expire at, rather than just after, the exact expiry instant.
 
 Additional tests confirm existing client binding for codes/refresh tokens,
@@ -426,6 +427,11 @@ long-term operational policy rather than silently forgetting deletion barriers.
 
 ## 13. Disappearing messages — conservative per-message expiry enforced
 
+> **Opt-in since the pre-release review:** everything in this section runs only with
+> `WAZAP_RETENTION=1`. Without it, deadlines are neither recorded nor enforced, and
+> starting with history off does not discard earlier caches. Deletion handling in
+> section 12 applies either way. See "Pre-release review" below.
+
 An offline probe first confirmed that an already-expired ephemeral message could
 remain in the live store. Eleven of twelve initial synthetic service regressions
 then failed before implementation; the ordinary-message control passed.
@@ -552,7 +558,8 @@ default account. Synthetic fixtures reproduced these gaps without a real send.
   missing/disabled accounts or newly disabled writes. Send rules no longer fall
   back to cached values. Rejected owned drafts remain available after repair.
 - Error hints say restore/repair from a trusted backup, not delete policy to get
-  past an error. Invalid recipient-rule contents are not echoed. Malformed
+  past an error; a lost policy also names the deliberate reset (delete the marker
+  too, for one default account without send rules). Invalid recipient-rule contents are not echoed. Malformed
   `WAZAP_READ_ONLY` values are rejected rather than silently enabling writes.
 
 The account roster/read access and startup read-only restrictions still require
@@ -590,9 +597,10 @@ also clears pending pages/codes. Invalid persisted token shapes/scopes/expiry
 reset to no grants instead of granting unbounded access. Public issuer settings
 reject credentials and unsupported schemes without echoing malformed URLs.
 
-**Compatibility:** clients must save each returned refresh token and serialize
-refresh operations. Concurrent reuse is indistinguishable from theft and revokes
-the family. New access credentials still require new MCP sessions. The hosted
+**Compatibility:** clients must save each returned refresh token. A consumed
+token is still accepted for 60 seconds from its first rotation, so a concurrent
+refresh or a lost response does not sign the client out; the window is fixed and
+cannot be extended by reuse. Reuse after it revokes the family. New access credentials still require new MCP sessions. The hosted
 clients' real refresh/reconnect behavior is a release check, not proven by these
 synthetic tests. Tests: expanded `test/oauth.test.mjs`, including restart,
 independent families, bounded rotation chains, capacity and corruption.
@@ -603,21 +611,21 @@ Five initial budget regressions failed; separate raw HTTP tests also reproduced
 anonymous initialization with a foreign Origin or attacker-controlled Host.
 
 - MCP POST authentication precedes JSON parsing. Bodies are explicitly capped at
-  100 KiB and compressed bodies are refused. Each exact credential gets 120 POSTs
-  per minute across session resets; 429 includes `Retry-After`. The endpoint's
+  100 KiB and compressed bodies are refused. Each exact credential gets 240 POSTs
+  per minute across session resets (`WAZAP_HTTP_BUDGET`); 429 includes `Retry-After`. The endpoint's
   credential-window map is capped at 1,024 entries, pruning expired entries and
   refusing new ones with 503 rather than growing indefinitely.
 - Session state remains capped at 128 overall, now also at 32 per exact
   credential. Excess sessions first evict that credential's oldest session, so
   one unchanged token cannot consume the entire registry.
-- Actual tool handlers have four in-flight slots per MCP session and sixteen
-  process-wide. Capacity is returned when work settles, even if the caller
+- Actual tool handlers have eight in-flight slots per MCP session and 32
+  process-wide (`WAZAP_MAX_INFLIGHT`, `WAZAP_MAX_INFLIGHT_TOTAL`). Capacity is returned when work settles, even if the caller
   disconnects earlier. HTTP, stdio and private bridges share the tool budget.
 - The listener caps connections at 256, header receipt at ten seconds, body
   receipt at thirty seconds and headers at 16 KiB. SSE/long-running tool response
   time is not confused with request-body receipt time.
-- Anonymous access requires a literal loopback Host at the listener's port and,
-  if provided, the matching HTTP Origin. Raw headers are checked before transport
+- Anonymous access requires a literal loopback Host name (any port, so a mapped
+  container port works) and, if provided, the matching HTTP Origin. Raw headers are checked before transport
   creation and never echoed on refusal. Explicit valid bearer authentication is
   not ambient browser authority and retains its existing host/proxy behavior.
 
@@ -651,6 +659,35 @@ size and cleanup I/O, retain protected backups, and never truncate barriers as a
 space-saving shortcut. Large installations need a separately designed archival
 or indexed-ledger policy, not an arbitrary age limit in this patch.
 
+## Pre-release review
+
+The owner's review of this pass, before 0.21.0, kept its substance and changed
+what hurt ordinary operation. Each item is its own commit with tests.
+
+- **Strict retention is opt-in** (`WAZAP_RETENTION=1`, section 13). Enforcing
+  disappearing-message deadlines, discarding caches when history is off, and
+  clearing the index when a delete arrives while recall is unavailable are
+  product decisions, not fixes; upgrades keep what wazap has seen.
+- **The recall index migrates v2 to v3 in place** (section 13). Invalidating it
+  would have re-embedded ~12k messages on the maintainer's account and lost 695
+  rows with no local history. Accepted risk: a legacy ephemeral row whose history
+  is gone keeps no deadline.
+- **OAuth refresh:** a 60-second reuse window after rotation and scope narrowing
+  instead of rejection (sections 6 and 16).
+- **Budgets** default to 8/32 in-flight tools and 240 POSTs a minute and are
+  configurable; anonymous loopback Host checks ignore the port (section 17).
+- **Docker:** the compose network is pinned and its gateway trusted as the proxy
+  hop; inside the container a host proxy appears as the gateway, not loopback,
+  which was verified on Docker 29 (section 6).
+- **Diagnostics:** error codes (ECONNREFUSED, CERT_*, exit codes, signals) are
+  kept in logs and failure strings, never messages; llama-server boot output is
+  logged until the server is ready.
+- **Models:** lock-release failure no longer fails a verified download, the total
+  deadline scales with model size, `bytes a-b/*` resumes are accepted, and lock
+  errors name the directory.
+- A failed retention cleanup is reported to its waiter once instead of failing
+  every later delete until restart.
+
 ## Remaining limits and release gates
 
 - A shared static token is a shared identity. A caller with both the owner's
@@ -680,7 +717,8 @@ or indexed-ledger policy, not an arbitrary age limit in this patch.
 ## Verification
 
 The scoped local review is complete on the pulled 0.20.2 base. `npm run check`
-passes lint, typecheck and all 1,375 tests (none skipped on this machine). Fresh
+passes lint, typecheck and all 1,375 tests (none skipped on this machine); after
+the pre-release review, 1,391. Fresh
 `npm ci` installations and the full gate were verified in a temporary repository
 copy under Node 22.22.3 and 24.21.0, without replacing the working installation.
 `npm audit --omit=dev --audit-level=high` reported zero vulnerabilities at check
