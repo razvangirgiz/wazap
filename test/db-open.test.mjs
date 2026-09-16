@@ -143,8 +143,8 @@ test("everything written survives close and reopen", () => {
   reopened.close();
 });
 
-test("an online backup is an owner-only, complete, openable copy", async () => {
-  const { db, dir } = openTemp();
+test("an online backup is an owner-only, complete, openable copy, and never lands on the live file", async () => {
+  const { db, dir, path } = openTemp();
   for (let i = 0; i < 50; i++) db.messages.upsert(textMessage(PEER, `K${i}`, T0 + i * 1000, `mesaj ${i}`));
   const destination = join(dir, "backups", "copy.sqlite");
   const pages = await db.backup(destination);
@@ -155,6 +155,8 @@ test("an online backup is an owner-only, complete, openable copy", async () => {
   assert.equal(copy.counts().messages, 50);
   assert.equal(copy.search.text({ query: "mesaj 4", limit: 20 }).items.length, 11);
   copy.close();
+  await assert.rejects(db.backup(path), (err) => err instanceof StorageError && err.code === "INVALID_INPUT");
+  assert.equal(db.counts().messages, 51, "the live file is untouched");
   db.close();
 });
 

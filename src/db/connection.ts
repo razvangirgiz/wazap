@@ -9,7 +9,7 @@
  * of short transactions with `setImmediate` between them.
  */
 import { chmodSync, closeSync, existsSync, mkdirSync, openSync, statSync } from "node:fs";
-import { dirname } from "node:path";
+import { dirname, resolve } from "node:path";
 import { StorageError } from "./errors.js";
 import { MIGRATIONS, SCHEMA_VERSION } from "./schema.js";
 import { sqlite, type DatabaseSync, type SQLInputValue, type StatementSync } from "./sqlite.js";
@@ -322,6 +322,10 @@ export class Connection {
    */
   async backup(destination: string): Promise<number> {
     this.assertOpen();
+    const target = resolve(destination);
+    if ([this.path, `${this.path}-wal`, `${this.path}-shm`].some((file) => resolve(file) === target)) {
+      throw new StorageError("INVALID_INPUT", "A backup cannot overwrite the database it copies.");
+    }
     mkdirSync(dirname(destination), { recursive: true, mode: DIR_MODE });
     closeSync(openSync(destination, "w", FILE_MODE));
     enforceMode(destination, FILE_MODE);
