@@ -13,6 +13,23 @@
  *
  * Not wired into the service yet (F1-a); the service keeps its JSON stores
  * until the import slice switches reads over.
+ *
+ * What the wiring must know (F1-b, F1-d, F1-e):
+ * - Call resume() after every writable open, and unlink files only through
+ *   claimUnlinks() / ackUnlinks().
+ * - waiting() pages on each chat's last_ts, which moves as messages arrive: a
+ *   chat can repeat or be skipped between pages. Treat the cursor as
+ *   best-effort paging, not a snapshot.
+ * - id_high and retracted only grow: a small row per second that lost a row to
+ *   a purge, and one per deleted, retracted or expired message (status
+ *   expiries included). Nothing prunes them.
+ * - A timestamp is stored as given. One far in the future becomes the chat's
+ *   last message until it is corrected; clamping implausible future
+ *   timestamps is the service's job, before upsert.
+ * - retracted makes a message key dead for good: a later upsert with that
+ *   chat, direction and key is stored as a tombstone. F1-e must never delete an
+ *   optimistic send row after a definite failure and retry with the same
+ *   pre-generated key — retry with a fresh key, or keep the row.
  */
 import { Connection, type CheckpointResult, type ConnectionOptions, type ConnectionSettings } from "./connection.js";
 import { StorageError } from "./errors.js";

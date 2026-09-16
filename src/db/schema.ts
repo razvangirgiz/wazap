@@ -122,6 +122,8 @@ CREATE INDEX messages_tombstones ON messages(deleted_at) WHERE deleted_at IS NOT
 -- Every message deleted, retracted or expired, by key and without content.
 -- A purge removes the tombstone row but never this record, so a quote of the
 -- message that arrives later is still scrubbed and the message stays gone.
+-- The key is dead for good: sends (F1-e) must not reuse a pre-generated key
+-- after a definite failure. The table only grows, a row per such message.
 CREATE TABLE retracted(
   key_id TEXT NOT NULL,
   from_me INTEGER NOT NULL,
@@ -210,7 +212,9 @@ CREATE TABLE events(
 CREATE INDEX events_due ON events(state, next_attempt_at);
 CREATE INDEX events_message ON events(message_id) WHERE message_id IS NOT NULL;
 
--- F1-e: idempotent sends. Only the table exists until then.
+-- F1-e: idempotent sends. Only the table exists until then. A key a
+-- retraction or a tombstone used is dead (see retracted): retry a definitely
+-- failed send with a fresh key, or keep its row.
 CREATE TABLE sends(
   draft_id TEXT PRIMARY KEY,
   owner TEXT,
@@ -275,7 +279,8 @@ END;
 
 -- The highest id a second has ever handed out, kept for seconds that lost
 -- rows to a physical delete, so a freed id is never given to another message:
--- nothing that remembered the old id can land on a different one.
+-- nothing that remembered the old id can land on a different one. It only
+-- grows, a row per second that lost a row.
 CREATE TABLE id_high(
   second INTEGER PRIMARY KEY,
   top INTEGER NOT NULL

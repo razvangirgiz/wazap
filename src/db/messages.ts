@@ -914,6 +914,10 @@ export class Messages {
    * mark still covers — the mark names the ask and no newer message has
    * arrived since, or it names no message and nothing arrived after it.
    * Whether the word asks for something stays the caller's judgment.
+   *
+   * The cursor is a chat's last_ts, which moves when a message arrives: a chat
+   * that changes between two pages can appear twice or not at all. Paging is
+   * best-effort, not a snapshot.
    */
   waiting(options: {
     since: number;
