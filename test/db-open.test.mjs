@@ -7,7 +7,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, linkSync, mkdirSync, readFileSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
@@ -158,6 +158,38 @@ test("an online backup is an owner-only, complete, openable copy, and never land
   await assert.rejects(db.backup(path), (err) => err instanceof StorageError && err.code === "INVALID_INPUT");
   assert.equal(db.counts().messages, 51, "the live file is untouched");
   db.close();
+});
+
+test("finding 8: a backup aimed at the live file through a symlink or another case is refused and the live file is untouched", { skip: !posix }, async () => {
+  for (const variant of ["symlink", "case", "hardlink"]) {
+    const { db, path, clock } = openTemp();
+    for (let i = 0; i < 200; i++) db.messages.upsert(textMessage(PEER, `K${i}`, T0 + i * 1000, "x".repeat(500)));
+    db.checkpoint();
+    const before = statSync(path).size;
+    let destination;
+    if (variant === "symlink") {
+      destination = join(dirname(path), "..", "backup-link.sqlite");
+      symlinkSync(path, destination);
+    } else if (variant === "hardlink") {
+      destination = join(dirname(path), "..", "backup-hard.sqlite");
+      linkSync(path, destination);
+    } else {
+      destination = join(dirname(path), "WAZAP.sqlite");
+    }
+    const sameFile = existsSync(destination) && statSync(destination).ino === statSync(path).ino;
+    if (sameFile) {
+      await assert.rejects(db.backup(destination), (err) => err instanceof StorageError && err.code === "INVALID_INPUT", variant);
+    } else {
+      await db.backup(destination);
+    }
+    assert.equal(statSync(path).size, before, `${variant}: the live file keeps its size`);
+    db.close();
+    const again = AccountDb.open(path, { now: () => clock.now });
+    assert.equal(again.counts().messages, 200, variant);
+    assert.equal(again.integrityCheck().ok, true, variant);
+    again.close();
+    if (variant !== "case") assert.ok(sameFile, `${variant} names the live file on every disk`);
+  }
 });
 
 test("a closed database refuses with CLOSED rather than a native error", () => {

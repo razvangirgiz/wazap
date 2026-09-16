@@ -8,8 +8,9 @@
  * `write()` takes a synchronous function, and a long operation is a sequence
  * of short transactions with `setImmediate` between them.
  */
-import { chmodSync, closeSync, existsSync, mkdirSync, openSync, statSync } from "node:fs";
-import { dirname, resolve } from "node:path";
+import { randomBytes } from "node:crypto";
+import { chmodSync, closeSync, existsSync, fsyncSync, mkdirSync, openSync, renameSync, rmSync, statSync } from "node:fs";
+import { basename, dirname, join, resolve } from "node:path";
 import { StorageError } from "./errors.js";
 import { MIGRATIONS, SCHEMA_VERSION } from "./schema.js";
 import { sqlite, type DatabaseSync, type SQLInputValue, type StatementSync } from "./sqlite.js";
@@ -319,17 +320,45 @@ export class Connection {
   /**
    * An online copy of the whole database to `destination`, taken while the
    * account keeps working. The copy is owner-only like the original.
+   *
+   * A destination that is the live database under any name — another case on
+   * a case-insensitive disk, a symlink, a hard link — is refused by comparing
+   * the files themselves, not their paths. The copy is written to a new
+   * exclusive temp file beside the destination and renamed over it only when
+   * complete, so even a missed alias could never truncate the live file.
    */
   async backup(destination: string): Promise<number> {
     this.assertOpen();
     const target = resolve(destination);
-    if ([this.path, `${this.path}-wal`, `${this.path}-shm`].some((file) => resolve(file) === target)) {
-      throw new StorageError("INVALID_INPUT", "A backup cannot overwrite the database it copies.");
+    if (existsSync(target)) {
+      const aimed = statSync(target);
+      for (const live of [this.path, `${this.path}-wal`, `${this.path}-shm`]) {
+        if (!existsSync(live)) continue;
+        const own = statSync(live);
+        if (own.dev === aimed.dev && own.ino === aimed.ino) {
+          throw new StorageError("INVALID_INPUT", "A backup cannot overwrite the database it copies.");
+        }
+      }
     }
-    mkdirSync(dirname(destination), { recursive: true, mode: DIR_MODE });
-    closeSync(openSync(destination, "w", FILE_MODE));
-    enforceMode(destination, FILE_MODE);
-    return sqlite().backup(this.db, destination);
+    const dir = dirname(target);
+    mkdirSync(dir, { recursive: true, mode: DIR_MODE });
+    const temp = join(dir, `.${basename(target)}.${process.pid}.${randomBytes(6).toString("hex")}.tmp`);
+    closeSync(openSync(temp, "wx", FILE_MODE));
+    try {
+      enforceMode(temp, FILE_MODE);
+      const pages = await sqlite().backup(this.db, temp);
+      const fd = openSync(temp, "r");
+      try {
+        fsyncSync(fd);
+      } finally {
+        closeSync(fd);
+      }
+      renameSync(temp, target);
+      return pages;
+    } catch (err) {
+      rmSync(temp, { force: true });
+      throw err;
+    }
   }
 
   close(): void {
