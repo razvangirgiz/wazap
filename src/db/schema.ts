@@ -16,6 +16,8 @@
  *   stays a tombstone;
  * - the full-text index and the embeddings follow text and transcript, and a
  *   tombstone takes its embedding, reactions, votes and receipts with it;
+ * - (v3) a voice note leaves the transcription queue once it has a transcript,
+ *   and with its tombstone or its row;
  * - chats.last_* names the newest message a reader may see — not a tombstone,
  *   not under the clear barrier — after any insert, tombstone, delete or move;
  * - a file a removed media row pointed at is queued for unlinking in the same
@@ -534,10 +536,50 @@ BEGIN
 END;
 `;
 
+// ---- v3 (F1-f): the voice-note transcription queue -----------------------
+// Additive, and self-contained: one table, its index and two triggers. No
+// backfill: a file upgraded from an earlier version starts with an empty
+// queue, so nothing stored before the upgrade is transcribed on its own.
+const V3 = `
+-- Incoming voice notes the service transcribes on its own, one at a time, and
+-- the ones it gave up on. A row with failed_at NULL is queued: attempts counts
+-- the runs started (a run counts when it starts, so a note that takes the
+-- process down with it cannot loop), next_at is the earliest it may run again,
+-- started_at marks the run under way (one a restart finds is recovered). A row
+-- with failed_at set is no longer queued: it records why, so the note is not
+-- queued again. error is a short reason and never content. A transcript
+-- stored for the message, a tombstone or a delete takes the row with it.
+CREATE TABLE transcribe_queue(
+  message_id INTEGER PRIMARY KEY REFERENCES messages(id) ON DELETE CASCADE,
+  queued_at INTEGER NOT NULL,
+  attempts INTEGER NOT NULL DEFAULT 0,
+  next_at INTEGER NOT NULL,
+  started_at INTEGER,
+  error TEXT,
+  error_at INTEGER,
+  failed_at INTEGER
+) STRICT;
+CREATE INDEX transcribe_queue_waiting ON transcribe_queue(next_at) WHERE failed_at IS NULL;
+
+CREATE TRIGGER messages_transcribed AFTER UPDATE OF transcript ON messages
+WHEN new.transcript IS NOT NULL
+BEGIN
+  DELETE FROM transcribe_queue WHERE message_id = new.id;
+END;
+
+CREATE TRIGGER messages_tombstone_transcribe AFTER UPDATE OF deleted_at ON messages
+WHEN old.deleted_at IS NULL AND new.deleted_at IS NOT NULL
+BEGIN
+  DELETE FROM transcribe_queue WHERE message_id = new.id;
+END;
+`;
+// ---- end v3 ----------------------------------------------------------------
+
 /** Every migration, in order. The schema version a build knows is the last one's. */
 export const MIGRATIONS: readonly Migration[] = [
   { version: 1, sql: V1 },
   { version: 2, sql: V2 },
+  { version: 3, sql: V3 },
 ];
 
 export const SCHEMA_VERSION = MIGRATIONS[MIGRATIONS.length - 1]!.version;

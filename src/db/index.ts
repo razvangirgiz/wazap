@@ -31,6 +31,10 @@
  *   chat, direction and key is stored as a tombstone. sends therefore never
  *   stores a message before WhatsApp took it, and never retries a key once it
  *   reached the socket (see sends.ts).
+ * - transcripts is the durable voice-note queue (F1-f). A note on it with no
+ *   transcript yet is still being worked on: transcripts.state(sid) says
+ *   queued, failed (given up, with a reason) or null (not queued — done, never
+ *   eligible, or gone). The row leaves once setTranscript stores words.
  */
 import { Connection, type CheckpointResult, type ConnectionOptions, type ConnectionSettings } from "./connection.js";
 import { StorageError } from "./errors.js";
@@ -39,6 +43,7 @@ import { Merger } from "./merge.js";
 import { Messages, type ScrubQuote } from "./messages.js";
 import { Search } from "./search.js";
 import { Sends } from "./sends.js";
+import { Transcripts } from "./transcripts.js";
 import type { BulkDeleteResult, Counts, MergeReport } from "./types.js";
 import { Vectors } from "./vectors.js";
 
@@ -52,6 +57,7 @@ export { contentHash, hybridTokens, hybridWords, int8Similarity, quantizeVector,
 export { isSqliteExperimentalWarning } from "./sqlite.js";
 export type { ScrubQuote } from "./messages.js";
 export type { NewDraft, SendRecord, SendState, Sends } from "./sends.js";
+export type { TranscribeItem, TranscribeQueueStats, TranscribeState } from "./transcripts.js";
 export type { CheckpointResult, ConnectionOptions, ConnectionSettings } from "./connection.js";
 export type {
   BacklogItem,
@@ -77,6 +83,7 @@ export class AccountDb {
   readonly search: Search;
   readonly vectors: Vectors;
   readonly sends: Sends;
+  readonly transcripts: Transcripts;
   private readonly merger: Merger;
 
   private constructor(private readonly connection: Connection, options: AccountDbOptions) {
@@ -85,6 +92,7 @@ export class AccountDb {
     this.search = new Search(connection, this.identity, this.messages);
     this.vectors = new Vectors(connection, this.identity, this.messages, this.search);
     this.sends = new Sends(connection);
+    this.transcripts = new Transcripts(connection, this.messages);
     this.merger = new Merger(connection, this.identity, this.messages);
   }
 
