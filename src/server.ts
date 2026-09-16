@@ -263,10 +263,11 @@ export async function startHttpEndpoint(hub: AccountSource, config: Config, endp
     if (openRead) {
       // Anonymous loopback access is not ambient browser authority. Use raw
       // Host/Origin, never forwarded headers, to reject DNS rebinding and CSRF.
+      // A loopback name is what defeats rebinding; the port may differ from the
+      // socket's when a container or forwarder maps it (127.0.0.1:9000 -> 8766).
       const host = req.headers.host?.toLowerCase();
-      const port = req.socket.localPort;
       const localHosts = ["localhost", "127.0.0.1", "[::1]"];
-      const allowed = localHosts.some((name) => host === `${name}:${port}` || (port === 80 && host === name));
+      const allowed = host !== undefined && localHosts.includes(host.replace(/:\d{1,5}$/, ""));
       if (!allowed || (req.headers.origin !== undefined && req.headers.origin !== `http://${host}`)) {
         res.status(403).json({ error: "Anonymous MCP requires a loopback Host and same-origin requests. Use a bearer token." });
         return;

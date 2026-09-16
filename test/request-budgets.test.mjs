@@ -70,6 +70,17 @@ for (const headers of [{ origin: "https://attacker.example" }, { host: "attacker
   assert.equal((await call("a", initialize, headers)).status, 200, "explicit bearer authentication is not ambient browser authority");
 });
 
+test("anonymous MCP accepts a loopback Host on a mapped port, but not a lookalike name", async (t) => {
+  const call = await boot(t, true);
+  const initialize = JSON.stringify({ jsonrpc: "2.0", id: 1, method: "initialize", params: {
+    protocolVersion: "2025-03-26", capabilities: {}, clientInfo: { name: "synthetic", version: "1" },
+  } });
+  assert.equal((await call("foreign", initialize, { host: "localhost:9000" })).status, 200);
+  assert.equal((await call("foreign", initialize, { host: "[::1]:9000", origin: "http://[::1]:9000" })).status, 200);
+  assert.equal((await call("foreign", initialize, { host: "localhost.attacker.example:9000" })).status, 403);
+  assert.equal((await call("foreign", initialize, { host: "127.0.0.1:9000", origin: "http://127.0.0.1:9001" })).status, 403);
+});
+
 test("MCP authentication precedes JSON parsing", async (t) => {
   const call = await boot(t);
   assert.equal((await call("foreign", "{SYNTHETIC-SECRET")).status, 401);
