@@ -489,7 +489,14 @@ is missing. `wazap status` runs the three checks — `recall`, `llama-server`,
 under the similarity floor is dropped rather than listed. The index lives at
 `accounts/<id>/recall/` (dir `0700`, files `0600`), holds only what persisted
 history already stores, and tombstones a message out when it is deleted or
-revoked.
+revoked or expires.
+
+Embedding requests refuse redirects, cap replies at 4 MiB and validate vector
+shape and finite values. Provider bodies and decoder stderr are not copied into
+errors. The test-only `WAZAP_EMBED_URL` override is an operator-controlled sink:
+setting it to another machine sends message/query text there. Do not point it at
+an untrusted service; credentials, query strings and fragments in that URL are
+refused, and diagnostics show its host only.
 
 The knobs — `WAZAP_RECALL`, `WAZAP_EMBED_MODEL` (`embeddinggemma-300m` by
 default, `e5-base-multilingual` for an older llama.cpp), `WAZAP_EMBED_BIN`,
@@ -582,6 +589,7 @@ accounts moves into `accounts/default/` the first time a wazap command runs.
 ```
 ~/.wazap/
   accounts.json     which accounts exist, and which is default
+  accounts.json.required  empty marker: missing policy must not reset permissions
   accounts/<id>/
     auth/           WhatsApp credentials — treat this like a password
     media/          downloads from download_media
@@ -754,6 +762,21 @@ The send tools check the rules when a message is drafted and again at
 refused send fails `SEND_BLOCKED` naming the rule that fired; the agent is
 told to tell you, not to retry or route around it.
 
+Saving policy or starting the account hub writes an empty `0600`
+`accounts.json.required` marker. If that known policy disappears, wazap refuses
+unrestricted defaults. Restore the policy from a trusted backup; do not remove
+the marker to bypass the error. Fresh/legacy directories without a marker keep
+their bootstrap behavior. Explicit layout rollback removes the modern registry
+and marker; old flat-layout versions do not enforce per-account rules.
+
+Every write tool checks the current disk policy before preparing work. Corrupt,
+missing, disabled or newly read-only accounts refuse the write without consuming
+an owned draft. Cached rules are not a fallback. Restart is still required to
+change the running account roster or relax startup read-only settings; these
+checks cannot undo an already-started operation. Malformed `WAZAP_READ_ONLY`
+values are refused. Unset global settings still mean writes on; for a durable
+account-level prohibition use `wazap config writes off --account <id>`.
+
 ## HTTP mode
 
 ```bash
@@ -801,6 +824,23 @@ separate drafts, but sharing that token is still sharing an identity: anyone
 holding both that token and the owner's session id can act as that session.
 Draft/confirm is a workflow, not independent proof of human consent; the agent
 can call both tools unless a trusted harness enforces approval.
+
+### Request budgets
+
+MCP POSTs authenticate before JSON parsing, accept at most 100 KiB and refuse
+compressed bodies. Each credential has 120 POSTs/minute across its sessions;
+429 responses include `Retry-After`. The session registry holds at most 128
+sessions overall and 32 per credential, evicting that credential's oldest first.
+Tool work is capped at four concurrent operations per MCP session and sixteen
+across the process, including stdio/bridges. Slots remain held until work settles,
+not merely until a client disconnects. Retry once after pending work completes.
+
+The HTTP listener caps connections at 256, header receipt at ten seconds and
+request-body receipt at thirty seconds; this does not time out legitimate SSE
+streams or long-running tools. Anonymous loopback requests must have a loopback
+Host and, when supplied, a matching Origin; browser rebinding/cross-origin
+requests are refused. Always configure credentials for a proxy/tunnel. These
+bounds are not a DDoS shield or per-tenant fairness guarantee.
 
 ### Host files and remote media
 
@@ -938,8 +978,12 @@ What to know before exposing it:
 - Grants live in `<data-dir>/oauth.json` as hashes. Delete the file to sign
   every agent out at once, running server included; `wazap status` lists who
   holds one. Disconnecting an agent on its side revokes its refresh token and
-  every access token it minted. A refresh token unused for ninety days is
-  dropped.
+  every access token in that grant family. Refresh tokens rotate on every use:
+  clients must save the returned token and serialize refresh calls. Replaying
+  one of the last 32 consumed tokens revokes the family; older tokens are simply
+  invalid. At most eight access tokens per grant remain active. A refresh token
+  unused for ninety days is dropped. Damaged persisted grants require sign-in
+  again rather than becoming unexpiring.
 - A read grant never sees a write tool, whatever scope the agent requested.
   The radio button on the consent page is the only thing that decides. Refresh
   requests may narrow scopes, but any scope outside that grant is rejected.

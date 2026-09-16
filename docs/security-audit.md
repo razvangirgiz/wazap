@@ -506,7 +506,147 @@ own completion/timeout; this is not cancellation of decoder/provider work or
 erasure of provider-side caches. Barrier growth and compaction I/O remain
 operational limits.
 
-## Limits and next review areas
+## 14. Embedding transport — bounded and secret-safe
+
+The local embedding client followed redirects, read unbounded JSON/error bodies,
+and exposed provider messages and decoder stderr. All 23 initial synthetic
+regressions failed. The follow-up also tests health-body disposal and failed-child
+shutdown without starting a real model.
+
+Embedding POSTs and sidecar health probes now refuse redirects. Ignored bodies
+are cancelled; JSON is limited to 4 MiB of actual decoded bytes under the existing
+60-second request deadline. Replies must contain the expected number of vectors,
+with the configured dimensions and finite numeric elements. Invalid/null replies,
+HTTP errors, transport errors and decoder exits produce typed errors without raw
+provider text, URLs or stderr. A failed spawn clears the child reference so stop
+cannot wait forever for an exit from a process that never started.
+
+The test-only `WAZAP_EMBED_URL` override rejects userinfo, query and fragment, and
+readiness displays its host only. Like transcription/webhooks, this is a trusted
+operator sink, not a public-media URL: private endpoints remain usable. Selecting
+a remote override sends text there. The default sidecar binds literal loopback;
+this does not sandbox local processes or defend against a hostile local port
+owner. Tests: `test/embedding-security.test.mjs` and the existing sidecar/recall
+suites. No real model, credentials or WhatsApp data were used.
+
+## 15. Account policy loss — fail closed
+
+Previously `AccountHub.recordOnDisk` swallowed parse/read errors and send handlers
+fell back to cached rules. Removing accounts.json could also synthesize an open
+default account. Synthetic fixtures reproduced these gaps without a real send.
+
+- Saving policy seals its existence first with an empty, private
+  `accounts.json.required` marker. The hub also seals legacy policy at startup,
+  without rewriting its bytes or permissions. Missing marked policy is an error,
+  not fresh-install defaults; migration cannot silently recreate it.
+- Fresh or legacy unmarked directories retain their bootstrap behavior. The
+  marker cannot prove a file existed before this version observed it. Explicit
+  layout rollback removes the modern registry and marker; an old flat-layout
+  runtime does not enforce per-account controls.
+- Write admission reads disk policy before preparation and refuses corruption,
+  missing/disabled accounts or newly disabled writes. Send rules no longer fall
+  back to cached values. Rejected owned drafts remain available after repair.
+- Error hints say restore/repair from a trusted backup, not delete policy to get
+  past an error. Invalid recipient-rule contents are not echoed. Malformed
+  `WAZAP_READ_ONLY` values are rejected rather than silently enabling writes.
+
+The account roster/read access and startup read-only restrictions still require
+a restart to change. This is next-call write admission, not cancellation of
+already-started work, transactional configuration updates or a per-client ACL.
+The marker is not tamper protection against an operator who can remove both
+files. It does not seal external environment variables or command-line flags:
+unset global read-only settings still mean writes on, as before. For a durable
+account restriction, use `wazap config writes off --account <id>`. Tests: `test/policy-state.test.mjs` plus account, migration and send-rule
+regressions.
+
+## 16. OAuth lifecycle — rotation, revocation and bounded state
+
+Six initial regressions exposed reusable refresh tokens, malformed persisted
+access entries becoming unexpiring, and registration resurrecting grants after
+`oauth.json` was deleted before another request noticed its absence.
+
+Refresh tokens are now single-use and rotate. A family identifier ties all
+its generations and access tokens together. Reuse of a retained consumed token
+revokes that family only, even when another grant uses the same client ID.
+Revoking a retained old refresh token also revokes the family. Narrowing one
+access token does not broaden or destroy the original consent grant's scope.
+Legacy unrotated grants migrate on their next refresh; no raw bearer token is
+persisted.
+
+At most eight access tokens and 32 consumed refresh hashes are kept per family;
+pruned tokens remain invalid, but their family can no longer be identified for
+replay-triggered revocation. Global allocation caps are 256 registered clients,
+256 active grants, 128 pending consent pages and 128 authorization codes. Existing
+legacy state is not revoked merely to meet an allocation cap. Idle refresh grants
+expire after 90 days; codes/pages expire at the exact ten-minute boundary.
+
+Registration and client lookup honor sign-out before writing state, and sign-out
+also clears pending pages/codes. Invalid persisted token shapes/scopes/expiry
+reset to no grants instead of granting unbounded access. Public issuer settings
+reject credentials and unsupported schemes without echoing malformed URLs.
+
+**Compatibility:** clients must save each returned refresh token and serialize
+refresh operations. Concurrent reuse is indistinguishable from theft and revokes
+the family. New access credentials still require new MCP sessions. The hosted
+clients' real refresh/reconnect behavior is a release check, not proven by these
+synthetic tests. Tests: expanded `test/oauth.test.mjs`, including restart,
+independent families, bounded rotation chains, capacity and corruption.
+
+## 17. Request/session budgets and anonymous browser requests
+
+Five initial budget regressions failed; separate raw HTTP tests also reproduced
+anonymous initialization with a foreign Origin or attacker-controlled Host.
+
+- MCP POST authentication precedes JSON parsing. Bodies are explicitly capped at
+  100 KiB and compressed bodies are refused. Each exact credential gets 120 POSTs
+  per minute across session resets; 429 includes `Retry-After`. The endpoint's
+  credential-window map is capped at 1,024 entries, pruning expired entries and
+  refusing new ones with 503 rather than growing indefinitely.
+- Session state remains capped at 128 overall, now also at 32 per exact
+  credential. Excess sessions first evict that credential's oldest session, so
+  one unchanged token cannot consume the entire registry.
+- Actual tool handlers have four in-flight slots per MCP session and sixteen
+  process-wide. Capacity is returned when work settles, even if the caller
+  disconnects earlier. HTTP, stdio and private bridges share the tool budget.
+- The listener caps connections at 256, header receipt at ten seconds, body
+  receipt at thirty seconds and headers at 16 KiB. SSE/long-running tool response
+  time is not confused with request-body receipt time.
+- Anonymous access requires a literal loopback Host at the listener's port and,
+  if provided, the matching HTTP Origin. Raw headers are checked before transport
+  creation and never echoed on refusal. Explicit valid bearer authentication is
+  not ambient browser authority and retains its existing host/proxy behavior.
+
+These are bounded resource controls, not DDoS protection, fair scheduling or
+multi-tenant isolation. Credential rotation creates a different credential;
+anonymous callers and clients sharing a token share budgets. Anonymous access
+is still not authentication: a proxy can rewrite headers, and non-browser callers
+can set them. Always configure credentials for proxies/tunnels. Tests:
+`test/request-budgets.test.mjs`, session isolation and existing daemon lifecycle
+coverage. `src/http-budget.ts` keeps admission bookkeeping out of the endpoint.
+
+## 18. Retention cost and small decomposition
+
+`src/history-records.ts` extracts the history-version scan from the service. The
+observer still sees every version before deduplication, so a stripped edit cannot
+hide a prior deadline; tombstones stay independent of record order. Existing
+service regressions characterize the extraction, with focused parser tests added.
+
+Cleanup now groups deletion IDs by history file once, rather than remapping every
+ID for every file. Existing tombstone timestamps are preserved, avoiding needless
+file replacement just because the wall clock advanced. A deterministic 20-file,
+200-barrier regression checks 200 path mappings instead of 4,000 and verifies
+unchanged files retain their inode. Invalid internal deadlines fail closed rather
+than arming an endless timer. Tests: `test/history-records.test.mjs`.
+
+No database, new job framework or wholesale service rewrite was introduced.
+Barriers still grow intentionally: evicting them without a replay policy would
+restore deleted data. Cleanup still reads current history and can compact the
+index; this is not a production-scale throughput claim. Monitor ledger/history
+size and cleanup I/O, retain protected backups, and never truncate barriers as a
+space-saving shortcut. Large installations need a separately designed archival
+or indexed-ledger policy, not an arbitrary age limit in this patch.
+
+## Remaining limits and release gates
 
 - A shared static token is a shared identity. A caller with both the owner's
   credential and session id can impersonate that session. Session-scoped drafts
@@ -517,36 +657,54 @@ operational limits.
   to call both tools can perform both; stronger approval requires a trusted UI
   or harness outside incoming message content.
 - Validate real proxy/tunnel deployments and sanitized header chains separately.
-  Continue reviewing request/session abuse limits, refresh-token lifecycle,
-  policy-file corruption/removal behavior, live disappearing-message protocol
-  variants/keep-in-chat semantics and retention compaction costs.
+  Exercise actual hosted-client token rotation/reconnection and live disappearing
+  metadata before release. Keep-in-chat exceptions and inference from unmarked
+  chat-default messages remain deliberately unsupported, as described above.
 - Local stdio and private bridges are trusted with the filesystem. This pass does
   not sandbox them or address all local file replacement/symlink races.
-- This pass covers the identified webhook, preview and transcription paths, not
-  every dependency, reverse-proxy log or decoder resource budget. Local embedding
-  service traffic needs its own review. Model downloads now have byte/time bounds
+- This pass covers the identified webhook, preview, transcription and embedding
+  paths, not every dependency, reverse-proxy log or decoder resource budget.
+  Model downloads now have byte/time bounds
   and cooperative same-host exclusion, but hostile-local filesystem races and
   distributed coordination remain outside the guarantees.
   Existing historical logs/persisted diagnostics are not retroactively scrubbed.
-- Further decomposition of `src/whatsapp.ts` should follow lifecycle, history and
-  outgoing-operation boundaries, after characterization tests, not a wholesale
-  rewrite.
+- The service is still large. The scoped extraction is complete; additional
+  lifecycle/outgoing refactoring is optional maintenance, not a reason to rewrite
+  tested behavior during this security pass.
 
 ## Verification
 
-`npm run check` passed on the pulled 0.20.2 base after the expiry follow-up:
-lint, typecheck and all 1,320 tests (none skipped on this machine), including the
-controlled-preview and concurrent-download follow-ups. New coverage lives in
+The scoped local review is complete on the pulled 0.20.2 base. `npm run check`
+passes lint, typecheck and all 1,375 tests (none skipped on this machine). Fresh
+`npm ci` installations and the full gate were verified in a temporary repository
+copy under Node 22.22.3 and 24.21.0, without replacing the working installation.
+`npm audit --omit=dev --audit-level=high` reported zero vulnerabilities at check
+time. Node 24's npm also emitted install-script allowlist notices for Baileys,
+esbuild, fsevents and protobufjs; installation and checks still succeeded. These
+notices are not vulnerability findings and do not justify blindly approving
+future dependency scripts.
+
+`npm pack --dry-run --json` was checked for the new runtime modules and absence of
+private state, `.env`, test fixtures and tickets. It did not publish a package. New coverage lives in
 `test/message-retention.test.mjs`, `test/message-retention-state.test.mjs`,
 `test/ephemeral-retention.test.mjs`, `test/message-expiry.test.mjs`,
 `test/model-download-lock.test.mjs`, `test/model-download.test.mjs`,
-`test/link-preview.test.mjs`,
-`test/network-sinks.test.mjs` and `test/preview-security.test.mjs`, alongside
+`test/link-preview.test.mjs`, `test/embedding-security.test.mjs`,
+`test/policy-state.test.mjs`, `test/request-budgets.test.mjs`,
+`test/history-records.test.mjs`, `test/network-sinks.test.mjs` and
+`test/preview-security.test.mjs`, alongside
 the previous account, OAuth, proxy, log, media and session tests. Real ffmpeg
 fixtures are conditional on its availability in other environments.
 These tests do not validate the real WhatsApp network, live public DNS behavior,
 every hosted MCP client's reconnection behavior or a Windows deployment.
 
-No release or deployment has been performed. The pre-existing `.gitignore`
+Release validation still needs the actual proxy/tunnel to reject spoofed
+forwarding headers, enforce credentials and handle the deployed streaming/timeouts;
+and the actual hosted clients to retain rotated refresh tokens and reinitialize
+sessions. Run that smoke test with a dedicated synthetic WhatsApp account, not
+private conversations. It was not run here because live WhatsApp/public listeners
+and deployment were outside the authorized test scope.
+
+No push, release or deployment has been performed. The pre-existing `.gitignore`
 change is untouched. This report is under `docs/` because `tickets/` is ignored
 in this working tree; the first-pass ticket remains only a local artifact.
