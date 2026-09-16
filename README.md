@@ -1249,8 +1249,7 @@ delivery never stops WhatsApp or MCP.
 
 Events wait in an outbox inside the account database, written in the same
 transaction as the message they announce, so a restart or a crash loses none.
-They are posted one at a time per account, oldest first, each POST bounded by
-10 seconds. A timeout, an unreachable URL, or a `408`, `425`, `429` or `5xx` is
+They are posted one POST at a time per account, each bounded by 10 seconds. A timeout, an unreachable URL, or a `408`, `425`, `429` or `5xx` is
 retried after 1 s, 5 s, 30 s and 2 min, then every 5 min, and one last time 24
 hours after the event; then it has failed. A new event, or a POST that gets
 through, retries at once every waiting event last tried 30 s ago or more, so a
@@ -1319,11 +1318,13 @@ finish within the 60 seconds. `ts` is the original local
 time with a numeric offset, kept for consumers already reading it, and
 `timestamp` is the same instant in UTC.
 
-Events arrive in the order the account queued them: nothing is posted while an
-older event waits for its transcript or its next retry. That is the order
-WhatsApp delivered the messages in, which a late or retried delivery on its
-side can make differ from the order they were written, so order by `timestamp`
-when it matters.
+Within a chat, events arrive in the order wazap queued them: nothing of a chat
+is posted while an older event of that chat waits for its transcript or its
+next retry. Across chats there is no order: a chat whose event is retried, or
+a voice note waiting for its words, holds back no other chat. `connection`
+events keep their own order. Delivery is at least once, so dedupe on
+`message_id`, and order by `timestamp` when it matters, since WhatsApp itself
+can deliver a message late.
 
 A message another person sent:
 

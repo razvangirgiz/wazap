@@ -11,6 +11,9 @@
  *
  * A `sending` row is the POST in flight, or one a crash interrupted: claim()
  * takes it again, so a receiver may see an event twice but never loses one.
+ *
+ * Every event is in a lane — its chat, or the account's connection — and only
+ * the oldest open event of each lane may be posted (laneHeads).
  */
 import type { Connection } from "./connection.js";
 import { StorageError } from "./errors.js";
@@ -19,6 +22,8 @@ export type EventState = "pending" | "sending" | "delivered" | "failed" | "cance
 
 export interface EventInput {
   kind: string;
+  /** Events of one lane are posted in the order they were queued: `chat:<chat id>` or `connection`. */
+  lane: string;
   /** The message a message event is about; null for an event about the account. */
   messageId: number | null;
   /** What the dispatcher cannot read back from the message row, as JSON. */
@@ -32,6 +37,7 @@ export interface EventInput {
 export interface EventRecord {
   seq: number;
   kind: string;
+  lane: string;
   messageId: number | null;
   payload: string;
   createdAt: number;
@@ -67,6 +73,7 @@ export interface EventStats {
 interface EventRow {
   seq: number;
   kind: string;
+  lane: string;
   message_id: number | null;
   payload: string;
   created_at: number;
@@ -85,6 +92,7 @@ function eventFromRow(row: EventRow): EventRecord {
   return {
     seq: row.seq,
     kind: row.kind,
+    lane: row.lane,
     messageId: row.message_id,
     payload: row.payload,
     createdAt: row.created_at,
@@ -108,15 +116,16 @@ export class Events {
 
   /** Adds an event behind every other; joins the caller's transaction, so it commits with the message it is about. */
   enqueue(input: EventInput): number {
-    if (!input.kind) throw new StorageError("INVALID_INPUT", "An event needs a kind.");
+    if (!input.kind || !input.lane) throw new StorageError("INVALID_INPUT", "An event needs a kind and a lane.");
     const created = instant(input.createdAt, "createdAt");
     const ready = instant(input.readyAt ?? created, "readyAt");
     return this.c.write(
       () =>
         this.c.get<{ seq: number }>(
-          `INSERT INTO events(kind, message_id, payload, created_at, ready_at, updated_at)
-           VALUES (?, ?, ?, ?, ?, ?) RETURNING seq`,
+          `INSERT INTO events(kind, lane, message_id, payload, created_at, ready_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?) RETURNING seq`,
           input.kind,
+          input.lane,
           input.messageId,
           input.payload,
           created,
@@ -136,10 +145,21 @@ export class Events {
     return row === undefined ? null : eventFromRow(row);
   }
 
-  /** The oldest event still to post: every other waits behind it. */
+  /** The oldest event still to post, in any lane. */
   head(): EventRecord | null {
     const row = this.c.get<EventRow>(`SELECT * FROM events INDEXED BY events_open WHERE ${OPEN} ORDER BY seq LIMIT 1`);
     return row === undefined ? null : eventFromRow(row);
+  }
+
+  /** The oldest open event of every lane, oldest first: the only events that may be posted next. */
+  laneHeads(): EventRecord[] {
+    return this.c
+      .all<EventRow>(
+        `SELECT * FROM events WHERE seq IN (
+           SELECT min(seq) FROM events INDEXED BY events_lane WHERE ${OPEN} GROUP BY lane)
+         ORDER BY seq`
+      )
+      .map(eventFromRow);
   }
 
   /** Marks the POST as started before it is sent, so a crash during it leaves a row that is sent again. */

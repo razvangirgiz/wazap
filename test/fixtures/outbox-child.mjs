@@ -11,7 +11,7 @@ const db = AccountDb.open(path);
 if (mode === "enqueue") {
   db.transaction(() => {
     const stored = db.messages.upsert({ chatJid: chat, keyId: key, fromMe: false, ts: at, type: "text", text: "before the crash" });
-    db.events.enqueue({ kind: "message_received", messageId: stored.id, payload: "{}", createdAt: Date.now() });
+    db.events.enqueue({ kind: "message_received", lane: "chat:1", messageId: stored.id, payload: "{}", createdAt: Date.now() });
   });
   process.kill(process.pid, "SIGKILL");
 }

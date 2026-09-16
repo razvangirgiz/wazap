@@ -14,18 +14,20 @@ import { fileURLToPath } from "node:url";
 
 import { AccountDb } from "../dist/db/index.js";
 import {
+  CONNECTION_LANE,
   OUTBOX_GIVE_UP_MS,
   OUTBOX_RETRY_DELAYS_MS,
   OUTBOX_RETRY_EVERY_MS,
   WEBHOOK_TRANSCRIPT_WAIT_MS,
   WebhookOutbox,
+  chatLane,
   deliveryOf,
   readWebhookDelivery,
   retryDelay,
   undeliveredFailure,
 } from "../dist/webhook-outbox.js";
 import { WebhookSink } from "../dist/webhook.js";
-import { PEER, T0, openTemp, sid, textMessage } from "./db-fixtures.mjs";
+import { GROUP, PEER, T0, openTemp, sid, textMessage } from "./db-fixtures.mjs";
 import { waitFor } from "./helpers.mjs";
 
 const SECRET = "outbox-test-secret";
@@ -80,18 +82,20 @@ function harness(t, { env = readyEnv(), post = answering(204), awaiting = () => 
   return { db, path, clock, sink, outbox, post, logs, run };
 }
 
-/** A stored message and its event, in one transaction, the way the service writes them. */
-function messageEvent(h, key, text = `text ${key}`, { kind = "message_received", readyAt, ts = T0, extra = {} } = {}) {
+/** A stored message and its event, in one transaction and in its chat's lane, the way the service writes them. */
+function messageEvent(h, key, text = `text ${key}`, { kind = "message_received", readyAt, ts = T0, extra = {}, chat = PEER } = {}) {
   return h.db.transaction(() => {
-    const stored = h.db.messages.upsert(textMessage(PEER, key, ts, text, extra));
-    const seq = h.db.events.enqueue({ kind, messageId: stored.id, payload: "{}", createdAt: h.clock.now, readyAt });
-    return { seq, sid: sid(false, PEER, key) };
+    const stored = h.db.messages.upsert(textMessage(chat, key, ts, text, extra));
+    const lane = chatLane(h.db.identity.chat(chat).id);
+    const seq = h.db.events.enqueue({ kind, lane, messageId: stored.id, payload: "{}", createdAt: h.clock.now, readyAt });
+    return { seq, sid: sid(false, chat, key) };
   });
 }
 
 function connectionEvent(h, status = "linked") {
   return h.db.events.enqueue({
     kind: "connection",
+    lane: CONNECTION_LANE,
     messageId: null,
     payload: JSON.stringify({ event: "connection", status }),
     createdAt: h.clock.now,
@@ -125,22 +129,70 @@ test("events go out in the order they were queued, one POST at a time", async (t
   for (const seq of seqs) assert.equal(state(h, seq).state, "delivered");
 });
 
-test("an event being retried holds back every event behind it, so none overtakes it", async (t) => {
-  const h = harness(t, { post: answering(503, 204) });
-  const first = messageEvent(h, "FIRST");
-  const second = messageEvent(h, "SECOND");
+test("an event being retried holds back the events of its own chat, and no other chat's", async (t) => {
+  const post = async (_url, init) => {
+    const body = JSON.parse(init.body);
+    post.bodies.push(body);
+    return new Response(null, { status: body.message_id?.endsWith("POISON") && post.poisoned ? 500 : 204 });
+  };
+  post.bodies = [];
+  post.poisoned = true;
+  const h = harness(t, { post });
+  const t0 = h.clock.now;
+  const poison = messageEvent(h, "POISON");
+  const after = messageEvent(h, "SAME_CHAT");
+  h.clock.now += 1_000;
+  const other = messageEvent(h, "B1", "vreau o programare", { chat: GROUP });
+  const linked = connectionEvent(h);
   await h.run();
-  assert.deepEqual(h.post.bodies.map((body) => body.message_id), [first.sid]);
-  assert.equal(state(h, second.seq).attempts, 0, "the second event waits behind the first");
+  assert.deepEqual(
+    h.post.bodies.map((body) => body.message_id ?? body.status),
+    [poison.sid, other.sid, "linked"],
+    "the other chat and the connection went out a second after the failure, not after its retries"
+  );
+  assert.equal(state(h, after.seq).attempts, 0, "the same chat waits behind its failing event");
+  assert.equal(state(h, other.seq).updatedAt - t0, 1_000);
+
+  post.poisoned = false;
+  h.clock.now = state(h, poison.seq).nextAttemptAt;
+  await h.run();
+  assert.deepEqual(h.post.bodies.slice(-2).map((body) => body.message_id), [poison.sid, after.sid], "the chat keeps its order");
+  for (const event of [poison, after, other]) assert.equal(state(h, event.seq).state, "delivered");
+  assert.equal(state(h, linked).state, "delivered");
+});
+
+test("a voice note waiting for its transcript holds back only its own chat, and a POST that gets through brings the other chats' retries forward", async (t) => {
+  let up = false;
+  const post = async (_url, init) => {
+    const body = JSON.parse(init.body);
+    post.bodies.push(body);
+    return new Response(null, { status: up ? 204 : 503 });
+  };
+  post.bodies = [];
+  const h = harness(t, { post, awaiting: () => true });
+  const voice = messageEvent(h, "VOICE", "[voice message · 0:06]", { readyAt: h.clock.now + WEBHOOK_TRANSCRIPT_WAIT_MS });
+  const text = messageEvent(h, "AFTER_VOICE");
+  const group = messageEvent(h, "G1", "în grup", { chat: GROUP });
+  await h.run();
+  assert.deepEqual(h.post.bodies.map((body) => body.message_id), [group.sid], "the group did not wait for the voice note");
+  assert.equal(state(h, text.seq).attempts, 0, "the text after the voice note waits for it");
+
+  // The group's event is in its 5-minute retries when the receiver comes back.
+  for (let i = 0; i < 4; i++) {
+    h.clock.now = state(h, group.seq).nextAttemptAt;
+    await h.run();
+  }
+  assert.ok(state(h, group.seq).nextAttemptAt - h.clock.now >= 2 * 60_000);
+  up = true;
+  h.clock.now += 60_000;
+  const third = messageEvent(h, "C1", "altă conversație", { chat: "40700000009@s.whatsapp.net" });
+  // A kick, not a nudge: only the delivery of the new chat's event can bring the rest forward.
   h.outbox.kick();
   await h.outbox.idle();
-  assert.equal(h.post.bodies.length, 1, "nothing is posted before the first event's retry is due");
-
-  h.clock.now += 1_000;
-  await h.run();
-  assert.deepEqual(h.post.bodies.map((body) => body.message_id), [first.sid, first.sid, second.sid]);
-  assert.equal(state(h, first.seq).state, "delivered");
-  assert.equal(state(h, second.seq).state, "delivered");
+  for (const event of [third, group, voice, text]) {
+    assert.equal(state(h, event.seq).state, "delivered", event.sid);
+    assert.equal(state(h, event.seq).updatedAt, h.clock.now, `${event.sid} went out at once`);
+  }
 });
 
 test("a retryable failure is tried again after 1 s, 5 s, 30 s and 2 min, then every 5 min", async (t) => {
@@ -572,7 +624,7 @@ test("an event whose POST a crash cut short is posted again: once to a receiver 
   seeded.transaction(() => {
     const stored = seeded.messages.upsert(textMessage(PEER, "MIDPOST", T0, "in flight when the server died"));
     // The child posts on the real clock, so the event is created on it too.
-    seeded.events.enqueue({ kind: "message_received", messageId: stored.id, payload: "{}", createdAt: Date.now() });
+    seeded.events.enqueue({ kind: "message_received", lane: "chat:1", messageId: stored.id, payload: "{}", createdAt: Date.now() });
   });
   seeded.close();
 

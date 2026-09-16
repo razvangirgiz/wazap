@@ -9,8 +9,10 @@
  * - The body of a message event is built when it is posted, from the message
  *   as it is then: an edit or a transcript that landed meanwhile goes out with
  *   it, and a message deleted, expired or cleared first is not posted at all.
- * - Order: nothing is posted while an older event waits, whether for its
- *   transcript (at most until ready_at) or for its next retry.
+ * - Order is per chat: an event is posted only once every older event of its
+ *   chat is delivered, failed or cancelled, and connection events keep their
+ *   own order. An event waiting for its transcript or its next retry holds
+ *   back its own chat, never another. Still one POST at a time per account.
  * - Retries: a timeout, an unreachable host, 408, 425, 429 or 5xx is tried
  *   again after 1 s, 5 s, 30 s and 2 min, then every 5 min, and one last time
  *   24 h after the event was created; then it has failed. Any other 4xx fails
@@ -62,6 +64,14 @@ const FAULT_RETRY_MS = 5_000;
 const STEPS_PER_TURN = 64;
 
 const MESSAGE_EVENTS: ReadonlySet<string> = new Set(["message_received", "message_sent"]);
+
+/** The lane connection events are posted in, in order, apart from every chat. */
+export const CONNECTION_LANE = "connection";
+
+/** The lane of a message event: its chat, whose events are posted in the order they were queued. */
+export function chatLane(chatId: number): string {
+  return `chat:${chatId}`;
+}
 
 /** The wait before the next POST of an event that has failed `failedAttempts` POSTs. */
 export function retryDelay(
@@ -255,7 +265,12 @@ export class WebhookOutbox {
     }
   }
 
-  /** What to do with the oldest open event, and every write that decision takes short of a POST. */
+  /**
+   * The oldest event that may be posted now — the oldest open one of its lane,
+   * due, and not waiting for a transcript — and every write it takes to find
+   * it short of a POST. A write changes which events head their lanes, so the
+   * pass looks again after each.
+   */
   private step(): Step {
     const db = this.host.db();
     if (db === null || !db.isOpen) return IDLE;
@@ -264,50 +279,58 @@ export class WebhookOutbox {
       this.nudged = false;
       db.events.nudge(now, now - OUTBOX_NUDGE_AFTER_MS);
     }
-    const event = db.events.head();
-    if (event === null) return IDLE;
+    const heads = db.events.laneHeads();
+    if (heads.length === 0) return IDLE;
     const settings = this.host.sink().settings();
     if (settings.kind !== "ready") {
       // Off means post nothing anywhere; an event must not go out once the webhook is fixed or back on.
       db.events.cancelOpen(settings.kind === "off" ? "the webhook is off" : "the webhook settings are invalid", now);
       return NEXT;
     }
-    if (!WEBHOOK_EVENTS.some((name) => name === event.kind && settings.events.includes(name))) {
-      db.events.cancel(event.seq, `${event.kind} is not an enabled event`, now);
-      return NEXT;
-    }
-    const deadline = event.createdAt + this.giveUpMs;
-    // Past the day, only the last attempt scheduled for its very end is still made.
-    if (now >= deadline && (event.nextAttemptAt === null || event.nextAttemptAt < deadline)) {
-      const error = event.lastError ?? "not posted";
-      db.events.fail(event.seq, event.lastStatus, `${error}; gave up 24 h after the event`, now);
-      this.noteFailure(`gave up on ${event.kind} after ${event.attempts} attempts: ${error}`);
-      return NEXT;
-    }
-    if (event.nextAttemptAt !== null && event.nextAttemptAt > now) return { kind: "wait", until: event.nextAttemptAt };
-    let message: StoredMessage | null = null;
-    if (MESSAGE_EVENTS.has(event.kind)) {
-      message = event.messageId === null ? null : (db.messages.byIds([event.messageId])[0] ?? null);
-      if (message === null) {
-        db.events.cancel(event.seq, "the message was deleted, expired or cleared before it was posted", now);
+    let wake = Infinity;
+    for (const event of heads) {
+      if (!WEBHOOK_EVENTS.some((name) => name === event.kind && settings.events.includes(name))) {
+        db.events.cancel(event.seq, `${event.kind} is not an enabled event`, now);
         return NEXT;
       }
-      if (event.readyAt > now && message.transcript === null && this.host.awaitingTranscript(message)) {
-        return { kind: "wait", until: Math.min(event.readyAt, now + this.transcriptPollMs) };
+      const deadline = event.createdAt + this.giveUpMs;
+      // Past the day, only the last attempt scheduled for its very end is still made.
+      if (now >= deadline && (event.nextAttemptAt === null || event.nextAttemptAt < deadline)) {
+        const error = event.lastError ?? "not posted";
+        db.events.fail(event.seq, event.lastStatus, `${error}; gave up 24 h after the event`, now);
+        this.noteFailure(`gave up on ${event.kind} after ${event.attempts} attempts: ${error}`);
+        return NEXT;
       }
+      if (event.nextAttemptAt !== null && event.nextAttemptAt > now) {
+        wake = Math.min(wake, event.nextAttemptAt);
+        continue;
+      }
+      let message: StoredMessage | null = null;
+      if (MESSAGE_EVENTS.has(event.kind)) {
+        message = event.messageId === null ? null : (db.messages.byIds([event.messageId])[0] ?? null);
+        if (message === null) {
+          db.events.cancel(event.seq, "the message was deleted, expired or cleared before it was posted", now);
+          return NEXT;
+        }
+        if (event.readyAt > now && message.transcript === null && this.host.awaitingTranscript(message)) {
+          wake = Math.min(wake, event.readyAt, now + this.transcriptPollMs);
+          continue;
+        }
+      }
+      let payload: WebhookPayload;
+      try {
+        payload = this.host.payload(event, message);
+      } catch (err) {
+        // Whatever went wrong may have said what the message says; only its code is kept.
+        const error = `Webhook delivery failed${withCode(err)}.`;
+        db.events.fail(event.seq, null, error, now);
+        this.noteFailure(error);
+        return NEXT;
+      }
+      if (!db.events.claim(event.seq, now)) return NEXT;
+      return { kind: "post", event, payload, settings };
     }
-    let payload: WebhookPayload;
-    try {
-      payload = this.host.payload(event, message);
-    } catch (err) {
-      // Whatever went wrong may have said what the message says; only its code is kept.
-      const error = `Webhook delivery failed${withCode(err)}.`;
-      db.events.fail(event.seq, null, error, now);
-      this.noteFailure(error);
-      return NEXT;
-    }
-    if (!db.events.claim(event.seq, now)) return NEXT;
-    return { kind: "post", event, payload, settings };
+    return wake === Infinity ? IDLE : { kind: "wait", until: wake };
   }
 
   private async post({ event, payload, settings }: Extract<Step, { kind: "post" }>): Promise<void> {

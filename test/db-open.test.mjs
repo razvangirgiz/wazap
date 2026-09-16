@@ -350,7 +350,7 @@ test("version 1 is the schema 0.22.0 released, and a file at it migrates to the 
   const db = AccountDb.open(path);
   assert.equal(db.schemaVersion, SCHEMA_VERSION);
   const stored = db.messages.upsert(textMessage(PEER, "AFTER", T0, "after the upgrade"));
-  const seq = db.events.enqueue({ kind: "message_received", messageId: stored.id, payload: "{}", createdAt: Date.now() });
+  const seq = db.events.enqueue({ kind: "message_received", lane: "chat:1", messageId: stored.id, payload: "{}", createdAt: Date.now() });
   const bodies = [];
   const sink = new WebhookSink(
     { WAZAP_WEBHOOK: "on", WAZAP_WEBHOOK_URL: "http://127.0.0.1:9/hook", WAZAP_WEBHOOK_SECRET: "s" },

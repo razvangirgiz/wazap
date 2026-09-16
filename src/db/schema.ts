@@ -583,7 +583,8 @@ END;
 // placeholder table is replaced whole rather than altered.
 /**
  * One row per event, in the order the account produced it (seq, never handed
- * out twice). A message event is written in the transaction that stores its
+ * out twice), in a lane: its chat (`chat:<chats.id>`) or `connection`; events
+ * of one lane are posted in seq order, lanes independently. A message event is written in the transaction that stores its
  * message, and keeps only what the message row cannot say (payload); its body
  * is built from the message when it is posted. A message deleted from under an
  * event leaves message_id NULL, and the dispatcher cancels that event. state:
@@ -597,6 +598,7 @@ DROP TABLE IF EXISTS events;
 CREATE TABLE events(
   seq INTEGER PRIMARY KEY AUTOINCREMENT,
   kind TEXT NOT NULL,
+  lane TEXT NOT NULL,
   message_id INTEGER REFERENCES messages(id) ON DELETE SET NULL,
   payload TEXT NOT NULL,
   created_at INTEGER NOT NULL,
@@ -609,6 +611,7 @@ CREATE TABLE events(
   updated_at INTEGER NOT NULL
 ) STRICT;
 CREATE INDEX events_open ON events(seq) WHERE state IN ('pending', 'sending');
+CREATE INDEX events_lane ON events(lane, seq) WHERE state IN ('pending', 'sending');
 CREATE INDEX events_state ON events(state, updated_at);
 CREATE INDEX events_message ON events(message_id) WHERE message_id IS NOT NULL;
 `;

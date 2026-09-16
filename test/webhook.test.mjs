@@ -1782,7 +1782,13 @@ test("status reads the outbox from another process: it fails after a run of refu
   });
   const queue = (n) => {
     for (let i = 0; i < n; i++) {
-      db.events.enqueue({ kind: "connection", messageId: null, payload: JSON.stringify({ event: "connection", status: "linked" }), createdAt: Date.now() });
+      db.events.enqueue({
+        kind: "connection",
+        lane: "connection",
+        messageId: null,
+        payload: JSON.stringify({ event: "connection", status: "linked" }),
+        createdAt: Date.now(),
+      });
     }
   };
   const realError = console.error;

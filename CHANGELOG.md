@@ -44,7 +44,8 @@
 
 - **Webhook events survive a restart.** Each event waits in an outbox inside
   the account database, written with the message it announces, and is posted
-  one at a time per account in the order it was queued. A timeout, an
+  one at a time per account, in the order it was queued within its chat; a
+  chat waiting for a retry or a transcript holds back no other chat. A timeout, an
   unreachable receiver, `408`, `425`, `429` or `5xx` is retried after 1 s, 5 s,
   30 s, 2 min, then every 5 min and a last time at 24 hours, and at once when
   new traffic shows the receiver may be back; any other `4xx` still fails at

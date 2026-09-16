@@ -162,7 +162,13 @@ import {
   type WebhookConnectionStatus,
   type WebhookPayload,
 } from "./webhook.js";
-import { WEBHOOK_TRANSCRIPT_WAIT_MS, WebhookOutbox, undeliveredFailure } from "./webhook-outbox.js";
+import {
+  CONNECTION_LANE,
+  WEBHOOK_TRANSCRIPT_WAIT_MS,
+  WebhookOutbox,
+  chatLane,
+  undeliveredFailure,
+} from "./webhook-outbox.js";
 import type { SearchCoverage } from "./coverage.js";
 import type {
   CallInfo,
@@ -1253,6 +1259,7 @@ export class WhatsAppService implements WhatsAppApi {
     try {
       db.events.enqueue({
         kind: "connection",
+        lane: CONNECTION_LANE,
         messageId: null,
         payload: JSON.stringify(asConnectionPayload({ status: mapped, account: this.accountRecord, at })),
         createdAt: at,
@@ -4224,6 +4231,7 @@ export class WhatsAppService implements WhatsAppApi {
       const transcribed = !message.fromMe && this.autoTranscribe && webhookKind(message.type as MessageType) === "audio";
       db.events.enqueue({
         kind: event,
+        lane: chatLane(message.chatId),
         messageId: message.id,
         payload: JSON.stringify({ is_self_chat: this.isMe(message.chatJid) }),
         createdAt: now,

@@ -37,7 +37,7 @@ test("finding 6: an id freed by a purge is never handed to another message, and 
   const conn = db["connection"];
   conn.write(() =>
     conn.run(
-      "INSERT INTO events(kind, message_id, payload, created_at, ready_at, updated_at) VALUES ('message_received', ?, '{}', 1, 1, 1)",
+      "INSERT INTO events(kind, lane, message_id, payload, created_at, ready_at, updated_at) VALUES ('message_received', 'chat:1', ?, '{}', 1, 1, 1)",
       ask.id
     )
   );
