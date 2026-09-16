@@ -1,0 +1,30 @@
+{
+  "v": 1,
+  "contacts": {
+    "40700000003@s.whatsapp.net": {
+      "note": "Bogdan de la depozit",
+      "updated_at": "2026-09-16T18:11:11.450Z"
+    },
+    "40700000002@s.whatsapp.net": {
+      "note": "Colegă de proiect",
+      "updated_at": "2026-09-16T18:11:11.466Z"
+    }
+  },
+  "handled": {
+    "40700000002@s.whatsapp.net": {
+      "ask_id": "false_40700000002@s.whatsapp.net_A4",
+      "at": "2026-09-16T18:11:11.467Z"
+    }
+  },
+  "fields": {
+    "40700000003@s.whatsapp.net": {
+      "updated_at": "2026-09-16T18:11:11.452Z",
+      "tags": [
+        "furnizor"
+      ],
+      "fields": {
+        "oras": "Cluj"
+      }
+    }
+  }
+}

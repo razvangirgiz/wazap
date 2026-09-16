@@ -18,16 +18,24 @@ import { ANA, BOGDAN, BOGDAN_LID, CRISTI, GROUP, ME, MODEL, buildLegacyAccount, 
 
 const r = roles();
 
+/** The fixture's files were written at fx.now: every clock here reads that moment. */
 function openDb(fx, options = {}) {
   return AccountDb.open(join(fx.dataDir, "accounts", "default", options.file ?? "wazap.sqlite"), {
     scrubQuote,
     checkpointDelayMs: 0,
+    now: () => fx.now,
     ...options.db,
   });
 }
 
 function run(fx, db, options = {}) {
-  return importLegacyAccount({ dataDir: fx.dataDir, accountId: "default", accountPaths: fx.paths, db, options });
+  return importLegacyAccount({
+    dataDir: fx.dataDir,
+    accountId: "default",
+    accountPaths: fx.paths,
+    db,
+    options: { now: () => fx.now, ...options },
+  });
 }
 
 /** Every file under the legacy paths, hashed: the import must leave each byte as it was. */
@@ -299,9 +307,8 @@ test("a finished import is a no-op the second time", async () => {
 
 test("an import cut off at any chunk resumes into the same database", async () => {
   const fx = await buildLegacyAccount();
-  const clock = Date.now();
-  const options = { verify: false, chunkSize: 2, now: () => clock };
-  const dbOptions = { now: () => clock };
+  const options = { verify: false, chunkSize: 2 };
+  const dbOptions = {};
 
   const phases = [];
   const clean = openDb(fx, { file: "wazap-clean.sqlite", db: dbOptions });
@@ -396,7 +403,13 @@ test("verification names the keys of a difference nothing explains", async () =>
     await run(fx, db, { verify: false });
     db.messages.delete(r.a1);
     db.identity.setNote(ANA, "altceva");
-    const report = await verifyLegacyImport({ dataDir: fx.dataDir, accountId: "default", accountPaths: fx.paths, db });
+    const report = await verifyLegacyImport({
+      dataDir: fx.dataDir,
+      accountId: "default",
+      accountPaths: fx.paths,
+      db,
+      options: { now: () => fx.now },
+    });
     assert.equal(report.ok, false);
     assert.equal(report.unexpected.missingInDb, 1);
     assert.deepEqual(report.samples.missingInDb, [r.a1]);

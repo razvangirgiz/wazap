@@ -1,21 +1,26 @@
 /**
- * A legacy account written by main's own persistence code: a WhatsAppService
- * with a fake socket is fed events (messages, a history sync, edits, a delete
- * for me, a revoke, a cleared chat, a lid that pairs with a number, reactions,
- * a vote, receipts, a transcript, a story, calls, notes and a handled mark),
- * then stopped so store.json, history/, retention.json and notes.json are what
- * a real account leaves. The recall index and the beta archive are synthesized
- * in their on-disk formats, and a few damaged lines are appended.
+ * A legacy account as main's own persistence code wrote it. The files under
+ * test/fixtures/legacy-account/ are what a WhatsAppService with a fake socket
+ * left on disk (commit 7ec2f93, before the service moved to the account
+ * database) after it was fed messages, a history sync, edits, a delete for me,
+ * a revoke, a cleared chat, a lid that pairs with a number, reactions, a vote,
+ * receipts, a transcript, a story, calls, notes and a handled mark: store.json,
+ * history/, retention.json and notes.json, with and without WAZAP_RETENTION.
+ * The service no longer writes that format, so the files are frozen, with the
+ * clock they were written at. The recall index and the beta archive are
+ * synthesized in their on-disk formats, and a few damaged lines are appended.
  */
-import { appendFileSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { appendFileSync, cpSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { proto } from "baileys";
 
-import { WhatsAppService } from "../dist/whatsapp.js";
+import { accountPaths } from "../dist/config.js";
 import { searchableText } from "../dist/messages.js";
 import { sqlite } from "../dist/db/sqlite.js";
-import { connectedService } from "./helpers.mjs";
+
+const FIXTURES = join(dirname(fileURLToPath(import.meta.url)), "fixtures", "legacy-account");
 
 export const ME = "40700000001@s.whatsapp.net";
 export const ANA = "40700000002@s.whatsapp.net";
@@ -27,8 +32,6 @@ export const GHOST_LID = "222222222222222@lid";
 export const GROUP = "120363000000000009@g.us";
 export const DIMS = 768;
 export const MODEL = "embeddinggemma-300m";
-
-const ENV = ["WAZAP_RECALL", "WAZAP_RETENTION", "WAZAP_TRANSCRIBE", "WAZAP_WEBHOOK_URL", "WAZAP_EMBED_URL"];
 
 export const sid = (fromMe, chat, id) => `${fromMe}_${chat}_${id}`;
 
@@ -70,10 +73,6 @@ export function roles() {
   };
 }
 
-function upsert(sock, messages, type = "notify") {
-  sock.ev.emit("messages.upsert", { type, messages });
-}
-
 function msg({ chat, id, fromMe = false, participant, ts, message, pushName, stub }) {
   return {
     key: { remoteJid: chat, fromMe, id, ...(participant ? { participant } : {}) },
@@ -96,188 +95,24 @@ export function vectorRow(i) {
 }
 
 /**
- * Builds the account and returns its data dir and the times it used.
- * `retention` runs the service with WAZAP_RETENTION on; `beta` writes an
- * archive owned by `betaOwner`; `linked` writes the credentials that name ME.
+ * Builds the account and returns its data dir and the clock it was written at.
+ * `retention` takes the files a service with WAZAP_RETENTION on wrote; `beta`
+ * writes an archive owned by `betaOwner`; `linked` writes the credentials that
+ * name ME. Everything time-dependent — the story's day, the disappearing
+ * timers, the future line — is relative to `now`, the moment the files were
+ * written: pass it to the import, the verification and the database as their
+ * clock.
  */
 export async function buildLegacyAccount({ retention = false, beta = true, betaOwner = ME, linked = true } = {}) {
   const dataDir = mkdtempSync(join(tmpdir(), "wazap-legacy-"));
-  const saved = ENV.map((key) => [key, process.env[key]]);
-  for (const key of ENV) delete process.env[key];
-  let connected;
-  try {
-    connected = connectedService(WhatsAppService, {
-      prefix: "wazap-legacy-",
-      id: ME,
-      name: "Răzvan",
-      config: { dataDir, persistHistory: true, readOnly: false, rateLimitPerMinute: 0, retention },
-    });
-  } finally {
-    for (const [key, value] of saved) {
-      if (value === undefined) delete process.env[key];
-      else process.env[key] = value;
-    }
-  }
-  const { svc, sock } = connected;
-  sock.chatModify = async () => {};
-  const now = Date.now();
-  const T = Math.floor(now / 1000) - 3 * 86_400;
+  const source = join(FIXTURES, retention ? "retention" : "plain");
+  const { now, T } = JSON.parse(readFileSync(join(source, "clock.json"), "utf8"));
+  const paths = accountPaths(dataDir, "default");
+  mkdirSync(paths.historyDir, { recursive: true, mode: 0o700 });
+  for (const name of ["store.json", "retention.json", "notes.json"]) cpSync(join(source, name), join(paths.root, name));
+  for (const name of readdirSync(join(source, "history"))) cpSync(join(source, "history", name), join(paths.historyDir, name));
   const r = roles();
 
-  sock.ev.emit("contacts.upsert", [
-    { id: ANA, name: "Ana Pop" },
-    { id: BOGDAN, name: "Bogdan Ionescu" },
-    { id: DANA, notify: "Dana" },
-  ]);
-  sock.ev.emit("chats.upsert", [
-    { id: ANA, unreadCount: 1, conversationTimestamp: T + 100 },
-    { id: GROUP, name: "Echipa", unreadCount: 3, archived: false },
-    { id: CRISTI, unreadCount: 0 },
-  ]);
-
-  // A history sync: older messages the phone sent over.
-  sock.ev.emit("messaging-history.set", {
-    chats: [],
-    contacts: [],
-    messages: [
-      msg({ chat: ANA, id: "S1", ts: T - 100, message: { conversation: "Mesaj vechi sincronizat din telefon" } }),
-      {
-        ...msg({ chat: GROUP, id: "S2", fromMe: true, ts: T - 90, message: { conversation: "Trimis de pe telefon, citit de Dana" } }),
-        status: 3,
-        userReceipt: [
-          { userJid: DANA, receiptTimestamp: T - 80, readTimestamp: T - 70 },
-          { userJid: ME, receiptTimestamp: T - 85 },
-        ],
-      },
-    ],
-    isLatest: false,
-    progress: 50,
-  });
-
-  // Ana: a direct chat with an edit, a delete for me, an ask, a voice note and a call.
-  upsert(sock, [msg({ chat: ANA, id: "A1", ts: T + 10, message: { conversation: "Salut, ce mai faci azi?" }, pushName: "Ana" })]);
-  upsert(sock, [msg({ chat: ANA, id: "A2", fromMe: true, ts: T + 20, message: { conversation: "Bine, mulțumesc frumos" } })]);
-  upsert(sock, [msg({ chat: ANA, id: "A3", ts: T + 30, message: { conversation: "Mesaj pe care îl șterg doar la mine" } })]);
-  upsert(sock, [msg({ chat: ANA, id: "A4", ts: T + 40, message: { conversation: "Ai timp mâine dimineață?" } })]);
-  svc.store.setTranscript(r.voice, { text: "Te sun mai târziu", provider: "local", at: now });
-  upsert(sock, [msg({ chat: ANA, id: "V1", ts: T + 50, message: { audioMessage: { ptt: true, seconds: 42, mimetype: "audio/ogg" } } })]);
-  upsert(sock, [msg({ chat: ANA, id: "C1", ts: T + 60, message: { call: { callKey: Buffer.from("key") } } })]);
-  upsert(sock, [msg({ chat: ANA, id: "C2", ts: T + 90, message: { callLogMesssage: { isVideo: false, callOutcome: 0, durationSecs: 42 } } })]);
-  sock.ev.emit("messages.update", [
-    {
-      key: { remoteJid: ANA, fromMe: true, id: "A2" },
-      update: { message: { editedMessage: { message: { conversation: "Bine, mulțumesc frumos, tu?" } } }, messageTimestamp: T + 100 },
-    },
-  ]);
-  sock.ev.emit("messages.update", [{ key: { remoteJid: ANA, fromMe: true, id: "A2" }, update: { status: 4 } }]);
-
-  // Bogdan: first known by a lid, then paired with his number.
-  upsert(sock, [msg({ chat: BOGDAN_LID, id: "B1", ts: T + 200, message: { conversation: "Salutare de pe lid, sunt Bogdan" } })]);
-  await svc.setContactNote(BOGDAN_LID, "Bogdan de la depozit");
-  sock.ev.emit("lid-mapping.update", { lid: BOGDAN_LID, pn: BOGDAN });
-  upsert(sock, [msg({ chat: BOGDAN, id: "B2", ts: T + 300, message: { conversation: "Acum scriu de pe număr" } })]);
-  upsert(sock, [msg({ chat: BOGDAN_LID, id: "B3", fromMe: true, ts: T + 310, message: { conversation: "Răspuns trimis spre lid" } })]);
-  await svc.updateContactDetails(BOGDAN, { addTags: ["furnizor"], fields: { oras: "Cluj" } });
-
-  // The group: a reply, a reaction, receipts, a revoke of the quoted message, a poll with a vote.
-  upsert(sock, [msg({ chat: GROUP, id: "G1", participant: DANA, ts: T + 400, message: { conversation: "Ședința e la ora zece" } })]);
-  upsert(sock, [msg({ chat: GROUP, id: "G2", participant: ANA, ts: T + 410, message: { conversation: "Confirm prezența la ședință" } })]);
-  upsert(sock, [msg({ chat: GROUP, id: "G3", fromMe: true, ts: T + 420, message: { conversation: "Vin și eu cu raportul" } })]);
-  sock.ev.emit("message-receipt.update", [
-    { key: { remoteJid: GROUP, fromMe: true, id: "G3" }, receipt: { userJid: DANA, readTimestamp: T + 425, receiptTimestamp: T + 421 } },
-    { key: { remoteJid: GROUP, fromMe: true, id: "G3" }, receipt: { userJid: ANA, receiptTimestamp: T + 422 } },
-  ]);
-  upsert(sock, [
-    msg({
-      chat: GROUP,
-      id: "G4",
-      participant: DANA,
-      ts: T + 430,
-      message: {
-        extendedTextMessage: {
-          text: "Perfect, mulțumesc Ana",
-          contextInfo: { stanzaId: "G2", participant: ANA, quotedMessage: { conversation: "Confirm prezența la ședință" } },
-        },
-      },
-    }),
-  ]);
-  upsert(sock, [
-    msg({ chat: GROUP, id: "R1", participant: ANA, ts: T + 440, message: { reactionMessage: { key: { remoteJid: GROUP, fromMe: false, id: "G1", participant: DANA }, text: "👍" } } }),
-  ]);
-  upsert(sock, [
-    msg({
-      chat: GROUP,
-      id: "REV1",
-      participant: ANA,
-      ts: T + 450,
-      message: { protocolMessage: { type: 0, key: { remoteJid: GROUP, fromMe: false, id: "G2", participant: ANA } } },
-    }),
-  ]);
-  upsert(sock, [
-    msg({
-      chat: GROUP,
-      id: "P1",
-      fromMe: true,
-      ts: T + 460,
-      message: {
-        messageContextInfo: { messageSecret: Buffer.alloc(32, 7) },
-        pollCreationMessage: { name: "Unde mergem?", options: [{ optionName: "Cluj" }, { optionName: "Iași" }], selectableOptionsCount: 1 },
-      },
-    }),
-  ]);
-  svc.store.vote(r.poll, DANA, ["Cluj"], (T + 470) * 1000);
-  upsert(sock, [
-    msg({
-      chat: GROUP,
-      id: "V9",
-      participant: DANA,
-      ts: T + 480,
-      message: {
-        pollUpdateMessage: {
-          pollCreationMessageKey: { remoteJid: GROUP, fromMe: false, id: "NOPOLL" },
-          vote: { encPayload: Buffer.alloc(16, 1), encIv: Buffer.alloc(12, 2) },
-          senderTimestampMs: (T + 480) * 1000,
-        },
-      },
-    }),
-  ]);
-
-  // Cristi: a chat cleared on the phone.
-  upsert(sock, [msg({ chat: CRISTI, id: "K1", ts: T + 500, message: { conversation: "Mesaj care va fi golit" } })]);
-  upsert(sock, [msg({ chat: CRISTI, id: "K2", ts: T + 510, message: { conversation: "Încă unul golit" } })]);
-  await svc.retentionIdle();
-  sock.ev.emit("messages.delete", { jid: CRISTI, all: true });
-
-  // A lid nobody paired, and a story from the last hours.
-  upsert(sock, [msg({ chat: GHOST_LID, id: "H1", ts: T + 600, message: { conversation: "Cineva necunoscut scrie" } })]);
-  upsert(sock, [
-    msg({
-      chat: "status@broadcast",
-      id: "ST1",
-      participant: DANA,
-      ts: Math.floor(now / 1000) - 7_200,
-      message: { imageMessage: { caption: "Priveliște frumoasă", mimetype: "image/jpeg" } },
-    }),
-  ]);
-
-  // Dana: disappearing messages, one still inside its timer and one past it.
-  const nowSeconds = Math.floor(now / 1000);
-  upsert(sock, [
-    msg({ chat: DANA, id: "E1", ts: nowSeconds - 3_600, message: { extendedTextMessage: { text: "Mesaj care dispare într-o săptămână", contextInfo: { expiration: 7 * 86_400 } } } }),
-  ]);
-  upsert(sock, [
-    msg({ chat: DANA, id: "E2", ts: nowSeconds - 7_200, message: { extendedTextMessage: { text: "Mesaj care a dispărut deja", contextInfo: { expiration: 3_600 } } } }),
-  ]);
-
-  await svc.retentionIdle();
-  await svc.deleteMessage(r.a3, false);
-  await svc.setContactNote(ANA, "Colegă de proiect");
-  await svc.markHandled(ANA);
-  await svc.retentionIdle();
-  svc.markStoreDirty();
-  await svc.stop();
-
-  const paths = svc.paths;
   if (linked) {
     mkdirSync(paths.authDir, { recursive: true });
     writeFileSync(join(paths.authDir, "creds.json"), JSON.stringify({ me: { id: "40700000001:3@s.whatsapp.net", name: "Răzvan" } }));
