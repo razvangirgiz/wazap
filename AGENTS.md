@@ -27,6 +27,10 @@ user.
 - `npm run check` — the local gate: lint → typecheck → test (which builds).
   Green from a clean tree before you push.
 - `npm run hooks:install` — installs the pre-push hook; once per clone.
+- `npm run bench:db` — builds, then times the account database (`src/db/`) on
+  synthetic data: 100k messages, vector and hybrid search at 13k and 100k.
+  `--messages 1000000 --vectors 1000000` is the local 1M run; `--check` fails on
+  generous budgets. Not part of the gate.
 
 ## The gate and the hook
 
