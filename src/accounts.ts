@@ -40,6 +40,9 @@ export interface ResolvedAccount {
 const FIX_LIST = "Run `wazap account list`";
 const FIX_ADD = "Run `wazap account add <id>` first, or `wazap account list`";
 const FIX_POLICY = "Restore or repair accounts.json from a trusted backup; do not remove the policy file or its .required marker";
+/** A lost policy has one knowing way out besides a backup, and it has to be spelled out. */
+const FIX_MISSING_POLICY =
+  "Restore accounts.json from a trusted backup. To start over on purpose with one default account and no send rules, delete accounts.json.required too, then run `wazap account list`";
 
 export function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -244,7 +247,7 @@ export class AccountRegistry {
       text = readFileSync(file, "utf8");
     } catch (err) {
       if (isEnoent(err) && !existsSync(`${file}.required`)) return new AccountRegistry(dataDir, synthesizedDefault());
-      throw new WazapError("INVALID_ID", "Account policy is missing or unreadable; refusing unrestricted defaults.", FIX_POLICY);
+      throw new WazapError("INVALID_ID", "Account policy is missing or unreadable; refusing unrestricted defaults.", FIX_MISSING_POLICY);
     }
     let parsed: unknown;
     try {
@@ -263,7 +266,7 @@ export class AccountRegistry {
   seal(): void {
     const file = paths(this.dataDir).accountsFile;
     if (existsSync(file)) this.markRequired(file);
-    else if (existsSync(`${file}.required`)) throw new WazapError("INVALID_ID", "Account policy is missing.", FIX_POLICY);
+    else if (existsSync(`${file}.required`)) throw new WazapError("INVALID_ID", "Account policy is missing.", FIX_MISSING_POLICY);
     else this.save();
   }
 

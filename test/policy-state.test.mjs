@@ -25,6 +25,19 @@ test("a previously persisted policy cannot be reset by removing accounts.json", 
   assert.throws(() => migrateLayout(dir), /restore|missing/i);
 });
 
+test("a lost policy names the deliberate way to start over, and taking it works", (t) => {
+  const { dir, registry, file } = fixture(t);
+  registry.setSendRules("default", { allow: [] });
+  rmSync(file);
+  assert.throws(() => AccountRegistry.load(dir), (err) => {
+    assert.match(err.fix, /trusted backup/);
+    assert.match(err.fix, /delete accounts\.json\.required too/);
+    return true;
+  });
+  rmSync(`${file}.required`);
+  assert.equal(AccountRegistry.load(dir).defaultId(), "default");
+});
+
 test("sealing legacy policy preserves its bytes, extra metadata and read-only permissions", (t) => {
   const { dir, file } = fixture(t);
   const state = JSON.parse(readFileSync(file, "utf8")); state.extra = "synthetic metadata";

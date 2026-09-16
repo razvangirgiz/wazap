@@ -774,8 +774,9 @@ told to tell you, not to retry or route around it.
 
 Saving policy or starting the account hub writes an empty `0600`
 `accounts.json.required` marker. If that known policy disappears, wazap refuses
-unrestricted defaults. Restore the policy from a trusted backup; do not remove
-the marker to bypass the error. Fresh/legacy directories without a marker keep
+unrestricted defaults. Restore the policy from a trusted backup. To start over
+on purpose with one default account and no send rules, delete the marker too;
+never do it just to get past the error. Fresh/legacy directories without a marker keep
 their bootstrap behavior. Explicit layout rollback removes the modern registry
 and marker; old flat-layout versions do not enforce per-account rules.
 
