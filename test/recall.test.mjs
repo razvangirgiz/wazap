@@ -365,6 +365,11 @@ test("a message the database holds only as text still answers, marked as from th
     assert.equal(hit.message.chat_id, PEER);
     assert.equal(hit.message.sender.id, PEER);
     assert.match(hit.message.timestamp, /^\d{4}-\d{2}-\d{2}T/);
+    // The same row answers keyword search and get_message with its text; it has no media to download.
+    const words = await svc.searchMessages("plătită integral", undefined, 5);
+    assert.deepEqual(words.data.map((m) => m.message_id), [sid]);
+    assert.equal((await svc.getMessage(sid)).text, "factura din august, plătită integral");
+    await assert.rejects(svc.downloadMedia(sid), (err) => err.code === "MEDIA_UNAVAILABLE");
   } finally {
     await svc.stop();
     stub.server.close();
