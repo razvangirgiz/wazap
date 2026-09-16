@@ -7,6 +7,7 @@ import { pipeline } from "node:stream/promises";
 import type { ReadableStream } from "node:stream/web";
 import { WazapError } from "./errors.js";
 import { discardResponse } from "./http-response.js";
+import { log } from "./logger.js";
 import { acquireModelDownloadLock, type ModelDownloadLock } from "./model-download-lock.js";
 
 export interface DownloadProgress {
@@ -29,11 +30,19 @@ export interface DownloadOpts {
   /** Network/write phase deadlines, also injectable for deterministic local tests. */
   timeoutMs?: number;
   idleTimeoutMs?: number;
+  /** The command that retries, for the fix text. */
+  command?: string;
 }
 
 const TOTAL_MS = 30 * 60 * 1000;
 const IDLE_MS = 30 * 1000;
-const FIX = "Check the network and free disk space, then run `wazap transcribe download` again";
+/** A slow but steady link must finish: the idle deadline is what catches a stall. */
+const SLOWEST_BYTES_PER_SECOND = 100 * 1024;
+
+/** Thirty minutes, or as long as the model takes at 100 KiB/s: large-v3 gets about three hours. */
+export function downloadDeadlineMs(bytes: number): number {
+  return Math.max(TOTAL_MS, Math.ceil(bytes / SLOWEST_BYTES_PER_SECOND) * 1000);
+}
 const IO_CODES = new Set([
   "ENOSPC",
   "EACCES",
@@ -46,11 +55,14 @@ const IO_CODES = new Set([
   "EMFILE",
   "ENFILE",
 ]);
-function failure(message: string): WazapError {
-  return new WazapError("TRANSCRIBE_FAILED", message, FIX);
+type Failure = (message: string) => WazapError;
+
+function failureFor(command: string): Failure {
+  const fix = `Check the network and free disk space, then run \`${command}\` again`;
+  return (message) => new WazapError("TRANSCRIBE_FAILED", message, fix);
 }
 
-async function sizeOf(path: string): Promise<number | null> {
+async function sizeOf(path: string, failure: Failure): Promise<number | null> {
   try {
     const info = await stat(path);
     // Do not delete a directory or treat an unreadable path as an absent file.
@@ -66,9 +78,10 @@ async function digestOf(path: string, into: Hash, signal: AbortSignal): Promise<
   for await (const chunk of createReadStream(path, { signal })) into.update(chunk as Uint8Array);
 }
 
+/** The range must run from the part's end to the model's last byte; an unknown total (`*`) is allowed, a wrong one is not. */
 function validRange(response: Response, start: number, total: number): boolean {
-  const match = /^bytes (\d+)-(\d+)\/(\d+)$/.exec(response.headers.get("content-range") ?? "");
-  return !!match && Number(match[1]) === start && Number(match[2]) === total - 1 && Number(match[3]) === total;
+  const match = /^bytes (\d+)-(\d+)\/(\d+|\*)$/.exec(response.headers.get("content-range") ?? "");
+  return !!match && Number(match[1]) === start && Number(match[2]) === total - 1 && (match[3] === "*" || Number(match[3]) === total);
 }
 
 /**
@@ -78,7 +91,8 @@ function validRange(response: Response, start: number, total: number): boolean {
  * production URLs/digests come from curated model tables, not MCP arguments.
  */
 export async function downloadFile(opts: DownloadOpts): Promise<DownloadResult> {
-  const timeoutMs = opts.timeoutMs ?? TOTAL_MS;
+  const failure = failureFor(opts.command ?? "wazap transcribe download");
+  const timeoutMs = opts.timeoutMs ?? downloadDeadlineMs(opts.bytes);
   const idleTimeoutMs = opts.idleTimeoutMs ?? IDLE_MS;
   if (
     !Number.isSafeInteger(opts.bytes) ||
@@ -118,7 +132,7 @@ export async function downloadFile(opts: DownloadOpts): Promise<DownloadResult> 
     checkAbort();
     const target = lock.path;
     part = `${target}.part`;
-    const present = await sizeOf(target);
+    const present = await sizeOf(target, failure);
     if (present === opts.bytes) {
       const hash = createHash("sha256");
       await digestOf(target, hash, controller.signal);
@@ -130,7 +144,7 @@ export async function downloadFile(opts: DownloadOpts): Promise<DownloadResult> 
     checkAbort();
     if (present !== null) await rm(target, { force: true });
 
-    let have = (await sizeOf(part)) ?? 0;
+    let have = (await sizeOf(part, failure)) ?? 0;
     checkAbort();
     if (have >= opts.bytes) {
       await rm(part, { force: true });
@@ -244,10 +258,9 @@ export async function downloadFile(opts: DownloadOpts): Promise<DownloadResult> 
     clearTimeout(totalTimer);
     clearTimeout(idleTimer);
     opts.signal?.removeEventListener("abort", abort);
-    try {
-      if (response) await discardResponse(response);
-    } finally {
-      await lock?.release();
-    }
+    if (response) await discardResponse(response);
+    // A leftover claim must not turn a verified model into a failure, nor hide
+    // the error already on its way out. The next run reports it with its path.
+    await lock?.release().catch(() => log(`model download: could not remove ${lock!.path}.download-lock`));
   }
 }

@@ -5,17 +5,18 @@ import { basename, dirname, join, resolve } from "node:path";
 import { lstat, mkdir, open, readFile, readdir, readlink, realpath, rmdir, unlink } from "node:fs/promises";
 import { WazapError } from "./errors.js";
 
-const FIX =
-  "Wait for the other download and retry. If a lock remains, inspect <model>.download-lock/owner-*.json; remove the lock directory only after confirming no downloader is using it";
-function locked(): WazapError {
+function fix(directory: string): string {
+  return `Wait for the other download and retry. If the lock remains, inspect ${directory}/owner-*.json and remove ${directory} only after confirming no downloader is using it`;
+}
+function locked(directory: string): WazapError {
   return new WazapError(
     "TRANSCRIBE_FAILED",
     "Another model download holds this destination, or its lock cannot be safely recovered.",
-    FIX
+    fix(directory)
   );
 }
-function cleanupFailed(): WazapError {
-  return new WazapError("TRANSCRIBE_FAILED", "Could not release the model download lock safely.", FIX);
+function cleanupFailed(directory: string): WazapError {
+  return new WazapError("TRANSCRIBE_FAILED", "Could not release the model download lock safely.", fix(directory));
 }
 
 /** Never interpret EPERM or an unknown process-probe failure as proof of death. */
@@ -106,7 +107,7 @@ export async function acquireModelDownloadLock(path: string): Promise<ModelDownl
         try {
           await unlink(file);
         } catch {
-          throw cleanupFailed();
+          throw cleanupFailed(directory);
         }
       }
       await rmdir(directory).catch(() => {});
@@ -123,7 +124,7 @@ export async function acquireModelDownloadLock(path: string): Promise<ModelDownl
             await unlink(file);
             await rmdir(directory);
           } catch {
-            throw cleanupFailed();
+            throw cleanupFailed(directory);
           }
         })());
       },
@@ -133,16 +134,16 @@ export async function acquireModelDownloadLock(path: string): Promise<ModelDownl
   const fresh = await claim();
   if (fresh) return fresh;
   const owner = await knownOwner(directory);
-  if (!owner || localScope === null || owner.scope !== localScope || alive(owner.pid)) throw locked();
+  if (!owner || localScope === null || owner.scope !== localScope || alive(owner.pid)) throw locked(directory);
   try {
     // Several processes may observe the same dead owner. Only ONE can unlink
     // this generation's unique filename; losers MUST NOT remove the directory.
     await unlink(owner.file);
     await rmdir(directory);
   } catch {
-    throw locked();
+    throw locked(directory);
   }
   const recovered = await claim();
-  if (!recovered) throw locked(); // Another ordinary claimant may win after rmdir.
+  if (!recovered) throw locked(directory); // Another ordinary claimant may win after rmdir.
   return recovered;
 }

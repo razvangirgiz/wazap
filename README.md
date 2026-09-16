@@ -385,8 +385,9 @@ before excess bytes are written, independently of `Content-Length`. Only a
 successfully closed write with the exact size and digest is renamed from `.part`
 to the final model file.
 
-The network/write phase has a 30-minute deadline and a 30-second no-progress
-timeout (including waiting for response headers). A timeout or interrupted
+The network/write phase has a 30-second no-progress timeout (including waiting
+for response headers) and an overall deadline of 30 minutes or the time the
+model takes at 100 KiB/s, whichever is longer (about three hours for large-v3). A timeout or interrupted
 transfer keeps a bounded partial file for a later retry to resume; an invalid
 range, oversized response or failed verification discards it. A receiver that
 ignores Range restarts the download safely. CDN redirects remain supported,
@@ -397,7 +398,9 @@ Each destination has an exclusive `<model>.download-lock/` directory, held from
 cache verification through the final rename and cleanup. A simultaneous download
 of that model fails promptly with a retry hint; different models can download
 in parallel. Directory symlinks and relative paths use the same canonical parent.
-The lock is released on success, handled failures and cancellation.
+The lock is released on success, handled failures and cancellation; if it
+cannot be removed, the verified model is kept and the next run names the
+directory.
 
 A known dead owner on the same host/PID scope can be recovered automatically;
 Linux also checks the PID namespace. Live owners are never evicted by age. If a

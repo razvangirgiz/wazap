@@ -8,6 +8,7 @@ import { join } from "node:path";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { downloadFile } from "../dist/transcribe/models.js";
+import { downloadDeadlineMs } from "../dist/model-download.js";
 import { downloadEmbed } from "../dist/recall/models.js";
 import { childEnv, waitFor } from "./helpers.mjs";
 
@@ -396,4 +397,47 @@ test("embedding downloads share the byte cap and retain their own error code/fix
   );
   assert.equal(stream.cancelled(), true);
   assert.ok(stream.reads() < 40);
+});
+
+test("the total deadline grows with the model, so a slow steady link finishes large-v3", () => {
+  assert.equal(downloadDeadlineMs(PAYLOAD.length), 30 * 60 * 1000, "small files keep thirty minutes");
+  const largeV3 = 1_081_140_203;
+  assert.ok(downloadDeadlineMs(largeV3) >= Math.ceil(largeV3 / (100 * 1024)) * 1000);
+  assert.ok(downloadDeadlineMs(largeV3) < 2 ** 31 - 1, "still a valid timer");
+});
+
+test("a resume whose Content-Range has an unknown total still completes", async (t) => {
+  const { opts, path, part } = setup(t);
+  writeFileSync(part, PAYLOAD.subarray(0, 16));
+  const stream = streamed({ status: 206, headers: { "content-range": `bytes 16-${PAYLOAD.length - 1}/*` }, count: 1, chunk: PAYLOAD.subarray(16) });
+  t.mock.method(globalThis, "fetch", async () => stream.response);
+  const result = await downloadFile(opts);
+  assert.equal(result.resumed, true);
+  assert.deepEqual(readFileSync(path), PAYLOAD);
+});
+
+test("a lock that cannot be removed does not fail a verified download, and the next run names it", async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "wazap-download-leftover-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const path = join(dir, "model.bin");
+  const url = "https://model.example/fixture";
+  t.mock.method(globalThis, "fetch", async () => new Response(PAYLOAD));
+  const lines = [];
+  t.mock.method(console, "error", (...args) => lines.push(args.join(" ")));
+  const result = await downloadFile({
+    path, url, bytes: PAYLOAD.length, sha256: HASH,
+    // Something else drops a file into the claim while the model downloads, so rmdir fails.
+    onProgress: () => {
+      const lock = `${path}.download-lock`;
+      if (existsSync(lock)) writeFileSync(join(lock, "stray"), "");
+    },
+  });
+  assert.equal(result.alreadyPresent, false);
+  assert.deepEqual(readFileSync(path), PAYLOAD);
+  assert.ok(lines.some((line) => line.includes(`${path}.download-lock`)));
+  await assert.rejects(downloadFile({ path, url, bytes: PAYLOAD.length, sha256: HASH }), (err) => {
+    assert.equal(err.code, "TRANSCRIBE_FAILED");
+    assert.ok(err.fix.includes(`${path}.download-lock`), "the fix names the exact directory to inspect");
+    return true;
+  });
 });

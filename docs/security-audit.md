@@ -276,8 +276,10 @@ and command-specific fix. The model tables, URLs and pinned digests are unchange
   start, end and total, even on an unsolicited partial response.
 - `pipeline` owns backpressure, stream errors and closure. Publication by rename
   occurs only after pipeline success, exact byte count and SHA-256 verification.
-- The network/write phase has a 30-minute total deadline and a 30-second idle
-  deadline, including response-header waits. Caller cancellation also applies
+- The network/write phase has a 30-second idle deadline, including
+  response-header waits, and a total deadline of 30 minutes or the model's size
+  at 100 KiB/s, whichever is longer: a fixed 30 minutes cut off a steady 1 GB
+  download on a slow link. Caller cancellation also applies
   during local prefix/cache hashing. Timers and abort listeners are cleaned up.
 - Interruptions/timeouts keep a bounded prefix; invalid ranges, 416, overflow
   and verification mismatches remove the partial file. A server ignoring Range

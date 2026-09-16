@@ -124,14 +124,11 @@ export async function downloadEmbed(
       bytes: spec.bytes,
       onProgress,
       signal,
+      command: "wazap embed download",
     });
   } catch (err) {
     if (err instanceof WazapError) {
-      throw new WazapError(
-        "RECALL_FAILED",
-        err.message,
-        err.fix?.replaceAll("wazap transcribe download", "wazap embed download") ?? "Run `wazap embed download` again"
-      );
+      throw new WazapError("RECALL_FAILED", err.message, err.fix ?? "Run `wazap embed download` again");
     }
     throw err;
   }
