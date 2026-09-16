@@ -8,7 +8,7 @@ import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 
 import { WAZAP_VERSION } from "../dist/config.js";
-import { isNewer } from "../dist/doctor.js";
+import { isNewer, nodeVersionCheck } from "../dist/doctor.js";
 import { childEnv } from "./helpers.mjs";
 
 const run = promisify(execFile);
@@ -43,6 +43,21 @@ for (const [candidate, current, expected] of VERSIONS) {
     assert.equal(isNewer(candidate, current), expected);
   });
 }
+
+test("the Node floor is 22.16 on the 22 line and 24 after it; 23 lacks node:sqlite features", () => {
+  for (const version of ["22.16.0", "22.22.3", "24.0.0", "24.21.0", "26.1.0"]) {
+    assert.deepEqual(nodeVersionCheck(version), { name: "node", state: "ok", detail: version });
+  }
+  const fix = "install Node 24 LTS, or Node 22.16 or newer";
+  assert.deepEqual(nodeVersionCheck("22.15.1"), { name: "node", state: "fail", detail: "22.15.1 is too old", fix });
+  assert.deepEqual(nodeVersionCheck("20.19.0"), { name: "node", state: "fail", detail: "20.19.0 is too old", fix });
+  assert.deepEqual(nodeVersionCheck("23.11.0"), {
+    name: "node",
+    state: "fail",
+    detail: "23.11.0 lacks node:sqlite features wazap needs",
+    fix,
+  });
+});
 
 test("a healthy data dir passes every check it can", async () => {
   const dir = dataDir();

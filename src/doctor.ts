@@ -55,7 +55,13 @@ const GLYPH: Record<CheckState, (text: string) => string> = { ok, warn, fail, in
 const TINT: Record<CheckState, (text: string) => string> = { ok: green, warn: yellow, fail: red, info: dim };
 
 const UPDATE_TIMEOUT_MS = 2_000;
-const MIN_NODE_MAJOR = 22;
+/**
+ * The account database runs on node:sqlite and needs backup(), the timeout
+ * option and isTransaction: 22.16.0 on the 22 line, 24.0.0 after it. The 23
+ * line never got isTransaction, so it is refused whatever its minor.
+ */
+const MIN_NODE_22_MINOR = 16;
+const NODE_FIX = "install Node 24 LTS, or Node 22.16 or newer";
 
 /** A check function may answer with a group, the way transcription does. */
 type CheckFn = (config: Config) => Check | Check[] | Promise<Check | Check[]>;
@@ -112,11 +118,15 @@ export function checkLines(check: Check): string[] {
 }
 
 function checkNode(): Check {
-  const version = process.versions.node;
-  const major = Number.parseInt(version.split(".")[0]!, 10);
-  return major >= MIN_NODE_MAJOR
-    ? { name: "node", state: "ok", detail: version }
-    : { name: "node", state: "fail", detail: `${version} is too old`, fix: `install Node ${MIN_NODE_MAJOR} or newer` };
+  return nodeVersionCheck(process.versions.node);
+}
+
+/** major.minor against the floor; exported so the rule is testable without another Node. */
+export function nodeVersionCheck(version: string): Check {
+  const [major = 0, minor = 0] = version.split(".").map((part) => Number.parseInt(part, 10) || 0);
+  if (major >= 24 || (major === 22 && minor >= MIN_NODE_22_MINOR)) return { name: "node", state: "ok", detail: version };
+  const detail = major === 23 ? `${version} lacks node:sqlite features wazap needs` : `${version} is too old`;
+  return { name: "node", state: "fail", detail, fix: NODE_FIX };
 }
 
 function checkDataDir(config: Config): Check {

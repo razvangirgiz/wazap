@@ -16,9 +16,10 @@ jobs:
       # A failure on one Node should still show whether the other passes.
       fail-fast: false
       matrix:
-        # 22 is the oldest Node that package.json's engines accepts; 24 is the
-        # newest LTS, the one users installing today get.
-        node: [22, 24]
+        # 22.16.0 is the oldest Node that package.json's engines accepts (the
+        # floor node:sqlite needs); 24 is the newest LTS, the one users
+        # installing today get.
+        node: ["22.16.0", 24]
     steps:
       - uses: actions/checkout@v7
 

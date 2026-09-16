@@ -48,7 +48,7 @@
     "hooks:install": "git config core.hooksPath scripts/git-hooks && echo 'pre-push hook active (scripts/git-hooks)'"
   },
   "engines": {
-    "node": ">=22"
+    "node": ">=22.16.0"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.12.0",
