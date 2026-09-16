@@ -71,6 +71,10 @@ export type WebhookReady = Extract<WebhookSettings, { kind: "ready" }>;
 export interface WebhookMessagePayload {
   event: "message_received" | "message_sent";
   from: string;
+  /** The sender's contact in this account's database: one id however the sender is spelled, kept when the number behind a lid becomes known. */
+  contact_id: number | null;
+  /** The sender's number in E.164 (`+40…`), when WhatsApp revealed it. */
+  phone: string | null;
   chat_id: string;
   ts: string;
   timestamp: string;
@@ -323,6 +327,8 @@ export function asWebhookPayload({ event, view, account, isSelfChat }: WebhookMe
   return {
     event,
     from: view.sender.phone ?? view.sender.id,
+    contact_id: view.sender.contact_id ?? null,
+    phone: view.sender.phone === undefined ? null : `+${view.sender.phone}`,
     chat_id: view.chat_id,
     ts: view.timestamp,
     timestamp: utcTimestamp(view.timestamp),
@@ -504,6 +510,8 @@ function testPayload(event: WebhookEvent, account?: Pick<WebhookAccount, "id" | 
   return {
     event,
     from: "wazap",
+    contact_id: null,
+    phone: null,
     chat_id: "test@s.whatsapp.net",
     ts: now,
     timestamp: now,

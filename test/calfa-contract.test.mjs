@@ -338,6 +338,11 @@ function assertMessageEvent(hit) {
   assert.ok(["text", "audio", "image", "other"].includes(body.kind), `kind ${body.kind}`);
   assert.equal(typeof body.truncated, "boolean");
   assertUtcTimestamp(body.timestamp);
+  // Additive since the durable outbox (design D9): the sender as a stable contact and a number, null when unknown.
+  assert.ok("contact_id" in body, "every message event carries contact_id");
+  assert.ok(body.contact_id === null || Number.isSafeInteger(body.contact_id), `contact_id ${body.contact_id}`);
+  assert.ok("phone" in body, "every message event carries phone");
+  assert.ok(body.phone === null || /^\+\d{8,15}$/.test(body.phone), `phone ${body.phone} is E.164`);
   return body;
 }
 
@@ -875,6 +880,8 @@ describe("Calfa webhook: decision 0009 as webhook.ts and wire.ts parse it", () =
     assert.equal(body.truncated, false);
     assert.equal(body.timestamp, "2026-09-16T08:30:05.000Z", "the message's own instant, in UTC");
     assert.equal(calfaVerifies(hit, "another-secret"), false);
+    assert.equal(body.phone, "+40733000111", "the client's number in E.164");
+    assert.ok(Number.isSafeInteger(body.contact_id), "a stable id for the client");
   });
 
   test("a text over 2000 characters arrives as 2000, ending in …, with truncated: true", async (t) => {

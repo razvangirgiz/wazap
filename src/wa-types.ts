@@ -192,6 +192,10 @@ export interface WebhookDelivery {
 
 export interface ChatSummary {
   chat_id: string;
+  /** A one-to-one chat: the other person's contact in this account's database, stable across the spellings of their id. */
+  contact_id?: number;
+  /** A one-to-one chat: the other person's number in E.164, once WhatsApp revealed it. */
+  phone?: string;
   name: string;
   note?: string;
   type: ChatType;
@@ -206,6 +210,8 @@ export interface ChatSummary {
 
 export interface MessageSender {
   id: string;
+  /** The sender's contact in this account's database: stable when a lid's number becomes known. Absent while none is stored. */
+  contact_id?: number;
   name: string;
   phone?: string;
   /** The user's own note on this person, when there is one. */

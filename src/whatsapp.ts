@@ -417,6 +417,7 @@ interface ViewLookups {
   marks: ReturnType<AccountDb["messages"]["marksOf"]>;
   nameFor: (jid: string, pushName?: string) => string;
   noteFor: (jid: string) => string | undefined;
+  contactIdFor: (jid: string) => number | null;
 }
 
 export class WhatsAppService implements WhatsAppApi {
@@ -4481,6 +4482,7 @@ export class WhatsAppService implements WhatsAppApi {
     const marks = this.db.messages.marksOf(messages.map((message) => message.id));
     const names = new Map<string, string>();
     const notes = new Map<string, string | undefined>();
+    const contactIds = new Map<string, number | null>();
     const lookups: ViewLookups = {
       marks,
       nameFor: (jid, pushName) => {
@@ -4495,6 +4497,10 @@ export class WhatsAppService implements WhatsAppApi {
       noteFor: (jid) => {
         if (!notes.has(jid)) notes.set(jid, this.noteFor(jid));
         return notes.get(jid);
+      },
+      contactIdFor: (jid) => {
+        if (!contactIds.has(jid)) contactIds.set(jid, this.db.identity.contactIdOf(jid));
+        return contactIds.get(jid) ?? null;
       },
     };
     return lookups;
@@ -4537,6 +4543,24 @@ export class WhatsAppService implements WhatsAppApi {
       view.type = "unknown";
       view.text = message.text ?? view.text;
     }
+    return this.withSenderContact(view, message, lookups);
+  }
+
+  /**
+   * The sender's contact id, the person as the account database knows them: it
+   * stays the same when a lid's number becomes known, where `id` changes. The
+   * row's own sender for someone else's message; a lookup by id for the
+   * account's own, which the row does not name.
+   */
+  private withSenderContact(view: MessageView, message: StoredMessage, lookups?: ViewLookups): MessageView {
+    const contactId =
+      !message.fromMe && message.senderId !== null
+        ? message.senderId
+        : (lookups?.contactIdFor(view.sender.id) ?? this.db.identity.contactIdOf(view.sender.id));
+    if (contactId !== null) {
+      const { id, ...rest } = view.sender;
+      view.sender = { id, contact_id: contactId, ...rest };
+    }
     return view;
   }
 
@@ -4565,7 +4589,7 @@ export class WhatsAppService implements WhatsAppApi {
     const sender = message.fromMe ? this.ownJid() : (message.senderJid ?? message.chatJid);
     const phone = phoneOf(sender);
     const note = this.noteFor(sender);
-    return {
+    return this.withSenderContact({
       message_id: message.sid,
       chat_id: message.chatJid,
       from_me: message.fromMe,
@@ -4582,7 +4606,7 @@ export class WhatsAppService implements WhatsAppApi {
       has_media: false,
       forwarded: false,
       edited: message.editedAt !== null,
-    };
+    }, message);
   }
 
   private async fetchOlder(sock: WASocket, anchor: StoredMessage, limit: number): Promise<void> {
@@ -4639,8 +4663,11 @@ export class WhatsAppService implements WhatsAppApi {
     const last = chat.lastMessageId === null ? null : (this.db.messages.byIds([chat.lastMessageId])[0] ?? this.db.messages.lastVisible(chat.id));
     const muteEnd = chat.mutedUntil ?? 0;
     const note = this.noteFor(jid);
+    const phone = chat.kind === "direct" ? phoneOf(jid) : undefined;
     const summary: ChatSummary = {
       chat_id: jid,
+      ...(chat.kind === "direct" && chat.contactId !== null ? { contact_id: chat.contactId } : {}),
+      ...(phone === undefined ? {} : { phone: `+${phone}` }),
       name: this.displayName(jid),
       type: isGroupId(jid) ? "group" : "individual",
       unread_count: Math.max(0, chat.unread),

@@ -181,6 +181,8 @@ function samplePayload(overrides = {}) {
   return {
     event: "message_received",
     from: PEER,
+    contact_id: 1,
+    phone: "+40700000002",
     chat_id: PEER,
     ts: "2026-09-08T14:00:00+00:00",
     timestamp: "2026-09-08T14:00:00.000Z",
@@ -303,6 +305,8 @@ test("asWebhookPayload names the account", () => {
   assert.equal(payload.account_name, "Work");
   assert.equal(payload.event, "message_received");
   assert.equal(payload.text, "salut");
+  assert.equal(payload.phone, "+40700000002", "the sender's number in E.164");
+  assert.equal(payload.contact_id, null, "a view without a stored contact names none");
 });
 
 test("an audio payload carries the transcription instead of the placeholder", () => {
@@ -1977,6 +1981,53 @@ test("the body is built when the event is posted: an edit and a transcript that 
   } finally {
     release();
     svc.webhook = posting;
+    await svc.stop();
+    await server.close();
+    restoreEnv();
+  }
+});
+
+test("message events name the sender's contact_id and E.164 phone, and a lid whose number is unknown has a contact_id only", async () => {
+  const server = await recorder();
+  const restoreEnv = saveWebhookEnv(server.url, "all");
+  const { svc, sock } = connectedService(WhatsAppService, { prefix: "wazap-webhook-identity-", id: ME, name: "Răzvan" });
+  const group = "120363000000000009@g.us";
+  const lid = "98765432109876@lid";
+  try {
+    sock.ev.emit("messages.upsert", { type: "notify", messages: [textMessage("IN", "salut")] });
+    sock.ev.emit("messages.upsert", { type: "notify", messages: [ownMessage("OUT", "pa")] });
+    sock.ev.emit("messages.upsert", {
+      type: "notify",
+      messages: [
+        {
+          key: { remoteJid: group, fromMe: false, id: "LID", participant: lid },
+          messageTimestamp: Math.floor(Date.now() / 1000),
+          message: { conversation: "din grup" },
+        },
+      ],
+    });
+    await waitFor(() => server.received.length === 3, 3_000, "the three message POSTs");
+    const [received, sent, fromLid] = server.received;
+    assert.equal(received.phone, "+40700000002");
+    assert.equal(received.contact_id, svc.db.identity.contactIdOf(PEER));
+    assert.equal(typeof received.contact_id, "number");
+    assert.equal(received.from, "40700000002", "from is unchanged");
+    assert.equal(sent.phone, "+40700000001", "the account itself sent it");
+    assert.equal(sent.contact_id, svc.db.identity.contactIdOf(ME));
+    assert.equal(fromLid.phone, null);
+    assert.equal(fromLid.contact_id, svc.db.identity.contactIdOf(lid));
+    assert.equal(typeof fromLid.contact_id, "number");
+
+    const [view] = (await svc.readMessages(PEER, 10)).data.filter((message) => message.message_id === `false_${PEER}_IN`);
+    assert.equal(view.sender.contact_id, received.contact_id, "read_messages names the same contact");
+    assert.equal(view.sender.phone, "40700000002", "sender.phone is unchanged");
+    const chat = (await svc.listChats("individual", 10)).data.find((row) => row.chat_id === PEER);
+    assert.equal(chat.contact_id, received.contact_id);
+    assert.equal(chat.phone, "+40700000002");
+    const groupChat = (await svc.listChats("groups", 10)).data.find((row) => row.chat_id === group);
+    assert.equal(groupChat.contact_id, undefined, "a group is nobody's contact");
+    assert.equal(groupChat.phone, undefined);
+  } finally {
     await svc.stop();
     await server.close();
     restoreEnv();
