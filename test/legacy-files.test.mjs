@@ -578,6 +578,15 @@ test("the number linked before takes its set-aside database back, and the legacy
   assert.equal(withDb(dbPath, (db) => db.messages.get(A1) !== null), true);
 });
 
+test("a database set aside in the same millisecond as an earlier one takes the next free name", async (t) => {
+  const fx = await legacyAccount();
+  await bootAt(t, fx.dataDir, fx.now);
+  const earlier = setAside(fx.paths.root, "40788888888@s.whatsapp.net", fx.now + DAY);
+  await bootAt(t, fx.dataDir, fx.now + DAY, {}, OTHER);
+  assert.equal(readMeta(earlier, "owner"), "40788888888@s.whatsapp.net", "the earlier one is untouched");
+  assert.equal(readMeta(join(fx.paths.root, `wazap.${fx.now + DAY + 1}.previous-owner.sqlite`), "owner"), ME);
+});
+
 test("a logout binds the database to its number before deleting the credentials, so a different number never imports its files", async (t) => {
   const fx = await legacyAccount({ beta: false });
   const dbPath = join(fx.paths.root, "wazap.sqlite");
