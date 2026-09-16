@@ -271,6 +271,8 @@ const silentLogger: ILogger = {
 };
 
 const PROFILE_LOOKUP_MS = 8_000;
+/** How long stop waits for a cancelled pairing socket to close. */
+const PAIRING_STOP_MS = 5_000;
 
 /** Resolves to `null` when `work` rejects or is still pending after `ms`. */
 function orNullAfter<T>(work: Promise<T>, ms: number): Promise<T | null> {
@@ -304,6 +306,11 @@ export class WhatsAppService implements WhatsAppApi {
   /** The pairing in flight, from the first `link` call until it settles either way. */
   private linking: Promise<PairingInfo> | null = null;
   private pairing: PairingInfo | null = null;
+  /**
+   * The pairing socket behind a code already handed out. Stopping cancels it and
+   * waits for it to close, so no link lands credentials behind a logout or a removal.
+   */
+  private pairingRun: { cancel: () => void; settled: Promise<void> } | null = null;
   private lastInboundAt: number | null = null;
   /** Invalidated by every write on store.contacts; see namedContacts. */
   private namedContactsDirty = true;
@@ -452,7 +459,19 @@ export class WhatsAppService implements WhatsAppApi {
     await this.flushStore();
     await this.retention.idle().catch(() => {});
     this.teardownSocket();
+    await this.stopPairing();
     await this.stopRecall();
+  }
+
+  private async stopPairing(): Promise<void> {
+    const run = this.pairingRun;
+    if (run === null) return;
+    run.cancel();
+    let timer: NodeJS.Timeout | undefined;
+    const bounded = new Promise<void>((resolve) => {
+      timer = setTimeout(resolve, PAIRING_STOP_MS);
+    });
+    await Promise.race([run.settled, bounded]).finally(() => clearTimeout(timer));
   }
 
   /**
@@ -491,6 +510,10 @@ export class WhatsAppService implements WhatsAppApi {
       this.abandonLink(err);
       throw err;
     }
+    if (this.stopped) {
+      pairing.cancel();
+      throw new WazapError("NOT_CONNECTED", "The account is shutting down.", "Call get_status");
+    }
     this.pairing = {
       code: prettyCode(pairing.code),
       phone_masked: maskNumber(phone),
@@ -501,6 +524,9 @@ export class WhatsAppService implements WhatsAppApi {
       (account) => this.adoptLink(account),
       (err: unknown) => this.abandonLink(err)
     );
+    // Registered after the handlers above, so a stop waiting on it resumes only
+    // once adoptLink or abandonLink has seen the outcome.
+    this.pairingRun = { cancel: pairing.cancel, settled: pairing.done.then(() => {}, () => {}) };
     return this.pairing;
   }
 
@@ -512,6 +538,10 @@ export class WhatsAppService implements WhatsAppApi {
   private async adoptLink(account: LinkedAccount): Promise<void> {
     this.linking = null;
     this.pairing = null;
+    this.pairingRun = null;
+    // A stopped service is being logged out or removed: the credentials are the
+    // caller's to clear, and the owner is not this service's to record.
+    if (this.stopped) return;
     this.account = account;
     this.lastError = null;
     this.onLinked?.(account);
@@ -521,6 +551,9 @@ export class WhatsAppService implements WhatsAppApi {
   private abandonLink(err: unknown): void {
     this.linking = null;
     this.pairing = null;
+    this.pairingRun = null;
+    // Cancelled by stop: nothing failed, so nothing to report.
+    if (this.stopped) return;
     this.setStatus("not_linked");
     this.lastError = describe(err);
     logError("link", err);

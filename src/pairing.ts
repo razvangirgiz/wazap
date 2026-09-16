@@ -142,6 +142,8 @@ export interface Pairing {
   expiresAt: number;
   /** Resolves once the socket opens and the account has settled; rejects on expiry or rejection. */
   done: Promise<LinkedAccount>;
+  /** Ends the link early, the way the deadline does; `done` then rejects. */
+  cancel: () => void;
 }
 
 /**
@@ -180,7 +182,7 @@ export async function startPairing(authDir: string, phone: string, deadlineMs: n
 
   const codeTimer = setTimeout(() => refuse(timedOut()), Math.min(CODE_TIMEOUT_MS, deadlineMs));
   try {
-    return { code: await issued, expiresAt: deadline, done };
+    return { code: await issued, expiresAt: deadline, done, cancel: () => abort.abort() };
   } catch (err) {
     abort.abort();
     throw err;

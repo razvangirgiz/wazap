@@ -120,3 +120,20 @@ test("the restart WhatsApp demands after pairing is followed, and the link still
     stop();
   }
 });
+
+test("cancel after the code ends the link socket and rejects done, so nothing lands later", async () => {
+  const sock = fakeSocket({ pairingCode: "ABCD1234", user: USER });
+  const { started, stop } = await pairing([sock]);
+  try {
+    sock.ev.emit("connection.update", { qr: "a-qr" });
+    const p = await started;
+    p.cancel();
+    await assert.rejects(p.done, (err) => {
+      assert.equal(err.code, "TIMEOUT");
+      return true;
+    });
+    assert.equal(sock.ended, true, "a cancelled pairing must not keep its socket for the rest of the deadline");
+  } finally {
+    stop();
+  }
+});
