@@ -41,8 +41,12 @@ export interface TranscribeWorkerOptions {
   /** Waits before the second and the third attempt. */
   retryDelaysMs?: readonly number[];
   maxAttempts?: number;
-  /** The wait of a note that could not start through no fault of its own. */
-  blockedDelayMs?: number;
+  /**
+   * The wait of a note whose run found its account unable to serve it. Short:
+   * a note is only started while its account says it is connected, and the
+   * account wakes the worker the moment its connection opens.
+   */
+  waitingDelayMs?: number;
   /** How often an account that cannot serve yet is looked at again. */
   pollMs?: number;
   /** How often every account's queue drops what is too old to run or to remember. */
@@ -57,7 +61,7 @@ export interface TranscribeWorkerOptions {
 const DEFAULTS: Required<TranscribeWorkerOptions> = {
   retryDelaysMs: [10_000, 60_000],
   maxAttempts: TRANSCRIBE_MAX_ATTEMPTS,
-  blockedDelayMs: 30_000,
+  waitingDelayMs: 5_000,
   pollMs: 10_000,
   maintainMs: 60 * 60_000,
   pauseMs: 30_000,
@@ -331,7 +335,7 @@ export class TranscribeWorker {
       return;
     }
     if (failure.kind === "waiting") {
-      queue.release(item.id, failure.reason, this.options.blockedDelayMs);
+      queue.release(item.id, failure.reason, this.options.waitingDelayMs);
       return;
     }
     if (failure.kind === "permanent" || attempts >= this.options.maxAttempts) {

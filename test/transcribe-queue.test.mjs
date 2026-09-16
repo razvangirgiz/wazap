@@ -634,6 +634,20 @@ test("wazap status warns that a read-only account's queue never runs with an API
   assert.match(checks[0].fix, /wazap config writes on/);
 });
 
+test("a note waiting for its account runs as soon as the connection opens, not at the next poll", async () => {
+  const { svc, sock } = serviceWith(CONFIGURED);
+  svc.status = "disconnected";
+  const provider = stub(svc);
+  deliver(sock, [voiceNote("V1")]);
+  await svc.transcribeIdle();
+  assert.equal(provider.calls, 0);
+
+  svc.setStatus("connected");
+  await waitUntil(() => svc.db.messages.get(sidOf("V1")).transcript !== null, 1_000);
+  assert.equal(provider.calls, 1);
+  await svc.stop();
+});
+
 test("a short-lived command queues arriving notes but leaves transcribing them to the server", async () => {
   const queued = serviceWith(CONFIGURED);
   queued.svc.status = "disconnected";
