@@ -276,6 +276,14 @@ export function storageChecks(report: StorageReport, serverRunning: boolean): Ch
     if (storage !== null) checks.push({ ...storage, detail: named(account, storage.detail) });
     const legacy = legacyCheck(account);
     if (legacy !== null) checks.push({ ...legacy, detail: named(account, legacy.detail) });
+    if (account.links.length > 0) {
+      checks.push({
+        name: "legacy files",
+        state: "info",
+        detail: named(account, `${account.links.join(", ")} ${account.links.length === 1 ? "is a link" : "are links"}: wazap never moves or deletes through a link`),
+        fix: "delete what the link points at yourself once the account reads right",
+      });
+    }
     if (account.previous_owner.length > 0) {
       const files = account.previous_owner.map((db) => `${db.file} (${bytes(db.bytes)}), deleted after ${day(db.delete_after)}`);
       checks.push({
@@ -342,11 +350,18 @@ function legacyCheck(account: AccountStorage): Check | null {
     case "in-place":
       // Before the import they are the import's; after it, someone put them back (a rollback, say).
       if (account.state !== "ready" && account.state !== "imported-unverified") return null;
+      if (account.import_state === "skipped") {
+        return {
+          name: "legacy files",
+          state: "info",
+          detail: `${legacy.entries} earlier message files stay in place: they belong to the number linked here before a different one, and are imported if it links again`,
+        };
+      }
       return {
         name: "legacy files",
         state: "info",
         detail: `${legacy.entries} earlier message files are at their old place, but the account was already imported and does not read them`,
-        fix: "delete them if you no longer need them; to import them again, stop the server and delete wazap.sqlite with its -wal and -shm, which also drops whatever only the database holds",
+        fix: "delete them if you no longer need them. To import them again: stop the server, move wazap.sqlite and its -wal and -shm aside (keep them: they hold what arrived since the upgrade), start",
       };
     case "moved":
       return { name: "legacy files", state: "info", detail: `kept in ${legacy.path} until ${day(legacy.delete_after)}, then deleted` };
@@ -361,7 +376,7 @@ function legacyCheck(account: AccountStorage): Check | null {
       return {
         name: "legacy files",
         state: "info",
-        detail: `${legacy.path} is not scheduled for deletion: this account database did not move it there`,
+        detail: `${legacy.path} holds nothing this account database moved there, so wazap never deletes it`,
         fix: `delete it yourself once you no longer need it: \`rm -rf ${legacy.path}\``,
       };
     default: {
@@ -392,7 +407,7 @@ function betaArchiveCheck(archive: BetaArchiveReport): Check {
     state: "info",
     detail:
       archive.waiting_for.length > 0
-        ? `${archive.path} moves to legacy/ once ${archive.waiting_for.join(", ")} finished importing it`
+        ? `${archive.path} stays in place until ${archive.waiting_for.join(", ")} imported it, at the next start`
         : `${archive.path} moves to legacy/ at the next start`,
   };
 }

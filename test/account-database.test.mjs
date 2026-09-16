@@ -196,10 +196,10 @@ test("after the import the service never reads or writes a legacy file, whatever
   await first.stop();
   assert.equal(existsSync(join(fx.paths.root, "legacy", "store.json")), true, "the boot moved them aside");
 
-  // Their old places and legacy/, however looked at; the moved beta archive's age may be checked, never its bytes.
+  // Their old places and legacy/, however looked at; the beta archive may be listed and dated, its bytes are read only by SQLite.
   const legacy = [fx.paths.storeFile, fx.paths.historyDir, fx.paths.notesFile, join(fx.paths.root, "retention.json"), join(fx.paths.root, "recall"), join(fx.paths.root, "legacy")];
   const archive = [join(fx.dataDir, "archive.sqlite"), join(fx.dataDir, "legacy")];
-  const metadataOnly = new Set(["existsSync", "statSync", "lstatSync", "stat"]);
+  const metadataOnly = new Set(["existsSync", "statSync", "lstatSync", "stat", "readdirSync"]);
   const touched = [];
   const watch = (target, name) => {
     const original = target[name];

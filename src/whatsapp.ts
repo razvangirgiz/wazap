@@ -47,8 +47,19 @@ import {
 import { asWazapError, RELINK_FIX, RESET_FIX, WazapError } from "./errors.js";
 import { LidRegistry, lidKey } from "./identity.js";
 import { isGroupId, isNoiseJid, isStatusJid, normalizePhone, STATUS_JID } from "./ids.js";
-import { FUTURE_SLACK_MS, IMPORT_META, importLegacyAccount, scrubQuote, type ImportReport } from "./legacy-import/index.js";
-import { LEGACY_TTL_MS, legacySchedule, moveAccountLegacy, purgeAccountLegacy, purgePreviousOwners, settleBetaArchive } from "./legacy-files.js";
+import { FUTURE_SLACK_MS, IMPORT_META, importBetaArchive, importLegacyAccount, scrubQuote, type ImportReport } from "./legacy-import/index.js";
+import {
+  LEGACY_TTL_MS,
+  accountBetaState,
+  lateBetaArchive,
+  legacySchedule,
+  linkedOwners,
+  moveAccountLegacy,
+  purgeAccountLegacy,
+  purgePreviousOwners,
+  settleAccountArchive,
+  settleBetaArchive,
+} from "./legacy-files.js";
 import { log, logError } from "./logger.js";
 import { messageExpiry } from "./message-expiry.js";
 import {
@@ -753,6 +764,7 @@ export class WhatsAppService implements WhatsAppApi {
         this.lids = new LidRegistry();
         this.adoptDatabase(db);
       }
+      await this.importLateBeta(db);
       if (this.stopped || !db.isOpen) return;
       if (!this.config.persistHistory) await db.messages.purgeLive();
       this.storageState = "ready";
@@ -778,6 +790,40 @@ export class WhatsAppService implements WhatsAppApi {
       } catch (err) {
         logError("recall index", err);
       }
+    }
+  }
+
+  /**
+   * A beta archive this account's number owns and its import did not take (it
+   * was not linked then, or the archive came later): imported now, before the
+   * account serves, so the archive is never retired with rows only it holds.
+   * A failure is logged and retried at the next start; the archive stays.
+   */
+  private async importLateBeta(db: AccountDb): Promise<void> {
+    const archive = lateBetaArchive(this.config.dataDir, this.paths, db);
+    if (archive === null || this.stopped || !db.isOpen) return;
+    const before = this.storageState;
+    this.storageState = "preparing";
+    log(`account ${this.accountRecord.id}: importing the beta archive.sqlite its number owns (once)`);
+    try {
+      const result = await importBetaArchive({
+        dataDir: this.config.dataDir,
+        accountId: this.accountRecord.id,
+        accountPaths: this.paths,
+        db,
+        betaArchive: archive,
+        options: { retention: this.config.retention === true },
+      });
+      const beta = result.phases?.beta;
+      log(`account ${this.accountRecord.id}: beta archive ${result.outcome}${beta ? `, ${beta.imported} messages added` : ""}`);
+      this.lids = new LidRegistry();
+      this.adoptDatabase(db);
+    } catch (err) {
+      if (this.stopped || !db.isOpen) return;
+      const code = (err as { code?: unknown })?.code;
+      logError(`account ${this.accountRecord.id}`, `the beta archive import failed (${typeof code === "string" ? code : "error"}); it stays and is tried again at the next start`);
+    } finally {
+      if (this.storageState === "preparing") this.storageState = before;
     }
   }
 
@@ -816,18 +862,23 @@ export class WhatsAppService implements WhatsAppApi {
     });
     step("deleting legacy/", () => {
       const entries = purgeAccountLegacy(this.paths.root, db, now, retention);
-      if (entries !== null) log(`account ${id}: deleted legacy/ (${entries} entries)`);
+      if (entries !== null) log(`account ${id}: deleted ${entries} earlier message files from legacy/`);
+    });
+    step("settling the account's beta archive", () => {
+      const { moved, deleted } = settleAccountArchive(this.paths.root, db, now, retention);
+      if (moved) log(`account ${id}: moved its beta archive.sqlite into legacy/`);
+      if (deleted > 0) log(`account ${id}: deleted ${deleted} beta archive(s) from legacy/`);
     });
     step("deleting set-aside databases", () => {
-      const deleted = purgePreviousOwners(this.paths.root, now, retention);
+      const deleted = purgePreviousOwners(this.paths.root, now, linkedOwners(this.config.dataDir));
       if (deleted > 0) log(`account ${id}: deleted ${deleted} database(s) set aside when a different number linked`);
     });
     step("settling the beta archive", () => {
       const { moved, deleted } = settleBetaArchive(this.config.dataDir, now, retention, (accountId) =>
-        accountId === id ? db.getMeta(IMPORT_META.state) : undefined
+        accountId === id ? accountBetaState(db) : undefined
       );
       if (moved) log("moved the beta archive.sqlite into legacy/");
-      if (deleted) log("deleted the beta archive.sqlite from legacy/");
+      if (deleted > 0) log(`deleted ${deleted} beta archive(s) from legacy/`);
     });
   }
 
