@@ -104,6 +104,9 @@
 - A server started by an older wazap has no control line: against it,
   `account` changes still say to restart, and `logout` and `account remove`
   still refuse. Restart it once on the new version.
+- Sending once moves the account database to schema version 2 on the first
+  start. 0.22 refuses a version 2 database (`SCHEMA_TOO_NEW`), and there is
+  no downgrade: going back means restoring a copy taken before the upgrade.
 
 ## 0.21.0
 ### Security

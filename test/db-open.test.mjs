@@ -14,6 +14,8 @@ import { promisify } from "node:util";
 import { createHash } from "node:crypto";
 
 import { AccountDb, SCHEMA_VERSION, StorageError, isSqliteExperimentalWarning } from "../dist/db/index.js";
+import { MIGRATIONS } from "../dist/db/schema.js";
+import { sqlite } from "../dist/db/sqlite.js";
 import { PEER, T0, openTemp, tempDir, textMessage } from "./db-fixtures.mjs";
 
 const run = promisify(execFile);
@@ -73,6 +75,38 @@ test("migrations run once: reopening keeps the version and the original migratio
   assert.equal(reopened.getMeta("migrated_v1"), stamp);
   assert.equal(reopened.getMeta("created_at"), created);
   reopened.close();
+});
+
+test("a version 1 file, as 0.22 ships it, upgrades to the schema a new file gets, keeping what it held", () => {
+  const schemaOf = (path) => {
+    const { DatabaseSync } = sqlite();
+    const reader = new DatabaseSync(path, { readOnly: true });
+    try {
+      return reader.prepare("SELECT type, name, tbl_name, sql FROM sqlite_schema ORDER BY type, name").all();
+    } finally {
+      reader.close();
+    }
+  };
+  const old = join(tempDir(), "v1", "wazap.sqlite");
+  mkdirSync(dirname(old), { recursive: true });
+  const { DatabaseSync } = sqlite();
+  const v1 = new DatabaseSync(old);
+  v1.exec(MIGRATIONS[0].sql);
+  v1.exec(`PRAGMA user_version = ${MIGRATIONS[0].version}`);
+  v1.prepare("INSERT INTO meta(key, value) VALUES ('owner', ?)").run(PEER);
+  v1.prepare("INSERT INTO chats(jid, kind) VALUES (?, 'direct')").run(PEER);
+  v1.close();
+  const upgraded = AccountDb.open(old);
+  assert.equal(upgraded.schemaVersion, SCHEMA_VERSION, "opening migrates");
+  assert.equal(upgraded.getMeta("owner"), PEER);
+  assert.equal(upgraded.identity.chat(PEER)?.jid, PEER);
+  upgraded.close();
+
+  const fresh = join(tempDir(), "fresh", "wazap.sqlite");
+  AccountDb.open(fresh).close();
+  assert.deepEqual(schemaOf(old), schemaOf(fresh));
+  assert.equal(SCHEMA_VERSION, 2);
+
 });
 
 test("a file from a newer schema is refused with a typed error and left byte-for-byte untouched", () => {
