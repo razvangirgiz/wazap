@@ -133,7 +133,7 @@ export async function resolveSenderFilter(wa: WhatsAppApi, from: string | undefi
  * for a group, one metadata fetch pairs every participant it can; for a chat
  * filed under the lid itself, a one-page read runs the account's own lid→number
  * table over it. Both leave the store changed, so the message is re-rendered
- * afterwards rather than patched — a recall "index only" hit has no message to
+ * afterwards rather than patched — a recall "index only" hit has no protobuf to
  * re-render and keeps its stored view.
  */
 async function relearnViews(wa: WhatsAppApi, messages: MessageView[]): Promise<MessageView[]> {

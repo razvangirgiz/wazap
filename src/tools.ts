@@ -174,7 +174,7 @@ link_account when it says no account is linked yet.
   and search_contacts({tag: "client"}) lists everyone filed under a tag.
 - Find something said: search_messages(query[, chat_id]) for the exact words,
   or recall(query[, chat_id]) for what was meant — a paraphrase or another
-  language still hits, and it reaches messages too old for the live store.
+  language still hits. Both reach every message the account keeps.
 - Send: send_message / send_media / send_poll / send_location / forward_message
   draft only. They return a draft_id and a preview. Show the preview to the
   user; after they say yes, call confirm_send({ draft_id }). That is the only
@@ -761,8 +761,8 @@ Each result carries its date, a fused score, \`matched\` ("words", "meaning" or
 "both") and the cosine \`similarity\` when its meaning ranked it. chat_id, since,
 until and from narrow the search exactly like search_messages — including a
 name that resolves to exactly one person. A hit marked "index only" is a
-message wazap holds only as text: quote it, but get_message and download_media
-cannot open it.
+message wazap holds only as text: quote it; get_message returns that text, and
+download_media has nothing to open.
 A hit found only by meaning must clear the similarity floor, so a question with
 no answer comes back empty; when only weak meaning matches survive, the output
 says so — do not present them as found facts.
@@ -1827,8 +1827,8 @@ function renderMessages(
 
 /**
  * Ranked hits with the date always on the line and the score that ordered
- * them. "index only" warns that the message left the live store, so
- * get_message and download_media can no longer see it.
+ * them. "index only" warns that wazap holds the message only as text, so
+ * download_media has nothing to open.
  */
 function renderRecall(title: string, answer: RecallAnswer | IdentifiedRecallAnswer): string {
   const { hits, index } = answer;
