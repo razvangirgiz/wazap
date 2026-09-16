@@ -71,11 +71,9 @@ function recordCalls(sock) {
   return calls;
 }
 
-/** The sids the recall index was told to forget. */
-function recordForgotten(svc) {
-  const forgotten = [];
-  svc.recallForget = (sids) => forgotten.push(...sids);
-  return forgotten;
+/** Whether nothing of the message is left in the database, not even a tombstone: a clear purges. */
+function purged(svc, sid) {
+  return svc.db.messages.get(sid, { includeHidden: true }) === null;
 }
 
 let seq = 0;
@@ -181,14 +179,11 @@ test("a message from another chat, or none at all, is refused before any socket 
 test("clearing a chat, by manage_chat or by the phone's messages.delete, empties it and keeps it listed", async () => {
   const { svc, sock } = writableService();
   const calls = recordCalls(sock);
-  const forgotten = recordForgotten(svc);
   sock.ev.emit("chats.upsert", [{ id: ANA }, { id: DAN }, { id: GROUP }]);
   const first = arrive(sock, ANA, { ageSeconds: 7200 });
   const last = arrive(sock, ANA);
   const fromPhone = arrive(sock, DAN);
   const kept = arrive(sock, GROUP, { participant: ANA });
-  svc.config.persistHistory = true;
-  svc.storeDirty = false;
 
   const result = await svc.manageChat(ANA, "clear");
   assert.deepEqual(result, { chat_id: ANA, action: "clear", applied: "clear" });
@@ -199,14 +194,14 @@ test("clearing a chat, by manage_chat or by the phone's messages.delete, empties
   assert.equal(mod.clear, true);
   assert.equal(mod.lastMessages.length, 1);
   assert.equal(mod.lastMessages[0].key.id, last.split("_").at(-1));
-  assert.equal(svc.storeDirty, false, "manage_chat clear waits for the cleaned snapshot to be saved");
+  assert.equal(purged(svc, first) && purged(svc, last), true, "manage_chat clear waits for the purge");
 
-  svc.storeDirty = false;
   sock.ev.emit("messages.delete", { jid: DAN, all: true });
-  assert.equal(svc.storeDirty, true, "messages.delete all");
+  assert.notEqual(svc.db.identity.chat(DAN).clearedThroughTs, null, "messages.delete all stores the barrier at once");
 
   for (const sid of [first, last, fromPhone]) assert.equal(svc.hasMessage(sid), false, sid);
-  assert.deepEqual(forgotten.sort(), [first, last, fromPhone].sort());
+  await svc.storageIdle();
+  for (const sid of [first, last, fromPhone]) assert.equal(purged(svc, sid), true, `${sid} and its vector are purged`);
   assert.equal(svc.hasMessage(kept), true);
   const listed = (await svc.listChats("all", 50)).data;
   for (const cleared of [ANA, DAN]) {
@@ -220,13 +215,10 @@ test("clearing a chat, by manage_chat or by the phone's messages.delete, empties
 test("deleting a chat, by manage_chat or by the phone's chats.delete, takes it, its messages and their index entries out", async () => {
   const { svc, sock } = writableService();
   const calls = recordCalls(sock);
-  const forgotten = recordForgotten(svc);
   sock.ev.emit("chats.upsert", [{ id: ANA }, { id: DAN }, { id: GROUP }]);
   const only = arrive(sock, ANA);
   const fromPhone = arrive(sock, DAN);
   const kept = arrive(sock, GROUP, { participant: ANA });
-  svc.config.persistHistory = true;
-  svc.storeDirty = false;
 
   const result = await svc.manageChat(ANA, "delete");
   assert.deepEqual(result, { chat_id: ANA, action: "delete", applied: "delete" });
@@ -234,22 +226,21 @@ test("deleting a chat, by manage_chat or by the phone's chats.delete, takes it, 
   assert.equal(calls[0][1].delete, true);
   assert.equal(calls[0][1].lastMessages[0].key.id, only.split("_").at(-1));
   assert.equal(calls[0][2], ANA);
-  assert.equal(svc.storeDirty, false, "manage_chat delete waits for the cleaned snapshot to be saved");
+  assert.equal(purged(svc, only), true, "manage_chat delete waits for the purge");
 
-  svc.storeDirty = false;
   sock.ev.emit("chats.delete", [DAN]);
-  assert.equal(svc.storeDirty, true, "chats.delete");
+  assert.notEqual(svc.db.identity.chat(DAN).clearedThroughTs, null, "chats.delete stores the barrier at once");
 
   for (const [chat, sid] of [
     [ANA, only],
     [DAN, fromPhone],
   ]) {
-    assert.equal(svc.store.chats.has(chat), false, chat);
-    assert.equal(svc.store.byChat.has(chat), false, chat);
+    assert.deepEqual(svc.db.messages.chatPage(chat, { limit: 10 }).items, [], chat);
     assert.equal(svc.hasChat(chat), false, chat);
     assert.equal(svc.hasMessage(sid), false, sid);
   }
-  assert.deepEqual(forgotten, [only, fromPhone]);
+  await svc.storageIdle();
+  assert.equal(purged(svc, fromPhone), true);
   assert.deepEqual(
     (await svc.listChats("all", 50)).data.map((chat) => chat.chat_id),
     [GROUP]
@@ -260,7 +251,6 @@ test("deleting a chat, by manage_chat or by the phone's chats.delete, takes it, 
 
 test("a refused clear or delete leaves the store as it was", async () => {
   const { svc, sock } = writableService();
-  const forgotten = recordForgotten(svc);
   sock.ev.emit("chats.upsert", [{ id: ANA }]);
   const kept = arrive(sock, ANA);
   sock.chatModify = async () => {
@@ -273,8 +263,8 @@ test("a refused clear or delete leaves the store as it was", async () => {
     );
   }
   assert.equal(svc.hasMessage(kept), true);
-  assert.equal(svc.store.chats.has(ANA), true);
-  assert.deepEqual(forgotten, []);
+  assert.equal(svc.hasChat(ANA), true);
+  assert.equal(svc.db.identity.chat(ANA).clearedThroughTs, null, "no barrier was stored");
   await svc.stop();
 });
 
@@ -306,7 +296,6 @@ test("block and unblock a person update WhatsApp and is_blocked at once; a group
 test("delete_message for the linked account only: anyone's message at any age, removed here too", async () => {
   const { svc, sock } = writableService();
   const calls = recordCalls(sock);
-  const forgotten = recordForgotten(svc);
   const lookups = [];
   sock.groupMetadata = async (id) => {
     lookups.push(id);
@@ -333,7 +322,9 @@ test("delete_message for the linked account only: anyone's message at any age, r
 
   assert.equal(svc.hasMessage(theirs), false);
   assert.equal(svc.hasMessage(mine), false);
-  assert.deepEqual(forgotten, [theirs, mine]);
+  for (const sid of [theirs, mine]) {
+    assert.notEqual(svc.db.messages.get(sid, { includeHidden: true }).deletedAt, null, `${sid} is a tombstone`);
+  }
   assert.deepEqual(lookups, [], "no admin rights are needed to delete for the account alone");
 
   const server = fakeServer();
