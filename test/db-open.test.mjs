@@ -257,3 +257,39 @@ test("opening a database prints nothing to stdout and no SQLite warning to stder
   assert.doesNotMatch(stderr, /SQLite is an experimental/);
   assert.match(stderr, /something else is experimental/);
 });
+
+test("a version 1 file migrates to version 2: reactions and votes keep their rows, and list ties in the order they arrived", async () => {
+  const { MIGRATIONS } = await import("../dist/db/schema.js");
+  const { sqlite } = await import("../dist/db/sqlite.js");
+  const path = join(tempDir("wazap-db-v1-"), "wazap.sqlite");
+  const { DatabaseSync } = sqlite();
+  const v1 = new DatabaseSync(path);
+  v1.exec("PRAGMA journal_mode = WAL");
+  v1.exec(MIGRATIONS[0].sql);
+  v1.exec("PRAGMA user_version = 1");
+  v1.exec(`INSERT INTO contacts(id, phone_jid, updated_at) VALUES (1, '40700000002@s.whatsapp.net', 1), (2, '40700000003@s.whatsapp.net', 1);
+    INSERT INTO chats(id, jid, kind) VALUES (1, '120363000000000001@g.us', 'group');
+    INSERT INTO messages(id, chat_id, key_id, from_me, ts, type, text) VALUES (${1_788_256_800 * 1048576}, 1, 'P', 0, 1788256800000, 'poll', 'poll');
+    INSERT INTO votes(message_id, contact_id, choice, ts) VALUES (${1_788_256_800 * 1048576}, 2, '["da"]', 5), (${1_788_256_800 * 1048576}, 1, '["nu"]', 7);
+    INSERT INTO reactions(message_id, contact_id, emoji, ts) VALUES (${1_788_256_800 * 1048576}, 1, '👍', 9);`);
+  v1.close();
+
+  const db = AccountDb.open(path);
+  assert.equal(db.schemaVersion, 2);
+  assert.ok(db.getMeta("migrated_v2"));
+  const poll = "false_120363000000000001@g.us_P";
+  assert.deepEqual(db.messages.votes(poll).map((v) => [v.jid, v.choice]), [
+    ["40700000003@s.whatsapp.net", '["da"]'],
+    ["40700000002@s.whatsapp.net", '["nu"]'],
+  ]);
+  assert.deepEqual(db.messages.reactions(poll).map((r) => r.emoji), ["👍"]);
+
+  // Two votes in the same instant: the one that came first is listed first, whoever's contact is older.
+  db.messages.vote(poll, "40700000003@s.whatsapp.net", '["da"]', 20);
+  db.messages.vote(poll, "40700000002@s.whatsapp.net", '["da"]', 20);
+  assert.deepEqual(db.messages.votes(poll).map((v) => v.jid), ["40700000003@s.whatsapp.net", "40700000002@s.whatsapp.net"]);
+  db.messages.delete(poll);
+  assert.deepEqual(db.messages.votes(poll), [], "the recreated tombstone trigger still takes the marks");
+  assert.deepEqual(db.integrityCheck(), { ok: true, problems: [] });
+  db.close();
+});

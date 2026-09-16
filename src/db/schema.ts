@@ -388,7 +388,67 @@ BEGIN
 END;
 `;
 
+/**
+ * Reactions and votes remember the order they arrived in: a reader lists
+ * them by time, and two left in the same instant in the order they came, the
+ * way the service always listed them. A rowid table keeps that order — a
+ * change of mind updates the row in place — where a table keyed by message
+ * and person cannot. The tombstone trigger names both tables, so it is
+ * recreated around the swap.
+ */
+const V2 = `
+DROP TRIGGER messages_tombstone;
+
+CREATE TABLE reactions_v2(
+  message_id INTEGER NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
+  contact_id INTEGER NOT NULL REFERENCES contacts(id),
+  emoji TEXT NOT NULL,
+  ts INTEGER NOT NULL,
+  UNIQUE (message_id, contact_id)
+) STRICT;
+INSERT INTO reactions_v2(message_id, contact_id, emoji, ts)
+  SELECT message_id, contact_id, emoji, ts FROM reactions ORDER BY message_id, ts, contact_id;
+DROP TABLE reactions;
+ALTER TABLE reactions_v2 RENAME TO reactions;
+CREATE INDEX reactions_contact ON reactions(contact_id);
+
+CREATE TABLE votes_v2(
+  message_id INTEGER NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
+  contact_id INTEGER NOT NULL REFERENCES contacts(id),
+  choice TEXT NOT NULL,
+  ts INTEGER NOT NULL,
+  UNIQUE (message_id, contact_id)
+) STRICT;
+INSERT INTO votes_v2(message_id, contact_id, choice, ts)
+  SELECT message_id, contact_id, choice, ts FROM votes ORDER BY message_id, ts, contact_id;
+DROP TABLE votes;
+ALTER TABLE votes_v2 RENAME TO votes;
+CREATE INDEX votes_contact ON votes(contact_id);
+
+CREATE TRIGGER messages_tombstone AFTER UPDATE OF deleted_at ON messages
+WHEN old.deleted_at IS NULL AND new.deleted_at IS NOT NULL
+BEGIN
+  DELETE FROM embeddings WHERE message_id = new.id;
+  DELETE FROM reactions WHERE message_id = new.id;
+  DELETE FROM votes WHERE message_id = new.id;
+  DELETE FROM receipts WHERE message_id = new.id;
+  UPDATE chats SET (last_message_id, last_ts, last_from_me) = (
+    SELECT m.id, m.ts, m.from_me FROM messages m WHERE m.id = (
+      SELECT max((
+        SELECT x.id FROM messages x
+        WHERE x.chat_id = k.id AND x.deleted_at IS NULL
+          AND x.id >= (coalesce(k.cleared_through_ts, 0) / 1000) * 1048576
+          AND x.ts > coalesce(k.cleared_through_ts, 0)
+        ORDER BY x.id DESC LIMIT 1))
+      FROM chats k WHERE k.id = chats.id OR k.merged_into = chats.id))
+  WHERE (id = new.chat_id OR id = (SELECT merged_into FROM chats WHERE id = new.chat_id)) AND last_message_id = new.id;
+END;
+`;
+
 /** Every migration, in order. The schema version a build knows is the last one's. */
-export const MIGRATIONS: readonly Migration[] = [{ version: 1, sql: V1 }];
+export const MIGRATIONS: readonly Migration[] = [
+  { version: 1, sql: V1 },
+  { version: 2, sql: V2 },
+];
 
 export const SCHEMA_VERSION = MIGRATIONS[MIGRATIONS.length - 1]!.version;

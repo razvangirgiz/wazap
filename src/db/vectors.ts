@@ -44,7 +44,7 @@ export function unitVector(vector: ArrayLike<number>): Float64Array {
   return unit;
 }
 
-/** recall/store.ts's quantization, byte for byte: normalize, clamp, round(x * 127). */
+/** The old recall index's quantization, byte for byte, so its vectors import as they are: normalize, clamp, round(x * 127). */
 export function quantizeVector(vector: ArrayLike<number>): Int8Array {
   const unit = unitVector(vector);
   const out = new Int8Array(unit.length);

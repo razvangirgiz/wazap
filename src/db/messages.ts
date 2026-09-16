@@ -751,7 +751,7 @@ export class Messages {
     return this.c
       .all<{ contact_id: number; jid: string | null; emoji: string; ts: number }>(
         `SELECT r.contact_id, coalesce(k.phone_jid, k.lid) AS jid, r.emoji, r.ts
-         FROM reactions r JOIN contacts k ON k.id = r.contact_id WHERE r.message_id = ? ORDER BY r.ts`,
+         FROM reactions r JOIN contacts k ON k.id = r.contact_id WHERE r.message_id = ? ORDER BY r.ts, r.rowid`,
         key.id
       )
       .map((row) => ({ contactId: row.contact_id, jid: row.jid, emoji: row.emoji, ts: row.ts }));
@@ -763,7 +763,7 @@ export class Messages {
     return this.c
       .all<{ contact_id: number; jid: string | null; choice: string; ts: number }>(
         `SELECT v.contact_id, coalesce(k.phone_jid, k.lid) AS jid, v.choice, v.ts
-         FROM votes v JOIN contacts k ON k.id = v.contact_id WHERE v.message_id = ? ORDER BY v.ts`,
+         FROM votes v JOIN contacts k ON k.id = v.contact_id WHERE v.message_id = ? ORDER BY v.ts, v.rowid`,
         key.id
       )
       .map((row) => ({ contactId: row.contact_id, jid: row.jid, choice: row.choice, ts: row.ts }));
