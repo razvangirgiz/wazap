@@ -5,7 +5,6 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdirSync, writeFileSync } from "node:fs";
 
 import { proto } from "baileys";
 import { z } from "zod";
@@ -205,10 +204,10 @@ test("in a group each member's receipt is kept apart, the latest moment wins, an
     },
     "a member who read it is no longer listed as only delivered to"
   );
-  assert.deepEqual(svc.store.receipts.get(`true_${GROUP}_${id}`).users[ANA], {
-    delivered: (T0 + 60) * 1000,
-    read: (T0 + 180) * 1000,
-  });
+  assert.deepEqual(
+    svc.db.messages.receipts(`true_${GROUP}_${id}`).find((r) => r.jid === ANA),
+    { contactId: svc.db.identity.contact(ANA).id, jid: ANA, deliveredAt: (T0 + 60) * 1000, readAt: (T0 + 180) * 1000, playedAt: null }
+  );
 });
 
 test("a synced message brings the status and receipts it already had, and live receipts only raise them", async () => {
@@ -317,20 +316,16 @@ test("the account's own devices are no recipients, and a one-to-one message name
 });
 
 test("statuses and receipts come back after a restart, and go with their message", async () => {
-  const first = setup();
+  const first = setup({ persistHistory: true });
   const oneToOne = first.arrive(ANA, "gata");
   first.status(ANA, oneToOne, STATUS.READ);
   const inGroup = first.arrive(GROUP, "poza");
   first.receipt(inGroup, DAN, { readTimestamp: T0 + 90 });
   const silent = first.arrive(ANA, "nimic");
-  const snapshot = first.svc.store.serialize();
-  assert.deepEqual(snapshot.receipts[`true_${ANA}_${oneToOne}`], { status: STATUS.READ });
-  assert.equal(snapshot.receipts[`true_${ANA}_${silent}`], undefined, "nothing written for a message nobody confirmed");
+  assert.equal(first.svc.db.messages.get(`true_${ANA}_${oneToOne}`).status, STATUS.READ);
+  assert.equal(first.svc.db.messages.get(`true_${ANA}_${silent}`).status, null, "nothing written for a message nobody confirmed");
 
-  const second = setup({ persistHistory: true });
-  mkdirSync(second.svc.paths.root, { recursive: true });
-  writeFileSync(second.svc.paths.storeFile, JSON.stringify(snapshot));
-  await second.svc.loadPersisted();
+  const second = setup({ persistHistory: true, dataDir: first.svc.config.dataDir });
   assert.deepEqual((await second.view(ANA, oneToOne)).delivery, { status: "read" });
   assert.deepEqual((await second.view(GROUP, inGroup)).delivery, {
     status: "read",
@@ -339,13 +334,14 @@ test("statuses and receipts come back after a restart, and go with their message
   assert.equal(
     (await second.view(ANA, silent)).delivery,
     undefined,
-    "decoded from disk, a message with no status is not an error"
+    "read back from the database, a message with no status is not an error"
   );
 
-  const sid = `true_${ANA}_${oneToOne}`;
-  first.sock.ev.emit("messages.delete", { keys: [{ remoteJid: ANA, fromMe: true, id: oneToOne }] });
-  assert.equal(first.svc.store.receipts.has(sid), false, "a deleted message takes its receipt with it");
-  assert.equal(first.svc.store.serialize().receipts[sid], undefined);
+  const sid = `true_${GROUP}_${inGroup}`;
+  first.sock.ev.emit("messages.delete", { keys: [{ remoteJid: GROUP, fromMe: true, id: inGroup }] });
+  assert.deepEqual(first.svc.db.messages.receipts(sid), [], "a deleted message takes its receipts with it");
+  await first.svc.stop();
+  await second.svc.stop();
 });
 
 test("read_messages tags the user's own messages with how far they got, and get_message says who read them and when", async () => {
