@@ -10,7 +10,9 @@ import { proto } from "baileys";
 
 import { WhatsAppService } from "../dist/whatsapp.js";
 import { isNoiseJid } from "../dist/ids.js";
-import { connectedService } from "./helpers.mjs";
+import { mkdirSync, writeFileSync } from "node:fs";
+
+import { connectedService, storedIds } from "./helpers.mjs";
 
 const ME = "40700000001@s.whatsapp.net";
 const REAL = "40700000002@s.whatsapp.net";
@@ -65,7 +67,7 @@ test("noise chats never reach the chat list, the digest or the store", async () 
     digest.map((c) => c.chat_id),
     [REAL]
   );
-  assert.equal(svc.store.byChat.has("0@s.whatsapp.net"), false, "nothing is stored for a noise jid");
+  assert.equal(svc.db.identity.chat("0@s.whatsapp.net"), null, "nothing is stored for a noise jid");
 });
 
 test("linking machinery is dropped, not shown as a message", async () => {
@@ -99,37 +101,35 @@ test("linking machinery is dropped, not shown as a message", async () => {
   assert.equal(digest[0].messages.length, 1, "machinery must not be counted as conversation");
 });
 
-test("a snapshot an older wazap wrote is cleaned on the way in", () => {
-  const { svc, sock } = makeService();
-  sock.ev.emit("messages.upsert", {
-    type: "notify",
-    messages: [message(REAL, { conversation: "keep me" }, { id: "K1" })],
-  });
-  const snapshot = JSON.parse(JSON.stringify(svc.store.serialize()));
+test("a snapshot an older wazap wrote is cleaned on the way in", async () => {
+  const { svc } = connectedService(WhatsAppService, { prefix: "wazap-noise-", id: ME, name: "Răzvan", config: { persistHistory: true } });
+  const b64 = (raw) => Buffer.from(proto.WebMessageInfo.encode(raw).finish()).toString("base64");
+  const chat = Buffer.from(proto.Conversation.encode({ id: REAL }).finish()).toString("base64");
+  const snapshot = {
+    v: 1,
+    chats: { [REAL]: chat, "0@s.whatsapp.net": chat },
+    contacts: {},
+    messages: {
+      [`false_${REAL}_K1`]: b64({ key: { remoteJid: REAL, fromMe: false, id: "K1" }, message: { conversation: "keep me" }, messageTimestamp: at(60) }),
+      "false_0@s.whatsapp.net_N1": b64({ key: { remoteJid: "0@s.whatsapp.net", fromMe: false, id: "N1" }, message: { templateMessage: {} }, messageTimestamp: at(10) }),
+      [`true_${REAL}_N2`]: b64({
+        key: { remoteJid: REAL, fromMe: true, id: "N2" },
+        message: { protocolMessage: { type: proto.Message.ProtocolMessage.Type.HISTORY_SYNC_NOTIFICATION } },
+        messageTimestamp: at(10),
+      }),
+    },
+    byChat: { [REAL]: [`false_${REAL}_K1`, `true_${REAL}_N2`], "0@s.whatsapp.net": ["false_0@s.whatsapp.net_N1"] },
+  };
+  mkdirSync(svc.paths.root, { recursive: true });
+  writeFileSync(svc.paths.storeFile, JSON.stringify(snapshot));
 
-  const noisy = proto.WebMessageInfo.encode({
-    key: { remoteJid: "0@s.whatsapp.net", fromMe: false, id: "N1" },
-    message: { templateMessage: {} },
-    messageTimestamp: at(10),
-  }).finish();
-  snapshot.messages["false_0@s.whatsapp.net_N1"] = Buffer.from(noisy).toString("base64");
-  snapshot.byChat["0@s.whatsapp.net"] = ["false_0@s.whatsapp.net_N1"];
-
-  snapshot.chats["0@s.whatsapp.net"] = snapshot.chats[REAL];
-  const noisyControl = proto.WebMessageInfo.encode({
-    key: { remoteJid: REAL, fromMe: true, id: "N2" },
-    message: { protocolMessage: { type: proto.Message.ProtocolMessage.Type.HISTORY_SYNC_NOTIFICATION } },
-    messageTimestamp: at(10),
-  }).finish();
-  snapshot.messages[`true_${REAL}_N2`] = Buffer.from(noisyControl).toString("base64");
-  snapshot.byChat[REAL].push(`true_${REAL}_N2`);
-
-  const { svc: revived } = makeService();
-  revived.store.hydrate(snapshot);
-  assert.equal(revived.store.byChat.has("0@s.whatsapp.net"), false);
-  assert.equal(revived.store.chats.has("0@s.whatsapp.net"), false);
-  assert.deepEqual([...revived.store.byChat.keys()], [REAL]);
-  assert.deepEqual(revived.store.byChat.get(REAL), [`false_${REAL}_K1`], "the control payload is left behind too");
+  await svc.bootStorage();
+  assert.equal(svc.db.identity.chat("0@s.whatsapp.net"), null);
+  assert.deepEqual(
+    svc.db.identity.listChats().map((c) => c.jid),
+    [REAL]
+  );
+  assert.deepEqual(storedIds(svc, REAL), [`false_${REAL}_K1`], "the control payload is left behind too");
 });
 
 test("system notices are typed, excluded from the digest, and returned on request", async () => {

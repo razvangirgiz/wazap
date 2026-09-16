@@ -3818,7 +3818,7 @@ export class WhatsAppService implements WhatsAppApi {
         : this.canonical(raw.key.participant || raw.participant || raw.key.remoteJid || "") || this.ownJid();
     // The pushName is what the sender calls themselves: a person the message
     // mentions, or who reacted or voted, must not borrow it.
-    return buildMessageView(raw, {
+    const view = buildMessageView(raw, {
       canonical: (jid) => this.canonical(jid),
       nameFor: (jid) => this.displayName(jid, jid === sender ? (raw.pushName ?? undefined) : undefined),
       noteFor: (jid) => this.noteFor(jid),
@@ -3835,6 +3835,13 @@ export class WhatsAppService implements WhatsAppApi {
       receipt: this.receiptOf(message),
       transcript: this.transcriptOf(message),
     });
+    // A payload wazap does not model has no protobuf field to keep it: what it
+    // read as when it arrived is what the row says.
+    if (message.type === "unknown" && view.type !== "unknown") {
+      view.type = "unknown";
+      view.text = message.text ?? view.text;
+    }
+    return view;
   }
 
   /**
