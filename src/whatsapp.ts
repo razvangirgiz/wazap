@@ -3579,8 +3579,16 @@ export class WhatsAppService implements WhatsAppApi {
 
     const db = this.db;
     if (!this.hasChat(jid) && db.identity.contact(jid) === null) {
-      const found = await sock.onWhatsApp(jid).catch(() => undefined);
-      if (!found?.some((entry) => entry.exists)) {
+      // Only an answer says a number has no WhatsApp; a lookup that got none
+      // (a timeout, a dropped socket) is a link problem, and a consumer may retry it.
+      let found: Awaited<ReturnType<WASocket["onWhatsApp"]>>;
+      try {
+        found = await sock.onWhatsApp(jid);
+      } catch (err) {
+        throw lookupFailed(jid, describe(err));
+      }
+      if (found === undefined) throw lookupFailed(jid, "WhatsApp gave no answer");
+      if (!found.some((entry) => entry.exists)) {
         throw new WazapError("NOT_ON_WHATSAPP", `${jid} has no WhatsApp account.`);
       }
     }
@@ -5048,6 +5056,15 @@ function transcribeResult(record: TranscriptRecord, cached: boolean): Transcribe
 function callDetail(raw: WAMessage, info: CallInfo): number {
   if (info.duration_seconds !== undefined) return 2;
   return isCallPlaceholder(raw) ? 0 : 1;
+}
+
+/** A number whose WhatsApp lookup got no answer: not a verdict on the number, so NOT_CONNECTED, which a caller may retry. */
+function lookupFailed(jid: string, reason: string): WazapError {
+  return new WazapError(
+    "NOT_CONNECTED",
+    `Could not check whether ${jid} has WhatsApp: ${reason}`,
+    "Call get_status, wait, retry"
+  );
 }
 
 /** The own enumerable fields whose value is not undefined, so a spread cannot erase with "unknown". */
