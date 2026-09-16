@@ -24,7 +24,6 @@ import type { MessageFilter, Page, StoredMessage } from "./types.js";
 /** Reciprocal Rank Fusion's damping constant, the value from the original paper. */
 export const RRF_K = 60;
 const DEFAULT_CANDIDATES = 100;
-const HIDDEN_SLACK = 32;
 const DEFAULT_BACKLOG_SCAN = 20_000;
 /** A hybrid query word shorter than this names too much to be worth an index lookup. */
 const MIN_TOKEN_CHARS = 4;
@@ -287,10 +286,7 @@ export class Vectors {
     const limit = Math.max(1, Math.floor(input.limit));
     const filter = this.search.resolveFilter(input);
     if (filter === null) return [];
-    // A scan of embeddings alone cannot see a clear barrier whose purge has not
-    // finished; hydration drops those rows, so a few extra candidates keep the page full.
-    const want = filter.narrowsRows ? limit : limit + HIDDEN_SLACK;
-    const ranked = this.rank(filter, input.model, unitVector(input.vector), want, input.minSimilarity ?? 0, input.recencyHalfLifeMs);
+    const ranked = this.rank(filter, input.model, unitVector(input.vector), limit, input.minSimilarity ?? 0, input.recencyHalfLifeMs);
     const messages = new Map(this.messages.byIds(ranked.map((hit) => hit.id)).map((message) => [message.id, message]));
     return ranked
       .flatMap((hit) => {
@@ -311,7 +307,10 @@ export class Vectors {
     const now = this.c.now();
     const top = new TopK(limit);
     const similarities = new Map<number, number>();
-    const rows = this.scanRows(filter, model);
+    // A scan of embeddings alone cannot see a clear barrier whose purge has not
+    // run yet; while one is pending, the scan goes through messages and chats.
+    const joined = filter.narrowsRows || this.messages.purgePending();
+    const rows = this.scanRows(filter, model, joined);
     // Rows in the boundary seconds of since/until need their exact millisecond checked.
     const edgeLow = filter.since === undefined ? null : secondOf(filter.since);
     const edgeHigh = filter.until === undefined ? null : secondOf(filter.until);
@@ -324,11 +323,11 @@ export class Vectors {
       const age = now - secondOfId(id) * 1000;
       const score = halfLifeMs === undefined ? similarity : similarity * Math.pow(0.5, Math.max(0, age) / halfLifeMs);
       if (score <= top.floor) continue;
-      if (!filter.narrowsRows && (secondOfId(id) === edgeLow || secondOfId(id) === edgeHigh) && !this.inTimeRange(id, filter)) continue;
+      if (!joined && (secondOfId(id) === edgeLow || secondOfId(id) === edgeHigh) && !this.inTimeRange(id, filter)) continue;
       top.push(score, id);
       similarities.set(id, similarity);
     }
-    const expired = filter.narrowsRows ? null : this.expiredIds(now);
+    const expired = joined ? null : this.expiredIds(now);
     return top
       .sorted()
       .filter((hit) => expired === null || !expired.has(hit.id))
@@ -341,8 +340,8 @@ export class Vectors {
    * chronological — and expired rows are dropped afterwards; chat or sender
    * filters drive the scan from the messages index instead.
    */
-  private scanRows(filter: ResolvedFilter, model: string): Iterable<unknown[]> {
-    if (!filter.narrowsRows) {
+  private scanRows(filter: ResolvedFilter, model: string, joined: boolean): Iterable<unknown[]> {
+    if (!joined) {
       return this.c
         .arrayStmt("SELECT message_id, vec FROM embeddings WHERE model = ? AND message_id >= ? AND message_id < ?")
         .iterate(model, filter.lower, filter.upper) as Iterable<unknown[]>;

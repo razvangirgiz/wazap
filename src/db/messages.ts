@@ -530,6 +530,18 @@ export class Messages {
     });
   }
 
+  /** Whether any chat still has rows at or before its stored barrier: one index probe per chat with a barrier. */
+  purgePending(): boolean {
+    return (
+      this.c.get(
+        `SELECT 1 FROM chats c WHERE c.cleared_through_ts IS NOT NULL AND EXISTS (
+           SELECT 1 FROM messages m WHERE m.chat_id = c.id
+             AND m.id < ((c.cleared_through_ts / 1000) + 1) * 1048576 AND m.ts <= c.cleared_through_ts)
+         LIMIT 1`
+      ) !== undefined
+    );
+  }
+
   /** Physically removes rows a stored barrier already hides, for every chat a crash or a close left mid-purge. */
   resumePurges(): Promise<BulkDeleteResult> {
     this.c.assertWritable();

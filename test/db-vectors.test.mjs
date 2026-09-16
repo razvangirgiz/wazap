@@ -153,6 +153,31 @@ test("vector search ranks by cosine under the filters and the floor, and skips e
   db.close();
 });
 
+test("n9: vector and hybrid search still fill their pages while a clear's purge is pending", async () => {
+  const { db, path, clock } = openTemp();
+  const put = (messageSid, vector) => db.vectors.put(messageSid, MODEL, vector, wordsOf(db, messageSid));
+  for (let i = 0; i < 100; i++) {
+    db.messages.upsert(textMessage(PEER, `C${i}`, T0 + i * 1000, `cleared ${i}`));
+    put(sid(false, PEER, `C${i}`), [1, 0.01 * i, 0]);
+  }
+  for (let i = 0; i < 20; i++) {
+    db.messages.upsert(textMessage(OTHER, `V${i}`, T0 + i * 1000, `visible ${i}`));
+    put(sid(false, OTHER, `V${i}`), [1, 0.5, 0.3]);
+  }
+  db.messages.clearChat(PEER, T0 + 200_000).catch(() => {});
+  db.close();
+
+  const reopened = AccountDb.open(path, { now: () => clock.now, checkpointDelayMs: 0 });
+  const vector = reopened.vectors.vectorSearch({ model: MODEL, vector: [1, 0, 0], limit: 10, minSimilarity: 0.5 });
+  assert.equal(vector.length, 10);
+  assert.ok(vector.every((hit) => hit.message.chatJid === OTHER));
+  const hybrid = reopened.vectors.hybrid({ query: "zzzz", model: MODEL, vector: [1, 0, 0], limit: 10, minSimilarity: 0.5 });
+  assert.equal(hybrid.hits.length, 10);
+  await reopened.resume();
+  assert.equal(reopened.vectors.vectorSearch({ model: MODEL, vector: [1, 0, 0], limit: 10, minSimilarity: 0.5 }).length, 10);
+  reopened.close();
+});
+
 test("an int8 vector imported as-is is searched like one quantized here", () => {
   const { db } = openTemp();
   db.messages.upsert(textMessage(PEER, "IMP", T0, "importat"));
