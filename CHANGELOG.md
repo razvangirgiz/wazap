@@ -22,12 +22,33 @@
 - **Echoes of wazap's own sends stay quiet after a restart.** The webhook
   recognises them by the message ids confirmed drafts recorded, not only by
   the last ten minutes of sends in memory.
+- **Voice notes are transcribed from a durable queue.** The queue is kept in
+  the account database, queued in the transaction that stores the note, so a
+  restart or a crash resumes it instead of losing what was waiting. A failed
+  download, a provider answering 429 or 5xx, or a whisper.cpp crash is retried
+  after 10 s and a minute, three attempts in all; expired media, audio the
+  provider refuses and files too large give up at once and record why. A note
+  deleted or expired while it waits is dropped, and one still waiting a day
+  after it was queued is given up on (`too_old`). A note queued under `local`
+  is never uploaded to an API provider configured later (`provider_changed`).
+  One transcriber serves every account in turn, only in the server, and a
+  note that just arrived starts ahead of any backlog, so its webhook event
+  carries the words. A provider that cannot take any note (not ready, key
+  refused) pauses transcription for 30 s up to 15 minutes instead of
+  downloading and uploading every note again, and events post the placeholder
+  at once meanwhile. A stop waits up to 30 s for a transcription under way;
+  removing an account cancels it. Notes a history sync brings are now
+  transcribed when less than a day old (before, never). `get_status` has a
+  `transcription` block and `wazap status` a `voice queue` line: counts, the
+  current run's age, a pause and the latest reason, never content.
 
 ### Upgrade notes
 
-- The account database moves to schema version 2 on the first start. 0.22
-  refuses a version 2 database (`SCHEMA_TOO_NEW`), and there is no downgrade:
-  going back means restoring a copy taken before the upgrade.
+- The account database moves to schema version 3 on the first start: version
+  2 holds the drafts and sends, version 3 the voice-note transcription queue,
+  which starts empty (nothing stored before the upgrade is transcribed on its
+  own). 0.22 refuses a version 2 or 3 database (`SCHEMA_TOO_NEW`), and there
+  is no downgrade: going back means restoring a copy taken before the upgrade.
 
 ## 0.22.0
 ### Changed
@@ -78,32 +99,6 @@
   `status --json` carries it as `storage`, and `get_status` as `storage`.
 - **A handled chat reopens only when the other side writes after the ask**
   that was marked, and a receipt keeps the latest time it was reported.
-- **Voice notes are transcribed from a durable queue.** The queue is kept in
-  the account database, queued in the transaction that stores the note, so a
-  restart or a crash resumes it instead of losing what was waiting. A failed
-  download, a provider answering 429 or 5xx, or a whisper.cpp crash is retried
-  after 10 s and a minute, three attempts in all; expired media, audio the
-  provider refuses and files too large give up at once and record why. A note
-  deleted or expired while it waits is dropped, and one still waiting a day
-  after it was queued is given up on (`too_old`). A note queued under `local`
-  is never uploaded to an API provider configured later (`provider_changed`).
-  One transcriber serves every account in turn, only in the server, and a
-  note that just arrived starts ahead of any backlog, so its webhook event
-  carries the words. A provider that cannot take any note (not ready, key
-  refused) pauses transcription for 30 s up to 15 minutes instead of
-  downloading and uploading every note again, and events post the placeholder
-  at once meanwhile. A stop waits up to 30 s for a transcription under way;
-  removing an account cancels it. Notes a history sync brings are now
-  transcribed when less than a day old (before, never). `get_status` has a
-  `transcription` block and `wazap status` a `voice queue` line: counts, the
-  current run's age, a pause and the latest reason, never content.
-- **The account database moves to schema version 2** (the transcription
-  queue, added without touching version 1's tables). Upgrading needs nothing:
-  the queue starts empty and nothing stored before is transcribed on its own.
-  There is no way back: 0.22 refuses a version 2 database
-  (`SCHEMA_TOO_NEW`), so keep a backup of `accounts/<id>/wazap.sqlite` if you
-  may need to downgrade.
-
 - **Accounts come and go without a restart.** A running server follows
   `accounts.json`: `wazap account add`, `enable`, `disable`, `default` and
   `remove` apply to it at once, and a tool that names an account added since
