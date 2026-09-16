@@ -94,6 +94,14 @@ test("an import a stop cut off resumes at the next boot and finishes", async (t)
   assert.equal((await svc.getMessage(r.g1)).text, "Ședința e la ora zece");
 });
 
+/** Polls on real timers, since these tests freeze Date.now at the fixture's clock. */
+async function until(predicate, label) {
+  for (let polls = 0; !predicate(); polls++) {
+    assert.ok(polls < 1_000, `timed out waiting for ${label}`);
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+}
+
 /** Waits, a turn of the event loop at a time, until the boot import is under way. */
 async function importRunning(svc) {
   for (let turns = 0; svc.accountDb.getMeta("import_state") !== "running"; turns++) {
@@ -117,6 +125,44 @@ test("a stop while start() waits on the import opens no socket afterwards, and l
   assert.equal(sockets.opened.length, 0, "a stopped service opens no WhatsApp socket");
   assert.equal(svc.sockClient, null);
   assert.equal(existsSync(fx.paths.authDir), false, "the removed credentials are not recreated");
+});
+
+test("a link completed while the import runs opens the account's socket once the database is ready", async (t) => {
+  const fx = await buildLegacyAccount({ linked: false });
+  t.mock.method(Date, "now", () => fx.now);
+  const phoneSide = fakeSocket({ pairingCode: "K7PX3MQZ", user: { id: "40700000001:12@s.whatsapp.net", name: "Răzvan" } });
+  const serviceSide = fakeSocket();
+  const sockets = stubSockets(socketFactory, [phoneSide, serviceSide]);
+  t.after(() => sockets.restore());
+  const svc = openService(WhatsAppService, offlineConfig("wazap-accountdb-", { dataDir: fx.dataDir, persistHistory: true, readOnly: false }));
+  t.after(() => svc.stop());
+
+  // A long import, held open until the phone has accepted the code.
+  let release;
+  const held = new Promise((resolve) => (release = resolve));
+  const resume = svc.accountDb.resume.bind(svc.accountDb);
+  t.mock.method(svc.accountDb, "resume", async () => {
+    await held;
+    return resume();
+  });
+  const starting = svc.start();
+  const code = svc.link("+40700000001");
+  await until(() => sockets.opened.length > 0, "the pairing socket to open");
+  phoneSide.ev.emit("connection.update", { qr: "pairing-qr" });
+  assert.equal((await code).code, "K7PX-3MQZ");
+  // What saveCreds leaves behind once the phone accepts the code.
+  mkdirSync(fx.paths.authDir, { recursive: true });
+  writeFileSync(join(fx.paths.authDir, "creds.json"), JSON.stringify({ me: { id: "40700000001:12@s.whatsapp.net", name: "Răzvan" } }));
+  phoneSide.ev.emit("connection.update", { connection: "open" });
+  await until(() => svc.linking === null, "the link to be adopted");
+  assert.match(svc.getStatus().hint ?? "", /preparing/, "the import is still running");
+  release();
+  await starting;
+  await until(() => sockets.opened.length === 2, "the service socket to open");
+  assert.equal(svc.sockClient, serviceSide);
+  assert.equal(svc.getStatus().status, "connecting");
+  assert.equal(svc.db.getMeta("import_state"), "done");
+  assert.equal(svc.db.getMeta("owner"), ME);
 });
 
 test("an import whose verification finds a difference it cannot explain still serves, and says so for doctor", async (t) => {

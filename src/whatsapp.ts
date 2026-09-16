@@ -484,7 +484,7 @@ export class WhatsAppService implements WhatsAppApi {
     if (this.stopped || this.starting) return;
     this.starting = true;
     try {
-      const linked = this.readAccount();
+      let linked = this.readAccount();
       if (linked !== "corrupt" && linked !== null) {
         this.account = linked;
         this.claimDatabase(linked.id);
@@ -492,7 +492,15 @@ export class WhatsAppService implements WhatsAppApi {
       await this.bootStorage();
       // A stop during the boot (a logout, a removal) must not be followed by a socket.
       if (this.stopped) return;
-      if (linked === "corrupt" || linked === null) return;
+      if (linked === "corrupt" || linked === null) {
+        // A link that finished while the database was being prepared found this
+        // start() still running, so its own start() returned at once: pick it up.
+        const since = this.linkedSinceBoot();
+        if (since === null) return;
+        linked = since;
+        this.account = linked;
+        this.claimDatabase(linked.id);
+      }
 
       let state;
       try {
@@ -3081,6 +3089,17 @@ export class WhatsAppService implements WhatsAppApi {
       return null;
     }
     return { id: linked.id, name: linked.name, number: linked.number };
+  }
+
+  /** The credentials a pairing saved while start() was busy, without touching the status when there are none. */
+  private linkedSinceBoot(): StatusInfo["account"] | null {
+    if (this.linking !== null) return null;
+    try {
+      const linked = readLinkedAccount(this.paths.authDir);
+      return linked ? { id: linked.id, name: linked.name, number: linked.number } : null;
+    } catch {
+      return null;
+    }
   }
 
   private markCorrupt(err: unknown): void {
