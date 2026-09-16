@@ -162,6 +162,24 @@ test("expired stories leave the status feed for good: no tombstone left to walk,
   db.close();
 });
 
+test("a story its author revoked leaves no row behind either, seen or not, and a replay stays out", async () => {
+  const { db, clock } = openTemp();
+  const STATUS = "status@broadcast";
+  const story = (key) => textMessage(STATUS, key, T0, `story ${key}`, { senderJid: OTHER, expiresAt: clock.now + 86_400_000 });
+  db.messages.upsert(story("SEEN"));
+  db.messages.setMedia(sid(false, STATUS, "SEEN"), "preview", "/previews/SEEN.jpg");
+  assert.deepEqual(db.messages.delete(sid(false, STATUS, "SEEN")).mediaPaths, ["/previews/SEEN.jpg"]);
+  assert.equal(db.messages.delete(sid(false, STATUS, "UNSEEN"), { ts: T0 }).outcome, "placeholder");
+  assert.equal(db.counts().tombstones, 0, "no revoked story stays behind as a row");
+  for (const key of ["SEEN", "UNSEEN"]) {
+    assert.notEqual(db.messages.upsert(story(key)).outcome, "inserted", `${key} replayed stays gone`);
+    assert.equal(db.messages.get(sid(false, STATUS, key)), null);
+  }
+  assert.equal(db.counts().tombstones, 0);
+  assert.deepEqual(db.integrityCheck(), { ok: true, problems: [] });
+  db.close();
+});
+
 test("a merge of a large lid chat into the phone chat yields between chunks", async () => {
   const { db } = openTemp();
   fill(db, PEER_LID, 2000, { prefix: "L" });

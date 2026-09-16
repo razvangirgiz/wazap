@@ -412,7 +412,10 @@ export class Messages {
           : this.identity.findMessage(sid);
       if (existing !== null) {
         if (existing.deleted_at !== null) return { outcome: "already", id: existing.id, mediaPaths: [] };
-        return { outcome: "deleted", id: existing.id, mediaPaths: this.tombstone(existing.id, at) };
+        const mediaPaths = this.tombstone(existing.id, at);
+        // The status feed keeps no tombstones: the retraction record is its barrier.
+        if (existing.chat.kind === "status") this.c.run("DELETE FROM messages WHERE id = ?", existing.id);
+        return { outcome: "deleted", id: existing.id, mediaPaths };
       }
       if (chatJid === undefined || keyId === undefined || fromMe === undefined) {
         throw new StorageError("INVALID_INPUT", `A tombstone for the unseen ${sid} needs its chat, key and direction.`);
@@ -423,6 +426,10 @@ export class Messages {
         return { outcome: "cleared", id: null, mediaPaths: [] };
       }
       chat ??= this.identity.ensureChat(chatJid);
+      if (chat.kind === "status") {
+        this.recordRetracted(chat.id, fromMe, keyId, at);
+        return { outcome: "placeholder", id: null, mediaPaths: [] };
+      }
       const id = this.allocateId(ts);
       this.c.run(
         `INSERT INTO messages(id, chat_id, key_id, from_me, ts, type, deleted_at) VALUES (?, ?, ?, ?, ?, 'deleted', ?)`,
