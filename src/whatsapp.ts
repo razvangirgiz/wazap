@@ -4226,15 +4226,10 @@ export class WhatsAppService implements WhatsAppApi {
   }
 
   /**
-   * The voice notes that genuinely arrived, queued for transcription if the
-   * store did not already queue them: a note stamped more than a day ago that
-   * WhatsApp delivers only now is still an arrival. Only incoming voice notes
-   * whose length WhatsApp stated and kept short, since an audio file is
-   * something the sender chose to attach and a recording of unknown length is
-   * unbounded. Anything skipped here is still one transcribe_audio call away.
-   * A service on its way out queues nothing. Each sid on the queue carries the
-   * promise that settles when that note leaves it, which is what a held
-   * webhook event waits on; the worker is woken at once.
+   * The voice notes that genuinely arrived and that the store queued: each sid
+   * on the queue carries the promise that settles when that note leaves it,
+   * which is what a held webhook event waits on. A service on its way out
+   * waits on nothing.
    */
   private queueTranscripts(arrived: readonly WAMessage[]): Map<string, Promise<void>> {
     const queued = new Map<string, Promise<void>>();
@@ -4244,26 +4239,29 @@ export class WhatsAppService implements WhatsAppApi {
       if (!transcribable(raw)) continue;
       const sid = messageIdFor(raw.key, this.canonical(raw.key.remoteJid ?? ""));
       try {
-        if (this.transcribeClass !== null) db.transcripts.enqueue(sid, this.transcribeClass);
         if (db.transcripts.state(sid)?.state === "queued") queued.set(sid, this.transcribeWorker.settled(this.transcribeSource, sid));
       } catch (err) {
         logError("transcribe", err);
       }
     }
-    if (queued.size > 0) this.transcribeWorker.kick();
     return queued;
   }
 
   /**
-   * In the transaction that stores it, a new incoming voice note joins the
-   * durable queue: every one that arrives live, and one a history sync brings
-   * when it is less than a day old. A crash after the store cannot lose it.
-   * The worker is woken at once; it reads the queue a turn later, once the
-   * transaction has committed.
+   * In the transaction that stores it, an incoming voice note joins the
+   * durable queue: every one that arrives live, however old its stamp (a note
+   * WhatsApp delivers only now is still an arrival), and one a history sync
+   * brings when it is less than a day old. A crash after the store cannot lose
+   * it. Only incoming voice notes whose length WhatsApp stated and kept short,
+   * since an audio file is something the sender chose to attach and a
+   * recording of unknown length is unbounded; anything skipped is still one
+   * transcribe_audio call away. The worker is woken at once; it reads the
+   * queue a turn later, once the transaction has committed.
    */
-  private queueTranscript(raw: WAMessage, result: UpsertResult): void {
-    if (!this.autoTranscribe || result.outcome !== "inserted" || result.sid === null || !transcribable(raw)) return;
-    if (messageTimestampMs(raw) <= Date.now() - HISTORY_TRANSCRIBE_WINDOW_MS) return;
+  private queueTranscript(raw: WAMessage, result: UpsertResult, live: boolean): void {
+    if (!this.autoTranscribe || result.sid === null || !transcribable(raw)) return;
+    if (result.outcome !== "inserted" && !(live && result.outcome === "updated")) return;
+    if (!live && messageTimestampMs(raw) <= Date.now() - HISTORY_TRANSCRIBE_WINDOW_MS) return;
     if (this.transcribeClass !== null && this.db.transcripts.enqueue(result.sid, this.transcribeClass)) this.transcribeWorker.kick();
   }
 
@@ -4701,10 +4699,10 @@ export class WhatsAppService implements WhatsAppApi {
     if (messages.length === 0) return;
     let stored: WAMessage[] = [];
     if (!deferred) {
-      stored = this.handling("messages", () => this.db.transaction(() => this.ingestMessages(messages)), []);
+      stored = this.handling("messages", () => this.db.transaction(() => this.ingestMessages(messages, type === "notify")), []);
     } else if (this.readyDb() !== null) {
       try {
-        stored = this.db.transaction(() => this.fileMessages(messages));
+        stored = this.db.transaction(() => this.fileMessages(messages, type === "notify"));
       } catch (err) {
         logError("messages", err);
       }
@@ -4820,15 +4818,16 @@ export class WhatsAppService implements WhatsAppApi {
    * messages that were stored, which is what a webhook, a wait and the
    * transcription queue may act on.
    */
-  private ingestMessages(messages: WAMessage[]): WAMessage[] {
+  private ingestMessages(messages: WAMessage[], live = false): WAMessage[] {
     if (this.stopped) return [];
-    return this.fileMessages(messages);
+    return this.fileMessages(messages, live);
   }
 
-  private fileMessages(messages: WAMessage[]): WAMessage[] {
+  /** `live`: the messages genuinely arrived now (a notify), which is what the transcription queue asks. */
+  private fileMessages(messages: WAMessage[], live = false): WAMessage[] {
     this.retractRevokes(messages);
     const stored: WAMessage[] = [];
-    this.storeMessages(messages, 0, Infinity, stored);
+    this.storeMessages(messages, 0, Infinity, stored, live);
     return stored;
   }
 
@@ -4844,7 +4843,7 @@ export class WhatsAppService implements WhatsAppApi {
    * Stores `messages` from `from` on, until `budgetMs` have passed; returns
    * the index to continue from. The revokes among them are already applied.
    */
-  private storeMessages(messages: readonly WAMessage[], from: number, budgetMs: number, stored: WAMessage[] = []): number {
+  private storeMessages(messages: readonly WAMessage[], from: number, budgetMs: number, stored: WAMessage[] = [], live = false): number {
     const started = performance.now();
     let index = from;
     for (; index < messages.length; index++) {
@@ -4866,7 +4865,7 @@ export class WhatsAppService implements WhatsAppApi {
         if (result === null || !this.kept(result)) continue;
         this.noteInbound(Boolean(raw.key.fromMe), messageTimestampMs(raw));
         this.foldVotesOnto(raw, jid);
-        this.queueTranscript(raw, result);
+        this.queueTranscript(raw, result, live);
         stored.push(raw);
       } catch (err) {
         // One message the database refuses must not cost the rest of its batch.
