@@ -758,8 +758,9 @@ export class WhatsAppService implements WhatsAppApi {
     await this.scheduleFileCleanup().catch(() => {});
     this.armExpiry();
     if (this.embedFeed !== null) this.embedFeed.kick();
-    else if (!(this.recallEnv instanceof WazapError)) {
-      // Recall is off: no queue is kept for it. Turning it on refills the queue once.
+    else {
+      // Recall is off, or its settings do not parse: no queue is kept that nothing
+      // would drain. The feed that runs again refills it once.
       try {
         db.vectors.unfeed();
       } catch (err) {

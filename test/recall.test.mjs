@@ -491,6 +491,28 @@ test("a recall env wazap cannot parse answers RECALL_UNAVAILABLE, not a crash", 
   }
 });
 
+test("recall settings that stop parsing keep no embedding queue that nothing would drain", async () => {
+  const stub = await stubEmbedServer();
+  const first = await serviceWith({ WAZAP_RECALL: "local", WAZAP_EMBED_URL: stub.url });
+  const dataDir = first.svc.config.dataDir;
+  try {
+    deliver(first.sock, [text("A", "primul mesaj")]);
+    await first.svc.recallIdle();
+  } finally {
+    await first.svc.stop();
+  }
+  const { svc, sock } = await serviceWith({ WAZAP_RECALL: "local", WAZAP_EMBED_URL: stub.url, WAZAP_EMBED_MODEL: "no-such-model" }, { dataDir });
+  try {
+    assert.equal(svc.getStatus().recall.state, "degraded");
+    deliver(sock, Array.from({ length: 50 }, (_, i) => text(`M${i}`, `mesaj ${i}`)));
+    await svc.storageIdle();
+    assert.equal(svc.db.vectors.queueSize(), 0, "nothing is queued for a feed that does not run");
+  } finally {
+    await svc.stop();
+    stub.server.close();
+  }
+});
+
 test("the tool renders each hit with its date, score, what matched and the index-only mark", async () => {
   const stub = await stubEmbedServer();
   const { svc, sock } = await serviceWith({ WAZAP_RECALL: "local", WAZAP_EMBED_URL: stub.url });
