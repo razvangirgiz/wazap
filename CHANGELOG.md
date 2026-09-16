@@ -42,6 +42,15 @@
   `transcription` block and `wazap status` a `voice queue` line: counts, the
   current run's age, a pause and the latest reason, never content.
 
+### Fixed
+
+- **`recall` no longer answers a long question with one-word coincidences.**
+  When a query has three or more words, a hit found only by its words must
+  share at least two of them, or its meaning must clear the similarity floor;
+  a question with no answer comes back empty again. An exact copy of a
+  better-ranked hit, such as the same message forwarded to two chats, is
+  listed once.
+
 ### Upgrade notes
 
 - The account database moves to schema version 3 on the first start: version
