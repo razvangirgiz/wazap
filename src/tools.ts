@@ -22,6 +22,7 @@ import {
   assertSendable,
   draftTargetOf,
   hasSendRules,
+  noteConfirming,
   noteDraftTarget,
   sendPolicyOf,
   type SendPolicy,
@@ -1413,6 +1414,7 @@ and never draft it again without asking the user.`,
         }
         assertSendable(policy, ref.target, accountId);
       }
+      noteConfirming(draft_id);
       const sent = await wa.confirm(draft_id, draftOwner);
       return ok(sentText(sent, ref?.target), sent as unknown as Record<string, unknown>);
     },

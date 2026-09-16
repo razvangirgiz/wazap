@@ -16,7 +16,9 @@ import {
   forgetDraftTarget,
   hasSendRules,
   normalizeSendRule,
+  noteConfirming,
   noteDraftTarget,
+  requireDraftOwner,
   sendPolicyOf,
 } from "../dist/send-guard.js";
 import { registerTools } from "../dist/tools.js";
@@ -128,6 +130,19 @@ test("noteDraftTarget records the resolved recipient so confirm can re-check it"
   assert.equal(ref.target.chat_id, ANA.chat_id);
   forgetDraftTarget(view.draft_id);
   assert.equal(draftTargetOf(view.draft_id), undefined);
+});
+
+test("a draft a confirm reached keeps its session's route however many drafts follow it", () => {
+  const store = draftStub();
+  const confirmed = store.view(store.put(ANA, { kind: "text", chatId: ANA.chat_id, text: "trimis" }));
+  noteDraftTarget(confirmed, "default", "session_route");
+  noteConfirming(confirmed.draft_id);
+  for (let i = 0; i < 600; i++) {
+    noteDraftTarget(store.view(store.put(ANA, { kind: "text", chatId: ANA.chat_id, text: `ciorna ${i}` })), "default", "session_other");
+  }
+  assert.equal(requireDraftOwner(confirmed.draft_id, "session_route").accountId, "default");
+  assert.throws(() => requireDraftOwner(confirmed.draft_id, "session_other"), { code: "DRAFT_NOT_FOUND" });
+  forgetDraftTarget(confirmed.draft_id);
 });
 
 test("setSendRules normalizes, persists through a reload, and null drops a list", () => {

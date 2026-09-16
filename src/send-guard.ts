@@ -7,7 +7,7 @@
  * Nothing here touches WhatsApp or the network: a refused send fails before
  * the socket ever sees it, with SEND_BLOCKED naming the rule that fired.
  */
-import { DRAFT_TTL_MS, type DraftView } from "./drafts.js";
+import { DRAFT_TTL_MS, SEND_RECORD_TTL_MS, type DraftView } from "./drafts.js";
 import { WazapError } from "./errors.js";
 import type { AccountRecord } from "./accounts.js";
 import type { OutgoingTarget } from "./wa-types.js";
@@ -121,9 +121,10 @@ export function assertSendable(policy: SendPolicy, target: SendTarget, accountId
  * draft_id → the resolved recipient and the account it was drafted under. Every
  * draft is born in a send tool, so this is what confirm_send re-checks the live
  * rules against — a draft taken through any other path would have no entry.
- * Entries age out with the drafts themselves, and a confirmed draft keeps its
- * entry so confirming it again reaches the service and answers its receipt.
- * A restart forgets them all, as it forgets every session that drafted.
+ * Entries age out with the drafts themselves. A draft a confirm reached keeps
+ * its entry as long as its send record, so confirming it again reaches the
+ * service and answers its receipt or SEND_OUTCOME_UNKNOWN, never "draft
+ * again". A restart forgets them all, as it forgets every session that drafted.
  */
 interface DraftRef {
   accountId: string;
@@ -133,29 +134,44 @@ interface DraftRef {
   owner?: string;
 }
 
+/** Drafts no confirm has reached yet, oldest first. */
 const draftTargets = new Map<string, DraftRef>();
 const DRAFT_TARGETS_CAP = 500;
+/** Drafts a confirm reached, oldest confirm first: new drafts never push these out. */
+const confirmedTargets = new Map<string, DraftRef>();
+const CONFIRMED_TARGETS_CAP = 10_000;
+
+/** Drops the entries past `ttlMs`, and the oldest until one more fits under `cap`. A map iterates in insertion order, which is `at` order. */
+function trim(map: Map<string, DraftRef>, ttlMs: number, cap: number, now: number): void {
+  for (const [id, ref] of map) {
+    if (ref.at + ttlMs > now && map.size < cap) break;
+    map.delete(id);
+  }
+}
 
 export function noteDraftTarget(view: DraftView, accountId: string, owner?: string): void {
   const now = Date.now();
-  for (const [id, ref] of draftTargets) {
-    if (ref.at + DRAFT_TTL_MS <= now) draftTargets.delete(id);
-  }
-  while (draftTargets.size >= DRAFT_TARGETS_CAP) {
-    const oldest = draftTargets.keys().next().value;
-    if (oldest === undefined) break;
-    draftTargets.delete(oldest);
-  }
+  trim(draftTargets, DRAFT_TTL_MS, DRAFT_TARGETS_CAP, now);
   draftTargets.set(view.draft_id, { accountId, target: view.to, at: now, owner });
 }
 
+/** A confirm reached this draft: its route lasts as long as its send record. */
+export function noteConfirming(draftId: string): void {
+  const ref = draftTargets.get(draftId);
+  if (ref === undefined) return;
+  const now = Date.now();
+  trim(confirmedTargets, SEND_RECORD_TTL_MS, CONFIRMED_TARGETS_CAP, now);
+  draftTargets.delete(draftId);
+  confirmedTargets.set(draftId, { ...ref, at: now });
+}
+
 export function draftTargetOf(draftId: string): DraftRef | undefined {
-  return draftTargets.get(draftId);
+  return draftTargets.get(draftId) ?? confirmedTargets.get(draftId);
 }
 
 /** Unknown and foreign drafts are indistinguishable, before account lookup or policy checks. */
 export function requireDraftOwner(draftId: string, owner: string, accountId?: string): DraftRef {
-  const ref = draftTargets.get(draftId);
+  const ref = draftTargetOf(draftId);
   if (ref === undefined || ref.owner !== owner || (accountId !== undefined && ref.accountId !== accountId)) {
     throw new WazapError(
       "DRAFT_NOT_FOUND",
@@ -168,4 +184,5 @@ export function requireDraftOwner(draftId: string, owner: string, accountId?: st
 
 export function forgetDraftTarget(draftId: string): void {
   draftTargets.delete(draftId);
+  confirmedTargets.delete(draftId);
 }

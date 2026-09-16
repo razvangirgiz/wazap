@@ -321,6 +321,33 @@ test("a draft outlives a restart on disk, but no session after it can confirm it
   assert.equal(second.sent.length, 0);
 });
 
+test("past the draft's 15 minutes, its session still gets the receipt of a sent draft and SEND_OUTCOME_UNKNOWN of an unknown one", async (t) => {
+  const { svc, sock, sent } = serviceOn(t, dataDirFor(t));
+  const tools = new Map();
+  registerTools({ registerTool: (name, _meta, handler) => tools.set(name, handler) }, asToolSource(svc), { allowWrite: true });
+  const call = (name, args) => tools.get(name)(args);
+
+  const sentDraft = (await call("send_message", { chat_id: PEER, text: "trimis" })).structuredContent.draft_id;
+  const receipt = (await call("confirm_send", { draft_id: sentDraft })).structuredContent;
+  const unknownDraft = (await call("send_message", { chat_id: PEER, text: "poate" })).structuredContent.draft_id;
+  const relay = sock.relayMessage;
+  sock.relayMessage = async () => {
+    throw new Error("Timed Out");
+  };
+  assert.equal((await call("confirm_send", { draft_id: unknownDraft })).structuredContent.error, "SEND_OUTCOME_UNKNOWN");
+  sock.relayMessage = relay;
+
+  const later = Date.now() + 16 * 60_000;
+  t.mock.method(Date, "now", () => later);
+  // Drafting later is what ages the session's routes out.
+  await call("send_message", { chat_id: PEER, text: "altceva" });
+  const again = (await call("confirm_send", { draft_id: sentDraft })).structuredContent;
+  assert.equal(again.message_id, receipt.message_id);
+  assert.equal(again.already_sent, true);
+  assert.equal((await call("confirm_send", { draft_id: unknownDraft })).structuredContent.error, "SEND_OUTCOME_UNKNOWN");
+  assert.equal(sent.length, 1);
+});
+
 test("the echo of a confirmed draft is not announced as message_sent, even after a restart", async (t) => {
   const received = [];
   const server = createServer((req, res) => {
