@@ -722,7 +722,11 @@ retires them.
   daily pass, and at once with `WAZAP_RETENTION=1`. An import whose
   verification found unexplained differences records `legacy_keep=unverified`
   and is never deleted automatically: the files are what the user compares
-  against. `wazap status` warns and gives the `rm -rf` to run deliberately.
+  against. `wazap status` warns and gives the `rm -rf` to run deliberately. A
+  `legacy/` the current database did not move (it was set aside for a
+  different number, or replaced) is never deleted by it either; a marker
+  written before the first rename keeps a crash after the last one from being
+  mistaken for that.
 - **Beta archive.** `<data-dir>/archive.sqlite` moves to `<data-dir>/legacy/`
   only when every enabled account linked to its `meta.owner` has a verified
   import; its mtime is set to the move and it is deleted a week later. An

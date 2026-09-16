@@ -22,6 +22,7 @@ import { AccountDb } from "../dist/db/index.js";
 import { sqlite } from "../dist/db/sqlite.js";
 import {
   LEGACY_TTL_MS,
+  legacySchedule,
   moveAccountLegacy,
   purgeAccountLegacy,
   purgePreviousOwners,
@@ -152,6 +153,50 @@ test("a crash between two renames leaves the move unrecorded, and the next pass 
   assert.deepEqual(readdirSync(join(root, "legacy")).sort(), ["history", "notes.json", "notes.json.tmp", "recall", "retention.json", "store.json"]);
   assert.deepEqual(readdirSync(root).sort(), ["legacy", "wazap.sqlite", "wazap.sqlite-shm", "wazap.sqlite-wal"]);
   assert.equal(db.getMeta("legacy_moved_at"), "3000");
+});
+
+test("a crash after the last rename still schedules the folder, but a legacy/ this database did not move is never deleted by it", (t) => {
+  const root = mkdtempSync(join(tmpdir(), "wazap-legacy-inherit-"));
+  writeFileSync(join(root, "store.json"), "{}");
+  const db = AccountDb.open(join(root, "wazap.sqlite"));
+  t.after(() => db.close());
+  db.setMeta("import_state", "done");
+  let fail = true;
+  const crashing = {
+    getMeta: (key) => db.getMeta(key),
+    setMeta: (key, value) => db.setMeta(key, value),
+    transaction: (body) => {
+      if (fail) {
+        fail = false;
+        throw Object.assign(new Error("simulated crash"), { code: "EIO" });
+      }
+      return db.transaction(body);
+    },
+  };
+  assert.throws(() => moveAccountLegacy(root, crashing, 1_000), { code: "EIO" });
+  assert.deepEqual(readdirSync(join(root, "legacy")), ["store.json"]);
+  assert.deepEqual(moveAccountLegacy(root, db, 2_000), { moved: 0, recorded: true });
+  assert.deepEqual(legacySchedule(db), { movedAt: 2_000, deleteAfter: 2_000 + LEGACY_TTL_MS, kept: null, deletedAt: null }, "the folder is its own move's");
+
+  // A different number linked: the fresh database finds a legacy/ the set-aside one scheduled.
+  const other = mkdtempSync(join(tmpdir(), "wazap-legacy-inherit-"));
+  mkdirSync(join(other, "legacy"));
+  writeFileSync(join(other, "legacy", "store.json"), "{}");
+  const fresh = AccountDb.open(join(other, "wazap.sqlite"));
+  t.after(() => fresh.close());
+  fresh.setMeta("import_state", "skipped");
+  assert.deepEqual(moveAccountLegacy(other, fresh, 3_000), { moved: 0, recorded: true });
+  assert.equal(legacySchedule(fresh).kept, "inherited");
+  assert.equal(purgeAccountLegacy(other, fresh, 3_000 + 30 * DAY, true), null);
+  assert.deepEqual(readdirSync(join(other, "legacy")), ["store.json"]);
+
+  // No legacy/ at all: nothing to keep, nothing left to delete, and later passes look no further.
+  const bare = mkdtempSync(join(tmpdir(), "wazap-legacy-inherit-"));
+  const empty = AccountDb.open(join(bare, "wazap.sqlite"));
+  t.after(() => empty.close());
+  empty.setMeta("import_state", "done");
+  assert.deepEqual(moveAccountLegacy(bare, empty, 4_000), { moved: 0, recorded: true });
+  assert.equal(legacySchedule(empty).deletedAt, 4_000);
 });
 
 test("an import a stop cut off keeps every legacy file where the next boot resumes from, and moves them once it is done", async (t) => {

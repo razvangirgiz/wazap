@@ -361,7 +361,7 @@ function legacyCheck(account: AccountStorage): Check | null {
       return {
         name: "legacy files",
         state: "info",
-        detail: `${legacy.path} is not scheduled for deletion: the account database has no record of moving it`,
+        detail: `${legacy.path} is not scheduled for deletion: this account database did not move it there`,
         fix: `delete it yourself once you no longer need it: \`rm -rf ${legacy.path}\``,
       };
     default: {

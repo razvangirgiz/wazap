@@ -114,8 +114,11 @@ export interface StorageInfo {
   state: "preparing" | "ready" | "imported-unverified" | "failed";
   /** While preparing: the import phase reached, like "history (3 of 9)". */
   progress?: string;
-  /** The earlier message files in `legacy/`: when they are deleted, or kept because the import is unverified. */
-  legacy_files?: { deleted_after: string } | { kept: "unverified" };
+  /**
+   * The earlier message files in `legacy/`: when they are deleted, or why they
+   * are kept — the import is unverified, or this database did not move them.
+   */
+  legacy_files?: { deleted_after: string } | { kept: "unverified" | "inherited" };
 }
 
 /** One row of `get_status.accounts` / `list_accounts`. Policy `write_tools`, not the session bit. */

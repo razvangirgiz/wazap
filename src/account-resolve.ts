@@ -194,7 +194,7 @@ function storageStatusLine(s: StatusInfo): string | null {
   if (storage === undefined || (storage.state === "ready" && storage.legacy_files === undefined)) return null;
   const parts: string[] = [storage.progress === undefined ? storage.state : `${storage.state}, ${storage.progress}`];
   if (storage.legacy_files !== undefined) {
-    parts.push("kept" in storage.legacy_files ? "earlier message files kept (import unverified)" : `earlier message files deleted after ${storage.legacy_files.deleted_after}`);
+    parts.push("kept" in storage.legacy_files ? `earlier message files kept (${storage.legacy_files.kept})` : `earlier message files deleted after ${storage.legacy_files.deleted_after}`);
   }
   return `- **storage**: ${parts.join("; ")}`;
 }

@@ -48,7 +48,7 @@ import { asWazapError, RELINK_FIX, RESET_FIX, WazapError } from "./errors.js";
 import { LidRegistry, lidKey } from "./identity.js";
 import { isGroupId, isNoiseJid, isStatusJid, normalizePhone, STATUS_JID } from "./ids.js";
 import { FUTURE_SLACK_MS, IMPORT_META, importLegacyAccount, scrubQuote, type ImportReport } from "./legacy-import/index.js";
-import { legacySchedule, moveAccountLegacy, purgeAccountLegacy, purgePreviousOwners, settleBetaArchive } from "./legacy-files.js";
+import { LEGACY_TTL_MS, legacySchedule, moveAccountLegacy, purgeAccountLegacy, purgePreviousOwners, settleBetaArchive } from "./legacy-files.js";
 import { log, logError } from "./logger.js";
 import { messageExpiry } from "./message-expiry.js";
 import {
@@ -808,7 +808,7 @@ export class WhatsAppService implements WhatsAppApi {
       const schedule = legacySchedule(db);
       const when =
         schedule?.deleteAfter == null
-          ? "kept until you delete them, since the import is unverified"
+          ? "kept until you delete them"
           : retention
             ? "deleted now (WAZAP_RETENTION=1)"
             : `deleted after ${isoWithOffset(schedule.deleteAfter)}`;
@@ -1146,7 +1146,7 @@ export class WhatsAppService implements WhatsAppApi {
     const info: StorageInfo = { state: db.getMeta(IMPORT_UNVERIFIED_META) === null ? "ready" : "imported-unverified" };
     const schedule = legacySchedule(db);
     if (schedule !== null && schedule.deletedAt === null) {
-      info.legacy_files = schedule.deleteAfter === null ? { kept: "unverified" } : { deleted_after: isoWithOffset(schedule.deleteAfter) };
+      info.legacy_files = schedule.kept !== null ? { kept: schedule.kept } : { deleted_after: isoWithOffset(schedule.movedAt + LEGACY_TTL_MS) };
     }
     return info;
   }

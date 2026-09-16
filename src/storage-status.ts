@@ -67,7 +67,7 @@ export type LegacyFiles =
   | { state: "moved"; path: string; moved_at: string; delete_after: string }
   /** In `legacy/`, kept because the import is unverified: only the user deletes them. */
   | { state: "kept-unverified"; path: string; moved_at: string }
-  /** A `legacy/` the database has no record of moving (the database was replaced): never deleted by wazap. */
+  /** A `legacy/` this database did not move (it was replaced, or set aside for another number): never deleted by wazap. */
   | { state: "unrecorded"; path: string };
 
 export interface AccountStorage {
@@ -121,7 +121,7 @@ function legacyFiles(root: string, inPlace: number, schedule: LegacySchedule | n
   if (inPlace > 0) return { state: "in-place", entries: inPlace };
   const path = join(root, LEGACY_DIR);
   if (!existsSync(path)) return { state: "none" };
-  if (schedule === null || schedule.deletedAt !== null) return { state: "unrecorded", path };
+  if (schedule === null || schedule.deletedAt !== null || schedule.kept === "inherited") return { state: "unrecorded", path };
   const movedAt = isoWithOffset(schedule.movedAt);
   return schedule.deleteAfter === null
     ? { state: "kept-unverified", path, moved_at: movedAt }

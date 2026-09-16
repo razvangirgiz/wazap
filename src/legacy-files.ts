@@ -13,7 +13,10 @@
  * - `legacy/` is deleted a week after the move, at once with
  *   WAZAP_RETENTION=1. An import whose verification found differences it could
  *   not explain (`imported`) records `legacy_keep=unverified`: its files stay
- *   until the user deletes them.
+ *   until the user deletes them. So does a `legacy/` this database did not
+ *   move (`inherited`: a different number linked, and the set-aside database
+ *   holds the schedule); a crash after the last rename is told apart from it
+ *   by `legacy_moving`, written before the first.
  * - The 0.15-beta `<data dir>/archive.sqlite` moves to `<data dir>/legacy/`
  *   once every enabled account linked to its number has imported it (`done`).
  *   Its mtime is set to the move first, so the week counts from there. An
@@ -56,8 +59,15 @@ export const LEGACY_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 export const LEGACY_META = {
   /** Epoch ms the last legacy entry left its place; absent until every one has. */
   movedAt: "legacy_moved_at",
-  /** "unverified": the import could not explain every difference, so nothing deletes `legacy/`. */
+  /**
+   * Why nothing deletes `legacy/`: "unverified", the import could not explain
+   * every difference; "inherited", the folder was there before this database
+   * moved anything (a database set aside by a different number's link recorded
+   * its schedule, not this one).
+   */
   keep: "legacy_keep",
+  /** Epoch ms a move started; tells a move of ours a crash cut short from a folder we inherited. */
+  moving: "legacy_moving",
   /** Epoch ms `legacy/` was deleted, so later passes look no further. */
   deletedAt: "legacy_deleted_at",
 } as const;
@@ -134,8 +144,10 @@ export function moveAccountLegacy(root: string, db: MetaDb, now: number): { move
     return { moved: 0, recorded: false };
   }
   const dir = join(root, LEGACY_DIR);
+  const entries = legacyEntriesInPlace(root);
+  if (entries.length > 0 && db.getMeta(LEGACY_META.moving) === null) db.setMeta(LEGACY_META.moving, String(now));
   let moved = 0;
-  for (const name of legacyEntriesInPlace(root)) {
+  for (const name of entries) {
     if (moved === 0) ensureDir(dir);
     renameSync(join(root, name), freeName(dir, name, now));
     moved++;
@@ -144,20 +156,25 @@ export function moveAccountLegacy(root: string, db: MetaDb, now: number): { move
     syncDir(dir);
     syncDir(root);
   }
-  // With nothing moved and no legacy/ from before, there is nothing to delete either.
-  const nothing = moved === 0 && !present(dir);
+  const ours = db.getMeta(LEGACY_META.moving) !== null;
+  const folder = present(dir);
+  const keep = !folder ? null : state === "imported" ? "unverified" : ours ? null : "inherited";
   db.transaction(() => {
     db.setMeta(LEGACY_META.movedAt, String(now));
-    db.setMeta(LEGACY_META.keep, state === "imported" && !nothing ? "unverified" : null);
-    if (nothing) db.setMeta(LEGACY_META.deletedAt, String(now));
+    db.setMeta(LEGACY_META.keep, keep);
+    db.setMeta(LEGACY_META.moving, null);
+    // With no legacy/ at all there is nothing to delete either.
+    if (!folder) db.setMeta(LEGACY_META.deletedAt, String(now));
   });
   return { moved, recorded: true };
 }
 
 export interface LegacySchedule {
   movedAt: number;
-  /** When `legacy/` may go; null while an unverified import keeps it. */
+  /** When `legacy/` may go; null while it is kept. */
   deleteAfter: number | null;
+  /** Why it is kept: see LEGACY_META.keep. */
+  kept: "unverified" | "inherited" | null;
   deletedAt: number | null;
 }
 
@@ -170,8 +187,9 @@ function metaTime(db: Pick<AccountDb, "getMeta">, key: string): number | null {
 export function legacySchedule(db: Pick<AccountDb, "getMeta">): LegacySchedule | null {
   const movedAt = metaTime(db, LEGACY_META.movedAt);
   if (movedAt === null) return null;
-  const kept = db.getMeta(LEGACY_META.keep) === "unverified";
-  return { movedAt, deleteAfter: kept ? null : movedAt + LEGACY_TTL_MS, deletedAt: metaTime(db, LEGACY_META.deletedAt) };
+  const keep = db.getMeta(LEGACY_META.keep);
+  const kept = keep === null ? null : keep === "unverified" ? "unverified" : "inherited";
+  return { movedAt, deleteAfter: kept === null ? movedAt + LEGACY_TTL_MS : null, kept, deletedAt: metaTime(db, LEGACY_META.deletedAt) };
 }
 
 /** Deletes the account's `legacy/` when its week is up, or at once under retention. Returns the entries it held. */
