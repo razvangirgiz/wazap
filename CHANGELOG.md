@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.22.0
 ### Changed
 
 - **Every account is served from one database.** Chats, contacts, messages,
