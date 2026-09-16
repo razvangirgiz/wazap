@@ -3,13 +3,15 @@
  * queue in bounded batches, retries a sick backend and gives up on a dead
  * one, is never held by its own backoff when stopped, walks only what is new
  * once it has seen the history — wherever in time it lands — and re-embeds a
- * message whose words changed; a walk over a large history yields to the
- * event loop.
+ * message whose words changed; a text the server refuses is skipped alone and
+ * for good, and a walk over a large history yields to the event loop.
  * The embed call is a fake that never leaves the process.
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
+import { AccountDb } from "../dist/db/index.js";
+import { WazapError } from "../dist/errors.js";
 import { EmbedFeed } from "../dist/recall/index.js";
 import { PEER, T0, openTemp, sid, textMessage, wordsOf } from "./db-fixtures.mjs";
 
@@ -150,6 +152,43 @@ test("a vector made from words the message no longer says is refused, and the ne
   await feed.idle();
   assert.ok(db.vectors.get(sid(false, PEER, "M1")));
   db.close();
+});
+
+test("a text the embedding server refuses is skipped alone, the rest lands, and a restart does not send it again", async () => {
+  const { db, path, clock } = openTemp();
+  const bodies = { M1: "factura pe august", M2: "POISON de nedigerat", M3: "chiria e plătită", M4: "avansul vine vineri" };
+  Object.entries(bodies).forEach(([key, body], i) => db.messages.upsert(textMessage(PEER, key, T0 + i * 1000, body)));
+  const refusing = (calls) => {
+    const { embed } = fakeEmbed();
+    return async (texts) => {
+      calls.push([...texts]);
+      if (texts.some((text) => text.includes("POISON"))) throw new WazapError("RECALL_BAD_INPUT", "Embedding server returned HTTP 400.");
+      return embed(texts);
+    };
+  };
+  const calls = [];
+  const feed = feedOver(db, refusing(calls));
+  feed.kick();
+  await feed.idle();
+  assert.equal(feed.dead, null, "one bad text does not stop the feed");
+  for (const key of ["M1", "M3", "M4"]) assert.ok(db.vectors.get(sid(false, PEER, key)), `${key} is embedded`);
+  assert.equal(db.vectors.get(sid(false, PEER, "M2")), null);
+  db.close();
+
+  const reopened = AccountDb.open(path, { now: () => clock.now, checkpointDelayMs: 0 });
+  const later = [];
+  const again = feedOver(reopened, refusing(later));
+  again.kick();
+  await again.idle();
+  assert.equal(later.flat().some((text) => text.includes("POISON")), false, "the refused text is not sent again after a restart");
+  assert.equal(again.dead, null);
+
+  // New words are a new chance.
+  reopened.messages.upsert(textMessage(PEER, "M2", T0 + 1000, "acum se poate citi", { editedAt: T0 + 90_000 }));
+  again.kick();
+  await again.idle();
+  assert.ok(reopened.vectors.get(sid(false, PEER, "M2")));
+  reopened.close();
 });
 
 test("a message stored below what a finished walk covered — later history, an older page — is embedded without a restart", async () => {

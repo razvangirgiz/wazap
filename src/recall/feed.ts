@@ -12,7 +12,9 @@
  * batch, an older page) is queued like any other. The first time a model is
  * fed, a refill queues the messages already stored, in bounded steps whose
  * place survives a restart. The feed yields to the event loop between steps
- * and pages.
+ * and pages. A text the embedding server refuses as input is bisected out of
+ * its batch and taken off the queue, so it is not sent again until its words
+ * change.
  */
 import { setTimeout as sleep } from "node:timers/promises";
 import { contentHash, type AccountDb, type BacklogItem, type StoredMessage } from "../db/index.js";
@@ -175,6 +177,18 @@ export class EmbedFeed {
         return true;
       } catch (err) {
         if (this.stopped || !db.isOpen) return false;
+        if (err instanceof WazapError && err.code === "RECALL_BAD_INPUT") {
+          // The input, not the backend: halve the batch until the refused text is
+          // alone, then take it off the queue rather than resend it forever.
+          this.failures = 0;
+          if (work.length === 1) {
+            logError("recall index: skipping a message the embedding server refuses", err);
+            db.vectors.dequeue([work[0]!.message.id]);
+            return true;
+          }
+          const mid = Math.ceil(work.length / 2);
+          return (await this.embedBatch(db, work.slice(0, mid))) && (await this.embedBatch(db, work.slice(mid)));
+        }
         this.failures++;
         if (this.failures >= MAX_FAILURES) {
           this.dead = `indexing stopped after ${MAX_FAILURES} failed embedding calls: ${describeError(err)}`;
