@@ -564,11 +564,14 @@ export interface WebhookDeliveryRow {
   delivery: WebhookDelivery;
 }
 
+/** An event still being retried this long after it was queued means delivery is down, not having a moment. */
+const WEBHOOK_STUCK_AFTER_MS = 10 * 60_000;
+
 /**
  * W1 webhook: off is quiet; on without a URL or secret is a visible fail. Once
  * an account has queued events, its outbox decides the rest: a run of failed
- * events, or an oldest event that failed that many POSTs, fails; one failure
- * since the last delivery, or an event retrying, warns.
+ * events, or an oldest waiting event retried for 10 minutes, fails; one failure
+ * since the last delivery, or an event retrying for less, warns.
  */
 export function webhookCheck(
   env: NodeJS.ProcessEnv = process.env,
@@ -603,7 +606,10 @@ function deliveryCheck(on: string, rows: readonly WebhookDeliveryRow[], now: num
       fix: webhookFailureFix(failure ?? ""),
     };
   }
-  const stuck = rows.find((row) => row.delivery.retrying >= WEBHOOK_FAILING_AFTER);
+  const stuck = rows.find((row) => {
+    const since = row.delivery.oldest_pending_at;
+    return row.delivery.retrying > 0 && since !== null && now - Date.parse(since) >= WEBHOOK_STUCK_AFTER_MS;
+  });
   if (stuck !== undefined) return retryingCheck(stuck, named, "fail", now);
   const flaky = rows.find((row) => row.delivery.consecutive_failures > 0);
   if (flaky !== undefined) {

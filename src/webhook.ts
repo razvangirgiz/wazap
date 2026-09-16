@@ -26,7 +26,7 @@ export const WEBHOOK_TIMEOUT_MS = 10_000;
 export const WEBHOOK_TEXT_MAX = 2000;
 /** `webhook test` retries a probe that may pass on its own this soon; the outbox has its own schedule. */
 export const WEBHOOK_TEST_RETRY_DELAYS_MS = [200, 500] as const;
-/** Failed events in a row, or failed attempts of the oldest waiting one, before doctor calls delivery broken rather than flaky. */
+/** Failed events in a row before doctor calls delivery broken rather than flaky. */
 export const WEBHOOK_FAILING_AFTER = 3;
 export const WEBHOOK_ON_FIX = "run `wazap config webhook on`";
 export const WEBHOOK_URL_FIX = "set WAZAP_WEBHOOK_URL to an https:// URL, or http:// on 127.0.0.1";

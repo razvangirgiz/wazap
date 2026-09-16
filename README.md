@@ -1280,9 +1280,9 @@ database could not store), `consecutive_failures`, `retrying` (failed POSTs of
 the oldest waiting event), `last_success_at`, `last_failure_at`,
 `last_failure`, `last_status`, `last_dropped_at` and `oldest_pending_at`.
 `wazap status` and doctor read the same outbox read-only, whether or not the
-server runs: three failed events in a row, or three failed POSTs of the oldest
-waiting one, fail the webhook check with the fix; one failure since the last
-delivery, or an event being retried, warns; the check passes again with the
+server runs: three failed events in a row, or an oldest waiting event still
+retried 10 minutes after it was queued, fail the webhook check with the fix;
+one failure since the last delivery, or an event retried for less, warns; the check passes again with the
 next delivery. `webhook test` posts its probe directly, not through the
 outbox, and does not change the counters. The log says the first failure of a
 run, a count every 100 failures, and one line when delivery comes back, not a

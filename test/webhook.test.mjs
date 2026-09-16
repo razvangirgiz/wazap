@@ -1838,7 +1838,7 @@ test("status reads the outbox from another process: it fails after a run of refu
   );
 });
 
-test("doctor warns on a failure since the last delivery or an event retrying, fails on three, naming the account", () => {
+test("doctor warns on a failure since the last delivery or an event retrying, and fails on three failures or 10 minutes of retries", () => {
   const env = readyEnv("https://hooks.example/wazap");
   const now = Date.parse("2026-09-15T12:00:00.000Z");
   const quiet = {
@@ -1902,7 +1902,17 @@ test("doctor warns on a failure since the last delivery or an event retrying, fa
   );
   assert.match(retrying.fix, /reachable and answer 2xx/);
 
-  const stuck = { ...down, retrying: 3, oldest_pending_at: "2026-09-15T09:30:00.000Z" };
+  const blip = { ...down, retrying: 5, oldest_pending_at: "2026-09-15T11:59:54.000Z" };
+  assert.equal(
+    webhookCheck(env, [{ account: "work", delivery: blip }], now).state,
+    "warn",
+    "five quick retries six seconds into an outage are not yet broken delivery"
+  );
+
+  const stuck = { ...down, retrying: 1, oldest_pending_at: "2026-09-15T11:50:00.000Z" };
+  assert.equal(webhookCheck(env, [{ account: "work", delivery: stuck }], now).state, "fail", "ten minutes of retries is");
+  stuck.retrying = 3;
+  stuck.oldest_pending_at = "2026-09-15T09:30:00.000Z";
   const broken = webhookCheck(env, [{ account: "work", delivery: stuck }], now);
   assert.equal(broken.state, "fail");
   assert.match(broken.detail, /retrying: 3 failed attempts, 12 events waiting, the oldest waiting 2 h 30 min: HTTP 503/);
