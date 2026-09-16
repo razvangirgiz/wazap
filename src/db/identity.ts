@@ -272,8 +272,14 @@ export class Identity {
     });
   }
 
-  /** The stored message with this chat, direction and key, wherever a fold has it right now. */
+  /**
+   * The stored message with this chat, direction and key, wherever a fold has
+   * it right now. While a fold is still moving rows, one message can sit under
+   * both spellings; a tombstone on either side is the one that answers, as
+   * the fold itself will decide, so a delete reads as done before it lands.
+   */
   findByKey(chat: ChatRecord, fromMe: boolean, keyId: string): MessageKey | null {
+    let found: MessageKey | null = null;
     for (const chatId of this.chatIdsOf(chat)) {
       const row = this.c.get<Omit<MessageKey, "chat" | "sid">>(
         `SELECT ${KEY_COLUMNS} FROM messages m JOIN chats c ON c.id = m.chat_id
@@ -282,9 +288,12 @@ export class Identity {
         fromMe ? 1 : 0,
         keyId
       );
-      if (row !== undefined) return { ...row, chat, sid: sidOf(fromMe, chat.jid, keyId) };
+      if (row === undefined) continue;
+      const key = { ...row, chat, sid: sidOf(fromMe, chat.jid, keyId) };
+      if (key.deleted_at !== null) return key;
+      found ??= key;
     }
-    return null;
+    return found;
   }
 
   /**

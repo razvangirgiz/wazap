@@ -400,3 +400,19 @@ test("a contact update keeps fields it does not name and clears the ones set to 
   );
   db.close();
 });
+
+test("while a fold is still moving rows, a message deleted under one spelling reads as deleted under both", async () => {
+  const { db } = openTemp({ chunkSize: 1 });
+  for (let i = 0; i < 5; i++) db.messages.upsert(textMessage(PEER, `P${i}`, T0 + i * 1000, `phone ${i}`));
+  db.messages.upsert(textMessage(PEER, "TWIN", T0 + 10_000, "under the number"));
+  for (let i = 0; i < 5; i++) db.messages.upsert(textMessage(PEER_LID, `L${i}`, T0 + 20_000 + i * 1000, `lid ${i}`));
+  db.messages.delete(sid(false, PEER_LID, "TWIN"), { ts: T0 + 10_000 });
+  const fold = db.learnLidPhone(PEER_LID, PEER);
+  for (const spelling of [PEER, PEER_LID]) {
+    assert.equal(db.messages.get(sid(false, spelling, "TWIN")), null, `under ${spelling}, before the fold lands`);
+    assert.equal(db.messages.upsert(textMessage(spelling, "TWIN", T0 + 10_000, "replay")).outcome, "deleted");
+  }
+  await fold;
+  assert.equal(db.messages.get(sid(false, PEER, "TWIN")), null, "and after it");
+  db.close();
+});
