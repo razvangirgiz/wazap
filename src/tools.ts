@@ -2020,7 +2020,10 @@ function drafted(view: DraftView): ToolResult {
  * is re-read rather than trusted from registry memory.
  */
 function liveSendPolicy(hub: AccountSource, accountId: string): SendPolicy {
-  return sendPolicyOf(hub.recordOnDisk(accountId) ?? hub.record(accountId));
+  const record = hub.recordOnDisk(accountId);
+  if (!record || !record.enabled) throw new WazapError("SEND_BLOCKED", "The account send policy is unavailable.",
+    "Restore the account policy before sending; do not fall back to cached rules");
+  return sendPolicyOf(record);
 }
 
 /**

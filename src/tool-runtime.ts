@@ -78,6 +78,9 @@ function rateLabel(name: string): string {
 
 /** Built once for the tool catalogue: reconnects never reset the process-wide rate buckets. */
 export function createToolRegistrar(defs: readonly ToolDef[]) {
+  // Hold a slot until the actual handler settles, even if its HTTP caller
+  // disconnects. Reinitializing a session cannot reset the process budget.
+  let inFlight = 0;
   const buckets = new Map<string, RateLimiter>(
     defs.flatMap((def) =>
       def.rate === undefined ? [] : [[def.name, new RateLimiter(def.rate, undefined, rateLabel(def.name))] as const]
@@ -87,6 +90,7 @@ export function createToolRegistrar(defs: readonly ToolDef[]) {
     // Each stdio server / HTTP session / upstream bridge session owns its drafts.
     // New initialization intentionally requires re-drafting, even with the same token.
     const draftOwner = Symbol("MCP draft owner");
+    let sessionInFlight = 0;
     for (const def of defs) {
       if (def.write && !opts.allowWrite) continue;
       const own = buckets.get(def.name);
@@ -109,7 +113,13 @@ export function createToolRegistrar(defs: readonly ToolDef[]) {
         async (args: unknown): Promise<ToolResult> => {
           const parsed = (args ?? {}) as ToolArgs;
           let resolved: { id: string; wa: WhatsAppApi } | undefined;
+          let admitted = false;
           try {
+            if (inFlight >= 16 || sessionInFlight >= 4) throw new WazapError("RATE_LIMITED", "Too many tool operations are still running.",
+              "Wait for pending operations to finish, then retry once");
+            inFlight++;
+            sessionInFlight++;
+            admitted = true;
             // Reject before any lookup/stat/read/write, including directory overrides on read tools.
             if (opts.allowLocalFiles === false && (parsed.file_path !== undefined || parsed.save_to !== undefined)) {
               throw new WazapError(
@@ -132,9 +142,14 @@ export function createToolRegistrar(defs: readonly ToolDef[]) {
             resolved = resolveToolAccount(hub, resolveArgs, def);
             // A writable account registers tools for the session, not permission to
             // touch every account. Gate before draft/media/group preflight work.
+            const live = def.write ? hub.recordOnDisk(resolved.id) : undefined;
+            if (def.write && (!live || !live.enabled)) {
+              throw new WazapError("READ_ONLY", `Account "${resolved.id}" is missing or disabled; this write is refused.`,
+                "Restore the account policy deliberately and restart the server");
+            }
             if (
               def.write &&
-              (hub.record(resolved.id)?.writes === false || resolved.wa.getStatus?.().read_only === true)
+              (live?.writes === false || hub.record(resolved.id)?.writes === false || resolved.wa.getStatus?.().read_only === true)
             ) {
               throw new WazapError(
                 "READ_ONLY",
@@ -154,6 +169,8 @@ export function createToolRegistrar(defs: readonly ToolDef[]) {
             const result = toolError(asWazapError(err));
             const id = resolved?.id ?? stringArg(parsed, "account_id");
             return id === undefined ? result : attachAccountId(result, id);
+          } finally {
+            if (admitted) { inFlight--; sessionInFlight--; }
           }
         }
       );

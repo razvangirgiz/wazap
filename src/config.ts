@@ -218,7 +218,11 @@ function asBool(value: string | undefined, fallback: boolean): boolean {
  */
 export function readOnlySetting(value: string | undefined): boolean {
   if (value === undefined) return false;
-  return ["1", "true", "yes", "on"].includes(value.trim().toLowerCase());
+  const normalized = value.trim().toLowerCase();
+  if (["1", "true", "yes", "on"].includes(normalized)) return true;
+  if (["", "0", "false", "no", "off"].includes(normalized)) return false;
+  throw new WazapError("INVALID_ID", "WAZAP_READ_ONLY must be a boolean value.",
+    "Set WAZAP_READ_ONLY to 1 to disable writes or 0 to enable them deliberately");
 }
 
 /** HTTP serve, or a public URL that remote agents use. */

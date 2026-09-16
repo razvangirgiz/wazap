@@ -21,6 +21,16 @@ for (const [value, expected, note] of CASES) {
   });
 }
 
+test("malformed read-only settings cannot silently enable writes or echo their contents", () => {
+  for (const value of ["tru", "2", "SYNTHETIC-SECRET"]) {
+    assert.throws(() => readOnlySetting(value), err => {
+      assert.equal(err.code, "INVALID_ID");
+      assert.ok(!err.message.includes(value));
+      return true;
+    });
+  }
+});
+
 test("isRemoteHttp is true for HTTP transport or a public URL", () => {
   assert.equal(isRemoteHttp({ transport: "stdio", publicUrl: null }), false);
   assert.equal(isRemoteHttp({ transport: "http", publicUrl: null }), true);

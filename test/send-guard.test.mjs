@@ -186,7 +186,8 @@ test("bad send rules in accounts.json are refused at load, naming the field", ()
     () => AccountRegistry.load(dir),
     (err) => {
       assert.equal(err.code, "INVALID_ID");
-      assert.match(err.message, /send_deny entry: "Ana"/);
+      assert.match(err.message, /send_deny entry/);
+      assert.ok(!err.message.includes('"Ana"'), "invalid rule contents are not echoed");
       return true;
     }
   );

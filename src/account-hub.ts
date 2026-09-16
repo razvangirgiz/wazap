@@ -94,6 +94,8 @@ export class AccountHub implements AccountSource {
 
   constructor(config: Config, registry: AccountRegistry) {
     this.dataDir = config.dataDir;
+    // Seal legacy policy presence, even if no account can be started.
+    registry.seal();
     for (const account of registry.all()) {
       this.known.set(account.id, { ...account });
     }
@@ -178,11 +180,7 @@ export class AccountHub implements AccountSource {
    * this server started" apart from "no such account" and ask for a restart.
    */
   recordOnDisk(id: string): AccountRecord | undefined {
-    try {
-      return AccountRegistry.load(this.dataDir).get(id);
-    } catch {
-      return undefined;
-    }
+    return AccountRegistry.load(this.dataDir).get(id);
   }
 
   noteOwner(id: string, owner: string): void {

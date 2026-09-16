@@ -6,7 +6,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createHash, randomBytes } from "node:crypto";
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -924,6 +924,84 @@ test("a forgotten refresh token and an orphaned registration are swept", async (
   onDisk = JSON.parse(readFileSync(join(dataDir, "oauth.json"), "utf8"));
   assert.deepEqual(onDisk.refresh, {});
   assert.deepEqual(onDisk.clients, {});
+});
+
+test("registration after oauth.json removal cannot resurrect grants or consent pages", async (t) => {
+  const ctx = await boot(t);
+  const { tokens } = await signIn(ctx);
+  const waiting = await begin(ctx);
+  rmSync(join(ctx.dataDir, "oauth.json"));
+  await begin(ctx);
+  await assert.rejects(ctx.oauth.verifyAccessToken(tokens.access_token));
+  assert.equal((await approve(ctx, waiting.request, { password: PASSWORD, decision: "allow" })).res.status, 400);
+});
+
+test("refresh rotates one-use tokens; replay revokes only that grant family", async (t) => {
+  const ctx = await boot(t);
+  const first = await signIn(ctx);
+  const other = { tokens: ctx.oauth.issue(first.client.client_id, ["read"]) };
+  const second = await ctx.oauth.exchangeRefreshToken(first.client, first.tokens.refresh_token);
+  assert.notEqual(second.refresh_token, first.tokens.refresh_token);
+  assert.equal(ctx.oauth.grants().length, 2);
+  await assert.rejects(ctx.oauth.exchangeRefreshToken(first.client, first.tokens.refresh_token));
+  await assert.rejects(ctx.oauth.verifyAccessToken(second.access_token));
+  await assert.rejects(ctx.oauth.exchangeRefreshToken(first.client, second.refresh_token));
+  assert.ok(await ctx.oauth.verifyAccessToken(other.tokens.access_token));
+});
+
+test("rotated refresh chains and active access tokens remain bounded across restart", async (t) => {
+  const ctx = await boot(t);
+  const first = await signIn(ctx);
+  let tokens = first.tokens;
+  for (let i = 0; i < 45; i++) tokens = await ctx.oauth.exchangeRefreshToken(first.client, tokens.refresh_token);
+  const stateFile = join(ctx.dataDir, "oauth.json");
+  const state = JSON.parse(readFileSync(stateFile, "utf8"));
+  assert.ok(Object.keys(state.refresh).length <= 33);
+  assert.ok(Object.keys(state.access).length <= 8);
+  const next = new WazapOAuthProvider({ publicUrl: new URL(ctx.base), password: PASSWORD, stateFile });
+  assert.equal(next.grants().length, 1);
+  assert.ok(await next.verifyAccessToken(tokens.access_token));
+  await assert.rejects(next.verifyAccessToken(first.tokens.access_token));
+  const rotated = await next.exchangeRefreshToken(first.client, tokens.refresh_token, ["read"]);
+  assert.equal(rotated.scope, "read");
+  assert.equal((await next.exchangeRefreshToken(first.client, rotated.refresh_token)).scope, "read write");
+});
+
+for (const change of [entry => { delete entry.expiresAt; }, entry => { entry.expiresAt = "never"; }, entry => { entry.scopes = ["administrator"]; }]) {
+  test("malformed persisted access grants fail closed instead of becoming unexpiring", async (t) => {
+    const ctx = await boot(t);
+    const { tokens } = await signIn(ctx);
+    const stateFile = join(ctx.dataDir, "oauth.json");
+    const state = JSON.parse(readFileSync(stateFile, "utf8")); change(Object.values(state.access)[0]);
+    writeFileSync(stateFile, JSON.stringify(state));
+    const next = new WazapOAuthProvider({ publicUrl: new URL(ctx.base), password: PASSWORD, stateFile });
+    await assert.rejects(next.verifyAccessToken(tokens.access_token));
+  });
+}
+
+test("OAuth registrations, pending pages and grants have finite capacity", async (t) => {
+  let now = Date.now();
+  const ctx = await boot(t, { now: () => now });
+  const metadata = { redirect_uris: ["https://synthetic.example/callback"] };
+  let client;
+  for (let i = 0; i < 256; i++) client = await ctx.oauth.clientsStore.registerClient(metadata);
+  await assert.rejects(async () => ctx.oauth.clientsStore.registerClient(metadata), /capacity/);
+  const params = { redirectUri: metadata.redirect_uris[0], codeChallenge: "synthetic" };
+  const res = { setHeader() {}, status() { return this; }, type() { return this; }, send() {} };
+  for (let i = 0; i < 128; i++) await ctx.oauth.authorize(client, params, res);
+  await assert.rejects(ctx.oauth.authorize(client, params, res), /pending/);
+  now += 10 * 60_000;
+  await ctx.oauth.authorize(client, params, res);
+  assert.equal(ctx.oauth.pending.size, 1, "expired pages free capacity at the exact boundary");
+  for (let i = 0; i < 256; i++) ctx.oauth.issue(client.client_id, ["read"]);
+  assert.throws(() => ctx.oauth.issue(client.client_id, ["read"]), /capacity/);
+});
+
+test("public issuer configuration refuses credentials and unsupported schemes without echo", () => {
+  for (const publicUrl of ["https://u:SYNTHETIC-SECRET@host.example", "ftp://127.0.0.1", "SYNTHETIC-SECRET"]) {
+    const error = oauthProblem({ publicUrl, oauthPassword: PASSWORD });
+    assert.ok(error); assert.ok(!error.includes("SYNTHETIC-SECRET"));
+  }
 });
 
 test("oauthProblem names what is missing or wrong", () => {

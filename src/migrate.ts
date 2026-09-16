@@ -1,4 +1,4 @@
-import { existsSync, lstatSync, mkdirSync, readFileSync, renameSync, rmdirSync, unlinkSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, readFileSync, renameSync, rmdirSync, rmSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
 import { AccountRegistry, DEFAULT_ACCOUNT_ID, ensureAccountsFile, isRecord, writeJsonFile } from "./accounts.js";
 import { readLinkedAccount } from "./auth-state.js";
@@ -185,6 +185,7 @@ function applyMigration(dataDir: string, manifestFile: string, existing: Migrati
  */
 export function migrateLayout(dataDir: string): void {
   if (!existsSync(dataDir)) return;
+  if (existsSync(`${paths(dataDir).accountsFile}.required`)) AccountRegistry.load(dataDir);
 
   const leftover = leftoverEntries(dataDir);
   const manifestFile = join(dataDir, "migration.json");
@@ -236,6 +237,8 @@ export function rollbackMigration(dataDir: string): MigrationManifest {
   }
   try {
     unlinkSync(join(dataDir, "accounts.json"));
+    // Explicit rollback also removes the modern policy-presence marker.
+    rmSync(`${paths(dataDir).accountsFile}.required`, { force: true });
   } catch {
     /* never written, or already gone */
   }

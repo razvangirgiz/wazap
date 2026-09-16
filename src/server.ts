@@ -1,5 +1,6 @@
 import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
 import { HttpSessions } from "./http-sessions.js";
+import { httpPostBudget } from "./http-budget.js";
 import { httpError, httpRequestLog } from "./http-log.js";
 import { createServer, type Server } from "node:http";
 import { createConnection } from "node:net";
@@ -183,7 +184,6 @@ export async function startHttpEndpoint(hub: AccountSource, config: Config, endp
   const { default: express } = await import("express");
   const app = express();
   app.use(httpRequestLog);
-  app.use(express.json());
 
   if (endpoint.openRead && !endpoint.oauth) {
     log(
@@ -259,6 +259,16 @@ export async function startHttpEndpoint(hub: AccountSource, config: Config, endp
       return;
     }
     if (openRead) {
+      // Anonymous loopback access is not ambient browser authority. Use raw
+      // Host/Origin, never forwarded headers, to reject DNS rebinding and CSRF.
+      const host = req.headers.host?.toLowerCase();
+      const port = req.socket.localPort;
+      const localHosts = ["localhost", "127.0.0.1", "[::1]"];
+      const allowed = localHosts.some((name) => host === `${name}:${port}` || (port === 80 && host === name));
+      if (!allowed || (req.headers.origin !== undefined && req.headers.origin !== `http://${host}`)) {
+        res.status(403).json({ error: "Anonymous MCP requires a loopback Host and same-origin requests. Use a bearer token." });
+        return;
+      }
       (req as AuthedRequest).mcpWrite = false;
       (req as AuthedRequest).sessionOwner = "anonymous";
       next();
@@ -358,7 +368,8 @@ export async function startHttpEndpoint(hub: AccountSource, config: Config, endp
   const authed = (req: Request, res: Response, next: NextFunction): void => {
     requireAuth(req, res, next).catch(next);
   };
-  app.post("/mcp", authed, handleMcp);
+  app.post("/mcp", authed, httpPostBudget((req) => (req as AuthedRequest).sessionOwner!),
+    express.json({ limit: "100kb", inflate: false }), handleMcp);
   app.get("/mcp", authed, handleMcp);
   app.delete("/mcp", authed, handleMcp);
 
@@ -379,7 +390,8 @@ export async function startHttpEndpoint(hub: AccountSource, config: Config, endp
   });
 
   app.use(httpError);
-  const server = createServer(app);
+  const server = createServer({ headersTimeout: 10_000, requestTimeout: 30_000, maxHeaderSize: 16 * 1024 }, app);
+  server.maxConnections = 256;
   const onAbort = (): void => {
     clearInterval(sweep);
     sessions.close();

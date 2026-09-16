@@ -26,6 +26,11 @@ export class HttpSessions {
 
   add(id: string, transport: StreamableHTTPServerTransport, owner: string): void {
     this.sessions.set(id, { transport, owner, lastSeen: Date.now() });
+    const owned = [...this.sessions].filter(([, session]) => session.owner === owner);
+    if (owned.length > Math.min(32, this.max)) {
+      const oldest = owned.filter(([other]) => other !== id).sort(([, a], [, b]) => a.lastSeen - b.lastSeen)[0];
+      if (oldest) this.drop(oldest[0]);
+    }
     while (this.sessions.size > this.max) {
       let oldest: string | undefined;
       let oldestAt = Infinity;

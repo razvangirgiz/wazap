@@ -39,6 +39,7 @@ export interface ResolvedAccount {
 
 const FIX_LIST = "Run `wazap account list`";
 const FIX_ADD = "Run `wazap account add <id>` first, or `wazap account list`";
+const FIX_POLICY = "Restore or repair accounts.json from a trusted backup; do not remove the policy file or its .required marker";
 
 export function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -89,23 +90,23 @@ function synthesizedDefault(): AccountsFile {
 
 function parseAccountRecord(value: unknown, file: string): AccountRecord {
   if (!isRecord(value) || typeof value.id !== "string" || !ACCOUNT_ID_RE.test(value.id)) {
-    throw new WazapError("INVALID_ID", `Invalid account entry in ${file}.`, "Fix or remove accounts.json");
+    throw new WazapError("INVALID_ID", `Invalid account entry in ${file}.`, FIX_POLICY);
   }
   if (typeof value.name !== "string" || value.name.trim() === "") {
-    throw new WazapError("INVALID_ID", `Account "${value.id}" in ${file} has no name.`, "Fix or remove accounts.json");
+    throw new WazapError("INVALID_ID", `Account "${value.id}" in ${file} has no name.`, FIX_POLICY);
   }
   if (typeof value.enabled !== "boolean") {
     throw new WazapError(
       "INVALID_ID",
       `Account "${value.id}" in ${file} is missing enabled.`,
-      "Fix or remove accounts.json"
+      FIX_POLICY
     );
   }
   if (value.owner !== null && typeof value.owner !== "string") {
     throw new WazapError(
       "INVALID_ID",
       `Account "${value.id}" in ${file} has a bad owner.`,
-      "Fix or remove accounts.json"
+      FIX_POLICY
     );
   }
   const record: AccountRecord = {
@@ -119,7 +120,7 @@ function parseAccountRecord(value: unknown, file: string): AccountRecord {
       throw new WazapError(
         "INVALID_ID",
         `Account "${value.id}" in ${file} has a bad writes flag.`,
-        "Fix or remove accounts.json"
+        FIX_POLICY
       );
     }
     record.writes = value.writes;
@@ -129,7 +130,7 @@ function parseAccountRecord(value: unknown, file: string): AccountRecord {
       throw new WazapError(
         "INVALID_ID",
         `Account "${value.id}" in ${file} has a bad rate_limit.`,
-        "Fix or remove accounts.json"
+        FIX_POLICY
       );
     }
     record.rate_limit = value.rate_limit;
@@ -145,7 +146,7 @@ function parseAccountRecord(value: unknown, file: string): AccountRecord {
 
 /** Every entry must be a chat id or a phone number; what load refuses, a writer cannot persist either. */
 function sendRuleList(id: string, field: "send_allow" | "send_deny", value: unknown, where = ""): string[] {
-  const fix = "Fix or remove accounts.json";
+  const fix = FIX_POLICY;
   if (!Array.isArray(value) || value.length > 200) {
     throw new WazapError("INVALID_ID", `Account "${id}"${where} has a bad ${field}.`, fix);
   }
@@ -156,7 +157,7 @@ function sendRuleList(id: string, field: "send_allow" | "send_deny", value: unkn
     try {
       return normalizeSendRule(entry);
     } catch {
-      throw new WazapError("INVALID_ID", `Account "${id}"${where} has a bad ${field} entry: "${entry}".`, fix);
+      throw new WazapError("INVALID_ID", `Account "${id}"${where} has a bad ${field} entry.`, fix);
     }
   });
 }
@@ -168,7 +169,7 @@ function webhookFields(
   secret: unknown,
   events: unknown,
   where = "",
-  fix = "Fix or remove accounts.json"
+  fix = FIX_POLICY
 ): Pick<AccountRecord, "webhook_url" | "webhook_secret" | "webhook_events"> {
   const fields: Pick<AccountRecord, "webhook_url" | "webhook_secret" | "webhook_events"> = {};
   if (url !== undefined) {
@@ -204,7 +205,7 @@ function webhookFields(
 
 function parseAccountsFile(value: unknown, file: string): AccountsFile {
   if (!isRecord(value) || value.v !== 2 || typeof value.default !== "string" || !Array.isArray(value.accounts)) {
-    throw new WazapError("INVALID_ID", `Could not read ${file}.`, "Fix the JSON or remove the file");
+    throw new WazapError("INVALID_ID", `Could not read ${file}.`, FIX_POLICY);
   }
   if (value.accounts.length === 0) {
     throw new WazapError("INVALID_ID", `${file} lists no accounts.`, FIX_ADD);
@@ -212,13 +213,13 @@ function parseAccountsFile(value: unknown, file: string): AccountsFile {
   const accounts = value.accounts.map((entry) => parseAccountRecord(entry, file));
   const ids = new Set(accounts.map((account) => account.id));
   if (ids.size !== accounts.length) {
-    throw new WazapError("INVALID_ID", `${file} lists the same account id twice.`, "Fix or remove accounts.json");
+    throw new WazapError("INVALID_ID", `${file} lists the same account id twice.`, FIX_POLICY);
   }
   if (!ids.has(value.default)) {
     throw new WazapError(
       "INVALID_ID",
-      `${file} default "${value.default}" is not an account.`,
-      "Fix or remove accounts.json"
+      `${file} default is not an account.`,
+      FIX_POLICY
     );
   }
   return { v: 2, default: value.default, accounts };
@@ -232,8 +233,8 @@ export class AccountRegistry {
 
   /**
    * Load accounts.json, or an in-memory default account when the file is
-   * missing. A missing file next to `accounts/default/` is not an error; the
-   * migrator creates the file. This load still synthesizes so login and status
+   * missing and no .required marker exists. Legacy unmarked layouts can still
+   * bootstrap through the migrator. This load synthesizes so login and status
    * work on a fresh data dir without writing anything.
    */
   static load(dataDir: string): AccountRegistry {
@@ -242,20 +243,28 @@ export class AccountRegistry {
     try {
       text = readFileSync(file, "utf8");
     } catch (err) {
-      if (isEnoent(err)) return new AccountRegistry(dataDir, synthesizedDefault());
-      throw new WazapError("INVALID_ID", `Could not read ${file}.`, "Fix the JSON or remove the file");
+      if (isEnoent(err) && !existsSync(`${file}.required`)) return new AccountRegistry(dataDir, synthesizedDefault());
+      throw new WazapError("INVALID_ID", "Account policy is missing or unreadable; refusing unrestricted defaults.", FIX_POLICY);
     }
     let parsed: unknown;
     try {
       parsed = JSON.parse(text);
     } catch {
-      throw new WazapError("INVALID_ID", `Could not read ${file}.`, "Fix the JSON or remove the file");
+      throw new WazapError("INVALID_ID", `Could not read ${file}.`, FIX_POLICY);
     }
     return new AccountRegistry(dataDir, parseAccountsFile(parsed, file));
   }
 
   save(): void {
     this.commit(this.file);
+  }
+
+  /** Remember existing policy without rewriting its bytes or permissions. */
+  seal(): void {
+    const file = paths(this.dataDir).accountsFile;
+    if (existsSync(file)) this.markRequired(file);
+    else if (existsSync(`${file}.required`)) throw new WazapError("INVALID_ID", "Account policy is missing.", FIX_POLICY);
+    else this.save();
   }
 
   defaultId(): string {
@@ -372,8 +381,17 @@ export class AccountRegistry {
     this.commit({ ...this.file, default: slug });
   }
 
+  private markRequired(file: string): void {
+    mkdirSync(dirname(file), { recursive: true, mode: 0o700 });
+    writeFileSync(`${file}.required`, "", { mode: 0o600 });
+    chmodSync(`${file}.required`, 0o600);
+  }
+
   private commit(next: AccountsFile): void {
-    writeJsonFile(paths(this.dataDir).accountsFile, next);
+    const file = paths(this.dataDir).accountsFile;
+    // Seal existence before publication; loss must not bootstrap open rules.
+    this.markRequired(file);
+    writeJsonFile(file, next);
     this.file = next;
   }
 

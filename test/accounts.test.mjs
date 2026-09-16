@@ -244,7 +244,7 @@ test("a directory named accounts.json is an error, not a synthesized default", (
     () => AccountRegistry.load(dir),
     (err) => {
       assert.equal(err.code, "INVALID_ID");
-      assert.match(err.message, /Could not read/);
+      assert.match(err.message, /missing or unreadable/);
       return true;
     }
   );

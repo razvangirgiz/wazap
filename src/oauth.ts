@@ -22,6 +22,7 @@ import {
   InvalidScopeError,
   InvalidTokenError,
   InvalidTargetError,
+  TooManyRequestsError,
 } from "@modelcontextprotocol/sdk/server/auth/errors.js";
 import type {
   OAuthClientInformationFull,
@@ -53,6 +54,11 @@ const GLOBAL_BRAKE_AFTER = 20;
 const GLOBAL_BRAKE_MS = 60 * 1000;
 /** Wrong passwords one consent page takes before it is thrown away. */
 const PENDING_MISSES = 3;
+const MAX_CLIENTS = 256;
+const MAX_PENDING = 128;
+const MAX_GRANTS = 256;
+const MAX_ACCESS_PER_GRANT = 8;
+const MAX_SPENT_PER_GRANT = 32;
 
 const LOOPBACK_HOSTS = ["127.0.0.1", "[::1]", "localhost"];
 
@@ -69,8 +75,10 @@ export function oauthProblem(config: { publicUrl: string | null; oauthPassword: 
   try {
     url = new URL(config.publicUrl);
   } catch {
-    return `WAZAP_PUBLIC_URL is not a URL: ${config.publicUrl}`;
+    return "WAZAP_PUBLIC_URL is not a valid HTTP(S) origin.";
   }
+  if (url.username || url.password) return "WAZAP_PUBLIC_URL must not contain credentials.";
+  if (url.protocol !== "http:" && url.protocol !== "https:") return "WAZAP_PUBLIC_URL must use HTTP(S).";
   if (url.search || url.hash) return "WAZAP_PUBLIC_URL must not carry a query or a fragment.";
   if (url.pathname !== "/") {
     return "WAZAP_PUBLIC_URL must be a bare origin: the OAuth endpoints live at its root, not under a path.";
@@ -88,10 +96,13 @@ interface StoredToken {
   issuedAt: number;
   /** Access tokens expire; a refresh token lives until revoked or forgotten. */
   expiresAt?: number;
-  /** Access only: the hash of the refresh token that minted it, so revoking one ends the other. */
+  /** Access only: the grant family (initial refresh hash), so revocation ends every generation. */
   refresh?: string;
   /** Refresh only: the last time it minted an access token. */
   lastUsedAt?: number;
+  /** Refresh generations share one family; consumed hashes detect replay without storing secrets. */
+  family?: string;
+  spent?: boolean;
 }
 
 interface OAuthState {
@@ -155,16 +166,34 @@ function emptyState(): OAuthState {
 function loadState(file: string): OAuthState {
   if (!existsSync(file)) return emptyState();
   try {
-    const parsed = JSON.parse(readFileSync(file, "utf8")) as Partial<OAuthState>;
-    return {
-      clients: parsed.clients ?? {},
-      access: parsed.access ?? {},
-      refresh: parsed.refresh ?? {},
-    };
+    const parsed: unknown = JSON.parse(readFileSync(file, "utf8"));
+    if (!validState(parsed)) throw new Error("Invalid OAuth state");
+    return parsed;
   } catch {
     log("oauth.json unreadable, starting with no grants");
     return emptyState();
   }
+}
+
+function validState(value: unknown): value is OAuthState {
+  const record = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
+  const time = (v: unknown): v is number => typeof v === "number" && Number.isSafeInteger(v) && v >= 0;
+  const hash = (v: unknown): v is string => typeof v === "string" && /^[a-f0-9]{64}$/.test(v);
+  if (!record(value) || !record(value.clients) || !record(value.access) || !record(value.refresh)) return false;
+  const clients = value.clients;
+  if (!Object.entries(clients).every(([id, client]) => record(client) && client.client_id === id &&
+    Array.isArray(client.redirect_uris) && client.redirect_uris.every((uri) => typeof uri === "string"))) return false;
+  for (const kind of ["access", "refresh"] as const) {
+    for (const [key, entry] of Object.entries(kind === "access" ? value.access : value.refresh)) {
+      if (!hash(key) || !record(entry) || typeof entry.clientId !== "string" || !Object.hasOwn(clients, entry.clientId) ||
+        !Array.isArray(entry.scopes) || entry.scopes.length === 0 || !entry.scopes.every((scope) => scope === "read" || scope === "write") ||
+        !time(entry.issuedAt) || (kind === "access" && !time(entry.expiresAt)) ||
+        (entry.lastUsedAt !== undefined && !time(entry.lastUsedAt)) ||
+        (entry.refresh !== undefined && !hash(entry.refresh)) || (entry.family !== undefined && !hash(entry.family)) ||
+        (entry.spent !== undefined && typeof entry.spent !== "boolean")) return false;
+    }
+  }
+  return true;
 }
 
 function saveState(file: string, state: OAuthState): void {
@@ -235,7 +264,7 @@ export interface Grant {
 }
 
 function grantsOf(state: OAuthState): Grant[] {
-  return Object.values(state.refresh).map((entry) => ({
+  return Object.values(state.refresh).filter((entry) => !entry.spent).map((entry) => ({
     client: state.clients[entry.clientId]?.client_name ?? entry.clientId,
     scopes: entry.scopes,
     issuedAt: entry.issuedAt,
@@ -260,8 +289,13 @@ export class WazapOAuthProvider implements OAuthServerProvider {
     this.state = loadState(options.stateFile);
     this.lockout = new Lockout(this.now);
     this.clientsStore = {
-      getClient: (clientId) => this.state.clients[clientId],
+      getClient: (clientId) => {
+        this.sync();
+        return Object.hasOwn(this.state.clients, clientId) ? this.state.clients[clientId] : undefined;
+      },
       registerClient: (client) => {
+        this.sweep();
+        if (Object.keys(this.state.clients).length >= MAX_CLIENTS) throw new TooManyRequestsError("OAuth registration capacity reached; retry later.");
         const full: OAuthClientInformationFull = {
           ...client,
           client_id: randomBytes(16).toString("hex"),
@@ -301,6 +335,7 @@ export class WazapOAuthProvider implements OAuthServerProvider {
       this.state.access = {};
       this.state.refresh = {};
       this.codes.clear();
+      this.pending.clear();
     }
   }
 
@@ -308,18 +343,18 @@ export class WazapOAuthProvider implements OAuthServerProvider {
     this.sync();
     this.lockout.prune();
     const now = this.now();
-    for (const [id, entry] of this.pending) if (now - entry.createdAt > PENDING_TTL_MS) this.pending.delete(id);
-    for (const [code, entry] of this.codes) if (now - entry.createdAt > CODE_TTL_MS) this.codes.delete(code);
+    for (const [id, entry] of this.pending) if (now - entry.createdAt >= PENDING_TTL_MS) this.pending.delete(id);
+    for (const [code, entry] of this.codes) if (now - entry.createdAt >= CODE_TTL_MS) this.codes.delete(code);
 
     let dirty = false;
     for (const [hash, entry] of Object.entries(this.state.access)) {
-      if (entry.expiresAt !== undefined && entry.expiresAt < now) {
+      if (entry.expiresAt !== undefined && entry.expiresAt <= now) {
         delete this.state.access[hash];
         dirty = true;
       }
     }
     for (const [hash, entry] of Object.entries(this.state.refresh)) {
-      if (now - (entry.lastUsedAt ?? entry.issuedAt) > REFRESH_IDLE_MS) {
+      if (now - (entry.lastUsedAt ?? entry.issuedAt) >= REFRESH_IDLE_MS) {
         delete this.state.refresh[hash];
         dirty = true;
       }
@@ -353,6 +388,7 @@ export class WazapOAuthProvider implements OAuthServerProvider {
   async authorize(client: OAuthClientInformationFull, params: AuthorizationParams, res: Response): Promise<void> {
     this.assertResource(params.resource);
     this.sweep();
+    if (this.pending.size >= MAX_PENDING) throw new TooManyRequestsError("Too many pending sign-ins; retry later.");
     const id = randomBytes(24).toString("hex");
     this.pending.set(id, { client, params, createdAt: this.now(), misses: 0 });
     sendPage(res, 200, this.consentPage(id, client, params), params.redirectUri);
@@ -403,6 +439,10 @@ export class WazapOAuthProvider implements OAuthServerProvider {
       sendPage(res, 401, this.consentPage(id, client, params, "Wrong password."), params.redirectUri);
       return;
     }
+    if (this.codes.size >= MAX_PENDING || grantsOf(this.state).length >= MAX_GRANTS) {
+      sendPage(res, 429, this.messagePage("OAuth grant capacity reached. Revoke unused grants and retry."));
+      return;
+    }
     this.lockout.clear(caller);
     this.pending.delete(id);
 
@@ -424,6 +464,7 @@ export class WazapOAuthProvider implements OAuthServerProvider {
   };
 
   async challengeForAuthorizationCode(client: OAuthClientInformationFull, code: string): Promise<string> {
+    this.sweep();
     const entry = this.codes.get(code);
     if (!entry || entry.clientId !== client.client_id) throw new InvalidGrantError("Unknown authorization code");
     return entry.codeChallenge;
@@ -457,6 +498,11 @@ export class WazapOAuthProvider implements OAuthServerProvider {
     this.sweep();
     const entry = this.state.refresh[sha256(refreshToken)];
     if (!entry || entry.clientId !== client.client_id) throw new InvalidGrantError("Unknown refresh token");
+    if (entry.spent) {
+      this.revokeFamily(entry.family ?? sha256(refreshToken));
+      this.persist();
+      throw new InvalidGrantError("Refresh token replay; sign in again");
+    }
     // A refresh may narrow the grant, never widen it.
     if (scopes?.some((scope) => !entry.scopes.includes(scope))) {
       throw new InvalidScopeError("Requested scopes exceed the grant");
@@ -467,22 +513,31 @@ export class WazapOAuthProvider implements OAuthServerProvider {
 
   private issue(clientId: string, scopes: string[], existingRefresh?: string): OAuthTokens {
     const now = this.now();
-    let refreshToken = existingRefresh;
-    if (!refreshToken) {
-      refreshToken = randomBytes(32).toString("hex");
-      this.state.refresh[sha256(refreshToken)] = { clientId, scopes, issuedAt: now, lastUsedAt: now };
-    } else {
-      const refresh = this.state.refresh[sha256(refreshToken)];
-      if (refresh) refresh.lastUsedAt = now;
+    if (!existingRefresh && grantsOf(this.state).length >= MAX_GRANTS) throw new TooManyRequestsError("OAuth grant capacity reached.");
+    const previous = existingRefresh ? this.state.refresh[sha256(existingRefresh)] : undefined;
+    const refreshToken = randomBytes(32).toString("hex");
+    const family = previous?.family ?? sha256(existingRefresh ?? refreshToken);
+    if (previous) {
+      previous.family = family;
+      previous.spent = true;
+      previous.lastUsedAt = now;
     }
+    this.state.refresh[sha256(refreshToken)] = {
+      clientId, scopes: previous?.scopes ?? scopes, issuedAt: previous?.issuedAt ?? now,
+      lastUsedAt: now, family,
+    };
     const accessToken = randomBytes(32).toString("hex");
     this.state.access[sha256(accessToken)] = {
       clientId,
       scopes,
       issuedAt: now,
       expiresAt: now + ACCESS_TOKEN_TTL_MS,
-      refresh: sha256(refreshToken),
+      refresh: family,
     };
+    const access = Object.entries(this.state.access).filter(([, entry]) => entry.refresh === family);
+    for (const [hash] of access.slice(0, Math.max(0, access.length - MAX_ACCESS_PER_GRANT))) delete this.state.access[hash];
+    const spent = Object.entries(this.state.refresh).filter(([, entry]) => entry.family === family && entry.spent);
+    for (const [hash] of spent.slice(0, Math.max(0, spent.length - MAX_SPENT_PER_GRANT))) delete this.state.refresh[hash];
     this.persist();
     return {
       access_token: accessToken,
@@ -524,13 +579,19 @@ export class WazapOAuthProvider implements OAuthServerProvider {
     }
     const refresh = this.state.refresh[hash];
     if (refresh && refresh.clientId === client.client_id) {
-      delete this.state.refresh[hash];
-      for (const [accessHash, entry] of Object.entries(this.state.access)) {
-        if (entry.refresh === hash) delete this.state.access[accessHash];
-      }
+      this.revokeFamily(refresh.family ?? hash);
       dirty = true;
     }
     if (dirty) this.persist();
+  }
+
+  private revokeFamily(family: string): void {
+    for (const [hash, entry] of Object.entries(this.state.refresh)) {
+      if ((entry.family ?? hash) === family) delete this.state.refresh[hash];
+    }
+    for (const [hash, entry] of Object.entries(this.state.access)) {
+      if (entry.refresh === family) delete this.state.access[hash];
+    }
   }
 
   /** Every grant, for `wazap status` and the like. */
