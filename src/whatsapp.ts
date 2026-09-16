@@ -51,12 +51,15 @@ import { FUTURE_SLACK_MS, IMPORT_META, importBetaArchive, importLegacyAccount, s
 import {
   LEGACY_TTL_MS,
   accountBetaState,
+  carryLegacyRecord,
   lateBetaArchive,
+  legacyRecordOf,
   legacySchedule,
   linkedOwners,
   moveAccountLegacy,
   purgeAccountLegacy,
   purgePreviousOwners,
+  setAsideFor,
   settleAccountArchive,
   settleBetaArchive,
 } from "./legacy-files.js";
@@ -542,6 +545,9 @@ export class WhatsAppService implements WhatsAppApi {
         linked = since;
         this.account = linked;
         this.claimDatabase(linked.id);
+        // A claim that swapped the database prepares the one it put in place.
+        await this.bootStorage();
+        if (this.stopped) return;
       }
 
       let state;
@@ -694,8 +700,11 @@ export class WhatsAppService implements WhatsAppApi {
   /**
    * Ties the database to the linked number. A file another number filled — the
    * account logged out and a different phone linked — is set aside whole, next
-   * to it, and a fresh one takes its place: one person's history never shows
-   * under another's. The earlier files it was imported from stay unread.
+   * to it: one person's history never shows under another's. The newest file
+   * set aside for the linking number takes its place when there is one (that
+   * number linked here before), otherwise a fresh one does. Legacy files the
+   * earlier import read stay unread, and the record of what was moved to
+   * legacy/ goes with whichever database serves next, so its week still runs.
    */
   private claimDatabase(owner: string): void {
     const db = this.accountDb;
@@ -710,20 +719,35 @@ export class WhatsAppService implements WhatsAppApi {
       }
     }
     const imported = db.getMeta(IMPORT_META.state) !== null;
+    const legacy = legacyRecordOf(db);
     db.close();
-    const aside = join(this.paths.root, `wazap.${Date.now()}.previous-owner.sqlite`);
+    const now = Date.now();
+    const aside = join(this.paths.root, `wazap.${now}.previous-owner.sqlite`);
     try {
+      const restore = setAsideFor(this.paths.root, owner);
       for (const suffix of ["", "-wal", "-shm"]) {
         if (existsSync(`${this.databasePath}${suffix}`)) renameSync(`${this.databasePath}${suffix}`, `${aside}${suffix}`);
       }
-      log(`account ${this.accountRecord.id}: a different number is linked; its earlier database was set aside`);
-      const fresh = AccountDb.open(this.databasePath, { scrubQuote, now: () => Date.now() });
-      this.accountDb = fresh;
-      if (imported || legacyFilesPresent(this.config.dataDir, this.paths)) fresh.setMeta(IMPORT_META.state, "skipped");
-      fresh.bindOwner(owner);
+      if (restore !== null) {
+        // The database file first: a -wal never lands beside a file it does not belong to.
+        for (const suffix of ["", "-wal", "-shm"]) {
+          const from = join(this.paths.root, `${restore}${suffix}`);
+          if (existsSync(from)) renameSync(from, `${this.databasePath}${suffix}`);
+        }
+        log(`account ${this.accountRecord.id}: a number linked here before is linked again; its database is back, the other one set aside`);
+      } else {
+        log(`account ${this.accountRecord.id}: a different number is linked; its earlier database was set aside`);
+      }
+      const next = AccountDb.open(this.databasePath, { scrubQuote, now: () => Date.now() });
+      this.accountDb = next;
+      if (restore === null && (imported || legacyFilesPresent(this.config.dataDir, this.paths))) next.setMeta(IMPORT_META.state, "skipped");
+      carryLegacyRecord(legacy, next);
+      next.bindOwner(owner);
       this.lids = new LidRegistry();
-      this.adoptDatabase(fresh);
-      this.storageState = "ready";
+      this.adoptDatabase(next);
+      this.storageState = this.legacyPending(next) ? "preparing" : "ready";
+      // The next bootStorage() prepares the database now in place.
+      this.storageBoot = null;
     } catch (err) {
       this.storageFail(err);
     }

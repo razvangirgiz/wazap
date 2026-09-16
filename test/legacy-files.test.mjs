@@ -536,6 +536,61 @@ test("a beta archive in the account folder is retired like the data dir's, once 
   assert.equal(readMeta(dbPath, "legacy_archives"), null);
 });
 
+test("the number linked before takes its set-aside database back, and the legacy week carries across both swaps", async (t) => {
+  const fx = await legacyAccount();
+  const root = fx.paths.root;
+  const dbPath = join(root, "wazap.sqlite");
+  await bootAt(t, fx.dataDir, fx.now);
+
+  // Another number links by mistake: the history is set aside, the legacy record goes with the fresh database.
+  await bootAt(t, fx.dataDir, fx.now + DAY, {}, OTHER);
+  assert.equal(readMeta(dbPath, "owner"), OTHER);
+  assert.equal(readMeta(dbPath, "import_state"), "skipped");
+  assert.equal(readMeta(dbPath, "legacy_moved_at"), String(fx.now), "the week still counts from the move");
+  assert.equal(withDb(dbPath, (db) => db.messages.get(A1)), null, "one person's history never shows under another's");
+  assert.equal(readdirSync(root).filter((name) => name.endsWith(".previous-owner.sqlite")).length, 1);
+
+  // The original number links again: its database is back, the other one set aside.
+  await bootAt(t, fx.dataDir, fx.now + 2 * DAY, {}, ME);
+  assert.equal(readMeta(dbPath, "owner"), ME);
+  assert.equal(withDb(dbPath, (db) => db.messages.get(A1)?.text), "Salut, ce mai faci azi?");
+  const asides = readdirSync(root).filter((name) => name.endsWith(".previous-owner.sqlite"));
+  assert.deepEqual(asides, [`wazap.${fx.now + 2 * DAY}.previous-owner.sqlite`], "only the other number's database is set aside");
+  assert.equal(readMeta(join(root, asides[0]), "owner"), OTHER);
+
+  await bootAt(t, fx.dataDir, fx.now + 8 * DAY);
+  assert.equal(existsSync(join(root, "legacy")), false, "deleted on the week the first move started");
+  assert.equal(existsSync(join(root, asides[0])), true, "the other number's database has its own week");
+  await bootAt(t, fx.dataDir, fx.now + 10 * DAY);
+  assert.equal(existsSync(join(root, asides[0])), false);
+  assert.equal(withDb(dbPath, (db) => db.messages.get(A1) !== null), true);
+});
+
+test("a logout binds the database to its number before deleting the credentials, so a different number never imports its files", async (t) => {
+  const fx = await legacyAccount({ beta: false });
+  const dbPath = join(fx.paths.root, "wazap.sqlite");
+  unlinkSockets(t);
+  assert.equal(existsSync(dbPath), false, "the account never started on this version");
+  assert.equal(await logoutAccount(fx.dataDir, "default", 2_000), "logged_out");
+  assert.equal(existsSync(fx.paths.authDir), false);
+  assert.equal(readMeta(dbPath, "owner"), ME);
+  for (const name of LEGACY_NAMES) assert.equal(existsSync(join(fx.paths.root, name)), true, `${name} untouched`);
+
+  link(fx.paths, OTHER);
+  await bootAt(t, fx.dataDir, fx.now, {}, OTHER);
+  assert.equal(readMeta(dbPath, "owner"), OTHER);
+  assert.equal(readMeta(dbPath, "import_state"), "skipped");
+  assert.equal(withDb(dbPath, (db) => db.counts().messages), 0, "none of the earlier number's messages");
+  for (const name of LEGACY_NAMES) assert.equal(existsSync(join(fx.paths.root, name)), true, `${name} stays for its number`);
+  assert.equal((await status(fx.dataDir)).checks.find((check) => check.name === "legacy files").detail.includes("imported if it links again"), true);
+
+  link(fx.paths, ME);
+  await bootAt(t, fx.dataDir, fx.now + DAY, {}, ME);
+  assert.equal(readMeta(dbPath, "import_state"), "done", "the number back imports its own files");
+  assert.equal(withDb(dbPath, (db) => db.messages.get(A1)?.text), "Salut, ce mai faci azi?");
+  assert.deepEqual(readdirSync(join(fx.paths.root, "legacy")).sort(), LEGACY_NAMES);
+});
+
 test("a logout deletes the credentials only: the database and every legacy file stay untouched", async (t) => {
   const fx = await legacyAccount();
   await bootAt(t, fx.dataDir, fx.now);
