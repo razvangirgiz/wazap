@@ -13,7 +13,7 @@ import { proto } from "baileys";
 
 import { AccountDb, contentHash } from "../dist/db/index.js";
 import { sqlite } from "../dist/db/sqlite.js";
-import { importLegacyAccount, verifyLegacyImport, scrubQuote, IMPORT_PHASES } from "../dist/legacy-import/index.js";
+import { importBetaArchive, importLegacyAccount, verifyLegacyImport, scrubQuote, IMPORT_PHASES } from "../dist/legacy-import/index.js";
 import { ANA, BOGDAN, BOGDAN_LID, CRISTI, DIMS, GROUP, ME, MODEL, buildLegacyAccount, roles, vectorRow } from "./legacy-fixtures.mjs";
 
 const r = roles();
@@ -405,6 +405,45 @@ test("a beta archive of another account is left alone, and so is one no linked a
     } finally {
       db.close();
     }
+  }
+});
+
+test("the import records the beta archive it took, and a number that links afterwards imports it on its own", async () => {
+  const linked = await buildLegacyAccount();
+  const db = openDb(linked);
+  try {
+    await run(linked, db);
+    const [recorded] = JSON.parse(db.getMeta("beta_imported"));
+    assert.equal(recorded.owner, ME);
+    assert.ok(recorded.rows > 0);
+  } finally {
+    db.close();
+  }
+
+  const fx = await buildLegacyAccount({ linked: false });
+  const late = openDb(fx);
+  try {
+    assert.equal((await run(fx, late)).state, "done");
+    assert.equal(late.getMeta("beta_imported"), null, "skipped as nobody's: nothing proves it was imported");
+    const archive = join(fx.dataDir, "archive.sqlite");
+    const args = { dataDir: fx.dataDir, accountId: "default", accountPaths: fx.paths, db: late, betaArchive: archive, options: { now: () => fx.now } };
+    assert.deepEqual(await importBetaArchive(args), { outcome: "unlinked" });
+    mkdirSync(fx.paths.authDir, { recursive: true });
+    writeFileSync(join(fx.paths.authDir, "creds.json"), JSON.stringify({ me: { id: "40799999999:3@s.whatsapp.net" } }));
+    assert.deepEqual(await importBetaArchive(args), { outcome: "other-owner" });
+    writeFileSync(join(fx.paths.authDir, "creds.json"), JSON.stringify({ me: { id: "40700000001:3@s.whatsapp.net" } }));
+    const result = await importBetaArchive(args);
+    assert.equal(result.outcome, "imported");
+    assert.ok(result.phases.beta.imported > 0);
+    assert.equal(late.messages.get(r.beta1).text, "Mesaj din arhiva beta");
+    assert.equal(late.messages.get(r.a3), null, "the barriers the first import stored still hold");
+    assert.equal(JSON.parse(late.getMeta("beta_imported"))[0].owner, ME);
+    assert.equal(late.getMeta("import_beta_progress"), null);
+    assert.equal(late.getMeta("owner"), ME);
+    assert.equal(late.getMeta("import_state"), "done", "the account's import is not reopened");
+    assert.deepEqual(await importBetaArchive(args), { outcome: "already" });
+  } finally {
+    late.close();
   }
 });
 

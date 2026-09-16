@@ -28,7 +28,16 @@
  *   and leaves the beta archive alone, since nothing can prove it is theirs.
  * - A message more than FUTURE_SLACK_MS ahead of the clock is left out.
  */
-export { importLegacyAccount, DEFAULT_IMPORT_CHUNK, IMPORT_META, type ImportArgs, type ImportOptions } from "./importer.js";
+export {
+  importBetaArchive,
+  importLegacyAccount,
+  DEFAULT_IMPORT_CHUNK,
+  IMPORT_META,
+  type ImportArgs,
+  type ImportOptions,
+  type LateBetaResult,
+} from "./importer.js";
+export { readBetaIdentity, sameBetaImport, type BetaIdentity } from "./sources.js";
 export { verifyLegacyImport, SAMPLE_KEYS, type VerifyArgs } from "./verify.js";
 export { scrubQuote } from "./scrub.js";
 export { FUTURE_SLACK_MS, STORY_TTL_MS } from "./convert.js";

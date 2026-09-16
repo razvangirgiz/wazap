@@ -34,6 +34,7 @@ import { performance } from "node:perf_hooks";
 import type { WAMessage } from "baileys";
 import type { AccountPaths } from "../config.js";
 import { chatKindOf, contentHash, parseSid, StorageError, type AccountDb, type MessageInput, type UpsertResult } from "../db/index.js";
+import { readLinkedAccount } from "../auth-state.js";
 import { isNoiseJid, STATUS_JID } from "../ids.js";
 import { chatMetadata, momentsOf, type HistoryRecord } from "../store.js";
 import { isEvent, messageIdFor, messageTimestampMs, pollOf, protoNumber, voteOf } from "../messages.js";
@@ -71,6 +72,7 @@ import {
   type PhaseReport,
 } from "./report.js";
 import {
+  betaIdentity,
   betaOwner,
   betaRows,
   betaTimes,
@@ -78,10 +80,13 @@ import {
   isBetaExpiry,
   historyFiles,
   openBetaArchive,
+  readBetaIdentity,
   readHistoryFile,
   readRecallIndex,
   recallLine,
+  sameBetaImport,
   VectorFile,
+  withBetaImport,
   type BetaRow,
   type HistoryFileRead,
   type RecallIndex,
@@ -99,7 +104,20 @@ export const IMPORT_META = {
   deferredCount: "import_deferred_count",
   deferred: (n: number) => `import_deferred_${n}`,
   contactsResyncedAt: "contacts_resynced_at",
+  /**
+   * The beta archives this database imported, `[{ owner, rows, lastTs }]`
+   * (BetaIdentity): one added when its rows went in for the linked owner, never
+   * for an archive skipped as another's, unreadable or absent. Nothing
+   * retires an archive without it.
+   */
+  betaImported: "beta_imported",
+  /** A beta import run after the account's import (importBetaArchive): its progress, then its report. */
+  betaProgress: "import_beta_progress",
+  betaReport: "import_beta_report",
 } as const;
+
+/** The phases a beta archive imported after the account's import runs. */
+const LATE_BETA_PHASES = ["beta", "marks", "optimize"] as const satisfies readonly ImportPhase[];
 
 export interface ImportOptions {
   /** WAZAP_RETENTION: disappearing-message deadlines are carried over and enforced. Default false, as in the service. */
@@ -198,9 +216,50 @@ export async function importLegacyAccount(args: ImportArgs): Promise<ImportRepor
   return new ImportRun(args).execute();
 }
 
+export interface LateBetaResult {
+  /** "imported": its rows are in and the marker is written; otherwise why nothing ran. */
+  outcome: "imported" | "not-imported-yet" | "unlinked" | "other-owner" | "unreadable" | "already";
+  phases?: Pick<ImportReport["phases"], "beta" | "marks">;
+}
+
+/**
+ * Imports a beta archive into an account whose import already finished
+ * without it: the account was not linked then, the archive could not be read,
+ * or it was copied in afterwards. Only the beta phase runs, then the marks it
+ * deferred and an optimize, resumable like the import; the legacy files are
+ * not needed. Refuses unless the linked number owns the archive, and does
+ * nothing once `beta_imported` names this very archive.
+ */
+export async function importBetaArchive(args: ImportArgs & { betaArchive: string }): Promise<LateBetaResult> {
+  const { db } = args;
+  if (db.readOnly) throw new StorageError("READ_ONLY", "The beta import needs a writable account database.");
+  const state = db.getMeta(IMPORT_META.state);
+  if (state !== "done" && state !== "imported") return { outcome: "not-imported-yet" };
+  const identity = readBetaIdentity(args.betaArchive);
+  if (identity === null) return { outcome: "unreadable" };
+  if (sameBetaImport(db.getMeta(IMPORT_META.betaImported), identity)) return { outcome: "already" };
+  let owner: string | null;
+  try {
+    owner = readLinkedAccount(args.accountPaths.authDir)?.id ?? null;
+  } catch {
+    owner = null;
+  }
+  if (owner === null) return { outcome: "unlinked" };
+  if (identity.owner !== owner) return { outcome: "other-owner" };
+  await db.resume();
+  const full = db.getMeta(IMPORT_META.progress);
+  const retention = full === null ? args.options?.retention === true : (JSON.parse(full) as Progress).retention;
+  const run = new ImportRun({ ...args, options: { ...args.options, retention, betaArchive: args.betaArchive } }, "late-beta");
+  const phases = await run.executeLateBeta();
+  return { outcome: sameBetaImport(db.getMeta(IMPORT_META.betaImported), identity) ? "imported" : "unreadable", phases };
+}
+
 class ImportRun {
   private readonly db: AccountDb;
   private readonly options: ImportOptions;
+  /** The phases this run walks: all of them, or the late beta import's. */
+  private readonly plan: readonly ImportPhase[];
+  private readonly progressKey: string;
   private readonly now: () => number;
   private readonly chunkSize: number;
   private progress: Progress;
@@ -208,12 +267,17 @@ class ImportRun {
   private tick = performance.now();
   private chunks = 0;
 
-  constructor(private readonly args: ImportArgs) {
+  constructor(
+    private readonly args: ImportArgs,
+    private readonly mode: "full" | "late-beta" = "full"
+  ) {
     this.db = args.db;
     this.options = args.options ?? {};
     this.now = this.options.now ?? Date.now;
     this.chunkSize = Math.max(1, Math.floor(this.options.chunkSize ?? DEFAULT_IMPORT_CHUNK));
-    const stored = this.db.getMeta(IMPORT_META.progress);
+    this.plan = mode === "full" ? IMPORT_PHASES : LATE_BETA_PHASES;
+    this.progressKey = mode === "full" ? IMPORT_META.progress : IMPORT_META.betaProgress;
+    const stored = this.db.getMeta(this.progressKey);
     this.progress =
       stored === null
         ? {
@@ -241,7 +305,33 @@ class ImportRun {
       this.db.setMeta(IMPORT_META.state, "running");
       this.db.setMeta(IMPORT_META.progress, JSON.stringify(this.progress));
     });
+    await this.runPhases();
+    return this.finish();
+  }
 
+  /** The late beta import: the context the files still give, the pairings the database learned since, and three phases. */
+  async executeLateBeta(): Promise<Pick<ImportReport["phases"], "beta" | "marks">> {
+    this.context = await buildContext({
+      accountPaths: this.args.accountPaths,
+      now: this.now(),
+      enforceExpiry: this.progress.retention,
+    });
+    for (const [lid, phone] of this.db.identity.lidPairs()) this.context.lids.learn(lid, phone);
+    if (this.context.owner !== null) this.db.bindOwner(this.context.owner.id);
+    this.db.setMeta(this.progressKey, JSON.stringify(this.progress));
+    await this.runPhases();
+    const phases = { beta: this.progress.phases.beta, marks: this.progress.phases.marks };
+    this.db.transaction(() => {
+      const count = Number(this.db.getMeta(IMPORT_META.deferredCount) ?? "0");
+      for (let n = 0; n < count; n++) this.db.setMeta(IMPORT_META.deferred(n), null);
+      this.db.setMeta(IMPORT_META.deferredCount, null);
+      this.db.setMeta(IMPORT_META.betaReport, JSON.stringify({ finishedAt: this.now(), runs: this.progress.runs, phases }));
+      this.db.setMeta(this.progressKey, null);
+    });
+    return phases;
+  }
+
+  private async runPhases(): Promise<void> {
     const runners: Record<ImportPhase, () => Promise<void>> = {
       lids: () => this.lids(),
       barriers: () => this.barriers(),
@@ -253,16 +343,15 @@ class ImportRun {
       recall: () => this.recall(),
       optimize: () => this.optimize(),
     };
-    while (this.progress.phase < IMPORT_PHASES.length) {
+    while (this.progress.phase < this.plan.length) {
       this.tick = performance.now();
-      await runners[IMPORT_PHASES[this.progress.phase]!]();
+      await runners[this.plan[this.progress.phase]!]();
       await this.commit(null, undefined, true);
     }
-    return this.finish();
   }
 
   private get phaseName(): ImportPhase {
-    return IMPORT_PHASES[Math.min(this.progress.phase, IMPORT_PHASES.length - 1)]!;
+    return this.plan[Math.min(this.progress.phase, this.plan.length - 1)]!;
   }
 
   private phase(name: ImportPhase): PhaseReport {
@@ -286,7 +375,7 @@ class ImportRun {
       this.tick = at;
       this.progress.cursor = typeof cursor === "function" ? (cursor as () => unknown)() : cursor;
       if (advance) this.progress.phase++;
-      this.db.setMeta(IMPORT_META.progress, JSON.stringify(this.progress));
+      this.db.setMeta(this.progressKey, JSON.stringify(this.progress));
     });
     this.chunks++;
     await this.options.afterChunk?.({ phase: name, chunks: this.chunks });
@@ -997,7 +1086,8 @@ class ImportRun {
         }
         return;
       }
-      for (let after = cursor.rowid; ; ) {
+      let after = cursor.rowid;
+      for (;;) {
         const rows = betaRows(archive, after, this.chunkSize);
         if (rows.length === 0) break;
         after = rows[rows.length - 1]!.rowid;
@@ -1005,6 +1095,11 @@ class ImportRun {
           this.importBetaRow(phase, row, deferred)
         );
       }
+      // Every row went through for its owner: this archive is imported, and may be retired.
+      const identity = betaIdentity(archive);
+      await this.commit({ rowid: after }, () =>
+        this.db.setMeta(IMPORT_META.betaImported, withBetaImport(this.db.getMeta(IMPORT_META.betaImported), identity))
+      );
     } finally {
       archive.close();
     }

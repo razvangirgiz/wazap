@@ -345,6 +345,56 @@ export interface BetaRow {
   origin: string;
 }
 
+/** What tells one beta archive from another: its owner, its row count and its newest message time. */
+export interface BetaIdentity {
+  owner: string | null;
+  rows: number;
+  lastTs: number | null;
+}
+
+export function betaIdentity(db: DatabaseSync): BetaIdentity {
+  const row = db.prepare("SELECT count(*) AS rows, max(ts) AS lastTs FROM messages").get() as { rows: number; lastTs: number | null };
+  return { owner: betaOwner(db), rows: Number(row.rows), lastTs: row.lastTs === null ? null : Number(row.lastTs) };
+}
+
+/** The archive's identity, or null when it cannot be opened or read as a beta archive. */
+export function readBetaIdentity(path: string): BetaIdentity | null {
+  try {
+    const archive = openBetaArchive(path);
+    try {
+      return betaIdentity(archive);
+    } finally {
+      archive.close();
+    }
+  } catch {
+    return null;
+  }
+}
+
+function importedIdentities(marker: string | null): Array<Partial<BetaIdentity>> {
+  if (marker === null) return [];
+  try {
+    const parsed = JSON.parse(marker) as unknown;
+    return (Array.isArray(parsed) ? parsed : [parsed]).filter((entry): entry is Partial<BetaIdentity> => entry !== null && typeof entry === "object");
+  } catch {
+    return [];
+  }
+}
+
+/** Whether a `beta_imported` marker names this archive. */
+export function sameBetaImport(marker: string | null, identity: BetaIdentity): boolean {
+  if (identity.owner === null) return false;
+  return importedIdentities(marker).some(
+    (recorded) => recorded.owner === identity.owner && recorded.rows === identity.rows && (recorded.lastTs ?? null) === identity.lastTs
+  );
+}
+
+/** The marker with this archive added: every archive a database imported stays named. */
+export function withBetaImport(marker: string | null, identity: BetaIdentity): string {
+  if (sameBetaImport(marker, identity)) return marker!;
+  return JSON.stringify([...importedIdentities(marker), identity]);
+}
+
 export function betaOwner(db: DatabaseSync): string | null {
   const row = db.prepare("SELECT value FROM meta WHERE key = 'owner'").get() as { value?: unknown } | undefined;
   return typeof row?.value === "string" ? row.value : null;
