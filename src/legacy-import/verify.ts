@@ -156,6 +156,7 @@ export async function verifyLegacyImport(args: VerifyArgs): Promise<Verification
         extras.add(key);
       }
     }
+    await yieldLoop();
     // The newest message: what list_chats shows as the chat's last word.
     const newest = stored[0] ?? null;
     const last = entry.last === null ? null : keyOf(jid, entry.last.fromMe, entry.last.keyId);
