@@ -60,8 +60,7 @@ const NO_UPPER_BOUND = Number.MAX_SAFE_INTEGER;
  * The single upsert. On a key conflict the row keeps its id, and content only
  * moves when the incoming version is not older than the stored edit; status
  * only rises (in statusRank's order), expiry only falls, a transcript or
- * sender is never erased. A
- * tombstone matches no update at all.
+ * sender is never erased. A tombstone matches no update at all.
  */
 const FRESH = "(messages.edited_at IS NULL OR (excluded.edited_at IS NOT NULL AND excluded.edited_at >= messages.edited_at))";
 
@@ -551,6 +550,37 @@ export class Messages {
          LIMIT 1`
       ) !== undefined
     );
+  }
+
+  /**
+   * Physically removes every live message, in chunks, and keeps every
+   * tombstone and every retraction record: what an account that does not keep
+   * its history forgets between runs. No barrier is raised, so WhatsApp may
+   * sync the same messages again; nothing deleted can come back.
+   */
+  purgeLive(): Promise<BulkDeleteResult> {
+    this.c.assertWritable();
+    return this.c.bulk(async () => {
+      const result: BulkDeleteResult = { count: 0, sids: [], mediaPaths: [] };
+      await this.c.chunked(() => {
+        const rows = this.c.all<{ id: number; sid: string }>(
+          `SELECT m.id, ${SID_EXPR} AS sid FROM messages m JOIN chats c ON c.id = m.chat_id
+             LEFT JOIN chats ck ON ck.id = c.merged_into
+           WHERE m.deleted_at IS NULL ORDER BY m.id LIMIT ?`,
+          this.c.chunkSize
+        );
+        const started = performance.now();
+        let done = 0;
+        while (done < rows.length) {
+          this.deleteRows([rows[done]!], result);
+          done++;
+          if (performance.now() - started > this.c.chunkBudgetMs) break;
+        }
+        return rows.length === this.c.chunkSize || done < rows.length;
+      });
+      if (result.count > 0) this.c.checkpoint();
+      return result;
+    });
   }
 
   /** Physically removes rows a stored barrier already hides, for every chat a crash or a close left mid-purge. */

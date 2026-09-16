@@ -353,3 +353,23 @@ test("n4: a path recorded again between claim and acknowledgement is reported, n
   assert.equal(db.claimUnlinks(10).length, 1, "a claim older than ten minutes is handed out again");
   db.close();
 });
+
+test("purgeLive forgets every live message and its files, and keeps every tombstone and retraction", async () => {
+  const { db } = openTemp({ chunkSize: 3 });
+  for (let i = 0; i < 10; i++) db.messages.upsert(textMessage(PEER, `L${i}`, T0 + i * 1000, `live ${i}`));
+  db.messages.upsert(textMessage(PEER, "GONE", T0 + 20_000, "deleted"));
+  db.messages.delete(sid(false, PEER, "GONE"));
+  db.messages.delete(sid(false, PEER, "UNSEEN"), { ts: T0 + 30_000 });
+  db.messages.setMedia(sid(false, PEER, "L3"), "preview", "/tmp/l3.jpg");
+
+  const result = await db.messages.purgeLive();
+  assert.equal(result.count, 10);
+  assert.deepEqual(result.mediaPaths, ["/tmp/l3.jpg"]);
+  assert.deepEqual(db.messages.chatPage(PEER, { limit: 50 }).items, []);
+  assert.equal(db.counts().tombstones, 2);
+  assert.equal(db.messages.upsert(textMessage(PEER, "L4", T0 + 4000, "live 4")).outcome, "inserted", "no barrier: a sync may bring it back");
+  assert.equal(db.messages.upsert(textMessage(PEER, "GONE", T0 + 20_000, "deleted")).outcome, "deleted");
+  assert.equal(db.messages.upsert(textMessage(PEER, "UNSEEN", T0 + 30_000, "late")).outcome, "deleted");
+  assert.deepEqual(db.integrityCheck(), { ok: true, problems: [] });
+  db.close();
+});
