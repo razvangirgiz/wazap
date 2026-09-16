@@ -7,9 +7,15 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { mkdirSync, mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 
-import { AccountDb } from "../dist/db/index.js";
+import { accountPaths } from "../dist/config.js";
+import { AccountDb, SCHEMA_VERSION } from "../dist/db/index.js";
+import { MIGRATIONS } from "../dist/db/schema.js";
+import { sqlite } from "../dist/db/sqlite.js";
 import { WazapError } from "../dist/errors.js";
 import { TranscribeWorker, transcribeWorker } from "../dist/transcribe/worker.js";
 import { checkTranscribeQueue, transcriptionStatusLine } from "../dist/transcribe-status.js";
@@ -494,4 +500,69 @@ test("the shared worker is the one every service uses", () => {
   const { svc } = serviceWith(CONFIGURED);
   assert.equal(svc.transcribeWorker, transcribeWorker);
   return svc.stop();
+});
+
+// Migration -------------------------------------------------------------------
+
+/**
+ * A database exactly as a build of schema `version` left it — 1 is 0.22.0's,
+ * 2 the one with idempotent sends — holding voice notes that were never
+ * transcribed: written through those migrations' own SQL, not through this
+ * build's API.
+ */
+function writeAtVersion(path, version, notes) {
+  mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
+  const { DatabaseSync } = sqlite();
+  const db = new DatabaseSync(path, { enableForeignKeyConstraints: true });
+  try {
+    db.exec("PRAGMA journal_mode = WAL");
+    db.exec("BEGIN IMMEDIATE");
+    const now = String(Date.now());
+    for (const migration of MIGRATIONS.filter((entry) => entry.version <= version)) {
+      db.exec(migration.sql);
+      db.exec(`PRAGMA user_version = ${migration.version}`);
+      db.prepare("INSERT INTO meta(key, value) VALUES (?, ?)").run(`migrated_v${migration.version}`, now);
+    }
+    db.prepare("INSERT INTO meta(key, value) VALUES ('created_at', ?), ('import_state', 'done')").run(now);
+    db.prepare("INSERT INTO chats(id, jid, kind) VALUES (1, ?, 'direct')").run(PEER);
+    const insert = db.prepare("INSERT INTO messages(id, chat_id, key_id, from_me, ts, type, text) VALUES (?, 1, ?, 0, ?, 'voice', ?)");
+    notes.forEach(([key, ts]) => insert.run(Math.floor(ts / 1000) * 1048576, key, ts, "[voice message · 0:06]"));
+    db.exec("COMMIT");
+  } finally {
+    db.close();
+  }
+}
+
+for (const from of [1, 2]) {
+  test(`a v${from} database holding voice notes upgrades to v3 with an empty queue`, () => {
+    assert.equal(SCHEMA_VERSION, 3);
+    const now = Date.now();
+    const direct = openTemp();
+    direct.db.close();
+    const path = `${direct.path}.v${from}`;
+    writeAtVersion(path, from, [["OLD1", now - 3_600_000], ["OLD2", now - 60_000]]);
+    const upgraded = AccountDb.open(path, { checkpointDelayMs: 0 });
+    assert.equal(upgraded.schemaVersion, 3);
+    assert.ok(upgraded.getMeta("migrated_v3") !== null);
+    assert.deepEqual(upgraded.transcripts.stats(), { queued: 0, startedAt: null, failed: 0, lastError: null }, "no backfill");
+    assert.equal(upgraded.messages.get(sid(false, PEER, "OLD2")).type, "voice", "the notes themselves came through");
+    assert.equal(upgraded.transcripts.enqueue(sid(false, PEER, "OLD2")), true, "and the queue works on the upgraded file");
+    upgraded.close();
+  });
+}
+
+test("a service on a v2 database upgraded to v3 transcribes nothing stored before, and new notes as usual", async () => {
+  const now = Date.now();
+  const dataDir = mkdtempSync(join(tmpdir(), "wazap-transcribe-v2-"));
+  writeAtVersion(join(accountPaths(dataDir, "default").root, "wazap.sqlite"), 2, [["OLD1", now - 3_600_000], ["OLD2", now - 60_000]]);
+  const { svc, sock } = serviceWith(CONFIGURED, { dataDir });
+  const provider = stub(svc);
+  await svc.transcribeIdle();
+  assert.equal(svc.db.schemaVersion, 3);
+  assert.equal(provider.calls, 0, "nothing stored before the upgrade is transcribed on its own");
+  deliver(sock, [voiceNote("NEW")]);
+  await svc.transcribeIdle();
+  assert.deepEqual(provider.started, ["NEW"], "a note that arrives after it is");
+  assert.equal(svc.db.messages.get(sidOf("NEW")).transcript, "am uitat umbrela acasă");
+  await svc.stop();
 });
