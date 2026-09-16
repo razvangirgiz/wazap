@@ -18,6 +18,7 @@ import { access } from "node:fs/promises";
 import { createServer } from "node:net";
 import { setTimeout as sleep } from "node:timers/promises";
 import { WazapError } from "../errors.js";
+import { discardResponse, readBoundedJson } from "../http-response.js";
 import { which } from "../transcribe/index.js";
 import { embedModelPath, type EmbedModelSpec } from "./models.js";
 import type { RecallSettings } from "./types.js";
@@ -27,6 +28,7 @@ const EMBED_PATH = "/embedding";
 /** Model load takes seconds on a cold start; nothing else is this patient. */
 const START_TIMEOUT_MS = 90_000;
 const REQUEST_TIMEOUT_MS = 60_000;
+const MAX_REPLY_BYTES = 4 * 1024 * 1024;
 const KILL_GRACE_MS = 5_000;
 const BACKOFF_INIT_MS = 500;
 const BACKOFF_MAX_MS = 30_000;
@@ -55,7 +57,7 @@ export interface EmbedReadiness {
 }
 
 export async function embedReady(settings: RecallSettings, spec: EmbedModelSpec): Promise<EmbedReadiness> {
-  if (settings.embedUrl !== null) return { ok: true, detail: `external embedding server at ${settings.embedUrl}` };
+  if (settings.embedUrl !== null) return { ok: true, detail: `external embedding server at ${new URL(settings.embedUrl).host}` };
   if (findLlama(settings) === null) {
     return { ok: false, detail: "llama-server not found", fix: llamaInstallFix() };
   }
@@ -66,11 +68,6 @@ export async function embedReady(settings: RecallSettings, spec: EmbedModelSpec)
     return { ok: false, detail: `model ${spec.file} is not downloaded`, fix: "Run `wazap embed download`" };
   }
   return { ok: true, detail: `llama-server with ${spec.file}` };
-}
-
-interface EmbeddingReply {
-  index?: number;
-  embedding?: number[][];
 }
 
 /** One free loopback port, released before llama-server claims it. */
@@ -136,13 +133,9 @@ class LlamaSidecar implements EmbeddingTarget {
     // A restart rejects a promise nobody may be awaiting; that is normal, so
     // the rejection must not count as unhandled.
     this.readyPromise.catch(() => {});
-    // llama-server's own log is startup noise; the last lines are kept only so a
-    // boot failure can say why. Nothing is forwarded to wazap's stderr.
-    let stderrTail = "";
-    child.stderr?.on("data", (chunk: Buffer) => {
-      stderrTail = (stderrTail + chunk.toString("utf8")).slice(-2000);
-    });
-    child.on("error", (err) => this.childFailed(err));
+    // Decoder diagnostics can include indexed text; drain without retaining it.
+    child.stderr?.resume();
+    child.on("error", () => { if (this.child === child) this.childFailed(); });
     child.on("exit", (code, signal) => {
       if (this.child !== child) return;
       this.child = null;
@@ -152,7 +145,7 @@ class LlamaSidecar implements EmbeddingTarget {
       }
       const reason = code !== null ? `exit ${code}` : `signal ${signal}`;
       this.onLog(`recall: llama-server ${reason}; restarting in ${Math.round(this.backoff / 1000)}s`);
-      this.readyReject?.(new WazapError("RECALL_FAILED", `llama-server ${reason}: ${stderrTail.trimEnd()}`));
+      this.readyReject?.(new WazapError("RECALL_FAILED", `llama-server ${reason}.`));
       this.restartTimer = setTimeout(() => {
         this.restartTimer = null;
         if (this.stopping) return;
@@ -163,10 +156,11 @@ class LlamaSidecar implements EmbeddingTarget {
     });
   }
 
-  private childFailed(err: Error): void {
+  private childFailed(): void {
+    this.child = null;
     if (this.stopping) return;
-    this.onLog(`recall: llama-server could not start (${err.message})`);
-    this.readyReject?.(err);
+    this.onLog("recall: llama-server could not start");
+    this.readyReject?.(new WazapError("RECALL_FAILED", "llama-server could not start."));
   }
 
   async waitReady(): Promise<void> {
@@ -178,7 +172,9 @@ class LlamaSidecar implements EmbeddingTarget {
       try {
         const response = await fetch(`${this.base}${HEALTH_PATH}`, {
           signal: AbortSignal.timeout(2_000),
+          redirect: "error",
         });
+        await discardResponse(response);
         if (response.ok) {
           this.backoff = BACKOFF_INIT_MS;
           this.readyResolve?.();
@@ -447,25 +443,31 @@ export class EmbedEngine {
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ content: input.length === 1 ? input[0] : input }),
         signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+        redirect: "error",
       });
-    } catch (err) {
+    } catch {
       throw new WazapError(
         "RECALL_FAILED",
-        `embedding request failed: ${err instanceof Error ? err.message : String(err)}`,
+        "Embedding request failed.",
         "Check that llama-server is running"
       );
     }
     if (!response.ok) {
-      const body = (await response.text().catch(() => "")).slice(0, 300);
+      await discardResponse(response);
       // A 4xx means the input itself is unembeddable — over the model's
       // context, malformed — and no retry will change that, so the queue
       // treats it differently from a sick backend.
       const code = response.status >= 400 && response.status < 500 ? "RECALL_BAD_INPUT" : "RECALL_FAILED";
-      throw new WazapError(code, `embedding server answered ${response.status}: ${body}`);
+      throw new WazapError(code, `Embedding server returned HTTP ${response.status}.`);
     }
-    const reply = (await response.json()) as EmbeddingReply[] | { error?: { message?: string } };
+    let reply: unknown;
+    try {
+      reply = await readBoundedJson(response, MAX_REPLY_BYTES);
+    } catch {
+      throw new WazapError("RECALL_FAILED", "Embedding response was invalid, interrupted or too large.");
+    }
     if (!Array.isArray(reply)) {
-      throw new WazapError("RECALL_FAILED", `embedding server refused: ${reply.error?.message ?? "bad reply"}`);
+      throw new WazapError("RECALL_FAILED", "Embedding server returned an invalid reply.");
     }
     if (reply.length !== input.length) {
       throw new WazapError(
@@ -474,11 +476,15 @@ export class EmbedEngine {
       );
     }
     return reply.map((item, i) => {
-      const embedding = item.embedding;
+      const embedding: unknown = item?.embedding;
       if (!Array.isArray(embedding) || embedding.length === 0 || !Array.isArray(embedding[0])) {
         throw new WazapError("RECALL_FAILED", `embedding ${i} has no pooled vector`);
       }
-      return embedding[0]!;
+      const vector: unknown[] = embedding[0];
+      if (vector.length !== this.spec.dims || vector.some((value) => typeof value !== "number" || !Number.isFinite(value))) {
+        throw new WazapError("RECALL_FAILED", `Embedding ${i} is not a finite ${this.spec.dims}-dimensional vector.`);
+      }
+      return vector as number[];
     });
   }
 

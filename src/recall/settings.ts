@@ -80,9 +80,10 @@ function parseUrl(raw: string | undefined): string | null {
   try {
     const url = new URL(value);
     if (url.protocol !== "http:" && url.protocol !== "https:") throw new Error("scheme");
-    return value;
+    if (url.username || url.password || url.search || url.hash) throw new Error("credentials or suffix");
+    return url.href.replace(/\/+$/, "");
   } catch {
-    throw new WazapError("INVALID_ID", `WAZAP_EMBED_URL "${value}" is not an http(s) URL.`, "Fix or remove WAZAP_EMBED_URL");
+    throw new WazapError("INVALID_ID", "WAZAP_EMBED_URL must be an HTTP(S) URL without credentials, query or fragment.", "Fix or remove WAZAP_EMBED_URL");
   }
 }
 
