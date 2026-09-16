@@ -2532,7 +2532,9 @@ export class WhatsAppService implements WhatsAppApi {
         this.recordSend(() => this.drafts.release(this.db.sends, draft.id));
         throw err;
       }
-      const echoed = this.storedReceipt(this.db, draft.to.chat_id, draft.keyId, receiptText(draft.payload));
+      // WhatsApp may have the message now: no error from here on, a stop
+      // closing the database included, may answer as if nothing was sent.
+      const echoed = this.echoedReceipt(draft);
       if (echoed !== null) {
         this.recordSend(() => this.drafts.settle(this.db.sends, draft.id, echoed));
         return echoed;
@@ -2555,6 +2557,17 @@ export class WhatsAppService implements WhatsAppApi {
       work();
     } catch (err) {
       if (!this.stopped) logError("send record", err);
+    }
+  }
+
+  /** storedReceipt of a draft that reached the socket, through a database that may be closing: null when it cannot tell. */
+  private echoedReceipt(draft: Draft): SentMessage | null {
+    const db = this.readyDb();
+    if (db === null) return null;
+    try {
+      return this.storedReceipt(db, draft.to.chat_id, draft.keyId, receiptText(draft.payload));
+    } catch {
+      return null;
     }
   }
 

@@ -649,6 +649,26 @@ describe("Calfa tool calls on a linked tenant (wazap-client.ts)", () => {
     assert.equal(f.sent.length, 0);
   });
 
+  test("a stop while the send is with WhatsApp never answers a definitely-unsent code", async (t) => {
+    const f = await live(t);
+    const client = calfaClient(f.url, WRITE_TOKEN);
+    await client.initialize();
+    const draft = answer(await client.tool("send_message", { chat_id: CLIENT, text: "salut", account_id: TENANT }), "draft");
+    let handed = false;
+    let fail;
+    f.sock.sendMessage = () => {
+      handed = true;
+      return new Promise((_resolve, reject) => (fail = reject));
+    };
+    const pending = client.tool("confirm_send", { draft_id: draft.draft_id, account_id: TENANT });
+    await waitFor(() => handed, 3_000, "the send handed to the socket");
+    await f.svc.stop();
+    fail(new Error("Connection Closed"));
+    const code = refusal(await pending);
+    assert.ok(!DEFINITELY_UNSENT.includes(code), `${code} would make Calfa draft the message again`);
+    assert.equal(code, "SEND_OUTCOME_UNKNOWN");
+  });
+
   test("a number lookup WhatsApp does not answer refuses the draft with NOT_CONNECTED, never NOT_ON_WHATSAPP", async (t) => {
     const f = await live(t);
     const client = calfaClient(f.url, WRITE_TOKEN);
