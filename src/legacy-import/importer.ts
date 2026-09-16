@@ -356,7 +356,10 @@ class ImportRun {
           phase.read++;
           let ts = times.get(`${entry.ref.chatJid}|${entry.ref.keyId}`) ?? entry.ts;
           if (ts === undefined) {
-            ts = fallback;
+            // No source knows the message's time any more. In a cleared chat it
+            // predates the clear, so the barrier itself covers it; elsewhere the
+            // retention file's own time is the latest it can have been deleted.
+            ts = this.db.identity.chat(entry.ref.chatJid)?.clearedThroughTs ?? fallback;
             detail(phase, "tsFallback");
           }
           this.tombstone(phase, entry.ref, ts);

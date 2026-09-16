@@ -112,6 +112,10 @@ export type ExpectedDifference =
    * pairing the rings imply; the database knows the pairing and honours the deletion.
    */
   | "deletedUnderAlias"
+  /** A message dated more than a day ahead, which the import leaves out (FUTURE_SLACK_MS). */
+  | "futureTimestamp"
+  /** The legacy view's newest message is one the import rightly left out, for one of the reasons above. */
+  | "newestRemoved"
   /** The database's newest message is one of the rows the legacy view lacks. */
   | "newestIsExtra"
   /** The two newest messages share their second; the order inside it is arbitrary. */

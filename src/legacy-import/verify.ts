@@ -14,7 +14,7 @@ import { readLinkedAccount } from "../auth-state.js";
 import type { AccountPaths } from "../config.js";
 import { chatKindOf, contentHash, normalizeJid, parseSid, type AccountDb, type StoredMessage } from "../db/index.js";
 import { buildContext } from "./context.js";
-import { base64Bytes, decodeRaw, viewSidOf } from "./convert.js";
+import { base64Bytes, decodeRaw, FUTURE_SLACK_MS, viewSidOf } from "./convert.js";
 import { loadLegacyView, MARKS_SAMPLE, type LegacyMessage } from "./legacy-view.js";
 import type { ExpectedDifference, UnexpectedDifference, VerificationReport } from "./report.js";
 import { betaOwner, betaRows, findBetaArchive, historyFiles, isBetaExpiry, openBetaArchive, readHistoryFile, readRecallIndex, recallLine } from "./sources.js";
@@ -124,15 +124,27 @@ export async function verifyLegacyImport(args: VerifyArgs): Promise<Verification
     legacyVisible += legacyKeys.size;
     dbVisible += storedKeys.size;
     const extras = new Set<string>();
+    const removed = new Set<string>();
     for (const [key, message] of legacyKeys) {
       const row = storedKeys.get(key);
       if (row !== undefined) {
         matched++;
         if (row.type !== message.type || contentHash(row.text, row.transcript) !== message.words) tally.fail("renderMismatch", key);
+        continue;
       }
-      else if (provenance.betaDeleted.has(key)) tally.expect("betaDeleted");
-      else if (deletedKeys.has(key) && db.messages.get(key, { includeHidden: true })?.deletedAt != null) tally.expect("deletedUnderAlias");
-      else tally.fail("missingInDb", key);
+      const why: ExpectedDifference | null =
+        message.ts > now + FUTURE_SLACK_MS
+          ? "futureTimestamp"
+          : provenance.betaDeleted.has(key)
+            ? "betaDeleted"
+            : deletedKeys.has(key) && db.messages.get(key, { includeHidden: true })?.deletedAt != null
+              ? "deletedUnderAlias"
+              : null;
+      if (why === null) tally.fail("missingInDb", key);
+      else {
+        tally.expect(why);
+        removed.add(key);
+      }
     }
     const oldestLegacy = entry.visible.reduce((min, message) => Math.min(min, message.ts), Infinity);
     for (const [key, message] of storedKeys) {
@@ -148,7 +160,8 @@ export async function verifyLegacyImport(args: VerifyArgs): Promise<Verification
     const newest = stored[0] ?? null;
     const last = entry.last === null ? null : keyOf(jid, entry.last.fromMe, entry.last.keyId);
     if (newest?.sid !== last && !(newest === null && last === null)) {
-      if (newest !== null && extras.has(newest.sid)) tally.expect("newestIsExtra");
+      if (last !== null && removed.has(last)) tally.expect("newestRemoved");
+      else if (newest !== null && extras.has(newest.sid)) tally.expect("newestIsExtra");
       else if (newest !== null && last !== null && sameSecond(storedKeys.get(last), newest)) tally.expect("newestSameSecond");
       else tally.fail("newestDiffers", jid);
     }
