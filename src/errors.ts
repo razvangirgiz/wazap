@@ -116,7 +116,7 @@ export const ERROR_GUIDE: Record<ErrorCode, string> = {
     "More than one account could handle this, or a write named a chat no account knows. Pass account_id. Call list_accounts to see the ids.",
   ACCOUNT_NOT_FOUND: "No account with that id. Run `wazap account add` first, or call list_accounts.",
   ACCOUNT_DISABLED:
-    "That account is disabled. Tell the user to run `wazap account enable <id>` and restart the server.",
+    "That account is disabled. Tell the user to run `wazap account enable <id>`; a running server picks it up.",
   WHATSAPP_ERROR: "WhatsApp rejected the operation. Read the message; do not blindly retry.",
 };
 

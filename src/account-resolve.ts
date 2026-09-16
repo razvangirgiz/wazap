@@ -68,28 +68,23 @@ function pickFromMatches(
 }
 
 function resolveGivenId(hub: AccountSource, requested: string, toolName: string): AccountBinding {
+  let live = hub.binding(requested);
+  if (live === undefined) {
+    // The roster is a snapshot of accounts.json; an account added or enabled
+    // since is picked up here, once, rather than called unknown. A missing or
+    // malformed policy throws out of this, and the call fails closed.
+    hub.reload();
+    live = hub.binding(requested);
+  }
   const record = hub.record(requested);
-  const live = hub.binding(requested);
   if (record !== undefined && !record.enabled) {
     throw new WazapError(
       "ACCOUNT_DISABLED",
       `Account "${requested}" is disabled.`,
-      `Run \`wazap account enable ${requested}\` and restart the server`
+      `Run \`wazap account enable ${requested}\``
     );
   }
   if (live === undefined) {
-    // The registry may have grown since this server started; `record` reads a
-    // snapshot, so check disk before calling the id unknown.
-    const onDisk = hub.recordOnDisk(requested);
-    if (onDisk !== undefined) {
-      throw new WazapError(
-        "ACCOUNT_NOT_FOUND",
-        `Account "${requested}" was added after this server started.`,
-        onDisk.enabled
-          ? "Restart the server so it picks up the account (`wazap service restart`, or restart your client)"
-          : `Run \`wazap account enable ${requested}\`, then restart the server`
-      );
-    }
     const fix = toolName === "link_account" ? FIX_ADD_ACCOUNT : `${FIX_ADD_ACCOUNT}, or call list_accounts`;
     throw new WazapError("ACCOUNT_NOT_FOUND", `No account "${requested}".`, fix);
   }

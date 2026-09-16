@@ -102,31 +102,33 @@ test("link_account on an unknown id tells the user to run wazap account add", as
   assert.match(result.structuredContent.fix, /wazap account add/);
 });
 
-test("an account added after the hub started asks for a restart, not another add", async () => {
+test("an account added after the hub started is served on the first call that names it", async () => {
   const config = offlineConfig("wazap-resolve-late-", { readOnly: false });
   const hub = new AccountHub(config, AccountRegistry.load(config.dataDir));
   // The hub snapshotted one account; this one lands on disk afterwards.
   AccountRegistry.load(config.dataDir).add("work");
   const tools = toolsOf(hub);
-  const result = await tools.get("link_account").handler({ phone: "+15550100", account_id: "work" });
-  assert.equal(result.structuredContent.error, "ACCOUNT_NOT_FOUND");
-  assert.match(result.structuredContent.message, /added after this server started/);
-  assert.match(result.structuredContent.fix, /[Rr]estart/);
+  // read_messages, not link_account: the link tool's process-wide rate bucket
+  // is spent by the test above.
+  const result = await tools.get("read_messages").handler({ chat_id: ANA, limit: 20, account_id: "work" });
+  assert.notEqual(result.structuredContent.error, "ACCOUNT_NOT_FOUND");
+  assert.equal(result.structuredContent.account_id, "work");
+  assert.ok(hub.get("work"), "the account has a service of its own now");
+  await hub.stop();
 });
 
-test("an account added disabled after the hub started asks to enable, then restart", async () => {
+test("an account added disabled after the hub started is ACCOUNT_DISABLED, naming enable and no restart", async () => {
   const config = offlineConfig("wazap-resolve-late-off-", { readOnly: false });
   const hub = new AccountHub(config, AccountRegistry.load(config.dataDir));
   const fresh = AccountRegistry.load(config.dataDir);
   fresh.add("work");
   fresh.disable("work");
   const tools = toolsOf(hub);
-  // read_messages, not link_account: the link tool's process-wide rate bucket
-  // is spent by the tests above.
   const result = await tools.get("read_messages").handler({ chat_id: ANA, limit: 20, account_id: "work" });
-  assert.equal(result.structuredContent.error, "ACCOUNT_NOT_FOUND");
+  assert.equal(result.structuredContent.error, "ACCOUNT_DISABLED");
   assert.match(result.structuredContent.fix, /account enable work/);
-  assert.match(result.structuredContent.fix, /restart/);
+  assert.doesNotMatch(result.structuredContent.fix, /restart/i);
+  assert.equal(hub.get("work"), undefined, "a disabled account gets no service");
 });
 
 test("a link settles the owner on the record, on disk and in the snapshot", async () => {

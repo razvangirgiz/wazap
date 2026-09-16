@@ -155,7 +155,7 @@ export function createToolRegistrar(defs: readonly ToolDef[]) {
             const live = def.write ? hub.recordOnDisk(resolved.id) : undefined;
             if (def.write && (!live || !live.enabled)) {
               throw new WazapError("READ_ONLY", `Account "${resolved.id}" is missing or disabled; this write is refused.`,
-                "Restore the account policy deliberately and restart the server");
+                `Restore the account policy deliberately; a disabled account needs \`wazap account enable ${resolved.id}\` first`);
             }
             if (
               def.write &&
