@@ -10,7 +10,9 @@ import { setTimeout as sleep } from "node:timers/promises";
 import { WhatsAppService } from "../dist/whatsapp.js";
 import { clockLabel } from "../dist/messages.js";
 import { registerTools } from "../dist/tools.js";
-import { asToolSource, connectedService, openService } from "./helpers.mjs";
+import { mkdirSync, writeFileSync } from "node:fs";
+
+import { asToolSource, connectedService } from "./helpers.mjs";
 
 const ME = "40700000001@s.whatsapp.net";
 const PEER = "40700000002@s.whatsapp.net";
@@ -124,7 +126,7 @@ test("a voice note reads as its length, and as its words once it has them", asyn
   assert.equal(before[0].transcript, undefined);
   assert.equal(before[1].text, "[voice message]", "a note WhatsApp said nothing about keeps the bare placeholder");
 
-  svc.store.transcripts.set(sidOf("V1"), { text: "salut", language: "ro", provider: "local", at: Date.now() });
+  svc.db.messages.setTranscript(sidOf("V1"), "salut");
   const after = (await svc.readMessages(PEER, 10)).data;
   assert.equal(after[0].text, '[voice message · 0:42] "salut"');
   assert.equal(after[0].transcript, "salut", "the bare words too, so an agent need not unwrap the placeholder");
@@ -172,35 +174,32 @@ test("two callers wanting the same recording share one upload", async () => {
   await svc.stop();
 });
 
-test("a transcript survives both the store snapshot and the history file", async () => {
-  const { svc, sock } = serviceWith(MANUAL);
-  stub(svc, mockProvider());
+test("a transcript survives a restart, and the newest one for a message is the one kept", async () => {
+  const { svc, sock } = serviceWith(MANUAL, { persistHistory: true });
+  const provider = stub(svc, mockProvider());
   deliver(sock, [voiceNote("V1", { seconds: 6 })]);
-
-  const raw = svc.store.messages.get(sidOf("V1"));
-  svc.config.persistHistory = true;
-  await svc.appendHistory([raw]);
   await svc.transcribeAudio(sidOf("V1"));
 
-  const snapshot = openService(WhatsAppService, svc.config);
-  snapshot.store.hydrate(svc.store.serialize());
-  assert.equal(snapshot.store.transcripts.get(sidOf("V1"))?.text, "salut");
+  const reloaded = serviceWith(MANUAL, { persistHistory: true, dataDir: svc.config.dataDir });
+  stub(reloaded.svc, provider);
+  const cached = await reloaded.svc.transcribeAudio(sidOf("V1"));
+  assert.equal(cached.text, "salut");
+  assert.equal(cached.cached, true, "a restart does not send the recording again");
+  assert.equal(provider.state.calls, 1);
 
-  // Three lines for one message: none, "salut", then a correction. Only the last
-  // may survive, which a rule of "any line carrying a transcript wins" would fail.
-  svc.store.transcripts.set(sidOf("V1"), { text: "a doua încercare", provider: "openai", at: Date.now() });
-  await svc.appendHistory([raw]);
-
-  const reloaded = openService(WhatsAppService, svc.config);
-  await reloaded.loadHistoryStore();
-  assert.equal(reloaded.store.transcripts.get(sidOf("V1"))?.text, "a doua încercare", "the newest line for a sid wins");
+  svc.db.messages.setTranscript(sidOf("V1"), "a doua încercare");
+  assert.equal((await reloaded.svc.readMessages(PEER, 5)).data[0].transcript, "a doua încercare", "the newest transcript wins");
+  await reloaded.svc.stop();
   await svc.stop();
 });
 
-test("an older snapshot, written before transcripts existed, still loads", () => {
-  const { svc } = serviceWith();
-  svc.store.hydrate({ v: 1, chats: {}, contacts: {}, messages: {}, byChat: {} });
-  assert.equal(svc.store.transcripts.size, 0);
+test("an older snapshot, written before transcripts existed, still imports", async () => {
+  const { svc } = serviceWith({}, { persistHistory: true });
+  mkdirSync(svc.paths.root, { recursive: true });
+  writeFileSync(svc.paths.storeFile, JSON.stringify({ v: 1, chats: {}, contacts: {}, messages: {}, byChat: {} }));
+  await svc.bootStorage();
+  assert.equal(svc.db.getMeta("import_state"), "done");
+  await svc.stop();
 });
 
 test("auto mode takes the voice notes, one at a time, and leaves the rest", async () => {
@@ -216,12 +215,14 @@ test("auto mode takes the voice notes, one at a time, and leaves the rest", asyn
     voiceNote("NOLENGTH", { at: at + 5000 }),
   ]);
 
-  assert.equal(svc.store.transcripts.size, 0, "ingestion returned before a single provider had finished");
+  const ids = ["V1", "V2", "V3", "A1", "LONG", "NOLENGTH"].map(sidOf);
+  const transcribed = () => ids.filter((sid) => svc.db.messages.get(sid)?.transcript != null);
+  assert.equal(transcribed().length, 0, "ingestion returned before a single provider had finished");
 
   await svc.transcribeIdle();
   assert.equal(provider.state.peak, 1, "a second whisper run would fight the first one for the machine");
   assert.deepEqual(
-    [...svc.store.transcripts.keys()].sort(),
+    transcribed().sort(),
     ["V1", "V2", "V3"].map(sidOf).sort(),
     "an audio file is something the sender attached, and a recording that is long or of unknown length is a bill nobody asked for"
   );
@@ -246,7 +247,11 @@ test("a provider that fails on one note does not stop the queue", async () => {
   deliver(sock, [voiceNote("V1", { seconds: 6, at }), voiceNote("V2", { seconds: 6, at: at + 1000 })]);
   await svc.transcribeIdle();
 
-  assert.deepEqual([...svc.store.transcripts.keys()], [sidOf("V2")], "the second note still gets its turn");
+  assert.deepEqual(
+    ["V1", "V2"].map(sidOf).filter((sid) => svc.db.messages.get(sid)?.transcript != null),
+    [sidOf("V2")],
+    "the second note still gets its turn"
+  );
   await svc.stop();
 });
 
@@ -258,14 +263,15 @@ test("a transcript landing during shutdown does not hold the process open", asyn
 
   await svc.stop();
   await svc.transcribeIdle();
-  assert.equal(svc.storeSaveTimer, null, "a stopped service must not arm a fresh save timer");
+  assert.equal(svc.expiryTimer, null, "a stopped service must not arm a fresh timer");
+  assert.equal(svc.accountDb.isOpen, false, "and its database is closed, not written behind the stop");
 });
 
 test("search_messages finds a word that exists only in a transcript", async () => {
   const { svc, sock } = serviceWith();
   const at = Date.now() - 60_000;
   deliver(sock, [voiceNote("V1", { seconds: 6, at }), textMessage("T1", "nimic aici", at + 1000)]);
-  svc.store.setTranscript(sidOf("V1"), { text: "am uitat umbrela acasă", provider: "local", at: Date.now() });
+  svc.db.messages.setTranscript(sidOf("V1"), "am uitat umbrela acasă");
 
   const spoken = (await svc.searchMessages("umbrela", undefined, 10)).data;
   assert.deepEqual(
