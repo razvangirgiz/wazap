@@ -683,3 +683,77 @@ test("a hit under the floor is listed only when its words match the query", asyn
     stub.server.close();
   }
 });
+
+test("a one-chat cluster cannot fill the list — another chat's relevant hit surfaces", async () => {
+  const OTHER = "40700000003@s.whatsapp.net";
+  const stub = await stubEmbedServer();
+  const { svc, sock } = await serviceWith({ WAZAP_RECALL: "local", WAZAP_EMBED_URL: stub.url });
+  try {
+    // Four PEER hits all outrank the OTHER one; the chat's cap of three leading slots keeps the fourth from taking its place.
+    deliver(sock, [
+      text("M1", "medicamentul copilului dimineata"),
+      text("M2", "medicamentul copilului la pranz"),
+      text("M3", "medicamentul copilului seara"),
+      text("M4", "medicamentul copilului in weekend"),
+      { ...text("X1", "medicamentul e in dulap"), key: { remoteJid: OTHER, fromMe: false, id: "X1" } },
+    ]);
+    await svc.recallIdle();
+    const { data } = await svc.recall("medicamentul copilului", undefined, 10);
+    assert.deepEqual(
+      data.hits.map((h) => h.message.chat_id),
+      [PEER, PEER, PEER, OTHER, PEER],
+      "the chat cap demotes the fourth cluster hit below the other chat's"
+    );
+    assert.equal(data.hits.length, 5, "demotion keeps every relevant hit reachable");
+    const scoped = await svc.recall("medicamentul copilului", PEER, 10);
+    assert.equal(scoped.data.hits.length, 4, "a search scoped to one chat is not capped");
+  } finally {
+    await svc.stop();
+    stub.server.close();
+  }
+});
+
+test("a near-duplicate in a second chat trails the list instead of taking a slot", async () => {
+  const OTHER = "40700000003@s.whatsapp.net";
+  const THIRD = "40700000004@s.whatsapp.net";
+  const stub = await stubEmbedServer();
+  const { svc, sock } = await serviceWith({ WAZAP_RECALL: "local", WAZAP_EMBED_URL: stub.url });
+  try {
+    deliver(sock, [
+      text("M1", "confirmat petrecerea de sambata"),
+      { ...text("X1", "Confirmat petrecerea de sâmbătă"), key: { remoteJid: OTHER, fromMe: false, id: "X1" } },
+      { ...text("Y1", "confirmat intalnirea de luni dimineata"), key: { remoteJid: THIRD, fromMe: false, id: "Y1" } },
+    ]);
+    await svc.recallIdle();
+    const { data } = await svc.recall("confirmat petrecerea", undefined, 10);
+    const chats = data.hits.map((h) => h.message.chat_id);
+    assert.equal(chats.length, 3);
+    assert.equal(chats[1], THIRD, "the forwarded copy yields to the distinct answer");
+    assert.deepEqual([chats[0], chats[2]].sort(), [OTHER, PEER].sort());
+  } finally {
+    await svc.stop();
+    stub.server.close();
+  }
+});
+
+test("a match found by meaning fades with age: a month-old closer match ranks below a fresh one", async () => {
+  const stub = await stubEmbedServer();
+  const { svc, sock } = await serviceWith({ WAZAP_RECALL: "local", WAZAP_EMBED_URL: stub.url });
+  try {
+    const day = 86_400;
+    deliver(sock, [
+      text("OLD", "factura", { messageTimestamp: Math.floor(Date.now() / 1000) - 60 * day }),
+      text("NEW", "factura noua"),
+    ]);
+    await svc.recallIdle();
+    const { data } = await svc.recall("invoice", undefined, 10);
+    assert.deepEqual(data.hits.map((h) => [h.message.message_id, h.matched]), [
+      [`false_${PEER}_NEW`, "meaning"],
+      [`false_${PEER}_OLD`, "meaning"],
+    ]);
+    assert.ok(data.hits[1].similarity > data.hits[0].similarity, "the older one is the closer match, and still ranks second");
+  } finally {
+    await svc.stop();
+    stub.server.close();
+  }
+});

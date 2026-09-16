@@ -204,6 +204,8 @@ export interface HybridSearchInput extends MessageFilter {
   semanticCandidates?: number;
   /** FTS rows examined on the lexical side before it stops. */
   scanCap?: number;
+  /** Rank the semantic side by similarity × 0.5^(age / halfLife); a meaning-only hit's floor still applies to similarity. */
+  recencyHalfLifeMs?: number;
 }
 
 export interface HybridHit {
@@ -557,7 +559,7 @@ export class Vectors {
 
     const lexical = this.lexicalCandidates(input.query, filter, input.lexicalCandidates ?? DEFAULT_CANDIDATES, input.scanCap);
     const semanticRanked = semantic
-      ? this.rank(filter, input.model, unitVector(input.vector!), input.semanticCandidates ?? DEFAULT_CANDIDATES, 0, undefined)
+      ? this.rank(filter, input.model, unitVector(input.vector!), input.semanticCandidates ?? DEFAULT_CANDIDATES, 0, input.recencyHalfLifeMs)
       : [];
 
     const fused = new Map<number, { score: number; lexicalRank: number | null; semanticRank: number | null; similarity: number | null }>();

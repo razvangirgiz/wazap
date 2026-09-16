@@ -772,7 +772,9 @@ search \`freshness.chat\` is the newest message wazap holds for that chat.`,
 answers "the invoice Dan mentioned", "the address Ana sent", "what did they say
 about the trip". A paraphrase or another language still hits through its
 meaning, and a short or foreign-language question still hits through its words;
-the two rankings are fused. For an exact string — an id, a phone number, a URL —
+the two rankings are fused. A match found by meaning fades with age (half as
+strong a month on), one chat takes at most three leading places before other
+chats' hits, and a near-duplicate trails the list. For an exact string — an id, a phone number, a URL —
 search_messages is the better tool.
 
 Each result carries its date, a fused score, \`matched\` ("words", "meaning" or

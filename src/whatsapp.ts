@@ -94,6 +94,7 @@ import {
 } from "./messages.js";
 import { readVote } from "./polls.js";
 import { PAIRING_TIMEOUT_MS, WA_BROWSER, prettyCode, socketFactory, startPairing } from "./pairing.js";
+import { diversify } from "./recall/variety.js";
 import {
   EMBED_MODELS,
   EmbedEngine,
@@ -194,6 +195,10 @@ const PREVIEW_SOURCE_MAX_BYTES = 6_000_000;
 const PREVIEW_VIDEO_MAX_BYTES = 25_000_000;
 /** How many active groups one catch-up fetches metadata for, to name their senders. */
 const RECENT_GROUP_META_MAX = 12;
+/** Hybrid hits recall ranks for variety before it cuts the list to the limit. */
+const RECALL_RERANK_WINDOW = 100;
+/** A match found by meaning counts half as much a month on, as the old recall index ranked it. */
+const RECALL_RECENCY_HALF_LIFE_MS = 30 * 86_400_000;
 /** Messages get_recent_messages returns per chat: the newest of its window, as many as main's per-chat ring held. */
 const RECENT_PER_CHAT_MAX = 2_000;
 /** Local contact filing caps: enough to describe anyone, small enough to stay a note. */
@@ -1305,18 +1310,24 @@ export class WhatsAppService implements WhatsAppApi {
       const from = this.senderFilter(opts.from);
       const [vector] = await this.recallEmbed([query], "query");
       const db = this.db;
+      // TODO(F1-b3): the hybrid scan runs on the main thread, ~160-190 ms at 100,000 vectors; it moves to a worker.
       const result = db.vectors.hybrid({
         query,
         model: settings.model,
         vector: vector ?? null,
-        limit: limit + 5,
+        // Wide enough that the variety rules below have something to promote.
+        limit: Math.max(limit + 5, RECALL_RERANK_WINDOW),
         minSimilarity: settings.minSimilarity,
+        recencyHalfLifeMs: RECALL_RECENCY_HALF_LIFE_MS,
         ...(scope === undefined ? {} : { chat: scope }),
         ...(from === undefined ? {} : { from }),
         ...(opts.sinceMs === undefined ? {} : { since: opts.sinceMs }),
         ...(opts.untilMs === undefined ? {} : { until: opts.untilMs }),
       });
-      const kept = result.hits.filter((hit) => hit.message.chatJid !== STATUS_JID).slice(0, limit);
+      const kept = diversify(
+        result.hits.filter((hit) => hit.message.chatJid !== STATUS_JID),
+        (hit) => ({ chat: hit.message.chatJid, text: `${hit.message.text ?? ""} ${hit.message.transcript ?? ""}` })
+      ).slice(0, limit);
       const views = this.viewsOfStored(kept.map((hit) => hit.message));
       const hits = kept.map((hit, i) => ({
         score: hit.score,
