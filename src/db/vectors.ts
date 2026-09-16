@@ -17,7 +17,7 @@ import { StorageError } from "./errors.js";
 import { secondOf, secondOfId } from "./ids.js";
 import type { Identity } from "./identity.js";
 import type { Messages } from "./messages.js";
-import { DEFAULT_TRIGRAM_CAP, foldText, type ResolvedFilter, type Search } from "./search.js";
+import { DEFAULT_SCAN_CAP, DEFAULT_TRIGRAM_CAP, foldText, ftsPhrase, type ResolvedFilter, type Search } from "./search.js";
 import type { SQLInputValue } from "./sqlite.js";
 import type { MessageFilter, Page, StoredMessage } from "./types.js";
 
@@ -74,12 +74,35 @@ export function int8Similarity(unit: Float64Array, vec: Int8Array): number {
   return dot / 127;
 }
 
-/** Words of a hybrid query worth looking up: folded, unique, the longer ones when there are any. */
+/**
+ * The words of a hybrid query worth looking up, folded and unique. Words of
+ * four or more letters go to the trigram index; three-letter words join them
+ * when there is nothing longer, or when they carry a digit or are an acronym
+ * ("PIN"). Words under three characters cannot use the index: only digits and
+ * acronyms ("42", "BT") are kept, and they go through the bounded short-query
+ * scan — "e", "la" or "de" would only ever match everything.
+ */
+export function hybridWords(query: string): { trigram: string[]; short: string[] } {
+  const seen = new Set<string>();
+  const words: Array<{ folded: string; length: number; significant: boolean }> = [];
+  for (const original of query.match(/[\p{L}\p{N}]+/gu) ?? []) {
+    const folded = foldText(original);
+    if (seen.has(folded)) continue;
+    seen.add(folded);
+    words.push({ folded, length: [...folded].length, significant: /\p{N}/u.test(original) || /^\p{Lu}{2,}$/u.test(original) });
+  }
+  const hasLong = words.some((word) => word.length >= MIN_TOKEN_CHARS);
+  const trigram = words
+    .filter((word) => word.length >= MIN_TOKEN_CHARS || (word.length === 3 && (!hasLong || word.significant)))
+    .map((word) => word.folded);
+  const short = words.filter((word) => word.length < 3 && word.significant).map((word) => word.folded);
+  return { trigram: trigram.slice(0, MAX_TOKENS), short: short.slice(0, Math.max(0, MAX_TOKENS - trigram.length)) };
+}
+
+/** Every word a hybrid query looks up, index words first. */
 export function hybridTokens(query: string): string[] {
-  const words = [...new Set(foldText(query).match(/[\p{L}\p{N}]+/gu) ?? [])];
-  const long = words.filter((word) => [...word].length >= MIN_TOKEN_CHARS);
-  const picked = long.length > 0 ? long : words.filter((word) => [...word].length >= 3);
-  return picked.slice(0, MAX_TOKENS);
+  const { trigram, short } = hybridWords(query);
+  return [...trigram, ...short];
 }
 
 /** A fixed-size min-heap on score: the K best of a stream without sorting the stream. */
@@ -417,26 +440,39 @@ export class Vectors {
   }
 
   /**
-   * The lexical side of hybrid search. Each query word is looked up on its
-   * own, newest `want` matches per word, so a rare word's old match is not
-   * crowded out by newer messages that only share a common word. Candidates
-   * are scored by the words they carry, each weighted by its rarity among the
-   * matches seen (a word matching everything weighs little), plus a bonus
-   * when the whole query appears verbatim; ties go to the newest. `capped`
-   * says some word had more matches than were examined.
+   * The lexical side of hybrid search. Each query word brings its own newest
+   * `want` matches, so a rare word's old match is not crowded out by newer
+   * messages sharing only a common word; the messages carrying every index word
+   * are one more source, so an old message made only of common words is found
+   * too; digits and acronyms under three characters go through the bounded
+   * short-query scan. Candidates are scored by the words they carry, each
+   * weighted by its rarity among the matches seen, plus a bonus when the whole
+   * query appears verbatim; ties go to the newest. `capped` says some source had
+   * more matches than were examined.
    */
   private lexicalCandidates(query: string, filter: ResolvedFilter, want: number, scanCap: number | undefined): { ids: number[]; capped: boolean } {
-    const tokens = hybridTokens(query);
+    const { trigram, short } = hybridWords(query);
+    const tokens = [...trigram, ...short];
     if (tokens.length === 0) return { ids: [], capped: false };
-    const perWordCap = Math.max(1, Math.floor((scanCap ?? DEFAULT_TRIGRAM_CAP) / tokens.length));
+    const perWordCap = Math.max(1, Math.floor((scanCap ?? DEFAULT_TRIGRAM_CAP) / (trigram.length + 1)));
+    const perShortCap = Math.max(1, Math.floor(Math.min(scanCap ?? DEFAULT_SCAN_CAP, DEFAULT_SCAN_CAP) / Math.max(1, short.length)));
     const candidates = new Set<number>();
     const weights = new Map<string, number>();
     let capped = false;
-    for (const token of tokens) {
-      const found = this.search.trigramIds(token, filter, filter.upper, want + 1, perWordCap);
+    const take = (found: { ids: number[]; cappedAt: number | null }): number => {
       if (found.ids.length > want || found.cappedAt !== null) capped = true;
-      weights.set(token, 1 / Math.log2(2 + found.ids.length));
       for (const id of found.ids.slice(0, want)) candidates.add(id);
+      return found.ids.length;
+    };
+    for (const token of trigram) {
+      weights.set(token, 1 / Math.log2(2 + take(this.search.trigramIds(token, filter, filter.upper, want + 1, perWordCap))));
+    }
+    for (const token of short) {
+      weights.set(token, 1 / Math.log2(2 + take(this.search.scanIds(token, filter, filter.upper, want + 1, perShortCap))));
+    }
+    if (trigram.length > 1) {
+      const everyWord = trigram.map(ftsPhrase).join(" AND ");
+      take(this.search.trigramIds(query, filter, filter.upper, want + 1, perWordCap, everyWord));
     }
     if (candidates.size === 0) return { ids: [], capped };
     const phrase = foldText(query).replace(/\s+/g, " ").trim();

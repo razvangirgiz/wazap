@@ -28,7 +28,7 @@ export { SEQ_SPAN, idLowerBound, idUpperBound, secondOfId } from "./ids.js";
 export { chatKindOf, isLidJid, normalizeJid, parseSid, sidOf } from "./identity.js";
 export { mergeNotes } from "./merge.js";
 export { foldText, DEFAULT_SCAN_CAP, DEFAULT_TRIGRAM_CAP } from "./search.js";
-export { contentHash, hybridTokens, int8Similarity, quantizeVector, unitVector, RRF_K } from "./vectors.js";
+export { contentHash, hybridTokens, hybridWords, int8Similarity, quantizeVector, unitVector, RRF_K } from "./vectors.js";
 export { isSqliteExperimentalWarning } from "./sqlite.js";
 export type { ScrubQuote } from "./messages.js";
 export type { CheckpointResult, ConnectionOptions, ConnectionSettings } from "./connection.js";

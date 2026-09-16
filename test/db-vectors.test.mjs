@@ -242,6 +242,24 @@ test("finding 10: hybrid finds an exact multi-word match buried under newer mess
   db.close();
 });
 
+test("n6: hybrid finds a message made only of common words, and looks up digits and acronyms too short for the index", () => {
+  const { db } = openTemp();
+  db.messages.upsert(textMessage(PEER, "TARGET", T0, "pentru luna august plata chiria"));
+  for (const [word, start] of [["pentru", 10_000], ["luna", 400_000], ["august", 800_000], ["plata chiria", 1_200_000]]) {
+    for (let i = 0; i < 150; i++) db.messages.upsert(textMessage(PEER, `${word}-${i}`, T0 + start + i * 1000, `${word} ${i}`));
+  }
+  const rank = (query) => db.vectors.hybrid({ query, model: "m", limit: 10, minSimilarity: 0.5 }).hits.findIndex((hit) => hit.message.keyId === "TARGET");
+  assert.equal(rank("pentru luna august plata"), 0);
+  assert.equal(rank("luna august plata chiria"), 0);
+
+  db.messages.upsert(textMessage(PEER, "SHORT", T0 + 5, "PIN 42 la BT"));
+  for (let i = 0; i < 5; i++) db.messages.upsert(textMessage(PEER, `S${i}`, T0 + 2_000_000 + i, `pin ${i}`));
+  assert.equal(db.vectors.hybrid({ query: "PIN BT", model: "m", limit: 10, minSimilarity: 0.5 }).hits[0]?.message.keyId, "SHORT");
+  const tiny = db.vectors.hybrid({ query: "BT 42", model: "m", limit: 10, minSimilarity: 0.5 });
+  assert.equal(tiny.hits[0]?.message.keyId, "SHORT");
+  db.close();
+});
+
 test("hybrid lexical ranking prefers candidates carrying more of the query words", () => {
   const { db } = openTemp();
   db.messages.upsert(textMessage(PEER, "ONE", T0 + 2000, "contractul e gata"));
@@ -251,7 +269,8 @@ test("hybrid lexical ranking prefers candidates carrying more of the query words
   assert.deepEqual(result.hits.map((hit) => hit.message.keyId), ["TWO", "ONE"]);
   assert.deepEqual(hybridTokens("Unde e ședința de mâine?"), ["unde", "sedinta", "maine"]);
   assert.deepEqual(hybridTokens("ce zi e"), []);
-  assert.deepEqual(hybridTokens("ora 17"), ["ora"]);
+  assert.deepEqual(hybridTokens("ora 17"), ["ora", "17"]);
+  assert.deepEqual(hybridTokens("PIN la BT"), ["pin", "bt"]);
   db.close();
 });
 

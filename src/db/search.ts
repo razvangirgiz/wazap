@@ -164,7 +164,7 @@ export class Search {
   }
 
   /** The short-query path: recent messages newest first, matched in JavaScript, at most `cap` of them. */
-  private scanIds(query: string, filter: ResolvedFilter, upper: number, want: number, cap: number): { ids: number[]; cappedAt: number | null } {
+  scanIds(query: string, filter: ResolvedFilter, upper: number, want: number, cap: number): { ids: number[]; cappedAt: number | null } {
     const needle = foldText(query);
     const ids: number[] = [];
     let examined = 0;
