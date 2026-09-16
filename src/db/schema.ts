@@ -16,8 +16,10 @@
  *   stays a tombstone;
  * - the full-text index and the embeddings follow text and transcript, and a
  *   tombstone takes its embedding, reactions, votes and receipts with it;
- * - chats.last_* names the newest non-tombstone message of the chat after any
- *   insert, tombstone, delete or move.
+ * - chats.last_* names the newest message a reader may see — not a tombstone,
+ *   not under the clear barrier — after any insert, tombstone, delete or move;
+ * - a file a removed media row pointed at is queued for unlinking in the same
+ *   transaction, so a crash never loses it.
  */
 
 export interface Migration {
@@ -250,11 +252,14 @@ BEGIN
   DELETE FROM embeddings WHERE message_id = new.id;
 END;
 
+-- chats.last_* names the newest message a reader may see: never a tombstone,
+-- never a row at or before the chat's clear barrier.
 CREATE TRIGGER messages_last_insert AFTER INSERT ON messages
 WHEN new.deleted_at IS NULL
 BEGIN
   UPDATE chats SET last_message_id = new.id, last_ts = new.ts, last_from_me = new.from_me
-  WHERE id = new.chat_id AND (last_message_id IS NULL OR last_message_id < new.id);
+  WHERE id = new.chat_id AND new.ts > coalesce(cleared_through_ts, 0)
+    AND (last_message_id IS NULL OR last_message_id < new.id);
 END;
 
 CREATE TRIGGER messages_tombstone AFTER UPDATE OF deleted_at ON messages
@@ -265,8 +270,11 @@ BEGIN
   DELETE FROM votes WHERE message_id = new.id;
   DELETE FROM receipts WHERE message_id = new.id;
   UPDATE chats SET (last_message_id, last_ts, last_from_me) = (
-    SELECT id, ts, from_me FROM messages
-    WHERE chat_id = new.chat_id AND deleted_at IS NULL ORDER BY id DESC LIMIT 1
+    SELECT m.id, m.ts, m.from_me FROM messages m
+    WHERE m.chat_id = new.chat_id AND m.deleted_at IS NULL
+      AND m.id >= (coalesce(chats.cleared_through_ts, 0) / 1000) * 1048576
+      AND m.ts > coalesce(chats.cleared_through_ts, 0)
+    ORDER BY m.id DESC LIMIT 1
   )
   WHERE id = new.chat_id AND last_message_id = new.id;
 END;
@@ -274,8 +282,11 @@ END;
 CREATE TRIGGER messages_last_delete AFTER DELETE ON messages
 BEGIN
   UPDATE chats SET (last_message_id, last_ts, last_from_me) = (
-    SELECT id, ts, from_me FROM messages
-    WHERE chat_id = old.chat_id AND deleted_at IS NULL ORDER BY id DESC LIMIT 1
+    SELECT m.id, m.ts, m.from_me FROM messages m
+    WHERE m.chat_id = old.chat_id AND m.deleted_at IS NULL
+      AND m.id >= (coalesce(chats.cleared_through_ts, 0) / 1000) * 1048576
+      AND m.ts > coalesce(chats.cleared_through_ts, 0)
+    ORDER BY m.id DESC LIMIT 1
   )
   WHERE id = old.chat_id AND last_message_id = old.id;
 END;
@@ -284,12 +295,44 @@ CREATE TRIGGER messages_last_move AFTER UPDATE OF chat_id ON messages
 WHEN old.chat_id IS NOT new.chat_id
 BEGIN
   UPDATE chats SET (last_message_id, last_ts, last_from_me) = (
-    SELECT id, ts, from_me FROM messages
-    WHERE chat_id = old.chat_id AND deleted_at IS NULL ORDER BY id DESC LIMIT 1
+    SELECT m.id, m.ts, m.from_me FROM messages m
+    WHERE m.chat_id = old.chat_id AND m.deleted_at IS NULL
+      AND m.id >= (coalesce(chats.cleared_through_ts, 0) / 1000) * 1048576
+      AND m.ts > coalesce(chats.cleared_through_ts, 0)
+    ORDER BY m.id DESC LIMIT 1
   )
   WHERE id = old.chat_id AND last_message_id = old.id;
   UPDATE chats SET last_message_id = new.id, last_ts = new.ts, last_from_me = new.from_me
-  WHERE id = new.chat_id AND new.deleted_at IS NULL AND (last_message_id IS NULL OR last_message_id < new.id);
+  WHERE id = new.chat_id AND new.deleted_at IS NULL AND new.ts > coalesce(cleared_through_ts, 0)
+    AND (last_message_id IS NULL OR last_message_id < new.id);
+END;
+
+-- Files a removed media row pointed at, queued in the same transaction that
+-- removed it, until the service has unlinked them and says so. A path another
+-- row still references is not queued; one recorded again leaves the queue.
+CREATE TABLE pending_unlinks(
+  path TEXT PRIMARY KEY,
+  queued_at INTEGER NOT NULL
+) STRICT, WITHOUT ROWID;
+
+CREATE TRIGGER media_released AFTER DELETE ON media
+WHEN NOT EXISTS (SELECT 1 FROM media WHERE path = old.path)
+BEGIN
+  INSERT OR IGNORE INTO pending_unlinks(path, queued_at) VALUES (old.path, CAST(unixepoch('subsec') * 1000 AS INTEGER));
+END;
+
+CREATE TRIGGER media_replaced AFTER UPDATE OF path ON media
+WHEN old.path IS NOT new.path
+BEGIN
+  DELETE FROM pending_unlinks WHERE path = new.path;
+  INSERT OR IGNORE INTO pending_unlinks(path, queued_at)
+    SELECT old.path, CAST(unixepoch('subsec') * 1000 AS INTEGER)
+    WHERE NOT EXISTS (SELECT 1 FROM media WHERE path = old.path);
+END;
+
+CREATE TRIGGER media_recorded AFTER INSERT ON media
+BEGIN
+  DELETE FROM pending_unlinks WHERE path = new.path;
 END;
 `;
 

@@ -245,7 +245,7 @@ export class Vectors {
            EXISTS (SELECT 1 FROM embeddings e WHERE e.message_id = m.id AND e.model = ?) AS embedded
          FROM messages m CROSS JOIN chats c ON c.id = m.chat_id LEFT JOIN chats ck ON ck.id = c.merged_into
          WHERE m.id < ? AND m.deleted_at IS NULL AND (m.expires_at IS NULL OR m.expires_at > ?)
-           AND (m.text IS NOT NULL OR m.transcript IS NOT NULL)
+           AND m.ts > coalesce(c.cleared_through_ts, 0) AND (m.text IS NOT NULL OR m.transcript IS NOT NULL)
          ORDER BY m.id DESC`
       )
       .iterate(options.model, options.before ?? NO_UPPER_BOUND, this.c.now()) as Iterable<BacklogItem & { embedded: number }>;
@@ -326,7 +326,7 @@ export class Vectors {
     const params: SQLInputValue[] = [model, filter.lower, filter.upper, ...filter.params];
     return this.c
       .arrayStmt(
-        `SELECT e.message_id, e.vec FROM messages m CROSS JOIN embeddings e ON e.message_id = m.id
+        `SELECT e.message_id, e.vec FROM messages m CROSS JOIN chats c ON c.id = m.chat_id CROSS JOIN embeddings e ON e.message_id = m.id
          WHERE e.model = ? AND m.id >= ? AND m.id < ? AND ${filter.where}`
       )
       .iterate(...params) as Iterable<unknown[]>;

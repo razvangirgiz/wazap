@@ -10,7 +10,10 @@ import assert from "node:assert/strict";
 import { statSync } from "node:fs";
 import { performance } from "node:perf_hooks";
 
+import { AccountDb } from "../dist/db/index.js";
 import { PEER, PEER_LID, T0, openTemp, sid, textMessage } from "./db-fixtures.mjs";
+
+const turn = () => new Promise((resolve) => setImmediate(resolve));
 
 const OTHER = "40700000003@s.whatsapp.net";
 /** Generous on purpose: a 200-row chunk takes a few ms; the bound only catches a loop that never yields. */
@@ -68,11 +71,12 @@ test("live writes land between chunks of a clear, and the barrier already holds 
   await new Promise((resolve) => setImmediate(resolve));
   const older = db.messages.upsert(textMessage(PEER, "LATE-OLD", T0 + 10, "vechi"));
   const newer = db.messages.upsert(textMessage(PEER, "LIVE", T0 + 2_000_000, "nou"));
-  const midway = db.messages.countInChat(PEER).messages;
+  const midway = db["connection"].get("SELECT count(*) AS n FROM messages").n;
+  assert.deepEqual(db.messages.countInChat(PEER), { messages: 1, tombstones: 0 }, "rows under the barrier are hidden before their purge");
   const result = await clearing;
   assert.equal(older.outcome, "cleared");
   assert.equal(newer.outcome, "inserted");
-  assert.ok(midway > 1 && midway < 1001, `the write landed mid-clear (${midway} rows left)`);
+  assert.ok(midway > 1 && midway < 1001, `the write landed mid-clear (${midway} rows physically left)`);
   assert.equal(result.count, 1000);
   assert.deepEqual(db.messages.chatPage(PEER, { limit: 10 }).items.map((m) => m.keyId), ["LIVE"]);
   db.close();
@@ -150,4 +154,94 @@ test("optimize merges the index in small steps and leaves it consistent", async 
   assert.equal(db.search.text({ query: "factur", limit: 5 }).items.length, 5);
   assert.deepEqual(db.integrityCheck(), { ok: true, problems: [] });
   db.close();
+});
+
+test("finding 2: a clear hides everything under its barrier at once, stays hidden after a stop mid-purge, and resume finishes it", async () => {
+  const { db, path, clock } = openTemp({ chunkSize: 10 });
+  const rows = [];
+  for (let i = 0; i < 100; i++) rows.push(textMessage(PEER, `K${i}`, T0 + i * 1000, `secret ${i}`));
+  db.messages.upsertMany(rows);
+  db.messages.setMedia(sid(false, PEER, "K5"), "preview", "/tmp/preview-K5.jpg");
+  db.vectors.put(sid(false, PEER, "K50"), "m", [1, 0, 0]);
+  const clearing = db.messages.clearChat(PEER, T0 + 99_000);
+  clearing.catch(() => {});
+
+  const hidden = (store) => {
+    assert.equal(store.identity.chat(PEER).lastMessageId, null, "last_* never names a row under the barrier");
+    assert.deepEqual(store.messages.chatPage(PEER, { limit: 1000 }).items, []);
+    assert.equal(store.messages.get(sid(false, PEER, "K50")), null);
+    assert.deepEqual(store.search.text({ query: "secret", limit: 5 }).items, []);
+    assert.deepEqual(store.search.text({ query: "se", limit: 5 }).items, []);
+    assert.deepEqual(store.messages.listChats({ limit: 5 }).items, []);
+    assert.deepEqual(store.messages.recent({ since: T0, limit: 5 }).items, []);
+    assert.deepEqual(store.messages.waiting({ since: T0, until: T0 + 200_000, limit: 5 }), []);
+    assert.deepEqual(store.messages.coverage(PEER), { oldest: null, newest: null });
+    assert.equal(store.counts().messages, 0);
+    assert.deepEqual(store.messages.countInChat(PEER), { messages: 0, tombstones: 0 });
+    assert.deepEqual(store.vectors.vectorSearch({ model: "m", vector: [1, 0, 0], limit: 5 }), []);
+    assert.deepEqual(store.vectors.hybrid({ query: "secret", vector: [1, 0, 0], model: "m", limit: 5, minSimilarity: 0.5 }).hits, []);
+    assert.deepEqual(store.vectors.backlog({ model: "m", limit: 5 }).items, []);
+  };
+  hidden(db);
+  await turn();
+  await turn();
+  db.close();
+  await clearing.catch(() => {});
+
+  const reopened = AccountDb.open(path, { now: () => clock.now, chunkSize: 10, checkpointDelayMs: 0 });
+  const left = reopened["connection"].get("SELECT count(*) AS n FROM messages").n;
+  assert.ok(left > 0 && left < 100, `the purge was interrupted with ${left} rows physically left`);
+  hidden(reopened);
+  const resumed = await reopened.resume();
+  assert.equal(resumed.purged.count, left);
+  assert.equal(reopened["connection"].get("SELECT count(*) AS n FROM messages").n, 0);
+  assert.deepEqual(reopened.pendingUnlinks(), ["/tmp/preview-K5.jpg"]);
+  reopened.close();
+});
+
+test("finding 2: the file of a row purged before a stop stays queued for unlink until acknowledged", async () => {
+  const { db, path, clock } = openTemp({ chunkSize: 10 });
+  for (let i = 0; i < 100; i++) db.messages.upsert(textMessage(PEER, `K${i}`, T0 + i * 1000, `secret ${i}`));
+  db.messages.setMedia(sid(false, PEER, "K0"), "download", "/data/photo-K0.jpg");
+  const clearing = db.messages.clearChat(PEER, T0 + 99_000);
+  clearing.catch(() => {});
+  await turn();
+  await turn();
+  db.close();
+  await clearing.catch(() => {});
+
+  const reopened = AccountDb.open(path, { now: () => clock.now, checkpointDelayMs: 0 });
+  assert.equal(reopened["connection"].get("SELECT count(*) AS n FROM messages WHERE key_id = 'K0'").n, 0, "K0's chunk committed");
+  assert.deepEqual(reopened.pendingUnlinks(), ["/data/photo-K0.jpg"]);
+  assert.equal(reopened.ackUnlinks(["/data/photo-K0.jpg"]), 1);
+  assert.deepEqual(reopened.pendingUnlinks(), []);
+  reopened.close();
+});
+
+test("finding 2: a path still referenced is never queued, and one recorded again leaves the queue", () => {
+  const { db } = openTemp();
+  db.messages.upsert(textMessage(PEER, "A", T0, "a"));
+  db.messages.upsert(textMessage(PEER, "B", T0 + 1000, "b"));
+  db.messages.setMedia(sid(false, PEER, "A"), "preview", "/shared.jpg");
+  db.messages.setMedia(sid(false, PEER, "B"), "preview", "/shared.jpg");
+  assert.deepEqual(db.messages.delete(sid(false, PEER, "A")).mediaPaths, []);
+  assert.deepEqual(db.pendingUnlinks(), []);
+  assert.deepEqual(db.messages.delete(sid(false, PEER, "B")).mediaPaths, ["/shared.jpg"]);
+  assert.deepEqual(db.pendingUnlinks(), ["/shared.jpg"]);
+  db.messages.upsert(textMessage(PEER, "C", T0 + 2000, "c"));
+  db.messages.setMedia(sid(false, PEER, "C"), "preview", "/shared.jpg");
+  assert.deepEqual(db.pendingUnlinks(), []);
+  db.close();
+});
+
+test("finding 2: a delete under a barrier whose purge has not run yet never makes a hidden row the last one", () => {
+  const { db } = openTemp();
+  db.messages.upsert(textMessage(PEER, "A", T0, "a"));
+  db.messages.upsert(textMessage(PEER, "B", T0 + 1000, "b"));
+  db.messages.upsert(textMessage(PEER, "C", T0 + 2000, "c"));
+  const clearing = db.messages.clearChat(PEER, T0 + 1000);
+  assert.equal(db.identity.chat(PEER).lastMessageId, db.messages.get(sid(false, PEER, "C")).id);
+  db.messages.delete(sid(false, PEER, "C"));
+  assert.equal(db.identity.chat(PEER).lastMessageId, null);
+  return clearing.then(() => db.close());
 });

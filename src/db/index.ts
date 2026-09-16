@@ -17,7 +17,7 @@ import { Identity } from "./identity.js";
 import { Merger } from "./merge.js";
 import { Messages, type ScrubQuote } from "./messages.js";
 import { Search } from "./search.js";
-import type { Counts, MergeReport } from "./types.js";
+import type { BulkDeleteResult, Counts, MergeReport } from "./types.js";
 import { Vectors } from "./vectors.js";
 
 export { StorageError, type StorageErrorCode } from "./errors.js";
@@ -155,17 +155,54 @@ export class AccountDb {
     return this.merger.resumeMerges();
   }
 
-  /** Whole-account counts for status; each is an index count, never a table scan. */
+  /**
+   * Finishes what a crash or a close interrupted: folds first, then the
+   * physical purge under every stored clear barrier. Call once after opening a
+   * writable database; reads are already correct before it runs.
+   */
+  async resume(): Promise<{ merges: MergeReport; purged: BulkDeleteResult }> {
+    const merges = await this.merger.resumeMerges();
+    const purged = await this.messages.resumePurges();
+    return { merges, purged };
+  }
+
+  /**
+   * Files removed rows pointed at and no row references any more, oldest
+   * first. Unlink them, then acknowledge; a crash in between only repeats an
+   * unlink, it never forgets a file.
+   */
+  pendingUnlinks(limit = 1000): string[] {
+    return this.connection
+      .all<{ path: string }>("SELECT path FROM pending_unlinks ORDER BY queued_at, path LIMIT ?", Math.max(1, Math.floor(limit)))
+      .map((row) => row.path);
+  }
+
+  /** Takes unlinked files off the queue. */
+  ackUnlinks(paths: readonly string[]): number {
+    if (paths.length === 0) return 0;
+    return this.connection.write(() =>
+      this.connection.run("DELETE FROM pending_unlinks WHERE path IN (SELECT value FROM json_each(?))", JSON.stringify(paths))
+    );
+  }
+
+  /**
+   * Whole-account counts for status, off indexes: rows a stored clear barrier
+   * already hides are not messages any more, even before their purge ran.
+   */
   counts(): Counts {
-    const row = this.connection.get<Counts & { total: number }>(
+    const row = this.connection.get<Counts & { total: number; hidden: number }>(
       `SELECT (SELECT count(*) FROM messages) AS total,
               (SELECT count(*) FROM messages INDEXED BY messages_tombstones WHERE deleted_at IS NOT NULL) AS tombstones,
-              (SELECT count(*) FROM chats) AS chats,
-              (SELECT count(*) FROM contacts) AS contacts,
+              (SELECT count(*) FROM chats c JOIN messages m ON m.chat_id = c.id
+                 AND m.id < ((c.cleared_through_ts / 1000) + 1) * 1048576 AND m.ts <= c.cleared_through_ts
+                 AND m.deleted_at IS NULL
+               WHERE c.cleared_through_ts IS NOT NULL) AS hidden,
+              (SELECT count(*) FROM chats WHERE merged_into IS NULL) AS chats,
+              (SELECT count(*) FROM contacts WHERE merged_into IS NULL) AS contacts,
               (SELECT count(*) FROM embeddings) AS embeddings`
     )!;
     return {
-      messages: row.total - row.tombstones,
+      messages: row.total - row.tombstones - row.hidden,
       tombstones: row.tombstones,
       chats: row.chats,
       contacts: row.contacts,

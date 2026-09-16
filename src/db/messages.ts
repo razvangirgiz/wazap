@@ -20,6 +20,7 @@ import {
   MESSAGE_COLUMNS,
   MESSAGE_FROM,
   messageFromRow,
+  RECOMPUTE_LAST,
   VISIBLE,
   type ChatRow,
   type MessageRow,
@@ -292,7 +293,12 @@ export class Messages {
       messageId
     );
     this.scrubQuotesOf(messageId);
-    return paths;
+    return this.released(paths);
+  }
+
+  /** The paths no media row references any more: the ones the delete queued for unlinking. */
+  private released(paths: readonly string[]): string[] {
+    return [...new Set(paths)].filter((path) => this.c.get("SELECT 1 FROM media WHERE path = ?", path) === undefined);
   }
 
   /**
@@ -454,15 +460,40 @@ export class Messages {
     });
   }
 
+  /**
+   * Stores the barrier and hides everything under it in the same transaction:
+   * the chat's last message is recomputed from what stays visible, and every
+   * read filters on the barrier, so a purge that a crash interrupts leaves
+   * nothing readable behind. `resumePurges()` finishes the physical delete.
+   */
   private raiseBarrier(chatJid: string, through: number): ChatRecord {
     return this.c.write(() => {
       const chat = this.identity.ensureChat(chatJid);
-      this.c.run(
-        "UPDATE chats SET cleared_through_ts = max(coalesce(cleared_through_ts, 0), ?) WHERE id = ?",
-        through,
-        chat.id
-      );
+      for (const chatId of this.identity.chatIdsOf(chat)) {
+        this.c.run("UPDATE chats SET cleared_through_ts = max(coalesce(cleared_through_ts, 0), ?) WHERE id = ?", through, chatId);
+        this.c.run(RECOMPUTE_LAST, chatId);
+      }
       return chat;
+    });
+  }
+
+  /** Physically removes rows a stored barrier already hides, for every chat a crash or a close left mid-purge. */
+  resumePurges(): Promise<BulkDeleteResult> {
+    this.c.assertWritable();
+    return this.c.bulk(async () => {
+      const result: BulkDeleteResult = { count: 0, sids: [], mediaPaths: [] };
+      const pending = this.c.all<{ id: number }>(
+        `SELECT c.id FROM chats c WHERE c.cleared_through_ts IS NOT NULL AND EXISTS (
+           SELECT 1 FROM messages m WHERE m.chat_id = c.id
+             AND m.id < ((c.cleared_through_ts / 1000) + 1) * 1048576 AND m.ts <= c.cleared_through_ts)`
+      );
+      for (const chat of pending) {
+        const purged = await this.purgeCleared(chat.id);
+        result.count += purged.count;
+        result.sids.push(...purged.sids);
+        result.mediaPaths.push(...purged.mediaPaths);
+      }
+      return result;
     });
   }
 
@@ -503,14 +534,12 @@ export class Messages {
   deleteRows(rows: ReadonlyArray<{ id: number; sid: string }>, into: BulkDeleteResult): void {
     if (rows.length === 0) return;
     const ids = idsJson(rows.map((row) => row.id));
-    for (const media of this.c.all<{ path: string }>(
-      "SELECT path FROM media WHERE message_id IN (SELECT value FROM json_each(?))",
-      ids
-    )) {
-      into.mediaPaths.push(media.path);
-    }
+    const paths = this.c
+      .all<{ path: string }>("SELECT path FROM media WHERE message_id IN (SELECT value FROM json_each(?))", ids)
+      .map((row) => row.path);
     for (const row of rows) this.scrubQuotesOf(row.id);
     this.c.run("DELETE FROM messages WHERE id IN (SELECT value FROM json_each(?))", ids);
+    into.mediaPaths.push(...this.released(paths));
     into.count += rows.length;
     for (const row of rows) into.sids.push(row.sid);
   }
@@ -664,7 +693,8 @@ export class Messages {
         path,
         this.c.now()
       );
-      return { stored: true, replaced: previous !== undefined && previous !== path ? previous : null };
+      const replaced = previous !== undefined && previous !== path ? this.released([previous]) : [];
+      return { stored: true, replaced: replaced[0] ?? null };
     });
   }
 
@@ -683,12 +713,11 @@ export class Messages {
   get(sid: string, options: { includeHidden?: boolean } = {}): StoredMessage | null {
     const key = this.identity.findMessage(sid);
     if (key === null) return null;
-    const row = this.c.get<MessageRow>(`SELECT ${MESSAGE_COLUMNS} FROM ${MESSAGE_FROM} WHERE m.id = ?`, key.id);
-    if (row === undefined) return null;
-    if (options.includeHidden !== true) {
-      if (row.deleted_at !== null || (row.expires_at !== null && row.expires_at <= this.c.now())) return null;
-    }
-    return messageFromRow(row);
+    const row =
+      options.includeHidden === true
+        ? this.c.get<MessageRow>(`SELECT ${MESSAGE_COLUMNS} FROM ${MESSAGE_FROM} WHERE m.id = ?`, key.id)
+        : this.c.get<MessageRow>(`SELECT ${MESSAGE_COLUMNS} FROM ${MESSAGE_FROM} WHERE m.id = ? AND ${VISIBLE}`, key.id, this.c.now());
+    return row === undefined ? null : messageFromRow(row);
   }
 
   /** Visible messages by id, newest first. */
@@ -858,13 +887,14 @@ export class Messages {
     return { oldest: edge("ASC"), newest: edge("DESC") };
   }
 
-  /** Rows and tombstones filed under one chat; what an import compares against its source. */
+  /** Rows and tombstones of one chat above its clear barrier; what an import compares against its source. */
   countInChat(chatJid: string): { messages: number; tombstones: number } {
     const chat = this.identity.chat(chatJid);
     if (chat === null) return { messages: 0, tombstones: 0 };
     const inChat = chatCondition(this.identity.chatIdsOf(chat));
     const row = this.c.get<{ total: number; tombstones: number }>(
-      `SELECT count(*) AS total, count(m.deleted_at) AS tombstones FROM messages m WHERE ${inChat.sql}`,
+      `SELECT count(*) AS total, count(m.deleted_at) AS tombstones FROM messages m CROSS JOIN chats c ON c.id = m.chat_id
+       WHERE ${inChat.sql} AND m.ts > coalesce(c.cleared_through_ts, 0)`,
       ...inChat.params
     )!;
     return { messages: row.total - row.tombstones, tombstones: row.tombstones };

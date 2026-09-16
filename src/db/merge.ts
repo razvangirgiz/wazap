@@ -31,7 +31,7 @@ import type { Connection } from "./connection.js";
 import { StorageError } from "./errors.js";
 import { chatKindOf, isLidJid, normalizeJid, type Identity } from "./identity.js";
 import type { Messages } from "./messages.js";
-import type { ChatRow, ContactRow } from "./rows.js";
+import { RECOMPUTE_LAST, type ChatRow, type ContactRow } from "./rows.js";
 import type { ContactNotes, MergeReport } from "./types.js";
 
 /** How the two note records of one person combine. Exported for the tests that pin the rule. */
@@ -125,7 +125,11 @@ export class Merger {
     if (lidChat !== undefined && phoneChat !== undefined) {
       const barrier = Math.max(lidChat.cleared_through_ts ?? 0, phoneChat.cleared_through_ts ?? 0);
       this.c.run("UPDATE chats SET merged_into = ? WHERE id = ? OR merged_into = ?", phoneChat.id, lidChat.id, lidChat.id);
-      if (barrier > 0) this.c.run("UPDATE chats SET cleared_through_ts = ? WHERE id IN (?, ?)", barrier, lidChat.id, phoneChat.id);
+      if (barrier > 0) {
+        this.c.run("UPDATE chats SET cleared_through_ts = ? WHERE id IN (?, ?)", barrier, lidChat.id, phoneChat.id);
+        this.c.run(RECOMPUTE_LAST, phoneChat.id);
+        this.c.run(RECOMPUTE_LAST, lidChat.id);
+      }
     } else if (lidChat !== undefined) {
       this.c.run("UPDATE chats SET jid = ? WHERE id = ?", phone, lidChat.id);
     }
@@ -318,13 +322,7 @@ export class Merger {
       }
       this.c.run("UPDATE chats SET contact_id = coalesce(contact_id, ?) WHERE id = ?", drop.contact_id, keepId);
       this.c.run("DELETE FROM chats WHERE id = ?", dropId);
-      this.c.run(
-        `UPDATE chats SET (last_message_id, last_ts, last_from_me) = (
-           SELECT id, ts, from_me FROM messages WHERE chat_id = ? AND deleted_at IS NULL ORDER BY id DESC LIMIT 1)
-         WHERE id = ?`,
-        keepId,
-        keepId
-      );
+      this.c.run(RECOMPUTE_LAST, keepId);
     });
     // A clear of either spelling that landed while the fold ran may have raised the barrier since the first purge.
     report.mediaPaths.push(...(await this.messages.purgeCleared(keepId)).mediaPaths);

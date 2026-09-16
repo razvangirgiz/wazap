@@ -28,7 +28,7 @@ export function foldText(text: string): string {
   return text.toLowerCase().normalize("NFD").replace(/\p{M}+/gu, "");
 }
 
-/** A filter turned into ids and one SQL condition over `m`; null when it can match nothing. */
+/** A filter turned into ids and one SQL condition over `m` and its chat `c`; null when it can match nothing. */
 export interface ResolvedFilter {
   lower: number;
   upper: number;
@@ -52,7 +52,7 @@ export class Search {
   ) {}
 
   resolveFilter(filter: MessageFilter): ResolvedFilter | null {
-    const conditions = ["m.deleted_at IS NULL", "(m.expires_at IS NULL OR m.expires_at > ?)"];
+    const conditions = ["m.deleted_at IS NULL", "(m.expires_at IS NULL OR m.expires_at > ?)", "m.ts > coalesce(c.cleared_through_ts, 0)"];
     const params: SQLInputValue[] = [this.c.now()];
     let narrowsRows = false;
     if (filter.chat !== undefined) {
@@ -148,7 +148,8 @@ export class Search {
       if (batch.length === 0) return { ids, cappedAt: null };
       examined += batch.length;
       const passing = this.c.all<{ id: number }>(
-        `SELECT m.id FROM messages m WHERE m.id IN (SELECT value FROM json_each(?)) AND ${filter.where}
+        `SELECT m.id FROM messages m CROSS JOIN chats c ON c.id = m.chat_id
+         WHERE m.id IN (SELECT value FROM json_each(?)) AND ${filter.where}
          ORDER BY m.id DESC LIMIT ?`,
         JSON.stringify(batch),
         ...filter.params,
@@ -169,7 +170,7 @@ export class Search {
     let examined = 0;
     const rows = this.c
       .stmt(
-        `SELECT m.id, m.text, m.transcript FROM messages m
+        `SELECT m.id, m.text, m.transcript FROM messages m CROSS JOIN chats c ON c.id = m.chat_id
          WHERE m.id < ? AND m.id >= ? AND ${filter.where} ORDER BY m.id DESC`
       )
       .iterate(upper, filter.lower, ...filter.params) as Iterable<{ id: number; text: string | null; transcript: string | null }>;

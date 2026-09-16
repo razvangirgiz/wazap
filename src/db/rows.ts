@@ -68,8 +68,22 @@ export const MESSAGE_COLUMNS = `m.id, coalesce(ck.id, c.id) AS chat_id, coalesce
 export const MESSAGE_FROM = `messages m CROSS JOIN chats c ON c.id = m.chat_id LEFT JOIN chats ck ON ck.id = c.merged_into
   LEFT JOIN contacts s ON s.id = m.sender_id LEFT JOIN contacts sk ON sk.id = s.merged_into`;
 
-/** A row a reader may see: not a tombstone and not past its deadline. Binds one parameter, now. */
-export const VISIBLE = `m.deleted_at IS NULL AND (m.expires_at IS NULL OR m.expires_at > ?)`;
+/**
+ * A row a reader may see: not a tombstone, not past its deadline, and not at
+ * or before its chat's clear barrier — hidden from the moment the barrier is
+ * stored, however far the physical purge has got. Needs `m` and its chat `c`;
+ * binds one parameter, now.
+ */
+export const VISIBLE = `m.deleted_at IS NULL AND (m.expires_at IS NULL OR m.expires_at > ?) AND m.ts > coalesce(c.cleared_through_ts, 0)`;
+
+/** Recomputes a chat's last_* from what a reader may see; binds the chat id. */
+export const RECOMPUTE_LAST = `UPDATE chats SET (last_message_id, last_ts, last_from_me) = (
+    SELECT m.id, m.ts, m.from_me FROM messages m
+    WHERE m.chat_id = chats.id AND m.deleted_at IS NULL
+      AND m.id >= (coalesce(chats.cleared_through_ts, 0) / 1000) * 1048576
+      AND m.ts > coalesce(chats.cleared_through_ts, 0)
+    ORDER BY m.id DESC LIMIT 1
+  ) WHERE id = ?`;
 
 export function contactFromRow(row: ContactRow): ContactRecord {
   return {
