@@ -17,9 +17,9 @@ export class MessageRetention {
   /** Without `WAZAP_RETENTION`, deadlines are neither recorded nor enforced; deletions always are. */
   constructor(private readonly enforceExpiry = true) {}
 
-  allows(sid: string, jid: string, timestamp: number): boolean {
+  allows(sid: string, jid: string, timestamp: number, now = Date.now()): boolean {
     return !this.deleted.has(sid) && timestamp > (this.cleared.get(jid) ?? -Infinity) &&
-      Date.now() < (this.expires.get(sid)?.at ?? Infinity);
+      now < (this.expires.get(sid)?.at ?? Infinity);
   }
 
   /** The first/earliest observed deadline wins, including over stripped edits. */

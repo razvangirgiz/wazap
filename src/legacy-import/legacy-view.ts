@@ -1,38 +1,18 @@
 /**
- * What the legacy service shows for an account, read through the service's
- * own boot path: a WhatsAppService with no socket and recall off replays a
- * private copy of the legacy files (loadPersisted rewrites what it loads, so
- * never the originals), and the rings, barriers, notes and marks are read off
- * it afterwards. This is the oracle the import is verified against, which is
- * why it runs main's code instead of re-deriving main's rules.
+ * What the legacy service shows for an account, read through a replay of the
+ * service's own boot path (legacy-replay.ts): the rings, barriers, notes and
+ * marks main would have held after booting on these files. This is the oracle
+ * the import is verified against. The replay only reads the files, in memory.
  */
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync } from "node:fs";
+import { existsSync, readdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import type { WAMessage } from "baileys";
-import { accountPaths, type AccountPaths, type Config } from "../config.js";
+import type { AccountPaths } from "../config.js";
 import { isNoiseJid, STATUS_JID } from "../ids.js";
 import { contentHash } from "../db/index.js";
 import { messageIdFor, messageText, messageTimestampMs, messageType } from "../messages.js";
-import type { MessageRetention } from "../message-retention.js";
-import type { Notes } from "../notes.js";
-import type { Store } from "../store.js";
 import { STORY_TTL_MS } from "./convert.js";
-
-/** The private members of WhatsAppService this reads; the service keeps them private, the oracle needs them. */
-interface ServiceInternals {
-  store: Store;
-  retention: MessageRetention;
-  notes: Notes;
-  account: { id: string; name: string; number: string } | null;
-  recallEnv: unknown;
-  loadPersisted(): Promise<void>;
-  retentionIdle(): Promise<void>;
-  hasMessage(sid: string): boolean;
-  canonical(jid: string): string;
-  isMe(jid: string): boolean;
-  namedContacts(): number;
-  stop(): Promise<void>;
-}
+import { LegacyReplay } from "./legacy-replay.js";
 
 export interface LegacyMessage {
   /** The id a view reports: direction, the ring's chat, key. */
@@ -78,80 +58,29 @@ export interface LegacyView {
 }
 
 export const MARKS_SAMPLE = 20;
-/** The private copy the replay runs on, beside the database. */
+/** Where verification used to copy the legacy files; a copy an older run left behind holds message text. */
 const VERIFY_PREFIX = ".legacy-verify-";
 
-/** Copies what the boot replay reads: the snapshot, the history logs, the barriers and the notes. */
-function copyLegacyFiles(from: AccountPaths, to: AccountPaths): void {
-  mkdirSync(to.root, { recursive: true, mode: 0o700 });
-  for (const [source, target] of [
-    [from.storeFile, to.storeFile],
-    [join(from.root, "retention.json"), join(to.root, "retention.json")],
-    [from.notesFile, to.notesFile],
-  ] as const) {
-    if (existsSync(source)) cpSync(source, target);
-  }
-  mkdirSync(to.historyDir, { recursive: true, mode: 0o700 });
-  if (existsSync(from.historyDir)) {
-    for (const name of readdirSync(from.historyDir)) {
-      if (name.endsWith(".jsonl")) cpSync(join(from.historyDir, name), join(to.historyDir, name));
-    }
-  }
-}
-
 export async function loadLegacyView(options: {
-  accountId: string;
   accountPaths: AccountPaths;
   owner: { id: string; name: string; number: string } | null;
   retention: boolean;
+  /** The directory an older verification copied the files into; its leftovers are removed. */
   workDir: string;
+  now: () => number;
 }): Promise<LegacyView> {
-  mkdirSync(options.workDir, { recursive: true, mode: 0o700 });
-  // A copy a crashed verification left behind holds message text: it goes first.
-  for (const name of readdirSync(options.workDir)) {
-    if (name.startsWith(VERIFY_PREFIX)) rmSync(join(options.workDir, name), { recursive: true, force: true });
-  }
-  const temp = mkdtempSync(join(options.workDir, VERIFY_PREFIX));
-  try {
-    const paths = accountPaths(temp, options.accountId);
-    copyLegacyFiles(options.accountPaths, paths);
-    const { WhatsAppService, realName } = await import("../whatsapp.js");
-    const config = {
-      dataDir: temp,
-      readOnly: true,
-      syncFullHistory: false,
-      persistHistory: true,
-      retention: options.retention,
-      transport: "stdio",
-      httpHost: "127.0.0.1",
-      httpPort: 0,
-      readToken: null,
-      writeToken: null,
-      publicUrl: null,
-      oauthPassword: null,
-      share: false,
-      rateLimitPerMinute: 0,
-      command: "serve",
-    } as unknown as Config;
-    const account = { id: options.accountId, name: options.accountId, enabled: true, owner: null };
-    const service = new WhatsAppService(config, account, paths);
-    const svc = service as unknown as ServiceInternals;
-    // Recall off: the oracle must not open an index or start an embedding sidecar.
-    svc.recallEnv = { enabled: false, model: "embeddinggemma-300m", embedBin: null, embedUrl: null, modelsDir: temp, embedIdleMs: 0, maxRows: 100, minSimilarity: 0 };
-    svc.account = options.owner;
-    try {
-      await svc.loadPersisted();
-      await svc.retentionIdle();
-      return readView(svc, realName);
-    } finally {
-      await svc.stop();
+  if (existsSync(options.workDir)) {
+    for (const name of readdirSync(options.workDir)) {
+      if (name.startsWith(VERIFY_PREFIX)) rmSync(join(options.workDir, name), { recursive: true, force: true });
     }
-  } finally {
-    rmSync(temp, { recursive: true, force: true });
   }
+  const replay = new LegacyReplay(options.accountPaths, { owner: options.owner, retention: options.retention, now: options.now });
+  await replay.load();
+  const { realName } = await import("../whatsapp.js");
+  return readView(replay, realName, options.now());
 }
 
-function readView(svc: ServiceInternals, realName: (value: string | null | undefined) => string): LegacyView {
+function readView(svc: LegacyReplay, realName: (value: string | null | undefined) => string, now: number): LegacyView {
   const store = svc.store;
   const message = (sid: string, chatJid: string, raw: WAMessage): LegacyMessage => {
     const type = messageType(raw);
@@ -190,7 +119,7 @@ function readView(svc: ServiceInternals, realName: (value: string | null | undef
       });
     }
   }
-  const cutoff = Date.now() - STORY_TTL_MS;
+  const cutoff = now - STORY_TTL_MS;
   const stories: LegacyMessage[] = [];
   for (const sid of store.stories) {
     const raw = store.messages.get(sid);

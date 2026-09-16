@@ -12,9 +12,10 @@
  * What the wiring must know:
  * - Open the database with this module's `scrubQuote`, or quotes of deleted
  *   messages keep their embedded copy.
- * - The legacy files are only read. Verification replays a private copy of
- *   them through WhatsAppService's boot path in `.legacy-verify-*` beside the
- *   database (or `workDir`), removed when it finishes and at the next start.
+ * - The legacy files are only read. Verification replays them in memory
+ *   through main's boot path (legacy-replay.ts), with the import's clock, and
+ *   removes any `.legacy-verify-*` copy an older run left beside the database
+ *   (or in `workDir`).
  * - `state: "done"` means imported and verified; a later call returns the
  *   stored report and writes nothing. `"imported"` means the rows are in but
  *   verification found an unexpected difference (or was off); calling again

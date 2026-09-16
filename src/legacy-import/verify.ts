@@ -67,14 +67,15 @@ export async function verifyLegacyImport(args: VerifyArgs): Promise<Verification
   const { db } = args;
   const options = args.options ?? {};
   const owner = readLinkedAccount(args.accountPaths.authDir);
+  const clock = options.now ?? Date.now;
   const legacy = await loadLegacyView({
-    accountId: args.accountId,
     accountPaths: args.accountPaths,
     owner,
     retention: options.retention === true,
     workDir: options.workDir ?? dirname(db.path),
+    now: clock,
   });
-  const now = (options.now ?? Date.now)();
+  const now = clock();
   const context = await buildContext({ accountPaths: args.accountPaths, now, enforceExpiry: false });
   const tally = new Tally();
 

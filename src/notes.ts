@@ -40,7 +40,11 @@ export class Notes {
   readonly handled = new Map<string, HandledMark>();
   readonly fields = new Map<string, ContactFields>();
 
-  constructor(private readonly file: string) {
+  /** `persist: false` reads the file and never writes it: the legacy import's replay of it. */
+  constructor(
+    private readonly file: string,
+    private readonly options: { persist?: boolean } = {}
+  ) {
     this.load();
   }
 
@@ -63,6 +67,7 @@ export class Notes {
   }
 
   private save(): void {
+    if (this.options.persist === false) return;
     // A file that never read cleanly must not be overwritten with a fresh one.
     if (this.loadError) throw new Error(`Cannot overwrite unreadable notes: ${this.loadError}`);
     const data: NotesFile = {
