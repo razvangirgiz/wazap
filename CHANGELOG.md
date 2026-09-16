@@ -1,5 +1,34 @@
 # Changelog
 
+## Unreleased
+### Changed
+
+- **`confirm_send` sends a draft at most once.** Drafts live in the account
+  database with the WhatsApp message id they go out under. Confirming a sent
+  draft again answers its receipt with `already_sent: true` instead of
+  `DRAFT_NOT_FOUND`, for 24 hours, and two confirms at once send once. A
+  failure once the message is handed to WhatsApp's relay answers the new
+  `SEND_OUTCOME_UNKNOWN`, a stop in the middle included, and never sends that
+  draft again; it used to put the draft back, so a timeout could become a
+  second message. The draft counts as sent once WhatsApp echoes its id, and a
+  send a crash interrupted is unknown after the restart. A failure before the
+  relay (not connected, the write budget, the number lookup, a media upload)
+  still keeps the draft, with the same code as before. Drafts are capped at 20
+  per MCP session, instead of 20 per account, and 200 per account. Deleting a
+  sent message or clearing its chat takes its words out of the send record, and
+  `WAZAP_PERSIST_HISTORY=0` keeps no drafts and no send words across a restart.
+- **A number lookup WhatsApp does not answer is `NOT_CONNECTED`**, not
+  `NOT_ON_WHATSAPP`: only an answer says a number has no WhatsApp.
+- **Echoes of wazap's own sends stay quiet after a restart.** The webhook
+  recognises them by the message ids confirmed drafts recorded, not only by
+  the last ten minutes of sends in memory.
+
+### Upgrade notes
+
+- The account database moves to schema version 2 on the first start. 0.22
+  refuses a version 2 database (`SCHEMA_TOO_NEW`), and there is no downgrade:
+  going back means restoring a copy taken before the upgrade.
+
 ## 0.22.0
 ### Changed
 
@@ -49,25 +78,6 @@
   `status --json` carries it as `storage`, and `get_status` as `storage`.
 - **A handled chat reopens only when the other side writes after the ask**
   that was marked, and a receipt keeps the latest time it was reported.
-- **`confirm_send` sends a draft at most once.** Drafts live in the account
-  database with the WhatsApp message id they go out under. Confirming a sent
-  draft again answers its receipt with `already_sent: true` instead of
-  `DRAFT_NOT_FOUND`, for 24 hours, and two confirms at once send once. A
-  failure once the message is handed to WhatsApp's relay answers the new
-  `SEND_OUTCOME_UNKNOWN`, a stop in the middle included, and never sends that
-  draft again; it used to put the draft back, so a timeout could become a
-  second message. The draft counts as sent once WhatsApp echoes its id, and a
-  send a crash interrupted is unknown after the restart. A failure before the
-  relay (not connected, the write budget, the number lookup, a media upload)
-  still keeps the draft, with the same code as before. Drafts are capped at 20
-  per MCP session, instead of 20 per account, and 200 per account. Deleting a
-  sent message or clearing its chat takes its words out of the send record, and
-  `WAZAP_PERSIST_HISTORY=0` keeps no drafts and no send words across a restart.
-- **A number lookup WhatsApp does not answer is `NOT_CONNECTED`**, not
-  `NOT_ON_WHATSAPP`: only an answer says a number has no WhatsApp.
-- **Echoes of wazap's own sends stay quiet after a restart.** The webhook
-  recognises them by the message ids confirmed drafts recorded, not only by
-  the last ten minutes of sends in memory.
 
 - **Accounts come and go without a restart.** A running server follows
   `accounts.json`: `wazap account add`, `enable`, `disable`, `default` and
@@ -108,9 +118,6 @@
 - A server started by an older wazap has no control line: against it,
   `account` changes still say to restart, and `logout` and `account remove`
   still refuse. Restart it once on the new version.
-- Sending once moves the account database to schema version 2 on the first
-  start. 0.22 refuses a version 2 database (`SCHEMA_TOO_NEW`), and there is
-  no downgrade: going back means restoring a copy taken before the upgrade.
 
 ## 0.21.0
 ### Security
