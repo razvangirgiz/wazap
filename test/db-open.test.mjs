@@ -153,6 +153,18 @@ test("read-only open reads beside a writer, refuses writes and migrations, and r
   );
 });
 
+test("an immutable read-only open of a closed file reads it and creates nothing beside it", () => {
+  const { db, path } = openTemp();
+  db.messages.upsert(textMessage(PEER, "A", T0, "salut"));
+  db.close();
+  assert.equal(existsSync(`${path}-wal`) || existsSync(`${path}-shm`), false, "a clean close leaves the file alone");
+  const reader = AccountDb.open(path, { readOnly: true, immutable: true });
+  assert.equal(reader.counts().messages, 1);
+  reader.close();
+  assert.equal(existsSync(`${path}-wal`), false);
+  assert.equal(existsSync(`${path}-shm`), false);
+});
+
 test("a read-only open of a file that still needs migrating says so instead of reading a half schema", () => {
   const path = join(tempDir(), "empty.sqlite");
   writeFileSync(path, "");

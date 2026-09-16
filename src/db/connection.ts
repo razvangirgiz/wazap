@@ -11,6 +11,7 @@
 import { randomBytes } from "node:crypto";
 import { chmodSync, closeSync, existsSync, fsyncSync, mkdirSync, openSync, renameSync, rmSync, statSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
+import { pathToFileURL } from "node:url";
 import { StorageError } from "./errors.js";
 import { MIGRATIONS, SCHEMA_VERSION } from "./schema.js";
 import { sqlite, type DatabaseSync, type SQLInputValue, type StatementSync } from "./sqlite.js";
@@ -32,6 +33,12 @@ const MAX_CHECKPOINT_RETRIES = 6;
 export interface ConnectionOptions {
   /** status and doctor: never migrates, never writes, refuses a schema it would have to change. */
   readOnly?: boolean;
+  /**
+   * With readOnly: open the file as immutable, which creates no -wal or -shm
+   * beside it and ignores a write-ahead log. Only for a database no process
+   * has open.
+   */
+  immutable?: boolean;
   /** How long a statement waits on a lock held by another connection (busy_timeout). */
   timeoutMs?: number;
   /** The clock expiry and bookkeeping read; tests move it. Epoch ms. */
@@ -117,7 +124,8 @@ export class Connection {
       if (!existsSync(path)) {
         throw new StorageError("NOT_FOUND", `${path} does not exist.`, "Start the wazap server once to create it");
       }
-      const db = new DatabaseSync(path, { readOnly: true, timeout });
+      const source = options.immutable === true ? `${pathToFileURL(path).href}?immutable=1` : path;
+      const db = new DatabaseSync(source, { readOnly: true, timeout });
       try {
         const version = userVersion(db);
         if (version > SCHEMA_VERSION) throw tooNew(path, version);
