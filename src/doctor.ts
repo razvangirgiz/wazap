@@ -16,6 +16,7 @@ import { oauthProblem, readGrants } from "./oauth.js";
 import { EMBED_MODELS, embedModelPath, embedReady, readRecallSettings } from "./recall/index.js";
 import { installedService } from "./service.js";
 import { detectedTargets, skillState } from "./skills.js";
+import { storageReport, type AccountStorage, type BetaArchiveReport, type StorageReport } from "./storage-status.js";
 import {
   MODELS,
   findWhisper,
@@ -63,8 +64,13 @@ const UPDATE_TIMEOUT_MS = 2_000;
 const MIN_NODE_22_MINOR = 16;
 const NODE_FIX = "install Node 24 LTS, or Node 22.16 or newer";
 
+/** What a status run already read, so a check does not read it twice. */
+export interface CheckInputs {
+  storage?: StorageReport;
+}
+
 /** A check function may answer with a group, the way transcription does. */
-type CheckFn = (config: Config) => Check | Check[] | Promise<Check | Check[]>;
+type CheckFn = (config: Config, inputs: CheckInputs) => Check | Check[] | Promise<Check | Check[]>;
 
 const CHECKS: readonly CheckFn[] = [
   checkNode,
@@ -72,6 +78,7 @@ const CHECKS: readonly CheckFn[] = [
   checkLock,
   checkService,
   checkCredentials,
+  checkStorage,
   checkWrites,
   checkSkills,
   checkOAuth,
@@ -84,9 +91,9 @@ const CHECKS: readonly CheckFn[] = [
 /** Setup will offer these. Until an account is linked, their fix lines fight `Next wazap setup`. */
 const OPTIONAL_UNTIL_LINKED = new Set(["service", "skills", "transcribe"]);
 
-export async function runChecks(config: Config): Promise<Check[]> {
+export async function runChecks(config: Config, inputs: CheckInputs = {}): Promise<Check[]> {
   const checks: Check[] = [];
-  for (const check of CHECKS) checks.push(...[await check(config)].flat());
+  for (const check of CHECKS) checks.push(...[await check(config, inputs)].flat());
   let linked: boolean;
   try {
     linked = anyAccountLinked(config.dataDir);
@@ -234,6 +241,151 @@ function checkCredentials(config: Config): Check {
     name: "credentials",
     state: "ok",
     detail: records.length > 1 ? `readable (${linkedIds.join(", ")})` : "readable",
+  };
+}
+
+/** Whether recall is on, the one thing the storage report needs from the environment. */
+export function recallEnabled(config: Pick<Config, "dataDir">): boolean {
+  try {
+    return readRecallSettings(process.env, config.dataDir).enabled;
+  } catch {
+    return false;
+  }
+}
+
+function checkStorage(config: Config, inputs: CheckInputs): Check[] {
+  const report = inputs.storage ?? storageReport(config.dataDir, recallEnabled(config));
+  return storageChecks(report, lockHolder(paths(config.dataDir).lockFile) !== null);
+}
+
+const count = (n: number): string => n.toLocaleString("en-US");
+const bytes = (n: number): string => (n < 1024 * 1024 ? `${Math.max(1, Math.round(n / 1024))} KiB` : `${Math.round(n / (1024 * 1024))} MiB`);
+const day = (iso: string): string => iso.slice(0, 10);
+
+/**
+ * Per account: the database's state, size and counts, the legacy files and
+ * the databases a different number's link set aside; then the beta archive.
+ * An account with nothing on disk yet says nothing.
+ */
+export function storageChecks(report: StorageReport, serverRunning: boolean): Check[] {
+  const named = (account: AccountStorage, text: string): string =>
+    report.accounts.length > 1 ? `${account.account}: ${text}` : text;
+  const checks: Check[] = [];
+  for (const account of report.accounts) {
+    const storage = accountStorageCheck(account, serverRunning);
+    if (storage !== null) checks.push({ ...storage, detail: named(account, storage.detail) });
+    const legacy = legacyCheck(account);
+    if (legacy !== null) checks.push({ ...legacy, detail: named(account, legacy.detail) });
+    if (account.previous_owner.length > 0) {
+      const files = account.previous_owner.map((db) => `${db.file} (${bytes(db.bytes)}), deleted after ${day(db.delete_after)}`);
+      checks.push({
+        name: "previous owner",
+        state: "info",
+        detail: named(account, `set aside when a different number linked: ${files.join("; ")}`),
+      });
+    }
+  }
+  if (report.beta_archive !== null) checks.push(betaArchiveCheck(report.beta_archive));
+  return checks;
+}
+
+function accountStorageCheck(account: AccountStorage, serverRunning: boolean): Check | null {
+  const size = (): string => {
+    const counts = account.counts;
+    const parts = counts === null ? [] : [`${count(counts.messages)} messages in ${count(counts.chats)} chats`];
+    if (account.db_bytes !== null) parts.push(bytes(account.db_bytes));
+    if (account.embedding_queue !== null && account.embedding_queue > 0) parts.push(`${count(account.embedding_queue)} waiting to be embedded`);
+    return parts.join(", ");
+  };
+  switch (account.state) {
+    case "absent":
+      return null;
+    case "ready":
+      return { name: "storage", state: "ok", detail: size() };
+    case "preparing": {
+      const at = account.progress === null ? "" : ` (${account.progress.phase}, step ${account.progress.step} of ${account.progress.steps})`;
+      return {
+        name: "storage",
+        state: "info",
+        detail: serverRunning
+          ? `importing the earlier message files${at}`
+          : `the earlier message files are imported at the next start${at === "" ? "" : `, resuming${at}`}`,
+      };
+    }
+    case "imported-unverified": {
+      const kinds = Object.entries(account.unverified?.unexpected ?? {}).map(([kind, n]) => `${kind} ${n}`);
+      return {
+        name: "storage",
+        state: "warn",
+        detail: `${size()}; imported with differences the check could not explain (${kinds.join(", ") || "verification did not run"}), served from the database`,
+      };
+    }
+    case "error":
+      return {
+        name: "storage",
+        state: "fail",
+        detail: account.error?.message ?? "the account database could not be opened",
+        ...(account.error?.fix ? { fix: account.error.fix } : {}),
+      };
+    default: {
+      const _never: never = account.state;
+      return _never;
+    }
+  }
+}
+
+function legacyCheck(account: AccountStorage): Check | null {
+  const legacy = account.legacy;
+  switch (legacy.state) {
+    case "none":
+    case "in-place":
+      return null;
+    case "moved":
+      return { name: "legacy files", state: "info", detail: `kept in ${legacy.path} until ${day(legacy.delete_after)}, then deleted` };
+    case "kept-unverified":
+      return {
+        name: "legacy files",
+        state: "warn",
+        detail: `kept in ${legacy.path}: the import is unverified, so wazap never deletes them`,
+        fix: `once the account reads right, delete them yourself: \`rm -rf ${legacy.path}\``,
+      };
+    case "unrecorded":
+      return {
+        name: "legacy files",
+        state: "info",
+        detail: `${legacy.path} is not scheduled for deletion: the account database has no record of moving it`,
+        fix: `delete it yourself once you no longer need it: \`rm -rf ${legacy.path}\``,
+      };
+    default: {
+      const _never: never = legacy;
+      return _never;
+    }
+  }
+}
+
+function betaArchiveCheck(archive: BetaArchiveReport): Check {
+  const name = "beta archive";
+  if (archive.state === "moved") {
+    return { name, state: "info", detail: `kept in ${archive.path} until ${day(archive.delete_after ?? "")}, then deleted` };
+  }
+  if (!archive.owner_readable) {
+    return { name, state: "info", detail: `${archive.path} is left in place: its owner cannot be read`, fix: "delete it yourself if you do not need it" };
+  }
+  if (archive.accounts.length === 0) {
+    return {
+      name,
+      state: "info",
+      detail: `${archive.path} is left in place: no enabled account is linked to its number`,
+      fix: "link that number to import it, or delete it yourself if you do not need it",
+    };
+  }
+  return {
+    name,
+    state: "info",
+    detail:
+      archive.waiting_for.length > 0
+        ? `${archive.path} moves to legacy/ once ${archive.waiting_for.join(", ")} finished importing it`
+        : `${archive.path} moves to legacy/ at the next start`,
   };
 }
 

@@ -13,7 +13,7 @@ import { connectNext, whereInstalled, type Install } from "./connect.js";
 import { CONTROL_ROUTES, LOGOUT_WAIT_MS, askRunningServer, isLogoutOutcome, startControlEndpoint } from "./control.js";
 import { decideRole, readDaemon, removeDaemon, writeDaemon } from "./daemon.js";
 import { DEPS, ensureDeps } from "./deps.js";
-import { checkLine, checkLines, runChecks, type Check } from "./doctor.js";
+import { checkLine, checkLines, recallEnabled, runChecks, type Check } from "./doctor.js";
 import { withCode } from "./error-code.js";
 import { WazapError, asWazapError } from "./errors.js";
 import { normalizePhone } from "./ids.js";
@@ -32,6 +32,7 @@ import { PAIRING_TIMEOUT_MS, linkSession, prettyCode, settledAccount, startPairi
 import { runHttp, runStdio, startLoopbackEndpoint } from "./server.js";
 import { SUPERVISORS, fetchHealth, serviceHolding, tunnelsTo, type Supervisor } from "./service.js";
 import { applyWrites } from "./settings.js";
+import { storageReport, type StorageReport } from "./storage-status.js";
 import {
   MODELS,
   downloadModel,
@@ -108,6 +109,8 @@ interface StatusReport {
   /** The lock holder is the background service, so it can be stopped with `wazap service stop`. */
   server_is_service?: boolean;
   daemon: { pid: number; port: number } | null;
+  /** Each account's database, legacy files and set-aside databases, and the beta archive; read-only. */
+  storage: StorageReport;
   checks: Check[];
   live?: LiveReport;
 }
@@ -136,6 +139,7 @@ export async function runStatus(config: Config): Promise<StatusReport> {
   const sharing = daemon !== null && daemon.pid === serverPid ? { pid: daemon.pid, port: daemon.port } : null;
 
   const rows = accountRows(config);
+  const storage = storageReport(config.dataDir, recallEnabled(config));
   const report: StatusReport = {
     data_dir: config.dataDir,
     // The dir is linked when any account is; `account` still describes the
@@ -150,7 +154,8 @@ export async function runStatus(config: Config): Promise<StatusReport> {
     server_pid: serverPid,
     server_is_service: serverPid !== null && serviceHolding(config.dataDir, serverPid) !== null,
     daemon: sharing,
-    checks: await runChecks(config),
+    storage,
+    checks: await runChecks(config, { storage }),
   };
   if (config.live) report.live = await runLiveProbe(config);
 
