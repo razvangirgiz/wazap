@@ -19,7 +19,9 @@
  * - chats.last_* names the newest message a reader may see — not a tombstone,
  *   not under the clear barrier — after any insert, tombstone, delete or move;
  * - a file a removed media row pointed at is queued for unlinking in the same
- *   transaction, so a crash never loses it.
+ *   transaction, so a crash never loses it;
+ * - a message of the account's own that goes for good leaves no words in the
+ *   send that made it.
  */
 
 export interface Migration {
@@ -136,8 +138,8 @@ CREATE INDEX messages_tombstones ON messages(deleted_at) WHERE deleted_at IS NOT
 -- Every message deleted, retracted or expired, by key and without content.
 -- A purge removes the tombstone row but never this record, so a quote of the
 -- message that arrives later is still scrubbed and the message stays gone.
--- The key is dead for good: sends (F1-e) must not reuse a pre-generated key
--- after a definite failure. The table only grows, a row per such message.
+-- The key is dead for good, which is why a send never retries a key that
+-- reached the socket. The table only grows, a row per such message.
 CREATE TABLE retracted(
   key_id TEXT NOT NULL,
   from_me INTEGER NOT NULL,
@@ -241,23 +243,41 @@ CREATE TABLE events(
 CREATE INDEX events_due ON events(state, next_attempt_at);
 CREATE INDEX events_message ON events(message_id) WHERE message_id IS NOT NULL;
 
--- F1-e: idempotent sends. Only the table exists until then. A key a
--- retraction or a tombstone used is dead (see retracted): retry a definitely
--- failed send with a fresh key, or keep its row.
+-- Drafts and what became of them once confirmed (see sends.ts). A draft
+-- carries the WhatsApp key it goes out under from the moment it is made, so a
+-- send whose outcome is unknown is recognised when WhatsApp echoes that key.
+-- A row leaves sending only for sent or unknown, or back to draft when the
+-- key never reached the socket; a dispatched key is never retried, since a
+-- retraction or a tombstone makes it dead for good (see retracted). The chat
+-- is a jid: a draft to a number nobody wrote to yet has no chats row, and
+-- must not create one. expires_at is when the draft lapses while it is one,
+-- and when the row may go once it settled.
 CREATE TABLE sends(
   draft_id TEXT PRIMARY KEY,
   owner TEXT,
-  chat_id INTEGER,
+  chat_jid TEXT NOT NULL,
   kind TEXT NOT NULL,
   payload TEXT NOT NULL,
-  key_id TEXT,
-  state TEXT NOT NULL,
+  key_id TEXT NOT NULL,
+  state TEXT NOT NULL CHECK (state IN ('draft', 'sending', 'sent', 'unknown')),
+  receipt TEXT,
   error_code TEXT,
   created_at INTEGER NOT NULL,
-  expires_at INTEGER,
+  expires_at INTEGER NOT NULL,
   updated_at INTEGER NOT NULL
 ) STRICT;
-CREATE INDEX sends_key ON sends(key_id) WHERE key_id IS NOT NULL;
+CREATE UNIQUE INDEX sends_key ON sends(key_id);
+CREATE INDEX sends_owner ON sends(owner, state, created_at);
+CREATE INDEX sends_expiry ON sends(expires_at);
+
+-- A message of the account's own gone for good takes its words out of the
+-- send that made it: the row stays, so a repeated confirm still sends nothing.
+CREATE TRIGGER retracted_scrubs_send AFTER INSERT ON retracted
+WHEN new.from_me = 1
+BEGIN
+  UPDATE sends SET payload = '{}', receipt = CASE WHEN receipt IS NULL THEN NULL ELSE json_set(receipt, '$.text', '') END
+  WHERE key_id = new.key_id;
+END;
 
 -- Substring search over text and transcript: trigrams, case- and
 -- diacritic-insensitive. External content, kept in step by the triggers below.

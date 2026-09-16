@@ -28,9 +28,9 @@
  *   last message until it is corrected; clamping implausible future
  *   timestamps is the service's job, before upsert.
  * - retracted makes a message key dead for good: a later upsert with that
- *   chat, direction and key is stored as a tombstone. F1-e must never delete an
- *   optimistic send row after a definite failure and retry with the same
- *   pre-generated key — retry with a fresh key, or keep the row.
+ *   chat, direction and key is stored as a tombstone. sends therefore never
+ *   stores a message before WhatsApp took it, and never retries a key once it
+ *   reached the socket (see sends.ts).
  */
 import { Connection, type CheckpointResult, type ConnectionOptions, type ConnectionSettings } from "./connection.js";
 import { StorageError } from "./errors.js";
@@ -38,6 +38,7 @@ import { Identity } from "./identity.js";
 import { Merger } from "./merge.js";
 import { Messages, type ScrubQuote } from "./messages.js";
 import { Search } from "./search.js";
+import { Sends } from "./sends.js";
 import type { BulkDeleteResult, Counts, MergeReport } from "./types.js";
 import { Vectors } from "./vectors.js";
 
@@ -50,6 +51,7 @@ export { foldText, DEFAULT_SCAN_CAP, DEFAULT_TRIGRAM_CAP } from "./search.js";
 export { contentHash, hybridTokens, hybridWords, int8Similarity, quantizeVector, unitVector, RRF_K } from "./vectors.js";
 export { isSqliteExperimentalWarning } from "./sqlite.js";
 export type { ScrubQuote } from "./messages.js";
+export type { NewDraft, SendRecord, SendState, Sends } from "./sends.js";
 export type { CheckpointResult, ConnectionOptions, ConnectionSettings } from "./connection.js";
 export type {
   BacklogItem,
@@ -74,6 +76,7 @@ export class AccountDb {
   readonly messages: Messages;
   readonly search: Search;
   readonly vectors: Vectors;
+  readonly sends: Sends;
   private readonly merger: Merger;
 
   private constructor(private readonly connection: Connection, options: AccountDbOptions) {
@@ -81,6 +84,7 @@ export class AccountDb {
     this.messages = new Messages(connection, this.identity, options.scrubQuote ?? null);
     this.search = new Search(connection, this.identity, this.messages);
     this.vectors = new Vectors(connection, this.identity, this.messages, this.search);
+    this.sends = new Sends(connection);
     this.merger = new Merger(connection, this.identity, this.messages);
   }
 
