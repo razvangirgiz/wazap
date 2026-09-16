@@ -138,6 +138,21 @@ export function chatCondition(ids: readonly number[]): { sql: string; params: Ar
     : { sql: "m.chat_id IN (SELECT value FROM json_each(?))", params: [JSON.stringify(ids)] };
 }
 
+/**
+ * While a chat folds into another, one message can sit under both spellings.
+ * A page lists it once, from the chat it folds into, and not at all when
+ * either copy is a tombstone — as get() answers for it. Empty for a chat
+ * with nothing folding into it.
+ */
+function foldTwinCondition(family: readonly number[], canonicalId: number): { sql: string; params: Array<number | string> } {
+  if (family.length <= 1) return { sql: "", params: [] };
+  return {
+    sql: `AND NOT EXISTS (SELECT 1 FROM messages t WHERE t.chat_id IN (SELECT value FROM json_each(?)) AND t.chat_id <> m.chat_id
+            AND t.from_me = m.from_me AND t.key_id = m.key_id AND (t.deleted_at IS NOT NULL OR t.chat_id = ?))`,
+    params: [JSON.stringify(family), canonicalId],
+  };
+}
+
 export class Messages {
   constructor(
     private readonly c: Connection,
@@ -943,16 +958,19 @@ export class Messages {
     const limit = clampLimit(options.limit);
     const chat = this.identity.chat(chatJid);
     if (chat === null) return { items: [], hasMore: false, nextBefore: null };
-    const inChat = chatCondition(this.identity.chatIdsOf(chat));
+    const family = this.identity.chatIdsOf(chat);
+    const inChat = chatCondition(family);
+    const once = foldTwinCondition(family, chat.id);
     const since = options.since === undefined ? null : checkTimestamp(options.since, "since");
     const rows = this.c.all<MessageRow>(
       `SELECT ${MESSAGE_COLUMNS} FROM ${MESSAGE_FROM}
-       WHERE ${inChat.sql} AND m.id < ? AND m.id >= ? AND m.ts >= ? AND ${VISIBLE} ORDER BY m.id DESC LIMIT ?`,
+       WHERE ${inChat.sql} AND m.id < ? AND m.id >= ? AND m.ts >= ? AND ${VISIBLE} ${once.sql} ORDER BY m.id DESC LIMIT ?`,
       ...inChat.params,
       options.before ?? NO_UPPER_BOUND,
       since === null ? 0 : idLowerBound(since),
       since ?? 0,
       this.c.now(),
+      ...once.params,
       limit + 1
     );
     return pageOf(rows.map(messageFromRow), limit);

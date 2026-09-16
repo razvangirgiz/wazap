@@ -108,6 +108,22 @@ test("finding 1: rows landing lid-addressed while a lid chat takes its number ar
   db.close();
 });
 
+test("while a lid chat folds into its number, a page shows each message once, and never one deleted under the other spelling", async () => {
+  const { db } = openTemp({ chunkSize: 2 });
+  for (let i = 0; i < 20; i++) db.messages.upsert(textMessage(PEER_LID, `L${i}`, T0 + i * 1000, `mesaj ${i}`));
+  // Before anyone knew the pairing: the sender revoked L19 from a device addressing the number, and L18 was synced under both spellings.
+  db.messages.delete(sid(false, PEER, "L19"), { ts: T0 + 19_000 });
+  db.messages.upsert(textMessage(PEER, "L18", T0 + 18_000, "mesaj 18"));
+  const learn = db.learnLidPhone(PEER_LID, PEER);
+  await turn();
+  const midway = db.messages.chatPage(PEER, { limit: 5 }).items.map((m) => m.keyId);
+  assert.equal(db.messages.get(sid(false, PEER, "L19")), null, "get already hides it");
+  await learn;
+  assert.deepEqual(midway, ["L18", "L17", "L16", "L15", "L14"], "the revoked one is not listed, the twin is listed once");
+  assert.deepEqual(db.messages.chatPage(PEER, { limit: 5 }).items.map((m) => m.keyId), ["L18", "L17", "L16", "L15", "L14"]);
+  db.close();
+});
+
 test("finding 3: a lid learned for a second number stops answering for the first and never merges the two people", async () => {
   const { db } = openTemp();
   await db.learnLidPhone(PEER_LID, PEER);
