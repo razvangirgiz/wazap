@@ -432,3 +432,21 @@ test("while a fold is still moving rows, a message deleted under one spelling re
   assert.equal(db.messages.get(sid(false, PEER, "TWIN")), null, "and after it");
   db.close();
 });
+
+test("the address book's order costs the same for the ten-thousandth contact as for the first", () => {
+  const { db } = openTemp();
+  const phone = (i) => `4075${String(i).padStart(7, "0")}@s.whatsapp.net`;
+  const batch = (from) => {
+    const started = performance.now();
+    db.transaction(() => {
+      for (let i = from; i < from + 2_000; i++) db.identity.upsertContact({ jid: phone(i), name: `C${i}`, listed: true });
+    });
+    return performance.now() - started;
+  };
+  const first = batch(0);
+  for (let from = 2_000; from < 8_000; from += 2_000) batch(from);
+  const last = batch(8_000);
+  assert.ok(last < Math.max(first, 5) * 3, `the last 2,000 took ${last.toFixed(0)} ms, the first ${first.toFixed(0)} ms`);
+  assert.deepEqual(db.identity.listContacts().slice(-2).map(({ contact }) => contact.listed), [9_999, 10_000]);
+  db.close();
+});

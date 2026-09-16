@@ -56,6 +56,8 @@ CREATE TABLE contacts(
   merged_into INTEGER REFERENCES contacts(id)
 ) STRICT;
 CREATE INDEX contacts_merging ON contacts(merged_into) WHERE merged_into IS NOT NULL;
+-- The address book's next place is read off this, not counted over every person.
+CREATE INDEX contacts_listed ON contacts(listed) WHERE listed IS NOT NULL;
 
 -- Every lid -> number pairing learned, the table Baileys keeps: a lid answers
 -- for the number it was last learned with, and an older lid of a number keeps

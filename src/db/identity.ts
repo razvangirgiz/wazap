@@ -203,7 +203,14 @@ export class Identity {
       assign("push_name", input.pushName);
       assign("verified_name", input.verifiedName);
       assign("is_business", input.isBusiness === undefined ? undefined : input.isBusiness === null ? null : input.isBusiness ? 1 : 0);
-      if (input.listed === true) sets.push("listed = coalesce(listed, (SELECT coalesce(max(listed), 0) + 1 FROM contacts))");
+      if (input.listed === true) {
+        const current = this.c.get<{ listed: number | null }>("SELECT listed FROM contacts WHERE id = ?", id)?.listed ?? null;
+        if (current === null) {
+          const last = this.c.get<{ n: number | null }>("SELECT max(listed) AS n FROM contacts WHERE listed IS NOT NULL")?.n ?? 0;
+          sets.push("listed = ?");
+          values.push(last + 1);
+        }
+      }
       else if (typeof input.listed === "number") {
         sets.push("listed = min(coalesce(listed, ?), ?)");
         values.push(input.listed, input.listed);
