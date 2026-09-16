@@ -10,8 +10,13 @@
   message read the same file. The first start after the upgrade imports
   `store.json`, `history/`, `retention.json`, `notes.json`, `recall/` and the
   beta archive once, resuming if it is stopped; meanwhile the account's tools
-  answer `NOT_CONNECTED` and `get_status` says it is preparing. The legacy
-  files stay where they are and are not read again.
+  answer `NOT_CONNECTED` and `get_status` says it is preparing. Once imported,
+  the legacy files move into `accounts/<id>/legacy/`, and the beta archive into
+  `<data-dir>/legacy/` once every enabled account linked to its number has
+  imported it; both are deleted a week later, at once with
+  `WAZAP_RETENTION=1`. An import whose check found differences it could not
+  explain keeps its legacy files until you delete them. A beta archive no
+  enabled account is linked to stays where it is.
 - **`search_messages` has no per-chat window.** Every kept message is
   searched, and `coverage.per_chat_cap` is `null`. A query so short or so
   common that the search reaches its scan limit answers `scan_capped: true`
@@ -26,10 +31,18 @@
 - **`WAZAP_PERSIST_HISTORY=0` removes stored messages at every start and
   stop**, not only under `WAZAP_RETENTION=1`; barriers, chats, contacts and
   notes stay.
-- **Logout keeps the account database**, so the same number linking again
-  finds its history; a different number linking sets it aside as
-  `wazap.<time>.previous-owner.sqlite`. `account remove` still deletes the
-  whole folder.
+- **Logout deletes only the credentials.** The account database stays, so
+  the same number linking again finds its history, and an earlier wazap's
+  `store.json` follows the legacy files' week instead of being deleted. A
+  different number linking sets the database aside as
+  `wazap.<time>.previous-owner.sqlite`, deleted a week later (at once with
+  `WAZAP_RETENTION=1`). `account remove` still deletes the whole folder.
+- **`wazap status` reports each account's storage**, read-only, with the
+  server running or not: preparing (with the import phase), ready, imported
+  with unexplained differences (by category and count) or failing to open;
+  the database's size, messages, chats and embedding queue; the legacy files
+  and when they are deleted; set-aside databases; and the beta archive.
+  `status --json` carries it as `storage`, and `get_status` as `storage`.
 - **A handled chat reopens only when the other side writes after the ask**
   that was marked, and a receipt keeps the latest time it was reported.
 
@@ -46,7 +59,7 @@
   `wazap is running (pid N)` unless the server was the `wazap service`, logout
   asks the running server to log the account out: it closes that account's
   socket and any pairing in flight, unlinks it from WhatsApp and deletes its
-  credentials and snapshot as an offline logout does, and keeps serving the
+  credentials as an offline logout does, and keeps serving the
   other accounts. The account comes back not linked, so `link_account` can
   link it again. Output and exit codes are the offline ones.
 
@@ -62,6 +75,12 @@
 
 ### Upgrade notes
 
+- **The first start imports each account once**, before serving it (see
+  above); `wazap status` shows the phase. To roll back within the week the
+  legacy files are kept: stop the server, move what `accounts/<id>/legacy/`
+  holds back into `accounts/<id>/` (and `<data-dir>/legacy/archive.sqlite` to
+  `<data-dir>/`), and install 0.21.0. Messages received after the upgrade are
+  only in the database, not in the old format. README, "Upgrading to 0.22".
 - A server started by an older wazap has no control line: against it,
   `account` changes still say to restart, and `logout` and `account remove`
   still refuse. Restart it once on the new version.

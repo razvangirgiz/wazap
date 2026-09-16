@@ -702,6 +702,48 @@ tightened writes and send rules are read from disk on every write, as before.
 Tests: `test/account-roster.test.mjs`, `test/control.test.mjs`, and the two
 running-server cases in `test/calfa-contract.test.mjs`.
 
+## 20. Legacy files and set-aside databases — kept a week
+
+The account database (0.22) imports each account's legacy files once. Left in
+place, they would keep a second copy of the history, readable from the data dir
+for good, after the database had honoured a deletion. `src/legacy-files.ts`
+retires them.
+
+- **Move.** Once the import is `done` (or `imported`, or `skipped`),
+  `store.json`, `history/`, `retention.json`, `notes.json`, `recall/` and their
+  temp files are renamed into `accounts/<id>/legacy/` (`0700`): same
+  filesystem, no copy, directory entries synced. `legacy_moved_at` is written
+  only after the last rename, so a crash leaves the rest to the next boot, and
+  nothing moves before the import finishes, so a resumed import still reads
+  every file. Once it is written the service never opens, lists or stats those
+  paths again (tested by instrumenting `fs`). `auth/`, `media/`, `previews/`
+  and `webhook.json` stay.
+- **Deletion.** `legacy/` is removed a week after the move, at boot or by the
+  daily pass, and at once with `WAZAP_RETENTION=1`. An import whose
+  verification found unexplained differences records `legacy_keep=unverified`
+  and is never deleted automatically: the files are what the user compares
+  against. `wazap status` warns and gives the `rm -rf` to run deliberately.
+- **Beta archive.** `<data-dir>/archive.sqlite` moves to `<data-dir>/legacy/`
+  only when every enabled account linked to its `meta.owner` has a verified
+  import; its mtime is set to the move and it is deleted a week later. An
+  archive no enabled account is linked to, or whose owner cannot be read, is
+  never moved or deleted: nothing proves whose it is.
+- **Previous owner.** A database set aside when a different number linked
+  (`wazap.<ms>.previous-owner.sqlite`, its `-wal` and `-shm`) holds the earlier
+  person's history. It is deleted a week after the later of the time in its
+  name and its mtime, at once under retention.
+- **Logout** deletes only the credentials. The database stays for the same
+  number, and legacy files keep their schedule.
+- **Reporting.** Logs carry counts and error codes, never contents, file names
+  inside `history/` or numbers. `wazap status` opens each database read-only.
+
+Not covered: deletion is an unlink, not a secure erase, and copies in backups,
+snapshots or free disk blocks are outside wazap. The week is a rollback window,
+not a promise that nothing older survives: an unverified import, an archive
+nobody owns and files put back after the import (reported by `wazap status`)
+stay until the user deletes them. Tests: `test/legacy-files.test.mjs`, the
+`fs` watch in `test/account-database.test.mjs`.
+
 ## Pre-release review
 
 The owner's review of this pass, before 0.21.0, kept its substance and changed

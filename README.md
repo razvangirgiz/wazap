@@ -610,6 +610,11 @@ accounts moves into `accounts/default/` the first time a wazap command runs.
     previews/       one small JPEG per photo or video already previewed
     qr.png          last QR, when login showed one
     webhook.json    webhook delivery counters, once the server has posted an event
+    legacy/         an earlier wazap's store.json, history/, retention.json,
+                    notes.json and recall/, once imported; deleted a week later
+    wazap.<time>.previous-owner.sqlite
+                    the database a different number's link set aside; deleted a week later
+  legacy/           the 0.15 beta archive.sqlite, once imported; deleted a week later
   models/           whisper.cpp and embedding models, when transcription or recall run locally
   server.lock       pid of the running server
   daemon.json       loopback endpoint a second wazap bridges to
@@ -635,20 +640,54 @@ only small bounded caches stay in the process.
   served; meanwhile its tools answer `NOT_CONNECTED` and `get_status` says it is
   preparing its database. A stop in the middle resumes where it left off at the
   next start. The import checks the database against what those files showed;
-  a difference it cannot explain is logged by category and count, recorded for
-  `wazap doctor`, and the account is served from the database anyway. An
+  a difference it cannot explain is logged by category and count, shown by
+  `wazap status`, and the account is served from the database anyway. An
   unreadable `retention.json` stops the import, since history without its
-  deletion barriers could bring deleted messages back. The legacy files are left
-  where they are and never read or written again.
-- **Logout** deletes the credentials and keeps the database, so the same number
-  linking again finds its history. **A different number linking** sets the
-  earlier database aside as `wazap.<time>.previous-owner.sqlite` and starts an
-  empty one: one person's history never shows under another's.
+  deletion barriers could bring deleted messages back. Once imported, the legacy
+  files move into `legacy/` and are never read again; see
+  [Upgrading to 0.22](#upgrading-to-022).
+- **Logout** deletes the credentials, and nothing else: the database stays, so
+  the same number linking again finds its history. **A different number
+  linking** sets the earlier database aside as
+  `wazap.<time>.previous-owner.sqlite` and starts an empty one: one person's
+  history never shows under another's. The set-aside file is deleted a week
+  later, at once with `WAZAP_RETENTION=1`.
   **`wazap account remove`** stops the account, closes its database and deletes
   the whole folder with it.
 - **`WAZAP_PERSIST_HISTORY=0`** removes every stored message at each start and
   stop, whatever `WAZAP_RETENTION` says; chats, contacts, notes and deletion
   barriers stay, and recall is off.
+
+- **`wazap status`** reads each database read-only, with the server running or
+  not: whether it is preparing (and the import phase), ready or imported with
+  unexplained differences, its size, messages, chats and embedding queue, the
+  legacy files and when they go, set-aside databases and the beta archive.
+  `--json` carries the same as `storage`.
+
+### Upgrading to 0.22
+
+0.22 moves each account from its files to the account database, once.
+
+1. **The first start imports.** Each account imports `store.json`, `history/`,
+   `retention.json`, `notes.json`, `recall/` and, for the number it belongs
+   to, the 0.15 beta `archive.sqlite`. Until that is done the account's tools
+   answer `NOT_CONNECTED`, and `get_status` and `wazap status` say it is
+   preparing, with the phase it reached. A stop resumes at the next start.
+2. **The files move aside.** Once imported, an account's files move into
+   `accounts/<id>/legacy/`, and the beta archive into `<data-dir>/legacy/` once
+   every enabled account linked to its number has imported it. They are deleted
+   a week after the move (`wazap status` shows the date), or at once with
+   `WAZAP_RETENTION=1`. An import whose check found differences it could not
+   explain keeps its files until you delete them, and `wazap status` says how.
+   A beta archive no enabled account is linked to stays where it is.
+3. **Rolling back**, within that week: stop the server (`wazap service stop`),
+   move what `accounts/<id>/legacy/` holds back into `accounts/<id>/` (and
+   `<data-dir>/legacy/archive.sqlite` back to `<data-dir>/`), then install
+   0.21.0 (`npm i -g wazap-mcp@0.21.0`), which ignores `wazap.sqlite`. Messages
+   received after the upgrade exist only in the database, not in the old
+   format. To upgrade again later with what 0.21 received meanwhile, delete
+   `wazap.sqlite` and its `-wal` and `-shm` first, so the next start imports
+   the files again.
 
 ### Deleted and disappearing messages
 
