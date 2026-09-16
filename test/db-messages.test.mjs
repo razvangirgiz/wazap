@@ -9,7 +9,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 
 import { AccountDb, SEQ_SPAN, StorageError, secondOfId } from "../dist/db/index.js";
-import { GROUP, ME, PEER, T0, openTemp, sid, sids, textMessage } from "./db-fixtures.mjs";
+import { GROUP, ME, PEER, PEER_LID, T0, openTemp, sid, sids, textMessage } from "./db-fixtures.mjs";
 
 const OTHER = "40700000003@s.whatsapp.net";
 const STATUS = "status@broadcast";
@@ -340,6 +340,41 @@ test("a retraction scrubs its quotes and transcript, and a later quote of it arr
   db.messages.upsert(later);
   assert.deepEqual(db.messages.get(later.sid).raw, scrubbed);
   assert.deepEqual(calls, [original.sid, original.sid]);
+  db.close();
+});
+
+test("finding 4: a retraction scrubs a quote that spelled the quoted message with the other address", async () => {
+  const scrubbed = new Uint8Array(Buffer.from("SCRUBBED"));
+  const { db } = openTemp({ scrubQuote: () => scrubbed });
+  await db.learnLidPhone(PEER_LID, PEER);
+  db.messages.upsert(textMessage(PEER, "Q", T0, "secret original"));
+  db.messages.upsert(
+    textMessage(PEER, "M", T0 + 5000, "reply", {
+      quotedSid: sid(false, PEER_LID, "Q"),
+      raw: new Uint8Array(Buffer.from("REPLY+EMBEDDED:secret original")),
+    })
+  );
+  db.messages.delete(sid(false, PEER, "Q"));
+  assert.deepEqual(db.messages.get(sid(false, PEER, "M")).raw, scrubbed);
+  db.close();
+});
+
+test("finding 4: a quote of a retracted message stays scrubbed after a clear purged the tombstone", async () => {
+  const scrubbed = new Uint8Array(Buffer.from("SCRUBBED"));
+  const { db } = openTemp({ scrubQuote: () => scrubbed });
+  const quoting = () =>
+    textMessage(PEER, "M", T0 + 5000, "reply", {
+      quotedSid: sid(false, PEER, "Q"),
+      raw: new Uint8Array(Buffer.from("REPLY+EMBEDDED:secret original")),
+    });
+  db.messages.upsert(textMessage(PEER, "Q", T0, "secret original"));
+  db.messages.upsert(quoting());
+  db.messages.delete(sid(false, PEER, "Q"));
+  assert.deepEqual(db.messages.get(sid(false, PEER, "M")).raw, scrubbed);
+  await db.messages.clearChat(PEER, T0 + 1000);
+  assert.equal(db.messages.get(sid(false, PEER, "Q"), { includeHidden: true }), null, "the tombstone itself was purged");
+  db.messages.upsert(quoting());
+  assert.deepEqual(db.messages.get(sid(false, PEER, "M")).raw, scrubbed, "a replay of the quote arrives scrubbed");
   db.close();
 });
 

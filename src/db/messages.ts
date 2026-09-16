@@ -64,15 +64,18 @@ const NO_UPPER_BOUND = Number.MAX_SAFE_INTEGER;
  */
 const FRESH = "(messages.edited_at IS NULL OR (excluded.edited_at IS NOT NULL AND excluded.edited_at >= messages.edited_at))";
 const UPSERT_SQL = `
-INSERT INTO messages(id, chat_id, key_id, from_me, sender_id, ts, type, quoted_sid, status, edited_at, expires_at,
-  text, transcript, raw)
-VALUES (:id, :chat_id, :key_id, :from_me, :sender_id, :ts, :type, :quoted_sid, :status, :edited_at, :expires_at,
-  :text, :transcript, :raw)
+INSERT INTO messages(id, chat_id, key_id, from_me, sender_id, ts, type, quoted_sid, quoted_from_me, quoted_key_id, status,
+  edited_at, expires_at, text, transcript, raw)
+VALUES (:id, :chat_id, :key_id, :from_me, :sender_id, :ts, :type, :quoted_sid, :quoted_from_me, :quoted_key_id, :status,
+  :edited_at, :expires_at, :text, :transcript, :raw)
 ON CONFLICT(chat_id, from_me, key_id) DO UPDATE SET
   type = CASE WHEN ${FRESH} THEN excluded.type ELSE messages.type END,
   text = CASE WHEN ${FRESH} THEN coalesce(excluded.text, messages.text) ELSE messages.text END,
   raw = CASE WHEN ${FRESH} THEN coalesce(excluded.raw, messages.raw) ELSE messages.raw END,
   quoted_sid = CASE WHEN ${FRESH} THEN coalesce(excluded.quoted_sid, messages.quoted_sid) ELSE messages.quoted_sid END,
+  quoted_from_me = CASE WHEN ${FRESH} AND excluded.quoted_key_id IS NOT NULL THEN excluded.quoted_from_me
+    ELSE messages.quoted_from_me END,
+  quoted_key_id = CASE WHEN ${FRESH} THEN coalesce(excluded.quoted_key_id, messages.quoted_key_id) ELSE messages.quoted_key_id END,
   edited_at = CASE WHEN ${FRESH} THEN coalesce(excluded.edited_at, messages.edited_at) ELSE messages.edited_at END,
   transcript = coalesce(excluded.transcript, messages.transcript),
   sender_id = coalesce(messages.sender_id, excluded.sender_id),
@@ -81,6 +84,16 @@ ON CONFLICT(chat_id, from_me, key_id) DO UPDATE SET
   expires_at = CASE WHEN excluded.expires_at IS NULL THEN messages.expires_at WHEN messages.expires_at IS NULL
     THEN excluded.expires_at ELSE min(messages.expires_at, excluded.expires_at) END
 WHERE messages.deleted_at IS NULL`;
+
+/** The quoted message's direction and key, parsed once; a quote is matched by these, never by spelling. */
+function quoteColumns(quotedSid: string | null): { quoted_sid: string | null; quoted_from_me: number | null; quoted_key_id: string | null } {
+  const parsed = quotedSid === null ? null : parseSid(quotedSid);
+  return {
+    quoted_sid: quotedSid,
+    quoted_from_me: parsed === null || parsed.fromMe === null ? null : parsed.fromMe ? 1 : 0,
+    quoted_key_id: parsed?.keyId ?? null,
+  };
+}
 
 function clampLimit(limit: number): number {
   if (!Number.isFinite(limit)) return MAX_PAGE;
@@ -168,6 +181,23 @@ export class Messages {
     const id = this.allocateId(ts);
     const senderId = this.senderIdFor(input, chat);
 
+    const gone = this.wasRetracted(chat, input.fromMe, input.keyId);
+    if (gone !== null) {
+      // Its tombstone was purged with a clear, but the message stays gone.
+      this.c.run(
+        `INSERT INTO messages(id, chat_id, key_id, from_me, sender_id, ts, type, deleted_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+        id,
+        chat.id,
+        input.keyId,
+        input.fromMe ? 1 : 0,
+        senderId,
+        ts,
+        input.type,
+        gone
+      );
+      return { outcome: "deleted", id, sid };
+    }
+
     if (expiresAt !== null && expiresAt <= now) {
       this.c.run(
         `INSERT INTO messages(id, chat_id, key_id, from_me, sender_id, ts, type, expires_at, deleted_at)
@@ -182,6 +212,7 @@ export class Messages {
         expiresAt,
         now
       );
+      this.recordRetracted(chat.id, input.fromMe, input.keyId, now);
       return { outcome: "expired", id, sid };
     }
 
@@ -193,7 +224,7 @@ export class Messages {
       sender_id: senderId,
       ts,
       type: input.type,
-      quoted_sid: input.quotedSid ?? null,
+      ...quoteColumns(input.quotedSid ?? null),
       status: input.status ?? null,
       edited_at: editedAt,
       expires_at: expiresAt,
@@ -233,7 +264,7 @@ export class Messages {
       sender_id: this.senderIdFor(input, chat),
       ts: existing.ts,
       type: input.type,
-      quoted_sid: input.quotedSid ?? null,
+      ...quoteColumns(input.quotedSid ?? null),
       status: input.status ?? null,
       edited_at: editedAt,
       expires_at: expiresAt,
@@ -249,37 +280,59 @@ export class Messages {
     return !input.fromMe && chat.kind === "direct" ? chat.contactId : null;
   }
 
-  /** A quote of a deleted message arrives without its embedded copy. */
+  /** When the message with this key in this chat was deleted, retracted or expired; null when it never was. */
+  private wasRetracted(chat: ChatRecord, fromMe: boolean, keyId: string): number | null {
+    const inChat = chatCondition(this.identity.chatIdsOf(chat));
+    const row = this.c.get<{ at: number }>(
+      `SELECT at FROM retracted m WHERE key_id = ? AND from_me = ? AND ${inChat.sql} LIMIT 1`,
+      keyId,
+      fromMe ? 1 : 0,
+      ...inChat.params
+    );
+    return row?.at ?? null;
+  }
+
+  /** The content-free record of a message gone for good. Call inside write(). */
+  private recordRetracted(chatId: number, fromMe: boolean | number, keyId: string, at: number): void {
+    this.c.run(
+      "INSERT OR IGNORE INTO retracted(key_id, from_me, chat_id, at) VALUES (?, ?, ?, ?)",
+      keyId,
+      fromMe === true || fromMe === 1 ? 1 : 0,
+      chatId,
+      at
+    );
+  }
+
+  /**
+   * A quote of a deleted message arrives without its embedded copy. The quote
+   * is matched by the quoted message's direction and WhatsApp key, whichever
+   * address spelled it; stanza ids are random enough that the chat is not
+   * needed, and a false match only ever removes a copy.
+   */
   private scrubbedRaw(raw: Uint8Array | null, quotedSid: string | null): Uint8Array | null {
     if (raw === null || quotedSid === null || this.scrubQuote === null) return raw;
-    const target = this.identity.findMessage(quotedSid);
-    if (target === null || target.deleted_at === null) return raw;
-    return this.scrubQuote(raw, quotedSid);
+    const { quoted_from_me: fromMe, quoted_key_id: keyId } = quoteColumns(quotedSid);
+    if (keyId === null) return raw;
+    const gone =
+      fromMe === null
+        ? this.c.get("SELECT 1 FROM retracted WHERE key_id = ? LIMIT 1", keyId)
+        : this.c.get("SELECT 1 FROM retracted WHERE key_id = ? AND from_me = ? LIMIT 1", keyId, fromMe);
+    return gone === undefined ? raw : this.scrubQuote(raw, quotedSid);
   }
 
-  /** Every spelling a quote of the message may carry: its chat's canonical jid and every lid of that number. */
-  private quoteSpellings(messageId: number): string[] {
-    const row = this.c.get<{ from_me: number; key_id: string; jid: string }>(
-      `SELECT m.from_me, m.key_id, coalesce(ck.jid, c.jid) AS jid
-       FROM messages m JOIN chats c ON c.id = m.chat_id LEFT JOIN chats ck ON ck.id = c.merged_into WHERE m.id = ?`,
-      messageId
-    );
-    if (row === undefined) return [];
-    const jids = [row.jid, ...this.c.all<{ lid: string }>("SELECT lid FROM lid_phones WHERE phone_jid = ?", row.jid).map((r) => r.lid)];
-    return jids.map((jid) => sidOf(row.from_me === 1, jid, row.key_id));
-  }
-
-  /** Every live quote of `messageId` loses its embedded copy of it. */
+  /** Every live quote of `messageId`, however its address was spelled, loses its embedded copy of it. */
   private scrubQuotesOf(messageId: number): void {
     if (this.scrubQuote === null) return;
-    for (const variant of this.quoteSpellings(messageId)) {
-      const quoting = this.c.all<{ id: number; raw: Uint8Array }>(
-        "SELECT id, raw FROM messages WHERE quoted_sid = ? AND raw IS NOT NULL AND deleted_at IS NULL",
-        variant
-      );
-      for (const row of quoting) {
-        this.c.run("UPDATE messages SET raw = ? WHERE id = ?", this.scrubQuote(row.raw, variant), row.id);
-      }
+    const target = this.c.get<{ from_me: number; key_id: string }>("SELECT from_me, key_id FROM messages WHERE id = ?", messageId);
+    if (target === undefined) return;
+    const quoting = this.c.all<{ id: number; raw: Uint8Array; quoted_sid: string }>(
+      `SELECT id, raw, quoted_sid FROM messages
+       WHERE quoted_key_id = ? AND (quoted_from_me IS NULL OR quoted_from_me = ?) AND raw IS NOT NULL AND deleted_at IS NULL`,
+      target.key_id,
+      target.from_me
+    );
+    for (const row of quoting) {
+      this.c.run("UPDATE messages SET raw = ? WHERE id = ?", this.scrubQuote(row.raw, row.quoted_sid), row.id);
     }
   }
 
@@ -289,6 +342,11 @@ export class Messages {
     this.c.run("DELETE FROM media WHERE message_id = ?", messageId);
     this.c.run(
       "UPDATE messages SET deleted_at = ?, text = NULL, transcript = NULL, raw = NULL WHERE id = ? AND deleted_at IS NULL",
+      at,
+      messageId
+    );
+    this.c.run(
+      "INSERT OR IGNORE INTO retracted(key_id, from_me, chat_id, at) SELECT key_id, from_me, chat_id, ? FROM messages WHERE id = ?",
       at,
       messageId
     );
@@ -343,6 +401,7 @@ export class Messages {
         ts,
         at
       );
+      this.recordRetracted(chat.id, fromMe, keyId, at);
       this.scrubQuotesOf(id);
       return { outcome: "placeholder", id, mediaPaths: [] };
     });
@@ -530,14 +589,14 @@ export class Messages {
     return result;
   }
 
-  /** Physically removes rows; cascades take aliases, reactions, votes, receipts, media rows and embeddings. */
+  /** Physically removes rows; cascades take reactions, votes, receipts, media rows and embeddings. */
   deleteRows(rows: ReadonlyArray<{ id: number; sid: string }>, into: BulkDeleteResult): void {
     if (rows.length === 0) return;
     const ids = idsJson(rows.map((row) => row.id));
     const paths = this.c
       .all<{ path: string }>("SELECT path FROM media WHERE message_id IN (SELECT value FROM json_each(?))", ids)
       .map((row) => row.path);
-    for (const row of rows) this.scrubQuotesOf(row.id);
+    // A clear is not a retraction: quotes of cleared messages keep their copy, as they do on the phone.
     this.c.run("DELETE FROM messages WHERE id IN (SELECT value FROM json_each(?))", ids);
     into.mediaPaths.push(...this.released(paths));
     into.count += rows.length;

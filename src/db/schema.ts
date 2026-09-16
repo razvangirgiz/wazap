@@ -97,6 +97,8 @@ CREATE TABLE messages(
   ts INTEGER NOT NULL CHECK (ts > 0),
   type TEXT NOT NULL,
   quoted_sid TEXT,
+  quoted_from_me INTEGER,
+  quoted_key_id TEXT,
   status INTEGER,
   edited_at INTEGER,
   expires_at INTEGER,
@@ -113,8 +115,20 @@ CREATE UNIQUE INDEX messages_key ON messages(chat_id, from_me, key_id);
 CREATE INDEX messages_chat ON messages(chat_id, id);
 CREATE INDEX messages_sender ON messages(sender_id, id) WHERE sender_id IS NOT NULL;
 CREATE INDEX messages_expiry ON messages(expires_at) WHERE expires_at IS NOT NULL AND deleted_at IS NULL;
-CREATE INDEX messages_quoted ON messages(quoted_sid) WHERE quoted_sid IS NOT NULL;
+-- Quotes are matched by the quoted message's key, whatever address spelled it.
+CREATE INDEX messages_quoted ON messages(quoted_key_id) WHERE quoted_key_id IS NOT NULL;
 CREATE INDEX messages_tombstones ON messages(deleted_at) WHERE deleted_at IS NOT NULL;
+
+-- Every message deleted, retracted or expired, by key and without content.
+-- A purge removes the tombstone row but never this record, so a quote of the
+-- message that arrives later is still scrubbed and the message stays gone.
+CREATE TABLE retracted(
+  key_id TEXT NOT NULL,
+  from_me INTEGER NOT NULL,
+  chat_id INTEGER NOT NULL,
+  at INTEGER NOT NULL,
+  PRIMARY KEY (key_id, from_me, chat_id)
+) STRICT, WITHOUT ROWID;
 
 CREATE TABLE reactions(
   message_id INTEGER NOT NULL REFERENCES messages(id) ON DELETE CASCADE,

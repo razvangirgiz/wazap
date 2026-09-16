@@ -321,6 +321,8 @@ export class Merger {
         );
       }
       this.c.run("UPDATE chats SET contact_id = coalesce(contact_id, ?) WHERE id = ?", drop.contact_id, keepId);
+      this.c.run("UPDATE OR IGNORE retracted SET chat_id = ? WHERE chat_id = ?", keepId, dropId);
+      this.c.run("DELETE FROM retracted WHERE chat_id = ?", dropId);
       this.c.run("DELETE FROM chats WHERE id = ?", dropId);
       this.c.run(RECOMPUTE_LAST, keepId);
     });
@@ -364,11 +366,13 @@ export class Merger {
    */
   private mergeTwin(keepId: number, dropId: number, report: MergeReport): void {
     type Twin = {
-      id: number; type: string; quoted_sid: string | null; status: number | null; edited_at: number | null;
+      id: number; type: string; quoted_sid: string | null; quoted_from_me: number | null; quoted_key_id: string | null;
+      status: number | null; edited_at: number | null;
       expires_at: number | null; deleted_at: number | null; sender_id: number | null;
       text: string | null; transcript: string | null; raw: Uint8Array | null;
     };
-    const columns = "id, type, quoted_sid, status, edited_at, expires_at, deleted_at, sender_id, text, transcript, raw";
+    const columns =
+      "id, type, quoted_sid, quoted_from_me, quoted_key_id, status, edited_at, expires_at, deleted_at, sender_id, text, transcript, raw";
     const keep = this.c.get<Twin>(`SELECT ${columns} FROM messages WHERE id = ?`, keepId)!;
     const drop = this.c.get<Twin>(`SELECT ${columns} FROM messages WHERE id = ?`, dropId)!;
 
@@ -382,12 +386,14 @@ export class Merger {
     const [winner, other] = dropNewer ? [drop, keep] : [keep, drop];
     const earliest = [keep.expires_at, drop.expires_at].filter((at): at is number => at !== null);
     this.c.run(
-      `UPDATE messages SET type = ?, text = ?, raw = ?, quoted_sid = ?, edited_at = ?, transcript = ?, status = ?,
-         expires_at = ?, sender_id = ? WHERE id = ?`,
+      `UPDATE messages SET type = ?, text = ?, raw = ?, quoted_sid = ?, quoted_from_me = ?, quoted_key_id = ?, edited_at = ?,
+         transcript = ?, status = ?, expires_at = ?, sender_id = ? WHERE id = ?`,
       winner.type,
       winner.text ?? other.text,
       winner.raw ?? other.raw,
       winner.quoted_sid ?? other.quoted_sid,
+      winner.quoted_key_id === null ? other.quoted_from_me : winner.quoted_from_me,
+      winner.quoted_key_id ?? other.quoted_key_id,
       winner.edited_at ?? other.edited_at,
       keep.transcript ?? drop.transcript,
       keep.status === null || drop.status === null ? (keep.status ?? drop.status) : Math.max(keep.status, drop.status),
