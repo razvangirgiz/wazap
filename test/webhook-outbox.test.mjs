@@ -691,6 +691,33 @@ test("the counters status and doctor read: from the rows, read-only, with the se
   assert.ok(!h.logs.join("\n").includes(SECRET));
 });
 
+test("the counters are read in one transaction: a delivery the server records meanwhile cannot make them disagree", async (t) => {
+  const h = harness(t);
+  const { seq } = messageEvent(h, "RACE");
+  const reader = AccountDb.open(h.path, { readOnly: true });
+  t.after(() => reader.close());
+  const connection = reader.events["c"];
+  const read = connection.get.bind(connection);
+  let statements = 0;
+  // The server delivers the event right after the reader's first statement.
+  connection.get = (...args) => {
+    const row = read(...args);
+    if (++statements === 1) {
+      h.db.events.claim(seq, h.clock.now);
+      h.db.events.delivered(seq, 204, h.clock.now, 1);
+    }
+    return row;
+  };
+  const stats = reader.events.stats();
+  assert.equal(statements > 1, true);
+  assert.deepEqual(
+    [stats.pending, stats.delivered, stats.oldestPendingAt, stats.lastSuccessAt],
+    [1, 0, h.clock.now, null],
+    "the whole read sees the event still waiting"
+  );
+  assert.deepEqual([reader.events.stats().pending, reader.events.stats().delivered], [0, 1]);
+});
+
 /** The receiver a crash test posts to: every body it got, and what it answers. */
 async function receiver(t, onRequest) {
   const hits = [];

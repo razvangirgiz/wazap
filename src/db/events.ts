@@ -291,7 +291,12 @@ export class Events {
     return removed;
   }
 
+  /** Read in one transaction, so a server writing meanwhile cannot make the counts disagree with each other. */
   stats(): EventStats {
+    return this.snapshot(() => this.readStats());
+  }
+
+  private readStats(): EventStats {
     const counts = this.c.get<{
       delivered: number;
       failed: number;
@@ -333,6 +338,18 @@ export class Events {
       // The in-flight attempt has not failed yet.
       oldestPendingFailures: head === null ? 0 : head.state === "sending" ? head.attempts - 1 : head.attempts,
     };
+  }
+
+  /** `read` inside one read transaction, or inside the caller's transaction when there is one. */
+  private snapshot<T>(read: () => T): T {
+    const db = this.c.db;
+    if (db.isTransaction) return read();
+    db.exec("BEGIN");
+    try {
+      return read();
+    } finally {
+      if (db.isTransaction) db.exec("COMMIT");
+    }
   }
 
   private close(
