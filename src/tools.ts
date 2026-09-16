@@ -781,8 +781,8 @@ Each result carries its date, a fused score, \`matched\` ("words", "meaning" or
 "both") and the cosine \`similarity\` when its meaning ranked it. chat_id, since,
 until and from narrow the search exactly like search_messages — including a
 name that resolves to exactly one person. A hit marked "index only" is a
-message wazap holds only as text: quote it; get_message returns that text, and
-download_media has nothing to open.
+message wazap holds only as text: quote its words; get_message returns them, but
+download_media has nothing to open and it cannot be replied to or forwarded.
 A hit found only by meaning must clear the similarity floor, so a question with
 no answer comes back empty; when only weak meaning matches survive, the output
 says so — do not present them as found facts.

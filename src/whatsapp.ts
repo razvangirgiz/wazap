@@ -2273,6 +2273,7 @@ export class WhatsAppService implements WhatsAppApi {
       const jid = await this.assertOutgoing(payload.chatId, sock);
       let stored: DraftPayload = { ...payload, chatId: jid };
       if (payload.kind === "forward") {
+        this.contentOrThrow(payload.messageId);
         stored = { ...payload, chatId: jid, text: (await this.getMessage(payload.messageId)).text };
       } else if (payload.kind === "text" && payload.mentionIds?.length) {
         // Mentions resolve here, and the text gains each @<user> it lacks, so the
@@ -2306,9 +2307,9 @@ export class WhatsAppService implements WhatsAppApi {
       }
       const { sock, jid } = await this.prepareSend(chatId);
       const mentions = (mentionIds ?? []).map((id) => this.resolveId(id));
-      if (replyTo !== undefined) this.messageOrThrow(replyTo);
+      if (replyTo !== undefined) this.contentOrThrow(replyTo);
       const linkPreview = await this.previewLink(text);
-      const quoted = replyTo === undefined ? undefined : this.messageOrThrow(replyTo);
+      const quoted = replyTo === undefined ? undefined : this.contentOrThrow(replyTo);
       const sent = await sock.sendMessage(
         jid,
         // Explicit null on failure prevents Baileys from using its own fetcher.
@@ -2400,9 +2401,9 @@ export class WhatsAppService implements WhatsAppApi {
 
   forwardMessage(messageId: string, toChatId: string): Promise<SentMessage> {
     return this.guarded(async () => {
-      const raw = this.messageOrThrow(messageId);
+      const raw = this.contentOrThrow(messageId);
       const { sock, jid } = await this.prepareSend(toChatId);
-      this.messageOrThrow(messageId);
+      this.contentOrThrow(messageId);
       const sent = await sock.sendMessage(jid, { forward: raw });
       return this.sentResult(sent, jid, messageText(raw));
     });
@@ -3823,9 +3824,32 @@ export class WhatsAppService implements WhatsAppApi {
    * forward, react to or edit it. A row the database holds only as text (from
    * the old recall index) stands in with its key and time.
    */
+  /**
+   * The stored message for an action that needs its key: a message held only
+   * as text answers with a key and its timestamp, enough to react to, edit or
+   * delete it. An action that needs its content asks contentOrThrow.
+   */
   private messageOrThrow(messageId: string): WAMessage {
     const message = this.storedOrThrow(messageId);
     return this.rawOf(message) ?? this.keyOnly(message);
+  }
+
+  /**
+   * The stored message with its content, for a quote or a forward: Baileys
+   * reads the content of both, and one held only as text (words carried over
+   * from an older recall index) has none to give, so it is refused here.
+   */
+  private contentOrThrow(messageId: string): WAMessage {
+    const message = this.storedOrThrow(messageId);
+    const raw = this.rawOf(message);
+    if (raw === null || !raw.message) {
+      throw new WazapError(
+        "MESSAGE_NOT_FOUND",
+        `Message ${messageId} is held only as text, so it cannot be quoted or forwarded.`,
+        "Send its words as a new message, without reply_to"
+      );
+    }
+    return raw;
   }
 
   private chatOfOrThrow(messageId: string): string {

@@ -380,6 +380,31 @@ test("a message the database holds only as text still answers, marked as from th
   }
 });
 
+test("a message held only as text cannot be quoted or forwarded, and says so before WhatsApp is asked", async () => {
+  const { svc, sock } = await serviceWith({ WAZAP_RECALL: "off" }, { readOnly: false, rateLimitPerMinute: 0 });
+  try {
+    textOnly(svc, "OLD", "factura din august, plătită integral");
+    const sent = [];
+    // What Baileys does with a quote or a forward that has no content: it reads the missing message and throws.
+    sock.sendMessage = async (jid, content, options = {}) => {
+      if (options.quoted && !options.quoted.message) throw new TypeError("Cannot read properties of undefined (reading 'conversation')");
+      if (content.forward && !content.forward.message) throw new TypeError("Cannot read properties of undefined (reading 'viewOnceMessage')");
+      sent.push(jid);
+      return { key: { remoteJid: jid, fromMe: true, id: `S${sent.length}` }, messageTimestamp: Math.floor(Date.now() / 1000), message: { conversation: content.text ?? "" } };
+    };
+    const sid = `false_${PEER}_OLD`;
+    const refused = (err) => err.code === "MESSAGE_NOT_FOUND" && /only as text/.test(err.message) && typeof err.fix === "string";
+    await assert.rejects(svc.sendMessage(PEER, "da, am plătit-o", sid), refused);
+    await assert.rejects(svc.forwardMessage(sid, PEER), refused);
+    await assert.rejects(svc.draft({ kind: "forward", chatId: PEER, messageId: sid }), refused);
+    assert.deepEqual(sent, [], "nothing reached WhatsApp");
+    await svc.sendMessage(PEER, "fără citat");
+    assert.equal(sent.length, 1, "a send without the quote still goes");
+  } finally {
+    await svc.stop();
+  }
+});
+
 test("recall off answers RECALL_UNAVAILABLE with the fix, and the tool falls back to keyword search", async () => {
   const { svc } = await serviceWith({});
   try {

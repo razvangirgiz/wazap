@@ -498,8 +498,8 @@ live in the account database next to their messages, are made in the
 background for every message that has none, and leave with their message when
 it is deleted, revoked or expires; an edit makes its vector again. A message
 wazap holds only as text — carried over from the recall index an older wazap
-built — is marked `index only`: `get_message` returns its text, and
-`download_media` has nothing to open.
+built — is marked `index only`: `get_message` returns its text, but
+`download_media` has nothing to open and it cannot be replied to or forwarded.
 
 Embedding requests refuse redirects, cap replies at 4 MiB and validate vector
 shape and finite values. Provider bodies and decoder stderr are not copied into
