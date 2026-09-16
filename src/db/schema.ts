@@ -182,6 +182,17 @@ CREATE TABLE embeddings(
   vec BLOB NOT NULL
 ) STRICT;
 
+-- Messages whose words the embedding feed has not looked at since they were
+-- stored or changed, kept only while a model is fed (meta embed_model): the
+-- triggers below queue a message stored with words, or whose words change,
+-- and a delete takes it off. The feed takes a row off once it stored a vector,
+-- or skipped the message for good (nothing to embed, words the server refuses).
+-- A refill (meta embed_refill_before, a descending id cursor) queues what
+-- already existed when a model started being fed.
+CREATE TABLE embed_queue(
+  message_id INTEGER PRIMARY KEY
+) STRICT;
+
 CREATE TABLE contact_notes(
   contact_id INTEGER PRIMARY KEY REFERENCES contacts(id),
   note TEXT,
@@ -279,6 +290,22 @@ BEGIN
   INSERT INTO messages_fts(rowid, text, transcript) VALUES (new.id, new.text, new.transcript);
   -- A vector of words the message no longer says is stale; the backlog picks it up again.
   DELETE FROM embeddings WHERE message_id = new.id;
+  -- NOT EXISTS, not OR IGNORE: the statement that fired the trigger overrides a trigger's conflict clause.
+  INSERT INTO embed_queue(message_id)
+    SELECT new.id WHERE (new.text IS NOT NULL OR new.transcript IS NOT NULL)
+      AND EXISTS (SELECT 1 FROM meta WHERE key = 'embed_model')
+      AND NOT EXISTS (SELECT 1 FROM embed_queue WHERE message_id = new.id);
+END;
+
+CREATE TRIGGER messages_embed_insert AFTER INSERT ON messages
+WHEN (new.text IS NOT NULL OR new.transcript IS NOT NULL) AND EXISTS (SELECT 1 FROM meta WHERE key = 'embed_model')
+BEGIN
+  INSERT INTO embed_queue(message_id) SELECT new.id WHERE NOT EXISTS (SELECT 1 FROM embed_queue WHERE message_id = new.id);
+END;
+
+CREATE TRIGGER messages_embed_delete AFTER DELETE ON messages
+BEGIN
+  DELETE FROM embed_queue WHERE message_id = old.id;
 END;
 
 -- The highest id a second has ever handed out, kept for seconds that lost
@@ -313,6 +340,7 @@ CREATE TRIGGER messages_tombstone AFTER UPDATE OF deleted_at ON messages
 WHEN old.deleted_at IS NULL AND new.deleted_at IS NOT NULL
 BEGIN
   DELETE FROM embeddings WHERE message_id = new.id;
+  DELETE FROM embed_queue WHERE message_id = new.id;
   DELETE FROM reactions WHERE message_id = new.id;
   DELETE FROM votes WHERE message_id = new.id;
   DELETE FROM receipts WHERE message_id = new.id;

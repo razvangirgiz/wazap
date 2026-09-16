@@ -130,6 +130,59 @@ test("the backlog lists visible messages with words and no vector from that mode
   db.close();
 });
 
+test("the embedding queue: while a model is fed, stored and edited words queue their message, and a vector, a delete or a skip takes it off", async () => {
+  const { db } = openTemp();
+  db.messages.upsert(textMessage(PEER, "BEFORE", T0, "înainte de feed"));
+  assert.equal(db.vectors.queueSize(), 0, "nothing is queued while no model is fed");
+  assert.deepEqual(db.vectors.feed(MODEL), { refilling: true }, "a model fed for the first time owes a refill");
+  while (db.vectors.refill(2)) {
+    /* bounded steps */
+  }
+  assert.deepEqual(db.vectors.feed(MODEL), { refilling: false });
+  assert.deepEqual(db.vectors.queued({ model: MODEL, limit: 10 }).items.map((item) => item.sid), [sid(false, PEER, "BEFORE")]);
+
+  db.messages.upsert(textMessage(PEER, "NEW", T0 + 1000, "mesaj nou"));
+  db.messages.upsert(textMessage(PEER, "OLD", T0 - 86_400_000, "mesaj vechi"));
+  db.messages.upsert({ ...textMessage(PEER, "IMG", T0 + 2000, null), type: "image", text: null });
+  const queued = db.vectors.queued({ model: MODEL, limit: 10 });
+  assert.deepEqual(queued.items.map((item) => item.sid.split("_").pop()), ["NEW", "BEFORE", "OLD"], "newest first, whatever order they arrived in");
+
+  const byKey = Object.fromEntries(queued.items.map((item) => [item.sid.split("_").pop(), item]));
+  assert.equal(db.vectors.put(byKey.NEW.sid, MODEL, direction(0), byKey.NEW.contentHash), true);
+  db.messages.delete(byKey.OLD.sid);
+  db.vectors.dequeue([byKey.BEFORE.id]);
+  assert.equal(db.vectors.queueSize(), 0, "embedded, deleted and skipped messages leave the queue");
+
+  db.messages.upsert(textMessage(PEER, "NEW", T0 + 1000, "mesaj nou, editat", { editedAt: T0 + 5000 }));
+  db.messages.setTranscript(sid(false, PEER, "BEFORE"), "cu voce");
+  assert.deepEqual(db.vectors.queued({ model: MODEL, limit: 10 }).items.map((item) => item.sid.split("_").pop()), ["NEW", "BEFORE"], "new words queue the message again");
+
+  db.vectors.unfeed();
+  assert.equal(db.vectors.queueSize(), 0);
+  db.messages.upsert(textMessage(PEER, "AFTER", T0 + 9000, "după"));
+  assert.equal(db.vectors.queueSize(), 0, "a model no longer fed queues nothing");
+  db.close();
+});
+
+test("the refill queues only what has no vector from the model, in bounded steps that resume after a reopen", () => {
+  const { db, path, clock } = openTemp();
+  for (let i = 0; i < 10; i++) db.messages.upsert(textMessage(PEER, `R${i}`, T0 + i * 1000, `rând ${i}`));
+  for (const i of [9, 5, 1]) db.vectors.put(sid(false, PEER, `R${i}`), MODEL, direction(i % DIMS), wordsOf(db, sid(false, PEER, `R${i}`)));
+  assert.deepEqual(db.vectors.feed(MODEL), { refilling: true });
+  assert.equal(db.vectors.refill(4), true, "the first step covers four rows and owes more");
+  assert.equal(db.vectors.queueSize(), 3, "R8, R7, R6 — R9 has its vector");
+  db.close();
+
+  const reopened = AccountDb.open(path, { now: () => clock.now, checkpointDelayMs: 0 });
+  assert.deepEqual(reopened.vectors.feed(MODEL), { refilling: true }, "the refill's place survives the reopen");
+  while (reopened.vectors.refill(4)) {
+    /* resumes below R6 */
+  }
+  assert.deepEqual(reopened.vectors.queued({ model: MODEL, limit: 20 }).items.map((item) => item.sid.split("_").pop()), ["R8", "R7", "R6", "R4", "R3", "R2", "R0"]);
+  assert.deepEqual(reopened.vectors.feed("e5-base-multilingual"), { refilling: true }, "another model owes its own refill");
+  reopened.close();
+});
+
 test("vector search ranks by cosine under the filters and the floor, and skips expired rows", () => {
   const { db, clock } = openTemp();
   const docs = [

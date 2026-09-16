@@ -471,6 +471,14 @@ export class Merger {
       contentHash(merged.text, merged.transcript),
       keepId
     );
+    // A survivor left without a vector of the fed model is owed one.
+    this.c.run(
+      `INSERT OR IGNORE INTO embed_queue(message_id)
+         SELECT m.id FROM messages m, meta f WHERE m.id = ? AND f.key = 'embed_model'
+           AND m.deleted_at IS NULL AND (m.text IS NOT NULL OR m.transcript IS NOT NULL)
+           AND NOT EXISTS (SELECT 1 FROM embeddings e WHERE e.message_id = m.id AND e.model = f.value)`,
+      keepId
+    );
     this.dropTwin(keepId, dropId, report);
   }
 

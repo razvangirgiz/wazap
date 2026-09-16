@@ -29,6 +29,11 @@ const DEFAULT_BACKLOG_SCAN = 20_000;
 const MIN_TOKEN_CHARS = 4;
 const MAX_TOKENS = 8;
 const NO_UPPER_BOUND = Number.MAX_SAFE_INTEGER;
+/** The model the embedding queue is kept for; the queue triggers test for this key. */
+const FEED_MODEL_META = "embed_model";
+/** The refill's descending id cursor, present while a refill is owed. */
+const REFILL_META = "embed_refill_before";
+const DEFAULT_QUEUE_SCAN = 2_000;
 
 export function unitVector(vector: ArrayLike<number>): Float64Array {
   let norm = 0;
@@ -253,6 +258,10 @@ export class Vectors {
         hash,
         new Uint8Array(vec.buffer, vec.byteOffset, vec.byteLength)
       );
+      // Done for the fed model; a vector from another model leaves the message still owed one.
+      const fed = this.meta(FEED_MODEL_META);
+      if (fed === model) this.c.run("DELETE FROM embed_queue WHERE message_id = ?", key.id);
+      else if (fed !== null) this.c.run("INSERT OR IGNORE INTO embed_queue(message_id) VALUES (?)", key.id);
       return true;
     });
   }
@@ -302,6 +311,142 @@ export class Vectors {
       if (examined >= cap) return { items, hasMore: true, nextBefore: row.id };
     }
     return { items, hasMore: false, nextBefore: null };
+  }
+
+  /**
+   * Starts, or keeps, feeding `model`: from here on a message stored with
+   * words, or whose words change, is queued for it. A model fed for the first
+   * time — or instead of another — owes a refill of the messages already
+   * stored; `refilling` says one is still owed, and refill() pays it in steps.
+   */
+  feed(model: string): { refilling: boolean } {
+    return this.c.write(() => {
+      const current = this.meta(FEED_MODEL_META);
+      if (current !== model) {
+        this.setMeta(FEED_MODEL_META, model);
+        this.setMeta(REFILL_META, String(NO_UPPER_BOUND));
+      }
+      return { refilling: this.meta(REFILL_META) !== null };
+    });
+  }
+
+  /** Stops keeping the queue: no model is fed, and nothing stays queued. */
+  unfeed(): void {
+    this.c.write(() => {
+      if (this.meta(FEED_MODEL_META) === null && this.meta(REFILL_META) === null) return;
+      this.setMeta(FEED_MODEL_META, null);
+      this.setMeta(REFILL_META, null);
+      this.c.run("DELETE FROM embed_queue");
+    });
+  }
+
+  /**
+   * One step of the refill: the next `scan` stored messages down from the
+   * cursor, of which those with words and no vector from the fed model are
+   * queued. The cursor is stored with the step, so a restart resumes below
+   * it. True while more is owed.
+   */
+  refill(scan = DEFAULT_QUEUE_SCAN): boolean {
+    const span = Math.max(1, Math.floor(scan));
+    return this.c.write(() => {
+      const cursor = this.meta(REFILL_META);
+      const model = this.meta(FEED_MODEL_META);
+      if (cursor === null) return false;
+      if (model === null) {
+        this.setMeta(REFILL_META, null);
+        return false;
+      }
+      const before = Number(cursor);
+      const boundary = this.c.get<{ id: number }>("SELECT id FROM messages WHERE id < ? ORDER BY id DESC LIMIT 1 OFFSET ?", before, span - 1);
+      const lower = boundary?.id ?? 0;
+      this.c.run(
+        `INSERT OR IGNORE INTO embed_queue(message_id)
+           SELECT m.id FROM messages m
+           WHERE m.id < ? AND m.id >= ? AND m.deleted_at IS NULL AND (m.text IS NOT NULL OR m.transcript IS NOT NULL)
+             AND NOT EXISTS (SELECT 1 FROM embeddings e WHERE e.message_id = m.id AND e.model = ?)`,
+        before,
+        lower,
+        model
+      );
+      if (boundary === undefined) {
+        this.setMeta(REFILL_META, null);
+        return false;
+      }
+      this.setMeta(REFILL_META, String(boundary.id));
+      return true;
+    });
+  }
+
+  /**
+   * Queued messages to embed for `model`, newest first, each with the hash of
+   * the words to embed. A queued row that needs nothing — its message gone,
+   * hidden, expired, without words, or already holding a vector of these
+   * words — leaves the queue on the way. At most `scanCap` rows are looked at
+   * per call; `nextBefore` resumes below them.
+   */
+  queued(options: { model: string; limit: number; before?: number; scanCap?: number }): Page<BacklogItem> {
+    const limit = Math.max(1, Math.floor(options.limit));
+    const cap = Math.max(limit, Math.floor(options.scanCap ?? DEFAULT_QUEUE_SCAN));
+    return this.c.write(() => {
+      const rows = this.c.all<
+        Omit<BacklogItem, "contentHash" | "sid"> & { sid: string | null; live: number | null; embeddedHash: string | null }
+      >(
+        `SELECT q.message_id AS id,
+           (CASE WHEN m.from_me = 1 THEN 'true' ELSE 'false' END) || '_' || coalesce(ck.jid, c.jid) || '_' || m.key_id AS sid,
+           m.type, m.ts, m.text, m.transcript,
+           (m.deleted_at IS NULL AND (m.expires_at IS NULL OR m.expires_at > ?) AND m.ts > coalesce(c.cleared_through_ts, 0)) AS live,
+           (SELECT e.content_hash FROM embeddings e WHERE e.message_id = m.id AND e.model = ?) AS embeddedHash
+         FROM embed_queue q LEFT JOIN messages m ON m.id = q.message_id
+           LEFT JOIN chats c ON c.id = m.chat_id LEFT JOIN chats ck ON ck.id = c.merged_into
+         WHERE q.message_id < ? ORDER BY q.message_id DESC LIMIT ?`,
+        this.c.now(),
+        options.model,
+        options.before ?? NO_UPPER_BOUND,
+        cap
+      );
+      const items: BacklogItem[] = [];
+      const done: number[] = [];
+      for (const row of rows) {
+        const hash = row.sid === null ? null : contentHash(row.text, row.transcript);
+        if (row.sid === null || row.live !== 1 || (row.text === null && row.transcript === null) || row.embeddedHash === hash) {
+          done.push(row.id);
+          continue;
+        }
+        if (items.length === limit) {
+          this.dequeueIds(done);
+          return { items, hasMore: true, nextBefore: items[items.length - 1]!.id };
+        }
+        items.push({ id: row.id, sid: row.sid, type: row.type, ts: row.ts, text: row.text, transcript: row.transcript, contentHash: hash! });
+      }
+      this.dequeueIds(done);
+      const hasMore = rows.length === cap;
+      return { items, hasMore, nextBefore: hasMore ? rows[rows.length - 1]!.id : null };
+    });
+  }
+
+  /** Takes messages off the queue for good, until their words change: nothing to embed, or words the server refuses. */
+  dequeue(ids: readonly number[]): void {
+    if (ids.length === 0) return;
+    this.c.write(() => this.dequeueIds(ids));
+  }
+
+  /** Messages queued and not yet looked at; the refill still owed is not counted. */
+  queueSize(): number {
+    return this.c.get<{ n: number }>("SELECT count(*) AS n FROM embed_queue")?.n ?? 0;
+  }
+
+  private dequeueIds(ids: readonly number[]): void {
+    if (ids.length === 0) return;
+    this.c.run("DELETE FROM embed_queue WHERE message_id IN (SELECT value FROM json_each(?))", JSON.stringify(ids));
+  }
+
+  private meta(key: string): string | null {
+    return this.c.get<{ value: string }>("SELECT value FROM meta WHERE key = ?", key)?.value ?? null;
+  }
+
+  private setMeta(key: string, value: string | null): void {
+    if (value === null) this.c.run("DELETE FROM meta WHERE key = ?", key);
+    else this.c.run("INSERT OR REPLACE INTO meta(key, value) VALUES (?, ?)", key, value);
   }
 
   /** Brute-force cosine over the filtered rows; the best `limit` above the floor, hydrated. */
