@@ -207,7 +207,7 @@ export class Merger {
    * One chunk of references from `drop` to `keep`; `limit` null moves the
    * rest at once (the final pass, for rows that arrived between chunks). Where
    * both rows reacted, voted or got a receipt on one message, the newer
-   * reaction or vote wins and receipts keep the earliest times.
+   * reaction or vote wins and receipts keep the latest times.
    */
   private moveContactRefs(keep: number, drop: number, limit: number | null): boolean {
     const cap = limit ?? -1;
@@ -256,9 +256,9 @@ export class Merger {
       const json = JSON.stringify(receiptIds);
       this.c.run(
         `UPDATE receipts AS k SET
-           delivered_at = coalesce(min(k.delivered_at, d.delivered_at), k.delivered_at, d.delivered_at),
-           read_at = coalesce(min(k.read_at, d.read_at), k.read_at, d.read_at),
-           played_at = coalesce(min(k.played_at, d.played_at), k.played_at, d.played_at)
+           delivered_at = coalesce(max(k.delivered_at, d.delivered_at), k.delivered_at, d.delivered_at),
+           read_at = coalesce(max(k.read_at, d.read_at), k.read_at, d.read_at),
+           played_at = coalesce(max(k.played_at, d.played_at), k.played_at, d.played_at)
          FROM receipts AS d
          WHERE k.contact_id = ? AND d.contact_id = ? AND d.message_id = k.message_id
            AND d.message_id IN (SELECT value FROM json_each(?))`,
@@ -427,12 +427,12 @@ export class Merger {
       );
       this.c.run(`UPDATE ${table} SET message_id = ? WHERE message_id = ?`, keepId, dropId);
     }
-    // Receipts: the earliest time of each kind.
+    // Receipts: the latest time of each kind.
     this.c.run(
       `UPDATE receipts AS k SET
-         delivered_at = coalesce(min(k.delivered_at, d.delivered_at), k.delivered_at, d.delivered_at),
-         read_at = coalesce(min(k.read_at, d.read_at), k.read_at, d.read_at),
-         played_at = coalesce(min(k.played_at, d.played_at), k.played_at, d.played_at)
+         delivered_at = coalesce(max(k.delivered_at, d.delivered_at), k.delivered_at, d.delivered_at),
+         read_at = coalesce(max(k.read_at, d.read_at), k.read_at, d.read_at),
+         played_at = coalesce(max(k.played_at, d.played_at), k.played_at, d.played_at)
        FROM receipts AS d WHERE k.message_id = ? AND d.message_id = ? AND d.contact_id = k.contact_id`,
       keepId,
       dropId

@@ -225,6 +225,14 @@ export interface Coverage {
   newest: { id: number; sid: string; ts: number } | null;
 }
 
+/** What a search ran across; see Search.coverage. */
+export interface SearchCoverage {
+  messages: number;
+  chats: number;
+  oldestTs: number | null;
+  newestTs: number | null;
+}
+
 export interface Counts {
   messages: number;
   tombstones: number;

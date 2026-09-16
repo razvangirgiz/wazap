@@ -77,7 +77,8 @@ test("a lid and a phone number become one contact and one chat, and every messag
   assert.deepEqual(db.messages.reactions(sid(false, PEER, "P1")).map((r) => [r.jid, r.emoji]), [[PEER, "🔥"]]);
   assert.deepEqual(
     db.messages.receipts(sid(true, PEER, "P2")).map((r) => [r.jid, r.deliveredAt, r.readAt]),
-    [[PEER, T0 + 51_000, T0 + 52_000]]
+    [[PEER, T0 + 51_000, T0 + 55_000]],
+    "the fold keeps the latest time of each kind"
   );
 
   const live = db.messages.upsert(textMessage(PEER_LID, "NEW", T0 + 90_000, "după unire"));

@@ -340,7 +340,8 @@ test("reactions, votes and receipts are kept for every message, survive reopen, 
   assert.deepEqual(reopened.messages.votes(oldest).map((v) => [v.jid, v.choice]), [[OTHER, '["nu"]']]);
   assert.deepEqual(
     reopened.messages.receipts(oldest).map((r) => [r.jid, r.deliveredAt, r.readAt, r.playedAt]),
-    [[OTHER, T0 + 2_000, T0 + 4_000, null]]
+    [[OTHER, T0 + 3_000, T0 + 4_000, null]],
+    "each time keeps the latest one seen"
   );
   reopened.messages.react(oldest, ME, "", T0 + 9_000);
   assert.deepEqual(reopened.messages.reactions(oldest).map((r) => r.jid), [OTHER]);
@@ -486,5 +487,86 @@ test("timestamps the store cannot file faithfully are refused", () => {
     (err) => err instanceof StorageError && err.code === "INVALID_INPUT"
   );
   assert.equal(db.counts().messages, 0);
+  db.close();
+});
+
+test("a handled mark reopens only when the other side writes after its ask, not for the user's own or a system notice", () => {
+  const { db, clock } = openTemp();
+  const window = { since: T0, until: T0 + 3_600_000, limit: 10, kinds: ["direct"] };
+  const waiting = () => db.messages.waiting(window).items.map((w) => w.last.keyId);
+  db.messages.upsert(textMessage(PEER, "ASK", T0 + 1000, "poți să mă suni?"));
+  db.identity.markHandled(PEER, sid(false, PEER, "ASK"));
+  assert.deepEqual(waiting(), []);
+
+  // A security-code notice is the chat's newest row and is theirs, but nobody wrote.
+  db.messages.upsert(textMessage(PEER, "SYS", T0 + 2000, "[security code changed]", { type: "system" }));
+  assert.deepEqual(waiting(), [], "a system notice does not reopen");
+  assert.deepEqual(db.messages.waiting({ ...window, includeHandled: true }).items.map((w) => w.last.keyId), ["SYS"]);
+
+  db.messages.upsert(textMessage(PEER, "THEIRS", T0 + 3000, "mersi"));
+  assert.deepEqual(waiting(), ["THEIRS"], "a message from them after the ask reopens");
+
+  // A mark naming no message covers what came before it, and reopens on theirs after it.
+  db.messages.upsert(textMessage(OTHER, "O1", T0 + 4000, "salut"));
+  db.identity.markHandled(OTHER, null, T0 + 4500);
+  assert.deepEqual(waiting(), ["THEIRS"]);
+  db.messages.upsert(textMessage(OTHER, "O2", T0 + 6000, "ești acolo?"));
+  assert.deepEqual(waiting(), ["THEIRS", "O2"]);
+
+  // A later message that expired before anyone read it does not count.
+  db.messages.upsert(textMessage(ME, "M-ASK", T0 + 7000, "ce faci?"));
+  db.identity.markHandled(ME, sid(false, ME, "M-ASK"));
+  db.messages.upsert(textMessage(ME, "M-GONE", T0 + 8000, "dispare", { expiresAt: clock.now + 1000 }));
+  clock.now += 2000;
+  assert.deepEqual(waiting(), ["THEIRS", "O2"]);
+  db.close();
+});
+
+test("the lookups the service wires on: lid pairings in order, people with their notes, every chat, the last inbound, search coverage", async () => {
+  const { db } = openTemp();
+  await db.learnLidPhone(PEER_LID, PEER);
+  await db.learnLidPhone("99999999999999@lid", OTHER);
+  assert.deepEqual(db.identity.lidPairs(), [
+    [PEER_LID, PEER],
+    ["99999999999999@lid", OTHER],
+  ]);
+
+  db.identity.upsertContact({ jid: PEER, name: "Ana" });
+  db.identity.setNote(OTHER, "contabil");
+  const people = db.identity.listContacts();
+  assert.deepEqual(
+    people.map((p) => [p.contact.phoneJid, p.contact.name, p.notes?.note ?? null]),
+    [
+      [PEER, "Ana", null],
+      [OTHER, null, "contabil"],
+    ]
+  );
+
+  db.identity.upsertChat({ jid: GROUP, name: "Echipa" });
+  db.messages.upsert(textMessage(PEER, "P1", T0 + 1000, "factura de azi"));
+  db.messages.upsert(textMessage(PEER, "P2", T0 + 2000, "am trimis factura", { fromMe: true }));
+  db.messages.upsert(textMessage(STATUS, "S1", T0 + 3000, "factura în story", { senderJid: OTHER, expiresAt: T0 + 86_400_000 }));
+  assert.deepEqual(
+    db.identity.listChats().map((c) => [c.jid, c.lastTs]),
+    [
+      [GROUP, null],
+      [PEER, T0 + 2000],
+      [STATUS, T0 + 3000],
+    ],
+    "chats without a message are listed too"
+  );
+  assert.equal(db.messages.lastInboundTs(), T0 + 3000, "a story is a sign of life too");
+  db.messages.delete(sid(false, STATUS, "S1"));
+  assert.equal(db.messages.lastInboundTs(), T0 + 1000);
+
+  assert.deepEqual(db.search.coverage({}), { messages: 2, chats: 1, oldestTs: T0 + 1000, newestTs: T0 + 2000 });
+  db.messages.upsert(textMessage(OTHER, "O1", T0 + 5000, "altceva"));
+  assert.deepEqual(db.search.coverage({ excludeKinds: ["status"], since: T0 + 1500 }), {
+    messages: 2,
+    chats: 2,
+    oldestTs: T0 + 2000,
+    newestTs: T0 + 5000,
+  });
+  assert.deepEqual(db.search.coverage({ chat: "40799999999@s.whatsapp.net" }), { messages: 0, chats: 0, oldestTs: null, newestTs: null });
   db.close();
 });

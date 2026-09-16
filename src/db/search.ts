@@ -11,7 +11,7 @@ import type { Identity } from "./identity.js";
 import { foldText } from "./fold.js";
 import { chatCondition, type Messages } from "./messages.js";
 import type { SQLInputValue } from "./sqlite.js";
-import type { MessageFilter, TextSearchInput, TextSearchResult } from "./types.js";
+import type { ChatKind, MessageFilter, SearchCoverage, TextSearchInput, TextSearchResult } from "./types.js";
 
 /**
  * Messages the short-query scan matches in JavaScript before it stops and
@@ -97,6 +97,30 @@ export class Search {
       ...(filter.since === undefined ? {} : { since: filter.since }),
       ...(filter.until === undefined ? {} : { until: filter.until }),
     };
+  }
+
+  /**
+   * What a search over `filter` runs across: how many visible messages, in how
+   * many chats, from when to when, leaving out the kinds of chat named. One
+   * pass over the filtered rows — the price of saying how much was searched.
+   */
+  coverage(filter: MessageFilter & { excludeKinds?: readonly ChatKind[] }): SearchCoverage {
+    const resolved = this.resolveFilter(filter);
+    const empty = { messages: 0, chats: 0, oldestTs: null, newestTs: null };
+    if (resolved === null) return empty;
+    const excluded = filter.excludeKinds ?? [];
+    const kinds = excluded.length === 0 ? "" : "AND c.kind NOT IN (SELECT value FROM json_each(?))";
+    const row = this.c.get<{ n: number; chats: number; oldest: number | null; newest: number | null }>(
+      `SELECT count(*) AS n, count(DISTINCT coalesce(c.merged_into, c.id)) AS chats, min(m.ts) AS oldest, max(m.ts) AS newest
+       FROM messages m CROSS JOIN chats c ON c.id = m.chat_id
+       WHERE m.id >= ? AND m.id < ? AND ${resolved.where} ${kinds}`,
+      resolved.lower,
+      resolved.upper,
+      ...resolved.params,
+      ...(excluded.length === 0 ? [] : [JSON.stringify(excluded)])
+    );
+    if (row === undefined || row.n === 0) return empty;
+    return { messages: row.n, chats: row.chats, oldestTs: row.oldest, newestTs: row.newest };
   }
 
   text(input: TextSearchInput): TextSearchResult {

@@ -671,7 +671,11 @@ export class Messages {
     });
   }
 
-  /** Delivery, read and played times; each keeps the earliest one seen. */
+  /**
+   * Delivery, read and played times; each keeps the latest one seen, as the
+   * service always has: a person who reads a message again is shown at the
+   * newer time.
+   */
   receipt(
     sid: string,
     contactJid: string,
@@ -687,9 +691,9 @@ export class Messages {
       this.c.run(
         `INSERT INTO receipts(message_id, contact_id, delivered_at, read_at, played_at) VALUES (?, ?, ?, ?, ?)
          ON CONFLICT(message_id, contact_id) DO UPDATE SET
-           delivered_at = coalesce(min(receipts.delivered_at, excluded.delivered_at), receipts.delivered_at, excluded.delivered_at),
-           read_at = coalesce(min(receipts.read_at, excluded.read_at), receipts.read_at, excluded.read_at),
-           played_at = coalesce(min(receipts.played_at, excluded.played_at), receipts.played_at, excluded.played_at)`,
+           delivered_at = coalesce(max(receipts.delivered_at, excluded.delivered_at), receipts.delivered_at, excluded.delivered_at),
+           read_at = coalesce(max(receipts.read_at, excluded.read_at), receipts.read_at, excluded.read_at),
+           played_at = coalesce(max(receipts.played_at, excluded.played_at), receipts.played_at, excluded.played_at)`,
         key.id,
         contactId,
         delivered,
@@ -911,9 +915,10 @@ export class Messages {
    * with `after`. Everything that narrows the list happens in SQL before the
    * limit: the kinds of chat a person waits in (direct and group unless told
    * otherwise), archived chats (left out unless asked), and chats a handled
-   * mark still covers — the mark names the ask and no newer message has
-   * arrived since, or it names no message and nothing arrived after it.
-   * Whether the word asks for something stays the caller's judgment.
+   * mark still covers — nothing from the other side has arrived after the
+   * ask the mark names (or, naming none, after the mark itself). The user's
+   * own messages and system notices do not reopen a chat. Whether a word asks
+   * for something stays the caller's judgment, and so does a finer rule.
    *
    * The cursor is a chat's last_ts, which moves when a message arrives: a chat
    * that changes between two pages can appear twice or not at all. Paging is
@@ -931,12 +936,19 @@ export class Messages {
     const limit = clampLimit(options.limit);
     const kinds = options.kinds ?? ["direct", "group"];
     const archived = options.includeArchived === true ? "" : "AND ch.archived = 0";
+    // A mark covers the chat until the other side writes again after its ask:
+    // walked up each chat's (chat_id, id) index from the ask, or from the
+    // mark's own second when it names no message.
     const handled =
       options.includeHandled === true
         ? ""
-        : `AND NOT (h.chat_id IS NOT NULL AND (
-             (h.ask_message_id IS NOT NULL AND h.ask_message_id >= ch.last_message_id)
-             OR (h.ask_message_id IS NULL AND h.at >= ch.last_ts)))`;
+        : `AND (h.chat_id IS NULL OR EXISTS (
+             SELECT 1 FROM chats k CROSS JOIN messages m ON m.chat_id = k.id
+             WHERE (k.id = ch.id OR k.merged_into = ch.id)
+               AND m.id > coalesce(h.ask_message_id, (h.at / 1000) * 1048576 - 1)
+               AND (h.ask_message_id IS NOT NULL OR m.ts > h.at)
+               AND m.from_me = 0 AND m.type <> 'system' AND m.deleted_at IS NULL
+               AND (m.expires_at IS NULL OR m.expires_at > ?) AND m.ts > coalesce(k.cleared_through_ts, 0)))`;
     const rows = this.c.all<ChatRow>(
       `SELECT ch.* FROM chats ch INDEXED BY chats_waiting LEFT JOIN handled h ON h.chat_id = ch.id
        WHERE ch.last_from_me = 0 AND ch.last_ts >= ? AND ch.last_ts <= ? AND ch.merged_into IS NULL
@@ -946,6 +958,7 @@ export class Messages {
       options.since,
       options.until,
       JSON.stringify(kinds),
+      ...(options.includeHandled === true ? [] : [this.c.now()]),
       options.after?.lastTs ?? -1,
       options.after?.lastTs ?? -1,
       options.after?.id ?? -1,
@@ -970,6 +983,21 @@ export class Messages {
     }
     const tail = page[page.length - 1];
     return { items, next: hasMore && tail !== undefined ? { lastTs: tail.last_ts!, id: tail.id } : null };
+  }
+
+  /**
+   * When the newest visible message someone else sent arrived, stories
+   * included: what status reports as the last sign of a live phone. Walks
+   * the primary key back from the newest message to the first one that is not
+   * the user's own.
+   */
+  lastInboundTs(): number | null {
+    const row = this.c.get<{ ts: number }>(
+      `SELECT m.ts FROM messages m CROSS JOIN chats c ON c.id = m.chat_id
+       WHERE m.from_me = 0 AND ${VISIBLE} ORDER BY m.id DESC LIMIT 1`,
+      this.c.now()
+    );
+    return row?.ts ?? null;
   }
 
   /** The oldest and newest visible message, of one chat or of the account, read off an index. */

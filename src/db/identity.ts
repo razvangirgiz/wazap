@@ -118,6 +118,35 @@ export class Identity {
     return isLidJid(normalized) ? (this.phoneOfLid(normalized) ?? normalized) : normalized;
   }
 
+  /** Every lid -> number pairing, in the order it was learned: what an in-memory registry replays. */
+  lidPairs(): Array<[lid: string, phoneJid: string]> {
+    return this.c
+      .all<{ lid: string; phone_jid: string }>("SELECT lid, phone_jid FROM lid_phones ORDER BY learned_at, lid")
+      .map((row) => [row.lid, row.phone_jid]);
+  }
+
+  /** Every person, with what the user filed about them; a merging row is not listed twice. Bounded by people, not messages. */
+  listContacts(): Array<{ contact: ContactRecord; notes: ContactNotes | null }> {
+    return this.c
+      .all<ContactRow & { note: string | null; tags: string | null; fields: string | null; notes_updated_at: number | null }>(
+        `SELECT k.*, n.note, n.tags, n.fields, n.updated_at AS notes_updated_at
+         FROM contacts k LEFT JOIN contact_notes n ON n.contact_id = k.id
+         WHERE k.merged_into IS NULL ORDER BY k.id`
+      )
+      .map((row) => ({
+        contact: contactFromRow(row),
+        notes:
+          row.notes_updated_at === null
+            ? null
+            : notesFromRow({ note: row.note, tags: row.tags, fields: row.fields, updated_at: row.notes_updated_at }),
+      }));
+  }
+
+  /** Every chat that is not folding into another, with or without messages. Bounded by chats, not messages. */
+  listChats(): ChatRecord[] {
+    return this.c.all<ChatRow>("SELECT * FROM chats WHERE merged_into IS NULL ORDER BY id").map(chatFromRow);
+  }
+
   contactById(id: number): ContactRecord | null {
     const row = this.c.get<ContactRow>("SELECT * FROM contacts WHERE id = ?", id);
     return row === undefined ? null : contactFromRow(row);
@@ -334,7 +363,10 @@ export class Identity {
     return row === undefined ? null : notesFromRow(row);
   }
 
-  /** "I dealt with that": the ask open now is handled; a newer message from them reopens the chat. */
+  /**
+   * "I dealt with that": the ask open now is handled. A message from them after
+   * the ask reopens the chat; the user's own and system notices do not.
+   */
   markHandled(chatJid: string, askSid: string | null, at: number = this.c.now()): HandledRecord {
     return this.c.write(() => {
       const chat = this.ensureChat(chatJid);
