@@ -588,7 +588,7 @@ test("search_contacts asks for a query or a tag, and reports a tag listing as on
   assert.match(none.content[0].text, /No contacts matching tag #client/);
 });
 
-test("search_contacts matches every name a person goes by, lists the address book in the order it arrived, and leaves out the account and strangers", async () => {
+test("search_contacts matches every name a person goes by, lists the address book in the order it arrived, the account too when it is in it, and leaves out strangers", async () => {
   const { svc, sock } = makeService();
   const BOGDAN = "40700000071@s.whatsapp.net";
   const ANA = "40700000072@s.whatsapp.net";
@@ -607,6 +607,6 @@ test("search_contacts matches every name a person goes by, lists the address boo
   assert.deepEqual((await svc.searchContacts("Bogdan", 10)).map((c) => c.name), ["Bogdan"], "the address book's name is the one shown");
   assert.deepEqual((await svc.searchContacts("Elena", 10)).map((c) => c.contact_id), [], "someone who only wrote is not a contact");
   const everyone = (await svc.searchContacts("", 10)).map((c) => c.contact_id);
-  assert.deepEqual(everyone, [ANA, BOGDAN], "the address book in the order it arrived, without the account itself");
+  assert.deepEqual(everyone, [ANA, BOGDAN, ME], "the address book in the order it arrived, the account's own entry included, as main listed it");
   assert.deepEqual((await svc.searchContacts("", 1)).map((c) => c.contact_id), [ANA], "a limit keeps the first ones");
 });

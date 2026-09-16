@@ -1409,8 +1409,8 @@ export class WhatsAppService implements WhatsAppApi {
       const matches: ContactSummary[] = [];
       for (const { contact, notes } of this.db.identity.listContacts()) {
         const person = contact.phoneJid ?? contact.lid;
-        if (person === null || isGroupId(person) || isNoiseJid(person) || this.isMe(person)) continue;
-        // The address book and the people the user filed: not everyone who ever wrote.
+        if (person === null || isGroupId(person) || isNoiseJid(person)) continue;
+        // The address book (the account's own entry too, when it is in it) and the people the user filed: not everyone who ever wrote.
         if (contact.listed === null && notes === null) continue;
         const tags = notes?.tags ?? [];
         if (tag !== undefined && !tags.includes(tag)) continue;
