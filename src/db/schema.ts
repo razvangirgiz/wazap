@@ -149,6 +149,7 @@ CREATE TABLE media(
   created_at INTEGER NOT NULL,
   PRIMARY KEY (message_id, kind)
 ) STRICT, WITHOUT ROWID;
+CREATE INDEX media_path ON media(path);
 
 CREATE TABLE embeddings(
   message_id INTEGER PRIMARY KEY REFERENCES messages(id) ON DELETE CASCADE,

@@ -332,33 +332,137 @@ export class Merger {
 
   /** Moves up to `limit` messages from the folding chat into the number's chat; true while more remain. */
   private moveChunk(keepId: number, dropId: number, report: MergeReport, limit: number): boolean {
-    const rows = this.c.all<{ id: number; from_me: number; key_id: string; deleted_at: number | null }>(
-      "SELECT id, from_me, key_id, deleted_at FROM messages WHERE chat_id = ? ORDER BY id LIMIT ?",
+    const rows = this.c.all<{ id: number; from_me: number; key_id: string }>(
+      "SELECT id, from_me, key_id FROM messages WHERE chat_id = ? ORDER BY id LIMIT ?",
       dropId,
       limit
     );
     for (const row of rows) {
-      const twin = this.c.get<{ id: number; deleted_at: number | null }>(
-        "SELECT id, deleted_at FROM messages WHERE chat_id = ? AND from_me = ? AND key_id = ?",
+      const twin = this.c.get<{ id: number }>(
+        "SELECT id FROM messages WHERE chat_id = ? AND from_me = ? AND key_id = ?",
         keepId,
         row.from_me,
         row.key_id
       );
       if (twin === undefined) {
         this.c.run("UPDATE messages SET chat_id = ? WHERE id = ?", keepId, row.id);
-        report.movedMessages++;
-        continue;
+      } else {
+        this.mergeTwin(twin.id, row.id, report);
       }
-      // One message filed under both spellings: the number's row survives.
-      if (row.deleted_at !== null && twin.deleted_at === null) {
-        report.mediaPaths.push(...this.messages.tombstone(twin.id, row.deleted_at));
-      }
-      report.mediaPaths.push(
-        ...this.c.all<{ path: string }>("SELECT path FROM media WHERE message_id = ?", row.id).map((m) => m.path)
-      );
-      this.c.run("DELETE FROM messages WHERE id = ?", row.id);
       report.movedMessages++;
     }
     return rows.length === limit;
+  }
+
+  /**
+   * One message filed under both spellings. The number's row survives and
+   * takes the other row under the upsert rules: a tombstone on either side
+   * wins; otherwise the newer edit's content wins, the older row fills gaps,
+   * a transcript is never lost, status only rises, expiry only falls.
+   * Reactions, votes and receipts move with their own merge rules, derived
+   * files move unless the survivor has its own of that kind, and the
+   * embedding moves when it still describes the survivor's words. Only a file
+   * no row references any more is handed back to unlink.
+   */
+  private mergeTwin(keepId: number, dropId: number, report: MergeReport): void {
+    type Twin = {
+      id: number; type: string; quoted_sid: string | null; status: number | null; edited_at: number | null;
+      expires_at: number | null; deleted_at: number | null; sender_id: number | null;
+      text: string | null; transcript: string | null; raw: Uint8Array | null;
+    };
+    const columns = "id, type, quoted_sid, status, edited_at, expires_at, deleted_at, sender_id, text, transcript, raw";
+    const keep = this.c.get<Twin>(`SELECT ${columns} FROM messages WHERE id = ?`, keepId)!;
+    const drop = this.c.get<Twin>(`SELECT ${columns} FROM messages WHERE id = ?`, dropId)!;
+
+    if (keep.deleted_at !== null || drop.deleted_at !== null) {
+      if (keep.deleted_at === null) report.mediaPaths.push(...this.messages.tombstone(keepId, drop.deleted_at!));
+      this.dropTwin(dropId, report);
+      return;
+    }
+
+    const dropNewer = (drop.edited_at ?? -1) > (keep.edited_at ?? -1);
+    const [winner, other] = dropNewer ? [drop, keep] : [keep, drop];
+    const earliest = [keep.expires_at, drop.expires_at].filter((at): at is number => at !== null);
+    this.c.run(
+      `UPDATE messages SET type = ?, text = ?, raw = ?, quoted_sid = ?, edited_at = ?, transcript = ?, status = ?,
+         expires_at = ?, sender_id = ? WHERE id = ?`,
+      winner.type,
+      winner.text ?? other.text,
+      winner.raw ?? other.raw,
+      winner.quoted_sid ?? other.quoted_sid,
+      winner.edited_at ?? other.edited_at,
+      keep.transcript ?? drop.transcript,
+      keep.status === null || drop.status === null ? (keep.status ?? drop.status) : Math.max(keep.status, drop.status),
+      earliest.length === 0 ? null : Math.min(...earliest),
+      keep.sender_id ?? drop.sender_id,
+      keepId
+    );
+
+    // Reactions and votes: one per person, the newer wins.
+    for (const table of ["reactions", "votes"] as const) {
+      this.c.run(
+        `DELETE FROM ${table} WHERE message_id = ? AND EXISTS (
+           SELECT 1 FROM ${table} d WHERE d.message_id = ? AND d.contact_id = ${table}.contact_id AND d.ts > ${table}.ts)`,
+        keepId,
+        dropId
+      );
+      this.c.run(
+        `DELETE FROM ${table} WHERE message_id = ? AND EXISTS (
+           SELECT 1 FROM ${table} k WHERE k.message_id = ? AND k.contact_id = ${table}.contact_id)`,
+        dropId,
+        keepId
+      );
+      this.c.run(`UPDATE ${table} SET message_id = ? WHERE message_id = ?`, keepId, dropId);
+    }
+    // Receipts: the earliest time of each kind.
+    this.c.run(
+      `UPDATE receipts AS k SET
+         delivered_at = coalesce(min(k.delivered_at, d.delivered_at), k.delivered_at, d.delivered_at),
+         read_at = coalesce(min(k.read_at, d.read_at), k.read_at, d.read_at),
+         played_at = coalesce(min(k.played_at, d.played_at), k.played_at, d.played_at)
+       FROM receipts AS d WHERE k.message_id = ? AND d.message_id = ? AND d.contact_id = k.contact_id`,
+      keepId,
+      dropId
+    );
+    this.c.run(
+      `DELETE FROM receipts WHERE message_id = ? AND EXISTS (
+         SELECT 1 FROM receipts k WHERE k.message_id = ? AND k.contact_id = receipts.contact_id)`,
+      dropId,
+      keepId
+    );
+    this.c.run("UPDATE receipts SET message_id = ? WHERE message_id = ?", keepId, dropId);
+
+    // Derived files: the survivor's own of a kind wins; the other moves over.
+    this.c.run(
+      `UPDATE media SET message_id = ? WHERE message_id = ?
+         AND NOT EXISTS (SELECT 1 FROM media k WHERE k.message_id = ? AND k.kind = media.kind)`,
+      keepId,
+      dropId,
+      keepId
+    );
+
+    // The embedding still describes the survivor when the words it was made from are the survivor's words.
+    const merged = this.c.get<{ text: string | null; transcript: string | null }>(
+      "SELECT text, transcript FROM messages WHERE id = ?",
+      keepId
+    )!;
+    if (merged.text === drop.text && merged.transcript === drop.transcript) {
+      this.c.run(
+        "UPDATE embeddings SET message_id = ? WHERE message_id = ? AND NOT EXISTS (SELECT 1 FROM embeddings WHERE message_id = ?)",
+        keepId,
+        dropId,
+        keepId
+      );
+    }
+    this.dropTwin(dropId, report);
+  }
+
+  /** Deletes the folded twin; a file only it referenced is handed back, one another row still uses is not. */
+  private dropTwin(dropId: number, report: MergeReport): void {
+    const paths = this.c.all<{ path: string }>("SELECT path FROM media WHERE message_id = ?", dropId).map((row) => row.path);
+    this.c.run("DELETE FROM messages WHERE id = ?", dropId);
+    for (const path of paths) {
+      if (this.c.get("SELECT 1 FROM media WHERE path = ?", path) === undefined) report.mediaPaths.push(path);
+    }
   }
 }

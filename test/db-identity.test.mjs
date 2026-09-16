@@ -169,6 +169,32 @@ test("finding 3: re-pointing a lid while messages arrive creates no duplicate ch
   db.close();
 });
 
+test("finding 5: a message filed under both spellings folds into one row and keeps its edit, transcript, reactions, receipts, embedding and file", async () => {
+  const { db } = openTemp();
+  db.messages.upsert(textMessage(PEER, "V", T0, "original"));
+  db.messages.upsert(textMessage(PEER_LID, "V", T0, "edited text", { editedAt: T0 + 30_000, type: "audio" }));
+  db.messages.setTranscript(sid(false, PEER_LID, "V"), "transcriere vocala");
+  db.messages.react(sid(false, PEER_LID, "V"), "40711111111@s.whatsapp.net", "❤️", T0 + 40_000);
+  db.messages.receipt(sid(false, PEER_LID, "V"), PEER_LID, { readAt: T0 + 50_000 });
+  db.vectors.put(sid(false, PEER_LID, "V"), "m", [1, 2, 3]);
+  db.messages.setMedia(sid(false, PEER_LID, "V"), "download", "/data/voice-V.ogg");
+
+  const report = await db.learnLidPhone(PEER_LID, PEER);
+  assert.deepEqual(report.mediaPaths, [], "a file the surviving row still references is not handed back to unlink");
+  const survivor = db.messages.get(sid(false, PEER, "V"));
+  assert.deepEqual(
+    [survivor.text, survivor.editedAt, survivor.transcript, survivor.type],
+    ["edited text", T0 + 30_000, "transcriere vocala", "audio"]
+  );
+  assert.deepEqual(db.messages.reactions(sid(false, PEER, "V")).map((r) => r.emoji), ["❤️"]);
+  assert.deepEqual(db.messages.receipts(sid(false, PEER_LID, "V")).map((r) => [r.jid, r.readAt]), [[PEER, T0 + 50_000]]);
+  assert.equal(db.vectors.get(sid(false, PEER, "V"))?.model, "m");
+  assert.deepEqual(db.messages.media(sid(false, PEER, "V")).map((m) => m.path), ["/data/voice-V.ogg"]);
+  assert.deepEqual(db.messages.countInChat(PEER), { messages: 1, tombstones: 0 });
+  assert.deepEqual(db.integrityCheck(), { ok: true, problems: [] });
+  db.close();
+});
+
 test("a number that gains a new lid keeps answering to its older lid too", async () => {
   const { db } = openTemp();
   await db.learnLidPhone(PEER_LID, PEER);
