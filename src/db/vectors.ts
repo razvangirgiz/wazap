@@ -215,9 +215,8 @@ export class Vectors {
     const vec = vector instanceof Int8Array ? vector : quantizeVector(vector);
     if (vec.length === 0) throw new StorageError("INVALID_INPUT", "An embedding cannot be empty.");
     return this.c.write(() => {
-      const key = this.identity.findMessage(sid);
-      if (key === null || key.deleted_at !== null) return false;
-      if (key.expires_at !== null && key.expires_at <= this.c.now()) return false;
+      const key = this.messages.visibleKey(sid);
+      if (key === null) return false;
       const words = this.c.get<{ text: string | null; transcript: string | null }>(
         "SELECT text, transcript FROM messages WHERE id = ?",
         key.id
@@ -237,7 +236,7 @@ export class Vectors {
   }
 
   get(sid: string): { model: string; vector: Int8Array } | null {
-    const key = this.identity.findMessage(sid);
+    const key = this.messages.visibleKey(sid);
     if (key === null) return null;
     const row = this.c.get<{ model: string; vec: Uint8Array }>("SELECT model, vec FROM embeddings WHERE message_id = ?", key.id);
     return row === undefined ? null : { model: row.model, vector: new Int8Array(row.vec.buffer, row.vec.byteOffset, row.vec.byteLength) };

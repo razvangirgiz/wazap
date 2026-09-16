@@ -71,13 +71,16 @@ export interface MessageKey {
   edited_at: number | null;
   expires_at: number | null;
   deleted_at: number | null;
+  /** The clear barrier of the row's own chat. */
+  cleared_through_ts: number | null;
   /** The chat a reader sees the message in. */
   chat: ChatRecord;
   /** The sid over that chat's canonical jid. */
   sid: string;
 }
 
-const KEY_COLUMNS = "id, chat_id, key_id, from_me, ts, edited_at, expires_at, deleted_at";
+const KEY_COLUMNS =
+  "m.id, m.chat_id, m.key_id, m.from_me, m.ts, m.edited_at, m.expires_at, m.deleted_at, c.cleared_through_ts";
 
 interface NotesRow {
   note: string | null;
@@ -238,7 +241,8 @@ export class Identity {
   findByKey(chat: ChatRecord, fromMe: boolean, keyId: string): MessageKey | null {
     for (const chatId of this.chatIdsOf(chat)) {
       const row = this.c.get<Omit<MessageKey, "chat" | "sid">>(
-        `SELECT ${KEY_COLUMNS} FROM messages WHERE chat_id = ? AND from_me = ? AND key_id = ?`,
+        `SELECT ${KEY_COLUMNS} FROM messages m JOIN chats c ON c.id = m.chat_id
+         WHERE m.chat_id = ? AND m.from_me = ? AND m.key_id = ?`,
         chatId,
         fromMe ? 1 : 0,
         keyId

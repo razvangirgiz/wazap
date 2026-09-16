@@ -300,3 +300,30 @@ test("a second lid chat folding into the same number shares the barrier a first 
   assert.deepEqual(reopened.integrityCheck(), { ok: true, problems: [] });
   reopened.close();
 });
+
+test("n3: a row a stored barrier hides answers to no accessor and takes no write before its purge", async () => {
+  const { db, path, clock } = openTemp({ chunkSize: 1 });
+  const hidden = sid(false, PEER, "K0");
+  for (let i = 0; i < 50; i++) db.messages.upsert(textMessage(PEER, `K${i}`, T0 + i * 1000, `secret ${i}`));
+  db.messages.setMedia(hidden, "download", "/data/K0.jpg");
+  db.messages.react(hidden, "40711111111@s.whatsapp.net", "👍", T0 + 5);
+  db.messages.setTranscript(hidden, "voice words");
+  db.vectors.put(hidden, "m", [1, 0, 0], wordsOf(db, hidden));
+  db.messages.clearChat(PEER, T0 + 60_000).catch(() => {});
+  db.close();
+
+  const reopened = AccountDb.open(path, { now: () => clock.now, checkpointDelayMs: 0 });
+  assert.equal(reopened.messages.get(hidden), null);
+  assert.deepEqual(reopened.messages.media(hidden), []);
+  assert.deepEqual(reopened.messages.reactions(hidden), []);
+  assert.deepEqual(reopened.messages.receipts(hidden), []);
+  assert.equal(reopened.vectors.get(hidden), null);
+  assert.deepEqual(reopened.messages.setMedia(hidden, "preview", "/data/K0-p.jpg"), { stored: false, replaced: null });
+  assert.equal(reopened.messages.setTranscript(hidden, "new words"), false);
+  assert.equal(reopened.messages.setStatus(hidden, 4), false);
+  assert.equal(reopened.messages.react(hidden, "40711111112@s.whatsapp.net", "x", T0 + 9), false);
+  assert.equal(reopened.messages.receipt(hidden, "40711111112@s.whatsapp.net", { readAt: T0 + 9 }), false);
+  assert.equal(reopened.vectors.put(hidden, "m", [0, 1, 0], "any"), false);
+  await reopened.resume();
+  reopened.close();
+});

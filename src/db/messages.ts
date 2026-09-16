@@ -411,7 +411,7 @@ export class Messages {
   /** A transcript arrived for a live message; it joins the search index and drops a stale embedding. */
   setTranscript(sid: string, transcript: string): boolean {
     return this.c.write(() => {
-      const key = this.identity.findMessage(sid);
+      const key = this.visibleKey(sid);
       if (key === null) return false;
       return this.c.run("UPDATE messages SET transcript = ? WHERE id = ? AND deleted_at IS NULL", transcript, key.id) > 0;
     });
@@ -420,7 +420,7 @@ export class Messages {
   /** Delivery status only rises. */
   setStatus(sid: string, status: number): boolean {
     return this.c.write(() => {
-      const key = this.identity.findMessage(sid);
+      const key = this.visibleKey(sid);
       if (key === null) return false;
       return (
         this.c.run(
@@ -437,7 +437,7 @@ export class Messages {
   setExpiry(sid: string, at: number): boolean {
     const deadline = checkInstant(at, "at")!;
     return this.c.write(() => {
-      const key = this.identity.findMessage(sid);
+      const key = this.visibleKey(sid);
       if (key === null) return false;
       return (
         this.c.run(
@@ -597,17 +597,25 @@ export class Messages {
     for (const row of rows) into.sids.push(row.sid);
   }
 
-  /** A live message's key, or null for an unknown or deleted one. */
-  private liveKey(sid: string): MessageKey | null {
+  /**
+   * The key of a message a reader may see, or null: unknown, a tombstone, past
+   * its deadline, or at or before a stored clear barrier whose purge has not
+   * reached it yet. Every accessor and write addressed by sid goes through this,
+   * so a hidden row can neither be read nor gain reactions, files or words.
+   */
+  visibleKey(sid: string): MessageKey | null {
     const key = this.identity.findMessage(sid);
-    return key === null || key.deleted_at !== null ? null : key;
+    if (key === null || key.deleted_at !== null) return null;
+    if (key.ts <= Math.max(key.cleared_through_ts ?? 0, key.chat.clearedThroughTs ?? 0)) return null;
+    if (key.expires_at !== null && key.expires_at <= this.c.now()) return null;
+    return key;
   }
 
   /** A reaction, or its removal (empty emoji). An older event never overrides a newer one. */
   react(sid: string, reactorJid: string, emoji: string | null, ts: number): boolean {
     const at = checkTimestamp(ts, "ts");
     return this.c.write(() => {
-      const key = this.liveKey(sid);
+      const key = this.visibleKey(sid);
       if (key === null) return false;
       const contactId = this.identity.ensureContact(reactorJid);
       if (!emoji) {
@@ -631,7 +639,7 @@ export class Messages {
   vote(sid: string, voterJid: string, choice: string | null, ts: number): boolean {
     const at = checkTimestamp(ts, "ts");
     return this.c.write(() => {
-      const key = this.liveKey(sid);
+      const key = this.visibleKey(sid);
       if (key === null) return false;
       const contactId = this.identity.ensureContact(voterJid);
       if (choice === null) {
@@ -661,7 +669,7 @@ export class Messages {
     const read = checkInstant(times.readAt, "readAt");
     const played = checkInstant(times.playedAt, "playedAt");
     return this.c.write(() => {
-      const key = this.liveKey(sid);
+      const key = this.visibleKey(sid);
       if (key === null) return false;
       const contactId = this.identity.ensureContact(contactJid);
       this.c.run(
@@ -681,7 +689,7 @@ export class Messages {
   }
 
   reactions(sid: string): Reaction[] {
-    const key = this.liveKey(sid);
+    const key = this.visibleKey(sid);
     if (key === null) return [];
     return this.c
       .all<{ contact_id: number; jid: string | null; emoji: string; ts: number }>(
@@ -693,7 +701,7 @@ export class Messages {
   }
 
   votes(sid: string): Vote[] {
-    const key = this.liveKey(sid);
+    const key = this.visibleKey(sid);
     if (key === null) return [];
     return this.c
       .all<{ contact_id: number; jid: string | null; choice: string; ts: number }>(
@@ -705,7 +713,7 @@ export class Messages {
   }
 
   receipts(sid: string): Receipt[] {
-    const key = this.liveKey(sid);
+    const key = this.visibleKey(sid);
     if (key === null) return [];
     return this.c
       .all<{
@@ -731,7 +739,7 @@ export class Messages {
   /** Records a derived file; returns the path it replaced, which the caller unlinks. */
   setMedia(sid: string, kind: string, path: string): { stored: boolean; replaced: string | null } {
     return this.c.write(() => {
-      const key = this.liveKey(sid);
+      const key = this.visibleKey(sid);
       if (key === null) return { stored: false, replaced: null };
       const previous = this.c.get<{ path: string }>(
         "SELECT path FROM media WHERE message_id = ? AND kind = ?",
@@ -752,7 +760,7 @@ export class Messages {
   }
 
   media(sid: string): MediaRecord[] {
-    const key = this.liveKey(sid);
+    const key = this.visibleKey(sid);
     if (key === null) return [];
     return this.c
       .all<{ kind: string; path: string; created_at: number }>(
