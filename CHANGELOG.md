@@ -49,6 +49,21 @@
   `status --json` carries it as `storage`, and `get_status` as `storage`.
 - **A handled chat reopens only when the other side writes after the ask**
   that was marked, and a receipt keeps the latest time it was reported.
+- **`confirm_send` sends a draft at most once.** Drafts live in the account
+  database with the WhatsApp message id they go out under. Confirming a sent
+  draft again answers its receipt with `already_sent: true` instead of
+  `DRAFT_NOT_FOUND`, and two confirms at once send once. A failure after the
+  message reached the socket answers the new `SEND_OUTCOME_UNKNOWN` and never
+  sends that draft again; it used to put the draft back, so a timeout could
+  become a second message. The draft counts as sent once WhatsApp echoes its
+  id, and a send a crash interrupted is unknown after the restart. A failure
+  before the socket still keeps the draft, with the same code as before. The
+  20-draft cap is per MCP session instead of per account.
+- **A number lookup WhatsApp does not answer is `NOT_CONNECTED`**, not
+  `NOT_ON_WHATSAPP`: only an answer says a number has no WhatsApp.
+- **Echoes of wazap's own sends stay quiet after a restart.** The webhook
+  recognises them by the message ids confirmed drafts recorded, not only by
+  the last ten minutes of sends in memory.
 
 - **Accounts come and go without a restart.** A running server follows
   `accounts.json`: `wazap account add`, `enable`, `disable`, `default` and

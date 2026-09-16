@@ -301,7 +301,7 @@ them. `--dry-run` prints the plan and touches nothing.
 | `edit_message` | write | Edit your own message, within WhatsApp's 15-minute window. |
 | `react_to_message` | write | Add or remove an emoji reaction. |
 | `forward_message` | write | Draft a forward to another chat. Does not send. |
-| `confirm_send` | write | Send a draft after the user has seen the preview and said yes. |
+| `confirm_send` | write | Send a draft after the user has seen the preview and said yes. A draft is sent at most once; see [Sending once](#sending-once). |
 | `delete_message` | write | `for_everyone: true` retracts your own message, within WhatsApp's 2-day window, and in a group where you are admin someone else's message too. `for_everyone: false` deletes any message for the linked account only, at any age. |
 | `set_profile_picture` | write | Set the linked account's own profile photo from a local path or URL. Hits WhatsApp immediately. |
 | `manage_chat` | write | Archive, pin, mute (8h by default), mark read/unread; pin a message for everyone (24h, 7 days or 30 days) or star it; clear or delete the chat for the linked account; block or unblock a person. |
@@ -310,6 +310,22 @@ them. `--dry-run` prints the plan and touches nothing.
 | `manage_group` | write | Add, remove, promote, demote, leave, rename, set or remove the group photo, invite links, list, approve or reject join requests, and change the settings: only admins post, only admins edit the info, who adds members, join approval, disappearing messages. Every member sees a change at once. |
 | `save_contact` | write | Add a number to the account's WhatsApp contacts, or rename an entry; `save_on_phone` (default) also writes the phone's own address book. |
 | `remove_contact` | write | Drop a contact entry; the chat and its history stay. |
+
+### Sending once
+
+Nothing reaches WhatsApp until `confirm_send`, and a draft goes out at most
+once, even across a crash. Drafts are kept in the account database for 15
+minutes, at most 20 per MCP session, each with the WhatsApp message id it will
+be sent under. Confirming a draft again answers the same receipt with
+`already_sent: true`, and two confirms at once send it once. A failure before
+the message reaches the socket (not connected, the write budget, the number
+lookup, a missing file) leaves the draft as it was, to confirm again. A failure
+after it (a timeout, a dropped socket) answers `SEND_OUTCOME_UNKNOWN`: WhatsApp
+may have the message, so that draft is never sent again. The agent checks the
+chat instead. When WhatsApp later echoes that message id, including after a
+restart, the draft counts as sent and confirming it answers the receipt.
+A send a crash interrupts is unknown when the server starts again. Receipts and
+ids are kept 24 hours; deleting the sent message removes its words from them.
 
 ### Seeing, waiting, following up
 
@@ -575,7 +591,7 @@ trace, so an agent can decide whether to retry, ask the user, or stop.
 | `SYNC_IN_PROGRESS` | History sync has not finished; results may be partial. |
 | `INVALID_PHONE` | Number is not in international format. |
 | `INVALID_ID` | Not a WhatsApp chat, contact or group id. |
-| `NOT_ON_WHATSAPP` | That number has no WhatsApp account. |
+| `NOT_ON_WHATSAPP` | WhatsApp answered that the number has no account. A lookup it did not answer is `NOT_CONNECTED`. |
 | `CHAT_NOT_FOUND` / `MESSAGE_NOT_FOUND` / `CONTACT_NOT_FOUND` / `GROUP_NOT_FOUND` | Unknown id. |
 | `NOT_A_PARTICIPANT` / `NOT_ADMIN` / `GROUP_ANNOUNCEMENT_ONLY` | Group permissions. |
 | `MEDIA_UNAVAILABLE` | WhatsApp expired the file, or it was never synced here. |
@@ -584,7 +600,8 @@ trace, so an agent can decide whether to retry, ask the user, or stop.
 | `EDIT_WINDOW_EXPIRED` / `RETRACT_WINDOW_EXPIRED` / `NOT_OWN_MESSAGE` | WhatsApp's own limits on editing and deleting. |
 | `READ_ONLY` | wazap is running read-only. |
 | `RATE_LIMITED` | Too many writes; `fix` says how long to wait. |
-| `DRAFT_NOT_FOUND` / `DRAFT_EXPIRED` | The preview was already sent, unknown, or older than 15 minutes. Draft again. |
+| `DRAFT_NOT_FOUND` / `DRAFT_EXPIRED` | The draft is unknown, from another MCP session, sent more than 15 minutes ago, or expired unsent. Draft again. |
+| `SEND_OUTCOME_UNKNOWN` | The message reached the socket and then the send failed, so WhatsApp may have it. The draft is never sent again; check the chat before drafting anew. |
 | `SEND_BLOCKED` | The account's send rules refuse this recipient. `wazap config send` changes them; the agent must not route around. |
 | `AMBIGUOUS_ACCOUNT` | More than one account could handle this, or a write named a chat no account knows. Pass `account_id`. |
 | `ACCOUNT_NOT_FOUND` | No account with that id. Run `wazap account add`, or call `list_accounts`. |

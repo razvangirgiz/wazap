@@ -260,7 +260,7 @@ To: Ana (+40 722 …)
 "Joi la 10 e perfect, ne vedem la notar. Aduc eu actele."
 ```
 
-On the user's yes, call `confirm_send` with that `draft_id`. Do not call the send tool again. Report the result with the `message_id` so the user can follow up with `edit_message` (own messages, 15 minutes) or `delete_message`. `DRAFT_EXPIRED` (15 minutes) or `DRAFT_NOT_FOUND` means draft again, show the new preview, and wait for another yes.
+On the user's yes, call `confirm_send` with that `draft_id`. Do not call the send tool again. Report the result with the `message_id` so the user can follow up with `edit_message` (own messages, 15 minutes) or `delete_message`. `DRAFT_EXPIRED` (15 minutes) or `DRAFT_NOT_FOUND` means draft again, show the new preview, and wait for another yes. `SEND_OUTCOME_UNKNOWN` means the message may have gone out: do not confirm or draft it again; check the chat with `read_messages` and tell the user what you find.
 
 `SEND_BLOCKED` means the account's send rules refuse the recipient (an allowlist or a deny list the owner set with `wazap config send`). It can fire at draft time or at `confirm_send`. Do not retry or route around it — tell the user which rule fired; only they can lift it.
 
