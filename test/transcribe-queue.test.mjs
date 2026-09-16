@@ -523,6 +523,21 @@ test("WAZAP_TRANSCRIBE_AUTO=0 and no provider queue nothing, and a queue kept wh
   await off.svc.stop();
 });
 
+test("a short-lived command queues arriving notes but leaves transcribing them to the server", async () => {
+  const queued = serviceWith(CONFIGURED);
+  queued.svc.status = "disconnected";
+  deliver(queued.sock, [voiceNote("V1")]);
+  await queued.svc.stop();
+
+  const live = serviceWith(CONFIGURED, { dataDir: queued.svc.config.dataDir, command: "status" });
+  const provider = stub(live.svc);
+  deliver(live.sock, [voiceNote("V2")]);
+  await live.svc.transcribeIdle();
+  assert.equal(provider.calls, 0, "`wazap status --live` or `contacts resync` must not work through the backlog");
+  assert.equal(live.svc.db.transcripts.stats().queued, 2, "the notes wait for the server");
+  await live.svc.stop();
+});
+
 test("a note queued under one provider is transcribed by the provider configured after a restart", async () => {
   const local = serviceWith({ WAZAP_TRANSCRIBE: "local" });
   local.svc.status = "disconnected";

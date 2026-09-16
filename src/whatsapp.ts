@@ -576,7 +576,9 @@ export class WhatsAppService implements WhatsAppApi {
             embed: (texts) => this.recallEmbed(texts, "document"),
           });
     this.openDatabase();
-    if (this.autoTranscribe) this.transcribeWorker.register(this.transcribeSource);
+    // Only the server transcribes: a short-lived command (status --live, contacts resync, the sync after a
+    // link) queues what arrives and leaves the backlog to it.
+    if (this.autoTranscribe && config.command === "serve") this.transcribeWorker.register(this.transcribeSource);
   }
 
   async start(): Promise<void> {
