@@ -3,10 +3,12 @@
  * when nothing holds the data dir, or the running server when it does.
  */
 
+import { join } from "node:path";
 import { DisconnectReason, type WASocket } from "baileys";
 import { AccountRegistry } from "./accounts.js";
 import { clearSession, readLinkedAccount } from "./auth-state.js";
 import { accountPaths } from "./config.js";
+import { AccountDb, StorageError } from "./db/index.js";
 import { WazapError } from "./errors.js";
 import { logError } from "./logger.js";
 import { linkSession } from "./pairing.js";
@@ -23,8 +25,10 @@ export const LOGOUT_TIMEOUT_MS = 10_000;
  * Every outcome but `not_linked` deleted the credentials, and only them. The
  * account database (`wazap.sqlite`) stays: the same number linking again finds
  * its history, and a different number linking sets it aside (see
- * `WhatsAppService.claimDatabase`). Legacy files from before the database are
- * not touched; they follow their own week (`src/legacy-files.ts`).
+ * `WhatsAppService.claimDatabase`); a logout binds it to the number first, so
+ * that holds even before the account's first start on this version. Legacy
+ * files from before the database are not touched; they follow their own week
+ * (`src/legacy-files.ts`).
  * `wazap account remove` is what deletes the folder.
  */
 export type LogoutOutcome = "not_linked" | "logged_out" | "already_unlinked" | "unlink_unconfirmed";
@@ -96,9 +100,29 @@ export async function logoutAccount(
     }
   }
 
+  if (linked) bindDatabase(storage.root, linked.id);
   clearSession(storage);
   AccountRegistry.load(dataDir).setOwner(id, null);
   return outcome;
+}
+
+/**
+ * Ties the account database to the number logging out before its credentials
+ * go, creating the file when the account never started on this version. A
+ * different number linking later then sets it aside and starts a fresh one
+ * marked `skipped`, instead of importing the earlier number's legacy files
+ * into its own history. A database that already names another number keeps it.
+ */
+function bindDatabase(root: string, owner: string): void {
+  let db: AccountDb | null = null;
+  try {
+    db = AccountDb.open(join(root, "wazap.sqlite"), { now: () => Date.now() });
+    db.bindOwner(owner);
+  } catch (err) {
+    if (!(err instanceof StorageError) || err.code !== "OWNER_MISMATCH") logError("bind the account database to its number", err);
+  } finally {
+    db?.close();
+  }
 }
 
 /** The lines a logout prints, the same whether the CLI or the running server did the work. */

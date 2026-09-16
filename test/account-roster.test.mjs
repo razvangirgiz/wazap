@@ -13,6 +13,8 @@ import { AccountHub } from "../dist/account-hub.js";
 import { resolveToolAccount } from "../dist/account-resolve.js";
 import { AccountRegistry } from "../dist/accounts.js";
 import { accountPaths, paths } from "../dist/config.js";
+import { AccountDb } from "../dist/db/index.js";
+import { logoutAccount } from "../dist/logout.js";
 import { socketFactory } from "../dist/pairing.js";
 import { anyAccountAllowsWrites, registerTools } from "../dist/tools.js";
 import { asToolSource, fakeSocket, offlineConfig, stubSockets, waitFor } from "./helpers.mjs";
@@ -395,6 +397,23 @@ async function assertServedAgain(hub, id, old) {
   assert.equal(linked.code, "K7PX-3MQZ");
   assert.equal(fresh.getStatus().status, "linking");
 }
+
+test("a logout binds the account database to the number before its credentials go, creating it for an account never started", async (t) => {
+  const config = offlineConfig("wazap-roster-bind-", { readOnly: false });
+  const storage = accountPaths(config.dataDir, "default");
+  mkdirSync(storage.authDir, { recursive: true });
+  writeFileSync(join(storage.authDir, "creds.json"), JSON.stringify({ me: { id: "40700000001:7@s.whatsapp.net" } }));
+  writeFileSync(storage.storeFile, '{"v":1,"chats":{}}');
+  unlinkSockets(t);
+  const dbPath = join(storage.root, "wazap.sqlite");
+  assert.equal(existsSync(dbPath), false);
+  assert.equal(await logoutAccount(config.dataDir, "default", 2_000), "logged_out");
+  assert.equal(existsSync(storage.authDir), false);
+  assert.equal(existsSync(storage.storeFile), true, "the legacy file is left for its number");
+  const db = AccountDb.open(dbPath, { readOnly: true });
+  assert.equal(db.getMeta("owner"), "40700000001@s.whatsapp.net");
+  db.close();
+});
 
 test("a logout whose clear step throws propagates the error and leaves the account served by a live service", { skip: process.getuid?.() === 0 ? "root deletes from a read-only folder" : false }, async (t) => {
   const { config, hub, work } = twoAccountHub(t, { linkedWork: true });
