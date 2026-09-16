@@ -13,6 +13,8 @@
  *   chat is delivered, failed or cancelled, and connection events keep their
  *   own order. An event waiting for its transcript or its next retry holds
  *   back its own chat, never another. Still one POST at a time per account.
+ * - A connection event with a newer one behind it is cancelled unposted: after
+ *   an outage the receiver hears the current status, not every flap.
  * - Retries: a timeout, an unreachable host, 408, 425, 429 or 5xx is tried
  *   again after 1 s, 5 s, 30 s and 2 min, then every 5 min, and one last time
  *   24 h after the event was created; then it has failed. Any other 4xx fails
@@ -291,6 +293,10 @@ export class WebhookOutbox {
     for (const event of heads) {
       if (!WEBHOOK_EVENTS.some((name) => name === event.kind && settings.events.includes(name))) {
         db.events.cancel(event.seq, `${event.kind} is not an enabled event`, now);
+        return NEXT;
+      }
+      if (event.lane === CONNECTION_LANE && db.events.hasNewerOpen(event.lane, event.seq)) {
+        db.events.cancel(event.seq, "superseded by a newer connection event", now);
         return NEXT;
       }
       const deadline = event.createdAt + this.giveUpMs;

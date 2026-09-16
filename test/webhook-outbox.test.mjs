@@ -195,6 +195,38 @@ test("a voice note waiting for its transcript holds back only its own chat, and 
   }
 });
 
+test("after an outage only the newest connection status goes out; the flaps before it are cancelled as superseded", async (t) => {
+  let up = false;
+  const post = async (_url, init) => {
+    const body = JSON.parse(init.body);
+    if (up) post.bodies.push([h.clock.now, body.status]);
+    return new Response(null, { status: up ? 204 : 502 });
+  };
+  post.bodies = [];
+  const h = harness(t, { post });
+  const t0 = h.clock.now;
+  const flaps = [];
+  for (let i = 0; i < 5; i++) {
+    flaps.push(connectionEvent(h, "disconnected"));
+    h.outbox.nudge();
+    await h.outbox.idle();
+    h.clock.now += 20 * 60_000;
+    flaps.push(connectionEvent(h, "linked"));
+    h.outbox.nudge();
+    await h.outbox.idle();
+    h.clock.now += 5 * 60_000;
+  }
+  up = true;
+  h.outbox.nudge();
+  await h.outbox.idle();
+  assert.deepEqual(post.bodies, [[t0 + 125 * 60_000, "linked"]], "one POST, the current status");
+  assert.equal(state(h, flaps.at(-1)).state, "delivered");
+  for (const seq of flaps.slice(0, -1)) {
+    assert.equal(state(h, seq).state, "cancelled");
+    assert.equal(state(h, seq).lastError, "superseded by a newer connection event");
+  }
+});
+
 test("a retryable failure is tried again after 1 s, 5 s, 30 s and 2 min, then every 5 min", async (t) => {
   const h = harness(t, { post: answering(503) });
   const { seq } = messageEvent(h, "RETRY");
@@ -471,10 +503,10 @@ test("a run of identical refusals logs a few lines, and one line when delivery c
   let status = 401;
   const post = async () => new Response(null, { status });
   const h = harness(t, { post });
-  for (let i = 0; i < 250; i++) connectionEvent(h);
+  for (let i = 0; i < 250; i++) messageEvent(h, `R${i}`);
   await h.run();
   status = 204;
-  connectionEvent(h);
+  messageEvent(h, "BACK");
   await h.run();
   const lines = h.logs.filter((line) => line.includes("webhook"));
   assert.equal(lines.length, 4, lines.join("\n"));

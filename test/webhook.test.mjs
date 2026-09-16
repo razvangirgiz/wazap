@@ -1246,9 +1246,10 @@ test("connection changes post linked, disconnected and expired, once per mapped 
 /**
  * `expired` has no later transition to recover with, because re-linking needs a
  * human. So a status the consumer refused stays in the outbox and is retried
- * until it arrives, and the next change waits behind it rather than overtaking it.
+ * until it arrives, unless a newer status replaces it: the consumer hears the
+ * current one, never an older one after it.
  */
-test("a connection event the consumer refused is retried until it arrives, ahead of the next change", async () => {
+test("a connection event the consumer refused is retried until it arrives, and a newer status supersedes it", async () => {
   const received = [];
   let attempts = 0;
   let accepting = false;
@@ -1275,24 +1276,31 @@ test("a connection event the consumer refused is retried until it arrives, ahead
     await waitFor(() => attempts >= 3, 5_000, "the expired POST and two retries");
     assert.equal(received.length, 0, "nothing was delivered");
 
+    accepting = true;
+    await waitFor(() => received.length > 0, 5_000, "the retried expired POST");
     svc.setStatus("session_corrupt");
+    assert.equal(outboxRows(svc).length, 1, "session_corrupt is expired again, which was already queued");
+
+    accepting = false;
+    svc.setStatus("disconnected");
+    await waitFor(() => attempts >= 6, 5_000, "the disconnected POST and two retries");
     svc.setStatus("connected");
     accepting = true;
-    await waitFor(() => received.length > 1, 5_000, "the retried expired POST and the linked one");
+    await waitFor(() => received.length > 1, 5_000, "the linked POST");
     await svc.outbox.idle();
 
     assert.deepEqual(
       received.map((hit) => hit.status),
       ["expired", "linked"],
-      "expired arrives once, and the outbox keeps the pair in the order the link moved in"
+      "expired arrives once; disconnected, refused and then out of date, never does"
     );
     assert.deepEqual(
-      outboxRows(svc).map((row) => [row.kind, row.state]),
+      outboxRows(svc).map((row) => [row.state, row.last_error]),
       [
-        ["connection", "delivered"],
-        ["connection", "delivered"],
-      ],
-      "session_corrupt is expired again, which was already queued"
+        ["delivered", null],
+        ["cancelled", "superseded by a newer connection event"],
+        ["delivered", null],
+      ]
     );
   } finally {
     console.error = realError;
@@ -1771,23 +1779,19 @@ test("status reads the outbox from another process: it fails after a run of refu
   const env = readyEnv("http://127.0.0.1:9/hook");
   const db = AccountDb.open(accountPaths(dir, "default").databaseFile);
   let answer = 401;
-  const sink = new WebhookSink(readyEnv("http://127.0.0.1:9/hook", "connection"), {
-    post: async () => new Response(null, { status: answer }),
-  });
+  const sink = new WebhookSink(env, { post: async () => new Response(null, { status: answer }) });
   const outbox = new WebhookOutbox({
     db: () => db,
     sink: () => sink,
-    payload: (event) => JSON.parse(event.payload),
+    payload: (event, message) => ({ event: event.kind, message_id: message.sid }),
     awaitingTranscript: () => false,
   });
+  let keys = 0;
   const queue = (n) => {
     for (let i = 0; i < n; i++) {
-      db.events.enqueue({
-        kind: "connection",
-        lane: "connection",
-        messageId: null,
-        payload: JSON.stringify({ event: "connection", status: "linked" }),
-        createdAt: Date.now(),
+      db.transaction(() => {
+        const stored = db.messages.upsert({ chatJid: PEER, keyId: `K${++keys}`, fromMe: false, ts: Date.now(), type: "text", text: "salut" });
+        db.events.enqueue({ kind: "message_received", lane: "chat:1", messageId: stored.id, payload: "{}", createdAt: Date.now() });
       });
     }
   };

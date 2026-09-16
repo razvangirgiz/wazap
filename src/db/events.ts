@@ -162,6 +162,11 @@ export class Events {
       .map(eventFromRow);
   }
 
+  /** Whether an event queued after `seq` in the same lane is still open. */
+  hasNewerOpen(lane: string, seq: number): boolean {
+    return this.c.get(`SELECT 1 FROM events INDEXED BY events_lane WHERE lane = ? AND seq > ? AND ${OPEN} LIMIT 1`, lane, seq) !== undefined;
+  }
+
   /** Marks the POST as started before it is sent, so a crash during it leaves a row that is sent again. */
   claim(seq: number, at: number): boolean {
     return this.c.write(

@@ -1387,8 +1387,9 @@ mean the same status post once.
 `connection` reports what the socket does while wazap is running. A clean
 shutdown posts nothing, and a crash posts nothing either, so silence does not
 mean the link is up. Poll `get_status` when you need to know that. A
-`connection` event the receiver did not take is retried like any other, and
-the next change waits behind it.
+`connection` event the receiver did not take is retried like any other, until
+a newer change is queued behind it: then it is cancelled, so after an outage
+the receiver hears the current status once, not every flap.
 
 ## Settings
 
