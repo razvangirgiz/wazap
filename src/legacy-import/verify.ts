@@ -13,7 +13,7 @@ import { performance } from "node:perf_hooks";
 import { readLinkedAccount } from "../auth-state.js";
 import type { AccountPaths } from "../config.js";
 import { chatKindOf, contentHash, normalizeJid, parseSid, type AccountDb, type StoredMessage } from "../db/index.js";
-import { buildContext } from "./context.js";
+import { buildContext, yieldLoop, type ImportContext } from "./context.js";
 import { base64Bytes, decodeRaw, FUTURE_SLACK_MS, viewSidOf } from "./convert.js";
 import { loadLegacyView, MARKS_SAMPLE, type LegacyMessage } from "./legacy-view.js";
 import type { ExpectedDifference, UnexpectedDifference, VerificationReport } from "./report.js";
@@ -75,7 +75,7 @@ export async function verifyLegacyImport(args: VerifyArgs): Promise<Verification
     workDir: options.workDir ?? dirname(db.path),
   });
   const now = (options.now ?? Date.now)();
-  const context = buildContext({ accountPaths: args.accountPaths, now, enforceExpiry: false });
+  const context = await buildContext({ accountPaths: args.accountPaths, now, enforceExpiry: false });
   const tally = new Tally();
 
   /** A chat's jid as the database files it; the key every comparison goes through. */
@@ -87,7 +87,7 @@ export async function verifyLegacyImport(args: VerifyArgs): Promise<Verification
   };
 
   const betaArchive = options.betaArchive === undefined ? findBetaArchive(args.dataDir, args.accountPaths) : options.betaArchive;
-  const provenance = collectProvenance(context, keyOfSid, owner?.id ?? null, betaArchive, options.retention === true);
+  const provenance = await collectProvenance(context, keyOfSid, owner?.id ?? null, betaArchive, options.retention === true);
 
   const deletedKeys = new Set(legacy.deleted.flatMap((sid) => keyOfSid(sid) ?? []));
 
@@ -310,13 +310,13 @@ function explainExtra(
 }
 
 /** The keys each legacy source holds, over the database's canonical chats. */
-function collectProvenance(
-  context: ReturnType<typeof buildContext>,
+async function collectProvenance(
+  context: ImportContext,
   keyOfSid: (sid: string) => string | null,
   owner: string | null,
   betaArchive: string | null,
   retention: boolean
-): Provenance {
+): Promise<Provenance> {
   const provenance: Provenance = {
     history: new Set(),
     fileCapped: new Set(),
@@ -342,6 +342,7 @@ function collectProvenance(
       provenance.history.add(entry.key);
       if (i < sorted.length - LEGACY_CAP) provenance.fileCapped.add(entry.key);
     });
+    await yieldLoop();
   }
   const recall = readRecallIndex(context.paths.recallDir).index;
   for (const live of recall?.live ?? []) {
@@ -377,6 +378,7 @@ function collectProvenance(
               else if (retention || !isBetaExpiry(row, context.now)) provenance.betaDeleted.add(key);
             }
             after = rows[rows.length - 1]!.rowid;
+            await yieldLoop();
           }
         }
       } finally {

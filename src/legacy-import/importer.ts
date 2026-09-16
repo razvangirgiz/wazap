@@ -42,7 +42,7 @@ import { EMBED_MODELS, RECALL_TEXT_CAP } from "../recall/index.js";
 import type { EmbedModelAlias } from "../recall/types.js";
 import type { TranscriptRecord } from "../transcribe/index.js";
 import { proto } from "baileys";
-import { buildContext, type ImportContext } from "./context.js";
+import { buildContext, yieldLoop, type ImportContext } from "./context.js";
 import {
   base64Bytes,
   CALL_DEDUPE_WINDOW_MS,
@@ -73,6 +73,7 @@ import {
 import {
   betaOwner,
   betaRows,
+  betaTimes,
   findBetaArchive,
   isBetaExpiry,
   historyFiles,
@@ -88,6 +89,8 @@ import {
 import { verifyLegacyImport } from "./verify.js";
 
 export const DEFAULT_IMPORT_CHUNK = 500;
+/** A chunk also commits once it has run this long, so the event loop never waits much longer. */
+const CHUNK_BUDGET_MS = 40;
 
 export const IMPORT_META = {
   state: "import_state",
@@ -147,10 +150,6 @@ type Deferred =
 interface HistoryItem {
   ts: number;
   classified: Extract<Classified, { kind: "message" }>;
-}
-
-function yieldLoop(): Promise<void> {
-  return new Promise((resolve) => setImmediate(resolve));
 }
 
 /** Lid-keyed entries first, so the number's own entry is written last and wins, as foldAlias merges them. */
@@ -222,7 +221,7 @@ class ImportRun {
   }
 
   async execute(): Promise<ImportReport> {
-    this.context = buildContext({
+    this.context = await buildContext({
       accountPaths: this.args.accountPaths,
       now: this.now(),
       enforceExpiry: this.progress.retention,
@@ -275,13 +274,44 @@ class ImportRun {
       const at = performance.now();
       this.phase(name).durationMs += Math.round(at - this.tick);
       this.tick = at;
-      this.progress.cursor = cursor;
+      this.progress.cursor = typeof cursor === "function" ? (cursor as () => unknown)() : cursor;
       if (advance) this.progress.phase++;
       this.db.setMeta(IMPORT_META.progress, JSON.stringify(this.progress));
     });
     this.chunks++;
     await this.options.afterChunk?.({ phase: name, chunks: this.chunks });
     await yieldLoop();
+  }
+
+  /**
+   * Applies items[from..] in transactions of at most chunkSize items that also
+   * stop after CHUNK_BUDGET_MS, each committing the cursor where it stopped.
+   */
+  private async batches<T>(
+    items: readonly T[],
+    from: number,
+    cursorAt: (end: number) => unknown,
+    apply: (item: T, deferred: Deferred[]) => void
+  ): Promise<void> {
+    let start = from;
+    while (start < items.length) {
+      let end = start;
+      await this.commit(
+        () => cursorAt(end),
+        () => {
+          const began = performance.now();
+          const stop = Math.min(items.length, start + this.chunkSize);
+          const deferred: Deferred[] = [];
+          while (end < stop) {
+            apply(items[end]!, deferred);
+            end++;
+            if (performance.now() - began > CHUNK_BUDGET_MS) break;
+          }
+          this.pushDeferred(deferred);
+        }
+      );
+      start = end;
+    }
   }
 
   private pushDeferred(items: Deferred[]): void {
@@ -358,26 +388,26 @@ class ImportRun {
       });
     }
 
-    const deleted = this.deletedKeys();
-    const times = this.knownTimes(new Set(deleted.map((entry) => `${entry.ref.chatJid}|${entry.ref.keyId}`)));
+    const deleted = await this.deletedKeys();
+    const times = await this.knownTimes(new Set(deleted.map((entry) => `${entry.ref.chatJid}|${entry.ref.keyId}`)));
     const fallback = Math.floor(ctx.retention.mtimeMs ?? this.startedAt);
-    for (let i = cursor.deleted; i < deleted.length; i += this.chunkSize) {
-      const slice = deleted.slice(i, i + this.chunkSize);
-      await this.commit({ cleared: cleared.length, deleted: i + slice.length }, () => {
-        for (const entry of slice) {
-          phase.read++;
-          let ts = times.get(`${entry.ref.chatJid}|${entry.ref.keyId}`) ?? entry.ts;
-          if (ts === undefined) {
-            // No source knows the message's time any more. In a cleared chat it
-            // predates the clear, so the barrier itself covers it; elsewhere the
-            // retention file's own time is the latest it can have been deleted.
-            ts = this.db.identity.chat(entry.ref.chatJid)?.clearedThroughTs ?? fallback;
-            detail(phase, "tsFallback");
-          }
-          this.tombstone(phase, entry.ref, ts);
+    await this.batches(
+      deleted,
+      cursor.deleted,
+      (end) => ({ cleared: cleared.length, deleted: end }),
+      (entry) => {
+        phase.read++;
+        let ts = times.get(`${entry.ref.chatJid}|${entry.ref.keyId}`) ?? entry.ts;
+        if (ts === undefined) {
+          // No source knows the message's time any more. In a cleared chat it
+          // predates the clear, so the barrier itself covers it; elsewhere the
+          // retention file's own time is the latest it can have been deleted.
+          ts = this.db.identity.chat(entry.ref.chatJid)?.clearedThroughTs ?? fallback;
+          detail(phase, "tsFallback");
         }
-      });
-    }
+        this.tombstone(phase, entry.ref, ts);
+      }
+    );
   }
 
   /** A tombstone ahead of (or over) a message; counted by what it did. */
@@ -400,7 +430,7 @@ class ImportRun {
    * enforced. `ts` is the tombstone line's own time, the fallback when no
    * source still knows the message's.
    */
-  private deletedKeys(): Array<{ ref: MessageRef; ts?: number }> {
+  private async deletedKeys(): Promise<Array<{ ref: MessageRef; ts?: number }>> {
     const ctx = this.context;
     const out = new Map<string, { ref: MessageRef; ts?: number }>();
     const add = (sid: string, ts?: number): void => {
@@ -416,6 +446,7 @@ class ImportRun {
       for (const record of readHistoryFile(ctx.paths.historyDir, name)?.records ?? []) {
         if (record.deleted) add(record.sid, typeof record.ts === "number" && record.ts > 0 ? record.ts * 1000 : undefined);
       }
+      await yieldLoop();
     }
     if (ctx.enforceExpiry) {
       for (const [view, at] of ctx.deadlines) if (at <= ctx.now) add(view);
@@ -424,7 +455,7 @@ class ImportRun {
   }
 
   /** The protocol time of each wanted message (chat|key), from whichever source still has it. */
-  private knownTimes(wanted: Set<string>): Map<string, number> {
+  private async knownTimes(wanted: Set<string>): Promise<Map<string, number>> {
     const ctx = this.context;
     const times = new Map<string, number>();
     if (wanted.size === 0) return times;
@@ -439,6 +470,7 @@ class ImportRun {
       for (const record of readHistoryFile(ctx.paths.historyDir, name)?.records ?? []) {
         if (!record.deleted && record.raw) note(record.sid, record.ts * 1000);
       }
+      await yieldLoop();
     }
     for (const [sid, raw] of ctx.store.messages) note(sid, protoNumber(raw.messageTimestamp) === undefined ? undefined : messageTimestampMs(raw));
     const recall = readRecallIndex(ctx.paths.recallDir).index;
@@ -455,10 +487,11 @@ class ImportRun {
       const archive = openBetaArchive(beta);
       try {
         for (let after = 0; ; ) {
-          const rows = betaRows(archive, after, 1000);
+          const rows = betaTimes(archive, after, 5000);
           if (rows.length === 0) break;
           for (const row of rows) note(row.sid, row.ts);
           after = rows[rows.length - 1]!.rowid;
+          await yieldLoop();
         }
       } finally {
         archive.close();
@@ -505,12 +538,12 @@ class ImportRun {
           if (plan.deferred.length > 0) detail(phase, "deferredMarks", plan.deferred.length);
         });
       }
-      for (let i = done; i < plan.items.length; i += this.chunkSize) {
-        const slice = plan.items.slice(i, i + this.chunkSize);
-        await this.commit({ file: f, name: read.name, size: read.size, planned: true, done: i + slice.length }, () => {
-          for (const item of slice) this.importMessage(phase, item.classified);
-        });
-      }
+      await this.batches(
+        plan.items,
+        done,
+        (end) => ({ file: f, name: read.name, size: read.size, planned: true, done: end }),
+        (item) => void this.importMessage(phase, item.classified)
+      );
     }
   }
 
@@ -657,22 +690,16 @@ class ImportRun {
 
     const chats = this.mergedChats();
     if (cursor.step <= 0) {
-      for (let i = cursor.step === 0 ? cursor.index : 0; i < chats.length; i += this.chunkSize) {
-        const slice = chats.slice(i, i + this.chunkSize);
-        await this.commit({ step: 0, index: i + slice.length }, () => {
-          for (const [jid, chat] of slice) this.importChat(phase, jid, chat);
-        });
-      }
+      await this.batches(chats, cursor.step === 0 ? cursor.index : 0, (end) => ({ step: 0, index: end }), ([jid, chat]) =>
+        this.importChat(phase, jid, chat)
+      );
     }
 
     const contacts = this.contactEntries();
     if (cursor.step <= 1) {
-      for (let i = cursor.step === 1 ? cursor.index : 0; i < contacts.length; i += this.chunkSize) {
-        const slice = contacts.slice(i, i + this.chunkSize);
-        await this.commit({ step: 1, index: i + slice.length }, () => {
-          for (const entry of slice) this.importContact(phase, entry);
-        });
-      }
+      await this.batches(contacts, cursor.step === 1 ? cursor.index : 0, (end) => ({ step: 1, index: end }), (entry) =>
+        this.importContact(phase, entry)
+      );
     }
 
     const messages: Array<{ sid: string; chatJid: string; story: boolean }> = [];
@@ -682,14 +709,9 @@ class ImportRun {
     }
     for (const sid of store.stories) messages.push({ sid, chatJid: STATUS_JID, story: true });
     if (cursor.step <= 2) {
-      for (let i = cursor.step === 2 ? cursor.index : 0; i < messages.length; i += this.chunkSize) {
-        const slice = messages.slice(i, i + this.chunkSize);
-        await this.commit({ step: 2, index: i + slice.length }, () => {
-          const deferred: Deferred[] = [];
-          for (const entry of slice) this.importSnapshotMessage(phase, entry, deferred);
-          this.pushDeferred(deferred);
-        });
-      }
+      await this.batches(messages, cursor.step === 2 ? cursor.index : 0, (end) => ({ step: 2, index: end }), (entry, deferred) =>
+        this.importSnapshotMessage(phase, entry, deferred)
+      );
     }
 
     if (cursor.step <= 3) {
@@ -957,11 +979,9 @@ class ImportRun {
         const rows = betaRows(archive, after, this.chunkSize);
         if (rows.length === 0) break;
         after = rows[rows.length - 1]!.rowid;
-        await this.commit({ rowid: after }, () => {
-          const deferred: Deferred[] = [];
-          for (const row of rows) this.importBetaRow(phase, row, deferred);
-          this.pushDeferred(deferred);
-        });
+        await this.batches(rows, 0, (end) => ({ rowid: rows[end - 1]!.rowid }), (row, deferred) =>
+          this.importBetaRow(phase, row, deferred)
+        );
       }
     } finally {
       archive.close();
@@ -1085,13 +1105,12 @@ class ImportRun {
         await this.commit({ chunk: c + 1, item: 0 });
         continue;
       }
-      for (let i = from; i < items.length; i += this.chunkSize) {
-        const slice = items.slice(i, i + this.chunkSize);
-        const end = i + slice.length;
-        await this.commit(end >= items.length ? { chunk: c + 1, item: 0 } : { chunk: c, item: end }, () => {
-          for (const item of slice) this.applyMark(phase, item);
-        });
-      }
+      await this.batches(
+        items,
+        from,
+        (end) => (end >= items.length ? { chunk: c + 1, item: 0 } : { chunk: c, item: end }),
+        (item) => this.applyMark(phase, item)
+      );
     }
   }
 
@@ -1204,12 +1223,9 @@ class ImportRun {
       if (cursor.index === 0 && index.malformed > 0) {
         await this.commit({ index: 0 }, () => skip(phase, "malformed", index.malformed));
       }
-      for (let i = cursor.index; i < index.live.length; i += this.chunkSize) {
-        const slice = index.live.slice(i, i + this.chunkSize);
-        await this.commit({ index: i + slice.length }, () => {
-          for (const live of slice) this.importRecallRow(phase, index, vectors, live, cap);
-        });
-      }
+      await this.batches(index.live, cursor.index, (end) => ({ index: end }), (live) =>
+        this.importRecallRow(phase, index, vectors, live, cap)
+      );
     } finally {
       vectors.close();
     }

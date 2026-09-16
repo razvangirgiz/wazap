@@ -64,7 +64,7 @@ export function legacyLids(snapshot: StoreSnapshot | null): LidRegistry {
  * the pairing while the rings still carry it. Only a lid the table does not
  * pair and the files place under exactly one number is learned.
  */
-export function inferLids(lids: LidRegistry, store: Store, historyDir: string): Array<[lid: string, phone: string]> {
+export async function inferLids(lids: LidRegistry, store: Store, historyDir: string): Promise<Array<[lid: string, phone: string]>> {
   const evidence = new Map<string, Set<string>>();
   const note = (raw: WAMessage | null | undefined, phone: string): void => {
     const remote = raw?.key?.remoteJid;
@@ -85,6 +85,7 @@ export function inferLids(lids: LidRegistry, store: Store, historyDir: string): 
     for (const record of readHistoryFile(historyDir, name)?.records ?? []) {
       if (!record.deleted && record.raw) note(decodeRaw(base64Bytes(record.raw)), jid);
     }
+    await yieldLoop();
   }
   const inferred: Array<[string, string]> = [];
   for (const [lid, phones] of [...evidence].sort(([a], [b]) => (a < b ? -1 : 1))) {
@@ -96,18 +97,23 @@ export function inferLids(lids: LidRegistry, store: Store, historyDir: string): 
   return inferred;
 }
 
-export function buildContext(options: {
+/** Lets the event loop run between files: a large account's scans take a while. */
+export function yieldLoop(): Promise<void> {
+  return new Promise((resolve) => setImmediate(resolve));
+}
+
+export async function buildContext(options: {
   accountPaths: AccountPaths;
   now: number;
   enforceExpiry: boolean;
-}): ImportContext {
+}): Promise<ImportContext> {
   const paths = legacyPaths(options.accountPaths);
   const owner = readLinkedAccount(paths.authDir);
   const { snapshot, unreadable } = readSnapshot(paths.storeFile);
   const store = new Store();
   if (snapshot !== null) store.hydrate(snapshot);
   const lids = legacyLids(snapshot);
-  const inferredLids = inferLids(lids, store, paths.historyDir).length;
+  const inferredLids = (await inferLids(lids, store, paths.historyDir)).length;
   const retention = readRetention(paths.retentionFile);
   const notes = readNotes(paths.notesFile);
   const context: ImportContext = {
@@ -126,7 +132,7 @@ export function buildContext(options: {
     enforceExpiry: options.enforceExpiry,
     deadlines: new Map(),
   };
-  if (options.enforceExpiry) collectDeadlines(context);
+  if (options.enforceExpiry) await collectDeadlines(context);
   return context;
 }
 
@@ -136,7 +142,7 @@ export function buildContext(options: {
  * — its recorded deadline and its own disappearing marker — so the earliest
  * wins whichever file or version carried it.
  */
-function collectDeadlines(context: ImportContext): void {
+async function collectDeadlines(context: ImportContext): Promise<void> {
   const note = (sid: string, at: number): void => {
     const view = viewSidOf(context, sid);
     if (view !== null) noteDeadline(context, view, at);
@@ -157,5 +163,6 @@ function collectDeadlines(context: ImportContext): void {
       const at = raw === null ? undefined : messageExpiry(raw);
       if (at !== undefined) note(record.sid, at);
     }
+    await yieldLoop();
   }
 }

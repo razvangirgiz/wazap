@@ -335,6 +335,13 @@ export function betaOwner(db: DatabaseSync): string | null {
   return typeof row?.value === "string" ? row.value : null;
 }
 
+/** Only what a timestamp lookup needs, without the protobufs. */
+export function betaTimes(db: DatabaseSync, afterRowid: number, limit: number): Array<{ rowid: number; sid: string; ts: number }> {
+  return db
+    .prepare("SELECT rowid, sid, ts FROM messages WHERE rowid > ? ORDER BY rowid LIMIT ?")
+    .all(afterRowid, limit) as unknown as Array<{ rowid: number; sid: string; ts: number }>;
+}
+
 export function betaRows(db: DatabaseSync, afterRowid: number, limit: number): BetaRow[] {
   return db
     .prepare(
