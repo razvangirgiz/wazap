@@ -2095,3 +2095,50 @@ test("with WAZAP_PERSIST_HISTORY=0 a message event still waiting at a stop is ca
     restoreEnv();
   }
 });
+
+test("the echo of a draft wazap confirmed writes no message_sent event, even when it arrives after a restart", async () => {
+  const dir = dataDir();
+  const server = await recorder();
+  const restoreEnv = saveWebhookEnv(server.url, "all");
+  const serviceOn = () => {
+    const connected = connectedService(WhatsAppService, {
+      prefix: "wazap-webhook-own-",
+      id: ME,
+      name: "Răzvan",
+      config: { dataDir: dir, persistHistory: true, readOnly: false, rateLimitPerMinute: 0 },
+    });
+    connected.sock.onWhatsApp = async (jid) => [{ jid, exists: true }];
+    return connected;
+  };
+  const first = serviceOn();
+  let second = null;
+  try {
+    const draft = await first.svc.draft({ kind: "text", chatId: PEER, text: "Te aștept." }, "session_a");
+    let key = null;
+    first.sock.relayMessage = async (_jid, _message, options) => {
+      key = options.messageId;
+      throw new Error("Connection Closed");
+    };
+    await assert.rejects(first.svc.confirm(draft.draft_id, "session_a"), { code: "SEND_OUTCOME_UNKNOWN" });
+    await first.svc.stop();
+
+    second = serviceOn();
+    second.sock.ev.emit("messages.upsert", { type: "notify", messages: [ownMessage(key, "Te aștept.")] });
+    second.sock.ev.emit("messages.upsert", { type: "notify", messages: [ownMessage("PHONE", "Te aștept.")] });
+    assert.deepEqual(
+      storageRows(second.svc, "SELECT e.kind, m.key_id FROM events e JOIN messages m ON m.id = e.message_id ORDER BY e.seq").map(
+        (row) => [row.kind, row.key_id]
+      ),
+      [["message_sent", "PHONE"]],
+      "the echo was stored and recognised in the same transaction, from the send the first run recorded"
+    );
+    await waitFor(() => server.received.length > 0, 3_000, "the phone's message_sent");
+    await second.svc.outbox.idle();
+    assert.deepEqual(server.received.map((body) => body.message_id), [`true_${PEER}_PHONE`]);
+  } finally {
+    await first.svc.stop();
+    if (second !== null) await second.svc.stop();
+    await server.close();
+    restoreEnv();
+  }
+});
