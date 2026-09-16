@@ -5,6 +5,7 @@
  * book is missing, and what it does about it.
  */
 import { test } from "node:test";
+import { mkdirSync, writeFileSync } from "node:fs";
 import assert from "node:assert/strict";
 
 import { WhatsAppService, needsContactResync } from "../dist/whatsapp.js";
@@ -82,21 +83,28 @@ test("a resync forgets every stored version before it asks", async () => {
 
   assert.deepEqual(Object.keys(stored), [], "a version left behind would make WhatsApp send patches, not the snapshot");
   assert.deepEqual(asked, [{ collections: COLLECTIONS, isInitialSync: true }]);
-  assert.equal(typeof svc.store.contactsResyncedAt, "number");
+  assert.ok(Number.isFinite(svc.contactsResyncedAt()), "the stamp is written before the request");
 });
 
-test("the resync stamp survives a store round trip, so a restart does not repeat it", () => {
-  const { svc } = makeService();
-  svc.store.contactsResyncedAt = NOW;
+test("the resync stamp survives a restart, so a restart does not repeat it", async () => {
+  const { svc, sock } = makeService();
+  syncableSocket(sock);
+  await svc.resyncContacts(sock);
+  const stamped = svc.contactsResyncedAt();
   const revived = openService(WhatsAppService, svc.config);
-  revived.store.hydrate(svc.store.serialize());
-  assert.equal(revived.store.contactsResyncedAt, NOW);
+  assert.equal(revived.contactsResyncedAt(), stamped);
+  await revived.stop();
 });
 
-test("an older snapshot, written before the stamp existed, reads as never asked", () => {
+test("an account that never asked, or an older snapshot written before the stamp existed, reads as never asked", async () => {
   const { svc } = makeService();
-  svc.store.hydrate({ v: 1, chats: {}, contacts: {}, messages: {}, byChat: {} });
-  assert.equal(svc.store.contactsResyncedAt, null);
+  assert.equal(svc.contactsResyncedAt(), null);
+  const imported = connectedService(WhatsAppService, { prefix: "wazap-contacts-", id: ME, name: "Răzvan", config: { persistHistory: true } });
+  mkdirSync(imported.svc.paths.root, { recursive: true });
+  writeFileSync(imported.svc.paths.storeFile, JSON.stringify({ v: 1, chats: {}, contacts: {}, messages: {}, byChat: {} }));
+  await imported.svc.bootStorage();
+  assert.equal(imported.svc.contactsResyncedAt(), null);
+  await imported.svc.stop();
 });
 
 test("a connection that came up without the address book asks for it, once", async () => {
@@ -118,7 +126,7 @@ test("a connection that already has names leaves WhatsApp alone", async () => {
 
   await svc.healContacts(sock, svc.generation);
   assert.deepEqual(asked, []);
-  assert.equal(svc.store.contactsResyncedAt, null);
+  assert.equal(svc.contactsResyncedAt(), null);
 });
 
 test("a connection with no stored version is already syncing, so it is left to it", async () => {
@@ -140,17 +148,17 @@ test("the open connection is what starts it", () => {
   assert.equal(calls, 1);
 });
 
-test("names arriving on either contact event reach the disk", () => {
+test("names arriving on either contact event reach the database, and a restart reads them back", async () => {
   const { svc, sock } = makeService();
-  svc.config.persistHistory = true;
   sock.ev.emit("contacts.upsert", [{ id: "40700000051@s.whatsapp.net", name: "Ionut" }]);
-  assert.equal(svc.storeDirty, true, "contacts.upsert");
+  assert.equal(svc.db.identity.contact("40700000051@s.whatsapp.net").name, "Ionut", "contacts.upsert");
 
-  svc.storeDirty = false;
   sock.ev.emit("contacts.update", [{ id: "40700000051@s.whatsapp.net", name: "Ionut Fox" }]);
-  assert.equal(svc.storeDirty, true, "contacts.update");
+  assert.equal(svc.db.identity.contact("40700000051@s.whatsapp.net").name, "Ionut Fox", "contacts.update");
   assert.equal(svc.displayName("40700000051@s.whatsapp.net"), "Ionut Fox");
-  if (svc.storeSaveTimer) clearTimeout(svc.storeSaveTimer);
+  const revived = openService(WhatsAppService, svc.config);
+  assert.equal(revived.displayName("40700000051@s.whatsapp.net"), "Ionut Fox");
+  await revived.stop();
 });
 
 test("sync_contacts reports what the resync changed, and never counts as a write", async () => {
@@ -380,16 +388,17 @@ test("updateContactDetails files tags and details, normalized to lowercase token
   assert.deepEqual(c.fields, { oras: "Cluj", role: "contabil" });
 });
 
-test("the filing survives on disk and reloads with the notes file", async () => {
+test("the filing survives in the database and reloads with it", async () => {
   const { svc } = makeService();
   await svc.updateContactDetails("40700000061@s.whatsapp.net", {
     addTags: ["client"],
     fields: { role: "contabil" },
   });
   const revived = openService(WhatsAppService, svc.config);
-  const stored = revived.notes.fieldsFor("40700000061@s.whatsapp.net");
+  const stored = revived.db.identity.notes("40700000061@s.whatsapp.net");
   assert.deepEqual(stored.tags, ["client"]);
   assert.deepEqual(stored.fields, { role: "contabil" });
+  await revived.stop();
 });
 
 test("search_contacts resolves a role and a tag word, not just names", async () => {
@@ -445,7 +454,7 @@ test("removals take keys and tags off; a person left bare loses the entry", asyn
   c = await svc.updateContactDetails(jid, { fields: { role: "" }, removeTags: ["client"] });
   assert.equal(c.tags, undefined);
   assert.equal(c.fields, undefined);
-  assert.equal(svc.notes.fieldsFor(jid), undefined, "nothing left, nothing stored");
+  assert.equal(svc.db.identity.notes(jid), null, "nothing left, nothing stored");
 });
 
 test("a note and the filing live side by side without touching each other", async () => {
@@ -466,8 +475,12 @@ test("the filing follows the person when a lid turns out to be their number", as
   const { svc } = makeService();
   await svc.updateContactDetails("12345678901234@lid", { addTags: ["client"], fields: { role: "contabil" } });
   svc.learnLid("12345678901234@lid", "40700000077@s.whatsapp.net");
-  assert.equal(svc.notes.fieldsFor("12345678901234@lid"), undefined);
-  assert.deepEqual(svc.notes.fieldsFor("40700000077@s.whatsapp.net").tags, ["client"]);
+  assert.deepEqual(svc.db.identity.notes("40700000077@s.whatsapp.net").tags, ["client"]);
+  assert.deepEqual(
+    svc.db.identity.notes("12345678901234@lid"),
+    svc.db.identity.notes("40700000077@s.whatsapp.net"),
+    "both spellings are one person with one filing"
+  );
   const found = await svc.searchContacts("contabil", 10);
   assert.deepEqual(found.map((c) => c.contact_id), ["40700000077@s.whatsapp.net"]);
 });
@@ -492,7 +505,7 @@ test("empty edits and unusable labels are refused before anything is filed", asy
     () => svc.updateContactDetails(jid, { fields: { "   ": "x" } }),
     (err) => err.code === "INVALID_ID"
   );
-  assert.equal(svc.notes.fieldsFor(jid), undefined, "nothing was filed");
+  assert.equal(svc.db.identity.notes(jid), null, "nothing was filed");
 });
 
 test("the filing is capped, like a note, not a document", async () => {
