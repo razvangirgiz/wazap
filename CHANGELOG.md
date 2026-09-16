@@ -1,5 +1,94 @@
 # Changelog
 
+## 0.21.0
+### Security
+
+- **An HTTP session belongs to the credential that opened it.** A session id
+  used to select its transport whatever token came with it, so a read token, a
+  different write token or an anonymous reader holding the id could drive a
+  write session. Sessions are now bound to a fingerprint of the exact
+  credential and its permissions; anyone else gets 404.
+- **A draft can only be confirmed from the MCP session that made it.** Any
+  write client could confirm another client's draft by id. A foreign or
+  unknown draft now answers `DRAFT_NOT_FOUND` without revealing the recipient
+  or consuming it. A new session, including one opened after an OAuth token
+  rotation, drafts again.
+- **Remote clients cannot read files off the server.** An HTTP write token
+  could send any local file as media or a picture, and any client could pick
+  the `download_media` directory. HTTP sessions, static tokens and OAuth alike,
+  now refuse `file_path` and `save_to`; public URLs, forwards and the default
+  download directory still work. Local stdio and the private daemon token used
+  by bridges keep file access.
+- **Forwarded addresses are trusted only from named proxies.** Every private
+  peer counted as a proxy, and `CF-Connecting-IP` alone could pick the password
+  lockout identity. `WAZAP_TRUST_PROXY` now lists the proxies that may supply
+  `X-Forwarded-For` (default `loopback`, `none` for none), and the compose file
+  trusts its own gateway.
+- **Transcription endpoints no longer follow redirects**, and provider errors,
+  signed URLs and decoder output no longer reach errors or logs; failures keep
+  their HTTP status or error code (`ECONNREFUSED`, `CERT_HAS_EXPIRED`, exit codes).
+- **ffmpeg reads only local media files**, never network protocols, playlists
+  or image sequences, for previews, GIFs and transcription.
+- **HTTP logs name only known routes and RPC methods**, never query strings,
+  arbitrary paths or request body excerpts.
+- **A revoke only removes a message in the chat it arrived in.** A protocol
+  message could name a message in another chat as its target.
+- **OAuth refresh tokens rotate**, and a consumed one replayed after a 60-second
+  grace window revokes its grant. Registrations, grants, consent pages and
+  codes have hard caps, and a damaged `oauth.json` signs every agent out
+  instead of being trusted.
+- **A lost account policy fails closed.** Saving `accounts.json` writes an empty
+  `accounts.json.required` marker; if the policy then disappears, wazap refuses
+  to start with open defaults. Write tools read the policy from disk and never
+  fall back to cached send rules. A malformed `WAZAP_READ_ONLY` is an error
+  instead of meaning writes on.
+
+### Added
+
+- **Link previews on sent and edited text.** wazap builds the card itself from
+  the first link: page and thumbnail fetched through the same DNS-pinned,
+  size-capped path as media URLs, four seconds at most, JPEG thumbnails only,
+  never while drafting. The sites see the server's public IP. Baileys' own
+  unrestricted fetcher stays off.
+- **`WAZAP_RETENTION=1`, strict retention, off by default.** Messages marked as
+  disappearing expire locally at their earliest known deadline, from memory,
+  history, snapshots, previews, transcripts and the recall index; keep-in-chat
+  is not an exemption. With it, starting with `WAZAP_PERSIST_HISTORY=0` also
+  discards caches an earlier history-on run left.
+- **Request budgets**, configurable: eight running tool calls per MCP session
+  and 32 in total (`WAZAP_MAX_INFLIGHT`, `WAZAP_MAX_INFLIGHT_TOTAL`), 240 POSTs a
+  minute per credential (`WAZAP_HTTP_BUDGET`), 100 KiB request bodies, 32
+  sessions per credential, and listener timeouts.
+
+### Changed
+
+- **Deleted messages leave no bytes behind.** An observed delete, revoke or
+  chat clear now also removes the message from history files, the snapshot,
+  automatic previews, transcripts and the recall index straight away, not at
+  the next restart. `retention.json` keeps the deleted ids and clear cutoffs,
+  without content, so a history sync cannot bring them back. Delete and clear
+  tools wait for that cleanup and report a disk failure.
+- **The recall index moves to format 3 in place.** Rows and progress are kept;
+  nothing is re-embedded on upgrade.
+- **Model downloads are bounded and exclusive.** Bytes are counted as they
+  arrive and stop at the model's size, a stalled transfer times out after 30
+  seconds, and the whole download gets 30 minutes or the model's size at
+  100 KiB/s, whichever is longer. Two downloads of the same model no longer
+  write one file: the second fails at once and names the lock directory.
+- **Anonymous loopback reads require a loopback `Host` and same-origin
+  requests**, which stops browser DNS rebinding; any port is accepted.
+
+### Upgrade notes
+
+- HTTP clients that sent `file_path` or `save_to` get an error; send a public
+  URL instead, or use stdio.
+- Behind a reverse proxy or tunnel that is not on loopback, set
+  `WAZAP_TRUST_PROXY` to its address, or every OAuth caller shares one lockout.
+  With the compose file, pull it: it pins its network and trusts that gateway.
+- Drafts do not survive a new MCP session or an OAuth token rotation.
+- Do not delete `accounts.json` to reset it: restore a backup, or delete
+  `accounts.json.required` as well to start over on purpose.
+
 ## 0.20.2
 ### Fixed
 
