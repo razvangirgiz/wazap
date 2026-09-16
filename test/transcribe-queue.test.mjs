@@ -521,6 +521,27 @@ test("a live note stamped days ago is queued in the transaction that stores it, 
   await svc.stop();
 });
 
+test("a queue that refuses a note does not hide the note: it is stored, announced and waited for like any other", async () => {
+  const { svc } = serviceWith(CONFIGURED);
+  svc.status = "disconnected";
+  svc.db.transcripts.enqueue = () => {
+    throw new Error("disk I/O error");
+  };
+  const realError = console.error;
+  const logged = [];
+  console.error = (...args) => logged.push(args.join(" "));
+  let stored;
+  try {
+    stored = svc.ingestMessages([voiceNote("V1")], true);
+  } finally {
+    console.error = realError;
+  }
+  assert.deepEqual(stored.map((raw) => raw.key.id), ["V1"], "what reaches webhooks and waits is the stored note");
+  assert.equal(svc.db.messages.get(sidOf("V1")).type, "voice");
+  assert.ok(logged.some((line) => /transcribe/.test(line)), "and the refusal is logged as the queue's");
+  await svc.stop();
+});
+
 test("audio files, long notes and notes of unknown length are never queued", async () => {
   const { svc, sock } = serviceWith(CONFIGURED);
   svc.status = "disconnected";

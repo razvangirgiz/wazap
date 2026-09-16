@@ -4262,7 +4262,13 @@ export class WhatsAppService implements WhatsAppApi {
     if (!this.autoTranscribe || result.sid === null || !transcribable(raw)) return;
     if (result.outcome !== "inserted" && !(live && result.outcome === "updated")) return;
     if (!live && messageTimestampMs(raw) <= Date.now() - HISTORY_TRANSCRIBE_WINDOW_MS) return;
-    if (this.transcribeClass !== null && this.db.transcripts.enqueue(result.sid, this.transcribeClass)) this.transcribeWorker.kick();
+    if (this.transcribeClass === null) return;
+    try {
+      if (this.db.transcripts.enqueue(result.sid, this.transcribeClass)) this.transcribeWorker.kick();
+    } catch (err) {
+      // The message is stored whatever the queue says: a webhook, a wait and a read still see it.
+      logError("transcribe", err);
+    }
   }
 
   /**
