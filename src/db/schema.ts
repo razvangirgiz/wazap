@@ -108,9 +108,11 @@ CREATE TABLE messages(
   deleted_at INTEGER,
   text TEXT,
   transcript TEXT,
+  -- Who made the transcript and when, with its language and length when known: JSON.
+  transcript_info TEXT,
   raw BLOB,
   CHECK ((id >> 20) = (ts / 1000)),
-  CHECK (deleted_at IS NULL OR (text IS NULL AND transcript IS NULL AND raw IS NULL))
+  CHECK (deleted_at IS NULL OR (text IS NULL AND transcript IS NULL AND transcript_info IS NULL AND raw IS NULL))
 ) STRICT;
 -- A message is its chat, its direction and its WhatsApp key; every sid
 -- spelling resolves to that through the chat, so no spelling is stored.

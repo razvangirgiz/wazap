@@ -378,10 +378,10 @@ export class Merger {
       id: number; type: string; quoted_sid: string | null; quoted_from_me: number | null; quoted_key_id: string | null;
       status: number | null; edited_at: number | null;
       expires_at: number | null; deleted_at: number | null; sender_id: number | null;
-      text: string | null; transcript: string | null; raw: Uint8Array | null;
+      text: string | null; transcript: string | null; transcript_info: string | null; raw: Uint8Array | null;
     };
     const columns =
-      "id, type, quoted_sid, quoted_from_me, quoted_key_id, status, edited_at, expires_at, deleted_at, sender_id, text, transcript, raw";
+      "id, type, quoted_sid, quoted_from_me, quoted_key_id, status, edited_at, expires_at, deleted_at, sender_id, text, transcript, transcript_info, raw";
     const keep = this.c.get<Twin>(`SELECT ${columns} FROM messages WHERE id = ?`, keepId)!;
     const drop = this.c.get<Twin>(`SELECT ${columns} FROM messages WHERE id = ?`, dropId)!;
 
@@ -396,7 +396,7 @@ export class Merger {
     const earliest = [keep.expires_at, drop.expires_at].filter((at): at is number => at !== null);
     this.c.run(
       `UPDATE messages SET type = ?, text = ?, raw = ?, quoted_sid = ?, quoted_from_me = ?, quoted_key_id = ?, edited_at = ?,
-         transcript = ?, status = ?, expires_at = ?, sender_id = ? WHERE id = ?`,
+         transcript = ?, transcript_info = ?, status = ?, expires_at = ?, sender_id = ? WHERE id = ?`,
       winner.type,
       winner.text ?? other.text,
       winner.raw ?? other.raw,
@@ -405,6 +405,7 @@ export class Merger {
       winner.quoted_key_id ?? other.quoted_key_id,
       winner.edited_at ?? other.edited_at,
       keep.transcript ?? drop.transcript,
+      keep.transcript !== null ? keep.transcript_info : drop.transcript_info,
       keep.status === null || drop.status === null
         ? (keep.status ?? drop.status)
         : statusRank(drop.status) > statusRank(keep.status)

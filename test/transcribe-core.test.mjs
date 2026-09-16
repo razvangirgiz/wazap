@@ -183,8 +183,11 @@ test("a transcript survives a restart, and the newest one for a message is the o
   const reloaded = serviceWith(MANUAL, { persistHistory: true, dataDir: svc.config.dataDir });
   stub(reloaded.svc, provider);
   const cached = await reloaded.svc.transcribeAudio(sidOf("V1"));
-  assert.equal(cached.text, "salut");
-  assert.equal(cached.cached, true, "a restart does not send the recording again");
+  assert.deepEqual(
+    cached,
+    { text: "salut", language: "ro", duration_seconds: 6, provider: "openai", cached: true },
+    "a restart does not send the recording again, and keeps who transcribed it, in what language and how long it ran"
+  );
   assert.equal(provider.state.calls, 1);
 
   svc.db.messages.setTranscript(sidOf("V1"), "a doua încercare");

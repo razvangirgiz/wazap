@@ -1,5 +1,5 @@
 /** SQL rows to records: the only place that knows both spellings of a column. */
-import type { ChatKind, ChatRecord, ContactRecord, StoredMessage } from "./types.js";
+import type { ChatKind, ChatRecord, ContactRecord, StoredMessage, TranscriptInfo } from "./types.js";
 
 export interface ContactRow {
   id: number;
@@ -44,6 +44,7 @@ export interface MessageRow {
   type: string;
   text: string | null;
   transcript: string | null;
+  transcript_info: string | null;
   raw: Uint8Array | null;
   quoted_sid: string | null;
   status: number | null;
@@ -62,7 +63,7 @@ export const MESSAGE_COLUMNS = `m.id, coalesce(ck.id, c.id) AS chat_id, coalesce
   (CASE WHEN m.from_me = 1 THEN 'true' ELSE 'false' END) || '_' || coalesce(ck.jid, c.jid) || '_' || m.key_id AS sid,
   m.key_id, m.from_me, coalesce(sk.id, s.id) AS sender_id,
   coalesce(s.phone_jid, s.lid, sk.phone_jid, sk.lid) AS sender_jid, m.ts, m.type, m.quoted_sid, m.status, m.edited_at,
-  m.expires_at, m.deleted_at, m.text, m.transcript, m.raw`;
+  m.expires_at, m.deleted_at, m.text, m.transcript, m.transcript_info, m.raw`;
 
 /** Messages drive the join, so a range or index scan over them is never reordered behind chats. */
 export const MESSAGE_FROM = `messages m CROSS JOIN chats c ON c.id = m.chat_id LEFT JOIN chats ck ON ck.id = c.merged_into
@@ -124,6 +125,34 @@ export function chatFromRow(row: ChatRow): ChatRecord {
   };
 }
 
+/** A stored transcript's details; a value that does not parse reads as none. */
+export function transcriptInfoOf(json: string | null): TranscriptInfo | null {
+  if (json === null) return null;
+  try {
+    const value = JSON.parse(json) as Partial<TranscriptInfo> | null;
+    if (value === null || typeof value.provider !== "string" || typeof value.at !== "number") return null;
+    return {
+      provider: value.provider,
+      at: value.at,
+      ...(typeof value.language === "string" ? { language: value.language } : {}),
+      ...(typeof value.duration_seconds === "number" ? { duration_seconds: value.duration_seconds } : {}),
+    };
+  } catch {
+    return null;
+  }
+}
+
+/** The JSON a transcript's details are stored as; null for none. */
+export function transcriptInfoJson(info: TranscriptInfo | null | undefined): string | null {
+  if (info === null || info === undefined) return null;
+  return JSON.stringify({
+    provider: info.provider,
+    at: info.at,
+    ...(info.language === undefined ? {} : { language: info.language }),
+    ...(info.duration_seconds === undefined ? {} : { duration_seconds: info.duration_seconds }),
+  });
+}
+
 export function messageFromRow(row: MessageRow): StoredMessage {
   return {
     id: row.id,
@@ -138,6 +167,7 @@ export function messageFromRow(row: MessageRow): StoredMessage {
     type: row.type,
     text: row.text,
     transcript: row.transcript,
+    transcriptInfo: transcriptInfoOf(row.transcript_info),
     raw: row.raw,
     quotedSid: row.quoted_sid,
     status: row.status,

@@ -229,8 +229,6 @@ const WEBHOOK_TRANSCRIPT_WAIT_MS = 60_000;
 const FOLD_SETTLE_MS = 2_000;
 /** How long one transaction of a history batch may hold the event loop. */
 const HISTORY_CHUNK_MS = 20;
-/** Transcript details the database does not keep (provider, language, length), for the latest few. */
-const TRANSCRIPT_DETAILS_KEPT = 500;
 /** How long the recall status reuses its count of stored vectors. */
 const VECTOR_COUNT_TTL_MS = 10_000;
 /** Chat kinds a person can be waiting in: every one but the status feed. */
@@ -448,8 +446,6 @@ export class WhatsAppService implements WhatsAppApi {
   private transcriber = transcribeFile;
   /** Transcriptions under way, so one recording is never uploaded twice at once. */
   private readonly transcribing = new Map<string, Promise<TranscribeResult>>();
-  /** Provider, language and length of the latest transcripts; the database keeps only the words. */
-  private readonly transcriptDetails = new Map<string, TranscriptRecord>();
   private readonly drafts = new DraftStore();
   private readonly writes: RateLimiter;
   private readonly webhook: WebhookSink;
@@ -1994,29 +1990,33 @@ export class WhatsAppService implements WhatsAppApi {
     // A message revoked or expired while the transcription ran keeps nothing behind.
     this.messageOrThrow(messageId);
     const sid = this.storedOrThrow(messageId).sid;
-    if (!this.db.messages.setTranscript(sid, record.text)) throw missingMessage(messageId);
-    this.rememberTranscript(sid, record);
+    const { text, ...details } = record;
+    if (!this.db.messages.setTranscript(sid, text, details)) throw missingMessage(messageId);
     // With the transcript on it, the voice note finally carries searchable words.
     this.embedFeed?.kick();
     this.messageOrThrow(messageId);
     return transcribeResult(record, false);
   }
 
-  /** Keeps the provider, language and length of a transcript for the latest few; the database has the words. */
-  private rememberTranscript(sid: string, record: TranscriptRecord): void {
-    this.transcriptDetails.delete(sid);
-    this.transcriptDetails.set(sid, record);
-    while (this.transcriptDetails.size > TRANSCRIPT_DETAILS_KEPT) {
-      this.transcriptDetails.delete(this.transcriptDetails.keys().next().value!);
-    }
-  }
-
-  /** A stored transcript as the views and transcribe_audio take it: the details when they are still at hand. */
+  /**
+   * A stored transcript as the views and transcribe_audio take it, with the
+   * details stored beside it. One stored without them (set directly, or by
+   * an import of a record that had none) names the configured provider.
+   */
   private transcriptRecordOf(message: StoredMessage): TranscriptRecord {
-    const details = this.transcriptDetails.get(message.sid);
-    if (details !== undefined && details.text === message.transcript) return details;
+    const text = message.transcript ?? "";
+    const info = message.transcriptInfo;
+    if (info !== null) {
+      return {
+        text,
+        provider: info.provider as TranscriptRecord["provider"],
+        at: info.at,
+        ...(info.language === undefined ? {} : { language: info.language }),
+        ...(info.duration_seconds === undefined ? {} : { duration_seconds: info.duration_seconds }),
+      };
+    }
     const configured = this.transcribe instanceof WazapError ? null : this.transcribe.provider;
-    return { text: message.transcript ?? "", provider: configured ?? "local", at: 0 };
+    return { text, provider: configured ?? "local", at: 0 };
   }
 
   private transcriptOf(message: StoredMessage): TranscriptRecord | undefined {

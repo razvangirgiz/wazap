@@ -6,7 +6,7 @@
  */
 import { proto, type WAMessage } from "baileys";
 import { isTrackedCall } from "../calls.js";
-import { chatKindOf, parseSid, type MessageInput } from "../db/index.js";
+import { chatKindOf, parseSid, type MessageInput, type TranscriptInfo } from "../db/index.js";
 import type { LidRegistry } from "../identity.js";
 import { isNoiseJid, STATUS_JID } from "../ids.js";
 import { messageExpiry } from "../message-expiry.js";
@@ -211,6 +211,7 @@ export function classify(id: LegacyIdentity, raw: WAMessage, options: ClassifyOp
     type,
     text: messageText(raw),
     transcript: spoken,
+    ...(spoken === null ? {} : { transcriptInfo: transcriptInfoOfRecord(options.transcript!) }),
     raw: options.bytes,
     quotedSid: quotedSidOf(id, raw, chatJid),
     status: fromMe && typeof raw.status === "number" ? raw.status : null,
@@ -228,3 +229,13 @@ export function callDetail(raw: WAMessage): number | null {
 }
 
 export { isTrackedCall };
+
+/** A legacy transcript record's details, as the database keeps them next to its words. */
+function transcriptInfoOfRecord(record: TranscriptRecord): TranscriptInfo {
+  return {
+    provider: typeof record.provider === "string" ? record.provider : "local",
+    at: typeof record.at === "number" && Number.isFinite(record.at) ? record.at : 0,
+    ...(typeof record.language === "string" ? { language: record.language } : {}),
+    ...(typeof record.duration_seconds === "number" && Number.isFinite(record.duration_seconds) ? { duration_seconds: record.duration_seconds } : {}),
+  };
+}

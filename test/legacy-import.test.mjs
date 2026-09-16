@@ -201,6 +201,7 @@ test("the newest edit wins, lids fold into their number, notes and marks carry o
     assert.equal(db.messages.receipts(r.g3).length, 2);
     const voice = db.messages.get(r.voice);
     assert.equal(voice.transcript, "Te sun mai târziu");
+    assert.deepEqual(voice.transcriptInfo, { provider: "local", at: 1789582271446 }, "the transcript's details come with it");
     assert.equal(voice.text, "[voice message · 0:42]");
     assert.equal(db.messages.get(r.callPlaceholder), null, "the call placeholder folds into the call log");
     assert.ok(db.messages.get(r.callLog));

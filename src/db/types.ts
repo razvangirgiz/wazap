@@ -70,6 +70,8 @@ export interface MessageInput {
   /** The searchable rendering of the message. */
   text?: string | null;
   transcript?: string | null;
+  /** Who made the transcript and when; kept with the transcript it describes. */
+  transcriptInfo?: TranscriptInfo | null;
   /** The protobuf bytes. */
   raw?: Uint8Array | null;
   quotedSid?: string | null;
@@ -106,6 +108,15 @@ export interface UpsertResult {
   sid: string | null;
 }
 
+/** The details of a transcript beyond its words. */
+export interface TranscriptInfo {
+  provider: string;
+  /** Epoch ms. */
+  at: number;
+  language?: string;
+  duration_seconds?: number;
+}
+
 export interface StoredMessage {
   id: number;
   /** `<fromMe>_<chat's canonical jid>_<keyId>`; every other spelling of it resolves to the same row. */
@@ -121,6 +132,7 @@ export interface StoredMessage {
   type: string;
   text: string | null;
   transcript: string | null;
+  transcriptInfo: TranscriptInfo | null;
   raw: Uint8Array | null;
   quotedSid: string | null;
   status: number | null;

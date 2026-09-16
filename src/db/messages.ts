@@ -21,6 +21,7 @@ import {
   MESSAGE_FROM,
   messageFromRow,
   RECOMPUTE_LAST,
+  transcriptInfoJson,
   VISIBLE,
   type ChatRow,
   type MessageRow,
@@ -35,6 +36,7 @@ import type {
   DeleteResult,
   MediaRecord,
   MessageInput,
+  TranscriptInfo,
   Page,
   Reaction,
   Receipt,
@@ -75,9 +77,9 @@ export function statusRank(status: number): number {
 const rank = (column: string): string => `(CASE WHEN ${column} = 0 THEN 1.5 ELSE ${column} END)`;
 const UPSERT_SQL = `
 INSERT INTO messages(id, chat_id, key_id, from_me, sender_id, ts, type, quoted_sid, quoted_from_me, quoted_key_id, status,
-  edited_at, expires_at, text, transcript, raw)
+  edited_at, expires_at, text, transcript, transcript_info, raw)
 VALUES (:id, :chat_id, :key_id, :from_me, :sender_id, :ts, :type, :quoted_sid, :quoted_from_me, :quoted_key_id, :status,
-  :edited_at, :expires_at, :text, :transcript, :raw)
+  :edited_at, :expires_at, :text, :transcript, :transcript_info, :raw)
 ON CONFLICT(chat_id, from_me, key_id) DO UPDATE SET
   type = CASE WHEN ${FRESH} THEN excluded.type ELSE messages.type END,
   text = CASE WHEN ${FRESH} THEN coalesce(excluded.text, messages.text) ELSE messages.text END,
@@ -88,6 +90,9 @@ ON CONFLICT(chat_id, from_me, key_id) DO UPDATE SET
   quoted_key_id = CASE WHEN ${FRESH} THEN coalesce(excluded.quoted_key_id, messages.quoted_key_id) ELSE messages.quoted_key_id END,
   edited_at = CASE WHEN ${FRESH} THEN coalesce(excluded.edited_at, messages.edited_at) ELSE messages.edited_at END,
   transcript = coalesce(excluded.transcript, messages.transcript),
+  transcript_info = CASE WHEN excluded.transcript IS NULL THEN messages.transcript_info
+    WHEN excluded.transcript_info IS NOT NULL THEN excluded.transcript_info
+    WHEN excluded.transcript IS messages.transcript THEN messages.transcript_info ELSE NULL END,
   sender_id = coalesce(messages.sender_id, excluded.sender_id),
   status = CASE WHEN excluded.status IS NULL THEN messages.status WHEN messages.status IS NULL THEN excluded.status
     WHEN ${rank("excluded.status")} > ${rank("messages.status")} THEN excluded.status ELSE messages.status END,
@@ -234,6 +239,7 @@ export class Messages {
       expires_at: expiresAt,
       text: input.text ?? null,
       transcript: input.transcript ?? null,
+      transcript_info: input.transcript ? transcriptInfoJson(input.transcriptInfo) : null,
       raw: this.scrubbedRaw(input.raw ?? null, input.quotedSid ?? null),
     });
     return { outcome: "inserted", id, sid };
@@ -274,6 +280,7 @@ export class Messages {
       expires_at: expiresAt,
       text: input.text ?? null,
       transcript: input.transcript ?? null,
+      transcript_info: input.transcript ? transcriptInfoJson(input.transcriptInfo) : null,
       raw: this.scrubbedRaw(input.raw ?? null, input.quotedSid ?? null),
     });
     return { outcome: stale ? "stale" : "updated", id: existing.id, sid: existing.sid };
@@ -345,7 +352,7 @@ export class Messages {
     const paths = this.c.all<{ path: string }>("SELECT path FROM media WHERE message_id = ?", messageId).map((r) => r.path);
     this.c.run("DELETE FROM media WHERE message_id = ?", messageId);
     this.c.run(
-      "UPDATE messages SET deleted_at = ?, text = NULL, transcript = NULL, raw = NULL WHERE id = ? AND deleted_at IS NULL",
+      "UPDATE messages SET deleted_at = ?, text = NULL, transcript = NULL, transcript_info = NULL, raw = NULL WHERE id = ? AND deleted_at IS NULL",
       at,
       messageId
     );
@@ -418,12 +425,19 @@ export class Messages {
     return chat === null ? null : this.identity.findByKey(chat, fromMe, keyId);
   }
 
-  /** A transcript arrived for a live message; it joins the search index and drops a stale embedding. */
-  setTranscript(sid: string, transcript: string): boolean {
+  /** A transcript arrived for a live message, with who made it; it joins the search index and drops a stale embedding. */
+  setTranscript(sid: string, transcript: string, info: TranscriptInfo | null = null): boolean {
     return this.c.write(() => {
       const key = this.visibleKey(sid);
       if (key === null) return false;
-      return this.c.run("UPDATE messages SET transcript = ? WHERE id = ? AND deleted_at IS NULL", transcript, key.id) > 0;
+      return (
+        this.c.run(
+          "UPDATE messages SET transcript = ?, transcript_info = ? WHERE id = ? AND deleted_at IS NULL",
+          transcript,
+          transcriptInfoJson(info),
+          key.id
+        ) > 0
+      );
     });
   }
 
