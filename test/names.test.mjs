@@ -7,7 +7,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 
 import { WhatsAppService } from "../dist/whatsapp.js";
-import { connectedService } from "./helpers.mjs";
+import { connectedService, openService } from "./helpers.mjs";
 
 const ME = "40700000001@s.whatsapp.net";
 
@@ -100,16 +100,17 @@ test("a group message renders its sender as a name, not as a LID", async () => {
   assert.equal(data[0].sender.phone, "40700000010");
 });
 
-test("pushNames survive a store round trip, so a restart does not forget who wrote", () => {
+test("pushNames survive a restart, so a restart does not forget who wrote", async () => {
   const { svc, sock } = makeService();
   sock.ev.emit("messages.upsert", {
     type: "notify",
     messages: [message("40700000011@s.whatsapp.net", { pushName: "Horia" })],
   });
 
-  const { svc: revived } = makeService();
-  revived.store.hydrate(JSON.parse(JSON.stringify(svc.store.serialize())));
-  assert.equal(revived.store.pushNames.get("40700000011@s.whatsapp.net"), "Horia");
+  const revived = openService(WhatsAppService, svc.config);
+  assert.equal(revived.db.identity.contact("40700000011@s.whatsapp.net").pushName, "Horia");
+  assert.equal(revived.displayName("40700000011@s.whatsapp.net"), "Horia");
+  await revived.stop();
 });
 
 test("search_contacts finds someone by the name the chat list shows them under", async () => {
@@ -277,7 +278,7 @@ test("a contact filed under both a lid chat and a phone chat is listed once", as
     { id: lid, conversationTimestamp: 1_700_000_100, unreadCount: 2 },
   ]);
   sock.ev.emit("messages.upsert", { type: "notify", messages: [message(lid, { text: "salut", id: "L1" })] });
-  assert.equal(svc.store.chats.size, 2, "two rows before the pairing is known");
+  assert.equal(svc.db.identity.listChats().length, 2, "two rows before the pairing is known");
   sock.ev.emit("contacts.upsert", [{ id: phone, name: "Mama", lid, phoneNumber: phone }]);
 
   const chats = (await svc.listChats("all", 10)).data;
@@ -301,7 +302,8 @@ test("a contact WhatsApp filed under a lid and under a phone is one search resul
     found.map((c) => c.contact_id),
     [phone]
   );
-  assert.equal(svc.store.contacts.has(lid), false, "the lid entry moved in with the phone entry");
+  assert.equal(svc.db.identity.contact(lid).phoneJid, phone, "the lid entry moved in with the phone entry");
+  assert.equal(svc.db.identity.listContacts().length, 1);
 });
 
 test("a later contact update with unknown fields does not erase a name learned before", () => {
@@ -310,7 +312,7 @@ test("a later contact update with unknown fields does not erase a name learned b
   sock.ev.emit("contacts.upsert", [{ id: phone, notify: "Dani Moler" }]);
   sock.ev.emit("contacts.upsert", [{ id: phone, notify: undefined, name: undefined, lid: "505050505050505@lid" }]);
   assert.equal(svc.displayName(phone), "Dani Moler");
-  assert.equal(svc.store.contacts.get(phone).lid, "505050505050505@lid", "the new field still lands");
+  assert.equal(svc.db.identity.contact(phone).lid, "505050505050505@lid", "the new field still lands");
 });
 
 test("a name that arrived on a lid message still names the number once the pairing is known, and the other way round", () => {
