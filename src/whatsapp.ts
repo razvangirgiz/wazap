@@ -4266,7 +4266,15 @@ export class WhatsAppService implements WhatsAppApi {
     const settings = this.transcribe;
     const auto: TranscriptionStatus["auto"] =
       settings instanceof WazapError ? "degraded" : this.autoTranscribe ? "on" : "off";
-    const status: TranscriptionStatus = { auto, queued: 0, running_for_seconds: null, failed: 0, last_error: null };
+    const pause = this.transcribeWorker.paused();
+    const status: TranscriptionStatus = {
+      auto,
+      queued: 0,
+      running_for_seconds: null,
+      failed: 0,
+      last_error: null,
+      paused: pause === null ? null : { reason: pause.reason, until: isoWithOffset(pause.until) },
+    };
     const db = this.readyDb();
     if (db === null) return status;
     try {

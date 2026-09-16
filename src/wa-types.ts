@@ -138,6 +138,8 @@ export interface TranscriptionStatus {
   failed: number;
   /** The latest failure on a note still queued or given up on: a short reason, never content. */
   last_error: { reason: string; at: string; final: boolean } | null;
+  /** The provider cannot take any note (not ready, key refused): no note runs until then. Process-wide. */
+  paused: { reason: string; until: string } | null;
 }
 
 /** One row of `get_status.accounts` / `list_accounts`. Policy `write_tools`, not the session bit. */

@@ -17,6 +17,7 @@ import { AccountDb, SCHEMA_VERSION } from "../dist/db/index.js";
 import { MIGRATIONS } from "../dist/db/schema.js";
 import { sqlite } from "../dist/db/sqlite.js";
 import { WazapError } from "../dist/errors.js";
+import { markFailure } from "../dist/transcribe/failure.js";
 import { TranscribeWorker, transcribeWorker } from "../dist/transcribe/worker.js";
 import { checkTranscribeQueue, transcriptionStatusLine } from "../dist/transcribe-status.js";
 import { WhatsAppService } from "../dist/whatsapp.js";
@@ -223,6 +224,56 @@ test("a failure another attempt cannot fix gives up at once; one that is not the
   }
 });
 
+test("a provider refusing the key pauses the whole worker, longer each time, and one note probes it", async () => {
+  const { db } = queuedDb(["V1", "V2", "V3"]);
+  let now = 1_000_000;
+  const worker = new TranscribeWorker({ now: () => now });
+  let refusing = true;
+  const { source, runs } = fakeSource(db, "default", async () => {
+    if (refusing) throw markFailure(new WazapError("TRANSCRIBE_FAILED", "HTTP 401"), "paused", "provider refused the key (HTTP 401)");
+  });
+  const realError = console.error;
+  console.error = () => {};
+  try {
+    worker.register(source);
+    await worker.idle();
+    assert.equal(runs.length, 1, "one note found the key refused; the other two were not downloaded and sent");
+    assert.deepEqual(worker.paused(), { reason: "provider refused the key (HTTP 401)", until: now + 30_000 });
+
+    const pauses = [];
+    for (let round = 0; round < 7; round++) {
+      const { until } = worker.paused();
+      now = until - 1;
+      worker.kick();
+      await worker.idle();
+      assert.equal(runs.length, round + 1, "nothing runs before the pause is over, whatever wakes the worker");
+      now = until;
+      const before = now;
+      worker.kick();
+      await worker.idle();
+      assert.equal(runs.length, round + 2, "once it is over, a single note probes the provider");
+      pauses.push((worker.paused().until - before) / 1000);
+    }
+    assert.deepEqual(pauses, [60, 120, 240, 480, 900, 900, 900], "twice as long each time, up to 15 minutes");
+    assert.deepEqual(
+      ["V1", "V2", "V3"].map((key) => db.transcripts.state(sid(false, PEER, key)).attempts),
+      [0, 0, 0],
+      "a refused key is not the notes' fault"
+    );
+
+    refusing = false;
+    now = worker.paused().until;
+    worker.kick();
+    await worker.idle();
+    assert.equal(worker.paused(), null);
+    assert.equal(db.transcripts.stats().queued, 0, "the key works again: every note runs");
+  } finally {
+    console.error = realError;
+    worker.unregister(source);
+    db.close();
+  }
+});
+
 test("an account that is not connected keeps its notes until it is", async () => {
   const { db } = queuedDb(["V1"]);
   const worker = new TranscribeWorker();
@@ -344,7 +395,7 @@ test("the queue survives a restart: a note that arrived while the account could 
   await before.svc.transcribeIdle();
   assert.equal(idle.calls, 0);
   const status = before.svc.getStatus().transcription;
-  assert.deepEqual(status, { auto: "on", queued: 1, running_for_seconds: null, failed: 0, last_error: null });
+  assert.deepEqual(status, { auto: "on", queued: 1, running_for_seconds: null, failed: 0, last_error: null, paused: null });
   assert.match(transcriptionStatusLine(status), /voice transcription queue\*\*: 1 waiting/);
   await before.svc.stop();
   const statusChecks = withEnv(CONFIGURED, () => checkTranscribeQueue({ dataDir: before.svc.config.dataDir }));

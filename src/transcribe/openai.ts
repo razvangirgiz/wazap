@@ -41,7 +41,7 @@ function failed(message: string, key: string | null, fix?: string, kind: Failure
  * is the provider refusing this audio as input.
  */
 function refusal(status: number): { kind: FailureKind; reason: string } {
-  if (status === 401 || status === 403) return { kind: "blocked", reason: `provider refused the key (HTTP ${status})` };
+  if (status === 401 || status === 403) return { kind: "paused", reason: `provider refused the key (HTTP ${status})` };
   if (status === 408 || status === 409 || status === 425 || status === 429 || status >= 500) {
     return { kind: "transient", reason: `provider unavailable (HTTP ${status})` };
   }

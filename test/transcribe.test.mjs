@@ -426,8 +426,8 @@ test("an HTTP refusal says whether another attempt could help, and never names t
   const cases = [
     [400, "permanent", /refused the audio \(HTTP 400\)/],
     [413, "permanent", /refused the audio \(HTTP 413\)/],
-    [401, "blocked", /refused the key \(HTTP 401\)/],
-    [403, "blocked", /refused the key \(HTTP 403\)/],
+    [401, "paused", /refused the key \(HTTP 401\)/],
+    [403, "paused", /refused the key \(HTTP 403\)/],
   ];
   for (const [status, kind, reason] of cases) {
     await assert.rejects(
@@ -462,8 +462,8 @@ test("a failure nobody marked is classified by what it is", () => {
   assert.equal(classifyFailure(new WazapError("MEDIA_UNAVAILABLE", "no media")).kind, "permanent");
   assert.equal(classifyFailure(new WazapError("FILE_TOO_LARGE", "x")).kind, "permanent");
   assert.equal(classifyFailure(new WazapError("MESSAGE_NOT_FOUND", "x")).kind, "gone");
-  assert.equal(classifyFailure(new WazapError("NOT_CONNECTED", "x")).kind, "blocked");
-  assert.equal(classifyFailure(new WazapError("TRANSCRIBE_UNAVAILABLE", "x")).kind, "blocked");
+  assert.equal(classifyFailure(new WazapError("NOT_CONNECTED", "x")).kind, "waiting");
+  assert.equal(classifyFailure(new WazapError("TRANSCRIBE_UNAVAILABLE", "x")).kind, "paused", "a provider not ready pauses the worker");
   assert.equal(classifyFailure(new Error("whisper.cpp fell over")).kind, "transient", "a crash is worth another attempt");
   assert.equal(classifyFailure(markFailure(new Error("x"), "permanent", "ffmpeg could not read the audio")).reason, "ffmpeg could not read the audio");
 });

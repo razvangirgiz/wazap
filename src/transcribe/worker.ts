@@ -10,8 +10,11 @@
  * a run a crash interrupted is recovered, its attempt counted, the first time
  * the worker sees that database. A note is tried at most three times, with a
  * wait between attempts; a failure that another attempt cannot fix gives up at
- * once and says why (see failure.ts). A note whose account is not connected,
- * or whose provider is not ready, spends no attempt and waits.
+ * once and says why (see failure.ts). A note whose account is not connected
+ * spends no attempt and waits. A provider that cannot take any note — not
+ * ready, refusing the key — pauses the whole worker, 30 s at first and twice as
+ * long each time up to 15 minutes; once a pause is over one note probes the
+ * provider before any other note's media is downloaded.
  *
  * Ingestion never waits on the worker and never sees it fail. kick() is how a
  * new note is noticed at once; timers cover retries and accounts coming back.
@@ -39,6 +42,11 @@ export interface TranscribeWorkerOptions {
   blockedDelayMs?: number;
   /** How often an account that cannot serve yet is looked at again. */
   pollMs?: number;
+  /** The first pause of a provider that cannot take any note, doubled each time up to the second. */
+  pauseMs?: number;
+  pauseMaxMs?: number;
+  /** The clock pauses are measured on; tests move it. */
+  now?: () => number;
 }
 
 const DEFAULTS: Required<TranscribeWorkerOptions> = {
@@ -46,6 +54,9 @@ const DEFAULTS: Required<TranscribeWorkerOptions> = {
   maxAttempts: 3,
   blockedDelayMs: 30_000,
   pollMs: 10_000,
+  pauseMs: 30_000,
+  pauseMaxMs: 15 * 60_000,
+  now: Date.now,
 };
 
 /** The wake for a note due now that a pass could not run: soon, never a spin. */
@@ -70,6 +81,10 @@ export class TranscribeWorker {
   private again = false;
   private timer: NodeJS.Timeout | null = null;
   private running: Running | null = null;
+  /** Until when the provider is left alone, and why; pauses in a row since the last run it took. */
+  private pausedUntil = 0;
+  private pauseReason: string | null = null;
+  private pauses = 0;
   /** Callers waiting for a note to leave the queue, by source and sid. */
   private readonly waiters = new Map<TranscribeSource, Map<string, Array<() => void>>>();
 
@@ -151,6 +166,19 @@ export class TranscribeWorker {
     });
   }
 
+  /** The pause under way: why, and until when (epoch ms); null while the provider is being used. */
+  paused(): { reason: string; until: number } | null {
+    return this.pauseReason !== null && this.options.now() < this.pausedUntil ? { reason: this.pauseReason, until: this.pausedUntil } : null;
+  }
+
+  /** Ends a pause now, as if its time were up; tests use it. */
+  resume(): void {
+    this.pausedUntil = 0;
+    this.pauseReason = null;
+    this.pauses = 0;
+    this.kick();
+  }
+
   /** Settles once nothing is due that could run now; retries scheduled for later do not count. */
   async idle(): Promise<void> {
     while (this.draining !== null) await this.draining;
@@ -170,6 +198,7 @@ export class TranscribeWorker {
 
   /** The next note to run, the accounts taken in turn; null when none can run now. */
   private pick(): { source: TranscribeSource; db: AccountDb; item: TranscribeItem } | null {
+    if (this.options.now() < this.pausedUntil) return null;
     const count = this.sources.length;
     for (let offset = 0; offset < count; offset++) {
       const index = (this.cursor + offset) % count;
@@ -241,11 +270,18 @@ export class TranscribeWorker {
 
   private settle(source: TranscribeSource, db: AccountDb, item: TranscribeItem, attempts: number, failure: Failure | null): void {
     const queue = db.transcripts;
+    if (failure?.kind !== "paused" && failure?.kind !== "waiting") this.unpause();
     if (failure === null || failure.kind === "gone") {
       queue.remove(item.id);
       return;
     }
-    if (failure.kind === "blocked") {
+    if (failure.kind === "paused") {
+      // The note is not at fault and stays first in line: it probes the provider when the pause is over.
+      queue.release(item.id, failure.reason, 0);
+      this.pause(failure.reason);
+      return;
+    }
+    if (failure.kind === "waiting") {
       queue.release(item.id, failure.reason, this.options.blockedDelayMs);
       return;
     }
@@ -258,6 +294,22 @@ export class TranscribeWorker {
     const delay = delays[Math.min(attempts - 1, delays.length - 1)] ?? 0;
     queue.retry(item.id, failure.reason, delay);
     logError(`transcribe ${source.name}`, `${failure.reason}; attempt ${attempts} of ${this.options.maxAttempts}, next in ${Math.round(delay / 1000)} s`);
+  }
+
+  /** No note is run until the pause is over; each pause in a row is twice as long, up to the cap. */
+  private pause(reason: string): void {
+    const delay = Math.min(this.options.pauseMaxMs, this.options.pauseMs * 2 ** this.pauses);
+    this.pauses++;
+    this.pausedUntil = this.options.now() + delay;
+    this.pauseReason = reason;
+    logError("transcribe", `${reason}; pausing transcription for ${Math.round(delay / 1000)} s`);
+  }
+
+  /** The provider took a note (or answered about one): pauses start from the shortest again. */
+  private unpause(): void {
+    this.pausedUntil = 0;
+    this.pauseReason = null;
+    this.pauses = 0;
   }
 
   /** Whether `sid` is still queued (waiting or running) on the source's database. */
@@ -293,7 +345,8 @@ export class TranscribeWorker {
    * never holds the process open.
    */
   private schedule(): void {
-    let delay = Infinity;
+    const pausedFor = this.pausedUntil - this.options.now();
+    let delay = pausedFor > 0 ? pausedFor : Infinity;
     for (const source of this.sources) {
       let db: AccountDb | null;
       try {
@@ -301,6 +354,7 @@ export class TranscribeWorker {
       } catch {
         db = null;
       }
+      if (pausedFor > 0) break;
       if (db === null || !db.isOpen) {
         delay = Math.min(delay, this.options.pollMs);
         continue;

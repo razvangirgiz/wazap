@@ -5,8 +5,11 @@
  *   provider answering 429 or 5xx, whisper.cpp crashing;
  * - permanent: another attempt gets the same answer — media WhatsApp no
  *   longer holds, audio a provider refuses as input, a file too large;
- * - blocked: nothing is wrong with the note — no connection, a provider that
- *   is not ready or refuses the key — so no attempt is spent on it;
+ * - waiting: nothing is wrong with the note, but its account cannot serve it
+ *   now (not connected, not linked, stopping), so no attempt is spent on it;
+ * - paused: nothing is wrong with the note, but the provider cannot take any
+ *   note now (not ready, refusing the key, read-only), so no attempt is spent
+ *   and the whole worker pauses instead of trying note after note;
  * - gone: the message was deleted, expired or is no longer one to transcribe.
  *
  * A reason is a few words for status and logs. It never carries what was said,
@@ -14,7 +17,7 @@
  */
 import { WazapError } from "../errors.js";
 
-export type FailureKind = "transient" | "permanent" | "blocked" | "gone";
+export type FailureKind = "transient" | "permanent" | "waiting" | "paused" | "gone";
 
 export interface Failure {
   kind: FailureKind;
@@ -33,11 +36,14 @@ export function markFailure<E extends Error>(err: E, kind: FailureKind, reason: 
 /** Media download statuses that mean WhatsApp no longer serves the file, even after a re-upload request. */
 const MEDIA_GONE = new Set([403, 404, 410, 412]);
 
-const BLOCKED: Partial<Record<string, string>> = {
+const WAITING: Partial<Record<string, string>> = {
   NOT_CONNECTED: "not connected",
   NOT_LINKED: "not linked",
   SESSION_EXPIRED: "not linked",
   SESSION_CORRUPT: "not linked",
+};
+
+const PAUSED: Partial<Record<string, string>> = {
   TRANSCRIBE_UNAVAILABLE: "transcription is not ready",
   READ_ONLY: "read-only",
 };
@@ -48,8 +54,10 @@ export function classifyFailure(err: unknown): Failure {
     if (marked !== undefined) return marked;
   }
   if (err instanceof WazapError) {
-    const blocked = BLOCKED[err.code];
-    if (blocked !== undefined) return { kind: "blocked", reason: blocked };
+    const waiting = WAITING[err.code];
+    if (waiting !== undefined) return { kind: "waiting", reason: waiting };
+    const paused = PAUSED[err.code];
+    if (paused !== undefined) return { kind: "paused", reason: paused };
     switch (err.code) {
       case "MESSAGE_NOT_FOUND":
         return { kind: "gone", reason: "message gone" };
@@ -74,7 +82,7 @@ export function classifyFailure(err: unknown): Failure {
         return { kind: "transient", reason: err.code.toLowerCase().replace(/_/g, " ") };
     }
   }
-  if (err instanceof Error && (err as { code?: unknown }).code === "CLOSED") return { kind: "blocked", reason: "stopping" };
+  if (err instanceof Error && (err as { code?: unknown }).code === "CLOSED") return { kind: "waiting", reason: "stopping" };
   return { kind: "transient", reason: "unexpected error" };
 }
 

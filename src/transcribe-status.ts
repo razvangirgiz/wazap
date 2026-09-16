@@ -49,7 +49,8 @@ export function transcriptionStatusLine(status: TranscriptionStatus, now = Date.
     lastError,
   });
   const idle = status.auto === "on" ? "" : " (automatic transcription is off, so the queue waits)";
-  return `- **voice transcription queue**: ${detail}${idle}`;
+  const paused = status.paused === null ? "" : `; paused until ${status.paused.until}: ${status.paused.reason}`;
+  return `- **voice transcription queue**: ${detail}${idle}${paused}`;
 }
 
 /**
