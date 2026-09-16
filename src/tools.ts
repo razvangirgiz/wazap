@@ -658,17 +658,17 @@ The timeout is capped at 55 seconds because MCP clients give up at 60.`,
   tool({
     name: "search_messages",
     title: "Search WhatsApp messages",
-    description: `Case-insensitive text search over the messages wazap holds locally — all chats,
-or one chat, including history synced on first link. Each chat keeps its newest
-2000 messages searchable, on disk and in memory alike; anything the phone sent
-before that window is what recall's index is for. It cannot reach messages the
+    description: `Substring search over the messages wazap holds locally — all chats, or one
+chat, including history synced on first link. Case and diacritics are ignored
+("sedinta" finds "ședință"). Every message the phone synced to this device is
+kept and searched; there is no per-chat window. It cannot reach messages the
 phone never synced to this device.
 
 Every answer declares the window it searched: \`coverage.searched\` counts the
-held messages the scan ran over (the chat scope and time filters applied),
-\`coverage.oldest_at\`/\`newest_at\` bound that window and \`coverage.per_chat_cap\`
-names the 2000-message boundary — so "no messages found" always says how much
-history was actually scanned.
+held messages in scope (the chat scope and time filters applied) and
+\`coverage.oldest_at\`/\`newest_at\` bound that window, so "no messages found"
+always says how much history was searched. \`coverage.per_chat_cap\` is null:
+no chat is capped.
 
 \`from\` accepts "me", a phone number, a contact/chat id, or a name: a name must
 resolve to exactly one person — it matches contact names, notify names and
@@ -750,22 +750,22 @@ search \`freshness.chat\` is the newest message wazap holds for that chat.`,
   tool({
     name: "recall",
     title: "Semantically search WhatsApp history",
-    description: `Semantic search over the whole indexed WhatsApp history — answers "the
-invoice Dan mentioned", "the address Ana sent", "what did they say about the
-trip". It matches by meaning rather than exact words, so a paraphrase or
-another language still hits, and it keeps finding messages too old for
-search_messages to see. For an exact string — an id, a phone number, a URL —
+    description: `Search by meaning and by words at once over the whole WhatsApp history —
+answers "the invoice Dan mentioned", "the address Ana sent", "what did they say
+about the trip". A paraphrase or another language still hits through its
+meaning, and a short or foreign-language question still hits through its words;
+the two rankings are fused. For an exact string — an id, a phone number, a URL —
 search_messages is the better tool.
 
-Each result carries its date and a score: semantic similarity scaled by
-recency, plus a small bonus when the hit repeats a rare query token
-verbatim — a name, a number — so fresh and exact matches rank first.
-chat_id, since, until and from narrow
-the search exactly like search_messages — including a name that resolves to
-exactly one person. A hit marked "index only" lives in the index alone: quote
-it, but get_message and download_media cannot see it.
-Results under the similarity floor are dropped rather than listed; when only
-weak matches survive, the output says so — do not present them as found facts.
+Each result carries its date, a fused score, \`matched\` ("words", "meaning" or
+"both") and the cosine \`similarity\` when its meaning ranked it. chat_id, since,
+until and from narrow the search exactly like search_messages — including a
+name that resolves to exactly one person. A hit marked "index only" is a
+message wazap holds only as text: quote it, but get_message and download_media
+cannot open it.
+A hit found only by meaning must clear the similarity floor, so a question with
+no answer comes back empty; when only weak meaning matches survive, the output
+says so — do not present them as found facts.
 
 When semantic recall is off or its embedding setup is missing, the tool does
 not dead-end: it falls back to a keyword search over the local history, marked
@@ -1840,12 +1840,14 @@ function renderRecall(title: string, answer: RecallAnswer | IdentifiedRecallAnsw
     return `${title}: no messages found.${catchingUp ? ` ${catchingUp}` : ""}`;
   }
   // Under ~0.55 cosine, embeddinggemma matches are usually coincidental — the
-  // agent must not present them as found facts.
-  const weak = Math.max(...hits.map((h) => h.similarity)) < 0.55;
+  // agent must not present them as found facts. A hit whose words matched is
+  // not a guess, whatever its similarity.
+  const best = Math.max(0, ...hits.map((h) => h.similarity ?? 0));
+  const weak = hits.every((h) => h.matched === "meaning") && best < 0.55;
   const lines = [`# ${title} (${hits.length})`, ""];
   if (weak) {
     lines.push(
-      `Weak matches only (best similarity ${Math.max(...hits.map((h) => h.similarity)).toFixed(2)}): the query may have no real answer — treat these as guesses.`,
+      `Weak matches only (best similarity ${best.toFixed(2)}): the query may have no real answer — treat these as guesses.`,
       ""
     );
   }
@@ -1854,7 +1856,8 @@ function renderRecall(title: string, answer: RecallAnswer | IdentifiedRecallAnsw
   for (const hit of hits) {
     const m = hit.message;
     const tags = [
-      `score ${hit.score.toFixed(2)}`,
+      `score ${hit.score.toFixed(3)}`,
+      hit.matched === "both" ? "words + meaning" : hit.matched,
       hit.from_index ? "index only" : null,
       m.type !== "text" ? m.type : null,
       m.quoted ? "reply" : null,

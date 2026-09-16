@@ -1442,6 +1442,20 @@ function eventView(event: GroupEvent, ctx: MessageViewContext): { system: System
   };
 }
 
+/**
+ * The message_id a reply's quote points at, spelled the way buildMessageView
+ * spells it for the same context; undefined when the message quotes nothing.
+ */
+export function quotedMessageId(
+  raw: WAMessage,
+  ctx: Pick<MessageViewContext, "canonical" | "ownId" | "chatId">
+): string | undefined {
+  const context = analyze(raw).context;
+  if (!context?.quotedMessage || !context.stanzaId) return undefined;
+  const participant = context.participant ? ctx.canonical(context.participant) : ctx.ownId;
+  return messageIdFor({ id: context.stanzaId, fromMe: participant === ctx.ownId, remoteJid: ctx.chatId }, ctx.chatId);
+}
+
 function quotedView(
   context: proto.IContextInfo,
   ctx: MessageViewContext

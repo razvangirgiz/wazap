@@ -1,5 +1,6 @@
 /** Public shapes of the WhatsApp service: what the MCP tools and the CLI consume. */
 
+import type { SearchCoverage } from "./coverage.js";
 import type { DraftPayload, DraftView } from "./drafts.js";
 import type { RecallStatus } from "./recall/index.js";
 import type { ProviderName } from "./transcribe/index.js";
@@ -334,12 +335,14 @@ export interface SearchOptions {
 
 /** One recall hit: the message plus the score it ranked by. */
 export interface RecallHit {
-  /** Cosine similarity × recency decay; hits are sorted by it, so fresh matches win. */
+  /** The fused rank score (reciprocal rank fusion of words and meaning); hits are sorted by it. */
   score: number;
-  /** Raw cosine similarity before the recency decay. */
-  similarity: number;
+  /** Raw cosine similarity to the query; null when only the words matched and the meaning did not rank it. */
+  similarity: number | null;
+  /** What found it: the query's words, its meaning, or both. */
+  matched: "words" | "meaning" | "both";
   message: MessageView;
-  /** The message left the live store; text and date come from the index itself. */
+  /** The database holds the message only as text (from the earlier recall index): get_message and download_media cannot open it. */
   from_index: boolean;
 }
 
@@ -566,6 +569,8 @@ export interface WhatsAppApi {
   getStatus(): StatusInfo;
   hasChat(jid: string): boolean;
   hasMessage(id: string): boolean;
+  /** What search_messages ran across; optional, so a stand-in need not count. */
+  searchCoverage?(chatId: string | undefined, opts?: { sinceMs?: number; untilMs?: number }): SearchCoverage | null;
   hasDraft(id: string): boolean;
   link(phone: string): Promise<PairingInfo>;
   listChats(filter: ChatFilter, limit: number): Promise<Synced<ChatSummary[]>>;

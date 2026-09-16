@@ -83,12 +83,12 @@ function statusRank(status: number): number {
   return status === STATUS.ERROR ? STATUS.PENDING + 0.5 : status;
 }
 
-function raiseStatus(receipt: Receipt, status: number): void {
+export function raiseStatus(receipt: Receipt, status: number): void {
   if (receipt.status === undefined || statusRank(status) > statusRank(receipt.status)) receipt.status = status;
 }
 
 /** Each moment keeps its latest; the message's status climbs to the furthest any one person got. */
-function raiseUser(receipt: Receipt, user: string, moments: UserMoments): void {
+export function raiseUser(receipt: Receipt, user: string, moments: UserMoments): void {
   const users = (receipt.users ??= {});
   const standing = (users[user] ??= {});
   for (const field of ["delivered", "read", "played"] as const) {

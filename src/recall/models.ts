@@ -9,6 +9,9 @@ import { WazapError } from "../errors.js";
 import { downloadFile, type DownloadProgress, type DownloadResult } from "../model-download.js";
 import type { EmbedModelAlias } from "./types.js";
 
+/** The most characters of one message the index ever embedded, whatever the model's window. */
+export const RECALL_TEXT_CAP = 2048;
+
 export interface EmbedModelSpec {
   alias: EmbedModelAlias;
   file: string;

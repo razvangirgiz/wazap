@@ -5,17 +5,13 @@ export {
   downloadEmbed,
   embedModelPath,
   embedModelSpec,
+  RECALL_TEXT_CAP,
   type EmbedModelSpec,
 } from "./models.js";
 export { readRecallSettings } from "./settings.js";
-export { RecallQueue, type RecallOp } from "./queue.js";
-export { RecallStore, TEXT_CAP as RECALL_TEXT_CAP } from "./store.js";
+export { EmbedFeed, type EmbedFeedOptions } from "./feed.js";
 export type {
   EmbedModelAlias,
-  RankedHit,
-  RecallItem,
-  RecallQuery,
-  RecallRecord,
   RecallSettings,
   RecallState,
   RecallStatus,
