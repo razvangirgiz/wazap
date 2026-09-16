@@ -42,6 +42,8 @@ function buildMcpServer(hub: AccountSource, config: Config, allowWrite: boolean,
   registerTools(server, hub, {
     allowWrite: allowWrite && !config.readOnly && anyAccountAllowsWrites(hub),
     allowLocalFiles,
+    ...(config.maxInFlight === undefined ? {} : { maxInFlight: config.maxInFlight }),
+    ...(config.maxInFlightTotal === undefined ? {} : { maxInFlightTotal: config.maxInFlightTotal }),
   });
   registerSkillPrompts(server, skills);
   return server;
@@ -368,7 +370,7 @@ export async function startHttpEndpoint(hub: AccountSource, config: Config, endp
   const authed = (req: Request, res: Response, next: NextFunction): void => {
     requireAuth(req, res, next).catch(next);
   };
-  app.post("/mcp", authed, httpPostBudget((req) => (req as AuthedRequest).sessionOwner!),
+  app.post("/mcp", authed, httpPostBudget((req) => (req as AuthedRequest).sessionOwner!, Date.now, config.httpPostBudget),
     express.json({ limit: "100kb", inflate: false }), handleMcp);
   app.get("/mcp", authed, handleMcp);
   app.delete("/mcp", authed, handleMcp);

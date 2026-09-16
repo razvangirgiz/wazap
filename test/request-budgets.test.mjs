@@ -23,7 +23,7 @@ test("one credential cannot fill the whole HTTP session registry", () => {
 
 test("HTTP windows expire and the credential bookkeeping has a hard cap", () => {
   let now = 1000;
-  const middleware = httpPostBudget(req => req.owner, () => now);
+  const middleware = httpPostBudget(req => req.owner, () => now, 120);
   function call(owner, method = "POST") {
     let status = 200;
     const res = { setHeader() {}, status(value) { status = value; return this; }, json() {} };
@@ -42,8 +42,8 @@ test("HTTP windows expire and the credential bookkeeping has a hard cap", () => 
 });
 
 const wa = { getStatus: () => ({ status: "connected", status_since: new Date().toISOString() }) };
-async function boot(t, openRead = false) {
-  const config = offlineConfig("wazap-budget-"); const stop = new AbortController();
+async function boot(t, openRead = false, overrides = {}) {
+  const config = offlineConfig("wazap-budget-", overrides); const stop = new AbortController();
   t.after(() => { stop.abort(); rmSync(config.dataDir, { recursive: true, force: true }); });
   const port = await startHttpEndpoint(stubAccountSource(wa), config, { host: "127.0.0.1", port: 0, openRead,
     credentials: [{ token: "a", write: false }, { token: "b", write: false }], signal: stop.signal });
@@ -79,7 +79,7 @@ test("compressed MCP bodies are refused rather than inflated", async (t) => {
   assert.equal((await call("a", gzipSync("{}"), { "content-encoding": "gzip" })).status, 415);
 });
 test("POST admission is bounded per credential, independently of session resets", async (t) => {
-  const call = await boot(t);
+  const call = await boot(t, false, { httpPostBudget: 120 });
   for (let i = 0; i < 120; i++) assert.equal((await call()).status, 400);
   const refused = await call(); assert.equal(refused.status, 429); assert.ok(refused.headers.get("retry-after"));
   assert.equal((await call("b")).status, 400);
@@ -89,7 +89,7 @@ for (const scope of ["session", "process"]) test(`tool work is bounded per ${sco
   let finish; const gate = new Promise(resolve => { finish = resolve; });
   const register = createToolRegistrar([{ name: "synthetic", title: "Synthetic", description: "Synthetic", schema: {}, write: false,
     handler: async () => { await gate; return { content: [] }; } }]);
-  const session = () => { let call; register({ registerTool(_name, _meta, handler) { call = handler; } }, stubAccountSource(wa), { allowWrite: false }); return call; };
+  const session = () => { let call; register({ registerTool(_name, _meta, handler) { call = handler; } }, stubAccountSource(wa), { allowWrite: false, maxInFlight: 4, maxInFlightTotal: 16 }); return call; };
   const calls = Array.from({ length: scope === "session" ? 1 : 4 }, session);
   const pending = calls.flatMap(call => Array.from({ length: 4 }, () => call({})));
   const overflow = (scope === "session" ? calls[0] : session())({});
@@ -97,4 +97,16 @@ for (const scope of ["session", "process"]) test(`tool work is bounded per ${sco
   const refused = await overflow; await Promise.all(pending);
   assert.equal(refused.structuredContent?.error, "RATE_LIMITED");
   assert.equal((await calls[0]({})).isError, undefined);
+});
+
+test("by default one session runs a burst of eight tool calls, and the ninth waits its turn", async () => {
+  let finish; const gate = new Promise(resolve => { finish = resolve; });
+  const register = createToolRegistrar([{ name: "synthetic", title: "Synthetic", description: "Synthetic", schema: {}, write: false,
+    handler: async () => { await gate; return { content: [] }; } }]);
+  let call; register({ registerTool(_name, _meta, handler) { call = handler; } }, stubAccountSource(wa), { allowWrite: false });
+  const burst = Array.from({ length: 8 }, () => call({}));
+  const ninth = call({});
+  await turn(); finish();
+  for (const result of await Promise.all(burst)) assert.equal(result.isError, undefined);
+  assert.equal((await ninth).structuredContent?.error, "RATE_LIMITED");
 });

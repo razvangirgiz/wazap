@@ -57,6 +57,12 @@ export interface Config {
   share: boolean;
   /** Write-tool token bucket, per minute. 0 disables the limit. */
   rateLimitPerMinute: number;
+  /** Tool calls one MCP session may have running at once; default 8. */
+  maxInFlight?: number;
+  /** Tool calls the whole process may have running at once; default 32. */
+  maxInFlightTotal?: number;
+  /** HTTP POSTs to /mcp per credential per minute; default 240. */
+  httpPostBudget?: number;
   sources: Record<"dataDir" | "readOnly" | "transport" | "rateLimit" | "transcribe" | "webhook" | "recall", Source>;
   command: Command;
   /** The command was named on the command line rather than defaulted to serve. */
@@ -254,6 +260,12 @@ export function writesHints(
   return hints;
 }
 
+/** A safety limit: a missing, zero or unreadable value keeps the default rather than lifting it. */
+function positiveInt(value: string | undefined, fallback: number): number {
+  const n = asInt(value, fallback);
+  return n > 0 ? n : fallback;
+}
+
 function asInt(value: string | undefined, fallback: number): number {
   const n = Number.parseInt((value ?? "").trim(), 10);
   return Number.isFinite(n) ? n : fallback;
@@ -378,6 +390,9 @@ export function parseCli(argv: string[] = process.argv.slice(2)): CliInvocation 
       oauthPassword: process.env.WAZAP_OAUTH_PASSWORD || null,
       share: !asBool(process.env.WAZAP_NO_SHARE, false),
       rateLimitPerMinute: asInt(process.env.WAZAP_RATE_LIMIT, 20),
+      maxInFlight: positiveInt(process.env.WAZAP_MAX_INFLIGHT, 8),
+      maxInFlightTotal: positiveInt(process.env.WAZAP_MAX_INFLIGHT_TOTAL, 32),
+      httpPostBudget: positiveInt(process.env.WAZAP_HTTP_BUDGET, 240),
       sources: {
         // Resolved before dotenv runs, so the data dir's own .env cannot name it.
         dataDir: values["data-dir"] !== undefined ? "flag" : shell.has("WAZAP_DATA_DIR") ? "env" : "default",

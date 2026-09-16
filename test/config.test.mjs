@@ -1,7 +1,10 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
-import { isRemoteHttp, readOnlySetting, writesHints } from "../dist/config.js";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { isRemoteHttp, parseCli, readOnlySetting, writesHints } from "../dist/config.js";
 
 const CASES = [
   [undefined, false, "unset registers write tools; config prints writes: on (default)"],
@@ -54,4 +57,30 @@ test("writesHints on HTTP say a write token is not writes being on", () => {
   assert.match(hints[0], /Write tools are not registered/);
   assert.match(hints[1], /write token is not the same as writes being enabled/i);
   assert.match(hints[1], /read token never registers write tools/i);
+});
+
+test("concurrency and HTTP budgets default generously, and only a positive number changes them", () => {
+  const keys = ["WAZAP_MAX_INFLIGHT", "WAZAP_MAX_INFLIGHT_TOTAL", "WAZAP_HTTP_BUDGET", "WAZAP_RETENTION"];
+  const previous = Object.fromEntries(keys.map((key) => [key, process.env[key]]));
+  const dir = mkdtempSync(join(tmpdir(), "wazap-limits-config-"));
+  const load = () => parseCli(["serve", "--data-dir", dir]).config;
+  try {
+    for (const key of keys) delete process.env[key];
+    assert.deepEqual(
+      (({ maxInFlight, maxInFlightTotal, httpPostBudget, retention }) => ({ maxInFlight, maxInFlightTotal, httpPostBudget, retention }))(load()),
+      { maxInFlight: 8, maxInFlightTotal: 32, httpPostBudget: 240, retention: false }
+    );
+    Object.assign(process.env, { WAZAP_MAX_INFLIGHT: "12", WAZAP_MAX_INFLIGHT_TOTAL: "0", WAZAP_HTTP_BUDGET: "junk", WAZAP_RETENTION: "1" });
+    const tuned = load();
+    assert.equal(tuned.maxInFlight, 12);
+    assert.equal(tuned.maxInFlightTotal, 32, "zero does not lift a safety limit");
+    assert.equal(tuned.httpPostBudget, 240);
+    assert.equal(tuned.retention, true);
+  } finally {
+    for (const key of keys) {
+      if (previous[key] === undefined) delete process.env[key];
+      else process.env[key] = previous[key];
+    }
+    rmSync(dir, { recursive: true, force: true });
+  }
 });

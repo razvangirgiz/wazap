@@ -44,7 +44,15 @@ export interface RegisterOpts {
   allowWrite: boolean;
   /** Trusted local stdio defaults to true; every HTTP session explicitly sets its capability. */
   allowLocalFiles?: boolean;
+  /** Tool calls this session may have running at once (WAZAP_MAX_INFLIGHT). */
+  maxInFlight?: number;
+  /** Tool calls every session together may have running at once (WAZAP_MAX_INFLIGHT_TOTAL). */
+  maxInFlightTotal?: number;
 }
+
+/** Agents fan out: Claude Code routinely sends several tool calls at once, and wait_for_messages holds one for up to 55 s. */
+const MAX_IN_FLIGHT = 8;
+const MAX_IN_FLIGHT_TOTAL = 32;
 
 export function toolError(err: WazapError): ToolResult {
   const payload: Record<string, unknown> = { error: err.code, message: err.message };
@@ -115,8 +123,10 @@ export function createToolRegistrar(defs: readonly ToolDef[]) {
           let resolved: { id: string; wa: WhatsAppApi } | undefined;
           let admitted = false;
           try {
-            if (inFlight >= 16 || sessionInFlight >= 4) throw new WazapError("RATE_LIMITED", "Too many tool operations are still running.",
-              "Wait for pending operations to finish, then retry once");
+            if (inFlight >= (opts.maxInFlightTotal ?? MAX_IN_FLIGHT_TOTAL) || sessionInFlight >= (opts.maxInFlight ?? MAX_IN_FLIGHT)) {
+              throw new WazapError("RATE_LIMITED", "Too many tool operations are still running.",
+                "Wait for pending operations to finish, then retry once; WAZAP_MAX_INFLIGHT raises the limit");
+            }
             inFlight++;
             sessionInFlight++;
             admitted = true;

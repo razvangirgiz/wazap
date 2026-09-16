@@ -1,7 +1,7 @@
 import type { Request, RequestHandler, Response } from "express";
 
 /** Endpoint-local, credential-keyed POST budget. No raw bearer tokens or IP trust. */
-export function httpPostBudget(ownerOf: (req: Request) => string, now: () => number = Date.now): RequestHandler {
+export function httpPostBudget(ownerOf: (req: Request) => string, now: () => number = Date.now, perMinute = 240): RequestHandler {
   const windows = new Map<string, { at: number; count: number }>();
   const windowMs = 60_000;
   const maxOwners = 1024;
@@ -22,7 +22,7 @@ export function httpPostBudget(ownerOf: (req: Request) => string, now: () => num
       entry = { at: time, count: 0 };
       windows.set(owner, entry);
     }
-    if (entry.count >= 120) { refuse(res, 429, Math.max(1, Math.ceil((entry.at + windowMs - time) / 1000))); return; }
+    if (entry.count >= perMinute) { refuse(res, 429, Math.max(1, Math.ceil((entry.at + windowMs - time) / 1000))); return; }
     entry.count++;
     next();
   };
