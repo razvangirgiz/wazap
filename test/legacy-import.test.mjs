@@ -6,7 +6,7 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { createHash } from "node:crypto";
 import { proto } from "baileys";
@@ -197,6 +197,11 @@ test("the newest edit wins, lids fold into their number, notes and marks carry o
     assert.equal(db.messages.get(r.callPlaceholder), null, "the call placeholder folds into the call log");
     assert.ok(db.messages.get(r.callLog));
     assert.ok(db.messages.get(r.synced), "a history-sync line imports like any other");
+    assert.deepEqual(
+      db.messages.receipts(r.syncedReceipts).map((x) => [x.jid, x.readAt]),
+      [["40700000005@s.whatsapp.net", (fx.T - 70) * 1000]],
+      "the receipts a synced message carries, the account's own device left out"
+    );
 
     const story = db.messages.get(r.story);
     assert.equal(story.expiresAt, story.ts + 24 * 3_600_000, "a story lives a day");
@@ -261,6 +266,21 @@ test("malformed lines and a torn tail are reported, not fatal; a timestamp days 
   }
 });
 
+test("a verification copy a crash left behind is removed before the next one", async () => {
+  const fx = await buildLegacyAccount();
+  const stale = join(fx.dataDir, "accounts", "default", ".legacy-verify-stale");
+  mkdirSync(join(stale, "accounts", "default", "history"), { recursive: true });
+  writeFileSync(join(stale, "accounts", "default", "store.json"), "{}");
+  const db = openDb(fx);
+  try {
+    const report = await run(fx, db);
+    assert.equal(report.state, "done");
+    assert.equal(existsSync(stale), false);
+  } finally {
+    db.close();
+  }
+});
+
 test("a finished import is a no-op the second time", async () => {
   const fx = await buildLegacyAccount();
   const db = openDb(fx);
@@ -314,7 +334,8 @@ test("an import cut off at any chunk resumes into the same database", async () =
     );
     db = openDb(fx, { file, db: dbOptions });
     try {
-      const report = await run(fx, db, options);
+      // The resumed run keeps the first run's rules even when told otherwise.
+      const report = await run(fx, db, { ...options, retention: true });
       assert.equal(report.runs, 2);
       assert.equal(report.state, "imported");
     } finally {

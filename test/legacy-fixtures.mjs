@@ -43,6 +43,7 @@ export function roles() {
     callPlaceholder: sid(false, ANA, "C1"),
     callLog: sid(false, ANA, "C2"),
     synced: sid(false, ANA, "S1"),
+    syncedReceipts: sid(true, GROUP, "S2"),
     future: sid(false, ANA, "F1"),
     b1: sid(false, BOGDAN, "B1"),
     b1Lid: sid(false, BOGDAN_LID, "B1"),
@@ -138,7 +139,17 @@ export async function buildLegacyAccount({ retention = false, beta = true, betaO
   sock.ev.emit("messaging-history.set", {
     chats: [],
     contacts: [],
-    messages: [msg({ chat: ANA, id: "S1", ts: T - 100, message: { conversation: "Mesaj vechi sincronizat din telefon" } })],
+    messages: [
+      msg({ chat: ANA, id: "S1", ts: T - 100, message: { conversation: "Mesaj vechi sincronizat din telefon" } }),
+      {
+        ...msg({ chat: GROUP, id: "S2", fromMe: true, ts: T - 90, message: { conversation: "Trimis de pe telefon, citit de Dana" } }),
+        status: 3,
+        userReceipt: [
+          { userJid: DANA, receiptTimestamp: T - 80, readTimestamp: T - 70 },
+          { userJid: ME, receiptTimestamp: T - 85 },
+        ],
+      },
+    ],
     isLatest: false,
     progress: 50,
   });
