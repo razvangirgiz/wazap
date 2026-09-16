@@ -8,6 +8,7 @@
 import type { Connection } from "./connection.js";
 import { idLowerBound, idUpperBound } from "./ids.js";
 import type { Identity } from "./identity.js";
+import { foldText } from "./fold.js";
 import { chatCondition, type Messages } from "./messages.js";
 import type { SQLInputValue } from "./sqlite.js";
 import type { MessageFilter, TextSearchInput, TextSearchResult } from "./types.js";
@@ -23,10 +24,7 @@ const FTS_BATCH = 256;
 const MIN_TRIGRAM_CHARS = 3;
 const NO_UPPER_BOUND = Number.MAX_SAFE_INTEGER;
 
-/** What the trigram tokenizer does to text, for the paths that match in JavaScript. */
-export function foldText(text: string): string {
-  return text.toLowerCase().normalize("NFD").replace(/\p{M}+/gu, "");
-}
+export { foldText } from "./fold.js";
 
 /** A filter turned into ids and one SQL condition over `m` and its chat `c`; null when it can match nothing. */
 export interface ResolvedFilter {
@@ -105,6 +103,8 @@ export class Search {
     const limit = Math.min(1_000, Math.max(1, Math.floor(input.limit)));
     const query = input.query.trim();
     const mode = [...query].length >= MIN_TRIGRAM_CHARS ? "trigram" : "scan";
+    // A query of nothing but whitespace names nothing: it must not list every message.
+    if (query === "") return { items: [], hasMore: false, nextBefore: null, mode, scanCapped: false };
     const cap = Math.max(1, Math.floor(input.scanCap ?? (mode === "trigram" ? DEFAULT_TRIGRAM_CAP : DEFAULT_SCAN_CAP)));
     const filter = this.resolveFilter(input);
     if (filter === null) return { items: [], hasMore: false, nextBefore: null, mode, scanCapped: false };
@@ -177,7 +177,6 @@ export class Search {
     for (const row of rows) {
       examined++;
       if (
-        needle === "" ||
         (row.text !== null && foldText(row.text).includes(needle)) ||
         (row.transcript !== null && foldText(row.transcript).includes(needle))
       ) {

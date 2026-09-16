@@ -121,12 +121,47 @@ test("the trigram path reports its cap too, when filters reject most candidates"
   db.close();
 });
 
-test("an empty query lists the filtered messages newest first; quotes and operators in a query are literal", () => {
+test("quotes and operators in a query are literal", () => {
   const { db } = openTemp();
   db.messages.upsert(textMessage(PEER, "Q", T0, 'a spus "da" OR nu'));
   db.messages.upsert(textMessage(OTHER, "X", T0 + 1000, "altceva"));
-  assert.deepEqual(db.search.text({ query: "", chat: PEER, limit: 5 }).items.map((m) => m.keyId), ["Q"]);
   assert.deepEqual(db.search.text({ query: '"da" OR', limit: 5 }).items.map((m) => m.keyId), ["Q"]);
   assert.deepEqual(db.search.text({ query: "NEAR(", limit: 5 }).items, []);
   db.close();
+});
+
+test("finding 12a: an empty or whitespace-only query names nothing and returns nothing", () => {
+  const { db } = openTemp();
+  db.messages.upsert(textMessage(PEER, "Q", T0, "orice"));
+  for (const query of ["", "   ", "\t\n"]) {
+    const result = db.search.text({ query, chat: PEER, limit: 5 });
+    assert.deepEqual([result.items, result.hasMore, result.scanCapped], [[], false, false], JSON.stringify(query));
+  }
+  db.close();
+});
+
+test("finding 12a: a short query folds exactly like the trigram index, in Greek and Cyrillic as in Romanian", () => {
+  const { db } = openTemp();
+  ["Αθήνα ταξίδι", "Привет Ёлка", "ȘEDINȚĂ"].forEach((text, i) => db.messages.upsert(textMessage(PEER, `K${i}`, T0 + i * 1000, text)));
+  const find = (query) => db.search.text({ query, limit: 10 }).items.map((m) => m.keyId);
+  // What the index does with three letters, the scan must do with two.
+  assert.deepEqual([find("θήν"), find("θην")], [["K0"], []], "the index keeps the Greek tonos");
+  assert.deepEqual([find("θή"), find("θη")], [["K0"], []]);
+  assert.deepEqual([find("ёлк"), find("елк")], [["K1"], []], "the index keeps ё distinct from е");
+  assert.deepEqual([find("Ёл"), find("ел")], [["K1"], []]);
+  assert.deepEqual([find("sed"), find("șe"), find("SE")], [["K2"], ["K2"], ["K2"]]);
+  db.close();
+});
+
+test("finding 12a: the JavaScript fold is the trigram index's fold for every code point up to U+1FFFF", async () => {
+  const { foldTableFromSqlite } = await import("../dist/db/fold-probe.js");
+  const { foldCodePoint } = await import("../dist/db/fold.js");
+  const sqliteFolds = new Map(foldTableFromSqlite(0x20, 0x20000));
+  const drift = [];
+  for (let cp = 0x20; cp < 0x20000; cp++) {
+    if (cp >= 0xd800 && cp <= 0xdfff) continue;
+    const expected = sqliteFolds.get(cp) ?? cp;
+    if (foldCodePoint(cp) !== expected) drift.push(`U+${cp.toString(16)}`);
+  }
+  assert.deepEqual(drift.slice(0, 20), [], "rerun scripts/gen-fold-table.mjs: the bundled SQLite folds differently");
 });

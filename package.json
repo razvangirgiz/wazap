@@ -44,6 +44,7 @@
     "icon": "node scripts/make-icon.mjs",
     "context:build": "node scripts/build-context.mjs",
     "bench:db": "npm run build && node scripts/bench-db.mjs",
+    "fold:table": "npm run build && node scripts/gen-fold-table.mjs",
     "lint": "eslint .",
     "check": "node scripts/check.mjs",
     "hooks:install": "git config core.hooksPath scripts/git-hooks && echo 'pre-push hook active (scripts/git-hooks)'"
