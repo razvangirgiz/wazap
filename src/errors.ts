@@ -64,7 +64,8 @@ export const ERROR_GUIDE: Record<ErrorCode, string> = {
   SESSION_EXPIRED: "The account was unlinked from the phone. Tell the user to run `npx wazap-mcp login`; do not retry.",
   SESSION_CORRUPT:
     "Stored credentials are unreadable. Tell the user to run `npx wazap-mcp logout` then `npx wazap-mcp login`.",
-  NOT_CONNECTED: "The socket is still connecting or reconnecting. Call get_status, wait, retry once.",
+  NOT_CONNECTED:
+    "The socket is still connecting or reconnecting, or the account is preparing its database once after an upgrade. Call get_status, wait, retry once.",
   SYNC_IN_PROGRESS:
     "History sync has not finished. Retry in a few seconds; earlier messages may be missing until then.",
   INVALID_PHONE:

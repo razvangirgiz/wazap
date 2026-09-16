@@ -285,8 +285,8 @@ them. `--dry-run` prints the plan and touches nothing.
 | `mark_handled` | local | Take a chat off `get_unanswered` until the other side writes again. Nothing changes on WhatsApp. |
 | `get_stories` | read | The stories (status updates) received in the last day, by author, with previews on request. They show nowhere else. |
 | `wait_for_messages` | read | Block up to 55 s until a message arrives, then return it with a cursor for the next call. `addressed_to_me` wakes only for direct messages, @-mentions and replies. |
-| `search_messages` | read | Text search across the locally held messages; `since`, `until` and `from` narrow it. |
-| `recall` | read | Semantic search over the whole indexed history: matches by meaning, so a paraphrase or another language still hits, and it finds messages too old for `search_messages`. Off until [turned on](#semantic-recall). |
+| `search_messages` | read | Text search across every message the account keeps; `since`, `until` and `from` narrow it, and the answer says how many messages it searched. |
+| `recall` | read | Search by meaning and by words at once over the whole kept history, so a paraphrase or another language still hits. Off until [turned on](#semantic-recall). |
 | `get_message` | read | One message in full, with its quoted message, each reaction with who left it, and who voted for each option of a poll or answered an event. On your own messages, `delivery` says whether it was sent, delivered, read or played, and in a group who read it and when; it stops at delivered or is missing when read receipts are off on either side, and large groups may send none. |
 | `search_contacts` | read | Find contacts by name, number, tag or detail; `tag` alone lists everyone filed under it. |
 | `sync_contacts` | read | Fetch the phone's address book from WhatsApp again, when names are missing. |
@@ -467,11 +467,11 @@ since one can be an hour long; call `transcribe_audio(message_id)` for those.
 
 ## Semantic recall
 
-`search_messages` matches exact words; `recall` matches what was meant. A
-paraphrase or another language still hits, and it keeps finding messages too
-old for `search_messages` to see — those come back marked `index only`, which
-`get_message` and `download_media` cannot open. For an exact string — an id,
-a phone number, a URL — `search_messages` stays the right tool.
+`search_messages` matches exact words; `recall` matches what was meant and the
+words at once: a paraphrase or another language still hits through its meaning,
+a short or foreign-language question through its words, and the two rankings
+are fused. Both reach every message the account keeps. For an exact string — an
+id, a phone number, a URL — `search_messages` stays the right tool.
 
 Off by default, and fully local: a `llama-server` sidecar bound to loopback
 does the embedding, so nothing leaves the machine. It needs llama.cpp, the
@@ -489,11 +489,15 @@ is missing. `wazap status` runs the three checks — `recall`, `llama-server`,
 `ready` or `degraded`.
 
 `chat_id`, `since`, `until` and `from` narrow a recall exactly like
-`search_messages`. Hits rank by similarity scaled by recency, and anything
-under the similarity floor is dropped rather than listed. The index lives at
-`accounts/<id>/recall/` (dir `0700`, files `0600`), holds only what persisted
-history already stores, and tombstones a message out when it is deleted or
-revoked or expires.
+`search_messages`. Hits rank by a fused score (reciprocal rank fusion of the
+word and meaning rankings), and a hit found only by meaning must clear the
+similarity floor, so a question with no answer comes back empty. The vectors
+live in the account database next to their messages, are made in the
+background for every message that has none, and leave with their message when
+it is deleted, revoked or expires; an edit makes its vector again. A message
+wazap holds only as text — carried over from the recall index an older wazap
+built — is marked `index only`: `get_message` returns its text, and
+`download_media` has nothing to open.
 
 Embedding requests refuse redirects, cap replies at 4 MiB and validate vector
 shape and finite values. Provider bodies and decoder stderr are not copied into
@@ -504,8 +508,9 @@ refused, and diagnostics show its host only.
 
 The knobs — `WAZAP_RECALL`, `WAZAP_EMBED_MODEL` (`embeddinggemma-300m` by
 default, `e5-base-multilingual` for an older llama.cpp), `WAZAP_EMBED_BIN`,
-`WAZAP_RECALL_MAX`, `WAZAP_RECALL_MIN_SIMILARITY` — are documented in
-`.env.example`.
+`WAZAP_RECALL_MIN_SIMILARITY` — are documented in `.env.example`.
+`WAZAP_RECALL_MAX` is still validated but no longer caps anything: every kept
+message is indexed.
 
 ## Skills
 
@@ -564,7 +569,7 @@ trace, so an agent can decide whether to retry, ask the user, or stop.
 | `ALREADY_LINKED` | `link_account` was called on a session that is already linked. Call `get_status`. |
 | `SESSION_EXPIRED` | Unlinked from the phone. Run `npx wazap-mcp login`. |
 | `SESSION_CORRUPT` | Credentials unreadable. Run `npx wazap-mcp logout` then `login`. |
-| `NOT_CONNECTED` | Still connecting or reconnecting. |
+| `NOT_CONNECTED` | Still connecting or reconnecting, or preparing the account database once after an upgrade. |
 | `SYNC_IN_PROGRESS` | History sync has not finished; results may be partial. |
 | `INVALID_PHONE` | Number is not in international format. |
 | `INVALID_ID` | Not a WhatsApp chat, contact or group id. |
@@ -597,12 +602,10 @@ accounts moves into `accounts/default/` the first time a wazap command runs.
   accounts/<id>/
     auth/           WhatsApp credentials — treat this like a password
     media/          downloads from download_media
-    history/        per-chat message history, so a restart is not amnesia
-    recall/         the semantic index, when recall is on
+    wazap.sqlite    the account database: chats, contacts, messages, reactions,
+                    receipts, transcripts, notes, recall vectors, deletion
+                    barriers (plus -wal and -shm beside it)
     previews/       one small JPEG per photo or video already previewed
-    notes.json      notes on contacts and "handled" marks; never sent anywhere
-    store.json      chat-list snapshot
-    retention.json  deletion IDs, clear cutoffs and expiry deadlines; no bodies
     qr.png          last QR, when login showed one
     webhook.json    webhook delivery counters, once the server has posted an event
   models/           whisper.cpp and embedding models, when transcription or recall run locally
@@ -617,24 +620,55 @@ accounts moves into `accounts/default/` the first time a wazap command runs.
 Credential writes go to a temp file and are renamed into place, so killing the
 process mid-write cannot leave you re-linking your phone.
 
+### The account database
+
+Each account keeps what it has seen in one SQLite file, `wazap.sqlite` (`0600`,
+in a `0700` folder), written with a full sync on every commit. Nothing of the
+history is held in memory: every read, search and restart goes to the file, and
+only small bounded caches stay in the process.
+
+- **Upgrade.** A data dir an earlier wazap wrote has `store.json`, `history/`,
+  `retention.json`, `notes.json`, `recall/` and perhaps the beta
+  `archive.sqlite`. The first start imports them once, before the account is
+  served; meanwhile its tools answer `NOT_CONNECTED` and `get_status` says it is
+  preparing its database. A stop in the middle resumes where it left off at the
+  next start. The import checks the database against what those files showed;
+  a difference it cannot explain is logged by category and count, recorded for
+  `wazap doctor`, and the account is served from the database anyway. An
+  unreadable `retention.json` stops the import, since history without its
+  deletion barriers could bring deleted messages back. The legacy files are left
+  where they are and never read or written again.
+- **Logout** deletes the credentials and keeps the database, so the same number
+  linking again finds its history. **A different number linking** sets the
+  earlier database aside as `wazap.<time>.previous-owner.sqlite` and starts an
+  empty one: one person's history never shows under another's.
+  **`wazap account remove`** stops the account, closes its database and deletes
+  the whole folder with it.
+- **`WAZAP_PERSIST_HISTORY=0`** removes every stored message at each start and
+  stop, whatever `WAZAP_RETENTION` says; chats, contacts, notes and deletion
+  barriers stay, and recall is off.
+
 ### Deleted and disappearing messages
 
-Observed deletes/revokes remove the message from reads immediately and queue
-cleanup of history, snapshots, automatic previews, transcripts and recall rows.
-Successful delete/clear tools wait for local cleanup; a disk failure is reported
-even if WhatsApp already accepted the deletion. Pending preview/transcription
-results cannot restore a deleted message. A revoke only ever removes a message
-in the chat it arrived in. Old history-sync chat metadata no longer keeps an
-extra embedded copy of the message.
+An observed delete or revoke tombstones the message in the database in one
+transaction: its text, protobuf, transcript, reactions, votes, receipts and
+recall vector go, a reply quoting it loses the quoted copy, and reads stop
+showing it at once. Its preview file is removed through a queue kept
+in the database, so a crash between the two finishes the removal at the next
+start. Successful delete/clear tools wait for that cleanup; a disk failure is
+reported even if WhatsApp already accepted the deletion. Pending
+preview/transcription results cannot restore a deleted message. A revoke only
+ever removes a message in the chat it arrived in. Chat metadata never keeps an
+embedded copy of a message.
 
-`retention.json` (`0600`) keeps account-local message IDs and chat-clear cutoffs,
-not bodies. These barriers prevent replay from resurrecting deleted messages;
-they remain even with `WAZAP_PERSIST_HISTORY=0`. Clearing a chat rejects backfill
-dated at or before the local clear time. WhatsApp timestamps have second
-precision, so a message in the same second can be suppressed. If the file is
-unreadable the account refuses to start rather than replay deleted messages;
-restore it from a backup, or move it aside knowingly (messages deleted earlier
-can reappear from local history).
+The tombstones and each chat's clear time are the barriers: message IDs and
+times, no bodies. They keep replay and backfill from resurrecting a deleted
+message, and they remain even with `WAZAP_PERSIST_HISTORY=0`. Clearing a chat
+hides it at once and purges it in chunks that resume after a crash; backfill
+dated at or before the local clear time is refused. WhatsApp timestamps have
+second precision, so a message in the same second can be suppressed. A
+database that cannot be opened keeps the account from being served rather than
+replay deleted messages.
 
 #### Strict retention (`WAZAP_RETENTION=1`, off by default)
 
@@ -643,27 +677,21 @@ timers are not enforced locally. With it:
 
 - For messages carrying disappearing-message metadata, wazap keeps the earliest
   observed deadline across edits, aliases, backfill and restarts. Reads refuse
-  the message at that instant; one background timer per account removes it from
-  memory and queues the same disk/index cleanup as deletion. Preview/transcription
-  results, forwards, quoted replies and queued/retried webhooks recheck retention
-  before publication. Already-started operations cannot be recalled.
+  the message at that instant; one background timer per account tombstones it
+  in the database the way a deletion does. Preview/transcription results,
+  forwards, quoted replies and queued/retried webhooks recheck retention before
+  publication. Already-started operations cannot be recalled.
 - The policy is conservative: a marked ephemeral message without a computable
   deadline is refused, and **keep-in-chat hints are not an indefinite exemption**.
   Current chat settings are not retroactively applied to unmarked messages. Keep
   the system clock synchronized.
-- Starting with `WAZAP_PERSIST_HISTORY=0` discards history, snapshot and recall
-  caches left by an earlier history-on run; notes, auth, models and explicit
-  downloads are untouched. A delete observed while recall is unavailable also
-  clears the on-disk index, which is rebuildable.
+- A text-only row carried over from an older recall index keeps the deadline
+  the legacy files knew for it; one they knew none for stays.
 
-A recall index built before 0.21 is kept on upgrade. Under strict retention,
-deadlines found in local history still expire its rows; a row whose message is
-no longer in local history has no deadline to find and stays.
-
-This is not secure erasure of heap pages, backups or filesystem snapshots.
-Explicit exports, independent quotes/forwards and data already returned or sent
-are not recalled. Cleanup is asynchronous, not a crash-atomic transaction; while
-wazap is stopped or suspended, disk cleanup waits until it runs again. Old
+The database overwrites what it deletes (`secure_delete`), but this is not
+secure erasure of heap pages, backups or filesystem snapshots. Explicit exports,
+independent quotes/forwards and data already returned or sent are not recalled.
+While wazap is stopped or suspended, disk cleanup waits until it runs again. Old
 unrecorded deletions cannot be reconstructed. See [the audit report](docs/security-audit.md).
 
 ## Several accounts
@@ -1200,7 +1228,7 @@ mean the link is up. Poll `get_status` when you need to know that.
 | `WAZAP_DATA_DIR` | `~/.wazap` | Where everything is stored. |
 | `WAZAP_READ_ONLY` | unset (`0`) | `1` does not register the write tools. Unset and `0` both do. |
 | `WAZAP_SYNC_FULL_HISTORY` | `0` | Ask WhatsApp for a fuller history sync. |
-| `WAZAP_PERSIST_HISTORY` | `1` | Keep chats and messages across restarts. |
+| `WAZAP_PERSIST_HISTORY` | `1` | Keep messages across restarts. `0` removes them at each start and stop; barriers, chats, contacts and notes stay. |
 | `WAZAP_RATE_LIMIT` | `20` | Write tool calls per minute; `0` disables. |
 | `WAZAP_TRANSPORT` | `stdio` | `stdio` or `http`. |
 | `WAZAP_HOST` / `WAZAP_PORT` | `127.0.0.1` / `8766` | HTTP bind address. |

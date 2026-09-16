@@ -3,6 +3,30 @@
 ## Unreleased
 ### Changed
 
+- **Every account is served from one database.** Chats, contacts, messages,
+  reactions, votes, receipts, transcripts, notes, recall vectors and deletion
+  barriers live in `accounts/<id>/wazap.sqlite`, and no history is held in
+  memory: a restart, a chat with thousands of messages and an edit to an old
+  message read the same file. The first start after the upgrade imports
+  `store.json`, `history/`, `retention.json`, `notes.json`, `recall/` and the
+  beta archive once, resuming if it is stopped; meanwhile the account's tools
+  answer `NOT_CONNECTED` and `get_status` says it is preparing. The legacy
+  files stay where they are and are not read again.
+- **`search_messages` has no per-chat window.** Every kept message is
+  searched, and `coverage.per_chat_cap` is `null`.
+- **`recall` matches by words and meaning at once**, fusing the two rankings;
+  each hit says which matched, and `similarity` is `null` for a hit found by
+  its words alone. `WAZAP_RECALL_MAX` no longer caps anything.
+- **`WAZAP_PERSIST_HISTORY=0` removes stored messages at every start and
+  stop**, not only under `WAZAP_RETENTION=1`; barriers, chats, contacts and
+  notes stay.
+- **Logout keeps the account database**, so the same number linking again
+  finds its history; a different number linking sets it aside as
+  `wazap.<time>.previous-owner.sqlite`. `account remove` still deletes the
+  whole folder.
+- **A handled chat reopens only when the other side writes after the ask**
+  that was marked, and a receipt keeps the latest time it was reported.
+
 - **Accounts come and go without a restart.** A running server follows
   `accounts.json`: `wazap account add`, `enable`, `disable`, `default` and
   `remove` apply to it at once, and a tool that names an account added since

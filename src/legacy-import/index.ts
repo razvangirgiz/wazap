@@ -2,7 +2,8 @@
  * The one-time move of an account's legacy files (store.json, history/,
  * retention.json, notes.json, recall/, the 0.15-beta archive.sqlite) into its
  * account database, and the check that the database shows what the legacy
- * service showed. Not wired into the service yet: F1-b2 runs it at boot.
+ * service showed. The service runs it at boot, before it serves the account
+ * (`WhatsAppService.bootStorage`); `scripts/import-legacy.mjs` runs it on a copy.
  *
  *   const db = AccountDb.open(path, { scrubQuote });
  *   await db.resume();

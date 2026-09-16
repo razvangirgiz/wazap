@@ -11,10 +11,11 @@
  *   const { rerecorded } = db.ackUnlinks(paths);  // recorded again meanwhile: recreate them
  *   db.close();
  *
- * Not wired into the service yet (F1-a); the service keeps its JSON stores
- * until the import slice switches reads over.
+ * The service (`WhatsAppService`) opens one per account at construction and
+ * serves every read and write from it; the legacy JSON stores are imported
+ * once at boot (`src/legacy-import/`) and never read again.
  *
- * What the wiring must know (F1-b, F1-d, F1-e):
+ * What the wiring must know (F1-d, F1-e, and any new caller):
  * - Call resume() after every writable open, and unlink files only through
  *   claimUnlinks() / ackUnlinks().
  * - waiting() pages on each chat's last_ts, which moves as messages arrive: a
