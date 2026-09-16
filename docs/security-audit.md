@@ -253,6 +253,93 @@ explicit card/null behavior through Baileys's real generator, no preview during
 drafting, and no preview on a refused read-only write. No live sites or WhatsApp
 accounts were queried for this feature.
 
+## 10. Model download streams and write lifecycle — hardened
+
+The shared model downloader previously checked size only after consuming and
+writing the entire response. Synthetic oversized streams reproduced unbounded
+progress beyond the pinned model size. Injected disk failures under backpressure
+could terminate the process with an unhandled stream error or leave it waiting
+for a drain that would never arrive. A final write error could also be swallowed
+by the completion handler. No real disk was filled and no model was downloaded
+from an external service for these reproducers.
+
+The implementation now lives in `src/model-download.ts`. Whisper's model table
+keeps compatibility exports; embedding downloads import the shared helper
+without loading transcription providers and retain their `RECALL_FAILED` code
+and command-specific fix. The model tables, URLs and pinned digests are unchanged.
+
+- A transform checks each chunk against the remaining expected bytes before
+  forwarding it to the file writer; progress cannot exceed that size.
+- Oversized/invalid Content-Length is rejected early, but actual streamed bytes
+  are always counted independently. Identity encoding is requested; compressed
+  responses are refused. A 206 must match the complete expected range, including
+  start, end and total, even on an unsolicited partial response.
+- `pipeline` owns backpressure, stream errors and closure. Publication by rename
+  occurs only after pipeline success, exact byte count and SHA-256 verification.
+- The network/write phase has a 30-minute total deadline and a 30-second idle
+  deadline, including response-header waits. Caller cancellation also applies
+  during local prefix/cache hashing. Timers and abort listeners are cleaned up.
+- Interruptions/timeouts keep a bounded prefix; invalid ranges, 416, overflow
+  and verification mismatches remove the partial file. A server ignoring Range
+  restarts cleanly. Unused responses are cancelled on failure.
+- Errors retain HTTP status, controlled categories and allowlisted disk error
+  codes, never raw reason phrases, Content-Range values, signed URL exceptions
+  or caller abort reasons. Invalid options/pre-aborted calls fail before changing
+  files or making requests; directories are not mistaken for absent files.
+
+All 20 initial regression cases failed on the old implementation; additional
+coverage brings this step to 34 tests in `test/model-download.test.mjs`. They cover
+fresh/resumed overflow, dishonest lengths/ranges, prefix reuse after cancellation,
+header/body/active-transfer timeouts, child-isolated ENOSPC/EACCES/final EIO
+injection, encoding refusal, callbacks, CDN redirect compatibility, and embedding
+error mapping. Existing verification/cache/resume tests also pass.
+
+Scope: this bounds each invocation's writes and coordinates its streams. The
+cross-process follow-up is below. Filesystem crash durability and protection from
+hostile-local file replacement remain outside this pass. Local hashing before
+the transfer uses caller cancellation, not the network timer.
+
+## 11. Concurrent model downloads — coordinated
+
+`src/model-download-lock.ts` acquires an atomic, per-destination lock directory
+before reading a cache hit, deleting an invalid model, hashing/resuming a partial
+file or making HTTP requests. The downloader uses the canonical parent directory
+for both the lock and model I/O, so relative and directory-symlink aliases cannot
+bypass exclusion. Another caller fails promptly rather than joining an unbounded
+queue. Different destination files remain independent.
+
+The directory contains one uniquely named ownership record, with a PID, start
+time and host/PID scope but no request URL or credentials. Linux scope includes
+the PID namespace; unavailable namespace identity disables automatic reclamation.
+Directory/file creation modes are 0700/0600. Release is idempotent and happens
+after stream cancellation/closure and invalid-part cleanup, including cached
+hits, errors and caller cancellation. Embedding error mapping preserves lock
+recovery instructions rather than replacing them with a generic retry command.
+
+There is no age-based lease expiry. A live or inconclusively probed PID (including
+EPERM) is never evicted. For a known dead owner in the same scope, successful
+unlink of that generation's unique ownership filename grants the right to remove
+the now-empty directory. Among competing reclaimers, only one unlink can succeed;
+losers never remove the directory. An old releaser also cannot unlink a successor's
+record. Cleanup is never recursive and a symlink at the lock path is not followed.
+
+Unknown/empty/malformed/foreign-scope claims fail closed. A crash between lock
+creation and record writing, or between record removal and directory removal,
+can require manual recovery. Operators must confirm no downloader is using the
+model before removing only its lock directory. PID reuse may conservatively
+require a retry/manual check. These are cooperative, same-host locks, not a
+distributed-filesystem protocol or protection against another local process that
+can maliciously alter the data directory; pre-upgrade downloaders must be stopped.
+
+Nine of eleven initial lock regression cases failed before implementation.
+`test/model-download-lock.test.mjs` now has 19 cases, including real child-process
+contention, killed-owner recovery with multiple contenders, distinct destinations,
+path aliases, stale timestamps, private records, ambiguous owners, inconclusive
+PID probes, idempotent/foreign cleanup, and embedding error guidance. The workers
+use synthetic IPC-controlled fetch streams, not live HTTP or model services.
+Existing downloader tests also assert lock removal across success/error paths.
+The lock suite passed five additional consecutive runs after the full gate.
+
 ## Limits and next review areas
 
 - A shared static token is a shared identity. A caller with both the owner's
@@ -271,9 +358,9 @@ accounts were queried for this feature.
   not sandbox them or address all local file replacement/symlink races.
 - This pass covers the identified webhook, preview and transcription paths, not
   every dependency, reverse-proxy log or decoder resource budget. Local embedding
-  service traffic needs its own review. Model downloads verify size/SHA-256 at
-  completion but still need an early streamed-byte/disk cap and write-error
-  lifecycle review; this is separate from the bounded transcription API response.
+  service traffic needs its own review. Model downloads now have byte/time bounds
+  and cooperative same-host exclusion, but hostile-local filesystem races and
+  distributed coordination remain outside the guarantees.
   Existing historical logs/persisted diagnostics are not retroactively scrubbed.
 - Further decomposition of `src/whatsapp.ts` should follow lifecycle, history and
   outgoing-operation boundaries, after characterization tests, not a wholesale
@@ -281,9 +368,11 @@ accounts were queried for this feature.
 
 ## Verification
 
-`npm run check` passed on the pulled 0.20.2 base after the network-sink changes:
-lint, typecheck and all 1,166 tests (none skipped on this machine), including the
-controlled-preview follow-up. New coverage lives in `test/link-preview.test.mjs`,
+`npm run check` passed on the pulled 0.20.2 base after the model-download changes:
+lint, typecheck and all 1,219 tests (none skipped on this machine), including the
+controlled-preview and concurrent-download follow-ups. New coverage lives in
+`test/model-download-lock.test.mjs`, `test/model-download.test.mjs`,
+`test/link-preview.test.mjs`,
 `test/network-sinks.test.mjs` and `test/preview-security.test.mjs`, alongside
 the previous account, OAuth, proxy, log, media and session tests. Real ffmpeg
 fixtures are conditional on its availability in other environments.

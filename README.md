@@ -380,7 +380,34 @@ themselves when either binary is missing, and go straight on to the model in the
 same run. `--no-brew` turns the offer off everywhere.
 
 Models land in `<data-dir>/models/` and are checked against a SHA-256 pinned in
-the source; an interrupted download resumes where it stopped.
+the source. The shared whisper/embedding downloader stops an oversized response
+before excess bytes are written, independently of `Content-Length`. Only a
+successfully closed write with the exact size and digest is renamed from `.part`
+to the final model file.
+
+The network/write phase has a 30-minute deadline and a 30-second no-progress
+timeout (including waiting for response headers). A timeout or interrupted
+transfer keeps a bounded partial file for a later retry to resume; an invalid
+range, oversized response or failed verification discards it. A receiver that
+ignores Range restarts the download safely. CDN redirects remain supported,
+but compressed responses are refused so byte ranges remain unambiguous. Errors
+report status/category, not signed URLs, response excerpts or raw disk errors.
+
+Each destination has an exclusive `<model>.download-lock/` directory, held from
+cache verification through the final rename and cleanup. A simultaneous download
+of that model fails promptly with a retry hint; different models can download
+in parallel. Directory symlinks and relative paths use the same canonical parent.
+The lock is released on success, handled failures and cancellation.
+
+A known dead owner on the same host/PID scope can be recovered automatically;
+Linux also checks the PID namespace. Live owners are never evicted by age. If a
+process dies during lock initialization/cleanup, or the owner record is corrupt,
+from another scope or inaccessible, recovery fails closed. Inspect the
+`owner-*.json` inside the lock directory and remove **only that lock directory**
+only after confirming no downloader is still using the model. Then rerun the
+command to reuse the partial file when possible. Never remove an active lock.
+This coordinates cooperating versions on one host, not distributed downloads
+across machines; stop older downloaders before upgrading.
 
 | `WAZAP_WHISPER_MODEL` | File | Size |
 | --- | --- | --- |

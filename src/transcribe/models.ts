@@ -1,13 +1,13 @@
 /**
- * The whisper.cpp model table and a resumable, verified downloader.
+ * The whisper.cpp model table and compatibility exports for the shared downloader.
  */
-import { createHash, type Hash } from "node:crypto";
-import { createReadStream, createWriteStream } from "node:fs";
-import { mkdir, rename, rm, stat } from "node:fs/promises";
+import { mkdir } from "node:fs/promises";
 import { join } from "node:path";
-import { finished } from "node:stream/promises";
 import { WazapError } from "../errors.js";
+import { downloadFile, type DownloadProgress, type DownloadResult } from "../model-download.js";
 import type { ModelAlias } from "./types.js";
+
+export { downloadFile, type DownloadOpts, type DownloadProgress, type DownloadResult } from "../model-download.js";
 
 export interface ModelSpec {
   alias: ModelAlias;
@@ -67,154 +67,6 @@ export function modelUrl(spec: ModelSpec): string {
 
 export function modelPath(modelsDir: string, spec: ModelSpec): string {
   return join(modelsDir, spec.file);
-}
-
-export interface DownloadProgress {
-  received: number;
-  total: number;
-}
-
-export interface DownloadResult {
-  path: string;
-  bytes: number;
-  resumed: boolean;
-  alreadyPresent: boolean;
-}
-
-export interface DownloadOpts {
-  url: string;
-  path: string;
-  sha256: string;
-  bytes: number;
-  onProgress?: (progress: DownloadProgress) => void;
-  signal?: AbortSignal;
-}
-
-async function sizeOf(path: string): Promise<number | null> {
-  try {
-    const info = await stat(path);
-    return info.isFile() ? info.size : null;
-  } catch {
-    return null;
-  }
-}
-
-/** Where a 206 body begins, from content-range. NaN when the server is lying. */
-function rangeStart(response: Response): number {
-  const header = response.headers.get("content-range");
-  if (header === null) return Number.NaN;
-  const match = /^bytes\s+(\d+)-/.exec(header);
-  return match === null ? Number.NaN : Number(match[1]);
-}
-
-async function digestOf(path: string, into: Hash): Promise<void> {
-  const stream = createReadStream(path);
-  for await (const chunk of stream) into.update(chunk as Uint8Array);
-}
-
-/**
- * Streams `url` into `<path>.part`, and renames it onto `path` only once the
- * digest matches, so an interrupted download can never be mistaken for a model.
- */
-export async function downloadFile(opts: DownloadOpts): Promise<DownloadResult> {
-  const part = `${opts.path}.part`;
-
-  const present = await sizeOf(opts.path);
-  if (present === opts.bytes) {
-    const hash = createHash("sha256");
-    await digestOf(opts.path, hash);
-    if (hash.digest("hex") === opts.sha256) {
-      return { path: opts.path, bytes: present, resumed: false, alreadyPresent: true };
-    }
-  }
-  if (present !== null) await rm(opts.path, { force: true });
-
-  let have = (await sizeOf(part)) ?? 0;
-  // A part at or past the full size can only be junk, and asking to resume from
-  // it would earn a 416 on every retry instead of converging.
-  if (have >= opts.bytes) {
-    await rm(part, { force: true });
-    have = 0;
-  }
-  let resumed = have > 0;
-
-  const headers: Record<string, string> = {};
-  if (resumed) headers.Range = `bytes=${have}-`;
-  const response = await fetch(opts.url, { headers, signal: opts.signal, redirect: "follow" });
-  if (!response.ok || response.body === null) {
-    // 416 means the part cannot be resumed from, so it goes now; any other
-    // failure is likely transient and the bytes on disk are still worth keeping.
-    if (response.status === 416) await rm(part, { force: true });
-    throw new WazapError(
-      "TRANSCRIBE_FAILED",
-      `Model download failed: HTTP ${response.status} ${response.statusText}`.trim(),
-      "Check the network and run `wazap transcribe download` again"
-    );
-  }
-
-  // A server that ignores Range answers 200 with the whole file, so what is on
-  // disk is not a prefix of what is arriving and the resume has to be dropped.
-  if (resumed && response.status !== 206) {
-    have = 0;
-    resumed = false;
-  }
-
-  // A 206 that starts somewhere other than where the part ends would splice a
-  // gap into the file. Dropping the part costs one retry instead of a bad model.
-  if (resumed && rangeStart(response) !== have) {
-    await rm(part, { force: true });
-    throw new WazapError(
-      "TRANSCRIBE_FAILED",
-      `Model download resumed at the wrong offset: ${response.headers.get("content-range") ?? "no content-range"}.`,
-      "Run `wazap transcribe download` again"
-    );
-  }
-
-  const hash = createHash("sha256");
-  if (resumed) await digestOf(part, hash);
-
-  const total = opts.bytes;
-  let received = have;
-  let reportedAt = 0;
-  const report = (force: boolean): void => {
-    if (opts.onProgress === undefined) return;
-    const now = Date.now();
-    if (!force && now - reportedAt < 100) return;
-    reportedAt = now;
-    opts.onProgress({ received, total });
-  };
-
-  const out = createWriteStream(part, { flags: resumed ? "a" : "w" });
-  try {
-    report(true);
-    for await (const chunk of response.body as AsyncIterable<Uint8Array>) {
-      hash.update(chunk);
-      received += chunk.byteLength;
-      if (!out.write(chunk)) await new Promise<void>((resolve) => out.once("drain", resolve));
-      report(false);
-    }
-  } finally {
-    out.end();
-    await finished(out).catch(() => {});
-  }
-  report(true);
-
-  const digest = hash.digest("hex");
-  if (received !== opts.bytes || digest !== opts.sha256) {
-    await rm(part, { force: true });
-    const problem =
-      received === opts.bytes
-        ? `sha256 ${digest}, expected ${opts.sha256}`
-        : `${received} bytes and sha256 ${digest}, expected ${opts.bytes} bytes and sha256 ${opts.sha256}`;
-    throw new WazapError(
-      "TRANSCRIBE_FAILED",
-      `Model download did not verify: got ${problem}.`,
-      "Run `wazap transcribe download` again"
-    );
-  }
-
-  await rename(part, opts.path);
-  return { path: opts.path, bytes: received, resumed, alreadyPresent: false };
 }
 
 export async function downloadModel(

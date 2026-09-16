@@ -6,11 +6,7 @@
 import { mkdir } from "node:fs/promises";
 import { join } from "node:path";
 import { WazapError } from "../errors.js";
-import {
-  downloadFile,
-  type DownloadProgress,
-  type DownloadResult,
-} from "../transcribe/index.js";
+import { downloadFile, type DownloadProgress, type DownloadResult } from "../model-download.js";
 import type { EmbedModelAlias } from "./types.js";
 
 export interface EmbedModelSpec {
@@ -131,7 +127,11 @@ export async function downloadEmbed(
     });
   } catch (err) {
     if (err instanceof WazapError) {
-      throw new WazapError("RECALL_FAILED", err.message, "Run `wazap embed download` again");
+      throw new WazapError(
+        "RECALL_FAILED",
+        err.message,
+        err.fix?.replaceAll("wazap transcribe download", "wazap embed download") ?? "Run `wazap embed download` again"
+      );
     }
     throw err;
   }
