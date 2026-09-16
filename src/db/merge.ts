@@ -1,26 +1,54 @@
 /**
- * Learning that a lid and a phone number are one person. The two contact
- * rows become one (the older id stays, so contact_id is stable), and the two
- * direct chats become one under the phone jid, with every message that moves
- * answering to both sid spellings from then on.
+ * Learning that a lid and a number are one person.
  *
- * It is a chunked operation: references move 200 rows per transaction with
- * the event loop running between chunks. The intent is written to `meta`
- * first and removed last, so a crash mid-merge is finished by
- * `resumeMerges()` on the next start; every step is safe to run twice.
+ * The pairing itself is synchronous: `learnLidPhone` records it, applies
+ * main's LidRegistry rules to the contact rows and folds a lid chat into the
+ * number's chat before it returns, so the very next write under either
+ * spelling lands on the right person. Only moving what a fold leaves behind —
+ * a merged contact's references, a lid chat's messages — runs in chunks,
+ * with the event loop turning between them.
+ *
+ * The rules, from src/identity.ts on main:
+ * - a lid answers for the number it was last learned with;
+ * - a lid that moves to a new number stops answering for the old one, and
+ *   nothing the old number holds moves: history, notes and chats stay with it;
+ * - a number that gains a new lid leaves its older lid answering for it.
+ * So the only rows ever merged are a person known only by a lid and the same
+ * person known by the number that lid now pairs with.
+ *
+ * What a merge keeps, deterministically:
+ * - the older contact id survives (ids already handed out stay valid);
+ * - names: the number's row wins, the lid's row fills gaps;
+ * - note: both, the number's first, joined by a newline when they differ;
+ * - tags: the sorted union;
+ * - fields: the union; a field both rows set differently keeps both values as
+ *   "<number's value> | <lid's value>".
+ *
+ * Nothing needs a separate record to survive a crash: a contact or chat row
+ * with `merged_into` set is the pending work, and `resumeMerges()` drains it.
  */
 import type { Connection } from "./connection.js";
 import { StorageError } from "./errors.js";
-import { chatKindOf, isLidJid, sidOf, type Identity } from "./identity.js";
+import { chatKindOf, isLidJid, normalizeJid, type Identity } from "./identity.js";
 import type { Messages } from "./messages.js";
-import type { ChatRow } from "./rows.js";
-import type { BulkDeleteResult, MergeReport } from "./types.js";
+import type { ChatRow, ContactRow } from "./rows.js";
+import type { ContactNotes, MergeReport } from "./types.js";
 
-const PENDING_PREFIX = "merge_pending:";
-
-interface ContactPair {
-  keep: number;
-  drop: number | null;
+/** How the two note records of one person combine. Exported for the tests that pin the rule. */
+export function mergeNotes(numberSide: ContactNotes | null, lidSide: ContactNotes | null): {
+  note: string | null;
+  tags: string[];
+  fields: Record<string, string>;
+} {
+  const notes = [numberSide?.note, lidSide?.note].filter((note): note is string => typeof note === "string" && note !== "");
+  const note = notes.length === 0 ? null : [...new Set(notes)].join("\n");
+  const tags = [...new Set([...(numberSide?.tags ?? []), ...(lidSide?.tags ?? [])])].sort();
+  const fields: Record<string, string> = {};
+  for (const key of [...new Set([...Object.keys(numberSide?.fields ?? {}), ...Object.keys(lidSide?.fields ?? {})])].sort()) {
+    const values = [numberSide?.fields[key], lidSide?.fields[key]].filter((value): value is string => value !== undefined);
+    fields[key] = [...new Set(values)].join(" | ");
+  }
+  return { note, tags, fields };
 }
 
 export class Merger {
@@ -30,99 +58,133 @@ export class Merger {
     private readonly messages: Messages
   ) {}
 
-  async learnLidPhone(lid: string, phoneJid: string): Promise<MergeReport> {
-    if (!isLidJid(lid) || isLidJid(phoneJid) || chatKindOf(lid) !== "direct" || chatKindOf(phoneJid) !== "direct") {
-      throw new StorageError("INVALID_INPUT", `Expected a lid and a phone jid, got ${lid} and ${phoneJid}.`);
+  learnLidPhone(lid: string, phoneJid: string): Promise<MergeReport> {
+    const l = normalizeJid(lid);
+    const p = normalizeJid(phoneJid);
+    if (!isLidJid(l) || isLidJid(p) || chatKindOf(l) !== "direct" || chatKindOf(p) !== "direct") {
+      return Promise.reject(new StorageError("INVALID_INPUT", `Expected a lid and a phone jid, got ${lid} and ${phoneJid}.`));
     }
+    let paired: { contactId: number; chatId: number | null };
+    try {
+      paired = this.c.write(() => this.pair(l, p));
+    } catch (err) {
+      return Promise.reject(err);
+    }
+    return this.c.bulk(async () => {
+      const report: MergeReport = { contactId: paired.contactId, chatId: paired.chatId, movedMessages: 0, mediaPaths: [] };
+      await this.drain(report);
+      return report;
+    });
+  }
+
+  /** Finishes every fold a crash or a close interrupted; call once after opening. */
+  resumeMerges(): Promise<MergeReport> {
     this.c.assertWritable();
-    return this.c.bulk(() => this.merge(lid, phoneJid));
+    return this.c.bulk(async () => {
+      const report: MergeReport = { contactId: null, chatId: null, movedMessages: 0, mediaPaths: [] };
+      await this.drain(report);
+      return report;
+    });
   }
 
-  /** Finishes merges a crash interrupted; call once after opening. */
-  async resumeMerges(): Promise<MergeReport[]> {
-    const pending = this.c.all<{ key: string; value: string }>(
-      "SELECT key, value FROM meta WHERE substr(key, 1, ?) = ? ORDER BY key",
-      PENDING_PREFIX.length,
-      PENDING_PREFIX
-    );
-    const reports: MergeReport[] = [];
-    for (const row of pending) reports.push(await this.learnLidPhone(row.key.slice(PENDING_PREFIX.length), row.value));
-    return reports;
-  }
-
-  private async merge(lid: string, phoneJid: string): Promise<MergeReport> {
-    const pendingKey = `${PENDING_PREFIX}${lid}`;
-    this.c.write(() => this.c.run("INSERT OR REPLACE INTO meta(key, value) VALUES (?, ?)", pendingKey, phoneJid));
-    const report: MergeReport = { contactId: 0, chatId: null, movedMessages: 0, aliasedMessages: 0, mediaPaths: [] };
-
-    const pair = this.c.write(() => this.pairContacts(lid, phoneJid));
-    report.contactId = pair.keep;
-    if (pair.drop !== null) {
-      const drop = pair.drop;
-      await this.c.chunked(() => this.moveContactRefs(pair.keep, drop, this.c.chunkSize));
-      this.c.write(() => this.finishContacts(pair.keep, drop, lid, phoneJid));
-    }
-
-    const phoneChat = this.chatRow(phoneJid);
-    const lidChat = this.chatRow(lid);
-    if (lidChat !== null && phoneChat !== null && lidChat.id !== phoneChat.id) {
-      report.chatId = phoneChat.id;
-      await this.mergeChats(phoneChat.id, lidChat.id, lid, phoneJid, report);
-    } else if (lidChat !== null && phoneChat === null) {
-      report.chatId = lidChat.id;
-      await this.renameChat(lidChat.id, lid, phoneJid, pair.keep, report);
-    } else if (phoneChat !== null) {
-      report.chatId = phoneChat.id;
-      this.c.write(() => {
-        this.c.run("INSERT OR REPLACE INTO chat_aliases(jid, chat_id) VALUES (?, ?)", lid, phoneChat.id);
-        this.c.run("UPDATE chats SET contact_id = ? WHERE id = ?", pair.keep, phoneChat.id);
-      });
-    }
-
-    this.c.write(() => this.c.run("DELETE FROM meta WHERE key = ?", pendingKey));
-    if (report.mediaPaths.length > 0 || report.movedMessages > 0) this.c.checkpoint();
-    return report;
-  }
-
-  /** A chat by its own jid or an alias only — never through the contact pair being built. */
-  private chatRow(jid: string): ChatRow | null {
-    return (
-      this.c.get<ChatRow>("SELECT * FROM chats WHERE jid = ?", jid) ??
-      this.c.get<ChatRow>("SELECT c.* FROM chat_aliases a JOIN chats c ON c.id = a.chat_id WHERE a.jid = ?", jid) ??
-      null
-    );
-  }
-
-  /** Decides which contact row survives. With one row or none, it is completed right here. */
-  private pairContacts(lid: string, phoneJid: string): ContactPair {
-    const byPhone = this.c.get<{ id: number; lid: string | null }>("SELECT id, lid FROM contacts WHERE phone_jid = ?", phoneJid);
-    const byLid = this.c.get<{ id: number; phone_jid: string | null }>("SELECT id, phone_jid FROM contacts WHERE lid = ?", lid);
+  /** The synchronous half: the pairing, the contact rows and the chat rows. Runs inside write(). */
+  private pair(lid: string, phone: string): { contactId: number; chatId: number | null } {
     const now = this.c.now();
-    if (byPhone === undefined && byLid === undefined) {
-      const id = this.c.get<{ id: number }>(
+    this.c.run(
+      `INSERT INTO lid_phones(lid, phone_jid, learned_at) VALUES (?, ?, ?)
+       ON CONFLICT(lid) DO UPDATE SET phone_jid = excluded.phone_jid, learned_at = excluded.learned_at`,
+      lid,
+      phone,
+      now
+    );
+    // A lid that moved stops answering for the number it left.
+    this.c.run("UPDATE contacts SET lid = NULL, updated_at = ? WHERE lid = ? AND phone_jid IS NOT NULL AND phone_jid != ?", now, lid, phone);
+
+    const byPhone = this.c.get<ContactRow>("SELECT * FROM contacts WHERE phone_jid = ?", phone);
+    const byLid = this.c.get<ContactRow>("SELECT * FROM contacts WHERE lid = ? AND phone_jid IS NULL", lid);
+    let contactId: number;
+    if (byPhone !== undefined && byLid !== undefined) {
+      contactId = this.mergeContacts(byPhone, byLid, lid, phone, now);
+    } else if (byPhone !== undefined) {
+      contactId = byPhone.id;
+      if (byPhone.lid !== lid) this.c.run("UPDATE contacts SET lid = ?, updated_at = ? WHERE id = ?", lid, now, contactId);
+    } else if (byLid !== undefined) {
+      contactId = byLid.id;
+      this.c.run("UPDATE contacts SET phone_jid = ?, updated_at = ? WHERE id = ?", phone, now, contactId);
+    } else {
+      contactId = this.c.get<{ id: number }>(
         "INSERT INTO contacts(phone_jid, lid, updated_at) VALUES (?, ?, ?) RETURNING id",
-        phoneJid,
+        phone,
         lid,
         now
       )!.id;
-      return { keep: id, drop: null };
     }
-    if (byPhone !== undefined && byLid !== undefined && byPhone.id === byLid.id) return { keep: byPhone.id, drop: null };
-    if (byPhone !== undefined && byLid !== undefined) {
-      return { keep: Math.min(byPhone.id, byLid.id), drop: Math.max(byPhone.id, byLid.id) };
+
+    const lidChat = this.c.get<ChatRow>("SELECT * FROM chats WHERE jid = ? AND merged_into IS NULL", lid);
+    const phoneChat = this.c.get<ChatRow>("SELECT * FROM chats WHERE jid = ? AND merged_into IS NULL", phone);
+    if (lidChat !== undefined && phoneChat !== undefined) {
+      const barrier = Math.max(lidChat.cleared_through_ts ?? 0, phoneChat.cleared_through_ts ?? 0);
+      this.c.run("UPDATE chats SET merged_into = ? WHERE id = ? OR merged_into = ?", phoneChat.id, lidChat.id, lidChat.id);
+      if (barrier > 0) this.c.run("UPDATE chats SET cleared_through_ts = ? WHERE id IN (?, ?)", barrier, lidChat.id, phoneChat.id);
+    } else if (lidChat !== undefined) {
+      this.c.run("UPDATE chats SET jid = ? WHERE id = ?", phone, lidChat.id);
     }
-    if (byPhone !== undefined) {
-      this.c.run("UPDATE contacts SET lid = ?, updated_at = ? WHERE id = ?", lid, now, byPhone.id);
-      return { keep: byPhone.id, drop: null };
+    const chatId = phoneChat?.id ?? lidChat?.id ?? null;
+    if (chatId !== null) this.c.run("UPDATE chats SET contact_id = ? WHERE id = ?", contactId, chatId);
+    return { contactId, chatId };
+  }
+
+  /** One person's two rows become one; references move later, in chunks. Returns the survivor. */
+  private mergeContacts(byPhone: ContactRow, byLid: ContactRow, lid: string, phone: string, now: number): number {
+    const keep = Math.min(byPhone.id, byLid.id);
+    const drop = Math.max(byPhone.id, byLid.id);
+    const merged = mergeNotes(this.identity.notesById(byPhone.id), this.identity.notesById(byLid.id));
+    this.c.run("DELETE FROM contact_notes WHERE contact_id IN (?, ?)", keep, drop);
+    this.identity.writeNotes(keep, merged.note, merged.tags, merged.fields);
+    this.c.run("UPDATE contacts SET phone_jid = NULL, lid = NULL, merged_into = ?, updated_at = ? WHERE id = ?", keep, now, drop);
+    this.c.run("UPDATE contacts SET merged_into = ? WHERE merged_into = ?", keep, drop);
+    this.c.run(
+      `UPDATE contacts SET phone_jid = ?, lid = ?, name = ?, push_name = ?, verified_name = ?, is_business = ?, updated_at = ?
+       WHERE id = ?`,
+      phone,
+      lid,
+      byPhone.name ?? byLid.name,
+      byPhone.push_name ?? byLid.push_name,
+      byPhone.verified_name ?? byLid.verified_name,
+      byPhone.is_business ?? byLid.is_business,
+      now,
+      keep
+    );
+    this.c.run("UPDATE chats SET contact_id = ? WHERE contact_id = ?", keep, drop);
+    return keep;
+  }
+
+  /** Moves everything pending folds left behind, then removes the folded rows. Runs inside bulk(). */
+  private async drain(report: MergeReport): Promise<void> {
+    for (;;) {
+      const contact = this.c.get<{ id: number; merged_into: number }>(
+        "SELECT id, merged_into FROM contacts WHERE merged_into IS NOT NULL ORDER BY id LIMIT 1"
+      );
+      if (contact === undefined) break;
+      await this.c.chunked(() => this.moveContactRefs(contact.merged_into, contact.id, this.c.chunkSize));
+      this.c.write(() => {
+        this.moveContactRefs(contact.merged_into, contact.id, null);
+        this.c.run("DELETE FROM contacts WHERE id = ?", contact.id);
+      });
     }
-    this.c.run("UPDATE contacts SET phone_jid = ?, updated_at = ? WHERE id = ?", phoneJid, now, byLid!.id);
-    return { keep: byLid!.id, drop: null };
+    for (;;) {
+      const chat = this.c.get<{ id: number; merged_into: number }>(
+        "SELECT id, merged_into FROM chats WHERE merged_into IS NOT NULL ORDER BY id LIMIT 1"
+      );
+      if (chat === undefined) break;
+      await this.foldChat(chat.merged_into, chat.id, report);
+    }
   }
 
   /**
    * One chunk of references from `drop` to `keep`; `limit` null moves the
    * rest at once (the final pass, for rows that arrived between chunks). Where
-   * both people reacted, voted or got a receipt on one message, the newer
+   * both rows reacted, voted or got a receipt on one message, the newer
    * reaction or vote wins and receipts keep the earliest times.
    */
   private moveContactRefs(keep: number, drop: number, limit: number | null): boolean {
@@ -200,99 +262,12 @@ export class Merger {
     return more;
   }
 
-  /** The last transaction of a contact merge: residual references, notes, names, then the row itself. */
-  private finishContacts(keep: number, drop: number, lid: string, phoneJid: string): void {
-    this.moveContactRefs(keep, drop, null);
-    const notes = this.c.all<{ contact_id: number; note: string | null; tags: string | null; fields: string | null }>(
-      "SELECT contact_id, note, tags, fields FROM contact_notes WHERE contact_id IN (?, ?)",
-      keep,
-      drop
-    );
-    const kept = notes.find((row) => row.contact_id === keep);
-    const dropped = notes.find((row) => row.contact_id === drop);
-    if (dropped !== undefined) {
-      const tags = [
-        ...new Set([...(JSON.parse(kept?.tags ?? "[]") as string[]), ...(JSON.parse(dropped.tags ?? "[]") as string[])]),
-      ];
-      const fields = {
-        ...(JSON.parse(dropped.fields ?? "{}") as Record<string, string>),
-        ...(JSON.parse(kept?.fields ?? "{}") as Record<string, string>),
-      };
-      this.c.run("DELETE FROM contact_notes WHERE contact_id = ?", drop);
-      this.c.run(
-        `INSERT INTO contact_notes(contact_id, note, tags, fields, updated_at) VALUES (?, ?, ?, ?, ?)
-         ON CONFLICT(contact_id) DO UPDATE SET note = excluded.note, tags = excluded.tags, fields = excluded.fields,
-           updated_at = excluded.updated_at`,
-        keep,
-        kept?.note ?? dropped.note,
-        tags.length === 0 ? null : JSON.stringify(tags),
-        Object.keys(fields).length === 0 ? null : JSON.stringify(fields),
-        this.c.now()
-      );
-    }
-    this.c.run("UPDATE chats SET contact_id = ? WHERE contact_id = ?", keep, drop);
-    const names = this.c.get<{ name: string | null; push_name: string | null; verified_name: string | null; is_business: number | null }>(
-      "SELECT name, push_name, verified_name, is_business FROM contacts WHERE id = ?",
-      drop
-    );
-    this.c.run("DELETE FROM contacts WHERE id = ?", drop);
-    this.c.run(
-      `UPDATE contacts SET phone_jid = ?, lid = ?, name = coalesce(name, ?), push_name = coalesce(push_name, ?),
-         verified_name = coalesce(verified_name, ?), is_business = coalesce(is_business, ?), updated_at = ?
-       WHERE id = ?`,
-      phoneJid,
-      lid,
-      names?.name ?? null,
-      names?.push_name ?? null,
-      names?.verified_name ?? null,
-      names?.is_business ?? null,
-      this.c.now(),
-      keep
-    );
-  }
-
   /**
-   * Only the lid chat exists: its messages first learn their phone spelling,
-   * then the chat takes the phone jid and keeps the lid as an alias.
+   * A lid chat folding into the number's chat: rows under the shared barrier
+   * go, the messages move over, then the lid chat's row merges into the
+   * number's and disappears.
    */
-  private async renameChat(chatId: number, lid: string, phoneJid: string, contactId: number, report: MergeReport): Promise<void> {
-    let cursor = -1;
-    await this.c.chunked(() => {
-      const rows = this.c.all<{ id: number; from_me: number; key_id: string }>(
-        "SELECT id, from_me, key_id FROM messages WHERE chat_id = ? AND id > ? ORDER BY id LIMIT ?",
-        chatId,
-        cursor,
-        this.c.chunkSize
-      );
-      for (const row of rows) report.aliasedMessages += this.aliasPhoneSpelling(row, phoneJid);
-      if (rows.length > 0) cursor = rows[rows.length - 1]!.id;
-      return rows.length === this.c.chunkSize;
-    });
-    this.c.write(() => {
-      for (const row of this.c.all<{ id: number; from_me: number; key_id: string }>(
-        "SELECT id, from_me, key_id FROM messages WHERE chat_id = ? AND id > ?",
-        chatId,
-        cursor
-      )) {
-        report.aliasedMessages += this.aliasPhoneSpelling(row, phoneJid);
-      }
-      this.c.run("UPDATE chats SET jid = ?, contact_id = ? WHERE id = ?", phoneJid, contactId, chatId);
-      this.c.run("INSERT OR REPLACE INTO chat_aliases(jid, chat_id) VALUES (?, ?)", lid, chatId);
-    });
-  }
-
-  private aliasPhoneSpelling(row: { id: number; from_me: number; key_id: string }, phoneJid: string): number {
-    const spelling = sidOf(row.from_me === 1, phoneJid, row.key_id);
-    if (this.c.get("SELECT 1 FROM messages WHERE sid = ?", spelling) !== undefined) return 0;
-    return this.c.run("INSERT OR IGNORE INTO message_aliases(sid, message_id) VALUES (?, ?)", spelling, row.id);
-  }
-
-  /**
-   * Both chats exist. The later barrier covers both, rows under it go, then
-   * the lid chat's messages move over. A message filed under both spellings
-   * keeps the phone row; if either copy was deleted, the survivor is too.
-   */
-  private async mergeChats(keepId: number, dropId: number, lid: string, phoneJid: string, report: MergeReport): Promise<void> {
+  private async foldChat(keepId: number, dropId: number, report: MergeReport): Promise<void> {
     this.c.write(() => {
       const barrier = this.c.get<{ through: number | null }>(
         "SELECT max(coalesce(cleared_through_ts, 0)) AS through FROM chats WHERE id IN (?, ?)",
@@ -303,16 +278,13 @@ export class Merger {
         this.c.run("UPDATE chats SET cleared_through_ts = ? WHERE id IN (?, ?)", barrier, keepId, dropId);
       }
     });
-    const purged: BulkDeleteResult = { count: 0, sids: [], mediaPaths: [] };
     for (const chatId of [keepId, dropId]) {
-      const result = await this.messages.purgeCleared(chatId);
-      purged.mediaPaths.push(...result.mediaPaths);
+      report.mediaPaths.push(...(await this.messages.purgeCleared(chatId)).mediaPaths);
     }
-    report.mediaPaths.push(...purged.mediaPaths);
 
-    await this.c.chunked(() => this.moveChunk(keepId, dropId, phoneJid, report, this.c.chunkSize));
+    await this.c.chunked(() => this.moveChunk(keepId, dropId, report, this.c.chunkSize));
     this.c.write(() => {
-      while (this.moveChunk(keepId, dropId, phoneJid, report, this.c.chunkSize));
+      while (this.moveChunk(keepId, dropId, report, this.c.chunkSize));
       const drop = this.c.get<ChatRow>("SELECT * FROM chats WHERE id = ?", dropId)!;
       this.c.run(
         `UPDATE chats SET name = coalesce(name, ?), pinned = coalesce(pinned, ?), muted_until = coalesce(muted_until, ?),
@@ -330,8 +302,8 @@ export class Merger {
         drop.cleared_through_ts,
         keepId
       );
-      const handled = this.c.all<{ chat_id: number; ask_message_id: number | null; at: number }>(
-        "SELECT chat_id, ask_message_id, at FROM handled WHERE chat_id IN (?, ?) ORDER BY at DESC",
+      const handled = this.c.all<{ ask_message_id: number | null; at: number }>(
+        "SELECT ask_message_id, at FROM handled WHERE chat_id IN (?, ?) ORDER BY at DESC",
         keepId,
         dropId
       );
@@ -344,11 +316,8 @@ export class Merger {
           handled[0]!.at
         );
       }
-      this.c.run("UPDATE chat_aliases SET chat_id = ? WHERE chat_id = ?", keepId, dropId);
       this.c.run("UPDATE chats SET contact_id = coalesce(contact_id, ?) WHERE id = ?", drop.contact_id, keepId);
       this.c.run("DELETE FROM chats WHERE id = ?", dropId);
-      this.c.run("INSERT OR REPLACE INTO chat_aliases(jid, chat_id) VALUES (?, ?)", lid, keepId);
-      // The move triggers keep last_* right row by row; recomputing once more costs one index probe.
       this.c.run(
         `UPDATE chats SET (last_message_id, last_ts, last_from_me) = (
            SELECT id, ts, from_me FROM messages WHERE chat_id = ? AND deleted_at IS NULL ORDER BY id DESC LIMIT 1)
@@ -357,46 +326,37 @@ export class Merger {
         keepId
       );
     });
-    // A clear of either spelling that landed while the merge ran has raised the barrier since the first purge.
+    // A clear of either spelling that landed while the fold ran may have raised the barrier since the first purge.
     report.mediaPaths.push(...(await this.messages.purgeCleared(keepId)).mediaPaths);
   }
 
-  /** Moves up to `limit` messages from the lid chat into the phone chat; true while more remain. */
-  private moveChunk(keepId: number, dropId: number, phoneJid: string, report: MergeReport, limit: number): boolean {
-    const rows = this.c.all<{ id: number; sid: string; from_me: number; key_id: string; deleted_at: number | null }>(
-      "SELECT id, sid, from_me, key_id, deleted_at FROM messages WHERE chat_id = ? ORDER BY id LIMIT ?",
+  /** Moves up to `limit` messages from the folding chat into the number's chat; true while more remain. */
+  private moveChunk(keepId: number, dropId: number, report: MergeReport, limit: number): boolean {
+    const rows = this.c.all<{ id: number; from_me: number; key_id: string; deleted_at: number | null }>(
+      "SELECT id, from_me, key_id, deleted_at FROM messages WHERE chat_id = ? ORDER BY id LIMIT ?",
       dropId,
       limit
     );
     for (const row of rows) {
-      const spelling = sidOf(row.from_me === 1, phoneJid, row.key_id);
-      const twin =
-        this.c.get<{ id: number; deleted_at: number | null }>(
-          "SELECT id, deleted_at FROM messages WHERE sid = ? AND id != ?",
-          spelling,
-          row.id
-        ) ??
-        this.c.get<{ id: number; deleted_at: number | null }>(
-          "SELECT m.id, m.deleted_at FROM message_aliases a JOIN messages m ON m.id = a.message_id WHERE a.sid = ? AND m.id != ?",
-          spelling,
-          row.id
-        );
+      const twin = this.c.get<{ id: number; deleted_at: number | null }>(
+        "SELECT id, deleted_at FROM messages WHERE chat_id = ? AND from_me = ? AND key_id = ?",
+        keepId,
+        row.from_me,
+        row.key_id
+      );
       if (twin === undefined) {
         this.c.run("UPDATE messages SET chat_id = ? WHERE id = ?", keepId, row.id);
-        report.aliasedMessages += this.aliasPhoneSpelling(row, phoneJid);
         report.movedMessages++;
         continue;
       }
-      // One message, two rows: the phone row survives and inherits the other spelling.
+      // One message filed under both spellings: the number's row survives.
       if (row.deleted_at !== null && twin.deleted_at === null) {
         report.mediaPaths.push(...this.messages.tombstone(twin.id, row.deleted_at));
       }
       report.mediaPaths.push(
         ...this.c.all<{ path: string }>("SELECT path FROM media WHERE message_id = ?", row.id).map((m) => m.path)
       );
-      this.c.run("UPDATE OR IGNORE message_aliases SET message_id = ? WHERE message_id = ?", twin.id, row.id);
       this.c.run("DELETE FROM messages WHERE id = ?", row.id);
-      this.c.run("INSERT OR IGNORE INTO message_aliases(sid, message_id) VALUES (?, ?)", row.sid, twin.id);
       report.movedMessages++;
     }
     return rows.length === limit;

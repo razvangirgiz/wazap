@@ -10,6 +10,7 @@ export interface ContactRow {
   verified_name: string | null;
   is_business: number | null;
   updated_at: number;
+  merged_into: number | null;
 }
 
 export interface ChatRow {
@@ -27,6 +28,7 @@ export interface ChatRow {
   last_ts: number | null;
   last_from_me: number | null;
   proto: Uint8Array | null;
+  merged_into: number | null;
 }
 
 export interface MessageRow {
@@ -50,13 +52,21 @@ export interface MessageRow {
   deleted_at: number | null;
 }
 
-/** Columns for a full message; pair with MESSAGE_FROM. */
-export const MESSAGE_COLUMNS = `m.id, m.sid, m.chat_id, c.jid AS chat_jid, m.key_id, m.from_me, m.sender_id,
-  coalesce(s.phone_jid, s.lid) AS sender_jid, m.ts, m.type, m.quoted_sid, m.status, m.edited_at, m.expires_at,
-  m.deleted_at, m.text, m.transcript, m.raw`;
+/**
+ * Columns for a full message; pair with MESSAGE_FROM. A row still sitting in a
+ * chat that is folding into another reads as part of that other chat, and a
+ * sender whose contact row is merging reads as the contact it merges into, so
+ * nothing a reader sees depends on how far a merge has got.
+ */
+export const MESSAGE_COLUMNS = `m.id, coalesce(ck.id, c.id) AS chat_id, coalesce(ck.jid, c.jid) AS chat_jid,
+  (CASE WHEN m.from_me = 1 THEN 'true' ELSE 'false' END) || '_' || coalesce(ck.jid, c.jid) || '_' || m.key_id AS sid,
+  m.key_id, m.from_me, coalesce(sk.id, s.id) AS sender_id,
+  coalesce(s.phone_jid, s.lid, sk.phone_jid, sk.lid) AS sender_jid, m.ts, m.type, m.quoted_sid, m.status, m.edited_at,
+  m.expires_at, m.deleted_at, m.text, m.transcript, m.raw`;
 
 /** Messages drive the join, so a range or index scan over them is never reordered behind chats. */
-export const MESSAGE_FROM = `messages m CROSS JOIN chats c ON c.id = m.chat_id LEFT JOIN contacts s ON s.id = m.sender_id`;
+export const MESSAGE_FROM = `messages m CROSS JOIN chats c ON c.id = m.chat_id LEFT JOIN chats ck ON ck.id = c.merged_into
+  LEFT JOIN contacts s ON s.id = m.sender_id LEFT JOIN contacts sk ON sk.id = s.merged_into`;
 
 /** A row a reader may see: not a tombstone and not past its deadline. Binds one parameter, now. */
 export const VISIBLE = `m.deleted_at IS NULL AND (m.expires_at IS NULL OR m.expires_at > ?)`;

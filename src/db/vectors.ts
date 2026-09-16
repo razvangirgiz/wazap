@@ -240,9 +240,10 @@ export class Vectors {
     const cap = Math.max(1, Math.floor(options.scanCap ?? DEFAULT_BACKLOG_SCAN));
     const rows = this.c
       .stmt(
-        `SELECT m.id, m.sid, m.type, m.ts, m.text, m.transcript,
+        `SELECT m.id, (CASE WHEN m.from_me = 1 THEN 'true' ELSE 'false' END) || '_' || coalesce(ck.jid, c.jid) || '_' || m.key_id AS sid,
+           m.type, m.ts, m.text, m.transcript,
            EXISTS (SELECT 1 FROM embeddings e WHERE e.message_id = m.id AND e.model = ?) AS embedded
-         FROM messages m
+         FROM messages m CROSS JOIN chats c ON c.id = m.chat_id LEFT JOIN chats ck ON ck.id = c.merged_into
          WHERE m.id < ? AND m.deleted_at IS NULL AND (m.expires_at IS NULL OR m.expires_at > ?)
            AND (m.text IS NOT NULL OR m.transcript IS NOT NULL)
          ORDER BY m.id DESC`

@@ -51,21 +51,23 @@ import type {
 export type ScrubQuote = (raw: Uint8Array, quotedSid: string) => Uint8Array | null;
 
 const MAX_PAGE = 1_000;
+/** A message's public sid in SQL, over the canonical jid of the chat it reads as part of; needs `m`, `c` and `ck`. */
+const SID_EXPR = `(CASE WHEN m.from_me = 1 THEN 'true' ELSE 'false' END) || '_' || coalesce(ck.jid, c.jid) || '_' || m.key_id`;
 const NO_UPPER_BOUND = Number.MAX_SAFE_INTEGER;
 
 /**
- * The single upsert. On a sid conflict the row keeps its id, and content only
+ * The single upsert. On a key conflict the row keeps its id, and content only
  * moves when the incoming version is not older than the stored edit; status
  * only rises, expiry only falls, a transcript or sender is never erased. A
  * tombstone matches no update at all.
  */
 const FRESH = "(messages.edited_at IS NULL OR (excluded.edited_at IS NOT NULL AND excluded.edited_at >= messages.edited_at))";
 const UPSERT_SQL = `
-INSERT INTO messages(id, sid, chat_id, key_id, from_me, sender_id, ts, type, quoted_sid, status, edited_at, expires_at,
+INSERT INTO messages(id, chat_id, key_id, from_me, sender_id, ts, type, quoted_sid, status, edited_at, expires_at,
   text, transcript, raw)
-VALUES (:id, :sid, :chat_id, :key_id, :from_me, :sender_id, :ts, :type, :quoted_sid, :status, :edited_at, :expires_at,
+VALUES (:id, :chat_id, :key_id, :from_me, :sender_id, :ts, :type, :quoted_sid, :status, :edited_at, :expires_at,
   :text, :transcript, :raw)
-ON CONFLICT(sid) DO UPDATE SET
+ON CONFLICT(chat_id, from_me, key_id) DO UPDATE SET
   type = CASE WHEN ${FRESH} THEN excluded.type ELSE messages.type END,
   text = CASE WHEN ${FRESH} THEN coalesce(excluded.text, messages.text) ELSE messages.text END,
   raw = CASE WHEN ${FRESH} THEN coalesce(excluded.raw, messages.raw) ELSE messages.raw END,
@@ -98,6 +100,13 @@ function pageOf(items: StoredMessage[], limit: number): Page<StoredMessage> {
 
 function idsJson(ids: readonly number[]): string {
   return JSON.stringify(ids);
+}
+
+/** `m.chat_id` against one chat, or against a chat and the chats still folding into it. */
+export function chatCondition(ids: readonly number[]): { sql: string; params: Array<number | string> } {
+  return ids.length === 1
+    ? { sql: "m.chat_id = ?", params: [ids[0]!] }
+    : { sql: "m.chat_id IN (SELECT value FROM json_each(?))", params: [JSON.stringify(ids)] };
 }
 
 export class Messages {
@@ -142,29 +151,27 @@ export class Messages {
     const ts = checkTimestamp(input.ts, "ts");
     const expiresAt = checkInstant(input.expiresAt, "expiresAt");
     const editedAt = checkInstant(input.editedAt, "editedAt");
-    if (!input.sid || !input.chatJid || !input.keyId || !input.type) {
-      throw new StorageError("INVALID_INPUT", "A message needs a sid, a chat jid, a key id and a type.");
+    if (!input.chatJid || !input.keyId || !input.type || typeof input.fromMe !== "boolean") {
+      throw new StorageError("INVALID_INPUT", "A message needs a chat jid, a key id, a direction and a type.");
     }
     const now = this.c.now();
-    const existing = this.identity.findMessage(input.sid);
+    let chat = this.identity.chat(input.chatJid);
+    const existing = chat === null ? null : this.identity.findByKey(chat, input.fromMe, input.keyId);
     if (existing !== null) return this.mergeExisting(existing, input, expiresAt, editedAt, now);
 
-    let chat = this.identity.chat(input.chatJid);
     if (chat !== null && chat.clearedThroughTs !== null && ts <= chat.clearedThroughTs) {
       return { outcome: "cleared", id: null, sid: null };
     }
     chat ??= this.identity.ensureChat(input.chatJid);
-    const standard = input.sid === sidOf(input.fromMe, input.chatJid, input.keyId);
-    const sid = standard ? sidOf(input.fromMe, chat.jid, input.keyId) : input.sid;
+    const sid = sidOf(input.fromMe, chat.jid, input.keyId);
     const id = this.allocateId(ts);
     const senderId = this.senderIdFor(input, chat);
 
     if (expiresAt !== null && expiresAt <= now) {
       this.c.run(
-        `INSERT INTO messages(id, sid, chat_id, key_id, from_me, sender_id, ts, type, expires_at, deleted_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO messages(id, chat_id, key_id, from_me, sender_id, ts, type, expires_at, deleted_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         id,
-        sid,
         chat.id,
         input.keyId,
         input.fromMe ? 1 : 0,
@@ -174,13 +181,11 @@ export class Messages {
         expiresAt,
         now
       );
-      this.alias(sid, input.sid, id);
       return { outcome: "expired", id, sid };
     }
 
     this.c.stmt(UPSERT_SQL).run({
       id,
-      sid,
       chat_id: chat.id,
       key_id: input.keyId,
       from_me: input.fromMe ? 1 : 0,
@@ -195,7 +200,6 @@ export class Messages {
       transcript: input.transcript ?? null,
       raw: this.scrubbedRaw(input.raw ?? null, input.quotedSid ?? null),
     });
-    this.alias(sid, input.sid, id);
     return { outcome: "inserted", id, sid };
   }
 
@@ -207,7 +211,7 @@ export class Messages {
     now: number
   ): UpsertResult {
     if (existing.deleted_at !== null) return { outcome: "deleted", id: existing.id, sid: existing.sid };
-    const chat = this.identity.chatById(existing.chat_id)!;
+    const chat = existing.chat;
     if (chat.clearedThroughTs !== null && existing.ts <= chat.clearedThroughTs) {
       return { outcome: "cleared", id: null, sid: null };
     }
@@ -222,7 +226,6 @@ export class Messages {
     const stale = existing.edited_at !== null && (editedAt === null || editedAt < existing.edited_at);
     this.c.stmt(UPSERT_SQL).run({
       id: existing.id,
-      sid: existing.sid,
       chat_id: existing.chat_id,
       key_id: existing.key_id,
       from_me: existing.from_me,
@@ -237,20 +240,12 @@ export class Messages {
       transcript: input.transcript ?? null,
       raw: this.scrubbedRaw(input.raw ?? null, input.quotedSid ?? null),
     });
-    this.alias(existing.sid, input.sid, existing.id);
     return { outcome: stale ? "stale" : "updated", id: existing.id, sid: existing.sid };
   }
 
   private senderIdFor(input: MessageInput, chat: ChatRecord): number | null {
     if (input.senderJid) return this.identity.ensureContact(input.senderJid);
     return !input.fromMe && chat.kind === "direct" ? chat.contactId : null;
-  }
-
-  /** Another spelling the caller used for a stored message; the next lookup under it lands on the row. */
-  private alias(storedSid: string, spelling: string, messageId: number): void {
-    if (spelling === storedSid) return;
-    if (this.c.get("SELECT 1 FROM messages WHERE sid = ?", spelling) !== undefined) return;
-    this.c.run("INSERT OR IGNORE INTO message_aliases(sid, message_id) VALUES (?, ?)", spelling, messageId);
   }
 
   /** A quote of a deleted message arrives without its embedded copy. */
@@ -261,10 +256,22 @@ export class Messages {
     return this.scrubQuote(raw, quotedSid);
   }
 
+  /** Every spelling a quote of the message may carry: its chat's canonical jid and every lid of that number. */
+  private quoteSpellings(messageId: number): string[] {
+    const row = this.c.get<{ from_me: number; key_id: string; jid: string }>(
+      `SELECT m.from_me, m.key_id, coalesce(ck.jid, c.jid) AS jid
+       FROM messages m JOIN chats c ON c.id = m.chat_id LEFT JOIN chats ck ON ck.id = c.merged_into WHERE m.id = ?`,
+      messageId
+    );
+    if (row === undefined) return [];
+    const jids = [row.jid, ...this.c.all<{ lid: string }>("SELECT lid FROM lid_phones WHERE phone_jid = ?", row.jid).map((r) => r.lid)];
+    return jids.map((jid) => sidOf(row.from_me === 1, jid, row.key_id));
+  }
+
   /** Every live quote of `messageId` loses its embedded copy of it. */
   private scrubQuotesOf(messageId: number): void {
     if (this.scrubQuote === null) return;
-    for (const variant of this.identity.sidVariants(messageId)) {
+    for (const variant of this.quoteSpellings(messageId)) {
       const quoting = this.c.all<{ id: number; raw: Uint8Array }>(
         "SELECT id, raw FROM messages WHERE quoted_sid = ? AND raw IS NOT NULL AND deleted_at IS NULL",
         variant
@@ -299,15 +306,18 @@ export class Messages {
   ): DeleteResult {
     const result = this.c.write((): DeleteResult => {
       const at = checkInstant(options.at, "at") ?? this.c.now();
-      const existing = this.identity.findMessage(sid);
+      const parsed = parseSid(sid);
+      const chatJid = options.chatJid ?? parsed?.chatJid;
+      const keyId = options.keyId ?? parsed?.keyId;
+      const fromMe = options.fromMe ?? parsed?.fromMe ?? undefined;
+      const existing =
+        chatJid !== undefined && keyId !== undefined && fromMe !== undefined
+          ? this.findKey(chatJid, fromMe, keyId)
+          : this.identity.findMessage(sid);
       if (existing !== null) {
         if (existing.deleted_at !== null) return { outcome: "already", id: existing.id, mediaPaths: [] };
         return { outcome: "deleted", id: existing.id, mediaPaths: this.tombstone(existing.id, at) };
       }
-      const parsed = parseSid(sid);
-      const chatJid = options.chatJid ?? parsed?.chatJid;
-      const keyId = options.keyId ?? parsed?.keyId;
-      const fromMe = options.fromMe ?? parsed?.fromMe;
       if (chatJid === undefined || keyId === undefined || fromMe === undefined) {
         throw new StorageError("INVALID_INPUT", `A tombstone for the unseen ${sid} needs its chat, key and direction.`);
       }
@@ -317,26 +327,26 @@ export class Messages {
         return { outcome: "cleared", id: null, mediaPaths: [] };
       }
       chat ??= this.identity.ensureChat(chatJid);
-      const standard = sid === sidOf(fromMe, chatJid, keyId);
-      const stored = standard ? sidOf(fromMe, chat.jid, keyId) : sid;
       const id = this.allocateId(ts);
       this.c.run(
-        `INSERT INTO messages(id, sid, chat_id, key_id, from_me, ts, type, deleted_at)
-         VALUES (?, ?, ?, ?, ?, ?, 'deleted', ?)`,
+        `INSERT INTO messages(id, chat_id, key_id, from_me, ts, type, deleted_at) VALUES (?, ?, ?, ?, ?, 'deleted', ?)`,
         id,
-        stored,
         chat.id,
         keyId,
         fromMe ? 1 : 0,
         ts,
         at
       );
-      this.alias(stored, sid, id);
       this.scrubQuotesOf(id);
       return { outcome: "placeholder", id, mediaPaths: [] };
     });
     if (result.outcome === "deleted") this.c.scheduleCheckpoint();
     return result;
+  }
+
+  private findKey(chatJid: string, fromMe: boolean, keyId: string): MessageKey | null {
+    const chat = this.identity.chat(chatJid);
+    return chat === null ? null : this.identity.findByKey(chat, fromMe, keyId);
   }
 
   /** A transcript arrived for a live message; it joins the search index and drops a stale embedding. */
@@ -398,8 +408,9 @@ export class Messages {
         const now = this.c.now();
         const started = performance.now();
         const due = this.c.all<{ id: number; sid: string }>(
-          `SELECT id, sid FROM messages INDEXED BY messages_expiry
-           WHERE expires_at IS NOT NULL AND deleted_at IS NULL AND expires_at <= ? ORDER BY expires_at LIMIT ?`,
+          `SELECT m.id, ${SID_EXPR} AS sid FROM messages m INDEXED BY messages_expiry
+             JOIN chats c ON c.id = m.chat_id LEFT JOIN chats ck ON ck.id = c.merged_into
+           WHERE m.expires_at IS NOT NULL AND m.deleted_at IS NULL AND m.expires_at <= ? ORDER BY m.expires_at LIMIT ?`,
           now,
           this.c.chunkSize
         );
@@ -465,7 +476,9 @@ export class Messages {
       )?.through;
       if (barrier === null || barrier === undefined) return false;
       const rows = this.c.all<{ id: number; sid: string }>(
-        "SELECT id, sid FROM messages WHERE chat_id = ? AND id < ? AND ts <= ? ORDER BY id LIMIT ?",
+        `SELECT m.id, ${SID_EXPR} AS sid FROM messages m JOIN chats c ON c.id = m.chat_id
+           LEFT JOIN chats ck ON ck.id = c.merged_into
+         WHERE m.chat_id = ? AND m.id < ? AND m.ts <= ? ORDER BY m.id LIMIT ?`,
         chatId,
         idUpperBound(barrier),
         barrier,
@@ -696,10 +709,11 @@ export class Messages {
     const limit = clampLimit(options.limit);
     const chat = this.identity.chat(chatJid);
     if (chat === null) return { items: [], hasMore: false, nextBefore: null };
+    const inChat = chatCondition(this.identity.chatIdsOf(chat));
     const rows = this.c.all<MessageRow>(
       `SELECT ${MESSAGE_COLUMNS} FROM ${MESSAGE_FROM}
-       WHERE m.chat_id = ? AND m.id < ? AND ${VISIBLE} ORDER BY m.id DESC LIMIT ?`,
-      chat.id,
+       WHERE ${inChat.sql} AND m.id < ? AND ${VISIBLE} ORDER BY m.id DESC LIMIT ?`,
+      ...inChat.params,
       options.before ?? NO_UPPER_BOUND,
       this.c.now(),
       limit + 1
@@ -733,9 +747,10 @@ export class Messages {
 
   /** The newest visible message of a chat, walked back from the end of its index range. */
   lastVisible(chatId: number): StoredMessage | null {
+    const inChat = chatCondition(this.c.all<{ id: number }>("SELECT id FROM chats WHERE id = ? OR merged_into = ?", chatId, chatId).map((r) => r.id));
     const row = this.c.get<MessageRow>(
-      `SELECT ${MESSAGE_COLUMNS} FROM ${MESSAGE_FROM} WHERE m.chat_id = ? AND ${VISIBLE} ORDER BY m.id DESC LIMIT 1`,
-      chatId,
+      `SELECT ${MESSAGE_COLUMNS} FROM ${MESSAGE_FROM} WHERE ${inChat.sql} AND ${VISIBLE} ORDER BY m.id DESC LIMIT 1`,
+      ...inChat.params,
       this.c.now()
     );
     return row === undefined ? null : messageFromRow(row);
@@ -763,7 +778,7 @@ export class Messages {
     const archived = options.includeArchived === false ? "AND ch.archived = 0" : "";
     const rows = this.c.all<ChatRow & { m_id: number | null }>(
       `SELECT ch.*, ch.last_message_id AS m_id FROM chats ch INDEXED BY chats_recent
-       WHERE ch.last_ts IS NOT NULL AND (ch.last_ts < ? OR (ch.last_ts = ? AND ch.id < ?)) ${archived}
+       WHERE ch.last_ts IS NOT NULL AND ch.merged_into IS NULL AND (ch.last_ts < ? OR (ch.last_ts = ? AND ch.id < ?)) ${archived}
        ORDER BY ch.last_ts DESC, ch.id DESC LIMIT ?`,
       cursor?.lastTs ?? NO_UPPER_BOUND,
       cursor?.lastTs ?? NO_UPPER_BOUND,
@@ -798,7 +813,7 @@ export class Messages {
     const archived = options.includeArchived === true ? "" : "AND ch.archived = 0";
     const rows = this.c.all<ChatRow>(
       `SELECT ch.* FROM chats ch INDEXED BY chats_waiting
-       WHERE ch.last_from_me = 0 AND ch.last_ts >= ? AND ch.last_ts <= ? ${archived}
+       WHERE ch.last_from_me = 0 AND ch.last_ts >= ? AND ch.last_ts <= ? AND ch.merged_into IS NULL ${archived}
        ORDER BY ch.last_ts ASC LIMIT ?`,
       options.since,
       options.until,
@@ -826,17 +841,18 @@ export class Messages {
   coverage(chatJid?: string): Coverage {
     const now = this.c.now();
     type Edge = { id: number; sid: string; ts: number };
-    if (chatJid === undefined) {
-      const edge = (order: "ASC" | "DESC"): Edge | null =>
-        this.c.get<Edge>(`SELECT m.id, m.sid, m.ts FROM messages m WHERE ${VISIBLE} ORDER BY m.id ${order} LIMIT 1`, now) ?? null;
-      return { oldest: edge("ASC"), newest: edge("DESC") };
+    let inChat = { sql: "1", params: [] as Array<number | string> };
+    if (chatJid !== undefined) {
+      const chat = this.identity.chat(chatJid);
+      if (chat === null) return { oldest: null, newest: null };
+      inChat = chatCondition(this.identity.chatIdsOf(chat));
     }
-    const chat = this.identity.chat(chatJid);
-    if (chat === null) return { oldest: null, newest: null };
     const edge = (order: "ASC" | "DESC"): Edge | null =>
       this.c.get<Edge>(
-        `SELECT m.id, m.sid, m.ts FROM messages m WHERE m.chat_id = ? AND ${VISIBLE} ORDER BY m.id ${order} LIMIT 1`,
-        chat.id,
+        `SELECT m.id, ${SID_EXPR} AS sid, m.ts FROM messages m CROSS JOIN chats c ON c.id = m.chat_id
+           LEFT JOIN chats ck ON ck.id = c.merged_into
+         WHERE ${inChat.sql} AND ${VISIBLE} ORDER BY m.id ${order} LIMIT 1`,
+        ...inChat.params,
         now
       ) ?? null;
     return { oldest: edge("ASC"), newest: edge("DESC") };
@@ -846,9 +862,10 @@ export class Messages {
   countInChat(chatJid: string): { messages: number; tombstones: number } {
     const chat = this.identity.chat(chatJid);
     if (chat === null) return { messages: 0, tombstones: 0 };
+    const inChat = chatCondition(this.identity.chatIdsOf(chat));
     const row = this.c.get<{ total: number; tombstones: number }>(
-      `SELECT count(*) AS total, count(deleted_at) AS tombstones FROM messages WHERE chat_id = ?`,
-      chat.id
+      `SELECT count(*) AS total, count(m.deleted_at) AS tombstones FROM messages m WHERE ${inChat.sql}`,
+      ...inChat.params
     )!;
     return { messages: row.total - row.tombstones, tombstones: row.tombstones };
   }

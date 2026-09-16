@@ -1,8 +1,14 @@
 /**
  * Who and where: contacts (one row per person, phone jid and lid together),
- * chats under their canonical jid with every other spelling as an alias, the
- * resolution of any sid spelling to its stored message, and what the user
- * filed about people and threads (notes, tags, fields, handled marks).
+ * the lid -> number pairings learned, chats under the canonical jid of their
+ * person, the resolution of any sid spelling to its stored message, and what
+ * the user filed about people and threads (notes, tags, fields, handled marks).
+ *
+ * The pairing rules are main's LidRegistry, table for table: a lid answers for
+ * the number it was last learned with; a lid that moves to a new number stops
+ * answering for the old one; a number that gains a new lid leaves its older
+ * lid answering for it. The canonical jid of a direct chat or contact is the
+ * number once a pairing names one, the lid until then.
  */
 import type { Connection } from "./connection.js";
 import { StorageError } from "./errors.js";
@@ -30,22 +36,34 @@ export function chatKindOf(jid: string): ChatKind {
   return "direct";
 }
 
+/** A user jid without its device (`40700000001:12@s.whatsapp.net`), and every lid server spelled `@lid`. */
+export function normalizeJid(jid: string): string {
+  const at = jid.lastIndexOf("@");
+  if (at === -1) return jid;
+  const user = jid.slice(0, at).split(":")[0]!;
+  const server = jid.slice(at + 1);
+  return `${user}@${server === "hosted.lid" ? "lid" : server === "hosted" ? "s.whatsapp.net" : server}`;
+}
+
 export function sidOf(fromMe: boolean, chatJid: string, keyId: string): string {
   return `${fromMe}_${chatJid}_${keyId}`;
 }
 
-/** Same grammar as message-ref.ts: `<true|false>_<chat jid>_<stanza id>`. */
+/** Same grammar as message-ref.ts: `<true|false>_<chat jid>_<stanza id>`, or `<chat jid>_<stanza id>` with no direction. */
 const FULL_SID = /^(true|false)_([^_\s]+@[^_\s]+)_(.+)$/s;
+const BARE_SID = /^([^_\s]+@[^_\s]+)_(.+)$/s;
 
-export function parseSid(sid: string): { fromMe: boolean; chatJid: string; keyId: string } | null {
-  const match = FULL_SID.exec(sid);
-  return match === null ? null : { fromMe: match[1] === "true", chatJid: match[2]!, keyId: match[3]! };
+export function parseSid(sid: string): { fromMe: boolean | null; chatJid: string; keyId: string } | null {
+  const full = FULL_SID.exec(sid);
+  if (full !== null) return { fromMe: full[1] === "true", chatJid: full[2]!, keyId: full[3]! };
+  const bare = BARE_SID.exec(sid);
+  return bare === null ? null : { fromMe: null, chatJid: bare[1]!, keyId: bare[2]! };
 }
 
 /** The columns every write decision about an existing message needs, and no content. */
 export interface MessageKey {
   id: number;
-  sid: string;
+  /** The row's own chat, which differs from `chat.id` while that chat is folding into another. */
   chat_id: number;
   key_id: string;
   from_me: number;
@@ -53,9 +71,13 @@ export interface MessageKey {
   edited_at: number | null;
   expires_at: number | null;
   deleted_at: number | null;
+  /** The chat a reader sees the message in. */
+  chat: ChatRecord;
+  /** The sid over that chat's canonical jid. */
+  sid: string;
 }
 
-const KEY_COLUMNS = "m.id, m.sid, m.chat_id, m.key_id, m.from_me, m.ts, m.edited_at, m.expires_at, m.deleted_at";
+const KEY_COLUMNS = "id, chat_id, key_id, from_me, ts, edited_at, expires_at, deleted_at";
 
 interface NotesRow {
   note: string | null;
@@ -76,16 +98,35 @@ function notesFromRow(row: NotesRow): ContactNotes {
 export class Identity {
   constructor(private readonly c: Connection) {}
 
+  /** The number a lid was last learned with, or null. */
+  phoneOfLid(lid: string): string | null {
+    return this.c.get<{ phone_jid: string }>("SELECT phone_jid FROM lid_phones WHERE lid = ?", normalizeJid(lid))?.phone_jid ?? null;
+  }
+
+  /** The id wazap hands out: the number once a pairing names it, the lid until then, anything else as it is. */
+  canonicalJid(jid: string): string {
+    const normalized = normalizeJid(jid);
+    return isLidJid(normalized) ? (this.phoneOfLid(normalized) ?? normalized) : normalized;
+  }
+
   contactById(id: number): ContactRecord | null {
     const row = this.c.get<ContactRow>("SELECT * FROM contacts WHERE id = ?", id);
     return row === undefined ? null : contactFromRow(row);
   }
 
   contactIdOf(jid: string): number | null {
-    const byPhone = this.c.get<{ id: number }>("SELECT id FROM contacts WHERE phone_jid = ?", jid);
-    if (byPhone !== undefined) return byPhone.id;
-    const byLid = this.c.get<{ id: number }>("SELECT id FROM contacts WHERE lid = ?", jid);
-    return byLid?.id ?? null;
+    const canonical = this.canonicalJid(jid);
+    const row = isLidJid(canonical)
+      ? this.c.get<{ id: number }>("SELECT id FROM contacts WHERE lid = ? AND phone_jid IS NULL", canonical)
+      : this.c.get<{ id: number }>("SELECT id FROM contacts WHERE phone_jid = ?", canonical);
+    return row?.id ?? null;
+  }
+
+  /** The contact and every row still merging into it: what a sender filter must match. */
+  contactIdsOf(jid: string): number[] {
+    const id = this.contactIdOf(jid);
+    if (id === null) return [];
+    return [id, ...this.c.all<{ id: number }>("SELECT id FROM contacts WHERE merged_into = ?", id).map((row) => row.id)];
   }
 
   contact(jid: string): ContactRecord | null {
@@ -96,9 +137,12 @@ export class Identity {
   ensureContact(jid: string): number {
     const found = this.contactIdOf(jid);
     if (found !== null) return found;
-    const column = isLidJid(jid) ? "lid" : "phone_jid";
+    const canonical = this.canonicalJid(jid);
+    const column = isLidJid(canonical) ? "lid" : "phone_jid";
     return this.c.write(
-      () => this.c.get<{ id: number }>(`INSERT INTO contacts(${column}, updated_at) VALUES (?, ?) RETURNING id`, jid, this.c.now())!.id
+      () =>
+        this.c.get<{ id: number }>(`INSERT INTO contacts(${column}, updated_at) VALUES (?, ?) RETURNING id`, canonical, this.c.now())!
+          .id
     );
   }
 
@@ -128,46 +172,41 @@ export class Identity {
     return row === undefined ? null : chatFromRow(row);
   }
 
-  /** A chat by any spelling: its jid, an alias, or the other half of a known lid/phone pair. */
+  /**
+   * A chat by any spelling: the canonical jid first, then the jid as given. A
+   * chat folding into another answers as the chat it folds into.
+   */
   chat(jid: string): ChatRecord | null {
-    const row =
-      this.c.get<ChatRow>("SELECT * FROM chats WHERE jid = ?", jid) ??
-      this.c.get<ChatRow>("SELECT c.* FROM chat_aliases a JOIN chats c ON c.id = a.chat_id WHERE a.jid = ?", jid);
-    if (row !== undefined) return chatFromRow(row);
-    if (chatKindOf(jid) !== "direct") return null;
-    const contact = this.contact(jid);
-    if (contact === null) return null;
-    for (const other of [contact.phoneJid, contact.lid]) {
-      if (other === null || other === jid) continue;
-      const found = this.c.get<ChatRow>("SELECT * FROM chats WHERE jid = ?", other);
-      if (found !== undefined) return chatFromRow(found);
+    const normalized = normalizeJid(jid);
+    const canonical = chatKindOf(normalized) === "direct" ? this.canonicalJid(normalized) : normalized;
+    for (const candidate of canonical === normalized ? [normalized] : [canonical, normalized]) {
+      const row = this.c.get<ChatRow>("SELECT * FROM chats WHERE jid = ?", candidate);
+      if (row === undefined) continue;
+      return row.merged_into === null ? chatFromRow(row) : this.chatById(row.merged_into);
     }
     return null;
   }
 
-  /**
-   * The chat for `jid`, created when unknown. A direct chat is filed under
-   * the contact's phone jid when the number is known, and the spelling it
-   * arrived under becomes an alias.
-   */
+  /** The chat and every chat still folding into it: where its messages may sit right now. */
+  chatIdsOf(chat: ChatRecord): number[] {
+    return [chat.id, ...this.c.all<{ id: number }>("SELECT id FROM chats WHERE merged_into = ?", chat.id).map((row) => row.id)];
+  }
+
+  /** The chat for `jid`, created under its canonical jid when unknown. */
   ensureChat(jid: string, kind?: ChatKind): ChatRecord {
     const existing = this.chat(jid);
     if (existing !== null) return existing;
     return this.c.write(() => {
-      const chatKind = kind ?? chatKindOf(jid);
-      let canonical = jid;
-      let contactId: number | null = null;
-      if (chatKind === "direct") {
-        contactId = this.ensureContact(jid);
-        canonical = this.contactById(contactId)!.phoneJid ?? jid;
-      }
+      const normalized = normalizeJid(jid);
+      const chatKind = kind ?? chatKindOf(normalized);
+      const canonical = chatKind === "direct" ? this.canonicalJid(normalized) : normalized;
+      const contactId = chatKind === "direct" ? this.ensureContact(canonical) : null;
       const row = this.c.get<ChatRow>(
         "INSERT INTO chats(jid, kind, contact_id) VALUES (?, ?, ?) RETURNING *",
         canonical,
         chatKind,
         contactId
       )!;
-      if (canonical !== jid) this.c.run("INSERT OR IGNORE INTO chat_aliases(jid, chat_id) VALUES (?, ?)", jid, row.id);
       return chatFromRow(row);
     });
   }
@@ -193,40 +232,35 @@ export class Identity {
     });
   }
 
+  /** The stored message with this chat, direction and key, wherever a fold has it right now. */
+  findByKey(chat: ChatRecord, fromMe: boolean, keyId: string): MessageKey | null {
+    for (const chatId of this.chatIdsOf(chat)) {
+      const row = this.c.get<Omit<MessageKey, "chat" | "sid">>(
+        `SELECT ${KEY_COLUMNS} FROM messages WHERE chat_id = ? AND from_me = ? AND key_id = ?`,
+        chatId,
+        fromMe ? 1 : 0,
+        keyId
+      );
+      if (row !== undefined) return { ...row, chat, sid: sidOf(fromMe, chat.jid, keyId) };
+    }
+    return null;
+  }
+
   /**
-   * The stored message a sid names, in any spelling: the row's own sid, a
-   * recorded alias, or the sid rebuilt over the chat's canonical jid — a lid
-   * spelling for a message filed after the number became known.
+   * The stored message a sid names, in any spelling: the chat part resolves
+   * through the pairings to the chat, and the message is that chat's
+   * direction and key. A sid without a direction tries both.
    */
   findMessage(sid: string): MessageKey | null {
-    const direct =
-      this.c.get<MessageKey>(`SELECT ${KEY_COLUMNS} FROM messages m WHERE m.sid = ?`, sid) ??
-      this.c.get<MessageKey>(`SELECT ${KEY_COLUMNS} FROM message_aliases a JOIN messages m ON m.id = a.message_id WHERE a.sid = ?`, sid);
-    if (direct !== undefined) return direct;
     const parsed = parseSid(sid);
     if (parsed === null) return null;
     const chat = this.chat(parsed.chatJid);
-    if (chat === null || chat.jid === parsed.chatJid) return null;
-    const canonical = sidOf(parsed.fromMe, chat.jid, parsed.keyId);
-    return (
-      this.c.get<MessageKey>(`SELECT ${KEY_COLUMNS} FROM messages m WHERE m.sid = ?`, canonical) ??
-      this.c.get<MessageKey>(`SELECT ${KEY_COLUMNS} FROM message_aliases a JOIN messages m ON m.id = a.message_id WHERE a.sid = ?`, canonical) ??
-      null
-    );
-  }
-
-  /** Every spelling a message is known by: its sid, its aliases, and the sid over its chat's canonical jid. */
-  sidVariants(messageId: number): string[] {
-    const row = this.c.get<{ sid: string; from_me: number; key_id: string; jid: string }>(
-      "SELECT m.sid, m.from_me, m.key_id, c.jid FROM messages m JOIN chats c ON c.id = m.chat_id WHERE m.id = ?",
-      messageId
-    );
-    if (row === undefined) return [];
-    const variants = new Set([row.sid, sidOf(row.from_me === 1, row.jid, row.key_id)]);
-    for (const alias of this.c.all<{ sid: string }>("SELECT sid FROM message_aliases WHERE message_id = ?", messageId)) {
-      variants.add(alias.sid);
+    if (chat === null) return null;
+    for (const fromMe of parsed.fromMe === null ? [true, false] : [parsed.fromMe]) {
+      const found = this.findByKey(chat, fromMe, parsed.keyId);
+      if (found !== null) return found;
     }
-    return [...variants];
+    return null;
   }
 
   notes(jid: string): ContactNotes | null {
@@ -260,8 +294,13 @@ export class Identity {
 
   private saveNotes(jid: string, note: string | null, tags: string[], fields: Record<string, string>): ContactNotes | null {
     const id = this.ensureContact(jid);
+    return this.writeNotes(id, note, tags, fields);
+  }
+
+  /** Stores notes on a contact row; the merge path writes through here too. Call inside write(). */
+  writeNotes(contactId: number, note: string | null, tags: string[], fields: Record<string, string>): ContactNotes | null {
     if (note === null && tags.length === 0 && Object.keys(fields).length === 0) {
-      this.c.run("DELETE FROM contact_notes WHERE contact_id = ?", id);
+      this.c.run("DELETE FROM contact_notes WHERE contact_id = ?", contactId);
       return null;
     }
     const at = this.c.now();
@@ -269,13 +308,18 @@ export class Identity {
       `INSERT INTO contact_notes(contact_id, note, tags, fields, updated_at) VALUES (?, ?, ?, ?, ?)
        ON CONFLICT(contact_id) DO UPDATE SET note = excluded.note, tags = excluded.tags, fields = excluded.fields,
          updated_at = excluded.updated_at`,
-      id,
+      contactId,
       note,
       tags.length === 0 ? null : JSON.stringify(tags),
       Object.keys(fields).length === 0 ? null : JSON.stringify(fields),
       at
     );
     return { note, tags, fields, updatedAt: at };
+  }
+
+  notesById(contactId: number): ContactNotes | null {
+    const row = this.c.get<NotesRow>("SELECT note, tags, fields, updated_at FROM contact_notes WHERE contact_id = ?", contactId);
+    return row === undefined ? null : notesFromRow(row);
   }
 
   /** "I dealt with that": the ask open now is handled; a newer message from them reopens the chat. */
@@ -303,10 +347,13 @@ export class Identity {
   }
 
   handledByChatId(chatId: number): HandledRecord | null {
-    const row = this.c.get<{ ask_message_id: number | null; sid: string | null; at: number }>(
-      "SELECT h.ask_message_id, m.sid, h.at FROM handled h LEFT JOIN messages m ON m.id = h.ask_message_id WHERE h.chat_id = ?",
+    const row = this.c.get<{ ask_message_id: number | null; from_me: number | null; key_id: string | null; jid: string; at: number }>(
+      `SELECT h.ask_message_id, m.from_me, m.key_id, c.jid, h.at
+       FROM handled h JOIN chats c ON c.id = h.chat_id LEFT JOIN messages m ON m.id = h.ask_message_id WHERE h.chat_id = ?`,
       chatId
     );
-    return row === undefined ? null : { askMessageId: row.ask_message_id, askSid: row.sid, at: row.at };
+    if (row === undefined) return null;
+    const askSid = row.key_id === null ? null : sidOf(row.from_me === 1, row.jid, row.key_id);
+    return { askMessageId: row.ask_message_id, askSid, at: row.at };
   }
 }

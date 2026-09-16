@@ -1,20 +1,25 @@
 /**
- * One person, one row: learning that a lid and a phone number belong
- * together merges the contacts, the chats and their messages, and every sid
- * spelling keeps resolving — including the barriers, so nothing deleted or
- * cleared under one spelling comes back under the other.
+ * One person, one row — and never two people in one. A lid and a number
+ * learned together fold into one contact and one chat, every sid spelling
+ * keeps resolving, and the barriers hold across spellings. A lid that moves
+ * to another number follows main's LidRegistry: it stops answering for the
+ * old number, and nothing the old number holds moves.
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
-import { StorageError } from "../dist/db/index.js";
+import { AccountDb, StorageError, mergeNotes } from "../dist/db/index.js";
 import { ME, PEER, PEER_LID, T0, openTemp, sid, textMessage } from "./db-fixtures.mjs";
 
 const OTHER = "40700000003@s.whatsapp.net";
+const P2 = "40700000009@s.whatsapp.net";
+const LID2 = "999999999999999@lid";
+const GROUP_A = "120363000000000001@g.us";
+
+const turn = () => new Promise((resolve) => setImmediate(resolve));
 
 test("a lid and a phone number become one contact and one chat, and every message answers to both spellings", async () => {
   const { db } = openTemp({ chunkSize: 3 });
-  // What the phone spelling knew: a contact with a note, a chat with history.
   const phoneContact = db.identity.upsertContact({ jid: PEER, name: "Ana Contabil" });
   db.identity.setNote(PEER, "contabila");
   db.identity.updateFields(PEER, { addTags: ["client"], set: { rol: "contabil" } });
@@ -23,7 +28,6 @@ test("a lid and a phone number become one contact and one chat, and every messag
   db.messages.upsert(textMessage(PEER, "DUP", T0 + 60_000, "același mesaj"));
   db.messages.upsert(textMessage(PEER, "PC", T0 + 500, "sub barieră"));
 
-  // What the lid spelling knew: another contact row, another chat.
   const lidContact = db.identity.upsertContact({ jid: PEER_LID, pushName: "Ana" });
   assert.notEqual(lidContact.id, phoneContact.id);
   db.identity.updateFields(PEER_LID, { addTags: ["vip"], set: { oras: "Iași", rol: "ignored" } });
@@ -44,12 +48,8 @@ test("a lid and a phone number become one contact and one chat, and every messag
   assert.equal(contact.id, report.contactId);
   assert.deepEqual([contact.phoneJid, contact.lid, contact.name, contact.pushName], [PEER, PEER_LID, "Ana Contabil", "Ana"]);
   assert.equal(db.identity.contact(PEER).id, contact.id);
-  assert.deepEqual(db.identity.notes(PEER_LID), {
-    note: "contabila",
-    tags: ["client", "vip"],
-    fields: { oras: "Iași", rol: "contabil" },
-    updatedAt: db.identity.notes(PEER).updatedAt,
-  });
+  const notes = db.identity.notes(PEER_LID);
+  assert.deepEqual([notes.note, notes.tags, notes.fields], ["contabila", ["client", "vip"], { oras: "Iași", rol: "contabil | ignored" }]);
 
   const chat = db.identity.chat(PEER_LID);
   assert.equal(chat.jid, PEER);
@@ -65,11 +65,12 @@ test("a lid and a phone number become one contact and one chat, and every messag
   const byLid = db.messages.get(sid(false, PEER_LID, "L3"));
   const byPhone = db.messages.get(sid(false, PEER, "L3"));
   assert.equal(byLid.id, byPhone.id);
+  assert.equal(byPhone.sid, sid(false, PEER, "L3"));
   assert.equal(byPhone.senderJid, PEER);
 
-  for (const spelling of [sid(false, PEER, "DUP"), sid(false, PEER_LID, "DUP")]) {
-    assert.equal(db.messages.get(spelling), null, `${spelling} stays deleted`);
-    assert.equal(db.messages.upsert(textMessage(spelling.split("_")[1], "DUP", T0 + 60_000, "același mesaj")).outcome, "deleted");
+  for (const chatJid of [PEER, PEER_LID]) {
+    assert.equal(db.messages.get(sid(false, chatJid, "DUP")), null, `DUP under ${chatJid} stays deleted`);
+    assert.equal(db.messages.upsert(textMessage(chatJid, "DUP", T0 + 60_000, "același mesaj")).outcome, "deleted");
   }
   assert.equal(db.search.text({ query: "același", limit: 5 }).items.length, 0);
 
@@ -83,39 +84,163 @@ test("a lid and a phone number become one contact and one chat, and every messag
   assert.equal(live.sid, sid(false, PEER, "NEW"), "a new lid-addressed message is filed under the phone spelling");
   assert.equal(db.messages.get(sid(false, PEER_LID, "NEW")).id, live.id);
   assert.equal(db.identity.chat(PEER).lastMessageId, live.id);
+  assert.deepEqual(db.integrityCheck(), { ok: true, problems: [] });
   db.close();
 });
 
-test("when only the lid chat exists it takes the phone jid, and its messages answer to both spellings", async () => {
-  const { db } = openTemp({ chunkSize: 200 });
-  for (let i = 0; i < 450; i++) db.messages.upsert(textMessage(PEER_LID, `K${i}`, T0 + i * 1000, `mesaj ${i}`));
-  const before = db.identity.chat(PEER_LID);
-  const report = await db.learnLidPhone(PEER_LID, PEER);
-  assert.equal(report.chatId, before.id);
-  assert.equal(report.aliasedMessages, 450);
-  const after = db.identity.chat(PEER);
-  assert.equal(after.id, before.id);
-  assert.equal(after.jid, PEER);
-  assert.equal(db.identity.chat(PEER_LID).id, before.id);
-  for (const key of ["K0", "K199", "K200", "K449"]) {
-    assert.equal(db.messages.get(sid(false, PEER, key)).sid, sid(false, PEER_LID, key), "the stored sid does not change");
-  }
-  assert.equal(db.messages.upsert(textMessage(PEER, "K5", T0 + 5_000, "replay")).outcome, "updated");
-  assert.equal(db.counts().messages, 450);
+test("finding 1: rows landing lid-addressed while a lid chat takes its number are the rows their phone spelling replays", async () => {
+  const { db } = openTemp({ chunkSize: 2 });
+  for (let i = 0; i < 10; i++) db.messages.upsert(textMessage(PEER_LID, `L${i}`, T0 + 60_000 + i * 1000, `live ${i}`));
+  const learn = db.learnLidPhone(PEER_LID, PEER);
+  for (let i = 0; i < 4; i++) await turn();
+  db.messages.upsert(textMessage(PEER_LID, "OLD", T0 + 1000, "old history message"));
+  db.messages.delete(sid(false, PEER_LID, "GONE"), { ts: T0 + 2000 });
+  await learn;
+
+  const old = db.messages.get(sid(false, PEER, "OLD"));
+  assert.equal(old?.text, "old history message", "an older row that arrived mid-rename answers to the phone spelling");
+  assert.equal(db.messages.upsert(textMessage(PEER, "OLD", T0 + 1000, "old history message")).outcome, "updated");
+  assert.equal(db.messages.upsert(textMessage(PEER, "GONE", T0 + 1500, "the retracted text")).outcome, "deleted");
+  const texts = db.messages.chatPage(PEER, { limit: 50 }).items.map((m) => m.text).filter((text) => !text.startsWith("live"));
+  assert.deepEqual(texts, ["old history message"]);
+  assert.deepEqual(db.messages.countInChat(PEER), { messages: 11, tombstones: 1 });
   db.close();
 });
 
-test("when only the phone chat exists the lid becomes an alias, with no per-message rows", async () => {
+test("finding 3: a lid learned for a second number stops answering for the first and never merges the two people", async () => {
   const { db } = openTemp();
-  db.messages.upsert(textMessage(PEER, "A", T0, "salut"));
-  const report = await db.learnLidPhone(PEER_LID, PEER);
-  assert.equal(report.aliasedMessages, 0);
-  const viaLid = db.messages.get(sid(false, PEER_LID, "A"));
-  assert.equal(viaLid.sid, sid(false, PEER, "A"));
-  const replay = db.messages.upsert(textMessage(PEER_LID, "A", T0, "salut din nou"));
-  assert.deepEqual([replay.outcome, replay.id], ["updated", viaLid.id]);
-  db.messages.delete(sid(false, PEER_LID, "A"));
-  assert.equal(db.messages.upsert(textMessage(PEER, "A", T0, "salut")).outcome, "deleted");
+  await db.learnLidPhone(PEER_LID, PEER);
+  db.messages.upsert(textMessage(PEER, "A", T0, "to/from P1 (person X)"));
+  db.identity.setNote(PEER, "X: landlord, owes 300");
+  db.identity.updateFields(PEER, { set: { iban: "RO-X" } });
+  db.messages.upsert(textMessage(P2, "B", T0 + 1000, "to/from P2 (person Y)"));
+  db.identity.setNote(P2, "Y: dentist");
+  db.identity.updateFields(P2, { set: { iban: "RO-Y" } });
+
+  const report = await db.learnLidPhone(PEER_LID, P2);
+  assert.equal(report.movedMessages, 0);
+  assert.notEqual(db.identity.chat(PEER).id, db.identity.chat(P2).id);
+  assert.deepEqual(db.messages.chatPage(PEER, { limit: 10 }).items.map((m) => m.text), ["to/from P1 (person X)"]);
+  assert.deepEqual(db.messages.chatPage(P2, { limit: 10 }).items.map((m) => m.text), ["to/from P2 (person Y)"]);
+  assert.deepEqual([db.identity.notes(PEER).note, db.identity.notes(PEER).fields], ["X: landlord, owes 300", { iban: "RO-X" }]);
+  assert.deepEqual([db.identity.notes(P2).note, db.identity.notes(P2).fields], ["Y: dentist", { iban: "RO-Y" }]);
+  assert.notEqual(db.identity.contact(PEER).id, db.identity.contact(P2).id);
+  assert.equal(db.identity.contact(PEER).lid, null, "the old number no longer answers to the lid");
+  assert.equal(db.identity.contact(PEER_LID).id, db.identity.contact(P2).id);
+  assert.equal(db.identity.chat(PEER_LID).jid, P2);
+  assert.equal(db.messages.upsert(textMessage(PEER_LID, "C", T0 + 2000, "new lid message")).sid, sid(false, P2, "C"));
+  db.close();
+});
+
+test("finding 3: a lid-first conversation stays with its first number when the lid moves to another", async () => {
+  const { db } = openTemp();
+  db.messages.upsert(textMessage(PEER_LID, "A", T0, "X: my address is ..."));
+  db.identity.setNote(PEER_LID, "X note");
+  await db.learnLidPhone(PEER_LID, PEER);
+  db.messages.upsert(textMessage(P2, "B", T0 + 1000, "Y: hello"));
+  db.identity.setNote(P2, "Y note");
+  await db.learnLidPhone(PEER_LID, P2);
+  assert.deepEqual(
+    db.messages.chatPage(PEER, { limit: 10 }).items.map((m) => [m.chatJid, m.senderJid, m.text]),
+    [[PEER, PEER, "X: my address is ..."]]
+  );
+  assert.deepEqual(db.messages.chatPage(P2, { limit: 10 }).items.map((m) => [m.chatJid, m.text]), [[P2, "Y: hello"]]);
+  assert.equal(db.identity.notes(PEER).note, "X note");
+  assert.equal(db.identity.notes(P2).note, "Y note");
+  db.close();
+});
+
+test("finding 3: re-pointing a lid while messages arrive creates no duplicate chat and leaves nothing pending", async () => {
+  const { db } = openTemp({ chunkSize: 2 });
+  for (let i = 0; i < 10; i++) db.messages.upsert(textMessage(PEER_LID, `L${i}`, T0 + i * 1000, `lid ${i}`));
+  await db.learnLidPhone(PEER_LID, PEER);
+  const learn = db.learnLidPhone(PEER_LID, P2);
+  await turn();
+  await turn();
+  const up = db.messages.upsert(textMessage(P2, "NEW", T0 + 20_000, "arrives mid-merge"));
+  assert.equal(up.outcome, "inserted");
+  await learn;
+  const conn = db["connection"];
+  assert.equal(conn.get("SELECT count(*) AS n FROM chats WHERE merged_into IS NOT NULL").n, 0);
+  assert.equal(conn.get("SELECT count(*) AS n FROM contacts WHERE merged_into IS NOT NULL").n, 0);
+  assert.deepEqual(conn.all("SELECT jid FROM chats ORDER BY id").map((row) => row.jid), [PEER, P2]);
+  assert.equal(db.messages.chatPage(PEER, { limit: 20 }).items.length, 10);
+  assert.deepEqual(db.messages.chatPage(PEER_LID, { limit: 20 }).items.map((m) => m.keyId), ["NEW"]);
+  db.close();
+});
+
+test("a number that gains a new lid keeps answering to its older lid too", async () => {
+  const { db } = openTemp();
+  await db.learnLidPhone(PEER_LID, PEER);
+  await db.learnLidPhone(LID2, PEER);
+  const contact = db.identity.contact(PEER);
+  assert.equal(contact.lid, LID2);
+  assert.equal(db.identity.contact(PEER_LID).id, contact.id);
+  assert.equal(db.identity.contact(LID2).id, contact.id);
+  db.messages.upsert(textMessage(PEER_LID, "OLD-LID", T0, "prin lidul vechi"));
+  db.messages.upsert(textMessage(LID2, "NEW-LID", T0 + 1000, "prin lidul nou"));
+  assert.deepEqual(db.messages.chatPage(PEER, { limit: 5 }).items.map((m) => m.keyId), ["NEW-LID", "OLD-LID"]);
+  db.close();
+});
+
+test("finding 12b: a retraction spelled with the lid while the merge waits behind a long clear hits the number's message", async () => {
+  const { db } = openTemp({ chunkSize: 5 });
+  for (let i = 0; i < 400; i++) db.messages.upsert(textMessage(GROUP_A, `G${i}`, T0 + i, `g${i}`, { senderJid: OTHER }));
+  db.messages.upsert(textMessage(PEER, "X", T0 + 2000, "secret"));
+  const clear = db.messages.clearChat(GROUP_A, T0 + 1000);
+  const learn = db.learnLidPhone(PEER_LID, PEER);
+  const deleted = db.messages.delete(sid(false, PEER_LID, "X"), { ts: T0 + 2000 });
+  assert.equal(deleted.outcome, "deleted");
+  assert.equal(db.messages.get(sid(false, PEER, "X")), null);
+  await clear;
+  await learn;
+  assert.equal(db.messages.get(sid(false, PEER, "X")), null);
+  assert.deepEqual(db.messages.countInChat(PEER), { messages: 0, tombstones: 1 });
+  db.close();
+});
+
+test("a fold interrupted by close is finished by resumeMerges, and learning the pair again changes nothing", async () => {
+  const { db, path, clock } = openTemp({ chunkSize: 2 });
+  for (let i = 0; i < 20; i++) db.messages.upsert(textMessage(PEER_LID, `L${i}`, T0 + i * 1000, `lid ${i}`));
+  for (let i = 0; i < 20; i++) db.messages.upsert(textMessage(PEER, `P${i}`, T0 + i * 1000 + 500, `phone ${i}`));
+  db.messages.upsert(textMessage(PEER, "L3", T0 + 3000, "twin"));
+  const learn = db.learnLidPhone(PEER_LID, PEER);
+  learn.catch(() => {});
+  await turn();
+  db.close();
+  await learn.catch(() => {});
+
+  const reopened = AccountDb.open(path, { now: () => clock.now, chunkSize: 2, checkpointDelayMs: 0 });
+  assert.equal(reopened.identity.chat(PEER_LID).id, reopened.identity.chat(PEER).id, "the pairing itself was committed before close");
+  await reopened.resumeMerges();
+  const conn = reopened["connection"];
+  assert.equal(conn.get("SELECT count(*) AS n FROM chats").n, 1);
+  assert.equal(conn.get("SELECT count(*) AS n FROM contacts").n, 1);
+  assert.equal(reopened.messages.chatPage(PEER, { limit: 100 }).items.length, 40);
+  const counts = reopened.counts();
+  const again = await reopened.learnLidPhone(PEER_LID, PEER);
+  assert.equal(again.movedMessages, 0);
+  assert.deepEqual(reopened.counts(), counts);
+  assert.deepEqual(reopened.integrityCheck(), { ok: true, problems: [] });
+  reopened.close();
+});
+
+test("a merge of one person keeps both notes and both values of a conflicting field", () => {
+  const numberSide = { note: "contabila", tags: ["client"], fields: { rol: "contabil", oras: "Iași" }, updatedAt: 1 };
+  const lidSide = { note: "vine marți", tags: ["vip", "client"], fields: { rol: "consultant", email: "a@b.ro" }, updatedAt: 2 };
+  assert.deepEqual(mergeNotes(numberSide, lidSide), {
+    note: "contabila\nvine marți",
+    tags: ["client", "vip"],
+    fields: { email: "a@b.ro", oras: "Iași", rol: "contabil | consultant" },
+  });
+  assert.deepEqual(mergeNotes(null, lidSide).note, "vine marți");
+  assert.deepEqual(mergeNotes({ ...numberSide, note: "same" }, { ...lidSide, note: "same" }).note, "same");
+});
+
+test("learnLidPhone refuses arguments that are not a lid and a phone jid", async () => {
+  const { db } = openTemp();
+  await assert.rejects(db.learnLidPhone(PEER, PEER_LID), (err) => err instanceof StorageError && err.code === "INVALID_INPUT");
+  await assert.rejects(db.learnLidPhone(PEER_LID, "120363@g.us"), (err) => err instanceof StorageError && err.code === "INVALID_INPUT");
   db.close();
 });
 
@@ -126,30 +251,6 @@ test("a pair learned before any chat files a lid-addressed message in the phone 
   assert.equal(stored.sid, sid(false, PEER, "X"));
   assert.equal(db.identity.chat(PEER_LID).jid, PEER);
   assert.equal(db.messages.get(sid(false, PEER_LID, "X")).id, stored.id);
-  db.close();
-});
-
-test("a merge a crash interrupted is finished on resume, and learning the pair again changes nothing", async () => {
-  const { db } = openTemp({ chunkSize: 2 });
-  for (let i = 0; i < 5; i++) db.messages.upsert(textMessage(PEER_LID, `L${i}`, T0 + i * 1000, `l${i}`));
-  db.messages.upsert(textMessage(PEER, "P", T0 + 9_000, "p"));
-  db.setMeta(`merge_pending:${PEER_LID}`, PEER);
-  const reports = await db.resumeMerges();
-  assert.equal(reports.length, 1);
-  assert.equal(db.getMeta(`merge_pending:${PEER_LID}`), null);
-  assert.equal(db.identity.chat(PEER_LID).id, db.identity.chat(PEER).id);
-  const counts = db.counts();
-  const again = await db.learnLidPhone(PEER_LID, PEER);
-  assert.equal(again.movedMessages, 0);
-  assert.deepEqual(db.counts(), counts);
-  assert.deepEqual(await db.resumeMerges(), []);
-  db.close();
-});
-
-test("learnLidPhone refuses arguments that are not a lid and a phone jid", async () => {
-  const { db } = openTemp();
-  await assert.rejects(db.learnLidPhone(PEER, PEER_LID), (err) => err instanceof StorageError && err.code === "INVALID_INPUT");
-  await assert.rejects(db.learnLidPhone(PEER_LID, "120363@g.us"), (err) => err instanceof StorageError && err.code === "INVALID_INPUT");
   db.close();
 });
 

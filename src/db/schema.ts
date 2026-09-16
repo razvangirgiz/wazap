@@ -10,7 +10,8 @@
  * second to the timestamp's second, so an id range is a time range.
  *
  * Invariants the schema itself defends, whatever code writes to it:
- * - a message keeps its id, sid, timestamp, key and direction forever;
+ * - a message keeps its id, timestamp, key and direction forever, and is unique
+ *   by chat, direction and key;
  * - a tombstone (deleted_at set) holds no text, transcript or raw bytes, and
  *   stays a tombstone;
  * - the full-text index and the embeddings follow text and transcript, and a
@@ -30,6 +31,10 @@ CREATE TABLE meta(
   value TEXT NOT NULL
 ) STRICT;
 
+-- One row per person. phone_jid is the number once known; lid is the lid that
+-- currently answers for that number (or the only id of a person whose number
+-- is unknown). A row merging into another has both cleared and merged_into set
+-- until its references have moved over; nothing resolves to it meanwhile.
 CREATE TABLE contacts(
   id INTEGER PRIMARY KEY,
   phone_jid TEXT UNIQUE,
@@ -38,9 +43,24 @@ CREATE TABLE contacts(
   push_name TEXT,
   verified_name TEXT,
   is_business INTEGER,
-  updated_at INTEGER NOT NULL
+  updated_at INTEGER NOT NULL,
+  merged_into INTEGER REFERENCES contacts(id)
 ) STRICT;
+CREATE INDEX contacts_merging ON contacts(merged_into) WHERE merged_into IS NOT NULL;
 
+-- Every lid -> number pairing learned, the table Baileys keeps: a lid answers
+-- for the number it was last learned with, and an older lid of a number keeps
+-- answering for it.
+CREATE TABLE lid_phones(
+  lid TEXT PRIMARY KEY,
+  phone_jid TEXT NOT NULL,
+  learned_at INTEGER NOT NULL
+) STRICT, WITHOUT ROWID;
+CREATE INDEX lid_phones_phone ON lid_phones(phone_jid);
+
+-- A direct chat lives under the canonical jid of its person: the number once
+-- known. A lid chat folding into the number's chat keeps its row, with
+-- merged_into set, until its messages have moved.
 CREATE TABLE chats(
   id INTEGER PRIMARY KEY,
   jid TEXT NOT NULL UNIQUE,
@@ -55,24 +75,19 @@ CREATE TABLE chats(
   last_message_id INTEGER,
   last_ts INTEGER,
   last_from_me INTEGER,
-  proto BLOB
+  proto BLOB,
+  merged_into INTEGER REFERENCES chats(id)
 ) STRICT;
 CREATE INDEX chats_waiting ON chats(last_from_me, last_ts);
 CREATE INDEX chats_recent ON chats(last_ts);
 CREATE INDEX chats_contact ON chats(contact_id) WHERE contact_id IS NOT NULL;
-
-CREATE TABLE chat_aliases(
-  jid TEXT PRIMARY KEY,
-  chat_id INTEGER NOT NULL REFERENCES chats(id) ON DELETE CASCADE
-) STRICT;
-CREATE INDEX chat_aliases_chat ON chat_aliases(chat_id);
+CREATE INDEX chats_merging ON chats(merged_into) WHERE merged_into IS NOT NULL;
 
 -- Column order is deliberate: the small columns every filter reads come
 -- first, the large ones last, so checking deleted_at or expires_at never
 -- walks past a raw blob into its overflow pages.
 CREATE TABLE messages(
   id INTEGER PRIMARY KEY,
-  sid TEXT NOT NULL UNIQUE,
   chat_id INTEGER NOT NULL REFERENCES chats(id),
   key_id TEXT NOT NULL,
   from_me INTEGER NOT NULL CHECK (from_me IN (0, 1)),
@@ -90,17 +105,14 @@ CREATE TABLE messages(
   CHECK ((id >> 20) = (ts / 1000)),
   CHECK (deleted_at IS NULL OR (text IS NULL AND transcript IS NULL AND raw IS NULL))
 ) STRICT;
+-- A message is its chat, its direction and its WhatsApp key; every sid
+-- spelling resolves to that through the chat, so no spelling is stored.
+CREATE UNIQUE INDEX messages_key ON messages(chat_id, from_me, key_id);
 CREATE INDEX messages_chat ON messages(chat_id, id);
 CREATE INDEX messages_sender ON messages(sender_id, id) WHERE sender_id IS NOT NULL;
 CREATE INDEX messages_expiry ON messages(expires_at) WHERE expires_at IS NOT NULL AND deleted_at IS NULL;
 CREATE INDEX messages_quoted ON messages(quoted_sid) WHERE quoted_sid IS NOT NULL;
 CREATE INDEX messages_tombstones ON messages(deleted_at) WHERE deleted_at IS NOT NULL;
-
-CREATE TABLE message_aliases(
-  sid TEXT PRIMARY KEY,
-  message_id INTEGER NOT NULL REFERENCES messages(id) ON DELETE CASCADE
-) STRICT;
-CREATE INDEX message_aliases_message ON message_aliases(message_id);
 
 CREATE TABLE reactions(
   message_id INTEGER NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
@@ -203,11 +215,10 @@ CREATE VIRTUAL TABLE messages_fts USING fts5(
 -- for a later merge: deleted text must not stay readable in index pages.
 INSERT INTO messages_fts(messages_fts, rank) VALUES ('secure-delete', 1);
 
-CREATE TRIGGER messages_identity_fixed BEFORE UPDATE OF id, sid, ts, key_id, from_me ON messages
-WHEN old.id IS NOT new.id OR old.sid IS NOT new.sid OR old.ts IS NOT new.ts
-  OR old.key_id IS NOT new.key_id OR old.from_me IS NOT new.from_me
+CREATE TRIGGER messages_identity_fixed BEFORE UPDATE OF id, ts, key_id, from_me ON messages
+WHEN old.id IS NOT new.id OR old.ts IS NOT new.ts OR old.key_id IS NOT new.key_id OR old.from_me IS NOT new.from_me
 BEGIN
-  SELECT RAISE(ABORT, 'a stored message keeps its id, sid, timestamp, key and direction');
+  SELECT RAISE(ABORT, 'a stored message keeps its id, timestamp, key and direction');
 END;
 
 CREATE TRIGGER messages_tombstone_final BEFORE UPDATE OF deleted_at ON messages

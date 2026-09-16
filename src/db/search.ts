@@ -8,7 +8,7 @@
 import type { Connection } from "./connection.js";
 import { idLowerBound, idUpperBound } from "./ids.js";
 import type { Identity } from "./identity.js";
-import type { Messages } from "./messages.js";
+import { chatCondition, type Messages } from "./messages.js";
 import type { SQLInputValue } from "./sqlite.js";
 import type { MessageFilter, TextSearchInput, TextSearchResult } from "./types.js";
 
@@ -58,18 +58,24 @@ export class Search {
     if (filter.chat !== undefined) {
       const chat = this.identity.chat(filter.chat);
       if (chat === null) return null;
-      conditions.push("m.chat_id = ?");
-      params.push(chat.id);
+      const inChat = chatCondition(this.identity.chatIdsOf(chat));
+      conditions.push(inChat.sql);
+      params.push(...inChat.params);
       narrowsRows = true;
     }
     if (filter.from !== undefined) {
       if (filter.from === "me") {
         conditions.push("m.from_me = 1");
       } else {
-        const contactId = this.identity.contactIdOf(filter.from);
-        if (contactId === null) return null;
-        conditions.push("m.sender_id = ?");
-        params.push(contactId);
+        const contactIds = this.identity.contactIdsOf(filter.from);
+        if (contactIds.length === 0) return null;
+        if (contactIds.length === 1) {
+          conditions.push("m.sender_id = ?");
+          params.push(contactIds[0]!);
+        } else {
+          conditions.push("m.sender_id IN (SELECT value FROM json_each(?))");
+          params.push(JSON.stringify(contactIds));
+        }
       }
       narrowsRows = true;
     }

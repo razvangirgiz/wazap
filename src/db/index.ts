@@ -23,7 +23,8 @@ import { Vectors } from "./vectors.js";
 export { StorageError, type StorageErrorCode } from "./errors.js";
 export { SCHEMA_VERSION } from "./schema.js";
 export { SEQ_SPAN, idLowerBound, idUpperBound, secondOfId } from "./ids.js";
-export { chatKindOf, isLidJid, parseSid, sidOf } from "./identity.js";
+export { chatKindOf, isLidJid, normalizeJid, parseSid, sidOf } from "./identity.js";
+export { mergeNotes } from "./merge.js";
 export { foldText, DEFAULT_SCAN_CAP, DEFAULT_TRIGRAM_CAP } from "./search.js";
 export { hybridTokens, int8Similarity, quantizeVector, unitVector, RRF_K } from "./vectors.js";
 export { isSqliteExperimentalWarning } from "./sqlite.js";
@@ -149,8 +150,8 @@ export class AccountDb {
     return this.merger.learnLidPhone(lid, phoneJid);
   }
 
-  /** Finishes any merge a crash interrupted. */
-  resumeMerges(): Promise<MergeReport[]> {
+  /** Finishes any fold a crash or a close interrupted. */
+  resumeMerges(): Promise<MergeReport> {
     return this.merger.resumeMerges();
   }
 

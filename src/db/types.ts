@@ -29,7 +29,7 @@ export interface ContactInput {
 
 export interface ChatRecord {
   id: number;
-  /** The canonical spelling: the phone jid once a direct chat's number is known. */
+  /** The canonical jid: the number once a pairing names it, for a direct chat. */
   jid: string;
   kind: ChatKind;
   contactId: number | null;
@@ -57,8 +57,8 @@ export interface ChatInput {
   proto?: Uint8Array | null;
 }
 
+/** A message is identified by its chat (any spelling), its direction and its WhatsApp key. */
 export interface MessageInput {
-  sid: string;
   chatJid: string;
   keyId: string;
   fromMe: boolean;
@@ -102,12 +102,13 @@ export interface UpsertResult {
   outcome: UpsertOutcome;
   /** The row the message lives in; null when nothing was stored. */
   id: number | null;
-  /** The sid the row is filed under, which may differ from the input spelling. */
+  /** The public sid, over the chat's canonical jid. */
   sid: string | null;
 }
 
 export interface StoredMessage {
   id: number;
+  /** `<fromMe>_<chat's canonical jid>_<keyId>`; every other spelling of it resolves to the same row. */
   sid: string;
   chatId: number;
   chatJid: string;
@@ -259,9 +260,9 @@ export interface TextSearchResult extends Page<StoredMessage> {
 }
 
 export interface MergeReport {
-  contactId: number;
+  /** The person's contact row after the pairing; null for resumeMerges, which finishes whatever was pending. */
+  contactId: number | null;
   chatId: number | null;
   movedMessages: number;
-  aliasedMessages: number;
   mediaPaths: string[];
 }
