@@ -468,6 +468,44 @@ test("a chat clear reaches an unknown send drafted to the person's lid before th
   assert.doesNotMatch(sendRow(svc, view.draft_id).payload, /cuvinte/);
 });
 
+/** A draft left unsent, one sent and one unknown, all saying "cuvinte". */
+async function threeSends(svc, sock) {
+  await svc.draft({ kind: "text", chatId: PEER, text: "cuvinte nesemnate" }, OWNER);
+  const sentView = await svc.draft({ kind: "text", chatId: PEER, text: "cuvinte trimise" }, OWNER);
+  await svc.confirm(sentView.draft_id, OWNER);
+  const unknownView = await svc.draft({ kind: "text", chatId: PEER, text: "cuvinte poate" }, OWNER);
+  const relay = sock.relayMessage;
+  sock.relayMessage = async () => {
+    throw new Error("Timed Out");
+  };
+  await assert.rejects(svc.confirm(unknownView.draft_id, OWNER), { code: "SEND_OUTCOME_UNKNOWN" });
+  sock.relayMessage = relay;
+}
+
+function assertNoSendWords(svc) {
+  const rows = storageRows(svc, "SELECT state, payload, receipt FROM sends ORDER BY state");
+  assert.deepEqual(rows.map((row) => row.state), ["sent", "unknown"], "no draft is kept");
+  for (const row of rows) assert.doesNotMatch(`${row.payload}${row.receipt}`, /cuvinte/, `${row.state} send`);
+}
+
+test("an account that keeps no history keeps no draft and no sent words once it stops", async (t) => {
+  const { svc, sock } = serviceOn(t, dataDirFor(t), { persistHistory: false });
+  await threeSends(svc, sock);
+  await svc.stop();
+  assertNoSendWords(svc);
+});
+
+test("an account that keeps no history forgets the words of its sends at the start after a crash", async (t) => {
+  const dataDir = dataDirFor(t);
+  const first = serviceOn(t, dataDir);
+  await threeSends(first.svc, first.sock);
+  first.svc.accountDb.close();
+
+  const second = serviceOn(t, dataDir, { persistHistory: false });
+  await second.svc.bootStorage();
+  assertNoSendWords(second.svc);
+});
+
 test("deleting a sent message takes its words out of the send record, and a repeated confirm still sends nothing", async (t) => {
   const { svc, sock, sent } = serviceOn(t, dataDirFor(t));
   sock.chatModify = async () => {};

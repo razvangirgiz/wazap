@@ -679,8 +679,9 @@ only small bounded caches stay in the process.
   **`wazap account remove`** stops the account, closes its database and deletes
   the whole folder with it.
 - **`WAZAP_PERSIST_HISTORY=0`** removes every stored message at each start and
-  stop, whatever `WAZAP_RETENTION` says; chats, contacts, notes and deletion
-  barriers stay, and recall is off.
+  stop, whatever `WAZAP_RETENTION` says, and with them every draft and the words
+  of every send record; chats, contacts, notes, deletion barriers and the send
+  records themselves stay, and recall is off.
 
 - **`wazap status`** reads each database read-only, with the server running or
   not: whether it is preparing (and the import phase), ready or imported with

@@ -198,6 +198,21 @@ export class Sends {
     return this.change("DELETE FROM sends WHERE draft_id = ? AND state = 'draft'", draftId) === 1;
   }
 
+  /**
+   * What an account that keeps no history forgets between runs: every draft,
+   * and the words of every other send. The rows stay, so a send whose message
+   * WhatsApp may have is still never sent again.
+   */
+  forgetWords(): void {
+    this.c.write(() => {
+      this.c.run("DELETE FROM sends WHERE state = 'draft'");
+      this.c.run(
+        `UPDATE sends SET payload = '{}', receipt = CASE WHEN receipt IS NULL THEN NULL ELSE json_set(receipt, '$.text', '') END
+         WHERE payload <> '{}' OR json_extract(receipt, '$.text') <> ''`
+      );
+    });
+  }
+
   /** Deletes up to `limit` rows past their expires_at, never a send under way. Returns how many went. */
   sweep(now: number, limit: number): number {
     return this.change(

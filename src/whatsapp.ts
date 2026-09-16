@@ -642,6 +642,11 @@ export class WhatsAppService implements WhatsAppApi {
       // An account that keeps no history forgets it when it stops, as it did when nothing reached the disk.
       if (!this.config.persistHistory && this.storageState === "ready") {
         await db.messages.purgeLive().catch((err: unknown) => logError("history purge", err));
+        try {
+          db.sends.forgetWords();
+        } catch (err) {
+          logError("send record", err);
+        }
         await this.unlinkReleased().catch(() => {});
       }
       db.close();
@@ -822,7 +827,10 @@ export class WhatsAppService implements WhatsAppApi {
       }
       await this.importLateBeta(db);
       if (this.stopped || !db.isOpen) return;
-      if (!this.config.persistHistory) await db.messages.purgeLive();
+      if (!this.config.persistHistory) {
+        await db.messages.purgeLive();
+        db.sends.forgetWords();
+      }
       this.storageState = "ready";
     } catch (err) {
       if (this.stopped || !db.isOpen) return;
