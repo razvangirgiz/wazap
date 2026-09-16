@@ -157,7 +157,6 @@ import {
   asConnectionPayload,
   asWebhookPayload,
   webhookConnectionStatus,
-  webhookKind,
   type WebhookConnectionPayload,
   type WebhookConnectionStatus,
   type WebhookPayload,
@@ -565,7 +564,7 @@ export class WhatsAppService implements WhatsAppApi {
       db: () => this.readyDb(),
       sink: () => this.webhook,
       payload: (event, message) => this.webhookPayload(event, message),
-      awaitingTranscript: (message) => this.webhookTranscripts.has(message.sid),
+      awaitingTranscript: (message) => this.webhookAwaitsTranscript(message),
     });
     const policy = accountPolicy(account, config);
     this.effectiveReadOnly = policy.readOnly;
@@ -4217,7 +4216,7 @@ export class WhatsAppService implements WhatsAppApi {
       let event: "message_received" | "message_sent";
       try {
         if (!isUserMessage(raw)) continue;
-        if (raw.key.fromMe && raw.key.id && this.isOwnSend(raw.key.id)) continue;
+        if (this.webhookOwnSend(raw)) continue;
         event = raw.key.fromMe ? "message_sent" : "message_received";
         if (!settings.events.includes(event)) continue;
         sid = messageIdFor(raw.key, this.canonical(raw.key.remoteJid ?? ""));
@@ -4228,14 +4227,13 @@ export class WhatsAppService implements WhatsAppApi {
       }
       const message = db.messages.get(sid);
       if (message === null || db.events.hasMessageEvent(message.id, event)) continue;
-      const transcribed = !message.fromMe && this.autoTranscribe && webhookKind(message.type as MessageType) === "audio";
       db.events.enqueue({
         kind: event,
         lane: chatLane(message.chatId),
         messageId: message.id,
         payload: JSON.stringify({ is_self_chat: this.isMe(message.chatJid) }),
         createdAt: now,
-        readyAt: transcribed ? now + WEBHOOK_TRANSCRIPT_WAIT_MS : now,
+        readyAt: this.webhookReadyAt(raw, message, now),
       });
     }
     return stored;
@@ -4255,6 +4253,38 @@ export class WhatsAppService implements WhatsAppApi {
   }
 
   /**
+   * Seam (F1-e): whether wazap sent this message itself, so its echo is never
+   * announced as `message_sent`. Runs inside the transaction that stores the
+   * echo; the durable send record is what should answer it, so an echo after
+   * a restart is recognised too.
+   */
+  private webhookOwnSend(raw: WAMessage): boolean {
+    return Boolean(raw.key.fromMe && raw.key.id && this.isOwnSend(raw.key.id));
+  }
+
+  /**
+   * Seam (F1-f): until when a message's event may wait for a transcript — a
+   * voice note that auto-transcription takes (incoming, short enough, not
+   * transcribed yet) — and the event is due at once otherwise. It must name
+   * the same notes the transcription queue takes.
+   */
+  private webhookReadyAt(raw: WAMessage, message: StoredMessage, now: number): number {
+    if (!this.autoTranscribe || message.transcript !== null || !transcribable(raw)) return now;
+    return now + WEBHOOK_TRANSCRIPT_WAIT_MS;
+  }
+
+  /** Seam (F1-f): whether a transcript of this message is still being made; the durable queue's state should answer it. */
+  private webhookAwaitsTranscript(message: StoredMessage): boolean {
+    return this.webhookTranscripts.has(message.sid);
+  }
+
+  /** Seam (F1-f): a transcription finished or failed; its event, and its chat, need not wait any longer. */
+  private webhookTranscriptSettled(sid: string): void {
+    this.webhookTranscripts.delete(sid);
+    this.outbox.kick();
+  }
+
+  /**
    * Starts posting what announced() queued. A voice note being transcribed is
    * held until its transcript is stored or its run settles, however that went,
    * and never for the notes behind it in the transcription queue.
@@ -4262,10 +4292,7 @@ export class WhatsAppService implements WhatsAppApi {
   private postWebhookEvents(transcribing: ReadonlyMap<string, Promise<void>>): void {
     for (const [sid, done] of transcribing) {
       this.webhookTranscripts.add(sid);
-      void done.finally(() => {
-        this.webhookTranscripts.delete(sid);
-        this.outbox.kick();
-      });
+      void done.finally(() => this.webhookTranscriptSettled(sid));
     }
     this.outbox.nudge();
   }
