@@ -317,12 +317,13 @@ Nothing reaches WhatsApp until `confirm_send`, and a draft goes out at most
 once, even across a crash. Drafts are kept in the account database for 15
 minutes, at most 20 per MCP session, each with the WhatsApp message id it will
 be sent under. Confirming a draft again answers the same receipt with
-`already_sent: true`, and two confirms at once send it once. A failure before
-the message reaches the socket (not connected, the write budget, the number
-lookup, a missing file) leaves the draft as it was, to confirm again. A failure
-after it (a timeout, a dropped socket) answers `SEND_OUTCOME_UNKNOWN`: WhatsApp
-may have the message, so that draft is never sent again. The agent checks the
-chat instead. When WhatsApp later echoes that message id, including after a
+`already_sent: true`, and two confirms at once send it once. A failure while
+the message is still being prepared (not connected, the write budget, the
+number lookup, a missing file, a media upload) leaves the draft as it was, to
+confirm again. Once the message is handed to WhatsApp's relay (which also looks
+up the recipient's devices and encrypts it before writing), a failure answers
+`SEND_OUTCOME_UNKNOWN`: WhatsApp may have the message, so that draft is never
+sent again. The agent checks the chat instead. When WhatsApp later echoes that message id, including after a
 restart, the draft counts as sent and confirming it answers the receipt.
 A send a crash interrupts is unknown when the server starts again. Receipts and
 ids are kept 24 hours; deleting the sent message removes its words from them.

@@ -236,7 +236,8 @@ function tenantHub(t, overrides = {}) {
 
 /**
  * Give the tenant's service an open socket, the only part standing in for
- * WhatsApp. `sent` and `receipts` record what reached it.
+ * WhatsApp. `sent` and `receipts` record what reached it: a confirmed draft is
+ * relayed under the id it was drafted with, and `sent` keeps its text.
  */
 function openSocket(svc) {
   const sock = fakeSocket();
@@ -248,13 +249,9 @@ function openSocket(svc) {
   const sent = [];
   const receipts = [];
   sock.onWhatsApp = async (jid) => [{ jid, exists: true }];
-  sock.sendMessage = async (jid, content) => {
-    sent.push({ jid, content });
-    return {
-      key: { remoteJid: jid, fromMe: true, id: `OUT${sent.length}` },
-      messageTimestamp: Math.floor(Date.now() / 1000),
-      message: { conversation: content.text },
-    };
+  sock.relayMessage = async (jid, message, { messageId }) => {
+    sent.push({ jid, messageId, content: { text: message.extendedTextMessage?.text ?? message.conversation } });
+    return messageId;
   };
   sock.readMessages = async (keys) => {
     receipts.push(...keys);
@@ -577,7 +574,7 @@ describe("Calfa tool calls on a linked tenant (wazap-client.ts)", () => {
     assert.equal(confirmed.chat_id, CLIENT);
     assert.equal(confirmed.text, text);
     assert.match(confirmed.timestamp, CALFA_INSTANT);
-    assert.equal(confirmed.message_id, `true_${CLIENT}_OUT1`, "the id the webhook would use for the same message");
+    assert.equal(confirmed.message_id, `true_${CLIENT}_${f.sent[0].messageId}`, "the id the webhook would use for the same message");
     assert.equal(confirmed.account_id, TENANT);
     assert.equal(f.sent.length, 1);
     assert.equal(f.sent[0].jid, CLIENT);
@@ -634,16 +631,16 @@ describe("Calfa tool calls on a linked tenant (wazap-client.ts)", () => {
     await client.initialize();
     const draft = answer(await client.tool("send_message", { chat_id: CLIENT, text: "salut", account_id: TENANT }), "draft");
     const args = { draft_id: draft.draft_id, account_id: TENANT };
-    const answers = f.sock.sendMessage;
+    const answers = f.sock.relayMessage;
     let attempts = 0;
-    f.sock.sendMessage = async () => {
+    f.sock.relayMessage = async () => {
       attempts++;
       throw new Error("Timed Out");
     };
     const code = refusal(await client.tool("confirm_send", args));
     assert.equal(code, "SEND_OUTCOME_UNKNOWN");
     assert.ok(!DEFINITELY_UNSENT.includes(code), "Calfa must record it as unknown and never retry it");
-    f.sock.sendMessage = answers;
+    f.sock.relayMessage = answers;
     assert.equal(refusal(await client.tool("confirm_send", args)), "SEND_OUTCOME_UNKNOWN");
     assert.equal(attempts, 1);
     assert.equal(f.sent.length, 0);
@@ -656,7 +653,7 @@ describe("Calfa tool calls on a linked tenant (wazap-client.ts)", () => {
     const draft = answer(await client.tool("send_message", { chat_id: CLIENT, text: "salut", account_id: TENANT }), "draft");
     let handed = false;
     let fail;
-    f.sock.sendMessage = () => {
+    f.sock.relayMessage = () => {
       handed = true;
       return new Promise((_resolve, reject) => (fail = reject));
     };
@@ -922,7 +919,7 @@ describe("Calfa webhook: decision 0009 as webhook.ts and wire.ts parse it", () =
     assert.equal(confirmed.isError, undefined, JSON.stringify(confirmed.structuredContent));
     assert.equal(sent.length, 1);
 
-    const echo = message("OUT1", "Te aștept.", { fromMe: true });
+    const echo = message(sent[0].messageId, "Te aștept.", { fromMe: true });
     upsert(sock, "append", echo);
     upsert(sock, "notify", echo);
     upsert(sock, "notify", message("AFTER", "Mulțumesc"));

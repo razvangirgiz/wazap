@@ -348,7 +348,7 @@ test("confirm_send finds a draft stored on work", async () => {
   const { hub, workSock } = twoAccountHub();
   workSock.ev.emit("chats.upsert", [{ id: DAN, conversationTimestamp: Math.floor(Date.now() / 1000) }]);
   workSock.ev.emit("contacts.upsert", [{ id: DAN, name: "Dan" }]);
-  workSock.sendMessage = async () => undefined;
+  workSock.relayMessage = async () => undefined;
   const tools = toolsOf(hub);
   const drafted = await tools.get("send_message").handler({ chat_id: DAN, text: "hi" });
   assert.equal(drafted.structuredContent.account_id, "work");
@@ -430,7 +430,7 @@ test("implicit chat routing cannot borrow another account's write permission", a
 test("an owned draft cannot reach confirm while its effective account policy is read-only", async () => {
   const { hub, home, homeSock } = twoAccountHub();
   homeSock.ev.emit("chats.upsert", [{ id: ANA }]);
-  homeSock.sendMessage = async () => undefined;
+  homeSock.relayMessage = async () => undefined;
   const tools = toolsOf(hub);
   const draft = await tools.get("send_message").handler({ account_id: "default", chat_id: ANA, text: "test" });
   const args = { draft_id: draft.structuredContent.draft_id };

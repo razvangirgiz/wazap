@@ -68,6 +68,8 @@ function recordCalls(sock) {
     calls.push(["sendMessage", ...args]);
     return { key: { id: "SENT" } };
   };
+  // A confirmed draft is built here and relayed: what is recorded is what goes out.
+  sock.relayMessage = async (...args) => void calls.push(["relayMessage", ...args]);
   return calls;
 }
 
@@ -683,12 +685,14 @@ test("send_message with mention_ids: the draft preview shows the final text, and
   const confirmed = await server.tools.get("confirm_send").handler({ draft_id: drafted.structuredContent.draft_id });
   assert.equal(confirmed.isError, undefined, JSON.stringify(confirmed.structuredContent));
   assert.equal(calls.length, 1);
-  const [method, jid, content] = calls[0];
-  assert.equal(method, "sendMessage");
+  const [method, jid, message] = calls[0];
+  assert.equal(method, "relayMessage");
   assert.equal(jid, GROUP);
-  assert.deepEqual(content, { text: finalText, linkPreview: null, mentions: [ANA, DAN] });
-  for (const mentioned of content.mentions) {
-    assert.ok(content.text.includes(`@${mentioned.split("@")[0]}`), `the token for ${mentioned} is in the text`);
+  const { text, contextInfo } = message.extendedTextMessage;
+  assert.equal(text, finalText);
+  assert.deepEqual(contextInfo.mentionedJid, [ANA, DAN]);
+  for (const mentioned of contextInfo.mentionedJid) {
+    assert.ok(text.includes(`@${mentioned.split("@")[0]}`), `the token for ${mentioned} is in the text`);
   }
 
   const untouched = await svc.draft({

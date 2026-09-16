@@ -289,7 +289,7 @@ test("a confirm that fails before the send leaves gives the draft back; one that
   });
   sock.onWhatsApp = async () => [{ exists: true }];
   let calls = 0;
-  sock.sendMessage = async () => {
+  sock.relayMessage = async () => {
     calls++;
     throw new Error("Connection Closed");
   };

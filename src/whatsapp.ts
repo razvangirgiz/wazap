@@ -19,6 +19,7 @@ import {
   DisconnectReason,
   downloadMediaMessage,
   generateMessageIDV2,
+  generateWAMessage,
   type MiscMessageGenerationOptions,
   normalizeMessageContent,
   proto,
@@ -3712,11 +3713,14 @@ export class WhatsAppService implements WhatsAppApi {
   }
 
   /**
-   * The step past which a send may have reached WhatsApp. A confirmed draft
-   * goes out under the key it was drafted with, and is marked as handed over
-   * first: whatever fails from here on leaves its outcome unknown.
+   * Hands a message to Baileys. A confirmed draft does in two steps what
+   * sendMessage does in one, so the moment it may reach WhatsApp is known:
+   * building the message (uploading its media on the way) writes nothing to
+   * WhatsApp, and a failure there leaves the draft unsent. The relay is where
+   * it goes out, under the key it was drafted with; it is marked as handed
+   * over first, so whatever fails from there on leaves the outcome unknown.
    */
-  private dispatch(
+  private async dispatch(
     sock: WASocket,
     jid: string,
     content: AnyMessageContent,
@@ -3724,8 +3728,20 @@ export class WhatsAppService implements WhatsAppApi {
     attempt: SendAttempt | undefined
   ): Promise<WAMessage | undefined> {
     if (attempt === undefined) return sock.sendMessage(jid, content, options);
+    const built = await generateWAMessage(jid, content, {
+      ...options,
+      userJid: sock.user?.id ?? this.ownJid(),
+      upload: sock.waUploadToServer,
+      messageId: attempt.keyId,
+    });
+    if (!built.message) throw new WazapError("WHATSAPP_ERROR", "Baileys built an empty message.");
     attempt.dispatched = true;
-    return sock.sendMessage(jid, content, { ...options, messageId: attempt.keyId });
+    await sock.relayMessage(jid, built.message, {
+      messageId: attempt.keyId,
+      // What sendMessage adds for a poll, so it arrives as one.
+      ...("poll" in content ? { additionalNodes: [{ tag: "meta", attrs: { polltype: "creation" } }] } : {}),
+    });
+    return built;
   }
 
   /** The single gate every send path passes: writability, addressability, announce-only. */

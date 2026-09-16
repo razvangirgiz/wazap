@@ -68,6 +68,11 @@ for (const operation of ["send", "confirm", "edit"]) {
         assert.equal(encoded.extendedTextMessage?.title, preview?.title);
         return { key };
       };
+      // A confirmed draft is built by wazap, with the card it made, and relayed.
+      sock.relayMessage = async (_jid, message) => {
+        sends++;
+        assert.equal(message.extendedTextMessage?.title, preview?.title);
+      };
       const text = "https://preview.example/private?synthetic-token=abc";
       if (operation === "send") await svc.sendMessage(PEER, text);
       else if (operation === "confirm") {

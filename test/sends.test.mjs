@@ -44,15 +44,12 @@ function serviceOn(t, dataDir, config = {}) {
   return connected;
 }
 
-/** Baileys' sendMessage: the message goes out under options.messageId when one is given. */
+/** Baileys' media upload and relay: what goes out, and the id it goes out under. */
 function answerSends(sock, sent) {
-  sock.sendMessage = async (jid, content, options = {}) => {
-    sent.push({ jid, content, options });
-    return {
-      key: { remoteJid: jid, fromMe: true, id: options.messageId ?? `AUTO${sent.length}` },
-      messageTimestamp: Math.floor(Date.now() / 1000),
-      message: { conversation: content.text ?? content.caption ?? "" },
-    };
+  sock.waUploadToServer = async () => ({ mediaUrl: "https://mmg.whatsapp.net/synthetic", directPath: "/synthetic" });
+  sock.relayMessage = async (jid, message, options) => {
+    sent.push({ jid, message, options });
+    return options.messageId;
   };
 }
 
@@ -78,8 +75,8 @@ test("two confirms of one draft at once send it once and answer the same receipt
   const view = await svc.draft({ kind: "text", chatId: PEER, text: "Joi la 10." }, OWNER);
   let letGo;
   const gate = new Promise((resolve) => (letGo = resolve));
-  const answer = sock.sendMessage;
-  sock.sendMessage = async (...args) => {
+  const answer = sock.relayMessage;
+  sock.relayMessage = async (...args) => {
     await gate;
     return answer(...args);
   };
@@ -113,7 +110,7 @@ test("a send that fails after reaching the socket is unknown, never sent again, 
   const { svc, sock, sent } = serviceOn(t, dataDirFor(t));
   const view = await svc.draft({ kind: "text", chatId: PEER, text: "Joi la 10." }, OWNER);
   const keys = [];
-  sock.sendMessage = async (_jid, _content, options) => {
+  sock.relayMessage = async (_jid, _message, options) => {
     keys.push(options.messageId);
     throw new Error("Timed Out");
   };
@@ -143,7 +140,7 @@ test("a crash while a send is under way leaves it unknown after the restart, unt
   const first = serviceOn(t, dataDir);
   const view = await first.svc.draft({ kind: "text", chatId: PEER, text: "Joi la 10." }, OWNER);
   const keys = [];
-  first.sock.sendMessage = (_jid, _content, options) => {
+  first.sock.relayMessage = (_jid, _message, options) => {
     keys.push(options.messageId);
     return new Promise(() => {});
   };
@@ -169,7 +166,7 @@ test("a message stored under the key before a crash makes the send sent at the r
   const first = serviceOn(t, dataDir);
   const view = await first.svc.draft({ kind: "text", chatId: PEER, text: "Joi la 10." }, OWNER);
   const keys = [];
-  first.sock.sendMessage = (_jid, _content, options) => {
+  first.sock.relayMessage = (_jid, _message, options) => {
     keys.push(options.messageId);
     return new Promise(() => {});
   };
@@ -227,6 +224,48 @@ test("failures before the send leaves give the draft back with Calfa's definitel
   assert.equal(stored.text, "Bună ziua.", "stored as a message, not a tombstone");
 });
 
+test("a failure while the message is built, before the relay, leaves the draft unsent; a relay that fails is unknown", async (t) => {
+  const dataDir = dataDirFor(t);
+  const { svc, sock, sent } = serviceOn(t, dataDir);
+  const file = join(dataDir, "contract.pdf");
+  writeFileSync(file, "%PDF-1.4 synthetic");
+  const view = await svc.draft(
+    { kind: "media", chatId: PEER, source: { file_path: file }, caption: "actele", asDocument: true, asVoice: false, asGif: false },
+    OWNER
+  );
+  const upload = sock.waUploadToServer;
+  sock.waUploadToServer = async () => {
+    throw new Error("upload refused");
+  };
+  await assert.rejects(svc.confirm(view.draft_id, OWNER), (err) => {
+    assert.notEqual(err.code, "SEND_OUTCOME_UNKNOWN", "nothing reached WhatsApp");
+    assert.match(err.message, /upload refused/);
+    return true;
+  });
+  assert.equal(sendRow(svc, view.draft_id).state, "draft");
+  assert.equal(sent.length, 0);
+
+  sock.waUploadToServer = upload;
+  const relay = sock.relayMessage;
+  sock.relayMessage = async () => {
+    throw new Error("Connection Closed");
+  };
+  await assert.rejects(svc.confirm(view.draft_id, OWNER), { code: "SEND_OUTCOME_UNKNOWN" });
+  sock.relayMessage = relay;
+  await assert.rejects(svc.confirm(view.draft_id, OWNER), { code: "SEND_OUTCOME_UNKNOWN" });
+  assert.equal(sent.length, 0);
+});
+
+test("a poll goes out as sendMessage sends one, with its creation node", async (t) => {
+  const { svc, sent } = serviceOn(t, dataDirFor(t));
+  const view = await svc.draft({ kind: "poll", chatId: PEER, question: "Pizza?", options: ["da", "nu"], multiSelect: false }, OWNER);
+  const receipt = await svc.confirm(view.draft_id, OWNER);
+  assert.equal(receipt.text, "[poll] Pizza?");
+  const [{ message, options }] = sent;
+  assert.ok(message.pollCreationMessageV3 ?? message.pollCreationMessage, "a poll creation message");
+  assert.deepEqual(options.additionalNodes, [{ tag: "meta", attrs: { polltype: "creation" } }]);
+});
+
 test("a draft past its lifetime is DRAFT_EXPIRED once and sends nothing", async (t) => {
   const { svc, sent } = serviceOn(t, dataDirFor(t));
   let now = Date.now();
@@ -253,11 +292,11 @@ test("a media draft is confirmed after a restart as it was frozen: the recipient
   const second = serviceOn(t, dataDir);
   const receipt = await second.svc.confirm(view.draft_id, OWNER);
   assert.equal(second.sent.length, 1);
-  const [{ jid, content, options }] = second.sent;
+  const [{ jid, message, options }] = second.sent;
   assert.equal(jid, PEER);
-  assert.equal(content.caption, "actele");
-  assert.equal(content.fileName, "contract.pdf");
-  assert.equal(content.mimetype, "application/pdf");
+  assert.equal(message.documentMessage.caption, "actele");
+  assert.equal(message.documentMessage.fileName, "contract.pdf");
+  assert.equal(message.documentMessage.mimetype, "application/pdf");
   assert.equal(receipt.text, "actele");
   assert.equal(receipt.message_id, `true_${PEER}_${options.messageId}`);
 });
@@ -313,7 +352,7 @@ test("the echo of a confirmed draft is not announced as message_sent, even after
   const first = serviceOn(t, dataDir);
   const view = await first.svc.draft({ kind: "text", chatId: PEER, text: "Te aștept." }, OWNER);
   const keys = [];
-  first.sock.sendMessage = async (_jid, _content, options) => {
+  first.sock.relayMessage = async (_jid, _message, options) => {
     keys.push(options.messageId);
     throw new Error("Connection Closed");
   };
