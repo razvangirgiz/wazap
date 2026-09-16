@@ -167,9 +167,12 @@ CREATE TABLE media(
 ) STRICT, WITHOUT ROWID;
 CREATE INDEX media_path ON media(path);
 
+-- content_hash names the words the vector was made from (see contentHash), so
+-- a vector computed before an edit or a transcript is never stored as current.
 CREATE TABLE embeddings(
   message_id INTEGER PRIMARY KEY REFERENCES messages(id) ON DELETE CASCADE,
   model TEXT NOT NULL,
+  content_hash TEXT NOT NULL,
   vec BLOB NOT NULL
 ) STRICT;
 

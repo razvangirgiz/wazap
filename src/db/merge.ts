@@ -33,6 +33,7 @@ import { chatKindOf, isLidJid, normalizeJid, type Identity } from "./identity.js
 import type { Messages } from "./messages.js";
 import { RECOMPUTE_LAST, type ChatRow, type ContactRow } from "./rows.js";
 import type { ContactNotes, MergeReport } from "./types.js";
+import { contentHash } from "./vectors.js";
 
 /** How the two note records of one person combine. Exported for the tests that pin the rule. */
 export function mergeNotes(numberSide: ContactNotes | null, lidSide: ContactNotes | null): {
@@ -445,19 +446,19 @@ export class Merger {
       keepId
     );
 
-    // The embedding still describes the survivor when the words it was made from are the survivor's words.
+    // The embedding still describes the survivor when it was made from the survivor's words.
     const merged = this.c.get<{ text: string | null; transcript: string | null }>(
       "SELECT text, transcript FROM messages WHERE id = ?",
       keepId
     )!;
-    if (merged.text === drop.text && merged.transcript === drop.transcript) {
-      this.c.run(
-        "UPDATE embeddings SET message_id = ? WHERE message_id = ? AND NOT EXISTS (SELECT 1 FROM embeddings WHERE message_id = ?)",
-        keepId,
-        dropId,
-        keepId
-      );
-    }
+    this.c.run(
+      `UPDATE embeddings SET message_id = ? WHERE message_id = ? AND content_hash = ?
+         AND NOT EXISTS (SELECT 1 FROM embeddings WHERE message_id = ?)`,
+      keepId,
+      dropId,
+      contentHash(merged.text, merged.transcript),
+      keepId
+    );
     this.dropTwin(dropId, report);
   }
 

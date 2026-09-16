@@ -11,7 +11,7 @@ import { statSync } from "node:fs";
 import { performance } from "node:perf_hooks";
 
 import { AccountDb } from "../dist/db/index.js";
-import { PEER, PEER_LID, T0, openTemp, sid, textMessage } from "./db-fixtures.mjs";
+import { PEER, PEER_LID, T0, openTemp, sid, textMessage, wordsOf } from "./db-fixtures.mjs";
 
 const turn = () => new Promise((resolve) => setImmediate(resolve));
 
@@ -162,7 +162,7 @@ test("finding 2: a clear hides everything under its barrier at once, stays hidde
   for (let i = 0; i < 100; i++) rows.push(textMessage(PEER, `K${i}`, T0 + i * 1000, `secret ${i}`));
   db.messages.upsertMany(rows);
   db.messages.setMedia(sid(false, PEER, "K5"), "preview", "/tmp/preview-K5.jpg");
-  db.vectors.put(sid(false, PEER, "K50"), "m", [1, 0, 0]);
+  db.vectors.put(sid(false, PEER, "K50"), "m", [1, 0, 0], wordsOf(db, sid(false, PEER, "K50")));
   const clearing = db.messages.clearChat(PEER, T0 + 99_000);
   clearing.catch(() => {});
 

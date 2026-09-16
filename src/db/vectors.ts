@@ -11,6 +11,7 @@
  * calling thread. It needs only a read connection, so it can move to a
  * worker with a read-only open of the same file unchanged.
  */
+import { createHash } from "node:crypto";
 import type { Connection } from "./connection.js";
 import { StorageError } from "./errors.js";
 import { secondOf, secondOfId } from "./ids.js";
@@ -49,6 +50,16 @@ export function quantizeVector(vector: ArrayLike<number>): Int8Array {
   const out = new Int8Array(unit.length);
   for (let i = 0; i < unit.length; i++) out[i] = Math.round(Math.max(-1, Math.min(1, unit[i]!)) * 127);
   return out;
+}
+
+/**
+ * The words an embedding is made from, as a short digest: text and transcript,
+ * with null kept distinct from empty. The backlog hands it out with each item
+ * and put() stores a vector only while the message still says exactly that.
+ */
+export function contentHash(text: string | null, transcript: string | null): string {
+  const part = (value: string | null): string => (value === null ? "\u0000" : `\u0001${value}`);
+  return createHash("sha256").update(`${part(text)}\u0002${part(transcript)}`).digest("hex").slice(0, 32);
 }
 
 /** Cosine similarity of a unit query against a stored int8 vector. */
@@ -133,6 +144,8 @@ export interface BacklogItem {
   ts: number;
   text: string | null;
   transcript: string | null;
+  /** Pass to put() with the vector made from this text and transcript. */
+  contentHash: string;
 }
 
 export interface VectorSearchInput extends MessageFilter {
@@ -192,27 +205,33 @@ export class Vectors {
   /**
    * Stores a message's embedding. A float vector is normalized and quantized;
    * an Int8Array is taken as already quantized (the recall import path).
-   * Returns false for an unknown, deleted, expired or textless message.
+   * `hash` is the contentHash of the words the vector was made from — the
+   * backlog item's — and the vector is stored only while the message still
+   * says exactly those words. Returns false for an unknown, deleted, expired
+   * or textless message, and for one edited or transcribed since.
    */
-  put(sid: string, model: string, vector: ArrayLike<number> | Int8Array): boolean {
+  put(sid: string, model: string, vector: ArrayLike<number> | Int8Array, hash: string): boolean {
     const vec = vector instanceof Int8Array ? vector : quantizeVector(vector);
     if (vec.length === 0) throw new StorageError("INVALID_INPUT", "An embedding cannot be empty.");
     return this.c.write(() => {
       const key = this.identity.findMessage(sid);
       if (key === null || key.deleted_at !== null) return false;
       if (key.expires_at !== null && key.expires_at <= this.c.now()) return false;
-      return (
-        this.c.run(
-          `INSERT INTO embeddings(message_id, model, vec)
-           SELECT ?, ?, ? WHERE EXISTS (
-             SELECT 1 FROM messages WHERE id = ? AND deleted_at IS NULL AND (text IS NOT NULL OR transcript IS NOT NULL))
-           ON CONFLICT(message_id) DO UPDATE SET model = excluded.model, vec = excluded.vec`,
-          key.id,
-          model,
-          new Uint8Array(vec.buffer, vec.byteOffset, vec.byteLength),
-          key.id
-        ) > 0
+      const words = this.c.get<{ text: string | null; transcript: string | null }>(
+        "SELECT text, transcript FROM messages WHERE id = ?",
+        key.id
+      )!;
+      if (words.text === null && words.transcript === null) return false;
+      if (contentHash(words.text, words.transcript) !== hash) return false;
+      this.c.run(
+        `INSERT INTO embeddings(message_id, model, content_hash, vec) VALUES (?, ?, ?, ?)
+         ON CONFLICT(message_id) DO UPDATE SET model = excluded.model, content_hash = excluded.content_hash, vec = excluded.vec`,
+        key.id,
+        model,
+        hash,
+        new Uint8Array(vec.buffer, vec.byteOffset, vec.byteLength)
       );
+      return true;
     });
   }
 
@@ -248,7 +267,7 @@ export class Vectors {
            AND m.ts > coalesce(c.cleared_through_ts, 0) AND (m.text IS NOT NULL OR m.transcript IS NOT NULL)
          ORDER BY m.id DESC`
       )
-      .iterate(options.model, options.before ?? NO_UPPER_BOUND, this.c.now()) as Iterable<BacklogItem & { embedded: number }>;
+      .iterate(options.model, options.before ?? NO_UPPER_BOUND, this.c.now()) as Iterable<Omit<BacklogItem, "contentHash"> & { embedded: number }>;
     const items: BacklogItem[] = [];
     let examined = 0;
     for (const row of rows) {
@@ -256,7 +275,7 @@ export class Vectors {
       if (row.embedded === 0) {
         if (items.length === limit) return { items, hasMore: true, nextBefore: items[items.length - 1]!.id };
         const { embedded: _embedded, ...item } = row;
-        items.push(item);
+        items.push({ ...item, contentHash: contentHash(item.text, item.transcript) });
       }
       if (examined >= cap) return { items, hasMore: true, nextBefore: row.id };
     }

@@ -9,7 +9,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 
 import { AccountDb, StorageError, mergeNotes } from "../dist/db/index.js";
-import { ME, PEER, PEER_LID, T0, openTemp, sid, textMessage } from "./db-fixtures.mjs";
+import { ME, PEER, PEER_LID, T0, openTemp, sid, textMessage, wordsOf } from "./db-fixtures.mjs";
 
 const OTHER = "40700000003@s.whatsapp.net";
 const P2 = "40700000009@s.whatsapp.net";
@@ -176,7 +176,7 @@ test("finding 5: a message filed under both spellings folds into one row and kee
   db.messages.setTranscript(sid(false, PEER_LID, "V"), "transcriere vocala");
   db.messages.react(sid(false, PEER_LID, "V"), "40711111111@s.whatsapp.net", "❤️", T0 + 40_000);
   db.messages.receipt(sid(false, PEER_LID, "V"), PEER_LID, { readAt: T0 + 50_000 });
-  db.vectors.put(sid(false, PEER_LID, "V"), "m", [1, 2, 3]);
+  db.vectors.put(sid(false, PEER_LID, "V"), "m", [1, 2, 3], wordsOf(db, sid(false, PEER_LID, "V")));
   db.messages.setMedia(sid(false, PEER_LID, "V"), "download", "/data/voice-V.ogg");
 
   const report = await db.learnLidPhone(PEER_LID, PEER);

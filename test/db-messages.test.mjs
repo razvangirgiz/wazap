@@ -9,7 +9,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 
 import { AccountDb, SEQ_SPAN, StorageError, secondOfId } from "../dist/db/index.js";
-import { GROUP, ME, PEER, PEER_LID, T0, openTemp, sid, sids, textMessage } from "./db-fixtures.mjs";
+import { GROUP, ME, PEER, PEER_LID, T0, openTemp, sid, sids, textMessage, wordsOf } from "./db-fixtures.mjs";
 
 const OTHER = "40700000003@s.whatsapp.net";
 const STATUS = "status@broadcast";
@@ -120,7 +120,7 @@ test("a tombstone beats every replay: upsert, transcript, reaction, receipt, med
   assert.equal(db.messages.react(message.sid, OTHER, "👍", T0 + 1), false);
   assert.equal(db.messages.receipt(message.sid, OTHER, { readAt: T0 + 1 }), false);
   assert.equal(db.messages.setMedia(message.sid, "preview", "/tmp/x.jpg").stored, false);
-  assert.equal(db.vectors.put(message.sid, "embeddinggemma-300m", new Array(8).fill(1)), false);
+  assert.equal(db.vectors.put(message.sid, "embeddinggemma-300m", new Array(8).fill(1), wordsOf(db, message.sid)), false);
   assert.deepEqual(db.messages.delete(message.sid), { outcome: "already", id, mediaPaths: [] });
 
   assert.equal(db.messages.get(message.sid), null);

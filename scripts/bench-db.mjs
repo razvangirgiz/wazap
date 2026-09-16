@@ -24,7 +24,7 @@ import { performance } from "node:perf_hooks";
 import { parseArgs } from "node:util";
 
 const DIST_DB = new URL("../dist/db/index.js", import.meta.url).href;
-const { AccountDb, quantizeVector } = await import(DIST_DB);
+const { AccountDb, contentHash, quantizeVector } = await import(DIST_DB);
 
 const { values: args } = parseArgs({
   options: {
@@ -120,7 +120,11 @@ function build(path, count, { vectors = false } = {}) {
     for (let j = i; j < Math.min(count, i + batch); j++) rows.push(message(j));
     db.transaction(() => {
       const stored = db.messages.upsertMany(rows);
-      if (vectors) for (const result of stored) if (result.sid !== null) db.vectors.put(result.sid, MODEL, embedding());
+      if (vectors) {
+        stored.forEach((result, index) => {
+          if (result.sid !== null) db.vectors.put(result.sid, MODEL, embedding(), contentHash(rows[index].text, rows[index].transcript));
+        });
+      }
     });
     if (i % 100_000 === 0 && i > 0) log(`  … ${i} rows`);
   }

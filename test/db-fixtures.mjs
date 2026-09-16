@@ -6,7 +6,7 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { AccountDb } from "../dist/db/index.js";
+import { AccountDb, contentHash } from "../dist/db/index.js";
 
 export const ME = "40700000001@s.whatsapp.net";
 export const PEER = "40700000002@s.whatsapp.net";
@@ -51,4 +51,10 @@ export function textMessage(chat, key, ts, text, extra = {}) {
 /** Ids of a page, for comparisons that should not care about the rest of the row. */
 export function sids(items) {
   return items.map((item) => item.sid ?? item.message.sid);
+}
+
+/** The contentHash of what a message says now: what the backlog would hand an embedder. */
+export function wordsOf(db, messageSid) {
+  const message = db.messages.get(messageSid, { includeHidden: true });
+  return message === null ? "unknown" : contentHash(message.text, message.transcript);
 }

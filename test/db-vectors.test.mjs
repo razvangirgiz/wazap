@@ -10,10 +10,10 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
-import { AccountDb, hybridTokens, int8Similarity, quantizeVector, unitVector } from "../dist/db/index.js";
+import { AccountDb, contentHash, hybridTokens, int8Similarity, quantizeVector, unitVector } from "../dist/db/index.js";
 import { RecallStore } from "../dist/recall/store.js";
 import { EMBED_MODELS } from "../dist/recall/models.js";
-import { GROUP, PEER, T0, openTemp, sid, tempDir, textMessage } from "./db-fixtures.mjs";
+import { GROUP, PEER, T0, openTemp, sid, tempDir, textMessage, wordsOf } from "./db-fixtures.mjs";
 
 const MODEL = "embeddinggemma-300m";
 const OTHER = "40700000003@s.whatsapp.net";
@@ -56,7 +56,7 @@ test("quantization and similarity match recall's index byte for byte", async () 
 
 test("an embedding goes with its message: delete, clear, expiry, and edits or transcripts that change its words", async () => {
   const { db, clock } = openTemp();
-  const put = (key) => db.vectors.put(sid(false, PEER, key), MODEL, direction(0));
+  const put = (key) => db.vectors.put(sid(false, PEER, key), MODEL, direction(0), wordsOf(db, sid(false, PEER, key)));
   db.messages.upsert(textMessage(PEER, "DEL", T0, "șterge"));
   db.messages.upsert(textMessage(PEER, "EDIT", T0 + 1000, "prima formă"));
   db.messages.upsert({ ...textMessage(PEER, "VOICE", T0 + 2000, "[voice]"), type: "audio" });
@@ -64,7 +64,7 @@ test("an embedding goes with its message: delete, clear, expiry, and edits or tr
   db.messages.upsert(textMessage(OTHER, "CLR", T0 + 4000, "golit"));
   db.messages.upsert(textMessage(OTHER, "KEEP", T0 + 5000, "rămâne"));
   for (const key of ["DEL", "EDIT", "VOICE", "EXP"]) assert.equal(put(key), true);
-  for (const key of ["CLR", "KEEP"]) assert.equal(db.vectors.put(sid(false, OTHER, key), MODEL, direction(1)), true);
+  for (const key of ["CLR", "KEEP"]) assert.equal(db.vectors.put(sid(false, OTHER, key), MODEL, direction(1), wordsOf(db, sid(false, OTHER, key))), true);
   assert.equal(db.vectors.count(MODEL), 6);
 
   db.messages.delete(sid(false, PEER, "DEL"));
@@ -86,14 +86,32 @@ test("an embedding goes with its message: delete, clear, expiry, and edits or tr
   db.close();
 });
 
+test("finding 7: a vector made from words the message no longer says is refused, and the message stays in the backlog", () => {
+  const { db } = openTemp();
+  const target = sid(false, PEER, "A");
+  db.messages.upsert(textMessage(PEER, "A", T0, "my card PIN is 4321"));
+  const job = db.vectors.backlog({ model: "m", limit: 10 }).items[0];
+  db.messages.upsert(textMessage(PEER, "A", T0, "never mind", { editedAt: T0 + 60_000 }));
+  assert.equal(db.vectors.put(job.sid, "m", [1, 0, 0, 0], job.contentHash), false, "the vector of the old words is refused");
+  assert.equal(db.vectors.get(target), null);
+  const again = db.vectors.backlog({ model: "m", limit: 10 }).items;
+  assert.deepEqual(again.map((item) => [item.sid, item.text]), [[target, "never mind"]]);
+  assert.deepEqual(db.vectors.vectorSearch({ model: "m", vector: [1, 0, 0, 0], limit: 5, minSimilarity: 0.9 }), []);
+  assert.equal(db.vectors.put(target, "m", [0, 1, 0, 0], again[0].contentHash), true);
+  db.messages.setTranscript(target, "voce");
+  assert.equal(db.vectors.get(target), null, "a transcript changes the words, so the stored vector goes");
+  assert.equal(job.contentHash, contentHash("my card PIN is 4321", null));
+  db.close();
+});
+
 test("the backlog lists visible messages with words and no vector from that model, newest first, resumably", () => {
   const { db, clock } = openTemp();
   for (let i = 0; i < 12; i++) db.messages.upsert(textMessage(PEER, `B${i}`, T0 + i * 1000, `mesaj ${i}`));
   db.messages.upsert({ ...textMessage(PEER, "IMG", T0 + 20_000, null), type: "image", text: null });
   db.messages.upsert(textMessage(PEER, "GONE", T0 + 21_000, "expirat", { expiresAt: clock.now - 1 }));
   db.messages.delete(sid(false, PEER, "B11"));
-  for (const i of [10, 9, 8, 7]) db.vectors.put(sid(false, PEER, `B${i}`), MODEL, direction(i % DIMS));
-  db.vectors.put(sid(false, PEER, "B6"), "e5-base-multilingual", direction(2));
+  for (const i of [10, 9, 8, 7]) db.vectors.put(sid(false, PEER, `B${i}`), MODEL, direction(i % DIMS), wordsOf(db, sid(false, PEER, `B${i}`)));
+  db.vectors.put(sid(false, PEER, "B6"), "e5-base-multilingual", direction(2), wordsOf(db, sid(false, PEER, "B6")));
 
   const first = db.vectors.backlog({ model: MODEL, limit: 3, scanCap: 100 });
   assert.deepEqual(first.items.map((item) => item.sid.split("_").pop()), ["B6", "B5", "B4"]);
@@ -119,7 +137,7 @@ test("vector search ranks by cosine under the filters and the floor, and skips e
   for (const [key, chat, ts, vector] of docs) {
     const extra = chat === GROUP ? { senderJid: OTHER } : key === "EXP" ? { expiresAt: clock.now + 10 } : {};
     db.messages.upsert(textMessage(chat, key, ts, `doc ${key}`, extra));
-    assert.equal(db.vectors.put(sid(false, chat, key), MODEL, vector), true);
+    assert.equal(db.vectors.put(sid(false, chat, key), MODEL, vector, wordsOf(db, sid(false, chat, key))), true);
   }
   clock.now += 10;
   const keys = (hits) => hits.map((hit) => hit.message.keyId);
@@ -139,7 +157,7 @@ test("an int8 vector imported as-is is searched like one quantized here", () => 
   const { db } = openTemp();
   db.messages.upsert(textMessage(PEER, "IMP", T0, "importat"));
   const quantized = quantizeVector(direction(3, 4, 0.5));
-  assert.equal(db.vectors.put(sid(false, PEER, "IMP"), MODEL, quantized), true);
+  assert.equal(db.vectors.put(sid(false, PEER, "IMP"), MODEL, quantized, wordsOf(db, sid(false, PEER, "IMP"))), true);
   assert.deepEqual([...db.vectors.get(sid(false, PEER, "IMP")).vector], [...quantized]);
   const [hit] = db.vectors.vectorSearch({ model: MODEL, vector: direction(3, 4, 0.5), limit: 1 });
   assert.ok(Math.abs(hit.similarity - 1) < 0.01);
@@ -161,7 +179,7 @@ test("hybrid search: both ways outranks either, meaning-only hits need the floor
   ];
   for (const [key, ts, text, vector] of docs) {
     db.messages.upsert(textMessage(PEER, key, ts, text));
-    db.vectors.put(sid(false, PEER, key), MODEL, vector);
+    db.vectors.put(sid(false, PEER, key), MODEL, vector, wordsOf(db, sid(false, PEER, key)));
   }
   const keys = (result) => result.hits.map((hit) => hit.message.keyId);
 
@@ -202,7 +220,7 @@ test("hybrid lexical ranking prefers candidates carrying more of the query words
 test("vectors survive reopen and a read-only connection can search them", () => {
   const { db, path } = openTemp();
   db.messages.upsert(textMessage(PEER, "P", T0, "persistent"));
-  db.vectors.put(sid(false, PEER, "P"), MODEL, direction(2));
+  db.vectors.put(sid(false, PEER, "P"), MODEL, direction(2), wordsOf(db, sid(false, PEER, "P")));
   db.close();
   const reader = AccountDb.open(path, { readOnly: true });
   assert.deepEqual(reader.vectors.vectorSearch({ model: MODEL, vector: direction(2), limit: 1 }).map((hit) => hit.message.keyId), ["P"]);
