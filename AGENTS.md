@@ -33,6 +33,12 @@ user.
   generous budgets. Not part of the gate.
 - `npm run fold:table` — regenerates `src/db/fold-table.ts` from the bundled
   SQLite when a test says the trigram index folds differently.
+- `node scripts/import-legacy.mjs --data-dir <copy>` — after `npm run build`,
+  imports one account's legacy files (`store.json`,
+  `history/`, `retention.json`, `notes.json`, `recall/`, the beta
+  `archive.sqlite`) into a separate account database beside the data dir and
+  verifies it against the legacy service's view. Point it at a copy, never the
+  live data dir. Prints counts and keys only, numbers masked. Not part of the gate.
 
 ## The gate and the hook
 

@@ -1,12 +1,30 @@
 /**
  * The one-time move of an account's legacy files (store.json, history/,
- * retention.json, notes.json, recall/, the 0.15-beta archive) into its
+ * retention.json, notes.json, recall/, the 0.15-beta archive.sqlite) into its
  * account database, and the check that the database shows what the legacy
  * service showed. Not wired into the service yet: F1-b2 runs it at boot.
  *
  *   const db = AccountDb.open(path, { scrubQuote });
+ *   await db.resume();
  *   const report = await importLegacyAccount({ dataDir, accountId, accountPaths, db, options: { retention } });
  *   if (report.state !== "done") ... // report.verification says what differs, by key
+ *
+ * What the wiring must know:
+ * - Open the database with this module's `scrubQuote`, or quotes of deleted
+ *   messages keep their embedded copy.
+ * - The legacy files are only read. Verification replays a private copy of
+ *   them through WhatsAppService's boot path in `.legacy-verify-*` beside the
+ *   database (or `workDir`), removed when it finishes and at the next start.
+ * - `state: "done"` means imported and verified; a later call returns the
+ *   stored report and writes nothing. `"imported"` means the rows are in but
+ *   verification found an unexpected difference (or was off); calling again
+ *   re-runs only the verification.
+ * - `retention` must be the service's WAZAP_RETENTION. The first run's value
+ *   is kept for every resumed run.
+ * - A linked account binds the database to its number (OWNER_MISMATCH if the
+ *   file belongs to another). An unlinked account imports without an owner
+ *   and leaves the beta archive alone, since nothing can prove it is theirs.
+ * - A message more than FUTURE_SLACK_MS ahead of the clock is left out.
  */
 export { importLegacyAccount, DEFAULT_IMPORT_CHUNK, IMPORT_META, type ImportArgs, type ImportOptions } from "./importer.js";
 export { verifyLegacyImport, SAMPLE_KEYS, type VerifyArgs } from "./verify.js";
