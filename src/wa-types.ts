@@ -97,9 +97,25 @@ export interface StatusInfo {
   webhook: WebhookInfo;
   /** Local semantic recall: off, or how far the index is from caught-up. */
   recall: RecallStatus;
+  /** The account database: preparing, ready or failed, and the earlier message files it was imported from. */
+  storage?: StorageInfo;
   /** Present only while `status` is "linking". */
   pairing?: PairingInfo;
   hint?: string;
+}
+
+export interface StorageInfo {
+  /**
+   * `preparing`: importing the earlier message files, once after an upgrade;
+   * tools answer NOT_CONNECTED meanwhile. `imported-unverified`: served from
+   * the database, but the import found differences it could not explain.
+   * `failed`: see `last_error`.
+   */
+  state: "preparing" | "ready" | "imported-unverified" | "failed";
+  /** While preparing: the import phase reached, like "history (3 of 9)". */
+  progress?: string;
+  /** The earlier message files in `legacy/`: when they are deleted, or kept because the import is unverified. */
+  legacy_files?: { deleted_after: string } | { kept: "unverified" };
 }
 
 /** One row of `get_status.accounts` / `list_accounts`. Policy `write_tools`, not the session bit. */

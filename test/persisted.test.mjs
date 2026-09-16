@@ -7,7 +7,7 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { proto } from "baileys";
 
@@ -276,18 +276,18 @@ test("an import runs once: the next boot serves the database and never reads the
   await svc.bootStorage();
   assert.equal(svc.db.getMeta("import_state"), "done");
   await svc.stop();
+  assert.equal(existsSync(svc.paths.historyDir), false, "the imported history moved aside");
 
-  // A line appended to the old file after the import is not the database's business.
+  // A line appended to the old file after the import is not the database's business, wherever the file is.
   const later = proto.WebMessageInfo.fromObject({
     key: { remoteJid: PHONE, fromMe: false, id: "LATER" },
     message: { conversation: "scris după import" },
     messageTimestamp: Math.floor(Date.now() / 1000) - 30,
   });
-  writeFileSync(
-    join(svc.paths.historyDir, `${PHONE}.jsonl`),
-    `${JSON.stringify({ sid: `false_${PHONE}_LATER`, ts: Number(later.messageTimestamp), raw: Buffer.from(proto.WebMessageInfo.encode(later).finish()).toString("base64") })}\n`,
-    { flag: "a" }
-  );
+  const line = `${JSON.stringify({ sid: `false_${PHONE}_LATER`, ts: Number(later.messageTimestamp), raw: Buffer.from(proto.WebMessageInfo.encode(later).finish()).toString("base64") })}\n`;
+  writeFileSync(join(svc.paths.root, "legacy", "history", `${PHONE}.jsonl`), line, { flag: "a" });
+  mkdirSync(svc.paths.historyDir, { recursive: true });
+  writeFileSync(join(svc.paths.historyDir, `${PHONE}.jsonl`), line);
   const { svc: next } = connectedService(WhatsAppService, {
     prefix: "wazap-persisted-",
     id: ME,

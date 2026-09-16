@@ -48,6 +48,7 @@ import { asWazapError, RELINK_FIX, RESET_FIX, WazapError } from "./errors.js";
 import { LidRegistry, lidKey } from "./identity.js";
 import { isGroupId, isNoiseJid, isStatusJid, normalizePhone, STATUS_JID } from "./ids.js";
 import { FUTURE_SLACK_MS, IMPORT_META, importLegacyAccount, scrubQuote, type ImportReport } from "./legacy-import/index.js";
+import { legacySchedule, moveAccountLegacy, purgeAccountLegacy, purgePreviousOwners, settleBetaArchive } from "./legacy-files.js";
 import { log, logError } from "./logger.js";
 import { messageExpiry } from "./message-expiry.js";
 import {
@@ -116,6 +117,7 @@ import {
 } from "./transcribe/index.js";
 import { DraftStore, withMentionTokens, type Draft, type DraftPayload, type DraftView } from "./drafts.js";
 import { RateLimiter } from "./ratelimit.js";
+import { IMPORT_UNVERIFIED_META, importProgress } from "./storage-status.js";
 import { maskNumber } from "./ui.js";
 import { SentIds } from "./sent-ids.js";
 import {
@@ -155,6 +157,7 @@ import type {
   RecentConversation,
   SentMessage,
   StatusInfo,
+  StorageInfo,
   SyncState,
   Synced,
   TranscribeResult,
@@ -242,8 +245,8 @@ const DIR_MODE = 0o700;
 const FILE_MODE = 0o600;
 /** The account database's file, beside the account's credentials. */
 const DB_FILE = "wazap.sqlite";
-/** Set in meta when an import's verification found differences it could not explain; doctor reports it (F1-b2b). */
-export const IMPORT_UNVERIFIED_META = "import_unverified";
+/** How often a running service looks again at legacy files whose week may be up. */
+const LEGACY_SWEEP_MS = 24 * 60 * 60 * 1000;
 
 /**
  * A contact WhatsApp will not name for us still arrives with a `name`: the
@@ -433,6 +436,8 @@ export class WhatsAppService implements WhatsAppApi {
   private readonly folds = new Set<Promise<unknown>>();
   private stopPromise: Promise<void> | null = null;
   private expiryTimer: ReturnType<typeof setTimeout> | null = null;
+  /** The daily pass over the legacy files, the beta archive and set-aside databases. */
+  private legacyTimer: ReturnType<typeof setInterval> | null = null;
   private expiryAt: number | undefined;
   private expirySweep: Promise<void> = Promise.resolve();
   /** Unlinking the files deleted messages released, one pass at a time. */
@@ -565,6 +570,8 @@ export class WhatsAppService implements WhatsAppApi {
   private async stopOnce(): Promise<void> {
     this.stopped = true;
     if (this.expiryTimer) clearTimeout(this.expiryTimer);
+    if (this.legacyTimer) clearInterval(this.legacyTimer);
+    this.legacyTimer = null;
     this.expiryTimer = null;
     this.expiryAt = undefined;
     for (const timer of [this.reconnectTimer, this.syncDeadline]) {
@@ -756,6 +763,11 @@ export class WhatsAppService implements WhatsAppApi {
     }
     await this.reconcilePreviews(db).catch((err: unknown) => logError("preview reconcile", err));
     await this.scheduleFileCleanup().catch(() => {});
+    this.retireLegacy();
+    if (this.legacyTimer === null && !this.stopped) {
+      this.legacyTimer = setInterval(() => this.retireLegacy(), LEGACY_SWEEP_MS);
+      this.legacyTimer.unref();
+    }
     this.armExpiry();
     if (this.embedFeed !== null) this.embedFeed.kick();
     else {
@@ -767,6 +779,56 @@ export class WhatsAppService implements WhatsAppApi {
         logError("recall index", err);
       }
     }
+  }
+
+  /**
+   * What the legacy files' week asks of this account, at boot and daily:
+   * move its imported legacy files into legacy/, delete what is due (a week
+   * on, at once under WAZAP_RETENTION=1, never an unverified import's), and
+   * move or delete the beta archive. Each step fails alone and is logged by
+   * its error code, never by a path inside the files.
+   */
+  private retireLegacy(): void {
+    const db = this.readyDb();
+    if (db === null) return;
+    const id = this.accountRecord.id;
+    const now = Date.now();
+    const retention = this.config.retention === true;
+    const step = (what: string, run: () => void): void => {
+      try {
+        run();
+      } catch (err) {
+        const code = (err as NodeJS.ErrnoException)?.code ?? (err instanceof Error ? err.name : "error");
+        logError(`account ${id}`, `${what} failed (${code}); retried at the next start`);
+      }
+    };
+    step("moving the earlier message files into legacy/", () => {
+      const { moved, recorded } = moveAccountLegacy(this.paths.root, db, now);
+      if (!recorded || moved === 0) return;
+      const schedule = legacySchedule(db);
+      const when =
+        schedule?.deleteAfter == null
+          ? "kept until you delete them, since the import is unverified"
+          : retention
+            ? "deleted now (WAZAP_RETENTION=1)"
+            : `deleted after ${isoWithOffset(schedule.deleteAfter)}`;
+      log(`account ${id}: moved ${moved} earlier message files into legacy/, ${when}`);
+    });
+    step("deleting legacy/", () => {
+      const entries = purgeAccountLegacy(this.paths.root, db, now, retention);
+      if (entries !== null) log(`account ${id}: deleted legacy/ (${entries} entries)`);
+    });
+    step("deleting set-aside databases", () => {
+      const deleted = purgePreviousOwners(this.paths.root, now, retention);
+      if (deleted > 0) log(`account ${id}: deleted ${deleted} database(s) set aside when a different number linked`);
+    });
+    step("settling the beta archive", () => {
+      const { moved, deleted } = settleBetaArchive(this.config.dataDir, now, retention, (accountId) =>
+        accountId === id ? db.getMeta(IMPORT_META.state) : undefined
+      );
+      if (moved) log("moved the beta archive.sqlite into legacy/");
+      if (deleted) log("deleted the beta archive.sqlite from legacy/");
+    });
   }
 
   /** Logs how the import went; an import with unexplained differences still serves, and says so for doctor. */
@@ -1046,6 +1108,7 @@ export class WhatsAppService implements WhatsAppApi {
       last_error: this.lastError ?? this.storageFault?.message ?? null,
       webhook: this.webhook.info(),
       recall: this.recallStatus(),
+      storage: this.storageInfo(),
     };
     const hints: string[] = [];
     if (this.storageState === "preparing") {
@@ -1068,6 +1131,23 @@ export class WhatsAppService implements WhatsAppApi {
       hints.push("No messages received for 24h; the phone may be offline.");
     }
     if (hints.length > 0) info.hint = hints.join(" ");
+    return info;
+  }
+
+  /** What get_status says about the database; reads two meta rows. */
+  private storageInfo(): StorageInfo {
+    const db = this.accountDb;
+    const open = db !== null && db.isOpen;
+    if (this.storageState === "failed" || !open) return { state: this.storageState === "preparing" ? "preparing" : "failed" };
+    if (this.storageState === "preparing") {
+      const progress = importProgress(db);
+      return progress === null ? { state: "preparing" } : { state: "preparing", progress: `${progress.phase} (${progress.step} of ${progress.steps})` };
+    }
+    const info: StorageInfo = { state: db.getMeta(IMPORT_UNVERIFIED_META) === null ? "ready" : "imported-unverified" };
+    const schedule = legacySchedule(db);
+    if (schedule !== null && schedule.deletedAt === null) {
+      info.legacy_files = schedule.deleteAfter === null ? { kept: "unverified" } : { deleted_after: isoWithOffset(schedule.deleteAfter) };
+    }
     return info;
   }
 

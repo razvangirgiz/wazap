@@ -194,18 +194,23 @@ test("after the import the service never reads or writes a legacy file, whatever
   const first = serviceOn(fx.dataDir).svc;
   await first.bootStorage();
   await first.stop();
+  assert.equal(existsSync(join(fx.paths.root, "legacy", "store.json")), true, "the boot moved them aside");
 
-  const legacy = [fx.paths.storeFile, fx.paths.historyDir, fx.paths.notesFile, join(fx.paths.root, "retention.json"), join(fx.paths.root, "recall")];
+  // Their old places and legacy/, however looked at; the moved beta archive's age may be checked, never its bytes.
+  const legacy = [fx.paths.storeFile, fx.paths.historyDir, fx.paths.notesFile, join(fx.paths.root, "retention.json"), join(fx.paths.root, "recall"), join(fx.paths.root, "legacy")];
+  const archive = [join(fx.dataDir, "archive.sqlite"), join(fx.dataDir, "legacy")];
+  const metadataOnly = new Set(["existsSync", "statSync", "lstatSync", "stat"]);
   const touched = [];
   const watch = (target, name) => {
     const original = target[name];
     if (typeof original !== "function") return;
     t.mock.method(target, name, function (path, ...rest) {
-      if (typeof path === "string" && legacy.some((prefix) => path.startsWith(prefix))) touched.push(`${name} ${path}`);
+      const hit = (prefixes) => typeof path === "string" && prefixes.some((prefix) => path.startsWith(prefix));
+      if (hit(legacy) || (hit(archive) && !metadataOnly.has(name))) touched.push(`${name} ${path}`);
       return original.call(this, path, ...rest);
     });
   };
-  for (const name of ["readFileSync", "writeFileSync", "appendFileSync", "readdirSync", "existsSync", "statSync", "openSync", "renameSync", "rmSync", "createReadStream", "createWriteStream"]) watch(fs, name);
+  for (const name of ["readFileSync", "writeFileSync", "appendFileSync", "readdirSync", "existsSync", "statSync", "lstatSync", "openSync", "renameSync", "rmSync", "utimesSync", "createReadStream", "createWriteStream"]) watch(fs, name);
   for (const name of ["readFile", "writeFile", "appendFile", "readdir", "stat", "open", "rename", "rm"]) watch(fsPromises, name);
   syncBuiltinESMExports();
   t.after(() => {

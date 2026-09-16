@@ -188,6 +188,17 @@ function webhookStatusLine(webhook: StatusInfo["webhook"]): string {
  * The `history` line is how an agent tells a stale store from a quiet one — the
  * same freshness block search and recall attach to their results.
  */
+/** Only what is worth a line: a database not plainly ready, or legacy files still kept. */
+function storageStatusLine(s: StatusInfo): string | null {
+  const storage = s.storage;
+  if (storage === undefined || (storage.state === "ready" && storage.legacy_files === undefined)) return null;
+  const parts: string[] = [storage.progress === undefined ? storage.state : `${storage.state}, ${storage.progress}`];
+  if (storage.legacy_files !== undefined) {
+    parts.push("kept" in storage.legacy_files ? "earlier message files kept (import unverified)" : `earlier message files deleted after ${storage.legacy_files.deleted_after}`);
+  }
+  return `- **storage**: ${parts.join("; ")}`;
+}
+
 export function renderGetStatus(s: StatusInfo, writeTools: boolean, hub: AccountSource): ToolPayload {
   const account = s.account ? `${s.account.name || "(no name)"} (${s.account.number})` : "none";
   const writeLine = writeTools
@@ -208,6 +219,7 @@ export function renderGetStatus(s: StatusInfo, writeTools: boolean, hub: Account
       ? `- **pairing code**: ${s.pairing.code} for ${s.pairing.phone_masked}, until ${s.pairing.expires_at}`
       : null,
     webhookStatusLine(s.webhook),
+    storageStatusLine(s),
     s.last_error ? `- **last error**: ${s.last_error}` : null,
     s.hint ? `- **hint**: ${s.hint}` : null,
     accounts.length > 1 ? `- **accounts**: ${accounts.map((row) => row.id).join(", ")}` : null,

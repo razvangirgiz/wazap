@@ -382,5 +382,5 @@ test("deletion barriers hold against a replay after a restart, and against an ol
   await seed(next, raw);
   assert.equal(next.hasMessage(sidOf(raw)), false);
   await assertNoPayload(next, raw);
-  assert.equal(await readFile(next.paths.storeFile, "utf8").then(() => true), true, "the legacy file is only read");
+  assert.equal(await readFile(join(next.paths.root, "legacy", "store.json"), "utf8").then(() => true), true, "the legacy file is only read, then moved aside");
 });
