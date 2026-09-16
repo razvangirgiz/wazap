@@ -41,19 +41,21 @@
   transcribed when less than a day old (before, never). `get_status` has a
   `transcription` block and `wazap status` a `voice queue` line: counts, the
   current run's age, a pause and the latest reason, never content.
-
 - **Webhook events survive a restart.** Each event waits in an outbox inside
   the account database, written with the message it announces, and is posted
   one at a time per account, in the order it was queued within its chat; a
-  chat waiting for a retry or a transcript holds back no other chat. A timeout, an
-  unreachable receiver, `408`, `425`, `429` or `5xx` is retried after 1 s, 5 s,
-  30 s, 2 min, then every 5 min and a last time at 24 hours, and at once when
-  new traffic shows the receiver may be back; any other `4xx` still fails at
-  once. A POST a crash interrupted is sent again, so a receiver may
-  see an event twice: dedupe on `message_id`. A message event carries the
+  chat waiting for a retry or a transcript holds back no other chat. A
+  timeout, an unreachable receiver, `408`, `425`, `429` or `5xx` is retried
+  after 1 s, 5 s, 30 s, 2 min, then every 5 min and a last time at 24 hours,
+  and at once when new traffic shows the receiver may be back; any other
+  `4xx` still fails at once. After an outage only the newest `connection`
+  status is posted. A POST a crash interrupted is sent again, so a receiver
+  may see an event twice: dedupe on `message_id`. A message event carries the
   message as it is when posted, with an edit or transcript that arrived
   meanwhile, and is not posted at all once the message is deleted, expired or
-  cleared. Nothing waits in memory any more, so no event is dropped for a full
+  cleared. A voice note's event waits on the transcription queue, a restart
+  included, and goes at once when its transcription fails or the provider is
+  paused. Nothing waits in memory any more, so no event is dropped for a full
   backlog.
 - **Webhook message events carry `contact_id` and `phone`.** `contact_id` is
   the sender's stable contact in the account database, and `phone` their
@@ -63,9 +65,9 @@
 - **`webhook.delivery` counts the outbox.** `delivered` covers the last 7
   days, `failed` and `cancelled` the last 30; `cancelled`, `pending`,
   `retrying`, `last_status` and `oldest_pending_at` are new. `wazap status` and
-  doctor read it from the account database, server running or not, and warn
-  while an event is being retried; `accounts/<id>/webhook.json` is no longer
-  written.
+  doctor read it from the account database, server running or not; they warn
+  while an event is being retried and fail once the oldest has been retried
+  for 10 minutes. `accounts/<id>/webhook.json` is no longer written.
 
 ### Fixed
 
