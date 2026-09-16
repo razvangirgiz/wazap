@@ -140,7 +140,10 @@ export interface DeleteResult {
   /** "deleted": a live row became a tombstone; "placeholder": an unseen message got a tombstone ahead of it. */
   outcome: "deleted" | "already" | "placeholder" | "cleared";
   id: number | null;
-  /** Derived files (previews, downloads) the caller unlinks now that the transaction committed. */
+  /**
+   * Derived files (previews, downloads) this delete released: no row references
+   * them any more. They are also queued in pendingUnlinks() until acknowledged.
+   */
   mediaPaths: string[];
 }
 
@@ -148,6 +151,7 @@ export interface BulkDeleteResult {
   /** Rows removed or tombstoned. */
   count: number;
   sids: string[];
+  /** Files released by the operation; queued in pendingUnlinks() as well. */
   mediaPaths: string[];
 }
 

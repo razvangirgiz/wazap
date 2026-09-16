@@ -3,9 +3,11 @@
  * `accounts/<id>/wazap.sqlite`, opened synchronously on the calling thread.
  *
  *   const db = AccountDb.open(path);
- *   db.messages.upsert({...});           // barriers enforced in the write
+ *   await db.resume();                    // finishes folds and purges a stop interrupted
+ *   db.messages.upsert({...});            // barriers enforced in the write
  *   db.search.text({ query: "factur", limit: 20 });
- *   await db.messages.clearChat(jid, Date.now());  // chunked, yields between chunks
+ *   await db.messages.clearChat(jid, Date.now());  // hidden at once, purged in chunks
+ *   for (const path of db.pendingUnlinks()) unlink(path);  // then db.ackUnlinks(paths)
  *   db.close();
  *
  * Not wired into the service yet (F1-a); the service keeps its JSON stores

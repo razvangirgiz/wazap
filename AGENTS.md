@@ -31,6 +31,8 @@ user.
   synthetic data: 100k messages, vector and hybrid search at 13k and 100k.
   `--messages 1000000 --vectors 1000000` is the local 1M run; `--check` fails on
   generous budgets. Not part of the gate.
+- `npm run fold:table` — regenerates `src/db/fold-table.ts` from the bundled
+  SQLite when a test says the trigram index folds differently.
 
 ## The gate and the hook
 

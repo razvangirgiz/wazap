@@ -24,6 +24,7 @@ import type { MessageFilter, Page, StoredMessage } from "./types.js";
 /** Reciprocal Rank Fusion's damping constant, the value from the original paper. */
 export const RRF_K = 60;
 const DEFAULT_CANDIDATES = 100;
+const HIDDEN_SLACK = 32;
 const DEFAULT_BACKLOG_SCAN = 20_000;
 /** A hybrid query word shorter than this names too much to be worth an index lookup. */
 const MIN_TOKEN_CHARS = 4;
@@ -287,12 +288,17 @@ export class Vectors {
     const limit = Math.max(1, Math.floor(input.limit));
     const filter = this.search.resolveFilter(input);
     if (filter === null) return [];
-    const ranked = this.rank(filter, input.model, unitVector(input.vector), limit, input.minSimilarity ?? 0, input.recencyHalfLifeMs);
+    // A scan of embeddings alone cannot see a clear barrier whose purge has not
+    // finished; hydration drops those rows, so a few extra candidates keep the page full.
+    const want = filter.narrowsRows ? limit : limit + HIDDEN_SLACK;
+    const ranked = this.rank(filter, input.model, unitVector(input.vector), want, input.minSimilarity ?? 0, input.recencyHalfLifeMs);
     const messages = new Map(this.messages.byIds(ranked.map((hit) => hit.id)).map((message) => [message.id, message]));
-    return ranked.flatMap((hit) => {
-      const message = messages.get(hit.id);
-      return message === undefined ? [] : [{ message, similarity: hit.similarity, score: hit.score }];
-    });
+    return ranked
+      .flatMap((hit) => {
+        const message = messages.get(hit.id);
+        return message === undefined ? [] : [{ message, similarity: hit.similarity, score: hit.score }];
+      })
+      .slice(0, limit);
   }
 
   private rank(
