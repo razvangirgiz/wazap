@@ -95,6 +95,40 @@ test("a file from a newer schema is refused with a typed error and left byte-for
   assert.equal(digest(path), before);
 });
 
+test("finding 12c: a process opening a new file while another migrates it waits for that migration instead of repeating it", async () => {
+  const path = join(tempDir(), "race", "wazap.sqlite");
+  const dist = JSON.stringify(join(repoRoot, "dist", "db", "index.js"));
+  // The first process migrates slowly: its clock sleeps inside the migration transaction.
+  const slow = `
+    const { AccountDb } = await import(${dist});
+    let told = false;
+    const db = AccountDb.open(${JSON.stringify(path)}, {
+      now: () => {
+        if (!told) { told = true; process.stdout.write("migrating\\n"); Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 800); }
+        return Date.now();
+      },
+    });
+    db.close();
+    process.stdout.write("done\\n");
+  `;
+  const { spawn } = await import("node:child_process");
+  const child = spawn(process.execPath, ["--input-type=module", "-e", slow], { stdio: ["ignore", "pipe", "pipe"] });
+  let output = "";
+  await new Promise((resolve, reject) => {
+    child.stdout.on("data", (chunk) => {
+      output += chunk;
+      if (output.includes("migrating")) resolve();
+    });
+    child.on("exit", () => reject(new Error(`the slow opener exited early: ${output}`)));
+  });
+  const db = AccountDb.open(path);
+  assert.equal(db.schemaVersion, SCHEMA_VERSION);
+  db.close();
+  const code = await new Promise((resolve) => (child.exitCode === null ? child.on("exit", resolve) : resolve(child.exitCode)));
+  assert.equal(code, 0);
+  assert.match(output, /done/);
+});
+
 test("read-only open reads beside a writer, refuses writes and migrations, and refuses a missing file", () => {
   const { db, path } = openTemp();
   db.messages.upsert(textMessage(PEER, "A", T0, "salut"));

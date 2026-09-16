@@ -148,6 +148,7 @@ export class Connection {
     const db = new DatabaseSync(path, { timeout, enableForeignKeyConstraints: true });
     try {
       // Before anything that writes: a newer file is left exactly as it was.
+      // migrate() checks again inside its transaction, where the answer holds.
       const version = userVersion(db);
       if (version > SCHEMA_VERSION) throw tooNew(path, version);
       const mode = db.prepare("PRAGMA journal_mode = WAL").get() as { journal_mode: string } | undefined;
@@ -156,7 +157,7 @@ export class Connection {
       }
       db.exec("PRAGMA synchronous = FULL; PRAGMA secure_delete = ON; PRAGMA foreign_keys = ON;");
       const connection = new Connection(path, db, options);
-      connection.migrate(version);
+      connection.migrate();
       return connection;
     } catch (err) {
       db.close();
@@ -164,23 +165,30 @@ export class Connection {
     }
   }
 
-  /** Each pending migration and its version bump commit together, or not at all. */
-  private migrate(from: number): void {
-    for (const migration of MIGRATIONS) {
-      if (migration.version <= from) continue;
-      this.db.exec("BEGIN IMMEDIATE");
-      try {
+  /**
+   * Pending migrations and their version bumps commit together, or not at
+   * all. The version is read inside the write transaction: a second process
+   * opening the same new file waits for the first one's migration and then
+   * finds nothing left to do, instead of running it again.
+   */
+  private migrate(): void {
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      const from = userVersion(this.db);
+      if (from > SCHEMA_VERSION) throw tooNew(this.path, from);
+      for (const migration of MIGRATIONS) {
+        if (migration.version <= from) continue;
         this.db.exec(migration.sql);
         this.db.exec(`PRAGMA user_version = ${migration.version}`);
         this.db
           .prepare("INSERT OR REPLACE INTO meta(key, value) VALUES (?, ?)")
           .run(`migrated_v${migration.version}`, String(this.now()));
         this.db.prepare("INSERT OR IGNORE INTO meta(key, value) VALUES ('created_at', ?)").run(String(this.now()));
-        this.db.exec("COMMIT");
-      } catch (err) {
-        if (this.db.isTransaction) this.db.exec("ROLLBACK");
-        throw err;
       }
+      this.db.exec("COMMIT");
+    } catch (err) {
+      if (this.db.isTransaction) this.db.exec("ROLLBACK");
+      throw err;
     }
   }
 
