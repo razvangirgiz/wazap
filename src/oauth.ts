@@ -44,6 +44,11 @@ const CODE_TTL_MS = 10 * 60 * 1000;
 const PENDING_TTL_MS = 10 * 60 * 1000;
 /** A refresh token nobody has used in this long is a forgotten one. */
 const REFRESH_IDLE_MS = 90 * 24 * 60 * 60 * 1000;
+/**
+ * A client refreshing twice at once, or losing the response, retries with the
+ * token it just rotated. Within this window that is the same client, not a thief.
+ */
+const REFRESH_REUSE_GRACE_MS = 60 * 1000;
 /** A client that registered and never finished consent. */
 const CLIENT_ORPHAN_MS = 60 * 60 * 1000;
 const LOCKOUT_AFTER = 5;
@@ -103,6 +108,8 @@ interface StoredToken {
   /** Refresh generations share one family; consumed hashes detect replay without storing secrets. */
   family?: string;
   spent?: boolean;
+  /** When the token was first rotated; fixed, so reuse inside the grace window cannot extend it. */
+  spentAt?: number;
 }
 
 interface OAuthState {
@@ -190,7 +197,8 @@ function validState(value: unknown): value is OAuthState {
         !time(entry.issuedAt) || (kind === "access" && !time(entry.expiresAt)) ||
         (entry.lastUsedAt !== undefined && !time(entry.lastUsedAt)) ||
         (entry.refresh !== undefined && !hash(entry.refresh)) || (entry.family !== undefined && !hash(entry.family)) ||
-        (entry.spent !== undefined && typeof entry.spent !== "boolean")) return false;
+        (entry.spent !== undefined && typeof entry.spent !== "boolean") ||
+        (entry.spentAt !== undefined && !time(entry.spentAt))) return false;
     }
   }
   return true;
@@ -498,16 +506,16 @@ export class WazapOAuthProvider implements OAuthServerProvider {
     this.sweep();
     const entry = this.state.refresh[sha256(refreshToken)];
     if (!entry || entry.clientId !== client.client_id) throw new InvalidGrantError("Unknown refresh token");
-    if (entry.spent) {
+    if (entry.spent && (entry.spentAt === undefined || this.now() - entry.spentAt > REFRESH_REUSE_GRACE_MS)) {
       this.revokeFamily(entry.family ?? sha256(refreshToken));
       this.persist();
       throw new InvalidGrantError("Refresh token replay; sign in again");
     }
-    // A refresh may narrow the grant, never widen it.
-    if (scopes?.some((scope) => !entry.scopes.includes(scope))) {
-      throw new InvalidScopeError("Requested scopes exceed the grant");
-    }
-    const granted = scopes && scopes.length > 0 ? scopes : entry.scopes;
+    // A refresh may narrow the grant, never widen it. Asking for more gets what
+    // was granted, as before rotation: a client that always requests every scope
+    // must not be signed out at each expiry.
+    const granted = scopes && scopes.length > 0 ? scopes.filter((scope) => entry.scopes.includes(scope)) : entry.scopes;
+    if (granted.length === 0) throw new InvalidScopeError("Requested scopes exceed the grant");
     return this.issue(client.client_id, granted, refreshToken);
   }
 
@@ -520,6 +528,7 @@ export class WazapOAuthProvider implements OAuthServerProvider {
     if (previous) {
       previous.family = family;
       previous.spent = true;
+      previous.spentAt ??= now;
       previous.lastUsedAt = now;
     }
     this.state.refresh[sha256(refreshToken)] = {

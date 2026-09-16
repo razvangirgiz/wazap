@@ -617,12 +617,12 @@ test("token exchange rejects a different resource without consuming the valid co
   assert.equal((await exchange(ctx, { ...g, code, resource: `${ctx.base}/mcp` })).res.status, 200);
 });
 
-test("refresh refuses foreign resources and any scope outside the consent grant", async (t) => {
+test("refresh refuses foreign resources and scopes with nothing in the consent grant", async (t) => {
   const ctx = await boot(t);
   const { client, tokens } = await signIn(ctx, { access: "read" });
   for (const [extra, error] of [
     [{ resource: "https://other.example/mcp" }, "invalid_target"],
-    [{ scope: "read write" }, "invalid_scope"],
+    [{ scope: "write" }, "invalid_scope"],
   ]) {
     const { res, body } = await ctx.fetchJson("/token", {
       method: "POST",
@@ -642,6 +642,14 @@ test("refresh refuses foreign resources and any scope outside the consent grant"
     200,
     "invalid refresh requests do not revoke the valid grant"
   );
+  // Asking for more than the grant narrows to it rather than signing the client out.
+  const { res, body } = await ctx.fetchJson("/token", {
+    method: "POST",
+    headers: { "content-type": "application/x-www-form-urlencoded" },
+    body: form({ grant_type: "refresh_token", refresh_token: tokens.refresh_token, client_id: client.client_id, scope: "read write" }),
+  });
+  assert.equal(res.status, 200);
+  assert.equal(body.scope, "read");
 });
 
 test("behind a tunnel on this machine, the forwarded address is the caller a lockout counts", async (t) => {
@@ -937,16 +945,35 @@ test("registration after oauth.json removal cannot resurrect grants or consent p
 });
 
 test("refresh rotates one-use tokens; replay revokes only that grant family", async (t) => {
-  const ctx = await boot(t);
+  let now = Date.now();
+  const ctx = await boot(t, { now: () => now });
   const first = await signIn(ctx);
   const other = { tokens: ctx.oauth.issue(first.client.client_id, ["read"]) };
   const second = await ctx.oauth.exchangeRefreshToken(first.client, first.tokens.refresh_token);
   assert.notEqual(second.refresh_token, first.tokens.refresh_token);
   assert.equal(ctx.oauth.grants().length, 2);
+  now += 60_001;
   await assert.rejects(ctx.oauth.exchangeRefreshToken(first.client, first.tokens.refresh_token));
   await assert.rejects(ctx.oauth.verifyAccessToken(second.access_token));
   await assert.rejects(ctx.oauth.exchangeRefreshToken(first.client, second.refresh_token));
   assert.ok(await ctx.oauth.verifyAccessToken(other.tokens.access_token));
+});
+
+test("a refresh retried within 60 seconds of rotation keeps the grant, and the window does not slide", async (t) => {
+  let now = Date.now();
+  const ctx = await boot(t, { now: () => now });
+  const first = await signIn(ctx);
+  const second = await ctx.oauth.exchangeRefreshToken(first.client, first.tokens.refresh_token);
+  now += 30_000;
+  const retried = await ctx.oauth.exchangeRefreshToken(first.client, first.tokens.refresh_token);
+  assert.notEqual(retried.refresh_token, second.refresh_token);
+  assert.ok(await ctx.oauth.verifyAccessToken(second.access_token), "the concurrent refresh keeps its tokens");
+  assert.ok(await ctx.oauth.verifyAccessToken(retried.access_token));
+  now += 30_001;
+  await assert.rejects(ctx.oauth.exchangeRefreshToken(first.client, first.tokens.refresh_token), /replay/);
+  await assert.rejects(ctx.oauth.verifyAccessToken(retried.access_token), "a late replay still ends the family");
+  const stateFile = join(ctx.dataDir, "oauth.json");
+  assert.ok(new WazapOAuthProvider({ publicUrl: new URL(ctx.base), password: PASSWORD, stateFile }), "spentAt persists validly");
 });
 
 test("rotated refresh chains and active access tokens remain bounded across restart", async (t) => {
