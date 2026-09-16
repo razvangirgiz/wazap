@@ -454,10 +454,13 @@ a retroactive deadline.
   deduplication, learns all files' deadlines before allowing the recall queue to
   submit any text, and refreshes queued puts' deadlines around embedding. Index
   rows recover timers even when their original history is no longer present.
-- The recall format moves from version 2 to 3. Legacy index-only rows have no
-  way to prove they were not ephemeral, so the old derived index is invalidated
-  and rebuilt from retained history. Coverage older than that history requires
-  a new WhatsApp sync and is not guaranteed to be recoverable. New index queries
+- The recall format moves from version 2 to 3. The first version of this pass
+  invalidated the v2 index, because legacy index-only rows cannot prove they
+  were not ephemeral. On a real account that meant re-embedding ~12k messages
+  and permanently losing the rows whose history was gone, so the owner chose to
+  migrate v2 in place instead: rows are kept, and deadlines found in retained
+  history still expire them under `WAZAP_RETENTION`. The accepted residual risk
+  is a legacy ephemeral row with no history left, which keeps no deadline. New index queries
   filter absolute deadlines independently of the service's timer, and pending
   disk writes/embedding results recheck before publication.
 - Preview reads/writes and transcription results recheck expiry after awaits.

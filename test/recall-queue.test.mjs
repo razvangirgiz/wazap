@@ -240,6 +240,29 @@ test("a compaction leaves no tmp files behind and reopens with the same live row
   await again.close();
 });
 
+test("a v2 index of the same model reopens as v3 with every row, and a newer version is wiped", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "wazap-recall-migrate-"));
+  const spec = embedModelSpec("embeddinggemma-300m");
+  const store = await RecallStore.open(dir, spec, 100);
+  const vec = [1, ...new Array(DIMS - 1).fill(0)];
+  await store.add([item("a", "unu"), item("b", "doi")], [vec, vec]);
+  await store.advanceOffset("h.jsonl", 7);
+  await store.close();
+  const statePath = join(dir, "state.json");
+  const setVersion = (version) => writeFileSync(statePath, JSON.stringify({ ...JSON.parse(readFileSync(statePath, "utf8")), version }));
+  setVersion(2);
+  const migrated = await RecallStore.open(dir, spec, 100);
+  assert.equal(migrated.count, 2);
+  assert.equal(migrated.record("b").text, "doi");
+  assert.deepEqual(migrated.offsets(), { "h.jsonl": 7 }, "backfill does not restart from zero");
+  assert.equal(JSON.parse(readFileSync(statePath, "utf8")).version, 3);
+  await migrated.close();
+  setVersion(4);
+  const future = await RecallStore.open(dir, spec, 100);
+  assert.equal(future.count, 0, "an index from an unknown version is rebuilt, not guessed at");
+  await future.close();
+});
+
 test("a kill between the compaction renames rebuilds instead of pairing wrong vectors", async () => {
   const dir = mkdtempSync(join(tmpdir(), "wazap-recall-compact-"));
   const spec = embedModelSpec("embeddinggemma-300m");

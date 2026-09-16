@@ -651,6 +651,10 @@ timers are not enforced locally. With it:
   downloads are untouched. A delete observed while recall is unavailable also
   clears the on-disk index, which is rebuildable.
 
+A recall index built before 0.21 is kept on upgrade. Under strict retention,
+deadlines found in local history still expire its rows; a row whose message is
+no longer in local history has no deadline to find and stays.
+
 This is not secure erasure of heap pages, backups or filesystem snapshots.
 Explicit exports, independent quotes/forwards and data already returned or sent
 are not recalled. Cleanup is asynchronous, not a crash-atomic transaction; while

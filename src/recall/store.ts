@@ -24,8 +24,9 @@ import type { RankedHit, RecallItem, RecallQuery, RecallRecord } from "./types.j
 export const TEXT_CAP = 2048;
 /** Rewrite meta+vectors when more than this share of rows is dead. */
 const COMPACT_DEAD_RATIO = 0.3;
-/** v3: expiry-bearing rows. Legacy index-only rows cannot prove they were not ephemeral. */
+/** v3: rows may carry a message expiry. A v2 row simply has none, so v2 migrates in place. */
 const STATE_VERSION = 3;
+const MIGRATES_FROM = 2;
 const QUANT = "int8";
 /** The index holds message text; it gets history's permissions, not the defaults. */
 const DIR_MODE = 0o700;
@@ -180,7 +181,10 @@ export class RecallStore {
   /**
    * Load or create the index. A state file that names another model or
    * geometry, or files that cannot be replayed, mean the index belongs to a
-   * different world: it is wiped and backfill rebuilds it from history.
+   * different world: it is wiped and backfill rebuilds it from history. A v2
+   * index is the same world without expiries and is kept: rebuilding it would
+   * re-embed every message and lose rows whose history is gone. Under
+   * WAZAP_RETENTION, deadlines found in history still expire migrated rows.
    */
   static async open(dir: string, spec: EmbedModelSpec, maxRows: number): Promise<RecallStore> {
     const store = new RecallStore(dir, spec, maxRows);
@@ -200,11 +204,12 @@ export class RecallStore {
       await store.wipe();
       return store;
     }
-    if (state.version !== STATE_VERSION || state.model !== spec.alias || state.dims !== spec.dims || state.quant !== QUANT) {
+    const migrating = state.version === MIGRATES_FROM;
+    if ((state.version !== STATE_VERSION && !migrating) || state.model !== spec.alias || state.dims !== spec.dims || state.quant !== QUANT) {
       await store.wipe();
       return store;
     }
-    store.state = state;
+    store.state = { ...state, version: STATE_VERSION };
     const rows = Math.floor(vectorBytes.length / spec.dims);
     const vectors = new Int8Array(vectorBytes.subarray(0, rows * spec.dims));
     try {
@@ -214,6 +219,7 @@ export class RecallStore {
       return store;
     }
     store.vectors = vectors;
+    if (migrating) await store.writeState();
     if (store.deadRows > store.nextRow * COMPACT_DEAD_RATIO && store.deadRows > 0) {
       await store.compact();
     }
@@ -435,11 +441,15 @@ export class RecallStore {
     return this.enqueue(async () => {
       if (this.closed) return;
       this.state.offsets[file] = bytes;
-      await mkdir(this.dir, { recursive: true, mode: DIR_MODE });
-      const tmp = `${this.statePath}.tmp`;
-      await writeFile(tmp, `${JSON.stringify(this.state)}\n`, { mode: FILE_MODE });
-      await rename(tmp, this.statePath);
+      await this.writeState();
     });
+  }
+
+  private async writeState(): Promise<void> {
+    await mkdir(this.dir, { recursive: true, mode: DIR_MODE });
+    const tmp = `${this.statePath}.tmp`;
+    await writeFile(tmp, `${JSON.stringify(this.state)}\n`, { mode: FILE_MODE });
+    await rename(tmp, this.statePath);
   }
 
   offsets(): Readonly<Record<string, number>> {

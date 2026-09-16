@@ -305,16 +305,27 @@ test("deadline-bearing index rows restore expiry independently of lost bounded h
   await noPayload(next);
 });
 
-test("legacy v2 index-only rows cannot silently become permanent ordinary messages", async (t) => {
-  const { svc, boot } = await fixture(t, { embed: async (texts) => vectors(texts) });
-  await svc.recallStore.add([{ sid: "legacy", jid: CHAT, ts: START, sender: CHAT, type: "text", text: SECRET }], vectors([SECRET]));
+test("a v2 index migrates in place, and history deadlines still expire its rows", async (t) => {
+  const { svc, boot, advance } = await fixture(t, { embed: async (texts) => vectors(texts) });
+  const raw = message();
+  await svc.recallStore.add([
+    { sid: "legacy", jid: CHAT, ts: START, sender: CHAT, type: "text", text: "ordinary legacy row" },
+    { sid: sid(raw), jid: CHAT, ts: START, sender: CHAT, type: "text", text: SECRET },
+  ], vectors(["ordinary legacy row", SECRET]));
   await svc.recallStore.advanceOffset("old.jsonl", 1);
   await svc.stop();
+  await writeFile(join(svc.paths.historyDir, `${CHAT}.jsonl`), `${JSON.stringify({ sid: sid(raw), ts: raw.messageTimestamp,
+    raw: Buffer.from(proto.WebMessageInfo.encode(raw).finish()).toString("base64") })}\n`);
   const file = join(svc.paths.root, "recall", "state.json");
   const state = JSON.parse(await readFile(file, "utf8")); state.version = 2;
   await writeFile(file, JSON.stringify(state));
   const { svc: next } = await boot();
-  assert.equal(next.recallStore.count, 0);
+  assert.equal(next.recallStore.count, 2, "no rows are lost to the version bump");
+  assert.equal(JSON.parse(await readFile(file, "utf8")).version, 3);
+  advance(10_000);
+  await next.retentionIdle();
+  assert.equal(next.recallStore.count, 1);
+  assert.equal(next.recallStore.record("legacy").text, "ordinary legacy row");
   await noPayload(next);
 });
 
