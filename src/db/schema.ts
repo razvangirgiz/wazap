@@ -579,19 +579,20 @@ END;
 // ---- end v3 ----------------------------------------------------------------
 
 // ---- v4 (F1-d): the durable webhook outbox ---------------------------------
-// Self-contained. Released builds never wrote an event, so version 1's
-// placeholder table is replaced whole rather than altered.
+// Self-contained: one table and its indexes. No build before this one wrote an
+// event, so version 1's placeholder table is replaced, not altered.
 /**
  * One row per event, in the order the account produced it (seq, never handed
  * out twice), in a lane: its chat (`chat:<chats.id>`) or `connection`; events
- * of one lane are posted in seq order, lanes independently. A message event is written in the transaction that stores its
- * message, and keeps only what the message row cannot say (payload); its body
- * is built from the message when it is posted. A message deleted from under an
- * event leaves message_id NULL, and the dispatcher cancels that event. state:
- * pending (waiting for ready_at or next_attempt_at), sending (a POST started;
- * one a crash interrupted is sent again), then delivered, failed or cancelled
- * for good. updated_at is the last
- * change: when an attempt ended, and when a closed event is pruned from.
+ * of one lane are posted in seq order, lanes independently. A message event is
+ * written in the transaction that stores its message, and keeps only what the
+ * message row cannot say (payload); its body is built from the message when it
+ * is posted. A message deleted from under an event leaves message_id NULL, and
+ * the dispatcher cancels that event. state: pending (waiting for ready_at or
+ * next_attempt_at), sending (a POST started; one a crash left behind is taken
+ * over once it is older than a POST can run), then delivered, failed or
+ * cancelled for good. updated_at is the last change: when an attempt ended,
+ * and when a closed event is pruned from.
  */
 const V4 = `
 DROP TABLE IF EXISTS events;

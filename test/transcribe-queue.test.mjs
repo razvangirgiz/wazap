@@ -809,14 +809,14 @@ function writeAtVersion(path, version, notes) {
 
 for (const from of [1, 2]) {
   test(`a v${from} database holding voice notes upgrades to v3 with an empty queue`, () => {
-    assert.equal(SCHEMA_VERSION, 3);
+    assert.ok(SCHEMA_VERSION >= 3);
     const now = Date.now();
     const direct = openTemp();
     direct.db.close();
     const path = `${direct.path}.v${from}`;
     writeAtVersion(path, from, [["OLD1", now - 3_600_000], ["OLD2", now - 60_000]]);
     const upgraded = AccountDb.open(path, { checkpointDelayMs: 0 });
-    assert.equal(upgraded.schemaVersion, 3);
+    assert.equal(upgraded.schemaVersion, SCHEMA_VERSION);
     assert.ok(upgraded.getMeta("migrated_v3") !== null);
     assert.deepEqual(upgraded.transcripts.stats(), { queued: 0, startedAt: null, failed: 0, lastError: null }, "no backfill");
     assert.equal(upgraded.messages.get(sid(false, PEER, "OLD2")).type, "voice", "the notes themselves came through");
@@ -832,7 +832,7 @@ test("a service on a v2 database upgraded to v3 transcribes nothing stored befor
   const { svc, sock } = serviceWith(CONFIGURED, { dataDir });
   const provider = stub(svc);
   await svc.transcribeIdle();
-  assert.equal(svc.db.schemaVersion, 3);
+  assert.equal(svc.db.schemaVersion, SCHEMA_VERSION);
   assert.equal(provider.calls, 0, "nothing stored before the upgrade is transcribed on its own");
   deliver(sock, [voiceNote("NEW")]);
   await svc.transcribeIdle();

@@ -78,11 +78,12 @@
 
 ### Upgrade notes
 
-- The account database moves to schema version 3 on the first start: version
+- The account database moves to schema version 4 on the first start: version
   2 holds the drafts and sends, version 3 the voice-note transcription queue,
   which starts empty (nothing stored before the upgrade is transcribed on its
-  own). 0.22 refuses a version 2 or 3 database (`SCHEMA_TOO_NEW`), and there
-  is no downgrade: going back means restoring a copy taken before the upgrade.
+  own), version 4 the webhook outbox, which starts empty too. 0.22 refuses a
+  version 2, 3 or 4 database (`SCHEMA_TOO_NEW`), and there is no downgrade:
+  going back means restoring a copy taken before the upgrade.
 
 ## 0.22.0
 ### Changed

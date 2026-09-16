@@ -105,7 +105,7 @@ test("a version 1 file, as 0.22 ships it, upgrades to the schema a new file gets
   const fresh = join(tempDir(), "fresh", "wazap.sqlite");
   AccountDb.open(fresh).close();
   assert.deepEqual(schemaOf(old), schemaOf(fresh));
-  assert.equal(SCHEMA_VERSION, 3);
+  assert.equal(SCHEMA_VERSION, 4);
 
 });
 
@@ -327,45 +327,53 @@ test("reactions and votes list ties in the order they arrived, and a delete take
   db.close();
 });
 
-test("version 1 is the schema 0.22.0 released, and a file at it migrates to the outbox table that takes and posts events", async () => {
-  const { MIGRATIONS } = await import("../dist/db/schema.js");
-  const { WebhookOutbox } = await import("../dist/webhook-outbox.js");
-  const { WebhookSink } = await import("../dist/webhook.js");
-  const v1 = MIGRATIONS.find((migration) => migration.version === 1).sql;
-  // A released migration never changes: this is version 1 as 0.22.0 shipped it.
-  assert.equal(createHash("sha256").update(v1).digest("hex"), "8c4c8fb88eb74dd9772b041f4ce4a806575ae862dcbb76aab4d35be2c9c136c9");
+for (const from of [1, 2, 3]) {
+  test(`a version ${from} file, written through the real migrations, upgrades to version 4 and its outbox takes and posts events`, async () => {
+    const { MIGRATIONS } = await import("../dist/db/schema.js");
+    const { WebhookOutbox } = await import("../dist/webhook-outbox.js");
+    const { WebhookSink } = await import("../dist/webhook.js");
+    // A released migration never changes: this is version 1 as 0.22.0 shipped it.
+    const v1 = MIGRATIONS.find((migration) => migration.version === 1).sql;
+    assert.equal(createHash("sha256").update(v1).digest("hex"), "8c4c8fb88eb74dd9772b041f4ce4a806575ae862dcbb76aab4d35be2c9c136c9");
+    assert.equal(SCHEMA_VERSION, 4);
 
-  const path = join(tempDir(), "wazap.sqlite");
-  const { DatabaseSync } = (await import("../dist/db/sqlite.js")).sqlite();
-  const released = new DatabaseSync(path);
-  released.exec(v1);
-  released.exec("PRAGMA user_version = 1");
-  assert.deepEqual(
-    released.prepare("SELECT name FROM pragma_table_info('events') WHERE name = 'updated_at'").all(),
-    [],
-    "0.22.0's events table is the placeholder"
-  );
-  released.close();
+    const path = join(tempDir(), "wazap.sqlite");
+    const released = new (sqlite().DatabaseSync)(path);
+    released.exec("BEGIN IMMEDIATE");
+    for (const migration of MIGRATIONS.filter((entry) => entry.version <= from)) {
+      released.exec(migration.sql);
+      released.exec(`PRAGMA user_version = ${migration.version}`);
+    }
+    released.exec("COMMIT");
+    assert.deepEqual(
+      released.prepare("SELECT name FROM pragma_table_info('events') WHERE name IN ('updated_at', 'lane')").all(),
+      [],
+      `version ${from}'s events table is the placeholder`
+    );
+    released.close();
 
-  const db = AccountDb.open(path);
-  assert.equal(db.schemaVersion, SCHEMA_VERSION);
-  const stored = db.messages.upsert(textMessage(PEER, "AFTER", T0, "after the upgrade"));
-  const seq = db.events.enqueue({ kind: "message_received", lane: "chat:1", messageId: stored.id, payload: "{}", createdAt: Date.now() });
-  const bodies = [];
-  const sink = new WebhookSink(
-    { WAZAP_WEBHOOK: "on", WAZAP_WEBHOOK_URL: "http://127.0.0.1:9/hook", WAZAP_WEBHOOK_SECRET: "s" },
-    { post: async (_url, init) => (bodies.push(JSON.parse(init.body)), new Response(null, { status: 204 })) }
-  );
-  const outbox = new WebhookOutbox({
-    db: () => db,
-    sink: () => sink,
-    payload: (event, message) => ({ event: event.kind, message_id: message.sid }),
-    awaitingTranscript: () => false,
+    const db = AccountDb.open(path);
+    assert.equal(db.schemaVersion, 4);
+    assert.ok(db.getMeta("migrated_v4") !== null);
+    const stored = db.messages.upsert(textMessage(PEER, "AFTER", T0, "after the upgrade"));
+    const seq = db.events.enqueue({ kind: "message_received", lane: "chat:1", messageId: stored.id, payload: "{}", createdAt: Date.now() });
+    const bodies = [];
+    const sink = new WebhookSink(
+      { WAZAP_WEBHOOK: "on", WAZAP_WEBHOOK_URL: "http://127.0.0.1:9/hook", WAZAP_WEBHOOK_SECRET: "s" },
+      { post: async (_url, init) => (bodies.push(JSON.parse(init.body)), new Response(null, { status: 204 })) }
+    );
+    const outbox = new WebhookOutbox({
+      db: () => db,
+      sink: () => sink,
+      payload: (event, message) => ({ event: event.kind, message_id: message.sid }),
+      awaitingTranscript: () => false,
+    });
+    outbox.kick();
+    await outbox.idle();
+    await outbox.stop();
+    assert.deepEqual(bodies.map((body) => body.message_id), [stored.sid]);
+    assert.equal(db.events.get(seq).state, "delivered");
+    db.close();
   });
-  outbox.kick();
-  await outbox.idle();
-  await outbox.stop();
-  assert.deepEqual(bodies.map((body) => body.message_id), [stored.sid]);
-  assert.equal(db.events.get(seq).state, "delivered");
-  db.close();
-});
+}
+
