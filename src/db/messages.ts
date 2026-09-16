@@ -59,10 +59,21 @@ const NO_UPPER_BOUND = Number.MAX_SAFE_INTEGER;
 /**
  * The single upsert. On a key conflict the row keeps its id, and content only
  * moves when the incoming version is not older than the stored edit; status
- * only rises, expiry only falls, a transcript or sender is never erased. A
+ * only rises (in statusRank's order), expiry only falls, a transcript or
+ * sender is never erased. A
  * tombstone matches no update at all.
  */
 const FRESH = "(messages.edited_at IS NULL OR (excluded.edited_at IS NOT NULL AND excluded.edited_at >= messages.edited_at))";
+
+/**
+ * A delivery status's place in the order it only climbs through: WhatsApp's
+ * number, except ERROR (0), which can only follow a send still PENDING (1) and
+ * so outranks that and nothing the server confirmed.
+ */
+export function statusRank(status: number): number {
+  return status === 0 ? 1.5 : status;
+}
+const rank = (column: string): string => `(CASE WHEN ${column} = 0 THEN 1.5 ELSE ${column} END)`;
 const UPSERT_SQL = `
 INSERT INTO messages(id, chat_id, key_id, from_me, sender_id, ts, type, quoted_sid, quoted_from_me, quoted_key_id, status,
   edited_at, expires_at, text, transcript, raw)
@@ -80,7 +91,7 @@ ON CONFLICT(chat_id, from_me, key_id) DO UPDATE SET
   transcript = coalesce(excluded.transcript, messages.transcript),
   sender_id = coalesce(messages.sender_id, excluded.sender_id),
   status = CASE WHEN excluded.status IS NULL THEN messages.status WHEN messages.status IS NULL THEN excluded.status
-    ELSE max(messages.status, excluded.status) END,
+    WHEN ${rank("excluded.status")} > ${rank("messages.status")} THEN excluded.status ELSE messages.status END,
   expires_at = CASE WHEN excluded.expires_at IS NULL THEN messages.expires_at WHEN messages.expires_at IS NULL
     THEN excluded.expires_at ELSE min(messages.expires_at, excluded.expires_at) END
 WHERE messages.deleted_at IS NULL`;
@@ -417,17 +428,17 @@ export class Messages {
     });
   }
 
-  /** Delivery status only rises. */
+  /** Delivery status only rises, in statusRank's order. */
   setStatus(sid: string, status: number): boolean {
     return this.c.write(() => {
       const key = this.visibleKey(sid);
       if (key === null) return false;
       return (
         this.c.run(
-          "UPDATE messages SET status = ? WHERE id = ? AND deleted_at IS NULL AND (status IS NULL OR status < ?)",
+          `UPDATE messages SET status = ? WHERE id = ? AND deleted_at IS NULL AND (status IS NULL OR ${rank("status")} < ?)`,
           status,
           key.id,
-          status
+          statusRank(status)
         ) > 0
       );
     });

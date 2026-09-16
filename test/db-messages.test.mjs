@@ -570,3 +570,24 @@ test("the lookups the service wires on: lid pairings in order, people with their
   assert.deepEqual(db.search.coverage({ chat: "40799999999@s.whatsapp.net" }), { messages: 0, chats: 0, oldestTs: null, newestTs: null });
   db.close();
 });
+
+test("a delivery status climbs past an error: ERROR outranks PENDING and nothing the server confirmed", () => {
+  const { db } = openTemp();
+  const statusOf = (key) => db.messages.get(sid(true, PEER, key)).status;
+  db.messages.upsert(textMessage(PEER, "E1", T0, "unu", { fromMe: true }));
+  assert.equal(db.messages.setStatus(sid(true, PEER, "E1"), 0), true, "an error on a message with no status stands");
+  assert.equal(statusOf("E1"), 0);
+  db.messages.setStatus(sid(true, PEER, "E1"), 2);
+  assert.equal(statusOf("E1"), 2, "a later confirmation replaces it");
+
+  db.messages.upsert(textMessage(PEER, "E2", T0 + 1000, "doi", { fromMe: true, status: 1 }));
+  db.messages.setStatus(sid(true, PEER, "E2"), 0);
+  assert.equal(statusOf("E2"), 0, "a failure is the answer to a pending send");
+  db.messages.upsert(textMessage(PEER, "E2", T0 + 1000, "doi", { fromMe: true, status: 1 }));
+  assert.equal(statusOf("E2"), 0, "a replay of the pending send does not undo it");
+
+  db.messages.upsert(textMessage(PEER, "E3", T0 + 2000, "trei", { fromMe: true, status: 3 }));
+  db.messages.setStatus(sid(true, PEER, "E3"), 0);
+  assert.equal(statusOf("E3"), 3, "an error after a confirmation is ignored");
+  db.close();
+});

@@ -30,7 +30,7 @@
 import type { Connection } from "./connection.js";
 import { StorageError } from "./errors.js";
 import { chatKindOf, isLidJid, normalizeJid, type Identity } from "./identity.js";
-import type { Messages } from "./messages.js";
+import { statusRank, type Messages } from "./messages.js";
 import { RECOMPUTE_LAST, type ChatRow, type ContactRow } from "./rows.js";
 import type { ContactNotes, MergeReport } from "./types.js";
 import { contentHash } from "./vectors.js";
@@ -405,7 +405,11 @@ export class Merger {
       winner.quoted_key_id ?? other.quoted_key_id,
       winner.edited_at ?? other.edited_at,
       keep.transcript ?? drop.transcript,
-      keep.status === null || drop.status === null ? (keep.status ?? drop.status) : Math.max(keep.status, drop.status),
+      keep.status === null || drop.status === null
+        ? (keep.status ?? drop.status)
+        : statusRank(drop.status) > statusRank(keep.status)
+          ? drop.status
+          : keep.status,
       earliest.length === 0 ? null : Math.min(...earliest),
       keep.sender_id ?? drop.sender_id,
       keepId
