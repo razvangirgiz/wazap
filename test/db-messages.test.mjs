@@ -30,6 +30,27 @@ test("ids are the second times 2^20 plus a sequence, consecutive inside one seco
   db.close();
 });
 
+test("finding 6: an id freed by a purge is never handed to another message, and a mark pointing at it goes null", async () => {
+  const { db } = openTemp();
+  const ask = db.messages.upsert(textMessage(PEER, "ASK", T0 + 500, "can you send the contract?"));
+  db.identity.markHandled(PEER, sid(false, PEER, "ASK"));
+  const conn = db["connection"];
+  conn.write(() =>
+    conn.run(
+      "INSERT INTO events(kind, message_id, payload, created_at, ready_at, state) VALUES ('message_received', ?, '{}', 1, 1, 'pending')",
+      ask.id
+    )
+  );
+  await db.messages.clearChat(PEER, T0 + 1000);
+  assert.equal(conn.get("SELECT message_id FROM events").message_id, null, "an event whose message is gone points nowhere");
+  const other = db.messages.upsert(textMessage(GROUP, "G1", T0 + 700, "group secret", { senderJid: OTHER }));
+  assert.notEqual(other.id, ask.id);
+  assert.equal(other.id, ask.id + 1);
+  const handled = db.identity.handled(PEER);
+  assert.deepEqual([handled.askMessageId, handled.askSid], [null, null]);
+  db.close();
+});
+
 test("a history message arriving late sorts by its own time, not by arrival", () => {
   const { db } = openTemp();
   db.messages.upsert(textMessage(PEER, "late", T0 + 10_000, "newest"));

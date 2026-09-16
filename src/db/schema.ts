@@ -10,8 +10,8 @@
  * second to the timestamp's second, so an id range is a time range.
  *
  * Invariants the schema itself defends, whatever code writes to it:
- * - a message keeps its id, timestamp, key and direction forever, and is unique
- *   by chat, direction and key;
+ * - a message keeps its id, timestamp, key and direction forever, is unique by
+ *   chat, direction and key, and its id is never handed out again;
  * - a tombstone (deleted_at set) holds no text, transcript or raw bytes, and
  *   stays a tombstone;
  * - the full-text index and the embeddings follow text and transcript, and a
@@ -183,15 +183,18 @@ CREATE TABLE contact_notes(
 
 CREATE TABLE handled(
   chat_id INTEGER PRIMARY KEY REFERENCES chats(id) ON DELETE CASCADE,
-  ask_message_id INTEGER,
+  ask_message_id INTEGER REFERENCES messages(id) ON DELETE SET NULL,
   at INTEGER NOT NULL
 ) STRICT;
+CREATE INDEX handled_ask ON handled(ask_message_id) WHERE ask_message_id IS NOT NULL;
 
--- F1-d: the durable webhook outbox. Only the table exists until then.
+-- F1-d: the durable webhook outbox. Only the table exists until then. A
+-- message deleted from under an event leaves message_id NULL: the outbox
+-- treats that event as cancelled.
 CREATE TABLE events(
   seq INTEGER PRIMARY KEY AUTOINCREMENT,
   kind TEXT NOT NULL,
-  message_id INTEGER,
+  message_id INTEGER REFERENCES messages(id) ON DELETE SET NULL,
   payload TEXT NOT NULL,
   created_at INTEGER NOT NULL,
   ready_at INTEGER NOT NULL,
@@ -202,6 +205,7 @@ CREATE TABLE events(
   last_error TEXT
 ) STRICT;
 CREATE INDEX events_due ON events(state, next_attempt_at);
+CREATE INDEX events_message ON events(message_id) WHERE message_id IS NOT NULL;
 
 -- F1-e: idempotent sends. Only the table exists until then.
 CREATE TABLE sends(
@@ -264,6 +268,20 @@ BEGIN
   INSERT INTO messages_fts(rowid, text, transcript) VALUES (new.id, new.text, new.transcript);
   -- A vector of words the message no longer says is stale; the backlog picks it up again.
   DELETE FROM embeddings WHERE message_id = new.id;
+END;
+
+-- The highest id a second has ever handed out, kept for seconds that lost
+-- rows to a physical delete, so a freed id is never given to another message:
+-- nothing that remembered the old id can land on a different one.
+CREATE TABLE id_high(
+  second INTEGER PRIMARY KEY,
+  top INTEGER NOT NULL
+) STRICT;
+
+CREATE TRIGGER messages_id_high AFTER DELETE ON messages
+BEGIN
+  INSERT INTO id_high(second, top) VALUES (old.id >> 20, old.id)
+  ON CONFLICT(second) DO UPDATE SET top = max(top, excluded.top);
 END;
 
 -- chats.last_* names the newest message a reader may see: never a tombstone,

@@ -130,26 +130,20 @@ export class Messages {
     private readonly scrubQuote: ScrubQuote | null = null
   ) {}
 
-  /** The next free id in the message's second: after the newest one, or in a gap when the top is taken. */
+  /**
+   * The next id in the message's second: past the newest row and past every
+   * id the second ever handed out, so an id freed by a purge is never reused.
+   */
   allocateId(ts: number): number {
     const base = firstIdOfSecond(ts);
     const top = base + SEQ_SPAN;
-    const newest = this.c.get<{ id: number }>(
-      "SELECT id FROM messages WHERE id >= ? AND id < ? ORDER BY id DESC LIMIT 1",
-      base,
-      top
-    );
-    if (newest === undefined) return base;
-    if (newest.id + 1 < top) return newest.id + 1;
-    if (this.c.get("SELECT 1 FROM messages WHERE id = ?", base) === undefined) return base;
-    const gap = this.c.get<{ id: number }>(
-      `SELECT m.id + 1 AS id FROM messages m WHERE m.id >= ? AND m.id < ?
-         AND NOT EXISTS (SELECT 1 FROM messages n WHERE n.id = m.id + 1) ORDER BY m.id LIMIT 1`,
-      base,
-      top - 1
-    );
-    if (gap !== undefined) return gap.id;
-    throw new StorageError("ID_SPACE_EXHAUSTED", `Second ${Math.floor(ts / 1000)} already holds ${SEQ_SPAN} messages.`);
+    const newest =
+      this.c.get<{ id: number }>("SELECT id FROM messages WHERE id >= ? AND id < ? ORDER BY id DESC LIMIT 1", base, top)?.id ?? -1;
+    const high = this.c.get<{ top: number }>("SELECT top FROM id_high WHERE second = ?", Math.floor(ts / 1000))?.top ?? -1;
+    const next = Math.max(newest, high) + 1;
+    if (next < base) return base;
+    if (next < top) return next;
+    throw new StorageError("ID_SPACE_EXHAUSTED", `Second ${Math.floor(ts / 1000)} already handed out ${SEQ_SPAN} ids.`);
   }
 
   upsert(input: MessageInput): UpsertResult {
