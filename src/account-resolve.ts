@@ -171,9 +171,14 @@ function webhookStatusLine(webhook: StatusInfo["webhook"]): string {
   if (!webhook.valid) return `- **webhook**: invalid${webhook.last_error ? ` · ${webhook.last_error}` : ""}`;
   const parts = ["on"];
   const delivery = webhook.delivery;
-  if (delivery !== undefined && delivery.delivered + delivery.failed + delivery.dropped > 0) {
-    parts.push(`${delivery.delivered} delivered, ${delivery.failed} failed, ${delivery.dropped} dropped`);
+  if (delivery !== undefined && delivery.delivered + delivery.failed + delivery.cancelled + delivery.pending + delivery.dropped > 0) {
+    const counts = [`${delivery.delivered} delivered`, `${delivery.failed} failed`, `${delivery.cancelled} cancelled`, `${delivery.pending} pending`];
+    if (delivery.dropped > 0) counts.push(`${delivery.dropped} dropped`);
+    parts.push(counts.join(", "));
     if (delivery.consecutive_failures > 0) parts.push(`failing: ${delivery.consecutive_failures} in a row`);
+    if (delivery.retrying > 0) {
+      parts.push(`retrying: ${delivery.retrying} failed attempts, the oldest waiting since ${delivery.oldest_pending_at}`);
+    }
     if (delivery.last_failure !== null) {
       parts.push(`last failure at ${delivery.last_failure_at}: ${delivery.last_failure}`);
     }

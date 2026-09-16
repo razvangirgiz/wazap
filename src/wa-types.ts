@@ -157,23 +157,37 @@ export interface WebhookInfo {
   enabled: boolean;
   valid: boolean;
   last_error: string | null;
-  /** Only while the webhook is on and valid: what this server delivered since it started. */
+  /** Only while the webhook is on and valid: the account's outbox, as its database records it. */
   delivery?: WebhookDelivery;
 }
 
-/** Events, not POSTs: a retried event that finally fails is one `failed`. */
+/**
+ * Events, not POSTs: a retried event that finally fails is one `failed`. The
+ * outbox keeps delivered events 7 days and failed or cancelled ones 30, so the
+ * counts cover those windows.
+ */
 export interface WebhookDelivery {
   delivered: number;
-  /** Refused with a 4xx, or still failing once the retries ran out. */
+  /** Refused with a 4xx, or still failing 24 hours after it was created. */
   failed: number;
-  /** Turned away by a full backlog, so never posted. */
+  /** Never posted because its message was deleted, expired or cleared first, or the webhook stopped wanting it. */
+  cancelled: number;
+  /** Waiting to be posted: behind another event, for a transcript, or for its next retry. */
+  pending: number;
+  /** Events this server could not store to post, because the account database refused the write. */
   dropped: number;
   /** Failed events since the last delivery; zero once one gets through. */
   consecutive_failures: number;
+  /** POSTs the oldest waiting event already failed: above zero, the receiver is refusing or unreachable right now. */
+  retrying: number;
   last_success_at: string | null;
   last_failure_at: string | null;
   last_failure: string | null;
+  /** The HTTP status of that failure, null for a timeout or an unreachable host. */
+  last_status: number | null;
   last_dropped_at: string | null;
+  /** When the oldest waiting event was created; null when nothing waits. */
+  oldest_pending_at: string | null;
 }
 
 export interface ChatSummary {

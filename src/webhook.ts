@@ -2,16 +2,16 @@
  * W1 outbound webhook: three live events (`message_received`, `message_sent`
  * and `connection`), of which only `message_received` is posted unless
  * `WAZAP_WEBHOOK_EVENTS` asks for more. Global URL, secret and event list live
- * in `.env`; an account may override any of the three. Delivery never throws
- * into the WhatsApp or MCP path.
+ * in `.env`; an account may override any of the three. This module is the
+ * settings, the payloads and a single POST; the durable queue that decides
+ * when to post, and retries, is src/webhook-outbox.ts. Nothing here throws into
+ * the WhatsApp or MCP path.
  */
 import { createHmac, timingSafeEqual } from "node:crypto";
-import { chmodSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
-import { dirname } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { WAZAP_VERSION } from "./config.js";
 import { WazapError, asWazapError } from "./errors.js";
-import { log, logError } from "./logger.js";
+import { logError } from "./logger.js";
 import { redact, stripPasted } from "./transcribe/index.js";
 import { discardResponse } from "./http-response.js";
 import { withCode } from "./error-code.js";
@@ -24,16 +24,9 @@ export type WebhookEvent = (typeof WEBHOOK_EVENTS)[number];
 export const WEBHOOK_EVENT = "message_received" as const;
 export const WEBHOOK_TIMEOUT_MS = 10_000;
 export const WEBHOOK_TEXT_MAX = 2000;
-export const WEBHOOK_RETRY_DELAYS_MS = [200, 500] as const;
-/** Parallel POSTs a busy chat may hold; the rest queue behind them in order. */
-export const WEBHOOK_MAX_INFLIGHT = 4;
-/** A dead consumer must not grow memory: past this many queued events, new ones drop. */
-export const WEBHOOK_MAX_BACKLOG = 256;
-/** Inside a run of identical failures, or of drops, one log line per this many. */
-export const WEBHOOK_LOG_EVERY = 100;
-/** The counters reach disk at most this often, so a run of failures is not a run of writes. */
-export const WEBHOOK_STATS_WRITE_MS = 5_000;
-/** Failed events in a row before doctor calls delivery broken rather than flaky. */
+/** `webhook test` retries a probe that may pass on its own this soon; the outbox has its own schedule. */
+export const WEBHOOK_TEST_RETRY_DELAYS_MS = [200, 500] as const;
+/** Failed events in a row, or failed attempts of the oldest waiting one, before doctor calls delivery broken rather than flaky. */
 export const WEBHOOK_FAILING_AFTER = 3;
 export const WEBHOOK_ON_FIX = "run `wazap config webhook on`";
 export const WEBHOOK_URL_FIX = "set WAZAP_WEBHOOK_URL to an https:// URL, or http:// on 127.0.0.1";
@@ -71,6 +64,8 @@ export interface WebhookAccount {
   webhook_secret?: string;
   webhook_events?: string;
 }
+
+export type WebhookReady = Extract<WebhookSettings, { kind: "ready" }>;
 
 /** The JSON body of a message event. HMAC is over this exact UTF-8 string. */
 export interface WebhookMessagePayload {
@@ -121,8 +116,14 @@ export interface WebhookConnectionEvent {
 
 export type WebhookTestResult = { ok: true } | { ok: false; error: string; fix: string };
 
-/** One POST: a failure also says whether trying the same request again can help. */
-type WebhookAttempt = { ok: true } | { ok: false; error: string; fix: string; retry: boolean };
+/**
+ * One POST: the HTTP status when there was one, and on a failure whether the
+ * same request may pass later (a timeout, an unreachable host, 408, 425, 429,
+ * 5xx) or is refused for good (any other 4xx).
+ */
+export type WebhookAttempt =
+  | { ok: true; status: number }
+  | { ok: false; status: number | null; error: string; fix: string; retry: boolean };
 
 const WEBHOOK_REACH_FIX = "check the webhook URL is reachable and returns 2xx";
 
@@ -131,13 +132,9 @@ export type WebhookFetch = (url: string, init: RequestInit) => Promise<Response>
 /** Test seams and the account whose override the sink prefers. */
 export interface WebhookSinkOptions {
   post?: WebhookFetch;
+  /** What `webhook test` waits between retries of a probe. */
   retryDelays?: readonly number[];
   account?: WebhookAccount;
-  maxInflight?: number;
-  maxBacklog?: number;
-  /** Where the delivery counters are kept for another process to read; unset keeps them in memory only. */
-  statsFile?: string;
-  statsWriteMs?: number;
 }
 
 /** The one place the webhook environment becomes typed. */
@@ -371,87 +368,24 @@ export function webhookInfo(
   }
 }
 
-/** Posts an event when the webhook is on and valid. Never throws. */
+/**
+ * The webhook as configured for one account: its settings, a single POST of a
+ * payload, and the probe `webhook test` sends. Never throws.
+ */
 export class WebhookSink {
+  /** What the last probe failed with; the outbox keeps its own record in the account database. */
   lastError: string | null = null;
   private readonly post: WebhookFetch;
   private readonly retryDelays: readonly number[];
   private readonly account?: WebhookAccount;
-  private readonly maxInflight: number;
-  private readonly maxBacklog: number;
-  private inFlight = 0;
-  private readonly backlog: Array<() => void> = [];
-  private readonly delivery: WebhookDelivery = {
-    delivered: 0,
-    failed: 0,
-    dropped: 0,
-    consecutive_failures: 0,
-    last_success_at: null,
-    last_failure_at: null,
-    last_failure: null,
-    last_dropped_at: null,
-  };
-  /** Drops since the last delivery, for the log; `delivery.dropped` is the total. */
-  private droppedSinceDelivery = 0;
-  /** The error a run last logged, so a changed error is logged at once. */
-  private loggedFailure: string | null = null;
-  private readonly statsFile?: string;
-  private readonly statsWriteMs: number;
-  private statsWrittenAt = 0;
-  private statsTimer: NodeJS.Timeout | null = null;
-  private statsWriteFailed = false;
 
   constructor(
     private readonly env: NodeJS.ProcessEnv = process.env,
     opts: WebhookSinkOptions = {}
   ) {
     this.post = opts.post ?? fetch;
-    this.retryDelays = opts.retryDelays ?? WEBHOOK_RETRY_DELAYS_MS;
+    this.retryDelays = opts.retryDelays ?? WEBHOOK_TEST_RETRY_DELAYS_MS;
     this.account = opts.account;
-    this.maxInflight = opts.maxInflight ?? WEBHOOK_MAX_INFLIGHT;
-    this.maxBacklog = opts.maxBacklog ?? WEBHOOK_MAX_BACKLOG;
-    this.statsFile = opts.statsFile;
-    this.statsWriteMs = opts.statsWriteMs ?? WEBHOOK_STATS_WRITE_MS;
-  }
-
-  /**
-   * `wazap status` runs in a process of its own, so the counters it reads come
-   * from this file. A change after a quiet spell writes at once; the rest wait
-   * out statsWriteMs, so a receiver refusing a busy chat costs a write every
-   * few seconds rather than one per event.
-   */
-  private saveStats(): void {
-    if (this.statsFile === undefined || this.statsTimer !== null) return;
-    const wait = this.statsWrittenAt + this.statsWriteMs - Date.now();
-    if (wait <= 0) {
-      this.writeStats();
-      return;
-    }
-    this.statsTimer = setTimeout(() => {
-      this.statsTimer = null;
-      this.writeStats();
-    }, wait);
-    this.statsTimer.unref();
-  }
-
-  /** Writes a change the rate limit is still holding back. The service calls it on stop. */
-  flushStats(): void {
-    if (this.statsTimer === null) return;
-    clearTimeout(this.statsTimer);
-    this.statsTimer = null;
-    this.writeStats();
-  }
-
-  private writeStats(): void {
-    if (this.statsFile === undefined) return;
-    this.statsWrittenAt = Date.now();
-    try {
-      writeWebhookDelivery(this.statsFile, this.delivery);
-    } catch (err) {
-      // A data dir that refuses this write refuses the next one too; say it once.
-      if (!this.statsWriteFailed) logError("webhook", `could not save delivery counters: ${String(err)}`);
-      this.statsWriteFailed = true;
-    }
   }
 
   settings(): WebhookSettings {
@@ -462,101 +396,9 @@ export class WebhookSink {
     });
   }
 
-  info(): WebhookInfo {
-    return webhookInfo(this.settings(), this.lastError, { ...this.delivery });
-  }
-
-  private recordSuccess(): void {
-    const failures = this.delivery.consecutive_failures;
-    const drops = this.droppedSinceDelivery;
-    if (failures > 0 || drops > 0) {
-      const lost = [failures > 0 ? `${failures} failures` : "", drops > 0 ? `${drops} dropped` : ""];
-      log(`webhook delivered again after ${lost.filter((part) => part !== "").join(" and ")}`);
-    }
-    this.delivery.delivered++;
-    this.delivery.consecutive_failures = 0;
-    this.delivery.last_success_at = new Date().toISOString();
-    this.droppedSinceDelivery = 0;
-    this.loggedFailure = null;
-    this.saveStats();
-  }
-
-  /**
-   * A receiver that refused every event once logged a line per event, thousands
-   * of them, and nobody noticed. A run now logs its first failure, any change of
-   * error, and a count every WEBHOOK_LOG_EVERY failures; recordSuccess says when
-   * it ends.
-   */
-  private recordFailure(error: string): void {
-    this.delivery.failed++;
-    const failures = ++this.delivery.consecutive_failures;
-    this.delivery.last_failure_at = new Date().toISOString();
-    this.delivery.last_failure = error;
-    if (error !== this.loggedFailure) logError("webhook", error);
-    else if (failures % WEBHOOK_LOG_EVERY === 0) logError("webhook", `${error} (${failures} failures in a row)`);
-    this.loggedFailure = error;
-    this.saveStats();
-  }
-
-  private recordDrop(error: string): void {
-    this.delivery.dropped++;
-    this.delivery.last_dropped_at = new Date().toISOString();
-    const drops = ++this.droppedSinceDelivery;
-    if (drops === 1) logError("webhook", error);
-    else if (drops % WEBHOOK_LOG_EVERY === 0) {
-      logError("webhook", `${error} (${drops} dropped since the last delivery)`);
-    }
-    this.saveStats();
-  }
-
-  /**
-   * True only when the consumer accepted the POST, so a caller whose event has no
-   * later transition to recover with can tell a delivery from a drop. Still never
-   * throws.
-   */
-  async notify(payload: WebhookPayload, current: () => boolean = () => true): Promise<boolean> {
-    const isCurrent = (): boolean => { try { return current(); } catch { return false; } };
-    if (!isCurrent()) return false;
-    // An event nobody subscribed to used to take a slot before it was filtered,
-    // so it could push a wanted one out of a full backlog. It counts nowhere.
-    if (!this.subscribed(payload)) return false;
-    // A busy chat used to open one POST per message, unbounded. Slots beyond
-    // maxInflight wait in FIFO order; a full backlog drops the event rather
-    // than letting a dead consumer grow memory inside a live process.
-    while (this.inFlight >= this.maxInflight) {
-      if (!isCurrent()) return false;
-      if (this.backlog.length >= this.maxBacklog) {
-        this.lastError = `backlog full (${this.maxBacklog} queued); dropped ${payload.event}`;
-        this.recordDrop(this.lastError);
-        return false;
-      }
-      // A woken waiter re-checks: a fresh notify may have taken the freed slot.
-      await new Promise<void>((resolve) => this.backlog.push(resolve));
-    }
-    this.inFlight++;
-    try {
-      if (!isCurrent()) return false;
-      const settings = this.settings();
-      if (settings.kind !== "ready") return false;
-      if (!settings.events.includes(payload.event)) return false;
-      const result = await this.postEvent(payload, settings, isCurrent);
-      if (result === null) return false; // Retention cancellation is not a receiver failure.
-      if (result.ok) this.recordSuccess();
-      else this.recordFailure(result.error);
-      return result.ok;
-    } catch (err) {
-      this.lastError = `Webhook delivery failed${withCode(err)}.`;
-      this.recordFailure(this.lastError);
-      return false;
-    } finally {
-      this.inFlight--;
-      this.backlog.shift()?.();
-    }
-  }
-
-  private subscribed(payload: WebhookPayload): boolean {
-    const settings = this.settings();
-    return settings.kind === "ready" && settings.events.includes(payload.event);
+  /** The status block; `delivery` is what the account database says about the outbox. */
+  info(delivery?: WebhookDelivery, lastError: string | null = this.lastError): WebhookInfo {
+    return webhookInfo(this.settings(), lastError, delivery);
   }
 
   async sendTest(event: WebhookEvent = WEBHOOK_EVENT): Promise<WebhookTestResult> {
@@ -574,10 +416,9 @@ export class WebhookSink {
             fix: enableEventFix(settings.events, event, this.account),
           };
         }
-        const result = await this.postEvent(testPayload(event, this.account), settings);
-        // Test events have no retention predicate and cannot be cancelled.
-        if (!result!.ok) logError("webhook", result!.error);
-        return result!;
+        const result = await this.probe(testPayload(event, this.account), settings);
+        if (!result.ok) logError("webhook", result.error);
+        return result;
       }
       default: {
         const _exhaustive: never = settings;
@@ -586,47 +427,43 @@ export class WebhookSink {
     }
   }
 
-  private async postEvent(
-    payload: WebhookPayload,
-    settings: Extract<WebhookSettings, { kind: "ready" }>,
-    isCurrent: () => boolean = () => true
-  ): Promise<WebhookTestResult | null> {
-    const body = JSON.stringify(payload);
+  /** The probe goes straight out, not through the outbox, retried briefly as a live POST once was. */
+  private async probe(payload: WebhookPayload, settings: WebhookReady): Promise<WebhookTestResult> {
     const attempts = 1 + this.retryDelays.length;
-    let last: WebhookAttempt = { ok: false, error: "webhook POST failed", fix: WEBHOOK_REACH_FIX, retry: false };
+    let last: WebhookAttempt = { ok: false, status: null, error: "webhook POST failed", fix: WEBHOOK_REACH_FIX, retry: false };
     for (let i = 0; i < attempts; i++) {
-      if (!isCurrent()) return null;
-      last = await this.postOnce(body, payload.event, settings);
+      last = await this.attempt(payload, settings);
       if (last.ok) {
         this.lastError = null;
-        return last;
+        return { ok: true };
       }
       const delay = this.retryDelays[i];
       // A refusal would only be refused again, and each retry is one more POST
       // the receiver has to turn away.
       if (!last.retry || delay === undefined) break;
-      // Inside a run of failures a retry line says nothing the run's own lines do not.
-      if (this.delivery.consecutive_failures === 0) {
-        logError("webhook", `${last.error}; retry ${i + 1}/${this.retryDelays.length}`);
-      }
+      logError("webhook", `${last.error}; retry ${i + 1}/${this.retryDelays.length}`);
       if (delay > 0) await sleep(delay);
     }
-    this.lastError = last.error;
-    return { ok: false, error: last.error, fix: last.fix };
+    const failed = last as Extract<WebhookAttempt, { ok: false }>;
+    this.lastError = failed.error;
+    return { ok: false, error: failed.error, fix: failed.fix };
   }
 
-  private async postOnce(
-    body: string,
-    event: WebhookEvent,
-    settings: Extract<WebhookSettings, { kind: "ready" }>
-  ): Promise<WebhookAttempt> {
+  /** One signed POST of `payload`, bounded by WEBHOOK_TIMEOUT_MS. Never throws. */
+  async attempt(payload: WebhookPayload, settings: WebhookReady): Promise<WebhookAttempt> {
+    let body: string;
+    try {
+      body = JSON.stringify(payload);
+    } catch (err) {
+      return { ok: false, status: null, error: `Webhook delivery failed${withCode(err)}.`, fix: WEBHOOK_REACH_FIX, retry: false };
+    }
     try {
       const response = await this.post(settings.url, {
         method: "POST",
         headers: {
           "content-type": "application/json",
           "user-agent": `wazap/${WAZAP_VERSION}`,
-          "x-wazap-event": event,
+          "x-wazap-event": payload.event,
           "x-wazap-signature": webhookSignature(body, settings.secret),
         },
         body,
@@ -634,20 +471,21 @@ export class WebhookSink {
         signal: AbortSignal.timeout(WEBHOOK_TIMEOUT_MS),
       });
       await discardResponse(response);
-      if (response.ok) return { ok: true };
+      if (response.ok) return { ok: true, status: response.status };
       const host = hostOf(settings.url);
       if (retryableStatus(response.status)) {
-        return failAttempt(`HTTP ${response.status} from ${host}`, settings.secret, WEBHOOK_REACH_FIX, true);
+        return failAttempt(response.status, `HTTP ${response.status} from ${host}`, settings.secret, WEBHOOK_REACH_FIX, true);
       }
       const refused = refusal(response.status);
       return failAttempt(
+        response.status,
         `HTTP ${response.status} from ${host}, not retried: ${refused.hint}`,
         settings.secret,
         refused.fix,
         false
       );
     } catch (err) {
-      return failAttempt(describePostError(err, settings.url), settings.secret, WEBHOOK_REACH_FIX, true);
+      return failAttempt(null, describePostError(err, settings.url), settings.secret, WEBHOOK_REACH_FIX, true);
     }
   }
 }
@@ -696,8 +534,8 @@ function describePostError(err: unknown, url: string): string {
   return `could not reach ${host}${withCode(err)}`;
 }
 
-function failAttempt(error: string, secret: string, fix: string, retry: boolean): WebhookAttempt {
-  return { ok: false, error: redact(error, secret), fix, retry };
+function failAttempt(status: number | null, error: string, secret: string, fix: string, retry: boolean): WebhookAttempt {
+  return { ok: false, status, error: redact(error, secret), fix, retry };
 }
 
 /**
@@ -705,7 +543,7 @@ function failAttempt(error: string, secret: string, fix: string, retry: boolean)
  * Any other 4xx is the receiver refusing this exact request, and it would
  * refuse the retry the same way.
  */
-function retryableStatus(status: number): boolean {
+export function retryableStatus(status: number): boolean {
   return status >= 500 || status === 408 || status === 425 || status === 429;
 }
 
@@ -740,40 +578,4 @@ export function webhookFailureFix(failure: string): string {
   const status = Number(/^HTTP (\d{3}) from /.exec(failure)?.[1]);
   if (Number.isInteger(status) && status >= 400 && !retryableStatus(status)) return refusal(status).fix;
   return "make the receiver reachable and answer 2xx, then run `wazap webhook test`";
-}
-
-/** Atomic and 0600, the same contract as daemon.json: a reader sees the old counters or the new ones. */
-function writeWebhookDelivery(file: string, delivery: WebhookDelivery): void {
-  mkdirSync(dirname(file), { recursive: true, mode: 0o700 });
-  const temp = `${file}.${process.pid}.tmp`;
-  writeFileSync(temp, `${JSON.stringify(delivery, null, 2)}\n`, { mode: 0o600 });
-  chmodSync(temp, 0o600);
-  renameSync(temp, file);
-}
-
-const DELIVERY_COUNTS = ["delivered", "failed", "dropped", "consecutive_failures"] as const;
-const DELIVERY_TEXTS = ["last_success_at", "last_failure_at", "last_failure", "last_dropped_at"] as const;
-
-/** The counters a server left in an account dir, or null when it never posted or the file is not that shape. */
-export function readWebhookDelivery(file: string): WebhookDelivery | null {
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(readFileSync(file, "utf8"));
-  } catch {
-    return null;
-  }
-  if (typeof parsed !== "object" || parsed === null) return null;
-  const row = parsed as Record<string, unknown>;
-  const delivery: Record<string, unknown> = {};
-  for (const key of DELIVERY_COUNTS) {
-    const value = row[key];
-    if (typeof value !== "number" || !Number.isInteger(value) || value < 0) return null;
-    delivery[key] = value;
-  }
-  for (const key of DELIVERY_TEXTS) {
-    const value = row[key];
-    if (value !== null && typeof value !== "string") return null;
-    delivery[key] = value;
-  }
-  return delivery as unknown as WebhookDelivery;
 }

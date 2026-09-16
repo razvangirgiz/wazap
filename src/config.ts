@@ -124,8 +124,8 @@ export interface AccountPaths {
   notesFile: string;
   storeFile: string;
   qrFile: string;
-  /** Delivery counters the webhook sink leaves for `wazap status` in another process. */
-  webhookFile: string;
+  /** The account database; `wazap status` and doctor read its webhook outbox read-only. */
+  databaseFile: string;
 }
 
 export function paths(dataDir: string): Paths {
@@ -152,7 +152,7 @@ export function accountPaths(dataDir: string, accountId: string): AccountPaths {
     notesFile: join(root, "notes.json"),
     storeFile: join(root, "store.json"),
     qrFile: join(root, "qr.png"),
-    webhookFile: join(root, "webhook.json"),
+    databaseFile: join(root, "wazap.sqlite"),
   };
 }
 

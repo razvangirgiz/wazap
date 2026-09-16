@@ -43,6 +43,7 @@ import {
   StorageError,
   type ChatKind,
   type ChatRecord,
+  type EventRecord,
   type MessageInput,
   type Receipt as StoredReceipt,
   type SendRecord,
@@ -156,8 +157,12 @@ import {
   asConnectionPayload,
   asWebhookPayload,
   webhookConnectionStatus,
+  webhookKind,
+  type WebhookConnectionPayload,
   type WebhookConnectionStatus,
+  type WebhookPayload,
 } from "./webhook.js";
+import { WEBHOOK_TRANSCRIPT_WAIT_MS, WebhookOutbox, undeliveredFailure } from "./webhook-outbox.js";
 import type { SearchCoverage } from "./coverage.js";
 import type {
   CallInfo,
@@ -265,8 +270,6 @@ const MEDIA_DOWNLOAD_MAX_BYTES = 100_000_000;
 const SEND_RECOVERY_LIMIT = 500;
 /** Ten minutes of speech. Past that, auto-transcribing is a bill nobody asked for. */
 const AUTO_TRANSCRIBE_MAX_SECONDS = 600;
-/** How long a message event waits for the transcript of the voice note it carries. */
-const WEBHOOK_TRANSCRIPT_WAIT_MS = 60_000;
 /**
  * A voice note a history sync delivers is queued for transcription only when
  * it is this recent: the notes of the last day, not the whole archive a first
@@ -532,12 +535,14 @@ export class WhatsAppService implements WhatsAppApi {
   private readonly confirming = new Map<string, { owner: string | null; work: Promise<SentMessage> }>();
   private readonly writes: RateLimiter;
   private readonly webhook: WebhookSink;
+  /** Posts the events the account database holds; see src/webhook-outbox.ts. */
+  private readonly outbox: WebhookOutbox;
+  /** Voice notes this process is transcribing, whose events are worth holding for their words. */
+  private readonly webhookTranscripts = new Set<string>();
   /** Sends of our own, so their `fromMe` echo is never announced as `message_sent`. */
   private readonly sentByWazap = new SentIds();
-  /** The last status a consumer was told, so several internal states collapse into one event. */
+  /** The last connection status queued for the consumer, so several internal states collapse into one event. */
   private lastWebhookStatus: WebhookConnectionStatus | null = null;
-  /** Connection posts run one at a time, so a consumer sees the order the link moved in. */
-  private connectionPosts: Promise<void> = Promise.resolve();
   private readonly accountRecord: AccountRecord;
   private readonly effectiveReadOnly: boolean;
   private readonly effectiveRateLimit: number;
@@ -548,7 +553,13 @@ export class WhatsAppService implements WhatsAppApi {
     paths: AccountPaths
   ) {
     this.accountRecord = account;
-    this.webhook = new WebhookSink(process.env, { account, statsFile: paths.webhookFile });
+    this.webhook = new WebhookSink(process.env, { account });
+    this.outbox = new WebhookOutbox({
+      db: () => this.readyDb(),
+      sink: () => this.webhook,
+      payload: (event, message) => this.webhookPayload(event, message),
+      awaitingTranscript: (message) => this.webhookTranscripts.has(message.sid),
+    });
     const policy = accountPolicy(account, config);
     this.effectiveReadOnly = policy.readOnly;
     this.effectiveRateLimit = policy.rateLimit;
@@ -661,8 +672,8 @@ export class WhatsAppService implements WhatsAppApi {
     this.stopCallSweep();
     this.releaseWaiters();
     this.wakeArrivalWaiters();
-    this.webhook.flushStats();
     this.teardownSocket();
+    await this.outbox.stop();
     await this.stopPairing();
     await this.historyIdle();
     // Before the database closes: a run under way gets a while to store the transcript it is paying for,
@@ -882,6 +893,7 @@ export class WhatsAppService implements WhatsAppApi {
       this.legacyTimer.unref();
     }
     this.armExpiry();
+    this.outbox.start();
     if (this.embedFeed !== null) this.embedFeed.kick();
     else {
       // Recall is off, or its settings do not parse: no queue is kept that nothing
@@ -1222,29 +1234,34 @@ export class WhatsAppService implements WhatsAppApi {
 
   /**
    * Several internal states map to one thing a consumer acts on, so the guard is
-   * on the mapped status, and it advances only on a post the consumer actually
-   * received: an endpoint that was down for `expired` hears it on the next
-   * change instead of never, since re-linking needs a human and there is no
-   * later transition to recover with. One chain, because a post can occupy half
-   * a minute in retries and a flapping link would otherwise land `linked` and
-   * `disconnected` out of order. Running the guard inside the chain is what makes
-   * "only on change" true of what arrives rather than of what was attempted. The
-   * chain rests on `notify` never throwing, so it also catches: a rejection here
-   * would silence every later change instead of one.
+   * on the mapped status, and it advances only once the event is in the outbox,
+   * which retries it for a day and keeps the order the link moved in. A change
+   * the webhook does not subscribe to is not queued and does not advance it.
    */
   private queueConnectionWebhook(status: ConnectionStatus): void {
     const mapped = webhookConnectionStatus(status);
-    if (mapped === null) return;
+    if (mapped === null || mapped === this.lastWebhookStatus || this.stopped) return;
+    const settings = this.webhook.settings();
+    if (settings.kind !== "ready" || !settings.events.includes("connection")) return;
+    const db = this.readyDb();
+    if (db === null) {
+      this.outbox.dropped(`connection ${mapped}`);
+      return;
+    }
     const at = this.statusSince;
-    this.connectionPosts = this.connectionPosts
-      .then(async () => {
-        if (mapped === this.lastWebhookStatus) return;
-        if (this.stopped || this.webhook.settings().kind !== "ready") return;
-        if (await this.webhook.notify(asConnectionPayload({ status: mapped, account: this.accountRecord, at }))) {
-          this.lastWebhookStatus = mapped;
-        }
-      })
-      .catch((err) => logError("webhook", err));
+    try {
+      db.events.enqueue({
+        kind: "connection",
+        messageId: null,
+        payload: JSON.stringify(asConnectionPayload({ status: mapped, account: this.accountRecord, at })),
+        createdAt: at,
+      });
+    } catch (err) {
+      this.outbox.dropped(`connection ${mapped}`, err);
+      return;
+    }
+    this.lastWebhookStatus = mapped;
+    this.outbox.kick();
   }
 
   getStatus(): StatusInfo {
@@ -1267,7 +1284,7 @@ export class WhatsAppService implements WhatsAppApi {
       read_only: this.effectiveReadOnly,
       rate_limit: this.effectiveRateLimit,
       last_error: this.lastError ?? this.storageFault?.message ?? null,
-      webhook: this.webhook.info(),
+      webhook: this.webhookStatus(),
       recall: this.recallStatus(),
       storage: this.storageInfo(),
       transcription: this.transcriptionStatus(),
@@ -4166,30 +4183,53 @@ export class WhatsAppService implements WhatsAppApi {
     return this.transcribe;
   }
 
+  // Webhook outbox --------------------------------------------------------------
+
   /**
-   * Live messages both ways, same notify gate as transcription: a history sync
-   * must not POST the backlog, and stubs or system notices are not events. That
-   * gate is also what keeps wazap's own sends quiet in production, since Baileys
-   * re-emits a local send as an `append`; `isOwnSend` is the id-level backstop
-   * for an echo that does arrive as `notify`. Failures stay on
-   * `webhook.last_error` and never reject this path.
+   * Live messages both ways, queued for the webhook in the transaction that
+   * stores them, and only on the notify gate transcription uses: a history
+   * sync must not post the backlog, and stubs or system notices are not events.
+   * That gate is also what keeps wazap's own sends quiet in production, since
+   * Baileys re-emits a local send as an `append`; `sentByWazap` is the id-level
+   * backstop for an echo that does arrive as `notify`. An event the webhook
+   * does not subscribe to is never written, and a message delivered twice is
+   * queued once. An incoming voice note waits for its transcript, at most
+   * WEBHOOK_TRANSCRIPT_WAIT_MS. A write the database refuses fails the whole
+   * transaction, messages included, so none is stored without its event.
+   * Returns `stored`, for the caller to go on with.
    */
-  private queueWebhook(arrived: readonly WAMessage[], transcribing: ReadonlyMap<string, Promise<void>>): void {
-    if (this.stopped || this.webhook.settings().kind !== "ready") return;
-    for (const raw of arrived) {
-      if (!isUserMessage(raw)) continue;
+  private announced(stored: WAMessage[], type: string): WAMessage[] {
+    if (type !== "notify" || this.stopped || stored.length === 0) return stored;
+    const settings = this.webhook.settings();
+    if (settings.kind !== "ready") return stored;
+    const db = this.db;
+    const now = Date.now();
+    for (const raw of stored) {
+      let sid: string;
+      let event: "message_received" | "message_sent";
       try {
-        const jid = this.canonical(raw.key.remoteJid ?? "");
-        const sid = messageIdFor(raw.key, jid);
+        if (!isUserMessage(raw)) continue;
         if (raw.key.fromMe && raw.key.id && this.isOwnSend(raw.key.id)) continue;
-        const event = raw.key.fromMe ? "message_sent" : "message_received";
-        void this.postMessageEvent({ sid, jid, event, transcript: transcribing.get(sid) }).catch((err) => {
-          logError("webhook", err);
-        });
+        event = raw.key.fromMe ? "message_sent" : "message_received";
+        if (!settings.events.includes(event)) continue;
+        sid = messageIdFor(raw.key, this.canonical(raw.key.remoteJid ?? ""));
       } catch (err) {
+        // A message this cannot make sense of is not announced; the rest of the batch still is.
         logError("webhook", err);
+        continue;
       }
+      const message = db.messages.get(sid);
+      if (message === null || db.events.hasMessageEvent(message.id, event)) continue;
+      const transcribed = !message.fromMe && this.autoTranscribe && webhookKind(message.type as MessageType) === "audio";
+      db.events.enqueue({
+        kind: event,
+        messageId: message.id,
+        payload: JSON.stringify({ is_self_chat: this.isMe(message.chatJid) }),
+        createdAt: now,
+        readyAt: transcribed ? now + WEBHOOK_TRANSCRIPT_WAIT_MS : now,
+      });
     }
+    return stored;
   }
 
   /**
@@ -4206,39 +4246,46 @@ export class WhatsAppService implements WhatsAppApi {
   }
 
   /**
-   * A transcript lands after ingestion returns, so a message that just went onto
-   * the transcribe queue waits for it, bounded, before the view is built: the
-   * view reads the transcript from the database fresh, so the wait is the whole
-   * reason a voice note's webhook can carry its words. The wait is on that one
-   * message's transcript, never on the queue, so a note is never held for the
-   * notes behind it. The timer is unreferenced so it can never hold the process
-   * open. Before the POST, and before every retry, the message must still be
-   * there: deleted or expired meanwhile, it is not sent.
+   * Starts posting what announced() queued. A voice note being transcribed is
+   * held until its transcript is stored or its run settles, however that went,
+   * and never for the notes behind it in the transcription queue.
    */
-  private async postMessageEvent(args: {
-    sid: string;
-    jid: string;
-    event: "message_received" | "message_sent";
-    transcript?: Promise<void>;
-  }): Promise<void> {
-    if (args.transcript !== undefined) {
-      await Promise.race([args.transcript, sleep(WEBHOOK_TRANSCRIPT_WAIT_MS, undefined, { ref: false })]);
+  private postWebhookEvents(transcribing: ReadonlyMap<string, Promise<void>>): void {
+    for (const [sid, done] of transcribing) {
+      this.webhookTranscripts.add(sid);
+      void done.finally(() => {
+        this.webhookTranscripts.delete(sid);
+        this.outbox.kick();
+      });
     }
-    if (!this.hasMessage(args.sid)) return;
-    if (this.stopped) {
-      logError("webhook", `dropped ${args.event} for ${args.sid}: the service stopped while waiting for a transcript`);
-      return;
+    this.outbox.kick();
+  }
+
+  /**
+   * The body of an event as it is posted: a message event from the message as
+   * the database holds it now, so an edit or a transcript that landed since it
+   * was queued goes with it; a connection event as it was queued, under the
+   * account's current name.
+   */
+  private webhookPayload(event: EventRecord, message: StoredMessage | null): WebhookPayload {
+    const stored = JSON.parse(event.payload) as Record<string, unknown>;
+    const account = this.accountRecord;
+    if (message === null) {
+      return { ...(stored as unknown as WebhookConnectionPayload), account_id: account.id, account_name: account.name };
     }
-    const message = this.storedOrThrow(args.sid);
-    await this.webhook.notify(
-      asWebhookPayload({
-        event: args.event,
-        view: this.viewOfStored(message),
-        account: this.accountRecord,
-        isSelfChat: this.isMe(message.chatJid),
-      }),
-      () => this.hasMessage(args.sid)
-    );
+    return asWebhookPayload({
+      event: event.kind === "message_sent" ? "message_sent" : "message_received",
+      view: this.viewOfStored(message),
+      account,
+      isSelfChat: stored.is_self_chat === true,
+    });
+  }
+
+  /** get_status's webhook block: settings, and the outbox as the account database records it. */
+  private webhookStatus(): StatusInfo["webhook"] {
+    if (this.webhook.settings().kind !== "ready") return this.webhook.info(undefined, null);
+    const delivery = this.outbox.delivery(this.readyDb());
+    return this.webhook.info(delivery, undeliveredFailure(delivery));
   }
 
   /**
@@ -4721,10 +4768,10 @@ export class WhatsAppService implements WhatsAppApi {
     if (messages.length === 0) return;
     let stored: WAMessage[] = [];
     if (!deferred) {
-      stored = this.handling("messages", () => this.db.transaction(() => this.ingestMessages(messages, type === "notify")), []);
+      stored = this.handling("messages", () => this.db.transaction(() => this.announced(this.ingestMessages(messages, type === "notify"), type)), []);
     } else if (this.readyDb() !== null) {
       try {
-        stored = this.db.transaction(() => this.fileMessages(messages, type === "notify"));
+        stored = this.db.transaction(() => this.announced(this.fileMessages(messages, type === "notify"), type));
       } catch (err) {
         logError("messages", err);
       }
@@ -4735,7 +4782,7 @@ export class WhatsAppService implements WhatsAppApi {
         this.lastInboundAt = Math.max(this.lastInboundAt ?? 0, messageTimestampMs(raw));
       }
       const transcribing = this.queueTranscripts(stored);
-      this.queueWebhook(stored, transcribing);
+      this.postWebhookEvents(transcribing);
       this.noteArrivals(stored);
     }
   }

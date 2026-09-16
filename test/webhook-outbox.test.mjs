@@ -1,0 +1,552 @@
+/**
+ * The durable webhook outbox on its own: an account database, a dispatcher
+ * with a clock the test moves, and a receiver the test answers for. Order,
+ * the retry schedule, refusals, the 24-hour give-up, freshness, the transcript
+ * wait, crashes, pruning and the counters status and doctor read.
+ */
+import { test } from "node:test";
+import assert from "node:assert/strict";
+import { fork } from "node:child_process";
+import { once } from "node:events";
+import { createServer } from "node:http";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+
+import { AccountDb } from "../dist/db/index.js";
+import {
+  OUTBOX_GIVE_UP_MS,
+  OUTBOX_RETRY_DELAYS_MS,
+  OUTBOX_RETRY_EVERY_MS,
+  WEBHOOK_TRANSCRIPT_WAIT_MS,
+  WebhookOutbox,
+  deliveryOf,
+  readWebhookDelivery,
+  retryDelay,
+  undeliveredFailure,
+} from "../dist/webhook-outbox.js";
+import { WebhookSink } from "../dist/webhook.js";
+import { PEER, T0, openTemp, sid, textMessage } from "./db-fixtures.mjs";
+import { waitFor } from "./helpers.mjs";
+
+const SECRET = "outbox-test-secret";
+const URL = "http://127.0.0.1:9/hook";
+const CHILD = join(dirname(fileURLToPath(import.meta.url)), "fixtures", "outbox-child.mjs");
+const DAY = 24 * 60 * 60_000;
+
+function readyEnv(events = "all", url = URL) {
+  return { WAZAP_WEBHOOK: "on", WAZAP_WEBHOOK_URL: url, WAZAP_WEBHOOK_SECRET: SECRET, WAZAP_WEBHOOK_EVENTS: events };
+}
+
+/** A post that answers each call with the next status (the last one repeats), recording the bodies. */
+function answering(...statuses) {
+  const post = async (_url, init) => {
+    const body = JSON.parse(init.body);
+    post.bodies.push(body);
+    const status = statuses[Math.min(post.bodies.length - 1, statuses.length - 1)];
+    return new Response(null, { status });
+  };
+  post.bodies = [];
+  return post;
+}
+
+/** A database, a dispatcher over it with the test's clock, and the log lines it wrote. */
+function harness(t, { env = readyEnv(), post = answering(204), awaiting = () => false, payload } = {}) {
+  const { db, path, clock } = openTemp();
+  const sink = new WebhookSink(env, { post });
+  const outbox = new WebhookOutbox(
+    {
+      db: () => (db.isOpen ? db : null),
+      sink: () => sink,
+      payload:
+        payload ??
+        ((event, message) =>
+          message === null
+            ? JSON.parse(event.payload)
+            : { event: event.kind, message_id: message.sid, text: message.transcript ?? message.text }),
+      awaitingTranscript: (message) => awaiting(message),
+    },
+    { now: () => clock.now }
+  );
+  const logs = [];
+  t.mock.method(console, "error", (...args) => logs.push(args.join(" ")));
+  t.after(async () => {
+    await outbox.stop();
+    if (db.isOpen) db.close();
+  });
+  const run = async () => {
+    outbox.kick();
+    await outbox.idle();
+  };
+  return { db, path, clock, sink, outbox, post, logs, run };
+}
+
+/** A stored message and its event, in one transaction, the way the service writes them. */
+function messageEvent(h, key, text = `text ${key}`, { kind = "message_received", readyAt, ts = T0, extra = {} } = {}) {
+  return h.db.transaction(() => {
+    const stored = h.db.messages.upsert(textMessage(PEER, key, ts, text, extra));
+    const seq = h.db.events.enqueue({ kind, messageId: stored.id, payload: "{}", createdAt: h.clock.now, readyAt });
+    return { seq, sid: sid(false, PEER, key) };
+  });
+}
+
+function connectionEvent(h, status = "linked") {
+  return h.db.events.enqueue({
+    kind: "connection",
+    messageId: null,
+    payload: JSON.stringify({ event: "connection", status }),
+    createdAt: h.clock.now,
+  });
+}
+
+const state = (h, seq) => h.db.events.get(seq);
+
+test("events go out in the order they were queued, one POST at a time", async (t) => {
+  let inFlight = 0;
+  let peak = 0;
+  const bodies = [];
+  const post = async (_url, init) => {
+    inFlight++;
+    peak = Math.max(peak, inFlight);
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    bodies.push(JSON.parse(init.body));
+    inFlight--;
+    return new Response(null, { status: 204 });
+  };
+  const h = harness(t, { post });
+  const seqs = [messageEvent(h, "A").seq, connectionEvent(h), messageEvent(h, "B").seq, messageEvent(h, "C").seq];
+  h.outbox.kick();
+  h.outbox.kick();
+  await h.outbox.idle();
+  assert.equal(peak, 1);
+  assert.deepEqual(
+    bodies.map((body) => body.message_id ?? body.status),
+    [sid(false, PEER, "A"), "linked", sid(false, PEER, "B"), sid(false, PEER, "C")]
+  );
+  for (const seq of seqs) assert.equal(state(h, seq).state, "delivered");
+});
+
+test("an event being retried holds back every event behind it, so none overtakes it", async (t) => {
+  const h = harness(t, { post: answering(503, 204) });
+  const first = messageEvent(h, "FIRST");
+  const second = messageEvent(h, "SECOND");
+  await h.run();
+  assert.deepEqual(h.post.bodies.map((body) => body.message_id), [first.sid]);
+  assert.equal(state(h, second.seq).attempts, 0, "the second event waits behind the first");
+  h.outbox.kick();
+  await h.outbox.idle();
+  assert.equal(h.post.bodies.length, 1, "nothing is posted before the first event's retry is due");
+
+  h.clock.now += 1_000;
+  await h.run();
+  assert.deepEqual(h.post.bodies.map((body) => body.message_id), [first.sid, first.sid, second.sid]);
+  assert.equal(state(h, first.seq).state, "delivered");
+  assert.equal(state(h, second.seq).state, "delivered");
+});
+
+test("a retryable failure is tried again after 1 s, 5 s, 30 s, 2 min and 10 min, then hourly", async (t) => {
+  const h = harness(t, { post: answering(503) });
+  const { seq } = messageEvent(h, "RETRY");
+  await h.run();
+  const expected = [...OUTBOX_RETRY_DELAYS_MS, OUTBOX_RETRY_EVERY_MS, OUTBOX_RETRY_EVERY_MS, OUTBOX_RETRY_EVERY_MS];
+  assert.deepEqual(expected.slice(0, 5), [1_000, 5_000, 30_000, 120_000, 600_000]);
+  for (const [index, delay] of expected.entries()) {
+    const row = state(h, seq);
+    assert.equal(row.state, "pending");
+    assert.equal(row.attempts, index + 1);
+    assert.equal(row.nextAttemptAt - h.clock.now, delay, `after ${index + 1} failures`);
+    assert.equal(row.lastStatus, 503);
+    assert.equal(row.lastError, "HTTP 503 from 127.0.0.1:9");
+    h.clock.now = row.nextAttemptAt - 1;
+    await h.run();
+    assert.equal(h.post.bodies.length, index + 1, "not a moment early");
+    h.clock.now = row.nextAttemptAt;
+    await h.run();
+    assert.equal(h.post.bodies.length, index + 2);
+  }
+  assert.equal(retryDelay(1), 1_000);
+  assert.equal(retryDelay(6), OUTBOX_RETRY_EVERY_MS);
+});
+
+test("408, 425, 429 and 5xx are retried; any other 4xx fails at once, after one POST", async (t) => {
+  for (const status of [408, 425, 429, 500, 502, 503]) {
+    const h = harness(t, { post: answering(status) });
+    const { seq } = messageEvent(h, `S${status}`);
+    await h.run();
+    assert.equal(h.post.bodies.length, 1);
+    assert.equal(state(h, seq).state, "pending", `${status} is retried`);
+    assert.equal(state(h, seq).nextAttemptAt, h.clock.now + 1_000);
+  }
+  for (const status of [400, 401, 403, 404, 410, 413, 422]) {
+    const h = harness(t, { post: answering(status, 204) });
+    const { seq } = messageEvent(h, `S${status}`);
+    const behind = connectionEvent(h);
+    await h.run();
+    const row = state(h, seq);
+    assert.equal(row.state, "failed", `${status} is a refusal`);
+    assert.equal(row.attempts, 1);
+    assert.equal(row.lastStatus, status);
+    assert.match(row.lastError, new RegExp(`^HTTP ${status} from 127\\.0\\.0\\.1:9, not retried: the receiver`));
+    assert.ok(!row.lastError.includes(SECRET));
+    assert.equal(state(h, behind).state, "delivered", "a refused event does not hold back the next one");
+  }
+});
+
+test("an unreachable receiver is retried like a 5xx, and the error names the host, not the URL", async (t) => {
+  const server = createServer();
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const { port } = server.address();
+  await new Promise((resolve) => server.close(resolve));
+  const h = harness(t, { env: readyEnv("all", `http://127.0.0.1:${port}/hook?token=${SECRET}`), post: fetch });
+  const { seq } = messageEvent(h, "DOWN");
+  await h.run();
+  const row = state(h, seq);
+  assert.equal(row.state, "pending");
+  assert.equal(row.lastStatus, null);
+  assert.equal(row.lastError, `could not reach 127.0.0.1:${port} (ECONNREFUSED)`);
+});
+
+test("an event not delivered 24 hours after it was created has failed, whether it was retrying or never got a turn", async (t) => {
+  const h = harness(t, { post: answering(503) });
+  const { seq } = messageEvent(h, "OLD");
+  const created = h.clock.now;
+  await h.run();
+  // Into the hourly retries, as five more failed POSTs would have got it.
+  for (let i = 0; i < 5; i++) {
+    h.db.events.claim(seq, created);
+    h.db.events.retry(seq, created, 503, "HTTP 503 from 127.0.0.1:9", created);
+  }
+  // An hour from now is past the day: this attempt is the last one made.
+  h.clock.now = created + OUTBOX_GIVE_UP_MS - 30 * 60_000;
+  await h.run();
+  const row = state(h, seq);
+  assert.equal(row.state, "failed");
+  assert.equal(row.attempts, 7);
+  assert.equal(row.lastError, "HTTP 503 from 127.0.0.1:9; gave up 24 h after the event");
+
+  const late = messageEvent(h, "NEVER");
+  h.clock.now += OUTBOX_GIVE_UP_MS;
+  await h.run();
+  assert.equal(state(h, late.seq).state, "failed");
+  assert.equal(state(h, late.seq).attempts, 0, "a day-old event is not posted at all");
+  assert.equal(h.post.bodies.length, 2);
+});
+
+test("a message deleted, expired or cleared before its POST is cancelled and never posted, also before a retry", async (t) => {
+  const h = harness(t, { post: answering(503, 204) });
+  const deleted = messageEvent(h, "DEL");
+  const expiring = messageEvent(h, "EXP", "gone soon", { ts: T0 + 30_000, extra: { expiresAt: h.clock.now + 5_000 } });
+  const cleared = messageEvent(h, "CLR", "cleared", { ts: T0 + 1_000 });
+  const kept = messageEvent(h, "KEEP", "kept", { ts: T0 + 60_000 });
+
+  await h.run();
+  assert.deepEqual(h.post.bodies.map((body) => body.message_id), [deleted.sid], "the first POST failed and will be retried");
+  h.db.messages.delete(deleted.sid, { at: h.clock.now });
+  h.clock.now += 6_000;
+  await h.db.messages.clearChat(PEER, T0 + 1_000);
+  await h.run();
+
+  assert.equal(h.post.bodies.length, 2, "only the message still there was posted again");
+  assert.equal(h.post.bodies[1].message_id, kept.sid);
+  for (const gone of [deleted, expiring, cleared]) {
+    const row = state(h, gone.seq);
+    assert.equal(row.state, "cancelled", gone.sid);
+    assert.equal(row.lastError, "the message was deleted, expired or cleared before it was posted");
+  }
+  assert.equal(state(h, kept.seq).state, "delivered");
+});
+
+test("the webhook turned off cancels what waits, and an event it no longer subscribes to is cancelled when its turn comes", async (t) => {
+  const env = readyEnv("message_received");
+  const h = harness(t, { env });
+  const connection = connectionEvent(h);
+  const received = messageEvent(h, "IN");
+  const sent = messageEvent(h, "OUT", "typed on the phone", { kind: "message_sent" });
+  await h.run();
+  assert.deepEqual(h.post.bodies.map((body) => body.message_id), [received.sid]);
+  assert.equal(state(h, connection).state, "cancelled");
+  assert.equal(state(h, connection).lastError, "connection is not an enabled event");
+  assert.equal(state(h, sent.seq).state, "cancelled");
+
+  const waiting = messageEvent(h, "LATER");
+  env.WAZAP_WEBHOOK = "off";
+  await h.run();
+  assert.equal(state(h, waiting.seq).state, "cancelled");
+  assert.equal(state(h, waiting.seq).lastError, "the webhook is off");
+  env.WAZAP_WEBHOOK = "on";
+  await h.run();
+  assert.equal(h.post.bodies.length, 1, "turning it back on does not post what was cancelled");
+});
+
+test("a voice note's event waits for its transcript while one is being made, and goes without it at ready_at", async (t) => {
+  let transcribing = true;
+  const h = harness(t, { awaiting: () => transcribing });
+  const now = h.clock.now;
+  const voiced = messageEvent(h, "V1", "[voice message · 0:06]", { readyAt: now + WEBHOOK_TRANSCRIPT_WAIT_MS });
+  await h.run();
+  assert.equal(h.post.bodies.length, 0);
+  h.db.messages.setTranscript(voiced.sid, "am uitat umbrela acasă");
+  await h.run();
+  assert.deepEqual(h.post.bodies.map((body) => body.text), ["am uitat umbrela acasă"], "posted as soon as the words are stored");
+
+  const silent = messageEvent(h, "V2", "[voice message · 0:09]", { readyAt: now + WEBHOOK_TRANSCRIPT_WAIT_MS });
+  h.clock.now = now + WEBHOOK_TRANSCRIPT_WAIT_MS - 1;
+  await h.run();
+  assert.equal(h.post.bodies.length, 1, "still waiting a millisecond before ready_at");
+  h.clock.now = now + WEBHOOK_TRANSCRIPT_WAIT_MS;
+  await h.run();
+  assert.equal(h.post.bodies[1].text, "[voice message · 0:09]");
+  assert.equal(state(h, silent.seq).state, "delivered");
+
+  transcribing = false;
+  messageEvent(h, "V3", "[voice message · 0:03]", { readyAt: h.clock.now + WEBHOOK_TRANSCRIPT_WAIT_MS });
+  await h.run();
+  assert.equal(h.post.bodies.length, 3, "a transcription that settled without words holds nothing up");
+});
+
+test("a payload that cannot be built fails the event without posting it or logging what it said", async (t) => {
+  const h = harness(t, {
+    payload: () => {
+      throw new Error(`cannot build ${SECRET}`);
+    },
+  });
+  const { seq } = messageEvent(h, "BAD");
+  const next = connectionEvent(h);
+  await h.run();
+  assert.equal(h.post.bodies.length, 0);
+  assert.equal(state(h, seq).state, "failed");
+  assert.equal(state(h, seq).lastError, "Webhook delivery failed.");
+  assert.equal(state(h, next).state, "failed", "the builder threw for that one too");
+  assert.ok(!h.logs.join("\n").includes(SECRET));
+});
+
+test("stop waits for the POST in flight and records it; a POST a crash cut short is sent again", async (t) => {
+  let release = () => {};
+  const gate = new Promise((resolve) => {
+    release = resolve;
+  });
+  let started = () => {};
+  const posting = new Promise((resolve) => {
+    started = resolve;
+  });
+  const post = async () => {
+    started();
+    await gate;
+    return new Response(null, { status: 204 });
+  };
+  const h = harness(t, { post });
+  const { seq } = messageEvent(h, "FLIGHT");
+  h.outbox.kick();
+  await posting;
+  assert.equal(state(h, seq).state, "sending");
+  const stopping = h.outbox.stop();
+  release();
+  await stopping;
+  assert.equal(state(h, seq).state, "delivered", "stop recorded the answer before returning");
+
+  // A row left `sending`, as a process killed mid-POST leaves it, is due on the next start.
+  const again = messageEvent(h, "CUT");
+  h.db.events.claim(again.seq, h.clock.now);
+  const recorder = answering(204);
+  const reopened = new WebhookOutbox(
+    {
+      db: () => h.db,
+      sink: () => new WebhookSink(readyEnv(), { post: recorder }),
+      payload: (event, message) => ({ event: event.kind, message_id: message.sid }),
+      awaitingTranscript: () => false,
+    },
+    { now: () => h.clock.now }
+  );
+  reopened.start();
+  await reopened.idle();
+  await reopened.stop();
+  assert.deepEqual(recorder.bodies.map((body) => body.message_id), [again.sid]);
+  assert.equal(state(h, again.seq).attempts, 2);
+  assert.equal(state(h, again.seq).state, "delivered");
+});
+
+test("a run of identical refusals logs a few lines, and one line when delivery comes back", async (t) => {
+  let status = 401;
+  const post = async () => new Response(null, { status });
+  const h = harness(t, { post });
+  for (let i = 0; i < 250; i++) connectionEvent(h);
+  await h.run();
+  status = 204;
+  connectionEvent(h);
+  await h.run();
+  const lines = h.logs.filter((line) => line.includes("webhook"));
+  assert.equal(lines.length, 4, lines.join("\n"));
+  assert.match(lines[0], /ERROR \(webhook\): HTTP 401 from 127\.0\.0\.1:9, not retried/);
+  assert.match(lines[1], /\(100 failures in a row\)/);
+  assert.match(lines[2], /\(200 failures in a row\)/);
+  assert.match(lines[3], /webhook delivered again after 250 failures/);
+});
+
+test("delivered events are pruned after 7 days, failed and cancelled ones after 30, at start", async (t) => {
+  const h = harness(t);
+  const old = (days) => h.clock.now - days * DAY;
+  const close = (outcome, days) => {
+    const seq = connectionEvent(h);
+    h.db.events.claim(seq, old(days));
+    if (outcome === "delivered") h.db.events.delivered(seq, 204, old(days));
+    if (outcome === "failed") h.db.events.fail(seq, 401, "refused", old(days));
+    if (outcome === "cancelled") h.db.events.cancel(seq, "off", old(days));
+    return seq;
+  };
+  const gone = [close("delivered", 8), close("failed", 31), close("cancelled", 31)];
+  const kept = [close("delivered", 6), close("failed", 29), close("cancelled", 29)];
+  const waiting = connectionEvent(h);
+  h.db.events.claim(waiting, old(40));
+  h.db.events.retry(waiting, h.clock.now + DAY, 503, "down", old(40));
+  const outbox = new WebhookOutbox(
+    { db: () => h.db, sink: () => h.sink, payload: () => ({}), awaitingTranscript: () => false },
+    { now: () => h.clock.now, giveUpMs: 100 * DAY }
+  );
+  outbox.start();
+  await outbox.stop();
+  for (const seq of gone) assert.equal(state(h, seq), null, `event ${seq} was pruned`);
+  for (const seq of kept) assert.notEqual(state(h, seq), null, `event ${seq} is kept`);
+  assert.equal(state(h, waiting).state, "pending", "an open event is never pruned");
+  assert.equal(await h.db.events.prune(h.clock.now, h.clock.now, 1), 3, "the rest, one row per chunk");
+});
+
+test("the counters status and doctor read: from the rows, read-only, with the server running and after it stopped", async (t) => {
+  const h = harness(t, { post: answering(204, 401, 401, 503) });
+  messageEvent(h, "OK");
+  const refused = [messageEvent(h, "R1"), messageEvent(h, "R2")];
+  const retrying = messageEvent(h, "RETRY");
+  const cancelled = messageEvent(h, "GONE");
+  h.db.events.cancel(cancelled.seq, "the message was deleted, expired or cleared before it was posted", h.clock.now);
+  await h.run();
+  assert.deepEqual(refused.map((event) => state(h, event.seq).state), ["failed", "failed"]);
+  assert.equal(state(h, retrying.seq).state, "pending");
+
+  const expected = {
+    delivered: 1,
+    failed: 2,
+    cancelled: 1,
+    pending: 1,
+    dropped: 0,
+    consecutive_failures: 2,
+    retrying: 1,
+    last_success_at: new Date(h.clock.now).toISOString(),
+    last_failure_at: new Date(h.clock.now).toISOString(),
+    last_failure: "HTTP 503 from 127.0.0.1:9",
+    last_status: 503,
+    last_dropped_at: null,
+    oldest_pending_at: new Date(h.clock.now).toISOString(),
+  };
+  assert.deepEqual(h.outbox.delivery(h.db), expected);
+  assert.deepEqual(readWebhookDelivery(h.path), expected, "another process, while this one holds the database open");
+  h.db.close();
+  assert.deepEqual(readWebhookDelivery(h.path), expected, "another process, with the server stopped");
+  assert.equal(readWebhookDelivery(join(dirname(h.path), "missing.sqlite")), null);
+
+  const failedAt = Date.parse(expected.last_failure_at);
+  assert.equal(undeliveredFailure({ ...expected, last_success_at: new Date(failedAt - 1).toISOString() }), "HTTP 503 from 127.0.0.1:9");
+  assert.equal(undeliveredFailure({ ...expected, last_success_at: new Date(failedAt + 1).toISOString() }), null);
+  assert.deepEqual(deliveryOf(null).delivered, 0);
+
+  h.outbox.dropped("connection linked", Object.assign(new Error(SECRET), { code: "SQLITE_FULL" }));
+  const dropped = h.outbox.delivery(null);
+  assert.equal(dropped.dropped, 1);
+  assert.ok(Number.isFinite(Date.parse(dropped.last_dropped_at)));
+  assert.ok(h.logs.some((line) => /dropped connection linked: the account database could not store it \(SQLITE_FULL\)/.test(line)));
+  assert.ok(!h.logs.join("\n").includes(SECRET));
+});
+
+/** The receiver a crash test posts to: every body it got, and what it answers. */
+async function receiver(t, onRequest) {
+  const hits = [];
+  const server = createServer((req, res) => {
+    const chunks = [];
+    req.on("data", (chunk) => chunks.push(chunk));
+    req.on("end", () => {
+      hits.push(JSON.parse(Buffer.concat(chunks).toString("utf8")));
+      onRequest(hits.length, res);
+    });
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  t.after(() => {
+    server.closeAllConnections();
+    return new Promise((resolve) => server.close(resolve));
+  });
+  return { url: `http://127.0.0.1:${server.address().port}/hook`, hits };
+}
+
+function child(args) {
+  const proc = fork(CHILD, [JSON.stringify(args)], { stdio: ["ignore", "ignore", "pipe", "ipc"] });
+  const exited = once(proc, "exit");
+  return { proc, exited };
+}
+
+/** A dispatcher in this process over the database the dead child left, until `done`. */
+async function afterRestart(t, path, url, done) {
+  const db = AccountDb.open(path);
+  const sink = new WebhookSink(readyEnv("all", url));
+  const outbox = new WebhookOutbox({
+    db: () => db,
+    sink: () => sink,
+    payload: (event, message) => ({ event: event.kind, message_id: message.sid, text: message.text }),
+    awaitingTranscript: () => false,
+  });
+  t.after(async () => {
+    await outbox.stop();
+    db.close();
+  });
+  outbox.start();
+  await waitFor(done, 10_000, "the restarted outbox to deliver");
+  await outbox.idle();
+  return db;
+}
+
+test("no event is lost when the server is killed between storing the message and posting it", async (t) => {
+  const { path, db: created } = openTemp();
+  created.close();
+  const hook = await receiver(t, (_n, res) => {
+    res.writeHead(204);
+    res.end();
+  });
+  const dying = child({ path, mode: "enqueue", chat: PEER, key: "CRASH1", at: T0 });
+  const [, signal] = await dying.exited;
+  assert.equal(signal, "SIGKILL");
+
+  const db = await afterRestart(t, path, hook.url, () => hook.hits.length > 0);
+  assert.deepEqual(hook.hits.map((hit) => hit.message_id), [sid(false, PEER, "CRASH1")], "delivered exactly once");
+  assert.equal(hook.hits[0].text, "before the crash");
+  assert.deepEqual(deliveryOf(db.events.stats()).delivered, 1);
+});
+
+test("an event whose POST a crash cut short is posted again: once to a receiver that dedupes, at least once to one that does not", async (t) => {
+  const { path, db: seeded } = openTemp();
+  seeded.transaction(() => {
+    const stored = seeded.messages.upsert(textMessage(PEER, "MIDPOST", T0, "in flight when the server died"));
+    // The child posts on the real clock, so the event is created on it too.
+    seeded.events.enqueue({ kind: "message_received", messageId: stored.id, payload: "{}", createdAt: Date.now() });
+  });
+  seeded.close();
+
+  let dying;
+  const hook = await receiver(t, (n, res) => {
+    if (n === 1) {
+      // The receiver took the event, and the server dies before it hears back.
+      dying.proc.kill("SIGKILL");
+      dying.exited.then(() => res.destroy());
+      return;
+    }
+    res.writeHead(204);
+    res.end();
+  });
+  dying = child({ path, mode: "post", url: hook.url, secret: SECRET });
+  await waitFor(() => hook.hits.length > 0, 10_000, "the child's POST");
+  const [, signal] = await dying.exited;
+  assert.equal(signal, "SIGKILL");
+  assert.equal(hook.hits.length, 1);
+
+  const db = await afterRestart(t, path, hook.url, () => hook.hits.length > 1);
+  assert.equal(hook.hits.length, 2, "at least once: the receiver saw it twice");
+  const deduped = new Set(hook.hits.map((hit) => hit.message_id));
+  assert.deepEqual([...deduped], [sid(false, PEER, "MIDPOST")], "exactly once to a receiver that dedupes by message_id");
+  const row = db.events.head() ?? db.events.get(1);
+  assert.equal(row.state, "delivered");
+  assert.equal(row.attempts, 2);
+});

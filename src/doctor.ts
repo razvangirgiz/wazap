@@ -31,14 +31,8 @@ import {
 import { checkTranscribeQueue } from "./transcribe-status.js";
 import { dim, fail, fix, green, info, ok, red, warn, yellow } from "./ui.js";
 import type { WebhookDelivery } from "./wa-types.js";
-import {
-  WEBHOOK_FAILING_AFTER,
-  WEBHOOK_MAX_BACKLOG,
-  WEBHOOK_MAX_INFLIGHT,
-  readWebhookDelivery,
-  readWebhookSettings,
-  webhookFailureFix,
-} from "./webhook.js";
+import { WEBHOOK_FAILING_AFTER, readWebhookSettings, webhookFailureFix } from "./webhook.js";
+import { readWebhookDelivery } from "./webhook-outbox.js";
 
 /** `warn` works but is losing something: nothing is broken yet, and nothing blocks setup. */
 export type CheckState = "ok" | "warn" | "fail" | "info";
@@ -562,20 +556,19 @@ async function checkRecall(config: Config): Promise<Check[]> {
   ];
 }
 
-/** What one account's server last wrote about its deliveries. */
+// Webhook ----------------------------------------------------------------------
+
+/** What one account's outbox says about its deliveries. */
 export interface WebhookDeliveryRow {
   account: string;
   delivery: WebhookDelivery;
 }
 
-/** A drop is an event nobody will ever see, so it is worth a warning for a day. */
-const WEBHOOK_DROP_RECENT_MS = 24 * 60 * 60 * 1000;
-
 /**
- * W1 webhook: off is quiet; on without a URL or secret is a visible fail. Once a
- * server has posted, what it left on disk decides the rest: a run of failed
- * events fails, one failure since the last delivery or a drop in the last day
- * warns.
+ * W1 webhook: off is quiet; on without a URL or secret is a visible fail. Once
+ * an account has queued events, its outbox decides the rest: a run of failed
+ * events, or an oldest event that failed that many POSTs, fails; one failure
+ * since the last delivery, or an event retrying, warns.
  */
 export function webhookCheck(
   env: NodeJS.ProcessEnv = process.env,
@@ -610,6 +603,8 @@ function deliveryCheck(on: string, rows: readonly WebhookDeliveryRow[], now: num
       fix: webhookFailureFix(failure ?? ""),
     };
   }
+  const stuck = rows.find((row) => row.delivery.retrying >= WEBHOOK_FAILING_AFTER);
+  if (stuck !== undefined) return retryingCheck(stuck, named, "fail", now);
   const flaky = rows.find((row) => row.delivery.consecutive_failures > 0);
   if (flaky !== undefined) {
     const { last_failure_at: at, last_failure: failure } = flaky.delivery;
@@ -620,29 +615,47 @@ function deliveryCheck(on: string, rows: readonly WebhookDeliveryRow[], now: num
       fix: webhookFailureFix(failure ?? ""),
     };
   }
-  const dropping = rows.find((row) => {
-    const at = row.delivery.last_dropped_at;
-    return at !== null && now - Date.parse(at) < WEBHOOK_DROP_RECENT_MS;
-  });
-  if (dropping !== undefined) {
-    const { dropped, last_dropped_at: at } = dropping.delivery;
-    return {
-      name: "webhook",
-      state: "warn",
-      detail: named(dropping, `${dropped} events dropped with the backlog full, the last at ${at}`),
-      fix: `make the receiver answer sooner: wazap holds ${WEBHOOK_MAX_INFLIGHT} POSTs open and queues ${WEBHOOK_MAX_BACKLOG} behind them`,
-    };
-  }
+  const retrying = rows.find((row) => row.delivery.retrying > 0);
+  if (retrying !== undefined) return retryingCheck(retrying, named, "warn", now);
   if (rows.length === 0) return { name: "webhook", state: "ok", detail: on };
-  const total = (key: "delivered" | "failed" | "dropped"): number =>
+  const total = (key: "delivered" | "failed" | "cancelled" | "pending"): number =>
     rows.reduce((sum, row) => sum + row.delivery[key], 0);
   const counts = [`${total("delivered")} delivered`];
   if (total("failed") > 0) counts.push(`${total("failed")} failed`);
-  if (total("dropped") > 0) counts.push(`${total("dropped")} dropped`);
+  if (total("cancelled") > 0) counts.push(`${total("cancelled")} cancelled`);
+  if (total("pending") > 0) counts.push(`${total("pending")} pending`);
   return { name: "webhook", state: "ok", detail: `${on}; ${counts.join(", ")}` };
 }
 
-/** Every account whose server has posted at least once; a registry that will not load reads as none. */
+/** The oldest waiting event is being retried: nothing behind it goes out meanwhile. */
+function retryingCheck(
+  row: WebhookDeliveryRow,
+  named: (row: WebhookDeliveryRow, text: string) => string,
+  state: "warn" | "fail",
+  now: number
+): Check {
+  const { retrying, pending, oldest_pending_at: since, last_failure: failure } = row.delivery;
+  const waited = since === null ? "" : `, the oldest waiting ${formatWait(now - Date.parse(since))}`;
+  return {
+    name: "webhook",
+    state,
+    detail: named(row, `retrying: ${retrying} failed attempts, ${pending} events waiting${waited}: ${failure}`),
+    fix: webhookFailureFix(failure ?? ""),
+  };
+}
+
+function formatWait(ms: number): string {
+  const minutes = Math.max(0, Math.round(ms / 60_000));
+  if (minutes < 60) return `${minutes} min`;
+  const hours = Math.floor(minutes / 60);
+  return `${hours} h ${minutes % 60} min`;
+}
+
+/**
+ * Every account whose outbox holds an event, read off its database read-only,
+ * so this works with the server running or stopped; a registry that will not
+ * load reads as none.
+ */
 export function webhookDeliveries(dataDir: string): WebhookDeliveryRow[] {
   let records;
   try {
@@ -651,12 +664,11 @@ export function webhookDeliveries(dataDir: string): WebhookDeliveryRow[] {
     return [];
   }
   return records.flatMap((record) => {
-    const delivery = readWebhookDelivery(accountPaths(dataDir, record.id).webhookFile);
+    const delivery = readWebhookDelivery(accountPaths(dataDir, record.id).databaseFile);
     return delivery === null ? [] : [{ account: record.id, delivery }];
   });
 }
 
-/** The server that delivers runs in another process, so this reads what it left in each account dir. */
 function checkWebhook(config: Config): Check {
   return webhookCheck(process.env, webhookDeliveries(config.dataDir));
 }

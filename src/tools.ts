@@ -302,8 +302,9 @@ is — \`history\` shows when a message last arrived and flags \`stale\` when th
 phone has been quiet for a day while connected — the versions and data
 directory in use, and how many contacts carry a name from
 the phone's address book (contacts_named: 0 means it never arrived).
-\`webhook.delivery\` counts what the webhook posted since the server started;
-a non-zero \`consecutive_failures\` means the receiver is refusing or
+\`webhook.delivery\` counts the account's webhook events: delivered (last 7
+days), failed and cancelled (last 30), pending; a non-zero
+\`consecutive_failures\` or \`retrying\` means the receiver is refusing or
 unreachable right now, and \`last_failure\` says how.
 
 Call this whenever another tool reports NOT_CONNECTED, NOT_LINKED or

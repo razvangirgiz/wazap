@@ -1,0 +1,409 @@
+/**
+ * The durable webhook outbox: one dispatcher per account, posting the events
+ * the account database holds (db.events), oldest first and one at a time.
+ *
+ * - An event is written in the transaction that stores its message, so a
+ *   message is never stored without its event, nor an event without its
+ *   message. Only the server process posts; status and doctor read the same
+ *   rows read-only (readWebhookDelivery).
+ * - The body of a message event is built when it is posted, from the message
+ *   as it is then: an edit or a transcript that landed meanwhile goes out with
+ *   it, and a message deleted, expired or cleared first is not posted at all.
+ * - Order: nothing is posted while an older event waits, whether for its
+ *   transcript (at most until ready_at) or for its next retry.
+ * - Retries: a timeout, an unreachable host, 408, 425, 429 or 5xx is tried
+ *   again after 1 s, 5 s, 30 s, 2 min and 10 min, then hourly, until 24 h after
+ *   the event was created; then it has failed. Any other 4xx fails at once.
+ * - At least once: a POST is marked as started before it is sent, and a crash
+ *   during it leaves the event to be sent again. Receivers dedupe by
+ *   message_id.
+ * - Delivered events are kept 7 days, failed and cancelled ones 30.
+ */
+import { setImmediate as turn, setTimeout as sleep } from "node:timers/promises";
+import { AccountDb, type EventRecord, type EventStats, type StoredMessage } from "./db/index.js";
+import { withCode } from "./error-code.js";
+import { log, logError } from "./logger.js";
+import type { WebhookDelivery } from "./wa-types.js";
+import {
+  WEBHOOK_EVENTS,
+  WEBHOOK_TIMEOUT_MS,
+  type WebhookPayload,
+  type WebhookReady,
+  type WebhookSink,
+} from "./webhook.js";
+
+const MINUTE = 60_000;
+const HOUR = 60 * MINUTE;
+const DAY = 24 * HOUR;
+
+/** After the first failed POST of an event, the next waits this long; after the fifth, OUTBOX_RETRY_EVERY_MS. */
+export const OUTBOX_RETRY_DELAYS_MS: readonly number[] = [1_000, 5_000, 30_000, 2 * MINUTE, 10 * MINUTE];
+export const OUTBOX_RETRY_EVERY_MS = HOUR;
+/** An event not delivered this long after it was created has failed. */
+export const OUTBOX_GIVE_UP_MS = DAY;
+/** How long an incoming voice note's event waits for the transcript wazap is making of it. */
+export const WEBHOOK_TRANSCRIPT_WAIT_MS = MINUTE;
+/** While an event waits for a transcript, the database is looked at again this often. */
+export const OUTBOX_TRANSCRIPT_POLL_MS = 1_000;
+export const OUTBOX_KEEP_DELIVERED_MS = 7 * DAY;
+export const OUTBOX_KEEP_CLOSED_MS = 30 * DAY;
+export const OUTBOX_PRUNE_EVERY_MS = DAY;
+/** Inside a run of identical failures, one log line per this many. */
+const LOG_EVERY = 100;
+/** A pass the database refused tries again this much later. */
+const FAULT_RETRY_MS = 5_000;
+/** Events a pass closes without posting (cancelled, given up) before it lets the event loop run. */
+const STEPS_PER_TURN = 64;
+
+const MESSAGE_EVENTS: ReadonlySet<string> = new Set(["message_received", "message_sent"]);
+
+/** The wait before the next POST of an event that has failed `failedAttempts` POSTs. */
+export function retryDelay(
+  failedAttempts: number,
+  schedule: readonly number[] = OUTBOX_RETRY_DELAYS_MS,
+  every: number = OUTBOX_RETRY_EVERY_MS
+): number {
+  return schedule[Math.max(0, failedAttempts - 1)] ?? every;
+}
+
+/** What the dispatcher needs from the service that owns the account. */
+export interface OutboxHost {
+  /** The account database while it takes writes; null while it is preparing, failed or closed. */
+  db(): AccountDb | null;
+  sink(): WebhookSink;
+  /** The body to post, built now: from the stored message for a message event, from the stored payload otherwise. */
+  payload(event: EventRecord, message: StoredMessage | null): WebhookPayload;
+  /** Whether a transcript of this message is still being made, which is what makes waiting for it worthwhile. */
+  awaitingTranscript(message: StoredMessage): boolean;
+}
+
+export interface OutboxOptions {
+  /** Epoch ms; tests move it. */
+  now?: () => number;
+  retryDelays?: readonly number[];
+  retryEveryMs?: number;
+  giveUpMs?: number;
+  transcriptPollMs?: number;
+  keepDeliveredMs?: number;
+  keepClosedMs?: number;
+  pruneEveryMs?: number;
+}
+
+type Step =
+  | { kind: "idle" }
+  | { kind: "wait"; until: number }
+  | { kind: "next" }
+  | { kind: "post"; event: EventRecord; payload: WebhookPayload; settings: WebhookReady };
+
+const IDLE: Step = { kind: "idle" };
+const NEXT: Step = { kind: "next" };
+
+export class WebhookOutbox {
+  /** Mutable so a test can shorten the schedule of a service it did not construct. */
+  retryDelays: readonly number[];
+  retryEveryMs: number;
+  giveUpMs: number;
+  transcriptPollMs: number;
+  private readonly now: () => number;
+  private readonly keepDeliveredMs: number;
+  private readonly keepClosedMs: number;
+  private readonly pruneEveryMs: number;
+  private started = false;
+  private stopped = false;
+  private pass: Promise<void> | null = null;
+  private again = false;
+  private timer: NodeJS.Timeout | null = null;
+  private pruneTimer: NodeJS.Timeout | null = null;
+  private pruning: Promise<void> = Promise.resolve();
+  /** Failed POSTs since the last delivery, and the error last logged, so a run of failures logs a few lines. */
+  private failures = 0;
+  private loggedFailure: string | null = null;
+  private drops = 0;
+  private droppedAt: number | null = null;
+
+  constructor(
+    private readonly host: OutboxHost,
+    options: OutboxOptions = {}
+  ) {
+    this.now = options.now ?? (() => Date.now());
+    this.retryDelays = options.retryDelays ?? OUTBOX_RETRY_DELAYS_MS;
+    this.retryEveryMs = options.retryEveryMs ?? OUTBOX_RETRY_EVERY_MS;
+    this.giveUpMs = options.giveUpMs ?? OUTBOX_GIVE_UP_MS;
+    this.transcriptPollMs = options.transcriptPollMs ?? OUTBOX_TRANSCRIPT_POLL_MS;
+    this.keepDeliveredMs = options.keepDeliveredMs ?? OUTBOX_KEEP_DELIVERED_MS;
+    this.keepClosedMs = options.keepClosedMs ?? OUTBOX_KEEP_CLOSED_MS;
+    this.pruneEveryMs = options.pruneEveryMs ?? OUTBOX_PRUNE_EVERY_MS;
+  }
+
+  /**
+   * Once the account database is ready: prunes what aged out, arms the daily
+   * prune, and posts whatever an earlier run left, including a POST a crash
+   * interrupted.
+   */
+  start(): void {
+    if (this.started || this.stopped) return;
+    this.started = true;
+    this.prune();
+    this.pruneTimer = setInterval(() => this.prune(), this.pruneEveryMs);
+    this.pruneTimer.unref();
+    this.kick();
+  }
+
+  /** Something may be ready to post: a new event, a transcript, a changed setting. */
+  kick(): void {
+    if (this.stopped) return;
+    if (this.pass !== null) {
+      this.again = true;
+      return;
+    }
+    this.disarm();
+    this.pass = this.run().finally(() => {
+      this.pass = null;
+      if (this.again) {
+        this.again = false;
+        this.kick();
+      }
+    });
+  }
+
+  /** Settles once no pass is running. A timer armed for a later attempt stays armed. */
+  async idle(): Promise<void> {
+    while (this.pass !== null) await this.pass;
+  }
+
+  /**
+   * Posts nothing more, and waits for the POST in flight to be answered and
+   * recorded, as long as its own timeout allows. One that outlives that stays
+   * `sending` and is posted again by the next start.
+   */
+  async stop(): Promise<void> {
+    this.stopped = true;
+    this.disarm();
+    if (this.pruneTimer !== null) clearInterval(this.pruneTimer);
+    this.pruneTimer = null;
+    const pass = this.pass;
+    if (pass !== null) await Promise.race([pass, sleep(WEBHOOK_TIMEOUT_MS + 1_000, undefined, { ref: false })]);
+    await this.pruning;
+  }
+
+  /** An event the database would not store: it can never be posted, so it is counted here instead. */
+  dropped(what: string, err?: unknown): void {
+    this.drops++;
+    this.droppedAt = this.now();
+    logError("webhook", `dropped ${what}: the account database could not store it${err === undefined ? "" : withCode(err)}`);
+  }
+
+  /** The counters status shows: the database's, and the drops only this process saw. */
+  delivery(db: AccountDb | null): WebhookDelivery {
+    let stats: EventStats | null = null;
+    try {
+      stats = db?.events.stats() ?? null;
+    } catch (err) {
+      logError("webhook", `could not read the outbox${withCode(err)}`);
+    }
+    return deliveryOf(stats, { count: this.drops, at: this.droppedAt });
+  }
+
+  private async run(): Promise<void> {
+    let closed = 0;
+    while (!this.stopped) {
+      let step: Step;
+      try {
+        step = this.step();
+      } catch (err) {
+        if (this.stopped) return;
+        logError("webhook", `the outbox could not be read or updated${withCode(err)}`);
+        this.arm(this.now() + FAULT_RETRY_MS);
+        return;
+      }
+      switch (step.kind) {
+        case "idle":
+          return;
+        case "wait":
+          this.arm(step.until);
+          return;
+        case "next":
+          if (++closed % STEPS_PER_TURN === 0) await turn();
+          continue;
+        case "post":
+          try {
+            await this.post(step);
+          } catch (err) {
+            if (this.stopped) return;
+            logError("webhook", `the outbox could not record a delivery${withCode(err)}`);
+            this.arm(this.now() + FAULT_RETRY_MS);
+            return;
+          }
+      }
+    }
+  }
+
+  /** What to do with the oldest open event, and every write that decision takes short of a POST. */
+  private step(): Step {
+    const db = this.host.db();
+    if (db === null || !db.isOpen) return IDLE;
+    const event = db.events.head();
+    if (event === null) return IDLE;
+    const now = this.now();
+    const settings = this.host.sink().settings();
+    if (settings.kind !== "ready") {
+      // Off means post nothing anywhere; an event must not go out once the webhook is fixed or back on.
+      db.events.cancelOpen(settings.kind === "off" ? "the webhook is off" : "the webhook settings are invalid", now);
+      return NEXT;
+    }
+    if (!WEBHOOK_EVENTS.some((name) => name === event.kind && settings.events.includes(name))) {
+      db.events.cancel(event.seq, `${event.kind} is not an enabled event`, now);
+      return NEXT;
+    }
+    if (now >= event.createdAt + this.giveUpMs) {
+      const error = event.lastError ?? "not posted";
+      db.events.fail(event.seq, event.lastStatus, `${error}; gave up 24 h after the event`, now);
+      this.noteFailure(`gave up on ${event.kind} after ${event.attempts} attempts: ${error}`);
+      return NEXT;
+    }
+    if (event.nextAttemptAt !== null && event.nextAttemptAt > now) return { kind: "wait", until: event.nextAttemptAt };
+    let message: StoredMessage | null = null;
+    if (MESSAGE_EVENTS.has(event.kind)) {
+      message = event.messageId === null ? null : (db.messages.byIds([event.messageId])[0] ?? null);
+      if (message === null) {
+        db.events.cancel(event.seq, "the message was deleted, expired or cleared before it was posted", now);
+        return NEXT;
+      }
+      if (event.readyAt > now && message.transcript === null && this.host.awaitingTranscript(message)) {
+        return { kind: "wait", until: Math.min(event.readyAt, now + this.transcriptPollMs) };
+      }
+    }
+    let payload: WebhookPayload;
+    try {
+      payload = this.host.payload(event, message);
+    } catch (err) {
+      // Whatever went wrong may have said what the message says; only its code is kept.
+      const error = `Webhook delivery failed${withCode(err)}.`;
+      db.events.fail(event.seq, null, error, now);
+      this.noteFailure(error);
+      return NEXT;
+    }
+    if (!db.events.claim(event.seq, now)) return NEXT;
+    return { kind: "post", event, payload, settings };
+  }
+
+  private async post({ event, payload, settings }: Extract<Step, { kind: "post" }>): Promise<void> {
+    const result = await this.host.sink().attempt(payload, settings);
+    const db = this.host.db();
+    // Stays `sending`: the next start posts it again.
+    if (db === null || !db.isOpen) return;
+    const now = this.now();
+    if (result.ok) {
+      db.events.delivered(event.seq, result.status, now);
+      this.noteDelivery();
+      return;
+    }
+    this.noteFailure(result.error);
+    const failed = event.attempts + 1;
+    const next = now + retryDelay(failed, this.retryDelays, this.retryEveryMs);
+    if (result.retry && next < event.createdAt + this.giveUpMs) {
+      db.events.retry(event.seq, next, result.status, result.error, now);
+    } else {
+      db.events.fail(event.seq, result.status, result.retry ? `${result.error}; gave up 24 h after the event` : result.error, now);
+    }
+  }
+
+  /**
+   * A receiver that refused every event once logged a line per event,
+   * thousands of them. A run logs its first failure, any change of error and a
+   * count every LOG_EVERY failures; noteDelivery says when it ends.
+   */
+  private noteFailure(error: string): void {
+    const failures = ++this.failures;
+    if (error !== this.loggedFailure) logError("webhook", error);
+    else if (failures % LOG_EVERY === 0) logError("webhook", `${error} (${failures} failures in a row)`);
+    this.loggedFailure = error;
+  }
+
+  private noteDelivery(): void {
+    if (this.failures > 0) log(`webhook delivered again after ${this.failures} failures`);
+    this.failures = 0;
+    this.loggedFailure = null;
+  }
+
+  private arm(at: number): void {
+    if (this.stopped) return;
+    this.disarm();
+    this.timer = setTimeout(() => {
+      this.timer = null;
+      this.kick();
+    }, Math.max(0, at - this.now()));
+    this.timer.unref();
+  }
+
+  private disarm(): void {
+    if (this.timer !== null) clearTimeout(this.timer);
+    this.timer = null;
+  }
+
+  private prune(): void {
+    this.pruning = this.pruning.then(async () => {
+      // A prune stop() found under way finishes; stop waits for it.
+      const db = this.host.db();
+      if (db === null || !db.isOpen) return;
+      const now = this.now();
+      try {
+        await db.events.prune(now - this.keepDeliveredMs, now - this.keepClosedMs);
+      } catch (err) {
+        if (!this.stopped) logError("webhook", `could not prune the outbox${withCode(err)}`);
+      }
+    });
+  }
+}
+
+function iso(at: number | null): string | null {
+  return at === null ? null : new Date(at).toISOString();
+}
+
+/** The status block's counters from the outbox's rows; `drops` are what only the posting process knows. */
+export function deliveryOf(
+  stats: EventStats | null,
+  drops: { count: number; at: number | null } = { count: 0, at: null }
+): WebhookDelivery {
+  return {
+    delivered: stats?.delivered ?? 0,
+    failed: stats?.failed ?? 0,
+    cancelled: stats?.cancelled ?? 0,
+    pending: stats?.pending ?? 0,
+    dropped: drops.count,
+    consecutive_failures: stats?.consecutiveFailures ?? 0,
+    retrying: stats?.oldestPendingFailures ?? 0,
+    last_success_at: iso(stats?.lastSuccessAt ?? null),
+    last_failure_at: iso(stats?.lastFailureAt ?? null),
+    last_failure: stats?.lastFailure ?? null,
+    last_status: stats?.lastFailureStatus ?? null,
+    last_dropped_at: iso(drops.at),
+    oldest_pending_at: iso(stats?.oldestPendingAt ?? null),
+  };
+}
+
+/** The failure a delivery has not cleared since: what `webhook.last_error` says. */
+export function undeliveredFailure(delivery: WebhookDelivery): string | null {
+  const { last_failure: failure, last_failure_at: failedAt, last_success_at: deliveredAt } = delivery;
+  if (failure === null || failedAt === null) return null;
+  return deliveredAt === null || Date.parse(failedAt) > Date.parse(deliveredAt) ? failure : null;
+}
+
+/**
+ * What an account's outbox says, read through a read-only connection of its
+ * own, whether or not the server is running. Null when the database is not
+ * there or not readable yet, or holds no event.
+ */
+export function readWebhookDelivery(databaseFile: string): WebhookDelivery | null {
+  let db: AccountDb | null = null;
+  try {
+    db = AccountDb.open(databaseFile, { readOnly: true });
+    const stats = db.events.stats();
+    if (stats.delivered + stats.failed + stats.cancelled + stats.pending === 0) return null;
+    return deliveryOf(stats);
+  } catch {
+    return null;
+  } finally {
+    db?.close();
+  }
+}

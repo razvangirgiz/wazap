@@ -199,43 +199,55 @@ test("a transcription completing after expiry is neither returned nor re-cached"
   await noPayload(svc);
 });
 
+const HOOK_ENV = { WAZAP_WEBHOOK: "on", WAZAP_WEBHOOK_URL: "http://127.0.0.1:9/hook",
+  WAZAP_WEBHOOK_SECRET: "synthetic-secret", WAZAP_WEBHOOK_EVENTS: "all" };
+const events = (svc) => storageRows(svc, "SELECT kind, state, attempts, last_error FROM events ORDER BY seq");
+
 for (const reason of ["expiry", "delete"]) test(`a queued service webhook is not sent after ${reason}`, async (t) => {
   const { svc, sock, advance } = await fixture(t);
-  const raw = await seed(svc);
+  const raw = message();
   const started = gate(); const finish = gate(); const seen = [];
-  const sink = new WebhookSink({ WAZAP_WEBHOOK: "on", WAZAP_WEBHOOK_URL: "http://127.0.0.1:9/hook",
-    WAZAP_WEBHOOK_SECRET: "synthetic-secret", WAZAP_WEBHOOK_EVENTS: "all" }, {
-    maxInflight: 1, retryDelays: [], post: async (_url, opts) => {
-      seen.push(JSON.parse(opts.body)); started.release(); await finish.promise; return new Response(null, { status: 204 });
-    },
-  });
-  svc.webhook = sink;
-  const blocking = sink.notify({ event: "connection", status: "linked", timestamp: "synthetic", account_id: "default", account_name: "Synthetic" });
+  svc.webhook = new WebhookSink(HOOK_ENV, { post: async (_url, opts) => {
+    seen.push(JSON.parse(opts.body)); started.release(); await finish.promise; return new Response(null, { status: 204 });
+  } });
+  // A connection event goes first and holds the line while the message's event waits behind it.
+  svc.setStatus("disconnected");
   await started.promise;
-  const queued = svc.postMessageEvent({ sid: sid(raw), jid: CHAT, event: "message_received" });
+  sock.ev.emit("messages.upsert", { type: "notify", messages: [raw] });
   if (reason === "expiry") advance(10_000);
   else sock.ev.emit("messages.delete", { keys: [raw.key] });
   finish.release();
-  await Promise.all([blocking, queued]);
+  await svc.outbox.idle();
   assert.equal(seen.length, 1);
   assert.equal(seen[0].event, "connection");
+  assert.deepEqual(events(svc).map((row) => [row.kind, row.state]), [["connection", "delivered"], ["message_received", "cancelled"]]);
 });
 
-test("a webhook retry checks retention again instead of re-sending an expired payload", async () => {
-  let valid = true; let calls = 0;
-  const sink = new WebhookSink({ WAZAP_WEBHOOK: "on", WAZAP_WEBHOOK_URL: "http://127.0.0.1:9/hook",
-    WAZAP_WEBHOOK_SECRET: "synthetic-secret", WAZAP_WEBHOOK_EVENTS: "all" }, {
-    retryDelays: [0, 0], post: async () => { calls++; valid = false; return new Response(null, { status: 503 }); },
-  });
-  const result = await sink.notify({ event: "message_received", text: SECRET }, () => valid);
-  assert.equal(result, false);
+test("a webhook retry checks retention again instead of re-sending an expired payload", async (t) => {
+  const { svc, sock, advance } = await fixture(t);
+  let calls = 0;
+  svc.webhook = new WebhookSink(HOOK_ENV, { post: async () => { calls++; advance(10_000); return new Response(null, { status: 503 }); } });
+  sock.ev.emit("messages.upsert", { type: "notify", messages: [message()] });
+  await svc.outbox.idle();
   assert.equal(calls, 1);
+  advance(1_000);
+  svc.outbox.kick();
+  await svc.outbox.idle();
+  assert.equal(calls, 1, "the retry found the message expired");
+  assert.deepEqual(events(svc).map((row) => [row.state, row.attempts]), [["cancelled", 1]]);
 });
 
-test("a failing retention predicate refuses a webhook without exposing its exception", async () => {
-  const sink = new WebhookSink({ WAZAP_WEBHOOK: "on", WAZAP_WEBHOOK_URL: "http://127.0.0.1:9/hook",
-    WAZAP_WEBHOOK_SECRET: "synthetic-secret" }, { post: async () => assert.fail("must not POST") });
-  assert.equal(await sink.notify({ event: "message_received" }, () => { throw new Error(SECRET); }), false);
+test("a webhook whose body cannot be built is not posted, and the exception is exposed nowhere", async (t) => {
+  const { svc, sock } = await fixture(t);
+  const logs = [];
+  t.mock.method(console, "error", (...args) => logs.push(args.join(" ")));
+  svc.webhook = new WebhookSink(HOOK_ENV, { post: async () => assert.fail("must not POST") });
+  svc.webhookPayload = () => { throw new Error(SECRET); };
+  sock.ev.emit("messages.upsert", { type: "notify", messages: [message()] });
+  await svc.outbox.idle();
+  assert.deepEqual(events(svc).map((row) => [row.state, row.last_error]), [["failed", "Webhook delivery failed."]]);
+  assert.ok(!JSON.stringify(svc.getStatus().webhook).includes(SECRET));
+  assert.ok(!logs.join("\n").includes(SECRET));
 });
 
 test("an in-flight embedding cannot publish a message after expiry", async (t) => {
