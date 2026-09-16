@@ -24,7 +24,7 @@ export { StorageError, type StorageErrorCode } from "./errors.js";
 export { SCHEMA_VERSION } from "./schema.js";
 export { SEQ_SPAN, idLowerBound, idUpperBound, secondOfId } from "./ids.js";
 export { chatKindOf, isLidJid, parseSid, sidOf } from "./identity.js";
-export { foldText, DEFAULT_SCAN_CAP } from "./search.js";
+export { foldText, DEFAULT_SCAN_CAP, DEFAULT_TRIGRAM_CAP } from "./search.js";
 export { hybridTokens, int8Similarity, quantizeVector, unitVector, RRF_K } from "./vectors.js";
 export { isSqliteExperimentalWarning } from "./sqlite.js";
 export type { ScrubQuote } from "./messages.js";

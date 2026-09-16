@@ -12,8 +12,13 @@ import type { Messages } from "./messages.js";
 import type { SQLInputValue } from "./sqlite.js";
 import type { MessageFilter, TextSearchInput, TextSearchResult } from "./types.js";
 
-/** FTS rows examined, or messages scanned, before a search gives up and reports scanCapped. */
-export const DEFAULT_SCAN_CAP = 50_000;
+/**
+ * Messages the short-query scan matches in JavaScript before it stops and
+ * reports scanCapped: about 40 ms at 100k messages, where 50k took 93 ms.
+ */
+export const DEFAULT_SCAN_CAP = 20_000;
+/** FTS candidates the trigram path examines before it stops; each costs a fraction of a scanned row. */
+export const DEFAULT_TRIGRAM_CAP = 50_000;
 const FTS_BATCH = 256;
 const MIN_TRIGRAM_CHARS = 3;
 const NO_UPPER_BOUND = Number.MAX_SAFE_INTEGER;
@@ -92,9 +97,9 @@ export class Search {
 
   text(input: TextSearchInput): TextSearchResult {
     const limit = Math.min(1_000, Math.max(1, Math.floor(input.limit)));
-    const cap = Math.max(1, Math.floor(input.scanCap ?? DEFAULT_SCAN_CAP));
     const query = input.query.trim();
     const mode = [...query].length >= MIN_TRIGRAM_CHARS ? "trigram" : "scan";
+    const cap = Math.max(1, Math.floor(input.scanCap ?? (mode === "trigram" ? DEFAULT_TRIGRAM_CAP : DEFAULT_SCAN_CAP)));
     const filter = this.resolveFilter(input);
     if (filter === null) return { items: [], hasMore: false, nextBefore: null, mode, scanCapped: false };
     const upper = Math.min(input.before ?? NO_UPPER_BOUND, filter.upper);

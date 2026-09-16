@@ -91,7 +91,11 @@ export type UpsertOutcome =
   | "deleted"
   /** The chat was cleared through this message's time; nothing was written. */
   | "cleared"
-  /** Past its deadline: stored as a tombstone so a later replay cannot bring it back. */
+  /**
+   * Past its deadline. A message seen for the first time is stored as a
+   * tombstone so a later replay cannot bring it back; a stored one is hidden
+   * from reads and waits for the expiry sweep, which hands back its files.
+   */
   | "expired";
 
 export interface UpsertResult {
@@ -242,7 +246,7 @@ export interface TextSearchInput extends MessageFilter {
   before?: number;
   /**
    * Candidates examined before the search stops and says so: FTS rows on the
-   * trigram path, messages on the short-query scan.
+   * trigram path (default 50,000), messages on the short-query scan (20,000).
    */
   scanCap?: number;
 }

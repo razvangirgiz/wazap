@@ -16,7 +16,7 @@ import { StorageError } from "./errors.js";
 import { secondOf, secondOfId } from "./ids.js";
 import type { Identity } from "./identity.js";
 import type { Messages } from "./messages.js";
-import { foldText, ftsPhrase, type ResolvedFilter, type Search } from "./search.js";
+import { DEFAULT_TRIGRAM_CAP, foldText, ftsPhrase, type ResolvedFilter, type Search } from "./search.js";
 import type { SQLInputValue } from "./sqlite.js";
 import type { MessageFilter, Page, StoredMessage } from "./types.js";
 
@@ -396,7 +396,7 @@ export class Vectors {
     const tokens = hybridTokens(query);
     if (tokens.length === 0) return { ids: [], capped: false };
     const expression = tokens.map(ftsPhrase).join(" OR ");
-    const found = this.search.trigramIds(query, filter, filter.upper, want, scanCap ?? 50_000, expression);
+    const found = this.search.trigramIds(query, filter, filter.upper, want, scanCap ?? DEFAULT_TRIGRAM_CAP, expression);
     if (found.ids.length === 0) return { ids: [], capped: found.cappedAt !== null };
     const texts = this.c.all<{ id: number; text: string | null; transcript: string | null }>(
       "SELECT id, text, transcript FROM messages WHERE id IN (SELECT value FROM json_each(?))",
