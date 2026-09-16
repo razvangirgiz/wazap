@@ -645,7 +645,7 @@ export class WhatsAppService implements WhatsAppApi {
     this.storageFault = new WazapError(
       "SERVICE_ERROR",
       `The account database of "${this.accountRecord.id}" could not be used: ${message}`,
-      fix ?? "Run `wazap doctor`, check the account directory's permissions and free disk space, then restart the server"
+      fix ?? "Run `wazap status`, check the account directory's permissions and free disk space, then restart the server"
     );
     logError(`account database ${this.accountRecord.id}`, err);
   }

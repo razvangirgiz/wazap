@@ -338,8 +338,16 @@ function legacyCheck(account: AccountStorage): Check | null {
   const legacy = account.legacy;
   switch (legacy.state) {
     case "none":
-    case "in-place":
       return null;
+    case "in-place":
+      // Before the import they are the import's; after it, someone put them back (a rollback, say).
+      if (account.state !== "ready" && account.state !== "imported-unverified") return null;
+      return {
+        name: "legacy files",
+        state: "info",
+        detail: `${legacy.entries} earlier message files are at their old place, but the account was already imported and does not read them`,
+        fix: "delete them if you no longer need them; to import them again, stop the server and delete wazap.sqlite with its -wal and -shm, which also drops whatever only the database holds",
+      };
     case "moved":
       return { name: "legacy files", state: "info", detail: `kept in ${legacy.path} until ${day(legacy.delete_after)}, then deleted` };
     case "kept-unverified":

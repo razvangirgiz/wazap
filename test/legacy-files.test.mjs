@@ -446,3 +446,14 @@ test("status tells a preparing import, running or waiting for the next start, a 
   assert.equal(fresh.storage.beta_archive, null);
   assert.equal(fresh.checks.some((check) => ["storage", "legacy files", "previous owner", "beta archive"].includes(check.name)), false);
 });
+
+test("status says when legacy files are back at their old place after the import, which nothing reads", async (t) => {
+  const fx = await buildLegacyAccount();
+  await bootAt(t, fx.dataDir, fx.now);
+  fs.renameSync(join(fx.paths.root, "legacy", "store.json"), fx.paths.storeFile);
+  const report = await status(fx.dataDir);
+  assert.deepEqual(report.storage.accounts[0].legacy, { state: "in-place", entries: 1 });
+  const check = report.checks.find((c) => c.name === "legacy files");
+  assert.match(check.detail, /^1 earlier message files are at their old place, but the account was already imported/);
+  assert.match(check.fix, /delete wazap\.sqlite/);
+});
