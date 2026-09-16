@@ -707,46 +707,65 @@ running-server cases in `test/calfa-contract.test.mjs`.
 The account database (0.22) imports each account's legacy files once. Left in
 place, they would keep a second copy of the history, readable from the data dir
 for good, after the database had honoured a deletion. `src/legacy-files.ts`
-retires them.
+retires them, and deletes nothing it cannot prove is its own copy.
 
-- **Move.** Once the import is `done` (or `imported`, or `skipped`),
-  `store.json`, `history/`, `retention.json`, `notes.json`, `recall/` and their
-  temp files are renamed into `accounts/<id>/legacy/` (`0700`): same
-  filesystem, no copy, directory entries synced. `legacy_moved_at` is written
-  only after the last rename, so a crash leaves the rest to the next boot, and
-  nothing moves before the import finishes, so a resumed import still reads
-  every file. Once it is written the service never opens, lists or stats those
-  paths again (tested by instrumenting `fs`). `auth/`, `media/`, `previews/`
-  and `webhook.json` stay.
-- **Deletion.** `legacy/` is removed a week after the move, at boot or by the
-  daily pass, and at once with `WAZAP_RETENTION=1`. An import whose
-  verification found unexplained differences records `legacy_keep=unverified`
-  and is never deleted automatically: the files are what the user compares
-  against. `wazap status` warns and gives the `rm -rf` to run deliberately. A
-  `legacy/` the current database did not move (it was set aside for a
-  different number, or replaced) is never deleted by it either; a marker
-  written before the first rename keeps a crash after the last one from being
-  mistaken for that.
-- **Beta archive.** `<data-dir>/archive.sqlite` moves to `<data-dir>/legacy/`
-  only when every enabled account linked to its `meta.owner` has a verified
-  import; its mtime is set to the move and it is deleted a week later. An
-  archive no enabled account is linked to, or whose owner cannot be read, is
-  never moved or deleted: nothing proves whose it is.
+- **Move.** Once the import is `done` or `imported`, `store.json`, `history/`,
+  `retention.json`, `notes.json`, `recall/` and their temp files are renamed
+  into `accounts/<id>/legacy/` (`0700`; `legacy-<n>/` when `legacy` is taken by
+  a file or a link): same filesystem, no copy, directory entries synced. The
+  plan with every destination is written before the first rename, so a crash
+  leaves each moved entry recorded and the rest to the next boot; nothing moves
+  before the import finishes, so a resumed import still reads every file. Once
+  the move is recorded the service never opens, lists or stats those paths
+  again (tested by instrumenting `fs`). A link is never moved. `auth/`,
+  `media/`, `previews/` and `webhook.json` stay. A database marked `skipped`
+  (a different number linked) moves nothing: those files belong to the earlier
+  number and wait for it.
+- **Deletion.** Only the recorded entries are deleted, a week after the later
+  of the move and their own mtimes, at boot or by the daily pass, and at once
+  with `WAZAP_RETENTION=1`; the folder goes only when empty, so anything else a
+  user keeps in it stays. An import whose verification found unexplained
+  differences records `legacy_keep=unverified` and is never deleted
+  automatically: the files are what the user compares against. `wazap status`
+  warns and gives the `rm -rf` to run deliberately.
+- **Beta archive.** The import records the archive it took (`beta_imported`:
+  owner, row count, newest time). `<data-dir>/archive.sqlite` moves to
+  `<data-dir>/legacy/` only when every enabled account linked to its
+  `meta.owner` has a `done` import carrying that record, and
+  `accounts/<id>/archive.sqlite` only when its own account does. An account
+  not linked at the upgrade, or an archive copied in later, is imported at the
+  next start once the number matches; until then the archive stays in place.
+  A moved archive's mtime is set to the move (never earlier than its files')
+  and it is deleted a week later; one left in `legacy/` does not block the
+  next, which takes a free name. An archive no enabled account is linked to, or
+  whose owner cannot be read, is never moved or deleted.
 - **Previous owner.** A database set aside when a different number linked
   (`wazap.<ms>.previous-owner.sqlite`, its `-wal` and `-shm`) holds the earlier
-  person's history. It is deleted a week after the later of the time in its
-  name and its mtime, at once under retention.
-- **Logout** deletes only the credentials. The database stays for the same
-  number, and legacy files keep their schedule.
+  person's history. When that number links again, the newest one it owns is
+  put back and the other number's set aside. Otherwise it is deleted a week
+  after the later of the time in its name and its mtime, never while its owner
+  is linked to an enabled account or cannot be read, and `WAZAP_RETENTION=1`
+  does not shorten the week. The legacy record moves with every swap, so a
+  folder whose first database was set aside is still deleted on its week.
+- **Logout** binds the account database to the number (creating it for an
+  account never started on 0.22), then deletes only the credentials. A
+  different number linking afterwards therefore never imports the earlier
+  number's legacy files into its own history.
 - **Reporting.** Logs carry counts and error codes, never contents, file names
-  inside `history/` or numbers. `wazap status` opens each database read-only.
+  inside `history/` or numbers. `wazap status` opens a database the server
+  holds read-only, and a closed one immutable, so it creates no `-wal` or
+  `-shm` beside it; symlinked legacy entries are reported, not followed.
 
 Not covered: deletion is an unlink, not a secure erase, and copies in backups,
 snapshots or free disk blocks are outside wazap. The week is a rollback window,
 not a promise that nothing older survives: an unverified import, an archive
-nobody owns and files put back after the import (reported by `wazap status`)
-stay until the user deletes them. Tests: `test/legacy-files.test.mjs`, the
-`fs` watch in `test/account-database.test.mjs`.
+nobody owns, a set-aside database whose owner is linked, links and files put
+back after the import (all reported by `wazap status`) stay until the user
+deletes them. A rollback to 0.21 brings back messages deleted during the 0.22
+period (README, "Rolling back to 0.21"). Tests: `test/legacy-files.test.mjs`,
+the beta cases in `test/legacy-import.test.mjs`, the logout case in
+`test/account-roster.test.mjs`, the `fs` watch in
+`test/account-database.test.mjs`.
 
 ## Pre-release review
 

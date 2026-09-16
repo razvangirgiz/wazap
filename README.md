@@ -646,12 +646,14 @@ only small bounded caches stay in the process.
   deletion barriers could bring deleted messages back. Once imported, the legacy
   files move into `legacy/` and are never read again; see
   [Upgrading to 0.22](#upgrading-to-022).
-- **Logout** deletes the credentials, and nothing else: the database stays, so
-  the same number linking again finds its history. **A different number
-  linking** sets the earlier database aside as
+- **Logout** deletes the credentials, and nothing else: the database stays,
+  tied to the number, so the same number linking again finds its history.
+  **A different number linking** sets the earlier database aside as
   `wazap.<time>.previous-owner.sqlite` and starts an empty one: one person's
-  history never shows under another's. The set-aside file is deleted a week
-  later, at once with `WAZAP_RETENTION=1`.
+  history never shows under another's, and legacy files the earlier number
+  never imported stay for it. When the earlier number links again, its
+  set-aside database comes back. A set-aside file nobody links is deleted a
+  week later; `WAZAP_RETENTION=1` does not shorten that week.
   **`wazap account remove`** stops the account, closes its database and deletes
   the whole folder with it.
 - **`WAZAP_PERSIST_HISTORY=0`** removes every stored message at each start and
@@ -669,25 +671,49 @@ only small bounded caches stay in the process.
 0.22 moves each account from its files to the account database, once.
 
 1. **The first start imports.** Each account imports `store.json`, `history/`,
-   `retention.json`, `notes.json`, `recall/` and, for the number it belongs
+   `retention.json`, `notes.json`, `recall/` and, for the number it is linked
    to, the 0.15 beta `archive.sqlite`. Until that is done the account's tools
    answer `NOT_CONNECTED`, and `get_status` and `wazap status` say it is
-   preparing, with the phase it reached. A stop resumes at the next start.
+   preparing, with the phase it reached. A stop resumes at the next start. An
+   account not linked at the upgrade imports the beta archive at the first
+   start after its number links.
 2. **The files move aside.** Once imported, an account's files move into
    `accounts/<id>/legacy/`, and the beta archive into `<data-dir>/legacy/` once
    every enabled account linked to its number has imported it. They are deleted
    a week after the move (`wazap status` shows the date), or at once with
-   `WAZAP_RETENTION=1`. An import whose check found differences it could not
-   explain keeps its files until you delete them, and `wazap status` says how.
-   A beta archive no enabled account is linked to stays where it is.
-3. **Rolling back**, within that week: stop the server (`wazap service stop`),
-   move what `accounts/<id>/legacy/` holds back into `accounts/<id>/` (and
-   `<data-dir>/legacy/archive.sqlite` back to `<data-dir>/`), then install
-   0.21.0 (`npm i -g wazap-mcp@0.21.0`), which ignores `wazap.sqlite`. Messages
-   received after the upgrade exist only in the database, not in the old
-   format. To upgrade again later with what 0.21 received meanwhile, delete
-   `wazap.sqlite` and its `-wal` and `-shm` first, so the next start imports
-   the files again.
+   `WAZAP_RETENTION=1`. Only what wazap moved is deleted. An import whose check
+   found differences it could not explain keeps its files until you delete
+   them, and `wazap status` says how. A beta archive nobody linked to its
+   number has imported stays where it is.
+
+#### Rolling back to 0.21
+
+A rollback trades what happened since the upgrade for the old files, and is
+only possible while those files exist.
+
+- **What you lose on 0.21:** every message, edit, reaction and note from the
+  time you ran 0.22, and every deletion made then. Messages deleted while you
+  ran 0.22 show again on 0.21, because its files predate the deletion.
+- **When you cannot:** with `WAZAP_RETENTION=1` (the files were deleted at the
+  upgrade), and once the week after the move is over. `wazap status` tells you
+  whether `legacy/` still exists.
+
+In this order:
+
+1. Stop the server: `wazap service stop`, or stop the process that runs it.
+2. Back up the whole data dir (`cp -a ~/.wazap ~/.wazap-backup`) and keep that
+   copy until you are sure.
+3. For each account, move everything in `accounts/<id>/legacy/` back into
+   `accounts/<id>/`. Leave `wazap.sqlite` where it is: 0.21 ignores it.
+4. Install 0.21.0 (`npm i -g wazap-mcp@0.21.0`) and start it.
+
+To upgrade again later: stop the server, move `wazap.sqlite` with its `-wal`
+and `-shm` out of `accounts/<id>/` (into your backup; do not delete it, it
+holds what arrived while you ran 0.22), put the beta archive back at
+`<data-dir>/archive.sqlite` if you want it imported again, and start 0.22. It
+imports the files as 0.21 left them. Never remove `wazap.sqlite` while part of
+the legacy files is still in `legacy/` or already deleted: the next start would
+build the account from what is left.
 
 ### Deleted and disappearing messages
 
