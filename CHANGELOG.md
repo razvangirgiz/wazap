@@ -52,13 +52,17 @@
 - **`confirm_send` sends a draft at most once.** Drafts live in the account
   database with the WhatsApp message id they go out under. Confirming a sent
   draft again answers its receipt with `already_sent: true` instead of
-  `DRAFT_NOT_FOUND`, and two confirms at once send once. A failure after the
-  message reached the socket answers the new `SEND_OUTCOME_UNKNOWN` and never
-  sends that draft again; it used to put the draft back, so a timeout could
-  become a second message. The draft counts as sent once WhatsApp echoes its
-  id, and a send a crash interrupted is unknown after the restart. A failure
-  before the socket still keeps the draft, with the same code as before. The
-  20-draft cap is per MCP session instead of per account.
+  `DRAFT_NOT_FOUND`, for 24 hours, and two confirms at once send once. A
+  failure once the message is handed to WhatsApp's relay answers the new
+  `SEND_OUTCOME_UNKNOWN`, a stop in the middle included, and never sends that
+  draft again; it used to put the draft back, so a timeout could become a
+  second message. The draft counts as sent once WhatsApp echoes its id, and a
+  send a crash interrupted is unknown after the restart. A failure before the
+  relay (not connected, the write budget, the number lookup, a media upload)
+  still keeps the draft, with the same code as before. Drafts are capped at 20
+  per MCP session, instead of 20 per account, and 200 per account. Deleting a
+  sent message or clearing its chat takes its words out of the send record, and
+  `WAZAP_PERSIST_HISTORY=0` keeps no drafts and no send words across a restart.
 - **A number lookup WhatsApp does not answer is `NOT_CONNECTED`**, not
   `NOT_ON_WHATSAPP`: only an answer says a number has no WhatsApp.
 - **Echoes of wazap's own sends stay quiet after a restart.** The webhook
