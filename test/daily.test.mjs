@@ -13,7 +13,7 @@ import { WhatsAppService } from "../dist/whatsapp.js";
 import { registerTools } from "../dist/tools.js";
 import { compactConversations } from "../dist/compact.js";
 import { decodeMessage } from "../dist/store.js";
-import { asToolSource, connectedService, offlineConfig, openService, waitFor } from "./helpers.mjs";
+import { asToolSource, connectedService, offlineConfig, openService } from "./helpers.mjs";
 
 const ME = "40700000001@s.whatsapp.net";
 const ANA = "40700000002@s.whatsapp.net";
@@ -256,20 +256,24 @@ test("a revoked message leaves the store, the search, and the history file on re
   assert.doesNotMatch(read, /hunter2/);
   assert.match(read, /\[deleted\]/, "the placeholder stays, the way the phone shows it");
 
-  // The file keeps the line until the next load compacts it away; the
-  // tombstone must win over it there, or a restart resurrects the message.
+  // Cleanup now removes the payload before restart. A content-free barrier
+  // must still win if an older copy is replayed later.
   const file = join(svc.paths.historyDir, `${ANA}.jsonl`);
   const lines = () => (existsSync(file) ? readFileSync(file, "utf8").trim().split("\n").filter(Boolean) : []);
-  await waitFor(() => lines().length >= 2, 5_000, "the history lines to land");
+  await svc.retentionIdle();
+  assert.ok(lines().length > 0);
+  assert.ok(lines().every((line) => !decodeMessage(JSON.parse(line).raw)?.message?.conversation?.includes("hunter2")));
   await svc.flushStore();
   const again = openService(WhatsAppService, { ...offlineConfig("x"), dataDir: svc.config.dataDir, persistHistory: true });
   await again.loadPersisted();
   assert.equal(again.store.messages.has(sid), false, "the reload honours the tombstone");
   assert.deepEqual(
-    lines().map((line) => decodeMessage(JSON.parse(line).raw)?.message?.protocolMessage?.type ?? null),
+    lines().map((line) => JSON.parse(line)).filter((record) => !record.deleted)
+      .map((record) => decodeMessage(record.raw)?.message?.protocolMessage?.type ?? null),
     [proto.Message.ProtocolMessage.Type.REVOKE],
-    "compaction drops the target's bytes and keeps only the tombstone"
+    "compaction drops the target's bytes and keeps only the revoke plus content-free barriers"
   );
+  await again.stop();
 
   const second = arrive(ANA, "al doilea secret");
   sock.ev.emit("messages.delete", { keys: [{ remoteJid: ANA, fromMe: false, id: second }] });

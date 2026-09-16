@@ -24,8 +24,8 @@ import type { RankedHit, RecallItem, RecallQuery, RecallRecord } from "./types.j
 export const TEXT_CAP = 2048;
 /** Rewrite meta+vectors when more than this share of rows is dead. */
 const COMPACT_DEAD_RATIO = 0.3;
-/** v2: model task prompts — a raw-embedded index belongs to a different world. */
-const STATE_VERSION = 2;
+/** v3: expiry-bearing rows. Legacy index-only rows cannot prove they were not ephemeral. */
+const STATE_VERSION = 3;
 const QUANT = "int8";
 /** The index holds message text; it gets history's permissions, not the defaults. */
 const DIR_MODE = 0o700;
@@ -184,6 +184,7 @@ export class RecallStore {
    */
   static async open(dir: string, spec: EmbedModelSpec, maxRows: number): Promise<RecallStore> {
     const store = new RecallStore(dir, spec, maxRows);
+    await Promise.all([store.metaPath, store.vectorsPath, store.statePath].map((path) => rm(`${path}.tmp`, { force: true })));
     let state: RecallState;
     let metaText: string;
     let vectorBytes: Buffer;
@@ -194,7 +195,10 @@ export class RecallStore {
         readFile(store.vectorsPath),
       ]);
     } catch {
-      return store; // Any missing piece is a fresh index.
+      // A partial index is not an empty append target: old text/vector bytes
+      // must not survive or become mismatched with rows numbered from zero.
+      await store.wipe();
+      return store;
     }
     if (state.version !== STATE_VERSION || state.model !== spec.alias || state.dims !== spec.dims || state.quant !== QUANT) {
       await store.wipe();
@@ -228,7 +232,11 @@ export class RecallStore {
       if (entry.op !== "put" || entry.row >= vectorRows || entry.model !== this.spec.alias) {
         throw new WazapError("RECALL_FAILED", "meta.jsonl does not match vectors.bin");
       }
+      if (entry.expiresAt !== undefined && (!Number.isSafeInteger(entry.expiresAt) || entry.expiresAt < 0)) {
+        throw new WazapError("RECALL_FAILED", "Invalid message expiry in recall index.");
+      }
       const record: RecallRecord = {
+        ...(entry.expiresAt === undefined ? {} : { expiresAt: entry.expiresAt }),
         sid: entry.sid,
         jid: entry.jid,
         ts: entry.ts,
@@ -260,13 +268,15 @@ export class RecallStore {
     this.live.delete(sid);
   }
 
+  /** Only the derived index's owned files, including interrupted rewrite stages. */
+  static async clearFiles(dir: string): Promise<void> {
+    await Promise.all(["meta.jsonl", "vectors.bin", "state.json"].flatMap((name) =>
+      [name, `${name}.tmp`].map((file) => rm(join(dir, file), { force: true }))));
+  }
+
   private async wipe(): Promise<void> {
     await this.closeHandles();
-    await Promise.all([
-      rm(this.metaPath, { force: true }),
-      rm(this.vectorsPath, { force: true }),
-      rm(this.statePath, { force: true }),
-    ]);
+    await RecallStore.clearFiles(this.dir);
     this.live.clear();
     this.order = [];
     this.bySid.clear();
@@ -313,6 +323,10 @@ export class RecallStore {
     return this.enqueue(async () => {
       if (this.closed || items.length === 0) return;
       const { meta, vec } = await this.handles();
+      const live = items.flatMap((item, i) => Date.now() < (item.expiresAt ?? Infinity) ? [{ item, vector: vectors[i]! }] : []);
+      items = live.map(({ item }) => item);
+      vectors = live.map(({ vector }) => vector);
+      if (!items.length) return;
       const lines: string[] = [];
       const rows = new Int8Array(items.length * this.spec.dims);
       for (let i = 0; i < items.length; i++) {
@@ -327,6 +341,7 @@ export class RecallStore {
           sender: item.sender,
           type: item.type,
           text: item.text.slice(0, TEXT_CAP),
+          ...(item.expiresAt === undefined ? {} : { expiresAt: item.expiresAt }),
           model: this.spec.alias,
           row,
         };
@@ -362,20 +377,29 @@ export class RecallStore {
    */
   removeChats(jids: string[]): Promise<void> {
     const chats = new Set(jids);
-    const sids = [...this.live.values()].filter((record) => chats.has(record.jid)).map((record) => record.sid);
-    return this.tombstone(sids);
+    return this.tombstone(() => [...this.live.values()].filter((record) => chats.has(record.jid)).map((record) => record.sid));
   }
 
-  private tombstone(sids: string[]): Promise<void> {
+  /** Privacy cleanup also covers rows absent from the bounded live message store. */
+  removeMatching(test: (record: RecallRecord) => boolean): Promise<void> {
+    return this.tombstone(() => [...this.live.values()].filter(test).map((record) => record.sid));
+  }
+
+  private tombstone(sids: string[] | (() => string[])): Promise<void> {
     return this.enqueue(async () => {
       if (this.closed) return;
-      const hits = sids.filter((sid) => this.bySid.has(sid));
-      if (hits.length === 0) return;
+      const hits = (typeof sids === "function" ? sids() : sids).filter((sid) => this.bySid.has(sid));
+      if (hits.length === 0) {
+        if (this.deadRows > 0) await this.compact();
+        return;
+      }
       const { meta } = await this.handles();
       for (const sid of hits) this.removeLive(sid);
       await meta!.appendFile(hits.map((sid) => JSON.stringify({ op: "del", sid } satisfies MetaDel)).join("\n") + "\n", "utf8");
       await meta!.sync();
-      await this.maybeCompact();
+      // Deletion is a privacy operation, not just a ranking tombstone. Rewrite
+      // the old text and vector bytes even below the normal dead-row threshold.
+      await this.compact();
     });
   }
 
@@ -426,6 +450,12 @@ export class RecallStore {
     return this.live.size;
   }
 
+  /** Deadline-only recovery also covers rows no longer present in bounded history. */
+  expirations(): Array<{ sid: string; jid: string; at: number }> {
+    return [...this.live.values()].flatMap((item) => item.expiresAt === undefined ? [] :
+      [{ sid: item.sid, jid: item.jid, at: item.expiresAt }]);
+  }
+
   record(sid: string): RecallRecord | undefined {
     return this.live.get(sid);
   }
@@ -442,6 +472,7 @@ export class RecallStore {
     const floor = q.minSimilarity ?? 0;
     const hits: RankedHit[] = [];
     for (const record of this.live.values()) {
+      if (record.expiresAt !== undefined && nowMs >= record.expiresAt) continue;
       if (q.chatId !== undefined && record.jid !== q.chatId) continue;
       if (q.sinceMs !== undefined && record.ts < q.sinceMs) continue;
       if (q.untilMs !== undefined && record.ts > q.untilMs) continue;

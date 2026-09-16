@@ -15,6 +15,8 @@ export interface RecallItem {
   sender: string;
   type: string;
   text: string;
+  /** Absolute message expiry, epoch ms; absent only for ordinary messages. */
+  expiresAt?: number;
 }
 
 /** A live index row: one meta.jsonl "put" plus its row in vectors.bin. */

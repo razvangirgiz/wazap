@@ -199,7 +199,7 @@ test("clearing a chat, by manage_chat or by the phone's messages.delete, empties
   assert.equal(mod.clear, true);
   assert.equal(mod.lastMessages.length, 1);
   assert.equal(mod.lastMessages[0].key.id, last.split("_").at(-1));
-  assert.equal(svc.storeDirty, true, "manage_chat clear");
+  assert.equal(svc.storeDirty, false, "manage_chat clear waits for the cleaned snapshot to be saved");
 
   svc.storeDirty = false;
   sock.ev.emit("messages.delete", { jid: DAN, all: true });
@@ -234,7 +234,7 @@ test("deleting a chat, by manage_chat or by the phone's chats.delete, takes it, 
   assert.equal(calls[0][1].delete, true);
   assert.equal(calls[0][1].lastMessages[0].key.id, only.split("_").at(-1));
   assert.equal(calls[0][2], ANA);
-  assert.equal(svc.storeDirty, true, "manage_chat delete");
+  assert.equal(svc.storeDirty, false, "manage_chat delete waits for the cleaned snapshot to be saved");
 
   svc.storeDirty = false;
   sock.ev.emit("chats.delete", [DAN]);

@@ -1109,6 +1109,7 @@ export function searchableText(raw: WAMessage, transcript?: TranscriptRecord): s
 
 /** The message a REVOKE protocol message takes back, when there is one. */
 export function revokedTargetKey(raw: WAMessage): WAMessageKey | undefined {
+  if (raw.messageStubType === proto.WebMessageInfo.StubType.REVOKE && raw.key?.id) return raw.key;
   const proto_ = analyze(raw).content?.protocolMessage;
   if (proto_?.type !== proto.Message.ProtocolMessage.Type.REVOKE) return undefined;
   const key = proto_.key;

@@ -22,6 +22,8 @@ export interface HistoryRecord {
   raw: string;
   /** Added in 0.9.8. The transcript held for this message when the line was written. */
   tr?: TranscriptRecord;
+  /** Absolute deadline survives edits that strip the original contextInfo. */
+  expiresAt?: number;
   /**
    * Added in 0.20.0. A tombstone, not a message: `sid` was deleted for the
    * linked account alone, so the replay leaves it out the way it leaves out a
@@ -42,6 +44,8 @@ export interface StoreSnapshot {
   contactsResyncedAt?: number;
   /** Added in 0.9.8. Transcripts of the messages this snapshot keeps, by message id. */
   transcripts?: Record<string, TranscriptRecord>;
+  /** Message deadlines independent of the latest protobuf's shape. */
+  expires?: Record<string, number>;
   /** Added in 0.13.0. Reactions on the messages this snapshot keeps: message id → author jid → emoji. */
   reactions?: Record<string, Record<string, string>>;
   /** Added in 0.13.0. Stories seen in the last day, newest last, by message id; their messages are in `messages`. */
@@ -116,6 +120,13 @@ export interface Vote {
   choice: string[];
   /** When it was cast, epoch ms. */
   at: number;
+}
+
+/** History-sync chat rows can embed the latest full message. Keep one payload store, not a hidden second copy. */
+export function chatMetadata(chat: BaileysChat): BaileysChat {
+  const metadata = { ...chat };
+  delete metadata.messages;
+  return metadata;
 }
 
 /** In-memory state fed from Baileys events, keyed by canonical jid. */
@@ -385,7 +396,7 @@ export class Store {
     return merged.status === undefined ? undefined : merged;
   }
 
-  serialize(): StoreSnapshot {
+  serialize(deadlineFor?: (raw: WAMessage, sid: string) => number | undefined): StoreSnapshot {
     const snapshot: StoreSnapshot = {
       v: 1,
       chats: {},
@@ -397,7 +408,7 @@ export class Store {
       ...(this.contactsResyncedAt === null ? {} : { contactsResyncedAt: this.contactsResyncedAt }),
     };
     for (const [jid, chat] of this.chats) {
-      const encoded = encode(() => proto.Conversation.encode(chat).finish());
+      const encoded = encode(() => proto.Conversation.encode(chatMetadata(chat)).finish());
       if (encoded) snapshot.chats[jid] = encoded;
     }
     for (const [jid, contact] of this.contacts) snapshot.contacts[jid] = contact;
@@ -417,6 +428,8 @@ export class Store {
       if (!raw) continue;
       const encoded = this.encodeMessage(sid, raw);
       if (encoded) snapshot.messages[sid] = encoded;
+      const deadline = deadlineFor?.(raw, sid);
+      if (deadline !== undefined) (snapshot.expires ??= {})[sid] = deadline;
       const transcript = this.transcripts.get(sid);
       if (transcript) transcripts[sid] = transcript;
       const reacted = this.reactions.get(sid);
@@ -439,7 +452,7 @@ export class Store {
     for (const [jid, b64] of Object.entries(snapshot.chats ?? {})) {
       if (isNoiseJid(jid)) continue;
       const chat = decodeChat(b64);
-      if (chat) this.chats.set(jid, chat);
+      if (chat) this.chats.set(jid, chatMetadata(chat));
     }
     for (const [jid, contact] of Object.entries(snapshot.contacts ?? {})) this.contacts.set(jid, contact);
     for (const [jid, name] of Object.entries(snapshot.pushNames ?? {})) this.pushNames.set(jid, name);

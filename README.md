@@ -590,6 +590,7 @@ accounts moves into `accounts/default/` the first time a wazap command runs.
     previews/       one small JPEG per photo or video already previewed
     notes.json      notes on contacts and "handled" marks; never sent anywhere
     store.json      chat-list snapshot
+    retention.json  deletion IDs, clear cutoffs and expiry deadlines; no bodies
     qr.png          last QR, when login showed one
     webhook.json    webhook delivery counters, once the server has posted an event
   models/           whisper.cpp and embedding models, when transcription or recall run locally
@@ -602,6 +603,48 @@ accounts moves into `accounts/default/` the first time a wazap command runs.
 
 Credential writes go to a temp file and are renamed into place, so killing the
 process mid-write cannot leave you re-linking your phone.
+
+### Deleted and disappearing messages
+
+Observed deletes/revokes remove the message from reads immediately and queue
+cleanup of history, snapshots, automatic previews, transcripts and recall rows.
+Successful delete/clear tools wait for local cleanup; a disk failure is reported
+even if WhatsApp already accepted the deletion. Pending preview/transcription
+results cannot restore a deleted message. Old history-sync chat metadata no
+longer keeps an extra embedded copy of the message.
+
+`retention.json` (`0600`) keeps account-local message IDs, expiry deadlines and
+chat-clear cutoffs, not bodies. These barriers prevent replay from resurrecting
+deleted/expired messages; **do not remove the file to bypass a load error**.
+They remain even with `WAZAP_PERSIST_HISTORY=0`. Starting with history off now
+invalidates inactive history/snapshot/recall caches from earlier enabled use;
+notes, auth, models and explicit downloads are untouched. Clearing a chat rejects
+backfill dated at or before the local clear time. WhatsApp timestamps have second
+precision, so a message in the same second can be suppressed.
+
+For messages carrying disappearing-message metadata, wazap keeps the earliest
+observed deadline across edits, aliases, backfill and restarts. Reads refuse the
+message at that instant; one background timer per account removes it from memory
+and queues the same disk/index cleanup as deletion. Preview/transcription results,
+forwards, quoted replies and queued/retried webhooks recheck retention before
+publication. Already-started operations cannot be recalled; in-flight jobs may
+hold temporary buffers/files until they settle. Provider-side retention is separate.
+
+The policy is conservative: a marked ephemeral message without a computable
+deadline is refused, and **keep-in-chat hints are not an indefinite exemption**.
+Current chat settings are not retroactively applied to unmarked messages; wazap
+cannot infer a missing per-message timer. Keep the system clock synchronized.
+
+**Upgrade:** the old semantic index is rebuilt because its index-only rows did
+not record expiry. Older rows absent from retained history need another WhatsApp
+sync to be recoverable. New history, snapshots and index rows also preserve the
+deadline when a later edit strips the original timer fields.
+
+This is not secure erasure of heap pages, backups or filesystem snapshots.
+Explicit exports, independent quotes/forwards and data already returned or sent
+are not recalled. Cleanup is asynchronous, not a crash-atomic transaction; while
+wazap is stopped or suspended, disk cleanup waits until it runs again. Old
+unrecorded deletions cannot be reconstructed. See [the audit report](docs/security-audit.md).
 
 ## Several accounts
 

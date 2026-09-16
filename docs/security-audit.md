@@ -1,4 +1,4 @@
-# Security audit: client isolation and network boundaries
+# Security audit: client isolation, network boundaries and retention
 
 This is a scoped source review and local regression test effort, not a complete
 security audit or a production penetration test. WhatsApp is stubbed; no messages
@@ -340,6 +340,172 @@ use synthetic IPC-controlled fetch streams, not live HTTP or model services.
 Existing downloader tests also assert lock removal across success/error paths.
 The lock suite passed five additional consecutive runs after the full gate.
 
+## 12. Observed deletions and revocations — local retention hardened
+
+The first eleven synthetic regressions all failed against the previous commit,
+built separately in a temporary directory. The failures covered ignored Baileys
+`messages.update` REVOKE events, payload bytes left in history/snapshots and the
+append-only semantic index, missing persistent phone-event deletion barriers,
+stale appends/backfill, and preview/transcription results returned after deletion.
+Further review found that history-sync chat rows embed a second copy of the most
+recent message, and that a deletion arriving during the recall queue's final
+history-offset write could remain pending until another feed. The latter was
+reproduced independently with a gated offset write.
+
+Changes:
+
+- Normalize protocol revoke keys from the sender's perspective and scope them
+  to the enclosing chat, never an arbitrary embedded `remoteJid`. Honor REVOKE
+  updates even without a cached original. Group revoke stubs can identify an
+  admin rather than the original author, so both direction encodings of that
+  chat/message ID are removed. Successful local deletes for everyone now remove
+  the cached original without waiting for an echo.
+- `src/message-retention.ts` owns content-free account-local deletion barriers,
+  serialized persistence, coalesced cleanup and history rewriting. IDs and local
+  chat-clear cutoffs live in `retention.json`, independently of bounded history
+  rings. Missing files initialize legacy installations; malformed/unreadable
+  files fail closed with no raw JSON/error excerpts. Directory/file creation
+  modes are 0700/0600. Barriers are not age-evicted.
+- Delete/revoke observation removes readable payloads synchronously. Snapshot,
+  history and preview writes share an ordering with cleanup, and late appends
+  re-check barriers. History rewrites remove all saved versions/transcripts of
+  deleted records rather than merely appending another tombstone. Snapshot chat
+  metadata is stripped of its embedded messages on ingestion, hydration and
+  serialization. Known LID/phone aliases, including newly learned pairings, are
+  applied to stored and indexed copies.
+- Clearing/deleting a chat rejects older backfill, including messages absent
+  from the live ring. The cutoff is the local observation time, not a WhatsApp
+  server sequence. Clock skew and second-precision message timestamps can also
+  suppress a legitimate message around the clear boundary.
+- Late automatic preview/transcription results are not returned or cached for a
+  deleted message. Preview file publication shares the cleanup queue. Webhook
+  events still waiting for transcription check message existence before creating
+  their payload.
+- Recall queries filter barriers immediately, including index-only messages.
+  Embedding batches re-check retention before submission and publication;
+  deletions are not optimized away while a put is in flight. The queue restarts
+  if work arrived during its final offset write. Chat/predicate removal selects
+  rows inside the index write queue, after earlier queued puts.
+- Explicit index deletes force compaction even below the normal dead-row ratio,
+  removing old text and vector rows from the current files. Incomplete indexes
+  are wiped before rebuilding instead of appending new row-zero data to old
+  payloads. Managed interrupted rewrite files are removed. A disabled or failed
+  recall index is invalidated on deletion rather than exempted from cleanup.
+- Barriers are kept even with history persistence off. Inactive
+  history/snapshot/recall caches from a previous enabled configuration are
+  invalidated in full (the expiry follow-up makes this unconditional on startup
+  with history off). Only owned cache files are removed;
+  notes, credentials, models, explicit media exports and unrelated files are not.
+- Successful delete/clear tools wait for cleanup. A storage failure is reported
+  safely even when the WhatsApp-side action already succeeded. The error stays
+  sticky for that service instance; fix permissions/space before restarting.
+  Socket-event cleanup is asynchronous; startup applies known barriers again.
+
+The initial 39 tests in `test/message-retention.test.mjs` and
+`test/message-retention-state.test.mjs` exercised these boundaries with synthetic
+protobufs, mocked sockets, controlled
+embedding/transcription promises and temporary directories. Existing daily,
+chat-action, persistence, story and recall tests remain covered. No user history,
+credentials, live WhatsApp sends or real embedding/transcription service was used.
+Both new suites also passed five consecutive additional runs after the full gate.
+
+Limits: this is logical removal plus rewriting of current owned cache files, not
+secure erasure of heap pages, SSD blocks, journals, backups or filesystem snapshots.
+The multi-file operation is not a crash-durable transaction. A delete lost before
+its barrier is saved, or never recorded by an older version, cannot be inferred
+later. This is retention after recognized delete events, not independent
+verification of WhatsApp's revoke authorization. Already returned data, explicit
+exports/in-flight export operations,
+independent quoted/forwarded copies and external processing are not recalled.
+The follow-up below adds freshness gates for webhook backlogs and retries;
+already-started HTTP requests cannot be unsent, and a queued job can still hold
+its payload until it drains. Metadata growth and forced index-compaction I/O need an explicit
+long-term operational policy rather than silently forgetting deletion barriers.
+
+## 13. Disappearing messages — conservative per-message expiry enforced
+
+An offline probe first confirmed that an already-expired ephemeral message could
+remain in the live store. Eleven of twelve initial synthetic service regressions
+then failed before implementation; the ordinary-message control passed.
+
+`src/message-expiry.ts` derives an absolute deadline from `ephemeralDuration` or
+the actual payload's `contextInfo.expiration`, and message-specific start/sent
+timestamps (protobuf Longs included). When multiple valid clocks or durations
+exist, the earliest combination wins. Bounded traversal handles known envelopes,
+including edits, device-sent, document-with-caption, associated-child and view-once
+wrappers. It does not descend into another message's quoted content, use the chat
+setting timestamp as the message start, or use ingestion time to restart a timer.
+A marked message with missing/invalid/overflowing timing fails closed. Ordinary
+messages, zero protobuf defaults and chat-setting protocol events do not acquire
+a retroactive deadline.
+
+- Account-local deadlines live in the content-free retention ledger. Updates
+  cannot extend them; learned LID/phone aliases inherit them. Once expiry is
+  observed it becomes a deletion barrier, including against clock rollback.
+  Malformed ledger expiry metadata is rejected before partially applying state.
+- A single unreferenced timer per account sweeps due IDs even with no readers and
+  even after their raw messages have left bounded memory. Long waits are capped
+  to Node's timer range and rearmed. Reads also compare the current clock, so a
+  delayed callback is not permission to return expired text. Expiry removes
+  memory synchronously and schedules serialized disk/index cleanup.
+- History records, snapshots and index rows carry the deadline independently of
+  the latest protobuf. This prevents stripped edits from turning temporary text
+  into ordinary text on replay. Boot observes every history version before
+  deduplication, learns all files' deadlines before allowing the recall queue to
+  submit any text, and refreshes queued puts' deadlines around embedding. Index
+  rows recover timers even when their original history is no longer present.
+- The recall format moves from version 2 to 3. Legacy index-only rows have no
+  way to prove they were not ephemeral, so the old derived index is invalidated
+  and rebuilt from retained history. Coverage older than that history requires
+  a new WhatsApp sync and is not guaranteed to be recoverable. New index queries
+  filter absolute deadlines independently of the service's timer, and pending
+  disk writes/embedding results recheck before publication.
+- Preview reads/writes and transcription results recheck expiry after awaits.
+  Media downloads check while consuming data and before exporting/returning it.
+  A file already written as an explicit user export is not deleted: it is no
+  longer an automatic cache. Forwards, edits, reactions and quoted replies
+  recheck their source before sending after asynchronous preparation.
+- Webhook message jobs carry a content-free freshness predicate. The sink checks
+  it before admission, after waiting for a slot and before each retry. Expired or
+  deleted jobs return false without counting as receiver failures; a throwing
+  predicate fails closed. Connection/test events remain independent of messages.
+  This does not cancel a POST already started or instantly erase job/heap buffers.
+- With history off, startup invalidates inactive old history/snapshot/index
+  caches; a disabled recall index is not an exemption. Credentials, notes,
+  explicit exports, model files and unrelated files outside owned cache paths
+  are not wiped. Deadline metadata still persists without message bodies.
+- Stop cancels the account's timer and shares one idempotent shutdown promise.
+  Stopped instances do not re-ingest messages or publish late preview/transcript
+  results. A delete/clear whose remote acknowledgement arrives after shutdown
+  reports that local cleanup could not complete, rather than promising success
+  or writing through a stale owner.
+
+The follow-up adds 62 tests across `test/ephemeral-retention.test.mjs`,
+`test/message-expiry.test.mjs` and the retention-state suite. They cover exact
+boundaries, idle cleanup, missing/malformed metadata, protocol Longs, wrapper
+bounds, edits, restarts, index-only rows, legacy index migration, cross-file boot
+ordering, independent cache deadlines, long timers, clock rollback, delayed
+embedding/media/transcription/preview/forward/reply operations, webhook backlog
+and retry cancellation, marked outbound acknowledgements without a socket upsert,
+and shutdown. Fixtures use mocked clocks, synthetic protobufs, stubbed
+network/provider functions and temporary directories only. All four retention
+suites (101 tests) also passed five consecutive additional runs after the full gate.
+
+Scope is intentionally stricter than full WhatsApp UI semantics: **keep-in-chat
+hints do not grant indefinite retention**. A chat's current disappearing setting
+is not applied retroactively to unmarked messages; absent a recognized per-message
+marker, this code cannot infer the original timer. Live protocol compatibility,
+keep/undo-keep authorization and unmarked outgoing/chat-default behavior need
+separate review. Clock accuracy matters; choosing the earlier timestamp can
+expire a message early under clock skew. Suspension or a stopped process delays
+physical cleanup until execution resumes/startup; expiry checks and cleanup are
+not a crash-durable transaction or secure erasure. Already returned/sent data,
+independent quotes/forwards, explicit exports and third-party processing remain
+outside retraction. In-flight jobs can hold temporary buffers/files until their
+own completion/timeout; this is not cancellation of decoder/provider work or
+erasure of provider-side caches. Barrier growth and compaction I/O remain
+operational limits.
+
 ## Limits and next review areas
 
 - A shared static token is a shared identity. A caller with both the owner's
@@ -352,8 +518,8 @@ The lock suite passed five additional consecutive runs after the full gate.
   or harness outside incoming message content.
 - Validate real proxy/tunnel deployments and sanitized header chains separately.
   Continue reviewing request/session abuse limits, refresh-token lifecycle,
-  policy-file corruption/removal behavior and retention of deleted/disappearing
-  messages.
+  policy-file corruption/removal behavior, live disappearing-message protocol
+  variants/keep-in-chat semantics and retention compaction costs.
 - Local stdio and private bridges are trusted with the filesystem. This pass does
   not sandbox them or address all local file replacement/symlink races.
 - This pass covers the identified webhook, preview and transcription paths, not
@@ -368,9 +534,11 @@ The lock suite passed five additional consecutive runs after the full gate.
 
 ## Verification
 
-`npm run check` passed on the pulled 0.20.2 base after the model-download changes:
-lint, typecheck and all 1,219 tests (none skipped on this machine), including the
+`npm run check` passed on the pulled 0.20.2 base after the expiry follow-up:
+lint, typecheck and all 1,320 tests (none skipped on this machine), including the
 controlled-preview and concurrent-download follow-ups. New coverage lives in
+`test/message-retention.test.mjs`, `test/message-retention-state.test.mjs`,
+`test/ephemeral-retention.test.mjs`, `test/message-expiry.test.mjs`,
 `test/model-download-lock.test.mjs`, `test/model-download.test.mjs`,
 `test/link-preview.test.mjs`,
 `test/network-sinks.test.mjs` and `test/preview-security.test.mjs`, alongside

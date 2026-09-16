@@ -513,7 +513,9 @@ export class WebhookSink {
    * later transition to recover with can tell a delivery from a drop. Still never
    * throws.
    */
-  async notify(payload: WebhookPayload): Promise<boolean> {
+  async notify(payload: WebhookPayload, current: () => boolean = () => true): Promise<boolean> {
+    const isCurrent = (): boolean => { try { return current(); } catch { return false; } };
+    if (!isCurrent()) return false;
     // An event nobody subscribed to used to take a slot before it was filtered,
     // so it could push a wanted one out of a full backlog. It counts nowhere.
     if (!this.subscribed(payload)) return false;
@@ -521,6 +523,7 @@ export class WebhookSink {
     // maxInflight wait in FIFO order; a full backlog drops the event rather
     // than letting a dead consumer grow memory inside a live process.
     while (this.inFlight >= this.maxInflight) {
+      if (!isCurrent()) return false;
       if (this.backlog.length >= this.maxBacklog) {
         this.lastError = `backlog full (${this.maxBacklog} queued); dropped ${payload.event}`;
         this.recordDrop(this.lastError);
@@ -531,10 +534,12 @@ export class WebhookSink {
     }
     this.inFlight++;
     try {
+      if (!isCurrent()) return false;
       const settings = this.settings();
       if (settings.kind !== "ready") return false;
       if (!settings.events.includes(payload.event)) return false;
-      const result = await this.postEvent(payload, settings);
+      const result = await this.postEvent(payload, settings, isCurrent);
+      if (result === null) return false; // Retention cancellation is not a receiver failure.
       if (result.ok) this.recordSuccess();
       else this.recordFailure(result.error);
       return result.ok;
@@ -569,8 +574,9 @@ export class WebhookSink {
           };
         }
         const result = await this.postEvent(testPayload(event, this.account), settings);
-        if (!result.ok) logError("webhook", result.error);
-        return result;
+        // Test events have no retention predicate and cannot be cancelled.
+        if (!result!.ok) logError("webhook", result!.error);
+        return result!;
       }
       default: {
         const _exhaustive: never = settings;
@@ -581,12 +587,14 @@ export class WebhookSink {
 
   private async postEvent(
     payload: WebhookPayload,
-    settings: Extract<WebhookSettings, { kind: "ready" }>
-  ): Promise<WebhookTestResult> {
+    settings: Extract<WebhookSettings, { kind: "ready" }>,
+    isCurrent: () => boolean = () => true
+  ): Promise<WebhookTestResult | null> {
     const body = JSON.stringify(payload);
     const attempts = 1 + this.retryDelays.length;
     let last: WebhookAttempt = { ok: false, error: "webhook POST failed", fix: WEBHOOK_REACH_FIX, retry: false };
     for (let i = 0; i < attempts; i++) {
+      if (!isCurrent()) return null;
       last = await this.postOnce(body, payload.event, settings);
       if (last.ok) {
         this.lastError = null;

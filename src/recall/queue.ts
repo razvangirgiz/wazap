@@ -54,6 +54,7 @@ export class RecallQueue {
   /** Highest sequence committed to the index; seals compare against this. */
   private committed = 0;
   private draining = false;
+  private paused = false;
   private stopped = false;
   private failures = 0;
   /** Wakes a retry sleep early so stop() is not held by the backoff. */
@@ -66,8 +67,15 @@ export class RecallQueue {
     private readonly store: RecallStore,
     private readonly embed: (texts: string[]) => Promise<number[][]>,
     /** Test seam: shorter retries so a dead engine fails fast. */
-    private readonly retry: { attempts?: number; baseMs?: number; maxMs?: number } = {}
-  ) {}
+    private readonly retry: { attempts?: number; baseMs?: number; maxMs?: number; paused?: boolean } = {},
+    private readonly keep: (item: RecallItem) => boolean = () => true
+  ) { this.paused = retry.paused ?? false; }
+
+  /** Boot must discover all history deadlines before submitting any text. */
+  resume(): void {
+    this.paused = false;
+    void this.drain();
+  }
 
   get size(): number {
     return this.pending.size;
@@ -142,7 +150,7 @@ export class RecallQueue {
   }
 
   private async drain(): Promise<void> {
-    if (this.draining) return;
+    if (this.draining || this.paused) return;
     this.draining = true;
     try {
       while (this.pending.size > 0 && !this.stopped && this.deadReason === null) {
@@ -193,6 +201,7 @@ export class RecallQueue {
     } finally {
       this.draining = false;
       if (this.settled()) this.wake();
+      else void this.drain(); // A feed may have arrived while the final seal was being written.
     }
   }
 
@@ -215,10 +224,13 @@ export class RecallQueue {
    * than dying behind a poison pill that every restart would re-feed.
    */
   private async commitPuts(puts: RecallItem[]): Promise<void> {
+    const keep = (item: RecallItem): boolean => this.keep(item) && Date.now() < (item.expiresAt ?? Infinity);
+    puts = puts.filter(keep);
     if (puts.length === 0) return;
     try {
       const vectors = await this.embed(puts.map((item) => item.text));
-      await this.store.add(puts, vectors);
+      const kept = puts.flatMap((item, i) => keep(item) ? [{ item, vector: vectors[i]! }] : []);
+      if (kept.length) await this.store.add(kept.map(({ item }) => item), kept.map(({ vector }) => vector));
     } catch (err) {
       if (!(err instanceof WazapError && err.code === "RECALL_BAD_INPUT")) throw err;
       if (puts.length === 1) {
