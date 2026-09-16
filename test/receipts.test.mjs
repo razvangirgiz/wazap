@@ -12,7 +12,7 @@ import { z } from "zod";
 import { isoWithOffset } from "../dist/messages.js";
 import { registerTools } from "../dist/tools.js";
 import { WhatsAppService } from "../dist/whatsapp.js";
-import { asToolSource, connectedService } from "./helpers.mjs";
+import { asToolSource, connectedService, storedMarks } from "./helpers.mjs";
 
 const ME = "40700000001@s.whatsapp.net";
 const ME_LID = "900000000000001@lid";
@@ -339,7 +339,7 @@ test("statuses and receipts come back after a restart, and go with their message
 
   const sid = `true_${GROUP}_${inGroup}`;
   first.sock.ev.emit("messages.delete", { keys: [{ remoteJid: GROUP, fromMe: true, id: inGroup }] });
-  assert.deepEqual(first.svc.db.messages.receipts(sid), [], "a deleted message takes its receipts with it");
+  assert.equal(storedMarks(first.svc, sid).receipts, 0, "a deleted message takes its receipt rows with it");
   await first.svc.stop();
   await second.svc.stop();
 });

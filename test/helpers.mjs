@@ -228,6 +228,35 @@ export function storageRows(svc, sql, ...params) {
   }
 }
 
+/**
+ * What the file still holds for a message, under any spelling of its chat and
+ * however deleted: its rows, the rows among them that keep words or a
+ * protobuf, and its vector, reactions, votes, receipts and file records.
+ */
+export function storedMarks(svc, sid) {
+  const [, fromMe, key] = /^(true|false)_[^_]+?@[^_]+_(.+)$/.exec(sid);
+  const ids = "SELECT id FROM messages WHERE key_id = ? AND from_me = ?";
+  const params = [key, fromMe === "true" ? 1 : 0];
+  const count = (sql) => storageRows(svc, sql, ...params)[0].n;
+  return {
+    rows: count(`SELECT count(*) AS n FROM messages WHERE key_id = ? AND from_me = ?`),
+    words: count(`SELECT count(*) AS n FROM messages WHERE key_id = ? AND from_me = ? AND (text IS NOT NULL OR transcript IS NOT NULL OR raw IS NOT NULL)`),
+    embeddings: count(`SELECT count(*) AS n FROM embeddings WHERE message_id IN (${ids})`),
+    reactions: count(`SELECT count(*) AS n FROM reactions WHERE message_id IN (${ids})`),
+    votes: count(`SELECT count(*) AS n FROM votes WHERE message_id IN (${ids})`),
+    receipts: count(`SELECT count(*) AS n FROM receipts WHERE message_id IN (${ids})`),
+    media: count(`SELECT count(*) AS n FROM media WHERE message_id IN (${ids})`),
+  };
+}
+
+/** Nothing of a deleted message but, at most, the content-free rows of its tombstone. */
+export function onlyTombstone(svc, sid) {
+  const { rows: _rows, ...marks } = storedMarks(svc, sid);
+  return marks;
+}
+
+export const NO_MARKS = Object.freeze({ words: 0, embeddings: 0, reactions: 0, votes: 0, receipts: 0, media: 0 });
+
 /** The message ids a chat holds, newest first, as read_messages would page them. */
 export function storedIds(svc, chat, limit = 1000) {
   return svc.db.messages.chatPage(chat, { limit }).items.map((message) => message.sid);

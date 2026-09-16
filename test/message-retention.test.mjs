@@ -11,7 +11,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { proto } from "baileys";
 import { WhatsAppService } from "../dist/whatsapp.js";
-import { connectedService, databaseHolds } from "./helpers.mjs";
+import { NO_MARKS, connectedService, databaseHolds, onlyTombstone } from "./helpers.mjs";
 
 const CHAT = "40700000002@s.whatsapp.net";
 const SECRET = "synthetic-retention-secret-27182";
@@ -278,7 +278,7 @@ test("recall stops answering with a deleted message before its file cleanup fini
     assert.deepEqual(answer.data.hits, []);
   } finally { finish.release(); }
   await idle(svc);
-  assert.equal(svc.db.vectors.get(sid), null);
+  assert.deepEqual(onlyTombstone(svc, sid), NO_MARKS, "its vector row is gone from the file, not just hidden");
 });
 
 test("phone-number deletion also removes the LID-filed message and its vector", async (t) => {

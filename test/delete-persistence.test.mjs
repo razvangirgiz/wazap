@@ -14,7 +14,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { WhatsAppService } from "../dist/whatsapp.js";
-import { connectedService, storedIds } from "./helpers.mjs";
+import { NO_MARKS, connectedService, onlyTombstone, storedIds } from "./helpers.mjs";
 
 const ME = "40700000001@s.whatsapp.net";
 const CLEARED = "40700000011@s.whatsapp.net";
@@ -136,7 +136,7 @@ async function assertDeletes(svc, { cleared = [], deleted = [], gone, kept }) {
   }
   for (const sid of gone) {
     assert.equal(svc.hasMessage(sid), false, `${sid} is out of the database`);
-    assert.equal(svc.db.vectors.get(sid), null, `${sid} has no vector`);
+    assert.deepEqual(onlyTombstone(svc, sid), NO_MARKS, `${sid} keeps no words, vector or marks in the file`);
   }
   const hits = await recallHits(svc);
   assert.deepEqual(
@@ -244,7 +244,7 @@ test("a message deleted for the linked account alone stays gone after a restart,
     const second = await boot(dataDir, stub.url);
     await second.svc.recallIdle();
     assert.equal(second.svc.hasMessage(gone), false);
-    assert.equal(second.svc.db.vectors.get(gone), null);
+    assert.deepEqual(onlyTombstone(second.svc, gone), NO_MARKS, "the file keeps no words, vector or marks of it");
     assert.deepEqual(
       (await second.svc.readMessages(KEPT, 50)).data.map((m) => [m.message_id, m.type]),
       [[stays, "text"]],
