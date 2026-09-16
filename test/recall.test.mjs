@@ -337,6 +337,10 @@ test("chat, since/until and from narrow recall the way they narrow search_messag
 
     const mine = await svc.recall("invoice", undefined, 10, { from: "me" });
     assert.deepEqual(mine.data.hits.map((h) => h.message.message_id), [`true_${PEER}_ME1`]);
+    for (const self of [ME, ME.split("@")[0], `+${ME.split("@")[0]}`]) {
+      const spelled = await svc.recall("invoice", undefined, 10, { from: self });
+      assert.deepEqual(spelled.data.hits.map((h) => h.message.message_id), [`true_${PEER}_ME1`], `from ${self}`);
+    }
   } finally {
     await svc.stop();
     stub.server.close();

@@ -121,6 +121,11 @@ test("search_messages narrows by time and by sender", async () => {
     mine.structuredContent.messages.map((m) => m.text),
     ["am plătit RCA"]
   );
+  // The account's own number, however it is spelled, is "me" too.
+  for (const self of [ME, ME.split("@")[0], `+${ME.split("@")[0]}`]) {
+    const spelled = await call("search_messages", { query: "rca", from: self });
+    assert.deepEqual(spelled.structuredContent.messages.map((m) => m.text), ["am plătit RCA"], `from ${self}`);
+  }
   const until = await call("search_messages", { query: "rca", until: new Date(Date.now() - 5 * day).toISOString() });
   assert.deepEqual(
     until.structuredContent.messages.map((m) => m.text),

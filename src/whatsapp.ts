@@ -1206,7 +1206,7 @@ export class WhatsAppService implements WhatsAppApi {
       limit = pageLimit(limit);
       const db = this.db;
       const scope = chatId === undefined ? undefined : this.resolveId(chatId);
-      const from = opts.from === undefined ? undefined : opts.from === "me" ? "me" : this.resolveId(opts.from);
+      const from = this.senderFilter(opts.from);
       const filter = {
         ...(scope === undefined ? {} : { chat: scope }),
         ...(from === undefined ? {} : { from }),
@@ -1277,7 +1277,7 @@ export class WhatsAppService implements WhatsAppApi {
       const settings = this.readyRecall();
       limit = pageLimit(limit);
       const scope = chatId === undefined ? undefined : this.resolveId(chatId);
-      const from = opts.from === undefined ? undefined : opts.from === "me" ? "me" : this.resolveId(opts.from);
+      const from = this.senderFilter(opts.from);
       const [vector] = await this.recallEmbed([query], "query");
       const db = this.db;
       const result = db.vectors.hybrid({
@@ -3507,6 +3507,14 @@ export class WhatsAppService implements WhatsAppApi {
 
   private resolveId(input: string): string {
     return this.lids.resolve(input);
+  }
+
+  /** A sender filter: the account's own id, however it is spelled, is "me" — its messages are stored without a sender. */
+  private senderFilter(from: string | undefined): string | undefined {
+    if (from === undefined) return undefined;
+    if (from === "me") return "me";
+    const jid = this.resolveId(from);
+    return this.ownJid() !== "" && this.isMe(jid) ? "me" : jid;
   }
 
   /** A contact mutation keys on a person: groups and noise jids are caller errors, not contacts. */
