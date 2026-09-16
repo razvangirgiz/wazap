@@ -118,6 +118,7 @@ function wavSeconds(wav: string): number | undefined {
 }
 
 export const localProvider: Provider = {
+  kind: "local",
   async transcribe(settings: TranscribeSettings, file: string, opts: TranscribeOpts): Promise<Transcript> {
     if (!existsSync(file)) throw new WazapError("FILE_NOT_FOUND", `No such file: ${file}`);
     const readiness = await localProvider.ready(settings);

@@ -127,6 +127,7 @@ import {
 } from "./recall/index.js";
 import {
   readTranscribeSettings,
+  PROVIDERS,
   transcribeFile,
   transcribeReady,
   transcribeWorker,
@@ -513,14 +514,17 @@ export class WhatsAppService implements WhatsAppApi {
    * configured, auto mode is on, and the provider may run in this mode.
    */
   private readonly autoTranscribe: boolean;
+  /** Where the configured provider sends the audio, recorded with each note queued; null with no provider. */
+  private readonly transcribeClass: "local" | "api" | null;
   /** This account as the process's transcription worker sees it. */
   private readonly transcribeSource: TranscribeSource;
   /** The worker every account shares; a seam for tests. */
   private readonly transcribeWorker = transcribeWorker;
   /** Cancels this account's uploads and whisper.cpp runs: it is being removed. */
   private readonly transcribeAbort = new AbortController();
-  /** The seam the tests replace; production always runs the real providers. */
+  /** The seams the tests replace; production always runs the real providers. */
   private transcriber = transcribeFile;
+  private transcribeReadiness = transcribeReady;
   /** Transcriptions under way, so one recording is never uploaded twice at once. */
   private readonly transcribing = new Map<string, Promise<TranscribeResult>>();
   private readonly drafts = new DraftStore();
@@ -559,8 +563,10 @@ export class WhatsAppService implements WhatsAppApi {
       settings.provider !== null &&
       settings.auto &&
       !(this.effectiveReadOnly && settings.provider === "openai");
+    this.transcribeClass = settings instanceof WazapError || settings.provider === null ? null : PROVIDERS[settings.provider].kind;
     this.transcribeSource = {
       name: account.id,
+      providerClass: () => this.transcribeClass ?? "local",
       db: () => (this.stopped ? null : this.readyDb()),
       ready: () => !this.stopped && this.status === "connected",
       run: (sid) => this.transcribeQueued(sid),
@@ -2192,7 +2198,7 @@ export class WhatsAppService implements WhatsAppApi {
           "Run `wazap config writes on` and restart the server, or run `wazap config transcribe local`"
         );
       }
-      const readiness = await transcribeReady(settings);
+      const readiness = await this.transcribeReadiness(settings);
       if (!readiness.ok) throw new WazapError("TRANSCRIBE_UNAVAILABLE", readiness.detail, readiness.fix);
 
       // The transcript is only written once a provider has run and been paid, so the
@@ -4238,7 +4244,7 @@ export class WhatsAppService implements WhatsAppApi {
       if (!transcribable(raw)) continue;
       const sid = messageIdFor(raw.key, this.canonical(raw.key.remoteJid ?? ""));
       try {
-        db.transcripts.enqueue(sid);
+        if (this.transcribeClass !== null) db.transcripts.enqueue(sid, this.transcribeClass);
         if (db.transcripts.state(sid)?.state === "queued") queued.set(sid, this.transcribeWorker.settled(this.transcribeSource, sid));
       } catch (err) {
         logError("transcribe", err);
@@ -4258,7 +4264,7 @@ export class WhatsAppService implements WhatsAppApi {
   private queueTranscript(raw: WAMessage, result: UpsertResult): void {
     if (!this.autoTranscribe || result.outcome !== "inserted" || result.sid === null || !transcribable(raw)) return;
     if (messageTimestampMs(raw) <= Date.now() - HISTORY_TRANSCRIBE_WINDOW_MS) return;
-    if (this.db.transcripts.enqueue(result.sid)) this.transcribeWorker.kick();
+    if (this.transcribeClass !== null && this.db.transcripts.enqueue(result.sid, this.transcribeClass)) this.transcribeWorker.kick();
   }
 
   /**

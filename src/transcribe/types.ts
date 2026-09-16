@@ -30,6 +30,8 @@ export interface Readiness {
  * so PROVIDERS can stay a plain table of stateless objects.
  */
 export interface Provider {
+  /** Where the audio goes: "local" keeps it on this machine, "api" uploads it. */
+  readonly kind: "local" | "api";
   transcribe(settings: TranscribeSettings, file: string, opts: TranscribeOpts): Promise<Transcript>;
   ready(settings: TranscribeSettings): Promise<Readiness>;
 }

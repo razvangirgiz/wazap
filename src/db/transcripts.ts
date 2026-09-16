@@ -18,6 +18,11 @@ const NEXT_SCAN = 32;
 const FAILED_KEPT_MS = 30 * 24 * 60 * 60_000;
 /** A reason is a few words; anything longer is cut. */
 const REASON_MAX = 120;
+/** A note still waiting this long after it was queued is given up on: its words are no longer news. */
+export const TRANSCRIBE_QUEUE_MAX_AGE_MS = 24 * 60 * 60_000;
+
+/** Where the audio goes: stays on this machine, or is uploaded to an API. */
+export type ProviderClass = "local" | "api";
 
 export interface TranscribeItem {
   id: number;
@@ -50,21 +55,22 @@ export class Transcripts {
   ) {}
 
   /**
-   * Queues a message the reader can see and that has no transcript yet. A
-   * message already on the queue, or given up on, is left as it is. True
-   * when a row was added.
+   * Queues a message the reader can see and that has no transcript yet, for
+   * the class of provider configured now. A message already on the queue, or
+   * given up on, is left as it is. True when a row was added.
    */
-  enqueue(sid: string): boolean {
+  enqueue(sid: string, providerClass: ProviderClass): boolean {
     return this.c.write(() => {
       const key = this.messages.visibleKey(sid);
       if (key === null) return false;
       const now = this.c.now();
       return (
         this.c.run(
-          `INSERT INTO transcribe_queue(message_id, queued_at, next_at)
-             SELECT m.id, ?, ? FROM messages m
+          `INSERT INTO transcribe_queue(message_id, provider_class, queued_at, next_at)
+             SELECT m.id, ?, ?, ? FROM messages m
              WHERE m.id = ? AND m.transcript IS NULL
                AND NOT EXISTS (SELECT 1 FROM transcribe_queue q WHERE q.message_id = m.id)`,
+          providerClass,
           now,
           now,
           key.id
@@ -74,13 +80,27 @@ export class Transcripts {
   }
 
   /**
-   * The note to transcribe now: queued, not running, due. The newest message
-   * goes first, so a note that just arrived is never held behind a history
-   * backlog or an older note's retry. A row whose message a reader can no
-   * longer see, or that has a transcript, leaves the queue on the way.
+   * The note to transcribe now with a provider of `providerClass`: queued, not
+   * running, due. The newest message goes first, so a note that just arrived
+   * is never held behind a history backlog or an older note's retry. A row
+   * whose message a reader can no longer see, or that has a transcript, leaves
+   * the queue on the way. Before that, what must never run is given up on: a
+   * note queued more than a day ago (too_old), and a note queued for this
+   * machine when the provider is now an API (provider_changed). A note queued
+   * for an API may run locally.
    */
-  next(): TranscribeItem | null {
+  next(providerClass: ProviderClass): TranscribeItem | null {
     return this.c.write(() => {
+      this.expire();
+      if (providerClass === "api") {
+        const now = this.c.now();
+        this.c.run(
+          `UPDATE transcribe_queue SET failed_at = ?, error = 'provider_changed', error_at = ?
+           WHERE failed_at IS NULL AND started_at IS NULL AND provider_class = 'local'`,
+          now,
+          now
+        );
+      }
       const rows = this.c.all<{ id: number; sid: string | null; attempts: number; queued_at: number; transcribed: number }>(
         `SELECT q.message_id AS id, q.attempts, q.queued_at,
            (CASE WHEN m.from_me = 1 THEN 'true' ELSE 'false' END) || '_' || coalesce(ck.jid, c.jid) || '_' || m.key_id AS sid,
@@ -100,7 +120,7 @@ export class Transcripts {
         this.c.run("DELETE FROM transcribe_queue WHERE message_id = ?", row.id);
       }
       // A full page of gone notes: the caller asks again, and the next page is due too.
-      return rows.length === NEXT_SCAN ? this.next() : null;
+      return rows.length === NEXT_SCAN ? this.next(providerClass) : null;
     });
   }
 
@@ -166,6 +186,25 @@ export class Transcripts {
         now,
         id
       );
+    });
+  }
+
+  /**
+   * Gives up on notes queued more than a day ago and still waiting (too_old),
+   * and forgets notes given up on more than a month ago. Runs before every
+   * look for the next note, and on the worker's hourly round.
+   */
+  expire(): void {
+    this.c.write(() => {
+      const now = this.c.now();
+      this.c.run(
+        `UPDATE transcribe_queue SET failed_at = ?, error = 'too_old', error_at = ?
+         WHERE failed_at IS NULL AND started_at IS NULL AND queued_at <= ?`,
+        now,
+        now,
+        now - TRANSCRIBE_QUEUE_MAX_AGE_MS
+      );
+      this.c.run("DELETE FROM transcribe_queue WHERE failed_at IS NOT NULL AND failed_at < ?", now - FAILED_KEPT_MS);
     });
   }
 

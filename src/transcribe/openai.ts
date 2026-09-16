@@ -71,6 +71,7 @@ async function post(settings: TranscribeSettings, key: string, file: string, lan
 }
 
 export const openaiProvider: Provider = {
+  kind: "api",
   async transcribe(settings: TranscribeSettings, file: string, opts: TranscribeOpts): Promise<Transcript> {
     if (!existsSync(file)) throw new WazapError("FILE_NOT_FOUND", `No such file: ${file}`);
     const key = settings.apiKey;

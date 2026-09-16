@@ -500,6 +500,13 @@ its words are searchable, recalled and carried by the webhook event.
   again; `transcribe_audio(message_id)` still tries it on request.
 - **Deleted means dropped.** A note deleted, expired or cleared while it
   waits leaves the queue and is never uploaded.
+- **A day at most.** A note still waiting 24 hours after it was queued (the
+  account offline, the provider paused) is given up on as `too_old` and never
+  transcribed on its own later.
+- **Local stays local.** Each note remembers whether it was queued for
+  `local` or for an API. A note queued under `local` is never sent to an API
+  provider configured afterwards: it is given up on as `provider_changed`. A
+  note queued for an API may still be transcribed locally.
 - **History: the last day only.** A note that a history sync brings (a first
   link, a relink) is queued only when it is less than 24 hours old, so linking
   never transcribes the archive. A note WhatsApp delivers live is always
@@ -509,8 +516,8 @@ Audio *files* are left alone, since one can be an hour long, and so are notes
 you recorded and notes WhatsApp gave no length for; call
 `transcribe_audio(message_id)` for those. `WAZAP_TRANSCRIBE_AUTO=0` keeps the
 tool and stops the background work; with it, or with the provider switched
-off, a queue already stored is kept and waits, and it continues under whichever
-provider is configured next. `get_status` shows the queue under `transcription`
+off, a queue already stored is kept and waits, and it continues under the
+provider configured next, within the day and the local-stays-local rule. `get_status` shows the queue under `transcription`
 (how many wait, how long the current run has taken, how many were given up on,
 the latest reason, never content), and `wazap status` prints a `voice queue`
 line.

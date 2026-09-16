@@ -549,8 +549,11 @@ const V3 = `
 -- with failed_at set is no longer queued: it records why, so the note is not
 -- queued again. error is a short reason and never content. A transcript
 -- stored for the message, a tombstone or a delete takes the row with it.
+-- provider_class is where the audio was meant to go when the note was queued:
+-- a note queued for this machine ('local') is never handed to an API.
 CREATE TABLE transcribe_queue(
   message_id INTEGER PRIMARY KEY REFERENCES messages(id) ON DELETE CASCADE,
+  provider_class TEXT NOT NULL CHECK (provider_class IN ('local', 'api')),
   queued_at INTEGER NOT NULL,
   attempts INTEGER NOT NULL DEFAULT 0,
   next_at INTEGER NOT NULL,

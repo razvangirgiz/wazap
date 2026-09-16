@@ -19,7 +19,7 @@
  * Ingestion never waits on the worker and never sees it fail. kick() is how a
  * new note is noticed at once; timers cover retries and accounts coming back.
  */
-import type { AccountDb, TranscribeItem } from "../db/index.js";
+import type { AccountDb, ProviderClass, TranscribeItem } from "../db/index.js";
 import { logError } from "../logger.js";
 import { classifyFailure, type Failure } from "./failure.js";
 
@@ -30,6 +30,8 @@ export interface TranscribeSource {
   db(): AccountDb | null;
   /** Whether a run may start: the account is connected. */
   ready(): boolean;
+  /** Where the configured provider sends the audio; a note queued for this machine never goes to an API. */
+  providerClass(): ProviderClass;
   /** Transcribes one queued note and stores the transcript; throws what went wrong. */
   run(sid: string): Promise<void>;
 }
@@ -233,7 +235,7 @@ export class TranscribeWorker {
       if (db === null || !source.ready()) continue;
       let item: TranscribeItem | null;
       try {
-        item = db.transcripts.next();
+        item = db.transcripts.next(source.providerClass());
       } catch (err) {
         logError(`transcribe ${source.name}`, err);
         continue;

@@ -54,11 +54,11 @@ function voiceRow(key, ts, extra = {}) {
   };
 }
 
-function queuedDb(keys) {
+function queuedDb(keys, providerClass = "api") {
   const fixture = openTemp();
   keys.forEach((key, i) => {
     fixture.db.messages.upsert(voiceRow(key, T0 + i * 1000));
-    assert.equal(fixture.db.transcripts.enqueue(sid(false, PEER, key)), true);
+    assert.equal(fixture.db.transcripts.enqueue(sid(false, PEER, key), providerClass), true);
   });
   return fixture;
 }
@@ -83,6 +83,38 @@ test("a note leaves the queue with its transcript, its tombstone, its purge or i
   assert.equal(db.transcripts.next(), null, "a cleared chat's notes are not run");
   assert.equal(db.transcripts.stats().queued, 0);
   db.close();
+});
+
+test("a note still waiting a day after it was queued is given up on as too_old, and never runs later", () => {
+  const { db, clock } = queuedDb(["OLD"]);
+  clock.now += 60_000;
+  db.messages.upsert(voiceRow("FRESH", clock.now - 1_000));
+  db.transcripts.enqueue(sid(false, PEER, "FRESH"), "api");
+
+  clock.now += 24 * 3_600_000 - 60_000;
+  const next = db.transcripts.next("api");
+  assert.equal(next.sid, sid(false, PEER, "FRESH"), "a minute short of a day, it still runs");
+  assert.deepEqual(db.transcripts.state(sid(false, PEER, "OLD")), { state: "failed", attempts: 0, error: "too_old" });
+  clock.now += 7 * 24 * 3_600_000;
+  assert.equal(db.transcripts.next("local"), null);
+  assert.equal(db.transcripts.state(sid(false, PEER, "OLD")).state, "failed", "given up for good, whichever provider asks");
+  db.close();
+});
+
+test("a note queued for this machine is never handed to an API; a note queued for an API may run locally", () => {
+  const { db } = queuedDb(["LOCAL"], "local");
+  db.messages.upsert(voiceRow("API", T0 + 10_000));
+  db.transcripts.enqueue(sid(false, PEER, "API"), "api");
+
+  assert.equal(db.transcripts.next("api").sid, sid(false, PEER, "API"));
+  assert.deepEqual(db.transcripts.state(sid(false, PEER, "LOCAL")), { state: "failed", attempts: 0, error: "provider_changed" });
+  db.transcripts.claim(db.transcripts.next("api").id);
+  assert.equal(db.transcripts.next("local"), null, "the API note is running; the local one stays given up");
+
+  const local = queuedDb(["V1"], "api");
+  assert.equal(local.db.transcripts.next("local").sid, sid(false, PEER, "V1"), "audio meant for an API may stay on this machine");
+  db.close();
+  local.db.close();
 });
 
 test("a run a crash left under way is waiting again after a restart, its attempt counted, and given up at the third", () => {
@@ -119,7 +151,7 @@ test("a note given up on stays given up, with its reason, and is not queued agai
   db.transcripts.claim(item.id);
   db.transcripts.fail(item.id, "media no longer on WhatsApp (HTTP 404)");
 
-  assert.equal(db.transcripts.enqueue(note), false, "a live re-delivery of the same note does not queue it again");
+  assert.equal(db.transcripts.enqueue(note, "api"), false, "a live re-delivery of the same note does not queue it again");
   assert.equal(db.transcripts.next(), null);
   const stats = db.transcripts.stats();
   assert.equal(stats.queued, 0);
@@ -138,6 +170,7 @@ function fakeSource(db, name, run, { ready = () => true } = {}) {
       name,
       db: () => db,
       ready,
+      providerClass: () => "api",
       run: async (note) => {
         runs.push(note);
         await run(note);
@@ -538,7 +571,7 @@ test("a short-lived command queues arriving notes but leaves transcribing them t
   await live.svc.stop();
 });
 
-test("a note queued under one provider is transcribed by the provider configured after a restart", async () => {
+test("a note queued for local transcription is given up, not uploaded, once the provider is an API", async () => {
   const local = serviceWith({ WAZAP_TRANSCRIBE: "local" });
   local.svc.status = "disconnected";
   deliver(local.sock, [voiceNote("V1")]);
@@ -546,10 +579,25 @@ test("a note queued under one provider is transcribed by the provider configured
   await local.svc.stop();
 
   const api = serviceWith(CONFIGURED, { dataDir: local.svc.config.dataDir });
-  stub(api.svc);
+  const provider = stub(api.svc);
   await api.svc.transcribeIdle();
-  assert.equal(api.svc.db.messages.get(sidOf("V1")).transcriptInfo.provider, "openai");
+  assert.equal(provider.calls, 0, "audio the user meant to keep on this machine never leaves it");
+  assert.deepEqual(api.svc.db.transcripts.state(sidOf("V1")), { state: "failed", attempts: 0, error: "provider_changed" });
   await api.svc.stop();
+});
+
+test("a note queued for an API is transcribed locally once the provider is local", async () => {
+  const api = serviceWith(CONFIGURED);
+  api.svc.status = "disconnected";
+  deliver(api.sock, [voiceNote("V1")]);
+  await api.svc.stop();
+
+  const local = serviceWith({ WAZAP_TRANSCRIBE: "local" }, { dataDir: api.svc.config.dataDir });
+  local.svc.transcribeReadiness = async () => ({ ok: true, detail: "whisper.cpp, stubbed" });
+  stub(local.svc);
+  await local.svc.transcribeIdle();
+  assert.equal(local.svc.db.messages.get(sidOf("V1")).transcriptInfo.provider, "local");
+  await local.svc.stop();
 });
 
 test("a stop in the middle of a transcription keeps the transcript it paid for, and does not upload it again", async () => {
@@ -680,7 +728,7 @@ for (const from of [1, 2]) {
     assert.ok(upgraded.getMeta("migrated_v3") !== null);
     assert.deepEqual(upgraded.transcripts.stats(), { queued: 0, startedAt: null, failed: 0, lastError: null }, "no backfill");
     assert.equal(upgraded.messages.get(sid(false, PEER, "OLD2")).type, "voice", "the notes themselves came through");
-    assert.equal(upgraded.transcripts.enqueue(sid(false, PEER, "OLD2")), true, "and the queue works on the upgraded file");
+    assert.equal(upgraded.transcripts.enqueue(sid(false, PEER, "OLD2"), "api"), true, "and the queue works on the upgraded file");
     upgraded.close();
   });
 }
