@@ -672,7 +672,7 @@ test("send_message with mention_ids: the draft preview shows the final text, and
   const server = fakeServer();
   registerTools(server, asToolSource(svc), { allowWrite: true });
   const send = server.tools.get("send_message");
-  assert.match(send.meta.description, /@<number>/);
+  assert.match(send.meta.inputSchema.mention_ids.description, /@<number>/);
   assert.doesNotMatch(send.meta.description, /include their names in the text yourself/);
 
   const drafted = await send.handler({ chat_id: GROUP, text: "@40700000003 vii mâine?", mention_ids: ["+40700000002", DAN] });
