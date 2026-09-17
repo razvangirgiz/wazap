@@ -233,3 +233,29 @@ test("an account with the draft context off gets no style_check on its drafts ei
   assert.doesNotMatch(off.content[0].text, /Style check/);
   await hub.stop();
 });
+
+test("an answer over several accounts that is not one contact names no account", async () => {
+  const config = offlineConfig("wazap-find-null-account-", { readOnly: false });
+  const registry = AccountRegistry.load(config.dataDir);
+  registry.add("work", "Work");
+  const hub = new AccountHub(config, AccountRegistry.load(config.dataDir));
+  const home = hub.get("default");
+  const work = hub.get("work");
+  connect(home, ME);
+  connect(work, WORK_ME);
+  seed(home, ANA, "Ana Pop");
+  seed(work, DAN, "Ana Ionescu");
+  const server = fakeServer();
+  registerTools(server, asToolSource(hub), { allowWrite: true });
+  const find = async (args) => (await server.tools.get("find_contact").handler(args)).structuredContent;
+
+  const both = await find({ name: "Ana" });
+  assert.deepEqual([both.status, both.account_id], ["ambiguous", null], "not the default account's answer");
+  const nobody = await find({ name: "Xyzzy" });
+  assert.deepEqual([nobody.status, nobody.account_id], ["not_found", null]);
+  const one = await find({ name: "Ana Ionescu" });
+  assert.deepEqual([one.status, one.account_id], ["resolved", "work"]);
+  const named = await find({ name: "Ana", account_id: "default" });
+  assert.equal(named.account_id, "default", "one account asked, that account");
+  await hub.stop();
+});

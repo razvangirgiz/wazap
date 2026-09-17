@@ -369,7 +369,7 @@ export const FIND_CONTACT_OUTPUT = {
   fix: z.string().optional().describe("What to do next, when not resolved"),
   accounts_searched: z.array(z.string()).optional(),
   accounts_unavailable: z.array(z.object({ account_id: z.string(), error: z.string() })).optional(),
-  account_id: z.string().optional(),
+  account_id: z.string().nullable().optional().describe("The account that answered; null when several accounts were searched and none answered alone"),
 };
 
 // ---------------------------------------------------------------- the tool
@@ -456,6 +456,8 @@ export async function runFindContact(args: FindContactArgs, ctx: ToolCtx): Promi
   } else {
     structured.closest = outcome.closest.map((found) => candidateView(found, multi));
   }
+  // Over several accounts, no one account answered: each candidate names its own.
+  if (multi && outcome.contact === null) structured.account_id = null;
   const fix = fixFor(outcome, read, args.name, multi, unavailable);
   if (fix !== undefined) structured.fix = fix;
   if (multi) structured.accounts_searched = targets.map((target) => target.id);
