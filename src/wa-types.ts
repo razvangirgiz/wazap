@@ -368,7 +368,7 @@ export interface WaitOptions {
   /** Only messages that address the linked account: any direct message, or a group message that @-mentions it or replies to one of its own. */
   addressedToMe: boolean;
   cursor?: string;
-  /** Unless it waits on their chat, a #private person's messages come without their words. */
+  /** Without a chat, a #private person's messages come without their words; a chat named reads whole. */
   private?: PrivateRule;
 }
 

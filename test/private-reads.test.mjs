@@ -126,7 +126,7 @@ test("search from one #private person shows what they wrote, and a quote of anot
   assert.ok(!everything(result).includes("împrumut"));
 });
 
-test("wait_for_messages keeps what arrived from someone #private without their words, in their chat and in a group, unless it waits on their chat", async () => {
+test("wait_for_messages without a chat keeps what arrived from someone #private without their words, in their chat and in a group; waiting on a chat, theirs or a group's, reads it whole", async () => {
   const { svc, arrive } = account();
   const { call } = schemaCheckedTools(svc, { allowWrite: false });
   svc.db.identity.updateFields(ANA, { addTags: ["private"] });
@@ -159,7 +159,14 @@ test("wait_for_messages keeps what arrived from someone #private without their w
   assert.match(broad.content[0].text, /Ana: \[private\]/);
 
   const group = await call("wait_for_messages", { timeout_seconds: 1, cursor, chat_id: GROUP });
-  assert.deepEqual(group.structuredContent.messages.map((m) => [m.message_id, m.private]), [[inGroup, true], [reply, undefined]], "a group waited on is not her chat");
+  assert.deepEqual(
+    group.structuredContent.messages.map((m) => [m.message_id, m.text, m.private, m.quoted?.text]),
+    [
+      [inGroup, "nu spuneți nimănui de divorț", undefined, undefined],
+      [reply, "te sun diseară", undefined, "nu spuneți nimănui de divorț"],
+    ],
+    "a group named by chat_id reads whole, her words included"
+  );
   const theirs = await call("wait_for_messages", { timeout_seconds: 1, cursor, chat_id: ANA });
   assert.deepEqual(
     theirs.structuredContent.messages.map((m) => [m.text, m.private]),

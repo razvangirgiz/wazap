@@ -363,7 +363,7 @@ test("remember and learn state the #private rule the reads keep: no words unless
   assert.match(described, /#private keeps their words out of what you did not ask about them by name/);
   assert.doesNotMatch(described, /out of answers|out of catch_up and find_contact's draft context/);
   const guide = (await server.tools.get("learn").handler({})).content[0].text;
-  assert.match(guide, /#private: a person's words come only when a call names them: their chat_id,\s+a message_id of theirs, search's from\. Elsewhere their entries say private,\s+with no words, and search counts private_omitted\./);
+  assert.match(guide, /#private: a person's words come only when a call names them: their chat_id,\s+a message_id of theirs, search's from; a group's chat_id reads whole\. Elsewhere\s+their entries say private, with no words, and search counts private_omitted\./);
 });
 
 test("each tool's annotations are true of its most far-reaching action: get_media reads, remember does not", () => {

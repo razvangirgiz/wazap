@@ -12,8 +12,9 @@
  * - find_contact's draft context keeps only the user's style for them;
  * - search without `chat_id` leaves their messages out before its limit and
  *   counts them in `private_omitted`, and a quote of theirs loses its words;
- * - wait_for_messages, unless it waits on their chat, keeps what arrived from
- *   them without its words (withoutWords), marked `private`;
+ * - wait_for_messages without `chat_id` keeps what arrived from them without
+ *   its words (withoutWords), marked `private`; waiting on a chat, theirs or a
+ *   group's, names it;
  * - list_chats keeps the last message of their chat, or theirs in a group,
  *   without its words, marked `private`;
  * - read_messages on "status" keeps their stories without text, caption or

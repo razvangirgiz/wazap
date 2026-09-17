@@ -359,8 +359,9 @@ Call get_status when anything fails, and link_account when it says not_linked.
   user, never guess. remember keeps what the user says about a person (note,
   tags, fields such as relatie), on this machine; find_contact(tag) lists a tag.
 - #private: a person's words come only when a call names them: their chat_id,
-  a message_id of theirs, search's from. Elsewhere their entries say private,
-  with no words, and search counts private_omitted. Fetch them only when asked.
+  a message_id of theirs, search's from; a group's chat_id reads whole. Elsewhere
+  their entries say private, with no words, and search counts private_omitted.
+  Fetch them only when asked.
 - Send: send_message drafts text, media, a poll, a location or a forward, and
   sends nothing. Show the preview; after the user's yes, confirm_send(draft_id)
   is the only call that sends. A draft lasts 15 minutes. Fix style_check.warnings
@@ -604,7 +605,7 @@ const TOOLS: readonly ToolDef[] = [
         chatId: chat_id,
         addressedToMe: addressed_to_me,
         cursor,
-        private: await privateRule(ctx.hub, ctx.accountId),
+        ...(chat_id === undefined ? { private: await privateRule(ctx.hub, ctx.accountId) } : {}),
       });
       return ok(renderWait(result), { ...result, count: result.messages.length });
     },

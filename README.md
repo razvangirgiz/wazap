@@ -453,9 +453,9 @@ and what kind, and loses the words:
   groups before it counts to `limit`, by meaning and by words, and says how
   many in `private_omitted`. A quote of theirs in someone else's message keeps
   who wrote it, not what.
-- `wait_for_messages` still returns what arrived from them, in their chat or in
-  a group, with `text: "[private]"` and `private: true`, unless it waits on
-  their chat.
+- `wait_for_messages` without `chat_id` still returns what arrived from them,
+  in their chat or in a group, with `text: "[private]"` and `private: true`;
+  waiting on one chat, theirs or a group's, reads it whole.
 - `list_chats` shows the last message of their chat, or the last one they wrote
   in a group, the same way.
 - `read_messages` on `"status"` keeps their stories with author, time and kind,

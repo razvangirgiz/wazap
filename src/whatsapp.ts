@@ -1887,12 +1887,8 @@ export class WhatsAppService implements WhatsAppApi {
       const last = found.length > 0 ? found[found.length - 1]!.seq : Math.max(since, this.arrivalSeq);
       since = last;
       const db = this.readyDb();
-      let people = db === null ? null : this.privateScope(opts.private);
-      if (db !== null && people !== null && chatJid !== undefined) {
-        const chat = db.identity.chat(chatJid);
-        // Waiting on their own chat asks for them by name; a group does not.
-        if (chat !== null && people.chat(chat)) people = null;
-      }
+      // A chat named by chat_id reads whole, theirs or a group's: only a wait on every chat leaves #private words out.
+      const people = db === null || chatJid !== undefined ? null : this.privateScope(opts.private);
       // A message deleted or expired since it arrived is not handed out.
       const messages = found.flatMap((a) => {
         const message = db?.messages.get(a.sid) ?? null;

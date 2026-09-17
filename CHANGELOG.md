@@ -143,7 +143,7 @@ answers.
   reads whole. `search` without `chat_id` leaves their chat and what they write
   in groups out before `limit`, by meaning and words, by words and on the
   fallback, and counts them in `private_omitted`; a quote of theirs keeps its
-  author, not its words. `wait_for_messages` (unless it waits on their chat),
+  author, not its words. `wait_for_messages` without `chat_id`,
   `list_chats`' last message and `read_messages` on `"status"` keep the entry,
   with `text: "[private]"`, `private: true` and no preview. Filed on one
   account, the tag holds in these reads on every other account. `remember`, `learn`, the
