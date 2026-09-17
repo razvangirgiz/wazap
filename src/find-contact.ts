@@ -23,7 +23,7 @@
 import { z } from "zod";
 import type { AccountBinding } from "./account-hub.js";
 import { draftContextEnabled } from "./accounts.js";
-import { FIND_SCORES, RELATIONSHIPS, inflectionForms, type AccountDb, type ContactCandidate, type FindKind, type FindResult, type FindVerdict } from "./db/index.js";
+import { FIND_SCORES, RELATIONSHIPS, inflectionForms, nameWords, type AccountDb, type ContactCandidate, type FindKind, type FindResult, type FindVerdict } from "./db/index.js";
 import { styleLine, type DraftContext } from "./draft-style.js";
 import { WazapError, asWazapError } from "./errors.js";
 import { formatAge, isoWithOffset } from "./messages.js";
@@ -398,6 +398,13 @@ function contextAllowed(ctx: ToolCtx, binding: Pick<AccountBinding, "id" | "wa">
 }
 
 export async function runFindContact(args: FindContactArgs, ctx: ToolCtx): Promise<ToolResult> {
+  if (nameWords(args.name).length === 0) {
+    throw new WazapError(
+      "INVALID_ID",
+      `"${args.name}" has no letter or digit to look anyone up by.`,
+      'Pass what the user calls them, as they said it: find_contact({ name: "Ana" }). A phone number goes straight to send_message as chat_id'
+    );
+  }
   const limit = Math.max(1, Math.min(10, Math.floor(args.limit ?? FIND_SCORES.ambiguousMax)));
   const query: FindContactQuery = { name: args.name, qualifier: args.qualifier, kind: args.kind ?? "any", limit };
   const everyone = args.account_id === undefined ? ctx.hub.bindings() : [];

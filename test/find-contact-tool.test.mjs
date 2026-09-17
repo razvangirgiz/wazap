@@ -267,3 +267,17 @@ test("find_contact's limit says ambiguous answers list at most five people from 
   assert.match(limit.description, /at most 5 from each account/);
   assert.equal(limit.safeParse(11).success, false);
 });
+
+test("a name with nothing to look up is refused with what to pass instead", async () => {
+  const { svc } = connectedService(WhatsAppService, { prefix: "wazap-find-empty-", id: ME, name: "Andrei" });
+  const server = fakeServer();
+  registerTools(server, asToolSource(svc), { allowWrite: false });
+  for (const name of ["   ", "🙂", "!!"]) {
+    const result = await server.tools.get("find_contact").handler({ name });
+    assert.equal(result.isError, true, name);
+    const body = JSON.parse(result.content[0].text);
+    assert.equal(body.error, "INVALID_ID", name);
+    assert.match(body.fix, /find_contact\(\{ name: "Ana" \}\)/);
+  }
+  await svc.stop();
+});
