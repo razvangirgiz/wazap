@@ -801,8 +801,8 @@ function specOf(args: CatchupArgs, now: number): CatchupWindowSpec {
   return { kind: "since", ms: sinceOf(since, now) };
 }
 
-/** Everyone tagged #private or #no-catchup on any of the accounts, by jid; an account that cannot say adds nobody. */
-async function taggedAcross(targets: ReadonlyArray<{ wa: WhatsAppApi }>): Promise<CatchupTagJids> {
+/** Everyone tagged #private or #no-catchup on any of the accounts, by jid; an account that cannot say adds nobody. The broad reads take its #private half. */
+export async function taggedAcross(targets: ReadonlyArray<{ wa: WhatsAppApi }>): Promise<CatchupTagJids> {
   const privateJids = new Set<string>();
   const noCatchup = new Set<string>();
   for (const target of targets) {

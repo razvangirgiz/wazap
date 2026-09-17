@@ -20,9 +20,11 @@
  *   preview, marked `private`: a story is never asked for by name.
  *
  * The tag goes with the person, not only their chat: what they write in a
- * group is theirs too. A broad read takes the whole set once per call
- * (privatePeople). The webhook is the builder's channel, not the assistant's,
- * and is not touched.
+ * group is theirs too. A broad read takes the whole set once per call and per
+ * account (privatePeople), and with several accounts a person tagged on any of
+ * them is tagged on all: the accounts pass each other the jids (taggedJids,
+ * the tools' privateRule). The webhook is the builder's channel, not the
+ * assistant's, and is not touched.
  *
  * Tags are stored normalized (lowercase, without "#"), so the tag a user files
  * as "#private" or "Private" is `private`. Groups carry no tags.

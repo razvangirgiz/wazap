@@ -206,3 +206,58 @@ test("the stories of someone #private keep their author, time and kind, without 
   const images = await call("read_messages", { chat_id: "status", types: ["image"] });
   assert.equal(images.structuredContent.count, 2, "what kind stays: types still finds hers");
 });
+
+function hubOf(...accounts) {
+  const bindings = accounts.map(({ id, svc }) => ({ id, wa: svc }));
+  const records = accounts.map(({ id, name }) => ({ id, name, enabled: true, owner: null }));
+  return {
+    binding: (id) => bindings.find((binding) => binding.id === id),
+    defaultBinding: () => bindings[0],
+    bindings: () => bindings,
+    findByChat: (jid) => bindings.filter((binding) => binding.wa.hasChat(jid)),
+    findByMessage: (id) => bindings.filter((binding) => binding.wa.hasMessage(id)),
+    findByDraft: () => [],
+    record: (id) => records.find((record) => record.id === id),
+    records: () => records,
+    recordOnDisk: (id) => records.find((record) => record.id === id),
+    reload: () => {},
+    noteOwner: () => {},
+  };
+}
+
+test("with several accounts, #private filed on one account holds in every broad read of another, by number or by lid", async () => {
+  const personal = account({ record: { id: "personal", name: "Personal", enabled: true, owner: null } });
+  const work = account({ id: "40700000099@s.whatsapp.net", name: "Andrei", record: { id: "work", name: "Business", enabled: true, owner: null } });
+  const { call } = schemaCheckedTools(hubOf({ id: "personal", name: "Personal", svc: personal.svc }, { id: "work", name: "Business", svc: work.svc }), { allowWrite: false });
+  const LID = "555666777888999@lid";
+  personal.svc.db.identity.updateFields(ANA, { addTags: ["private"] });
+  personal.svc.db.identity.updateFields(LID, { addTags: ["private"] });
+  // The business account knows that lid as Dan's.
+  await work.svc.db.learnLidPhone(LID, DAN);
+  const { cursor } = (await call("wait_for_messages", { account_id: "work", timeout_seconds: 1 })).structuredContent;
+  const at = Date.now() - 10 * MINUTE;
+  work.arrive(ANA, "factura pentru avocat", { at });
+  work.arrive(GROUP, "factura de la psiholog", { participant: DAN, at: at + MINUTE });
+  work.arrive(ELA, "factura de curent", { at: at + 2 * MINUTE });
+  work.sock.ev.emit("messages.upsert", {
+    type: "notify",
+    messages: [{ key: { remoteJid: "status@broadcast", fromMe: false, id: "S1", participant: ANA }, message: { conversation: "concediu medical" }, messageTimestamp: Math.floor((at + 3 * MINUTE) / 1000) }],
+  });
+
+  const found = await call("search", { account_id: "work", query: "factura", match: "words" });
+  assert.equal(found.structuredContent.account_id, "work");
+  assert.deepEqual([found.structuredContent.messages.map((m) => m.chat_id), found.structuredContent.private_omitted], [[ELA], 2]);
+  const chats = await call("list_chats", { account_id: "work" });
+  const last = new Map(chats.structuredContent.chats.map((chat) => [chat.chat_id, chat.last_message]));
+  assert.deepEqual([last.get(ANA).private, last.get(GROUP).private, last.get(ELA).private], [true, true, undefined]);
+  const waited = await call("wait_for_messages", { account_id: "work", timeout_seconds: 1, cursor });
+  assert.deepEqual(waited.structuredContent.messages.map((m) => [m.chat_id, m.private]), [[ANA, true], [GROUP, true], [ELA, undefined]]);
+  const stories = await call("read_messages", { account_id: "work", chat_id: "status" });
+  assert.deepEqual(stories.structuredContent.messages.map((m) => [m.text, m.private]), [["[private]", true]]);
+  for (const result of [found, chats, waited, stories]) {
+    for (const words of ["avocat", "psiholog", "medical"]) assert.ok(!everything(result).includes(words), words);
+  }
+
+  const named = await call("search", { account_id: "work", query: "factura", match: "words", from: DAN });
+  assert.deepEqual(named.structuredContent.messages.map((m) => m.text), ["factura de la psiholog"], "from names him");
+});
