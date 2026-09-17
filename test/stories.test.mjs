@@ -5,11 +5,9 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { z } from "zod";
 
 import { WhatsAppService } from "../dist/whatsapp.js";
-import { registerTools } from "../dist/tools.js";
-import { asToolSource, connectedService } from "./helpers.mjs";
+import { connectedService, schemaCheckedTools } from "./helpers.mjs";
 
 const ME = "40700000001@s.whatsapp.net";
 const ANA = "40700000002@s.whatsapp.net";
@@ -18,14 +16,7 @@ const STATUS = "status@broadcast";
 
 function setup(config = {}) {
   const { svc, sock } = connectedService(WhatsAppService, { prefix: "wazap-stories-", id: ME, name: "Răzvan", config });
-  const tools = new Map();
-  registerTools({ registerTool: (name, meta, handler) => tools.set(name, { meta, handler }) }, asToolSource(svc), {
-    allowWrite: false,
-  });
-  const call = (name, args = {}) => {
-    const { meta, handler } = tools.get(name);
-    return handler(z.object(meta.inputSchema).parse(args));
-  };
+  const { call } = schemaCheckedTools(svc, { allowWrite: false });
   let seq = 0;
   const story = (author, content, { at = Date.now(), pushName } = {}) =>
     sock.ev.emit("messages.upsert", {
@@ -76,7 +67,7 @@ test("stories are listed by author, newest first, and show nowhere else", async 
   );
 });
 
-test("a story never leaks into search_messages either", async () => {
+test("a story never leaks into search either", async () => {
   const { sock, call, story } = setup();
   story(ANA, "la mare 🌊");
   sock.ev.emit("messages.upsert", {
@@ -90,7 +81,7 @@ test("a story never leaks into search_messages either", async () => {
     ],
   });
 
-  const result = await call("search_messages", { query: "mare" });
+  const result = await call("search", { match: "words", query: "mare" });
   assert.deepEqual(
     result.structuredContent.messages.map((m) => m.chat_id),
     [DAN],

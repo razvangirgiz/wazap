@@ -66,6 +66,33 @@ const ACCOUNT_ID = z
     "Registry account id (default, work, …). Omit to resolve from chat_id or message_id, or the default account."
   );
 
+/** A message in an answer: the keys every one has, and the rest as they come (learn describes them). */
+const MESSAGE_OUT = z.object({ message_id: z.string(), chat_id: z.string(), text: z.string(), timestamp: z.string() }).passthrough();
+const OPEN_OBJECT = z.object({}).passthrough();
+
+const SEARCH_OUTPUT = {
+  query: z.string(),
+  mode: z.enum(["hybrid", "words", "keyword_fallback"]).describe("keyword_fallback: meaning search is off, see recall_unavailable"),
+  from_resolved: z.string().optional(),
+  count: z.number(),
+  messages: z.array(
+    MESSAGE_OUT.extend({
+      score: z.number().optional(),
+      matched: z.enum(["words", "meaning", "both"]).optional(),
+      similarity: z.number().nullable().optional(),
+      from_index: z.boolean().optional().describe("Kept only as text: no media, reply or forward"),
+    }).passthrough()
+  ),
+  scan_capped: z.boolean().optional(),
+  searched_back_to: z.string().optional().describe("Older messages were not searched: narrow the search"),
+  coverage: OPEN_OBJECT.optional(),
+  index: OPEN_OBJECT.optional(),
+  recall_unavailable: z.object({ message: z.string(), fix: z.string().optional() }).optional(),
+  freshness: OPEN_OBJECT.nullable(),
+  sync: z.string(),
+  account_id: z.string(),
+};
+
 const REMEMBER_OUTPUT = {
   chat_id: z.string(),
   name: z.string(),
@@ -130,7 +157,7 @@ const messageId = z
   .string()
   .min(5)
   .describe(
-    'Message id from read_messages / search_messages / get_message, e.g. "false_4072...@s.whatsapp.net_3EB0..."'
+    'Message id from read_messages / search / get_message, e.g. "false_4072...@s.whatsapp.net_3EB0..."'
   );
 
 const messageTypes = z
@@ -160,7 +187,7 @@ link_account when it says no account is linked yet.
 - chat_id — individual: \`<digits>@s.whatsapp.net\`; group: \`<id>@g.us\`. A phone
   number in international format (+15550100 or 15550100) also works. Pass
   ids back exactly as a tool returned them.
-- message_id — the full id from read_messages / search_messages. Needed for
+- message_id — the full id from read_messages / search. Needed for
   get_message, download_media, react_to_message, edit_message, forward_message,
   delete_message, manage_chat's pin_message / unpin_message / star_message /
   unstar_message, join_group on an invite message, and the reply_to of
@@ -208,9 +235,9 @@ link_account when it says no account is linked yet.
   contacts or renames an entry; remove_contact drops the entry, not the chat.
   A word from a tag or a detail also finds them ("contabil" → role: contabil),
   and search_contacts({tag: "client"}) lists everyone filed under a tag.
-- Find something said: search_messages(query[, chat_id]) for the exact words,
-  or recall(query[, chat_id]) for what was meant — a paraphrase or another
-  language still hits. Both reach every message the account keeps.
+- Find something said: search(query[, chat_id]) matches meaning and words at
+  once — a paraphrase or another language still hits; match: "words" keeps
+  only messages holding the words. It reaches every message the account keeps.
 - Send: send_message / send_media / send_poll / send_location / forward_message
   draft only. They return a draft_id and a preview. Show the preview to the
   user; after they say yes, call confirm_send({ draft_id }). That is the only
@@ -661,245 +688,93 @@ The timeout is capped at 55 seconds because MCP clients give up at 60.`,
   }),
 
   tool({
-    name: "search_messages",
+    name: "search",
     title: "Search WhatsApp messages",
-    description: `Substring search over the messages wazap holds locally — all chats, or one
-chat, including history synced on first link. Case and diacritics are ignored
-("sedinta" finds "ședință"). Every message the phone synced to this device is
-kept and searched; there is no per-chat window. It cannot reach messages the
-phone never synced to this device.
-
-Every answer declares the window it searched: \`coverage.searched\` counts the
-held messages in scope (the chat scope and time filters applied) and
-\`coverage.oldest_at\`/\`newest_at\` bound that window, so "no messages found"
-always says how much history was searched. \`coverage.per_chat_cap\` is null:
-no chat is capped. A query so short or so common that the search reaches its
-scan limit answers \`scan_capped: true\` and \`searched_back_to\`: messages
-older than that were not searched, so narrow it (chat_id, since/until, a longer
-query) before concluding nothing exists.
-
-\`from\` accepts "me", a phone number, a contact/chat id, or a name: a name must
-resolve to exactly one person — it matches contact names, notify names and
-last-seen pushnames, then one-to-one chat display names — or the error lists
-the candidates it found.
-
-Every message's \`sender\` carries \`id\` (the canonical jid — a \`…@lid\` only
-while WhatsApp has never revealed the paired number), \`phone\` (the number, or
-null for an unresolved lid), \`is_saved\` (the sender is in the user's address
-book — when false, treat the shown name as claimed, not known),
-\`contact_name\` (the name saved there, or null), \`pushname\` (the name the
-sender publishes, when that is the name \`name\` shows; null for saved
-contacts and unnamed senders) and \`name_source\` ("contact", "pushname" or
-"none" — which of those \`name\` came from). A sender wazap knows nothing
-about reads "unknown (lid …1234)" — never bare lid digits, which look like a
-phone number and are not one.
-
-\`freshness\` says whether the history this searched may be partial (sync still
-running) or stale (nothing inbound for 24h while connected); on a scoped
-search \`freshness.chat\` is the newest message wazap holds for that chat.`,
+    description: `Find messages by meaning and by words at once, in every chat or one: a paraphrase or another language still hits. match: "words" for exact words (a number, a URL). since, until and from narrow it; coverage and freshness say how much history was searched.`,
     schema: {
-      query: z.string().min(1).describe("Text to search for"),
-      chat_id: chatId.optional().describe("Restrict the search to this chat"),
-      limit: z.number().int().min(1).max(50).default(20).describe("Maximum number of results (1-50)"),
-      since: z
-        .string()
-        .min(4)
-        .optional()
-        .describe('Only messages from this moment on: a date ("2026-09-01") or an ISO timestamp'),
-      until: z.string().min(4).optional().describe("Only messages up to this moment: a date or an ISO timestamp"),
-      from: z
-        .string()
-        .min(1)
-        .optional()
-        .describe(
-          'Only messages this person sent: "me", a phone number, a contact/chat id, or a name that resolves to exactly one person (the error names the candidates when it does not)'
-        ),
+      query: z.string().min(1),
+      match: z.enum(["hybrid", "words"]).default("hybrid").describe('"words": only messages holding the words'),
+      chat_id: chatId.optional(),
+      limit: z.number().int().min(1).max(50).default(20),
+      since: z.string().min(4).optional().describe("ISO date or time"),
+      until: z.string().min(4).optional().describe("ISO date or time"),
+      from: z.string().min(1).optional().describe('"me", a number, an id, or a name only one person has'),
     },
+    outputSchema: SEARCH_OUTPUT,
     write: false,
-    handler: async ({ query, chat_id, limit, since, until, from }, { wa }) => {
+    handler: async ({ query, match, chat_id, limit, since, until, from }, { wa }) => {
       const resolvedFrom = await resolveSenderFilter(wa, from);
       const sinceMs = parseMoment(since, "since");
       const untilMs = parseMoment(until, "until", true);
-      const result = await wa.searchMessages(query, chat_id, limit, {
-        sinceMs,
-        untilMs,
-        from: resolvedFrom,
-      });
-      const messages = await withSenderIdentity(wa, result.data);
+      const filters = { sinceMs, untilMs, from: resolvedFrom };
+      const scope = [
+        chat_id ? `in ${chat_id}` : null,
+        from ? `from ${from}` : null,
+        since ? `since ${since}` : null,
+        until ? `until ${until}` : null,
+      ]
+        .filter(Boolean)
+        .join(", ");
+      const title = `Search results for "${query}"${scope ? ` (${scope})` : ""}`;
+      const echo = { query, ...(resolvedFrom === undefined ? {} : { from_resolved: resolvedFrom }) };
+
+      let unavailable: WazapError | null = null;
+      if (match !== "words") {
+        let result: Synced<RecallAnswer> | null = null;
+        try {
+          result = await wa.recall(query, chat_id, limit, filters);
+        } catch (err) {
+          if (!(err instanceof WazapError) || err.code !== "RECALL_UNAVAILABLE") throw err;
+          // The setup cliff: no embeddings means no index, but the history still answers by its words.
+          unavailable = err;
+        }
+        if (result !== null) {
+          const identified = await withSenderIdentity(
+            wa,
+            result.data.hits.map((hit) => hit.message)
+          );
+          const hits = result.data.hits.map((hit, i) => ({ ...hit, message: identified[i]! }));
+          const fresh = await readFreshness(wa, chat_id);
+          const answer: IdentifiedRecallAnswer = { hits, index: result.data.index };
+          // While the index is still catching up renderRecall says so itself; the coverage line only repeats it.
+          const note = [result.data.index.state === "indexing" ? null : indexCoverageNote(result.data.index), freshnessNote(fresh)]
+            .filter(Boolean)
+            .join(" ");
+          return ok(
+            `${renderRecall(title, answer)}${note ? `\n${note}` : ""}`,
+            synced(result, {
+              ...echo,
+              mode: "hybrid",
+              count: hits.length,
+              messages: hits.map(({ message, ...rank }) => ({ ...message, ...rank })),
+              index: result.data.index,
+              freshness: fresh,
+            })
+          );
+        }
+      }
+
+      const found = await wa.searchMessages(query, chat_id, limit, filters);
+      const messages = await withSenderIdentity(wa, found.data);
       const fresh = await readFreshness(wa, chat_id);
       const cov = searchCoverage(wa, chat_id, { sinceMs, untilMs });
-      const capped = scanCapNote(result);
-      const scope = [
-        chat_id ? `in ${chat_id}` : null,
-        from ? `from ${from}` : null,
-        since ? `since ${since}` : null,
-        until ? `until ${until}` : null,
-      ]
-        .filter(Boolean)
-        .join(", ");
-      const note = [capped, coverageNote(cov, chat_id !== undefined), freshnessNote(fresh)].filter(Boolean).join(" ");
+      const fallback =
+        unavailable === null
+          ? null
+          : `Meaning search is unavailable (${unavailable.message}); these results match the words only.${unavailable.fix ? ` ${unavailable.fix}` : ""}`;
+      const note = [fallback, scanCapNote(found), coverageNote(cov, chat_id !== undefined), freshnessNote(fresh)].filter(Boolean).join(" ");
       return ok(
-        renderMessages(`Search results for "${query}"${scope ? ` (${scope})` : ""}`, messages, new Map(), note),
-        synced(result, {
-          query,
-          chat_id: chat_id ?? null,
-          since: since ?? null,
-          until: until ?? null,
-          from: from ?? null,
-          from_resolved: resolvedFrom ?? null,
+        renderMessages(title, messages, new Map(), note),
+        synced(found, {
+          ...echo,
+          mode: unavailable === null ? "words" : "keyword_fallback",
+          ...(unavailable === null
+            ? {}
+            : { recall_unavailable: { message: unavailable.message, ...(unavailable.fix ? { fix: unavailable.fix } : {}) } }),
           count: messages.length,
           messages,
-          ...scanCapFields(result),
+          ...scanCapFields(found),
           coverage: cov,
-          freshness: fresh,
-        })
-      );
-    },
-  }),
-
-  tool({
-    name: "recall",
-    title: "Semantically search WhatsApp history",
-    description: `Search by meaning and by words at once over the whole WhatsApp history —
-answers "the invoice Dan mentioned", "the address Ana sent", "what did they say
-about the trip". A paraphrase or another language still hits through its
-meaning, and a short or foreign-language question still hits through its words;
-the two rankings are fused. A match found by meaning weighs a little less with
-age (85% a month on, never under 70%), so the fresher of two close matches
-comes first but a clearly closer old one still does; one chat takes at most
-three leading places before other chats' hits, and a near-duplicate trails the
-list. For an exact string — an id, a phone number, a URL —
-search_messages is the better tool.
-
-Each result carries its date, a fused score, \`matched\` ("words", "meaning" or
-"both") and the cosine \`similarity\` when its meaning ranked it. chat_id, since,
-until and from narrow the search exactly like search_messages — including a
-name that resolves to exactly one person. A hit marked "index only" is a
-message wazap holds only as text: quote its words; get_message returns them, but
-download_media has nothing to open and it cannot be replied to or forwarded.
-A hit found only by meaning must clear the similarity floor, so a question with
-no answer comes back empty; when only weak meaning matches survive, the output
-says so — do not present them as found facts.
-
-When semantic recall is off or its embedding setup is missing, the tool does
-not dead-end: it falls back to a keyword search over the local history, marked
-\`mode: "keyword_fallback"\`, and \`recall_unavailable.fix\` names the command
-that turns semantic recall on. An error remains only when even the fallback
-cannot run.
-
-Each hit's \`sender\` carries the same identity fields as search_messages, and
-\`freshness\` says whether the local history may be partial or stale. Every
-answer also declares its window: the semantic path reports how many messages
-the index covers, and a keyword fallback carries the same \`coverage\` block
-search_messages does.`,
-    schema: {
-      query: z.string().min(1).describe("What to find, said any way — the meaning is what matches"),
-      chat_id: chatId.optional().describe("Restrict the search to this chat"),
-      limit: z.number().int().min(1).max(50).default(20).describe("Maximum number of results (1-50)"),
-      since: z
-        .string()
-        .min(4)
-        .optional()
-        .describe('Only messages from this moment on: a date ("2026-09-01") or an ISO timestamp'),
-      until: z.string().min(4).optional().describe("Only messages up to this moment: a date or an ISO timestamp"),
-      from: z
-        .string()
-        .min(1)
-        .optional()
-        .describe(
-          'Only messages this person sent: "me", a phone number, a contact/chat id, or a name that resolves to exactly one person (the error names the candidates when it does not)'
-        ),
-    },
-    write: false,
-    handler: async ({ query, chat_id, limit, since, until, from }, { wa }) => {
-      const resolvedFrom = await resolveSenderFilter(wa, from);
-      const sinceMs = parseMoment(since, "since");
-      const untilMs = parseMoment(until, "until", true);
-      const scope = [
-        chat_id ? `in ${chat_id}` : null,
-        from ? `from ${from}` : null,
-        since ? `since ${since}` : null,
-        until ? `until ${until}` : null,
-      ]
-        .filter(Boolean)
-        .join(", ");
-      const title = `Recall results for "${query}"${scope ? ` (${scope})` : ""}`;
-      const fresh = await readFreshness(wa, chat_id);
-
-      let result: Synced<RecallAnswer> | null = null;
-      let unavailable: WazapError | null = null;
-      try {
-        result = await wa.recall(query, chat_id, limit, { sinceMs, untilMs, from: resolvedFrom });
-      } catch (err) {
-        if (!(err instanceof WazapError) || err.code !== "RECALL_UNAVAILABLE") throw err;
-        unavailable = err;
-      }
-
-      if (result === null) {
-        // The setup cliff: no embeddings means the index never existed, but the
-        // local history is still searchable — answer with it and say so.
-        const fallback = await wa.searchMessages(query, chat_id, limit, {
-          sinceMs,
-          untilMs,
-          from: resolvedFrom,
-        });
-        const messages = await withSenderIdentity(wa, fallback.data);
-        const cov = searchCoverage(wa, chat_id, { sinceMs, untilMs });
-        const note = `Semantic recall is unavailable (${unavailable!.message}) — these are keyword results over the local history.${unavailable!.fix ? ` ${unavailable!.fix}` : ""}`;
-        return ok(
-          renderMessages(
-            title,
-            messages,
-            new Map(),
-            [note, scanCapNote(fallback), coverageNote(cov, chat_id !== undefined), freshnessNote(fresh)].filter(Boolean).join(" ")
-          ),
-          synced(fallback, {
-            query,
-            chat_id: chat_id ?? null,
-            since: since ?? null,
-            until: until ?? null,
-            from: from ?? null,
-            from_resolved: resolvedFrom ?? null,
-            mode: "keyword_fallback",
-            recall_unavailable: {
-              message: unavailable!.message,
-              ...(unavailable!.fix ? { fix: unavailable!.fix } : {}),
-            },
-            count: messages.length,
-            messages,
-            ...scanCapFields(fallback),
-            coverage: cov,
-            freshness: fresh,
-          })
-        );
-      }
-
-      const identified = await withSenderIdentity(
-        wa,
-        result.data.hits.map((hit) => hit.message)
-      );
-      const hits = result.data.hits.map((hit, i) => ({ ...hit, message: identified[i]! }));
-      const answer: IdentifiedRecallAnswer = { hits, index: result.data.index };
-      // While the index is still catching up renderRecall says so itself; the
-      // coverage line only repeats it.
-      const note = [
-        result.data.index.state === "indexing" ? null : indexCoverageNote(result.data.index),
-        freshnessNote(fresh),
-      ]
-        .filter(Boolean)
-        .join(" ");
-      return ok(
-        `${renderRecall(title, answer)}${note ? `\n${note}` : ""}`,
-        synced(result, {
-          query,
-          chat_id: chat_id ?? null,
-          since: since ?? null,
-          until: until ?? null,
-          from: from ?? null,
-          from_resolved: resolvedFrom ?? null,
-          count: hits.length,
-          index: result.data.index,
-          hits,
           freshness: fresh,
         })
       );
@@ -911,7 +786,7 @@ search_messages does.`,
     title: "Get one WhatsApp message in full",
     description: `The complete message behind a message_id, including the quoted message it
 replies to, each reaction with who left it, who chose each option of a poll or
-answered an event, and its media metadata. Use it after search_messages
+answered an event, and its media metadata. Use it after search
 or read_messages when you need the context around a single message.
 
 On the user's own messages, \`delivery.status\` says how far it got ("sent",
@@ -928,7 +803,7 @@ is tried on each of the others in turn before MESSAGE_NOT_FOUND comes back,
 and the answer's \`account_id\` names the one that had it; pass \`account_id\`
 to keep the lookup on one account.
 
-The \`sender\` carries the same identity fields as search_messages: \`id\` (the
+The \`sender\` carries the same identity fields as search: \`id\` (the
 canonical jid — a \`…@lid\` only while WhatsApp has never revealed the paired
 number), \`phone\` (the number, or null for an unresolved lid), \`is_saved\`
 (whether the sender is in the user's address book), \`contact_name\` (the name
@@ -1185,7 +1060,7 @@ The structured result carries: \`path\` (the saved file), \`mime\`, \`size\`
 made, not the sender's), \`original_filename\` (the name the sender's file had,
 or null when the envelope carried none), \`caption\` (the text the sender wrote
 under the media, or null — audio and voice notes cannot carry one),
-\`message_id\` and \`sender\` (the same identity fields as search_messages —
+\`message_id\` and \`sender\` (the same identity fields as search —
 is_saved, contact_name, pushname, name_source — or null when even the message
 can no longer be read back).
 
@@ -1240,7 +1115,7 @@ Fails with MEDIA_UNAVAILABLE when WhatsApp has expired the file.`,
     description: `Turn a voice note or an audio message into text. The transcript is cached, so a
 second call on the same message costs nothing, and from then on the message reads
 as [voice message · 0:42] "what was said" in read_messages, get_recent_messages
-and get_message, and its words become searchable through search_messages.
+and get_message, and its words become searchable through search.
 
 What it costs depends on how the user set transcription up: the local provider
 (whisper.cpp) is free and the audio never leaves the machine, while the API

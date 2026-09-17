@@ -9,10 +9,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
-import { z } from "zod";
 
 import { WhatsAppService } from "../dist/whatsapp.js";
-import { registerTools } from "../dist/tools.js";
 import {
   freshnessNote,
   historyFreshness,
@@ -20,7 +18,7 @@ import {
   readFreshness,
   STALE_AFTER_MS,
 } from "../dist/freshness.js";
-import { asToolSource, connectedService } from "./helpers.mjs";
+import { connectedService, schemaCheckedTools } from "./helpers.mjs";
 
 const ME = "40700000001@s.whatsapp.net";
 const ANA = "40700000002@s.whatsapp.net";
@@ -103,14 +101,7 @@ test("readFreshness never throws: no getStatus or a failing one still answers nu
 
 function setup() {
   const { svc, sock } = connectedService(WhatsAppService, { prefix: "wazap-fresh-", id: ME, name: "Răzvan" });
-  const tools = new Map();
-  registerTools({ registerTool: (name, meta, handler) => tools.set(name, { meta, handler }) }, asToolSource(svc), {
-    allowWrite: false,
-  });
-  const call = (name, args = {}) => {
-    const { meta, handler } = tools.get(name);
-    return handler(z.object(meta.inputSchema).parse(args));
-  };
+  const { call } = schemaCheckedTools(svc, { allowWrite: false });
   let seq = 0;
   const arrive = (chat, body, at = Date.now()) =>
     sock.ev.emit("messages.upsert", {
@@ -156,16 +147,16 @@ test("a scoped search adds how far that chat's local history reaches", async () 
   arrive(ANA, "cuvântul comun la ana", old);
   arrive(DAN, "cuvântul comun la dan");
 
-  const scoped = await call("search_messages", { query: "cuvântul", chat_id: ANA });
+  const scoped = await call("search", { match: "words", query: "cuvântul", chat_id: ANA });
   const chat = scoped.structuredContent.freshness.chat;
   assert.equal(chat.chat_id, ANA);
   assert.ok(Math.abs(Date.parse(chat.newest_local_at) - old) < 2_000, "the chat block dates the newest local hit");
   assert.ok(chat.newest_local_age_ms >= 3 * hour - 2_000);
 
-  const unscoped = await call("search_messages", { query: "cuvântul" });
+  const unscoped = await call("search", { match: "words", query: "cuvântul" });
   assert.equal(unscoped.structuredContent.freshness.chat, undefined, "no scope, no per-chat block");
   assert.equal(unscoped.structuredContent.freshness.stale, false);
 
-  const empty = await call("search_messages", { query: "cuvântul", chat_id: "40700000099@s.whatsapp.net" });
+  const empty = await call("search", { match: "words", query: "cuvântul", chat_id: "40700000099@s.whatsapp.net" });
   assert.equal(empty.structuredContent.freshness.chat.newest_local_at, null, "a chat wazap never saw reports null");
 });

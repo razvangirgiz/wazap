@@ -425,7 +425,7 @@ function missingMessage(messageId: string): WazapError {
   return new WazapError(
     "MESSAGE_NOT_FOUND",
     `No message "${messageId}" is loaded.`,
-    "Use a message_id from read_messages or search_messages"
+    "Use a message_id from read_messages or search"
   );
 }
 

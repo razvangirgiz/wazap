@@ -660,7 +660,7 @@ export interface WhatsAppApi {
   catchUpAdvance?(client: string, window: CatchupWindow): Promise<{ advanced: boolean }>;
   hasChat(jid: string): boolean;
   hasMessage(id: string): boolean;
-  /** What search_messages ran across; optional, so a stand-in need not count. */
+  /** What search ran across by words; optional, so a stand-in need not count. */
   searchCoverage?(chatId: string | undefined, opts?: { sinceMs?: number; untilMs?: number }): SearchCoverage | null;
   hasDraft(id: string): boolean;
   link(phone: string): Promise<PairingInfo>;

@@ -115,41 +115,41 @@ test("search_messages narrows by time and by sender", async () => {
   arrive(ANA, "am plătit RCA", { fromMe: true, at: Date.now() - day });
   const since = new Date(Date.now() - 3 * day).toISOString().slice(0, 10);
 
-  const recent = await call("search_messages", { query: "rca", since });
+  const recent = await call("search", { match: "words", query: "rca", since });
   assert.deepEqual(
     recent.structuredContent.messages.map((m) => m.text),
     ["am plătit RCA", "RCA e gata"]
   );
-  const theirs = await call("search_messages", { query: "rca", from: ANA });
+  const theirs = await call("search", { match: "words", query: "rca", from: ANA });
   assert.deepEqual(
     theirs.structuredContent.messages.map((m) => m.text),
     ["RCA e gata", "RCA expiră luni"]
   );
-  const mine = await call("search_messages", { query: "rca", from: "me" });
+  const mine = await call("search", { match: "words", query: "rca", from: "me" });
   assert.deepEqual(
     mine.structuredContent.messages.map((m) => m.text),
     ["am plătit RCA"]
   );
   // The account's own number, however it is spelled, is "me" too.
   for (const self of [ME, ME.split("@")[0], `+${ME.split("@")[0]}`]) {
-    const spelled = await call("search_messages", { query: "rca", from: self });
+    const spelled = await call("search", { match: "words", query: "rca", from: self });
     assert.deepEqual(spelled.structuredContent.messages.map((m) => m.text), ["am plătit RCA"], `from ${self}`);
   }
-  const until = await call("search_messages", { query: "rca", until: new Date(Date.now() - 5 * day).toISOString() });
+  const until = await call("search", { match: "words", query: "rca", until: new Date(Date.now() - 5 * day).toISOString() });
   assert.deepEqual(
     until.structuredContent.messages.map((m) => m.text),
     ["RCA expiră luni"]
   );
   assert.match(recent.content[0].text, new RegExp(`since ${since}`));
 
-  const bad = await call("search_messages", { query: "rca", since: "luni" });
-  assert.equal(bad.structuredContent.error, "INVALID_ID");
+  const bad = await call("search", { match: "words", query: "rca", since: "luni" });
+  assert.equal(textError(bad).error, "INVALID_ID");
 });
 
 test("search follows an edit and a late transcript, not the words it cached first", async () => {
   const { svc, sock, call, arrive } = setup();
   arrive(ANA, "RCA expiră luni");
-  const before = await call("search_messages", { query: "zebra" });
+  const before = await call("search", { match: "words", query: "zebra" });
   assert.deepEqual(before.structuredContent.messages, []);
 
   sock.ev.emit("messages.update", [
@@ -158,24 +158,24 @@ test("search follows an edit and a late transcript, not the words it cached firs
       update: { message: { editedMessage: { message: { conversation: "zebra e a mea" } } } },
     },
   ]);
-  const after = await call("search_messages", { query: "zebra" });
+  const after = await call("search", { match: "words", query: "zebra" });
   assert.deepEqual(
     after.structuredContent.messages.map((m) => m.text),
     ["zebra e a mea"],
     "the edit replaces what the search matches"
   );
   assert.deepEqual(
-    (await call("search_messages", { query: "rca" })).structuredContent.messages,
+    (await call("search", { match: "words", query: "rca" })).structuredContent.messages,
     [],
     "and the words it replaced no longer match"
   );
 
   const vid = arrive(ANA, { audioMessage: { ptt: true, seconds: 4 } });
   const sid = `false_${ANA}_${vid}`;
-  assert.deepEqual((await call("search_messages", { query: "umbrela" })).structuredContent.messages, []);
+  assert.deepEqual((await call("search", { match: "words", query: "umbrela" })).structuredContent.messages, []);
   svc.db.messages.setTranscript(sid, "am uitat umbrela");
   assert.deepEqual(
-    (await call("search_messages", { query: "umbrela" })).structuredContent.messages.map((m) => m.message_id),
+    (await call("search", { match: "words", query: "umbrela" })).structuredContent.messages.map((m) => m.message_id),
     [sid],
     "a transcript that lands after the first search is still found"
   );
@@ -260,7 +260,7 @@ test("a revoked message leaves the database, the search, and a restart", async (
   });
 
   assert.equal(svc.hasMessage(sid), false, "the target is gone");
-  assert.deepEqual((await call("search_messages", { query: "hunter2" })).structuredContent.messages, []);
+  assert.deepEqual((await call("search", { match: "words", query: "hunter2" })).structuredContent.messages, []);
   const read = (await call("read_messages", { chat_id: ANA })).content[0].text;
   assert.doesNotMatch(read, /hunter2/);
   assert.match(read, /\[deleted\]/, "the placeholder stays, the way the phone shows it");

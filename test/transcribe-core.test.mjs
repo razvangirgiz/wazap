@@ -278,7 +278,7 @@ test("a transcript landing during shutdown does not hold the process open", asyn
   assert.equal(svc.accountDb.isOpen, false, "and its database is closed, not written behind the stop");
 });
 
-test("search_messages finds a word that exists only in a transcript", async () => {
+test("a search by words finds a word that exists only in a transcript", async () => {
   const { svc, sock } = serviceWith();
   const at = Date.now() - 60_000;
   deliver(sock, [voiceNote("V1", { seconds: 6, at }), textMessage("T1", "nimic aici", at + 1000)]);
@@ -347,7 +347,7 @@ test("no tool output carries the API key, whatever the tool", async () => {
   const server = fakeServer();
   registerTools(server, asToolSource(svc), { allowWrite: true });
   const said = [JSON.stringify(await svc.transcribeAudio(sidOf("V1")))];
-  for (const name of ["get_status", "read_messages", "search_messages"]) {
+  for (const name of ["get_status", "read_messages", "search"]) {
     said.push(JSON.stringify(await server.tools.get(name).handler({ chat_id: PEER, query: "salut" })));
   }
 

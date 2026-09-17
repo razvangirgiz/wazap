@@ -75,7 +75,7 @@ export const ERROR_GUIDE: Record<ErrorCode, string> = {
   INVALID_ID: "The id is not a WhatsApp chat, contact or group id. Use an id exactly as returned by another tool.",
   NOT_ON_WHATSAPP: "That number has no WhatsApp account. Do not retry; confirm the number with the user.",
   CHAT_NOT_FOUND: "No such chat is known. Call list_chats or search_contacts to get a valid chat_id.",
-  MESSAGE_NOT_FOUND: "No such message is loaded. Use a message_id from read_messages or search_messages.",
+  MESSAGE_NOT_FOUND: "No such message is loaded. Use a message_id from read_messages or search.",
   CONTACT_NOT_FOUND: "No such contact is known. Call search_contacts first.",
   GROUP_NOT_FOUND: "No such group is known, or the id is not a group id (it must end in @g.us).",
   NOT_A_PARTICIPANT: "The linked account is not in that group. Do not retry.",

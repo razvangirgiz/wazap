@@ -76,7 +76,7 @@ interface NamedCandidate {
 }
 
 /**
- * The `from` filter of search_messages and recall. "me", an id or a phone go
+ * The `from` filter of search. "me", an id or a phone go
  * straight through; anything else is a name and must pick out exactly one
  * person — a saved contact name, a notify name or a last-seen pushname via
  * search_contacts' index, then a one-to-one chat's display name for someone
