@@ -1,6 +1,7 @@
 /** Public shapes of the WhatsApp service: what the MCP tools and the CLI consume. */
 
 import type { SearchCoverage } from "./coverage.js";
+import type { DraftContext, StyleCheck } from "./draft-style.js";
 import type { DraftPayload, DraftView } from "./drafts.js";
 import type { RecallStatus } from "./recall/index.js";
 import type { ProviderName } from "./transcribe/index.js";
@@ -677,6 +678,11 @@ export interface WhatsAppApi {
   searchContacts(query: string, limit: number, opts?: { tag?: string }): Promise<ContactSummary[]>;
   getContact(contactId: string): Promise<ContactDetails>;
   syncContacts(): Promise<ContactSyncResult>;
+  // The draft context and the style check (F2-3); optional, so a stand-in need not have them.
+  /** The recent exchange (unless `recent: false`) and the user's style in a chat, or null when it has no history. */
+  draftContext?(chatJid: string, options: { recent: boolean }): DraftContext | null;
+  /** How a text draft to a direct chat compares with the user's own messages there; null without enough of them. */
+  styleCheck?(chatJid: string, text: string): StyleCheck | null;
   updateContactDetails(contactId: string, edit: ContactDetailsEdit): Promise<ContactSummary>;
   saveContact(
     contactId: string,

@@ -2095,7 +2095,19 @@ async function draftAndGuard(payload: DraftPayload, ctx: ToolCtx): Promise<ToolR
   assertSendable(policy, view.to, ctx.accountId);
   noteDraftTarget(view, ctx.accountId, ctx.draftOwner);
   await flagUnnamed(view, ctx.wa);
+  if (payload.kind === "text") checkStyle(view, payload.text, ctx.wa);
   return drafted(view);
+}
+
+/** send_message's style_check (F2-3): additive, and a failure only leaves it out. */
+function checkStyle(view: DraftView, text: string, wa: WhatsAppApi): void {
+  if (typeof wa.styleCheck !== "function") return;
+  try {
+    const check = wa.styleCheck(view.to.chat_id, text);
+    if (check !== null) view.style_check = check;
+  } catch {
+    /* the draft stands without it */
+  }
 }
 
 function sentText(sent: SentMessage, to?: OutgoingTarget): string {

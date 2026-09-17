@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { SendRecord, Sends } from "./db/index.js";
+import { styleCheckLines, type StyleCheck } from "./draft-style.js";
 import { WazapError } from "./errors.js";
 import { isoWithOffset } from "./messages.js";
 import type { MediaSource, OutgoingTarget, SentMessage } from "./wa-types.js";
@@ -64,6 +65,12 @@ export interface DraftView {
   unnamed_recipient?: boolean;
   expires_at: string;
   kind: DraftKind;
+  /**
+   * A text draft to a direct chat, against how the user writes there: the
+   * mismatches found (none is fine) and what they were measured on. Absent
+   * when the user wrote too little in that chat to judge. Never blocks.
+   */
+  style_check?: StyleCheck;
 }
 
 /** What confirm_send may do with a draft: send it, or answer the receipt of the send it already made. */
@@ -317,6 +324,8 @@ export function renderDraft(view: DraftView): string {
       "Note: the recipient is not a saved contact — the name shown is their public WhatsApp name, or only their number."
     );
   }
+  const style = styleCheckLines(view.style_check);
+  if (style.length > 0) lines.push("", ...style);
   lines.push("", "Show this to the user. After they say yes, call confirm_send with this draft_id.");
   return lines.join("\n");
 }

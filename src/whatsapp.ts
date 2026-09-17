@@ -52,6 +52,7 @@ import {
   type StoredMessage,
   type UpsertResult,
 } from "./db/index.js";
+import { draftContextFor, styleCheckFor, type DraftContext, type StyleCheck } from "./draft-style.js";
 import { asWazapError, RELINK_FIX, RESET_FIX, WazapError } from "./errors.js";
 import { LidRegistry, lidKey } from "./identity.js";
 import { isGroupId, isNoiseJid, isStatusJid, normalizePhone, STATUS_JID } from "./ids.js";
@@ -1746,6 +1747,21 @@ export class WhatsAppService implements WhatsAppApi {
       };
     });
   }
+
+  // ---- find_contact and the draft context (F2-3) ----------------------------
+
+  /** The recent exchange and the user's style in a chat, for a contact find_contact resolved. */
+  draftContext(chatJid: string, options: { recent: boolean }): DraftContext | null {
+    return draftContextFor(this.db, chatJid, { recent: options.recent, senderName: (jid) => this.displayName(jid) });
+  }
+
+  /** send_message's style check on a text draft; null when the chat gives too little to judge or the database is not ready. */
+  styleCheck(chatJid: string, text: string): StyleCheck | null {
+    const db = this.readyDb();
+    return db === null ? null : styleCheckFor(db, chatJid, text);
+  }
+
+  // ---- end find_contact ------------------------------------------------------
 
   /**
    * Block until something arrives that matches, or until the deadline. The
