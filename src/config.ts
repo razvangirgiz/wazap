@@ -37,7 +37,7 @@ export interface Config {
   readOnly: boolean;
   /** Always false outside tests since `WAZAP_SYNC_FULL_HISTORY` was retired. */
   syncFullHistory: boolean;
-  /** Keep chats and messages in the account database. Always true outside tests since `WAZAP_PERSIST_HISTORY` was retired. */
+  /** Persist chats and messages under the data dir so they survive a restart. */
   persistHistory: boolean;
   /**
    * Strict retention: disappearing messages expire locally, and starting with
@@ -264,8 +264,6 @@ export const RETIRED_SETTINGS: Readonly<Record<string, string>> = {
   WAZAP_TRANSPORT: "HTTP is the `--http` flag, as in `wazap serve --http`",
   WAZAP_SYNC_FULL_HISTORY:
     "wazap takes WhatsApp's default history sync, and `read_messages` with `before` pulls older messages",
-  WAZAP_PERSIST_HISTORY:
-    "messages are always kept in the account database; `wazap account remove <id>` deletes an account and everything it kept",
   WAZAP_RATE_LIMIT: "writes are limited to 20 a minute, unless an account sets `rate_limit` in accounts.json",
   WAZAP_MAX_INFLIGHT: "one MCP session runs at most 8 tool calls at once",
   WAZAP_MAX_INFLIGHT_TOTAL: "all sessions together run at most 32 tool calls at once",
@@ -388,7 +386,7 @@ export function parseCli(argv: string[] = process.argv.slice(2)): CliInvocation 
       dataDir,
       readOnly: values["read-only"] === true || readOnlySetting(process.env.WAZAP_READ_ONLY),
       syncFullHistory: false,
-      persistHistory: true,
+      persistHistory: asBool(process.env.WAZAP_PERSIST_HISTORY, true),
       retention: asBool(process.env.WAZAP_RETENTION, false),
       transport: values.http === true ? "http" : "stdio",
       httpHost: values.host ?? (process.env.WAZAP_HOST?.trim() || "127.0.0.1"),

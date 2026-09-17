@@ -55,7 +55,6 @@ test("writesHints carry no bearer-token note, whatever the transport", () => {
 const RETIRED_VALUES = {
   WAZAP_TRANSPORT: "http",
   WAZAP_SYNC_FULL_HISTORY: "1",
-  WAZAP_PERSIST_HISTORY: "0",
   WAZAP_RATE_LIMIT: "0",
   WAZAP_MAX_INFLIGHT: "12",
   WAZAP_MAX_INFLIGHT_TOTAL: "64",
@@ -108,9 +107,28 @@ test("retired settings change nothing: the limits are fixed, and HTTP is only th
   }
 });
 
+test("WAZAP_PERSIST_HISTORY is still honoured: 0 keeps no messages, unset keeps them", () => {
+  const previous = process.env.WAZAP_PERSIST_HISTORY;
+  const dir = mkdtempSync(join(tmpdir(), "wazap-persist-config-"));
+  const load = () => parseCli(["serve", "--data-dir", dir]).config;
+  try {
+    delete process.env.WAZAP_PERSIST_HISTORY;
+    assert.equal(load().persistHistory, true);
+    process.env.WAZAP_PERSIST_HISTORY = "0";
+    assert.equal(load().persistHistory, false);
+    assert.deepEqual(retiredSettingWarnings({ WAZAP_PERSIST_HISTORY: "0" }), [], "a privacy setting is not a retired one");
+    process.env.WAZAP_PERSIST_HISTORY = "1";
+    assert.equal(load().persistHistory, true);
+  } finally {
+    if (previous === undefined) delete process.env.WAZAP_PERSIST_HISTORY;
+    else process.env.WAZAP_PERSIST_HISTORY = previous;
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("each retired setting that is set gets one warning naming what replaced it, and nothing else does", () => {
   assert.deepEqual(retiredSettingWarnings({}), []);
-  assert.deepEqual(retiredSettingWarnings({ WAZAP_READ_ONLY: "1", WAZAP_RECALL: "local", WAZAP_NO_SHARE: "1" }), []);
+  assert.deepEqual(retiredSettingWarnings({ WAZAP_READ_ONLY: "1", WAZAP_RECALL: "local", WAZAP_NO_SHARE: "1", WAZAP_PERSIST_HISTORY: "0" }), []);
   for (const key of Object.keys(RETIRED_SETTINGS)) {
     const [line, ...rest] = retiredSettingWarnings({ [key]: "" });
     assert.deepEqual(rest, [], key);

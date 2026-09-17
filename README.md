@@ -475,7 +475,7 @@ id, a phone number, a URL — `search_messages` stays the right tool.
 
 Off by default, and fully local: a `llama-server` sidecar bound to loopback
 does the embedding, so nothing leaves the machine. It needs llama.cpp, the
-pinned model and the history the account keeps:
+pinned model and persisted history (`WAZAP_PERSIST_HISTORY`, on by default):
 
 ```bash
 brew install llama.cpp      # macOS; elsewhere build llama.cpp and put llama-server on PATH
@@ -652,6 +652,10 @@ only small bounded caches stay in the process.
   week later; `WAZAP_RETENTION=1` does not shorten that week.
   **`wazap account remove`** stops the account, closes its database and deletes
   the whole folder with it.
+- **`WAZAP_PERSIST_HISTORY=0`** removes every stored message at each start and
+  stop, whatever `WAZAP_RETENTION` says, and with them every draft and the words
+  of every send record; chats, contacts, notes, deletion barriers and the send
+  records themselves stay, and recall is off.
 
 - **`wazap status`** reads each database read-only, with the server running or
   not: whether it is preparing (and the import phase), ready or imported with
@@ -723,7 +727,7 @@ embedded copy of a message.
 
 The tombstones and each chat's clear time are the barriers: message IDs and
 times, no bodies. They keep replay and backfill from resurrecting a deleted
-message. Clearing a chat
+message, and they remain even with `WAZAP_PERSIST_HISTORY=0`. Clearing a chat
 hides it at once and purges it in chunks that resume after a crash; backfill
 dated at or before the local clear time is refused. WhatsApp timestamps have
 second precision, so a message in the same second can be suppressed. A
@@ -1197,6 +1201,9 @@ fails, and the error names the status with a hint. Either way the failure sets
 least once: a POST a crash interrupted is sent again, so dedupe on
 `message_id`. Turning the webhook off, or dropping an event from
 `WAZAP_WEBHOOK_EVENTS`, cancels what waits; nothing is queued while it is off.
+With `WAZAP_PERSIST_HISTORY=0` the stored messages are removed at every stop
+and start, so a message event still waiting then is cancelled rather than
+posted after the restart; connection events still go out.
 
 A message event is built when it is posted, from the message as it is then: an
 edit or a transcript that arrived in the meantime goes with it, and a message
@@ -1339,6 +1346,7 @@ Most of these are written for you by `wazap config`, `wazap login` and
 | --- | --- | --- |
 | `WAZAP_DATA_DIR` | `~/.wazap` | Where everything is stored. |
 | `WAZAP_READ_ONLY` | unset (`0`) | `1` does not register the write tools. Unset and `0` both do. `wazap config writes on\|off` sets it. |
+| `WAZAP_PERSIST_HISTORY` | `1` | Privacy: `0` keeps no messages on disk, removing them at each start and stop; barriers, chats, contacts and notes stay, and recall is off. |
 | `WAZAP_HOST` / `WAZAP_PORT` | `127.0.0.1` / `8766` | Where `wazap serve --http` listens. |
 | `WAZAP_PUBLIC_URL` / `WAZAP_OAUTH_PASSWORD` | unset | The `https` address agents reach the server at, and the password its consent page asks for (at least 8 characters). Both together turn [OAuth](#hosted-agents-oauth) on; `wazap expose` sets them. |
 | `WAZAP_READ_TOKEN` / `WAZAP_WRITE_TOKEN` | unset | Static bearer tokens for your own code; see [Building on wazap](#building-on-wazap-http-api-for-products). |
