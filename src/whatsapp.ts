@@ -54,6 +54,7 @@ import {
 } from "./db/index.js";
 import { draftContextFor, styleCheckFor, type DraftContext, type StyleCheck } from "./draft-style.js";
 import { asWazapError, RELINK_FIX, RESET_FIX, WazapError } from "./errors.js";
+import { findInAccount, type AccountFind, type FindContactQuery } from "./find-contact.js";
 import { LidRegistry, lidKey } from "./identity.js";
 import { isGroupId, isNoiseJid, isStatusJid, normalizePhone, STATUS_JID } from "./ids.js";
 import { FUTURE_SLACK_MS, IMPORT_META, importBetaArchive, importLegacyAccount, scrubQuote, type ImportReport } from "./legacy-import/index.js";
@@ -478,6 +479,8 @@ export class WhatsAppService implements WhatsAppApi {
   private historyWaiters: Array<() => void> = [];
   private callSweepTimer: ReturnType<typeof setInterval> | null = null;
   private contactResyncTried = false;
+  /** find_contact asked WhatsApp for an empty address book this boot (F2-3). */
+  private findAskedForContacts = false;
   private readonly blocked = new Set<string>();
   private readonly groupCache = new Map<string, GroupMetadata>();
   /** Groups whose metadata WhatsApp refused, so we stop asking on every read. */
@@ -1749,6 +1752,28 @@ export class WhatsAppService implements WhatsAppApi {
   }
 
   // ---- find_contact and the draft context (F2-3) ----------------------------
+
+  /**
+   * Who a name means on this account (src/find-contact.ts). An address book
+   * that looks empty (no contact carries a saved name) is asked for once per
+   * boot first, the way sync_contacts asks, waiting up to 15 s for names; a
+   * failed ask is logged and the answer comes from what is stored.
+   */
+  findContact(query: FindContactQuery): Promise<AccountFind> {
+    return this.guarded(async () => {
+      this.ensureConnected();
+      await this.waitForSync();
+      if (!this.findAskedForContacts && this.namedContacts() === 0) {
+        this.findAskedForContacts = true;
+        try {
+          await this.syncContacts();
+        } catch (err) {
+          logError("contact sync", err);
+        }
+      }
+      return findInAccount(this.db, this.accountRecord.id, query);
+    });
+  }
 
   /** The recent exchange and the user's style in a chat, for a contact find_contact resolved. */
   draftContext(chatJid: string, options: { recent: boolean }): DraftContext | null {

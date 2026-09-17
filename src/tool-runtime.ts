@@ -33,6 +33,8 @@ export interface ToolDef {
   title: string;
   description: string;
   schema: z.ZodRawShape;
+  /** The shape of structuredContent on success; the SDK checks every answer against it. */
+  outputSchema?: z.ZodRawShape;
   write: boolean;
   destructive?: boolean;
   /** Changes only local notes, so available in read-only mode too. */
@@ -115,6 +117,7 @@ export function createToolRegistrar(defs: readonly ToolDef[]) {
               ? "\nThis remote session cannot use file_path or save_to. Use public HTTP(S) URLs, forward existing messages, or download_media with its default directory."
               : ""),
           inputSchema: def.schema,
+          ...(def.outputSchema === undefined ? {} : { outputSchema: def.outputSchema }),
           annotations: def.write
             ? { ...WRITE_HINTS, destructiveHint: def.destructive === true }
             : def.local

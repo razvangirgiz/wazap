@@ -310,6 +310,7 @@ export async function buildWorld({ world, anchorMs, dataDir, effects, faults, on
       enabled: true,
       owner: resolved.get(account.id).me.jid,
       ...(account.writes === false ? { writes: false } : {}),
+      ...(account.draft_context === false ? { draft_context: false } : {}),
     })),
   };
   writeFileSync(join(dataDir, "accounts.json"), `${JSON.stringify(file, null, 2)}\n`, { mode: 0o600 });

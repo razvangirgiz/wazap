@@ -14,6 +14,7 @@ import { compactConversations, renderCompact } from "./compact.js";
 import { coverageNote, indexCoverageNote, searchCoverage } from "./coverage.js";
 import { describeTarget, looksUnnamed, renderDraft, type DraftPayload, type DraftView } from "./drafts.js";
 import { ERROR_GUIDE, WazapError } from "./errors.js";
+import { FIND_CONTACT_OUTPUT, runFindContact } from "./find-contact.js";
 import { freshnessNote, readFreshness } from "./freshness.js";
 import { mediaCaptionOf } from "./media-details.js";
 import { getMessageView, getMessageViewAcross, resolveMessageId, resolveMessageIdAcross } from "./message-ref.js";
@@ -67,6 +68,7 @@ function tool<S extends z.ZodRawShape>(def: {
   title: string;
   description: string;
   schema: S;
+  outputSchema?: z.ZodRawShape;
   write: boolean;
   destructive?: boolean;
   local?: boolean;
@@ -179,9 +181,13 @@ link_account when it says no account is linked yet.
   calls. Pass addressed_to_me to wake only for direct messages, @-mentions and
   replies to the user.
 - Go back further: read_messages(chat_id, before: <oldest message_id you have>).
-- Find a person: search_contacts → get_contact. Names come from the phone's own
-  address book; if they are missing (get_status shows contacts_named: 0), call
-  sync_contacts once. save_contact adds a number to the account's WhatsApp
+- Find a person: find_contact(name[, qualifier]) before drafting to anyone the
+  user names — "mama", "Ana de la contabilitate", "Mișu". resolved gives the
+  chat_id and, in a write session, how the user writes to them; ambiguous and
+  not_found mean ask the user, never guess. search_contacts → get_contact
+  still list and detail contacts. Names come from the phone's own address
+  book; find_contact asks WhatsApp for it once when it is empty, and
+  sync_contacts does it on demand. save_contact adds a number to the account's WhatsApp
   contacts or renames an entry; remove_contact drops the entry, not the chat.
   A word from a tag or a detail also finds them ("contabil" → role: contabil),
   and search_contacts({tag: "client"}) lists everyone filed under a tag.
@@ -1061,6 +1067,37 @@ name (is_my_contact), "pushname" when it is a name the person publishes, or
       return ok(text, { ...c, name_source: nameSourceOf(c) } as unknown as Record<string, unknown>);
     },
   }),
+
+  // ---- find_contact (F2-3) ------------------------------------------------
+  tool({
+    name: "find_contact",
+    title: "Find who the user means",
+    description: `Who a name, nickname, relationship ("mama") or group name means, before drafting to them.
+resolved: contact.chat_id, plus context (recent messages, how the user writes there) in a write session.
+ambiguous or not_found: ask the user, then call again; never send to a guess.`,
+    schema: {
+      name: z
+        .string()
+        .min(1)
+        .max(100)
+        .describe('What the user calls them: "Ana", "mamei", "Mișu", "fotbal"; case endings and diacritics do not matter'),
+      qualifier: z
+        .string()
+        .max(100)
+        .optional()
+        .describe('What tells two of that name apart: "contabilitate", a group, or the last 4 digits of the number'),
+      kind: z.enum(["person", "group", "any"]).default("any").describe("Only people, only groups, or both"),
+      limit: z.number().int().min(1).max(10).default(5).describe("Candidates listed when ambiguous (1-10)"),
+      include_context: z
+        .boolean()
+        .default(true)
+        .describe("Attach the recent exchange and the user's style when resolved; only in a session that can write"),
+    },
+    outputSchema: FIND_CONTACT_OUTPUT,
+    write: false,
+    handler: async (args, ctx) => runFindContact(args, ctx),
+  }),
+  // ---- end find_contact ----------------------------------------------------
 
   tool({
     name: "save_contact",
