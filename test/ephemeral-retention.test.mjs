@@ -274,12 +274,11 @@ test("a forward waiting on recipient preparation rechecks source expiry", async 
   await rejected; assert.equal(sent, 0);
 });
 
-test("a reply waiting for a link preview does not quote an expired message", async (t) => {
+test("a reply waiting on recipient preparation does not quote an expired message", async (t) => {
   const { svc, sock, advance } = await fixture(t);
   const raw = await seed(svc);
   const started = gate(); const finish = gate(); let sent = 0;
-  svc.prepareSend = async () => ({ sock, jid: CHAT });
-  svc.previewLink = async () => { started.release(); await finish.promise; return null; };
+  svc.prepareSend = async () => { started.release(); await finish.promise; return { sock, jid: CHAT }; };
   sock.sendMessage = async () => { sent++; };
   const pending = svc.sendMessage(CHAT, "synthetic reply", sid(raw));
   const rejected = assert.rejects(pending, { code: "MESSAGE_NOT_FOUND" });

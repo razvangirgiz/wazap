@@ -864,25 +864,11 @@ disables). Sending faster than a human is how accounts get banned.
 
 ## Link previews and media processing
 
-Text sent or edited by wazap can include a controlled preview of the first
-explicit HTTP(S) URL. Fetching happens at send/confirm or edit, never while
-creating an MCP draft. Pages and thumbnail URLs both go through the public-media
-checks: public DNS answers only, a pinned socket lookup, a public connected peer,
-and validation at every redirect. HTTPS downgrades are refused. Baileys's own
-page/thumbnail fetcher stays disabled, including when our preview fails.
-
-The page and image share a four-second network budget, with at most three
-redirects each. Pages are capped at 256 KiB and images at 2 MiB. At most four
-previews run concurrently; excess requests send without one. Only HTML metadata
-is scanned (Open Graph, Twitter or title/description), with no JavaScript,
-embeds, cookies, authentication headers or Referer. Sites can still observe the
-server's preview request/IP. There is no cross-message URL cache.
-
-Thumbnail decoding currently supports JPEG only, capped at 4 megapixels and
-32 MiB decoder memory. An unsafe, oversized, unavailable or unsupported image
-leaves a text card. An invalid/missing page preview leaves the original message
-unchanged, without a card. URLs and provider errors are not logged. Forwarding
-an existing message may retain its embedded preview without fetching it again.
+Text sent or edited by wazap goes out without a link preview, and nothing
+fetches the page: not wazap, and not Baileys, whose own fetcher is kept off
+explicitly on every send, confirm and edit. The link itself arrives intact, as
+text. Forwarding an existing message may keep the preview already embedded in
+it, without fetching it again.
 
 Photo previews are decoded locally. Video frames, outgoing video thumbnails,
 GIF conversion and local transcription use restricted ffmpeg inputs: local-file

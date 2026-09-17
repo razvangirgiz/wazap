@@ -21,73 +21,54 @@ const ME = "40700000001@s.whatsapp.net";
 const PEER = "40700000002@s.whatsapp.net";
 
 for (const operation of ["send", "confirm", "edit"]) {
-  for (const preview of [
-    null,
-    {
-      title: "Safe title",
-      "canonical-url": "https://preview.example/",
-      "matched-text": "https://preview.example/private?synthetic-token=abc",
-    },
-  ]) {
-    test(`${operation} uses the controlled preview (${preview ? "card" : "fallback"}), never Baileys's fetcher`, async (t) => {
-      const previous = process.env;
-      process.env = { ...previous, WAZAP_WEBHOOK: "off", WAZAP_TRANSCRIBE: "off", WAZAP_RECALL: "off" };
-      t.after(() => {
-        process.env = previous;
-      });
-      const { svc, sock } = connectedService(WhatsAppService, {
-        prefix: "wazap-link-security-",
-        id: ME,
-        name: "Test",
-        config: { readOnly: false },
-      });
-      t.after(() => rmSync(svc.config.dataDir, { recursive: true, force: true }));
-      sock.ev.emit("chats.upsert", [{ id: PEER }]);
-      const key = { remoteJid: PEER, id: "M1", fromMe: true };
-      sock.ev.emit("messages.upsert", {
-        type: "append",
-        messages: [{ key, message: { conversation: "original" }, messageTimestamp: Math.floor(Date.now() / 1000) }],
-      });
-      let fetches = 0;
-      let sends = 0;
-      let previews = 0;
-      svc.previewLink = async () => {
-        previews++;
-        return preview;
-      };
-      sock.sendMessage = async (_jid, content) => {
-        sends++;
-        assert.equal(content.linkPreview, preview);
-        const generated = await generateWAMessageContent(content, {
-          getUrlInfo: async () => {
-            fetches++;
-            return undefined;
-          },
-        });
-        const encoded = generated.protocolMessage?.editedMessage ?? generated;
-        assert.equal(encoded.extendedTextMessage?.title, preview?.title);
-        return { key };
-      };
-      // A confirmed draft is built by wazap, with the card it made, and relayed.
-      sock.relayMessage = async (_jid, message) => {
-        sends++;
-        assert.equal(message.extendedTextMessage?.title, preview?.title);
-      };
-      const text = "https://preview.example/private?synthetic-token=abc";
-      if (operation === "send") await svc.sendMessage(PEER, text);
-      else if (operation === "confirm") {
-        const draft = await svc.draft({ kind: "text", chatId: PEER, text });
-        assert.equal(previews, 0, "drafting must not fetch anything");
-        await svc.confirm(draft.draft_id);
-      } else await svc.editMessage(messageIdFor(key, PEER), text);
-      assert.equal(sends, 1);
-      assert.equal(fetches, 0);
-      assert.equal(previews, 1);
-      svc.effectiveReadOnly = true;
-      await assert.rejects(svc.sendMessage(PEER, text), { code: "READ_ONLY" });
-      assert.equal(previews, 1, "a refused write must not trigger a preview request");
+  test(`${operation} sends a link with no preview, and never lets Baileys fetch one`, async (t) => {
+    const previous = process.env;
+    process.env = { ...previous, WAZAP_WEBHOOK: "off", WAZAP_TRANSCRIBE: "off", WAZAP_RECALL: "off" };
+    t.after(() => {
+      process.env = previous;
     });
-  }
+    const { svc, sock } = connectedService(WhatsAppService, {
+      prefix: "wazap-link-security-",
+      id: ME,
+      name: "Test",
+      config: { readOnly: false },
+    });
+    t.after(() => rmSync(svc.config.dataDir, { recursive: true, force: true }));
+    sock.ev.emit("chats.upsert", [{ id: PEER }]);
+    const key = { remoteJid: PEER, id: "M1", fromMe: true };
+    sock.ev.emit("messages.upsert", {
+      type: "append",
+      messages: [{ key, message: { conversation: "original" }, messageTimestamp: Math.floor(Date.now() / 1000) }],
+    });
+    let fetches = 0;
+    let sends = 0;
+    const getUrlInfo = async () => {
+      fetches++;
+      return { title: "Fetched title", "canonical-url": "https://preview.example/", "matched-text": text };
+    };
+    sock.sendMessage = async (_jid, content) => {
+      sends++;
+      assert.ok("linkPreview" in content, "the preview must be passed explicitly");
+      assert.equal(content.linkPreview, null);
+      const generated = await generateWAMessageContent(content, { getUrlInfo });
+      const encoded = generated.protocolMessage?.editedMessage ?? generated;
+      assert.equal(encoded.extendedTextMessage?.title, undefined);
+      return { key };
+    };
+    // A confirmed draft is built by wazap, with Baileys's real generator, and relayed.
+    sock.relayMessage = async (_jid, message) => {
+      sends++;
+      assert.equal(message.extendedTextMessage?.title, undefined);
+    };
+    const text = "https://preview.example/private?synthetic-token=abc";
+    if (operation === "send") await svc.sendMessage(PEER, text);
+    else if (operation === "confirm") {
+      const draft = await svc.draft({ kind: "text", chatId: PEER, text });
+      await svc.confirm(draft.draft_id);
+    } else await svc.editMessage(messageIdFor(key, PEER), text);
+    assert.equal(sends, 1);
+    assert.equal(fetches, 0);
+  });
 }
 
 test("outgoing video disables Baileys's thumbnail fallback even without ffmpeg", async (t) => {

@@ -81,7 +81,6 @@ import {
   mediaFilename,
 } from "./outgoing-media.js";
 import { makePreview, videoFrame } from "./previews.js";
-import { safeLinkPreview } from "./link-preview.js";
 import { chatMetadata, decodeChat, encode, momentsOf, raiseStatus, raiseUser, type Receipt } from "./store.js";
 import {
   buildMessageView,
@@ -476,7 +475,6 @@ export class WhatsAppService implements WhatsAppApi {
   private historyWaiters: Array<() => void> = [];
   private callSweepTimer: ReturnType<typeof setInterval> | null = null;
   private contactResyncTried = false;
-  private readonly previewLink = safeLinkPreview;
   private readonly blocked = new Set<string>();
   private readonly groupCache = new Map<string, GroupMetadata>();
   /** Groups whose metadata WhatsApp refused, so we stop asking on every read. */
@@ -2708,14 +2706,12 @@ export class WhatsAppService implements WhatsAppApi {
       }
       const { sock, jid } = await this.prepareSend(chatId);
       const mentions = (mentionIds ?? []).map((id) => this.resolveId(id));
-      if (replyTo !== undefined) this.contentOrThrow(replyTo);
-      const linkPreview = await this.previewLink(text);
       const quoted = replyTo === undefined ? undefined : this.contentOrThrow(replyTo);
       const sent = await this.dispatch(
         sock,
         jid,
-        // Explicit null on failure prevents Baileys from using its own fetcher.
-        { text, linkPreview, ...(mentions.length > 0 ? { mentions } : {}) },
+        // No link previews: an explicit null keeps Baileys from fetching the page itself.
+        { text, linkPreview: null, ...(mentions.length > 0 ? { mentions } : {}) },
         quoted ? { quoted } : {},
         attempt
       );
@@ -2801,9 +2797,9 @@ export class WhatsAppService implements WhatsAppApi {
         throw new WazapError("EDIT_WINDOW_EXPIRED", `Message ${messageId} is older than 15 minutes.`);
       }
       const { sock, jid } = await this.prepareSend(this.chatOfOrThrow(messageId));
-      const linkPreview = await this.previewLink(text);
       this.messageOrThrow(messageId);
-      await sock.sendMessage(jid, { text, edit: raw.key, linkPreview });
+      // No link previews: an explicit null keeps Baileys from fetching the page itself.
+      await sock.sendMessage(jid, { text, edit: raw.key, linkPreview: null });
       return { message_id: messageId, chat_id: jid, text, timestamp: isoWithOffset(Date.now()) };
     });
   }

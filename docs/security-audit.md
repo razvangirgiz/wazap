@@ -193,12 +193,11 @@ Baileys implicitly fetches a page and potentially its thumbnail when generating
 text messages, even with `generateHighQualityLinkPreview: false`. This bypasses
 wazap's `safe-media` path and uses dependency-specific network/logging behavior.
 A stub callback in the real Baileys message generator reproduced invocation for
-send, confirm and edit, without making external requests. The initial fix passed
-`linkPreview: null`, disabling new previews. The controlled implementation below
-now supplies an explicit card or null instead; the dependency's fetcher remains
-disabled in both cases. Forwarding may retain an already embedded preview without
-a new page fetch. This test proves an implicit network-capable code path, not a
-live SSRF exploit.
+send, confirm and edit, without making external requests. The fix passes
+`linkPreview: null`, disabling new previews; since link previews were removed
+(section 9), that explicit null is again the whole behavior. Forwarding may
+retain an already embedded preview without a new page fetch. This test proves an
+implicit network-capable code path, not a live SSRF exploit.
 
 `src/media-process.ts` centralizes ffmpeg input restrictions for video previews,
 GIF conversion and local transcription: only the file protocol and an explicit
@@ -224,35 +223,20 @@ account were used. Model downloads were inspected as a separate CLI-operated
 path with curated upstream URLs and no account payload/API credential; their
 CDN redirects remain intentionally enabled.
 
-## 9. Controlled link previews — restored
+## 9. Controlled link previews — removed
 
-`src/link-preview.ts` fetches only the first explicit HTTP(S) link in sent/edited
-text, never during MCP draft creation or before the service's write gate. It
-uses `publicMedia` independently for the page and optional thumbnail. Both paths
-validate every DNS answer, pin the socket lookup and check the connected peer;
-redirects are revalidated, limited to three per resource, and cannot downgrade
-HTTPS. The shared media helper now also rejects non-success final HTTP statuses.
+For a while, `src/link-preview.ts` fetched the first explicit HTTP(S) link in
+sent or edited text through `publicMedia`, with bounded page and JPEG thumbnail
+fetches. It was removed before 1.0: the server no longer fetches anything for a
+text send, confirm or edit, so none of that network path remains to defend.
 
-Limits: 256 KiB HTML, 2 MiB image, one shared four-second network budget and four
-concurrent previews without a queue. A bounded metadata scanner reads common
-OG/Twitter/title fields, ignoring scripts, styles, embeds and base/canonical hints.
-Relative images resolve against the validated final page URL. There is no browser,
-JavaScript, cookie jar, credential header, Referer, URL logging or cross-message
-cache. The configured sites can observe requests and the server's public IP.
-
-Only JPEG thumbnails are currently decoded, with 4 MP/32 MiB decoder limits and
-a 200-pixel maximum edge. Other formats, decoder failures, unsafe images or image
-timeouts leave a text-only card. Failure to obtain valid page metadata leaves the
-message without a card. The dependency receives bytes, never an image URL to fetch.
-These are bounded best-effort previews, not a full HTML renderer or codec sandbox.
-
-`test/link-preview.test.mjs` uses synthetic DNS/HTTP streams and JPEG fixtures for
-success, metadata precedence, private/mixed DNS, pinned lookup, private socket
-peers, page/image redirects, downgrade refusals, resource caps, JPEG pixel bombs,
-timeouts, a shared deadline and concurrency overflow. Service tests confirm both
-explicit card/null behavior through Baileys's real generator, no preview during
-drafting, and no preview on a refused read-only write. No live sites or WhatsApp
-accounts were queried for this feature.
+The dependency's own fetcher stays disabled. Both call sites pass
+`linkPreview: null` explicitly, because an omitted field lets Baileys fetch the
+page itself with its unrestricted helper (section 8). A confirmed draft is built
+without Baileys's URL-info callback, so it cannot fetch either.
+`test/preview-security.test.mjs` runs send, confirm and edit through Baileys's
+real message generator with a counting fetcher and checks that the field is
+present, null, and that nothing was fetched.
 
 ## 10. Model download streams and write lifecycle — hardened
 
@@ -840,7 +824,7 @@ private state, `.env`, test fixtures and tickets. It did not publish a package. 
 `test/message-retention.test.mjs`, `test/message-retention-state.test.mjs`,
 `test/ephemeral-retention.test.mjs`, `test/message-expiry.test.mjs`,
 `test/model-download-lock.test.mjs`, `test/model-download.test.mjs`,
-`test/link-preview.test.mjs`, `test/embedding-security.test.mjs`,
+`test/embedding-security.test.mjs`,
 `test/policy-state.test.mjs`, `test/request-budgets.test.mjs`,
 `test/history-records.test.mjs`, `test/network-sinks.test.mjs` and
 `test/preview-security.test.mjs`, alongside
