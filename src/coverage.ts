@@ -25,7 +25,7 @@ export interface SearchCoverage {
 }
 
 /**
- * The coverage of one search_messages call, or null when `wa` is a stand-in
+ * The coverage of one search by words, or null when `wa` is a stand-in
  * that cannot count it. Never throws: a coverage miss must not take a working
  * search down with it.
  */

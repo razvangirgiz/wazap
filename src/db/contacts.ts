@@ -573,7 +573,7 @@ export class Contacts {
           else if (NICKNAME_FIELDS.has(field.folded)) consider(asRelation(relationWordsMatch(relation, field.words)), "nickname", `${field.key}: ${field.value}`);
         }
         for (const tag of person.tags) consider(asRelation(relationWordsMatch(relation, tag.words) === "exact" ? "exact" : null), "tag", tag.tag);
-        // Free text: only a note that says nothing else ("mama", "Mama mea"), how set_contact_note filed one before details; "prietena mamei" is someone else.
+        // Free text: only a note that says nothing else ("mama", "Mama mea"), how a note was filed before details existed; "prietena mamei" is someone else.
         if (relationWordsMatch(relation, person.noteWords) === "exact") consider(asRelation("exact"), "note", person.row.note!);
         if (person.saved) consider(asRelation(relationWordsMatch(relation, person.savedWords)), "name", person.row.name!);
       } else {

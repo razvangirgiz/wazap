@@ -261,7 +261,7 @@ const RECENT_GROUP_META_MAX = 12;
 const RECALL_RERANK_WINDOW = 100;
 /** A match found by meaning loses half its way down to 70% each month: recency orders close matches, never buries a clearly closer old one. */
 const RECALL_RECENCY_HALF_LIFE_MS = 30 * 86_400_000;
-/** Messages get_recent_messages returns per chat: the newest of its window, as many as main's per-chat ring held. */
+/** Messages getRecentMessages returns per chat: the newest of its window, as many as main's per-chat ring held. */
 const RECENT_PER_CHAT_MAX = 2_000;
 /** Local contact filing caps: enough to describe anyone, small enough to stay a note. */
 const MAX_CONTACT_TAGS = 30;
@@ -274,7 +274,7 @@ const MAX_FIELD_KEY_CHARS = 40;
 const PREVIEW_BUDGET_MS = 20_000;
 /** WhatsApp shows a story for a day; so does wazap. */
 const STORY_TTL_MS = 24 * 3_600_000;
-/** How far back into a chat get_unanswered reads for the ask. */
+/** How far back into a chat an open ask is looked for. */
 const UNANSWERED_SCAN = 30;
 const CALL_SWEEP_MS = 30_000;
 /** The same call reaches the store up to three ways; only nearness in time tells them apart. */
@@ -1573,7 +1573,7 @@ export class WhatsAppService implements WhatsAppApi {
   }
 
   /**
-   * What search_messages ran across: every visible message of the account (or
+   * What a search by words ran across: every visible message of the account (or
    * of the chat) inside the time filters, the status feed left out. Null when
    * the database cannot say; a coverage miss never takes a search down.
    */
@@ -1603,7 +1603,7 @@ export class WhatsAppService implements WhatsAppApi {
   /**
    * Words and meaning in one search: the query is embedded, then matched
    * against the account's stored vectors and its trigram index under the
-   * same filters search_messages takes, and the two rankings are fused. A hit
+   * same filters a search by words takes, and the two rankings are fused. A hit
    * found only by meaning must clear the similarity floor. A row the database
    * holds only as text (imported from the old recall index) answers with that
    * text, marked `from_index`.
@@ -3823,7 +3823,7 @@ export class WhatsAppService implements WhatsAppApi {
 
   /**
    * Who the account has blocked, asked once per connection: WhatsApp pushes the
-   * list only when it changes, so get_contact would otherwise say "not blocked"
+   * list only when it changes, so getContact would otherwise say "not blocked"
    * for everyone until then. A failure costs only that answer, so it is logged.
    */
   private async loadBlocklist(sock: WASocket, generation: number): Promise<void> {

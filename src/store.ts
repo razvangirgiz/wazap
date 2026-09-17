@@ -493,7 +493,7 @@ export class Store {
   }
 }
 
-/** How long `get_contact` waits for WhatsApp's about text or profile picture. */
+/** How long a contact lookup (getContact) waits for WhatsApp's about text or profile picture. */
 export function encode(run: () => Uint8Array): string | null {
   try {
     return Buffer.from(run()).toString("base64");
