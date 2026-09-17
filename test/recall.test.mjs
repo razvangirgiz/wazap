@@ -521,6 +521,30 @@ test("while the index catches up, search by meaning and words still finds every 
   }
 });
 
+test("a default search whose words fill more messages than it ranks says scan_capped, and tells how to narrow it", async () => {
+  const stub = await stubEmbedServer();
+  const { svc, sock } = await serviceWith({ WAZAP_RECALL: "local", WAZAP_EMBED_URL: stub.url });
+  try {
+    const at = Math.floor(Date.now() / 1000) - 3_600;
+    deliver(sock, Array.from({ length: 105 }, (_, i) => text(`F${i}`, `factura numărul ${i}`, { messageTimestamp: at + i })));
+    deliver(sock, [text("R1", "chiria pe septembrie", { messageTimestamp: at + 200 })]);
+    await svc.recallIdle();
+    const { call } = schemaCheckedTools(svc, { allowWrite: false });
+
+    const common = await call("search", { query: "factura" });
+    assert.equal(common.structuredContent.mode, "hybrid");
+    assert.equal(common.structuredContent.scan_capped, true);
+    assert.match(common.content[0].text, /older matches may be missing: narrow it with chat_id or since\/until, or pass match: "words"/);
+
+    const rare = await call("search", { query: "chiria" });
+    assert.equal(rare.structuredContent.scan_capped, false);
+    assert.doesNotMatch(rare.content[0].text, /older matches may be missing/);
+  } finally {
+    await svc.stop();
+    stub.server.close();
+  }
+});
+
 test("when even the keyword fallback cannot run, search stays a hard error", async () => {
   const { svc } = await serviceWith({});
   // Nothing linked: recall refuses NOT_LINKED before the index question ever

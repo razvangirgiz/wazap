@@ -425,6 +425,8 @@ export interface RecallAnswer {
   hits: RecallHit[];
   /** The index at query time; "indexing" means more matches may still land. */
   index: RecallStatus;
+  /** More messages held the query's words than the word side examined: older word matches may be missing. */
+  lexicalCapped: boolean;
 }
 
 export interface HandledResult {

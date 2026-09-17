@@ -1654,7 +1654,7 @@ export class WhatsAppService implements WhatsAppApi {
         message: views[i]!,
         from_index: hit.message.raw === null,
       })) satisfies RecallAnswer["hits"];
-      return this.synced({ hits, index: this.recallStatus() });
+      return this.synced({ hits, index: this.recallStatus(), lexicalCapped: result.lexicalCapped });
     });
   }
 

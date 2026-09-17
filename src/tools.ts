@@ -133,7 +133,7 @@ const SEARCH_OUTPUT = {
       from_index: z.boolean().optional().describe("Kept only as text: no media, reply or forward"),
     }).passthrough()
   ),
-  scan_capped: z.boolean().optional(),
+  scan_capped: z.boolean().optional().describe("Older matches may be missing: narrow the search"),
   searched_back_to: z.string().optional().describe("Older messages were not searched: narrow the search"),
   coverage: OPEN_OBJECT.nullable().optional().describe("null: it could not be counted"),
   index: OPEN_OBJECT.optional(),
@@ -617,9 +617,16 @@ const TOOLS: readonly ToolDef[] = [
           );
           const hits = result.data.hits.map((hit, i) => ({ ...hit, message: identified[i]! }));
           const fresh = await readFreshness(wa, chat_id);
-          const answer: IdentifiedRecallAnswer = { hits, index: result.data.index };
+          const capped = result.data.lexicalCapped === true;
+          const answer: IdentifiedRecallAnswer = { hits, index: result.data.index, lexicalCapped: capped };
           // While the index is still catching up renderRecall says so itself; the coverage line only repeats it.
-          const note = [result.data.index.state === "indexing" ? null : indexCoverageNote(result.data.index), freshnessNote(fresh)]
+          const note = [
+            capped
+              ? 'More messages hold these words than were ranked, so older matches may be missing: narrow it with chat_id or since/until, or pass match: "words" to list them newest first.'
+              : null,
+            result.data.index.state === "indexing" ? null : indexCoverageNote(result.data.index),
+            freshnessNote(fresh),
+          ]
             .filter(Boolean)
             .join(" ");
           return ok(
@@ -629,6 +636,7 @@ const TOOLS: readonly ToolDef[] = [
               mode: "hybrid",
               count: hits.length,
               messages: hits.map(({ message, ...rank }) => ({ ...message, ...rank })),
+              scan_capped: capped,
               index: result.data.index,
               freshness: fresh,
             })
