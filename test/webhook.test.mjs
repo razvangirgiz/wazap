@@ -1264,7 +1264,10 @@ test("a connection event the consumer refused is retried until it arrives, and a
   const server = await listen(async (req, res) => {
     const body = JSON.parse(await readBody(req));
     attempts += 1;
-    if (!accepting) {
+    // A retry already on the wire when the status changes can land after the
+    // consumer starts accepting; refusing disconnected throughout keeps this
+    // about the supersede, not about which POST wins that race.
+    if (!accepting || body.status === "disconnected") {
       res.writeHead(500, { "content-type": "text/plain" });
       res.end("no");
       return;
