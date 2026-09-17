@@ -545,6 +545,55 @@ test("a default search whose words fill more messages than it ranks says scan_ca
   }
 });
 
+test("the default search leaves the stories out, by words and by meaning", async () => {
+  const stub = await stubEmbedServer();
+  const { svc, sock } = await serviceWith({ WAZAP_RECALL: "local", WAZAP_EMBED_URL: stub.url });
+  try {
+    const at = Math.floor(Date.now() / 1000) - 60;
+    deliver(sock, [
+      { key: { remoteJid: "status@broadcast", fromMe: false, id: "S1", participant: PEER }, messageTimestamp: at, message: { conversation: "factura la mare 🌊" }, pushName: "Ana" },
+      text("M1", "ți-am trimis factura", { messageTimestamp: at + 1 }),
+    ]);
+    await svc.recallIdle();
+    const { call } = schemaCheckedTools(svc, { allowWrite: false });
+    for (const query of ["factura", "the invoice"]) {
+      const result = await call("search", { query });
+      assert.equal(result.structuredContent.mode, "hybrid");
+      assert.deepEqual(result.structuredContent.messages.map((m) => m.chat_id), [PEER], `${query}: the chat message, never the story`);
+    }
+  } finally {
+    await svc.stop();
+    stub.server.close();
+  }
+});
+
+test("a revoked message leaves the default search, by words and by meaning", async () => {
+  const stub = await stubEmbedServer();
+  const { svc, sock } = await serviceWith({ WAZAP_RECALL: "local", WAZAP_EMBED_URL: stub.url });
+  try {
+    const at = Math.floor(Date.now() / 1000) - 60;
+    deliver(sock, [text("M1", "factura cu parola hunter2", { messageTimestamp: at }), text("M2", "altă factura", { messageTimestamp: at + 1 })]);
+    await svc.recallIdle();
+    const { call } = schemaCheckedTools(svc, { allowWrite: false });
+    const found = async (query) => (await call("search", { query })).structuredContent.messages.map((m) => m.message_id.split("_").pop()).sort();
+    assert.deepEqual(await found("factura"), ["M1", "M2"]);
+    deliver(sock, [
+      {
+        key: { remoteJid: PEER, fromMe: false, id: "R1" },
+        messageTimestamp: at + 2,
+        message: { protocolMessage: { type: proto.Message.ProtocolMessage.Type.REVOKE, key: { remoteJid: PEER, fromMe: false, id: "M1" } } },
+      },
+    ]);
+    await svc.recallIdle();
+    assert.deepEqual(await found("factura"), ["M2"], "by words");
+    assert.deepEqual(await found("the invoice"), ["M2"], "by meaning");
+    assert.deepEqual(await found("hunter2"), [], "not even its own words");
+  } finally {
+    await svc.stop();
+    stub.server.close();
+  }
+});
+
 test("when even the keyword fallback cannot run, search stays a hard error", async () => {
   const { svc } = await serviceWith({});
   // Nothing linked: recall refuses NOT_LINKED before the index question ever
