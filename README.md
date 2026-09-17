@@ -234,10 +234,11 @@ them. `--dry-run` prints the plan and touches nothing.
 | `search_contacts` | read | Find contacts by name, number, tag or detail; `tag` alone lists everyone filed under it. |
 | `sync_contacts` | read | Fetch the phone's address book from WhatsApp again, when names are missing. |
 | `get_contact` | read | Name, number, about text, profile picture. |
+| `find_contact` | read | Who a name, nickname, relationship ("mama") or group name means. Resolved: the `chat_id`, plus the recent exchange and how you write there in a session that can send. Otherwise the candidates that tell people apart, to ask you. See [Finding people](#finding-people). |
 | `get_group_info` | read | Participants, admins, announcement mode, who may edit the info or add members, join approval, disappearing messages, community, invite link (when you are admin). |
 | `download_media` | read | Save an attachment to disk; small images also come back inline. |
 | `transcribe_audio` | read | Turn a voice note or audio message into text, with the local or the API provider. |
-| `send_message` | write | Draft text, optionally as a reply, with @-mentions. Does not send. |
+| `send_message` | write | Draft text, optionally as a reply, with @-mentions. Does not send. A draft to someone you write to often carries `style_check`: where it does not read like you. |
 | `send_media` | write | Draft an image, video, audio, voice note, document or GIF (`as_gif`: an mp4 loops, a .gif is converted with ffmpeg) from a path or URL. Does not send. |
 | `send_poll` | write | Draft a poll with 2–12 options. Does not send. The votes then show on the poll message. |
 | `send_location` | write | Draft a map pin. Does not send. |
@@ -308,6 +309,64 @@ carry a placeholder such as `[image] caption`, `[voice message · 0:42]`, `[dele
 `[poll] Pizza or pasta?`. A poll also carries each option with who voted for it,
 and an event who answered going, maybe or not going. Timestamps are ISO 8601 with the machine's UTC offset,
 alongside a human `age` like `2h ago`.
+
+### Finding people
+
+`find_contact` answers "who is mama?", "Ana de la contabilitate" or "Mișu"
+before anything is drafted. It reads the names wazap keeps for a person — the
+saved contact name, a business name, the name they give themselves — and what
+you filed about them: a `nickname` or `relatie` detail, a tag, and a note that
+says nothing but the relationship ("mama"). Case, diacritics and Romanian case
+endings do not matter ("Stefan" is Ștefan, "mamei" is mama), a short form finds
+the full name ("Mișu" is Mihai) below the name itself, and a group is found by
+its name. A relationship word matches only what you filed, never a message and
+never a name like "Mama Anei" or "Mamaia Resort". People you talk to more, and
+more recently, rank higher. `qualifier` tells two of a name apart: a tag, a
+detail, a note, a business or a group they write in ("contabilitate"), or the
+last four digits of the number.
+
+The answer is one of three:
+
+- **resolved** — one person or group is clearly meant: `contact.chat_id`, the
+  full id to send to, with what matched.
+- **ambiguous** — up to five candidates and what tells them apart: when you
+  last exchanged messages and in which direction, how many you sent them in 90
+  days, groups in common, your note and tags, whether it is a business, and the
+  number's last four digits. No candidate carries a full number or a word of any
+  message, so the agent has to ask you and look the one you name up again.
+- **not_found** — the closest names, if any. For a relationship nobody is filed
+  under, the agent is told to ask who it is and file it with
+  `update_contact_details` (`fields: {"relatie": "mama"}`).
+
+Without `account_id`, every linked account is searched and each candidate says
+which account it is on; the answer is resolved only when one account has the
+only match.
+
+**Draft context.** A resolved contact also carries what a message to them is
+written after: the last 8 messages both ways (each cut to 200 characters,
+voice notes as their transcript) and how you write there — language,
+diacritics, tu or dumneavoastră, length, emoji — from your own messages in that
+chat in the last 90 days, or across the account when there are fewer than five.
+Messages wazap sent are never part of it, so an agent does not learn its own
+drafts back. It is on by default, only in a session that can send, and only for
+a resolved contact. A contact tagged `#private`
+(`update_contact_details` with `add_tags: ["private"]`) gets the style only,
+never messages. `wazap config draft-context off [--account <id>]` turns it off
+for an account (`draft_context: false` in `accounts.json`), from the next call,
+without a restart.
+
+**Style check.** A text draft to a person you have written to at least five
+times in 90 days comes back with `style_check`: `warnings` among
+`language_mismatch`, `diacritics_mismatch` (with diacritics where you write
+without them, or the reverse), `address_mismatch` (tu where you say
+dumneavoastră, or the reverse) and `length_outlier` (over three times your
+usual longest there, and over 80 characters), with the `basis` it was measured
+on. It never blocks a draft; words you dictated stay as they are.
+
+**The address book.** Names come from the phone. When no contact has a saved
+name yet, the first `find_contact` of a server run asks WhatsApp for the
+address book, the way `sync_contacts` does, and waits up to 15 seconds for it
+before answering.
 
 ## Voice messages
 
@@ -522,7 +581,7 @@ wazap ships five [Agent Skills](https://agentskills.io) that teach an agent the 
 | `whatsapp-inbox` | "What did I miss?" Triage into *needs you / FYI / noise*, ranked, plus forgotten replies. Read-only |
 | `whatsapp-recall` | "Find the invoice Dan sent." Search with query variants, page back in time, download and read the file. Read-only |
 | `whatsapp-groups` | Catch up on a 300-message group: decisions, dates, what is asked of you. Read-only |
-| `whatsapp-send` | Draft in the chat's own register, show recipient and text, send only after the user says yes |
+| `whatsapp-send` | Find who the user means, draft in the chat's own register, show recipient and text, send only after the user says yes |
 
 `wazap setup` copies them into every client it connects, so there is usually
 nothing to run. The command behind it, for a harness `setup` never offered or
@@ -773,7 +832,8 @@ account. A send to a chat no account knows, with two or more accounts, fails
 `AMBIGUOUS_ACCOUNT` instead of falling back to default.
 
 Reads without a chat and without `account_id` use the default account; the
-response still carries `account_id`. `link_account` needs an account that
+response still carries `account_id`. `find_contact` is the exception: without
+`account_id` it searches every account and labels what it finds. `link_account` needs an account that
 already exists. Five accounts is advice, not a cap. One phone number is one
 account.
 

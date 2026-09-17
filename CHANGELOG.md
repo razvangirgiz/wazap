@@ -1,6 +1,40 @@
 # Changelog
 
 ## Unreleased
+### Added
+
+- **`find_contact`: who "mama", "Ana de la contabilitate" or "Mișu" is.** A
+  read tool, in every session, next to `search_contacts` and `get_contact`
+  (which stay for now). It matches saved, business and self-given names, the
+  `nickname` and `relatie` details, tags, and a note that is only the
+  relationship; diacritics and Romanian case endings do not matter, short forms
+  find the full name, groups are found by name. It answers `resolved` with the
+  `chat_id`, `ambiguous` with what tells the candidates apart (last exchange,
+  messages in 90 days, groups in common, note, tags, the number's last four
+  digits), or `not_found` with the closest names, and never shows a message's
+  words or a full number for anyone it is not sure of. `qualifier` narrows by a
+  tag, detail, note, business or group, or by the last four digits. Without
+  `account_id` it searches every account and labels each candidate. It has an
+  output schema.
+- **Draft context.** A contact `find_contact` resolves, in a session that can
+  send, carries the last 8 messages both ways and how the user writes there
+  (language, diacritics, tu or dumneavoastră, length, emoji), from the user's
+  own messages, never from what wazap sent. On by default; a contact tagged
+  `#private` gets the style only, and `wazap config draft-context off
+  [--account <id>]` turns it off for an account (`draft_context: false` in
+  `accounts.json`).
+- **`style_check` on `send_message` drafts.** A text draft to someone the user
+  has written to at least five times in 90 days carries `style_check`:
+  `warnings` among `language_mismatch`, `diacritics_mismatch`,
+  `address_mismatch` and `length_outlier`, with the `basis` they were measured
+  on, and the preview says what does not match. Additive: the arguments and
+  every field `send_message` returned before are unchanged, and it never
+  blocks a draft.
+- **The address book is asked for when `find_contact` needs it.** With no
+  contact carrying a saved name, the first `find_contact` of a server run asks
+  WhatsApp for the address book, as `sync_contacts` does, and waits up to 15
+  seconds before answering.
+
 ### Removed
 
 - **The Gemini CLI extension.** `gemini-extension.json`, the generated

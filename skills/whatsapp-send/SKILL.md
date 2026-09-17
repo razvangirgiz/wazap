@@ -1,6 +1,6 @@
 ---
 name: whatsapp-send
-description: Send, reply, forward, share a file, react, create a poll, or change the linked account's profile picture on WhatsApp on the user's behalf. Use for any request that results in an outgoing WhatsApp message or a new profile photo. Messages draft first; a profile picture has no draft. Show the image, wait for a yes, then call set_profile_picture (manage_group set_picture for a group).
+description: Send, reply, forward, share a file, react, create a poll, or change the linked account's profile picture on WhatsApp on the user's behalf. Use for any request that results in an outgoing WhatsApp message or a new profile photo. Find who the user means with find_contact first; messages draft first, and a profile picture has no draft. Show the image, wait for a yes, then call set_profile_picture (manage_group set_picture for a group).
 ---
 
 # WhatsApp send
@@ -13,17 +13,22 @@ If more than one WhatsApp account is linked, call `list_accounts` first and pass
 
 ## Resolve the recipient
 
-1. `search_contacts` with the name — and with what the user calls them: local tags and details filed by `update_contact_details` match too, so "contabilul" finds who carries `role: contabil`. Exactly one match: use its `chat_id`. Several: list them with numbers and ask. None: ask for the number in international format; `NOT_ON_WHATSAPP` means the number is wrong, not that you should retry. When the user names a number that is not in contacts yet, `save_contact` puts it in the account's WhatsApp contacts so it reads as a name next time; `remove_contact` drops an entry. A batch the user describes by a label ("all suppliers", "the team") resolves with `search_contacts` `tag`.
-2. Groups come from `list_chats` with `filter: "groups"`. Before posting, `get_group_info`; if `announcement_only` is true and the user is not admin, say so instead of trying.
-3. A reply to a specific message needs its `message_id` from `read_messages`; pass it as `reply_to` so the quote shows.
+1. `find_contact` with what the user called them, as said: a name ("Ana"), a nickname ("Mișu"), a relationship ("mamei"), a group ("fotbal"). Put what tells people apart in `qualifier` ("contabilitate" for "Ana de la contabilitate"). Without `account_id` it searches every account.
+   - `resolved`: use `contact.chat_id`, and `contact.account_id` on every tool that follows.
+   - `ambiguous`: never pick. Ask, naming each candidate by what tells them apart (the last exchange and when, groups in common, note, tags, the number's last four digits), then call `find_contact` again with the full name, a qualifier, or those four digits as `qualifier`. Candidates on different accounts: ask which account too.
+   - `not_found`: ask. For a relationship ("mama"), ask who it is, find that person, then file it with `update_contact_details` (`fields: {"relatie": "mama"}`) so it resolves next time. A number the user gives goes straight in `chat_id`, in international format; `NOT_ON_WHATSAPP` means the number is wrong, not that you should retry.
+2. When the user names a number that is not in contacts yet, `save_contact` puts it in the account's WhatsApp contacts so it reads as a name next time; `remove_contact` drops an entry. A batch the user describes by a label ("all suppliers", "the team") is everyone under that tag: `search_contacts` with `tag`.
+3. Before posting in a group, `get_group_info`; if `announcement_only` is true and the user is not admin, say so instead of trying.
+4. A reply to a specific message needs its `message_id` from `read_messages`; pass it as `reply_to` so the quote shows.
 
 ## Draft
 
-1. `read_messages` on the chat, `limit: 20`, and match the register already in use: language (Romanian or English), formality, emoji, length. A two-line chat gets a two-line reply.
-2. Write the message as the user, first person, without a signature or "sent by an assistant".
+1. Match the register already in use: language (Romanian or English), diacritics or none, tu or dumneavoastră, emoji, length. A resolved `find_contact` carries it in `context`: `context.style` is how the user writes there, `context.recent` the last messages both ways. Without `context` (a read session, a contact tagged `#private`, an account that turned it off), use `read_messages` on the chat, `limit: 20`, when you need the thread. A two-line chat gets a two-line reply.
+2. Write the message as the user, first person, without a signature or "sent by an assistant". Words the user dictated ("send exactly: …") go out as dictated.
 3. Files: `send_media` needs a local `file_path` that exists on the machine running wazap, or a public URL. Check the path before drafting; pick `as_document: true` for PDFs and anything the recipient should keep at original quality, `as_voice: true` only for audio meant as a voice note, `as_gif: true` for a .gif or an mp4 meant to loop like a GIF (a .gif needs ffmpeg on that machine).
 4. To @-mention someone, pass their ids as `mention_ids` and write `@<number>` in the text where the mention belongs. A mention the text lacks gets its `@<number>` added at the end, and the preview shows the final text.
 5. Call the matching send tool (`send_message` / `send_media` / `send_poll` / `send_location` / `forward_message`). It does **not** send. It returns a `draft_id` and a `preview`.
+6. A `send_message` draft may come back with `style_check.warnings`: `language_mismatch`, `diacritics_mismatch`, `address_mismatch`, `length_outlier`. Unless the user dictated the words, fix what it names and draft again, then show only the draft that reads like the user. It never blocks a send.
 
 ## Confirm, then send
 
@@ -33,6 +38,8 @@ Show the preview the tool returned, exactly, and wait for a yes:
 To: Ana (+40 722 …)
 "Joi la 10 e perfect, ne vedem la notar. Aduc eu actele."
 ```
+
+A draft "Vă anunț că ajung la 7." to someone the user writes to on tu and without diacritics comes back with `address_mismatch` and `diacritics_mismatch`: draft "ajung la 7, nu mai gati" instead, and show that preview.
 
 On the user's yes, call `confirm_send` with that `draft_id`. Do not call the send tool again. Report the result with the `message_id` so the user can follow up with `edit_message` (own messages, 15 minutes) or `delete_message`. `DRAFT_EXPIRED` (15 minutes) or `DRAFT_NOT_FOUND` means draft again, show the new preview, and wait for another yes. `SEND_OUTCOME_UNKNOWN` means the message may have gone out: do not confirm or draft it again; check the chat with `read_messages` and tell the user what you find.
 
