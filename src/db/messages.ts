@@ -1430,6 +1430,11 @@ export class Messages {
    * voice note or audio with a transcript reads as its transcript; any other
    * media as the placeholder it is stored with ("[image] caption"); system
    * notices are left out.
+   *
+   * It returns what the messages say, whatever the user filed about the chat:
+   * the caller gates it — a contact tagged `#private` gets style statistics
+   * only, and the account setting that turns the draft context off gets
+   * nothing (design D4). The storage layer does not read tags for this.
    */
   recentExchange(chatJid: string, options: { limit?: number; maxChars?: number } = {}): RecentExchangeItem[] {
     const chat = this.identity.chat(chatJid);
