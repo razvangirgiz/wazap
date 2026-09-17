@@ -16,7 +16,7 @@ import { promisify } from "node:util";
 import { paths } from "../dist/config.js";
 import { daemonHealthy, decideRole, readDaemon, removeDaemon, writeDaemon } from "../dist/daemon.js";
 import { startHttpEndpoint } from "../dist/server.js";
-import { BINARY, childEnv, mcpClient, offlineConfig, spawnWazap, stubAccountSource, waitFor } from "./helpers.mjs";
+import { BINARY, READ_TOOL_COUNT, TOOL_COUNT, childEnv, mcpClient, offlineConfig, spawnWazap, stubAccountSource, waitFor } from "./helpers.mjs";
 
 const SAMPLE = { pid: 4242, port: 51515, token: "deadbeef", version: "9.9.9" };
 
@@ -261,8 +261,8 @@ test("--http publishes its own port and takes the internal token as a full-acces
       assert.equal((await health.json()).ok, true);
 
       // No read token, so the endpoint is open; the internal token is what unlocks writes.
-      assert.equal(await httpToolCount(info.port, null), 24, "an anonymous session gets the read tools");
-      assert.equal(await httpToolCount(info.port, info.token), 40, "the internal token gets everything");
+      assert.equal(await httpToolCount(info.port, null), READ_TOOL_COUNT, "an anonymous session gets the read tools");
+      assert.equal(await httpToolCount(info.port, info.token), TOOL_COUNT, "the internal token gets everything");
     },
     ["serve", "--http", "--port", "0"]
   );

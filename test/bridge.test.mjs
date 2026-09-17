@@ -11,7 +11,7 @@ import { join } from "node:path";
 
 import { bridgedCall } from "../dist/bridge.js";
 import { readDaemon } from "../dist/daemon.js";
-import { mcpClient, spawnWazap, waitFor } from "./helpers.mjs";
+import { READ_TOOL_COUNT, mcpClient, spawnWazap, waitFor } from "./helpers.mjs";
 
 /** A data dir and the children started against it, all killed when the case ends. */
 function scene() {
@@ -226,7 +226,7 @@ test("a bridge serves what the owner exposes, so --read-only reaches every clien
     const b = s.start();
     const mcp = await session(b.child);
     const names = (await toolShape(mcp)).map((tool) => tool.name);
-    assert.equal(names.length, 24);
+    assert.equal(names.length, READ_TOOL_COUNT);
     assert.ok(!names.includes("send_message"), names.join(", "));
 
     const status = await mcp.request("tools/call", { name: "get_status", arguments: {} });

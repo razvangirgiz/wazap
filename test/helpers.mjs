@@ -22,7 +22,7 @@ import { singletonSource } from "../dist/account-hub.js";
 import { accountPaths } from "../dist/config.js";
 import { sqlite } from "../dist/db/sqlite.js";
 import { DRAFT_TTL_MS, DraftStore, draftExpired, draftNotFound, formatDraftPreview } from "../dist/drafts.js";
-import { registerTools } from "../dist/tools.js";
+import { registerTools, TOOL_NAMES } from "../dist/tools.js";
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
 export const BINARY = join(repoRoot, "dist", "index.js");
@@ -210,6 +210,16 @@ export function asToolSource(source) {
   }
   return singletonSource(source && typeof source === "object" ? source : {});
 }
+
+/** Every tool, as a session that can write lists them. */
+export const TOOL_COUNT = TOOL_NAMES.length;
+
+/** The tools a session without writes lists: the reads, and the local remember. */
+export const READ_TOOL_COUNT = (() => {
+  let count = 0;
+  registerTools({ registerTool: () => count++ }, singletonSource({}), { allowWrite: false });
+  return count;
+})();
 
 /**
  * The tools of `source` on a stand-in server, called the way an MCP client

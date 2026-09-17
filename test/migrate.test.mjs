@@ -21,7 +21,7 @@ import { promisify } from "node:util";
 import { AccountRegistry, DEFAULT_ACCOUNT_ID } from "../dist/accounts.js";
 import { accountPaths, paths } from "../dist/config.js";
 import { LAYOUT_ENTRIES, migrateLayout, rollbackMigration } from "../dist/migrate.js";
-import { childEnv } from "./helpers.mjs";
+import { TOOL_COUNT, childEnv } from "./helpers.mjs";
 import { runSmoke } from "./smoke-stdio.mjs";
 
 const run = promisify(execFile);
@@ -261,7 +261,7 @@ test("serve on a v0 dir migrates then answers initialize", async () => {
   const dir = dataDir();
   seedV0(dir);
   const { toolNames, status } = await runSmoke({ args: ["serve"], dataDir: dir, keepDataDir: true });
-  assert.equal(toolNames.length, 40);
+  assert.equal(toolNames.length, TOOL_COUNT);
   assert.equal(status.status, "not_linked");
   assert.equal(existsSync(join(dir, "auth")), false);
   assert.equal(existsSync(accountPaths(dir, DEFAULT_ACCOUNT_ID).authDir), true);
