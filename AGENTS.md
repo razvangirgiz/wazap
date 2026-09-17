@@ -135,7 +135,9 @@ from the Actions page, since that re-runs only the failed job.
   setting needs a reason and goes there; a knob only tests need goes under
   Development knobs below. A setting that stops being read goes into
   `RETIRED_SETTINGS` in `src/config.ts`, so whoever still sets it gets a warning
-  naming its replacement instead of a silent change.
+  naming its replacement instead of a silent change. One still honoured until
+  the next major version goes into `DEPRECATED_SETTINGS` instead
+  (`WAZAP_TRANSPORT` until 2.0).
 - **Secrets in errors are redacted.** The webhook secret and tokens never
   appear in error strings or logs; keep it that way.
 - **Hygiene is not behavior.** Lint, format and docs commits must not change

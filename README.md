@@ -1362,6 +1362,8 @@ Most of these are written for you by `wazap config`, `wazap login` and
 Flags beat environment variables, which beat `<data-dir>/.env`. A setting an
 earlier wazap read and this one does not is ignored, with a warning at startup
 that says what replaced it; see the [CHANGELOG](CHANGELOG.md).
+`WAZAP_TRANSPORT=http` still serves HTTP through 1.x, with a warning: `--http`
+is the supported way, and the variable goes away in 2.0.
 
 ## Known limitations
 

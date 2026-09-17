@@ -26,15 +26,13 @@
   gone, and both text paths still hand Baileys an explicit `linkPreview: null`
   so its own unrestricted fetcher stays off. Forwarding still keeps a preview a
   message already carries.
-- **Eleven settings, now fixed.** Each one still set in the environment or in
+- **Nine settings, now fixed.** Each one still set in the environment or in
   `.env` prints one warning at startup saying what replaced it, and is ignored;
   nothing refuses to start.
 
   | Setting | Now |
   | --- | --- |
-  | `WAZAP_TRANSPORT` | HTTP is the `--http` flag only |
   | `WAZAP_SYNC_FULL_HISTORY` | WhatsApp's default history sync; `read_messages` with `before` pulls older messages |
-  | `WAZAP_PERSIST_HISTORY` | messages are always kept in the account database |
   | `WAZAP_RATE_LIMIT` | 20 writes a minute, unless the account sets `rate_limit` in `accounts.json` |
   | `WAZAP_MAX_INFLIGHT` / `WAZAP_MAX_INFLIGHT_TOTAL` | 8 tool calls per MCP session, 32 in all |
   | `WAZAP_HTTP_BUDGET` | 240 requests a minute per HTTP credential |
@@ -45,7 +43,7 @@
 
 - **Settings documentation, down to what a user sets.** The README's Settings
   table, `.env.example` and `wazap --help` list `WAZAP_DATA_DIR`,
-  `WAZAP_READ_ONLY`, `WAZAP_HOST`/`WAZAP_PORT`, `WAZAP_PUBLIC_URL`/
+  `WAZAP_READ_ONLY`, `WAZAP_PERSIST_HISTORY`, `WAZAP_HOST`/`WAZAP_PORT`, `WAZAP_PUBLIC_URL`/
   `WAZAP_OAUTH_PASSWORD`, `WAZAP_READ_TOKEN`/`WAZAP_WRITE_TOKEN`,
   `WAZAP_TRANSCRIBE` with `WAZAP_TRANSCRIBE_API_KEY`, `WAZAP_RECALL`,
   `WAZAP_WEBHOOK` with its URL, secret and events, `WAZAP_RETENTION` and
@@ -57,11 +55,18 @@
 - **Tool counts** in the package description and the README, which had gone
   stale, and the unused `scripts/smoke-distribution.mjs`.
 
+### Deprecated
+
+- **`WAZAP_TRANSPORT`.** `WAZAP_TRANSPORT=http` still serves HTTP through
+  1.x, and prints one warning at startup that `--http` is the supported way;
+  the variable goes away in 2.0.
+
 ### Changed
 
 - **`wazap status` shows OAuth sign-ins when the background service is
   installed.** It used to say OAuth was only served with
-  `WAZAP_TRANSPORT=http`, even while the service served it.
+  `WAZAP_TRANSPORT=http`, even while the service served it; without the
+  service, it now names `wazap serve --http`.
 
 ### Upgrade notes
 
@@ -77,18 +82,16 @@
 - **Grok Bot, or any agent on a static header**: give it a URL instead.
   `wazap service install`, then `wazap expose`, prints it, and the agent signs
   in on the consent page. Code of your own keeps its tokens.
-- **`WAZAP_TRANSPORT=http`**: run `wazap serve --http`. A supervisor or a
-  container that relied on the variable alone now starts over stdio.
-  `wazap service install`, `deploy/wazap.service` and the Docker image already
-  pass `--http`.
-- **`WAZAP_PERSIST_HISTORY=0`**: messages are now kept in
-  `accounts/<id>/wazap.sqlite`. To keep nothing from an account, remove it with
-  `wazap account remove <id>`; `WAZAP_RETENTION=1` still expires disappearing
-  messages locally.
+- **`WAZAP_TRANSPORT=http`** keeps working, with a warning. Before 2.0, add
+  `--http` to the command your supervisor or container runs
+  (`wazap serve --http`) and drop the variable. `wazap service install`,
+  `deploy/wazap.service` and the Docker image already pass `--http`.
+- **`WAZAP_PERSIST_HISTORY=0`** is unchanged: it stays a documented setting,
+  and no messages are kept on disk.
 - **`WAZAP_RATE_LIMIT`**: set `rate_limit` (writes a minute, `0` for none) on
   the account in `accounts.json`.
 - **Silence the warnings** by deleting the retired lines from `.env` or the
-  environment.
+  environment, and by moving `WAZAP_TRANSPORT=http` to `--http`.
 
 ## 0.23.1
 ### Fixed
