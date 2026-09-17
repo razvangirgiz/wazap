@@ -1,6 +1,28 @@
 # Changelog
 
 ## Unreleased
+### Added
+
+- **`catch_up`: what the user missed, in one call.** Ranked sections — who is
+  waiting on a reply (the ask quoted, a voice note by its transcript, and what
+  they said after it), mentions, replies and unanswered polls (muted groups
+  included), missed calls per person, people who wrote, groups one line each,
+  stories — with a footer for untranscribed voice notes and what was left out.
+  It fits `budget_tokens` (2,500 by default, 500 to 8,000): the lines first,
+  then quotes by priority, and a `more.cursor` for the rest, which reads the
+  same window whatever arrives in between. A chat's messages count as missed
+  after the user's own last message there and after what their phone already
+  read. Without `account_id` it covers every linked account, each labelled.
+  See *Catching up* in the README.
+- **A catch-up mark per client.** Each OAuth client, each token
+  (`token:read`, `token:write`) and `local` (stdio, and clients sharing a
+  running wazap) keeps its own mark per account. A catch-up moves it once all
+  of it was given; `since: "previous"` repeats the last one; `hours`, an ISO
+  `since` and a partial `include` leave it where it is.
+- **`#no-catchup`**: a person tagged with it through `update_contact_details`
+  stays out of every catch-up, counted in its footer.
+- **An output schema on `catch_up`**, the first tool to declare one.
+
 ### Removed
 
 - **The Gemini CLI extension.** `gemini-extension.json`, the generated
@@ -63,6 +85,9 @@
 
 ### Changed
 
+- **The `whatsapp-inbox` skill collects with `catch_up`**, falling back to
+  `get_unanswered` for replies forgotten for days and `get_recent_messages` for
+  every message of a window. `learn` points a catch-up there too.
 - **The account database moves to schema version 5** the first time the server
   starts, in one transaction. It adds what the coming `catch_up` and
   `find_contact` read: whether a message mentions the account or was sent
