@@ -688,6 +688,7 @@ test("status reports each account's storage read-only, with a server holding the
   assert.equal(running.storage.accounts[0].embedding_queue, null, "recall off: no queue");
   svc.db.messages.upsert({ chatJid: ANA, keyId: "AFTER", fromMe: false, ts: Date.now(), type: "text", text: "după status" });
   assert.equal(svc.db.getMeta("import_state"), "done", "the server's connection is unharmed");
+  assert.equal(svc.db.counts().messages, account.counts.messages + 2, "and it kept every row the read passed over");
 });
 
 test("status tells a preparing import, running or waiting for the next start, a database it cannot open, and an account with nothing yet", async () => {

@@ -100,7 +100,19 @@ const realNow = Date.now;
 export function clockAtHour(hour = 12, minute = 0) {
   const anchor = new Date(realNow());
   anchor.setHours(hour, minute, 0, 0);
-  const shift = anchor.getTime() - realNow();
+  return clockAt(anchor.getTime());
+}
+
+/**
+ * Put this process on the moment `at`, time still flowing from there: the
+ * offset is fixed once and `Date.now` keeps ticking. A fixture recorded at one
+ * moment ages against the real clock — a story is swept a day later, a
+ * disappearing message when its timer runs out — so the code that reads it has
+ * to be given the clock it was written at, or the fixture decays between one
+ * run and the next.
+ */
+export function clockAt(at) {
+  const shift = at - realNow();
   Date.now = () => realNow() + shift;
   return Date.now();
 }

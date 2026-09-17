@@ -19,6 +19,7 @@ import { proto } from "baileys";
 import { accountPaths } from "../dist/config.js";
 import { searchableText } from "../dist/messages.js";
 import { sqlite } from "../dist/db/sqlite.js";
+import { clockAt } from "./helpers.mjs";
 
 const FIXTURES = join(dirname(fileURLToPath(import.meta.url)), "fixtures", "legacy-account");
 
@@ -100,13 +101,16 @@ export function vectorRow(i) {
  * writes an archive owned by `betaOwner`; `linked` writes the credentials that
  * name ME. Everything time-dependent — the story's day, the disappearing
  * timers, the future line — is relative to `now`, the moment the files were
- * written: pass it to the import, the verification and the database as their
- * clock.
+ * written, so the process is put on that clock here: a service started on these
+ * files reads the same `Date.now` they were recorded against, whatever day the
+ * suite runs on. Without it the fixture decays — a day after the recording the
+ * story is a day old, and the first service to boot sweeps it.
  */
 export async function buildLegacyAccount({ retention = false, beta = true, betaOwner = ME, linked = true } = {}) {
   const dataDir = mkdtempSync(join(tmpdir(), "wazap-legacy-"));
   const source = join(FIXTURES, retention ? "retention" : "plain");
   const { now, T } = JSON.parse(readFileSync(join(source, "clock.json"), "utf8"));
+  clockAt(now);
   const paths = accountPaths(dataDir, "default");
   mkdirSync(paths.historyDir, { recursive: true, mode: 0o700 });
   for (const name of ["store.json", "retention.json", "notes.json"]) cpSync(join(source, name), join(paths.root, name));
