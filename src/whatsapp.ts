@@ -4279,7 +4279,11 @@ export class WhatsAppService implements WhatsAppApi {
    * and the worker takes the note up again.
    */
   private webhookAwaitsTranscript(message: StoredMessage): boolean {
-    if (!this.autoTranscribe || this.config.command !== "serve" || !this.transcribeSource.ready()) return false;
+    if (!this.autoTranscribe || this.config.command !== "serve" || this.stopped) return false;
+    // A boot starts the outbox before the socket opens: an event a restart left
+    // waiting keeps waiting while the account connects, and its ready_at still
+    // caps the wait. Only a connection that dropped sends the placeholder now.
+    if (this.status !== "connected" && this.status !== "connecting") return false;
     return this.transcribeWorker.paused() === null && this.transcriptQueued(message);
   }
 

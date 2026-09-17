@@ -13,6 +13,7 @@ import { mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { setTimeout as sleep } from "node:timers/promises";
 import { promisify } from "node:util";
 import { parse } from "dotenv";
 import { DisconnectReason, proto } from "baileys";
@@ -2181,7 +2182,12 @@ test("a voice note's event whose wait a restart cut short goes out with the word
     second = transcribingService("wazap-webhook-voice-restart-", { dataDir: dir, persistHistory: true });
     second.svc.mediaBuffer = async () => Buffer.from("not really an ogg file");
     second.svc.transcriber = async () => ({ text: "am ajuns acasă", language: "ro", duration_seconds: 6 });
+    // As start() boots: the outbox starts while the socket is still connecting.
+    second.svc.status = "connecting";
     await second.svc.bootStorage();
+    await sleep(1_500);
+    assert.equal(server.received.length, 0, "a boot still connecting keeps the event waiting for the words");
+    second.sock.ev.emit("connection.update", { connection: "open" });
     await waitFor(() => server.received.length > 0, 5_000, "the event after the restart");
     assert.deepEqual(
       server.received.map((body) => [body.message_id, body.text]),
