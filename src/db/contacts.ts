@@ -64,7 +64,7 @@ import {
 
 export type FindKind = "person" | "group" | "any";
 export type MatchClass = "exact" | "word" | "diminutive" | "prefix" | "substring" | "fuzzy";
-export type MatchSource = "nickname" | "relatie" | "tag" | "field" | "note" | "name" | "business_name" | "notify" | "push_name" | "group_name";
+export type MatchSource = "nickname" | "relatie" | "tag" | "field" | "note" | "name" | "business_name" | "notify" | "push_name" | "group_name" | "number" | "id";
 export type QualifierSource = "note" | "tag" | "field" | "business_name" | "group_name";
 export type FindVerdict = "resolved" | "ambiguous" | "not_found";
 
@@ -135,6 +135,18 @@ export interface FindInput {
    */
   numberTail?: string | null;
 }
+
+/**
+ * Someone asked for by a number or an id instead of a name. `digits`: the
+ * number as typed, digits only, an international 00 dropped; it matches a
+ * person's number in full, or else its end once leading zeros are gone ("0722
+ * 001 111" is 40722001111). `jids`: every spelling of one id (a lid and the
+ * number it pairs with); it matches a person by number or lid, or a group.
+ */
+export type LookupInput = { kind?: FindKind; limit?: number } & ({ source: "number"; digits: string } | { source: "id"; jids: readonly string[] });
+
+/** A number typed the way it is dialled at home matches on its last digits, never fewer than these. */
+export const LOOKUP_MIN_DIGITS = 7;
 
 export interface QualifierHit {
   source: QualifierSource;
@@ -532,6 +544,59 @@ export class Contacts {
     return result;
   }
 
+  /**
+   * Who a number or an id is (LookupInput): each one found is an exact match
+   * from `source`, resolved when there is one, ambiguous when a number's end
+   * fits several people, not_found with no closest otherwise. The account
+   * itself and a group it left are nobody.
+   */
+  lookup(input: LookupInput): FindResult {
+    const kind: FindKind = input.kind ?? "any";
+    const limit = Math.max(1, Math.min(20, Math.floor(Number.isFinite(input.limit) ? input.limit! : FIND_SCORES.ambiguousMax)));
+    const people = kind === "group" ? [] : this.people();
+    const groupRows = this.groupRows();
+    const exact = (value: string): ContactCandidate["match"] => ({
+      class: "exact",
+      source: input.source,
+      value,
+      score: FIND_SCORES.match.exact,
+      inflected: false,
+      relationship: null,
+      resolvable: true,
+    });
+    const scored: Scored[] = [];
+    const addPerson = (person: Person): void => {
+      const value = input.source === "number" ? person.row.phone_jid!.split("@")[0]! : (person.row.phone_jid ?? person.row.lid)!;
+      scored.push({ person, group: null, familyChats: [], familyContacts: [], candidate: this.personCandidate(person, exact(value)) });
+    };
+    if (input.source === "number") {
+      const numberOf = (person: Person): string | null => person.row.phone_jid?.split("@")[0] ?? null;
+      const whole = people.filter((person) => numberOf(person) === input.digits);
+      const tail = input.digits.replace(/^0+/, "");
+      const fits = whole.length > 0 ? whole : tail.length >= LOOKUP_MIN_DIGITS ? people.filter((person) => numberOf(person)?.endsWith(tail) === true) : [];
+      fits.forEach(addPerson);
+    } else {
+      const wanted = new Set(input.jids);
+      for (const person of people) {
+        if ((person.row.phone_jid !== null && wanted.has(person.row.phone_jid)) || (person.row.lid !== null && wanted.has(person.row.lid))) addPerson(person);
+      }
+      if (kind !== "person") {
+        for (const row of groupRows) {
+          if (wanted.has(row.jid) && this.stillIn(row)) scored.push(this.groupEntry(row, exact(row.jid)));
+        }
+      }
+    }
+    const now = this.c.now();
+    this.relate(scored, [], now, idLowerBound(Math.max(1, now - WINDOW_DAYS * DAY_MS)), [], []);
+    scored.sort((a, b) => b.candidate.score - a.candidate.score || (b.candidate.lastExchange?.at ?? -1) - (a.candidate.lastExchange?.at ?? -1));
+    return {
+      verdict: scored.length === 0 ? "not_found" : scored.length === 1 ? "resolved" : "ambiguous",
+      candidates: scored.slice(0, Math.min(limit, FIND_SCORES.ambiguousMax)).map((entry) => this.withGroups(entry, groupRows)),
+      closest: [],
+      query: { words: [], relationship: null, qualifier: [] },
+    };
+  }
+
   /** Everyone matching may read, the account itself left out, folded names reused while nothing about them changed. */
   private people(): Person[] {
     const owner = this.c.get<{ value: string }>("SELECT value FROM meta WHERE key = 'owner'")?.value ?? null;
@@ -644,33 +709,37 @@ export class Contacts {
       const match: Match | null = near ? (nearWords(query, words) ? { class: "fuzzy", inflected: false, resolvable: false } : null) : matchWords(query, words);
       if (match === null || !this.stillIn(row)) continue;
       const score = matchScore(match, "group_name");
-      out.push({
-        person: null,
-        group: row,
-        familyChats: [row.id],
-        familyContacts: [],
-        candidate: {
-          kind: "group",
-          contactId: null,
-          chatId: row.id,
-          jid: row.jid,
-          displayName: row.name,
-          names: { saved: null, notify: null, pushName: null, business: null, nickname: null, group: row.name },
-          score,
-          match: { class: match.class, source: "group_name", value: row.name, score, inflected: match.inflected, relationship: null, resolvable: match.resolvable },
-          qualifier: null,
-          relationship: { recency: 0, frequency: 0, saved: 0 },
-          lastExchange: null,
-          ownMessages90d: 0,
-          groupsInCommon: null,
-          saved: false,
-          business: false,
-          tags: [],
-          phoneLast4: null,
-        },
-      });
+      out.push(this.groupEntry(row, { class: match.class, source: "group_name", value: row.name, score, inflected: match.inflected, relationship: null, resolvable: match.resolvable }));
     }
     return out;
+  }
+
+  private groupEntry(row: GroupRow, match: ContactCandidate["match"]): Scored {
+    return {
+      person: null,
+      group: row,
+      familyChats: [row.id],
+      familyContacts: [],
+      candidate: {
+        kind: "group",
+        contactId: null,
+        chatId: row.id,
+        jid: row.jid,
+        displayName: row.name,
+        names: { saved: null, notify: null, pushName: null, business: null, nickname: null, group: row.name },
+        score: match.score,
+        match,
+        qualifier: null,
+        relationship: { recency: 0, frequency: 0, saved: 0 },
+        lastExchange: null,
+        ownMessages90d: 0,
+        groupsInCommon: null,
+        saved: false,
+        business: false,
+        tags: [],
+        phoneLast4: null,
+      },
+    };
   }
 
   /**

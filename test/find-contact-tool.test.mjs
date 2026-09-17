@@ -260,6 +260,65 @@ test("an answer over several accounts that is not one contact names no account",
   await hub.stop();
 });
 
+test("a number, however it is written, or an id resolves to who it is, with what the user filed; an unknown one is not_found", async () => {
+  const config = offlineConfig("wazap-find-number-", { readOnly: false });
+  const registry = AccountRegistry.load(config.dataDir);
+  registry.add("work", "Work");
+  const hub = new AccountHub(config, AccountRegistry.load(config.dataDir));
+  const home = hub.get("default");
+  const work = hub.get("work");
+  const homeSock = connect(home, ME);
+  connect(work, WORK_ME);
+  seed(home, ANA, "Ana Pop");
+  seed(work, DAN, "Dan Radu");
+  const GROUP = "120363000000000031@g.us";
+  homeSock.ev.emit("chats.upsert", [{ id: GROUP, name: "Bloc 12" }]);
+  const server = fakeServer();
+  registerTools(server, asToolSource(hub), { allowWrite: true });
+  const find = async (args) => (await server.tools.get("find_contact").handler(args)).structuredContent;
+  await server.tools.get("remember").handler({ chat_id: ANA, add_tags: ["client"], fields: { rol: "contabil" }, account_id: "default" });
+
+  for (const [name, source] of [
+    ["+40 722 000 001", "number"],
+    ["40722000001", "number"],
+    ["0722-000-001", "number"],
+    ["0040722000001", "number"],
+    [ANA, "id"],
+  ]) {
+    const found = await find({ name });
+    assert.equal(found.status, "resolved", name);
+    assert.equal(found.contact.chat_id, ANA, name);
+    assert.equal(found.contact.account_id, "default", name);
+    assert.equal(found.contact.matched.source, source, name);
+    assert.equal(found.contact.number, "40722000001", name);
+    assert.deepEqual([found.contact.tags, found.contact.fields], [["client"], { rol: "contabil" }], name);
+    assert.ok(found.context, `${name}: a write session gets the context on the usual rules`);
+  }
+  assert.equal((await find({ name: "+40722000001", include_context: false })).context, undefined);
+  const dan = await find({ name: "+40 722 000 002" });
+  assert.deepEqual([dan.status, dan.contact.account_id, dan.contact.name], ["resolved", "work", "Dan Radu"]);
+  const group = await find({ name: GROUP });
+  assert.deepEqual([group.status, group.contact.kind, group.contact.name], ["resolved", "group", "Bloc 12"]);
+
+  const nobody = await find({ name: "+40 733 000 999" });
+  assert.equal(nobody.status, "not_found");
+  assert.match(nobody.fix, /check the number/);
+  assert.equal(nobody.closest.length, 0);
+
+  // The same person on both accounts is a question of which account, never a guess.
+  seed(work, ANA, "Ana Pop");
+  const twice = await find({ name: "0722 000 001" });
+  assert.equal(twice.status, "ambiguous");
+  assert.deepEqual(twice.candidates.map((c) => c.account_id).sort(), ["default", "work"]);
+  assert.match(twice.fix, /account_id/);
+
+  const readServer = fakeServer();
+  registerTools(readServer, asToolSource(hub), { allowWrite: false });
+  const read = (await readServer.tools.get("find_contact").handler({ name: DAN })).structuredContent;
+  assert.deepEqual([read.status, read.context], ["resolved", undefined], "a read session gets no context, as for a name");
+  await hub.stop();
+});
+
 test("find_contact's limit says ambiguous answers list at most five people from each account", () => {
   const server = fakeServer();
   registerTools(server, asToolSource({}), { allowWrite: false });

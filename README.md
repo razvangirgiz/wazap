@@ -223,7 +223,7 @@ them. `--dry-run` prints the plan and touches nothing.
 | `catch_up` | read | What the user missed, in one call and within a token budget, across every linked account: who is waiting on a reply, mentions, replies and open polls, missed calls, people, groups condensed, stories. Pages with a cursor. See [Catching up](#catching-up). |
 | `search` | read | Messages by meaning and by words at once, over everything the account keeps, so a paraphrase or another language still hits; `match: "words"` keeps only messages holding the words. `chat_id`, `since`, `until` and `from` narrow it, and the answer says how much it searched. Without [semantic recall](#semantic-recall) it matches words and says so. |
 | `get_message` | read | One message in full, with its quoted message, each reaction with who left it, and who voted for each option of a poll or answered an event. On your own messages, `delivery` says whether it was sent, delivered, read or played, and in a group who read it and when. |
-| `find_contact` | read | Who a name, nickname, relationship ("mama") or group name means. Resolved: the `chat_id`, number, note, tags and details, plus the recent exchange and how you write there in a session that can send. Otherwise the candidates that tell people apart, to ask you. `tag` lists everyone filed under a tag. See [Finding people](#finding-people). |
+| `find_contact` | read | Who a name, nickname, relationship ("mama"), group name, number or id means. Resolved: the `chat_id`, number, note, tags and details, plus the recent exchange and how you write there in a session that can send. Otherwise the candidates that tell people apart, to ask you. `tag` lists everyone filed under a tag. See [Finding people](#finding-people). |
 | `get_group_info` | read | Participants, admins, announcement mode, who may edit the info or add members, join approval, disappearing messages, community, invite link (when you are admin). |
 | `get_media` | read | A message's media: a voice note or audio as its transcript, a photo attached as an image, any file saved to disk (`save_to` picks the directory). Transcription runs on the local or the API provider; with `save_to` a recording comes as its file, with a transcript only if one was already made, and when no transcript can be made the file comes instead, with `transcript_unavailable` saying why. |
 | `wait_for_messages` | read | Block up to 55 s until a message arrives, then return it with a cursor for the next call. `addressed_to_me` wakes only for direct messages, @-mentions and replies. |
@@ -395,8 +395,12 @@ The answer is one of three:
 Without `account_id`, every linked account is searched and each candidate says
 which account it is on; the answer is resolved only when one account has the
 only match. A resolved person also comes with their number and what the user
-filed on them (note, tags, details). `find_contact({ tag: "client" })` lists
-everyone filed under a tag instead, each with their `chat_id`.
+filed on them (note, tags, details). A number, however it is written
+("+40 722 001 111", "0722-001-111"), or an id (a sender's `id` from a message)
+is looked up as such: `resolved` with `matched.source` `number` or `id`, or
+`not_found` telling the agent to check the number.
+`find_contact({ tag: "client" })` lists everyone filed under a tag instead,
+each with their `chat_id`.
 
 **Draft context.** A resolved contact also carries what a message to them is
 written after: the last 8 messages both ways (each cut to 200 characters,

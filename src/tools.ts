@@ -693,14 +693,14 @@ const TOOLS: readonly ToolDef[] = [
   tool({
     name: "find_contact",
     title: "Find who the user means",
-    description: `Who a name, nickname, relationship ("mama") or group name means, before drafting to them. resolved: contact.chat_id, with number, note, tags, details and, in a write session, context. ambiguous or not_found: ask the user; never send to a guess. tag lists everyone filed under it.`,
+    description: `Who a name, nickname, relationship ("mama"), group name, number or id means, before drafting to them. resolved: contact.chat_id, with number, note, tags, details and, in a write session, context. ambiguous or not_found: ask the user; never send to a guess. tag lists everyone filed under it.`,
     schema: {
       name: z
         .string()
         .min(1)
         .max(100)
         .optional()
-        .describe('What the user calls them: "Ana", "mamei", "Mișu", "fotbal"'),
+        .describe('What the user calls them ("Ana", "mamei", "fotbal"), or a number or id'),
       qualifier: z.string().max(100).optional().describe('Tells two apart: "contabilitate", a group, the last 4 digits'),
       kind: z.enum(["person", "group", "any"]).default("any"),
       tag: z.string().min(1).optional().describe("List everyone filed under this tag instead"),

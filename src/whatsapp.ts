@@ -1783,7 +1783,7 @@ export class WhatsAppService implements WhatsAppApi {
         await this.askForEmptyAddressBook();
         db = this.db;
       }
-      return findInAccount(db, this.accountRecord.id, query);
+      return findInAccount(db, this.accountRecord.id, query, (id) => this.resolveId(id));
     });
   }
 

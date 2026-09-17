@@ -23,9 +23,10 @@
 import { z } from "zod";
 import type { AccountBinding } from "./account-hub.js";
 import { draftContextEnabled } from "./accounts.js";
-import { FIND_SCORES, RELATIONSHIPS, inflectionForms, nameWords, type AccountDb, type ContactCandidate, type FindKind, type FindResult, type FindVerdict } from "./db/index.js";
+import { FIND_SCORES, LOOKUP_MIN_DIGITS, RELATIONSHIPS, inflectionForms, nameWords, type AccountDb, type ContactCandidate, type FindKind, type FindResult, type FindVerdict } from "./db/index.js";
 import { styleLine, type DraftContext } from "./draft-style.js";
 import { WazapError, asWazapError } from "./errors.js";
+import { resolveChatId } from "./ids.js";
 import { formatAge, isoWithOffset } from "./messages.js";
 import { hasPrivateTag } from "./private-contacts.js";
 import { assertSendable, sendPolicyOf } from "./send-guard.js";
@@ -63,20 +64,41 @@ function numberTailOf(qualifier: string): string | null {
   return qualifier.trim() !== "" && !/\p{L}/u.test(qualifier) && digits.length >= 4 ? digits : null;
 }
 
+/** A name that is a phone number or a WhatsApp id, which find_contact looks up as such instead of matching names. */
+export type Lookup = { source: "number"; digits: string } | { source: "id"; id: string };
+
+/** "+40 722 001 111", "0722-001-111", "0040722001111": a number; "…@s.whatsapp.net", "…@lid", "…@g.us": an id. */
+export function lookupOf(name: string): Lookup | null {
+  const trimmed = name.trim();
+  if (/^[^\s@]+@(s\.whatsapp\.net|c\.us|lid|g\.us)$/i.test(trimmed)) return { source: "id", id: trimmed };
+  if (!/^\+?[\d\s().-]+$/.test(trimmed)) return null;
+  const digits = trimmed.replace(/\D/g, "");
+  if (digits.length < LOOKUP_MIN_DIGITS) return null;
+  return { source: "number", digits: trimmed.startsWith("00") ? digits.slice(2) : digits };
+}
+
 /**
  * db.contacts.find on one account, with a digits-only qualifier read as the
- * end of a phone number (numberTail), and each returned person's note. The
- * service calls it.
+ * end of a phone number (numberTail), and each returned person's note; a
+ * number or an id is looked up instead (db.contacts.lookup), `resolveId`
+ * giving the number a lid is paired with. The service calls it.
  */
-export function findInAccount(db: AccountDb, accountId: string, query: FindContactQuery): AccountFind {
+export function findInAccount(db: AccountDb, accountId: string, query: FindContactQuery, resolveId?: (id: string) => string): AccountFind {
   const tail = numberTailOf(query.qualifier ?? "");
-  const { verdict, candidates, closest, ...found } = db.contacts.find({
-    name: query.name,
-    qualifier: tail === null ? (query.qualifier ?? null) : null,
-    numberTail: tail,
-    kind: query.kind ?? "any",
-    limit: query.limit,
-  });
+  const lookup = lookupOf(query.name);
+  const kind = query.kind ?? "any";
+  const { verdict, candidates, closest, ...found } =
+    lookup === null
+      ? db.contacts.find({
+          name: query.name,
+          qualifier: tail === null ? (query.qualifier ?? null) : null,
+          numberTail: tail,
+          kind,
+          limit: query.limit,
+        })
+      : lookup.source === "number"
+        ? db.contacts.lookup({ source: "number", digits: lookup.digits, kind, limit: query.limit })
+        : db.contacts.lookup({ source: "id", jids: [...new Set([resolveChatId(lookup.id), resolveId?.(lookup.id) ?? lookup.id])], kind, limit: query.limit });
   const withNote = (candidate: ContactCandidate): FoundContact => {
     const filed = candidate.kind === "person" ? db.identity.notes(candidate.jid) : null;
     return { accountId, candidate, note: filed?.note ?? null, fields: filed === null || Object.keys(filed.fields).length === 0 ? null : filed.fields };
@@ -206,6 +228,19 @@ function unsearchedLine(unavailable: readonly UnavailableAccount[]): string | nu
 function fixFor(outcome: FindOutcome, query: FindResult["query"], asked: string, multi: boolean, unavailable: readonly UnavailableAccount[]): string | undefined {
   if (outcome.status === "resolved") return undefined;
   const unsearched = unsearchedLine(unavailable);
+  const lookup = lookupOf(asked);
+  if (lookup !== null) {
+    const accounts = new Set(outcome.candidates.map((found) => found.accountId));
+    const line =
+      outcome.status === "not_found"
+        ? lookup.source === "number"
+          ? `Nobody saved or filed has the number "${asked}": check the number with the user, in international format. A number nobody saved still takes a message as chat_id.`
+          : `Nobody saved or filed, and no group, is "${asked}": check the id, passed exactly as a message or chat gave it.`
+        : accounts.size > 1
+          ? "They are on different accounts: ask the user which account, then call find_contact again with its account_id."
+          : "Several numbers end with those digits: ask the user for the full number in international format.";
+    return [line, unsearched].filter((part) => part !== null).join(" ");
+  }
   if (outcome.status === "ambiguous") {
     const accounts = new Set(outcome.candidates.map((found) => found.accountId));
     return [
