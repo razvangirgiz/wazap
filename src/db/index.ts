@@ -52,6 +52,10 @@
  * - (v5) contacts.find keeps the people it folded in memory, refolding a
  *   person when any of their row changes; groups need `leftGroup` to exclude
  *   the ones the account left.
+ * - digest (catch_up) reads only: every read is bounded above by the untilId
+ *   the caller fixed (digest.maxId() when a digest starts), and per-chat reads
+ *   take the chat's family (families()), so a page after the first sees what
+ *   the first saw while a lid chat folds.
  */
 import { CatchupMarks } from "./catchup.js";
 import { Contacts, type LeftGroup } from "./contacts.js";
