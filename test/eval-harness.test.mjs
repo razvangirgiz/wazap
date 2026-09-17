@@ -194,7 +194,7 @@ describe("evaluation harness", () => {
     assert.match(ready.anchor_sentence, /^Azi e \S+, \d+ \S+ \d{4}, 15:30, ora României\.$/);
 
     const s = await mcpSession(ready.mcp_url, ready.tokens.write);
-    const accounts = await s.call("list_accounts");
+    const accounts = await s.call("get_status");
     assert.deepEqual(accounts.structuredContent.accounts.map((a) => [a.id, a.name]), [["personal", "Personal"], ["work", "Business"]]);
     const voice = await s.call("get_message", { message_id: refs.messages.elena_voice.id });
     assert.match(JSON.stringify(voice.structuredContent), /cina de duminică la 7/);

@@ -157,7 +157,7 @@ export interface TranscriptionStatus {
   paused: { reason: string; until: string } | null;
 }
 
-/** One row of `get_status.accounts` / `list_accounts`. Policy `write_tools`, not the session bit. */
+/** One row of `get_status.accounts`. Policy `write_tools`, not the session bit. */
 export interface ListedAccount {
   id: string;
   name: string;

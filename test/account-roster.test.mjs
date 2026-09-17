@@ -145,7 +145,7 @@ test("disable stops the account's service, and every tool that names it refuses 
   const implicit = await tools.get("read_messages")({ chat_id: DAN, limit: 20 });
   assert.equal(implicit.structuredContent.account_id, "default");
 
-  const listed = await tools.get("list_accounts")({});
+  const listed = await tools.get("get_status")({});
   assert.equal(listed.structuredContent.accounts.find((row) => row.id === "work").status, "disabled");
 });
 
@@ -168,7 +168,7 @@ test("the default follows the registry", async (t) => {
   AccountRegistry.load(config.dataDir).setDefault("work");
   hub.reload();
   assert.equal(hub.defaultBinding().id, "work");
-  const listed = await toolsOf(hub).get("list_accounts")({});
+  const listed = await toolsOf(hub).get("get_status")({});
   assert.equal(listed.structuredContent.default, "work");
 });
 

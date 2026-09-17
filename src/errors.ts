@@ -120,8 +120,8 @@ export const ERROR_GUIDE: Record<ErrorCode, string> = {
   SEND_BLOCKED:
     "The account's send rules refuse this recipient. Do not retry or route around it; tell the user, who can change the rules with `wazap config send` if the send is wanted.",
   AMBIGUOUS_ACCOUNT:
-    "More than one account could handle this, or a write named a chat no account knows. Pass account_id. Call list_accounts to see the ids.",
-  ACCOUNT_NOT_FOUND: "No account with that id. Run `wazap account add` first, or call list_accounts.",
+    "More than one account could handle this, or a write named a chat no account knows. Pass account_id; get_status lists the ids.",
+  ACCOUNT_NOT_FOUND: "No account with that id. Run `wazap account add` first, or call get_status without account_id to see the ids.",
   ACCOUNT_DISABLED:
     "That account is disabled. Tell the user to run `wazap account enable <id>`; a running server picks it up.",
   WHATSAPP_ERROR: "WhatsApp rejected the operation. Read the message; do not blindly retry.",

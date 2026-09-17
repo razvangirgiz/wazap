@@ -279,14 +279,14 @@ test("a stdio server publishes the control line whether or not it shares its ses
 test("account add, disable, enable, default and remove reach a running server, with no restart", async (t) => {
   const { dataDir, child, stderr } = await served(t, { env: { WAZAP_NO_SHARE: "1" } });
   const mcp = await mcpSession(child);
-  const accounts = async () => await mcp.call("list_accounts");
+  const accounts = async () => await mcp.call("get_status");
   const row = async (id) => (await accounts()).accounts.find((entry) => entry.id === id);
 
   assert.equal(await row("work"), undefined);
   const added = await cli(dataDir, ["account", "add", "work"]);
   assert.equal(added.code, 0, added.stderr);
   assert.doesNotMatch(added.stderr, /restart/i);
-  // list_accounts reads the roster, never disk: a live row is the reload, not a lookup.
+  // get_status reads the roster, never disk: a live row is the reload, not a lookup.
   assert.equal((await row("work"))?.status, "not_linked");
 
   const disabled = await cli(dataDir, ["account", "disable", "work"]);
@@ -309,7 +309,7 @@ test("account add, disable, enable, default and remove reach a running server, w
   assert.match(removed.stderr, /Account "work" removed/);
   assert.equal(existsSync(accountPaths(dataDir, "work").root), false);
   assert.equal(AccountRegistry.load(dataDir).get("work"), undefined);
-  assert.equal((await accounts()).count, 1);
+  assert.equal((await accounts()).accounts.length, 1);
   assert.equal((await accounts()).default, "default");
   assert.equal((await mcp.call("get_status", { account_id: "work" })).error, "ACCOUNT_NOT_FOUND");
 

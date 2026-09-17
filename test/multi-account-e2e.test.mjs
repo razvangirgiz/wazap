@@ -1,6 +1,6 @@
 /**
  * Phase 4 e2e: a v0 dir migrates, a second account is added through the
- * binary, then two fake sockets drive list_accounts, get_status, a send
+ * binary, then two fake sockets drive get_status, a send
  * resolved by chat, and AMBIGUOUS_ACCOUNT.
  */
 import { test } from "node:test";
@@ -69,7 +69,7 @@ function toolsOf(hub) {
   return server.tools;
 }
 
-test("migrate, two accounts, list_accounts, get_status, send by chat, AMBIGUOUS_ACCOUNT", async () => {
+test("migrate, two accounts, get_status, send by chat, AMBIGUOUS_ACCOUNT", async () => {
   const dir = dataDir();
   seedV0(dir);
 
@@ -103,16 +103,10 @@ test("migrate, two accounts, list_accounts, get_status, send by chat, AMBIGUOUS_
 
   const tools = toolsOf(hub);
 
-  const listed = await tools.get("list_accounts").handler({});
-  assert.equal(listed.structuredContent.count, 2);
-  assert.deepEqual(
-    listed.structuredContent.accounts.map((row) => row.id),
-    ["default", "work"]
-  );
-  assert.equal(listed.structuredContent.accounts[1].name, "Work");
-
   const status = await tools.get("get_status").handler({});
   assert.equal(status.structuredContent.account_id, "default");
+  assert.equal(status.structuredContent.default, "default");
+  assert.equal(status.structuredContent.accounts[1].name, "Work");
   assert.deepEqual(
     status.structuredContent.accounts.map((row) => row.id),
     ["default", "work"]

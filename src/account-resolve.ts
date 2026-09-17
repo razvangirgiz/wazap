@@ -1,5 +1,5 @@
 /**
- * Per-call account resolution and the list/status overlays that need the hub.
+ * Per-call account resolution and the status overlay that needs the hub.
  * Tool handlers stay in tools.ts.
  */
 
@@ -88,7 +88,7 @@ function resolveGivenId(hub: AccountSource, requested: string, toolName: string)
     );
   }
   if (live === undefined) {
-    const fix = toolName === "link_account" ? FIX_ADD_ACCOUNT : `${FIX_ADD_ACCOUNT}, or call list_accounts`;
+    const fix = toolName === "link_account" ? FIX_ADD_ACCOUNT : `${FIX_ADD_ACCOUNT}, or call get_status without account_id to see the ids`;
     throw new WazapError("ACCOUNT_NOT_FOUND", `No account "${requested}".`, fix);
   }
   return live;
@@ -99,8 +99,6 @@ export function resolveToolAccount(
   args: Record<string, unknown>,
   tool: ResolveTool
 ): AccountBinding {
-  if (tool.name === "list_accounts") return hub.defaultBinding();
-
   const requested = stringArg(args, "account_id");
   if (requested !== undefined) return resolveGivenId(hub, requested, tool.name);
 
@@ -152,16 +150,12 @@ function renderAccountLines(rows: ListedAccount[]): string[] {
   });
 }
 
-export function renderListAccounts(hub: AccountSource): ToolPayload {
-  const accounts: ListedAccount[] = [];
-  for (const record of hub.records()) {
+/** Every configured account, disabled ones included, in registry order. */
+function accountRows(hub: AccountSource): ListedAccount[] {
+  return hub.records().map((record) => {
     const live = hub.binding(record.id);
-    accounts.push(
-      live === undefined ? listedFromRecord(record) : listedFromStatus(live.wa.getStatus(), record.enabled, live.id)
-    );
-  }
-  const text = [`# Accounts (${accounts.length})`, "", ...renderAccountLines(accounts)].join("\n");
-  return ok(text, { count: accounts.length, default: hub.defaultBinding().id, accounts });
+    return live === undefined ? listedFromRecord(record) : listedFromStatus(live.wa.getStatus(), record.enabled, live.id);
+  });
 }
 
 /**
@@ -214,7 +208,8 @@ export function renderGetStatus(s: StatusInfo, writeTools: boolean, hub: Account
     : s.read_only
       ? "not registered (server is read-only; run `wazap config writes on` and restart)"
       : "not registered (this session used a read token)";
-  const accounts = hub.bindings().map((row) => listedFromStatus(row.wa.getStatus(), true, row.id));
+  const accounts = accountRows(hub);
+  const defaultId = hub.defaultBinding().id;
   const freshness = historyFreshness(s);
   const text = [
     `# WhatsApp: ${s.status} (sync: ${s.sync})`,
@@ -231,9 +226,9 @@ export function renderGetStatus(s: StatusInfo, writeTools: boolean, hub: Account
     s.transcription === undefined ? null : transcriptionStatusLine(s.transcription),
     s.last_error ? `- **last error**: ${s.last_error}` : null,
     s.hint ? `- **hint**: ${s.hint}` : null,
-    accounts.length > 1 ? `- **accounts**: ${accounts.map((row) => row.id).join(", ")}` : null,
+    ...(accounts.length > 1 ? [`- **accounts** (default: ${defaultId}):`, ...renderAccountLines(accounts).map((line) => `  ${line}`)] : []),
   ]
     .filter((line): line is string => line !== null)
     .join("\n");
-  return ok(text, { ...s, write_tools: writeTools, accounts, freshness } as unknown as Record<string, unknown>);
+  return ok(text, { ...s, write_tools: writeTools, default: defaultId, accounts, freshness } as unknown as Record<string, unknown>);
 }

@@ -1,6 +1,6 @@
 import { z } from "zod";
 import type { AccountSource } from "./account-hub.js";
-import { renderGetStatus, renderListAccounts } from "./account-resolve.js";
+import { renderGetStatus } from "./account-resolve.js";
 import { draftContextEnabled } from "./accounts.js";
 import {
   createToolRegistrar,
@@ -152,12 +152,12 @@ link_account when it says no account is linked yet.
   unstar_message, join_group on an invite message, and the reply_to of
   send_message.
 - account_id — registry slug (\`default\`, \`work\`). Optional on every tool.
-  Several accounts: call list_accounts first and pass account_id. A send
+  Several accounts: get_status lists them; pass account_id. A send
   to a chat no account knows, with two or more accounts, fails
   AMBIGUOUS_ACCOUNT; it never falls back to the default.
 
 ## Workflows
-- Several accounts: call list_accounts first. Pass account_id on the tools
+- Several accounts: call get_status first; its accounts lists them. Pass account_id on the tools
   that follow. Without it, a chat or message that only one account knows
   selects that account; a chat none of them know uses the default for reads
   and fails AMBIGUOUS_ACCOUNT for writes. link_account needs an account that
@@ -330,39 +330,10 @@ code with what to do about it. Takes no arguments and never touches WhatsApp.`,
   tool({
     name: "get_status",
     title: "Get the WhatsApp connection status",
-    description: `Check the session: connection status ("connected" means the tools work,
-"not_linked" means the user must run \`npx wazap-mcp login\`), whether the initial
-history sync has finished, which account is linked, how fresh the local history
-is — \`history\` shows when a message last arrived and flags \`stale\` when the
-phone has been quiet for a day while connected — the versions and data
-directory in use, and how many contacts carry a name from
-the phone's address book (contacts_named: 0 means it never arrived).
-\`webhook.delivery\` counts the account's webhook events: delivered (last 7
-days), failed and cancelled (last 30), pending; a non-zero
-\`consecutive_failures\` or \`retrying\` means the receiver is refusing or
-unreachable right now, and \`last_failure\` says how.
-
-Call this whenever another tool reports NOT_CONNECTED, NOT_LINKED or
-SYNC_IN_PROGRESS, or to confirm which account you are about to send from.
-Without account_id the top-level fields are the default account, plus
-\`accounts\` listing every live one. While a link is in progress the status
-is "linking" and \`pairing\` carries the code the user still has to type
-into their phone.`,
+    description: `Whether the account works: status (connected, not_linked, linking with its pairing code…), sync, how fresh the history is, webhook delivery, versions. accounts lists every account, with default. Call it on NOT_CONNECTED, NOT_LINKED or SYNC_IN_PROGRESS.`,
     schema: {},
     write: false,
     handler: async (_args, { wa, hub, allowWrite }) => renderGetStatus(wa.getStatus(), allowWrite, hub),
-  }),
-
-  tool({
-    name: "list_accounts",
-    title: "List WhatsApp accounts on this server",
-    description: `List every configured WhatsApp account: id, name, connection status, masked
-phone, owner name, and whether that account allows writes. Call this first
-when more than one account is linked, then pass account_id on the other tools.
-Takes no arguments besides the optional account_id (ignored for the listing).`,
-    schema: {},
-    write: false,
-    handler: async (_args, { hub }) => renderListAccounts(hub),
   }),
 
   tool({

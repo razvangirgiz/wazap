@@ -265,11 +265,11 @@ test("an unknown chat with two accounts: writes AMBIGUOUS, reads use default", a
   assert.equal(read.structuredContent.account_id, "default");
 });
 
-test("list_accounts lists every configured account", async () => {
+test("get_status lists every configured account and names the default", async () => {
   const { hub } = twoAccountHub({ workWrites: false });
   const tools = toolsOf(hub);
-  const result = await tools.get("list_accounts").handler({});
-  assert.equal(result.structuredContent.count, 2);
+  const result = await tools.get("get_status").handler({});
+  assert.equal(result.structuredContent.accounts.length, 2);
   assert.equal(result.structuredContent.default, "default");
   assert.deepEqual(
     result.structuredContent.accounts.map((row) => row.id),
@@ -320,7 +320,7 @@ test("get_status on two accounts keeps the default on top and lists both", async
     ["default", "work"]
   );
   assert.equal(result.structuredContent.accounts[1].write_tools, false);
-  assert.match(result.content[0].text, /accounts.*default, work/);
+  assert.match(result.content[0].text, /accounts\*\* \(default: default\):\n {2}- \*\*default\*\*.*\n {2}- \*\*work\*\*/);
 });
 
 test("list_chats without a locator uses the default account", async () => {
@@ -359,12 +359,12 @@ test("confirm_send finds a draft stored on work", async () => {
   assert.equal(sent.structuredContent.account_id, "work");
 });
 
-test("list_accounts ignores a bad account_id and still lists a disabled row", async () => {
+test("get_status still lists a disabled account's row", async () => {
   const { hub } = twoAccountHub({ disableWork: true });
   const tools = toolsOf(hub);
-  const result = await tools.get("list_accounts").handler({ account_id: "ghost" });
+  const result = await tools.get("get_status").handler({});
   assert.equal(result.isError, undefined);
-  assert.equal(result.structuredContent.count, 2);
+  assert.equal(result.structuredContent.accounts.length, 2);
   assert.deepEqual(
     result.structuredContent.accounts.map((row) => row.id),
     ["default", "work"]
@@ -374,7 +374,7 @@ test("list_accounts ignores a bad account_id and still lists a disabled row", as
   assert.equal(result.structuredContent.account_id, "default");
 });
 
-test("list_accounts shows the persisted owner of an account with no live socket, masked", async () => {
+test("get_status shows the persisted owner of an account with no live socket, masked", async () => {
   const config = offlineConfig("wazap-resolve-listed-");
   const registry = AccountRegistry.load(config.dataDir);
   registry.add("work", "Work");
@@ -382,7 +382,7 @@ test("list_accounts shows the persisted owner of an account with no live socket,
   registry.disable("work");
   const hub = new AccountHub(config, AccountRegistry.load(config.dataDir));
   const tools = toolsOf(hub);
-  const result = await tools.get("list_accounts").handler({});
+  const result = await tools.get("get_status").handler({});
   const work = result.structuredContent.accounts[1];
   assert.equal(work.enabled, false);
   assert.equal(work.phone_masked, "+40 7xx xxx xxx");
@@ -394,7 +394,7 @@ test("write tools stay unregistered when every enabled account is read-only", ()
   assert.equal(anyAccountAllowsWrites(hub), false);
   const tools = toolsOf(hub);
   assert.equal(tools.has("send_message"), false);
-  assert.ok(tools.has("list_accounts"));
+  assert.ok(tools.has("get_status"));
 });
 
 test("ACCOUNT_NOT_CONNECTED is not an error code", () => {
