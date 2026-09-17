@@ -241,6 +241,36 @@ describe("evaluation harness", () => {
     await readOnly.close();
   });
 
+  /**
+   * N15 in the world as it is (F2-6): Andrei has answered John once, so his
+   * own style says nothing about that chat and the account's says Romanian.
+   * What John writes is the evidence left, and a Romanian draft to him comes
+   * back with language_mismatch and a next that asks for it again in English.
+   */
+  test("a draft to John: the language comes from what he writes, not from the account's style", async () => {
+    await control.reset({});
+    const refs = await control.refs();
+    const s = await mcpSession(ready.mcp_url, ready.tokens.write);
+    const found = (await s.call("find_contact", { name: "John" })).structuredContent;
+    assert.deepEqual([found.context.style.basis.scope, found.context.style.language], ["account", "ro"], "too little of Andrei's own writing there");
+    assert.equal(found.context.style.their_language, "en", "John's own messages say English");
+
+    const romanian = (await s.call("send_message", { chat_id: refs.contacts.john.jid, text: "Salut John, întârzii 10 minute." })).structuredContent;
+    assert.deepEqual(romanian.style_check.warnings, ["language_mismatch"]);
+    assert.deepEqual(romanian.style_check.basis, { from: "recipient", messages: 3, days: 90, language: "en" });
+    assert.equal(romanian.status, "draft", "the warning blocks nothing");
+    assert.match(romanian.next, /Draft again before showing anything/);
+
+    const english = (await s.call("send_message", { chat_id: refs.contacts.john.jid, text: "Hi John, I'll be 10 minutes late." })).structuredContent;
+    assert.equal(english.style_check, undefined);
+    assert.match(english.next, /Show this preview to the user exactly/);
+
+    // Mama has two text messages in her chat, under the three a language needs.
+    const mama = (await s.call("send_message", { chat_id: refs.contacts.elena.jid, text: "Ajung la 7" })).structuredContent;
+    assert.equal(mama.style_check, undefined);
+    await s.close();
+  });
+
   test("the 1.0 map covers exactly the tools the server registers", () => {
     const mapped = new Set(Object.values(toolMap.capabilities).flat());
     assert.deepEqual([...mapped].sort(), [...TOOL_NAMES].sort());

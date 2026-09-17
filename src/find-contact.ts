@@ -508,6 +508,7 @@ const styleSchema = z.object({
   emoji_rate: z.number(),
   starts_capital: z.number(),
   ends_punct: z.number(),
+  their_language: z.enum(["ro", "en"]).optional().describe("What language the recipient writes here; a draft goes in this one, whatever scope the style above has"),
 });
 
 const listedSchema = z.object({

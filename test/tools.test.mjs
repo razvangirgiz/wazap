@@ -193,7 +193,7 @@ test("a draft in the wrong language is written again before any preview is shown
     ...draftApi(),
     styleCheck: () => ({
       warnings,
-      basis: { own_messages: 6, days: 90, language: "en", diacritics: "unknown", address: "unknown", length_chars: { p50: 30, p90: 60 } },
+      basis: { from: "user", own_messages: 6, days: 90, language: "en", diacritics: "unknown", address: "unknown", length_chars: { p50: 30, p90: 60 } },
       draft: { language: "ro", diacritics: true, address: null, chars: 26 },
     }),
   });
@@ -206,7 +206,7 @@ test("a draft in the wrong language is written again before any preview is shown
   const wrongLanguage = await draft(["language_mismatch"]);
   const { next } = wrongLanguage.structuredContent;
   assert.match(next, /Draft again before showing anything/);
-  assert.match(next, /not in the language the user writes to this recipient \(style_check\.basis\.language\)/);
+  assert.match(next, /not in the language this chat is written in \(style_check\.basis\.language, from whoever basis\.from says\)/);
   assert.match(next, /Call send_message with the same message in that language, then show the preview it returns/);
   assert.doesNotMatch(next, /Show this preview to the user exactly/, "the step is the redraft, not this preview");
   assert.equal(wrongLanguage.structuredContent.status, "draft", "the warning blocks nothing");

@@ -1528,10 +1528,12 @@ const DRAFT_NEXT =
  * A draft in the wrong language is redone before it is shown: the gate's third
  * run put a Romanian message in front of an English speaker and asked to send
  * it. The warning still blocks nothing — the draft stands, and every other
- * warning leaves the step after a draft as it is.
+ * warning leaves the step after a draft as it is. The language to write in is
+ * style_check.basis.language whether basis.from is the user or, in a chat the
+ * user has hardly written in, the recipient.
  */
 const DRAFT_NEXT_LANGUAGE =
-  "Draft again before showing anything: this text is not in the language the user writes to this recipient (style_check.basis.language). Call send_message with the same message in that language, then show the preview it returns and follow its next.";
+  "Draft again before showing anything: this text is not in the language this chat is written in (style_check.basis.language, from whoever basis.from says). Call send_message with the same message in that language, then show the preview it returns and follow its next.";
 
 function drafted(view: DraftView): ToolResult {
   const warnings = view.style_check?.warnings ?? [];

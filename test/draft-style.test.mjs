@@ -8,7 +8,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 
 import { MESSAGE_FLAGS, messageStyle } from "../dist/db/index.js";
-import { LENGTH_OUTLIER_MIN_CHARS, STYLE_CHECK_MIN_OWN, draftContextFor, styleCheckFor, styleCheckLines } from "../dist/draft-style.js";
+import { LENGTH_OUTLIER_MIN_CHARS, STYLE_CHECK_MIN_OWN, STYLE_CHECK_MIN_THEIRS, draftContextFor, styleCheckFor, styleCheckLines, theirLanguageIn } from "../dist/draft-style.js";
 import { renderDraft } from "../dist/drafts.js";
 import { PRIVATE_TAG, hasPrivateTag, isPrivateChat, isPrivateSender } from "../dist/private-contacts.js";
 import { GROUP, PEER, T0, openTemp, textMessage } from "./db-fixtures.mjs";
@@ -77,6 +77,7 @@ test("Romanian written without diacritics, and a draft with them: diacritics_mis
   const result = check(ANA, "Bună, ajung în zece minute și te sun când plec.");
   assert.deepEqual(result.warnings, ["diacritics_mismatch"]);
   assert.deepEqual(result.basis, {
+    from: "user",
     own_messages: 5,
     days: 90,
     language: "ro",
@@ -138,6 +139,89 @@ test("no style check without five of the user's own messages in that direct chat
   assert.equal(check(GROUP, "Bună ziua tuturor, vă mulțumesc."), null, "groups are not checked");
   assert.equal(check("40799999999@s.whatsapp.net", "salut"), null, "a chat the account does not know");
   assert.equal(db.messages.styleFor(DAN).basis.own_messages, 5);
+});
+
+/**
+ * F2-6: a chat the user has hardly written in still has a language, and it is
+ * the recipient's. Without this, a draft to an English speaker the user has
+ * answered once was compared with the account's style (Romanian) or with
+ * nothing at all, and nothing said which language to write in.
+ */
+test("too few of the user's own messages here: the language is read off the recipient's, and only the language", () => {
+  const { db, write, check } = account();
+  write(JOHN, ["Yes, sure! Talk then."]);
+  write(JOHN, ["Hi Andrei, I'll send the contract draft by Friday.", "Hi Andrei, are we still on for the call on Friday at 3pm?", "Great, thanks!"], { fromMe: false });
+  // The user's own style here cannot be read; the account's (Romanian) is no evidence about John.
+  assert.equal(db.messages.styleFor(JOHN).basis.scope, "account");
+  assert.deepEqual(theirLanguageIn(db, JOHN), { language: "en", messages: STYLE_CHECK_MIN_THEIRS });
+
+  const mismatch = check(JOHN, "Salut John, întârzii 10 minute.");
+  assert.deepEqual(mismatch.warnings, ["language_mismatch"]);
+  assert.deepEqual(mismatch.basis, { from: "recipient", messages: 3, days: 90, language: "en" });
+  assert.equal(mismatch.draft.language, "ro");
+  const lines = styleCheckLines(mismatch);
+  assert.match(lines[0], /the user has written too little in this chat to compare with, so the draft is read against the 3 messages the recipient wrote here/);
+  assert.match(lines[1], /language_mismatch: the draft is Romanian; the recipient writes English here/);
+  assert.match(lines.at(-1), /Unless the user dictated these exact words/);
+
+  assert.equal(check(JOHN, "Hi John, I'll be 10 minutes late."), null, "the same language as the recipient: nothing to say");
+  assert.equal(check(JOHN, "👍"), null, "a draft with no language of its own is not judged");
+  assert.equal(
+    check(JOHN, "Hi John, sorry, I am running late and I will be there in about ten minutes, we can start without me if you want to."),
+    null,
+    "nothing but the language is judged without the user's own messages: no length outlier, no address"
+  );
+
+  // A recipient who writes Romanian, with as little of the user's own writing.
+  write(DAN, ["da"]);
+  write(DAN, ["Salut, ne vedem maine?", "Ok, atunci la 5.", "Multumesc!"], { fromMe: false });
+  assert.deepEqual(theirLanguageIn(db, DAN), { language: "ro", messages: 3 });
+  assert.equal(check(DAN, "Salut Dan, întârzii 10 minute."), null, "Romanian to someone who writes Romanian: nothing to say");
+  assert.deepEqual(check(DAN, "Hi Dan, I'll be 10 minutes late.").warnings, ["language_mismatch"], "and English to him is the mismatch");
+});
+
+test("the recipient's language needs three of their messages, agreeing, and never comes from a group or a #private contact", () => {
+  const { db, write } = account();
+  write(ANA, ["Hi Andrei, are we on for Friday?", "Great, thanks!"], { fromMe: false });
+  assert.equal(theirLanguageIn(db, ANA), null, "two messages are a greeting, not a chat");
+  write(ANA, ["See you at the office tomorrow."], { fromMe: false });
+  assert.deepEqual(theirLanguageIn(db, ANA), { language: "en", messages: 3 });
+
+  write(NOTAR, ["Bună ziua, vă trimit actele.", "Mulțumesc, aveți dreptate.", "Hi, see you at the office.", "Thanks, I will send it."], { fromMe: false });
+  assert.equal(theirLanguageIn(db, NOTAR), null, "split between two languages: no answer");
+
+  write(GROUP, ["Hi all, are we on for Friday?", "See you at the office.", "Thanks, I will bring it."], { fromMe: false });
+  assert.equal(theirLanguageIn(db, GROUP), null, "a group has no one recipient");
+
+  write(MISU, ["Hi, are we on for Friday?", "See you tomorrow.", "Thanks!"], { fromMe: false });
+  assert.deepEqual(theirLanguageIn(db, MISU), { language: "en", messages: 3 });
+  db.identity.updateFields(MISU, { addTags: [PRIVATE_TAG] });
+  assert.equal(theirLanguageIn(db, MISU), null, "a #private contact's words say nothing here either, not even their language");
+});
+
+test("the user's own messages in the chat win: five of them and the check is theirs again", () => {
+  const { db, write, check } = account();
+  write(JOHN, ["hai ca vin si eu", "da, te sun cand ajung", "ok, vorbim maine", "nu stiu daca pot azi", "mersi, ne vedem acolo"]);
+  write(JOHN, ["Hi Andrei, are we on for Friday?", "Great, thanks!", "See you at the office."], { fromMe: false });
+  assert.deepEqual(theirLanguageIn(db, JOHN), { language: "en", messages: 3 }, "the recipient still writes English");
+  const check1 = check(JOHN, "hai ca ajung in 10 minute");
+  assert.equal(check1.basis.from, "user", "the user writes Romanian to him, and that is what a draft matches");
+  assert.deepEqual(check1.warnings, []);
+  assert.equal(check(JOHN, "Hi John, I'll be 10 minutes late.").warnings.includes("language_mismatch"), true, "against the user's own Romanian, English is the mismatch");
+});
+
+test("the draft context carries the recipient's language beside the user's style, and never for a #private contact", () => {
+  const { db, write } = account();
+  write(JOHN, ["da, ne vedem acolo"]);
+  write(JOHN, ["Hi Andrei, are we on for Friday?", "Great, thanks!", "See you at the office."], { fromMe: false });
+  const context = draftContextFor(db, JOHN, { recent: true, senderName: () => "John" });
+  assert.equal(context.style.basis.scope, "account", "too little of the user's own writing here");
+  assert.equal(context.style.language, "ro", "so the style is the account's");
+  assert.equal(context.style.their_language, "en", "and what John writes is said beside it");
+
+  const quiet = draftContextFor(db, JOHN, { recent: false, senderName: () => "John" });
+  assert.equal(quiet.private, true);
+  assert.equal(quiet.style.their_language, undefined, "style only: nothing read off his messages");
 });
 
 test("the preview says what does not match and leaves the choice to the user's words", () => {

@@ -1438,6 +1438,33 @@ export class Messages {
   }
 
   /**
+   * The other side's last `limit` text messages in this chat, newest first,
+   * within `days`: what says which language they write in. styleFor answers
+   * about the user, and falls back to the whole account when they have written
+   * too little here — which says nothing about this one chat. What the other
+   * side writes is the evidence left, and it is read only for its language.
+   */
+  theirTexts(chatJid: string, options: { days?: number; limit?: number } = {}): string[] {
+    const chat = this.identity.chat(chatJid);
+    if (chat === null) return [];
+    const days = Math.max(1, Math.floor(options.days ?? STYLE_DAYS));
+    const lower = idLowerBound(Math.max(1, this.c.now() - days * 86_400_000));
+    const inChat = chatCondition(this.identity.chatIdsOf(chat));
+    return this.c
+      .all<{ text: string }>(
+        `SELECT m.text FROM messages m CROSS JOIN chats c ON c.id = m.chat_id
+         WHERE ${inChat.sql} AND m.from_me = 0 AND m.deleted_at IS NULL AND m.id >= ? AND m.type = 'text' AND m.text IS NOT NULL
+           AND (m.expires_at IS NULL OR m.expires_at > ?) AND m.ts > coalesce(c.cleared_through_ts, 0)
+         ORDER BY m.id DESC LIMIT ?`,
+        ...inChat.params,
+        lower,
+        this.c.now(),
+        Math.max(1, Math.floor(options.limit ?? STYLE_SAMPLE))
+      )
+      .map((row) => row.text);
+  }
+
+  /**
    * The last `limit` (8) messages a reader sees in a chat, both ways, oldest
    * first, each cut to `maxChars` (200): what a draft is written after. A
    * voice note or audio with a transcript reads as its transcript; any other
