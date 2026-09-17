@@ -414,14 +414,16 @@ test("waiting holds an ask across catch-ups until it is answered, handled or two
 test("an answered call after an ask says it may have been dealt with; missed calls group by person with what followed", async () => {
   const { svc, arrive, callLog } = account();
   const { call } = toolsOf(svc);
-  arrive(ANA, "mă suni când poți?", { at: Date.now() - 5 * HOUR });
-  callLog(ANA, CALL.CONNECTED, { seconds: 360, at: Date.now() - 4 * HOUR });
-  callLog(DAN, CALL.MISSED, { at: Date.now() - 6 * HOUR });
-  callLog(DAN, CALL.MISSED, { at: Date.now() - 5 * HOUR });
-  callLog(ELA, CALL.MISSED, { at: Date.now() - 3 * HOUR });
-  callLog(ELA, CALL.CONNECTED, { fromMe: true, at: Date.now() - 2 * HOUR });
-  callLog(BOT, CALL.MISSED, { at: Date.now() - 3 * HOUR });
-  arrive(BOT, "ok", { fromMe: true, at: Date.now() - 2 * HOUR });
+  // One clock for every call: Ela's and Hermi's missed calls ring in the same second, whenever the test runs.
+  const now = Date.now();
+  arrive(ANA, "mă suni când poți?", { at: now - 5 * HOUR });
+  callLog(ANA, CALL.CONNECTED, { seconds: 360, at: now - 4 * HOUR });
+  callLog(DAN, CALL.MISSED, { at: now - 6 * HOUR });
+  callLog(DAN, CALL.MISSED, { at: now - 5 * HOUR });
+  callLog(ELA, CALL.MISSED, { at: now - 3 * HOUR });
+  callLog(ELA, CALL.CONNECTED, { fromMe: true, at: now - 2 * HOUR });
+  callLog(BOT, CALL.MISSED, { at: now - 3 * HOUR });
+  arrive(BOT, "ok", { fromMe: true, at: now - 2 * HOUR });
 
   const result = await call("catch_up", { hours: 24 });
   const ana = result.structuredContent.waiting.find((entry) => entry.chat === ANA);
