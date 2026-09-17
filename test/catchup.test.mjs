@@ -86,6 +86,40 @@ function errorOf(result) {
 }
 const chatsOf = (result, section) => result.structuredContent[section].map((entry) => entry.chat);
 
+/** A client of `source` over the SDK's own transport, so answers meet the validation real clients run. */
+async function sdkClient(source, { name = "catch-up-test", opts = {} } = {}) {
+  const { McpServer } = await import("@modelcontextprotocol/sdk/server/mcp.js");
+  const { Client } = await import("@modelcontextprotocol/sdk/client/index.js");
+  const { InMemoryTransport } = await import("@modelcontextprotocol/sdk/inMemory.js");
+  const server = new McpServer({ name: "wazap", version: "0" });
+  registerTools(server, asToolSource(source), { allowWrite: false, ...opts });
+  const [serverSide, clientSide] = InMemoryTransport.createLinkedPair();
+  await server.connect(serverSide);
+  const client = new Client({ name, version: "1" });
+  await client.connect(clientSide);
+  return client;
+}
+
+/**
+ * catch_up's output schema as clients list it, and a check of structured
+ * content the way the SDK's client runs it (AJV: a key the schema does not
+ * declare is refused, not stripped the way a zod parse strips it).
+ */
+async function listedSchema() {
+  const { AjvJsonSchemaValidator } = await import("@modelcontextprotocol/sdk/validation/ajv");
+  const client = await sdkClient({ getStatus: () => ({ status: "connected" }) });
+  const schema = (await client.listTools()).tools.find((tool) => tool.name === "catch_up").outputSchema;
+  await client.close();
+  const validate = new AjvJsonSchemaValidator().getValidator(schema);
+  return {
+    schema,
+    assertValid(structured) {
+      const verdict = validate(structured);
+      assert.ok(verdict.valid, verdict.errorMessage);
+    },
+  };
+}
+
 test("a call's stored words read back as the call they render: every direction, outcome and length", () => {
   for (const kind of ["voice", "video"]) {
     for (const direction of ["incoming", "outgoing"]) {
@@ -116,7 +150,7 @@ test("catch_up is a read tool with an output schema, registered in read sessions
   assert.ok(meta.outputSchema);
   arrive(ANA, "ai ajuns?", { at: Date.now() - HOUR });
   const result = await call("catch_up");
-  assert.doesNotThrow(() => z.object(meta.outputSchema).parse(result.structuredContent));
+  (await listedSchema()).assertValid(result.structuredContent);
   assert.equal(result.structuredContent.account_id, "default");
   assert.equal(result.structuredContent.window.basis, "first_run");
   assert.equal(result.structuredContent.window.hours, 24);
@@ -169,20 +203,9 @@ test("a session that names no client catches up as `local`", async () => {
 });
 
 test("local sessions keep a mark per MCP client: its name, or the one a bridge passes on, never shared by stdio, bridge and loopback", async () => {
-  const { McpServer } = await import("@modelcontextprotocol/sdk/server/mcp.js");
-  const { Client } = await import("@modelcontextprotocol/sdk/client/index.js");
-  const { InMemoryTransport } = await import("@modelcontextprotocol/sdk/inMemory.js");
   const { svc, arrive } = account();
   arrive(DAN, "salut", { at: Date.now() - HOUR });
-  const connect = async (name, opts = {}) => {
-    const server = new McpServer({ name: "wazap", version: "0" });
-    registerTools(server, asToolSource(svc), { allowWrite: false, ...opts });
-    const [serverSide, clientSide] = InMemoryTransport.createLinkedPair();
-    await server.connect(serverSide);
-    const client = new Client({ name, version: "1" });
-    await client.connect(clientSide);
-    return client;
-  };
+  const connect = (name, opts = {}) => sdkClient(svc, { name, opts });
   const claude = await connect("claude-code");
   const cursor = await connect("Cursor\nIDE");
   const bridge = await connect("wazap-bridge");
@@ -788,7 +811,7 @@ function twoAccounts() {
 
 test("with several accounts and no account_id, one catch-up covers every account, each section labelled by account", async () => {
   const { personal, work, hub } = twoAccounts();
-  const { tools, call } = toolsOf(hub);
+  const { call } = toolsOf(hub);
   personal.arrive(ANA, "vii la cină?", { at: Date.now() - 2 * HOUR });
   personal.arrive(DAN, "am ajuns", { at: Date.now() - HOUR });
   work.arrive(ANA, "Factura 118 a intrat, mulțumesc", { at: Date.now() - 3 * HOUR });
@@ -821,7 +844,7 @@ test("with several accounts and no account_id, one catch-up covers every account
   const rendered = text(result);
   assert.match(rendered, /# WhatsApp catch-up · 2 accounts\n- Personal \(personal\): .*\n- Business \(work\): /);
   assert.match(rendered, /## Waiting on you · Personal \(1\)\n- Ana[^\n]*\n## Waiting on you · Business \(1\)\n- Ela/);
-  assert.doesNotThrow(() => z.object(tools.get("catch_up").meta.outputSchema).parse(structured));
+  (await listedSchema()).assertValid(structured);
   assert.ok(personal.svc.db.catchup.get("local") && work.svc.db.catchup.get("local"), "each account keeps its own mark");
 
   const one = await call("catch_up", { account_id: "work", hours: 24 });
@@ -1104,6 +1127,122 @@ test("a digest's pages are held 15 minutes past the last one given, sixteen dige
   for (let i = 0; i < 17; i++) cursors.push((await runCatchUp({ budget_tokens: 500, hours: 24 }, ctx(`client-${i}`))).structuredContent.more.cursor);
   await assert.rejects(runCatchUp({ budget_tokens: 500, cursor: cursors[0] }, ctx("client-0")), { code: "CURSOR_EXPIRED" }, "the least recently paged goes");
   assert.ok((await runCatchUp({ budget_tokens: 500, cursor: cursors[16] }, ctx("client-16"))).structuredContent.more !== undefined);
+});
+
+test("every shape catch_up answers passes a client's validation of its output schema, which declares every key and describes the short ones", async () => {
+  const { schema, assertValid } = await listedSchema();
+  // A shape used twice is listed once and referred to after: follow the reference.
+  const deref = (node) => (node.$ref === undefined ? node : deref(node.$ref.slice(2).split("/").reduce((at, part) => at[part], schema)));
+  const section = (key) => deref(key === "groups" ? schema.properties.groups.items.anyOf[0] : schema.properties[key].items);
+  for (const key of ["waiting", "addressed", "missed_calls", "direct", "stories"]) assert.equal(section(key).additionalProperties, false, key);
+  assert.ok(schema.properties.groups.items.anyOf.every((shape) => deref(shape).additionalProperties === false));
+  const described = { waiting: ["acct", "n", "q", "sig", "new", "then", "at"], addressed: ["q", "sig"], missed_calls: ["n"], direct: ["n", "q", "sig"], groups: ["n", "hot", "sig"], stories: ["n"] };
+  for (const [key, names] of Object.entries(described)) {
+    for (const name of names) assert.ok(deref(section(key).properties[name]).description, `${key}.${name} is described`);
+  }
+
+  // Two accounts and one that cannot answer; every section, and every key an entry can carry.
+  const { personal, work } = twoAccounts();
+  const broken = { getStatus: () => ({ status: "connected", account_id: "old" }), hasChat: () => false, hasMessage: () => false };
+  const hub = hubOf({ id: "personal", name: "Personal", svc: personal.svc }, { id: "work", name: "Business", svc: work.svc }, { id: "old", name: "Old", svc: broken });
+  const { svc, sock, arrive, mention, callLog } = personal;
+  const own = toolsOf(svc);
+  const SHOP = "40700000010@s.whatsapp.net";
+  const STRANGER = "40700000011@s.whatsapp.net";
+  sock.ev.emit("contacts.upsert", [{ id: SHOP, verifiedName: "Curier Rapid", notify: "Curier Rapid" }]);
+  sock.ev.emit("chats.upsert", [
+    { id: GROUP, name: "Echipa proiect" },
+    { id: MUTED, name: "Bloc 12", muteEndTime: Date.now() + 30 * 24 * HOUR },
+    { id: LEFT, name: "Fotbal joi", readOnly: true },
+    { id: STRANGER, muteEndTime: Date.now() + 30 * 24 * HOUR },
+  ]);
+  const voice = { audioMessage: { mimetype: "audio/ogg; codecs=opus", ptt: true, seconds: 42 } };
+  arrive(DAN, "îmi dai înapoi 200 lei până vineri?", { at: Date.now() - 6 * HOUR });
+  arrive(DAN, "și nu uita de cina de duminică, vine și tanti Lia.", { at: Date.now() - 6 * HOUR + 1000 });
+  callLog(DAN, CALL.CONNECTED, { seconds: 360, at: Date.now() - 5 * HOUR });
+  arrive("40700000015@s.whatsapp.net", "mă puteți suna când ajungeți?", { at: Date.now() - 5 * HOUR });
+  arrive(ELA, voice, { at: Date.now() - 5 * HOUR });
+  arrive(SHOP, "Când vă putem livra coletul?", { at: Date.now() - 5 * HOUR });
+  arrive(SHOP, { imageMessage: { mimetype: "image/jpeg", caption: "AWB 889213, livrare la 10:00 pe strada Lalelelor 4" } }, { at: Date.now() - 5 * HOUR + 1000 });
+  arrive(STRANGER, "salut, sunt vecinul de la 4, am găsit pisica voastră pe hol", { at: Date.now() - 4 * HOUR });
+  arrive(STRANGER, { pollCreationMessageV3: { name: "Curățenie pe scară sâmbătă", options: [{ optionName: "Da" }, { optionName: "Nu" }], selectableOptionsCount: 1 } }, { at: Date.now() - 4 * HOUR + 1000 });
+  arrive(ANA, "povestea mea confidențială despre bolile din familie", { at: Date.now() - 4 * HOUR });
+  const PHARMACY = "40700000016@s.whatsapp.net";
+  const MIHAI = "40700000017@s.whatsapp.net";
+  sock.ev.emit("contacts.upsert", [{ id: PHARMACY, verifiedName: "Farmacia", notify: "Farmacia" }, { id: MIHAI, name: "Mihai" }]);
+  arrive(PHARMACY, { imageMessage: { mimetype: "image/jpeg", caption: "Rețeta dvs. este pregătită, o găsiți la ghișeul 2" } }, { at: Date.now() - 4 * HOUR });
+  arrive(PHARMACY, "Program: 8:00 - 20:00", { at: Date.now() - 4 * HOUR + 1000 });
+  arrive(MIHAI, "am ajuns acasă, totul e în regulă", { at: Date.now() - 4 * HOUR });
+  await own.call("set_contact_note", { contact_id: MIHAI, note: "vărul meu" });
+  await own.call("update_contact_details", { contact_id: ANA, add_tags: ["#private"] });
+  await own.call("set_contact_note", { contact_id: DAN, note: "coleg de birou" });
+  await own.call("update_contact_details", { contact_id: BOT, add_tags: ["#no-catchup"] });
+  arrive(BOT, "Raport: gata", { at: Date.now() - 3 * HOUR });
+  const mine = arrive(GROUP, "am trimis oferta", { fromMe: true, at: Date.now() - 7 * HOUR });
+  arrive(GROUP, mention("@Răzvan vii mâine la 10:00?"), { participant: STRANGER, at: Date.now() - 3 * HOUR });
+  arrive(GROUP, { extendedTextMessage: { text: "super, mersi pentru oferta de 3000 lei", contextInfo: { stanzaId: mine.split("_").pop(), participant: ME, quotedMessage: { conversation: "am trimis oferta" } } } }, { participant: DAN, at: Date.now() - 3 * HOUR + 1000 });
+  arrive(GROUP, mention("@Răzvan și încă ceva de discutat, pe larg"), { participant: DAN, at: Date.now() - 3 * HOUR + 2000 });
+  arrive(GROUP, { pollCreationMessageV3: { name: "Pizza sau paste?", options: [{ optionName: "Pizza" }, { optionName: "Paste" }], selectableOptionsCount: 1 } }, { participant: ELA, at: Date.now() - 3 * HOUR + 3000 });
+  arrive(GROUP, { pollCreationMessageV3: { name: "Ce zi?", options: [{ optionName: "Luni" }, { optionName: "Marți" }], selectableOptionsCount: 1 } }, { participant: ANA, at: Date.now() - 3 * HOUR + 4000 });
+  arrive(GROUP, { imageMessage: { mimetype: "image/jpeg", caption: "uite schița pentru ședința de mâine de la 10" } }, { participant: ELA, at: Date.now() - 2 * HOUR });
+  const NEIGHBOURS = "120363000000000005@g.us";
+  const paid = arrive(NEIGHBOURS, "am plătit întreținerea", { fromMe: true, at: Date.now() - 7 * HOUR });
+  arrive(NEIGHBOURS, { extendedTextMessage: { text: "mulțumim, am primit cei 300 lei", contextInfo: { stanzaId: paid.split("_").pop(), participant: ME, quotedMessage: { conversation: "am plătit întreținerea" } } } }, { participant: DAN, at: Date.now() - 2 * HOUR });
+  arrive(NEIGHBOURS, mention("@Răzvan am lăsat cheia la administrator, treci după 18:00"), { participant: ELA, at: Date.now() - 2 * HOUR + 1000 });
+  for (let i = 0; i < 3; i++) arrive(MUTED, `vecinii discută ${i}`, { participant: DAN, at: Date.now() - 2 * HOUR + i * 1000 });
+  arrive(LEFT, "cine mai vine?", { participant: DAN, at: Date.now() - HOUR });
+  arrive(CHANNEL, "Știrile zilei", { at: Date.now() - HOUR });
+  arrive("40712345678@broadcast", "ofertă", { at: Date.now() - HOUR });
+  callLog("40700000013@s.whatsapp.net", CALL.MISSED, { at: Date.now() - 2 * HOUR });
+  callLog("40700000013@s.whatsapp.net", CALL.MISSED, { at: Date.now() - HOUR, fromMe: true });
+  sock.ev.emit("messages.upsert", { type: "notify", messages: [{ key: { remoteJid: GROUP, fromMe: false, id: "GCALL", participant: SHOP }, message: { callLogMesssage: { callOutcome: CALL.MISSED, isVideo: true } }, messageTimestamp: Math.floor((Date.now() - HOUR) / 1000) }] });
+  callLog("40700000014@s.whatsapp.net", CALL.MISSED, { at: Date.now() - HOUR });
+  arrive("40700000014@s.whatsapp.net", "te sun eu mai târziu", { fromMe: true, at: Date.now() - HOUR + 1000 });
+  for (const [i, author] of [ANA, DAN, ELA, SHOP, STRANGER, "40700000012@s.whatsapp.net"].entries()) {
+    arrive(STATUS, { extendedTextMessage: { text: `poveste ${i}` } }, { participant: author, at: Date.now() - HOUR + i * 1000 });
+  }
+  work.arrive(ANA, "Factura 118 a intrat?", { at: Date.now() - 3 * HOUR });
+  svc.initialSyncDone = false;
+  svc.db.messages.requestFlagsBackfill();
+
+  const client = await sdkClient(hub);
+  const seen = {};
+  const check = (result) => {
+    assert.equal(result.isError, undefined, JSON.stringify(result.content));
+    assertValid(result.structuredContent);
+    for (const key of ["waiting", "addressed", "missed_calls", "direct", "groups", "stories"]) {
+      for (const entry of result.structuredContent[key]) for (const name of Object.keys(entry)) (seen[key] ??= new Set()).add(name);
+    }
+    for (const entry of result.structuredContent.footer?.accounts ?? []) for (const name of Object.keys(entry)) (seen.footer ??= new Set()).add(name);
+    for (const entry of result.structuredContent.accounts) for (const name of Object.keys(entry)) (seen.accounts ??= new Set()).add(name);
+    return result;
+  };
+  let page = check(await client.callTool({ name: "catch_up", arguments: { budget_tokens: 500 } }));
+  while (page.structuredContent.more) page = check(await client.callTool({ name: "catch_up", arguments: { cursor: page.structuredContent.more.cursor, budget_tokens: 500 } }));
+  check(await client.callTool({ name: "catch_up", arguments: { hours: 24, budget_tokens: 8000 } }));
+  work.svc.status = "disconnected";
+  work.svc.statusSince = Date.now() - HOUR;
+  check(await client.callTool({ name: "catch_up", arguments: { hours: 24, budget_tokens: 8000 } }));
+  check(await client.callTool({ name: "catch_up", arguments: { account_id: "personal", hours: 24, budget_tokens: 8000 } }));
+  check(await client.callTool({ name: "catch_up", arguments: { account_id: "work", since: "previous", include: ["direct"] } }));
+  const refused = await client.callTool({ name: "catch_up", arguments: { cursor: "gone" } });
+  assert.deepEqual([refused.isError, refused.structuredContent], [true, undefined]);
+  await client.close();
+
+  // The fixture reaches every key the schema declares, so the validation above covered each of them.
+  const declared = (shape) => Object.keys(shape.properties);
+  const expected = {
+    waiting: declared(section("waiting")),
+    addressed: declared(section("addressed")),
+    missed_calls: declared(section("missed_calls")),
+    direct: declared(section("direct")),
+    groups: [...new Set(schema.properties.groups.items.anyOf.flatMap((shape) => declared(deref(shape))))],
+    stories: declared(section("stories")),
+    accounts: declared(deref(schema.properties.accounts.items)),
+  };
+  for (const [key, names] of Object.entries(expected)) {
+    assert.deepEqual(names.filter((name) => !seen[key]?.has(name)), [], `${key}: keys the fixture never produced`);
+  }
 });
 
 test("the structured answer carries the same entries as the text, in at most 1.3 times its size", async () => {

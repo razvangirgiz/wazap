@@ -101,7 +101,6 @@ export const CATCHUP_INPUT = {
   cursor: z.string().min(1).optional().describe("more.cursor from the previous page"),
 };
 
-const loose = z.object({}).passthrough();
 const windowShape = z.object({
   since: z.string(),
   until: z.string(),
@@ -109,32 +108,154 @@ const windowShape = z.object({
   basis: z.string(),
 });
 
+// Every key an entry may carry, and no other: a client validates the answer against this schema.
+const acct = z.string().optional().describe("The account the entry is from, when the catch-up covers several");
+const at = z.string().describe("When, as a clock time (with the day when not today)");
+const q = z.string().optional().describe("Quote: the message's own words, cut to fit the budget");
+const sig = z.string().optional().describe("Signals in the quote, comma-separated: amount, date, time, address, link, question");
+const media = z.record(z.number()).optional().describe("Media by kind: image, video, voice, audio, document, sticker, location, contact");
+const privateFlag = z.literal(true).optional().describe("Someone the user tagged #private: counted, never quoted");
+
+const waitingEntry = z.object({
+  acct,
+  chat: z.string(),
+  name: z.string(),
+  note: z.string().optional(),
+  group: z.literal(true).optional(),
+  from: z.string().optional().describe("In a group: who asks"),
+  business: z.literal(true).optional(),
+  unknown: z.literal(true).optional().describe("A number the user never saved"),
+  at,
+  n: z.number().optional().describe("Their messages since the user's last one"),
+  new: z.literal(true).optional().describe("Asked since this client's last catch-up"),
+  private: privateFlag,
+  type: z.string().optional(),
+  voice: z.string().optional().describe("A voice note's length"),
+  transcribed: z.boolean().optional(),
+  sig,
+  call_after: z
+    .object({ at: z.string(), outgoing: z.literal(true).optional(), seconds: z.number().optional() })
+    .optional()
+    .describe("An answered call after the ask: it may have been dealt with by phone"),
+  q,
+  then: z.string().optional().describe("What they sent after the ask, quoted with it"),
+});
+
+const addressedEntry = z.object({
+  acct,
+  chat: z.string(),
+  name: z.string(),
+  kind: z.enum(["mention", "reply", "poll", "event"]),
+  from: z.string(),
+  at,
+  more: z.number().optional().describe("Other mentions and replies in the chat"),
+  title: z.string().optional().describe("A poll's question or an event's name"),
+  private: privateFlag,
+  q,
+  sig,
+});
+
+const callsEntry = z.object({
+  acct,
+  chat: z.string(),
+  name: z.string(),
+  n: z.number().describe("Missed calls from them"),
+  video: z.literal(true).optional(),
+  last: z.string().describe("When the last one rang"),
+  group: z.string().optional().describe("The group the call rang in"),
+  called_back: z.literal(true).optional(),
+  wrote_after: z.literal(true).optional(),
+});
+
+const directEntry = z.object({
+  acct,
+  chat: z.string(),
+  name: z.string(),
+  note: z.string().optional(),
+  n: z.number().describe("New messages"),
+  at,
+  media,
+  polls: z.number().optional(),
+  business: z.literal(true).optional(),
+  unknown: z.literal(true).optional().describe("A number the user never saved"),
+  muted: z.literal(true).optional(),
+  private: privateFlag,
+  q,
+  sig,
+  more_in_chat: z.number().optional().describe("New messages besides the one quoted"),
+});
+
+const groupEntry = z.object({
+  acct,
+  chat: z.string(),
+  name: z.string(),
+  n: z.number().describe("New messages"),
+  senders: z.number(),
+  top: z.array(z.string()).describe("Who wrote most, at most three"),
+  at,
+  media,
+  polls: z.number().optional(),
+  addressed: z.literal(true).optional().describe("Someone mentioned, replied to or asked the user here"),
+  hot: z.string().optional().describe("Quote: the most reacted message, or the newest worth quoting"),
+  sig,
+});
+
+const mutedGroupsEntry = z.object({
+  acct,
+  muted_or_archived: z.literal(true),
+  groups: z.number(),
+  n: z.number().describe("New messages across them"),
+  names: z.array(z.string()).describe("The busiest, at most three"),
+});
+
+const storiesEntry = z.object({
+  acct,
+  n: z.number().describe("Stories"),
+  authors: z.array(z.string()).describe("The most recent authors, at most five"),
+  more: z.number().optional().describe("Other authors"),
+});
+
+const skipCount = z.object({ chats: z.number(), messages: z.number() });
+const footerShape = {
+  voice_untranscribed: z.array(z.string()).optional().describe("Voice notes nobody transcribed, by message id, for transcribe_audio"),
+  voice_untranscribed_more: z.number().optional().describe("Voice notes nobody transcribed that are not named"),
+  skipped: z
+    .object({ no_catchup: skipCount.optional(), left_groups: skipCount.optional(), newsletters: skipCount.optional(), broadcasts: skipCount.optional() })
+    .optional()
+    .describe("What was left out, counted"),
+  history_sync: z.string().optional(),
+  mentions_indexing: z.literal(true).optional(),
+};
+
 /** The structured content catch_up answers with; every entry keeps its own short keys. */
 export const CATCHUP_OUTPUT = {
   window: windowShape,
   accounts: z.array(
-    z
-      .object({
-        account_id: z.string(),
-        name: z.string(),
-        status: z.string(),
-        sync: z.string().optional(),
-        window: windowShape.optional(),
-        mark: z.object({ moved: z.boolean(), why: z.string().optional(), next_since: z.string().optional() }).optional(),
-        error: z.object({ code: z.string(), message: z.string() }).optional(),
-      })
-      .passthrough()
+    z.object({
+      account_id: z.string(),
+      name: z.string(),
+      status: z.string(),
+      status_since: z.string().optional(),
+      sync: z.string().optional(),
+      window: windowShape.optional(),
+      mark: z.object({ moved: z.boolean(), why: z.string().optional(), next_since: z.string().optional() }).optional(),
+      error: z.object({ code: z.string(), message: z.string() }).optional(),
+    })
   ),
-  waiting: z.array(loose),
-  addressed: z.array(loose),
-  missed_calls: z.array(loose),
-  direct: z.array(loose),
-  groups: z.array(loose),
-  stories: z.array(loose),
-  footer: loose.nullable(),
+  waiting: z.array(waitingEntry),
+  addressed: z.array(addressedEntry),
+  missed_calls: z.array(callsEntry),
+  direct: z.array(directEntry),
+  groups: z.array(z.union([groupEntry, mutedGroupsEntry])),
+  stories: z.array(storiesEntry),
+  footer: z
+    .union([z.object(footerShape), z.object({ accounts: z.array(z.object({ acct: z.string(), ...footerShape })) })])
+    .nullable()
+    .describe("On the last page: what the entries leave out"),
   more: z
     .object({ cursor: z.string(), remaining: z.record(z.number()), approx_tokens: z.number() })
-    .nullable(),
+    .nullable()
+    .describe("Set when entries are left: call catch_up again with more.cursor"),
   approx_tokens: z.number(),
   account_id: z.string().nullable(),
 };
