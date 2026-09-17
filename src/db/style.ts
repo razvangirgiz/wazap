@@ -21,12 +21,17 @@ export interface StyleStats {
   ends_punct: number;
 }
 
-/** Words only Romanian uses this often, folded. Words both languages share ("am", "in", "a") count for neither. */
+/**
+ * Words only Romanian uses this often, folded. Words both languages share
+ * ("am", "in", "a") count for neither. "salut" sits beside "buna" because a
+ * short draft is often nothing but a greeting and the words after it: without
+ * it, "Salut John, întârzii 10 minute" has no language at all.
+ */
 const RO_WORDS = new Set(
   (
     "si sa ca nu de la pe cu este sunt ce cum unde cand mai dar sau ma te il ne un pentru din iti imi eu tu el ea noi voi asta " +
     "aici acum doar foarte deja inca daca care fost poti pot vreau stiu bine multumesc mersi azi maine ai e vin trebuie niste " +
-    "lui meu mea tau ta vad zic hai bun buna acasa ajung va timp aveti puteti sunteti doriti stiti vreti veniti esti vrei stii " +
+    "lui meu mea tau ta vad zic hai bun buna salut acasa ajung va timp aveti puteti sunteti doriti stiti vreti veniti esti vrei stii " +
     "vii faci zici crezi dumneavoastra dvs multumim"
   ).split(" ")
 );
