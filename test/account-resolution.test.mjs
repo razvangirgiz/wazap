@@ -464,8 +464,10 @@ test("every non-confirm write is stopped at the resolved account, not just at th
   });
   const original = hub.binding.bind(hub);
   hub.binding = (id) => (id === "work" ? { id, wa: trapped } : original(id));
-  for (const [name, { meta, handler }] of tools) {
-    if (meta.annotations.readOnlyHint || meta.annotations.idempotentHint || name === "confirm_send") continue;
+  const readTools = toolsOf(hub, false);
+  for (const [name, { handler }] of tools) {
+    // The write tools: what a session without writes does not get. confirm_send resolves its draft first.
+    if (readTools.has(name) || name === "confirm_send") continue;
     const result = await handler({ account_id: "work" });
     // A tool with an output schema answers its refusal as text only.
     assert.equal(result.structuredContent?.error ?? JSON.parse(result.content[0].text).error, "READ_ONLY", name);

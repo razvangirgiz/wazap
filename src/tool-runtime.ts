@@ -36,6 +36,14 @@ export interface ToolCtx {
   client: string;
 }
 
+/** MCP tool annotations, stated per tool for its most far-reaching action. */
+export interface ToolHints {
+  readOnlyHint: boolean;
+  destructiveHint: boolean;
+  idempotentHint: boolean;
+  openWorldHint: boolean;
+}
+
 export interface ToolDef {
   name: string;
   title: string;
@@ -43,12 +51,9 @@ export interface ToolDef {
   schema: z.ZodRawShape;
   /** The structured content's shape, when the tool declares one. */
   outputSchema?: z.ZodRawShape;
+  /** Registered only in a session that can write, and refused on an account that cannot. */
   write: boolean;
-  /** A read that changes local state a repeat call sees (catch_up's mark). */
-  idempotent?: boolean;
-  destructive?: boolean;
-  /** Changes only local notes, so available in read-only mode too. */
-  local?: boolean;
+  hints: ToolHints;
   /** Per-tool budget, separate from the account's write budget. */
   rate?: number;
   handler: (args: ToolArgs, ctx: ToolCtx) => Promise<ToolResult>;
@@ -85,25 +90,6 @@ function schemaSafeError(result: ToolResult): ToolResult {
   const { structuredContent: _structured, ...rest } = result;
   return rest;
 }
-
-const READ_ONLY_HINTS = {
-  readOnlyHint: true,
-  destructiveHint: false,
-  idempotentHint: true,
-  openWorldHint: true,
-} as const;
-const WRITE_HINTS = {
-  readOnlyHint: false,
-  destructiveHint: false,
-  idempotentHint: false,
-  openWorldHint: true,
-} as const;
-const LOCAL_HINTS = {
-  readOnlyHint: false,
-  destructiveHint: false,
-  idempotentHint: true,
-  openWorldHint: false,
-} as const;
 
 function rateLabel(name: string): string {
   const verb = name.split("_")[0] ?? name;
@@ -147,11 +133,7 @@ export function createToolRegistrar(defs: readonly ToolDef[]) {
               : ""),
           inputSchema: def.schema,
           ...(def.outputSchema === undefined ? {} : { outputSchema: def.outputSchema }),
-          annotations: def.write
-            ? { ...WRITE_HINTS, destructiveHint: def.destructive === true }
-            : def.local
-              ? LOCAL_HINTS
-              : { ...READ_ONLY_HINTS, openWorldHint: def.name !== "learn", ...(def.idempotent === false ? { idempotentHint: false } : {}) },
+          annotations: def.hints,
         },
         async (args: unknown, extra?: { _meta?: Record<string, unknown> }): Promise<ToolResult> => {
           const parsed = (args ?? {}) as ToolArgs;

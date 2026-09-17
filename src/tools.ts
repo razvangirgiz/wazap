@@ -8,6 +8,7 @@ import {
   type ToolArgs,
   type ToolCtx,
   type ToolDef,
+  type ToolHints,
   type ToolResult,
 } from "./tool-runtime.js";
 export { toolError, type ToolCtx, type RegisterOpts } from "./tool-runtime.js";
@@ -140,6 +141,50 @@ const REMEMBER_OUTPUT = {
   account_id: z.string(),
 };
 
+const hint = (readOnlyHint: boolean, destructiveHint: boolean, idempotentHint: boolean, openWorldHint: boolean): ToolHints => ({
+  readOnlyHint,
+  destructiveHint,
+  idempotentHint,
+  openWorldHint,
+});
+
+/**
+ * Each tool's annotations, true of its most far-reaching action. A read that
+ * only mirrors WhatsApp still reaches it (older history, group metadata, the
+ * address book), so only learn, get_status and remember are closed-world.
+ */
+const HINTS: Record<string, ToolHints> = {
+  learn: hint(true, false, true, false),
+  get_status: hint(true, false, true, false),
+  // It starts a pairing on WhatsApp.
+  link_account: hint(false, false, false, true),
+  list_chats: hint(true, false, true, true),
+  read_messages: hint(true, false, true, true),
+  // It moves this client's catch-up mark, so a repeat answers differently.
+  catch_up: hint(true, false, false, true),
+  // Local notes only: never WhatsApp, and filing the same thing twice changes nothing.
+  remember: hint(false, false, true, false),
+  wait_for_messages: hint(true, false, true, true),
+  search: hint(true, false, true, true),
+  get_message: hint(true, false, true, true),
+  find_contact: hint(true, false, true, true),
+  get_group_info: hint(true, false, true, true),
+  // It saves a file on each call, and a transcript may be billed by an API.
+  get_media: hint(false, false, false, true),
+  // A draft is not a send, but each call makes another.
+  send_message: hint(false, false, false, true),
+  // Confirming a draft again answers the same receipt.
+  confirm_send: hint(false, false, true, true),
+  // The earlier text is gone for everyone.
+  edit_message: hint(false, true, true, true),
+  delete_message: hint(false, true, true, true),
+  react_to_message: hint(false, false, true, true),
+  // clear, delete and block, beside mark_read.
+  manage_chat: hint(false, true, false, true),
+  // remove, leave, revoke_invite_link.
+  manage_group: hint(false, true, false, true),
+};
+
 function tool<S extends z.ZodRawShape>(def: {
   name: string;
   title: string;
@@ -147,14 +192,14 @@ function tool<S extends z.ZodRawShape>(def: {
   schema: S;
   outputSchema?: z.ZodRawShape;
   write: boolean;
-  idempotent?: boolean;
-  destructive?: boolean;
-  local?: boolean;
   rate?: number;
   handler: (args: z.infer<z.ZodObject<S>>, ctx: ToolCtx) => Promise<ToolResult>;
 }): ToolDef {
+  const hints = HINTS[def.name];
+  if (hints === undefined) throw new Error(`${def.name} has no annotations in HINTS`);
   return {
     ...def,
+    hints,
     schema: { ...def.schema, account_id: ACCOUNT_ID.optional() },
     handler: def.handler as (args: ToolArgs, ctx: ToolCtx) => Promise<ToolResult>,
   };
@@ -378,7 +423,6 @@ again with more.cursor within 15 minutes. It marks nothing read on WhatsApp.`,
   schema: CATCHUP_INPUT,
   outputSchema: CATCHUP_OUTPUT,
   write: false,
-  idempotent: false,
   handler: async (args, { hub, wa, accountId, client }) => runCatchUp(args, { hub, wa, accountId, client }),
 });
 // ---- end catch_up -------------------------------------------------------------
@@ -541,7 +585,6 @@ from_me}, archived, pinned, muted_until, and left (groups you are no longer in).
     },
     outputSchema: REMEMBER_OUTPUT,
     write: false,
-    local: true,
     handler: async ({ chat_id, note, add_tags, remove_tags, fields, remove_fields, handled }, { wa }) => {
       const details = add_tags !== undefined || remove_tags !== undefined || fields !== undefined || remove_fields !== undefined;
       if (!details && note === undefined && handled === undefined) {
@@ -994,7 +1037,6 @@ required, and picks one of two different deletes; tell the user which:
         .describe("Required. true retracts it for everyone in the chat; false deletes it for the linked account only"),
     },
     write: true,
-    destructive: true,
     handler: async ({ message_id, for_everyone }, { wa }) => {
       const result = await wa.deleteMessage(message_id, for_everyone);
       const scope = result.for_everyone ? "for everyone" : "for the linked account only";
@@ -1051,7 +1093,6 @@ there is no draft: say what will change and wait for a yes before calling it.`,
         .describe("How long pin_message keeps the message pinned: 24, 168 (default) or 720 hours"),
     },
     write: true,
-    destructive: true,
     handler: async ({ chat_id, action, mute_hours, message_id, pin_hours }, { wa }) => {
       const result = await wa.manageChat(chat_id, action, {
         muteHours: mute_hours,
@@ -1105,7 +1146,6 @@ there is no draft: say what will change and wait for a yes before calling it.`,
     },
     outputSchema: MANAGE_GROUP_OUTPUT,
     write: true,
-    destructive: true,
     handler: async ({ action, group_id, participant_ids, value, file_path, url, invite, message_id, confirm }, { wa }) => {
       if (action === "create") {
         const name = value?.trim() ?? "";

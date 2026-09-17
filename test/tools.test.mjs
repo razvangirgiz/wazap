@@ -321,3 +321,37 @@ test("send_message drafts one kind at a time and refuses what does not belong to
   await send({ text: "Joi la 10.", reply_to: "false_1@s.whatsapp.net_X" });
   assert.deepEqual(drafted.at(-1), { kind: "text", chatId: "+40722123456", text: "Joi la 10.", replyTo: "false_1@s.whatsapp.net_X", mentionIds: undefined });
 });
+
+test("each tool's annotations are true of its most far-reaching action", () => {
+  const server = fakeServer();
+  registerTools(server, asToolSource({}), { allowWrite: true });
+  const hints = Object.fromEntries(
+    [...server.tools].map(([name, { meta }]) => {
+      const a = meta.annotations;
+      return [name, [a.readOnlyHint, a.destructiveHint, a.idempotentHint, a.openWorldHint].map((h) => (h ? 1 : 0)).join("")];
+    })
+  );
+  // readOnly, destructive, idempotent, openWorld
+  assert.deepEqual(hints, {
+    learn: "1010",
+    get_status: "1010",
+    link_account: "0001",
+    list_chats: "1011",
+    read_messages: "1011",
+    catch_up: "1001",
+    remember: "0010",
+    wait_for_messages: "1011",
+    search: "1011",
+    get_message: "1011",
+    find_contact: "1011",
+    get_group_info: "1011",
+    get_media: "0001",
+    send_message: "0001",
+    confirm_send: "0011",
+    edit_message: "0111",
+    delete_message: "0111",
+    react_to_message: "0011",
+    manage_chat: "0101",
+    manage_group: "0101",
+  });
+});
