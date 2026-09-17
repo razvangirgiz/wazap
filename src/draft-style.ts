@@ -181,14 +181,19 @@ export function theirLanguageIn(db: AccountDb, chatJid: string, others?: readonl
  * read off the recipient's own messages: a draft in another language than the
  * one they write in is language_mismatch, and nothing else is judged. The
  * user's own messages here win whenever there are enough of them.
+ *
+ * Reading the recipient reads them, so it takes the `#private` rule of the
+ * call: `others`, the numbers and lids tagged on the other linked accounts,
+ * the way every other read receives it. Tagged on any of them, nothing of
+ * theirs is read here either, not even to say which language they write in.
  */
-export function styleCheckFor(db: AccountDb, chatJid: string, text: string): StyleCheck | null {
+export function styleCheckFor(db: AccountDb, chatJid: string, text: string, options: { others?: readonly string[] } = {}): StyleCheck | null {
   if (chatKindOf(chatJid) !== "direct") return null;
   const style = db.messages.styleFor(chatJid, { excludeViaWazap: true });
   const draft = messageStyle(text, { oneToOne: true });
   const known = (language: string): boolean => language === "ro" || language === "en";
   if (style === null || style.basis.scope !== "chat" || style.basis.own_messages < STYLE_CHECK_MIN_OWN) {
-    const theirs = theirLanguageIn(db, chatJid);
+    const theirs = theirLanguageIn(db, chatJid, options.others);
     if (theirs === null || !known(draft.language) || theirs.language === draft.language) return null;
     return { warnings: ["language_mismatch"], basis: { from: "recipient", messages: theirs.messages, days: THEIRS_DAYS, language: theirs.language }, draft };
   }

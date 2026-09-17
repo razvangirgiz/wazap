@@ -409,3 +409,27 @@ test("send_message: a draft with diacritics to someone the user writes to withou
   assert.equal(plain.structuredContent.notes, undefined);
   await s.close();
 });
+
+/**
+ * With too little of the user's own writing in a chat, the check reads the
+ * recipient for the language — so it takes the same `#private` rule every read
+ * does, over every account of the call: tagged anywhere, not even the language
+ * they write in is volunteered.
+ */
+test("send_message: a #private contact on another account gives no language either", async () => {
+  // The same John Carter, saved on the work account and tagged there.
+  const tagged = await world({ accounts: { work: { contacts: { john_work: { phone: "40766600003", name: "John Carter", tags: ["private"] } } } } });
+  const quiet = await tagged.s.call("send_message", { chat_id: tagged.refs.contacts.john.jid, text: "Salut John, întârzii 10 minute.", account_id: "personal" });
+  assert.notEqual(quiet.isError, true, JSON.stringify(quiet.structuredContent));
+  assert.equal(quiet.structuredContent.style_check, undefined, "tagged on work: nothing of his is read on personal, his language included");
+  assert.doesNotMatch(quiet.content[0].text, /Style check/);
+  assert.ok(quiet.structuredContent.draft_id, "the draft itself stands");
+  await tagged.s.close();
+
+  // Untagged, the same draft is answered with the language he writes in.
+  const open = await world();
+  const warned = await open.s.call("send_message", { chat_id: open.refs.contacts.john.jid, text: "Salut John, întârzii 10 minute.", account_id: "personal" });
+  assert.deepEqual(warned.structuredContent.style_check.warnings, ["language_mismatch"]);
+  assert.deepEqual(warned.structuredContent.style_check.basis, { from: "recipient", messages: 3, days: 90, language: "en" });
+  await open.s.close();
+});

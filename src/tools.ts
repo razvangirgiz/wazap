@@ -1682,21 +1682,23 @@ async function draftAndGuard(payload: DraftPayload, ctx: ToolCtx): Promise<ToolR
   assertSendable(policy, view.to, ctx.accountId);
   noteDraftTarget(view, ctx.accountId, ctx.draftOwner);
   await flagUnnamed(view, ctx.wa);
-  if (payload.kind === "text") checkStyle(view, payload.text, ctx);
+  if (payload.kind === "text") await checkStyle(view, payload.text, ctx);
   return drafted(view);
 }
 
 /**
  * send_message's style_check (F2-3): additive, and a failure only leaves it
  * out. An account that turned the draft context off gets no style statistics
- * here either.
+ * here either. Where the check reads the recipient — a chat the user has
+ * hardly written in, whose language only they can give — it takes the
+ * `#private` rule of the call, across every linked account, like every read.
  */
-function checkStyle(view: DraftView, text: string, { wa, hub, accountId }: ToolCtx): void {
+async function checkStyle(view: DraftView, text: string, { wa, hub, accountId }: ToolCtx): Promise<void> {
   if (typeof wa.styleCheck !== "function") return;
   try {
     const record = hub.recordOnDisk(accountId);
     if (record === undefined || !draftContextEnabled(record)) return;
-    const check = wa.styleCheck(view.to.chat_id, text);
+    const check = wa.styleCheck(view.to.chat_id, text, { private: await privateRule(hub, accountId) });
     if (check !== null) view.style_check = check;
   } catch {
     /* the draft stands without it */

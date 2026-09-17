@@ -745,8 +745,14 @@ export interface WhatsAppApi {
   findContact?(query: FindContactQuery): Promise<AccountFind>;
   /** The recent exchange (unless `recent: false`) and the user's style in a chat, or null when it has no history. */
   draftContext?(chatJid: string, options: { recent: boolean; private?: PrivateRule }): DraftContext | null;
-  /** How a text draft to a direct chat compares with the user's own messages there; null without enough of them. */
-  styleCheck?(chatJid: string, text: string): StyleCheck | null;
+  /**
+   * How a text draft to a direct chat compares with the user's own messages
+   * there; null without enough of them. With too few, the language is read off
+   * the recipient's own messages instead, so `private` carries the same rule
+   * every read does: nothing of a `#private` contact, on this account or on
+   * another, is read for it.
+   */
+  styleCheck?(chatJid: string, text: string, options?: { private?: PrivateRule }): StyleCheck | null;
   updateContactDetails(contactId: string, edit: ContactDetailsEdit): Promise<ContactSummary>;
   getGroupInfo(groupId: string): Promise<GroupInfo>;
   downloadMedia(messageId: string, saveTo?: string): Promise<MediaResult>;

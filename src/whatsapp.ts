@@ -1869,9 +1869,9 @@ export class WhatsAppService implements WhatsAppApi {
   }
 
   /** send_message's style check on a text draft; null when the chat gives too little to judge or the database is not ready. */
-  styleCheck(chatJid: string, text: string): StyleCheck | null {
+  styleCheck(chatJid: string, text: string, options: { private?: PrivateRule } = {}): StyleCheck | null {
     const db = this.readyDb();
-    return db === null ? null : styleCheckFor(db, chatJid, text);
+    return db === null ? null : styleCheckFor(db, chatJid, text, { others: options.private?.others });
   }
 
   // ---- end find_contact ------------------------------------------------------

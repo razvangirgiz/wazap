@@ -192,6 +192,20 @@ answers.
   on, and the preview says what does not match. Additive: the arguments and
   every field `send_message` returned before are unchanged, and it never
   blocks a draft.
+- **A chat the user has hardly written in takes its language from the
+  recipient.** With fewer than five of the user's own messages there, their
+  style falls back to the whole account, which says nothing about that one
+  chat — a draft to someone who writes another language had nothing saying so.
+  `find_contact`'s draft context now carries `style.their_language`, what the
+  recipient writes there, read off their own messages by the same function-word
+  tables (never by diacritics) and only once three of them agree; and
+  `style_check` answers `language_mismatch` against it, judging nothing else.
+  **`style_check.basis` now carries `from`**: `"user"` for the basis as it was,
+  `"recipient"` for this one, where the fields are `messages`, `days` and
+  `language`. The user's own messages in the chat win whenever there are five
+  of them, a `#private` contact on any linked account gives no language either,
+  and the warning still blocks nothing: the draft's `next` asks for it again in
+  that language before any preview is shown.
 - **The address book is asked for when `find_contact` needs it.** With no
   contact carrying a saved name, the first `find_contact` of a server run asks
   WhatsApp for the address book, as `wazap contacts resync` does, and waits up to 15
