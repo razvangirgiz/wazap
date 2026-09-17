@@ -500,7 +500,7 @@ const TOOLS: readonly ToolDef[] = [
   tool({
     name: "remember",
     title: "Remember something about a person",
-    description: `Keep what the user says about someone, locally; nothing reaches WhatsApp: a note, tags, details find_contact matches ({"relatie": "mama"}), or handled: true when their open ask was dealt with elsewhere. Tag #private keeps their words out of answers, #no-catchup keeps them out of catch_up.`,
+    description: `Keep what the user says about someone, locally, never on WhatsApp: a note, tags, details find_contact matches ({"relatie": "mama"}), or handled: true for an ask dealt with elsewhere. #private keeps their words out of catch_up and find_contact's draft context; #no-catchup keeps them out of catch_up.`,
     schema: {
       chat_id: chatId,
       note: z.string().max(200).optional().describe('"" removes it'),

@@ -355,6 +355,16 @@ test("a voice note or an audio file drafted with text is refused: WhatsApp shows
   assert.equal(drafted.at(-1).caption, "înregistrarea");
 });
 
+test("remember says what #private hides, and promises nothing the other tools do not keep", () => {
+  const server = fakeServer();
+  registerTools(server, asToolSource({}), { allowWrite: true });
+  const described = server.tools.get("remember").meta.description;
+  // Only catch_up and find_contact's draft context leave a #private person's words out (src/private-contacts.ts);
+  // search, read_messages and wait_for_messages answer what they are asked for.
+  assert.match(described, /#private keeps their words out of catch_up and find_contact's draft context/);
+  assert.doesNotMatch(described, /out of answers/);
+});
+
 test("each tool's annotations are true of its most far-reaching action", () => {
   const server = fakeServer();
   registerTools(server, asToolSource({}), { allowWrite: true });
