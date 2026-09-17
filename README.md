@@ -349,7 +349,7 @@ diacritics, tu or dumneavoastră, length, emoji — from your own messages in th
 chat in the last 90 days, or across the account when there are fewer than five.
 The style never counts messages wazap sent, so an agent does not learn its own
 drafts back. It is on by default, only in a session that can send, and only for
-a resolved contact. A contact tagged `#private`
+a resolved contact the account's [send rules](#send-rules) allow. A contact tagged `#private`
 (`update_contact_details` with `add_tags: ["private"]`) gets the style only,
 never messages. `wazap config draft-context off [--account <id>]` turns it off
 for an account (`draft_context: false` in `accounts.json`), the style check

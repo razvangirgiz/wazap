@@ -281,3 +281,26 @@ test("a name with nothing to look up is refused with what to pass instead", asyn
   }
   await svc.stop();
 });
+
+test("no draft context for a contact the account's send rules refuse", async () => {
+  const config = offlineConfig("wazap-find-send-rules-", { readOnly: false });
+  const hub = new AccountHub(config, AccountRegistry.load(config.dataDir));
+  const home = hub.get("default");
+  connect(home, ME);
+  seed(home, ANA, "Ana Pop");
+  seed(home, DAN, "Dan Radu");
+  const server = fakeServer();
+  registerTools(server, asToolSource(hub), { allowWrite: true });
+  const find = async (name) => (await server.tools.get("find_contact").handler({ name })).structuredContent;
+  const rules = (edit) => AccountRegistry.load(config.dataDir).setSendRules("default", edit);
+
+  assert.ok((await find("Ana Pop")).context, "no rules: context");
+  rules({ deny: ["+40 722 000 001"] });
+  const denied = await find("Ana Pop");
+  assert.deepEqual([denied.status, denied.context], ["resolved", undefined], "denied");
+  assert.ok((await find("Dan Radu")).context, "someone the deny list does not name");
+  rules({ deny: null, allow: [DAN] });
+  assert.equal((await find("Ana Pop")).context, undefined, "not on the allowlist");
+  assert.ok((await find("Dan Radu")).context, "on the allowlist");
+  await hub.stop();
+});

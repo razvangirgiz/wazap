@@ -28,6 +28,7 @@ import { styleLine, type DraftContext } from "./draft-style.js";
 import { WazapError, asWazapError } from "./errors.js";
 import { formatAge, isoWithOffset } from "./messages.js";
 import { hasPrivateTag } from "./private-contacts.js";
+import { assertSendable, sendPolicyOf } from "./send-guard.js";
 import type { ToolCtx, ToolResult } from "./tool-runtime.js";
 import type { WhatsAppApi } from "./wa-types.js";
 
@@ -383,16 +384,21 @@ export interface FindContactArgs {
   account_id?: string;
 }
 
-/** Whether a resolved contact's account hands out draft context: a write session, an account that writes and has not turned it off. */
-function contextAllowed(ctx: ToolCtx, binding: Pick<AccountBinding, "id" | "wa">): boolean {
+/**
+ * Whether a resolved contact gets the draft context: a write session, an
+ * account that writes and has not turned it off, and a recipient its send
+ * rules allow — no draft to them could go out.
+ */
+function contextAllowed(ctx: ToolCtx, binding: Pick<AccountBinding, "id" | "wa">, chatJid: string): boolean {
   if (!ctx.allowWrite) return false;
   try {
     // Read fresh, like the send rules: `wazap config draft-context off` applies to the next call.
     const record = ctx.hub.recordOnDisk(binding.id);
     if (record === undefined || !record.enabled || record.writes === false || !draftContextEnabled(record)) return false;
+    assertSendable(sendPolicyOf(record), { chat_id: chatJid }, binding.id);
     return binding.wa.getStatus?.().read_only !== true;
   } catch {
-    // An unreadable policy hands out nothing it might have turned off.
+    // Refused by the rules, or an unreadable policy: nothing handed out.
     return false;
   }
 }
@@ -449,7 +455,7 @@ export async function runFindContact(args: FindContactArgs, ctx: ToolCtx): Promi
     const found = outcome.contact;
     structured.contact = contactView(found);
     const binding = targets.find((target) => target.id === found.accountId)!;
-    if (args.include_context !== false && contextAllowed(ctx, binding) && typeof binding.wa.draftContext === "function") {
+    if (args.include_context !== false && contextAllowed(ctx, binding, found.candidate.jid) && typeof binding.wa.draftContext === "function") {
       try {
         const context = binding.wa.draftContext(found.candidate.jid, { recent: !hasPrivateTag(found.candidate.tags) });
         if (context !== null) structured.context = context;
