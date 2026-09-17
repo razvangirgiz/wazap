@@ -33,6 +33,7 @@ import {
 } from "baileys";
 import type { ILogger } from "baileys/lib/Utils/logger.js";
 import { accountPolicy, type AccountRecord } from "./accounts.js";
+import { wordsAsk } from "./asks.js";
 import { clearAuth, readLinkedAccount, useAtomicAuthState, type LinkedAccount } from "./auth-state.js";
 import { CallTracker, callMessage, isTrackedCall, type CallEntry } from "./calls.js";
 import { BAILEYS_VERSION, WAZAP_VERSION, writesHints, type AccountPaths, type Config } from "./config.js";
@@ -260,9 +261,6 @@ const PREVIEW_BUDGET_MS = 20_000;
 const STORY_TTL_MS = 24 * 3_600_000;
 /** How far back into a chat get_unanswered reads for the ask. */
 const UNANSWERED_SCAN = 30;
-/** Words that make a message read as something asked of the user, when it has no question mark. */
-const ASK_PATTERN =
-  /\b(te rog|v[ăa] rog|po[țt]i|pute[țt]i|ai putea|a[țt]i putea|c[âa]nd|c[âa]t|unde|trimite|trimi[țt]i|sun[ăa]|spune-mi|zi-mi|confirm[ăai]?|urgent|please|can you|could you|would you|when|where|how much|send me|let me know|need)\b/i;
 const CALL_SWEEP_MS = 30_000;
 /** The same call reaches the store up to three ways; only nearness in time tells them apart. */
 const CALL_DEDUPE_WINDOW_MS = 60_000;
@@ -2062,9 +2060,7 @@ export class WhatsAppService implements WhatsAppApi {
     if (message.type === "call") return false;
     // A voice note nobody has heard is an ask until proven otherwise.
     if (message.type === "voice" && message.transcript === null) return true;
-    // A link's query string is not a question.
-    const text = (raw === null ? this.viewTextOf(message) : viewText(raw, this.transcriptOf(message))).replace(/https?:\/\/\S+/g, "");
-    return text.includes("?") || ASK_PATTERN.test(text);
+    return wordsAsk(raw === null ? this.viewTextOf(message) : viewText(raw, this.transcriptOf(message)));
   }
 
   /** A group message that @-mentions the linked account or replies to one of its messages. */
