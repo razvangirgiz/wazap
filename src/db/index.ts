@@ -38,6 +38,7 @@
  *   queued, failed (given up, with a reason) or null (not queued — done, never
  *   eligible, or gone). The row leaves once setTranscript stores words.
  */
+import { CatchupMarks } from "./catchup.js";
 import { Connection, type CheckpointResult, type ConnectionOptions, type ConnectionSettings } from "./connection.js";
 import { StorageError } from "./errors.js";
 import { Events } from "./events.js";
@@ -58,7 +59,10 @@ export { mergeNotes } from "./merge.js";
 export { foldText, DEFAULT_SCAN_CAP, DEFAULT_TRIGRAM_CAP } from "./search.js";
 export { contentHash, hybridTokens, hybridWords, int8Similarity, quantizeVector, unitVector, RRF_K } from "./vectors.js";
 export { isSqliteExperimentalWarning } from "./sqlite.js";
-export type { ScrubQuote } from "./messages.js";
+export type { FlagDetector, ScrubQuote } from "./messages.js";
+export { FLAGS_BACKFILL_META, FLAGS_BACKFILL_WINDOW_MS } from "./messages.js";
+export { MESSAGE_FLAGS } from "./types.js";
+export type { CatchupAdvance, CatchupMark, CatchupMarks } from "./catchup.js";
 export type { NewDraft, SendRecord, SendState, Sends } from "./sends.js";
 export { TRANSCRIBE_MAX_ATTEMPTS, TRANSCRIBE_QUEUE_MAX_AGE_MS } from "./transcripts.js";
 export type { ProviderClass, TranscribeItem, TranscribeQueueStats, TranscribeState } from "./transcripts.js";
@@ -91,6 +95,8 @@ export class AccountDb {
   readonly transcripts: Transcripts;
   /** The webhook outbox; see src/webhook-outbox.ts for who posts it. */
   readonly events: Events;
+  /** Where each client's catch-up summary left off (v5). */
+  readonly catchup: CatchupMarks;
   private readonly merger: Merger;
 
   private constructor(private readonly connection: Connection, options: AccountDbOptions) {
@@ -101,6 +107,7 @@ export class AccountDb {
     this.sends = new Sends(connection);
     this.transcripts = new Transcripts(connection, this.messages);
     this.events = new Events(connection);
+    this.catchup = new CatchupMarks(connection);
     this.merger = new Merger(connection, this.identity, this.messages);
   }
 

@@ -105,7 +105,7 @@ test("a version 1 file, as 0.22 ships it, upgrades to the schema a new file gets
   const fresh = join(tempDir(), "fresh", "wazap.sqlite");
   AccountDb.open(fresh).close();
   assert.deepEqual(schemaOf(old), schemaOf(fresh));
-  assert.equal(SCHEMA_VERSION, 4);
+  assert.equal(SCHEMA_VERSION, 5);
 
 });
 
@@ -328,14 +328,14 @@ test("reactions and votes list ties in the order they arrived, and a delete take
 });
 
 for (const from of [1, 2, 3]) {
-  test(`a version ${from} file, written through the real migrations, upgrades to version 4 and its outbox takes and posts events`, async () => {
+  test(`a version ${from} file, written through the real migrations, upgrades to the current version and its outbox takes and posts events`, async () => {
     const { MIGRATIONS } = await import("../dist/db/schema.js");
     const { WebhookOutbox } = await import("../dist/webhook-outbox.js");
     const { WebhookSink } = await import("../dist/webhook.js");
     // A released migration never changes: this is version 1 as 0.22.0 shipped it.
     const v1 = MIGRATIONS.find((migration) => migration.version === 1).sql;
     assert.equal(createHash("sha256").update(v1).digest("hex"), "8c4c8fb88eb74dd9772b041f4ce4a806575ae862dcbb76aab4d35be2c9c136c9");
-    assert.equal(SCHEMA_VERSION, 4);
+    assert.ok(SCHEMA_VERSION >= 4);
 
     const path = join(tempDir(), "wazap.sqlite");
     const released = new (sqlite().DatabaseSync)(path);
@@ -353,7 +353,7 @@ for (const from of [1, 2, 3]) {
     released.close();
 
     const db = AccountDb.open(path);
-    assert.equal(db.schemaVersion, 4);
+    assert.equal(db.schemaVersion, SCHEMA_VERSION);
     assert.ok(db.getMeta("migrated_v4") !== null);
     const stored = db.messages.upsert(textMessage(PEER, "AFTER", T0, "after the upgrade"));
     const seq = db.events.enqueue({ kind: "message_received", lane: "chat:1", messageId: stored.id, payload: "{}", createdAt: Date.now() });

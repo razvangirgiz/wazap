@@ -31,6 +31,8 @@ export interface ChatRow {
   last_from_me: number | null;
   proto: Uint8Array | null;
   merged_into: number | null;
+  last_own_id: number | null;
+  read_through_id: number | null;
 }
 
 export interface MessageRow {
@@ -53,6 +55,7 @@ export interface MessageRow {
   edited_at: number | null;
   expires_at: number | null;
   deleted_at: number | null;
+  flags: number;
 }
 
 /**
@@ -65,7 +68,7 @@ export const MESSAGE_COLUMNS = `m.id, coalesce(ck.id, c.id) AS chat_id, coalesce
   (CASE WHEN m.from_me = 1 THEN 'true' ELSE 'false' END) || '_' || coalesce(ck.jid, c.jid) || '_' || m.key_id AS sid,
   m.key_id, m.from_me, coalesce(sk.id, s.id) AS sender_id,
   coalesce(s.phone_jid, s.lid, sk.phone_jid, sk.lid) AS sender_jid, m.ts, m.type, m.quoted_sid, m.status, m.edited_at,
-  m.expires_at, m.deleted_at, m.text, m.transcript, m.transcript_info, m.raw`;
+  m.expires_at, m.deleted_at, m.text, m.transcript, m.transcript_info, m.raw, m.flags`;
 
 /** Messages drive the join, so a range or index scan over them is never reordered behind chats. */
 export const MESSAGE_FROM = `messages m CROSS JOIN chats c ON c.id = m.chat_id LEFT JOIN chats ck ON ck.id = c.merged_into
@@ -126,6 +129,8 @@ export function chatFromRow(row: ChatRow): ChatRecord {
     lastTs: row.last_ts,
     lastFromMe: row.last_from_me === null ? null : row.last_from_me === 1,
     proto: row.proto,
+    lastOwnId: row.last_own_id,
+    readThroughId: row.read_through_id,
   };
 }
 
@@ -178,5 +183,6 @@ export function messageFromRow(row: MessageRow): StoredMessage {
     editedAt: row.edited_at,
     expiresAt: row.expires_at,
     deletedAt: row.deleted_at,
+    flags: row.flags,
   };
 }

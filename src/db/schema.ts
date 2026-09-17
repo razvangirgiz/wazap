@@ -20,6 +20,8 @@
  *   and with its tombstone or its row;
  * - chats.last_* names the newest message a reader may see — not a tombstone,
  *   not under the clear barrier — after any insert, tombstone, delete or move;
+ *   (v5) chats.last_own_id does the same for the account's own messages, and
+ *   through a barrier raised or a fold started too;
  * - a file a removed media row pointed at is queued for unlinking in the same
  *   transaction, so a crash never loses it;
  * - a message of the account's own that goes for good leaves no words in the
@@ -618,12 +620,180 @@ CREATE INDEX events_message ON events(message_id) WHERE message_id IS NOT NULL;
 `;
 // ---- end v4 ----------------------------------------------------------------
 
+// ---- v5 (F2-1): what catch_up and find_contact read ------------------------
+// Self-contained: columns added to messages and chats, one table, the
+// triggers that keep chats.last_own_id, the indexes the planned reads use,
+// and the backfills a file upgraded from an earlier version needs at once.
+// Flags derived from a message's protobuf (mentions_me) cannot be computed in
+// SQL: the service backfills the last 14 days after opening, below the
+// descending id cursor in meta flags_backfill_before (Messages.backfillFlags).
+/**
+ * - messages.flags: bits the service sets when it stores a message, and that
+ *   only ever gain bits (an edit or a replay never clears one): 1 mentions_me
+ *   (an incoming message whose mentions name the account, by number or lid),
+ *   2 via_wazap (the account's own message sent through wazap: its key is a
+ *   confirmed send's). A fold keeps the union of both copies' bits.
+ * - chats.last_own_id: the newest message of the account's own a reader may
+ *   see in the chat and in every chat folding into it, kept like last_*.
+ * - chats.read_through_id: the newest message the account's own devices (the
+ *   phone) reported read in the chat; it only moves forward, and a fold keeps
+ *   the later of the two.
+ * - catchup_marks: per client of the account, the newest message id a summary
+ *   covered (through_id) and the one before it (previous_id), so a summary can
+ *   be repeated; advanced in one statement.
+ */
+const V5 = `
+ALTER TABLE messages ADD COLUMN flags INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE chats ADD COLUMN last_own_id INTEGER;
+ALTER TABLE chats ADD COLUMN read_through_id INTEGER;
+
+CREATE TABLE catchup_marks(
+  client TEXT NOT NULL,
+  through_id INTEGER NOT NULL,
+  previous_id INTEGER,
+  updated_at INTEGER NOT NULL,
+  PRIMARY KEY (client)
+) STRICT, WITHOUT ROWID;
+
+-- The account's own messages per chat, tombstones left out: last_own_id is
+-- walked back off it, and so are the own messages of a chat in a window (who
+-- answered, how the user writes, how much they talk to someone). The two
+-- constant columns make a count over it read the index alone. The triggers
+-- name it (INDEXED BY): without statistics the planner may walk messages_chat,
+-- every message of a chat the account never wrote in.
+CREATE INDEX messages_own ON messages(chat_id, id, from_me, deleted_at) WHERE from_me = 1 AND deleted_at IS NULL;
+-- Messages that mention the account, by id: a window's mentions without a scan.
+CREATE INDEX messages_mentions ON messages(id) WHERE (flags & 1) <> 0;
+-- Calls, and polls and events, by id: a window's calls or open polls without a scan.
+CREATE INDEX messages_calls ON messages(id) WHERE type = 'call';
+CREATE INDEX messages_polls ON messages(id) WHERE type IN ('poll', 'event');
+
+CREATE TRIGGER messages_last_own_insert AFTER INSERT ON messages
+WHEN new.from_me = 1 AND new.deleted_at IS NULL
+BEGIN
+  UPDATE chats SET last_own_id = new.id
+  WHERE (id = new.chat_id OR id = (SELECT merged_into FROM chats WHERE id = new.chat_id))
+    AND new.ts > coalesce(cleared_through_ts, 0)
+    AND (last_own_id IS NULL OR last_own_id < new.id);
+END;
+
+CREATE TRIGGER messages_last_own_tombstone AFTER UPDATE OF deleted_at ON messages
+WHEN old.deleted_at IS NULL AND new.deleted_at IS NOT NULL AND new.from_me = 1
+BEGIN
+  UPDATE chats SET last_own_id = (
+    SELECT max((
+      SELECT x.id FROM messages x INDEXED BY messages_own
+      WHERE x.chat_id = k.id AND x.from_me = 1 AND x.deleted_at IS NULL
+        AND x.id >= (coalesce(k.cleared_through_ts, 0) / 1000) * 1048576
+        AND x.ts > coalesce(k.cleared_through_ts, 0)
+      ORDER BY x.id DESC LIMIT 1))
+    FROM chats k WHERE k.id = chats.id OR k.merged_into = chats.id)
+  WHERE (id = new.chat_id OR id = (SELECT merged_into FROM chats WHERE id = new.chat_id)) AND last_own_id = new.id;
+END;
+
+CREATE TRIGGER messages_last_own_delete AFTER DELETE ON messages
+WHEN old.from_me = 1
+BEGIN
+  UPDATE chats SET last_own_id = (
+    SELECT max((
+      SELECT x.id FROM messages x INDEXED BY messages_own
+      WHERE x.chat_id = k.id AND x.from_me = 1 AND x.deleted_at IS NULL
+        AND x.id >= (coalesce(k.cleared_through_ts, 0) / 1000) * 1048576
+        AND x.ts > coalesce(k.cleared_through_ts, 0)
+      ORDER BY x.id DESC LIMIT 1))
+    FROM chats k WHERE k.id = chats.id OR k.merged_into = chats.id)
+  WHERE (id = old.chat_id OR id = (SELECT merged_into FROM chats WHERE id = old.chat_id)) AND last_own_id = old.id;
+END;
+
+CREATE TRIGGER messages_last_own_move AFTER UPDATE OF chat_id ON messages
+WHEN old.chat_id IS NOT new.chat_id AND new.from_me = 1
+BEGIN
+  UPDATE chats SET last_own_id = (
+    SELECT max((
+      SELECT x.id FROM messages x INDEXED BY messages_own
+      WHERE x.chat_id = k.id AND x.from_me = 1 AND x.deleted_at IS NULL
+        AND x.id >= (coalesce(k.cleared_through_ts, 0) / 1000) * 1048576
+        AND x.ts > coalesce(k.cleared_through_ts, 0)
+      ORDER BY x.id DESC LIMIT 1))
+    FROM chats k WHERE k.id = chats.id OR k.merged_into = chats.id)
+  WHERE (id = old.chat_id OR id = (SELECT merged_into FROM chats WHERE id = old.chat_id)) AND last_own_id = old.id;
+  UPDATE chats SET last_own_id = new.id
+  WHERE id = new.chat_id AND new.deleted_at IS NULL AND new.ts > coalesce(cleared_through_ts, 0)
+    AND (last_own_id IS NULL OR last_own_id < new.id);
+END;
+
+-- A raised barrier hides own messages too: the chat and the chat it folds into recount.
+CREATE TRIGGER chats_last_own_barrier AFTER UPDATE OF cleared_through_ts ON chats
+WHEN new.cleared_through_ts IS NOT old.cleared_through_ts
+BEGIN
+  UPDATE chats SET last_own_id = (
+    SELECT max((
+      SELECT x.id FROM messages x INDEXED BY messages_own
+      WHERE x.chat_id = k.id AND x.from_me = 1 AND x.deleted_at IS NULL
+        AND x.id >= (coalesce(k.cleared_through_ts, 0) / 1000) * 1048576
+        AND x.ts > coalesce(k.cleared_through_ts, 0)
+      ORDER BY x.id DESC LIMIT 1))
+    FROM chats k WHERE k.id = chats.id OR k.merged_into = chats.id)
+  WHERE id = new.id OR id = new.merged_into;
+END;
+
+-- A chat starting to fold into another reads as part of it at once: the
+-- target's newest own message and read mark take the folding chat's into account.
+CREATE TRIGGER chats_fold_marks AFTER UPDATE OF merged_into ON chats
+WHEN new.merged_into IS NOT old.merged_into
+BEGIN
+  UPDATE chats SET last_own_id = (
+    SELECT max((
+      SELECT x.id FROM messages x INDEXED BY messages_own
+      WHERE x.chat_id = k.id AND x.from_me = 1 AND x.deleted_at IS NULL
+        AND x.id >= (coalesce(k.cleared_through_ts, 0) / 1000) * 1048576
+        AND x.ts > coalesce(k.cleared_through_ts, 0)
+      ORDER BY x.id DESC LIMIT 1))
+    FROM chats k WHERE k.id = chats.id OR k.merged_into = chats.id)
+  WHERE id = new.merged_into OR id = old.merged_into;
+  UPDATE chats SET read_through_id = new.read_through_id
+  WHERE id = new.merged_into AND new.read_through_id IS NOT NULL
+    AND (read_through_id IS NULL OR read_through_id < new.read_through_id);
+END;
+
+-- What a file upgraded from an earlier version already holds.
+UPDATE chats SET last_own_id = (
+  SELECT max((
+    SELECT x.id FROM messages x INDEXED BY messages_own
+    WHERE x.chat_id = k.id AND x.from_me = 1 AND x.deleted_at IS NULL
+      AND x.id >= (coalesce(k.cleared_through_ts, 0) / 1000) * 1048576
+      AND x.ts > coalesce(k.cleared_through_ts, 0)
+    ORDER BY x.id DESC LIMIT 1))
+  FROM chats k WHERE k.id = chats.id OR k.merged_into = chats.id);
+
+-- A confirmed send's message, under the chat its jid names (or the number a
+-- lid pairs with), or a chat folding into or out of that one.
+WITH spelled(key_id, chat_id) AS (
+  SELECT s.key_id, c.id FROM sends s CROSS JOIN chats c
+  WHERE s.state <> 'draft' AND c.jid IN (s.chat_jid, (SELECT p.phone_jid FROM lid_phones p WHERE p.lid = s.chat_jid))
+),
+family(key_id, chat_id) AS (
+  SELECT key_id, chat_id FROM spelled
+  UNION SELECT sp.key_id, c.merged_into FROM spelled sp CROSS JOIN chats c WHERE c.id = sp.chat_id AND c.merged_into IS NOT NULL
+  UNION SELECT sp.key_id, c.id FROM spelled sp CROSS JOIN chats c WHERE c.merged_into = sp.chat_id
+)
+UPDATE messages SET flags = flags | 2 WHERE id IN (
+  SELECT m.id FROM family f CROSS JOIN messages m ON m.chat_id = f.chat_id AND m.from_me = 1 AND m.key_id = f.key_id
+);
+
+-- The mentions of what is already stored come from the protobuf: the service
+-- walks down from here, the newest first, as far as 14 days back.
+INSERT INTO meta(key, value) SELECT 'flags_backfill_before', CAST(max(id) + 1 AS TEXT) FROM messages HAVING count(*) > 0;
+`;
+// ---- end v5 ----------------------------------------------------------------
+
 /** Every migration, in order. The schema version a build knows is the last one's. */
 export const MIGRATIONS: readonly Migration[] = [
   { version: 1, sql: V1 },
   { version: 2, sql: V2 },
   { version: 3, sql: V3 },
   { version: 4, sql: V4 },
+  { version: 5, sql: V5 },
 ];
 
 export const SCHEMA_VERSION = MIGRATIONS[MIGRATIONS.length - 1]!.version;

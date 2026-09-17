@@ -26,6 +26,7 @@ import {
   type ChatRow,
   type MessageRow,
 } from "./rows.js";
+import { MESSAGE_FLAGS } from "./types.js";
 import type {
   BulkDeleteResult,
   ChatCursor,
@@ -54,6 +55,16 @@ import type {
 export type ScrubQuote = (raw: Uint8Array, quotedSid: string) => Uint8Array | null;
 
 const MAX_PAGE = 1_000;
+/** The meta row holding the descending id cursor of the flags backfill. */
+export const FLAGS_BACKFILL_META = "flags_backfill_before";
+/** How far back the flags backfill reaches: what catch_up and the draft context ever read. */
+export const FLAGS_BACKFILL_WINDOW_MS = 14 * 86_400_000;
+
+/**
+ * The flags one stored message's protobuf carries, for backfillFlags: the
+ * service decodes, the storage layer does not parse protobuf.
+ */
+export type FlagDetector = (message: { raw: Uint8Array; fromMe: boolean; type: string; chatJid: string }) => number;
 /** A message's public sid in SQL, over the canonical jid of the chat it reads as part of; needs `m`, `c` and `ck`. */
 const SID_EXPR = `(CASE WHEN m.from_me = 1 THEN 'true' ELSE 'false' END) || '_' || coalesce(ck.jid, c.jid) || '_' || m.key_id`;
 const NO_UPPER_BOUND = Number.MAX_SAFE_INTEGER;
@@ -75,12 +86,20 @@ export function statusRank(status: number): number {
   return status === 0 ? 1.5 : status;
 }
 const rank = (column: string): string => `(CASE WHEN ${column} = 0 THEN 1.5 ELSE ${column} END)`;
+/**
+ * The bits a write carries, and via_wazap whenever the account's own message
+ * is filed under a confirmed send's key, whoever stores it: the send itself,
+ * WhatsApp's echo, a history sync, after a restart or not.
+ */
+const FLAGS_EXPR = `(:flags | CASE WHEN :from_me = 1 AND EXISTS (SELECT 1 FROM sends WHERE key_id = :key_id AND state <> 'draft')
+  THEN ${MESSAGE_FLAGS.viaWazap} ELSE 0 END)`;
 const UPSERT_SQL = `
 INSERT INTO messages(id, chat_id, key_id, from_me, sender_id, ts, type, quoted_sid, quoted_from_me, quoted_key_id, status,
-  edited_at, expires_at, text, transcript, transcript_info, raw)
+  edited_at, expires_at, text, transcript, transcript_info, raw, flags)
 VALUES (:id, :chat_id, :key_id, :from_me, :sender_id, :ts, :type, :quoted_sid, :quoted_from_me, :quoted_key_id, :status,
-  :edited_at, :expires_at, :text, :transcript, :transcript_info, :raw)
+  :edited_at, :expires_at, :text, :transcript, :transcript_info, :raw, ${FLAGS_EXPR})
 ON CONFLICT(chat_id, from_me, key_id) DO UPDATE SET
+  flags = messages.flags | excluded.flags,
   type = CASE WHEN ${FRESH} THEN excluded.type ELSE messages.type END,
   text = CASE WHEN ${FRESH} THEN coalesce(excluded.text, messages.text) ELSE messages.text END,
   raw = CASE WHEN ${FRESH} THEN coalesce(excluded.raw, messages.raw) ELSE messages.raw END,
@@ -108,6 +127,11 @@ function quoteColumns(quotedSid: string | null): { quoted_sid: string | null; qu
     quoted_from_me: parsed === null || parsed.fromMe === null ? null : parsed.fromMe ? 1 : 0,
     quoted_key_id: parsed?.keyId ?? null,
   };
+}
+
+/** Flag bits as stored: a non-negative integer, anything else is none. */
+function flagBits(flags: number | undefined): number {
+  return typeof flags === "number" && Number.isSafeInteger(flags) && flags > 0 ? flags : 0;
 }
 
 function clampLimit(limit: number): number {
@@ -262,6 +286,7 @@ export class Messages {
       transcript: input.transcript ?? null,
       transcript_info: input.transcript ? transcriptInfoJson(input.transcriptInfo) : null,
       raw: this.scrubbedRaw(input.raw ?? null, input.quotedSid ?? null),
+      flags: flagBits(input.flags),
     });
     return { outcome: "inserted", id, sid };
   }
@@ -303,6 +328,7 @@ export class Messages {
       transcript: input.transcript ?? null,
       transcript_info: input.transcript ? transcriptInfoJson(input.transcriptInfo) : null,
       raw: this.scrubbedRaw(input.raw ?? null, input.quotedSid ?? null),
+      flags: flagBits(input.flags),
     });
     return { outcome: stale ? "stale" : "updated", id: existing.id, sid: existing.sid };
   }
@@ -482,6 +508,131 @@ export class Messages {
           statusRank(status)
         ) > 0
       );
+    });
+  }
+
+  /** Adds MESSAGE_FLAGS bits to a stored message that is not a tombstone; bits are never taken away. */
+  addFlags(sid: string, bits: number): boolean {
+    const add = flagBits(bits);
+    if (add === 0) return false;
+    return this.c.write(() => {
+      const key = this.identity.findMessage(sid);
+      if (key === null || key.deleted_at !== null) return false;
+      return this.c.run("UPDATE messages SET flags = flags | ? WHERE id = ? AND deleted_at IS NULL AND flags & ? <> ?", add, key.id, add, add) > 0;
+    });
+  }
+
+  /**
+   * Asks for the protobuf-derived flags of every stored message to be worked
+   * out again, newest first, by the next backfillFlags(): what an import that
+   * stored messages without them calls. Rows already flagged only gain bits.
+   */
+  requestFlagsBackfill(): void {
+    this.c.write(() => {
+      const top = this.c.get<{ id: number | null }>("SELECT max(id) AS id FROM messages")?.id ?? null;
+      if (top === null) return;
+      const current = this.c.get<{ value: string }>("SELECT value FROM meta WHERE key = ?", FLAGS_BACKFILL_META)?.value;
+      const before = Math.max(top + 1, current === undefined ? 0 : Number(current) || 0);
+      this.c.run("INSERT OR REPLACE INTO meta(key, value) VALUES (?, ?)", FLAGS_BACKFILL_META, String(before));
+    });
+  }
+
+  /** Whether flags are still owed to stored messages: the cursor a migration or an import left. */
+  flagsBackfillPending(): boolean {
+    return this.c.get("SELECT 1 FROM meta WHERE key = ?", FLAGS_BACKFILL_META) !== undefined;
+  }
+
+  /**
+   * Works out the flags the protobuf carries (mentions_me) for messages stored
+   * before this build set them: from the cursor in meta flags_backfill_before
+   * down, newest first, as far as `windowMs` back (14 days), in chunks that
+   * commit and yield like every large operation. The cursor moves with each
+   * chunk, so a stop or a crash resumes where it was; it is gone once the
+   * window is walked. `detect` returns the bits for one message (0 for none)
+   * and must not write; a detector that throws counts as none.
+   */
+  backfillFlags(detect: FlagDetector, options: { windowMs?: number } = {}): Promise<{ scanned: number; flagged: number; done: boolean }> {
+    this.c.assertWritable();
+    return this.c.bulk(async () => {
+      const result = { scanned: 0, flagged: 0, done: false };
+      const floor = idLowerBound(Math.max(1, this.c.now() - Math.max(0, options.windowMs ?? FLAGS_BACKFILL_WINDOW_MS)));
+      await this.c.chunked(() => {
+        const cursor = this.c.get<{ value: string }>("SELECT value FROM meta WHERE key = ?", FLAGS_BACKFILL_META)?.value;
+        const before = cursor === undefined ? NaN : Number(cursor);
+        if (!Number.isSafeInteger(before)) {
+          if (cursor !== undefined) this.c.run("DELETE FROM meta WHERE key = ?", FLAGS_BACKFILL_META);
+          result.done = true;
+          return false;
+        }
+        const rows = this.c.all<{ id: number; from_me: number; type: string; raw: Uint8Array; chat_jid: string }>(
+          `SELECT m.id, m.from_me, m.type, m.raw, coalesce(ck.jid, c.jid) AS chat_jid
+           FROM messages m CROSS JOIN chats c ON c.id = m.chat_id LEFT JOIN chats ck ON ck.id = c.merged_into
+           WHERE m.id < ? AND m.id >= ? AND m.deleted_at IS NULL AND m.raw IS NOT NULL
+           ORDER BY m.id DESC LIMIT ?`,
+          before,
+          floor,
+          this.c.chunkSize
+        );
+        const started = performance.now();
+        let last = before;
+        let done = 0;
+        for (const row of rows) {
+          let bits: number;
+          try {
+            bits = flagBits(detect({ raw: row.raw, fromMe: row.from_me === 1, type: row.type, chatJid: row.chat_jid }));
+          } catch {
+            bits = 0;
+          }
+          if (bits !== 0 && this.c.run("UPDATE messages SET flags = flags | ? WHERE id = ? AND flags & ? <> ?", bits, row.id, bits, bits) > 0) {
+            result.flagged++;
+          }
+          result.scanned++;
+          last = row.id;
+          done++;
+          if (performance.now() - started > this.c.chunkBudgetMs) break;
+        }
+        if (done === rows.length && rows.length < this.c.chunkSize) {
+          this.c.run("DELETE FROM meta WHERE key = ?", FLAGS_BACKFILL_META);
+          result.done = true;
+          return false;
+        }
+        this.c.run("INSERT OR REPLACE INTO meta(key, value) VALUES (?, ?)", FLAGS_BACKFILL_META, String(last));
+        return true;
+      });
+      return result;
+    });
+  }
+
+  /**
+   * The account's own devices (the phone) reported this message read: its
+   * chat's read mark moves up to it, and never back. Any spelling of the sid
+   * works, a bare `<chat>_<key>` too, since a receipt names a key and not
+   * always its direction; a message not stored (yet), or one of the account's
+   * own, moves nothing (`chatJid` null only for the first). The mark lands on
+   * the chat a reader sees, so a lid spelling marks the number's chat.
+   */
+  markReadSelf(sid: string): { moved: boolean; chatJid: string | null; readThroughId: number | null } {
+    return this.c.write(() => {
+      const parsed = parseSid(sid);
+      const chat = parsed === null ? null : this.identity.chat(parsed.chatJid);
+      if (parsed === null || chat === null) return { moved: false, chatJid: null, readThroughId: null };
+      // Only someone else's message is read; a receipt naming one of the account's own moves nothing.
+      const key = parsed.fromMe === true ? null : this.identity.findByKey(chat, false, parsed.keyId);
+      if (key === null) {
+        const own = parsed.fromMe === false ? null : this.identity.findByKey(chat, true, parsed.keyId);
+        return own === null
+          ? { moved: false, chatJid: null, readThroughId: null }
+          : { moved: false, chatJid: chat.jid, readThroughId: chat.readThroughId };
+      }
+      const moved =
+        this.c.run(
+          "UPDATE chats SET read_through_id = ? WHERE id = ? AND (read_through_id IS NULL OR read_through_id < ?)",
+          key.id,
+          key.chat.id,
+          key.id
+        ) > 0;
+      const through = this.c.get<{ read_through_id: number | null }>("SELECT read_through_id FROM chats WHERE id = ?", key.chat.id);
+      return { moved, chatJid: key.chat.jid, readThroughId: through?.read_through_id ?? null };
     });
   }
 

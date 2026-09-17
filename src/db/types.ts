@@ -56,6 +56,10 @@ export interface ChatRecord {
   lastTs: number | null;
   lastFromMe: boolean | null;
   proto: Uint8Array | null;
+  /** The newest message of the account's own a reader may see here (v5). */
+  lastOwnId: number | null;
+  /** The newest message the account's own devices reported read here; only moves forward (v5). */
+  readThroughId: number | null;
 }
 
 export interface ChatInput {
@@ -92,7 +96,21 @@ export interface MessageInput {
   editedAt?: number | null;
   /** Absolute deadline; it can only ever move earlier. */
   expiresAt?: number | null;
+  /**
+   * MESSAGE_FLAGS bits the message carries (mentions_me, via_wazap). A stored
+   * message only gains bits; via_wazap is also set by the database itself
+   * when the key is a confirmed send's.
+   */
+  flags?: number;
 }
+
+/** The bits of messages.flags (v5). */
+export const MESSAGE_FLAGS = Object.freeze({
+  /** An incoming message whose mentions name the account, by number or lid. */
+  mentionsMe: 1,
+  /** The account's own message, sent through wazap. */
+  viaWazap: 2,
+});
 
 export type UpsertOutcome =
   /** A new row. */
@@ -151,6 +169,8 @@ export interface StoredMessage {
   editedAt: number | null;
   expiresAt: number | null;
   deletedAt: number | null;
+  /** MESSAGE_FLAGS bits. */
+  flags: number;
 }
 
 export interface Page<T> {

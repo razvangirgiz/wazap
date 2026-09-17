@@ -371,7 +371,8 @@ export class Merger {
    * One message filed under both spellings. The number's row survives and
    * takes the other row under the upsert rules: a tombstone on either side
    * wins; otherwise the newer edit's content wins, the older row fills gaps,
-   * a transcript is never lost, status only rises, expiry only falls.
+   * a transcript is never lost, status only rises, expiry only falls, flags
+ * are the union of both.
    * Reactions, votes and receipts move with their own merge rules, derived
    * files move unless the survivor has its own of that kind, and the
    * embedding moves when it still describes the survivor's words. Only a file
@@ -382,10 +383,10 @@ export class Merger {
       id: number; type: string; quoted_sid: string | null; quoted_from_me: number | null; quoted_key_id: string | null;
       status: number | null; edited_at: number | null;
       expires_at: number | null; deleted_at: number | null; sender_id: number | null;
-      text: string | null; transcript: string | null; transcript_info: string | null; raw: Uint8Array | null;
+      text: string | null; transcript: string | null; transcript_info: string | null; raw: Uint8Array | null; flags: number;
     };
     const columns =
-      "id, type, quoted_sid, quoted_from_me, quoted_key_id, status, edited_at, expires_at, deleted_at, sender_id, text, transcript, transcript_info, raw";
+      "id, type, quoted_sid, quoted_from_me, quoted_key_id, status, edited_at, expires_at, deleted_at, sender_id, text, transcript, transcript_info, raw, flags";
     const keep = this.c.get<Twin>(`SELECT ${columns} FROM messages WHERE id = ?`, keepId)!;
     const drop = this.c.get<Twin>(`SELECT ${columns} FROM messages WHERE id = ?`, dropId)!;
 
@@ -400,7 +401,7 @@ export class Merger {
     const earliest = [keep.expires_at, drop.expires_at].filter((at): at is number => at !== null);
     this.c.run(
       `UPDATE messages SET type = ?, text = ?, raw = ?, quoted_sid = ?, quoted_from_me = ?, quoted_key_id = ?, edited_at = ?,
-         transcript = ?, transcript_info = ?, status = ?, expires_at = ?, sender_id = ? WHERE id = ?`,
+         transcript = ?, transcript_info = ?, status = ?, expires_at = ?, sender_id = ?, flags = ? WHERE id = ?`,
       winner.type,
       winner.text ?? other.text,
       winner.raw ?? other.raw,
@@ -417,6 +418,8 @@ export class Merger {
           : keep.status,
       earliest.length === 0 ? null : Math.min(...earliest),
       keep.sender_id ?? drop.sender_id,
+      // The bits either copy carried: a mention or a send seen under one spelling stays true of the message.
+      keep.flags | drop.flags,
       keepId
     );
 
