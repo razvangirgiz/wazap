@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.23.1
 ### Fixed
 
 - **`recall` again answers a short question padded with function words.** The
