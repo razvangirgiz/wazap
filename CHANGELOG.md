@@ -93,6 +93,11 @@ answers.
   offering the text for the user to send from their phone; a contact
   `find_contact` resolves there carries `can_draft: false` with the same words
   in `next`.
+- **An expired draft asks for a new yes.** `DRAFT_EXPIRED`'s `fix`, its line in
+  `learn` and `confirm_send`'s description say to draft again, show the new
+  preview and wait for a new yes: the yes given to the expired draft does not
+  carry over to the new one. `DRAFT_NOT_FOUND` says the same. The codes are
+  unchanged.
 - **`find_contact`: who "mama", "Ana de la contabilitate" or "Mișu" is.** A
   read tool, in every session. It matches saved, business and self-given names, the
   `nickname` and `relatie` details, tags, and a note that is only the

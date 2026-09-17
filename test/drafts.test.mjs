@@ -65,8 +65,14 @@ test("an expired draft is DRAFT_EXPIRED, not NOT_FOUND, and only for its owner",
   const draft = put(ANA, textPayload, "session-a");
   advance(1_001);
   assert.throws(() => store.claim(sends, draft.id, "session-b"), { code: "DRAFT_NOT_FOUND" });
-  assert.throws(() => store.claim(sends, draft.id, "session-a"), { code: "DRAFT_EXPIRED" });
-  assert.throws(() => store.claim(sends, draft.id, "session-a"), { code: "DRAFT_NOT_FOUND" });
+  assert.throws(
+    () => store.claim(sends, draft.id, "session-a"),
+    (err) => err.code === "DRAFT_EXPIRED" && /show the new preview and wait for a new yes: the yes given to the expired draft does not carry over/.test(err.fix)
+  );
+  assert.throws(
+    () => store.claim(sends, draft.id, "session-a"),
+    (err) => err.code === "DRAFT_NOT_FOUND" && /wait for a new yes/.test(err.fix)
+  );
 });
 
 test("put sweeps expired drafts and evicts the owner's oldest at the cap, never another owner's or a send", (t) => {

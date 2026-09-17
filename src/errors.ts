@@ -99,7 +99,7 @@ export const ERROR_GUIDE: Record<ErrorCode, string> = {
   TIMEOUT: "WhatsApp did not answer in time: retry once, then get_status.",
   SERVICE_ERROR: "wazap's background service failed on this machine, not WhatsApp: tell the user the fix.",
   DRAFT_NOT_FOUND: "No such draft in this session: draft again, show the preview, get a fresh yes.",
-  DRAFT_EXPIRED: "The draft expired after 15 minutes: draft again, show the preview, then confirm_send.",
+  DRAFT_EXPIRED: "The draft expired after 15 minutes: draft again, show the new preview and wait for a new yes; the old yes does not carry over.",
   CURSOR_EXPIRED: "The catch_up cursor expired: call catch_up without it; nothing was lost.",
   SEND_OUTCOME_UNKNOWN:
     "It may have been sent: check the chat with read_messages, and never confirm or draft it again without asking the user.",

@@ -153,6 +153,13 @@ test("send_message says it sends nothing, so it is called as soon as the recipie
   assert.match(confirm, /after the user said yes to its preview/);
 });
 
+test("an expired draft asks for a new yes wherever it is explained: confirm_send's description and the error guide", () => {
+  const server = fakeServer();
+  registerTools(server, asToolSource({}), { allowWrite: true });
+  assert.match(server.tools.get("confirm_send").meta.description, /Expired or missing draft: draft again, show the new preview, ask again\./);
+  assert.match(ERROR_GUIDE.DRAFT_EXPIRED, /wait for a new yes; the old yes does not carry over/);
+});
+
 test("a media draft surfaces FILE_NOT_FOUND from draft", async () => {
   const server = fakeServer();
   const wa = {

@@ -125,7 +125,9 @@ test("owned expired drafts still report DRAFT_EXPIRED; foreign ones reveal nothi
   now += 16 * 60_000;
   const args = { draft_id: draft.structuredContent.draft_id };
   assert.equal((await f.client()("confirm_send", args)).structuredContent.error, "DRAFT_NOT_FOUND");
-  assert.equal((await owner("confirm_send", args)).structuredContent.error, "DRAFT_EXPIRED");
+  const expired = (await owner("confirm_send", args)).structuredContent;
+  assert.equal(expired.error, "DRAFT_EXPIRED");
+  assert.match(expired.fix, /wait for a new yes: the yes given to the expired draft does not carry over/, "a redrafted message is not sent on the old yes");
 });
 
 test("tool-runtime keeps rated tool budgets across registrations", async () => {

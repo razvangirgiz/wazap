@@ -88,7 +88,7 @@ export function draftNotFound(id: string): WazapError {
   return new WazapError(
     "DRAFT_NOT_FOUND",
     `No draft ${id}.`,
-    "Call send_message again to draft, then confirm_send"
+    "Call send_message again, show the new preview and wait for a new yes, then confirm_send"
   );
 }
 
@@ -96,7 +96,7 @@ export function draftExpired(id: string): WazapError {
   return new WazapError(
     "DRAFT_EXPIRED",
     `Draft ${id} expired.`,
-    "Call send_message again to draft, show the new preview, then confirm_send"
+    "Call send_message again, show the new preview and wait for a new yes: the yes given to the expired draft does not carry over. Then confirm_send"
   );
 }
 
