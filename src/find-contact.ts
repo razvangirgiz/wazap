@@ -367,11 +367,13 @@ export interface FindContactArgs {
 /** Whether a resolved contact's account hands out draft context: a write session, an account that writes and has not turned it off. */
 function contextAllowed(ctx: ToolCtx, binding: Pick<AccountBinding, "id" | "wa">): boolean {
   if (!ctx.allowWrite) return false;
-  const record = ctx.hub.recordOnDisk(binding.id);
-  if (record === undefined || !record.enabled || record.writes === false || !draftContextEnabled(record)) return false;
   try {
+    // Read fresh, like the send rules: `wazap config draft-context off` applies to the next call.
+    const record = ctx.hub.recordOnDisk(binding.id);
+    if (record === undefined || !record.enabled || record.writes === false || !draftContextEnabled(record)) return false;
     return binding.wa.getStatus?.().read_only !== true;
   } catch {
+    // An unreadable policy hands out nothing it might have turned off.
     return false;
   }
 }
