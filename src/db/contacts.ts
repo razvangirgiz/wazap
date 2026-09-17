@@ -187,6 +187,8 @@ interface GroupRow {
   proto: Uint8Array | null;
   last_ts: number | null;
   last_from_me: number | null;
+  /** Whether the account left it, worked out the first time a match needs it. */
+  left?: boolean;
 }
 
 
@@ -399,9 +401,9 @@ export class Contacts {
 
     const now = this.c.now();
     const since90 = idLowerBound(Math.max(1, now - WINDOW_DAYS * DAY_MS));
-    const groupRows = kind === "person" && qualifier.length === 0 ? [] : this.groupRows();
+    const groupRows = this.groupRows();
     const people = kind === "group" ? [] : this.people();
-    const qualifierGroups = qualifier.length === 0 ? [] : groupRows.filter((group) => qualifierIn(qualifier, nameWords(group.name)));
+    const qualifierGroups = qualifier.length === 0 ? [] : groupRows.filter((group) => qualifierIn(qualifier, nameWords(group.name)) && this.stillIn(group));
 
     const scored: Scored[] = [];
     if (kind !== "group") scored.push(...this.matchPeople(people, query, relation, false));
@@ -520,22 +522,28 @@ export class Contacts {
     };
   }
 
-  /** Every group chat with a name that is not folding into another, left groups excluded. */
+  /** Every group chat with a name that is not folding into another; stillIn tells the ones the account left. */
   private groupRows(): GroupRow[] {
-    return this.c
-      .all<GroupRow>(
-        `SELECT id, jid, name, proto, last_ts, last_from_me FROM chats
-         WHERE kind = 'group' AND merged_into IS NULL AND name IS NOT NULL`
-      )
-      .filter((row) => !(row.proto !== null && this.leftGroup !== null && this.isLeft(row.proto)));
+    return this.c.all<GroupRow>(
+      `SELECT id, jid, name, proto, last_ts, last_from_me FROM chats
+       WHERE kind = 'group' AND merged_into IS NULL AND name IS NOT NULL`
+    );
   }
 
-  private isLeft(proto: Uint8Array): boolean {
-    try {
-      return this.leftGroup!(proto);
-    } catch {
-      return false;
+  /** Whether the account is still in a group: its protobuf is read only for a group a match needs. */
+  private stillIn(group: GroupRow): boolean {
+    if (group.left === undefined) {
+      let left = false;
+      if (group.proto !== null && this.leftGroup !== null) {
+        try {
+          left = this.leftGroup(group.proto);
+        } catch {
+          left = false;
+        }
+      }
+      group.left = left;
     }
+    return !group.left;
   }
 
   private matchGroups(groups: readonly GroupRow[], query: readonly QueryWord[], near: boolean): Scored[] {
@@ -543,7 +551,7 @@ export class Contacts {
     for (const row of groups) {
       const words = nameWords(row.name);
       const match: Match | null = near ? (nearWords(query, words) ? { class: "fuzzy", inflected: false } : null) : matchWords(query, words);
-      if (match === null) continue;
+      if (match === null || !this.stillIn(row)) continue;
       const score = matchScore(match, "group_name");
       out.push({
         person: null,
@@ -699,13 +707,13 @@ export class Contacts {
       JSON.stringify(entry.familyContacts),
       GROUP_SCAN_MESSAGES
     );
-    const groups = new Map((groupRows.length > 0 ? groupRows : this.groupRows()).map((group) => [group.id, group]));
+    const groups = new Map(groupRows.map((group) => [group.id, group]));
     const names: string[] = [];
     const seen = new Set<number>();
     for (const row of rows) {
       const id = row.merged_into ?? row.chat_id;
       const group = groups.get(id);
-      if (group === undefined || seen.has(id)) continue;
+      if (group === undefined || seen.has(id) || !this.stillIn(group)) continue;
       seen.add(id);
       names.push(group.name);
     }
