@@ -457,9 +457,10 @@ its words are searchable, recalled and carried by the webhook event.
 
 Audio *files* are left alone, since one can be an hour long, and so are notes
 you recorded and notes WhatsApp gave no length for; call
-`transcribe_audio(message_id)` for those. With the provider switched off, a
-queue already stored is kept and waits, and it continues under the provider
-configured next, within the day and the local-stays-local rule.
+`transcribe_audio(message_id)` for those. `WAZAP_TRANSCRIBE_AUTO=0` keeps the
+tool and stops the background work; with it, or with the provider switched
+off, a queue already stored is kept and waits, and it continues under the
+provider configured next, within the day and the local-stays-local rule.
 `get_status` shows the queue under `transcription` (how many wait, how long
 the current run has taken, how many were given up on, the latest reason, a
 pause and until when, never content), and `wazap status` prints a
