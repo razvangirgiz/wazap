@@ -105,6 +105,10 @@ answers.
   on the newest page of that chat lists it in `unconfirmed_sends`
   (`draft_id`, `text`, `handed_at`, `state: "unknown"`) with a note, until
   WhatsApp echoes it and it reads as the user's own message.
+- **Older history the phone did not send is not "no messages".** When
+  `read_messages` with `before` runs past what wazap holds and asks the phone,
+  its answer carries `older: { asked_phone: true, received }`; with nothing
+  received, a note says older history may still exist on the phone.
 - **`find_contact`: who "mama", "Ana de la contabilitate" or "Mișu" is.** A
   read tool, in every session. It matches saved, business and self-given names, the
   `nickname` and `relatie` details, tags, and a note that is only the

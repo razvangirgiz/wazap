@@ -674,6 +674,11 @@ export interface UnconfirmedSend {
 export interface ChatRead extends Synced<MessageView[]> {
   /** On the newest page of the chat: sends whose outcome is unknown, oldest first. */
   unconfirmedSends?: UnconfirmedSend[];
+  /**
+   * Set when the page ran past what is held and the phone was asked for older
+   * messages: how many came back for it. None is not the start of the chat.
+   */
+  older?: { askedPhone: true; received: number };
 }
 
 /** A keyword search's messages, and where the storage scan limit stopped it when it did. */

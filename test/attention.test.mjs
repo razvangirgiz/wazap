@@ -9,7 +9,7 @@ import { z } from "zod";
 
 import { WhatsAppService } from "../dist/whatsapp.js";
 import { registerTools } from "../dist/tools.js";
-import { asToolSource, connectedService } from "./helpers.mjs";
+import { asToolSource, connectedService, schemaCheckedTools } from "./helpers.mjs";
 
 const ME = "40700000001@s.whatsapp.net";
 const ANA = "40700000002@s.whatsapp.net";
@@ -58,6 +58,42 @@ function setup() {
 }
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+test("read_messages past the oldest held message asks the phone, and an answer with nothing says so instead of reading as the chat's start", async () => {
+  const { svc, sock, arrive } = setup();
+  const { call } = schemaCheckedTools(svc, { allowWrite: false });
+  const at = Date.now() - 3_600_000;
+  arrive(ANA, "a doua zi", { at });
+  arrive(ANA, "a treia zi", { at: at + 60_000 });
+  const asked = [];
+  // The phone answers each ask with a history batch: first with nothing for this chat, then with one older message.
+  let batch = [];
+  sock.fetchMessageHistory = async (count, key) => {
+    asked.push(key.id);
+    setImmediate(() => sock.ev.emit("messaging-history.set", { chats: [], contacts: [], messages: batch, isLatest: false }));
+    return `history-${asked.length}`;
+  };
+
+  const newest = (await call("read_messages", { chat_id: ANA, limit: 5 })).structuredContent;
+  assert.equal(newest.older, undefined, "a page the store holds asks nobody");
+  const oldest = newest.messages[0].message_id;
+  const held = (await call("read_messages", { chat_id: ANA, limit: 5, before: newest.messages[1].message_id })).structuredContent;
+  assert.deepEqual([held.count, held.older, asked.length], [1, undefined, 0]);
+
+  const none = (await call("read_messages", { chat_id: ANA, limit: 5, before: oldest })).structuredContent;
+  assert.equal(asked.length, 1, "past the oldest held message, the phone is asked");
+  assert.equal(none.count, 0);
+  assert.deepEqual(none.older, { asked_phone: true, received: 0 });
+  assert.match((none.notes ?? []).join(" "), /The phone was asked for older messages and sent none: older history may still exist there\. Say so; do not say there are none\./);
+
+  batch = [{ key: { remoteJid: ANA, fromMe: false, id: "OLD1" }, message: { conversation: "prima zi" }, messageTimestamp: Math.floor((at - 86_400_000) / 1000) }];
+  const found = (await call("read_messages", { chat_id: ANA, limit: 5, before: oldest })).structuredContent;
+  assert.equal(asked.length, 2);
+  assert.deepEqual(found.messages.map((m) => m.text), ["prima zi"]);
+  assert.deepEqual(found.older, { asked_phone: true, received: 1 });
+  assert.equal(found.notes, undefined, "what came back needs no caveat");
+  await svc.stop();
+});
 
 test("wait_for_messages returns the message that lands while it waits, and nothing of the user's own", async () => {
   const { call, arrive } = setup();

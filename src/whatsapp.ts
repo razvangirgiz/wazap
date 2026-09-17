@@ -1451,11 +1451,11 @@ export class WhatsAppService implements WhatsAppApi {
       const anchor = this.storedOrThrow(before);
       const inChat = this.db.identity.chat(jid)?.jid === anchor.chatJid;
       let older = inChat ? this.pageOf(jid, limit, anchor.id, types) : [];
-      if (older.length === 0) {
-        await this.fetchOlder(sock, anchor, limit);
-        older = inChat ? this.pageOf(jid, limit, anchor.id, types) : [];
-      }
-      return this.synced(this.viewsOfStored(older));
+      if (older.length > 0) return this.synced(this.viewsOfStored(older));
+      await this.fetchOlder(sock, anchor, limit);
+      older = inChat ? this.pageOf(jid, limit, anchor.id, types) : [];
+      // The phone may hold more than it sent in time: an empty answer says it was asked, never that the chat starts here.
+      return { ...this.synced(this.viewsOfStored(older)), older: { askedPhone: true, received: older.length } };
     });
   }
 

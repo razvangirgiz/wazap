@@ -107,6 +107,10 @@ const READ_OUTPUT = {
     .array(z.object({ draft_id: z.string(), text: z.string(), handed_at: z.string(), state: z.literal("unknown") }))
     .optional()
     .describe("Sends WhatsApp has not echoed yet: outcome unknown, not failed"),
+  older: z
+    .object({ asked_phone: z.literal(true), received: z.number() })
+    .optional()
+    .describe("before ran past the local history: the phone was asked, and sent this many"),
   notes: NOTES,
   sync: z.string(),
   account_id: z.string(),
@@ -551,6 +555,7 @@ const TOOLS: readonly ToolDef[] = [
       const result = await wa.readMessages(chat_id, limit, before, types);
       const previews = include_previews ? await wa.previews(newestFirst(result.data), MAX_PREVIEWS) : [];
       const unconfirmed = result.unconfirmedSends ?? [];
+      const noOlder = result.older?.received === 0 ? OLDER_NONE_NOTE : null;
       return ok(
         renderMessages(
           `Messages in ${chat_id}`,
@@ -558,6 +563,7 @@ const TOOLS: readonly ToolDef[] = [
           previewLabels(previews),
           [
             ...unconfirmed.map((send) => `${unconfirmedNote(send)} Its words: ${JSON.stringify(truncate(send.text, 160))}.`),
+            noOlder,
             previewNote(result.data, previews, include_previews),
           ]
             .filter(Boolean)
@@ -570,7 +576,8 @@ const TOOLS: readonly ToolDef[] = [
           preview_count: previews.length,
           messages: result.data,
           ...(unconfirmed.length === 0 ? {} : { unconfirmed_sends: unconfirmed }),
-          ...notesField([...unconfirmed.map(unconfirmedNote), previewGap(result.data, previews, include_previews)]),
+          ...(result.older === undefined ? {} : { older: { asked_phone: true, received: result.older.received } }),
+          ...notesField([...unconfirmed.map(unconfirmedNote), noOlder, previewGap(result.data, previews, include_previews)]),
         }),
         previewBlocks(previews)
       );
@@ -1224,6 +1231,9 @@ function previewNote(messages: MessageView[], previews: Preview[], asked: boolea
   ].filter((part): part is string => part !== null);
   return parts.length > 0 ? `${parts.join("; ")}.` : null;
 }
+
+/** A page past the local history that the phone, asked for it, sent nothing for. */
+const OLDER_NONE_NOTE = "The phone was asked for older messages and sent none: older history may still exist there. Say so; do not say there are none.";
 
 /** A send handed to WhatsApp that has not echoed: unknown, which a read that does not show it yet cannot turn into failed. */
 function unconfirmedNote(send: UnconfirmedSend): string {
