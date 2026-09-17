@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.23.0
 ### Changed
 
 - **`confirm_send` sends a draft at most once.** Drafts live in the account
