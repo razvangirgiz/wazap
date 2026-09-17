@@ -27,7 +27,8 @@
   (a missed call stored when it stops ringing, a retried decryption, a clock
   ahead) is in the next catch-up instead of under the mark.
 - **`#no-catchup`**: a person tagged with it through `update_contact_details`
-  stays out of every catch-up, counted in its footer.
+  stays out of every catch-up: their chat is left out and counted in the
+  footer, and nothing they send in a group or post as a story shows.
 - **`#private` in a catch-up**: a person tagged with it is counted and never
   quoted — their asks, what followed, their messages, their mentions and polls
   in groups, a group's quote — and their entries say `private`; their unheard

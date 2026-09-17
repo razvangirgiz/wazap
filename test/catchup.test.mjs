@@ -674,6 +674,41 @@ test("nothing someone else wrote can forge a line: names, notes and titles are f
   assert.equal(result.structuredContent.direct[0].note, "coleg ## Groups (4)");
 });
 
+test("a person tagged #no-catchup stays out of every catch-up, groups included: no ask, mention, poll, quote, top sender, call or story of theirs", async () => {
+  const { svc, sock, arrive, mention, callLog } = account();
+  const { call } = toolsOf(svc);
+  sock.ev.emit("chats.upsert", [{ id: GROUP, name: "Echipa proiect" }]);
+  const mine = arrive(GROUP, "am trimis raportul", { fromMe: true, at: Date.now() - 6 * HOUR });
+  arrive(GROUP, mention("@Răzvan poți verifica raportul de azi până la 5?"), { participant: BOT, at: Date.now() - 5 * HOUR });
+  arrive(
+    GROUP,
+    { extendedTextMessage: { text: "am primit, mulțumesc", contextInfo: { stanzaId: mine.split("_").pop(), participant: ME, quotedMessage: { conversation: "am trimis raportul" } } } },
+    { participant: BOT, at: Date.now() - 4 * HOUR }
+  );
+  arrive(
+    GROUP,
+    { pollCreationMessageV3: { name: "Rulăm sarcina de noapte?", options: [{ optionName: "Da" }, { optionName: "Nu" }], selectableOptionsCount: 1 } },
+    { participant: BOT, at: Date.now() - 3 * HOUR }
+  );
+  arrive(GROUP, "Raport automat: 3 sarcini gata, 2 în lucru, niciun eșec în ultima oră", { participant: BOT, at: Date.now() - 2 * HOUR });
+  arrive(GROUP, "ok", { participant: DAN, at: Date.now() - 2 * HOUR + 1000 });
+  callLog(GROUP, CALL.MISSED, { participant: BOT, at: Date.now() - HOUR });
+  arrive(STATUS, { extendedTextMessage: { text: "status bot" } }, { participant: BOT, at: Date.now() - HOUR });
+  arrive(STATUS, { extendedTextMessage: { text: "la mare" } }, { participant: ANA, at: Date.now() - HOUR });
+  await call("update_contact_details", { contact_id: BOT, add_tags: ["#no-catchup"] });
+
+  const result = await call("catch_up", { hours: 24, budget_tokens: 8000 });
+  const structured = result.structuredContent;
+  assert.deepEqual([structured.waiting, structured.addressed, structured.missed_calls], [[], [], []]);
+  assert.deepEqual(
+    structured.groups.map((entry) => [entry.name, entry.n, entry.top, entry.hot]),
+    [["Echipa proiect", 1, ["Dan"], undefined]]
+  );
+  assert.deepEqual(structured.stories, [{ n: 1, authors: ["Ana"] }]);
+  const all = `${text(result)}\n${JSON.stringify(structured)}`;
+  for (const words of ["Hermi", BOT.split("@")[0], "raportul de azi", "Rulăm", "Raport automat"]) assert.ok(!all.includes(words), words);
+});
+
 test("stories: how many, and up to five authors, the most recent first", async () => {
   const { svc, arrive } = account();
   const { call } = toolsOf(svc);

@@ -407,6 +407,41 @@ function emptySkips(): CatchupScan["skipped"] {
   };
 }
 
+// ---------------------------------------------------------------- tags
+
+/**
+ * #private and #no-catchup as a catch-up reads them — the one place that does,
+ * so find_contact's shared predicate (isPrivateSender) can take it over:
+ * - #no-catchup keeps a person out of every catch-up: their chat is left out
+ *   and counted, and nothing they send anywhere else — an ask, a mention, a
+ *   poll, a quote, a group call, a story — is read at all (`excludedSenders`
+ *   goes into every span);
+ * - #private keeps a person in, counted, but never quoted: their chat, and
+ *   what they send in a group.
+ * A tag is filed on a contact (a group keeps notes on its own row too).
+ */
+interface CatchupTags {
+  privateChat(chat: ChatRecord): boolean;
+  privateSender(senderId: number | null): boolean;
+  privateSenders: ReadonlySet<number>;
+  excludedChat(chat: ChatRecord): boolean;
+  excludedSenders: ReadonlySet<number>;
+}
+
+function catchupTags(db: AccountDb): CatchupTags {
+  const privacy = db.digest.tagged(PRIVATE_TAG);
+  const excluded = db.digest.tagged(NO_CATCHUP_TAG);
+  const tagged = (tag: { contactIds: ReadonlySet<number>; jids: ReadonlySet<string> }, chat: ChatRecord): boolean =>
+    (chat.contactId !== null && tag.contactIds.has(chat.contactId)) || tag.jids.has(chat.jid);
+  return {
+    privateChat: (chat) => tagged(privacy, chat),
+    privateSender: (senderId) => senderId !== null && privacy.contactIds.has(senderId),
+    privateSenders: privacy.contactIds,
+    excludedChat: (chat) => tagged(excluded, chat),
+    excludedSenders: excluded.contactIds,
+  };
+}
+
 // ---------------------------------------------------------------- scan
 
 /**
@@ -419,23 +454,21 @@ export async function scanCatchup(db: AccountDb, host: CatchupHost, request: Cat
   const window = resolveWindow(db, request.client, request.window, request.at ?? host.now());
   const now = window.at;
   const { sinceId, untilId, afterSeq, untilSeq } = window;
-  /** The window from `afterId` up, the client's mark included. */
-  const windowSpan = (afterId: number): DigestSpan => ({ afterId, untilId, afterSeq, untilSeq });
+  const tags = catchupTags(db);
+  const { privateChat, privateSender } = tags;
+  const excludeSenders = tags.excludedSenders;
+  /** The window from `afterId` up, the client's mark included; nothing from anyone #no-catchup. */
+  const windowSpan = (afterId: number): DigestSpan => ({ afterId, untilId, afterSeq, untilSeq, excludeSenders });
   /** From `afterId` up to the window's tops, whatever the mark: what an ask reads back over two weeks. */
-  const openSpan = (afterId: number): DigestSpan => ({ afterId, untilId, afterSeq: -1, untilSeq });
+  const openSpan = (afterId: number): DigestSpan => ({ afterId, untilId, afterSeq: -1, untilSeq, excludeSenders });
+  /** A chat tagged #no-catchup is counted, so its own reads keep what its person sent. */
+  const counting = (span: DigestSpan): DigestSpan => ({ ...span, excludeSenders: undefined });
   const inWindow = (message: { id: number; storedSeq: number }): boolean => message.id > sinceId && message.storedSeq > afterSeq;
   const digest = db.digest;
   const own = host.ownJid();
   const families = digest.families();
   const familyOf = (chat: ChatRecord): number[] => families.get(chat.id) ?? [chat.id];
-  const excluded = digest.tagged(NO_CATCHUP_TAG);
-  // #private: a local reading of the tag until find_contact's predicate is shared.
-  const privacy = digest.tagged(PRIVATE_TAG);
-  const privateChat = (chat: ChatRecord): boolean =>
-    (chat.contactId !== null && privacy.contactIds.has(chat.contactId)) || privacy.jids.has(chat.jid);
-  const privateSender = (senderId: number | null): boolean => senderId !== null && privacy.contactIds.has(senderId);
-  const isExcluded = (chat: ChatRecord): boolean =>
-    (chat.contactId !== null && excluded.contactIds.has(chat.contactId)) || excluded.jids.has(chat.jid);
+  const isExcluded = tags.excludedChat;
   const muted = (chat: ChatRecord): boolean => chat.archived || (chat.mutedUntil !== null && chat.mutedUntil > now);
   const ownThroughs = new Map<number, number | null>();
   const ownThrough = (chat: ChatRecord): number | null => {
@@ -502,7 +535,7 @@ export async function scanCatchup(db: AccountDb, host: CatchupHost, request: Cat
       if (chat.lastFromMe === true && chat.lastMessageId !== null && chat.lastMessageId <= untilId) continue;
       const family = familyOf(chat);
       const after = Math.max(horizonId, ownThrough(chat) ?? 0);
-      const tail = digest.inboundTail(family, openSpan(after), now, ASK_SCAN);
+      const tail = digest.inboundTail(family, isExcluded(chat) ? counting(openSpan(after)) : openSpan(after), now, ASK_SCAN);
       if (tail.length === 0) continue;
       const group = chat.kind === "group";
       const ask = tail.find(
@@ -591,7 +624,7 @@ export async function scanCatchup(db: AccountDb, host: CatchupHost, request: Cat
     const family = familyOf(chat);
     const floor = floorOf(chat, low);
     if (floor >= untilId) continue;
-    const aggregate: InboundAggregate = digest.inbound(family, windowSpan(floor), now);
+    const aggregate: InboundAggregate = digest.inbound(family, isExcluded(chat) ? counting(windowSpan(floor)) : windowSpan(floor), now);
     if (aggregate.count === 0) continue;
     if (chat.kind === "newsletter" || chat.kind === "broadcast") {
       const bucket = chat.kind === "newsletter" ? skipped.newsletters : skipped.broadcasts;
@@ -706,7 +739,7 @@ export async function scanCatchup(db: AccountDb, host: CatchupHost, request: Cat
     if (privateChat(group.chatRecord)) continue;
     const family = familyOf(group.chatRecord);
     group.hotId =
-      digest.mostReacted(family, windowSpan(group.floor), now, { excludeSenders: privacy.contactIds }) ??
+      digest.mostReacted(family, windowSpan(group.floor), now, { excludeSenders: tags.privateSenders }) ??
       digest
         .inboundTail(family, windowSpan(group.floor), now, 10, 400)
         .find((message) => quotable(message) && message.text.length >= 20 && !privateSender(message.senderId))?.id ??

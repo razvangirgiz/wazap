@@ -303,8 +303,9 @@ groups, fetched within a second — and fits its answer into `budget_tokens`
 6. **Stories**: how many, and from whom.
 
 A footer names the voice notes nobody transcribed (for `transcribe_audio`) —
-only counting those of someone tagged `#private` — and counts what was left out: chats tagged `#no-catchup`, groups the user left,
-channels and broadcast lists. Signals — an amount, a date, a time, an address,
+only counting those of someone tagged `#private` — and counts what was left
+out: chats tagged `#no-catchup`, groups the user left, channels and broadcast
+lists. Signals — an amount, a date, a time, an address,
 a link, a question — are marked on the entries shown, and an ask carrying a sum
 or a date moves up. A chat's messages count as missed only after the user's
 own last message there and after what their phone already read.
@@ -343,7 +344,9 @@ keeps its mark.
 
 **Leaving a chat out.** Tag a person `#no-catchup` with
 `update_contact_details` (an agent, a bot, a busy notification number) and
-catch-ups skip their chat, counting it in the footer. Tag them `#private`
+catch-ups skip their chat, counting it in the footer, and nothing they send
+elsewhere shows either: no ask, mention, poll or quote of theirs in a group, no
+group call, no story. Tag them `#private`
 instead and they stay in, counted, but nothing they wrote is quoted — not the
 ask, not a mention or a poll of theirs in a group, not a group's quote — and
 their entries say `private`.

@@ -34,18 +34,27 @@ const INBOUND = `m.from_me = 0 AND m.deleted_at IS NULL AND (m.expires_at IS NUL
 /**
  * Messages with an id in (afterId, untilId] that reached the account in
  * (afterSeq, untilSeq]; afterSeq -1 bounds nothing below. A message stored
- * before v5 has no stored_seq and reads as 0: before every mark.
+ * before v5 has no stored_seq and reads as 0: before every mark. Nothing sent
+ * by a contact in `excludeSenders` is read at all.
  */
 export interface DigestSpan {
   afterId: number;
   untilId: number;
   afterSeq: number;
   untilSeq: number;
+  excludeSenders?: ReadonlySet<number>;
 }
 
-/** A span over `m`: four parameters, in spanParams' order. */
-const SPAN = "m.id > ? AND m.id <= ? AND coalesce(m.stored_seq, 0) > ? AND coalesce(m.stored_seq, 0) <= ?";
-const spanParams = (span: DigestSpan): number[] => [span.afterId, span.untilId, span.afterSeq, span.untilSeq];
+/** A span over `m`, as SQL and its parameters. */
+function spanOf(span: DigestSpan): { sql: string; params: Array<number | string> } {
+  const bounds = "m.id > ? AND m.id <= ? AND coalesce(m.stored_seq, 0) > ? AND coalesce(m.stored_seq, 0) <= ?";
+  const params: Array<number | string> = [span.afterId, span.untilId, span.afterSeq, span.untilSeq];
+  if (span.excludeSenders === undefined || span.excludeSenders.size === 0) return { sql: bounds, params };
+  return {
+    sql: `${bounds} AND (m.sender_id IS NULL OR m.sender_id NOT IN (SELECT value FROM json_each(?)))`,
+    params: [...params, JSON.stringify([...span.excludeSenders])],
+  };
+}
 
 /** Media kinds a digest counts by type. */
 export const DIGEST_MEDIA = ["image", "video", "voice", "audio", "document", "sticker", "location", "contact"] as const;
@@ -217,6 +226,7 @@ export class Digest {
 
   /** What someone else sent in the chat in the span, in one pass over its (chat_id, id) index. */
   inbound(family: readonly number[], span: DigestSpan, now: number): InboundAggregate {
+    const inSpan = spanOf(span);
     const inChat = familyCondition(family);
     const row = this.c.get<Record<string, number | null>>(
       `SELECT sum(m.type <> 'call') AS count, count(DISTINCT CASE WHEN m.type <> 'call' THEN m.sender_id END) AS senders,
@@ -227,9 +237,9 @@ export class Digest {
          sum(m.quoted_from_me = 1) AS replies, max(CASE WHEN m.quoted_from_me = 1 THEN m.id END) AS last_reply,
          sum(m.type = 'voice' AND m.transcript IS NULL) AS voice_untranscribed
        FROM messages m CROSS JOIN chats c ON c.id = m.chat_id
-       WHERE ${inChat.sql} AND ${SPAN} AND ${INBOUND}`,
+       WHERE ${inChat.sql} AND ${inSpan.sql} AND ${INBOUND}`,
       ...inChat.params,
-      ...spanParams(span),
+      ...inSpan.params,
       now
     )!;
     const media: Partial<Record<DigestMedia, number>> = {};
@@ -254,13 +264,14 @@ export class Digest {
 
   /** How many inbound messages the chat holds in the span, counting at most `cap`. */
   inboundCount(family: readonly number[], span: DigestSpan, now: number, cap: number): number {
+    const inSpan = spanOf(span);
     const inChat = familyCondition(family);
     return (
       this.c.get<{ n: number }>(
         `SELECT count(*) AS n FROM (SELECT 1 FROM messages m CROSS JOIN chats c ON c.id = m.chat_id
-           WHERE ${inChat.sql} AND ${SPAN} AND ${INBOUND} AND m.type <> 'call' LIMIT ?)`,
+           WHERE ${inChat.sql} AND ${inSpan.sql} AND ${INBOUND} AND m.type <> 'call' LIMIT ?)`,
         ...inChat.params,
-        ...spanParams(span),
+        ...inSpan.params,
         now,
         cap
       )?.n ?? 0
@@ -273,6 +284,7 @@ export class Digest {
    * `maxChars`, and a voice note's transcript rides along.
    */
   inboundTail(family: readonly number[], span: DigestSpan, now: number, limit: number, maxChars = 2000): TailMessage[] {
+    const inSpan = spanOf(span);
     const inChat = familyCondition(family);
     return this.c
       .all<{
@@ -290,12 +302,12 @@ export class Digest {
         `SELECT m.id, coalesce(m.stored_seq, 0) AS stored_seq, m.key_id, m.ts, m.type, m.flags, m.quoted_from_me, m.sender_id,
            substr(m.text, 1, ?) AS text, substr(m.transcript, 1, ?) AS transcript
          FROM messages m CROSS JOIN chats c ON c.id = m.chat_id
-         WHERE ${inChat.sql} AND ${SPAN} AND ${INBOUND} AND m.type <> 'call'
+         WHERE ${inChat.sql} AND ${inSpan.sql} AND ${INBOUND} AND m.type <> 'call'
          ORDER BY m.id DESC LIMIT ?`,
         maxChars,
         maxChars,
         ...inChat.params,
-        ...spanParams(span),
+        ...inSpan.params,
         now,
         limit
       )
@@ -315,14 +327,15 @@ export class Digest {
 
   /** Who wrote most in the chat in the span, at most `limit`, the most recent first among equals. */
   topSenders(family: readonly number[], span: DigestSpan, now: number, limit = 3): Array<{ senderId: number; count: number }> {
+    const inSpan = spanOf(span);
     const inChat = familyCondition(family);
     return this.c
       .all<{ sender_id: number; n: number }>(
         `SELECT m.sender_id, count(*) AS n FROM messages m CROSS JOIN chats c ON c.id = m.chat_id
-         WHERE ${inChat.sql} AND ${SPAN} AND ${INBOUND} AND m.type <> 'call' AND m.sender_id IS NOT NULL
+         WHERE ${inChat.sql} AND ${inSpan.sql} AND ${INBOUND} AND m.type <> 'call' AND m.sender_id IS NOT NULL
          GROUP BY m.sender_id ORDER BY n DESC, max(m.id) DESC LIMIT ?`,
         ...inChat.params,
-        ...spanParams(span),
+        ...inSpan.params,
         now,
         limit
       )
@@ -337,14 +350,15 @@ export class Digest {
     options: { min?: number; excludeSenders?: ReadonlySet<number> } = {}
   ): number | null {
     const inChat = familyCondition(family);
+    const inSpan = spanOf(span);
     return (
       this.c.get<{ id: number }>(
         `SELECT m.id FROM messages m CROSS JOIN chats c ON c.id = m.chat_id CROSS JOIN reactions r ON r.message_id = m.id
-         WHERE ${inChat.sql} AND ${SPAN} AND ${INBOUND}
+         WHERE ${inChat.sql} AND ${inSpan.sql} AND ${INBOUND}
            AND (m.sender_id IS NULL OR m.sender_id NOT IN (SELECT value FROM json_each(?)))
          GROUP BY m.id HAVING count(*) >= ? ORDER BY count(*) DESC, m.id DESC LIMIT 1`,
         ...inChat.params,
-        ...spanParams(span),
+        ...inSpan.params,
         now,
         JSON.stringify([...(options.excludeSenders ?? [])]),
         options.min ?? 2
@@ -354,14 +368,15 @@ export class Digest {
 
   /** Voice notes someone sent in the span that have no transcript, newest first. */
   untranscribedVoice(family: readonly number[], span: DigestSpan, now: number, limit: number): Array<{ id: number; keyId: string }> {
+    const inSpan = spanOf(span);
     const inChat = familyCondition(family);
     return this.c
       .all<{ id: number; key_id: string }>(
         `SELECT m.id, m.key_id FROM messages m CROSS JOIN chats c ON c.id = m.chat_id
-         WHERE ${inChat.sql} AND ${SPAN} AND ${INBOUND} AND m.type = 'voice' AND m.transcript IS NULL
+         WHERE ${inChat.sql} AND ${inSpan.sql} AND ${INBOUND} AND m.type = 'voice' AND m.transcript IS NULL
          ORDER BY m.id DESC LIMIT ?`,
         ...inChat.params,
-        ...spanParams(span),
+        ...inSpan.params,
         now,
         limit
       )
@@ -394,6 +409,7 @@ export class Digest {
   }
 
   private windowRows(index: string, where: string, span: DigestSpan, now: number, params: number[] = []): WindowMessage[] {
+    const inSpan = spanOf(span);
     return this.c
       .all<{
         id: number;
@@ -410,10 +426,10 @@ export class Digest {
         `SELECT m.id, coalesce(m.stored_seq, 0) AS stored_seq, m.key_id, coalesce(ck.id, c.id) AS chat_id, coalesce(ck.jid, c.jid) AS chat_jid,
            m.from_me, m.sender_id, m.ts, m.type, substr(m.text, 1, 300) AS text
          FROM messages m INDEXED BY ${index} CROSS JOIN chats c ON c.id = m.chat_id LEFT JOIN chats ck ON ck.id = c.merged_into
-         WHERE ${SPAN} AND ${where} AND m.deleted_at IS NULL AND (m.expires_at IS NULL OR m.expires_at > ?)
+         WHERE ${inSpan.sql} AND ${where} AND m.deleted_at IS NULL AND (m.expires_at IS NULL OR m.expires_at > ?)
            AND m.ts > coalesce(c.cleared_through_ts, 0)
          ORDER BY m.id`,
-        ...spanParams(span),
+        ...inSpan.params,
         ...params,
         now
       )
@@ -433,12 +449,13 @@ export class Digest {
 
   /** The stories someone posted in the span: how many, and their authors, the most recent first. */
   stories(statusChatId: number, span: DigestSpan, now: number): { count: number; authors: number[] } {
+    const inSpan = spanOf(span);
     const rows = this.c.all<{ sender_id: number | null; n: number }>(
       `SELECT m.sender_id, count(*) AS n FROM messages m CROSS JOIN chats c ON c.id = m.chat_id
-       WHERE m.chat_id = ? AND ${SPAN} AND ${INBOUND}
+       WHERE m.chat_id = ? AND ${inSpan.sql} AND ${INBOUND}
        GROUP BY m.sender_id ORDER BY max(m.id) DESC`,
       statusChatId,
-      ...spanParams(span),
+      ...inSpan.params,
       now
     );
     return {
