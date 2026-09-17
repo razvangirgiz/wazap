@@ -3439,9 +3439,11 @@ export class WhatsAppService implements WhatsAppApi {
 
     // In a group, each member's receipt arrives on its own; the status is theirs combined.
     sock.ev.on("message-receipt.update", (items) => {
-      // A member's receipt that is the account's own: one of its devices read a group message.
+      // A member's receipt that is the account's own: one of its devices read a group message (a story it viewed is not a chat read).
       const readSelf = items.flatMap(({ key, receipt }) =>
-        receipt.userJid && this.isMe(receipt.userJid) && (receipt.readTimestamp || receipt.playedTimestamp) ? [key] : []
+        key.remoteJid && chatKindOf(this.canonical(key.remoteJid)) === "group" && receipt.userJid && this.isMe(receipt.userJid) && (receipt.readTimestamp || receipt.playedTimestamp)
+          ? [key]
+          : []
       );
       this.noteReadSelf(readSelf.length);
       this.markLater(

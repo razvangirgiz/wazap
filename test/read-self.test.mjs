@@ -99,6 +99,11 @@ test("someone else's receipts never move the read mark and are not counted as th
   assert.equal(mark(GROUP), null, "a receipt on the account's own message is not a read of the chat");
   assert.equal(counters().seen, 1);
   assert.equal(counters().applied, 0);
+  // The phone viewing a story reports a receipt on the status feed; that reads no chat.
+  sock.ev.emit("message-receipt.update", [
+    { key: { remoteJid: "status@broadcast", fromMe: false, id: "STORY", participant: ME }, receipt: { userJid: ME, readTimestamp: T0 + 100 } },
+  ]);
+  assert.equal(counters().seen, 1);
   assert.ok(idOf(GROUP, inGroup) > 0);
 });
 
