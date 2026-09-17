@@ -12,7 +12,7 @@ import {
   type ToolResult,
 } from "./tool-runtime.js";
 export { toolError, type ToolCtx, type RegisterOpts } from "./tool-runtime.js";
-import { CATCHUP_INPUT, CATCHUP_OUTPUT, runCatchUp, taggedAcross } from "./catchup.js";
+import { CATCHUP_INPUT, CATCHUP_OUTPUT, privateRule, runCatchUp } from "./catchup.js";
 import { coverageNote, indexCoverageNote, searchCoverage } from "./coverage.js";
 import { describeTarget, looksUnnamed, renderDraft, type DraftPayload, type DraftView } from "./drafts.js";
 import { ERROR_GUIDE, WazapError, asWazapError } from "./errors.js";
@@ -52,7 +52,6 @@ import type {
   SearchAnswer,
   Synced,
   Preview,
-  PrivateRule,
   WaitResult,
   WhatsAppApi,
 } from "./wa-types.js";
@@ -305,17 +304,6 @@ function scanCapNote(result: SearchAnswer): string | null {
   return `The search stopped at its scan limit; messages before ${result.scanCapped.searchedBackTo.slice(0, 10)} were not searched — narrow it with chat_id, since/until or a longer query.`;
 }
 
-/**
- * A broad read's #private rule (src/private-contacts.ts): the account the call
- * resolved to reads its own tags, and the other live accounts name the people
- * they tagged, by number and lid, as they do for catch_up (taggedAcross). With
- * one account nobody else is asked.
- */
-async function privateRule({ hub, accountId }: ToolCtx): Promise<PrivateRule> {
-  const others = hub.bindings().filter((binding) => binding.id !== accountId);
-  return { others: others.length === 0 ? [] : (await taggedAcross(others)).private };
-}
-
 /** `private_omitted`, only when a search left someone #private out. */
 function privateFields(omitted: number | undefined): Record<string, unknown> {
   return omitted === undefined ? {} : { private_omitted: omitted };
@@ -471,7 +459,7 @@ const TOOLS: readonly ToolDef[] = [
     outputSchema: LIST_CHATS_OUTPUT,
     write: false,
     handler: async ({ filter, limit }, ctx) => {
-      const result = await ctx.wa.listChats(filter, limit, { private: await privateRule(ctx) });
+      const result = await ctx.wa.listChats(filter, limit, { private: await privateRule(ctx.hub, ctx.accountId) });
       return ok(
         renderChats(result.data, filter),
         synced(result, { filter, count: result.data.length, chats: result.data })
@@ -500,7 +488,7 @@ const TOOLS: readonly ToolDef[] = [
           throw new WazapError("INVALID_ID", "Stories are not paged: before does not apply to status.", "Pass hours (1-24) instead");
         }
         const window = hours ?? 24;
-        const result = await wa.getStories(window, { private: await privateRule(ctx) });
+        const result = await wa.getStories(window, { private: await privateRule(ctx.hub, ctx.accountId) });
         const matching = types === undefined ? result.data : result.data.filter((m) => types.includes(m.type));
         const stories = matching.slice(0, limit);
         // A story of someone tagged #private gets no preview: what it shows is its words.
@@ -616,7 +604,7 @@ const TOOLS: readonly ToolDef[] = [
         chatId: chat_id,
         addressedToMe: addressed_to_me,
         cursor,
-        private: await privateRule(ctx),
+        private: await privateRule(ctx.hub, ctx.accountId),
       });
       return ok(renderWait(result), { ...result, count: result.messages.length });
     },
@@ -643,7 +631,7 @@ const TOOLS: readonly ToolDef[] = [
       const sinceMs = parseMoment(since, "since");
       const untilMs = parseMoment(until, "until", true);
       // Without a chat, someone tagged #private is left out unless from names them (src/private-contacts.ts).
-      const filters = { sinceMs, untilMs, from: resolvedFrom, ...(chat_id === undefined ? { private: await privateRule(ctx) } : {}) };
+      const filters = { sinceMs, untilMs, from: resolvedFrom, ...(chat_id === undefined ? { private: await privateRule(ctx.hub, ctx.accountId) } : {}) };
       const scope = [
         chat_id ? `in ${chat_id}` : null,
         from ? `from ${from}` : null,

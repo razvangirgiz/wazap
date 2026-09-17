@@ -723,7 +723,7 @@ export interface WhatsAppApi {
   /** Who a name, nickname or relationship means on this account; asks WhatsApp for an empty address book once per boot first. */
   findContact?(query: FindContactQuery): Promise<AccountFind>;
   /** The recent exchange (unless `recent: false`) and the user's style in a chat, or null when it has no history. */
-  draftContext?(chatJid: string, options: { recent: boolean }): DraftContext | null;
+  draftContext?(chatJid: string, options: { recent: boolean; private?: PrivateRule }): DraftContext | null;
   /** How a text draft to a direct chat compares with the user's own messages there; null without enough of them. */
   styleCheck?(chatJid: string, text: string): StyleCheck | null;
   updateContactDetails(contactId: string, edit: ContactDetailsEdit): Promise<ContactSummary>;

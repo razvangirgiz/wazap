@@ -88,7 +88,8 @@ answers.
   send, carries the last 8 messages both ways and how the user writes there
   (language, diacritics, tu or dumneavoastră, length, emoji), from the user's
   own messages, never from what wazap sent. On by default; a contact tagged
-  `#private` gets the style only, and `wazap config draft-context off
+  `#private` on any linked account gets the style only, a group's context
+  leaves out what they wrote, and `wazap config draft-context off
   [--account <id>]` turns it off for an account (`draft_context: false` in
   `accounts.json`).
 - **`style_check` on `send_message` drafts.** A text draft to someone the user

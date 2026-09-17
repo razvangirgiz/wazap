@@ -260,6 +260,33 @@ test("a resolved contact carries the recent exchange and the user's style in a w
   await s.close();
 });
 
+test("a draft context on one account reads #private filed on another: a person's chat gives style only, a group leaves their words out", async () => {
+  const { s, refs } = await world({
+    accounts: {
+      // The same Ana Marin, saved on the personal account too and tagged there.
+      personal: { contacts: { ana_marin_personal: { phone: "40721000001", name: "Ana Marin", tags: ["private"] } } },
+      work: {
+        groups: { ofertare: { id: "120363000000000088", subject: "Ofertare Print", participants: [{ who: "me" }, { who: "ana_marin" }, { who: "furnizor" }] } },
+        "+messages": [
+          { chat: "ofertare", from: "ana_marin", at: "azi 11:00", text: "Bugetul nostru real e doar 900 de lei, nu le spuneți" },
+          { chat: "ofertare", from: "furnizor", at: "azi 11:05", text: "Putem face 1000 de flyere până joi" },
+        ],
+      },
+    },
+  });
+  const person = await find(s, { name: "Ana Marin", account_id: "work" });
+  assert.deepEqual([person.structuredContent.status, person.structuredContent.contact.chat_id], ["resolved", refs.contacts.ana_marin.jid]);
+  assert.deepEqual(Object.keys(person.structuredContent.context).sort(), ["private", "style"], "tagged on personal, style only on work");
+  assert.ok(!JSON.stringify(person.structuredContent).includes("Ne vedem azi la birou"));
+
+  const group = await find(s, { name: "Ofertare Print", account_id: "work" });
+  assert.equal(group.structuredContent.status, "resolved");
+  const recent = group.structuredContent.context.recent.map((line) => line.text);
+  assert.ok(recent.includes("Putem face 1000 de flyere până joi"), "the others' words stay");
+  assert.ok(!JSON.stringify(group.structuredContent).includes("Bugetul nostru real"), "hers do not");
+  await s.close();
+});
+
 test("send_message: a draft with diacritics to someone the user writes to without them gets style_check; too little of the user's own writing gets none", async () => {
   const own = ["da, vin si eu la meci", "hai ca te sun cand ajung", "ok, iti zic diseara", "nu stiu daca pot sambata", "mersi frate, vorbim"];
   const { s, refs } = await world({

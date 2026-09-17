@@ -412,8 +412,9 @@ chat in the last 90 days, or across the account when there are fewer than five.
 The style never counts messages wazap sent, so an agent does not learn its own
 drafts back. It is on by default, only in a session that can send, and only for
 a resolved contact the account's [send rules](#send-rules) allow. A contact tagged `#private`
-(`remember` with `add_tags: ["private"]`) gets the style only,
-never messages ([Keeping someone private](#keeping-someone-private)). `wazap config draft-context off [--account <id>]` turns it off
+(`remember` with `add_tags: ["private"]`) on any linked account gets the style
+only, never messages, and a group's context leaves out what they wrote
+([Keeping someone private](#keeping-someone-private)). `wazap config draft-context off [--account <id>]` turns it off
 for an account (`draft_context: false` in `accounts.json`), the style check
 below included, from the next call, without a restart.
 
@@ -462,8 +463,8 @@ and what kind, and loses the words:
   is no way to read one of theirs through the assistant.
 
 The tag goes with the person: filed on one account, it holds in `search`,
-`wait_for_messages`, `list_chats` and the stories of every other account, by
-number or lid, and in every catch-up. The
+`wait_for_messages`, `list_chats`, the stories and `find_contact`'s draft
+context of every other account, by number or lid, and in every catch-up. The
 [outbound webhook](#outbound-webhook) is not affected; it is the channel for
 what you build, not the assistant's.
 

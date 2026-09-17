@@ -1841,8 +1841,8 @@ export class WhatsAppService implements WhatsAppApi {
   }
 
   /** The recent exchange and the user's style in a chat, for a contact find_contact resolved. */
-  draftContext(chatJid: string, options: { recent: boolean }): DraftContext | null {
-    return draftContextFor(this.db, chatJid, { recent: options.recent, senderName: (jid) => this.displayName(jid) });
+  draftContext(chatJid: string, options: { recent: boolean; private?: PrivateRule }): DraftContext | null {
+    return draftContextFor(this.db, chatJid, { recent: options.recent, others: options.private?.others, senderName: (jid) => this.displayName(jid) });
   }
 
   /** send_message's style check on a text draft; null when the chat gives too little to judge or the database is not ready. */

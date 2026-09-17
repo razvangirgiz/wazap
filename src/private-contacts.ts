@@ -71,7 +71,7 @@ export interface PrivatePeople {
   sender(senderId: number | null): boolean;
   /** A stored message in their chat, or written by them anywhere; each chat is looked up once. */
   message(message: { chatId: number; chatJid: string; senderId: number | null }): boolean;
-  /** The call names one of them as the author (a jid, or "me", which never is). */
+  /** A number or lid that is one of them, as a call names an author or a draft context a person; "me" never is. */
   names(jid: string): boolean;
 }
 

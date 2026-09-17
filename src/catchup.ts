@@ -50,7 +50,7 @@ import { asWazapError, WazapError } from "./errors.js";
 import { isoWithOffset } from "./messages.js";
 import { signalsOf, type Signal } from "./signals.js";
 import type { ToolResult } from "./tool-runtime.js";
-import type { WhatsAppApi } from "./wa-types.js";
+import type { PrivateRule, WhatsAppApi } from "./wa-types.js";
 
 export const DEFAULT_BUDGET_TOKENS = 2_500;
 export const MIN_BUDGET_TOKENS = 500;
@@ -815,6 +815,16 @@ export async function taggedAcross(targets: ReadonlyArray<{ wa: WhatsAppApi }>):
     }
   }
   return { private: [...privateJids], noCatchup: [...noCatchup] };
+}
+
+/**
+ * A read on one account under the #private rule (src/private-contacts.ts): the
+ * account reads its own tags, and every other live account names the people it
+ * tagged, by number and lid. With one account nobody else is asked.
+ */
+export async function privateRule(hub: AccountSource, accountId: string): Promise<PrivateRule> {
+  const others = hub.bindings().filter((binding) => binding.id !== accountId);
+  return { others: others.length === 0 ? [] : (await taggedAcross(others)).private };
 }
 
 function missingSupport(id: string): WazapError {
