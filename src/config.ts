@@ -64,7 +64,7 @@ export interface Config {
   maxInFlightTotal?: number;
   /** HTTP POSTs to /mcp per credential per minute; 240 outside tests. */
   httpPostBudget?: number;
-  sources: Record<"dataDir" | "readOnly" | "transport" | "rateLimit" | "transcribe" | "webhook" | "recall", Source>;
+  sources: Record<"dataDir" | "readOnly" | "transport" | "transcribe" | "webhook" | "recall", Source>;
   command: Command;
   /** The command was named on the command line rather than defaulted to serve. */
   explicitCommand: boolean;
@@ -421,7 +421,6 @@ export function parseCli(argv: string[] = process.argv.slice(2)): CliInvocation 
         dataDir: values["data-dir"] !== undefined ? "flag" : shell.has("WAZAP_DATA_DIR") ? "env" : "default",
         readOnly: sourceOf("WAZAP_READ_ONLY", values["read-only"] === true),
         transport: sourceOf("WAZAP_TRANSPORT", values.http === true),
-        rateLimit: "default",
         transcribe: sourceOf("WAZAP_TRANSCRIBE", false),
         webhook: sourceOf("WAZAP_WEBHOOK", false),
         recall: sourceOf("WAZAP_RECALL", false),

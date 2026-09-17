@@ -160,6 +160,24 @@ test("config writes off persists the setting, and config reads it back from .env
   assert.match((await wazap(dir, ["config"])).stderr, /writes: on \(\.env\)/);
 });
 
+test("config shows the rate limit the account actually gets, and says when accounts.json set it", async () => {
+  const dir = dataDir();
+  assert.match((await wazap(dir, ["config"])).stderr, /rate limit: 20 writes\/minute \(default\)/);
+
+  const account = (rate_limit) =>
+    writeFileSync(
+      join(dir, "accounts.json"),
+      JSON.stringify({ v: 2, default: "default", accounts: [{ id: "default", name: "default", enabled: true, owner: null, rate_limit }] })
+    );
+  account(5);
+  const five = (await wazap(dir, ["config"])).stderr;
+  assert.match(five, /rate limit: 5 writes\/minute \(accounts\.json\)/);
+  assert.doesNotMatch(five, /20 writes\/minute/);
+
+  account(0);
+  assert.match((await wazap(dir, ["config"])).stderr, /rate limit: off \(accounts\.json\)/);
+});
+
 test("the flag beats the environment, which beats .env", async () => {
   const dir = dataDir();
   await wazap(dir, ["config", "writes", "on"]);

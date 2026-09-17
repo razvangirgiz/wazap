@@ -84,9 +84,9 @@ export function setEnvSetting(envFile: string, key: string, value: string): void
 
 interface SettingRow {
   label: string;
-  source: keyof Config["sources"];
   value: (config: Config) => string;
-  sourceLabel?: (config: Config) => string;
+  /** Where the value came from: a flag, the environment, `.env`, `accounts.json` or the default. */
+  source: (config: Config) => string;
 }
 
 function writesSource(config: Config): string {
@@ -94,28 +94,33 @@ function writesSource(config: Config): string {
   return selected.account.writes === undefined ? config.sources.readOnly : "accounts.json";
 }
 
+/** The fixed default, unless the account sets its own `rate_limit`. */
+function rateLimitSource(config: Config): string {
+  return resolveAccount(config.dataDir, config.accountId).account.rate_limit === undefined ? "default" : "accounts.json";
+}
+
+function effectiveRateLimit(config: Config): string {
+  const { rateLimit } = accountPolicy(resolveAccount(config.dataDir, config.accountId).account, config);
+  return rateLimit === 0 ? "off" : `${rateLimit} writes/minute`;
+}
+
 const SETTINGS: readonly SettingRow[] = [
-  { label: "data dir", source: "dataDir", value: (config) => config.dataDir },
+  { label: "data dir", value: (config) => config.dataDir, source: (config) => config.sources.dataDir },
   {
     label: "writes",
-    source: "readOnly",
     value: (config) =>
       accountPolicy(resolveAccount(config.dataDir, config.accountId).account, config).readOnly ? "off" : "on",
-    sourceLabel: writesSource,
+    source: writesSource,
   },
   {
     label: "transport",
-    source: "transport",
     value: (config) =>
       config.transport === "http"
         ? `http ${config.httpHost}:${config.httpPort}${config.publicUrl && config.oauthPassword ? ` · oauth at ${config.publicUrl}` : ""}`
         : "stdio",
+    source: (config) => config.sources.transport,
   },
-  {
-    label: "rate limit",
-    source: "rateLimit",
-    value: (config) => (config.rateLimitPerMinute === 0 ? "off" : `${config.rateLimitPerMinute} writes/minute`),
-  },
+  { label: "rate limit", value: effectiveRateLimit, source: rateLimitSource },
 ];
 
 /** Every setting `wazap config <name> <value>` can change, and what each accepts. */
@@ -148,8 +153,7 @@ const SEND_USAGE_FIX =
 export async function runConfig(config: Config): Promise<void> {
   if (config.args.length === 0) {
     for (const row of SETTINGS) {
-      const source = row.sourceLabel === undefined ? config.sources[row.source] : row.sourceLabel(config);
-      say(`${row.label}: ${row.value(config)} (${source})`);
+      say(`${row.label}: ${row.value(config)} (${row.source(config)})`);
     }
     for (const line of transcribeRows(config)) say(line);
     for (const line of recallRows(config)) say(line);
