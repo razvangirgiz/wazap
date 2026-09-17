@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import { registerTools, toolError, TOOL_NAMES } from "../dist/tools.js";
 import { WazapError, ERROR_GUIDE } from "../dist/errors.js";
 import { WhatsAppService } from "../dist/whatsapp.js";
-import { asToolSource, connectedService, draftStub } from "./helpers.mjs";
+import { asToolSource, connectedService, draftStub, READ_TOOL_COUNT, TOOL_COUNT } from "./helpers.mjs";
 
 /** Stand-in for McpServer: records what got registered and lets us call it. */
 function fakeServer() {
@@ -43,9 +43,12 @@ const WRITE_TOOLS = [
   "manage_group",
 ];
 
-test("the registry is exactly the documented tools", () => {
+test("the registry is exactly the 20 documented tools, 13 of them in a session without writes", () => {
   assert.deepEqual([...TOOL_NAMES].sort(), [...READ_TOOLS, ...WRITE_TOOLS].sort());
-  assert.equal(TOOL_NAMES.length, READ_TOOLS.length + WRITE_TOOLS.length);
+  assert.equal(TOOL_NAMES.length, 20);
+  assert.equal(TOOL_COUNT, 20);
+  assert.equal(READ_TOOLS.length, 13);
+  assert.equal(READ_TOOL_COUNT, 13);
 });
 
 test("read-only registration exposes no write tool at all", () => {
