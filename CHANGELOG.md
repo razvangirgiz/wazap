@@ -128,6 +128,20 @@ answers.
   in groups, a group's quote — and their entries say `private`; their unheard
   voice notes are counted in the footer, never named for transcription. Across
   several accounts, both tags filed on one account hold on all of them.
+- **`#private` in every read that does not name the person.** Their words
+  (text, caption, transcript, quote, a link's or file's preview, a poll's text)
+  reach the assistant only when a call names them: their `chat_id`, a
+  `message_id` of theirs, or `search` with `from`; a group named by `chat_id`
+  reads whole. `search` without `chat_id` leaves their chat and what they write
+  in groups out before `limit`, by meaning and words, by words and on the
+  fallback, and counts them in `private_omitted`; a quote of theirs keeps its
+  author, not its words. `wait_for_messages` (unless it waits on their chat),
+  `list_chats`' last message and `read_messages` on `"status"` keep the entry,
+  with `text: "[private]"`, `private: true` and no preview. Filed on one
+  account, the tag holds on every account of the call. `remember`, `learn`, the
+  inbox and recall skills and the README (*Keeping someone private*) state the
+  rule; the output schemas declare `private_omitted` and `private`. The webhook
+  is unchanged.
 
 ### Removed
 

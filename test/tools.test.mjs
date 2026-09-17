@@ -355,14 +355,15 @@ test("a voice note or an audio file drafted with text is refused: WhatsApp shows
   assert.equal(drafted.at(-1).caption, "înregistrarea");
 });
 
-test("remember says what #private hides, and promises nothing the other tools do not keep", () => {
+test("remember and learn state the #private rule the reads keep: no words unless a call names the person", async () => {
   const server = fakeServer();
   registerTools(server, asToolSource({}), { allowWrite: true });
   const described = server.tools.get("remember").meta.description;
-  // Only catch_up and find_contact's draft context leave a #private person's words out (src/private-contacts.ts);
-  // search, read_messages and wait_for_messages answer what they are asked for.
-  assert.match(described, /#private keeps their words out of catch_up and find_contact's draft context/);
-  assert.doesNotMatch(described, /out of answers/);
+  // Every read that does not name the person leaves their words out (src/private-contacts.ts); one that names them shows them.
+  assert.match(described, /#private keeps their words out of what you did not ask about them by name/);
+  assert.doesNotMatch(described, /out of answers|out of catch_up and find_contact's draft context/);
+  const guide = (await server.tools.get("learn").handler({})).content[0].text;
+  assert.match(guide, /#private: a person's words come only when a call names them: their chat_id,\s+a message_id of theirs, search's from\. Elsewhere their entries say private,\s+with no words, and search counts private_omitted\./);
 });
 
 test("each tool's annotations are true of its most far-reaching action", () => {

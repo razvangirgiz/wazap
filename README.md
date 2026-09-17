@@ -221,13 +221,13 @@ them. `--dry-run` prints the plan and touches nothing.
 | `list_chats` | read | Conversations newest-first; filter `all`/`unread`/`groups`/`individual`/`archived`. |
 | `read_messages` | read | Messages in a chat; `before` pages further back, pulling older history from the phone; `types` narrows to one or more message types, e.g. `["call"]`; `include_previews` attaches a small image of each photo. `chat_id: "status"` reads the stories of the last `hours`, which show nowhere else. |
 | `catch_up` | read | What the user missed, in one call and within a token budget, across every linked account: who is waiting on a reply, mentions, replies and open polls, missed calls, people, groups condensed, stories. Pages with a cursor. See [Catching up](#catching-up). |
-| `search` | read | Messages by meaning and by words at once, over everything the account keeps, so a paraphrase or another language still hits; `match: "words"` keeps only messages holding the words. `chat_id`, `since`, `until` and `from` narrow it, and the answer says how much it searched. Without [semantic recall](#semantic-recall) it matches words and says so. |
+| `search` | read | Messages by meaning and by words at once, over everything the account keeps, so a paraphrase or another language still hits; `match: "words"` keeps only messages holding the words. `chat_id`, `since`, `until` and `from` narrow it, and the answer says how much it searched. Without `chat_id`, someone tagged `#private` is left out and counted in `private_omitted`. Without [semantic recall](#semantic-recall) it matches words and says so. |
 | `get_message` | read | One message in full, with its quoted message, each reaction with who left it, and who voted for each option of a poll or answered an event. On your own messages, `delivery` says whether it was sent, delivered, read or played, and in a group who read it and when. |
 | `find_contact` | read | Who a name, nickname, relationship ("mama"), group name, number or id means. Resolved: the `chat_id`, number, note, tags and details, plus the recent exchange and how you write there in a session that can send. Otherwise the candidates that tell people apart, to ask you. `tag` lists everyone filed under a tag. See [Finding people](#finding-people). |
 | `get_group_info` | read | Participants, admins, announcement mode, who may edit the info or add members, join approval, disappearing messages, community, invite link (when you are admin). |
 | `get_media` | read | A message's media: a voice note or audio as its transcript, a photo attached as an image, any file saved to disk (`save_to` picks the directory). Transcription runs on the local or the API provider; with `save_to` a recording comes as its file, with a transcript only if one was already made, and when no transcript can be made the file comes instead, with `transcript_unavailable` saying why. |
 | `wait_for_messages` | read | Block up to 55 s until a message arrives, then return it with a cursor for the next call. `addressed_to_me` wakes only for direct messages, @-mentions and replies. |
-| `remember` | local | Keep what the user says about a person, on this machine only: a note, tags, details (`relatie`, `nickname`, "role": "contabil") that `find_contact` matches, and `handled: true` to take an ask off `catch_up`'s waiting list until they write again. Nothing changes on WhatsApp. |
+| `remember` | local | Keep what the user says about a person, on this machine only: a note, tags, details (`relatie`, `nickname`, "role": "contabil") that `find_contact` matches, and `handled: true` to take an ask off `catch_up`'s waiting list until they write again. `#private` keeps their words out of what the assistant did not ask about them by name ([Keeping someone private](#keeping-someone-private)). Nothing changes on WhatsApp. |
 | `send_message` | write | Draft a message: text (a reply, @-mentions), media from a path or URL (`as`: document, voice note or GIF), a poll (`options`), a location (`latitude`, `longitude`) or a forward (`forward`). Does not send. A text draft to someone you write to often carries `style_check`: where it does not read like you. |
 | `confirm_send` | write | Send a draft after the user has seen the preview and said yes. A draft is sent at most once; see [Sending once](#sending-once). |
 | `edit_message` | write | Edit your own message, within WhatsApp's 15-minute window. |
@@ -335,8 +335,9 @@ elsewhere shows either: no ask, mention, poll or quote of theirs in a group, no
 group call, no story. Tag them `#private`
 instead and they stay in, counted, but nothing they wrote is quoted — not the
 ask, not a mention or a poll of theirs in a group, not a group's quote — and
-their entries say `private`. A catch-up across several accounts reads a person
-tagged on any of them as tagged on all, by number or lid.
+their entries say `private` ([Keeping someone private](#keeping-someone-private)).
+A catch-up across several accounts reads a person tagged on any of them as
+tagged on all, by number or lid.
 
 ### Seeing, waiting, following up
 
@@ -412,7 +413,7 @@ The style never counts messages wazap sent, so an agent does not learn its own
 drafts back. It is on by default, only in a session that can send, and only for
 a resolved contact the account's [send rules](#send-rules) allow. A contact tagged `#private`
 (`remember` with `add_tags: ["private"]`) gets the style only,
-never messages. `wazap config draft-context off [--account <id>]` turns it off
+never messages ([Keeping someone private](#keeping-someone-private)). `wazap config draft-context off [--account <id>]` turns it off
 for an account (`draft_context: false` in `accounts.json`), the style check
 below included, from the next call, without a restart.
 
@@ -433,6 +434,36 @@ before answering; finds that arrive meanwhile wait for the same answer. It does
 not ask while the connection is still receiving its first sync, nor again
 within 7 days of the last ask, the same rule wazap heals a missing address book
 by at connect.
+
+### Keeping someone private
+
+Tag a person `#private` (`remember` with `add_tags: ["private"]`) and their
+words — a message's text, caption, transcript, quote, a link's or a file's
+preview, a poll's text — stay out of what the assistant did not ask about them
+by name. A call names them when it gives their chat (`chat_id`), a message of
+theirs (`message_id`, to `get_message` or `get_media`), or them as the author
+(`search` with `from`); a group named by `chat_id` reads whole, what they wrote
+in it included. Everywhere else what is theirs keeps who, when, in which chat
+and what kind, and loses the words:
+
+- `catch_up` counts them and never quotes them; their entries say `private`.
+- `find_contact`'s draft context carries your style for them, no messages.
+- `search` without `chat_id` leaves out their chat and what they write in
+  groups before it counts to `limit`, by meaning and by words, and says how
+  many in `private_omitted`. A quote of theirs in someone else's message keeps
+  who wrote it, not what.
+- `wait_for_messages` still returns what arrived from them, in their chat or in
+  a group, with `text: "[private]"` and `private: true`, unless it waits on
+  their chat.
+- `list_chats` shows the last message of their chat, or the last one they wrote
+  in a group, the same way.
+- `read_messages` on `"status"` keeps their stories with author, time and kind,
+  without text, caption or preview. A story cannot be named, so for now there
+  is no way to read one of theirs through the assistant.
+
+The tag goes with the person: filed on one account, it holds on every account
+of a call, by number or lid. The [outbound webhook](#outbound-webhook) is not
+affected; it is the channel for what you build, not the assistant's.
 
 ## Voice messages
 

@@ -367,6 +367,9 @@ Call get_status when anything fails, and link_account when it says not_linked.
   contabilitate"). resolved gives the chat_id; ambiguous or not_found: ask the
   user, never guess. remember keeps what the user says about a person (note,
   tags, fields such as relatie), on this machine; find_contact(tag) lists a tag.
+- #private: a person's words come only when a call names them: their chat_id,
+  a message_id of theirs, search's from. Elsewhere their entries say private,
+  with no words, and search counts private_omitted. Fetch them only when asked.
 - Send: send_message drafts text, media, a poll, a location or a forward, and
   sends nothing. Show the preview; after the user's yes, confirm_send(draft_id)
   is the only call that sends. A draft lasts 15 minutes. Fix style_check.warnings
@@ -546,7 +549,7 @@ const TOOLS: readonly ToolDef[] = [
   tool({
     name: "remember",
     title: "Remember something about a person",
-    description: `Keep what the user says about someone, locally, never on WhatsApp: a note, tags, details find_contact matches ({"relatie": "mama"}), or handled: true for an ask dealt with elsewhere. #private keeps their words out of catch_up and find_contact's draft context; #no-catchup keeps them out of catch_up.`,
+    description: `Keep what the user says about someone, locally, never on WhatsApp: a note, tags, details find_contact matches ({"relatie": "mama"}), or handled: true for an ask dealt with elsewhere. #private keeps their words out of what you did not ask about them by name; #no-catchup keeps them out of catch_up.`,
     schema: {
       chat_id: chatId,
       note: z.string().max(200).optional().describe('"" removes it'),
