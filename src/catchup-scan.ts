@@ -109,9 +109,13 @@ export interface WaitingEntry {
   note?: string;
   group: boolean;
   business: boolean;
+  /** A person not in the address book, never named by the user. */
+  unknown: boolean;
   /** In a group: who asked. */
   from?: string;
   ask: { id: number; sid: string; ts: number; type: string; voice?: string; transcribed: boolean };
+  /** Their newest message after the ask inside the window, worth quoting with it. */
+  thenId?: number;
   /** Their messages since the user's last one (inside the 14 days). */
   sinceYou: number;
   newSinceLast: boolean;
@@ -422,7 +426,7 @@ export async function scanCatchup(db: AccountDb, host: CatchupHost, request: Cat
   }
 
   // -------------------------------------------------------------- waiting
-  type RawWaiting = Omit<WaitingEntry, "name" | "note" | "business" | "from"> & { chatRecord: ChatRecord; senderId: number | null };
+  type RawWaiting = Omit<WaitingEntry, "name" | "note" | "business" | "unknown" | "from"> & { chatRecord: ChatRecord; senderId: number | null };
   const rawWaiting: RawWaiting[] = [];
   const waitingChats = new Set<number>();
   if (include.has("waiting")) {
@@ -451,6 +455,8 @@ export async function scanCatchup(db: AccountDb, host: CatchupHost, request: Cat
       const sinceYou = tail.length < ASK_SCAN ? tail.length : digest.inboundCount(family, after, untilId, now, 999);
       const words = ask.transcript === null ? ask.text : ask.transcript;
       const transcribed = ask.transcript !== null;
+      // In a person's chat, what they said after the ask rides with it; a group's chatter has its own row.
+      const then = group ? undefined : tail.find((message) => message.id > ask.id && message.id > sinceId && quotable(message));
       const answered = group
         ? undefined
         : (callsByChat.get(chat.id) ?? []).find((call) => call.id > ask.id && call.reading.outcome === "answered");
@@ -467,6 +473,7 @@ export async function scanCatchup(db: AccountDb, host: CatchupHost, request: Cat
           ...(ask.type === "voice" || ask.type === "audio" ? { voice: voiceLength(ask.text) } : {}),
           transcribed,
         },
+        ...(then === undefined ? {} : { thenId: then.id }),
         sinceYou,
         newSinceLast: ask.id > sinceId,
         signals: ask.type === "voice" && !transcribed ? [] : [...signalsOf(words)],
@@ -709,6 +716,7 @@ export async function scanCatchup(db: AccountDb, host: CatchupHost, request: Cat
       name: host.nameOf(entry.chat),
       ...noteOf(entry.chat),
       business: entry.group ? false : personFlags(chatRecord).business,
+      unknown: entry.group ? false : personFlags(chatRecord).unknown && !personFlags(chatRecord).business,
       ...(entry.group ? { from: personName(senderId, "someone") } : {}),
     }))
     .sort(

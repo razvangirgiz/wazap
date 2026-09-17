@@ -229,6 +229,7 @@ test("waiting: people before groups, amounts and dates rise, a voice note is quo
   arrive(GROUP, mention("@Răzvan vii mâine?"), { participant: DAN, at: Date.now() - 30 * HOUR });
   arrive(ANA, "ce mai faci, ieși în oraș?", { at: Date.now() - 20 * HOUR });
   arrive(DAN, "îmi dai înapoi 200 lei până vineri?", { at: Date.now() - 2 * HOUR });
+  arrive(DAN, "și nu uita de cina de duminică, vine și tanti Lia.", { at: Date.now() - 2 * HOUR + 1000 });
   const voice = { audioMessage: { mimetype: "audio/ogg; codecs=opus", ptt: true, seconds: 42 } };
   const heard = arrive(ELA, voice, { at: Date.now() - 10 * HOUR });
   svc.db.messages.setTranscript(heard, "Vii duminică la cina de la 7? Vine și tanti Lia");
@@ -246,6 +247,9 @@ test("waiting: people before groups, amounts and dates rise, a voice note is quo
   assert.equal(waiting[0].voice, "0:42");
   assert.equal(waiting[0].transcribed, true);
   assert.equal(waiting[1].sig, "amount,date,question");
+  assert.equal(waiting[1].q, "îmi dai înapoi 200 lei până vineri?");
+  assert.equal(waiting[1].then, "și nu uita de cina de duminică, vine și tanti Lia.", "what followed the ask rides with it");
+  assert.match(text(result), /— "îmi dai înapoi 200 lei până vineri\?" · then "și nu uita de cina de duminică, vine și tanti Lia\." ·/);
   assert.equal(waiting[3].q, undefined, "an unheard voice note has nothing to quote");
   assert.equal(waiting[4].from, "Dan");
   assert.deepEqual(result.structuredContent.footer.voice_untranscribed, [unheard]);

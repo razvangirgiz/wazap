@@ -315,7 +315,8 @@ function windowPhrase(window: CatchupWindow, now: number): string {
 
 // ---------------------------------------------------------------- entries as items
 
-type Quoted = { text: string; signals: Signal[] } | null;
+/** A quote as placed: the message's words cut to their level, and for someone waiting, what they sent after the ask. */
+type Quoted = { text: string; signals: Signal[]; then?: string } | null;
 
 interface Item {
   section: CatchupSection;
@@ -323,6 +324,8 @@ interface Item {
   /** One quote per chat: the account and the chat. */
   chatKey: string;
   quoteId: number | null;
+  /** Someone waiting: their newest message after the ask, sharing the ask's quote. */
+  thenId: number | null;
   line(quote: Quoted): string;
   data(quote: Quoted): Record<string, unknown>;
 }
@@ -360,7 +363,25 @@ function sigOf(quote: NonNullable<Quoted>): { sig?: string } {
 function quoteSuffix(quote: Quoted, withSignals: boolean): string {
   if (quote === null) return "";
   const markers = withSignals && quote.signals.length > 0 ? ` [${quote.signals.join(",")}]` : "";
-  return ` — "${quote.text}"${markers}`;
+  const then = quote.then === undefined ? "" : ` · then "${quote.then}"`;
+  return `${quote.text === "" ? "" : ` — "${quote.text}"`}${markers}${then}`;
+}
+
+/** Shortest a "then" quote is worth showing. */
+const THEN_MIN = 20;
+
+/**
+ * An ask and what followed it inside one quote of `level` characters: the
+ * ask keeps at least two thirds when both are long, the rest goes to the
+ * newer message, which is left out when too little room remains.
+ */
+function composeQuote(ask: string, then: string | null, level: number): { text: string; then?: string } {
+  if (then === null) return { text: cut(ask, level) };
+  if (ask === "") return { text: "", then: cut(then, level) };
+  const thenChars = [...then].length;
+  const askText = cut(ask, level - Math.min(thenChars, Math.floor(level / 3)));
+  const room = level - [...askText].length;
+  return room < THEN_MIN ? { text: askText } : { text: askText, then: cut(then, room) };
 }
 
 function itemsOf(view: AccountView, multi: boolean, now: number): Item[] {
@@ -376,8 +397,9 @@ function itemsOf(view: AccountView, multi: boolean, now: number): Item[] {
       account,
       chatKey: key(entry.chat),
       quoteId: entry.ask.type === "voice" && !entry.ask.transcribed ? null : entry.ask.id,
+      thenId: entry.thenId ?? null,
       line: (quote) => {
-        const who = `${entry.name}${entry.note ? ` (${entry.note})` : ""}${entry.group ? " [group]" : ""}${entry.business ? " [business]" : ""}`;
+        const who = `${entry.name}${entry.note ? ` (${entry.note})` : ""}${entry.group ? " [group]" : ""}${entry.business ? " [business]" : entry.unknown ? " [not saved]" : ""}`;
         const parts = [
           `- ${who}`,
           ...(entry.from ? [`${entry.from} asks`] : []),
@@ -403,6 +425,7 @@ function itemsOf(view: AccountView, multi: boolean, now: number): Item[] {
         ...(entry.note ? { note: entry.note } : {}),
         ...(entry.group ? { group: true, from: entry.from } : {}),
         ...(entry.business ? { business: true } : {}),
+        ...(entry.unknown ? { unknown: true } : {}),
         at: clock(entry.ask.ts, now),
         ...(entry.sinceYou > 1 ? { n: entry.sinceYou } : {}),
         ...(entry.newSinceLast ? { new: true } : {}),
@@ -419,7 +442,8 @@ function itemsOf(view: AccountView, multi: boolean, now: number): Item[] {
               },
             }
           : {}),
-        ...(quote ? { q: quote.text } : {}),
+        ...(quote && quote.text !== "" ? { q: quote.text } : {}),
+        ...(quote?.then === undefined ? {} : { then: quote.then }),
       }),
     });
   });
@@ -432,6 +456,7 @@ function itemsOf(view: AccountView, multi: boolean, now: number): Item[] {
       account,
       chatKey: key(entry.chat),
       quoteId: entry.kind === "mention" || entry.kind === "reply" ? entry.id : null,
+      thenId: null,
       line: (quote) =>
         `- ${entry.name} · ${entry.from} ${verb} · ${clock(entry.ts, now)}${entry.more > 0 ? ` (+${entry.more} more)` : ""}${
           entry.title ? `: "${cut(entry.title, TITLE_CHARS)}"` : ""
@@ -456,6 +481,7 @@ function itemsOf(view: AccountView, multi: boolean, now: number): Item[] {
       account,
       chatKey: key(entry.chat),
       quoteId: null,
+      thenId: null,
       line: () =>
         `- ${entry.name}${entry.group ? ` (in ${entry.group})` : ""} · ${entry.count} missed ${entry.video ? "video" : "voice"} call${entry.count === 1 ? "" : "s"} · last ${clock(entry.lastTs, now)}${
           entry.calledBack ? " · you called back" : ""
@@ -481,6 +507,7 @@ function itemsOf(view: AccountView, multi: boolean, now: number): Item[] {
       account,
       chatKey: key(entry.chat),
       quoteId: entry.quoteId,
+      thenId: null,
       line: (quote) => {
         const who = `${entry.name}${entry.note ? ` (${entry.note})` : ""}${entry.business ? " [business]" : entry.unknown ? " [not saved]" : ""}${entry.muted ? " [muted]" : ""}`;
         const more = quote !== null && entry.count > 1 ? ` (+${entry.count - 1} more)` : "";
@@ -512,9 +539,10 @@ function itemsOf(view: AccountView, multi: boolean, now: number): Item[] {
       account,
       chatKey: key(entry.chat),
       quoteId: entry.hotId,
+      thenId: null,
       line: (quote) =>
         `- ${entry.name} · ${entry.count} new from ${entry.senders}${entry.top.length > 0 ? ` (${entry.top.join(", ")})` : ""}${media ? ` · ${media}` : ""}${
-          entry.addressed ? " · for you too" : ""
+          entry.addressed ? " · addresses you" : ""
         }${quoteSuffix(quote, true)} · ${entry.chat}`,
       data: (quote) => ({
         ...tag,
@@ -539,6 +567,7 @@ function itemsOf(view: AccountView, multi: boolean, now: number): Item[] {
       account,
       chatKey: key("#muted"),
       quoteId: null,
+      thenId: null,
       line: () => `- Muted or archived: ${plural(muted.groups, "group")}, ${muted.count} new (${muted.names.join(", ")}${muted.groups > muted.names.length ? ", …" : ""})`,
       data: () => ({ ...tag, muted_or_archived: true, groups: muted.groups, n: muted.count, names: muted.names }),
     });
@@ -551,6 +580,7 @@ function itemsOf(view: AccountView, multi: boolean, now: number): Item[] {
       account,
       chatKey: key("#stories"),
       quoteId: null,
+      thenId: null,
       line: () => `- ${plural(stories.count, "story", "stories")} from ${stories.authors.join(", ")}${stories.more > 0 ? ` +${stories.more}` : ""}`,
       data: () => ({ ...tag, n: stories.count, authors: stories.authors, ...(stories.more > 0 ? { more: stories.more } : {}) }),
     });
@@ -734,23 +764,33 @@ export async function runCatchUp(args: CatchupArgs, ctx: CatchupContext): Promis
   // 2. Quotes by priority, one per chat, read back in full for at most 60 messages.
   const quotedChats = new Set<string>();
   const candidates: Item[] = [];
+  let reads = 0;
   for (const section of CATCHUP_SECTIONS) {
     if (QUOTE_CAPS[section] === undefined) continue;
     for (const item of page) {
-      if (item.section !== section || item.quoteId === null || quotedChats.has(item.chatKey) || candidates.length >= MAX_QUOTES) continue;
+      if (item.section !== section || (item.quoteId === null && item.thenId === null) || quotedChats.has(item.chatKey)) continue;
+      if (reads + (item.quoteId === null ? 0 : 1) + (item.thenId === null ? 0 : 1) > MAX_QUOTES) break;
+      reads += (item.quoteId === null ? 0 : 1) + (item.thenId === null ? 0 : 1);
       quotedChats.add(item.chatKey);
       candidates.push(item);
     }
   }
   const texts = await readQuotes(candidates, answered);
-  type Placed = { item: Item; full: string; signals: Signal[]; level: number };
+  type Placed = { item: Item; full: string; then: string | null; signals: Signal[]; level: number };
   const placed: Placed[] = [];
   for (const item of candidates) {
-    const quote = texts.get(`${item.account}|${item.quoteId}`);
-    if (quote === undefined || quote.text === "") continue;
-    placed.push({ item, full: quote.text, signals: item.section === "waiting" ? [] : [...signalsOf(quote.text)], level: QUOTE_CAPS[item.section]! });
+    const full = item.quoteId === null ? "" : (texts.get(`${item.account}|${item.quoteId}`)?.text ?? "");
+    const then = item.thenId === null ? "" : (texts.get(`${item.account}|${item.thenId}`)?.text ?? "");
+    if (full === "" && then === "") continue;
+    placed.push({
+      item,
+      full,
+      then: then === "" ? null : then,
+      signals: item.section === "waiting" ? [] : [...signalsOf(full)],
+      level: QUOTE_CAPS[item.section]!,
+    });
   }
-  const quoteAt = (entry: Placed, level: number): Quoted => (level === 0 ? null : { text: cut(entry.full, level), signals: entry.signals });
+  const quoteAt = (entry: Placed, level: number): Quoted => (level === 0 ? null : { ...composeQuote(entry.full, entry.then, level), signals: entry.signals });
   const extra = (entry: Placed, level: number): number => entry.item.line(quoteAt(entry, level)).length - skeletonChars.get(entry.item)! + 1;
   let spent = placed.reduce((n, entry) => n + extra(entry, entry.level), 0);
   // 3. Too long: the lowest-priority quotes shrink to 80 characters, then go.
@@ -789,7 +829,7 @@ export async function runCatchUp(args: CatchupArgs, ctx: CatchupContext): Promis
     const offset = all.slice(0, start + page.length).filter((item) => item.section === next.section).length;
     const remaining: Record<string, number> = {};
     for (const item of remainingItems) remaining[STRUCTURED_KEYS[item.section]] = (remaining[STRUCTURED_KEYS[item.section]] ?? 0) + 1;
-    const quotesLeft = remainingItems.filter((item) => item.quoteId !== null).length;
+    const quotesLeft = remainingItems.filter((item) => item.quoteId !== null || item.thenId !== null).length;
     const approx = Math.ceil((skeletonOf(remainingItems) + footerChars) / 4) + quotesLeft * 30;
     more = { cursor: encodeCursor({ ...template, sec: next.section, o: offset }), remaining, approx_tokens: approx };
     const counts = Object.entries(remaining)
@@ -840,7 +880,9 @@ export async function runCatchUp(args: CatchupArgs, ctx: CatchupContext): Promis
 async function readQuotes(candidates: readonly Item[], views: readonly AccountView[]): Promise<Map<string, CatchupQuote>> {
   const out = new Map<string, CatchupQuote>();
   for (const view of views) {
-    const ids = candidates.filter((item) => item.account === view.id).map((item) => item.quoteId!);
+    const ids = candidates
+      .filter((item) => item.account === view.id)
+      .flatMap((item) => [item.quoteId, item.thenId].filter((id): id is number => id !== null));
     if (ids.length === 0 || typeof view.source.catchUpQuotes !== "function") continue;
     for (const quote of await view.source.catchUpQuotes(ids)) out.set(`${view.id}|${quote.id}`, quote);
   }
