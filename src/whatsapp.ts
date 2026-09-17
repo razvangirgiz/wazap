@@ -2920,7 +2920,9 @@ export class WhatsAppService implements WhatsAppApi {
         content.jpegThumbnail = (await videoFrame(media.buffer, 32))?.toString("base64") ?? "";
       }
       const sent = await this.dispatch(sock, jid, content, {}, attempt);
-      return this.sentResult(sent, jid, opts.caption ?? `[${media.mimetype}]`);
+      // The receipt names the caption only when it went: audio (a URL that named no type) carries none.
+      const caption = (content as { caption?: string }).caption;
+      return this.sentResult(sent, jid, caption ?? `[${media.mimetype}]`);
     });
   }
 

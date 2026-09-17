@@ -3,6 +3,7 @@ import type { SendRecord, Sends } from "./db/index.js";
 import { styleCheckLines, type StyleCheck } from "./draft-style.js";
 import { WazapError } from "./errors.js";
 import { isoWithOffset } from "./messages.js";
+import { captionTravels, mimeOfSource } from "./outgoing-media.js";
 import type { MediaSource, OutgoingTarget, SentMessage } from "./wa-types.js";
 
 export const DRAFT_TTL_MS = 15 * 60_000;
@@ -356,7 +357,9 @@ function mediaBody(payload: Extract<DraftPayload, { kind: "media" }>): string {
   const name = mediaLabel(payload);
   const tag = payload.asVoice ? "voice" : payload.asDocument ? "document" : payload.asGif ? "gif" : "media";
   const line = `[${tag}] ${name}`;
-  return payload.caption ? `${line}\n"${payload.caption}"` : line;
+  // Only a caption that will travel: a voice note or an audio file goes without one.
+  const shown = payload.caption && captionTravels(mimeOfSource(payload.source), payload);
+  return shown ? `${line}\n"${payload.caption}"` : line;
 }
 
 function mediaLabel(payload: Extract<DraftPayload, { kind: "media" }>): string {

@@ -327,6 +327,34 @@ test("send_message drafts one kind at a time and refuses what does not belong to
   assert.deepEqual(drafted.at(-1), { kind: "text", chatId: "+40722123456", text: "Joi la 10.", replyTo: "false_1@s.whatsapp.net_X", mentionIds: undefined });
 });
 
+test("a voice note or an audio file drafted with text is refused: WhatsApp shows no caption on it", async () => {
+  const server = fakeServer();
+  const drafted = [];
+  const wa = { ...draftApi(), draft: async (payload) => (drafted.push(payload), draftApi().draft(payload)) };
+  registerTools(server, asToolSource(wa), { allowWrite: true });
+  const send = (args) => server.tools.get("send_message").handler({ chat_id: "+40722123456", ...args });
+  const words = "Ascultă până la capăt, e despre contract";
+  for (const args of [
+    { text: words, file_path: "/tmp/nota.ogg", as: "voice" },
+    { text: words, file_path: "/tmp/nota.m4a", as: "voice" },
+    { text: words, file_path: "/tmp/nota.ogg" },
+    { text: words, file_path: "/tmp/interviu.MP3" },
+    { text: words, url: "https://example.com/audio/nota.opus?x=1" },
+  ]) {
+    const result = await send(args);
+    assert.equal(result.structuredContent.error, "INVALID_ID", JSON.stringify(args));
+    assert.match(result.structuredContent.message, /no caption/);
+    assert.match(result.structuredContent.fix, /own send_message/);
+  }
+  assert.equal(drafted.length, 0, "nothing refused reached a draft");
+
+  // Without text, or as a document (which keeps its caption), the recording drafts.
+  assert.equal((await send({ text: "", file_path: "/tmp/nota.ogg", as: "voice" })).structuredContent.status, "draft");
+  assert.equal((await send({ text: "", file_path: "/tmp/nota.mp3" })).structuredContent.status, "draft");
+  assert.equal((await send({ text: "înregistrarea", file_path: "/tmp/nota.mp3", as: "document" })).structuredContent.status, "draft");
+  assert.equal(drafted.at(-1).caption, "înregistrarea");
+});
+
 test("each tool's annotations are true of its most far-reaching action", () => {
   const server = fakeServer();
   registerTools(server, asToolSource({}), { allowWrite: true });

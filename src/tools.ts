@@ -19,6 +19,7 @@ import { ERROR_GUIDE, WazapError } from "./errors.js";
 import { FIND_CONTACT_OUTPUT, runFindContact } from "./find-contact.js";
 import { freshnessNote, readFreshness } from "./freshness.js";
 import { mediaCaptionOf } from "./media-details.js";
+import { captionTravels, mimeOfSource } from "./outgoing-media.js";
 import { getMessageView, getMessageViewAcross, resolveMessageId, resolveMessageIdAcross } from "./message-ref.js";
 import { clockLabel } from "./messages.js";
 import { RateLimiter } from "./ratelimit.js";
@@ -822,7 +823,7 @@ const TOOLS: readonly ToolDef[] = [
     description: `Draft a message; nothing is sent. Show the user the preview and call confirm_send after their yes; a draft lasts 15 minutes. The same draft carries media (file_path or url, text as caption), a poll (options), a location (latitude, longitude) or a forward. It may carry style_check warnings.`,
     schema: {
       chat_id: chatId,
-      text: z.string().max(65536).describe('The message, or the caption, poll question or place name; "" for a forward'),
+      text: z.string().max(65536).describe('The message, or the caption, poll question or place name; "" for a forward, a voice note or audio'),
       reply_to: messageId.optional(),
       mention_ids: z.array(z.string().min(1)).max(50).optional().describe("Chat ids to @-mention; write @<number> in text for each"),
       file_path: z.string().min(1).optional().describe("Media: absolute path on the machine running wazap"),
@@ -1448,15 +1449,16 @@ function sendPayload(args: SendArgs): DraftPayload {
   const chatId = args.chat_id;
   if (media) {
     if (args.text.length > 1024) throw new WazapError("TEXT_TOO_LONG", "A caption holds at most 1024 characters.", "Shorten the caption, or send the rest as a text");
-    return {
-      kind: "media",
-      chatId,
-      source: { file_path: args.file_path, url: args.url },
-      ...(args.text === "" ? {} : { caption: args.text }),
-      asDocument: args.as === "document",
-      asVoice: args.as === "voice",
-      asGif: args.as === "gif",
-    };
+    const source = { file_path: args.file_path, url: args.url };
+    const as = { asDocument: args.as === "document", asVoice: args.as === "voice", asGif: args.as === "gif" };
+    // A caption WhatsApp would not show is refused, not dropped: the user would approve words nobody receives.
+    if (args.text !== "" && !captionTravels(mimeOfSource(source), as)) {
+      refuse(
+        `text does not apply to ${as.asVoice ? "a voice note" : "an audio file"}: WhatsApp shows no caption on it.`,
+        "A voice note or audio file carries no caption; send the words as their own send_message"
+      );
+    }
+    return { kind: "media", chatId, source, ...(args.text === "" ? {} : { caption: args.text }), ...as };
   }
   if (poll) {
     if (args.text.trim() === "") refuse("A poll needs its question in text.", 'send_message({ chat_id, text: "Pizza?", options: ["da", "nu"] })');

@@ -54,7 +54,9 @@ answers.
   `delete` and `block`; `edit_message` is destructive.
 - **`send_message` refuses what does not belong to its draft** instead of
   dropping it: two kinds at once, `reply_to` or `mention_ids` on media, a poll
-  without its question, a forward with text.
+  without its question, a forward with text, text on a voice note or an audio
+  file. WhatsApp shows no caption there, so the preview no longer shows one and
+  `confirm_send` no longer reports words that never went.
 - **The eval tool map 1.0** names the 20 tools and is the default of
   `run-claude`, `score` and `manual`; a run recorded against 0.23.x scores with
   `--tool-map 0.23`.

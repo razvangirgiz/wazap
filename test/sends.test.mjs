@@ -256,6 +256,25 @@ test("a failure while the message is built, before the relay, leaves the draft u
   assert.equal(sent.length, 0);
 });
 
+test("an audio draft with a caption shows no caption, and its receipt names none: WhatsApp got none", async (t) => {
+  const dataDir = dataDirFor(t);
+  const { svc, sent } = serviceOn(t, dataDir);
+  const file = join(dataDir, "nota.ogg");
+  writeFileSync(file, "OggS synthetic opus");
+  // A caption can reach the service on a draft whose type the tool could not tell (a URL without an extension).
+  for (const asVoice of [true, false]) {
+    const view = await svc.draft(
+      { kind: "media", chatId: PEER, source: { file_path: file }, caption: "Ascultă până la capăt", asDocument: false, asVoice, asGif: false },
+      OWNER
+    );
+    assert.doesNotMatch(view.preview, /Ascultă/, "the preview the user approves shows no words that will not go");
+    const receipt = await svc.confirm(view.draft_id, OWNER);
+    const { message } = sent.at(-1);
+    assert.equal(message.audioMessage.caption, undefined);
+    assert.equal(receipt.text, "[audio/ogg]", "the receipt does not report words WhatsApp never got");
+  }
+});
+
 test("a poll goes out as sendMessage sends one, with its creation node", async (t) => {
   const { svc, sent } = serviceOn(t, dataDirFor(t));
   const view = await svc.draft({ kind: "poll", chatId: PEER, question: "Pizza?", options: ["da", "nu"], multiSelect: false }, OWNER);

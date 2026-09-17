@@ -110,6 +110,23 @@ export async function asGifMedia(media: LoadedMedia, asGif: boolean): Promise<Lo
   );
 }
 
+/** Whether WhatsApp shows a caption on media sent this way: never on a voice note, nor on a plain audio file. */
+export function captionTravels(mime: string, opts: { asDocument: boolean; asVoice: boolean; asGif: boolean }): boolean {
+  if (opts.asVoice) return false;
+  return opts.asGif || opts.asDocument || !mime.startsWith("audio/");
+}
+
+/** The MIME a draft's file or URL names by its extension, before anything is read; a URL without one names none. */
+export function mimeOfSource(source: MediaSource): string {
+  if (source.file_path) return guessMime(source.file_path);
+  if (!source.url) return "application/octet-stream";
+  try {
+    return guessMime(new URL(source.url).pathname);
+  } catch {
+    return "application/octet-stream";
+  }
+}
+
 export function mediaContent(
   media: LoadedMedia,
   opts: { caption?: string; asDocument: boolean; asVoice: boolean; asGif: boolean }
