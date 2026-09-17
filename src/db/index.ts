@@ -39,6 +39,7 @@
  *   eligible, or gone). The row leaves once setTranscript stores words.
  */
 import { CatchupMarks } from "./catchup.js";
+import { Contacts, type LeftGroup } from "./contacts.js";
 import { Connection, type CheckpointResult, type ConnectionOptions, type ConnectionSettings } from "./connection.js";
 import { StorageError } from "./errors.js";
 import { Events } from "./events.js";
@@ -63,6 +64,9 @@ export type { FlagDetector, ScrubQuote } from "./messages.js";
 export { FLAGS_BACKFILL_META, FLAGS_BACKFILL_WINDOW_MS } from "./messages.js";
 export { MESSAGE_FLAGS } from "./types.js";
 export type { CatchupAdvance, CatchupMark, CatchupMarks } from "./catchup.js";
+export { FIND_SCORES } from "./contacts.js";
+export type { ContactCandidate, Contacts, FindInput, FindKind, FindResult, FindVerdict, LeftGroup, MatchClass, MatchSource, QualifierHit, QualifierSource } from "./contacts.js";
+export { DIMINUTIVES, INFLECTIONS, RELATIONSHIPS, diminutivesOf, inflectionForms, nameWords, relationOf, relationNameMatch } from "./names.js";
 export type { NewDraft, SendRecord, SendState, Sends } from "./sends.js";
 export { TRANSCRIBE_MAX_ATTEMPTS, TRANSCRIBE_QUEUE_MAX_AGE_MS } from "./transcripts.js";
 export type { ProviderClass, TranscribeItem, TranscribeQueueStats, TranscribeState } from "./transcripts.js";
@@ -84,6 +88,8 @@ const FTS_MERGE_PAGES = 100;
 export interface AccountDbOptions extends ConnectionOptions {
   /** Strips a quoted message's embedded copy from a quoting message's protobuf; see ScrubQuote. */
   scrubQuote?: ScrubQuote;
+  /** Tells a group the account left from its stored chat protobuf; see LeftGroup. */
+  leftGroup?: LeftGroup;
 }
 
 export class AccountDb {
@@ -97,6 +103,8 @@ export class AccountDb {
   readonly events: Events;
   /** Where each client's catch-up summary left off (v5). */
   readonly catchup: CatchupMarks;
+  /** Who a name, a nickname or a relationship means: people and groups, scored (find_contact). */
+  readonly contacts: Contacts;
   private readonly merger: Merger;
 
   private constructor(private readonly connection: Connection, options: AccountDbOptions) {
@@ -108,6 +116,7 @@ export class AccountDb {
     this.transcripts = new Transcripts(connection, this.messages);
     this.events = new Events(connection);
     this.catchup = new CatchupMarks(connection);
+    this.contacts = new Contacts(connection, options.leftGroup ?? null);
     this.merger = new Merger(connection, this.identity, this.messages);
   }
 

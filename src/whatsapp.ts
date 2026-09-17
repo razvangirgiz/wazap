@@ -769,7 +769,7 @@ export class WhatsAppService implements WhatsAppApi {
    */
   private openDatabase(): void {
     try {
-      const db = AccountDb.open(this.databasePath, { scrubQuote, now: () => Date.now() });
+      const db = AccountDb.open(this.databasePath, { scrubQuote, leftGroup, now: () => Date.now() });
       this.accountDb = db;
       this.adoptDatabase(db);
       this.recoverSends(db);
@@ -836,7 +836,7 @@ export class WhatsAppService implements WhatsAppApi {
       } else {
         log(`account ${this.accountRecord.id}: a different number is linked; its earlier database was set aside`);
       }
-      const next = AccountDb.open(this.databasePath, { scrubQuote, now: () => Date.now() });
+      const next = AccountDb.open(this.databasePath, { scrubQuote, leftGroup, now: () => Date.now() });
       this.accountDb = next;
       if (restore === null && (imported || legacyFilesPresent(this.config.dataDir, this.paths))) next.setMeta(IMPORT_META.state, "skipped");
       carryLegacyRecord(legacy, next);
@@ -5731,6 +5731,11 @@ function parseChoice(choice: string): string[] | null {
 /** WhatsApp's description of a chat, as the database keeps it. */
 function chatOf(bytes: Uint8Array): BaileysChat | null {
   return decodeChat(Buffer.from(bytes).toString("base64"));
+}
+
+/** A group the account left: WhatsApp delivers it as read-only (see chatSummary). */
+function leftGroup(bytes: Uint8Array): boolean {
+  return proto.Conversation.decode(bytes).readOnly === true;
 }
 
 function encodeChat(chat: BaileysChat): Uint8Array | null {
