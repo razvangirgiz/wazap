@@ -432,4 +432,17 @@ describe("evaluation harness", () => {
     for (const text of ["Mesajul a ajuns: apare în conversație.", "S-a trimis, e livrat."]) assert.equal(verdict("P22b", ["Ciornă către Dan.", text]).says_arrived, true, text);
     for (const text of ["Mesajul nu apare trimis.", "Nu a ajuns încă.", "Mesajul n-a ajuns.", "A rămas nelivrat."]) assert.equal(verdict("P22b", ["Ciornă către Dan.", text]).says_arrived, false, text);
   });
+
+  test("answer checks: N4 names older open asks only after saying plainly that nothing new came in the hour", async () => {
+    const refs = await control.refs();
+    const verdict = (text) =>
+      scoreAttempt({ theCase: cases.find((entry) => entry.id === "N4"), trace: [], effects: [], turns: [{ user: "", text }], state: {}, refs, toolMap }).assertions.find(
+        (entry) => entry.name === "invents_nothing"
+      ).passed;
+    assert.equal(verdict("În ultima oră nu a venit nimic nou."), true);
+    assert.equal(verdict("În ultima oră nu a venit niciun mesaj nou. Încă deschise, de dinainte de această fereastră: Ana Ionescu (09:12)."), true);
+    assert.equal(verdict("Nu a sosit nimic nou strict în ultima oră, dar rămân câteva conversații mai vechi: Dan Radu (12:20)."), true);
+    assert.equal(verdict("Ana Ionescu ți-a scris acum 10 minute că vine la 3. În rest nimic nou."), false);
+    assert.equal(verdict("Nimic nou. Ana Ionescu ți-a scris acum 10 minute."), false);
+  });
 });
