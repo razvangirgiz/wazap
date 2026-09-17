@@ -19,10 +19,17 @@
  * - `ambiguous` and `not_found` never carry a message's words, and a
  *   candidate's number only as its last four digits: the assistant has to ask
  *   the user and look the one they name up again, it cannot send to a guess.
+ *   One name on several accounts, one candidate on each, is the exception the
+ *   `fix` names: what the request is about usually says which account it
+ *   means, so each candidate says since when it is `waiting` on an answer and
+ *   the assistant is told to look before it asks. Nothing goes out on a guess
+ *   either way: a draft's preview names the recipient, the number and the
+ *   account, and the user says yes to that.
  */
 import { z } from "zod";
 import type { AccountBinding } from "./account-hub.js";
 import { draftContextEnabled } from "./accounts.js";
+import { openAsk, ownThroughOf } from "./catchup-scan.js";
 import { privateRule } from "./catchup.js";
 import { FIND_SCORES, LOOKUP_MIN_DIGITS, RELATIONSHIPS, inflectionForms, nameWords, type AccountDb, type ContactCandidate, type FindKind, type FindResult, type FindVerdict } from "./db/index.js";
 import { styleLine, type DraftContext } from "./draft-style.js";
@@ -48,6 +55,8 @@ export interface FoundContact {
   candidate: ContactCandidate;
   note: string | null;
   fields: Record<string, string> | null;
+  /** When an ask of theirs the user has not answered was sent; null when nothing of theirs is open. */
+  waiting?: number | null;
 }
 
 /** One account's answer, before the tool merges accounts and decides on context. */
@@ -79,10 +88,48 @@ export function lookupOf(name: string): Lookup | null {
 }
 
 /**
+ * When each of these candidates' still-open ask was sent, by the chat id they
+ * were asked for under: catch_up's `waiting` judgment (openAsk), for the chats
+ * these people and groups have. An ask stays open until the user answers it,
+ * files it handled, or it is 14 days old.
+ *
+ * Only the instant, never the words: what tells two candidates of the same
+ * name apart is that one of them is waiting on an answer, not what they wrote.
+ * A name the user asked for by name is read whatever tags it carries, the way
+ * a search is: #private and #no-catchup keep words and chats out of what was
+ * not asked for, and no word is handed out here.
+ */
+function waitingByChat(db: AccountDb, candidates: readonly ContactCandidate[]): Map<number, number> {
+  const waiting = new Map<number, number>();
+  const chatIds = [...new Set(candidates.map((candidate) => candidate.chatId).filter((id): id is number => id !== null))];
+  if (chatIds.length === 0) return waiting;
+  const now = Date.now();
+  const untilId = db.digest.maxId();
+  const untilSeq = db.digest.storedTop();
+  const families = db.digest.families();
+  const handled = db.digest.handled();
+  for (const { chat, asked } of db.digest.chatsByIds(chatIds)) {
+    const family = families.get(chat.id) ?? [chat.id];
+    const open = openAsk(db, chat, {
+      now,
+      untilId,
+      family,
+      span: (afterId) => ({ afterId, untilId, afterSeq: -1, untilSeq }),
+      ownThrough: ownThroughOf(db, chat, family, untilId),
+      handled,
+    });
+    // A chat folding into another answers for both ids it was asked for under.
+    if (open !== null) for (const id of asked) waiting.set(id, open.ask.ts);
+  }
+  return waiting;
+}
+
+/**
  * db.contacts.find on one account, with a digits-only qualifier read as the
- * end of a phone number (numberTail), and each returned person's note; a
- * number or an id is looked up instead (db.contacts.lookup), `resolveId`
- * giving the number a lid is paired with. The service calls it.
+ * end of a phone number (numberTail), each returned person's note, and
+ * whether an ask of theirs is still open; a number or an id is looked up
+ * instead (db.contacts.lookup), `resolveId` giving the number a lid is paired
+ * with. The service calls it.
  */
 export function findInAccount(db: AccountDb, accountId: string, query: FindContactQuery, resolveId?: (id: string) => string): AccountFind {
   const tail = numberTailOf(query.qualifier ?? "");
@@ -100,9 +147,16 @@ export function findInAccount(db: AccountDb, accountId: string, query: FindConta
       : lookup.source === "number"
         ? db.contacts.lookup({ source: "number", digits: lookup.digits, kind, limit: query.limit })
         : db.contacts.lookup({ source: "id", jids: [...new Set([resolveChatId(lookup.id), resolveId?.(lookup.id) ?? lookup.id])], kind, limit: query.limit });
+  const waiting = waitingByChat(db, [...candidates, ...closest]);
   const withNote = (candidate: ContactCandidate): FoundContact => {
     const filed = candidate.kind === "person" ? db.identity.notes(candidate.jid) : null;
-    return { accountId, candidate, note: filed?.note ?? null, fields: filed === null || Object.keys(filed.fields).length === 0 ? null : filed.fields };
+    return {
+      accountId,
+      candidate,
+      note: filed?.note ?? null,
+      fields: filed === null || Object.keys(filed.fields).length === 0 ? null : filed.fields,
+      waiting: candidate.chatId === null ? null : (waiting.get(candidate.chatId) ?? null),
+    };
   };
   return { accountId, verdict, query: found.query, candidates: candidates.map(withNote), closest: closest.map(withNote) };
 }
@@ -157,7 +211,12 @@ function matchedOf(candidate: ContactCandidate): { source: string; value: string
   return { source: candidate.match.source, value: candidate.match.value, class: candidate.match.class };
 }
 
-/** A candidate the user has to choose from: what tells them apart, the number cut to its last four digits, no message text. */
+/**
+ * A candidate to choose from: what tells them apart, the number cut to its
+ * last four digits, no message text. `waiting` says one of them is owed an
+ * answer — the same open ask catch_up lists — since that is often what the
+ * request itself is about.
+ */
 function candidateView(found: FoundContact, labelAccount: boolean): Record<string, unknown> {
   const c = found.candidate;
   const view: Record<string, unknown> = {};
@@ -172,6 +231,9 @@ function candidateView(found: FoundContact, labelAccount: boolean): Record<strin
       ago: formatAge(c.lastExchange.at),
       direction: c.lastExchange.fromMe ? "sent" : "received",
     };
+  }
+  if (found.waiting !== undefined && found.waiting !== null) {
+    view.waiting = { since: isoWithOffset(found.waiting), ago: formatAge(found.waiting) };
   }
   view.messages_90d = c.ownMessages90d;
   if (c.groupsInCommon !== null && c.groupsInCommon.count > 0) {
@@ -226,6 +288,29 @@ function unsearchedLine(unavailable: readonly UnavailableAccount[]): string | nu
   return `Account ${which} could not be searched, so someone there may be meant too: confirm with the user before using any candidate, then call find_contact again with its account_id.`;
 }
 
+/**
+ * Candidates that are one name on several accounts, one candidate per account:
+ * the same person, or two people the user keeps apart by account. What the
+ * request is about then says which account it means, so the assistant is told
+ * to look before it asks (SAME_NAME_ON_ACCOUNTS). People with different names
+ * are a question for the user, whatever account they are on.
+ */
+function sameNameOnAccounts(candidates: readonly FoundContact[]): boolean {
+  if (candidates.length < 2) return false;
+  const accounts = new Set(candidates.map((found) => found.accountId));
+  if (accounts.size !== candidates.length) return false;
+  return new Set(candidates.map((found) => nameWords(found.candidate.displayName).join(" "))).size === 1;
+}
+
+/**
+ * One name on several accounts: the request itself usually says which one it
+ * is about, so looking comes before asking. Nothing is sent on a guess either
+ * way — a draft's preview names the recipient, the number and the account, and
+ * the user says yes to that.
+ */
+const SAME_NAME_ON_ACCOUNTS =
+  "The same name on several accounts, one on each. When the request says what it is about (a file, a topic, the answer one of them is waiting for), look before asking: search(query, from: the name), or find_contact again with a candidate's number_tail as qualifier and its account_id, which resolves them. Then go on with the account it points to and say which one. Ask the user only when nothing tells them apart.";
+
 function fixFor(outcome: FindOutcome, query: FindResult["query"], asked: string, multi: boolean, unavailable: readonly UnavailableAccount[]): string | undefined {
   if (outcome.status === "resolved") return undefined;
   const unsearched = unsearchedLine(unavailable);
@@ -244,6 +329,9 @@ function fixFor(outcome: FindOutcome, query: FindResult["query"], asked: string,
   }
   if (outcome.status === "ambiguous") {
     const accounts = new Set(outcome.candidates.map((found) => found.accountId));
+    if (multi && sameNameOnAccounts(outcome.candidates)) {
+      return [SAME_NAME_ON_ACCOUNTS, unsearched].filter((line) => line !== null).join(" ");
+    }
     return [
       outcome.candidates.length > 1
         ? `Ask the user which one they mean, naming each by what tells them apart (last exchange, groups, note, tags, number_tail); never pick one yourself.`
@@ -284,6 +372,8 @@ function candidateLine(view: Record<string, unknown>, index: number): string {
   if (view.number_tail) parts.push(`number …${view.number_tail as string}`);
   const last = view.last_exchanged as { ago: string; direction: string } | undefined;
   parts.push(last === undefined ? "no direct messages" : `last ${last.direction} ${last.ago}`);
+  const waiting = view.waiting as { since: string; ago: string } | undefined;
+  if (waiting !== undefined) parts.push(`waiting on an answer since ${when(waiting.since)} (${waiting.ago})`);
   parts.push(`${view.messages_90d as number} from the user in 90 days`);
   const groups = view.groups_in_common as { count: number; names: string[] } | undefined;
   if (groups !== undefined) parts.push(`groups: ${groups.names.join(", ")}${groups.count > groups.names.length ? ` +${groups.count - groups.names.length}` : ""}`);
@@ -392,6 +482,10 @@ const candidateSchema = z.object({
   name_source: z.enum(NAME_SOURCES),
   number_tail: z.string().optional().describe("Last 4 digits of the number; the full number is never given for a candidate"),
   last_exchanged: z.object({ at: z.string(), ago: z.string(), direction: z.enum(["sent", "received"]) }).optional(),
+  waiting: z
+    .object({ since: z.string(), ago: z.string() })
+    .optional()
+    .describe("Set when an ask of theirs is still open, as catch_up reads it: when they asked, still unanswered"),
   messages_90d: z.number().int().describe("The user's own messages to them in the last 90 days"),
   groups_in_common: z.object({ count: z.number().int(), names: z.array(z.string()) }).optional(),
   note: z.string().optional().describe("What the user noted about them"),

@@ -808,7 +808,7 @@ const TOOLS: readonly ToolDef[] = [
   tool({
     name: "find_contact",
     title: "Find who the user means",
-    description: `Who a name, nickname, relationship ("mama"), group name, number or id means, before drafting to them. resolved: contact.chat_id, with number, note, tags, details and, in a write session, context. ambiguous or not_found: ask the user; never send to a guess. tag lists everyone filed under it.`,
+    description: `Who a name, nickname, relationship ("mama"), group, number or id means, before drafting. resolved: contact.chat_id, with number, note, tags, details and, in a write session, context. ambiguous or not_found: ask the user; never send to a guess. A name on several accounts: see fix. tag: its people.`,
     schema: {
       name: z
         .string()

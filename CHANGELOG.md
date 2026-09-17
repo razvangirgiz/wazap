@@ -126,6 +126,19 @@ answers.
   before this window"; when nothing arrived in the window, the answer says so
   first, in the text and in `notes`. The description says `waiting` is every
   open ask, whatever the window.
+- **One name on several accounts: look before asking.** Each `find_contact`
+  candidate with an ask of theirs still open carries `waiting`
+  (`since`, `ago`), the one `catch_up` lists — open until the user answers it,
+  files it `handled` or it is 14 days old — with no word of what they wrote.
+  When the candidates are one name with one on each account, the `fix` says to
+  look for what the request is about (`search` with `from`, or `find_contact`
+  again with a candidate's `number_tail` and `account_id`), then to go on with
+  the account it points to and say which one, and to ask only when nothing
+  tells them apart. People with different names stay the user's to settle:
+  "ask, never pick one yourself". Nothing goes out on a guess either way — a
+  draft's preview names the recipient, the number and the account, and the
+  user says yes to that. `find_contact`'s description points at the `fix`, and
+  the output schema declares `waiting`.
 - **`find_contact`: who "mama", "Ana de la contabilitate" or "Mișu" is.** A
   read tool, in every session. It matches saved, business and self-given names, the
   `nickname` and `relatie` details, tags, and a note that is only the

@@ -153,8 +153,15 @@ test("Ana de la contabilitate resolves through the tag; plain Ana is two people 
   assert.equal(vasile.last_exchanged.direction, "received");
   assert.match(vasile.last_exchanged.ago, /ago$/);
   assert.equal(typeof vasile.messages_90d, "number");
-  assert.equal(body.candidates.find((c) => c.name === "Ana Ionescu").tags[0], "contabilitate");
+  const ionescu = body.candidates.find((c) => c.name === "Ana Ionescu");
+  assert.equal(ionescu.tags[0], "contabilitate");
+  // She sent the statement this morning and asked for an answer: that ask is still open, without a word of it.
+  assert.equal(ionescu.waiting.since, ionescu.last_exchanged.at);
+  assert.match(ionescu.waiting.ago, /ago$/);
+  assert.equal(vasile.waiting, undefined, "her own thread closed with a thank-you");
   assert.match(body.fix, /Ask the user which one/);
+  assert.match(body.fix, /never pick one yourself/, "different names stay the user's to settle");
+  assert.doesNotMatch(body.fix, /several accounts/);
   assert.match(ana.content[0].text, /number …3333/);
   assertNothingPrivate(ana);
 
@@ -202,6 +209,8 @@ test("across both accounts: candidates carry their account, one account's only m
     ana.structuredContent.candidates.map((c) => `${c.account_id}:${c.name}`).sort(),
     ["personal:Ana Ionescu", "personal:Ana Vasile", "work:Ana Ionescu", "work:Ana Marin"]
   );
+  assert.match(ana.structuredContent.fix, /never pick one yourself/, "four different people: the user says which");
+  assert.match(ana.structuredContent.fix, /pass account_id for the one the user means/);
   assertNothingPrivate(ana);
 
   const marin = (await find(s, { name: "Ana Marin" })).structuredContent;
@@ -214,13 +223,62 @@ test("across both accounts: candidates carry their account, one account's only m
   const accounting = await find(s, { name: "Anei", qualifier: "contabilitate" });
   assert.equal(accounting.structuredContent.status, "ambiguous", "each account resolves its own Ana Ionescu");
   assert.deepEqual(accounting.structuredContent.candidates.map((c) => c.account_id).sort(), ["personal", "work"]);
-  assert.match(accounting.structuredContent.fix, /pass account_id/);
+  assert.match(accounting.structuredContent.fix, /^The same name on several accounts/, "one name on each account: look before asking");
   assertNothingPrivate(accounting);
 
   await control.hooks([{ hook: "status", account: "work", status: "disconnected" }]);
   const offline = (await find(s, { name: "Ana Marin" })).structuredContent;
   assert.deepEqual([offline.status, offline.contact.account_id], ["resolved", "work"], "a disconnected account is searched in what it stores");
   await s.close();
+});
+
+test("one name on two accounts: the candidate owed an answer says since when, catch_up agrees, and the fix says to look before asking", async () => {
+  const { s, refs } = await world();
+  const ana = await find(s, { name: "Ana Ionescu" });
+  const body = ana.structuredContent;
+  assert.equal(body.status, "ambiguous");
+  const [personal, work] = ["personal", "work"].map((id) => body.candidates.find((c) => c.account_id === id));
+  assert.ok(personal !== undefined && work !== undefined, JSON.stringify(body.candidates));
+
+  // She sent the statement at 09:12 and asked for an answer by tomorrow; the one on work only said thank you.
+  assert.match(personal.waiting.since, /T09:12:00/);
+  assert.equal(personal.waiting.since, personal.last_exchanged.at, "her open ask is her newest message");
+  assert.match(personal.waiting.ago, /ago$/);
+  assert.equal(work.waiting, undefined, "nothing of hers is open there");
+  assert.match(ana.content[0].text, /waiting on an answer since/);
+  assertNothingPrivate(ana);
+
+  const digest = await s.call("catch_up", { hours: 24 });
+  const entry = digest.structuredContent.waiting.find((row) => row.chat === refs.contacts.ana_ionescu.jid);
+  assert.ok(entry !== undefined, "catch_up reads the same ask as open");
+  assert.equal(entry.at, personal.waiting.since.slice(11, 16), "and dates it the same");
+
+  assert.match(body.fix, /^The same name on several accounts/);
+  assert.match(body.fix, /look before asking: search\(query, from: the name\)/);
+  assert.match(body.fix, /find_contact again with a candidate's number_tail as qualifier and its account_id/);
+  assert.match(body.fix, /say which one/);
+  assert.match(body.fix, /Ask the user only when nothing tells them apart/);
+  assert.doesNotMatch(body.fix, /never pick one yourself/);
+
+  // The way out the fix names: her number_tail on her account resolves her, with the messages to answer.
+  const picked = (await find(s, { name: "Ana Ionescu", qualifier: personal.number_tail, account_id: "personal" })).structuredContent;
+  assert.deepEqual([picked.status, picked.contact.chat_id], ["resolved", refs.contacts.ana_ionescu.jid]);
+  assert.ok(picked.context.recent.length > 0, "and it brings her recent messages");
+
+  // An ask filed as handled is no longer open.
+  const marked = await s.call("remember", { chat_id: refs.contacts.ana_ionescu.jid, handled: true, account_id: "personal" });
+  assert.notEqual(marked.isError, true, JSON.stringify(marked.structuredContent ?? marked.content));
+  const handled = (await find(s, { name: "Ana Ionescu" })).structuredContent;
+  assert.equal(handled.candidates.find((c) => c.account_id === "personal").waiting, undefined, "filed handled: nothing open");
+  await s.close();
+
+  // Neither is an ask the user has answered since.
+  const answered = await world({
+    accounts: { personal: { "+messages": [{ chat: "ana_ionescu", from: "me", at: "azi 09:40", text: "Verific și vă confirm până mâine." }] } },
+  });
+  const after = (await find(answered.s, { name: "Ana Ionescu" })).structuredContent;
+  assert.equal(after.candidates.find((c) => c.account_id === "personal").waiting, undefined, "answered: nothing open");
+  await answered.s.close();
 });
 
 test("a resolved contact carries the recent exchange and the user's style in a write session, and nothing more anywhere else", async () => {
