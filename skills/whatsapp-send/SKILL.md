@@ -41,6 +41,8 @@ To: Ana (+40 722 …)
 
 A draft "Vă anunț că ajung la 7." to someone the user writes to on tu and without diacritics comes back with `address_mismatch` and `diacritics_mismatch`: draft "ajung la 7, nu mai gati" instead, and show that preview.
 
+The yes is a yes to **this text and this recipient**. A send asked in the same request that gave the text ("change it to «ajung la 6» and send") is that yes: send, do not ask a second time. A yes about something else, or one that comes after the talk moved to another subject, is not: show the preview again and ask.
+
 On the user's yes, call `confirm_send` with that `draft_id`. Do not call `send_message` again. Report the result with the `message_id` so the user can follow up with `edit_message` (own messages, 15 minutes) or `delete_message`. `DRAFT_EXPIRED` (15 minutes) or `DRAFT_NOT_FOUND` means draft again, show the new preview, and wait for another yes. `SEND_OUTCOME_UNKNOWN` means the message may have gone out: do not confirm or draft it again; check the chat with `read_messages` and tell the user what you find.
 
 `SEND_BLOCKED` means the account's send rules refuse the recipient (an allowlist or a deny list the owner set with `wazap config send`). It can fire at draft time or at `confirm_send`. Do not retry or route around it — tell the user which rule fired; only they can lift it.

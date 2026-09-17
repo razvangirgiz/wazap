@@ -37,7 +37,7 @@ answers.
 | `join_group` | `manage_group` with `action: "join"`, `invite` or `message_id`, `confirm` |
 | `save_contact`, `remove_contact`, `set_profile_picture` | removed, see below |
 
-- **What an assistant is sent is 4,787 tokens instead of 14,397**: the names,
+- **What an assistant is sent is 4,786 tokens instead of 14,397**: the names,
   descriptions, input schemas and annotations of a session that can write, as
   an SDK client lists them (2,937 in a read session). Every description fits in
   300 characters, `account_id` is explained once, in the server's instructions
@@ -88,6 +88,15 @@ answers.
   it has the recipient and the text and shows the preview the draft returns,
   instead of writing a preview of its own and asking first; a contact
   `find_contact` resolves in a session that can write says the same in `next`.
+- **The yes is a yes to one draft: this text, this recipient.** A send asked in
+  the same request that gave the text ("change it to «ajung la 6» and send") is
+  that yes, and asking again only leaves the message unsent; a yes about
+  something else, or one that comes after the talk moved to another subject, is
+  not, and the preview is shown again instead. The rule reads the same in the
+  draft's `next`, in `send_message`'s and `confirm_send`'s descriptions, in the
+  server's instructions and in the send skill. `confirm_send` is unchanged: same
+  arguments, same idempotence, no new state — the server never decides by itself
+  what counts as approval.
 - **A session that only reads says so.** Its server instructions say it
   cannot draft or send, and that a request to send is answered by saying so and
   offering the text for the user to send from their phone; a contact
@@ -130,11 +139,13 @@ answers.
   candidate with an ask of theirs still open carries `waiting`
   (`since`, `ago`), the one `catch_up` lists — open until the user answers it,
   files it `handled` or it is 14 days old — with no word of what they wrote.
-  When the candidates are one name with one on each account, the `fix` says to
-  look for what the request is about (`search` with `from`, or `find_contact`
-  again with a candidate's `number_tail` and `account_id`), then to go on with
-  the account it points to and say which one, and to ask only when nothing
-  tells them apart. People with different names stay the user's to settle:
+  When the candidates are one name with one on each account, the `fix` names
+  the two things that decide it, either one enough: exactly one candidate has
+  `waiting`, an open ask of theirs, and the request answers it; or what the
+  request is about (a file, a topic) is in one candidate's conversation, read
+  with `search` and `from`, or with `find_contact` again on a candidate's
+  `number_tail` and `account_id`. Then it says to go on with that account and
+  say which one, and to ask only when nothing tells them apart. People with different names stay the user's to settle:
   "ask, never pick one yourself". Nothing goes out on a guess either way — a
   draft's preview names the recipient, the number and the account, and the
   user says yes to that. `find_contact`'s description points at the `fix`, and
