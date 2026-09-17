@@ -1661,7 +1661,8 @@ export class WhatsAppService implements WhatsAppApi {
       });
       const ranked = result.hits.filter((hit) => hit.message.chatJid !== STATUS_JID);
       const hidden = new Set(people === null || author !== undefined ? [] : ranked.filter((hit) => people.message(hit.message)));
-      const shown = hidden.size === 0 ? ranked : ranked.filter((hit) => !hidden.has(hit)).slice(0, window);
+      // The window the variety rules walk stays as wide as without anyone #private, so the rest rank as they would.
+      const shown = ranked.filter((hit) => !hidden.has(hit)).slice(0, window);
       const kept = diversify(shown, (hit) => ({ chat: hit.message.chatJid, text: `${hit.message.text ?? ""} ${hit.message.transcript ?? ""}` })).slice(0, limit);
       // The #private hits that would have been among these: ranked at or above the lowest one kept, or all of them when fewer came.
       const floor = kept.length < limit ? -Infinity : Math.min(...kept.map((hit) => hit.score));
