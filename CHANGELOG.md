@@ -98,6 +98,13 @@ answers.
   preview and wait for a new yes: the yes given to the expired draft does not
   carry over to the new one. `DRAFT_NOT_FOUND` says the same. The codes are
   unchanged.
+- **A send whose outcome is unknown is not reported as failed.**
+  `SEND_OUTCOME_UNKNOWN`'s `fix` and its line in `learn` say to tell the user
+  it may or may not have arrived, never to confirm or draft it again unasked,
+  and that a chat not showing it yet does not mean it failed. `read_messages`
+  on the newest page of that chat lists it in `unconfirmed_sends`
+  (`draft_id`, `text`, `handed_at`, `state: "unknown"`) with a note, until
+  WhatsApp echoes it and it reads as the user's own message.
 - **`find_contact`: who "mama", "Ana de la contabilitate" or "Mișu" is.** A
   read tool, in every session. It matches saved, business and self-given names, the
   `nickname` and `relatie` details, tags, and a note that is only the

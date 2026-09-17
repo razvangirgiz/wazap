@@ -102,7 +102,7 @@ export const ERROR_GUIDE: Record<ErrorCode, string> = {
   DRAFT_EXPIRED: "The draft expired after 15 minutes: draft again, show the new preview and wait for a new yes; the old yes does not carry over.",
   CURSOR_EXPIRED: "The catch_up cursor expired: call catch_up without it; nothing was lost.",
   SEND_OUTCOME_UNKNOWN:
-    "It may have been sent: check the chat with read_messages, and never confirm or draft it again without asking the user.",
+    "It may or may not have arrived: never confirm or draft it again unasked. read_messages shows it once WhatsApp echoes it; not there yet does not mean it failed.",
   SEND_BLOCKED: "The account's send rules refuse this recipient: tell the user. Do not retry or route around it.",
   AMBIGUOUS_ACCOUNT: "Several accounts fit, or a write names a chat no account knows: pass account_id.",
   ACCOUNT_NOT_FOUND: "No such account: get_status lists them, and `wazap account add` makes one.",

@@ -52,6 +52,7 @@ import type {
   SearchAnswer,
   Synced,
   Preview,
+  UnconfirmedSend,
   WaitResult,
   WhatsAppApi,
 } from "./wa-types.js";
@@ -102,6 +103,10 @@ const READ_OUTPUT = {
   omitted: z.number().optional().describe("Older stories left out by limit"),
   preview_count: z.number(),
   messages: z.array(BROAD_MESSAGE_OUT),
+  unconfirmed_sends: z
+    .array(z.object({ draft_id: z.string(), text: z.string(), handed_at: z.string(), state: z.literal("unknown") }))
+    .optional()
+    .describe("Sends WhatsApp has not echoed yet: outcome unknown, not failed"),
   notes: NOTES,
   sync: z.string(),
   account_id: z.string(),
@@ -545,12 +550,18 @@ const TOOLS: readonly ToolDef[] = [
       }
       const result = await wa.readMessages(chat_id, limit, before, types);
       const previews = include_previews ? await wa.previews(newestFirst(result.data), MAX_PREVIEWS) : [];
+      const unconfirmed = result.unconfirmedSends ?? [];
       return ok(
         renderMessages(
           `Messages in ${chat_id}`,
           result.data,
           previewLabels(previews),
-          previewNote(result.data, previews, include_previews)
+          [
+            ...unconfirmed.map((send) => `${unconfirmedNote(send)} Its words: ${JSON.stringify(truncate(send.text, 160))}.`),
+            previewNote(result.data, previews, include_previews),
+          ]
+            .filter(Boolean)
+            .join(" ") || null
         ),
         synced(result, {
           chat_id,
@@ -558,7 +569,8 @@ const TOOLS: readonly ToolDef[] = [
           count: result.data.length,
           preview_count: previews.length,
           messages: result.data,
-          ...notesField([previewGap(result.data, previews, include_previews)]),
+          ...(unconfirmed.length === 0 ? {} : { unconfirmed_sends: unconfirmed }),
+          ...notesField([...unconfirmed.map(unconfirmedNote), previewGap(result.data, previews, include_previews)]),
         }),
         previewBlocks(previews)
       );
@@ -1211,6 +1223,11 @@ function previewNote(messages: MessageView[], previews: Preview[], asked: boolea
       : null,
   ].filter((part): part is string => part !== null);
   return parts.length > 0 ? `${parts.join("; ")}.` : null;
+}
+
+/** A send handed to WhatsApp that has not echoed: unknown, which a read that does not show it yet cannot turn into failed. */
+function unconfirmedNote(send: UnconfirmedSend): string {
+  return `A message handed to WhatsApp at ${send.handed_at.slice(11, 16)} has not echoed yet: its outcome is unknown, not failed.`;
 }
 
 /** The photos an asked-for preview could not be made for, as a note; null when none is missing. */

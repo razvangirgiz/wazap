@@ -194,6 +194,18 @@ export class Sends {
       .map(recordOf);
   }
 
+  /** The sends to these chats whose outcome is unknown, oldest first. */
+  unknownIn(chatJids: readonly string[], limit: number): SendRecord[] {
+    if (chatJids.length === 0) return [];
+    return this.c
+      .all<SendRow>(
+        `SELECT ${COLUMNS} FROM sends WHERE state = 'unknown' AND chat_jid IN (${chatJids.map(() => "?").join(", ")}) ORDER BY updated_at, draft_id LIMIT ?`,
+        ...chatJids,
+        limit
+      )
+      .map(recordOf);
+  }
+
   /** The unknown send made under this WhatsApp key, if any. */
   unknownByKey(keyId: string): SendRecord | null {
     const row = this.c.get<SendRow>(`SELECT ${COLUMNS} FROM sends WHERE key_id = ? AND state = 'unknown'`, keyId);

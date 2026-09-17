@@ -660,6 +660,22 @@ export interface Synced<T> {
   sync: SyncState;
 }
 
+/** A send confirm_send handed to WhatsApp whose echo has not come back: it may or may not have arrived. */
+export interface UnconfirmedSend {
+  draft_id: string;
+  /** The words it went out with; empty on an account that keeps no history. */
+  text: string;
+  /** When its outcome became unknown, ISO with the local offset. */
+  handed_at: string;
+  state: "unknown";
+}
+
+/** One page of a chat, and what the read cannot vouch for. */
+export interface ChatRead extends Synced<MessageView[]> {
+  /** On the newest page of the chat: sends whose outcome is unknown, oldest first. */
+  unconfirmedSends?: UnconfirmedSend[];
+}
+
 /** A keyword search's messages, and where the storage scan limit stopped it when it did. */
 export interface SearchAnswer extends Synced<MessageView[]> {
   /** Set when the scan limit stopped the search before the history ran out: older messages were not searched. */
@@ -696,7 +712,7 @@ export interface WhatsAppApi {
   link(phone: string): Promise<PairingInfo>;
   /** With `private`, a last message from someone tagged #private, or in their chat, comes without its words. */
   listChats(filter: ChatFilter, limit: number, opts?: { private?: PrivateRule }): Promise<Synced<ChatSummary[]>>;
-  readMessages(chatId: string, limit: number, before?: string, types?: MessageType[]): Promise<Synced<MessageView[]>>;
+  readMessages(chatId: string, limit: number, before?: string, types?: MessageType[]): Promise<ChatRead>;
   getRecentMessages(
     hours: number,
     filter: Exclude<ChatFilter, "archived">,

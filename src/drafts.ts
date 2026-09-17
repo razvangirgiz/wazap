@@ -105,7 +105,7 @@ export function sendOutcomeUnknown(id: string, cause?: string): WazapError {
   return new WazapError(
     "SEND_OUTCOME_UNKNOWN",
     `Draft ${id} was handed to WhatsApp, but whether it arrived is unknown${cause ? `: ${cause}` : "."}`,
-    "Do not confirm or draft this message again. Check the conversation with read_messages; if the message is not there, tell the user and ask before sending it again"
+    "Do not confirm or draft it again. Tell the user it may or may not have arrived. read_messages shows it once WhatsApp echoes it; not there yet does not mean it failed. Check again in a few seconds, and ask before any new send"
   );
 }
 

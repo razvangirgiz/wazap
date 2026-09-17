@@ -160,6 +160,12 @@ test("an expired draft asks for a new yes wherever it is explained: confirm_send
   assert.match(ERROR_GUIDE.DRAFT_EXPIRED, /wait for a new yes; the old yes does not carry over/);
 });
 
+test("SEND_OUTCOME_UNKNOWN is explained as unknown, never as failed: a chat that does not show the message yet proves nothing", () => {
+  assert.match(ERROR_GUIDE.SEND_OUTCOME_UNKNOWN, /may or may not have arrived/);
+  assert.match(ERROR_GUIDE.SEND_OUTCOME_UNKNOWN, /not there yet does not mean it failed/);
+  assert.doesNotMatch(ERROR_GUIDE.SEND_OUTCOME_UNKNOWN, /if the message is not there/);
+});
+
 test("a media draft surfaces FILE_NOT_FOUND from draft", async () => {
   const server = fakeServer();
   const wa = {
