@@ -7,7 +7,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { chmodSync, existsSync, linkSync, mkdirSync, readFileSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, linkSync, mkdirSync, readFileSync, readdirSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
@@ -377,3 +377,21 @@ for (const from of [1, 2, 3]) {
   });
 }
 
+
+test("SQL takes plain ? parameters: Node 22.16's node:sqlite cannot bind positional values to ?1", () => {
+  const root = fileURLToPath(new URL("../src/", import.meta.url));
+  const numbered = [];
+  const walk = (dir) => {
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      const path = join(dir, entry.name);
+      if (entry.isDirectory()) walk(path);
+      else if (entry.name.endsWith(".ts")) {
+        readFileSync(path, "utf8").split("\n").forEach((line, i) => {
+          if (/[\s(,=]\?\d/.test(line)) numbered.push(`${path.slice(root.length)}:${i + 1}`);
+        });
+      }
+    }
+  };
+  walk(root);
+  assert.deepEqual(numbered, []);
+});

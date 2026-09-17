@@ -512,11 +512,11 @@ export class Digest {
     }
     if (jids.length > 0) {
       for (const row of this.c.all<{ survivor: number }>(
-        `SELECT coalesce(k.merged_into, k.id) AS survivor FROM json_each(?1) j CROSS JOIN contacts k ON k.phone_jid = j.value
-         UNION SELECT coalesce(k.merged_into, k.id) FROM json_each(?1) j CROSS JOIN contacts k ON k.lid = j.value
-         UNION SELECT coalesce(k.merged_into, k.id) FROM json_each(?1) j CROSS JOIN lid_phones p ON p.lid = j.value
+        `SELECT coalesce(k.merged_into, k.id) AS survivor FROM json_each(?) j CROSS JOIN contacts k ON k.phone_jid = j.value
+         UNION SELECT coalesce(k.merged_into, k.id) FROM json_each(?) j CROSS JOIN contacts k ON k.lid = j.value
+         UNION SELECT coalesce(k.merged_into, k.id) FROM json_each(?) j CROSS JOIN lid_phones p ON p.lid = j.value
            CROSS JOIN contacts k ON k.phone_jid = p.phone_jid`,
-        JSON.stringify([...new Set(jids)])
+        ...Array<string>(3).fill(JSON.stringify([...new Set(jids)]))
       )) {
         survivors.add(row.survivor);
       }
@@ -525,9 +525,9 @@ export class Digest {
     const named = new Set<string>(jids);
     if (survivors.size === 0) return { contactIds, jids: named };
     for (const row of this.c.all<{ id: number; phone_jid: string | null; lid: string | null }>(
-      `SELECT id, phone_jid, lid FROM contacts WHERE id IN (SELECT value FROM json_each(?1))
-       UNION SELECT id, phone_jid, lid FROM contacts INDEXED BY contacts_merging WHERE merged_into IN (SELECT value FROM json_each(?1))`,
-      JSON.stringify([...survivors])
+      `SELECT id, phone_jid, lid FROM contacts WHERE id IN (SELECT value FROM json_each(?))
+       UNION SELECT id, phone_jid, lid FROM contacts INDEXED BY contacts_merging WHERE merged_into IN (SELECT value FROM json_each(?))`,
+      ...Array<string>(2).fill(JSON.stringify([...survivors]))
     )) {
       contactIds.add(row.id);
       if (row.phone_jid !== null) named.add(row.phone_jid);
