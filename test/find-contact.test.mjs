@@ -6,8 +6,10 @@
  * digits); when a resolved contact carries the draft context; and the
  * style_check a text draft gets back from send_message.
  *
- * The SDK checks every answer against the tool's outputSchema, so a field the
- * schema does not allow fails the call here.
+ * These calls go over plain HTTP, so only the server's own check applies: a
+ * successful answer missing a field the outputSchema requires, or with one of
+ * the wrong type, fails. A field the schema does not name passes here; the SDK
+ * client refuses it, and test/output-schema.test.mjs calls through that client.
  */
 import { after, before, test } from "node:test";
 import assert from "node:assert/strict";
