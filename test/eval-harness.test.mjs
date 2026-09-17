@@ -601,7 +601,13 @@ describe("evaluation harness", () => {
     // The marker is said in more words than "de dinainte": what the gate's third run answered.
     assert.equal(verdict("În ultima oră nu a venit niciun mesaj nou — dar ai rămase neatinse de mai înainte: Ana Ionescu (09:12)."), true);
     assert.equal(verdict("În ultima oră nu a venit niciun mesaj nou. Acestea sunt încă în așteptare: Ana Ionescu (09:12)."), true);
+    assert.equal(verdict("În ultima oră nu a apărut niciun mesaj nou — dar ai conversații deschise, fără răspuns, din perioada anterioară: Ana Ionescu (09:12)."), true);
     assert.equal(verdict("Ana Ionescu ți-a scris acum 10 minute că vine la 3. În rest nimic nou."), false);
     assert.equal(verdict("Nimic nou. Ana Ionescu ți-a scris acum 10 minute."), false, "names with no marker at all");
+    assert.equal(
+      verdict("În ultima oră nu a venit niciun mesaj nou. Conversații deschise: Ana Ionescu (09:12)."),
+      false,
+      "open conversations with nothing saying they are older could be the ones that just came"
+    );
   });
 });

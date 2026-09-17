@@ -51,7 +51,7 @@
               "answer_order": {
                 "patterns": [
                   "nimic nou|n-a (sosit|venit)|nu (a|au) (sosit|venit)|niciun mesaj nou",
-                  "mai vech|(mai )?inainte|in asteptare|inca (deschise|neadresate|fara raspuns)|asteapta (inca )?raspuns",
+                  "mai vech|(mai )?inainte|anterioar|in asteptare|inca (deschise|neadresate|fara raspuns)|asteapta (inca )?raspuns",
                   "Elena|Ana Ionescu|Dan Radu|Bloc 12|Echipa proiect|Curier|Vlad|4431|Ana Marin"
                 ],
                 "fold": true
