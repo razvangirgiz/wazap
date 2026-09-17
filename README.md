@@ -326,8 +326,11 @@ hours and says so. `since: "previous"` gives the last catch-up again;
 `hours: N` (up to 336) or `since` as an ISO date or time (`2026-09-16`,
 `2026-09-16T18:00`, an offset optional) from the last 14 days read an explicit
 window and leave the mark where it is, and so does a catch-up limited by
-`include`. No window reaches further back than 14 days. Two catch-ups of one client
-at once move the mark once. Nothing is marked read on WhatsApp.
+`include`. No window reaches further back than 14 days. Two catch-ups of one
+client at once move the mark once. The mark moves when the last page is
+answered, before the answer is on its way, so a catch-up is given at most once:
+if the answer is lost (a dropped connection, a client that crashed),
+`since: "previous"` gives it again. Nothing is marked read on WhatsApp.
 
 **Paging.** When the entries do not fit, the answer ends with `more`: how many
 are left per section, about how many tokens they take, and a `cursor`. The

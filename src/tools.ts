@@ -295,8 +295,9 @@ a reply (with the ask quoted), mentions, replies and open polls, missed calls, p
 wrote, groups one line each, stories. "Missed" starts after the user's own last word in a
 chat and after what their phone already read. Without account_id it covers every linked
 account, each labelled. By default it reads since this client's last complete catch-up and
-then moves that mark; since: "previous" repeats it, hours never moves it. When \`more\` is
-set, call again with more.cursor within 15 minutes. It marks nothing read on WhatsApp.`,
+then moves that mark, before the answer is sent: an answer lost on the way comes back with
+since: "previous", which repeats it; hours never moves the mark. When \`more\` is set, call
+again with more.cursor within 15 minutes. It marks nothing read on WhatsApp.`,
   schema: CATCHUP_INPUT,
   outputSchema: CATCHUP_OUTPUT,
   write: false,

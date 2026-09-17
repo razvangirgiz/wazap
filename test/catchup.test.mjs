@@ -122,6 +122,18 @@ test("catch_up is a read tool with an output schema, registered in read sessions
   assert.equal(result.structuredContent.window.hours, 24);
 });
 
+test("the mark moves before the answer leaves, so the tool says how a lost answer comes back: since \"previous\"", async () => {
+  const { svc, arrive } = account();
+  const { tools, call } = toolsOf(svc);
+  assert.match(tools.get("catch_up").meta.description, /lost[^.]*since: "previous"/);
+  arrive(DAN, "salut, am ajuns acasă", { at: Date.now() - 2 * HOUR });
+  const given = await call("catch_up");
+  assert.equal(given.structuredContent.accounts[0].mark.moved, true, "moved by the call that answers");
+  // The answer never reached the assistant; the next catch-up has nothing, the repeat has it all.
+  assert.deepEqual(chatsOf(await call("catch_up"), "direct"), []);
+  assert.deepEqual(chatsOf(await call("catch_up", { since: "previous" }), "direct"), [DAN]);
+});
+
 test("the mark is per client: one client's catch-up moves its own mark and leaves another's where it was", async () => {
   const { svc, arrive } = account();
   const claude = toolsOf(svc, { client: "oauth:claude" });
