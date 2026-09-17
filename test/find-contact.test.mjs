@@ -296,6 +296,20 @@ test("a draft context on one account reads #private filed on another: a person's
   await s.close();
 });
 
+test("a role filed with remember in one session finds the person in the next, in the forms the user says it", async () => {
+  const { s, refs } = await world();
+  const filed = await s.call("remember", { chat_id: refs.contacts.ioana.jid, fields: { relatie: "dentist" }, account_id: "personal" });
+  assert.notEqual(filed.isError, true, JSON.stringify(filed.structuredContent ?? filed.content));
+  await s.close();
+  const next = await mcpSession(ready.mcp_url, ready.tokens.write);
+  for (const name of ["dentista", "dentistei"]) {
+    const found = (await find(next, { name })).structuredContent;
+    assert.equal(found.status, "resolved", name);
+    assert.equal(found.contact.chat_id, refs.contacts.ioana.jid, name);
+  }
+  await next.close();
+});
+
 test("send_message: a draft with diacritics to someone the user writes to without them gets style_check; too little of the user's own writing gets none", async () => {
   const own = ["da, vin si eu la meci", "hai ca te sun cand ajung", "ok, iti zic diseara", "nu stiu daca pot sambata", "mersi frate, vorbim"];
   const { s, refs } = await world({

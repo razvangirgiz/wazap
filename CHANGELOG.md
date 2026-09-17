@@ -109,6 +109,11 @@ answers.
   `read_messages` with `before` runs past what wazap holds and asks the phone,
   its answer carries `older: { asked_phone: true, received }`; with nothing
   received, a note says older history may still exist on the phone.
+- **A role filed with `remember` finds the person.** A `relatie` or `role`
+  detail that is not a relationship word ("dentist", "contabil") is matched as
+  a name, whole words only, in the forms a role is said in: "dentista",
+  "dentistei" and "dentistul" find `relatie: dentist`, "profesoarei" finds
+  `role: profesor`. Such a match resolves like a name.
 - **`find_contact`: who "mama", "Ana de la contabilitate" or "Mișu" is.** A
   read tool, in every session. It matches saved, business and self-given names, the
   `nickname` and `relatie` details, tags, and a note that is only the

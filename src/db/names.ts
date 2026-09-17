@@ -301,6 +301,42 @@ export function relationOf(word: string): string | null {
 export const NICKNAME_FIELDS: ReadonlySet<string> = new Set(["nickname", "porecla", "alias", "nume"]);
 /** Detail keys whose value is how someone is related to the user. */
 export const RELATIONSHIP_FIELDS: ReadonlySet<string> = new Set(["relatie", "relationship", "relation"]);
+/** Detail keys whose value is what someone is to the user by trade: "contabil", "dentist". */
+export const ROLE_FIELDS: ReadonlySet<string> = new Set(["role", "rol"]);
+
+/**
+ * Romanian role-noun endings, folded, longest first where two would fit, and
+ * what the masculine singular ends in instead: the feminine ("dentistă",
+ * "profesoară", "doctoriță"), the article ("dentistul") and the
+ * genitive-dative ("dentistei", "dentistului", "profesoarei").
+ */
+const ROLE_ENDINGS: ReadonlyArray<readonly [ending: string, base: string]> = [
+  ["oarei", "or"],
+  ["oara", "or"],
+  ["itei", ""],
+  ["ita", ""],
+  ["ului", ""],
+  ["ei", ""],
+  ["ul", ""],
+  ["a", ""],
+];
+/** The shortest base a role ending may leave: "mea" and "sora" stay whole. */
+const MIN_ROLE_BASE_CHARS = 4;
+
+/**
+ * A folded word as a role noun's masculine singular: "dentista", "dentistei"
+ * and "dentistul" are "dentist", "contabila" is "contabil". Only ever compared
+ * with a role or relationship the user filed as a detail, both sides reduced
+ * alike, where no first name stands to be cut.
+ */
+export function roleBase(word: string): string {
+  for (const [ending, base] of ROLE_ENDINGS) {
+    if (!word.endsWith(ending)) continue;
+    const form = word.slice(0, word.length - ending.length) + base;
+    return form.length >= MIN_ROLE_BASE_CHARS ? form : word;
+  }
+  return word;
+}
 
 /** Words after a relationship word that say which of the user's numbers for them it is: "Mama mobil". */
 const RELATION_QUALIFIERS = new Set(["mobil", "fix", "acasa", "serviciu", "birou", "work", "home", "cell", "mobile", "nou", "noul", "vechi", "new", "old", "ro", "uk"]);

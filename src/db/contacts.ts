@@ -60,6 +60,8 @@ import {
   relationWordsMatch,
   RELATIONSHIP_FIELDS,
   RELATIONSHIPS,
+  ROLE_FIELDS,
+  roleBase,
 } from "./names.js";
 
 export type FindKind = "person" | "group" | "any";
@@ -215,6 +217,8 @@ interface QueryWord {
   related: Set<string>;
 }
 
+const NO_WORDS: Set<string> = new Set();
+
 interface Match {
   class: MatchClass;
   inflected: boolean;
@@ -272,6 +276,8 @@ interface Person {
   savedWords: string[];
   /** Nickname details, the saved name, the business name, the sync name and the push name that are real names. */
   names: NameSource[];
+  /** Relationship and role details, their words reduced by roleBase: what a word that is not a relationship ("dentista") meets. */
+  roles: NameSource[];
   fields: Array<{ folded: string; key: string; value: string; words: string[] }>;
   tags: Array<{ tag: string; words: string[] }>;
   noteWords: string[];
@@ -324,10 +330,16 @@ function personOf(row: PersonRow): Person {
   ] as const) {
     if (isRealName(value)) names.push({ source, value: value!, words: nameWords(value) });
   }
+  const roles: NameSource[] = [];
+  for (const field of fields) {
+    const source: MatchSource | null = RELATIONSHIP_FIELDS.has(field.folded) ? "relatie" : ROLE_FIELDS.has(field.folded) ? "field" : null;
+    if (source !== null && field.words.length > 0) roles.push({ source, value: `${field.key}: ${field.value}`, words: field.words.map(roleBase) });
+  }
   return {
     row,
     savedWords: isRealName(row.name) ? nameWords(row.name) : [],
     names,
+    roles,
     fields,
     tags,
     noteWords: nameWords(row.note),
@@ -620,6 +632,8 @@ export class Contacts {
   private matchPeople(people: readonly Person[], query: readonly QueryWord[], relation: string | null, near: boolean): Scored[] {
     const out: Scored[] = [];
     const inflected = relation !== null && !RELATIONSHIPS[relation]!.includes(query[0]!.word);
+    const roleQuery: QueryWord[] = query.map((q) => ({ word: roleBase(q.word), forms: [], related: NO_WORDS }));
+    const roleInflected = roleQuery.some((q, index) => q.word !== query[index]!.word);
     for (const person of people) {
       let best: ContactCandidate["match"] | null = null;
       const consider = (match: Match | null, source: MatchSource, value: string): void => {
@@ -644,6 +658,14 @@ export class Contacts {
       } else {
         for (const name of person.names) {
           consider(near ? (nearWords(query, name.words) ? { class: "fuzzy", inflected: false, resolvable: false } : null) : matchWords(query, name.words), name.source, name.value);
+        }
+        // A role or relationship the user filed ("relatie: dentist") names the person too, whole words only, as a role is said.
+        if (!near && person.roles.length > 0) {
+          for (const role of person.roles) {
+            const match = matchWords(roleQuery, role.words);
+            if (match === null || (match.class !== "exact" && match.class !== "word")) continue;
+            consider({ ...match, inflected: roleInflected }, role.source, role.value);
+          }
         }
       }
       const match = best as ContactCandidate["match"] | null;
