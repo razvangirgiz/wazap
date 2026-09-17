@@ -347,7 +347,7 @@ written after: the last 8 messages both ways (each cut to 200 characters,
 voice notes as their transcript) and how you write there — language,
 diacritics, tu or dumneavoastră, length, emoji — from your own messages in that
 chat in the last 90 days, or across the account when there are fewer than five.
-Messages wazap sent are never part of it, so an agent does not learn its own
+The style never counts messages wazap sent, so an agent does not learn its own
 drafts back. It is on by default, only in a session that can send, and only for
 a resolved contact. A contact tagged `#private`
 (`update_contact_details` with `add_tags: ["private"]`) gets the style only,
@@ -355,8 +355,8 @@ never messages. `wazap config draft-context off [--account <id>]` turns it off
 for an account (`draft_context: false` in `accounts.json`), from the next call,
 without a restart.
 
-**Style check.** A text draft to a person you have written to at least five
-times in 90 days comes back with `style_check`: `warnings` among
+**Style check.** A text draft to a person you have written to yourself (not
+through wazap) at least five times in 90 days comes back with `style_check`: `warnings` among
 `language_mismatch`, `diacritics_mismatch` (with diacritics where you write
 without them, or the reverse), `address_mismatch` (tu where you say
 dumneavoastră, or the reverse) and `length_outlier` (over three times your
