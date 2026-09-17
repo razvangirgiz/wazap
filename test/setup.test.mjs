@@ -242,6 +242,23 @@ async function failingSetup(box, ...args) {
   return err.stderr;
 }
 
+for (const client of ["windsurf", "opencode", "vscode"]) {
+  test(`setup --client ${client} fails before linking, naming the clients that exist`, async () => {
+    const box = sandbox();
+    const dir = dataDir("wazap-setup-unknown-client-");
+    const err = await setup(box, "--yes", "--client", "cursor", "--client", client, "--data-dir", dir).then(
+      () => assert.fail("an unknown client must fail setup"),
+      (rejected) => rejected
+    );
+    assert.equal(err.code, 1);
+    assert.match(err.stderr, new RegExp(`Unknown client "${client}"`));
+    assert.match(err.stderr, /claude-code, claude-desktop, cursor, codex, gemini/);
+    assert.doesNotMatch(err.stderr, /Step \d+ of|pairing code|Scan/i, "nothing ran before the refusal");
+    assert.deepEqual(readdirSync(dir), [], "the data dir is untouched");
+    assert.ok(!existsSync(join(box.home, ".cursor", "mcp.json")), "not even the valid client was connected");
+  });
+}
+
 test("setup on a linked session connects the named client and reports the session it could not reach", async () => {
   const box = sandbox();
   const dir = linkedDataDir();

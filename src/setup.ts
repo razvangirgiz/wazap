@@ -57,6 +57,10 @@ export async function runSetup(config: Config): Promise<void> {
     return;
   }
 
+  // A client `connect` does not know would only fail at Connect, after linking
+  // and installing; say so before anything happens.
+  for (const name of config.clients) findClient(name);
+
   if (!humanLayout()) say(banner());
   const install = whereInstalled();
   const announce = stepper(install.kind === "npx" ? 6 : 5);
