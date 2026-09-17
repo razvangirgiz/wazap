@@ -197,7 +197,10 @@ link_account when it says no account is linked yet.
 - Send: send_message / send_media / send_poll / send_location / forward_message
   draft only. They return a draft_id and a preview. Show the preview to the
   user; after they say yes, call confirm_send({ draft_id }). That is the only
-  call that reaches WhatsApp. A draft lasts 15 minutes.
+  call that reaches WhatsApp. A draft lasts 15 minutes. A text draft may carry
+  style_check.warnings (language, diacritics, tu/dumneavoastră, length against
+  how the user writes in that chat): unless the user dictated the words, fix
+  them and draft again before showing it.
 - Mention someone: pass mention_ids to send_message and write @<number> in the
   text where the mention belongs (the digits of their id). A mention the text
   lacks gets its @<number> added at the end, and the preview shows the result.
@@ -1290,7 +1293,10 @@ call confirm_send. A draft lasts 15 minutes.
 To @-mention people, pass mention_ids and write @<number> in the text where
 each mention belongs, the digits of their id (@40722123456). A mention the
 text lacks gets its @<number> added at the end, so the preview is the text
-that goes out.`,
+that goes out.
+
+A draft to someone the user writes to often may carry style_check: warnings
+where the text does not read like the user there. It never blocks.`,
     schema: {
       chat_id: chatId,
       text: z.string().min(1).max(65536).describe("The message text"),
