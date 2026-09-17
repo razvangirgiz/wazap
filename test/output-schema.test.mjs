@@ -100,3 +100,66 @@ test("the five tools Calfa calls declare no outputSchema", () => {
     assert.equal(tool.outputSchema, undefined, `${name} must not declare an outputSchema`);
   }
 });
+
+test("every tool with an output schema answers in its declared shape, through an SDK client", async () => {
+  const GROUP = "120363000000000009@g.us";
+  const sock = home.sockClient;
+  sock.sendMessage = async () => ({ key: { id: "SENT" } });
+  sock.chatModify = async () => {};
+  sock.groupMetadata = async (id) => ({
+    id,
+    subject: "Bloc 12",
+    owner: ME,
+    creation: 1_700_000_000,
+    participants: [{ id: ME, admin: "superadmin" }, { id: ANA }],
+  });
+  sock.groupInviteCode = async () => "CODE";
+  sock.groupCreate = async (subject, ids) => ({ id: GROUP, subject, participants: [{ id: ME, admin: "superadmin" }, ...ids.map((id) => ({ id }))] });
+  let seq = 0;
+  const arrive = (chat, message, { fromMe = false, participant } = {}) => {
+    const id = `S${++seq}`;
+    sock.ev.emit("messages.upsert", {
+      type: "notify",
+      messages: [{ key: { remoteJid: chat, fromMe, id, ...(participant ? { participant } : {}) }, message, messageTimestamp: Math.floor(Date.now() / 1000) }],
+    });
+    return `${fromMe}_${chat}_${id}`;
+  };
+  const theirs = arrive(ANA, { conversation: "ne vedem la 7?" });
+  const mine = arrive(ANA, { conversation: "da, la 7" }, { fromMe: true });
+  arrive(GROUP, { conversation: "salutare" }, { participant: ANA });
+  const photo = arrive(ANA, { imageMessage: { mimetype: "image/jpeg", fileLength: 4, caption: "meniul" } });
+  home.mediaBuffer = async () => Buffer.from([0xff, 0xd8, 0xff, 0xd9]);
+
+  const calls = [
+    ["list_chats", {}],
+    ["read_messages", { chat_id: ANA }],
+    ["read_messages", { chat_id: "status" }],
+    ["get_message", { message_id: theirs }],
+    ["get_group_info", { group_id: GROUP }],
+    ["wait_for_messages", { timeout_seconds: 1 }],
+    ["search", { query: "vedem" }],
+    ["search", { query: "vedem", match: "words" }],
+    ["find_contact", { tag: "client" }],
+    ["remember", { chat_id: ANA, note: "vecina", add_tags: ["client"], handled: true }],
+    ["get_media", { message_id: photo }],
+    ["react_to_message", { message_id: theirs, emoji: "👍" }],
+    ["edit_message", { message_id: mine, text: "da, la 7 fix" }],
+    ["delete_message", { message_id: mine, for_everyone: false }],
+    ["manage_group", { action: "create", value: "Bloc 12", participant_ids: [ANA] }],
+    ["manage_group", { action: "get_invite_link", group_id: GROUP }],
+  ];
+  for (const [name, args] of calls) {
+    const tool = tools.find((entry) => entry.name === name);
+    assert.ok(tool.outputSchema, `${name} declares an output schema`);
+    const result = await client.callTool({ name, arguments: args });
+    assert.equal(result.isError, undefined, `${name}: ${result.content?.[0]?.text}`);
+    assert.ok(result.structuredContent, `${name} answers structured content`);
+  }
+});
+
+test("only the five tools Calfa calls and learn go without an output schema", () => {
+  assert.deepEqual(
+    tools.filter((tool) => tool.outputSchema === undefined).map((tool) => tool.name).sort(),
+    ["confirm_send", "get_status", "learn", "link_account", "manage_chat", "send_message"]
+  );
+});

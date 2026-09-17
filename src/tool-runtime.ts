@@ -49,8 +49,8 @@ export interface ToolDef {
   title: string;
   description: string;
   schema: z.ZodRawShape;
-  /** The structured content's shape, when the tool declares one. */
-  outputSchema?: z.ZodRawShape;
+  /** The structured content's shape, when the tool declares one; an object schema may leave keys open. */
+  outputSchema?: z.ZodRawShape | z.AnyZodObject;
   /** Registered only in a session that can write, and refused on an account that cannot. */
   write: boolean;
   hints: ToolHints;
@@ -82,13 +82,15 @@ export function toolError(err: WazapError): ToolResult {
 }
 
 /**
- * An error from a tool that declares an outputSchema: the same text, no
- * structured content. SDK clients check structured content against the schema
- * on errors too, and `{ error, message, fix }` is not the tool's shape.
+ * An error from a tool that declares an outputSchema: `{ error, message, fix }`
+ * and the account it concerns, as text, with no structured content. SDK
+ * clients check structured content against the schema on errors too, and an
+ * error is not the tool's shape.
  */
-function schemaSafeError(result: ToolResult): ToolResult {
-  const { structuredContent: _structured, ...rest } = result;
-  return rest;
+function schemaSafeError(err: WazapError, accountId: string | undefined): ToolResult {
+  const payload = toolError(err).structuredContent!;
+  const body = accountId === undefined ? payload : { ...payload, account_id: accountId };
+  return { content: [{ type: "text", text: JSON.stringify(body) }], isError: true };
 }
 
 function rateLabel(name: string): string {
@@ -194,9 +196,9 @@ export function createToolRegistrar(defs: readonly ToolDef[]) {
             });
             return attachAccountId(result, resolved.id);
           } catch (err) {
-            const result = toolError(asWazapError(err));
-            if (def.outputSchema !== undefined) return schemaSafeError(result);
             const id = resolved?.id ?? stringArg(parsed, "account_id");
+            if (def.outputSchema !== undefined) return schemaSafeError(asWazapError(err), id);
+            const result = toolError(asWazapError(err));
             return id === undefined ? result : attachAccountId(result, id);
           } finally {
             if (admitted) { inFlight--; sessionInFlight--; }

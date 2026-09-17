@@ -65,6 +65,9 @@ function message(chat, text, { id = "M1", fromMe = false } = {}) {
   };
 }
 
+/** What a call answered: its structured content, or the `{ error, message, fix, account_id }` a tool with an output schema gives as text. */
+const answer = (result) => result.structuredContent ?? JSON.parse(result.content[0].text);
+
 function toolsOf(source, allowWrite = true) {
   const hub = asToolSource(source);
   const server = fakeServer();
@@ -86,12 +89,12 @@ test("given account_id uses that account", async () => {
 test("unknown account_id is ACCOUNT_NOT_FOUND; disabled is ACCOUNT_DISABLED", async () => {
   const { hub } = twoAccountHub({ disableWork: true });
   const tools = toolsOf(hub);
-  const missing = await tools.get("read_messages").handler({ chat_id: ANA, limit: 20, account_id: "ghost" });
-  assert.equal(missing.structuredContent.error, "ACCOUNT_NOT_FOUND");
-  assert.equal(missing.structuredContent.account_id, "ghost");
-  const disabled = await tools.get("read_messages").handler({ chat_id: ANA, limit: 20, account_id: "work" });
-  assert.equal(disabled.structuredContent.error, "ACCOUNT_DISABLED");
-  assert.match(disabled.structuredContent.message, /work/);
+  const missing = answer(await tools.get("read_messages").handler({ chat_id: ANA, limit: 20, account_id: "ghost" }));
+  assert.equal(missing.error, "ACCOUNT_NOT_FOUND");
+  assert.equal(missing.account_id, "ghost");
+  const disabled = answer(await tools.get("read_messages").handler({ chat_id: ANA, limit: 20, account_id: "work" }));
+  assert.equal(disabled.error, "ACCOUNT_DISABLED");
+  assert.match(disabled.message, /work/);
 });
 
 test("link_account on an unknown id tells the user to run wazap account add", async () => {
@@ -110,9 +113,9 @@ test("an account added after the hub started is served on the first call that na
   const tools = toolsOf(hub);
   // read_messages, not link_account: the link tool's process-wide rate bucket
   // is spent by the test above.
-  const result = await tools.get("read_messages").handler({ chat_id: ANA, limit: 20, account_id: "work" });
-  assert.notEqual(result.structuredContent.error, "ACCOUNT_NOT_FOUND");
-  assert.equal(result.structuredContent.account_id, "work");
+  const result = answer(await tools.get("read_messages").handler({ chat_id: ANA, limit: 20, account_id: "work" }));
+  assert.notEqual(result.error, "ACCOUNT_NOT_FOUND");
+  assert.equal(result.account_id, "work");
   assert.ok(hub.get("work"), "the account has a service of its own now");
   await hub.stop();
 });
@@ -124,10 +127,10 @@ test("an account added disabled after the hub started is ACCOUNT_DISABLED, namin
   fresh.add("work");
   fresh.disable("work");
   const tools = toolsOf(hub);
-  const result = await tools.get("read_messages").handler({ chat_id: ANA, limit: 20, account_id: "work" });
-  assert.equal(result.structuredContent.error, "ACCOUNT_DISABLED");
-  assert.match(result.structuredContent.fix, /account enable work/);
-  assert.doesNotMatch(result.structuredContent.fix, /restart/i);
+  const result = answer(await tools.get("read_messages").handler({ chat_id: ANA, limit: 20, account_id: "work" }));
+  assert.equal(result.error, "ACCOUNT_DISABLED");
+  assert.match(result.fix, /account enable work/);
+  assert.doesNotMatch(result.fix, /restart/i);
   assert.equal(hub.get("work"), undefined, "a disabled account gets no service");
 });
 
@@ -190,7 +193,7 @@ test("a message_id the default cannot resolve is tried on every account in turn"
   assert.equal(found.structuredContent.account_id, "work", "the account that answered is the one reported");
 
   const scoped = await tools.get("get_message").handler({ message_id: reported, account_id: "default" });
-  assert.equal(scoped.structuredContent.error, "MESSAGE_NOT_FOUND", "an explicit account_id keeps the lookup scoped");
+  assert.equal(answer(scoped).error, "MESSAGE_NOT_FOUND", "an explicit account_id keeps the lookup scoped");
 });
 
 test("get_media walks the accounts until a store files the id", async () => {
@@ -237,8 +240,8 @@ test("a message_id no account files keeps the resolved account's miss", async ()
   const tools = toolsOf(hub);
   const result = await tools.get("get_message").handler({ message_id: `false_${STRANGER}_GHOST` });
   assert.equal(result.isError, true);
-  assert.equal(result.structuredContent.error, "MESSAGE_NOT_FOUND");
-  assert.equal(result.structuredContent.account_id, "default");
+  assert.equal(answer(result).error, "MESSAGE_NOT_FOUND");
+  assert.equal(answer(result).account_id, "default");
 });
 
 test("a chat both accounts know is AMBIGUOUS_ACCOUNT naming them", async () => {
@@ -246,11 +249,11 @@ test("a chat both accounts know is AMBIGUOUS_ACCOUNT naming them", async () => {
   homeSock.ev.emit("chats.upsert", [{ id: ANA, conversationTimestamp: Math.floor(Date.now() / 1000) }]);
   workSock.ev.emit("chats.upsert", [{ id: ANA, conversationTimestamp: Math.floor(Date.now() / 1000) }]);
   const tools = toolsOf(hub);
-  const result = await tools.get("read_messages").handler({ chat_id: ANA, limit: 20 });
-  assert.equal(result.structuredContent.error, "AMBIGUOUS_ACCOUNT");
-  assert.match(result.structuredContent.message, /default/);
-  assert.match(result.structuredContent.message, /work/);
-  assert.match(result.structuredContent.fix, /account_id/);
+  const result = answer(await tools.get("read_messages").handler({ chat_id: ANA, limit: 20 }));
+  assert.equal(result.error, "AMBIGUOUS_ACCOUNT");
+  assert.match(result.message, /default/);
+  assert.match(result.message, /work/);
+  assert.match(result.fix, /account_id/);
 });
 
 test("an unknown chat with two accounts: writes AMBIGUOUS, reads use default", async () => {
@@ -340,8 +343,8 @@ test("a chat_id and a group_id unique to work select work", async () => {
   const tools = toolsOf(hub);
   const contact = await tools.get("remember").handler({ chat_id: ANA, note: "de la work" });
   assert.equal(contact.structuredContent.account_id, "work");
-  const info = await tools.get("get_group_info").handler({ group_id: group });
-  assert.equal(info.structuredContent.account_id, "work");
+  const info = answer(await tools.get("get_group_info").handler({ group_id: group }));
+  assert.equal(info.account_id, "work");
 });
 
 test("confirm_send finds a draft stored on work", async () => {

@@ -68,6 +68,61 @@ const ACCOUNT_ID = z
 const MESSAGE_OUT = z.object({ message_id: z.string(), chat_id: z.string(), text: z.string(), timestamp: z.string() }).passthrough();
 const OPEN_OBJECT = z.object({}).passthrough();
 
+const LIST_CHATS_OUTPUT = {
+  filter: z.string(),
+  count: z.number(),
+  chats: z.array(z.object({ chat_id: z.string(), name: z.string(), type: z.string(), unread_count: z.number() }).passthrough()),
+  sync: z.string(),
+  account_id: z.string(),
+};
+
+const READ_OUTPUT = {
+  chat_id: z.string(),
+  types: z.array(z.string()).optional(),
+  hours: z.number().optional(),
+  count: z.number(),
+  omitted: z.number().optional().describe("Older stories left out by limit"),
+  preview_count: z.number(),
+  messages: z.array(MESSAGE_OUT),
+  sync: z.string(),
+  account_id: z.string(),
+};
+
+const WAIT_OUTPUT = {
+  count: z.number(),
+  messages: z.array(MESSAGE_OUT),
+  cursor: z.string().describe("Pass to the next call"),
+  timed_out: z.boolean(),
+  cursor_reset: z.boolean().describe("The cursor was from another run; the wait started now"),
+  account_id: z.string(),
+};
+
+/** get_message answers the message itself: its fields are open, as every message's are. */
+const MESSAGE_OUTPUT = MESSAGE_OUT.extend({ account_id: z.string() }).passthrough();
+
+const GROUP_INFO_OUTPUT = {
+  chat_id: z.string(),
+  name: z.string(),
+  description: z.string().nullable(),
+  owner: z.string().nullable(),
+  created_at: z.string().nullable(),
+  participant_count: z.number(),
+  participants: z.array(z.object({ contact_id: z.string(), name: z.string(), is_admin: z.boolean() })),
+  announcement_only: z.boolean(),
+  i_am_admin: z.boolean(),
+  info_locked: z.boolean(),
+  member_add_mode: z.enum(["admins", "all"]),
+  join_approval: z.boolean(),
+  disappearing_seconds: z.number(),
+  community: z.object({ is_community: z.boolean(), parent_group_id: z.string().nullable() }).optional(),
+  invite_link: z.string().optional(),
+  account_id: z.string(),
+};
+
+const EDIT_OUTPUT = { message_id: z.string(), chat_id: z.string(), text: z.string(), timestamp: z.string(), account_id: z.string() };
+const REACT_OUTPUT = { message_id: z.string(), emoji: z.string(), account_id: z.string() };
+const DELETE_OUTPUT = { message_id: z.string(), for_everyone: z.boolean(), account_id: z.string() };
+
 const SEARCH_OUTPUT = {
   query: z.string(),
   mode: z.enum(["hybrid", "words", "keyword_fallback"]).describe("keyword_fallback: meaning search is off, see recall_unavailable"),
@@ -190,7 +245,7 @@ function tool<S extends z.ZodRawShape>(def: {
   title: string;
   description: string;
   schema: S;
-  outputSchema?: z.ZodRawShape;
+  outputSchema?: z.ZodRawShape | z.AnyZodObject;
   write: boolean;
   rate?: number;
   handler: (args: z.infer<z.ZodObject<S>>, ctx: ToolCtx) => Promise<ToolResult>;
@@ -494,6 +549,7 @@ from_me}, archived, pinned, muted_until, and left (groups you are no longer in).
         .describe('Which chats to list; "all" (default) excludes archived ones'),
       limit: z.number().int().min(1).max(100).default(20).describe("Maximum number of chats (1-100)"),
     },
+    outputSchema: LIST_CHATS_OUTPUT,
     write: false,
     handler: async ({ filter, limit }, { wa }) => {
       const result = await wa.listChats(filter, limit);
@@ -516,6 +572,7 @@ from_me}, archived, pinned, muted_until, and left (groups you are no longer in).
       include_previews: includePreviews,
       hours: z.number().int().min(1).max(24).optional().describe('"status" only: how far back, 24 by default'),
     },
+    outputSchema: READ_OUTPUT,
     write: false,
     handler: async ({ chat_id, limit, before, types, include_previews, hours }, { wa }) => {
       if (isStatusChat(chat_id)) {
@@ -644,6 +701,7 @@ The timeout is capped at 55 seconds because MCP clients give up at 60.`,
         .describe("Only direct messages, @-mentions of the user and replies to the user's messages"),
       cursor: z.string().min(1).optional().describe("The cursor returned by the previous call"),
     },
+    outputSchema: WAIT_OUTPUT,
     write: false,
     handler: async ({ timeout_seconds, chat_id, addressed_to_me, cursor }, { wa }) => {
       const result = await wa.waitForMessages({
@@ -782,6 +840,7 @@ is the name \`name\` shows) and \`name_source\` ("contact", "pushname" or
     // account_id is named again here so the handler sees it typed: an explicit
     // id keeps the lookup on that one account instead of walking the bindings.
     schema: { message_id: messageId, account_id: ACCOUNT_ID.optional() },
+    outputSchema: MESSAGE_OUTPUT,
     write: false,
     handler: async ({ message_id, account_id }, { wa, hub, accountId }) => {
       const resolved = { id: accountId, wa };
@@ -837,6 +896,7 @@ or "all"), join_approval, disappearing_seconds (0 when off), and community
 
 Call this before manage_group: most group actions need admin rights.`,
     schema: { group_id: chatId.describe('Group chat id ("<id>@g.us")') },
+    outputSchema: GROUP_INFO_OUTPUT,
     write: false,
     handler: async ({ group_id }, { wa }) => {
       const info = await wa.getGroupInfo(group_id);
@@ -969,6 +1029,7 @@ this within 15 minutes of sending; after that send a correction instead.`,
       message_id: messageId.describe("A message the linked account sent"),
       text: z.string().min(1).max(65536).describe("The replacement text"),
     },
+    outputSchema: EDIT_OUTPUT,
     write: true,
     handler: async ({ message_id, text }, { wa }) => {
       const sent = await wa.editMessage(message_id, text);
@@ -984,6 +1045,7 @@ this within 15 minutes of sending; after that send a correction instead.`,
       message_id: messageId,
       emoji: z.string().max(8).describe('A single emoji such as "👍", or "" to remove your reaction'),
     },
+    outputSchema: REACT_OUTPUT,
     write: true,
     handler: async ({ message_id, emoji }, { wa }) => {
       const result = await wa.reactToMessage(message_id, emoji);
@@ -1036,6 +1098,7 @@ required, and picks one of two different deletes; tell the user which:
         .boolean()
         .describe("Required. true retracts it for everyone in the chat; false deletes it for the linked account only"),
     },
+    outputSchema: DELETE_OUTPUT,
     write: true,
     handler: async ({ message_id, for_everyone }, { wa }) => {
       const result = await wa.deleteMessage(message_id, for_everyone);

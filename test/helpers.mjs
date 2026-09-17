@@ -241,7 +241,8 @@ export function schemaCheckedTools(source, opts = { allowWrite: true }) {
       if (result.isError) {
         assert.equal(result.structuredContent, undefined, `${name}: an error with an output schema is text only`);
       } else {
-        const schema = toJsonSchemaCompat(z.object(entry.meta.outputSchema), { strictUnions: true, pipeStrategy: "output" });
+        const shape = entry.meta.outputSchema;
+        const schema = toJsonSchemaCompat(shape instanceof z.ZodType ? shape : z.object(shape), { strictUnions: true, pipeStrategy: "output" });
         const verdict = validator.getValidator(schema)(result.structuredContent);
         assert.ok(verdict.valid, `${name}: ${verdict.errorMessage}`);
       }

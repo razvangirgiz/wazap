@@ -7,7 +7,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 
 import { WhatsAppService } from "../dist/whatsapp.js";
-import { connectedService, schemaCheckedTools } from "./helpers.mjs";
+import { connectedService, schemaCheckedTools, textError } from "./helpers.mjs";
 
 const ME = "40700000001@s.whatsapp.net";
 const ANA = "40700000002@s.whatsapp.net";
@@ -66,7 +66,7 @@ test("stories are listed by author, newest first, and show nowhere else", async 
   const one = await call("read_messages", { chat_id: "status", limit: 1 });
   assert.equal(one.structuredContent.omitted, 1, "a limit says what it left out");
   assert.match(one.content[0].text, /1 older stories left out/);
-  assert.equal((await call("read_messages", { chat_id: "status", before: "false_x@s.whatsapp.net_Y" })).structuredContent.error, "INVALID_ID");
+  assert.equal(textError(await call("read_messages", { chat_id: "status", before: "false_x@s.whatsapp.net_Y" })).error, "INVALID_ID");
 });
 
 test("a story never leaks into search either", async () => {

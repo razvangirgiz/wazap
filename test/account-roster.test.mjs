@@ -139,11 +139,11 @@ test("disable stops the account's service, and every tool that names it refuses 
     ["send_message", { chat_id: DAN, text: "hi" }],
   ]) {
     const result = await tools.get(name)({ ...args, account_id: "work" });
-    assert.equal(result.structuredContent.error, "ACCOUNT_DISABLED", name);
+    assert.equal((result.structuredContent ?? JSON.parse(result.content[0].text)).error, "ACCOUNT_DISABLED", name);
   }
   // A chat only the stopped account knew no longer routes to it.
   const implicit = await tools.get("read_messages")({ chat_id: DAN, limit: 20 });
-  assert.equal(implicit.structuredContent.account_id, "default");
+  assert.equal((implicit.structuredContent ?? JSON.parse(implicit.content[0].text)).account_id, "default");
 
   const listed = await tools.get("get_status")({});
   assert.equal(listed.structuredContent.accounts.find((row) => row.id === "work").status, "disabled");
