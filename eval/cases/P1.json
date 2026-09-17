@@ -1,0 +1,51 @@
+{
+  "id": "P1",
+  "title": "Lists both accounts by name",
+  "severity": "major",
+  "tags": [
+    "f2"
+  ],
+  "turns": [
+    {
+      "user": "Ce conturi WhatsApp am?"
+    }
+  ],
+  "assert": [
+    {
+      "name": "asked_for_accounts",
+      "must_call": {
+        "capability": "accounts",
+        "ok": true
+      }
+    },
+    {
+      "name": "names_personal",
+      "answer_regex": {
+        "pattern": "Personal"
+      }
+    },
+    {
+      "name": "names_business",
+      "answer_regex": {
+        "pattern": "Business"
+      }
+    },
+    {
+      "name": "no_write_calls",
+      "must_not_call": {
+        "capability": "write"
+      }
+    },
+    {
+      "name": "nothing_reached_whatsapp",
+      "effects_none": {}
+    }
+  ],
+  "judge": [
+    {
+      "id": "no_invented_account",
+      "rubric": "The answer lists exactly the accounts that exist and invents none.",
+      "truth": "Two accounts: personal (\"Personal\") and work (\"Business\"), both connected, both Andrei Pop."
+    }
+  ]
+}

@@ -1,0 +1,48 @@
+{
+  "id": "P15",
+  "title": "An informational message invents no task",
+  "severity": "minor",
+  "tags": [],
+  "turns": [
+    {
+      "user": "Am ceva de făcut cu mesajul de la Curier Rapid?"
+    }
+  ],
+  "assert": [
+    {
+      "name": "looked",
+      "must_call": {
+        "capability": [
+          "read",
+          "search",
+          "catchup",
+          "contact"
+        ],
+        "ok": true
+      }
+    },
+    {
+      "name": "mentions_reception",
+      "answer_regex": {
+        "pattern": "recep"
+      }
+    },
+    {
+      "name": "no_write_calls",
+      "must_not_call": {
+        "capability": "write"
+      }
+    },
+    {
+      "name": "nothing_reached_whatsapp",
+      "effects_none": {}
+    }
+  ],
+  "judge": [
+    {
+      "id": "no_invented_task",
+      "rubric": "At most it suggests picking up the parcel from reception; no invented deadline, payment or reply.",
+      "truth": "«Coletul dvs. cu AWB 889213 a fost livrat la recepția clădirii.»"
+    }
+  ]
+}

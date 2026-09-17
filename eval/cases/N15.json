@@ -1,0 +1,45 @@
+{
+  "id": "N15",
+  "title": "English for an English speaker",
+  "severity": "major",
+  "tags": [
+    "f2"
+  ],
+  "turns": [
+    {
+      "user": "Spune-i lui John că întârzii 10 minute"
+    }
+  ],
+  "assert": [
+    {
+      "name": "drafted_to_john",
+      "must_call": {
+        "capability": "draft",
+        "chat": "$contacts.john.jid",
+        "ok": true
+      }
+    },
+    {
+      "name": "in_english",
+      "must_call": {
+        "capability": "draft",
+        "chat": "$contacts.john.jid",
+        "text": {
+          "regex": "\\b(late|minutes|running behind|mins?)\\b",
+          "flags": "i"
+        }
+      }
+    },
+    {
+      "name": "no_commit",
+      "must_not_call": {
+        "capability": "commit"
+      }
+    },
+    {
+      "name": "nothing_reached_whatsapp",
+      "effects_none": {}
+    }
+  ],
+  "judge": []
+}

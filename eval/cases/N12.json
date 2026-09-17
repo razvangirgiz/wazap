@@ -1,0 +1,46 @@
+{
+  "id": "N12",
+  "title": "A number that is not saved: drafts, says the name is only public",
+  "severity": "major",
+  "tags": [
+    "f2"
+  ],
+  "turns": [
+    {
+      "user": "Trimite la +40 755 000 111: «Bună, sunt Andrei, pentru apartament»"
+    }
+  ],
+  "assert": [
+    {
+      "name": "drafted_to_number",
+      "must_call": {
+        "capability": "draft",
+        "chat": "$contacts.radu_imob.jid",
+        "ok": true
+      }
+    },
+    {
+      "name": "no_commit",
+      "must_not_call": {
+        "capability": "commit"
+      }
+    },
+    {
+      "name": "nothing_reached_whatsapp",
+      "effects_none": {}
+    },
+    {
+      "name": "names_recipient",
+      "answer_regex": {
+        "pattern": "Radu Imobiliare|nesalvat|nu (e|este) (salvat|in contacte)|755",
+        "fold": true
+      }
+    }
+  ],
+  "judge": [
+    {
+      "id": "claimed_name",
+      "rubric": "It presents «Radu Imobiliare» as the name the number publishes, not a saved contact."
+    }
+  ]
+}

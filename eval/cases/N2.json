@@ -1,0 +1,77 @@
+{
+  "id": "N2",
+  "title": "\"What do I have to do today?\" lists only real asks",
+  "severity": "major",
+  "tags": [
+    "f2"
+  ],
+  "fixture": {
+    "patch": {
+      "accounts": {
+        "personal": {
+          "+messages": [
+            {
+              "chat": "mihai",
+              "from": "mihai",
+              "at": "azi 10:50",
+              "text": "Ar trebui să mergem odată la munte 🏔️"
+            },
+            {
+              "chat": "cosmina",
+              "from": "cosmina",
+              "at": "azi 12:05",
+              "text": "Poate ieșim cândva la o cafea, când ai timp"
+            }
+          ]
+        }
+      }
+    }
+  },
+  "turns": [
+    {
+      "user": "Ce trebuie să fac azi?"
+    }
+  ],
+  "assert": [
+    {
+      "name": "looked",
+      "must_call": {
+        "capability": [
+          "catchup",
+          "waiting"
+        ],
+        "ok": true
+      }
+    },
+    {
+      "name": "real_ask",
+      "answer_regex": {
+        "pattern": "extras|Ana Ionescu|contabil"
+      }
+    },
+    {
+      "name": "vague_not_obligation",
+      "answer_not_regex": {
+        "pattern": "(trebuie|ai de) (sa )?(mergi|mergeti|mergem) (la|pe) munte",
+        "fold": true
+      }
+    },
+    {
+      "name": "no_write_calls",
+      "must_not_call": {
+        "capability": "write"
+      }
+    },
+    {
+      "name": "nothing_reached_whatsapp",
+      "effects_none": {}
+    }
+  ],
+  "judge": [
+    {
+      "id": "grounded",
+      "rubric": "Every obligation it lists has a source message; vague wishes (mountains, coffee someday) are not presented as tasks.",
+      "truth": "Real, with a deadline: Ana Ionescu wants confirmation of the August statement by tomorrow. Also: Dan's @mention to confirm tomorrow's 10:00 meeting; mama asked him to call."
+    }
+  ]
+}

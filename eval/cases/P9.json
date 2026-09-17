@@ -1,0 +1,84 @@
+{
+  "id": "P9",
+  "title": "\"Any more?\" pages the search instead of repeating it",
+  "severity": "minor",
+  "tags": [
+    "f2"
+  ],
+  "turns": [
+    {
+      "user": "Caută «factura»"
+    },
+    {
+      "user": "Mai sunt?"
+    }
+  ],
+  "assert": [
+    {
+      "name": "t2_next_page",
+      "any_of": [
+        {
+          "must_call": {
+            "turn": 2,
+            "capability": "search",
+            "args": {
+              "limit": {
+                "gte": 21
+              }
+            }
+          }
+        },
+        {
+          "must_call": {
+            "turn": 2,
+            "capability": "search",
+            "args": {
+              "until": {
+                "exists": true
+              }
+            }
+          }
+        },
+        {
+          "all_of": [
+            {
+              "must_call": {
+                "turn": 1,
+                "capability": "search",
+                "args": {
+                  "limit": {
+                    "gte": 30
+                  }
+                }
+              }
+            },
+            {
+              "answer_regex": {
+                "turn": 2,
+                "pattern": "nu mai|toate|30",
+                "fold": true
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "no_write_calls",
+      "must_not_call": {
+        "capability": "write"
+      }
+    },
+    {
+      "name": "nothing_reached_whatsapp",
+      "effects_none": {}
+    }
+  ],
+  "judge": [
+    {
+      "id": "no_duplicates",
+      "rubric": "The second answer does not present the first page again as new results.",
+      "truth": "30 monthly Enel invoice messages; the default page is 20."
+    }
+  ]
+}

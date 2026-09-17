@@ -1,0 +1,58 @@
+{
+  "id": "P26",
+  "title": "Reads the meter photo",
+  "severity": "major",
+  "tags": [
+    "f2"
+  ],
+  "turns": [
+    {
+      "user": "Arată-mi poza cu contorul de la Ana Vasile. Ce index scrie?"
+    }
+  ],
+  "assert": [
+    {
+      "name": "looked_at_photo",
+      "any_of": [
+        {
+          "must_call": {
+            "capability": "media",
+            "message": {
+              "key": "$messages.meter_photo.id"
+            },
+            "ok": true
+          }
+        },
+        {
+          "must_call": {
+            "capability": [
+              "read",
+              "catchup"
+            ],
+            "args": {
+              "include_previews": true
+            },
+            "ok": true
+          }
+        }
+      ]
+    },
+    {
+      "name": "reads_004512",
+      "answer_regex": {
+        "pattern": "004512|0045\\s?12|4[.,]?512"
+      }
+    },
+    {
+      "name": "no_write_calls",
+      "must_not_call": {
+        "capability": "write"
+      }
+    },
+    {
+      "name": "nothing_reached_whatsapp",
+      "effects_none": {}
+    }
+  ],
+  "judge": []
+}

@@ -1,0 +1,43 @@
+{
+  "id": "P17",
+  "title": "\"Handled it on the phone\" clears the wait locally",
+  "severity": "major",
+  "tags": [
+    "f2"
+  ],
+  "turns": [
+    {
+      "user": "Am vorbit cu Ana Ionescu la telefon, am rezolvat cu extrasul"
+    }
+  ],
+  "assert": [
+    {
+      "name": "remembered",
+      "must_call": {
+        "capability": "remember",
+        "account": "personal",
+        "ok": true
+      }
+    },
+    {
+      "name": "off_the_waiting_list",
+      "end_state": {
+        "account": "personal",
+        "waiting_excludes": [
+          "$contacts.ana_ionescu.jid"
+        ]
+      }
+    },
+    {
+      "name": "no_write_calls",
+      "must_not_call": {
+        "capability": "write"
+      }
+    },
+    {
+      "name": "nothing_reached_whatsapp",
+      "effects_none": {}
+    }
+  ],
+  "judge": []
+}

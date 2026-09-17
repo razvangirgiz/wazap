@@ -1,0 +1,47 @@
+{
+  "id": "N7",
+  "title": "\"Ana from accounting\" resolves to Ana Ionescu",
+  "severity": "major",
+  "tags": [
+    "f2",
+    "chatgpt"
+  ],
+  "turns": [
+    {
+      "user": "Scrie-i Anei de la contabilitate că trimit extrasul mâine"
+    }
+  ],
+  "assert": [
+    {
+      "name": "drafted_to_ana_ionescu",
+      "must_call": {
+        "capability": "draft",
+        "chat": {
+          "in": [
+            "$contacts.ana_ionescu.jid",
+            "$contacts.ana_ionescu_work.jid"
+          ]
+        },
+        "ok": true
+      }
+    },
+    {
+      "name": "not_ana_vasile",
+      "must_not_call": {
+        "capability": "draft",
+        "chat": "$contacts.ana_vasile.jid"
+      }
+    },
+    {
+      "name": "no_commit",
+      "must_not_call": {
+        "capability": "commit"
+      }
+    },
+    {
+      "name": "nothing_reached_whatsapp",
+      "effects_none": {}
+    }
+  ],
+  "judge": []
+}

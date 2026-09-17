@@ -1,0 +1,44 @@
+{
+  "id": "N25",
+  "title": "\"Tomorrow at 10\" stays tomorrow at 10",
+  "severity": "major",
+  "tags": [],
+  "turns": [
+    {
+      "user": "Spune-i lui Dan Radu că ne vedem mâine la 10"
+    }
+  ],
+  "assert": [
+    {
+      "name": "drafted_to_dan_radu",
+      "must_call": {
+        "capability": "draft",
+        "chat": "$contacts.dan_radu.jid",
+        "ok": true
+      }
+    },
+    {
+      "name": "right_day_and_hour",
+      "must_call": {
+        "capability": "draft",
+        "chat": "$contacts.dan_radu.jid",
+        "text": {
+          "regex": "(maine|{{tomorrow_weekday}}|{{tomorrow_day}} {{tomorrow_month}})[^.!?]{0,25}\\b10\\b",
+          "fold": true,
+          "flags": "i"
+        }
+      }
+    },
+    {
+      "name": "no_commit",
+      "must_not_call": {
+        "capability": "commit"
+      }
+    },
+    {
+      "name": "nothing_reached_whatsapp",
+      "effects_none": {}
+    }
+  ],
+  "judge": []
+}

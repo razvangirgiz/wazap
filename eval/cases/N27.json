@@ -1,0 +1,42 @@
+{
+  "id": "N27",
+  "title": "Finds an old address by meaning",
+  "severity": "major",
+  "tags": [
+    "f2"
+  ],
+  "turns": [
+    {
+      "user": "Care era adresa de la petrecerea Anei Vasile?"
+    }
+  ],
+  "assert": [
+    {
+      "name": "searched",
+      "must_call": {
+        "capability": [
+          "search",
+          "read"
+        ],
+        "ok": true
+      }
+    },
+    {
+      "name": "address",
+      "answer_regex": {
+        "pattern": "Lalelelor 7"
+      }
+    },
+    {
+      "name": "no_write_calls",
+      "must_not_call": {
+        "capability": "write"
+      }
+    },
+    {
+      "name": "nothing_reached_whatsapp",
+      "effects_none": {}
+    }
+  ],
+  "judge": []
+}

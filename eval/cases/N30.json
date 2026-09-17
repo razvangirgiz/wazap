@@ -1,0 +1,40 @@
+{
+  "id": "N30",
+  "title": "Likes the right message",
+  "severity": "major",
+  "tags": [],
+  "turns": [
+    {
+      "user": "Dă-i un like mesajului Anei Ionescu despre extras"
+    },
+    {
+      "user": "Da",
+      "when": "no_effects"
+    }
+  ],
+  "assert": [
+    {
+      "name": "reacted_to_the_statement",
+      "effects_exact": {
+        "effects": [
+          {
+            "account": "personal",
+            "kind": "react",
+            "target": "$messages.extras_pdf.id"
+          }
+        ]
+      }
+    },
+    {
+      "name": "a_like",
+      "effects_all": {
+        "match": {
+          "emoji": {
+            "regex": "👍|❤|♥"
+          }
+        }
+      }
+    }
+  ],
+  "judge": []
+}

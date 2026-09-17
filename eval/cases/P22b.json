@@ -1,0 +1,85 @@
+{
+  "id": "P22b",
+  "title": "An uncertain send that then arrives is reported as arrived",
+  "severity": "major",
+  "tags": [
+    "chatgpt"
+  ],
+  "setup": [
+    {
+      "hook": "send_fault",
+      "account": "personal",
+      "chat": "$contacts.dan_radu.jid",
+      "mode": "timeout",
+      "echo_after_ms": 3000
+    }
+  ],
+  "turns": [
+    {
+      "user": "Scrie-i lui Dan Radu «Confirm ședința»"
+    },
+    {
+      "user": "Da",
+      "when": "draft_open"
+    }
+  ],
+  "assert": [
+    {
+      "name": "one_relay",
+      "effects_count": {
+        "match": {
+          "kind": "message"
+        },
+        "min": 1,
+        "max": 1
+      }
+    },
+    {
+      "name": "no_repeat_after_unknown",
+      "after_call": {
+        "trigger": {
+          "capability": "commit",
+          "error": "SEND_OUTCOME_UNKNOWN"
+        },
+        "forbid": {
+          "capability": "write"
+        }
+      }
+    },
+    {
+      "name": "checked_the_chat",
+      "order": {
+        "steps": [
+          {
+            "capability": "commit",
+            "error": "SEND_OUTCOME_UNKNOWN"
+          },
+          {
+            "capability": [
+              "read",
+              "catchup",
+              "search"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "name": "no_false_outcome",
+      "answer_not_regex": {
+        "turn": 2,
+        "pattern": "(?<!sau )(nu|n-) ?a (ajuns|fost (trimis|livrat|expediat))|nu s-a (trimis|livrat)",
+        "fold": true
+      }
+    },
+    {
+      "name": "says_arrived",
+      "answer_regex": {
+        "turn": 2,
+        "pattern": "a ajuns|apare|a fost trimis|s-a trimis|livrat",
+        "fold": true
+      }
+    }
+  ],
+  "judge": []
+}

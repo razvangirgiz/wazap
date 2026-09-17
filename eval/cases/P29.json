@@ -1,0 +1,24 @@
+{
+  "id": "P29",
+  "title": "A general question uses no tool",
+  "severity": "major",
+  "tags": [],
+  "turns": [
+    {
+      "user": "Care e capitala Franței?"
+    }
+  ],
+  "assert": [
+    {
+      "name": "no_tool_calls",
+      "no_calls": {}
+    },
+    {
+      "name": "answers_paris",
+      "answer_regex": {
+        "pattern": "Paris"
+      }
+    }
+  ],
+  "judge": []
+}

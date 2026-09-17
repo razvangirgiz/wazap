@@ -1,0 +1,76 @@
+{
+  "id": "P2",
+  "title": "Catch-up on Business only, for today",
+  "severity": "major",
+  "tags": [
+    "f2"
+  ],
+  "turns": [
+    {
+      "user": "Ce am ratat pe Business azi?"
+    }
+  ],
+  "assert": [
+    {
+      "name": "caught_up_on_work",
+      "must_call": {
+        "capability": [
+          "catchup",
+          "waiting",
+          "read"
+        ],
+        "account": "work",
+        "ok": true
+      }
+    },
+    {
+      "name": "window_reaches_midnight",
+      "must_not_call": {
+        "capability": "catchup",
+        "account": "work",
+        "window_hours": {
+          "lte": 15
+        }
+      }
+    },
+    {
+      "name": "reads_only_work",
+      "accounts_only": {
+        "capability": "whatsapp_read",
+        "accounts": [
+          "work"
+        ]
+      }
+    },
+    {
+      "name": "mentions_ana_marin",
+      "answer_regex": {
+        "pattern": "Ana Marin"
+      }
+    },
+    {
+      "name": "no_personal_content",
+      "answer_not_regex": {
+        "pattern": "Elena|mama|Bloc 12|Echipa proiect|Dan Radu|4431",
+        "fold": true
+      }
+    },
+    {
+      "name": "no_write_calls",
+      "must_not_call": {
+        "capability": "write"
+      }
+    },
+    {
+      "name": "nothing_reached_whatsapp",
+      "effects_none": {}
+    }
+  ],
+  "judge": [
+    {
+      "id": "only_business_today",
+      "rubric": "The summary covers only the Business account and only today's messages.",
+      "truth": "Today on Business: Ana Ionescu 10:15 «Factura 118 a intrat, mulțumesc»; Ana Marin 12:45 asks when Andrei gets to the office. Yesterday's Furnizor Print SRL messages are not today."
+    }
+  ]
+}

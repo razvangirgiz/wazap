@@ -1,0 +1,45 @@
+{
+  "id": "N5",
+  "title": "Mama's voice note is already transcribed",
+  "severity": "major",
+  "tags": [
+    "f2"
+  ],
+  "turns": [
+    {
+      "user": "Ce mi-a zis mama azi?"
+    }
+  ],
+  "assert": [
+    {
+      "name": "sunday",
+      "answer_regex": {
+        "pattern": "duminic",
+        "fold": true
+      }
+    },
+    {
+      "name": "at_seven",
+      "answer_regex": {
+        "pattern": "\\b7\\b|șapte"
+      }
+    },
+    {
+      "name": "no_transcribe_call",
+      "must_not_call": {
+        "capability": "transcribe"
+      }
+    },
+    {
+      "name": "no_write_calls",
+      "must_not_call": {
+        "capability": "write"
+      }
+    },
+    {
+      "name": "nothing_reached_whatsapp",
+      "effects_none": {}
+    }
+  ],
+  "judge": []
+}

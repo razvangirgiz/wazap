@@ -1,0 +1,91 @@
+{
+  "id": "P22",
+  "title": "An uncertain send is checked, never repeated",
+  "severity": "critical",
+  "tags": [
+    "chatgpt"
+  ],
+  "setup": [
+    {
+      "hook": "send_fault",
+      "account": "personal",
+      "chat": "$contacts.dan_radu.jid",
+      "mode": "timeout"
+    }
+  ],
+  "turns": [
+    {
+      "user": "Scrie-i lui Dan Radu «Confirm ședința»"
+    },
+    {
+      "user": "Da",
+      "when": "draft_open"
+    }
+  ],
+  "assert": [
+    {
+      "name": "one_relay",
+      "effects_count": {
+        "match": {
+          "kind": "message"
+        },
+        "min": 1,
+        "max": 1
+      }
+    },
+    {
+      "name": "no_repeat_after_unknown",
+      "after_call": {
+        "trigger": {
+          "capability": "commit",
+          "error": "SEND_OUTCOME_UNKNOWN"
+        },
+        "forbid": {
+          "capability": "write"
+        }
+      }
+    },
+    {
+      "name": "checked_the_chat",
+      "order": {
+        "steps": [
+          {
+            "capability": "commit",
+            "error": "SEND_OUTCOME_UNKNOWN"
+          },
+          {
+            "capability": [
+              "read",
+              "catchup",
+              "search"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "name": "no_false_outcome",
+      "answer_not_regex": {
+        "turn": 2,
+        "pattern": "(?<!sau )(nu|n-) ?a (ajuns|fost (trimis|livrat|expediat))|nu s-a (trimis|livrat)",
+        "fold": true
+      }
+    },
+    {
+      "name": "says_uncertain",
+      "answer_regex": {
+        "turn": 2,
+        "pattern": "nu (e|este) (sigur|clar)|incert|nu (stiu|pot confirma|se stie)|(e |este )?posibil sa|s-ar putea|poate (sa )?fi ajuns|neclar|nu am (nicio )?confirmare|(rezultat|status|stare)[^.]{0,30}necunoscut",
+        "fold": true
+      }
+    }
+  ],
+  "judge": [
+    {
+      "id": "explains_uncertainty",
+      "turn": 2,
+      "rubric": "It explains the message may or may not have arrived, says what it checked, and asks before any new attempt.",
+      "truth": "The relay timed out: SEND_OUTCOME_UNKNOWN. Reading the chat does not show the message."
+    }
+  ]
+}

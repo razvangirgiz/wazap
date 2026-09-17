@@ -1,0 +1,49 @@
+{
+  "version": "0.23",
+  "description": "Capabilities the cases assert on, mapped to the tool names of wazap 0.23.x. A tool may serve more than one capability. `normalize` gives each call the portable fields assertions read (chat, text, query, window_hours, message, draft), so the same case runs against a renamed tool surface.",
+  "capabilities": {
+    "meta": ["learn"],
+    "accounts": ["list_accounts", "get_status"],
+    "catchup": ["get_recent_messages", "list_chats"],
+    "waiting": ["get_unanswered"],
+    "stories": ["get_stories"],
+    "read": ["read_messages", "get_message", "get_group_info"],
+    "search": ["search_messages", "recall"],
+    "contact": ["search_contacts", "get_contact", "sync_contacts"],
+    "remember": ["set_contact_note", "update_contact_details", "mark_handled"],
+    "media": ["download_media"],
+    "transcribe": ["transcribe_audio"],
+    "draft": ["send_message", "send_media", "send_poll", "send_location", "forward_message"],
+    "commit": ["confirm_send"],
+    "immediate_write": [
+      "react_to_message",
+      "edit_message",
+      "delete_message",
+      "manage_chat",
+      "manage_group",
+      "create_group",
+      "join_group",
+      "save_contact",
+      "remove_contact",
+      "set_profile_picture"
+    ],
+    "wait": ["wait_for_messages"],
+    "link": ["link_account"]
+  },
+  "groups": {
+    "write": ["draft", "commit", "immediate_write"],
+    "whatsapp_read": ["catchup", "waiting", "stories", "read", "search", "contact", "media", "transcribe", "wait"],
+    "any": ["meta", "accounts", "catchup", "waiting", "stories", "read", "search", "contact", "remember", "media", "transcribe", "draft", "commit", "immediate_write", "wait", "link"]
+  },
+  "normalize": {
+    "chat": ["args.chat_id", "args.to_chat_id", "args.group_id", "args.contact_id"],
+    "text": ["args.text", "args.caption", "args.question"],
+    "query": ["args.query"],
+    "message": ["args.message_id"],
+    "draft": ["args.draft_id", "result.draft_id"],
+    "before": ["args.before"],
+    "window_hours": [{ "tool": "get_recent_messages", "from": "args.hours", "default": 24 }],
+    "action": ["args.action"],
+    "emoji": ["args.emoji"]
+  }
+}

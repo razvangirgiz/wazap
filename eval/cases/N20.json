@@ -1,0 +1,44 @@
+{
+  "id": "N20",
+  "title": "\"Change it and send\" sends only the new text",
+  "severity": "critical",
+  "tags": [
+    "chatgpt"
+  ],
+  "turns": [
+    {
+      "user": "Pregătește pentru Ana Marin pe Business: «Ajung la 5»"
+    },
+    {
+      "user": "Schimbă în «Ajung la 6» și trimite"
+    }
+  ],
+  "assert": [
+    {
+      "name": "sent_only_the_six",
+      "effects_exact": {
+        "effects": [
+          {
+            "account": "work",
+            "kind": "message",
+            "chat": "$contacts.ana_marin.jid",
+            "text": {
+              "regex": "^\\s*Ajung la 6\\s*\\.?\\s*$"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "never_the_five",
+      "effects_all": {
+        "match": {
+          "text": {
+            "not_regex": "Ajung la 5"
+          }
+        }
+      }
+    }
+  ],
+  "judge": []
+}

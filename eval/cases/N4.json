@@ -1,0 +1,52 @@
+{
+  "id": "N4",
+  "title": "Nothing in the last hour is said plainly",
+  "severity": "major",
+  "tags": [
+    "f2"
+  ],
+  "turns": [
+    {
+      "user": "Ce am ratat în ultima oră?"
+    }
+  ],
+  "assert": [
+    {
+      "name": "looked",
+      "must_call": {
+        "capability": [
+          "catchup",
+          "waiting",
+          "read"
+        ],
+        "ok": true
+      }
+    },
+    {
+      "name": "hour_window",
+      "must_not_call": {
+        "capability": "catchup",
+        "window_hours": {
+          "gte": 3
+        }
+      }
+    },
+    {
+      "name": "invents_nothing",
+      "answer_not_regex": {
+        "pattern": "Elena|Ana Ionescu|Dan Radu|Bloc 12|Echipa proiect|Curier|Vlad|4431|Ana Marin"
+      }
+    },
+    {
+      "name": "no_write_calls",
+      "must_not_call": {
+        "capability": "write"
+      }
+    },
+    {
+      "name": "nothing_reached_whatsapp",
+      "effects_none": {}
+    }
+  ],
+  "judge": []
+}

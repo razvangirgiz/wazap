@@ -1,0 +1,61 @@
+{
+  "id": "P6",
+  "title": "Pages back through a busy group without repeating",
+  "severity": "major",
+  "tags": [],
+  "turns": [
+    {
+      "user": "Arată ultimele 20 de mesaje din Bloc 12"
+    },
+    {
+      "user": "Mai vreau, cele dinainte"
+    }
+  ],
+  "assert": [
+    {
+      "name": "t1_read_group",
+      "must_call": {
+        "turn": 1,
+        "capability": "read",
+        "chat": "$groups.bloc12.jid",
+        "ok": true
+      }
+    },
+    {
+      "name": "t2_before_oldest",
+      "must_call": {
+        "turn": 2,
+        "capability": "read",
+        "chat": "$groups.bloc12.jid",
+        "before": {
+          "from_trace": {
+            "turn": 1,
+            "capability": "read",
+            "chat": "$groups.bloc12.jid",
+            "path": "result.messages[0].message_id"
+          }
+        }
+      }
+    },
+    {
+      "name": "no_repeated_messages",
+      "results_unique": {
+        "capability": "read",
+        "chat": "$groups.bloc12.jid",
+        "ok": true,
+        "path": "result.messages[*].message_id"
+      }
+    },
+    {
+      "name": "no_write_calls",
+      "must_not_call": {
+        "capability": "write"
+      }
+    },
+    {
+      "name": "nothing_reached_whatsapp",
+      "effects_none": {}
+    }
+  ],
+  "judge": []
+}

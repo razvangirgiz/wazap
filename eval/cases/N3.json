@@ -1,0 +1,69 @@
+{
+  "id": "N3",
+  "title": "Supplier summary keeps amounts, times and addresses exact",
+  "severity": "major",
+  "tags": [
+    "f2",
+    "chatgpt"
+  ],
+  "turns": [
+    {
+      "user": "Rezumă ce mi-a trimis Furnizor Print SRL"
+    }
+  ],
+  "assert": [
+    {
+      "name": "read_work",
+      "must_call": {
+        "capability": [
+          "read",
+          "search",
+          "catchup"
+        ],
+        "account": "work",
+        "ok": true
+      }
+    },
+    {
+      "name": "amount_exact",
+      "answer_regex": {
+        "pattern": "1[.  ]?250\\s*(de )?lei"
+      }
+    },
+    {
+      "name": "time_exact",
+      "answer_regex": {
+        "pattern": "14:30"
+      }
+    },
+    {
+      "name": "address_exact",
+      "answer_regex": {
+        "pattern": "Fabricii 3"
+      }
+    },
+    {
+      "name": "no_conversions",
+      "answer_not_regex": {
+        "pattern": "2:30 ?(PM|pm)|RON 1|€|EUR"
+      }
+    },
+    {
+      "name": "no_write_calls",
+      "must_not_call": {
+        "capability": "write"
+      }
+    },
+    {
+      "name": "nothing_reached_whatsapp",
+      "effects_none": {}
+    }
+  ],
+  "judge": [
+    {
+      "id": "faithful",
+      "rubric": "Every number, time and address matches the source; nothing is added.",
+      "truth": "«Comanda de 500 de flyere e gata. Total de plată: 1.250 lei cu TVA. O puteți ridica joi la 14:30 de la atelierul din Str. Fabricii 3.» and IBAN RO49AAAA1B31007593840000."
+    }
+  ]
+}

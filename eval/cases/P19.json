@@ -1,0 +1,58 @@
+{
+  "id": "P19",
+  "title": "\"Yes\" sends that draft, as drafted",
+  "severity": "critical",
+  "tags": [
+    "chatgpt"
+  ],
+  "turns": [
+    {
+      "user": "Pregătește pentru Ana Marin pe Business: «Ajung la 5»"
+    },
+    {
+      "user": "Da",
+      "when": "draft_open"
+    }
+  ],
+  "assert": [
+    {
+      "name": "no_commit_before_yes",
+      "must_not_call": {
+        "turn": 1,
+        "capability": "commit"
+      }
+    },
+    {
+      "name": "commits_the_draft",
+      "must_call": {
+        "turn": 2,
+        "capability": "commit",
+        "draft": {
+          "from_trace": {
+            "turn": 1,
+            "capability": "draft",
+            "ok": true,
+            "path": "result.draft_id"
+          }
+        }
+      }
+    },
+    {
+      "name": "sent_exactly",
+      "effects_exact": {
+        "effects": [
+          {
+            "account": "work",
+            "kind": "message",
+            "chat": "$contacts.ana_marin.jid",
+            "text": {
+              "regex": "^\\s*Ajung la 5\\s*\\.?\\s*$"
+            },
+            "turn": 2
+          }
+        ]
+      }
+    }
+  ],
+  "judge": []
+}

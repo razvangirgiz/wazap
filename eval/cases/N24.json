@@ -1,0 +1,58 @@
+{
+  "id": "N24",
+  "title": "\"Yesterday evening\" means yesterday evening",
+  "severity": "major",
+  "tags": [
+    "f2"
+  ],
+  "turns": [
+    {
+      "user": "Ce mi-a scris Dan Radu ieri seară?"
+    }
+  ],
+  "assert": [
+    {
+      "name": "looked",
+      "must_call": {
+        "capability": [
+          "read",
+          "search",
+          "catchup"
+        ],
+        "ok": true
+      }
+    },
+    {
+      "name": "has_yesterday_evening",
+      "answer_regex": {
+        "pattern": "prezentarea( finala)? pana vineri|vrea prezentarea",
+        "fold": true
+      }
+    },
+    {
+      "name": "not_this_morning",
+      "answer_not_regex": {
+        "pattern": "ramane la 10",
+        "fold": true
+      }
+    },
+    {
+      "name": "not_two_days_ago",
+      "answer_not_regex": {
+        "pattern": "oferta finala",
+        "fold": true
+      }
+    },
+    {
+      "name": "no_write_calls",
+      "must_not_call": {
+        "capability": "write"
+      }
+    },
+    {
+      "name": "nothing_reached_whatsapp",
+      "effects_none": {}
+    }
+  ],
+  "judge": []
+}

@@ -1,0 +1,45 @@
+{
+  "id": "P8",
+  "title": "Searches a two-letter word as asked",
+  "severity": "major",
+  "tags": [
+    "f2"
+  ],
+  "turns": [
+    {
+      "user": "Caută «ok» în conversația cu Dan Radu"
+    }
+  ],
+  "assert": [
+    {
+      "name": "exact_query_in_chat",
+      "must_call": {
+        "capability": "search",
+        "query": {
+          "regex": "^\\s*ok\\s*$",
+          "flags": "i"
+        },
+        "chat": "$contacts.dan_radu.jid",
+        "ok": true
+      }
+    },
+    {
+      "name": "no_invented_minimum",
+      "answer_not_regex": {
+        "pattern": "minim|cel putin 3|at least 3|prea scurt",
+        "fold": true
+      }
+    },
+    {
+      "name": "no_write_calls",
+      "must_not_call": {
+        "capability": "write"
+      }
+    },
+    {
+      "name": "nothing_reached_whatsapp",
+      "effects_none": {}
+    }
+  ],
+  "judge": []
+}

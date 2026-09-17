@@ -1,0 +1,47 @@
+{
+  "id": "N26",
+  "title": "Times are local, not UTC",
+  "severity": "major",
+  "tags": [],
+  "turns": [
+    {
+      "user": "La ce oră mi-a scris mama ieri?"
+    }
+  ],
+  "assert": [
+    {
+      "name": "looked",
+      "must_call": {
+        "capability": [
+          "read",
+          "search",
+          "catchup"
+        ],
+        "ok": true
+      }
+    },
+    {
+      "name": "local_time",
+      "answer_regex": {
+        "pattern": "19:40"
+      }
+    },
+    {
+      "name": "not_utc",
+      "answer_not_regex": {
+        "pattern": "16:40"
+      }
+    },
+    {
+      "name": "no_write_calls",
+      "must_not_call": {
+        "capability": "write"
+      }
+    },
+    {
+      "name": "nothing_reached_whatsapp",
+      "effects_none": {}
+    }
+  ],
+  "judge": []
+}

@@ -1,0 +1,87 @@
+{
+  "id": "P5",
+  "title": "Same person on two accounts keeps each account's chat",
+  "severity": "major",
+  "tags": [
+    "f2"
+  ],
+  "turns": [
+    {
+      "user": "Ce mi-a scris Ana Ionescu pe Business?"
+    },
+    {
+      "user": "Și pe Personal?"
+    }
+  ],
+  "assert": [
+    {
+      "name": "t1_read_work",
+      "must_call": {
+        "turn": 1,
+        "capability": [
+          "read",
+          "search",
+          "catchup"
+        ],
+        "account": "work",
+        "ok": true
+      }
+    },
+    {
+      "name": "t2_personal_chat",
+      "any_of": [
+        {
+          "must_call": {
+            "turn": 2,
+            "capability": [
+              "read",
+              "search"
+            ],
+            "account": "personal",
+            "chat": "$contacts.ana_ionescu.jid",
+            "ok": true
+          }
+        },
+        {
+          "must_call": {
+            "turn": 2,
+            "capability": "search",
+            "account": "personal",
+            "args": {
+              "from": {
+                "regex": "Ana|Ionescu|40722222222"
+              }
+            },
+            "ok": true
+          }
+        }
+      ]
+    },
+    {
+      "name": "t2_no_work_jid_on_personal",
+      "must_not_call": {
+        "turn": 2,
+        "account": "personal",
+        "chat": "$contacts.ana_ionescu_work.jid"
+      }
+    },
+    {
+      "name": "t2_mentions_extras",
+      "answer_regex": {
+        "turn": 2,
+        "pattern": "extras"
+      }
+    },
+    {
+      "name": "no_write_calls",
+      "must_not_call": {
+        "capability": "write"
+      }
+    },
+    {
+      "name": "nothing_reached_whatsapp",
+      "effects_none": {}
+    }
+  ],
+  "judge": []
+}

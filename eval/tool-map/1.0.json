@@ -1,0 +1,39 @@
+{
+  "version": "1.0",
+  "placeholder": true,
+  "description": "PLACEHOLDER for the phase 2 tool surface (design §D1). F2-4 fills in the final names, arguments and `normalize` rules once the tools exist; until then the scorer refuses to run with this map.",
+  "capabilities": {
+    "meta": ["learn"],
+    "accounts": ["get_status"],
+    "catchup": ["catch_up"],
+    "waiting": ["catch_up"],
+    "stories": ["read_messages"],
+    "read": ["read_messages", "get_message", "get_group_info"],
+    "search": ["search"],
+    "contact": ["find_contact"],
+    "remember": ["remember"],
+    "media": ["get_media"],
+    "transcribe": ["get_media"],
+    "draft": ["send_message"],
+    "commit": ["confirm_send"],
+    "immediate_write": ["react_to_message", "edit_message", "delete_message", "manage_chat", "manage_group"],
+    "wait": ["wait_for_messages"],
+    "link": ["link_account"]
+  },
+  "groups": {
+    "write": ["draft", "commit", "immediate_write"],
+    "whatsapp_read": ["catchup", "waiting", "stories", "read", "search", "contact", "media", "transcribe", "wait"],
+    "any": ["meta", "accounts", "catchup", "waiting", "stories", "read", "search", "contact", "remember", "media", "transcribe", "draft", "commit", "immediate_write", "wait", "link"]
+  },
+  "normalize": {
+    "chat": ["args.chat_id", "args.group_id"],
+    "text": ["args.text"],
+    "query": ["args.query", "args.name"],
+    "message": ["args.message_id"],
+    "draft": ["args.draft_id", "result.draft_id"],
+    "before": ["args.before"],
+    "window_hours": [],
+    "action": ["args.action"],
+    "emoji": ["args.emoji"]
+  }
+}

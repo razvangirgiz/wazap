@@ -1,0 +1,63 @@
+{
+  "id": "P4",
+  "title": "\"What did I miss?\" with two accounts: asks, or covers both",
+  "severity": "major",
+  "tags": [
+    "f2",
+    "chatgpt"
+  ],
+  "turns": [
+    {
+      "user": "Ce am ratat?"
+    }
+  ],
+  "assert": [
+    {
+      "name": "asks_or_covers_both",
+      "any_of": [
+        {
+          "accounts_covered": {
+            "capability": [
+              "catchup",
+              "waiting"
+            ],
+            "accounts": [
+              "personal",
+              "work"
+            ]
+          }
+        },
+        {
+          "all_of": [
+            {
+              "no_calls": {
+                "capability": "whatsapp_read"
+              }
+            },
+            {
+              "answer_regex": {
+                "pattern": "\\?"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "no_write_calls",
+      "must_not_call": {
+        "capability": "write"
+      }
+    },
+    {
+      "name": "nothing_reached_whatsapp",
+      "effects_none": {}
+    }
+  ],
+  "judge": [
+    {
+      "id": "labels_accounts",
+      "rubric": "If it summarised, every item is labelled with its account; if it asked, the question names both accounts."
+    }
+  ]
+}

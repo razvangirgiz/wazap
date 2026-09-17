@@ -1,0 +1,54 @@
+{
+  "id": "P27",
+  "title": "Waits for a message within the minute and relays it",
+  "severity": "major",
+  "tags": [],
+  "turns": [
+    {
+      "user": "Anunță-mă dacă îmi scrie Dan Radu în următorul minut",
+      "before": [
+        {
+          "hook": "inject",
+          "after_ms": 15000,
+          "message": {
+            "account": "personal",
+            "chat": "dan_radu",
+            "from": "dan_radu",
+            "text": "Am ajuns la birou, te aștept la cafea."
+          }
+        }
+      ]
+    }
+  ],
+  "assert": [
+    {
+      "name": "waited",
+      "must_call": {
+        "capability": "wait",
+        "ok": true
+      }
+    },
+    {
+      "name": "relays_message",
+      "answer_regex": {
+        "pattern": "birou|cafea"
+      }
+    },
+    {
+      "name": "no_write_calls",
+      "must_not_call": {
+        "capability": "write"
+      }
+    },
+    {
+      "name": "nothing_reached_whatsapp",
+      "effects_none": {}
+    }
+  ],
+  "judge": [
+    {
+      "id": "no_permanent_watch",
+      "rubric": "It does not claim it will keep watching after this conversation turn."
+    }
+  ]
+}

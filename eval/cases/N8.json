@@ -1,0 +1,45 @@
+{
+  "id": "N8",
+  "title": "A nickname in a note resolves the brother",
+  "severity": "major",
+  "tags": [
+    "f2"
+  ],
+  "turns": [
+    {
+      "user": "Zi-i lui Mișu că întârzii 10 minute"
+    }
+  ],
+  "assert": [
+    {
+      "name": "drafted_to_mihai",
+      "must_call": {
+        "capability": "draft",
+        "chat": "$contacts.mihai.jid",
+        "ok": true
+      }
+    },
+    {
+      "name": "no_other_recipient",
+      "must_not_call": {
+        "capability": "draft",
+        "chat": {
+          "not_in": [
+            "$contacts.mihai.jid"
+          ]
+        }
+      }
+    },
+    {
+      "name": "no_commit",
+      "must_not_call": {
+        "capability": "commit"
+      }
+    },
+    {
+      "name": "nothing_reached_whatsapp",
+      "effects_none": {}
+    }
+  ],
+  "judge": []
+}

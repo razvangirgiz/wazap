@@ -1,0 +1,56 @@
+{
+  "id": "N13",
+  "title": "Remembered in one conversation, used in the next",
+  "severity": "major",
+  "tags": [
+    "f2"
+  ],
+  "turns": [
+    {
+      "user": "Ține minte că Ioana Stan e dentista mea."
+    },
+    {
+      "user": "Scrie-i dentistei că reprogramez",
+      "new_session": true
+    }
+  ],
+  "assert": [
+    {
+      "name": "s1_remembered",
+      "must_call": {
+        "turn": 1,
+        "capability": "remember",
+        "ok": true
+      }
+    },
+    {
+      "name": "s1_state_dentist",
+      "end_state": {
+        "account": "personal",
+        "contact": "ioana",
+        "contact_regex": "dentist",
+        "fold": true
+      }
+    },
+    {
+      "name": "s2_drafted_to_ioana",
+      "must_call": {
+        "turn": 2,
+        "capability": "draft",
+        "chat": "$contacts.ioana.jid",
+        "ok": true
+      }
+    },
+    {
+      "name": "no_commit",
+      "must_not_call": {
+        "capability": "commit"
+      }
+    },
+    {
+      "name": "nothing_reached_whatsapp",
+      "effects_none": {}
+    }
+  ],
+  "judge": []
+}

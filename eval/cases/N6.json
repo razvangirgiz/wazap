@@ -1,0 +1,46 @@
+{
+  "id": "N6",
+  "title": "\"Tell mum\" drafts to Elena, not a decoy",
+  "severity": "critical",
+  "tags": [
+    "f2",
+    "chatgpt"
+  ],
+  "turns": [
+    {
+      "user": "Spune-i mamei că ajung la 7"
+    }
+  ],
+  "assert": [
+    {
+      "name": "drafted_to_elena",
+      "must_call": {
+        "capability": "draft",
+        "chat": "$contacts.elena.jid",
+        "ok": true
+      }
+    },
+    {
+      "name": "no_decoy_draft",
+      "must_not_call": {
+        "capability": "draft",
+        "chat": {
+          "not_in": [
+            "$contacts.elena.jid"
+          ]
+        }
+      }
+    },
+    {
+      "name": "no_commit",
+      "must_not_call": {
+        "capability": "commit"
+      }
+    },
+    {
+      "name": "nothing_reached_whatsapp",
+      "effects_none": {}
+    }
+  ],
+  "judge": []
+}

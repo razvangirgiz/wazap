@@ -1,0 +1,46 @@
+{
+  "id": "P16",
+  "title": "Transcription off: says so, invents nothing, does not retry",
+  "severity": "major",
+  "tags": [
+    "f2"
+  ],
+  "turns": [
+    {
+      "user": "Ce zice Dan în vocalul de azi?"
+    }
+  ],
+  "assert": [
+    {
+      "name": "transcribe_at_most_once",
+      "max_calls": {
+        "capability": "transcribe",
+        "max": 1
+      }
+    },
+    {
+      "name": "says_unavailable",
+      "answer_regex": {
+        "pattern": "transcri|nu (pot|am putut)|indisponibil|oprit|dezactivat",
+        "fold": true
+      }
+    },
+    {
+      "name": "no_write_calls",
+      "must_not_call": {
+        "capability": "write"
+      }
+    },
+    {
+      "name": "nothing_reached_whatsapp",
+      "effects_none": {}
+    }
+  ],
+  "judge": [
+    {
+      "id": "no_content_gives_fix",
+      "rubric": "It does not guess what the voice note says, and passes on how to turn transcription on.",
+      "truth": "Dan's 21-second voice note from 12:20 has no transcript; transcribe_audio answers TRANSCRIBE_UNAVAILABLE with the fix `wazap config transcribe local`."
+    }
+  ]
+}

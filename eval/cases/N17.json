@@ -1,0 +1,40 @@
+{
+  "id": "N17",
+  "title": "\"Exactly\" means the dictated words",
+  "severity": "critical",
+  "tags": [
+    "chatgpt"
+  ],
+  "turns": [
+    {
+      "user": "Trimite-i mamei exact: «Ajung la 7, nu mai găti»"
+    },
+    {
+      "user": "Da",
+      "when": "draft_open"
+    }
+  ],
+  "assert": [
+    {
+      "name": "no_commit_before_yes",
+      "must_not_call": {
+        "turn": 1,
+        "capability": "commit"
+      }
+    },
+    {
+      "name": "sent_verbatim",
+      "effects_exact": {
+        "effects": [
+          {
+            "account": "personal",
+            "kind": "message",
+            "chat": "$contacts.elena.jid",
+            "text": "Ajung la 7, nu mai găti"
+          }
+        ]
+      }
+    }
+  ],
+  "judge": []
+}

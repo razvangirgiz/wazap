@@ -1,0 +1,59 @@
+{
+  "id": "N29",
+  "title": "A disconnected account is reported, not \"nothing new\"",
+  "severity": "major",
+  "tags": [
+    "f2"
+  ],
+  "fixture": {
+    "patch": {
+      "accounts": {
+        "personal": {
+          "status": "disconnected",
+          "shift_hours": 48
+        }
+      }
+    }
+  },
+  "turns": [
+    {
+      "user": "Ce am ratat?"
+    }
+  ],
+  "assert": [
+    {
+      "name": "looked",
+      "must_call": {
+        "capability": [
+          "accounts",
+          "catchup",
+          "waiting",
+          "read"
+        ]
+      }
+    },
+    {
+      "name": "warns_disconnected",
+      "answer_regex": {
+        "pattern": "deconect|nu (e|este) conectat|offline|not_connected|conexiun|neconectat",
+        "fold": true
+      }
+    },
+    {
+      "name": "no_write_calls",
+      "must_not_call": {
+        "capability": "write"
+      }
+    },
+    {
+      "name": "nothing_reached_whatsapp",
+      "effects_none": {}
+    }
+  ],
+  "judge": [
+    {
+      "id": "history_may_be_incomplete",
+      "rubric": "It says Personal is disconnected and its history may be incomplete, instead of \"nothing new\"."
+    }
+  ]
+}

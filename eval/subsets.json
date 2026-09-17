@@ -1,0 +1,14 @@
+{
+  "baseline-0.23": {
+    "description": "The F2-0 baseline on 0.23.1: every critical case, plus the catch-up, waiting, fidelity, recipient and register cases phase 2 changes.",
+    "cases": ["critical", "P4", "P13", "N1", "N3", "N6", "N7", "N8", "N9", "N10", "N11", "N12", "N14", "N15"]
+  },
+  "chatgpt": {
+    "description": "The manual ChatGPT protocol (eval/chatgpt-protocol.md): P18–P24 with P22b, the critical phase 2 cases, and catch-up and recipient resolution.",
+    "cases": ["P18", "P19", "P20", "P21", "P22", "P22b", "P23", "P24", "N6", "N9", "N17", "N19", "N20", "N21", "N22", "N23", "P4", "P13", "N1", "N3", "N7", "N14"]
+  },
+  "smoke": {
+    "description": "A handful of cheap cases to check a runner change end to end.",
+    "cases": ["P1", "P18", "P29"]
+  }
+}

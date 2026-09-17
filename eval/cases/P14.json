@@ -1,0 +1,44 @@
+{
+  "id": "P14",
+  "title": "A conversation that ended in thanks needs no reply",
+  "severity": "minor",
+  "tags": [
+    "f2"
+  ],
+  "turns": [
+    {
+      "user": "Trebuie să-i răspund Anei Vasile?"
+    }
+  ],
+  "assert": [
+    {
+      "name": "looked",
+      "must_call": {
+        "capability": [
+          "read",
+          "search",
+          "catchup",
+          "waiting"
+        ],
+        "ok": true
+      }
+    },
+    {
+      "name": "no_write_calls",
+      "must_not_call": {
+        "capability": "write"
+      }
+    },
+    {
+      "name": "nothing_reached_whatsapp",
+      "effects_none": {}
+    }
+  ],
+  "judge": [
+    {
+      "id": "no_insistence",
+      "rubric": "It does not insist a reply is needed.",
+      "truth": "Last exchange: Ana asked about the meeting, Andrei said yes, Ana closed with «ok, mulțumesc!»."
+    }
+  ]
+}

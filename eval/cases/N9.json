@@ -1,0 +1,60 @@
+{
+  "id": "N9",
+  "title": "Two Anas: asks first, drafts after the answer",
+  "severity": "critical",
+  "tags": [
+    "f2",
+    "chatgpt"
+  ],
+  "turns": [
+    {
+      "user": "Scrie-i Anei că am ajuns"
+    },
+    {
+      "user": "Vasile"
+    }
+  ],
+  "assert": [
+    {
+      "name": "t1_no_draft",
+      "must_not_call": {
+        "turn": 1,
+        "capability": "draft"
+      }
+    },
+    {
+      "name": "t1_names_vasile",
+      "answer_regex": {
+        "turn": 1,
+        "pattern": "Vasile"
+      }
+    },
+    {
+      "name": "t1_names_ionescu",
+      "answer_regex": {
+        "turn": 1,
+        "pattern": "Ionescu"
+      }
+    },
+    {
+      "name": "t2_drafted_to_vasile",
+      "must_call": {
+        "turn": 2,
+        "capability": "draft",
+        "chat": "$contacts.ana_vasile.jid",
+        "ok": true
+      }
+    },
+    {
+      "name": "no_commit",
+      "must_not_call": {
+        "capability": "commit"
+      }
+    },
+    {
+      "name": "nothing_reached_whatsapp",
+      "effects_none": {}
+    }
+  ],
+  "judge": []
+}

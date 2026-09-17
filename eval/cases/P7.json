@@ -1,0 +1,62 @@
+{
+  "id": "P7",
+  "title": "Search on Personal does not silently narrow to recent messages",
+  "severity": "major",
+  "tags": [
+    "f2"
+  ],
+  "turns": [
+    {
+      "user": "Caută «contract» pe Personal"
+    }
+  ],
+  "assert": [
+    {
+      "name": "searched_personal",
+      "must_call": {
+        "capability": "search",
+        "account": "personal",
+        "query": {
+          "regex": "contract",
+          "flags": "i"
+        },
+        "ok": true
+      }
+    },
+    {
+      "name": "no_time_window",
+      "must_not_call": {
+        "capability": "search",
+        "args": {
+          "since": {
+            "exists": true
+          }
+        }
+      }
+    },
+    {
+      "name": "old_hit_in_answer",
+      "answer_regex": {
+        "pattern": "2025|noiembrie|semnat contractul|clientul nou",
+        "fold": true
+      }
+    },
+    {
+      "name": "no_write_calls",
+      "must_not_call": {
+        "capability": "write"
+      }
+    },
+    {
+      "name": "nothing_reached_whatsapp",
+      "effects_none": {}
+    }
+  ],
+  "judge": [
+    {
+      "id": "all_hits",
+      "rubric": "All three hits are reported, including the one from 2025.",
+      "truth": "Dan Radu 2025-11-20 (contract with the new client), Cosmina Ilie ~15 days ago (rental contract), John Carter ~10 days ago (contract draft)."
+    }
+  ]
+}

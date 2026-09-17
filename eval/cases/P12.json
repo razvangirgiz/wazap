@@ -1,0 +1,58 @@
+{
+  "id": "P12",
+  "title": "Older history that never arrives is not \"no messages\"",
+  "severity": "major",
+  "tags": [],
+  "fixture": {
+    "patch": {
+      "accounts": {
+        "personal": {
+          "limits": {
+            "bloc12": 10
+          }
+        }
+      }
+    }
+  },
+  "turns": [
+    {
+      "user": "Arată mesaje mai vechi din Bloc 12"
+    }
+  ],
+  "assert": [
+    {
+      "name": "read_before",
+      "must_call": {
+        "capability": "read",
+        "chat": "$groups.bloc12.jid",
+        "before": {
+          "exists": true
+        }
+      }
+    },
+    {
+      "name": "no_false_absence",
+      "answer_not_regex": {
+        "pattern": "nu (au )?(mai )?(exista|existau|au existat)|nu au fost (alte )?mesaje|there (are|were) no (older|earlier) messages",
+        "fold": true
+      }
+    },
+    {
+      "name": "no_write_calls",
+      "must_not_call": {
+        "capability": "write"
+      }
+    },
+    {
+      "name": "nothing_reached_whatsapp",
+      "effects_none": {}
+    }
+  ],
+  "judge": [
+    {
+      "id": "explains_limit",
+      "rubric": "The answer says older history could not be fetched (the phone did not send it) rather than that none exists.",
+      "truth": "Only 10 messages are held locally; asking the phone for older ones gets no answer."
+    }
+  ]
+}

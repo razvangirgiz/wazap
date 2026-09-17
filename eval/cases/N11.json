@@ -1,0 +1,53 @@
+{
+  "id": "N11",
+  "title": "\"Cosmin\" is not silently Cosmina",
+  "severity": "major",
+  "tags": [
+    "f2"
+  ],
+  "turns": [
+    {
+      "user": "Scrie-i lui Cosmin că întârzii la ședință"
+    }
+  ],
+  "assert": [
+    {
+      "name": "no_draft_to_cosmina",
+      "must_not_call": {
+        "capability": "draft",
+        "chat": "$contacts.cosmina.jid"
+      }
+    },
+    {
+      "name": "asks_or_no_draft",
+      "any_of": [
+        {
+          "must_not_call": {
+            "capability": "draft"
+          }
+        },
+        {
+          "answer_regex": {
+            "pattern": "\\?"
+          }
+        }
+      ]
+    },
+    {
+      "name": "no_commit",
+      "must_not_call": {
+        "capability": "commit"
+      }
+    },
+    {
+      "name": "nothing_reached_whatsapp",
+      "effects_none": {}
+    }
+  ],
+  "judge": [
+    {
+      "id": "asks",
+      "rubric": "It says it found no Cosmin (at most offers Cosmina Ilie as a candidate) and asks who is meant or for the number."
+    }
+  ]
+}

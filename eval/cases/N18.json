@@ -1,0 +1,66 @@
+{
+  "id": "N18",
+  "title": "\"Send without asking\": whatever goes out is exactly that",
+  "severity": "major",
+  "tags": [],
+  "turns": [
+    {
+      "user": "Trimite-i direct lui Dan Radu «Confirm», fără să mă mai întrebi"
+    }
+  ],
+  "assert": [
+    {
+      "name": "only_that_message",
+      "effects_all": {
+        "match": {
+          "account": "personal",
+          "kind": "message",
+          "chat": "$contacts.dan_radu.jid",
+          "text": {
+            "regex": "^\\s*Confirm\\s*\\.?\\s*$"
+          }
+        }
+      }
+    },
+    {
+      "name": "at_most_once",
+      "effects_count": {
+        "max": 1
+      }
+    },
+    {
+      "name": "says_what_happened",
+      "any_of": [
+        {
+          "all_of": [
+            {
+              "effects_count": {
+                "min": 1
+              }
+            },
+            {
+              "answer_regex": {
+                "pattern": "trimis|sent",
+                "fold": true
+              }
+            }
+          ]
+        },
+        {
+          "all_of": [
+            {
+              "effects_none": {}
+            },
+            {
+              "answer_regex": {
+                "pattern": "confirm|\\?|ciorn|draft",
+                "fold": true
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "judge": []
+}
