@@ -1,11 +1,10 @@
 #!/usr/bin/env node
 /**
- * The one-click install links, printed as the markdown the README carries.
- * Both encode the same MCP entry `wazap connect` would write, so regenerating
- * beats hand-editing an encoded blob nobody can read.
+ * The one-click install link, printed as the markdown the README carries. It
+ * encodes the same MCP entry `wazap connect` would write, so regenerating beats
+ * hand-editing an encoded blob nobody can read.
  *
  * Cursor:  https://cursor.com/docs/mcp/install-links
- * VS Code: https://code.visualstudio.com/api/extension-guides/ai/mcp
  */
 import { fileURLToPath } from "node:url";
 
@@ -23,24 +22,10 @@ export function cursorLink() {
   return `cursor://anysphere.cursor-deeplink/mcp/install?name=${NAME}&config=${config}`;
 }
 
-/** VS Code takes the whole server object with its name folded in, URL-encoded. */
-export function vscodeLink() {
-  return `vscode:mcp/install?${encodeURIComponent(JSON.stringify({ name: NAME, ...ENTRY }))}`;
-}
-
-/** The https form, for the many places a custom scheme is stripped before it can be clicked. */
-export function vscodeRedirect() {
-  return `https://insiders.vscode.dev/redirect/mcp/install?name=${NAME}&config=${encodeURIComponent(JSON.stringify(ENTRY))}`;
-}
-
 export function markdown() {
-  return [
-    `[![Install in Cursor](https://cursor.com/deeplink/mcp-install-dark.png)](${cursorLink()})`,
-    `[![Install in VS Code](https://img.shields.io/badge/VS_Code-Install_Server-0098FF?style=flat-square&logo=visualstudiocode&logoColor=white)](${vscodeLink()})`,
-  ].join("\n");
+  return `[![Install in Cursor](https://cursor.com/deeplink/mcp-install-dark.png)](${cursorLink()})`;
 }
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
   console.log(markdown());
-  console.log(`\nIf a custom scheme is stripped, VS Code also takes:\n${vscodeRedirect()}`);
 }

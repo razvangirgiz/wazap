@@ -99,19 +99,16 @@ test("a data directory the user did fill in still arrives", async () => {
   assert.equal(report.data_dir, chosen);
 });
 
-test("both install links carry the entry connect would have written", async () => {
-  const { NAME, ENTRY, cursorLink, vscodeLink } = await import("../scripts/badges.mjs");
+test("the Cursor install link carries the entry connect would have written", async () => {
+  const { NAME, ENTRY, cursorLink } = await import("../scripts/badges.mjs");
   assert.deepEqual(ENTRY, launcher("/Users/x/.npm/_npx/8a1b/node_modules/wazap/dist/index.js", "/usr/bin"));
 
   const cursor = new URL(cursorLink());
   assert.equal(cursor.searchParams.get("name"), NAME);
   assert.deepEqual(JSON.parse(Buffer.from(cursor.searchParams.get("config"), "base64").toString()), ENTRY);
-
-  const vscode = decodeURIComponent(vscodeLink().slice("vscode:mcp/install?".length));
-  assert.deepEqual(JSON.parse(vscode), { name: NAME, ...ENTRY });
 });
 
-test("the README carries the links the generator prints", async () => {
+test("the README carries the link the generator prints", async () => {
   const { markdown } = await import("../scripts/badges.mjs");
   const readme = readFileSync(join(root, "README.md"), "utf8");
   for (const line of markdown().split("\n")) {

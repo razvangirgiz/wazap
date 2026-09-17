@@ -40,7 +40,6 @@ and it is missing, and to restart Claude Desktop itself once it has connected it
 | Claude Desktop | download `wazap-<version>.mcpb` from [Releases](https://github.com/razvangirgiz/wazap/releases) and double-click it |
 | Gemini CLI | `npx wazap-mcp connect gemini` |
 | Cursor | the [Install in Cursor](#other-mcp-clients) badge, then `npx wazap-mcp skills install cursor` |
-| VS Code | the [Install in VS Code](#other-mcp-clients) badge |
 | Codex CLI | `npx wazap-mcp connect codex`, then `npx wazap-mcp skills install codex` |
 | Grok Bot | [Grok Bot / remote MCP](#grok-bot--remote-mcp) |
 | Anything else | the MCP entry `npx -y wazap-mcp` over stdio, or a [self-hosted](#self-host) URL |
@@ -109,15 +108,11 @@ Set `WAZAP_WRITE_TOKEN` too only if this client should send, and put that value 
 
 ### Other MCP clients
 
-Cursor and VS Code install from a link:
+Cursor installs from a link:
 
 [![Install in Cursor](https://cursor.com/deeplink/mcp-install-dark.png)](cursor://anysphere.cursor-deeplink/mcp/install?name=whatsapp&config=eyJjb21tYW5kIjoibnB4IiwiYXJncyI6WyIteSIsIndhemFwLW1jcCJdfQ)
-[![Install in VS Code](https://img.shields.io/badge/VS_Code-Install_Server-0098FF?style=flat-square&logo=visualstudiocode&logoColor=white)](vscode:mcp/install?%7B%22name%22%3A%22whatsapp%22%2C%22command%22%3A%22npx%22%2C%22args%22%3A%5B%22-y%22%2C%22wazap-mcp%22%5D%7D)
 
-Both carry the same entry `connect` writes. Where a custom scheme is stripped
-before you can click it, VS Code also takes
-[the https form](https://insiders.vscode.dev/redirect/mcp/install?name=whatsapp&config=%7B%22command%22%3A%22npx%22%2C%22args%22%3A%5B%22-y%22%2C%22wazap-mcp%22%5D%7D).
-`node scripts/badges.mjs` reprints all three.
+It carries the same entry `connect` writes; `node scripts/badges.mjs` reprints it.
 
 Any other MCP client works the same way: the command is `npx -y wazap-mcp`, the
 transport is stdio. Tell the agent to call `learn` first — it returns the id
