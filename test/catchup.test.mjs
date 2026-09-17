@@ -626,6 +626,32 @@ test("a #private person's unheard voice notes are counted in the footer, never n
   assert.ok(!text(only).includes("transcribe_audio"));
 });
 
+test("a #private person is private under every row that is them: what they wrote as a lid still folding into their number is not quoted", async () => {
+  const { sqlite } = await import("../dist/db/sqlite.js");
+  const { svc, sock, arrive, mention } = account();
+  const { call } = toolsOf(svc);
+  const LID = "987654321098765@lid";
+  sock.ev.emit("chats.upsert", [{ id: GROUP, name: "Echipa proiect" }]);
+  arrive(GROUP, mention("@Răzvan îmi trimiți analizele de la clinică până mâine?"), { participant: LID, at: Date.now() - 2 * HOUR });
+  arrive(GROUP, "diagnosticul meu complet, pe care nu-l spun nimănui altcuiva", { participant: LID, at: Date.now() - HOUR });
+  await call("update_contact_details", { contact_id: DAN, add_tags: ["#private"] });
+  // The lid turns out to be Dan's: its row merges into his, and the messages it sent have not moved over yet.
+  const dan = svc.db.identity.contactIdOf(DAN);
+  const lid = svc.db.identity.contactIdOf(LID);
+  assert.ok(dan < lid);
+  const raw = new (sqlite().DatabaseSync)(svc.db.path);
+  raw.prepare("INSERT INTO lid_phones(lid, phone_jid, learned_at) VALUES (?, ?, ?)").run(LID, DAN, Date.now());
+  raw.prepare("UPDATE contacts SET lid = NULL, merged_into = ? WHERE id = ?").run(dan, lid);
+  raw.prepare("UPDATE contacts SET lid = ? WHERE id = ?").run(LID, dan);
+  raw.close();
+
+  const result = await call("catch_up", { hours: 24, budget_tokens: 8000 });
+  const all = `${text(result)}\n${JSON.stringify(result.structuredContent)}`;
+  for (const words of ["analizele", "diagnosticul"]) assert.ok(!all.includes(words), `"${words}" is not quoted`);
+  const asked = result.structuredContent.waiting.find((entry) => entry.chat === GROUP);
+  assert.deepEqual([asked.from, asked.private], ["Dan", true]);
+});
+
 test("a chat tagged #no-catchup is left out of every section and counted", async () => {
   const { svc, arrive } = account();
   const { call } = toolsOf(svc);

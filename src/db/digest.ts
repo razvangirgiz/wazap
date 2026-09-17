@@ -486,13 +486,17 @@ export class Digest {
     return out;
   }
 
-  /** The contacts (people, and the rows groups keep notes on) filed under `tag`: their ids and jids. */
+  /**
+   * The contacts (people, and the rows groups keep notes on) filed under `tag`:
+   * every row that is them — the row a tagged one merges into, and the rows
+   * still merging into that (digest.contacts reads them as it), so a message
+   * whose sender has not moved over yet is theirs too — with their jids.
+   */
   tagged(tag: string): { contactIds: Set<number>; jids: Set<string> } {
-    const contactIds = new Set<number>();
-    const jids = new Set<string>();
     const needle = JSON.stringify(tag);
-    for (const row of this.c.all<{ id: number; phone_jid: string | null; lid: string | null; tags: string }>(
-      `SELECT k.id, k.phone_jid, k.lid, n.tags FROM contact_notes n CROSS JOIN contacts k ON k.id = n.contact_id
+    const survivors = new Set<number>();
+    for (const row of this.c.all<{ survivor: number; tags: string }>(
+      `SELECT coalesce(k.merged_into, k.id) AS survivor, n.tags FROM contact_notes n CROSS JOIN contacts k ON k.id = n.contact_id
        WHERE n.tags IS NOT NULL AND instr(n.tags, ?) > 0`,
       needle
     )) {
@@ -502,7 +506,16 @@ export class Digest {
       } catch {
         continue;
       }
-      if (!Array.isArray(tags) || !tags.includes(tag)) continue;
+      if (Array.isArray(tags) && tags.includes(tag)) survivors.add(row.survivor);
+    }
+    const contactIds = new Set<number>();
+    const jids = new Set<string>();
+    if (survivors.size === 0) return { contactIds, jids };
+    for (const row of this.c.all<{ id: number; phone_jid: string | null; lid: string | null }>(
+      `SELECT id, phone_jid, lid FROM contacts WHERE id IN (SELECT value FROM json_each(?1))
+       UNION SELECT id, phone_jid, lid FROM contacts INDEXED BY contacts_merging WHERE merged_into IN (SELECT value FROM json_each(?1))`,
+      JSON.stringify([...survivors])
+    )) {
       contactIds.add(row.id);
       if (row.phone_jid !== null) jids.add(row.phone_jid);
       if (row.lid !== null) jids.add(row.lid);
