@@ -32,9 +32,9 @@ function account(options = {}) {
   const now = opened.clock.now;
   const person = (n, name, extra = {}) => opened.db.identity.upsertContact({ jid: phone(n), name, listed: true, ...extra });
   /** Messages with a person `daysAgo`: theirs, and `own` of the user's. */
-  const talk = (n, daysAgo, { theirs = 1, own = 0 } = {}) => {
+  const talk = (n, daysAgo, { theirs = 1, own = 0, text = "hei" } = {}) => {
     for (let i = 0; i < theirs + own; i++) {
-      opened.db.messages.upsert({ chatJid: phone(n), keyId: `K${++key}`, fromMe: i >= theirs, ts: now - daysAgo * DAY + i * 1000, type: "text", text: "hei" });
+      opened.db.messages.upsert({ chatJid: phone(n), keyId: `K${++key}`, fromMe: i >= theirs, ts: now - daysAgo * DAY + i * 1000, type: "text", text });
     }
   };
   const inGroup = (g, n, daysAgo, { own = false } = {}) =>
@@ -103,6 +103,10 @@ test("relationship words, through their case endings, and the names a user files
   assert.equal(relationNameMatch("mother", "Mama mea"), "exact");
   assert.equal(relationNameMatch("mother", "Mama mobil"), "exact");
   assert.equal(relationNameMatch("mother", "Maria (mama)"), "word");
+  assert.equal(relationNameMatch("mother", "La Mama"), null, "a restaurant");
+  assert.equal(relationNameMatch("grandmother", "Cazare Mamaia"), null, "a place to stay");
+  assert.equal(relationNameMatch("godfather", "Pizza Nasu"), null);
+  assert.equal(relationNameMatch("sister", "Andreea Sora"), "word", "a first name, then the word: a sister, or a surname");
   assert.equal(relationNameMatch("mother", "Mama Anei"), null, "Ana's mother");
   assert.equal(relationNameMatch("mother", "Mama lui Andrei"), null, "Andrei's mother");
   assert.equal(relationNameMatch("mother", "Mamaia Resort"), null);
@@ -264,8 +268,9 @@ test("diminutives rank under the name itself, and a nickname the user filed over
   person(5, "Puiu Marin");
   talk(5, 1, { own: 25 });
   result = find({ name: "puiu", limit: 5 });
-  assert.equal(result.candidates.find((c) => c.contactId !== null && c.names.nickname === "Puiu").match.score, 110);
-  assert.equal(result.candidates[0].displayName, "Puiu Marin", "a name talked to daily still wins on the relationship");
+  assert.equal(result.candidates[0].displayName, "Gheorghe Ionescu", "the nickname the user filed ranks first, whoever they talk to more");
+  assert.equal(result.candidates[0].match.score, 110);
+  assert.equal(result.verdict, "ambiguous", "a name talked to daily is still offered next to it");
 });
 
 test("groups match by name, a case ending reads through, and a group the account left is not a candidate", () => {
@@ -277,7 +282,9 @@ test("groups match by name, a case ending reads through, and a group the account
   inGroup(1, 9, 2, { own: true });
 
   let result = find({ name: "fotbalul", kind: "group" });
-  assert.equal(result.verdict, "resolved");
+  assert.equal(result.verdict, "ambiguous", "a case ending the tables do not vouch for is offered, never resolved");
+  assert.equal(result.candidates.length, 1);
+  assert.equal(result.candidates[0].match.resolvable, false);
   assert.equal(result.candidates[0].displayName, "Fotbal marți");
   assert.equal(result.candidates[0].kind, "group");
   assert.equal(result.candidates[0].match.inflected, true);
@@ -315,8 +322,10 @@ test("a prefix finds a name, the account itself is never a candidate, and a name
     ["name", 100, 105],
     ["push_name", 95, 95],
   ]);
-  talk(2, 1);
-  assert.equal(find({ name: "Alexandru" }).candidates[0].match.source, "push_name", "until the user talks to that one");
+  talk(2, 1, { own: 25 });
+  result = find({ name: "Alexandru", limit: 5 });
+  assert.equal(result.candidates[0].match.source, "name", "the saved name ranks first, however much the user talks to the other");
+  assert.equal(result.verdict, "ambiguous");
   assert.equal(find({ name: "Andrei" }).verdict, "not_found");
   result = find({ name: "Alexan" });
   assert.deepEqual(result.candidates.map((c) => c.match.class), ["prefix", "prefix"]);
@@ -347,4 +356,137 @@ test("a person renamed, tagged or merged between two finds is read as they are n
   const merged = find({ name: "Mimi", limit: 5 });
   assert.equal(merged.candidates.length, 1, "one person once the lid and the number are paired");
   assert.equal(merged.candidates[0].jid, phone(1));
+});
+
+// ---------------------------------------------------------------- the review's wrong resolutions
+
+test("a relationship word never resolves a business, a place or a surname, and matches only the details that say a relationship", () => {
+  let a = account();
+  a.person(1, "La Mama");
+  a.talk(1, 3, { own: 2 });
+  a.person(2, "Maria Popescu");
+  a.talk(2, 2, { own: 10 });
+  assert.equal(a.find({ name: "mama" }).verdict, "not_found", "the restaurant is no one's mother");
+
+  a = account();
+  a.person(1, "Cazare Mamaia");
+  a.talk(1, 20, { own: 1 });
+  assert.equal(a.find({ name: "bunica" }).verdict, "not_found");
+  assert.equal(a.find({ name: "mamaia" }).verdict, "not_found");
+
+  a = account();
+  a.person(1, "Andreea Sora");
+  a.talk(1, 5, { own: 3 });
+  for (const asked of ["sora", "sora mea"]) {
+    const result = a.find({ name: asked });
+    assert.equal(result.verdict, "ambiguous", `${asked}: a sister or a surname, for the user to say`);
+    assert.equal(result.candidates[0].match.resolvable, false);
+    assert.ok(result.candidates[0].score < FIND_SCORES.resolvedScore);
+  }
+
+  a = account();
+  a.person(1, "Pizza Nasu");
+  a.talk(1, 5, { own: 1 });
+  assert.equal(a.find({ name: "nasul" }).verdict, "not_found");
+
+  a = account();
+  a.person(1, "Ion Popa");
+  a.db.identity.updateFields(phone(1), { set: { oras: "Mamaia" } });
+  assert.equal(a.find({ name: "bunica" }).verdict, "not_found", "a town in a detail is not a relationship");
+  a.db.identity.updateFields(phone(1), { set: { relatie: "bunica mea dinspre mama" } });
+  assert.equal(a.find({ name: "bunica" }).verdict, "resolved", "the relationship detail says it");
+  a.db.identity.updateFields(phone(1), { set: { relatie: "sora mamei" } });
+  assert.equal(a.find({ name: "sora" }).verdict, "not_found", "the mother's sister is not the user's sister");
+});
+
+test("a first name is never read as a case ending of another, nor reached through -le or -ul", () => {
+  let a = account();
+  a.person(1, "Andra Ionescu");
+  a.talk(1, 10, { own: 2 });
+  assert.equal(a.find({ name: "Andrei" }).verdict, "not_found", "Andrei is not Andra");
+
+  a = account();
+  a.person(1, "Daniel Pop");
+  a.talk(1, 10, { own: 2 });
+  let result = a.find({ name: "Danielle" });
+  assert.equal(result.verdict, "not_found");
+  assert.deepEqual(result.closest.map((c) => [c.displayName, c.match.class]), [["Daniel Pop", "fuzzy"]], "offered as a near spelling only");
+  a.person(2, "Nico");
+  a.talk(2, 3, { own: 1 });
+  assert.equal(a.find({ name: "Nicole" }).verdict, "not_found");
+  a.person(3, "Gabriel Stan");
+  assert.equal(a.find({ name: "Gabrielle" }).verdict, "not_found");
+  a.person(4, "Matei Radu");
+  a.person(5, "Mata Hari");
+  result = a.find({ name: "Matei", limit: 5 });
+  assert.equal(result.verdict, "resolved");
+  assert.deepEqual(result.candidates.map((c) => c.displayName), ["Matei Radu"]);
+  assert.deepEqual(inflectionForms("paul"), ["paul"]);
+  assert.deepEqual(inflectionForms("andrei"), ["andrei"]);
+  assert.ok(inflectionForms("mariei").includes("maria"), "a case ending of a name still reads");
+});
+
+test("the start of a word never resolves, and a name that matches as a whole outranks one talked to more", () => {
+  const cases = [
+    ["Ion", "Maria Ionescu"],
+    ["Radu", "Elena Radulescu"],
+    ["Dan", "Dana Pop"],
+  ];
+  for (const [asked, only] of cases) {
+    const a = account();
+    a.person(1, only);
+    a.talk(1, 2, { own: 1 });
+    const result = a.find({ name: asked });
+    assert.equal(result.verdict, "ambiguous", `${asked} → ${only}`);
+    assert.deepEqual([result.candidates[0].match.class, result.candidates[0].match.resolvable], ["prefix", false]);
+    assert.ok(result.candidates[0].score <= FIND_SCORES.unresolvableCap);
+  }
+  const a = account();
+  a.person(1, "Radu Stan");
+  a.talk(1, 60, { own: 0 });
+  a.person(2, "Elena Radulescu");
+  a.talk(2, 1, { own: 25 });
+  const result = a.find({ name: "Radu" });
+  assert.equal(result.verdict, "resolved");
+  assert.equal(result.candidates[0].displayName, "Radu Stan");
+});
+
+test("someone's relative is not them: Mama lui Andrei and Mama Anei do not answer for Andrei or Ana", () => {
+  const a = account();
+  a.person(1, "Mama Anei");
+  a.person(2, "Mamaia Resort");
+  a.person(3, "Mama lui Andrei");
+  a.person(4, "Andrei Pop");
+  a.person(5, "Ana Pop");
+  for (const n of [1, 2, 3, 4, 5]) a.talk(n, 2, { own: 3 });
+  const verdict = (asked) => {
+    const result = a.find({ name: asked });
+    return [result.verdict, result.candidates[0]?.displayName ?? null];
+  };
+  assert.deepEqual(verdict("mama"), ["not_found", null]);
+  assert.deepEqual(verdict("Ana"), ["resolved", "Ana Pop"]);
+  assert.deepEqual(verdict("Anei"), ["resolved", "Ana Pop"]);
+  assert.deepEqual(verdict("Andrei"), ["resolved", "Andrei Pop"]);
+  assert.deepEqual(verdict("lui Andrei"), ["resolved", "Andrei Pop"]);
+  assert.deepEqual(verdict("mama lui Andrei"), ["resolved", "Mama lui Andrei"]);
+  assert.deepEqual(verdict("mama Anei"), ["resolved", "Mama Anei"]);
+  const andrei = a.find({ name: "Andrei", limit: 5 });
+  assert.equal(andrei.candidates.length, 1, "resolved shows the one");
+});
+
+test("a qualifier is never read from what messages say, and a group named after relatives is not a relationship", () => {
+  let a = account();
+  a.person(1, "Ana Pop");
+  a.talk(1, 1, { own: 3, text: "sunt la contabilitate" });
+  a.person(2, "Ana Ionescu");
+  a.talk(2, 1, { own: 3 });
+  const result = a.find({ name: "Ana", qualifier: "contabilitate" });
+  assert.equal(result.verdict, "ambiguous");
+  assert.deepEqual(result.candidates.map((c) => c.qualifier), [{ hits: [], score: -15 }, { hits: [], score: -15 }]);
+
+  a = account({ leftGroup: () => false });
+  a.db.identity.upsertChat({ jid: group(1), name: "Mama & Tata" });
+  a.inGroup(1, 1, 1, { own: true });
+  assert.equal(a.find({ name: "mama" }).verdict, "not_found");
+  assert.equal(a.find({ name: "tata", kind: "group" }).verdict, "not_found");
 });

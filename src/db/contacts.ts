@@ -20,14 +20,25 @@
  *   7 days +25, 30 days +15, 90 days +8; the user's own messages to them in 90
  *   days, 20 or more +10, 5 or more +6, one or more +3; a saved contact +5.
  *
+ * Candidates rank by their match first; the qualifier and the relationship
+ * order those whose names match alike, so a name talked to daily never
+ * outranks a better-matching one.
+ *
  * The verdict: `resolved` when the best candidate scores 80 or more and 25 more
- * than the next; `ambiguous` with up to 5 candidates otherwise; `not_found`,
- * with the closest weak matches (a word inside a name, a near spelling), when
- * no candidate matches at least through the start of a word. A relationship
- * word ("mama") matches only what the user filed — a saved name, a tag, a
- * detail — and a not_found for one carries no closest: who it is is a question
- * for the user. Groups match by their name; a group the account left is not a
- * candidate.
+ * than the next (or the next cannot resolve and matches 10 points worse);
+ * `ambiguous` with up to 5 candidates otherwise; `not_found`, with the closest
+ * weak matches (a word inside a name, a near spelling), when no candidate
+ * matches at least through the start of a word. Some matches are offered but
+ * never resolve, their score held at 79: through the start of a word only
+ * ("Ion" in Ionescu), through a case ending the tables do not vouch for (a
+ * base that is not a known first name or relationship word), a relationship
+ * word after a first name ("Andreea Sora": a sister or a surname), and the
+ * words that name someone else's relative ("Andrei" in "Mama lui Andrei",
+ * which also takes 20 points off). A relationship word ("mama") matches only
+ * what the user filed — a saved name that is the relationship alone, a tag, a
+ * nickname or relationship detail — and a not_found for one carries no
+ * closest: who it is is a question for the user. Groups match by their name;
+ * a group the account left is not a candidate.
  */
 import type { Connection } from "./connection.js";
 import { StorageError } from "./errors.js";
@@ -37,10 +48,13 @@ import {
   diminutivesOf,
   editDistance,
   inflectionForms,
+  isKnownBase,
   isRealName,
   nameWords,
   NAME_PARTICLES,
   NICKNAME_FIELDS,
+  possessorIndexes,
+  relationDetailMatch,
   relationOf,
   relationWordsMatch,
   RELATIONSHIP_FIELDS,
@@ -79,8 +93,18 @@ export const FIND_SCORES = Object.freeze({
     [1, 3],
   ] as ReadonlyArray<readonly [number, number]>),
   saved: 5,
+  /** A match on words that name someone else's relative ("Mama lui Andrei" for "Andrei"). */
+  possessor: -20,
   resolvedScore: 80,
   resolvedGap: 25,
+  /**
+   * A candidate matched only through the start of a word, a case ending the
+   * tables do not vouch for, a relationship word after a name, or the words
+   * naming someone else's relative, never resolves: its score is held here.
+   */
+  unresolvableCap: 79,
+  /** A next candidate that cannot resolve does not stand in the way of one whose match is this much better. */
+  unresolvableMatchGap: 10,
   /** A match at least this good can be resolved or ambiguous; below it a candidate is only ever closest. */
   eligibleMatch: 60,
   ambiguousMax: 5,
@@ -128,7 +152,17 @@ export interface ContactCandidate {
     group: string | null;
   };
   score: number;
-  match: { class: MatchClass; source: MatchSource; value: string; score: number; inflected: boolean; relationship: string | null };
+  match: {
+    class: MatchClass;
+    source: MatchSource;
+    value: string;
+    /** The match's points, before the qualifier and the relationship; candidates rank on this first. */
+    score: number;
+    inflected: boolean;
+    relationship: string | null;
+    /** False for a match that never resolves on its own (FIND_SCORES.unresolvableCap). */
+    resolvable: boolean;
+  };
   /** Null when no qualifier was asked. */
   qualifier: { hits: QualifierHit[]; score: number } | null;
   /** The points the relationship with the user added, by part. */
@@ -164,6 +198,10 @@ interface QueryWord {
 interface Match {
   class: MatchClass;
   inflected: boolean;
+  /** Whether this match alone may resolve: see FIND_SCORES.unresolvable. */
+  resolvable: boolean;
+  /** Matched only words that name someone else ("Mama lui Andrei" for "Andrei"). */
+  possessor?: boolean;
 }
 
 interface PersonRow {
@@ -278,35 +316,45 @@ function personOf(row: PersonRow): Person {
   };
 }
 
-/** Every word asked must meet its own word of the name; the weakest way any of them did is the class. */
+/**
+ * Every word asked must meet its own word of the name; the weakest way any of
+ * them did is the class. A case ending the tables do not vouch for, a prefix,
+ * or a match on the words that name someone else's relative, cannot resolve.
+ */
 function matchWords(query: readonly QueryWord[], words: readonly string[]): Match | null {
-  const tokens = words.filter((token) => token !== "lui");
-  if (tokens.length === 0 || query.length === 0) return null;
-  const used = new Array<boolean>(tokens.length).fill(false);
+  const indexes: number[] = [];
+  words.forEach((word, index) => {
+    if (word !== "lui") indexes.push(index);
+  });
+  if (indexes.length === 0 || query.length === 0) return null;
+  const used = new Set<number>();
   let inflected = false;
+  let unverified = false;
   let diminutive = false;
   let prefix = false;
-  const take = (test: (token: string) => boolean): boolean => {
-    for (let index = 0; index < tokens.length; index++) {
-      if (!used[index] && test(tokens[index]!)) {
-        used[index] = true;
-        return true;
+  const take = (test: (token: string) => boolean): string | null => {
+    for (const index of indexes) {
+      if (!used.has(index) && test(words[index]!)) {
+        used.add(index);
+        return words[index]!;
       }
     }
-    return false;
+    return null;
   };
   let whole = true;
   for (const q of query) {
-    if (take((token) => token === q.word)) continue;
-    if (q.forms.length > 0 && take((token) => q.forms.includes(token))) {
+    if (take((token) => token === q.word) !== null) continue;
+    const base = q.forms.length > 0 ? take((token) => q.forms.includes(token)) : null;
+    if (base !== null) {
       inflected = true;
+      if (!isKnownBase(base)) unverified = true;
       continue;
     }
-    if (q.related.size > 0 && take((token) => q.related.has(token))) {
+    if (q.related.size > 0 && take((token) => q.related.has(token)) !== null) {
       diminutive = true;
       continue;
     }
-    if (q.word.length >= 3 && take((token) => token.length > q.word.length && token.startsWith(q.word))) {
+    if (q.word.length >= 3 && take((token) => token.length > q.word.length && token.startsWith(q.word)) !== null) {
       prefix = true;
       continue;
     }
@@ -314,11 +362,14 @@ function matchWords(query: readonly QueryWord[], words: readonly string[]): Matc
     break;
   }
   if (whole) {
-    const cls: MatchClass = prefix ? "prefix" : diminutive ? "diminutive" : query.length === tokens.length ? "exact" : "word";
-    return { class: cls, inflected };
+    const cls: MatchClass = prefix ? "prefix" : diminutive ? "diminutive" : query.length === indexes.length ? "exact" : "word";
+    const possessors = possessorIndexes(words);
+    const possessor = !used.has(0) && [...used].some((index) => possessors.has(index));
+    return { class: cls, inflected, resolvable: !prefix && !unverified && !possessor, possessor };
   }
   const needle = query.map((q) => q.word).join(" ");
-  return needle.length >= 3 && tokens.join(" ").includes(needle) ? { class: "substring", inflected: false } : null;
+  const tokens = indexes.map((index) => words[index]!);
+  return needle.length >= 3 && tokens.join(" ").includes(needle) ? { class: "substring", inflected: false, resolvable: false } : null;
 }
 
 /** Every word asked is a near spelling of a word of the name: one edit up to six letters, two above. */
@@ -360,6 +411,7 @@ function matchScore(match: Match, source: MatchSource): number {
   return (
     FIND_SCORES.match[match.class] +
     (match.inflected ? FIND_SCORES.inflected : 0) +
+    (match.possessor === true ? FIND_SCORES.possessor : 0) +
     (USER_DATA_SOURCES.has(source) ? FIND_SCORES.userData : 0) +
     (SELF_NAMED_SOURCES.has(source) ? FIND_SCORES.selfNamed : 0)
   );
@@ -409,7 +461,9 @@ export class Contacts {
     if (kind !== "group") scored.push(...this.matchPeople(people, query, relation, false));
     if (kind !== "person" && relation === null) scored.push(...this.matchGroups(groupRows, query, false));
     this.relate(scored, query, now, since90, qualifier, qualifierGroups);
+    // The match ranks first; the qualifier and the relationship order candidates whose names match alike.
     const order = (a: Scored, b: Scored): number =>
+      b.candidate.match.score - a.candidate.match.score ||
       b.candidate.score - a.candidate.score ||
       (b.candidate.lastExchange?.at ?? -1) - (a.candidate.lastExchange?.at ?? -1) ||
       Number(b.candidate.saved) - Number(a.candidate.saved) ||
@@ -424,11 +478,15 @@ export class Contacts {
     };
     const eligible = scored.filter((entry) => FIND_SCORES.match[entry.candidate.match.class] >= FIND_SCORES.eligibleMatch);
     if (eligible.length > 0) {
-      const [top, next] = eligible;
+      const [top, next] = eligible.map((entry) => entry.candidate);
       const resolved =
-        top!.candidate.score >= FIND_SCORES.resolvedScore && (next === undefined || top!.candidate.score - next.candidate.score >= FIND_SCORES.resolvedGap);
+        top!.match.resolvable &&
+        top!.score >= FIND_SCORES.resolvedScore &&
+        (next === undefined ||
+          top!.score - next.score >= FIND_SCORES.resolvedGap ||
+          (!next.match.resolvable && top!.match.score - next.match.score >= FIND_SCORES.unresolvableMatchGap));
       result.verdict = resolved ? "resolved" : "ambiguous";
-      const shown = resolved ? [top!] : eligible.slice(0, Math.min(limit, FIND_SCORES.ambiguousMax));
+      const shown = resolved ? [eligible[0]!] : eligible.slice(0, Math.min(limit, FIND_SCORES.ambiguousMax));
       result.candidates = shown.map((entry) => this.withGroups(entry, groupRows));
       return result;
     }
@@ -475,19 +533,23 @@ export class Contacts {
       const consider = (match: Match | null, source: MatchSource, value: string): void => {
         if (match === null) return;
         const score = matchScore(match, source);
-        if (best === null || score > best.score) best = { class: match.class, source, value, score, inflected: match.inflected, relationship: relation };
+        const current = best as ContactCandidate["match"] | null;
+        if (current === null || score > current.score || (score === current.score && match.resolvable && !current.resolvable)) {
+          best = { class: match.class, source, value, score, inflected: match.inflected, relationship: relation, resolvable: match.resolvable };
+        }
       };
       if (relation !== null) {
-        const asRelation = (cls: "exact" | "word" | null): Match | null => (cls === null ? null : { class: cls, inflected });
+        // Only a name that is the relationship alone resolves; one after a first name ("Maria mama", or a surname) is a guess.
+        const asRelation = (cls: "exact" | "word" | null): Match | null => (cls === null ? null : { class: cls, inflected, resolvable: cls === "exact" });
         for (const field of person.fields) {
-          const source: MatchSource = RELATIONSHIP_FIELDS.has(field.folded) ? "relatie" : NICKNAME_FIELDS.has(field.folded) ? "nickname" : "field";
-          consider(asRelation(relationWordsMatch(relation, field.words)), source, `${field.key}: ${field.value}`);
+          if (RELATIONSHIP_FIELDS.has(field.folded)) consider(asRelation(relationDetailMatch(relation, field.words)), "relatie", `${field.key}: ${field.value}`);
+          else if (NICKNAME_FIELDS.has(field.folded)) consider(asRelation(relationWordsMatch(relation, field.words)), "nickname", `${field.key}: ${field.value}`);
         }
         for (const tag of person.tags) consider(asRelation(relationWordsMatch(relation, tag.words) === "exact" ? "exact" : null), "tag", tag.tag);
         if (person.saved) consider(asRelation(relationWordsMatch(relation, person.savedWords)), "name", person.row.name!);
       } else {
         for (const name of person.names) {
-          consider(near ? (nearWords(query, name.words) ? { class: "fuzzy", inflected: false } : null) : matchWords(query, name.words), name.source, name.value);
+          consider(near ? (nearWords(query, name.words) ? { class: "fuzzy", inflected: false, resolvable: false } : null) : matchWords(query, name.words), name.source, name.value);
         }
       }
       const match = best as ContactCandidate["match"] | null;
@@ -550,7 +612,7 @@ export class Contacts {
     const out: Scored[] = [];
     for (const row of groups) {
       const words = nameWords(row.name);
-      const match: Match | null = near ? (nearWords(query, words) ? { class: "fuzzy", inflected: false } : null) : matchWords(query, words);
+      const match: Match | null = near ? (nearWords(query, words) ? { class: "fuzzy", inflected: false, resolvable: false } : null) : matchWords(query, words);
       if (match === null || !this.stillIn(row)) continue;
       const score = matchScore(match, "group_name");
       out.push({
@@ -566,7 +628,7 @@ export class Contacts {
           displayName: row.name,
           names: { saved: null, notify: null, pushName: null, business: null, nickname: null, group: row.name },
           score,
-          match: { class: match.class, source: "group_name", value: row.name, score, inflected: match.inflected, relationship: null },
+          match: { class: match.class, source: "group_name", value: row.name, score, inflected: match.inflected, relationship: null, resolvable: match.resolvable },
           qualifier: null,
           relationship: { recency: 0, frequency: 0, saved: 0 },
           lastExchange: null,
@@ -689,8 +751,9 @@ export class Contacts {
         const score = filed ? FIND_SCORES.qualifier.filed : hits.length > 0 ? FIND_SCORES.qualifier.businessOrGroup : FIND_SCORES.qualifier.miss;
         candidate.qualifier = { hits, score };
       }
-      candidate.score =
+      const total =
         candidate.match.score + (candidate.qualifier?.score ?? 0) + candidate.relationship.recency + candidate.relationship.frequency + candidate.relationship.saved;
+      candidate.score = candidate.match.resolvable ? total : Math.min(total, FIND_SCORES.unresolvableCap);
     }
   }
 

@@ -29,7 +29,10 @@ export function isRealName(value: string | null | undefined): boolean {
  * ends in instead. In a group whose `every` is false only the longest ending
  * that fits applies ("Andreei" is Andreea, not Andrea); -ului and -lui both
  * apply, since "tatălui" is tata and "fotbalului" is fotbal and only the stored
- * names can tell which one was meant.
+ * names can tell which one was meant. A word that is itself a first name is
+ * never reduced ("Andrei" is not Andra, "Matei" not Mata), and the article
+ * endings (-ul, -le) never reach a first name ("Danielle" is not Daniel,
+ * "Paul" not Pa) and need a stem of four letters.
  */
 export const INFLECTIONS: ReadonlyArray<{ every: boolean; endings: ReadonlyArray<readonly [ending: string, base: string]> }> = [
   {
@@ -57,20 +60,33 @@ export const INFLECTIONS: ReadonlyArray<{ every: boolean; endings: ReadonlyArray
 ];
 const MIN_INFLECTED_CHARS = 4;
 const MIN_STEM_CHARS = 2;
+/** The article endings: a stem this long at least, and never a first name. */
+const ARTICLE_ENDINGS = new Set(["ul", "le"]);
+const MIN_ARTICLE_STEM_CHARS = 4;
 
 /** A folded word and the base forms its ending may stand for, the word itself first. */
 export function inflectionForms(word: string): string[] {
   const forms = [word];
-  if (word.length < MIN_INFLECTED_CHARS) return forms;
+  if (word.length < MIN_INFLECTED_CHARS || isFirstName(word)) return forms;
   for (const { every, endings } of INFLECTIONS) {
     for (const [ending, base] of endings) {
       if (!word.endsWith(ending) || word.length - ending.length < MIN_STEM_CHARS) continue;
       const form = word.slice(0, word.length - ending.length) + base;
+      if (ARTICLE_ENDINGS.has(ending) && (form.length < MIN_ARTICLE_STEM_CHARS || isFirstName(form))) break;
       if (!forms.includes(form)) forms.push(form);
       if (!every) break;
     }
   }
   return forms;
+}
+
+/**
+ * Whether a folded base form is one the tables vouch for — a first name or a
+ * relationship word — so a match reached through a case ending may resolve:
+ * "Mariei" is surely Maria, "fotbalului" only probably fotbal.
+ */
+export function isKnownBase(word: string): boolean {
+  return isFirstName(word) || RELATION_OF_WORD.has(word);
 }
 
 /** Words a query drops before matching: "lui" before a name, "mea"/"my" after a relationship. */
@@ -177,6 +193,37 @@ export const DIMINUTIVES: Readonly<Record<string, readonly string[]>> = {
   susan: ["sue", "suzy"],
 };
 
+/**
+ * Common given names beyond the diminutives table, Romanian and English,
+ * folded: a name here is never read as an inflected form of another, and it
+ * is what a relative's name may start with ("Maria mama").
+ */
+const MORE_FIRST_NAMES = (
+  // Romanian, women
+  "ana andra anca alina adina aurelia bianca camelia carmen catalina corina cosmina codruta dana daria delia denisa diana " +
+  "doina ecaterina elisabeta emilia florentina florina georgiana ileana ina irina iulia larisa laura lavinia liliana loredana " +
+  "lucia luminita madalina magdalena mara marcela marina maria medeea mirela miruna monica natalia nicoleta oana otilia paula " +
+  "petra raluca ramona rebeca roberta rodica roxana sabina sanda silvia simona sofia sorina stefania tatiana teodora valentina " +
+  "vasilica veronica violeta viorica zoe " +
+  // Romanian, men
+  "adi adrian alex alexandru alexei alin andi andrei aurel bogdan calin catalin ciprian claudiu constantin cornel cosmin " +
+  "costel costin cristian dan daniel dinu dorin dragos dumitru eduard emanuel emil eugen felix flavius florin gabriel " +
+  "george gheorghe grigore horia ilie ioan ion ionel ionut iosif iulian laurentiu liviu lucian marcel marian marius matei " +
+  "mihai mihail mircea nelu nicolae nicu octavian ovidiu paul petre petru radu raul razvan remus robert sandu sebastian " +
+  "sergei sergiu silviu sorin stefan teodor tiberiu timotei toma traian tudor valentin valeriu vasile victor viorel virgil vlad " +
+  // English
+  "amy anna charlotte chloe claire danielle elizabeth emily emma estelle gabrielle grace hannah isabelle jessica julie kate " +
+  "lucy mary michelle natalie nicole olivia rachel rebecca sarah sophia sophie andrew anthony brian charles david edward " +
+  "george harry jack james john kevin mark matthew michael oliver paul peter richard robert steven thomas william"
+).split(" ");
+
+const FIRST_NAMES: ReadonlySet<string> = new Set([...MORE_FIRST_NAMES, ...Object.keys(DIMINUTIVES), ...Object.values(DIMINUTIVES).flat()]);
+
+/** Whether a folded word is a given name the tables know: the diminutives table, full and short forms, and a list of common names. */
+export function isFirstName(word: string): boolean {
+  return FIRST_NAMES.has(word);
+}
+
 const RELATED_NAMES: ReadonlyMap<string, ReadonlySet<string>> = (() => {
   const related = new Map<string, Set<string>>();
   const link = (a: string, b: string): void => {
@@ -261,10 +308,12 @@ const RELATION_QUALIFIERS = new Set(["mobil", "fix", "acasa", "serviciu", "birou
 /**
  * Whether a name the user filed says the relationship `relation` is this
  * person: the name is nothing but the relationship ("Mama", "Mami ❤️", "Mom",
- * "Mama mobil"), or ends with it after their name ("Maria mama"). A name that
- * starts with it and goes on to someone else ("Mama Anei", "Mama lui Andrei")
- * is that someone's relative, not the user's. Returns the class: exact for
- * the first, word for the second, null for no match.
+ * "Mama mobil") — `exact`, which may resolve — or ends with it after a first
+ * name ("Maria mama", which may also be a surname: "Andreea Sora") — `word`,
+ * which never resolves on its own. A name that starts with it and goes on to
+ * someone else ("Mama Anei", "Mama lui Andrei") is that someone's relative,
+ * and a business or a place that ends in one ("La Mama", "Cazare Mamaia",
+ * "Pizza Nasu") is no one's: both are null.
  */
 export function relationNameMatch(relation: string, text: string | null | undefined): "exact" | "word" | null {
   return relationWordsMatch(relation, nameWords(text));
@@ -279,8 +328,34 @@ export function relationWordsMatch(relation: string, words: readonly string[]): 
   if (others.length === 0) return "exact";
   if (words.includes("lui")) return null;
   if (others.every((word) => RELATION_QUALIFIERS.has(word) || /^\d+$/.test(word))) return "exact";
-  if (at === words.length - 1) return "word";
+  if (at === words.length - 1 && isFirstName(words[0]!)) return "word";
   return null;
+}
+
+/**
+ * A relationship detail (`relatie: sora mai mare`) names the user's relative
+ * wherever the word stands, unless it names someone else's ("mama lui Dan",
+ * "mama Anei").
+ */
+export function relationDetailMatch(relation: string, words: readonly string[]): "exact" | null {
+  const at = words.findIndex((word) => relationOf(word) === relation);
+  if (at === -1 || words.includes("lui")) return null;
+  const next = words[at + 1];
+  return next !== undefined && /(?:ei|ii|ului)$/.test(next) && !RELATION_QUALIFIERS.has(next) ? null : "exact";
+}
+
+/**
+ * The words of a name that name someone else: what follows "lui", and what
+ * follows a relationship word the name starts with ("Mama Anei", "Sotia lui
+ * Dan"). A name matched only through them is that person's relative.
+ */
+export function possessorIndexes(words: readonly string[]): Set<number> {
+  const out = new Set<number>();
+  words.forEach((word, index) => {
+    if (index > 0 && words[index - 1] === "lui") out.add(index);
+  });
+  if (words.length > 1 && relationOf(words[0]!) !== null) for (let index = 1; index < words.length; index++) if (words[index] !== "lui") out.add(index);
+  return out;
 }
 
 // ---------------------------------------------------------------- closeness
