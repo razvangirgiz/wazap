@@ -307,10 +307,13 @@ function sameNameOnAccounts(candidates: readonly FoundContact[]): boolean {
  * is about, so looking comes before asking — and the two things that decide it
  * are named, since an assistant told only to look looked at both accounts and
  * then asked anyway. Nothing is sent on a guess either way: a draft's preview
- * names the recipient, the number and the account, and the user says yes to it.
+ * names the recipient, the number and the account, and the user says yes to it
+ * — and that preview comes from send_message, never from a message written out
+ * in the answer, which is what an assistant that had picked the right account
+ * did instead in the gate's third run.
  */
 const SAME_NAME_ON_ACCOUNTS =
-  "The same name on several accounts, one on each: look before asking. Either of two things decides it. Exactly one candidate has waiting, an open ask of theirs, and the request answers it: that one. Or what the request is about (a file, a topic) is in one candidate's conversation: read it with search(query, from: the name), or with find_contact again with a candidate's number_tail as qualifier and its account_id, which brings their recent messages. Then go on with that account and say which one. Ask the user only when nothing tells them apart.";
+  "The same name on several accounts, one on each: look before asking. Either of two things decides it. Exactly one candidate has waiting, an open ask of theirs, and the request answers it: that one. Or what the request is about (a file, a topic) is in one candidate's conversation: read it with search(query, from: the name), or with find_contact again with a candidate's number_tail as qualifier and its account_id, which brings their recent messages. Then go on with that account and say which one: call send_message there and show the preview it returns, never one you wrote yourself. Ask the user only when nothing tells them apart.";
 
 function fixFor(outcome: FindOutcome, query: FindResult["query"], asked: string, multi: boolean, unavailable: readonly UnavailableAccount[]): string | undefined {
   if (outcome.status === "resolved") return undefined;
@@ -606,9 +609,13 @@ function contextAllowed(ctx: ToolCtx, binding: Pick<AccountBinding, "id" | "wa">
 /**
  * The step a resolved contact points to in a session that can write: the draft
  * itself, since a draft sends nothing and its answer is the preview to show.
- * An assistant that asks first, with a preview of its own, never gets one.
+ * An assistant that asks first, with a preview of its own, never gets one —
+ * which the gate's third run did once, after it had picked the right account.
+ * So where the preview comes from, and that it is never written by hand, is
+ * said here rather than left to be understood.
  */
-const RESOLVED_NEXT = "To message them, draft with send_message(chat_id): it sends nothing and returns the preview to show.";
+const RESOLVED_NEXT =
+  "To message them, call send_message(chat_id) now: it sends nothing, and the preview to show is the one it returns. Never write a preview of your own.";
 
 /** A tag lists at most this many people. */
 const MAX_LISTED = 50;

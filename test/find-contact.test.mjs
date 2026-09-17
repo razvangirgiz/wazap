@@ -261,6 +261,8 @@ test("one name on two accounts: the candidate owed an answer says since when, ca
   assert.match(body.fix, /search\(query, from: the name\)/);
   assert.match(body.fix, /find_contact again with a candidate's number_tail as qualifier and its account_id/);
   assert.match(body.fix, /go on with that account and say which one/);
+  // Where the preview comes from: the gate's third run picked the right account and then wrote the preview itself.
+  assert.match(body.fix, /call send_message there and show the preview it returns, never one you wrote yourself/);
   assert.match(body.fix, /Ask the user only when nothing tells them apart/);
   assert.doesNotMatch(body.fix, /never pick one yourself/);
 
@@ -296,7 +298,8 @@ test("a resolved contact carries the recent exchange and the user's style in a w
   assert.deepEqual([last.from_me, last.text, last.transcribed], [false, "Nu uita de cina de duminică la 7, vine și tanti Lia.", true]);
   assert.ok(full.context.recent.some((line) => line.from_me && line.text === "Da mamă, am ajuns 😊"));
   assert.equal(full.context.recent.length, 4);
-  assert.match(full.next, /draft with send_message\(chat_id\): it sends nothing and returns the preview to show/, "a resolved contact says how a message to them starts");
+  assert.match(full.next, /call send_message\(chat_id\) now: it sends nothing, and the preview to show is the one it returns/, "a resolved contact says how a message to them starts");
+  assert.match(full.next, /Never write a preview of your own/, "and that the preview is never written by hand");
 
   assert.equal((await find(s, { name: "mama", account_id: "personal", include_context: false })).structuredContent.context, undefined);
   await s.close();
@@ -305,7 +308,7 @@ test("a resolved contact carries the recent exchange and the user's style in a w
   const read = await find(readOnly, { name: "mama", account_id: "personal" });
   assert.equal(read.structuredContent.status, "resolved");
   assert.equal(read.structuredContent.context, undefined, "a session that cannot send gets no draft context");
-  assert.doesNotMatch(read.structuredContent.next ?? "", /draft with send_message/, "nor a step toward a draft");
+  assert.doesNotMatch(read.structuredContent.next ?? "", /send_message/, "nor a step toward a draft");
   assert.equal(read.structuredContent.can_draft, false, "a session that cannot send says so where the step would be");
   assert.match(read.structuredContent.next, /This connection only reads: it cannot draft or send\. Asked to send, say so, and offer the text for the user to send/);
   assert.match(readOnly.instructions, /This connection only reads: it cannot draft or send\./, "and the server's instructions say it before any call");
