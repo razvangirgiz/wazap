@@ -597,14 +597,14 @@ anonymous initialization with a foreign Origin or attacker-controlled Host.
 
 - MCP POST authentication precedes JSON parsing. Bodies are explicitly capped at
   100 KiB and compressed bodies are refused. Each exact credential gets 240 POSTs
-  per minute across session resets (`WAZAP_HTTP_BUDGET`); 429 includes `Retry-After`. The endpoint's
+  per minute across session resets (fixed since the 1.0 settings cut; it was `WAZAP_HTTP_BUDGET`); 429 includes `Retry-After`. The endpoint's
   credential-window map is capped at 1,024 entries, pruning expired entries and
   refusing new ones with 503 rather than growing indefinitely.
 - Session state remains capped at 128 overall, now also at 32 per exact
   credential. Excess sessions first evict that credential's oldest session, so
   one unchanged token cannot consume the entire registry.
 - Actual tool handlers have eight in-flight slots per MCP session and 32
-  process-wide (`WAZAP_MAX_INFLIGHT`, `WAZAP_MAX_INFLIGHT_TOTAL`). Capacity is returned when work settles, even if the caller
+  process-wide (fixed since the 1.0 settings cut; they were `WAZAP_MAX_INFLIGHT` and `WAZAP_MAX_INFLIGHT_TOTAL`). Capacity is returned when work settles, even if the caller
   disconnects earlier. HTTP, stdio and private bridges share the tool budget.
 - The listener caps connections at 256, header receipt at ten seconds, body
   receipt at thirty seconds and headers at 16 KiB. SSE/long-running tool response

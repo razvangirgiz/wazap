@@ -2062,7 +2062,7 @@ test("message events name the sender's contact_id and E.164 phone, and a lid who
   }
 });
 
-test("with WAZAP_PERSIST_HISTORY=0 a message event still waiting at a stop is cancelled at the next start, and its connection event still goes out", async () => {
+test("with history persistence off a message event still waiting at a stop is cancelled at the next start, and its connection event still goes out", async () => {
   let up = false;
   const server = await recorder(() => (up ? 204 : 503));
   const restoreEnv = saveWebhookEnv(server.url, "all");
