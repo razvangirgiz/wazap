@@ -140,3 +140,33 @@ test("wait_for_messages keeps what arrived from someone #private without their w
     "waiting on her chat asks for her by name"
   );
 });
+
+test("list_chats shows the last message of a #private person's chat, and theirs in a group, without its words; reading the chat by name shows them", async () => {
+  const { svc, sock, arrive } = account();
+  const { call } = schemaCheckedTools(svc, { allowWrite: false });
+  sock.ev.emit("chats.upsert", [{ id: "120363000000000002@g.us", name: "Vecini" }]);
+  const at = Date.now() - 10 * MINUTE;
+  arrive(ANA, "ai găsit avocat?", { at });
+  arrive(ANA, "îți trimit banii pentru avocat mâine", { fromMe: true, at: at + MINUTE });
+  arrive(GROUP, "ok, vin", { participant: DAN, at: at + 2 * MINUTE });
+  arrive(GROUP, "am pierdut sarcina, nu mai vin", { participant: ANA, at: at + 3 * MINUTE });
+  arrive("120363000000000002@g.us", "cine a lăsat ușa deschisă?", { participant: ANA, at: at + 4 * MINUTE });
+  arrive("120363000000000002@g.us", "eu, scuze", { participant: ELA, at: at + 5 * MINUTE });
+  arrive(DAN, "factura e plătită", { at: at + 6 * MINUTE });
+  svc.db.identity.updateFields(ANA, { addTags: ["private"] });
+
+  const listed = await call("list_chats", {});
+  const all = everything(listed);
+  for (const words of ["avocat", "sarcina"]) assert.ok(!all.includes(words), words);
+  const last = new Map(listed.structuredContent.chats.map((chat) => [chat.chat_id, chat.last_message]));
+  assert.deepEqual(last.get(ANA), { text: "[private]", timestamp: last.get(ANA).timestamp, from_me: true, private: true }, "her chat, the user's own words in it too");
+  assert.deepEqual([last.get(GROUP).text, last.get(GROUP).private], ["[private]", true], "what she wrote last in a group");
+  assert.deepEqual([last.get("120363000000000002@g.us").text, last.get("120363000000000002@g.us").private], ["eu, scuze", undefined]);
+  assert.deepEqual([last.get(DAN).text, last.get(DAN).private], ["factura e plătită", undefined]);
+  assert.match(listed.content[0].text, /## Ana\n- \*\*chat_id\*\*: `40700000002@s\.whatsapp\.net`\n- \*\*last\*\*: me: \[private\] \(/);
+
+  const read = await call("read_messages", { chat_id: ANA });
+  assert.deepEqual(read.structuredContent.messages.map((m) => m.text), ["ai găsit avocat?", "îți trimit banii pentru avocat mâine"], "named, her chat reads whole");
+  const group = await call("read_messages", { chat_id: GROUP });
+  assert.ok(group.structuredContent.messages.some((m) => m.text === "am pierdut sarcina, nu mai vin"), "a group named reads whole");
+});

@@ -13,7 +13,9 @@
  * - search without `chat_id` leaves their messages out before its limit and
  *   counts them in `private_omitted`, and a quote of theirs loses its words;
  * - wait_for_messages, unless it waits on their chat, keeps what arrived from
- *   them without its words (withoutWords), marked `private`.
+ *   them without its words (withoutWords), marked `private`;
+ * - list_chats keeps the last message of their chat, or theirs in a group,
+ *   without its words, marked `private`.
  *
  * The tag goes with the person, not only their chat: what they write in a
  * group is theirs too. A broad read takes the whole set once per call

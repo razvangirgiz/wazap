@@ -131,7 +131,7 @@ import {
   type EncryptedVote,
 } from "./messages.js";
 import { readVote } from "./polls.js";
-import { privatePeople, withoutPrivateQuote, withoutWords, type PrivatePeople } from "./private-contacts.js";
+import { PRIVATE_TEXT, privatePeople, withoutPrivateQuote, withoutWords, type PrivatePeople } from "./private-contacts.js";
 import { PAIRING_TIMEOUT_MS, WA_BROWSER, prettyCode, socketFactory, startPairing } from "./pairing.js";
 import { diversify } from "./recall/variety.js";
 import {
@@ -1401,7 +1401,7 @@ export class WhatsAppService implements WhatsAppApi {
     this.lastInboundAt = Math.max(this.lastInboundAt ?? 0, ts);
   }
 
-  listChats(filter: ChatFilter, limit: number): Promise<Synced<ChatSummary[]>> {
+  listChats(filter: ChatFilter, limit: number, opts: { private?: PrivateRule } = {}): Promise<Synced<ChatSummary[]>> {
     return this.guarded(async () => {
       this.ensureConnected();
       await this.waitForSync();
@@ -1420,10 +1420,11 @@ export class WhatsAppService implements WhatsAppApi {
         if (described !== undefined && described !== null) return described;
         return entry.chat.lastTs === null ? 0 : Math.floor(entry.chat.lastTs / 1000);
       };
+      const people = this.privateScope(opts.private);
       const chats = entries
         .sort((a, b) => activity(b) - activity(a) || (b.chat.lastMessageId ?? 0) - (a.chat.lastMessageId ?? 0) || b.chat.id - a.chat.id)
         .slice(0, limit)
-        .map((entry) => this.chatSummary(entry.chat, entry.proto));
+        .map((entry) => this.chatSummary(entry.chat, entry.proto, people));
       return this.synced(chats);
     });
   }
@@ -4906,9 +4907,11 @@ export class WhatsAppService implements WhatsAppApi {
     }
   }
 
-  private chatSummary(chat: ChatRecord, described: BaileysChat | null): ChatSummary {
+  private chatSummary(chat: ChatRecord, described: BaileysChat | null, people: PrivatePeople | null = null): ChatSummary {
     const jid = chat.jid;
     const last = chat.lastMessageId === null ? null : (this.db.messages.byIds([chat.lastMessageId])[0] ?? this.db.messages.lastVisible(chat.id));
+    // Their chat, or what they wrote last in a group: when and who, not what.
+    const hidden = last !== null && people !== null && (people.chat(chat) || people.sender(last.senderId));
     const muteEnd = chat.mutedUntil ?? 0;
     const note = this.noteFor(jid);
     const phone = chat.kind === "direct" ? phoneOf(jid) : undefined;
@@ -4921,9 +4924,10 @@ export class WhatsAppService implements WhatsAppApi {
       unread_count: Math.max(0, chat.unread),
       last_message: last
         ? {
-            text: last.text ?? "",
+            text: hidden ? PRIVATE_TEXT : (last.text ?? ""),
             timestamp: isoWithOffset(last.ts),
             from_me: last.fromMe,
+            ...(hidden ? { private: true as const } : {}),
           }
         : null,
       ...(note ? { note } : {}),

@@ -215,7 +215,8 @@ export interface ChatSummary {
   note?: string;
   type: ChatType;
   unread_count: number;
-  last_message: { text: string; timestamp: string; from_me: boolean } | null;
+  /** `private`: written by someone tagged #private, or in their chat, in a list that did not ask for them; `text` holds no words. */
+  last_message: { text: string; timestamp: string; from_me: boolean; private?: true } | null;
   archived: boolean;
   pinned: boolean;
   muted_until: string | null;
@@ -693,7 +694,8 @@ export interface WhatsAppApi {
   searchCoverage?(chatId: string | undefined, opts?: { sinceMs?: number; untilMs?: number }): SearchCoverage | null;
   hasDraft(id: string): boolean;
   link(phone: string): Promise<PairingInfo>;
-  listChats(filter: ChatFilter, limit: number): Promise<Synced<ChatSummary[]>>;
+  /** With `private`, a last message from someone tagged #private, or in their chat, comes without its words. */
+  listChats(filter: ChatFilter, limit: number, opts?: { private?: PrivateRule }): Promise<Synced<ChatSummary[]>>;
   readMessages(chatId: string, limit: number, before?: string, types?: MessageType[]): Promise<Synced<MessageView[]>>;
   getRecentMessages(
     hours: number,

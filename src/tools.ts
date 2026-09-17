@@ -68,7 +68,17 @@ const OPEN_OBJECT = z.object({}).passthrough();
 const LIST_CHATS_OUTPUT = {
   filter: z.string(),
   count: z.number(),
-  chats: z.array(z.object({ chat_id: z.string(), name: z.string(), type: z.string(), unread_count: z.number() }).passthrough()),
+  chats: z.array(
+    z
+      .object({
+        chat_id: z.string(),
+        name: z.string(),
+        type: z.string(),
+        unread_count: z.number(),
+        last_message: z.object({ private: z.literal(true).optional().describe("Tagged #private: no words") }).passthrough().nullable().optional(),
+      })
+      .passthrough()
+  ),
   sync: z.string(),
   account_id: z.string(),
 };
@@ -443,7 +453,7 @@ const TOOLS: readonly ToolDef[] = [
     outputSchema: LIST_CHATS_OUTPUT,
     write: false,
     handler: async ({ filter, limit }, { wa }) => {
-      const result = await wa.listChats(filter, limit);
+      const result = await wa.listChats(filter, limit, { private: { others: [] } });
       return ok(
         renderChats(result.data, filter),
         synced(result, { filter, count: result.data.length, chats: result.data })
