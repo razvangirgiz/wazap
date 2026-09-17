@@ -11,6 +11,7 @@ import {
   type ToolResult,
 } from "./tool-runtime.js";
 export { toolError, type ToolCtx, type RegisterOpts } from "./tool-runtime.js";
+import { CATCHUP_INPUT, CATCHUP_OUTPUT, runCatchUp } from "./catchup.js";
 import { compactConversations, renderCompact } from "./compact.js";
 import { coverageNote, indexCoverageNote, searchCoverage } from "./coverage.js";
 import { describeTarget, looksUnnamed, renderDraft, type DraftPayload, type DraftView } from "./drafts.js";
@@ -71,6 +72,7 @@ function tool<S extends z.ZodRawShape>(def: {
   schema: S;
   outputSchema?: z.ZodRawShape;
   write: boolean;
+  idempotent?: boolean;
   destructive?: boolean;
   local?: boolean;
   rate?: number;
@@ -163,9 +165,11 @@ link_account when it says no account is linked yet.
 - Not linked: get_status says not_linked, logged_out, session_corrupt or
   auth_failure → link_account(phone), show the user the code, then poll
   get_status every 10 s until it says connected.
-- Catch up: get_recent_messages(hours) for everything, or list_chats(filter:"unread")
-  then read_messages(chat_id). Pass include_previews: true to see the photos as
-  small images instead of "[image]".
+- Catch up: catch_up() says what the user missed since this client's last
+  catch-up, every account at once, within a token budget: who waits on a reply,
+  mentions and polls, missed calls, people, groups condensed, stories. Pass
+  more.cursor back for the rest. For every message of a window instead,
+  get_recent_messages(hours); include_previews: true shows the photos.
 - Who is waiting on the user: get_unanswered. It returns only chats whose last
   word is theirs and asks for something, with the ask quoted. When the user
   says they dealt with one outside WhatsApp, mark_handled(chat_id) takes it
@@ -289,6 +293,27 @@ these types, e.g. \`types: ["call"]\` for the call log of a chat.
 Every failure returns \`{ error, message, fix }\`. What to do per code:
 ${(Object.keys(ERROR_GUIDE) as Array<keyof typeof ERROR_GUIDE>).map((code) => `- **${code}** — ${ERROR_GUIDE[code]}`).join("\n")}
 `;
+
+// ---- catch_up (F2-2) --------------------------------------------------------
+// The digest itself is src/catchup.ts; each account's side is catchup-scan.ts.
+const CATCH_UP: ToolDef = tool({
+  name: "catch_up",
+  title: "Catch up on what the user missed",
+  description: `What the user missed on WhatsApp, in one call, within budget_tokens: who is waiting on
+a reply (with the ask quoted), mentions, replies and open polls, missed calls, people who
+wrote, groups one line each, stories. "Missed" starts after the user's own last word in a
+chat and after what their phone already read. Without account_id it covers every linked
+account, each labelled. By default it reads since this client's last complete catch-up and
+then moves that mark, before the answer is sent: an answer lost on the way comes back with
+since: "previous", which repeats it; hours never moves the mark. When \`more\` is set, call
+again with more.cursor within 15 minutes. It marks nothing read on WhatsApp.`,
+  schema: CATCHUP_INPUT,
+  outputSchema: CATCHUP_OUTPUT,
+  write: false,
+  idempotent: false,
+  handler: async (args, { hub, wa, accountId, client }) => runCatchUp(args, { hub, wa, accountId, client }),
+});
+// ---- end catch_up -------------------------------------------------------------
 
 const TOOLS: readonly ToolDef[] = [
   tool({
@@ -492,6 +517,8 @@ lists at most its newest 2,000 messages of the window.`,
       );
     },
   }),
+
+  CATCH_UP,
 
   tool({
     name: "get_unanswered",

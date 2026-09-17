@@ -37,12 +37,13 @@ function isAuthorized(header: string | undefined, expected: string): boolean {
  * The one place a session is built, so the workflows reach stdio and HTTP alike:
  * a client that never installed the skill files still gets them here.
  */
-function buildMcpServer(hub: AccountSource, config: Config, allowWrite: boolean, allowLocalFiles: boolean): McpServer {
+function buildMcpServer(hub: AccountSource, config: Config, allowWrite: boolean, allowLocalFiles: boolean, client = LOCAL_CLIENT): McpServer {
   const skills = loadSkills();
   const server = new McpServer({ name: "wazap", version: WAZAP_VERSION }, { instructions: skillInstructions(skills) });
   registerTools(server, hub, {
     allowWrite: allowWrite && !config.readOnly && anyAccountAllowsWrites(hub),
     allowLocalFiles,
+    client,
     ...(config.maxInFlight === undefined ? {} : { maxInFlight: config.maxInFlight }),
     ...(config.maxInFlightTotal === undefined ? {} : { maxInFlightTotal: config.maxInFlightTotal }),
   });
@@ -50,9 +51,14 @@ function buildMcpServer(hub: AccountSource, config: Config, allowWrite: boolean,
   return server;
 }
 
+/** stdio, the daemon's loopback bridge and anonymous loopback reads: this machine's own clients, each named per call (client-name.ts). */
+const LOCAL_CLIENT = "local";
+
 type AuthedRequest = Request & {
   mcpWrite?: boolean;
   oauthClient?: string;
+  /** Who the credential names (ToolCtx.client), never the token itself. */
+  client?: string;
   sessionOwner?: string;
   localFiles?: boolean;
 };
@@ -106,6 +112,14 @@ export function healthBody(hub: AccountSource): HealthBody {
 export interface Credential {
   token: string;
   write: boolean;
+  /**
+   * What sessions on this token are called (ToolCtx.client): `token:<label>`,
+   * or `local` for the daemon's bridge, which each call then names after its
+   * MCP client (client-name.ts). Never derived from the token itself,
+   * so a rotated secret keeps its catch-up mark. `token:write` / `token:read`
+   * by default.
+   */
+  label?: string;
   /** Only the private daemon/bridge credential is granted host file access. Never inferred from peer IP. */
   localFiles?: boolean;
 }
@@ -237,13 +251,16 @@ export async function startHttpEndpoint(hub: AccountSource, config: Config, endp
   // the scope the person picked on the consent page.
   const bearerAccess = async (
     auth: string | undefined
-  ): Promise<{ write: boolean; localFiles: boolean; oauthClient?: string } | null> => {
+  ): Promise<{ write: boolean; localFiles: boolean; oauthClient?: string; client: string } | null> => {
     const credential = endpoint.credentials.find((entry) => isAuthorized(auth, entry.token));
-    if (credential) return { write: credential.write, localFiles: credential.localFiles === true };
+    if (credential) {
+      const client = credential.label ?? `token:${credential.write ? "write" : "read"}`;
+      return { write: credential.write, localFiles: credential.localFiles === true, client };
+    }
     if (oauth && auth?.startsWith("Bearer ")) {
       try {
         const info = await oauth.verifyAccessToken(auth.slice("Bearer ".length).trim());
-        return { write: info.scopes.includes("write"), localFiles: false, oauthClient: info.clientId };
+        return { write: info.scopes.includes("write"), localFiles: false, oauthClient: info.clientId, client: `oauth:${info.clientId}` };
       } catch {
         // An unknown or expired token opens nothing.
       }
@@ -256,6 +273,7 @@ export async function startHttpEndpoint(hub: AccountSource, config: Config, endp
     if (access) {
       (req as AuthedRequest).mcpWrite = access.write;
       (req as AuthedRequest).oauthClient = access.oauthClient;
+      (req as AuthedRequest).client = access.client;
       (req as AuthedRequest).localFiles = access.localFiles;
       (req as AuthedRequest).sessionOwner = sessionOwner(req.headers.authorization!, access.write, access.localFiles);
       next();
@@ -274,6 +292,7 @@ export async function startHttpEndpoint(hub: AccountSource, config: Config, endp
         return;
       }
       (req as AuthedRequest).mcpWrite = false;
+      (req as AuthedRequest).client = LOCAL_CLIENT;
       (req as AuthedRequest).sessionOwner = "anonymous";
       next();
       return;
@@ -334,7 +353,8 @@ export async function startHttpEndpoint(hub: AccountSource, config: Config, endp
           hub,
           config,
           (req as AuthedRequest).mcpWrite === true,
-          (req as AuthedRequest).localFiles === true
+          (req as AuthedRequest).localFiles === true,
+          (req as AuthedRequest).client ?? LOCAL_CLIENT
         );
         await server.connect(newTransport);
         transport = newTransport;
@@ -452,7 +472,7 @@ export async function startLoopbackEndpoint(hub: AccountSource, config: Config, 
   const port = await startHttpEndpoint(hub, config, {
     host: "127.0.0.1",
     port: 0,
-    credentials: [{ token, write: true, localFiles: true }],
+    credentials: [{ token, write: true, localFiles: true, label: LOCAL_CLIENT }],
     openRead: false,
   });
   log(`sharing this session on 127.0.0.1:${port}`);

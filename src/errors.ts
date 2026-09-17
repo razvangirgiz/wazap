@@ -36,6 +36,7 @@ export type ErrorCode =
   | "SERVICE_ERROR"
   | "DRAFT_NOT_FOUND"
   | "DRAFT_EXPIRED"
+  | "CURSOR_EXPIRED"
   | "SEND_OUTCOME_UNKNOWN"
   | "SEND_BLOCKED"
   | "AMBIGUOUS_ACCOUNT"
@@ -112,6 +113,8 @@ export const ERROR_GUIDE: Record<ErrorCode, string> = {
     "That draft_id is unavailable in this MCP session (unknown, sent too long ago, or created in another session). Draft again here, show the new preview and obtain fresh user approval before confirm_send.",
   DRAFT_EXPIRED:
     "The draft expired (15 minutes). Call the send tool again to draft, show the new preview, then confirm_send.",
+  CURSOR_EXPIRED:
+    "A catch_up cursor is held 15 minutes past its page, by the client that got it, and not across a restart. Call catch_up again without cursor: the mark has not moved, so nothing is lost.",
   SEND_OUTCOME_UNKNOWN:
     "The message was handed to WhatsApp and then the link failed, so it may or may not have arrived. Do not confirm or draft it again blindly: check the conversation with read_messages, and if it is not there, tell the user and ask before sending again.",
   SEND_BLOCKED:

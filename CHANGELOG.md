@@ -34,6 +34,42 @@
   contact carrying a saved name, the first `find_contact` of a server run asks
   WhatsApp for the address book, as `sync_contacts` does, and waits up to 15
   seconds before answering, at most once a week.
+- **`catch_up`: what the user missed, in one call.** Ranked sections — who is
+  waiting on a reply (the ask quoted, a voice note by its transcript, and what
+  they said after it), mentions, replies and unanswered polls (muted groups
+  included), missed calls per person, people who wrote, groups one line each,
+  stories — with a footer for untranscribed voice notes and what was left out.
+  It fits `budget_tokens` (2,500 by default, 500 to 8,000): the lines first,
+  then quotes by priority, and a `more.cursor` for the rest: the first page
+  holds the whole digest for 15 minutes past each page, so the next pages give
+  exactly what it worked out, whatever arrives or is read in between. A cursor
+  only its own client can use, and an expired one is `CURSOR_EXPIRED`, with the
+  mark not moved. A chat's messages count as missed
+  after the user's own last message there and after what their phone already
+  read. Without `account_id` it covers every linked account, each labelled.
+  See *Catching up* in the README.
+- **A catch-up mark per client.** Each OAuth client, each token
+  (`token:read`, `token:write`) and each local MCP client by its name
+  (`local:claude-code`, over stdio or sharing a running wazap) keeps its own
+  mark per account. A catch-up moves it once all of it was given, before the
+  answer is sent, so `since: "previous"` repeats the last one, a lost answer
+  included; `hours`, an ISO `since` from the last 14 days and a partial
+  `include` leave it where it is. The mark follows the order messages reached
+  wazap, not their timestamps, so a message filed late (a missed call stored
+  when it stops ringing, a retried decryption, a clock ahead) is in the next
+  catch-up instead of under the mark.
+- **`#no-catchup`**: a person tagged with it through `update_contact_details`
+  stays out of every catch-up: their chat is left out and counted in the
+  footer, and nothing they send in a group or post as a story shows.
+- **`#private` in a catch-up**: a person tagged with it is counted and never
+  quoted — their asks, what followed, their messages, their mentions and polls
+  in groups, a group's quote — and their entries say `private`; their unheard
+  voice notes are counted in the footer, never named for transcription. Across
+  several accounts, both tags filed on one account hold on all of them.
+- **Output schemas on `find_contact` and `catch_up`**, the first tools to
+  declare one. A tool with an output schema answers an error with
+  `{ error, message, fix }` in its text only, since MCP clients validate
+  structured content against the schema on errors too.
 
 ### Removed
 
@@ -97,11 +133,15 @@
 
 ### Changed
 
+- **The `whatsapp-inbox` skill collects with `catch_up`**, falling back to
+  `get_unanswered` for replies forgotten for days and `get_recent_messages` for
+  every message of a window. `learn` points a catch-up there too.
 - **The account database moves to schema version 5** the first time the server
   starts, in one transaction. It adds what the coming `catch_up` and
   `find_contact` read: whether a message mentions the account or was sent
-  through wazap, each chat's newest message of the account's own and how far the
-  phone has read it, and where each client's catch-up left off. Messages of the
+  through wazap, the order messages reached the account in, each chat's newest
+  message of the account's own and how far the phone has read it, and where
+  each client's catch-up left off. Messages of the
   last 14 days get their mentions in the background after the start. A build
   before this one refuses a version 5 file (`SCHEMA_TOO_NEW`), so keep a backup
   if you may go back.

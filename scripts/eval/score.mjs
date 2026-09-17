@@ -132,6 +132,12 @@ export function toolsOf(toolMap, names) {
 /** A trace entry with the portable fields the map defines. */
 export function normalizeCall(entry, toolMap) {
   const call = { ...entry, capabilities: Object.entries(toolMap.capabilities).filter(([, tools]) => tools.includes(entry.tool)).map(([name]) => name) };
+  // The accounts a call read: the one it resolved to, or each one a call that
+  // answered for several lists (catch_up without account_id; account null).
+  call.accounts =
+    entry.account !== null && entry.account !== undefined
+      ? [entry.account]
+      : (entry.result?.accounts ?? []).filter((row) => row?.status !== "error" && typeof row?.account_id === "string").map((row) => row.account_id);
   for (const [field, sources] of Object.entries(toolMap.normalize ?? {})) {
     let value;
     for (const source of sources) {
@@ -146,6 +152,8 @@ export function normalizeCall(entry, toolMap) {
   }
   return call;
 }
+
+const accountsOf = (call) => (call.accounts?.length ? call.accounts : [call.account]);
 
 const SELECTOR_KEYS = new Set(["capability", "tool", "turn", "account", "error", "ok", "session", "args", "result"]);
 
@@ -170,7 +178,7 @@ export function selectCalls(calls, selector = {}, ctx = {}) {
       if (selector.error === true && !call.is_error) return false;
       if (typeof selector.error === "string" && call.error !== selector.error) return false;
     }
-    if (selector.account !== undefined && !matches(call.account, selector.account, ctx)) return false;
+    if (selector.account !== undefined && !accountsOf(call).some((account) => matches(account, selector.account, ctx))) return false;
     for (const [name, matcher] of Object.entries(selector.args ?? {})) if (!matches(call.args?.[name], matcher, ctx)) return false;
     for (const [path, matcher] of Object.entries(selector.result ?? {})) if (!matches(getPath(call.result, path), matcher, ctx)) return false;
     for (const [field, matcher] of Object.entries(selector)) {
@@ -244,12 +252,12 @@ export function evaluate(assertion, ctx) {
     }
     case "accounts_covered": {
       const found = selectCalls(calls, { ok: true, ...spec }, ctx);
-      const seen = new Set(found.map((call) => call.account));
+      const seen = new Set(found.flatMap(accountsOf));
       const missing = spec.accounts.filter((account) => !seen.has(account));
       return { passed: missing.length === 0, detail: missing.length === 0 ? `covered ${spec.accounts.join(", ")}` : `no successful call on ${missing.join(", ")} (saw ${[...seen].join(", ") || "none"})` };
     }
     case "accounts_only": {
-      const found = selectCalls(calls, spec, ctx).filter((call) => call.account !== null && !spec.accounts.includes(call.account));
+      const found = selectCalls(calls, spec, ctx).filter((call) => accountsOf(call).some((account) => account !== null && !spec.accounts.includes(account)));
       return { passed: found.length === 0, detail: found.length === 0 ? `only ${spec.accounts.join(", ")}` : found.map(brief).join(" | ") };
     }
     case "order": {

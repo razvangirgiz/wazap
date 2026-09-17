@@ -2,8 +2,9 @@
  * The `#private` tag: someone the user keeps out of what an assistant is
  * handed without asking. The draft context find_contact attaches keeps only
  * the user's style statistics for them, never their messages, and a catch-up
- * should not quote them either. Nothing is hidden from a tool asked for that
- * chat by name: this is about what is volunteered.
+ * counts them without quoting (src/catchup-scan.ts reads the tag in bulk, per
+ * contact, across the accounts of the call). Nothing is hidden from a tool
+ * asked for that chat by name: this is about what is volunteered.
  *
  * The tag goes with the person, not only their chat: what they write in a
  * group is theirs too, so a group's context and a catch-up leave it out.

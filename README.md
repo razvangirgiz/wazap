@@ -221,11 +221,12 @@ them. `--dry-run` prints the plan and touches nothing.
 | `link_account` | read | Pair an account that already exists (`wazap account add`). Returns the code to type into the phone. Registered in read-only mode too. |
 | `list_chats` | read | Conversations newest-first; filter `all`/`unread`/`groups`/`individual`/`archived`. |
 | `read_messages` | read | Messages in a chat; `before` pages further back, pulling older history from the phone; `types` narrows to one or more message types, e.g. `["call"]`; `include_previews` attaches a small image of each photo. |
-| `get_recent_messages` | read | Everything from the last N hours, grouped by chat. The catch-up tool. `include_system` adds WhatsApp's own notices, `types` narrows to one or more message types, `include_previews` attaches a small image of each photo, `compact` halves it for a routine catch-up. |
+| `catch_up` | read | What the user missed, in one call and within a token budget, across every linked account: who is waiting on a reply, mentions, replies and open polls, missed calls, people, groups condensed, stories. Pages with a cursor. See [Catching up](#catching-up). |
+| `get_recent_messages` | read | Every message from the last N hours, grouped by chat. `include_system` adds WhatsApp's own notices, `types` narrows to one or more message types, `include_previews` attaches a small image of each photo, `compact` halves it for a routine catch-up. |
 | `get_unanswered` | read | Who is waiting on the user: chats whose last word is theirs and asks for something, with the ask quoted. Groups only when the user was @-mentioned or replied to. |
 | `set_contact_note` | local | Remember something about a person, on this machine only; it then shows next to their name everywhere. |
 | `update_contact_details` | local | File tags and key-value details on a person ("role": "contabil", tag "client"); `search_contacts` matches them, so roles and groups of people resolve. |
-| `mark_handled` | local | Take a chat off `get_unanswered` until the other side writes again. Nothing changes on WhatsApp. |
+| `mark_handled` | local | Take a chat off `get_unanswered` and `catch_up`'s waiting list until the other side writes again. Nothing changes on WhatsApp. |
 | `get_stories` | read | The stories (status updates) received in the last day, by author, with previews on request. They show nowhere else. |
 | `wait_for_messages` | read | Block up to 55 s until a message arrives, then return it with a cursor for the next call. `addressed_to_me` wakes only for direct messages, @-mentions and replies. |
 | `search_messages` | read | Text search across every message the account keeps; `since`, `until` and `from` narrow it, and the answer says how many messages it searched, or how far back when a very short or common query reached the scan limit. |
@@ -275,6 +276,85 @@ or deleting its chat, removes its words from the record. MCP sessions do not sur
 session can confirm a draft made before it, sent or not, though a send the
 restart interrupted is still recorded as unknown and still settles when its id
 is echoed.
+
+### Catching up
+
+`catch_up` answers "what did I miss?" in one call. It reads the account
+database only — no network, except the cached member list of at most a dozen
+groups, fetched within a second — and fits its answer into `budget_tokens`
+(2,500 by default, 500 to 8,000), one line per entry, in this order:
+
+1. **Waiting on you**: people whose last word asks for something, as
+   `get_unanswered` judges it, with the ask quoted (a voice note by its
+   transcript) and what they said after it. An ask stays until the user
+   answers, calls `mark_handled` or it is two weeks old; `new` marks one that
+   arrived since the last catch-up, and an answered call after the ask says
+   it may have been dealt with by phone.
+2. **Mentions, replies and polls**: group messages that @-mention the user or
+   reply to them, and polls and events they have not answered, muted and
+   archived groups included.
+3. **Missed calls**, one line per person, saying whether the user called back
+   or wrote since.
+4. **People** who wrote: saved contacts first, then by how much they wrote;
+   business accounts, numbers nobody saved and muted chats last. One quote
+   each, with the media counted by kind.
+5. **Groups**, one line each: how many messages, from how many people, the
+   three who wrote most, media, polls, and a quote when the budget allows.
+   Muted and archived groups share one line.
+6. **Stories**: how many, and from whom.
+
+A footer names the voice notes nobody transcribed (for `transcribe_audio`) —
+only counting those of someone tagged `#private` — and counts what was left
+out: chats tagged `#no-catchup`, groups the user left, channels and broadcast
+lists. Signals — an amount, a date, a time, an address,
+a link, a question — are marked on the entries shown, and an ask carrying a sum
+or a date moves up. A chat's messages count as missed only after the user's
+own last message there and after what their phone already read.
+
+**The mark.** Each client keeps its own mark per account: the OAuth client,
+the token (`WAZAP_READ_TOKEN` and `WAZAP_WRITE_TOKEN` are two clients), or
+for stdio and the clients sharing a running wazap the MCP client's own name
+(`local:claude-code`, `local:cursor`), so two assistants on one machine do not
+share a mark. By default a
+catch-up reads since that client's last complete one, and moves the mark once
+all of it was given: a digest with no `more`, or the last page of one. The
+mark follows what reached wazap, not the time a message carries, so a message
+filed late — a missed call stored when it stops ringing, a message decrypted on
+a retry, one from a phone whose clock runs ahead — is in the next catch-up
+rather than under the mark; nothing sent more than two weeks ago counts. The
+first time, or when the mark is more than a week old, it reads the last 24
+hours and says so. `since: "previous"` gives the last catch-up again;
+`hours: N` (up to 336) or `since` as an ISO date or time (`2026-09-16`,
+`2026-09-16T18:00`, an offset optional) from the last 14 days read an explicit
+window and leave the mark where it is, and so does a catch-up limited by
+`include`. No window reaches further back than 14 days. Two catch-ups of one
+client at once move the mark once. The mark moves when the last page is
+answered, before the answer is on its way, so a catch-up is given at most once:
+if the answer is lost (a dropped connection, a client that crashed),
+`since: "previous"` gives it again. Nothing is marked read on WhatsApp.
+
+**Paging.** When the entries do not fit, the answer ends with `more`: how many
+are left per section, about how many tokens they take, and a `cursor`. The
+first page works out the whole digest and holds it, so the next pages give
+exactly the rest of it, whatever arrives or is read on the phone in between.
+A cursor is a random id that only the client that got it can use, and it lasts
+15 minutes past its page; after that, or after a restart, it is
+`CURSOR_EXPIRED`: call `catch_up` again without it, the mark has not moved.
+
+**Several accounts.** Without `account_id`, a catch-up covers every linked
+account at once, each section labelled per account, sharing the budget. A
+disconnected account is reported as disconnected, with what it had stored, and
+keeps its mark.
+
+**Leaving a chat out.** Tag a person `#no-catchup` with
+`update_contact_details` (an agent, a bot, a busy notification number) and
+catch-ups skip their chat, counting it in the footer, and nothing they send
+elsewhere shows either: no ask, mention, poll or quote of theirs in a group, no
+group call, no story. Tag them `#private`
+instead and they stay in, counted, but nothing they wrote is quoted — not the
+ask, not a mention or a poll of theirs in a group, not a group's quote — and
+their entries say `private`. A catch-up across several accounts reads a person
+tagged on any of them as tagged on all, by number or lid.
 
 ### Seeing, waiting, following up
 

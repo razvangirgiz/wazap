@@ -32,7 +32,7 @@
     "message": ["args.message_id"],
     "draft": ["args.draft_id", "result.draft_id"],
     "before": ["args.before"],
-    "window_hours": [],
+    "window_hours": [{ "tool": "catch_up", "from": "result.window.hours", "default": 24 }],
     "action": ["args.action"],
     "emoji": ["args.emoji"]
   }

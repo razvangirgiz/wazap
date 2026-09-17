@@ -33,8 +33,22 @@ import {
 } from "baileys";
 import type { ILogger } from "baileys/lib/Utils/logger.js";
 import { accountPolicy, type AccountRecord } from "./accounts.js";
+import { wordsAsk } from "./asks.js";
 import { clearAuth, readLinkedAccount, useAtomicAuthState, type LinkedAccount } from "./auth-state.js";
 import { CallTracker, callMessage, isTrackedCall, type CallEntry } from "./calls.js";
+import {
+  GROUP_META_MAX,
+  GROUP_META_MS,
+  quotesOf,
+  scanCatchup,
+  taggedJids,
+  type CatchupHost,
+  type CatchupQuote,
+  type CatchupScan,
+  type CatchupScanRequest,
+  type CatchupTagJids,
+  type CatchupWindow,
+} from "./catchup-scan.js";
 import { BAILEYS_VERSION, WAZAP_VERSION, writesHints, type AccountPaths, type Config } from "./config.js";
 import {
   AccountDb,
@@ -262,9 +276,6 @@ const PREVIEW_BUDGET_MS = 20_000;
 const STORY_TTL_MS = 24 * 3_600_000;
 /** How far back into a chat get_unanswered reads for the ask. */
 const UNANSWERED_SCAN = 30;
-/** Words that make a message read as something asked of the user, when it has no question mark. */
-const ASK_PATTERN =
-  /\b(te rog|v[ăa] rog|po[țt]i|pute[țt]i|ai putea|a[țt]i putea|c[âa]nd|c[âa]t|unde|trimite|trimi[țt]i|sun[ăa]|spune-mi|zi-mi|confirm[ăai]?|urgent|please|can you|could you|would you|when|where|how much|send me|let me know|need)\b/i;
 const CALL_SWEEP_MS = 30_000;
 /** The same call reaches the store up to three ways; only nearness in time tells them apart. */
 const CALL_DEDUPE_WINDOW_MS = 60_000;
@@ -2042,6 +2053,82 @@ export class WhatsAppService implements WhatsAppApi {
     return ask ? { ask, theirs } : null;
   }
 
+  // ---- catch_up (F2-2): this account's side; the digest is src/catchup.ts ----
+
+  /**
+   * The account's catch-up entries over a window. It reads what the database
+   * holds whether or not the socket is up, and says which: a digest of a
+   * disconnected account is reported as such, not as "nothing new". An account
+   * never linked has nothing to read.
+   */
+  catchUpScan(request: CatchupScanRequest): Promise<CatchupScan> {
+    return this.guarded(async () => {
+      if (this.status === "not_linked" || this.status === "linking") this.ensureConnected();
+      return scanCatchup(this.db, this.catchupHost(), request, { id: this.accountRecord.id, name: this.accountRecord.name });
+    });
+  }
+
+  catchUpTags(): Promise<CatchupTagJids> {
+    return this.guarded(async () => taggedJids(this.db));
+  }
+
+  catchUpQuotes(ids: number[]): Promise<CatchupQuote[]> {
+    return this.guarded(async () => quotesOf(this.db, ids));
+  }
+
+  catchUpAdvance(client: string, window: CatchupWindow): Promise<{ advanced: boolean }> {
+    return this.guarded(async () => ({
+      advanced: this.db.catchup.advance(client, window.untilSeq, {
+        at: window.at,
+        expectedThroughSeq: window.expected,
+        // What the window read from: the mark, or a time when it read by time (a first run, a mark too old).
+        from: { seq: window.afterSeq < 0 ? null : window.afterSeq, at: window.sinceAt },
+      }).advanced,
+    }));
+  }
+
+  private catchupHost(): CatchupHost {
+    return {
+      now: () => Date.now(),
+      ownJid: () => this.ownJid(),
+      nameOf: (jid) => this.displayName(jid),
+      noteOf: (jid) => this.noteFor(jid),
+      isNoise: (jid) => isNoiseJid(jid),
+      leftGroup: (chat) => {
+        try {
+          return chat.proto !== null && leftGroup(chat.proto);
+        } catch {
+          return false;
+        }
+      },
+      // Names only: the lid table is a lookup, and group metadata is fetched for
+      // at most a dozen groups, within a second, and only while connected — a
+      // fetch that cannot run would mark the group unreadable for good.
+      prepareNames: async (groups, people) => {
+        await this.learnLidPhones(people);
+        if (this.status !== "connected") return;
+        const unknown = groups.filter((jid) => !this.groupCache.has(jid) && !this.unreadableGroups.has(jid)).slice(0, GROUP_META_MAX);
+        if (unknown.length === 0) return;
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        await Promise.race([
+          Promise.all(unknown.map((jid) => this.learnParticipants(jid))),
+          new Promise<void>((done) => {
+            timer = setTimeout(done, GROUP_META_MS);
+          }),
+        ]);
+        clearTimeout(timer);
+      },
+      connection: () => ({
+        status: this.status,
+        since: isoWithOffset(this.statusSince),
+        sync: this.syncState(),
+        mentionsIndexing: this.readyDb()?.messages.flagsBackfillPending() ?? false,
+      }),
+    };
+  }
+
+  // ---- end catch_up -------------------------------------------------------------
+
   setContactNote(contactId: string, note: string): Promise<ContactSummary> {
     return this.guarded(async () => {
       const jid = this.resolveId(contactId);
@@ -2131,9 +2218,7 @@ export class WhatsAppService implements WhatsAppApi {
     if (message.type === "call") return false;
     // A voice note nobody has heard is an ask until proven otherwise.
     if (message.type === "voice" && message.transcript === null) return true;
-    // A link's query string is not a question.
-    const text = (raw === null ? this.viewTextOf(message) : viewText(raw, this.transcriptOf(message))).replace(/https?:\/\/\S+/g, "");
-    return text.includes("?") || ASK_PATTERN.test(text);
+    return wordsAsk(raw === null ? this.viewTextOf(message) : viewText(raw, this.transcriptOf(message)));
   }
 
   /** A group message that @-mentions the linked account or replies to one of its messages. */

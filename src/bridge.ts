@@ -12,11 +12,21 @@ import {
   ListToolsRequestSchema,
   ListToolsResultSchema,
 } from "@modelcontextprotocol/sdk/types.js";
+import { CLIENT_META_KEY } from "./client-name.js";
 import { WAZAP_VERSION } from "./config.js";
 import { readDaemon, type DaemonInfo } from "./daemon.js";
 import { log } from "./logger.js";
 
 const HEARTBEAT_MS = 1_000;
+
+/**
+ * A tool call as the bridge forwards it: under the name of the client it
+ * serves, since to the session holder the bridge itself is the client, and
+ * catch_up keeps a mark per client (client-name.ts).
+ */
+export function bridgedCall<P extends { _meta?: Record<string, unknown> }>(params: P, clientName: string | undefined): P {
+  return clientName === undefined ? params : { ...params, _meta: { ...params._meta, [CLIENT_META_KEY]: clientName } };
+}
 
 /**
  * Serve this client from the session another process already owns: an MCP server
@@ -55,7 +65,7 @@ export async function runBridge(daemon: DaemonInfo, daemonFile: string): Promise
     client.request({ method: "tools/list", params: req.params }, ListToolsResultSchema)
   );
   server.setRequestHandler(CallToolRequestSchema, (req) =>
-    client.request({ method: "tools/call", params: req.params }, CallToolResultSchema)
+    client.request({ method: "tools/call", params: bridgedCall(req.params, server.getClientVersion()?.name) }, CallToolResultSchema)
   );
   if (caps.prompts) {
     server.setRequestHandler(ListPromptsRequestSchema, (req) =>

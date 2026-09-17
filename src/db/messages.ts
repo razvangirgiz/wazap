@@ -125,13 +125,26 @@ const rank = (column: string): string => `(CASE WHEN ${column} = 0 THEN 1.5 ELSE
  */
 const FLAGS_EXPR = `(:flags | CASE WHEN :from_me = 1 AND EXISTS (SELECT 1 FROM sent_keys WHERE key_id = :key_id)
   THEN ${MESSAGE_FLAGS.viaWazap} ELSE 0 END)`;
+/**
+ * The newest stored_seq handed out: the highest a row holds, or the one a
+ * physical delete took with it (meta stored_seq_high), 0 before any. Off the
+ * messages_stored index, a single descent.
+ */
+export const STORED_SEQ_TOP = `max(
+  coalesce((SELECT stored_seq FROM messages INDEXED BY messages_stored WHERE stored_seq IS NOT NULL ORDER BY stored_seq DESC LIMIT 1), 0),
+  coalesce((SELECT CAST(value AS INTEGER) FROM meta WHERE key = 'stored_seq_high'), 0))`;
+/** The stored_seq a message stored now takes: one past every one handed out. */
+const NEXT_STORED_SEQ = `(${STORED_SEQ_TOP} + 1)`;
 const UPSERT_SQL = `
 INSERT INTO messages(id, chat_id, key_id, from_me, sender_id, ts, type, quoted_sid, quoted_from_me, quoted_key_id, status,
-  edited_at, expires_at, text, transcript, transcript_info, raw, flags)
+  edited_at, expires_at, text, transcript, transcript_info, raw, flags, stored_seq)
 VALUES (:id, :chat_id, :key_id, :from_me, :sender_id, :ts, :type, :quoted_sid, :quoted_from_me, :quoted_key_id, :status,
-  :edited_at, :expires_at, :text, :transcript, :transcript_info, :raw, ${FLAGS_EXPR})
+  :edited_at, :expires_at, :text, :transcript, :transcript_info, :raw, ${FLAGS_EXPR}, ${NEXT_STORED_SEQ})
 ON CONFLICT(chat_id, from_me, key_id) DO UPDATE SET
   flags = messages.flags | excluded.flags,
+  -- A stub standing in for a message (one that could not be decrypted) replaced by it: the message reaches the account now.
+  stored_seq = CASE WHEN ${FRESH} AND messages.type = 'system' AND excluded.type <> 'system' THEN excluded.stored_seq
+    ELSE messages.stored_seq END,
   type = CASE WHEN ${FRESH} THEN excluded.type ELSE messages.type END,
   text = CASE WHEN ${FRESH} THEN coalesce(excluded.text, messages.text) ELSE messages.text END,
   raw = CASE WHEN ${FRESH} THEN coalesce(excluded.raw, messages.raw) ELSE messages.raw END,
@@ -267,7 +280,7 @@ export class Messages {
     if (gone !== null) {
       // Its tombstone was purged with a clear, but the message stays gone.
       this.c.run(
-        `INSERT INTO messages(id, chat_id, key_id, from_me, sender_id, ts, type, deleted_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO messages(id, chat_id, key_id, from_me, sender_id, ts, type, deleted_at, stored_seq) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ${NEXT_STORED_SEQ})`,
         id,
         chat.id,
         input.keyId,
@@ -286,8 +299,8 @@ export class Messages {
     }
     if (expiresAt !== null && expiresAt <= now) {
       this.c.run(
-        `INSERT INTO messages(id, chat_id, key_id, from_me, sender_id, ts, type, expires_at, deleted_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO messages(id, chat_id, key_id, from_me, sender_id, ts, type, expires_at, deleted_at, stored_seq)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ${NEXT_STORED_SEQ})`,
         id,
         chat.id,
         input.keyId,
@@ -490,7 +503,7 @@ export class Messages {
       }
       const id = this.allocateId(ts);
       this.c.run(
-        `INSERT INTO messages(id, chat_id, key_id, from_me, ts, type, deleted_at) VALUES (?, ?, ?, ?, ?, 'deleted', ?)`,
+        `INSERT INTO messages(id, chat_id, key_id, from_me, ts, type, deleted_at, stored_seq) VALUES (?, ?, ?, ?, ?, 'deleted', ?, ${NEXT_STORED_SEQ})`,
         id,
         chat.id,
         keyId,

@@ -11,7 +11,7 @@
 import { after, before, describe, test } from "node:test";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { createInterface } from "node:readline";
@@ -214,8 +214,8 @@ describe("evaluation harness", () => {
     assert.equal(selectCases(cases, "chatgpt").length, 22);
   });
 
-  /** Plays `agent` through `theCase` on a fresh world and scores it. */
-  async function play(theCase, agent) {
+  /** Plays `agent` through `theCase` on a fresh world and scores it, against `map` (0.23 unless given). */
+  async function play(theCase, agent, map = toolMap) {
     await control.reset({ patch: theCase.fixture?.patch });
     const refs = await control.refs();
     if (theCase.setup?.length) await control.hooks(theCase.setup);
@@ -251,7 +251,7 @@ describe("evaluation harness", () => {
       turns,
       state: await control.state(),
       refs,
-      toolMap,
+      toolMap: map,
     });
   }
 
@@ -266,6 +266,48 @@ describe("evaluation harness", () => {
       );
       const idle = await play(theCase, NULL_AGENT);
       assert.equal(idle.passed, false, `${id}: an agent that does nothing must fail`);
+    });
+  }
+
+  /**
+   * catch_up (F2-2) on the fixture world, scored on the 1.0 map as far as
+   * catch_up fills it: the map stays a placeholder until F2-4 names the rest.
+   */
+  const CATCH_UP_ORACLE = {
+    P3: [
+      async (s, r) => {
+        const digest = (await s.call("catch_up", {})).structuredContent;
+        assert.deepEqual(digest.accounts.map((row) => row.account_id), ["personal", "work"], "one call, both accounts");
+        const waiting = (account) => digest.waiting.filter((entry) => entry.acct === account).map((entry) => entry.chat);
+        for (const key of ["elena", "ana_ionescu", "dan_radu"]) assert.ok(waiting("personal").includes(r.contacts[key].jid), `${key} waits on Personal`);
+        assert.ok(waiting("work").includes(r.contacts.ana_marin.jid), "Ana Marin waits on Business");
+        assert.match(JSON.stringify(digest.waiting), /cina de duminică la 7/, "what mama said after her ask rides with it");
+        return "Personal: mama întreabă dacă ai ajuns și îți amintește de cina de duminică la 7; Ana Ionescu vrea confirmarea extrasului; Dan Radu ți-a lăsat un vocal; Echipa proiect te-a menționat; Bloc 12 a vorbit mult. Business: Ana Marin întreabă când ajungi la birou; Furnizor Print SRL are comanda gata.";
+      },
+    ],
+    N29: [
+      async (s) => {
+        const digest = (await s.call("catch_up", {})).structuredContent;
+        const personal = digest.accounts.find((row) => row.account_id === "personal");
+        assert.equal(personal.status, "disconnected");
+        assert.equal(personal.mark.moved, false, "a disconnected account keeps its mark");
+        return "Contul Personal e deconectat, așa că istoricul lui poate fi incomplet; pe Business nu e nimic nou.";
+      },
+    ],
+  };
+
+  for (const id of Object.keys(CATCH_UP_ORACLE)) {
+    test(`${id} with catch_up: the oracle passes on the 1.0 map, the null agent fails`, async () => {
+      const map = JSON.parse(readFileSync(join(ROOT, "eval", "tool-map", "1.0.json"), "utf8"));
+      delete map.placeholder;
+      const theCase = cases.find((entry) => entry.id === id);
+      const oracle = await play(theCase, CATCH_UP_ORACLE, map);
+      assert.deepEqual(
+        oracle.assertions.filter((entry) => !entry.passed).map((entry) => `${entry.name}: ${entry.detail}`),
+        [],
+        `${id} oracle`
+      );
+      assert.equal((await play(theCase, NULL_AGENT, map)).passed, false);
     });
   }
 });

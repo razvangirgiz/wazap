@@ -9,6 +9,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
+import { bridgedCall } from "../dist/bridge.js";
 import { readDaemon } from "../dist/daemon.js";
 import { mcpClient, spawnWazap, waitFor } from "./helpers.mjs";
 
@@ -76,6 +77,12 @@ function stderrLines(wazap) {
     .split("\n")
     .filter((line) => line !== "");
 }
+
+test("a bridged tool call names the bridge's own client, so the session holder keeps its catch-up mark apart", () => {
+  const params = { name: "catch_up", arguments: {}, _meta: { progressToken: 7 } };
+  assert.deepEqual(bridgedCall(params, "claude-code"), { name: "catch_up", arguments: {}, _meta: { progressToken: 7, "wazap/client": "claude-code" } });
+  assert.deepEqual(bridgedCall({ name: "get_status" }, undefined), { name: "get_status" }, "a client that named nobody passes nothing on");
+});
 
 test("a second serve answers out of the session the first one holds", async () => {
   const s = scene();
@@ -219,7 +226,7 @@ test("a bridge serves what the owner exposes, so --read-only reaches every clien
     const b = s.start();
     const mcp = await session(b.child);
     const names = (await toolShape(mcp)).map((tool) => tool.name);
-    assert.equal(names.length, 23);
+    assert.equal(names.length, 24);
     assert.ok(!names.includes("send_message"), names.join(", "));
 
     const status = await mcp.request("tools/call", { name: "get_status", arguments: {} });
