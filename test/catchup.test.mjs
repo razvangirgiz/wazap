@@ -530,6 +530,32 @@ test("a person tagged #private is never quoted: waiting, then, people, mentions,
   assert.match(text(result), /- Ela · 1 new · \d\d:\d\d · private · 40700000004@s\.whatsapp\.net/);
 });
 
+test("a #private person's unheard voice notes are counted in the footer, never named for transcription", async () => {
+  const { svc, arrive, mention, sock } = account();
+  const { call } = toolsOf(svc);
+  sock.ev.emit("chats.upsert", [{ id: GROUP, name: "Echipa proiect" }]);
+  const voice = (seconds) => ({ audioMessage: { ptt: true, seconds, mimetype: "audio/ogg; codecs=opus" } });
+  arrive(ANA, voice(42), { at: Date.now() - 2 * HOUR });
+  arrive(ANA, voice(12), { at: Date.now() - HOUR });
+  arrive(GROUP, { audioMessage: { ...voice(9).audioMessage, contextInfo: { mentionedJid: [ME] } } }, { participant: ANA, at: Date.now() - HOUR });
+  arrive(GROUP, mention("@Răzvan vii?"), { participant: ANA, at: Date.now() - HOUR + 1000 });
+  const heard = arrive(DAN, voice(30), { at: Date.now() - HOUR });
+  await call("update_contact_details", { contact_id: ANA, add_tags: ["#private"] });
+
+  const result = await call("catch_up", { hours: 24 });
+  const all = `${text(result)}\n${JSON.stringify(result.structuredContent)}`;
+  assert.ok(!all.includes("40700000002@s.whatsapp.net_"), "no message id of hers");
+  assert.deepEqual(result.structuredContent.footer.voice_untranscribed, [heard], "Dan's note is named");
+  assert.equal(result.structuredContent.footer.voice_untranscribed_more, 2);
+  assert.match(text(result), /Voice notes not transcribed \(3\): false_40700000003@s\.whatsapp\.net_M\d+, \+2 — transcribe_audio reads one\./);
+
+  await call("update_contact_details", { contact_id: DAN, add_tags: ["#private"] });
+  const only = await call("catch_up", { hours: 24 });
+  assert.deepEqual(only.structuredContent.footer, { voice_untranscribed_more: 3 });
+  assert.match(text(only), /Voice notes not transcribed \(3\)\.$/m);
+  assert.ok(!text(only).includes("transcribe_audio"));
+});
+
 test("a chat tagged #no-catchup is left out of every section and counted", async () => {
   const { svc, arrive } = account();
   const { call } = toolsOf(svc);

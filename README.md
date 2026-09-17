@@ -302,8 +302,8 @@ groups, fetched within a second — and fits its answer into `budget_tokens`
    Muted and archived groups share one line.
 6. **Stories**: how many, and from whom.
 
-A footer names the voice notes nobody transcribed (for `transcribe_audio`), and
-counts what was left out: chats tagged `#no-catchup`, groups the user left,
+A footer names the voice notes nobody transcribed (for `transcribe_audio`) —
+only counting those of someone tagged `#private` — and counts what was left out: chats tagged `#no-catchup`, groups the user left,
 channels and broadcast lists. Signals — an amount, a date, a time, an address,
 a link, a question — are marked on the entries shown, and an ask carrying a sum
 or a date moves up. A chat's messages count as missed only after the user's

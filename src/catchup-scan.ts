@@ -229,6 +229,7 @@ export interface CatchupScan {
   groups: GroupEntry[];
   mutedGroups: MutedGroups | null;
   stories: StoriesEntry | null;
+  /** Unheard voice notes by id, at most VOICE_IDS_MAX, never a #private person's: those are only counted. */
   voiceUntranscribed: string[];
   voiceUntranscribedCount: number;
   skipped: { noCatchup: SkipCount; leftGroups: SkipCount; newsletters: SkipCount; broadcasts: SkipCount };
@@ -459,11 +460,12 @@ export async function scanCatchup(db: AccountDb, host: CatchupHost, request: Cat
   const voiceIds: string[] = [];
   const voiceSeen = new Set<string>();
   let voiceCount = 0;
-  const noteVoice = (sid: string): void => {
+  /** An unheard voice note, counted once; named for transcribe_audio unless its person is #private. */
+  const noteVoice = (sid: string, hidden: boolean): void => {
     if (voiceSeen.has(sid)) return;
     voiceSeen.add(sid);
     voiceCount++;
-    if (voiceIds.length < VOICE_IDS_MAX) voiceIds.push(sid);
+    if (!hidden && voiceIds.length < VOICE_IDS_MAX) voiceIds.push(sid);
   };
 
   // Names are filled in once the host has prepared them; entries keep jids until then.
@@ -551,7 +553,7 @@ export async function scanCatchup(db: AccountDb, host: CatchupHost, request: Cat
             }),
       });
       waitingChats.add(chat.id);
-      if (ask.type === "voice" && !transcribed) noteVoice(sidOf(chat.jid, ask.keyId));
+      if (ask.type === "voice" && !transcribed) noteVoice(sidOf(chat.jid, ask.keyId), hidden);
       if (group && ask.senderId !== null) contactIds.add(ask.senderId);
       if (!group && chat.contactId !== null) contactIds.add(chat.contactId);
       if (group) groupsToName.add(chat.jid);
@@ -653,7 +655,7 @@ export async function scanCatchup(db: AccountDb, host: CatchupHost, request: Cat
     // A direct chat.
     if (aggregate.voiceUntranscribed > 0) {
       const voices = digest.untranscribedVoice(family, windowSpan(floor), now, VOICE_IDS_MAX);
-      for (const voice of voices) noteVoice(sidOf(chat.jid, voice.keyId));
+      for (const voice of voices) noteVoice(sidOf(chat.jid, voice.keyId), privateChat(chat));
       voiceCount += Math.max(0, aggregate.voiceUntranscribed - voices.length);
     }
     if (!include.has("direct") || waitingChats.has(chat.id)) continue;

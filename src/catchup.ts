@@ -918,9 +918,12 @@ function footerLines(views: readonly AccountView[], multi: boolean): string[] {
     const scan = view.scan!;
     const label = multi ? `${view.name}: ` : "";
     if (scan.voiceUntranscribedCount > 0) {
+      // Only the notes of people not kept #private are named; theirs are only counted.
       const more = scan.voiceUntranscribedCount - scan.voiceUntranscribed.length;
       lines.push(
-        `${label}Voice notes not transcribed (${scan.voiceUntranscribedCount}): ${scan.voiceUntranscribed.join(", ")}${more > 0 ? `, +${more}` : ""} — transcribe_audio reads one.`
+        scan.voiceUntranscribed.length === 0
+          ? `${label}Voice notes not transcribed (${scan.voiceUntranscribedCount}).`
+          : `${label}Voice notes not transcribed (${scan.voiceUntranscribedCount}): ${scan.voiceUntranscribed.join(", ")}${more > 0 ? `, +${more}` : ""} — transcribe_audio reads one.`
       );
     }
     const skipped = skippedParts(scan);

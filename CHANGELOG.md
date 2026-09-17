@@ -29,7 +29,8 @@
   stays out of every catch-up, counted in its footer.
 - **`#private` in a catch-up**: a person tagged with it is counted and never
   quoted — their asks, what followed, their messages, their mentions and polls
-  in groups, a group's quote — and their entries say `private`.
+  in groups, a group's quote — and their entries say `private`; their unheard
+  voice notes are counted in the footer, never named for transcription.
 - **An output schema on `catch_up`**, the first tool to declare one. A tool
   with an output schema answers an error with `{ error, message, fix }` in its
   text only, since MCP clients validate structured content against the schema
