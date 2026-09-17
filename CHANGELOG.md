@@ -120,6 +120,12 @@ answers.
   asked for an account's name or id answers `not_found` with a `fix` naming
   the `account_id` to pass; `catch_up`'s description says `account_id`
   narrows it to one account.
+- **`catch_up` over an explicit window tells old asks from new.** With `hours`
+  or an ISO `since`, `waiting` still lists every ask open in the last 14 days,
+  and one asked before the window carries `before_window: true` and says "from
+  before this window"; when nothing arrived in the window, the answer says so
+  first, in the text and in `notes`. The description says `waiting` is every
+  open ask, whatever the window.
 - **`find_contact`: who "mama", "Ana de la contabilitate" or "Mișu" is.** A
   read tool, in every session. It matches saved, business and self-given names, the
   `nickname` and `relatie` details, tags, and a note that is only the

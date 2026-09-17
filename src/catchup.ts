@@ -126,6 +126,7 @@ const waitingEntry = z.object({
   at,
   n: z.number().optional().describe("Their messages since the user's last one"),
   new: z.literal(true).optional().describe("Asked since this client's last catch-up"),
+  before_window: z.literal(true).optional().describe("Asked before an explicit window: still open, not new"),
   private: privateFlag,
   type: z.string().optional(),
   voice: z.string().optional().describe("A voice note's length"),
@@ -398,6 +399,8 @@ interface Item {
   thenId: number | null;
   line(quote: Quoted): string;
   data(quote: Quoted): Record<string, unknown>;
+  /** Someone waiting since before an explicit window (hours, or an ISO since): still open, not new. */
+  beforeWindow?: true;
 }
 
 interface AccountView {
@@ -485,11 +488,15 @@ function itemsOf(view: AccountView, multi: boolean, now: number): Item[] {
   const tag = multi ? { acct: account } : {};
   const key = (chat: string): string => `${account}|${chat}`;
   const items: Item[] = [];
+  // An explicit window still lists every open ask of the 14 days; the ones asked before it say so.
+  const explicit = scan.window.basis === "hours" || scan.window.basis === "since";
 
   scan.waiting.forEach((entry: WaitingEntry) => {
+    const before = explicit && !entry.newSinceLast;
     items.push({
       section: "waiting",
       account,
+      ...(before ? { beforeWindow: true as const } : {}),
       chatKey: key(entry.chat),
       quoteId: entry.private || (entry.ask.type === "voice" && !entry.ask.transcribed) ? null : entry.ask.id,
       thenId: entry.thenId ?? null,
@@ -501,6 +508,7 @@ function itemsOf(view: AccountView, multi: boolean, now: number): Item[] {
           `since ${clock(entry.ask.ts, now)} (${age(entry.ask.ts, now)})`,
           ...(entry.sinceYou > 1 ? [`${entry.sinceYou} msgs since you`] : []),
           ...(entry.newSinceLast ? ["new"] : []),
+          ...(before ? ["from before this window"] : []),
           ...(entry.private ? ["private"] : []),
           ...(entry.ask.type === "voice" || entry.ask.type === "audio"
             ? [`voice${entry.ask.voice ? ` ${entry.ask.voice}` : ""}${entry.ask.transcribed ? "" : ", not transcribed"}`]
@@ -525,6 +533,7 @@ function itemsOf(view: AccountView, multi: boolean, now: number): Item[] {
         at: clock(entry.ask.ts, now),
         ...(entry.sinceYou > 1 ? { n: entry.sinceYou } : {}),
         ...(entry.newSinceLast ? { new: true } : {}),
+        ...(before ? { before_window: true } : {}),
         ...(entry.private ? { private: true } : {}),
         ...(entry.ask.type === "text" ? {} : { type: entry.ask.type }),
         ...(entry.ask.voice ? { voice: entry.ask.voice } : {}),
@@ -911,7 +920,9 @@ async function givePage(snapshot: Snapshot, start: number, budgetChars: number, 
   const complete = snapshot.include.length === CATCHUP_SECTIONS.length;
   const rest = all.slice(start);
 
-  const header = headerLines(views, multi, now, start > 0);
+  // Every section read, and all there is are asks from before the window: nothing arrived in it.
+  const quiet = complete && all.length > 0 && all.every((item) => item.beforeWindow === true);
+  const header = [...headerLines(views, multi, now, start > 0), ...(quiet ? ["Nothing arrived in this window; still waiting from before it:"] : [])];
   const footer = footerLines(answered, multi);
   const linesChars = (lines: readonly string[]): number => lines.reduce((n, line) => n + line.length + 1, 0);
   const headerChars = linesChars(header);
@@ -1081,6 +1092,7 @@ async function givePage(snapshot: Snapshot, start: number, budgetChars: number, 
         connection.sync === "done" ? null : `${view.id}: history sync is still running; some messages may not be here yet.`,
       ];
     }),
+    quiet ? "Nothing arrived in this window: every waiting entry was asked before it and is still open." : null,
     more === null ? null : "More entries are left: call catch_up with more.cursor for them.",
   ].filter((note): note is string => note !== null);
   if (notes.length > 0) structured.notes = notes;

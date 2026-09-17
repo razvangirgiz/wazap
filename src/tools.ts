@@ -432,7 +432,7 @@ ${(Object.keys(ERROR_GUIDE) as Array<keyof typeof ERROR_GUIDE>).map((code) => `-
 const CATCH_UP: ToolDef = tool({
   name: "catch_up",
   title: "Catch up on what the user missed",
-  description: `What the user missed within budget_tokens, all accounts at once: who waits on a reply, mentions, missed calls, people, groups, stories. account_id narrows it to one account; get_status names them. The mark moves first: a lost answer comes back with since: "previous". more.cursor: the rest.`,
+  description: `What the user missed, all accounts, within budget_tokens: waiting (every open ask of 14 days, whatever the window), mentions, calls, people, groups, stories. account_id narrows it to one account; get_status names them. The mark moves first; a lost answer is since: "previous". more.cursor: the rest.`,
   schema: CATCHUP_INPUT,
   outputSchema: CATCHUP_OUTPUT,
   write: false,
