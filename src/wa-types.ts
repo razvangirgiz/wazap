@@ -406,6 +406,17 @@ export interface SearchOptions {
   untilMs?: number;
   /** "me", or a contact / chat id: only messages that person sent. */
   from?: string;
+  /** Without a chat, the #private rule (src/private-contacts.ts): their messages are left out and counted, unless `from` names them. */
+  private?: PrivateRule;
+}
+
+/**
+ * A broad read's #private rule (src/private-contacts.ts): the words of someone
+ * tagged #private stay out of what the call did not ask of them by name.
+ * `others` are the people another account of the call tagged, by number or lid.
+ */
+export interface PrivateRule {
+  others: readonly string[];
 }
 
 /** One recall hit: the message plus the score it ranked by. */
@@ -427,6 +438,8 @@ export interface RecallAnswer {
   index: RecallStatus;
   /** More messages held the query's words than the word side examined: older word matches may be missing. */
   lexicalCapped: boolean;
+  /** Matches from people kept #private that ranked among these, left out; absent when none were. */
+  privateOmitted?: number;
 }
 
 export interface HandledResult {
@@ -646,6 +659,8 @@ export interface Synced<T> {
 export interface SearchAnswer extends Synced<MessageView[]> {
   /** Set when the scan limit stopped the search before the history ran out: older messages were not searched. */
   scanCapped?: { searchedBackTo: string };
+  /** Matches from people kept #private, left out before the limit; absent when none were. */
+  privateOmitted?: number;
 }
 
 export interface ContactSyncResult {

@@ -134,6 +134,7 @@ const SEARCH_OUTPUT = {
     }).passthrough()
   ),
   scan_capped: z.boolean().optional().describe("Older matches may be missing: narrow the search"),
+  private_omitted: z.number().optional().describe("Matches from people tagged #private, left out: chat_id or from shows them"),
   searched_back_to: z.string().optional().describe("Older messages were not searched: narrow the search"),
   coverage: OPEN_OBJECT.nullable().optional().describe("null: it could not be counted"),
   index: OPEN_OBJECT.optional(),
@@ -285,6 +286,16 @@ function scanCapFields(result: SearchAnswer): Record<string, unknown> {
 function scanCapNote(result: SearchAnswer): string | null {
   if (result.scanCapped === undefined) return null;
   return `The search stopped at its scan limit; messages before ${result.scanCapped.searchedBackTo.slice(0, 10)} were not searched — narrow it with chat_id, since/until or a longer query.`;
+}
+
+/** `private_omitted`, only when a search left someone #private out. */
+function privateFields(omitted: number | undefined): Record<string, unknown> {
+  return omitted === undefined ? {} : { private_omitted: omitted };
+}
+
+function privateNote(omitted: number | undefined): string | null {
+  if (omitted === undefined) return null;
+  return `${omitted} ${omitted === 1 ? "match" : "matches"} from people tagged #private left out: name the chat (chat_id) or the person (from) to search them.`;
 }
 
 const chatId = z.string().min(1).describe("Chat id, or a phone number");
@@ -595,7 +606,8 @@ const TOOLS: readonly ToolDef[] = [
       const resolvedFrom = await resolveSenderFilter(wa, from);
       const sinceMs = parseMoment(since, "since");
       const untilMs = parseMoment(until, "until", true);
-      const filters = { sinceMs, untilMs, from: resolvedFrom };
+      // Without a chat, someone tagged #private is left out unless from names them (src/private-contacts.ts).
+      const filters = { sinceMs, untilMs, from: resolvedFrom, ...(chat_id === undefined ? { private: { others: [] } } : {}) };
       const scope = [
         chat_id ? `in ${chat_id}` : null,
         from ? `from ${from}` : null,
@@ -631,6 +643,7 @@ const TOOLS: readonly ToolDef[] = [
             capped
               ? 'More messages hold these words than were ranked, so older matches may be missing: narrow it with chat_id or since/until, or pass match: "words" to list them newest first.'
               : null,
+            privateNote(result.data.privateOmitted),
             result.data.index.state === "indexing" ? null : indexCoverageNote(result.data.index),
             freshnessNote(fresh),
           ]
@@ -644,6 +657,7 @@ const TOOLS: readonly ToolDef[] = [
               count: hits.length,
               messages: hits.map(({ message, ...rank }) => ({ ...message, ...rank })),
               scan_capped: capped,
+              ...privateFields(result.data.privateOmitted),
               index: result.data.index,
               freshness: fresh,
             })
@@ -659,7 +673,9 @@ const TOOLS: readonly ToolDef[] = [
         unavailable === null
           ? null
           : `Meaning search is unavailable (${unavailable.message}); these results match the words only.${unavailable.fix ? ` ${unavailable.fix}` : ""}`;
-      const note = [fallback, scanCapNote(found), coverageNote(cov, chat_id !== undefined), freshnessNote(fresh)].filter(Boolean).join(" ");
+      const note = [fallback, scanCapNote(found), privateNote(found.privateOmitted), coverageNote(cov, chat_id !== undefined), freshnessNote(fresh)]
+        .filter(Boolean)
+        .join(" ");
       return ok(
         renderMessages(title, messages, new Map(), note),
         synced(found, {
@@ -671,6 +687,7 @@ const TOOLS: readonly ToolDef[] = [
           count: messages.length,
           messages,
           ...scanCapFields(found),
+          ...privateFields(found.privateOmitted),
           coverage: cov,
           freshness: fresh,
         })

@@ -131,6 +131,7 @@ import {
   type EncryptedVote,
 } from "./messages.js";
 import { readVote } from "./polls.js";
+import { privatePeople, withoutPrivateQuote, type PrivatePeople } from "./private-contacts.js";
 import { PAIRING_TIMEOUT_MS, WA_BROWSER, prettyCode, socketFactory, startPairing } from "./pairing.js";
 import { diversify } from "./recall/variety.js";
 import {
@@ -209,6 +210,7 @@ import type {
   OutgoingTarget,
   MessageView,
   PairingInfo,
+  PrivateRule,
   ParticipantResult,
   RecallAnswer,
   RecallHit,
@@ -1553,13 +1555,20 @@ export class WhatsAppService implements WhatsAppApi {
         ...(opts.sinceMs === undefined ? {} : { since: opts.sinceMs }),
         ...(opts.untilMs === undefined ? {} : { until: opts.untilMs }),
       };
+      const people = scope === undefined ? this.privateScope(opts.private, from) : null;
       const found: StoredMessage[] = [];
+      let privateOmitted = 0;
       let capped: number | null = null;
       for (let before: number | undefined; found.length < limit; ) {
         const page = db.search.text({ query, limit, ...filter, ...(before === undefined ? {} : { before }) });
         for (const message of page.items) {
           // The status feed is not a chat: a story never answers a search.
           if (message.chatJid === STATUS_JID) continue;
+          // Nor does someone kept #private, unless the call names them: counted, never an entry without its words.
+          if (people?.message(message)) {
+            privateOmitted++;
+            continue;
+          }
           found.push(message);
           if (found.length >= limit) break;
         }
@@ -1571,8 +1580,10 @@ export class WhatsAppService implements WhatsAppApi {
         if (page.nextBefore === null) break;
         before = page.nextBefore;
       }
-      const answer: SearchAnswer = this.synced(this.viewsOfStored(found));
+      const views = this.viewsOfStored(found);
+      const answer: SearchAnswer = this.synced(people === null ? views : views.map((view) => withoutPrivateQuote(view, people)));
       if (capped !== null) answer.scanCapped = { searchedBackTo: isoWithOffset(secondOfId(capped) * 1000) };
+      if (privateOmitted > 0) answer.privateOmitted = privateOmitted;
       return answer;
     });
   }
@@ -1628,13 +1639,15 @@ export class WhatsAppService implements WhatsAppApi {
       const from = this.senderFilter(opts.from);
       const vector = await this.queryVector(query);
       const db = this.db;
+      const people = scope === undefined ? this.privateScope(opts.private, from) : null;
+      // Wide enough that the variety rules below have something to promote, and as wide again when #private hits may take slots.
+      const window = Math.max(limit + 5, RECALL_RERANK_WINDOW);
       // TODO(F1-b3): the hybrid scan runs on the main thread, ~160-190 ms at 100,000 vectors; it moves to a worker.
       const result = db.vectors.hybrid({
         query,
         model: settings.model,
         vector: vector ?? null,
-        // Wide enough that the variety rules below have something to promote.
-        limit: Math.max(limit + 5, RECALL_RERANK_WINDOW),
+        limit: people === null ? window : 2 * window,
         minSimilarity: settings.minSimilarity,
         recencyHalfLifeMs: RECALL_RECENCY_HALF_LIFE_MS,
         ...(scope === undefined ? {} : { chat: scope }),
@@ -1642,11 +1655,14 @@ export class WhatsAppService implements WhatsAppApi {
         ...(opts.sinceMs === undefined ? {} : { since: opts.sinceMs }),
         ...(opts.untilMs === undefined ? {} : { until: opts.untilMs }),
       });
-      const kept = diversify(
-        result.hits.filter((hit) => hit.message.chatJid !== STATUS_JID),
-        (hit) => ({ chat: hit.message.chatJid, text: `${hit.message.text ?? ""} ${hit.message.transcript ?? ""}` })
-      ).slice(0, limit);
-      const views = this.viewsOfStored(kept.map((hit) => hit.message));
+      const ranked = result.hits.filter((hit) => hit.message.chatJid !== STATUS_JID);
+      const hidden = new Set(people === null ? [] : ranked.filter((hit) => people.message(hit.message)));
+      const shown = hidden.size === 0 ? ranked : ranked.filter((hit) => !hidden.has(hit)).slice(0, window);
+      const kept = diversify(shown, (hit) => ({ chat: hit.message.chatJid, text: `${hit.message.text ?? ""} ${hit.message.transcript ?? ""}` })).slice(0, limit);
+      // The #private hits that would have been among these: ranked at or above the lowest one kept, or all of them when fewer came.
+      const floor = kept.length < limit ? -Infinity : Math.min(...kept.map((hit) => hit.score));
+      const privateOmitted = [...hidden].filter((hit) => hit.score >= floor).length;
+      const views = this.viewsOfStored(kept.map((hit) => hit.message)).map((view) => (people === null ? view : withoutPrivateQuote(view, people)));
       const hits = kept.map((hit, i) => ({
         score: hit.score,
         similarity: hit.similarity,
@@ -1654,7 +1670,7 @@ export class WhatsAppService implements WhatsAppApi {
         message: views[i]!,
         from_index: hit.message.raw === null,
       })) satisfies RecallAnswer["hits"];
-      return this.synced({ hits, index: this.recallStatus(), lexicalCapped: result.lexicalCapped });
+      return this.synced({ hits, index: this.recallStatus(), lexicalCapped: result.lexicalCapped, ...(privateOmitted > 0 ? { privateOmitted } : {}) });
     });
   }
 
@@ -4197,6 +4213,18 @@ export class WhatsAppService implements WhatsAppApi {
   }
 
   /** A sender filter: the account's own id, however it is spelled, is "me" — its messages are stored without a sender. */
+  /**
+   * The people a broad read leaves the words of out (src/private-contacts.ts),
+   * read once for the call; null when the call did not ask for the rule, nobody
+   * is #private, or `from` names one of them, whose messages are then what was asked.
+   */
+  private privateScope(rule: PrivateRule | undefined, from?: string): PrivatePeople | null {
+    if (rule === undefined) return null;
+    const people = privatePeople(this.db, rule.others);
+    if (people.none || (from !== undefined && people.names(from))) return null;
+    return people;
+  }
+
   private senderFilter(from: string | undefined): string | undefined {
     if (from === undefined) return undefined;
     if (from === "me") return "me";
