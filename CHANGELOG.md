@@ -1,5 +1,95 @@
 # Changelog
 
+## Unreleased
+### Removed
+
+- **The Gemini CLI extension.** `gemini-extension.json`, the generated
+  `GEMINI.md` and `npm run context:build` are gone. `wazap connect gemini`
+  still writes the MCP entry, and the Gemini CLI gets the five workflows from
+  the server as MCP prompts, like every client without a skills directory.
+- **`wazap connect vscode`, `windsurf` and `opencode`, and
+  `wazap skills install opencode`.** `connect` knows `claude-code`,
+  `claude-desktop`, `cursor`, `codex` and `gemini`; `skills install` knows
+  `claude-code`, `codex`, `cursor` and `agents`. `setup` offers the same five
+  clients.
+- **The Install in VS Code badge**, and its https form. The Cursor link stays.
+- **The Grok Bot guide, and `setup`'s `Remote client (Grok Bot / HTTP MCP)?`
+  question** with the URL and header notes it printed.
+- **Bearer-token notes aimed at agents.** `get_status`, `wazap status`, doctor,
+  `setup`, `connect`, `expose` and the `wazap-setup` skill no longer explain
+  that a write token is not writes being enabled, and the skill sends a remote
+  agent to `wazap expose` instead of to tokens. `WAZAP_READ_TOKEN` and
+  `WAZAP_WRITE_TOKEN` work exactly as before; the README describes them once,
+  under *Building on wazap (HTTP API for products)*.
+- **Link previews.** Text sent, confirmed or edited goes out without a preview
+  card, and nothing fetches the linked page: wazap's bounded preview fetcher is
+  gone, and both text paths still hand Baileys an explicit `linkPreview: null`
+  so its own unrestricted fetcher stays off. Forwarding still keeps a preview a
+  message already carries.
+- **Eleven settings, now fixed.** Each one still set in the environment or in
+  `.env` prints one warning at startup saying what replaced it, and is ignored;
+  nothing refuses to start.
+
+  | Setting | Now |
+  | --- | --- |
+  | `WAZAP_TRANSPORT` | HTTP is the `--http` flag only |
+  | `WAZAP_SYNC_FULL_HISTORY` | WhatsApp's default history sync; `read_messages` with `before` pulls older messages |
+  | `WAZAP_PERSIST_HISTORY` | messages are always kept in the account database |
+  | `WAZAP_RATE_LIMIT` | 20 writes a minute, unless the account sets `rate_limit` in `accounts.json` |
+  | `WAZAP_MAX_INFLIGHT` / `WAZAP_MAX_INFLIGHT_TOTAL` | 8 tool calls per MCP session, 32 in all |
+  | `WAZAP_HTTP_BUDGET` | 240 requests a minute per HTTP credential |
+  | `WAZAP_TRANSCRIBE_LANGUAGE` | the language is detected; `transcribe_audio` still takes `language` |
+  | `WAZAP_EMBED_IDLE_MINUTES` | the embedding server stops after 30 idle minutes |
+  | `WAZAP_RECALL_MAX` | nothing: it capped nothing since 0.22 |
+  | `WAZAP_TYPEWRITER` | the setup screens always type out at a terminal |
+
+- **Settings documentation, down to what a user sets.** The README's Settings
+  table, `.env.example` and `wazap --help` list `WAZAP_DATA_DIR`,
+  `WAZAP_READ_ONLY`, `WAZAP_HOST`/`WAZAP_PORT`, `WAZAP_PUBLIC_URL`/
+  `WAZAP_OAUTH_PASSWORD`, `WAZAP_READ_TOKEN`/`WAZAP_WRITE_TOKEN`,
+  `WAZAP_TRANSCRIBE` with `WAZAP_TRANSCRIBE_API_KEY`, `WAZAP_RECALL`,
+  `WAZAP_WEBHOOK` with its URL, secret and events, `WAZAP_RETENTION` and
+  `WAZAP_TRUST_PROXY`. `WAZAP_NO_SHARE`, `WAZAP_NO_UPDATE_CHECK`,
+  `WAZAP_TRANSCRIBE_AUTO`, `WAZAP_TRANSCRIBE_URL`, `WAZAP_TRANSCRIBE_MODEL`,
+  `WAZAP_WHISPER_MODEL`, `WAZAP_WHISPER_BIN`, `WAZAP_EMBED_MODEL`,
+  `WAZAP_EMBED_BIN` and `WAZAP_RECALL_MIN_SIMILARITY` are still read, for the
+  tests, and are no longer documented as settings.
+- **Tool counts** in the package description and the README, which had gone
+  stale, and the unused `scripts/smoke-distribution.mjs`.
+
+### Changed
+
+- **`wazap status` shows OAuth sign-ins when the background service is
+  installed.** It used to say OAuth was only served with
+  `WAZAP_TRANSPORT=http`, even while the service served it.
+
+### Upgrade notes
+
+- **A client whose `connect` target is gone** (VS Code, Windsurf, OpenCode)
+  takes the generic entry by hand: command `npx`, args `["-y", "wazap-mcp"]`,
+  over stdio, in that client's own MCP config. A client that reaches a running
+  server by URL uses `https://your-host/mcp` and signs in with OAuth. The
+  entries `connect` already wrote keep working. For OpenCode's skills,
+  `wazap skills install codex` copies them to `~/.agents/skills`, which it
+  reads too.
+- **The Gemini extension**: `gemini extensions uninstall wazap`, then
+  `npx wazap-mcp connect gemini`.
+- **Grok Bot, or any agent on a static header**: give it a URL instead.
+  `wazap service install`, then `wazap expose`, prints it, and the agent signs
+  in on the consent page. Code of your own keeps its tokens.
+- **`WAZAP_TRANSPORT=http`**: run `wazap serve --http`. A supervisor or a
+  container that relied on the variable alone now starts over stdio.
+  `wazap service install`, `deploy/wazap.service` and the Docker image already
+  pass `--http`.
+- **`WAZAP_PERSIST_HISTORY=0`**: messages are now kept in
+  `accounts/<id>/wazap.sqlite`. To keep nothing from an account, remove it with
+  `wazap account remove <id>`; `WAZAP_RETENTION=1` still expires disappearing
+  messages locally.
+- **`WAZAP_RATE_LIMIT`**: set `rate_limit` (writes a minute, `0` for none) on
+  the account in `accounts.json`.
+- **Silence the warnings** by deleting the retired lines from `.env` or the
+  environment.
+
 ## 0.23.1
 ### Fixed
 
