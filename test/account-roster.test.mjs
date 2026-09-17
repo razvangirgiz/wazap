@@ -6,7 +6,9 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import fs from "node:fs";
+import { syncBuiltinESMExports } from "node:module";
 import { join } from "node:path";
 
 import { AccountHub } from "../dist/account-hub.js";
@@ -432,20 +434,34 @@ test("a logout binds the account database to the number before its credentials g
   db.close();
 });
 
-test("a logout whose clear step throws propagates the error and leaves the account served by a live service", { skip: process.getuid?.() === 0 ? "root deletes from a read-only folder" : false }, async (t) => {
+test("a logout whose clear step throws propagates the error and leaves the account served by a live service", async (t) => {
   const { config, hub, work } = twoAccountHub(t, { linkedWork: true });
   unlinkSockets(t);
   const storage = accountPaths(config.dataDir, "work");
-  // A read-only folder inside the credentials: the credentials delete throws.
-  const locked = join(storage.authDir, "locked");
+  // The credentials delete throws once the service stopped. It is simulated at
+  // fs.rmSync rather than with a read-only folder: whether a recursive delete
+  // fails there, and after which entries, depends on the platform and on who
+  // runs the tests (Linux walks to the folder before creds.json, macOS after
+  // it, and a container user may be allowed to delete from it).
+  const realRmSync = fs.rmSync;
+  const restore = () => {
+    fs.rmSync = realRmSync;
+    syncBuiltinESMExports();
+  };
+  t.after(restore);
   afterStop(work, () => {
-    mkdirSync(locked, { recursive: true });
-    writeFileSync(join(locked, "blocker"), "");
-    chmodSync(locked, 0o500);
+    fs.rmSync = (path, options) => {
+      if (String(path) === storage.authDir) {
+        // A partial delete: the credentials are gone, the rest of the folder is not.
+        realRmSync(join(storage.authDir, "creds.json"), { force: true });
+        throw Object.assign(new Error(`EACCES: permission denied, rm '${path}'`), { code: "EACCES" });
+      }
+      return realRmSync(path, options);
+    };
+    syncBuiltinESMExports();
   });
-  t.after(() => chmodSync(locked, 0o700));
-  // Node 22 reports the read-only folder as EACCES; Node 24's recursive delete as ENOTEMPTY.
-  await assert.rejects(hub.logout("work"), (err) => ["EACCES", "EPERM", "ENOTEMPTY"].includes(err.code));
+  await assert.rejects(hub.logout("work"), (err) => err.code === "EACCES");
+  restore();
   assert.equal(work.stopped, true);
   await assertServedAgain(hub, "work", work);
 });
