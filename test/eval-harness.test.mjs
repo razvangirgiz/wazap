@@ -550,6 +550,10 @@ describe("evaluation harness", () => {
     assert.equal(verdict("Am cerut și mesajele mai vechi din Bloc 12, dar telefonul n-a trimis niciunul — nu înseamnă că nu există istoric anterior, doar că nu a fost primit acum."), true);
     assert.equal(verdict("Telefonul nu a răspuns la cererea de istoric; asta nu spune că nu mai există mesaje mai vechi."), true);
     assert.equal(verdict("Nu e sigur că nu mai există mesaje mai vechi: telefonul nu le-a trimis în 5 secunde."), true);
+    // The same denial in the words the gate's third run used.
+    assert.equal(verdict("S-ar putea să existe istoric mai vechi pe care nu-l am acum (nu pot confirma că nu există deloc)."), true);
+    assert.equal(verdict("Telefonul nu a trimis nimic: nu știu dacă nu mai există mesaje mai vechi."), true);
+    assert.equal(verdict("Nu spun că nu mai există mesaje mai vechi, doar că telefonul nu le-a trimis."), true);
     assert.equal(verdict("Nu mai există mesaje mai vechi în Bloc 12."), false);
     assert.equal(verdict("Astea sunt toate: nu au fost alte mesaje înainte de 12:32."), false);
     assert.equal(verdict("There are no older messages in this chat."), false);
