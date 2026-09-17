@@ -223,7 +223,7 @@ async function finish() {
 
 function score() {
   const session = readSession();
-  const summary = scoreRun(session.run_dir, { toolMap: loadToolMap("0.23") });
+  const summary = scoreRun(session.run_dir, { toolMap: loadToolMap("1.0") });
   writeFileSync(join(session.run_dir, "summary.json"), `${JSON.stringify(summary, null, 2)}\n`);
   process.stdout.write(`${renderSummary(summary)}\nsummary: ${join(session.run_dir, "summary.json")}\n`);
 }

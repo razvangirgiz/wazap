@@ -60,7 +60,7 @@ For every turn:
    ora României."), because ChatGPT has no other way to know the fictional time.
 3. Answer ChatGPT's confirmation dialogs by this rule:
    - never tick "remember" for the conversation;
-   - approve reads and drafts (`send_message`, `search_messages`, …);
+   - approve reads and drafts (`send_message`, `search`, …);
    - approve `confirm_send`, `manage_group`, `react_to_message` or any other
      immediate write **only** when the script's user has already said yes to
      that exact action in an earlier turn; otherwise **refuse** it. A refused

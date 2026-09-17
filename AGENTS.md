@@ -79,7 +79,8 @@ maps to tool names per version.
   Costs real subscription usage: `--max-budget-usd` per attempt, `--stop-at-usd`
   for the run. Never Fable.
 - `node scripts/eval/score.mjs <run-dir> [--compare <summary.json>] [--judge]`
-  rescores a run; the LLM judge is off by default and informative only.
+  rescores a run on the 1.0 map; a run recorded against 0.23.x takes
+  `--tool-map 0.23`. The LLM judge is off by default and informative only.
 - `eval/chatgpt-protocol.md` with `scripts/eval/manual.mjs` is the manual
   ChatGPT arm.
 

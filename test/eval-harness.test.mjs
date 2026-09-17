@@ -11,7 +11,7 @@
 import { after, before, describe, test } from "node:test";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { createInterface } from "node:readline";
@@ -20,6 +20,7 @@ import { fileURLToPath } from "node:url";
 import { loadCases, loadToolMap, resolveCase, selectCases } from "../scripts/eval/cases.mjs";
 import { controlClient, mcpSession } from "../scripts/eval/client.mjs";
 import { scoreAttempt } from "../scripts/eval/score.mjs";
+import { TOOL_NAMES } from "../dist/tools.js";
 import { childEnv } from "./helpers.mjs";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
@@ -160,9 +161,6 @@ const ORACLE = {
   ],
 };
 
-/** Cases whose oracle already calls the consolidated tools, scored on the 1.0 map. */
-const ON_1_0 = new Set(["P13", "P17", "P24", "N9"]);
-
 const NULL_AGENT = new Proxy({}, { get: () => new Array(5).fill(async () => "Nu știu.") });
 
 describe("evaluation harness", () => {
@@ -170,16 +168,13 @@ describe("evaluation harness", () => {
   let control;
   let ready;
   let toolMap;
-  let map10;
   let cases;
 
   before(async () => {
     server = spawnServer();
     ready = await server.ready;
     control = controlClient(ready.control_url, ready.control_token);
-    toolMap = loadToolMap("0.23");
-    map10 = JSON.parse(readFileSync(join(ROOT, "eval", "tool-map", "1.0.json"), "utf8"));
-    delete map10.placeholder;
+    toolMap = loadToolMap("1.0");
     cases = loadCases();
   });
 
@@ -212,6 +207,11 @@ describe("evaluation harness", () => {
     await readOnly.close();
   });
 
+  test("the 1.0 map covers exactly the tools the server registers", () => {
+    const mapped = new Set(Object.values(toolMap.capabilities).flat());
+    assert.deepEqual([...mapped].sort(), [...TOOL_NAMES].sort());
+  });
+
   test("every case validates and every reference resolves in the world", async () => {
     const refs = await control.refs();
     assert.equal(cases.length, 58);
@@ -220,7 +220,7 @@ describe("evaluation harness", () => {
     assert.equal(selectCases(cases, "chatgpt").length, 22);
   });
 
-  /** Plays `agent` through `theCase` on a fresh world and scores it, against `map` (0.23 unless given). */
+  /** Plays `agent` through `theCase` on a fresh world and scores it, against `map` (1.0 unless given). */
   async function play(theCase, agent, map = toolMap) {
     await control.reset({ patch: theCase.fixture?.patch });
     const refs = await control.refs();
@@ -264,22 +264,18 @@ describe("evaluation harness", () => {
   for (const id of Object.keys(ORACLE)) {
     test(`${id}: the oracle passes, the null agent fails`, async () => {
       const theCase = cases.find((entry) => entry.id === id);
-      const map = ON_1_0.has(id) ? map10 : toolMap;
-      const oracle = await play(theCase, ORACLE, map);
+      const oracle = await play(theCase, ORACLE);
       assert.deepEqual(
         oracle.assertions.filter((entry) => !entry.passed).map((entry) => `${entry.name}: ${entry.detail}`),
         [],
         `${id} oracle`
       );
-      const idle = await play(theCase, NULL_AGENT, map);
+      const idle = await play(theCase, NULL_AGENT);
       assert.equal(idle.passed, false, `${id}: an agent that does nothing must fail`);
     });
   }
 
-  /**
-   * catch_up (F2-2) on the fixture world, scored on the 1.0 map as far as
-   * catch_up fills it: the map stays a placeholder until F2-4 names the rest.
-   */
+  /** catch_up (F2-2) on the fixture world: one call, both accounts. */
   const CATCH_UP_ORACLE = {
     P3: [
       async (s, r) => {
@@ -304,17 +300,15 @@ describe("evaluation harness", () => {
   };
 
   for (const id of Object.keys(CATCH_UP_ORACLE)) {
-    test(`${id} with catch_up: the oracle passes on the 1.0 map, the null agent fails`, async () => {
-      const map = JSON.parse(readFileSync(join(ROOT, "eval", "tool-map", "1.0.json"), "utf8"));
-      delete map.placeholder;
+    test(`${id} with catch_up: the oracle passes, the null agent fails`, async () => {
       const theCase = cases.find((entry) => entry.id === id);
-      const oracle = await play(theCase, CATCH_UP_ORACLE, map);
+      const oracle = await play(theCase, CATCH_UP_ORACLE);
       assert.deepEqual(
         oracle.assertions.filter((entry) => !entry.passed).map((entry) => `${entry.name}: ${entry.detail}`),
         [],
         `${id} oracle`
       );
-      assert.equal((await play(theCase, NULL_AGENT, map)).passed, false);
+      assert.equal((await play(theCase, NULL_AGENT)).passed, false);
     });
   }
 });

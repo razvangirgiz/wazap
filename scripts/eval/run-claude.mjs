@@ -5,7 +5,7 @@
  *
  *   node scripts/eval/run-claude.mjs --cases baseline-0.23 [--reps 1] [--model sonnet]
  *     [--mode assistant|claude-code] [--parallel 2] [--max-budget-usd 0.8] [--stop-at-usd 6]
- *     [--max-turns 12] [--effort <level>] [--out ~/.wazap-eval/runs] [--tool-map 0.23]
+ *     [--max-turns 12] [--effort <level>] [--out ~/.wazap-eval/runs] [--tool-map 1.0]
  *     [--save eval/results/<version>/<date>-<model>-<mode>.summary.json] [--compare <summary.json>]
  *
  * `--cases` takes "all", a subset of eval/subsets.json, "critical", or ids and
@@ -51,7 +51,7 @@ function parseArgs(argv) {
     stopAtUsd: 6,
     maxTurns: 12,
     out: join(homedir(), ".wazap-eval", "runs"),
-    toolMap: "0.23",
+    toolMap: "1.0",
     turnTimeoutMs: 300_000,
   };
   const numbers = new Set(["reps", "parallel", "maxBudgetUsd", "stopAtUsd", "maxTurns", "turnTimeoutMs"]);

@@ -40,7 +40,7 @@
     {
       "id": "no_content_gives_fix",
       "rubric": "It does not guess what the voice note says, and passes on how to turn transcription on.",
-      "truth": "Dan's 21-second voice note from 12:20 has no transcript; transcribe_audio answers TRANSCRIBE_UNAVAILABLE with the fix `wazap config transcribe local`."
+      "truth": "Dan's 21-second voice note from 12:20 has no transcript; get_media answers transcript_unavailable with the fix `wazap config transcribe local`."
     }
   ]
 }

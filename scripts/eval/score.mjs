@@ -2,7 +2,8 @@
 /**
  * Scoring for the assistant evaluation.
  *
- *   node scripts/eval/score.mjs <run-dir> [--tool-map 0.23] [--judge] [--judge-model opus]
+ *   node scripts/eval/score.mjs <run-dir> [--tool-map 1.0] [--judge] [--judge-model opus]
+ *   (a run recorded against 0.23.x scores with --tool-map 0.23)
  *        [--compare <previous.summary.json>] [--save <path.summary.json>]
  *
  * An attempt directory (written by run-claude.mjs or manual.mjs) holds
@@ -467,7 +468,7 @@ export function judgeAttempt({ theCase, record, model = "opus" }) {
 // A run.
 // ---------------------------------------------------------------------------
 
-export function scoreRun(runDir, { toolMap = loadToolMap("0.23"), cases = loadCases(), judge = false, judgeModel = "opus" } = {}) {
+export function scoreRun(runDir, { toolMap = loadToolMap("1.0"), cases = loadCases(), judge = false, judgeModel = "opus" } = {}) {
   const byId = new Map(cases.map((theCase) => [theCase.id, theCase]));
   const meta = existsSync(join(runDir, "run.json")) ? JSON.parse(readFileSync(join(runDir, "run.json"), "utf8")) : {};
   const perCase = new Map();
@@ -574,12 +575,12 @@ export function renderSummary(summary) {
 async function main() {
   const args = process.argv.slice(2);
   const runDir = args.find((arg) => !arg.startsWith("--") && !args[args.indexOf(arg) - 1]?.startsWith("--"));
-  if (!runDir) throw new Error("usage: score.mjs <run-dir> [--tool-map 0.23] [--judge] [--compare prev.json] [--save out.json]");
+  if (!runDir) throw new Error("usage: score.mjs <run-dir> [--tool-map 1.0] [--judge] [--compare prev.json] [--save out.json]");
   const option = (name) => {
     const index = args.indexOf(name);
     return index === -1 ? undefined : args[index + 1];
   };
-  const toolMap = loadToolMap(option("--tool-map") ?? "0.23");
+  const toolMap = loadToolMap(option("--tool-map") ?? "1.0");
   const summary = scoreRun(resolve(runDir), { toolMap, judge: args.includes("--judge"), judgeModel: option("--judge-model") ?? "opus" });
   const compare = option("--compare");
   if (compare) summary.comparison = compareSummaries(summary, JSON.parse(readFileSync(compare, "utf8")));
