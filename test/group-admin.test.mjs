@@ -422,7 +422,7 @@ test("the manage_group schema accepts every new action and carries value and par
   assert.match(meta.description, /shows to all members at once/);
   assert.match(server.tools.get("get_group_info").meta.description, /disappearing_seconds/);
   assert.match(server.tools.get("delete_message").meta.description, /admin/);
-  const guide = (await server.tools.get("learn").handler({})).structuredContent.guide;
+  const guide = (await server.tools.get("learn").handler({})).content[0].text;
   assert.match(guide, /list_join_requests/);
   assert.match(guide, /delete_message takes someone else's message/);
   await svc.stop();

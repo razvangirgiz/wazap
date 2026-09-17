@@ -36,6 +36,8 @@ export function stringArg(args: Record<string, unknown>, key: string): string | 
 }
 
 export function attachAccountId(result: ToolPayload, accountId: string): ToolPayload {
+  // A text-only answer (learn's guide) stays text only.
+  if (result.structuredContent === undefined && !result.isError) return result;
   const structured = result.structuredContent ?? {};
   // A read that had to walk the bindings stamps the account that answered, or
   // null when it answered for several (catch_up); anything else reports the one

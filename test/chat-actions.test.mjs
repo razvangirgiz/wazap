@@ -734,7 +734,7 @@ test("the manage_chat schema takes every new action, message_id and pin_hours, a
   for (const action of ["pin_message", "star_message", "clear", "delete", "block"]) {
     assert.match(meta.description, new RegExp(action));
   }
-  const guide = (await server.tools.get("learn").handler({})).structuredContent.guide;
+  const guide = (await server.tools.get("learn").handler({})).content[0].text;
   assert.match(guide, /manage_group join/);
   assert.match(guide, /for_everyone: false/);
   assert.match(guide, /mentions: \[\{id, name\}\]/);

@@ -275,13 +275,15 @@ test("get_status on a remote write session tells the agent nothing about bearer 
   assert.equal(result.structuredContent.hint, undefined);
 });
 
-test("learn documents every error code an agent can receive", async () => {
+test("learn documents every error code an agent can receive, within 2,000 tokens and as text only", async () => {
   const server = fakeServer();
   registerTools(server, asToolSource({}), { allowWrite: true });
-  const guide = (await server.tools.get("learn").handler({})).structuredContent.guide;
+  const guide = (await server.tools.get("learn").handler({})).content[0].text;
   for (const code of Object.keys(ERROR_GUIDE)) {
     assert.ok(guide.includes(code), `learn must tell the agent what to do about ${code}`);
   }
+  assert.ok(Buffer.byteLength(guide) / 4 <= 2000, `${Math.round(Buffer.byteLength(guide) / 4)} tokens`);
+  assert.equal((await server.tools.get("learn").handler({})).structuredContent, undefined, "the guide is not repeated as structured content");
 });
 
 test("send_message drafts one kind at a time and refuses what does not belong to it", async () => {

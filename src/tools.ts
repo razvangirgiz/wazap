@@ -57,12 +57,8 @@ import type {
 
 export { anyAccountAllowsWrites } from "./account-resolve.js";
 
-const ACCOUNT_ID = z
-  .string()
-  .min(1)
-  .describe(
-    "Registry account id (default, work, …). Omit to resolve from chat_id or message_id, or the default account."
-  );
+/** Explained once, in the server's instructions and in learn; each tool only names it. */
+const ACCOUNT_ID = z.string().min(1).describe("Account id");
 
 /** A message in an answer: the keys every one has, and the rest as they come (learn describes them). */
 const MESSAGE_OUT = z.object({ message_id: z.string(), chat_id: z.string(), text: z.string(), timestamp: z.string() }).passthrough();
@@ -280,186 +276,79 @@ function scanCapNote(result: SearchAnswer): string | null {
   return `The search stopped at its scan limit; messages before ${result.scanCapped.searchedBackTo.slice(0, 10)} were not searched — narrow it with chat_id, since/until or a longer query.`;
 }
 
-const chatId = z
-  .string()
-  .min(1)
-  .describe(
-    'Chat id as returned by another tool ("<digits>@s.whatsapp.net" or "<id>@g.us"), or a phone number in international format'
-  );
+const chatId = z.string().min(1).describe("Chat id, or a phone number");
 
-const messageId = z
-  .string()
-  .min(5)
-  .describe(
-    'Message id from read_messages / search / get_message, e.g. "false_4072...@s.whatsapp.net_3EB0..."'
-  );
+const messageId = z.string().min(5);
 
 const messageTypes = z
   .array(z.enum([...MESSAGE_TYPES]))
   .optional()
-  .describe(
-    'Keep only these message types; omit for every type. The limit counts matching messages, so ["call"] returns that many calls, not that many messages of which some are calls.'
-  );
+  .describe('Only these types; limit counts them, so ["call"] gives that many calls');
 
 const includePreviews = z
   .boolean()
   .default(false)
-  .describe(
-    "Attach a small JPEG of each photo, newest first, up to 12 per call, so you can see what was sent: the preview WhatsApp shipped when there is one, otherwise the photo is downloaded once and shrunk on the machine running wazap"
-  );
+  .describe("Attach a small image of each photo, up to 12");
 
 /** Previews are 5-15 KB each; a dozen keep one answer small and the first call under the client's timeout. */
 const MAX_PREVIEWS = 12;
 
-const GUIDE = `# wazap — WhatsApp for your AI agent
+const GUIDE = `# wazap: WhatsApp for your AI agent
 
-Read/write access to the user's linked WhatsApp account: chats, messages, media,
-contacts and groups. Call get_status first if anything looks wrong, and
-link_account when it says no account is linked yet.
+The user's own WhatsApp account: chats, messages, media, contacts, groups.
+Call get_status when anything fails, and link_account when it says not_linked.
 
-## Identifiers
-- chat_id — individual: \`<digits>@s.whatsapp.net\`; group: \`<id>@g.us\`. A phone
-  number in international format (+15550100 or 15550100) also works. Pass
-  ids back exactly as a tool returned them.
-- message_id — the full id from read_messages / search. Needed for
-  get_message, get_media, react_to_message, edit_message, send_message's forward,
-  delete_message, manage_chat's pin_message / unpin_message / star_message /
-  unstar_message, manage_group join on an invite message, and the reply_to of
-  send_message.
-- account_id — registry slug (\`default\`, \`work\`). Optional on every tool.
-  Several accounts: get_status lists them; pass account_id. A send
-  to a chat no account knows, with two or more accounts, fails
-  AMBIGUOUS_ACCOUNT; it never falls back to the default.
+## Ids and accounts
+- chat_id: \`<digits>@s.whatsapp.net\` for a person, \`<id>@g.us\` for a group, or
+  a phone number in international format. Pass ids back exactly as given.
+- message_id: the full id from read_messages, search or catch_up.
+- account_id: the account a call is about (\`default\`, \`work\`); get_status
+  lists them. Optional everywhere. Without it, a chat or message only one account
+  knows picks that account; catch_up and find_contact cover every account; other
+  reads use the default; a write to a chat no account knows fails AMBIGUOUS_ACCOUNT.
 
 ## Workflows
-- Several accounts: call get_status first; its accounts lists them. Pass account_id on the tools
-  that follow. Without it, a chat or message that only one account knows
-  selects that account; a chat none of them know uses the default for reads
-  and fails AMBIGUOUS_ACCOUNT for writes. link_account needs an account that
-  already exists (\`wazap account add\`).
-- Not linked: get_status says not_linked, logged_out, session_corrupt or
-  auth_failure → link_account(phone), show the user the code, then poll
-  get_status every 10 s until it says connected.
-- Catch up: catch_up() says what the user missed since this client's last
-  catch-up, every account at once, within a token budget: who waits on a reply,
-  mentions and polls, missed calls, people, groups condensed, stories. Pass
-  more.cursor back for the rest; read_messages gives a chat in full.
-- Who is waiting on the user: catch_up's waiting. It lists only chats whose last
-  word is theirs and asks for something, with the ask quoted. When the user
-  says they dealt with one outside WhatsApp, remember(chat_id, handled: true) takes it
-  off the list until they write again.
-- Who is who: remember(chat_id, note) keeps what the user says about a person,
-  locally; tags and fields ("role": "contabil") file them so find_contact
-  resolves "the accountant". All of it stays on this machine.
-- Stories: read_messages(chat_id: "status") lists the status updates received in the last day, by
-  author; they show nowhere else.
-- Stay on the line: wait_for_messages blocks up to 55 s until something arrives,
-  and returns a cursor; call it again with that cursor to miss nothing between
-  calls. Pass addressed_to_me to wake only for direct messages, @-mentions and
-  replies to the user.
-- Go back further: read_messages(chat_id, before: <oldest message_id you have>).
-- Find a person: find_contact(name[, qualifier]) before drafting to anyone the
-  user names — "mama", "Ana de la contabilitate", "Mișu". resolved gives the
-  chat_id and, in a write session, how the user writes to them; ambiguous and
-  not_found mean ask the user, never guess. Names come from the phone's own
-  address book; find_contact asks WhatsApp for it once when it is empty. A
-  word from a tag or a detail also finds them ("contabil" → role: contabil),
-  and find_contact({tag: "client"}) lists everyone filed under a tag.
-- Find something said: search(query[, chat_id]) matches meaning and words at
-  once — a paraphrase or another language still hits; match: "words" keeps
-  only messages holding the words. It reaches every message the account keeps.
-- Send: send_message (text, media, a poll, a location or a forward)
-  draft only. They return a draft_id and a preview. Show the preview to the
-  user; after they say yes, call confirm_send({ draft_id }). That is the only
-  call that reaches WhatsApp. A draft lasts 15 minutes. A text draft may carry
-  style_check.warnings (language, diacritics, tu/dumneavoastră, length against
-  how the user writes in that chat): unless the user dictated the words, fix
-  them and draft again before showing it.
-- Mention someone: pass mention_ids to send_message and write @<number> in the
-  text where the mention belongs (the digits of their id). A mention the text
-  lacks gets its @<number> added at the end, and the preview shows the result.
-- Send rules: an account may restrict who it messages (wazap config send) —
-  an allowlist limits sends to its entries, a deny list refuses its own. A
-  refused recipient fails SEND_BLOCKED at draft time and again at confirm_send;
-  do not retry or route around it, tell the user. A draft flagged
-  unnamed_recipient goes to someone outside the address book: the name shown
-  is their public profile name, not a saved contact — say so to the user.
-- Group photo: manage_group set_picture / remove_picture changes a group's. Show the image
-  and wait for a yes first; these calls hit WhatsApp immediately.
-- Media: a message with has_media=true → get_media(message_id): a voice note comes back as its transcript, a photo as an image.
-- Groups: get_group_info before manage_group; most actions need admin rights.
-  get_group_info also says who may edit the info (info_locked), who may add
-  members (member_add_mode), whether joins need approval (join_approval) and
-  how long messages last (disappearing_seconds, 0 when off). As an admin,
-  manage_group list_join_requests shows who is waiting, approve_join_requests /
-  reject_join_requests decide, and set_announcement_only, set_info_locked,
-  set_add_mode, set_join_approval and set_disappearing change the settings.
-  Every change is visible to all members at once: say what will change and
-  wait for an explicit yes. delete_message takes someone else's message for
-  everyone only in a group where the linked account is an admin.
-- Join a group: manage_group join with the invite link, or with the message_id of an
-  "invite" message, previews the group (name, description, members, whether an
-  admin must approve). Show it; after a yes, call it again with confirm: true.
-- Tidy a chat: manage_chat pin_message / unpin_message pins a message for
-  everyone in the chat (pin_hours 24, 168 or 720), star_message / unstar_message
-  stars it for the account only, clear empties the chat and delete removes it
-  for the linked account only, and block / unblock take a person's chat. They
-  hit WhatsApp at once: say what will happen and wait for a yes.
-- Delete a message: delete_message with for_everyone: true retracts it for
-  everyone; for_everyone: false removes it from the linked account's devices
-  only, anyone's message at any age, and nobody else sees a change.
+- Catch up: catch_up() gives who waits on a reply, mentions, missed calls,
+  people, groups and stories, every account at once; more.cursor brings the rest.
+  An ask the user handled elsewhere: remember(chat_id, handled: true).
+- One chat: read_messages(chat_id), older with before; chat_id "status" reads
+  stories. To stay on the line, wait_for_messages with the cursor it returns.
+- Find something said: search(query) matches meaning and words; match: "words"
+  for an exact string. get_message shows one message in full; get_media gives its
+  file, a photo as an image, a voice note's transcript.
+- Who someone is: find_contact(name) before drafting ("mama", "Ana de la
+  contabilitate"). resolved gives the chat_id; ambiguous or not_found: ask the
+  user, never guess. remember keeps what the user says about a person (note,
+  tags, fields such as relatie), on this machine; find_contact(tag) lists a tag.
+- Send: send_message drafts text, media, a poll, a location or a forward, and
+  sends nothing. Show the preview; after the user's yes, confirm_send(draft_id)
+  is the only call that sends. A draft lasts 15 minutes. Fix style_check.warnings
+  before showing a draft the user did not dictate. To mention someone, pass
+  mention_ids and write @<number> in the text. unnamed_recipient: the name shown
+  is not a saved contact; say so.
+- At once, no draft: react_to_message, edit_message, delete_message, manage_chat,
+  manage_group. Say what will change and wait for a yes. delete_message with
+  for_everyone: false removes a message for the linked account only;
+  delete_message takes someone else's message for everyone only in a group where
+  the account is admin. manage_group join previews an invite until confirm: true.
+  Most group actions (settings, list_join_requests, set_picture) need admin:
+  get_group_info first.
 
 ## Message shape
-Every message has non-empty \`text\`: media and system messages carry a
-placeholder like "[image] caption", "[voice message]", "[deleted]", "[poll] question".
-A sender whose name WhatsApp has never given us reads as their phone number, or
-as "unknown (lid …1234)" when even that is unknown — never as raw LID digits,
-which look like a phone number and are not one.
-WhatsApp's own notices (device linking, group membership, encryption) have
-\`type: "system"\` and are left out of catch_up; read_messages shows them, and you can pass
-include_system: true.
-A group notice says who made which change: "[Medeea added Ana (40723124956)]",
-with \`system: {action, actor, targets, value}\` naming the same people. Report
-a membership change from there; never pair a new member with whoever posted
-nearby. A pin reads as "[Medeea pinned a message]", and \`system.value\` is the
-message_id of the message pinned.
-An event has \`type: "event"\` and reads as "[event] Botez · 2026-09-20T12:00:00+03:00 ·
-Biserica" with its description after it, or "[canceled event] …". A group invite
-has \`type: "invite"\` and reads as "[group invite] Familia"; the invite code is
-never shown, and manage_group join takes the message_id instead.
-A message that @-mentions people carries \`mentions: [{id, name}]\`, each person
-once; read_messages tags it "mentions Ana, Dan".
-Reactions ride on the message they answer: read_messages tags them as
-"❤️×2 😍", and get_message lists each one with who left it.
-Votes ride on their poll the same way: a poll carries
-\`poll: {question, options: [{name, votes, voters}], voters}\`, read_messages
-tags it "3 votes" and get_message lists each option as "Da (2): Ana, Dan". An
-event carries \`event_responses: {going, maybe, not_going}\`, tagged "2 going".
-The votes are the ones that reached this device. A vote whose poll is not
-loaded reads as "[vote on a poll that is not loaded]" until the poll arrives.
-The user's own messages carry \`delivery: {status, read_by, delivered_to}\`.
-\`status\` is "sent" (WhatsApp's server has it), "delivered" (it reached the
-other phone), "read", "played" (a voice note or video was played), "pending"
-(not yet on the server) or "error" (it failed to send). In a group it is the
-furthest any one member got, and \`read_by\` / \`delivered_to\` name each member
-with the time. read_messages tags it "read", or "read by 3" in a group, and
-get_message lists who. Only receipts that reached this device count: with read
-receipts off on either side a message stops at "delivered", a large group may
-send no receipts at all, and a message WhatsApp said nothing about has no
-\`delivery\`.
-A voice note reads as "[voice message · 0:42]"; once transcribed, what was said
-follows the placeholder in quotes and is carried bare in \`transcript\`.
-Call get_media(message_id) on a voice note that has no transcript yet.
-A WhatsApp call is a message with \`type: "call"\` carrying
-\`call: {kind, direction, outcome, duration_seconds}\`, reading as
-"[voice call · 6 min]" or "[missed voice call]".
-read_messages takes \`types\` to narrow to a subset of
-these types, e.g. \`types: ["call"]\` for the call log of a chat.
-\`timestamp\` is ISO 8601 with the machine's UTC offset, \`age\` is human-readable.
+text is never empty: media and notices read as "[image] caption", "[voice
+message · 0:42]", "[deleted]", "[poll] question". A transcribed voice note
+carries transcript. sender: {id, name, phone, is_saved, contact_name, pushname,
+name_source}; with is_saved false the name is self-given. An unknown sender reads
+"unknown (lid …1234)", never lid digits. mentions: [{id, name}]; reactions and
+votes ride on their message, get_message says who. The user's own messages carry
+delivery: {status, read_by, delivered_to}, as far as receipts reached this device.
+A call has type "call" and call: {kind, direction, outcome, duration_seconds}. A
+notice has type "system" and system: {action, actor, targets, value}: report a
+membership change from it, never from who posted nearby. timestamp is ISO 8601.
 
 ## Errors
-Every failure returns \`{ error, message, fix }\`. What to do per code:
-${(Object.keys(ERROR_GUIDE) as Array<keyof typeof ERROR_GUIDE>).map((code) => `- **${code}** — ${ERROR_GUIDE[code]}`).join("\n")}
+A failure is { error, message, fix }. Per code:
+${(Object.keys(ERROR_GUIDE) as Array<keyof typeof ERROR_GUIDE>).map((code) => `- ${code}: ${ERROR_GUIDE[code]}`).join("\n")}
 `;
 
 // ---- catch_up (F2-2) --------------------------------------------------------
@@ -467,14 +356,7 @@ ${(Object.keys(ERROR_GUIDE) as Array<keyof typeof ERROR_GUIDE>).map((code) => `-
 const CATCH_UP: ToolDef = tool({
   name: "catch_up",
   title: "Catch up on what the user missed",
-  description: `What the user missed on WhatsApp, in one call, within budget_tokens: who is waiting on
-a reply (with the ask quoted), mentions, replies and open polls, missed calls, people who
-wrote, groups one line each, stories. "Missed" starts after the user's own last word in a
-chat and after what their phone already read. Without account_id it covers every linked
-account, each labelled. By default it reads since this client's last complete catch-up and
-then moves that mark, before the answer is sent: an answer lost on the way comes back with
-since: "previous", which repeats it; hours never moves the mark. When \`more\` is set, call
-again with more.cursor within 15 minutes. It marks nothing read on WhatsApp.`,
+  description: `What the user missed, every account at once, within budget_tokens: who waits on a reply, mentions and polls, missed calls, people, groups, stories. It moves this client's mark before answering: a lost answer comes back with since: "previous". more.cursor gives the rest. It marks nothing read.`,
   schema: CATCHUP_INPUT,
   outputSchema: CATCHUP_OUTPUT,
   write: false,
@@ -486,12 +368,11 @@ const TOOLS: readonly ToolDef[] = [
   tool({
     name: "learn",
     title: "Learn how to use the WhatsApp tools",
-    description: `Read this FIRST, before any other WhatsApp tool. Returns the guide to the tools,
-the id formats, the recommended workflows, the message shape and every error
-code with what to do about it. Takes no arguments and never touches WhatsApp.`,
+    description: `The guide to these tools: ids, account_id with several accounts, the workflows, the message shape and what to do about each error code. Read it once, before the other tools; it never touches WhatsApp.`,
     schema: {},
     write: false,
-    handler: async () => ok(GUIDE, { guide: GUIDE }),
+    // Prose, once: the guide is not repeated as structured content.
+    handler: async () => ({ content: [{ type: "text", text: GUIDE }] }),
   }),
 
   tool({
@@ -506,16 +387,8 @@ code with what to do about it. Takes no arguments and never touches WhatsApp.`,
   tool({
     name: "link_account",
     title: "Link a WhatsApp account",
-    description: `Pair this wazap with the user's WhatsApp when get_status says not_linked, logged_out,
-session_corrupt or auth_failure. Ask the user for their phone number in international format,
-call this, and show them the code it returns with these exact steps:
-WhatsApp → Settings → Linked devices → Link a device → Link with phone number instead → enter the code.
-Then call get_status every 10 seconds until it says connected (up to 3 minutes). The code expires;
-call this again for a fresh one if get_status goes back to not_linked with an error.
-The account must already exist (\`wazap account add\`). Pass account_id when
-more than one is configured. An unknown id is ACCOUNT_NOT_FOUND.
-Never call this when the account is already linked.`,
-    schema: { phone: z.string().describe("International format, e.g. +15550100") },
+    description: `Pair wazap with the user's WhatsApp when get_status says not_linked, logged_out, session_corrupt or auth_failure. Show the user the code it returns: WhatsApp → Settings → Linked devices → Link a device → Link with phone number instead. Then poll get_status every 10 s until connected.`,
+    schema: { phone: z.string().describe("e.g. +15550100") },
     write: false,
     rate: 2,
     handler: async ({ phone }, { wa }) => {
@@ -537,17 +410,10 @@ Never call this when the account is already linked.`,
   tool({
     name: "list_chats",
     title: "List WhatsApp chats",
-    description: `List conversations, most recently active first. Use it to discover the chat_id
-values the other tools need.
-
-Each chat has: chat_id, name, type, unread_count, last_message {text, timestamp,
-from_me}, archived, pinned, muted_until, and left (groups you are no longer in).`,
+    description: `Conversations, most recently active first: chat_id, name, type, unread count, last message, and whether archived, pinned, muted or left. Use it to find a chat_id.`,
     schema: {
-      filter: z
-        .enum(["all", "unread", "groups", "individual", "archived"])
-        .default("all")
-        .describe('Which chats to list; "all" (default) excludes archived ones'),
-      limit: z.number().int().min(1).max(100).default(20).describe("Maximum number of chats (1-100)"),
+      filter: z.enum(["all", "unread", "groups", "individual", "archived"]).default("all").describe('"all" leaves out archived'),
+      limit: z.number().int().min(1).max(100).default(20),
     },
     outputSchema: LIST_CHATS_OUTPUT,
     write: false,
@@ -679,27 +545,12 @@ from_me}, archived, pinned, muted_until, and left (groups you are no longer in).
   tool({
     name: "wait_for_messages",
     title: "Wait for new WhatsApp messages",
-    description: `Block until a message arrives, then return it, or return empty when the timeout
-passes. This is how an agent stays on the line without polling: call it in a
-loop, and pass the cursor it returns into the next call so nothing that landed
-between two calls is missed. The first matching message starts a one-second
-settle so a burst comes back together.
-
-Only messages from other people are returned, never the user's own, and never
-WhatsApp's system notices. With addressed_to_me, only direct messages, group
-messages that @-mention the user, and replies to the user's own messages wake
-the wait; everything else in a group is ignored. A cursor from a previous run of
-wazap cannot be honoured: the wait then starts from now and says cursor_reset.
-
-The timeout is capped at 55 seconds because MCP clients give up at 60.`,
+    description: `Wait for messages from other people, up to timeout_seconds, and return them with a cursor: pass it to the next call so nothing that lands between calls is missed. addressed_to_me wakes only for direct messages, mentions and replies to the user. For agents that stay on the line.`,
     schema: {
-      timeout_seconds: z.number().int().min(1).max(55).default(30).describe("How long to wait (1-55 s)"),
-      chat_id: chatId.optional().describe("Only messages in this chat"),
-      addressed_to_me: z
-        .boolean()
-        .default(false)
-        .describe("Only direct messages, @-mentions of the user and replies to the user's messages"),
-      cursor: z.string().min(1).optional().describe("The cursor returned by the previous call"),
+      timeout_seconds: z.number().int().min(1).max(55).default(30),
+      chat_id: chatId.optional(),
+      addressed_to_me: z.boolean().default(false),
+      cursor: z.string().min(1).optional().describe("From the previous call"),
     },
     outputSchema: WAIT_OUTPUT,
     write: false,
@@ -811,32 +662,7 @@ The timeout is capped at 55 seconds because MCP clients give up at 60.`,
   tool({
     name: "get_message",
     title: "Get one WhatsApp message in full",
-    description: `The complete message behind a message_id, including the quoted message it
-replies to, each reaction with who left it, who chose each option of a poll or
-answered an event, and its media metadata. Use it after search
-or read_messages when you need the context around a single message.
-
-On the user's own messages, \`delivery.status\` says how far it got ("sent",
-"delivered", "read", "played", "pending" or "error"), and in a group
-\`read_by\` and \`delivered_to\` name who, with the time. It stops at "delivered"
-or is missing when read receipts are off on either side, and large groups may
-send none.
-
-The id also resolves in its raw form: \`false_<lid>@lid_<stanza>\` works even
-when the chat's number was never learned, and an id that names the same
-message under the lid or the paired number finds it either way. With several
-accounts linked and no \`account_id\`, an id the resolved account cannot find
-is tried on each of the others in turn before MESSAGE_NOT_FOUND comes back,
-and the answer's \`account_id\` names the one that had it; pass \`account_id\`
-to keep the lookup on one account.
-
-The \`sender\` carries the same identity fields as search: \`id\` (the
-canonical jid — a \`…@lid\` only while WhatsApp has never revealed the paired
-number), \`phone\` (the number, or null for an unresolved lid), \`is_saved\`
-(whether the sender is in the user's address book), \`contact_name\` (the name
-saved there, or null), \`pushname\` (the name the sender publishes, when that
-is the name \`name\` shows) and \`name_source\` ("contact", "pushname" or
-"none" — which of those \`name\` came from).`,
+    description: `One message in full: the message it quotes, each reaction with who left it, poll votes and event answers by person, its media, and on the user's own messages who it reached and who read it. Without account_id the id is looked for on every account.`,
     // account_id is named again here so the handler sees it typed: an explicit
     // id keeps the lookup on that one account instead of walking the bindings.
     schema: { message_id: messageId, account_id: ACCOUNT_ID.optional() },
@@ -886,16 +712,8 @@ is the name \`name\` shows) and \`name_source\` ("contact", "pushname" or
   tool({
     name: "get_group_info",
     title: "Get WhatsApp group info",
-    description: `Details of a group: name, description, owner, creation date, whether only admins
-may post, whether the linked account is an admin, and the participant list (up
-to 500; participant_count is always the true total). The invite link is included
-only when the linked account is an admin. The settings come too: info_locked
-(only admins edit the name, description and photo), member_add_mode ("admins"
-or "all"), join_approval, disappearing_seconds (0 when off), and community
-({is_community, parent_group_id}) when the group is a community or belongs to one.
-
-Call this before manage_group: most group actions need admin rights.`,
-    schema: { group_id: chatId.describe('Group chat id ("<id>@g.us")') },
+    description: `A group's name, description, owner and participants (up to 500), whether the account is admin, its settings (info_locked, member_add_mode, join_approval, disappearing_seconds), its community, and the invite link for an admin. Call it before manage_group.`,
+    schema: { group_id: chatId.describe("<id>@g.us") },
     outputSchema: GROUP_INFO_OUTPUT,
     write: false,
     handler: async ({ group_id }, { wa }) => {
@@ -1023,11 +841,10 @@ Call this before manage_group: most group actions need admin rights.`,
   tool({
     name: "edit_message",
     title: "Edit a WhatsApp message you sent",
-    description: `Replace the text of a message the linked account sent. WhatsApp only allows
-this within 15 minutes of sending; after that send a correction instead.`,
+    description: `Replace the text of a message the linked account sent. WhatsApp allows it for 15 minutes after sending; later, send a correction instead.`,
     schema: {
-      message_id: messageId.describe("A message the linked account sent"),
-      text: z.string().min(1).max(65536).describe("The replacement text"),
+      message_id: messageId,
+      text: z.string().min(1).max(65536),
     },
     outputSchema: EDIT_OUTPUT,
     write: true,
@@ -1040,10 +857,10 @@ this within 15 minutes of sending; after that send a correction instead.`,
   tool({
     name: "react_to_message",
     title: "React to a WhatsApp message",
-    description: "Add an emoji reaction to a message, or pass an empty string to remove your reaction.",
+    description: `React to a message with one emoji, or pass "" to take your reaction off.`,
     schema: {
       message_id: messageId,
-      emoji: z.string().max(8).describe('A single emoji such as "👍", or "" to remove your reaction'),
+      emoji: z.string().max(8),
     },
     outputSchema: REACT_OUTPUT,
     write: true,
@@ -1084,19 +901,10 @@ this within 15 minutes of sending; after that send a correction instead.`,
   tool({
     name: "delete_message",
     title: "Delete a WhatsApp message",
-    description: `Delete a message. DESTRUCTIVE — confirm with the user first. for_everyone is
-required, and picks one of two different deletes; tell the user which:
-  - for_everyone: true retracts it for everyone in the chat. Works on messages
-    the linked account sent, within 2 days of sending. In a group where the
-    linked account is an admin it also takes someone else's message, deleted
-    as an admin; anywhere else that is NOT_OWN_MESSAGE.
-  - for_everyone: false removes it from the linked account's own devices only:
-    anyone's message, at any age. Nobody else sees a change.`,
+    description: `Delete a message; confirm with the user first. for_everyone: true retracts it for everyone within 2 days: the account's own message, or anyone's in a group where it is admin. for_everyone: false removes any message from the linked account's devices only.`,
     schema: {
       message_id: messageId,
-      for_everyone: z
-        .boolean()
-        .describe("Required. true retracts it for everyone in the chat; false deletes it for the linked account only"),
+      for_everyone: z.boolean(),
     },
     outputSchema: DELETE_OUTPUT,
     write: true,
@@ -1110,20 +918,7 @@ required, and picks one of two different deletes; tell the user which:
   tool({
     name: "manage_chat",
     title: "Manage a WhatsApp chat",
-    description: `Change a chat, or a message in it. Actions:
-  - archive / unarchive, pin / unpin (the chat), mute / unmute (mute_hours
-    defaults to 8), mark_read (sends read receipts) / mark_unread
-  - pin_message / unpin_message — need message_id; pins it for everyone in the
-    chat, for pin_hours 24, 168 (default) or 720
-  - star_message / unstar_message — need message_id; the star is the linked
-    account's own
-  - clear — DESTRUCTIVE, empties the chat for the linked account only
-  - delete — DESTRUCTIVE, deletes the chat for the linked account only
-  - block / unblock — a person's chat only; a blocked person can no longer
-    message or call the account
-
-A message_id must belong to chat_id. Every action hits WhatsApp at once and
-there is no draft: say what will change and wait for a yes before calling it.`,
+    description: `Change a chat on WhatsApp at once, with no draft: archive, pin, mute, mark_read or mark_unread; pin_message (for everyone) or star_message on a message_id; clear or delete it for the linked account; block a person. Say what will change and wait for a yes.`,
     schema: {
       chat_id: chatId,
       action: z
@@ -1144,16 +939,13 @@ there is no draft: say what will change and wait for a yes before calling it.`,
           "delete",
           "block",
           "unblock",
-        ])
-        .describe("What to do with the chat"),
-      mute_hours: z.number().int().min(1).max(720).optional().describe('Hours to mute, default 8; only used by "mute"'),
-      message_id: messageId
-        .optional()
-        .describe("The message for pin_message, unpin_message, star_message and unstar_message; it must be in chat_id"),
+        ]),
+      mute_hours: z.number().int().min(1).max(720).optional().describe("mute: 8 by default"),
+      message_id: messageId.optional().describe("pin_message, star_message and their undo; in chat_id"),
       pin_hours: z
         .union([z.literal(24), z.literal(168), z.literal(720)])
         .optional()
-        .describe("How long pin_message keeps the message pinned: 24, 168 (default) or 720 hours"),
+        .describe("pin_message: 168 by default"),
     },
     write: true,
     handler: async ({ chat_id, action, mute_hours, message_id, pin_hours }, { wa }) => {
@@ -1169,7 +961,7 @@ there is no draft: say what will change and wait for a yes before calling it.`,
   tool({
     name: "manage_group",
     title: "Manage a WhatsApp group",
-    description: `Create a group, join one from an invite (preview first, then confirm: true), or administer one: members, name, description, photo, invite link, join requests, settings, leave. Most actions need admin (get_group_info). Every change shows to all members at once: say what will change and wait for a yes.`,
+    description: `Create a group, join one from an invite (preview first, then confirm: true), or administer one: members, name, description, photo, invite link, join requests, settings, leave. Most actions need admin. Every change shows to all members at once: say what will change, wait for a yes.`,
     schema: {
       action: z.enum([
         "create",

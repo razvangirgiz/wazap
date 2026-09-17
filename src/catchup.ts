@@ -77,28 +77,26 @@ export const CATCHUP_INPUT = {
     .string()
     .min(1)
     .optional()
-    .describe(
-      '"last" (default): since this client\'s last complete catch-up, or the last 24 h the first time; "previous": that catch-up again; or an ISO date or time (2026-09-16, 2026-09-16T18:00, with an optional offset) from the last 14 days'
-    ),
+    .describe('"last" (default); "previous" repeats that catch-up; or an ISO date or time from the last 14 days'),
   hours: z
     .number()
     .min(1)
     .max(336)
     .optional()
-    .describe("An explicit window of the last N hours instead; it never moves the catch-up mark"),
+    .describe("The last N hours instead; never moves the mark"),
   budget_tokens: z
     .number()
     .int()
     .min(MIN_BUDGET_TOKENS)
     .max(MAX_BUDGET_TOKENS)
     .default(DEFAULT_BUDGET_TOKENS)
-    .describe("How long the answer may be, in tokens (500-8000)"),
+    .describe("Answer length in tokens"),
   include: z
     .array(z.enum(CATCHUP_SECTIONS))
     .min(1)
     .optional()
-    .describe("Only these sections; the mark moves only when every section was given"),
-  cursor: z.string().min(1).optional().describe("more.cursor from the previous page"),
+    .describe("Only these sections; the mark then stays"),
+  cursor: z.string().min(1).optional().describe("more.cursor"),
 };
 
 const windowShape = z.object({
