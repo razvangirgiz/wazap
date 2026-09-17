@@ -41,7 +41,7 @@ answers.
   descriptions, input schemas and annotations of a session that can write, as
   an SDK client lists them (2,934 in a read session). Every description fits in
   300 characters, `account_id` is explained once, in the server's instructions
-  and in `learn`, and `learn`'s guide is 1,916 tokens of text with no copy in
+  and in `learn`, and `learn`'s guide is 1,924 tokens of text with no copy in
   structured content. `node scripts/tool-budget.mjs` prints the table per tool,
   and a test holds the budget.
 - **Output schemas on every tool** but the five Calfa calls and `learn`:
