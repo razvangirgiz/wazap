@@ -54,8 +54,15 @@ test("plugin manifest version matches package.json", () => {
 test("the server's instructions say a draft is made before asking: send_message sends nothing, and its preview is what the user says yes to", async () => {
   const { skillInstructions } = await import("../dist/skills.js");
   const instructions = skillInstructions(loadSkills());
-  assert.match(instructions, /Never send without the user's explicit yes: draft with send_message \(it sends nothing\), show the preview it returns, and wait for the yes before confirm_send\./);
+  assert.match(instructions, /Never send without the user's yes to this text and this recipient: draft with send_message \(it sends nothing\) and show the preview it returns\./);
   assert.doesNotMatch(instructions, /show the recipient and the exact text, then wait for it/, "no longer read as: ask before any call");
+});
+
+test("the server's instructions say what the yes has to be a yes to: the request that gave the text already said it, a yes about another subject did not", async () => {
+  const { skillInstructions } = await import("../dist/skills.js");
+  const instructions = skillInstructions(loadSkills());
+  assert.match(instructions, /A send asked in the same request that gave the text is that yes: confirm_send it, do not ask again\./);
+  assert.match(instructions, /A yes about something else, or one that comes after the talk moved on, is not: show the preview again and ask\./);
 });
 
 test("a session that only reads is told so in the server's instructions: asked to send, it says so instead of pretending", async () => {

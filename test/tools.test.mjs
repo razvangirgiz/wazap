@@ -127,7 +127,7 @@ test("send_message drafts through the session and confirm_send is the only send"
   assert.match(drafted.content[0].text, /Not sent/);
   assert.match(drafted.content[0].text, /To: Ana \(\+40 722 123 456\)/);
   assert.match(drafted.content[0].text, /confirm_send/);
-  assert.match(drafted.structuredContent.next, /preview.*confirm_send.*only after their yes/, "a client that reads structured content only still gets the step after a draft");
+  assert.match(drafted.structuredContent.next, /Show this preview.*confirm_send.*approve this text and this recipient/s, "a client that reads structured content only still gets the step after a draft");
 
   const poll = await server.tools.get("send_message").handler({
     chat_id: "+40722123456",
@@ -146,11 +146,36 @@ test("send_message says it sends nothing, so it is called as soon as the recipie
   const server = fakeServer();
   registerTools(server, asToolSource({}), { allowWrite: true });
   const { description } = server.tools.get("send_message").meta;
-  assert.match(description, /It sends nothing, so call it as soon as you have the recipient and the text/);
+  assert.match(description, /sends nothing\. Call it as soon as you have recipient and text/);
   assert.match(description, /returns draft_id and preview \(recipient, number, exact text\)\. Show that preview/);
-  assert.match(description, /confirm_send only after the user's yes to it/);
+});
+
+/**
+ * What the user's yes has to be a yes to (F2-6). The second gate run sent a
+ * draft on a "Da, super" about another subject (P20) and left "change it and
+ * send" undelivered (N20): the guidance said "only after a yes" without saying
+ * to what. One rule now, wherever the model reads it — the draft's own answer,
+ * both descriptions and the server's instructions.
+ */
+test("the approval rule: a yes to this text and this recipient, a send in the same request already yes, a yes about anything else not", async () => {
+  const server = fakeServer();
+  registerTools(server, asToolSource(draftApi()), { allowWrite: true });
+  const drafted = await server.tools.get("send_message").handler({ chat_id: "+40722123456", text: "Ajung la 6" });
+  const { next } = drafted.structuredContent;
+  assert.match(next, /only when their words approve this text and this recipient/);
+  assert.match(next, /a send asked in the same request that gave the text is that approval/);
+  assert.match(next, /do not ask again/);
+  assert.match(next, /A yes about something else, or one that comes after the talk moved on, is not: show this preview again and ask/);
+
+  const send = server.tools.get("send_message").meta.description;
+  assert.match(send, /confirm_send only on a yes to this text and recipient/);
+  assert.match(send, /a send in the same request is that yes/);
+  assert.doesNotMatch(send, /only after the user's yes to it/, "no longer a yes to anything");
+
   const confirm = server.tools.get("confirm_send").meta.description;
-  assert.match(confirm, /after the user said yes to its preview/);
+  assert.match(confirm, /Send a draft the user approved — this text, this recipient/);
+  assert.match(confirm, /A yes about something else: show the preview again and ask/);
+  assert.doesNotMatch(confirm, /after the user said yes to its preview/, "the preview is not the whole of it: the words have to approve this one");
 });
 
 test("catch_up's description says account_id narrows it to one account and get_status names them", () => {

@@ -943,7 +943,7 @@ const TOOLS: readonly ToolDef[] = [
   tool({
     name: "send_message",
     title: "Draft a WhatsApp message",
-    description: `Draft a message. It sends nothing, so call it as soon as you have the recipient and the text: it returns draft_id and preview (recipient, number, exact text). Show that preview; call confirm_send only after the user's yes to it. A draft lasts 15 min. Also media, a poll, a location or a forward.`,
+    description: `Drafts text, media, polls, locations, forwards; sends nothing. Call it as soon as you have recipient and text: it returns draft_id and preview (recipient, number, exact text). Show that preview; confirm_send only on a yes to this text and recipient — a send in the same request is that yes.`,
     schema: {
       chat_id: chatId,
       text: z.string().max(65536).describe('The message, or the caption, poll question or place name; "" for a forward, a voice note or audio'),
@@ -998,7 +998,7 @@ const TOOLS: readonly ToolDef[] = [
   tool({
     name: "confirm_send",
     title: "Send a drafted WhatsApp message",
-    description: `Send a draft after the user said yes to its preview: the only call that reaches WhatsApp, once per draft (again: already_sent), in the session that drafted it. Expired or missing draft: draft again, show the new preview, ask again. SEND_OUTCOME_UNKNOWN: check read_messages; never redo it unasked.`,
+    description: `Send a draft the user approved — this text, this recipient: the only call that sends, once per draft. A yes about something else: show the preview again and ask. Expired or missing draft: draft again, show the new preview, ask again. SEND_OUTCOME_UNKNOWN: read_messages, never redo it unasked.`,
     schema: {
       draft_id: z.string().min(1).describe("From send_message"),
     },
@@ -1514,8 +1514,15 @@ function truncate(text: string, max: number): string {
   return text.length > max ? `${text.slice(0, max)}…` : text;
 }
 
-/** The step after a draft, in the structured content a client may hand the model instead of the text. */
-const DRAFT_NEXT = "Show preview to the user exactly; call confirm_send with draft_id only after their yes to this draft.";
+/**
+ * The step after a draft, in the structured content a client may hand the model
+ * instead of the text — including what the yes has to be a yes to, since "only
+ * after their yes" left both halves open: a yes about another subject was taken
+ * as approval, and a send asked in the same words that dictated the text was
+ * asked about a second time and never sent.
+ */
+const DRAFT_NEXT =
+  "Show this preview to the user exactly. Call confirm_send with draft_id only when their words approve this text and this recipient: a send asked in the same request that gave the text is that approval, so send, do not ask again. A yes about something else, or one that comes after the talk moved on, is not: show this preview again and ask.";
 
 function drafted(view: DraftView): ToolResult {
   const warnings = view.style_check?.warnings ?? [];
