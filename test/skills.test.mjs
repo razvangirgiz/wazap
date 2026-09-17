@@ -51,6 +51,13 @@ test("plugin manifest version matches package.json", () => {
   assert.equal(plugin.version, pkg.version);
 });
 
+test("the server's instructions say a draft is made before asking: send_message sends nothing, and its preview is what the user says yes to", async () => {
+  const { skillInstructions } = await import("../dist/skills.js");
+  const instructions = skillInstructions(loadSkills());
+  assert.match(instructions, /Never send without the user's explicit yes: draft with send_message \(it sends nothing\), show the preview it returns, and wait for the yes before confirm_send\./);
+  assert.doesNotMatch(instructions, /show the recipient and the exact text, then wait for it/, "no longer read as: ask before any call");
+});
+
 test("loadSkills reads the packaged skills into one registry", () => {
   const skills = loadSkills();
   assert.equal(skills.length, 5);

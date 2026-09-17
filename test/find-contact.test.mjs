@@ -142,6 +142,7 @@ test("Ana de la contabilitate resolves through the tag; plain Ana is two people 
   assert.equal(body.status, "ambiguous");
   assert.equal(body.contact, undefined);
   assert.equal(body.context, undefined, "no context for a guess");
+  assert.equal(body.next, undefined, "no step toward a draft for a guess");
   assert.deepEqual(body.candidates.map((c) => c.name).sort(), ["Ana Ionescu", "Ana Vasile"]);
   const vasile = body.candidates.find((c) => c.name === "Ana Vasile");
   assert.equal(vasile.number_tail, "3333");
@@ -231,6 +232,7 @@ test("a resolved contact carries the recent exchange and the user's style in a w
   assert.deepEqual([last.from_me, last.text, last.transcribed], [false, "Nu uita de cina de duminică la 7, vine și tanti Lia.", true]);
   assert.ok(full.context.recent.some((line) => line.from_me && line.text === "Da mamă, am ajuns 😊"));
   assert.equal(full.context.recent.length, 4);
+  assert.match(full.next, /draft with send_message\(chat_id\): it sends nothing and returns the preview to show/, "a resolved contact says how a message to them starts");
 
   assert.equal((await find(s, { name: "mama", account_id: "personal", include_context: false })).structuredContent.context, undefined);
   await s.close();
@@ -239,6 +241,7 @@ test("a resolved contact carries the recent exchange and the user's style in a w
   const read = await find(readOnly, { name: "mama", account_id: "personal" });
   assert.equal(read.structuredContent.status, "resolved");
   assert.equal(read.structuredContent.context, undefined, "a session that cannot send gets no draft context");
+  assert.doesNotMatch(read.structuredContent.next ?? "", /draft with send_message/, "nor a step toward a draft");
   assert.ok(!read.content[0].text.includes("cina de duminică"));
   await readOnly.close();
 

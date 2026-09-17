@@ -924,7 +924,7 @@ const TOOLS: readonly ToolDef[] = [
   tool({
     name: "send_message",
     title: "Draft a WhatsApp message",
-    description: `Draft a message; nothing is sent. Show the user the preview and call confirm_send after their yes; a draft lasts 15 minutes. The same draft carries media (file_path or url, text as caption), a poll (options), a location (latitude, longitude) or a forward. It may carry style_check warnings.`,
+    description: `Draft a message. It sends nothing, so call it as soon as you have the recipient and the text: it returns draft_id and preview (recipient, number, exact text). Show that preview; call confirm_send only after the user's yes to it. A draft lasts 15 min. Also media, a poll, a location or a forward.`,
     schema: {
       chat_id: chatId,
       text: z.string().max(65536).describe('The message, or the caption, poll question or place name; "" for a forward, a voice note or audio'),

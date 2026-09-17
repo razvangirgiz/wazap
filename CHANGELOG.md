@@ -83,6 +83,11 @@ answers.
   `find_contact` tag list cut by `limit`, and on a draft to someone not saved
   or written off the user's style. The output schemas declare them; the five
   tools Calfa calls only gain keys.
+- **A draft comes before the question.** `send_message`'s description and the
+  server's instructions say it sends nothing, so an assistant drafts as soon as
+  it has the recipient and the text and shows the preview the draft returns,
+  instead of writing a preview of its own and asking first; a contact
+  `find_contact` resolves in a session that can write says the same in `next`.
 - **`find_contact`: who "mama", "Ana de la contabilitate" or "Mișu" is.** A
   read tool, in every session. It matches saved, business and self-given names, the
   `nickname` and `relatie` details, tags, and a note that is only the

@@ -121,7 +121,7 @@ export function skillInstructions(skills: readonly Skill[]): string {
     "The workflows behind these tools:",
     ...skills.map((skill) => `- **${skill.name}**: ${trigger(skill.description)}`),
     "",
-    "Each one is available in full as the MCP prompt of the same name. Never send from the user's WhatsApp without their explicit yes: show the recipient and the exact text, then wait for it.",
+    "Each one is available in full as the MCP prompt of the same name. Never send without the user's explicit yes: draft with send_message (it sends nothing), show the preview it returns, and wait for the yes before confirm_send.",
   ].join("\n");
 }
 

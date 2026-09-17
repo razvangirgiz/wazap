@@ -142,6 +142,17 @@ test("send_message drafts through the session and confirm_send is the only send"
   assert.equal(confirmed.structuredContent.message_id, "mid");
 });
 
+test("send_message says it sends nothing, so it is called as soon as the recipient and text are known, and the preview to show is the one it returns", () => {
+  const server = fakeServer();
+  registerTools(server, asToolSource({}), { allowWrite: true });
+  const { description } = server.tools.get("send_message").meta;
+  assert.match(description, /It sends nothing, so call it as soon as you have the recipient and the text/);
+  assert.match(description, /returns draft_id and preview \(recipient, number, exact text\)\. Show that preview/);
+  assert.match(description, /confirm_send only after the user's yes to it/);
+  const confirm = server.tools.get("confirm_send").meta.description;
+  assert.match(confirm, /after the user said yes to its preview/);
+});
+
 test("a media draft surfaces FILE_NOT_FOUND from draft", async () => {
   const server = fakeServer();
   const wa = {

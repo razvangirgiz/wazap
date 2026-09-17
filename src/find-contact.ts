@@ -469,6 +469,7 @@ export const FIND_CONTACT_OUTPUT = {
     .optional()
     .describe("Only when listed and cut by limit: how many more on each account"),
   fix: z.string().optional().describe("What to do next, when not resolved"),
+  next: z.string().optional().describe("Resolved: how a message to them starts"),
   notes: z.array(z.string()).optional().describe("Caveats to act on or tell the user"),
   accounts_searched: z.array(z.string()).optional(),
   accounts_unavailable: z.array(z.object({ account_id: z.string(), error: z.string() })).optional(),
@@ -505,6 +506,13 @@ function contextAllowed(ctx: ToolCtx, binding: Pick<AccountBinding, "id" | "wa">
     return false;
   }
 }
+
+/**
+ * The step a resolved contact points to in a session that can write: the draft
+ * itself, since a draft sends nothing and its answer is the preview to show.
+ * An assistant that asks first, with a preview of its own, never gets one.
+ */
+const RESOLVED_NEXT = "To message them, draft with send_message(chat_id): it sends nothing and returns the preview to show.";
 
 /** A tag lists at most this many people. */
 const MAX_LISTED = 50;
@@ -649,6 +657,7 @@ export async function runFindContact(args: FindContactArgs, ctx: ToolCtx): Promi
       }
     }
     structured.account_id = found.accountId;
+    if (ctx.allowWrite) structured.next = RESOLVED_NEXT;
   } else if (outcome.status === "ambiguous") {
     structured.candidates = outcome.candidates.map((found) => candidateView(found, multi));
   } else {
