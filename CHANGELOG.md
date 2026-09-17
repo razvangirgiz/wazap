@@ -114,6 +114,12 @@ answers.
   a name, whole words only, in the forms a role is said in: "dentista",
   "dentistei" and "dentistul" find `relatie: dentist`, "profesoarei" finds
   `role: profesor`. Such a match resolves like a name.
+- **An account's name leads to its `account_id`.** With several accounts, the
+  server's instructions name each one (`Accounts: personal (Personal,
+  default), work (Business).`, or only how many past eight); `find_contact`
+  asked for an account's name or id answers `not_found` with a `fix` naming
+  the `account_id` to pass; `catch_up`'s description says `account_id`
+  narrows it to one account.
 - **`find_contact`: who "mama", "Ana de la contabilitate" or "Mișu" is.** A
   read tool, in every session. It matches saved, business and self-given names, the
   `nickname` and `relatie` details, tags, and a note that is only the

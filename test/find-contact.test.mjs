@@ -296,6 +296,19 @@ test("a draft context on one account reads #private filed on another: a person's
   await s.close();
 });
 
+test("the name or id of an account is not a person: find_contact says which account it is, and the instructions name every account", async () => {
+  const { s } = await world();
+  assert.match(s.instructions, /Accounts: personal \(Personal, default\), work \(Business\)\./);
+  for (const [name, id] of [["Business", "work"], ["business", "work"], ["Personal", "personal"], ["work", "work"]]) {
+    const body = (await find(s, { name })).structuredContent;
+    assert.equal(body.status, "not_found", name);
+    assert.equal(body.fix, `"${name}" is the account ${id}: pass account_id "${id}" to catch_up, read_messages or search.`, name);
+  }
+  const person = (await find(s, { name: "Xyzzy" })).structuredContent;
+  assert.match(person.fix, /^Nobody is called "Xyzzy"/, "any other name keeps its answer");
+  await s.close();
+});
+
 test("a role filed with remember in one session finds the person in the next, in the forms the user says it", async () => {
   const { s, refs } = await world();
   const filed = await s.call("remember", { chat_id: refs.contacts.ioana.jid, fields: { relatie: "dentist" }, account_id: "personal" });

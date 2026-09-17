@@ -153,6 +153,12 @@ test("send_message says it sends nothing, so it is called as soon as the recipie
   assert.match(confirm, /after the user said yes to its preview/);
 });
 
+test("catch_up's description says account_id narrows it to one account and get_status names them", () => {
+  const server = fakeServer();
+  registerTools(server, asToolSource({}), { allowWrite: false });
+  assert.match(server.tools.get("catch_up").meta.description, /account_id narrows it to one account; get_status names them/);
+});
+
 test("an expired draft asks for a new yes wherever it is explained: confirm_send's description and the error guide", () => {
   const server = fakeServer();
   registerTools(server, asToolSource({}), { allowWrite: true });

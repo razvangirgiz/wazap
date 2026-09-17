@@ -70,6 +70,21 @@ test("a session that only reads is told so in the server's instructions: asked t
   }
 });
 
+test("with several accounts the instructions name each one, so a name like Business reaches its account_id; one account or very many are not listed", async () => {
+  const { skillInstructions } = await import("../dist/skills.js");
+  const two = [
+    { id: "personal", name: "Personal", default: true },
+    { id: "work", name: "Business", default: false },
+  ];
+  assert.match(skillInstructions(loadSkills(), { accounts: two }), /Accounts: personal \(Personal, default\), work \(Business\)\./);
+  assert.match(skillInstructions([], { accounts: [{ id: "default", name: "default", default: true }, { id: "shop", name: "Shop", default: false }] }), /Accounts: default \(default\), shop \(Shop\)\./);
+  assert.doesNotMatch(skillInstructions(loadSkills(), { accounts: two.slice(0, 1) }), /Accounts:/);
+  const many = Array.from({ length: 12 }, (_, i) => ({ id: `t${i}`, name: `Tenant ${i}`, default: i === 0 }));
+  const listed = skillInstructions(loadSkills(), { accounts: many });
+  assert.match(listed, /12 accounts: get_status names them\./);
+  assert.doesNotMatch(listed, /Tenant 11/);
+});
+
 test("loadSkills reads the packaged skills into one registry", () => {
   const skills = loadSkills();
   assert.equal(skills.length, 5);

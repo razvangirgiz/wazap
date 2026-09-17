@@ -110,6 +110,21 @@ function trigger(description: string): string {
 export interface InstructionOptions {
   /** Whether this session has the send tools; true unless said otherwise. */
   allowWrite?: boolean;
+  /** The live accounts, the default marked: named when there are several, so "Business" reaches its account_id. */
+  accounts?: ReadonlyArray<{ id: string; name: string; default: boolean }>;
+}
+
+/** Accounts named one by one at most; past it, how many there are and where they are named. */
+const MAX_NAMED_ACCOUNTS = 8;
+
+function accountsLine(accounts: InstructionOptions["accounts"]): string | null {
+  if (accounts === undefined || accounts.length < 2) return null;
+  if (accounts.length > MAX_NAMED_ACCOUNTS) return `${accounts.length} accounts: get_status names them.`;
+  const named = accounts.map((account) => {
+    const labels = [account.name !== account.id ? account.name : null, account.default ? "default" : null].filter((label) => label !== null);
+    return labels.length === 0 ? account.id : `${account.id} (${labels.join(", ")})`;
+  });
+  return `Accounts: ${named.join(", ")}.`;
 }
 
 /**
@@ -118,10 +133,12 @@ export interface InstructionOptions {
  * only reads is told so, so a request to send is answered, never pretended.
  */
 export function skillInstructions(skills: readonly Skill[], options: InstructionOptions = {}): string {
+  const accounts = accountsLine(options.accounts);
   const intro =
     "Call `learn` first: it returns every tool, the id formats and every error code with what to do about it. " +
     "With several WhatsApp accounts, `get_status` lists them and every tool takes `account_id`: without it, a chat or message only one account knows picks that account, `catch_up` and `find_contact` cover them all, other reads use the default, and a write to a chat no account knows fails AMBIGUOUS_ACCOUNT. " +
-    "An agent that should act as messages arrive calls `wait_for_messages` in a loop with the cursor it returns, instead of polling.";
+    "An agent that should act as messages arrive calls `wait_for_messages` in a loop with the cursor it returns, instead of polling." +
+    (accounts === null ? "" : ` ${accounts}`);
   const rule = options.allowWrite === false ? READ_ONLY_RULE : SEND_RULE;
   if (skills.length === 0) return `${intro}\n\n${rule}`;
   return [

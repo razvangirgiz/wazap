@@ -590,6 +590,16 @@ async function listTagged(args: FindContactArgs & { tag: string }, ctx: ToolCtx)
   return { content: [{ type: "text", text: renderFindContact(structured) }], structuredContent: structured };
 }
 
+/** The live account a name is, by its id or its name, folded: "business" is the account named Business. */
+function accountNamed(ctx: ToolCtx, name: string): string | null {
+  const asked = nameWords(name).join(" ");
+  if (asked === "") return null;
+  for (const binding of ctx.hub.bindings()) {
+    if (nameWords(binding.id).join(" ") === asked || nameWords(ctx.hub.record(binding.id)?.name).join(" ") === asked) return binding.id;
+  }
+  return null;
+}
+
 export async function runFindContact(args: FindContactArgs, ctx: ToolCtx): Promise<ToolResult> {
   if (args.tag !== undefined) return listTagged({ ...args, tag: args.tag }, ctx);
   if (args.name === undefined) {
@@ -667,7 +677,9 @@ export async function runFindContact(args: FindContactArgs, ctx: ToolCtx): Promi
   }
   // Over several accounts, no one account answered: each candidate names its own.
   if (multi && outcome.contact === null) structured.account_id = null;
-  const fix = fixFor(outcome, read, name, multi, unavailable);
+  // Asked for an account by its name ("Business") or id: the account to pass, not a person to ask about.
+  const account = outcome.status === "not_found" ? accountNamed(ctx, name) : null;
+  const fix = account === null ? fixFor(outcome, read, name, multi, unavailable) : `"${name}" is the account ${account}: pass account_id "${account}" to catch_up, read_messages or search.`;
   if (fix !== undefined) structured.fix = fix;
   if (multi) structured.accounts_searched = targets.map((target) => target.id);
   if (unavailable.length > 0) structured.accounts_unavailable = unavailable;
