@@ -1,7 +1,7 @@
 /**
  * Where each client's catch-up summary left off, per account (v5
  * `catchup_marks`). A client is whatever the service names the caller by —
- * an OAuth client id, a token label, `local` — and its mark is the newest
+ * an OAuth client id, a token label, `local:<MCP client>` — and its mark is the newest
  * stored_seq its last complete summary covered (the order messages reached the
  * account, so one filed late is still after it) and when that summary started,
  * with the mark before it kept so that summary can be given again.

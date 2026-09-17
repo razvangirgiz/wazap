@@ -149,11 +149,39 @@ test("the mark is per client: one client's catch-up moves its own mark and leave
   assert.ok(svc.db.catchup.get("oauth:claude").throughSeq > svc.db.catchup.get("oauth:chatgpt").throughSeq);
 });
 
-test("stdio sessions catch up as `local`", async () => {
+test("a session that names no client catches up as `local`", async () => {
   const { svc, arrive } = account();
   arrive(DAN, "salut", { at: Date.now() - HOUR });
   await toolsOf(svc).call("catch_up");
   assert.ok(svc.db.catchup.get("local"));
+});
+
+test("local sessions keep a mark per MCP client: its name, or the one a bridge passes on, never shared by stdio, bridge and loopback", async () => {
+  const { McpServer } = await import("@modelcontextprotocol/sdk/server/mcp.js");
+  const { Client } = await import("@modelcontextprotocol/sdk/client/index.js");
+  const { InMemoryTransport } = await import("@modelcontextprotocol/sdk/inMemory.js");
+  const { svc, arrive } = account();
+  arrive(DAN, "salut", { at: Date.now() - HOUR });
+  const connect = async (name, opts = {}) => {
+    const server = new McpServer({ name: "wazap", version: "0" });
+    registerTools(server, asToolSource(svc), { allowWrite: false, ...opts });
+    const [serverSide, clientSide] = InMemoryTransport.createLinkedPair();
+    await server.connect(serverSide);
+    const client = new Client({ name, version: "1" });
+    await client.connect(clientSide);
+    return client;
+  };
+  const claude = await connect("claude-code");
+  const cursor = await connect("Cursor\nIDE");
+  const bridge = await connect("wazap-bridge");
+  const oauth = await connect("claude-ai", { client: "oauth:abc" });
+  await claude.callTool({ name: "catch_up", arguments: {} });
+  await cursor.callTool({ name: "catch_up", arguments: {} });
+  await bridge.callTool({ name: "catch_up", arguments: {}, _meta: { "wazap/client": "codex" } });
+  await oauth.callTool({ name: "catch_up", arguments: {}, _meta: { "wazap/client": "codex-2" } });
+  for (const client of ["local:claude-code", "local:Cursor IDE", "local:codex", "oauth:abc"]) assert.ok(svc.db.catchup.get(client), client);
+  for (const client of ["local", "local:wazap-bridge", "local:codex-2"]) assert.equal(svc.db.catchup.get(client), null, client);
+  for (const client of [claude, cursor, bridge, oauth]) await client.close();
 });
 
 test('since: "previous" repeats the last complete catch-up, hours and an ISO since never move the mark', async () => {
@@ -1037,7 +1065,7 @@ test("HTTP sessions catch up under the credential's name, never the token", asyn
     assert.equal(result.isError, undefined, JSON.stringify(result));
     await session.close();
   }
-  assert.deepEqual(clients, ["token:read", "advance token:read", "local", "advance local"]);
+  assert.deepEqual(clients, ["token:read", "advance token:read", "local:eval-client", "advance local:eval-client"]);
   assert.ok(!clients.some((client) => client.includes("secret")));
 
   // The SDK's own client validates structured content against the output schema, errors included.

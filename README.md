@@ -311,7 +311,9 @@ own last message there and after what their phone already read.
 
 **The mark.** Each client keeps its own mark per account: the OAuth client,
 the token (`WAZAP_READ_TOKEN` and `WAZAP_WRITE_TOKEN` are two clients), or
-`local` for stdio and the clients sharing a running wazap. By default a
+for stdio and the clients sharing a running wazap the MCP client's own name
+(`local:claude-code`, `local:cursor`), so two assistants on one machine do not
+share a mark. By default a
 catch-up reads since that client's last complete one, and moves the mark once
 all of it was given: a digest with no `more`, or the last page of one. The
 mark follows what reached wazap, not the time a message carries, so a message

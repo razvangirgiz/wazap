@@ -51,7 +51,7 @@ function buildMcpServer(hub: AccountSource, config: Config, allowWrite: boolean,
   return server;
 }
 
-/** stdio, the daemon's loopback bridge and anonymous loopback reads: this machine's own clients. */
+/** stdio, the daemon's loopback bridge and anonymous loopback reads: this machine's own clients, each named per call (client-name.ts). */
 const LOCAL_CLIENT = "local";
 
 type AuthedRequest = Request & {
@@ -114,7 +114,8 @@ export interface Credential {
   write: boolean;
   /**
    * What sessions on this token are called (ToolCtx.client): `token:<label>`,
-   * or `local` for the daemon's bridge. Never derived from the token itself,
+   * or `local` for the daemon's bridge, which each call then names after its
+   * MCP client (client-name.ts). Never derived from the token itself,
    * so a rotated secret keeps its catch-up mark. `token:write` / `token:read`
    * by default.
    */

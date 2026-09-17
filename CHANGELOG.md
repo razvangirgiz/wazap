@@ -18,8 +18,9 @@
   read. Without `account_id` it covers every linked account, each labelled.
   See *Catching up* in the README.
 - **A catch-up mark per client.** Each OAuth client, each token
-  (`token:read`, `token:write`) and `local` (stdio, and clients sharing a
-  running wazap) keeps its own mark per account. A catch-up moves it once all
+  (`token:read`, `token:write`) and each local MCP client by its name
+  (`local:claude-code`, over stdio or sharing a running wazap) keeps its own
+  mark per account. A catch-up moves it once all
   of it was given; `since: "previous"` repeats the last one; `hours`, an ISO
   `since` from the last 14 days and a partial `include` leave it where it is. The mark follows the
   order messages reached wazap, not their timestamps, so a message filed late

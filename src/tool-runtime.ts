@@ -3,6 +3,7 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { z } from "zod";
 import type { AccountSource } from "./account-hub.js";
 import { attachAccountId, resolveToolAccount, stringArg } from "./account-resolve.js";
+import { CLIENT_META_KEY, LOCAL_CLIENT, localClient } from "./client-name.js";
 import { asWazapError, WazapError } from "./errors.js";
 import { RateLimiter } from "./ratelimit.js";
 import { requireDraftOwner } from "./send-guard.js";
@@ -28,8 +29,9 @@ export interface ToolCtx {
   draftOwner: string;
   /**
    * Who the session's credential names, stable across its sessions and token
-   * rotations: `oauth:<client_id>`, `token:<label>`, or `local` for stdio and
-   * the daemon's own clients. What catch_up keeps its mark under.
+   * rotations: `oauth:<client_id>`, `token:<label>`, or for stdio and the
+   * daemon's own clients `local:<MCP client name>` (client-name.ts). What
+   * catch_up keeps its mark under.
    */
   client: string;
 }
@@ -60,7 +62,7 @@ export interface RegisterOpts {
   maxInFlight?: number;
   /** Tool calls every session together may have running at once. */
   maxInFlightTotal?: number;
-  /** See ToolCtx.client; `local` when omitted. */
+  /** See ToolCtx.client; `local` when omitted, which names each call after the MCP client making it. */
   client?: string;
 }
 
@@ -120,6 +122,13 @@ export function createToolRegistrar(defs: readonly ToolDef[]) {
     // and so does a restart: no later session is ever handed this id again.
     const draftOwner = `session_${randomUUID()}`;
     let sessionInFlight = 0;
+    // A local session is named after its MCP client, or the client a bridge passes on; a credential's name stands.
+    const clientOf = (extra?: { _meta?: Record<string, unknown> }): string => {
+      const named = opts.client ?? LOCAL_CLIENT;
+      if (named !== LOCAL_CLIENT) return named;
+      const session = (server as { server?: { getClientVersion?(): { name?: string } | undefined } }).server;
+      return localClient(extra?._meta?.[CLIENT_META_KEY] ?? session?.getClientVersion?.()?.name);
+    };
     for (const def of defs) {
       if (def.write && !opts.allowWrite) continue;
       const own = buckets.get(def.name);
@@ -140,7 +149,7 @@ export function createToolRegistrar(defs: readonly ToolDef[]) {
               ? LOCAL_HINTS
               : { ...READ_ONLY_HINTS, openWorldHint: def.name !== "learn", ...(def.idempotent === false ? { idempotentHint: false } : {}) },
         },
-        async (args: unknown): Promise<ToolResult> => {
+        async (args: unknown, extra?: { _meta?: Record<string, unknown> }): Promise<ToolResult> => {
           const parsed = (args ?? {}) as ToolArgs;
           let resolved: { id: string; wa: WhatsAppApi } | undefined;
           let admitted = false;
@@ -195,7 +204,7 @@ export function createToolRegistrar(defs: readonly ToolDef[]) {
               allowWrite: opts.allowWrite,
               accountId: resolved.id,
               draftOwner,
-              client: opts.client ?? "local",
+              client: clientOf(extra),
             });
             return attachAccountId(result, resolved.id);
           } catch (err) {
