@@ -5106,18 +5106,19 @@ export class WhatsAppService implements WhatsAppApi {
       quotedSid: quotedMessageId(raw, { canonical: (jid) => this.canonical(jid), ownId: this.ownJid(), chatId: chatJid }) ?? null,
       status: fromMe && typeof raw.status === "number" ? raw.status : null,
       expiresAt,
-      flags: this.flagsOf(raw, fromMe, keyId),
+      flags: this.flagsOf(raw, fromMe, keyId, chatJid),
     };
     return { input, raw };
   }
 
   /**
    * The flags a message is stored with: someone else's that mentions the
-   * account (by number or lid), the account's own that this process sent. The
-   * database adds via_wazap for a confirmed send's key by itself.
+   * account (by number or lid), not in a story; the account's own that this
+   * process sent. The database adds via_wazap for a confirmed send's key by itself.
    */
-  private flagsOf(raw: WAMessage, fromMe: boolean, keyId: string): number {
+  private flagsOf(raw: WAMessage, fromMe: boolean, keyId: string, chatJid: string): number {
     if (fromMe) return this.sentByWazap.has(keyId) ? MESSAGE_FLAGS.viaWazap : 0;
+    if (chatJid === STATUS_JID) return 0;
     return mentionedJids(raw).some((jid) => this.isMe(jid)) ? MESSAGE_FLAGS.mentionsMe : 0;
   }
 

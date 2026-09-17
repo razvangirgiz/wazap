@@ -629,8 +629,8 @@ export class Messages {
    * The account's own devices (the phone) reported this message read: its
    * chat's read mark moves up to it, and never back. Any spelling of the sid
    * works, a bare `<chat>_<key>` too, since a receipt names a key and not
-   * always its direction; a message not stored (yet), or one of the account's
-   * own, moves nothing (`chatJid` null only for the first). The mark lands on
+   * always its direction; a message not stored (yet), one of the account's
+   * own, or a story, moves nothing (`chatJid` null only for the first). The mark lands on
    * the chat a reader sees, so a lid spelling marks the number's chat.
    */
   markReadSelf(sid: string): { moved: boolean; chatJid: string | null; readThroughId: number | null } {
@@ -638,6 +638,8 @@ export class Messages {
       const parsed = parseSid(sid);
       const chat = parsed === null ? null : this.identity.chat(parsed.chatJid);
       if (parsed === null || chat === null) return { moved: false, chatJid: null, readThroughId: null };
+      // A story viewed is not a chat read.
+      if (chat.kind === "status") return { moved: false, chatJid: chat.jid, readThroughId: chat.readThroughId };
       // Only someone else's message is read; a receipt naming one of the account's own moves nothing.
       const key = parsed.fromMe === true ? null : this.identity.findByKey(chat, false, parsed.keyId);
       if (key === null) {

@@ -155,3 +155,21 @@ test("what was stored before the flags existed gets its mentions from the backfi
   assert.equal(second.svc.db.messages.get(notMe).flags, 0);
   assert.equal(second.svc.db.messages.get(old).flags, 0, "older than the window catch_up reads");
 });
+
+test("a story that mentions the account is not mentions_me, live or backfilled, and a story read is no chat's read mark", async (t) => {
+  const { svc, sock } = await serviceOn(t, dataDirFor(t));
+  const story = {
+    key: { remoteJid: "status@broadcast", fromMe: false, id: "STORY-MENTION", participant: DAN },
+    message: { extendedTextMessage: { text: "@razvan uite", contextInfo: { mentionedJid: [ME] } } },
+    messageTimestamp: Math.floor(Date.now() / 1000) - 60,
+    status: proto.WebMessageInfo.Status.READ,
+  };
+  sock.ev.emit("messages.upsert", { type: "notify", messages: [story] });
+  const stored = svc.db.messages.get(`false_status@broadcast_${story.key.id}`);
+  assert.ok(stored !== null, "the story is stored");
+  assert.equal(stored.flags, 0);
+  assert.equal(svc.db.identity.chat("status@broadcast").readThroughId, null);
+  assert.deepEqual(svc.db.messages.markReadSelf(stored.sid), { moved: false, chatJid: "status@broadcast", readThroughId: null });
+  const counters = svc.getStatus().diagnostics.read_self;
+  assert.deepEqual([counters.seen, counters.synced, counters.applied], [0, 0, 0]);
+});
