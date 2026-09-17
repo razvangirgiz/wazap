@@ -122,7 +122,7 @@ const DELETE_OUTPUT = { message_id: z.string(), for_everyone: z.boolean(), accou
 
 const SEARCH_OUTPUT = {
   query: z.string(),
-  mode: z.enum(["hybrid", "words", "keyword_fallback"]).describe("keyword_fallback: meaning search is off, see recall_unavailable"),
+  mode: z.enum(["hybrid", "words", "keyword_fallback"]).describe("keyword_fallback: meaning search could not run, see recall_unavailable"),
   from_resolved: z.string().optional(),
   count: z.number(),
   messages: z.array(
@@ -137,11 +137,14 @@ const SEARCH_OUTPUT = {
   searched_back_to: z.string().optional().describe("Older messages were not searched: narrow the search"),
   coverage: OPEN_OBJECT.optional(),
   index: OPEN_OBJECT.optional(),
-  recall_unavailable: z.object({ message: z.string(), fix: z.string().optional() }).optional(),
+  recall_unavailable: z.object({ code: z.string(), message: z.string(), fix: z.string().optional() }).optional(),
   freshness: OPEN_OBJECT.nullable(),
   sync: z.string(),
   account_id: z.string(),
 };
+
+/** What keeps search from matching by meaning: off, a failing or refusing embedding server, or one still starting. search answers by words instead. */
+const MEANING_FAILURES: ReadonlySet<string> = new Set(["RECALL_UNAVAILABLE", "RECALL_FAILED", "RECALL_BAD_INPUT", "TIMEOUT"]);
 
 const MEDIA_OUTPUT = {
   message_id: z.string(),
@@ -603,8 +606,8 @@ const TOOLS: readonly ToolDef[] = [
         try {
           result = await wa.recall(query, chat_id, limit, filters);
         } catch (err) {
-          if (!(err instanceof WazapError) || err.code !== "RECALL_UNAVAILABLE") throw err;
-          // The setup cliff: no embeddings means no index, but the history still answers by its words.
+          if (!(err instanceof WazapError) || !MEANING_FAILURES.has(err.code)) throw err;
+          // Meaning search off, failing or still starting: the history still answers by its words.
           unavailable = err;
         }
         if (result !== null) {
@@ -649,7 +652,7 @@ const TOOLS: readonly ToolDef[] = [
           mode: unavailable === null ? "words" : "keyword_fallback",
           ...(unavailable === null
             ? {}
-            : { recall_unavailable: { message: unavailable.message, ...(unavailable.fix ? { fix: unavailable.fix } : {}) } }),
+            : { recall_unavailable: { code: unavailable.code, message: unavailable.message, ...(unavailable.fix ? { fix: unavailable.fix } : {}) } }),
           count: messages.length,
           messages,
           ...scanCapFields(found),

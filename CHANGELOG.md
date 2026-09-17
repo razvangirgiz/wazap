@@ -23,7 +23,7 @@ answers.
 | `update_contact_details` | `remember` with `add_tags`, `remove_tags`, `fields`, `remove_fields` |
 | `mark_handled` | `remember` with `handled: true` |
 | `search_messages` | `search` with `match: "words"` |
-| `recall` | `search` (by meaning and words by default; with recall off it matches words and says `mode: "keyword_fallback"`) |
+| `recall` | `search` (by meaning and words by default; when meaning search cannot run — off, a failing embedding server, a sidecar not up within 8 s — it matches words and says `mode: "keyword_fallback"`, with `recall_unavailable.code`) |
 | `search_contacts` | `find_contact` by `name`, or with `tag` to list everyone filed under it |
 | `get_contact` | `find_contact`: a resolved person carries their number, note, tags and details |
 | `sync_contacts` | automatic: `find_contact` asks for an address book that looks empty; `wazap contacts resync` while no server runs |

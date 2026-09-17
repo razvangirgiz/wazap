@@ -77,7 +77,8 @@ for (const c of cases) {
   });
   const answer = result.structuredContent;
   if (answer !== undefined && answer.mode !== "hybrid") {
-    console.error(`search answered mode ${answer.mode}, not a meaning search: ${answer.recall_unavailable?.fix ?? "is recall on?"}`);
+    const why = answer.recall_unavailable;
+    console.error(`search answered mode ${answer.mode}, not a meaning search: ${why === undefined ? "is recall on?" : `${why.code}: ${why.message}${why.fix ? ` ${why.fix}` : ""}`}`);
     process.exit(2);
   }
   const hits = answer?.messages ?? [];

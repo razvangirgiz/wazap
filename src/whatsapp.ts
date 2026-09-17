@@ -261,6 +261,8 @@ const RECENT_GROUP_META_MAX = 12;
 const RECALL_RERANK_WINDOW = 100;
 /** A match found by meaning loses half its way down to 70% each month: recency orders close matches, never buries a clearly closer old one. */
 const RECALL_RECENCY_HALF_LIFE_MS = 30 * 86_400_000;
+/** How long a search waits for its query's embedding (a sidecar starting cold takes longer) before it answers by words. */
+const RECALL_QUERY_WAIT_MS = 8_000;
 /** Messages getRecentMessages returns per chat: the newest of its window, as many as main's per-chat ring held. */
 const RECENT_PER_CHAT_MAX = 2_000;
 /** Local contact filing caps: enough to describe anyone, small enough to stay a note. */
@@ -533,6 +535,8 @@ export class WhatsAppService implements WhatsAppApi {
   private vectorCount: { at: number; count: number } | null = null;
   /** The sidecar starts on the first embedding call, never at boot. */
   private recallEngineP: Promise<EmbedEngine> | null = null;
+  /** RECALL_QUERY_WAIT_MS; a field so a test need not wait eight seconds. */
+  private recallQueryWaitMs = RECALL_QUERY_WAIT_MS;
   /**
    * Whether incoming voice notes are queued for transcription: a provider is
    * configured, auto mode is on, and the provider may run in this mode.
@@ -1621,7 +1625,7 @@ export class WhatsAppService implements WhatsAppApi {
       limit = pageLimit(limit);
       const scope = chatId === undefined ? undefined : this.resolveId(chatId);
       const from = this.senderFilter(opts.from);
-      const [vector] = await this.recallEmbed([query], "query");
+      const vector = await this.queryVector(query);
       const db = this.db;
       // TODO(F1-b3): the hybrid scan runs on the main thread, ~160-190 ms at 100,000 vectors; it moves to a worker.
       const result = db.vectors.hybrid({
@@ -2553,6 +2557,30 @@ export class WhatsAppService implements WhatsAppApi {
       this.recallEngineP.catch(() => (this.recallEngineP = null));
     }
     return this.recallEngineP;
+  }
+
+  /**
+   * The query's embedding, waited for at most recallQueryWaitMs: past it the
+   * search answers by words (TIMEOUT), while the sidecar keeps starting and
+   * the request under way finishes for nobody, so the next search finds it up.
+   */
+  private async queryVector(query: string): Promise<number[] | undefined> {
+    const embedding = this.recallEmbed([query], "query");
+    embedding.catch(() => {});
+    let timer: NodeJS.Timeout | undefined;
+    const late = new Promise<never>((_, reject) => {
+      timer = setTimeout(() => {
+        const seconds = Math.round(this.recallQueryWaitMs / 100) / 10;
+        reject(new WazapError("TIMEOUT", `Meaning search did not answer within ${seconds} s; the embedding model may still be starting.`, "Search again in a minute for meaning too"));
+      }, this.recallQueryWaitMs);
+      timer.unref();
+    });
+    try {
+      const [vector] = await Promise.race([embedding, late]);
+      return vector;
+    } finally {
+      clearTimeout(timer);
+    }
   }
 
   private async recallEmbed(texts: string[], kind: "query" | "document"): Promise<number[][]> {

@@ -591,9 +591,11 @@ With recall on, `search` matches what was meant and the words at once: a
 paraphrase or another language still hits through its meaning, a short or
 foreign-language question through its words, and the two rankings are fused.
 It reaches every message the account keeps. For an exact string — an id, a
-phone number, a URL — pass `match: "words"`. With recall off, `search` matches
-the words only and says so (`mode: "keyword_fallback"`, with the command that
-turns recall on).
+phone number, a URL — pass `match: "words"`. When meaning search cannot run —
+recall off, the embedding server failing or refusing the query, or the sidecar
+still starting after 8 s — `search` matches the words only and says so
+(`mode: "keyword_fallback"`, with `recall_unavailable` naming the cause and, for
+recall off, the command that turns it on).
 
 Off by default, and fully local: a `llama-server` sidecar bound to loopback
 does the embedding, so nothing leaves the machine. It needs llama.cpp, the
