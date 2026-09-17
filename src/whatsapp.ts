@@ -1556,7 +1556,9 @@ export class WhatsAppService implements WhatsAppApi {
         ...(opts.sinceMs === undefined ? {} : { since: opts.sinceMs }),
         ...(opts.untilMs === undefined ? {} : { until: opts.untilMs }),
       };
-      const people = scope === undefined ? this.privateScope(opts.private, from) : null;
+      const people = scope === undefined ? this.privateScope(opts.private) : null;
+      // from naming one of them asks for what they wrote; a quote of anyone else kept #private still loses its words.
+      const author = people !== null && from !== undefined && people.names(from) ? from : undefined;
       const found: StoredMessage[] = [];
       let privateOmitted = 0;
       let capped: number | null = null;
@@ -1566,7 +1568,7 @@ export class WhatsAppService implements WhatsAppApi {
           // The status feed is not a chat: a story never answers a search.
           if (message.chatJid === STATUS_JID) continue;
           // Nor does someone kept #private, unless the call names them: counted, never an entry without its words.
-          if (people?.message(message)) {
+          if (author === undefined && people?.message(message)) {
             privateOmitted++;
             continue;
           }
@@ -1582,7 +1584,7 @@ export class WhatsAppService implements WhatsAppApi {
         before = page.nextBefore;
       }
       const views = this.viewsOfStored(found);
-      const answer: SearchAnswer = this.synced(people === null ? views : views.map((view) => withoutPrivateQuote(view, people)));
+      const answer: SearchAnswer = this.synced(people === null ? views : views.map((view) => withoutPrivateQuote(view, people, author)));
       if (capped !== null) answer.scanCapped = { searchedBackTo: isoWithOffset(secondOfId(capped) * 1000) };
       if (privateOmitted > 0) answer.privateOmitted = privateOmitted;
       return answer;
@@ -1640,7 +1642,8 @@ export class WhatsAppService implements WhatsAppApi {
       const from = this.senderFilter(opts.from);
       const vector = await this.queryVector(query);
       const db = this.db;
-      const people = scope === undefined ? this.privateScope(opts.private, from) : null;
+      const people = scope === undefined ? this.privateScope(opts.private) : null;
+      const author = people !== null && from !== undefined && people.names(from) ? from : undefined;
       // Wide enough that the variety rules below have something to promote, and as wide again when #private hits may take slots.
       const window = Math.max(limit + 5, RECALL_RERANK_WINDOW);
       // TODO(F1-b3): the hybrid scan runs on the main thread, ~160-190 ms at 100,000 vectors; it moves to a worker.
@@ -1648,7 +1651,7 @@ export class WhatsAppService implements WhatsAppApi {
         query,
         model: settings.model,
         vector: vector ?? null,
-        limit: people === null ? window : 2 * window,
+        limit: people === null || author !== undefined ? window : 2 * window,
         minSimilarity: settings.minSimilarity,
         recencyHalfLifeMs: RECALL_RECENCY_HALF_LIFE_MS,
         ...(scope === undefined ? {} : { chat: scope }),
@@ -1657,13 +1660,13 @@ export class WhatsAppService implements WhatsAppApi {
         ...(opts.untilMs === undefined ? {} : { until: opts.untilMs }),
       });
       const ranked = result.hits.filter((hit) => hit.message.chatJid !== STATUS_JID);
-      const hidden = new Set(people === null ? [] : ranked.filter((hit) => people.message(hit.message)));
+      const hidden = new Set(people === null || author !== undefined ? [] : ranked.filter((hit) => people.message(hit.message)));
       const shown = hidden.size === 0 ? ranked : ranked.filter((hit) => !hidden.has(hit)).slice(0, window);
       const kept = diversify(shown, (hit) => ({ chat: hit.message.chatJid, text: `${hit.message.text ?? ""} ${hit.message.transcript ?? ""}` })).slice(0, limit);
       // The #private hits that would have been among these: ranked at or above the lowest one kept, or all of them when fewer came.
       const floor = kept.length < limit ? -Infinity : Math.min(...kept.map((hit) => hit.score));
       const privateOmitted = [...hidden].filter((hit) => hit.score >= floor).length;
-      const views = this.viewsOfStored(kept.map((hit) => hit.message)).map((view) => (people === null ? view : withoutPrivateQuote(view, people)));
+      const views = this.viewsOfStored(kept.map((hit) => hit.message)).map((view) => (people === null ? view : withoutPrivateQuote(view, people, author)));
       const hits = kept.map((hit, i) => ({
         score: hit.score,
         similarity: hit.similarity,
@@ -4228,14 +4231,13 @@ export class WhatsAppService implements WhatsAppApi {
   /** A sender filter: the account's own id, however it is spelled, is "me" — its messages are stored without a sender. */
   /**
    * The people a broad read leaves the words of out (src/private-contacts.ts),
-   * read once for the call; null when the call did not ask for the rule, nobody
-   * is #private, or `from` names one of them, whose messages are then what was asked.
+   * read once for the call; null when the call did not ask for the rule or
+   * nobody is #private.
    */
-  private privateScope(rule: PrivateRule | undefined, from?: string): PrivatePeople | null {
+  private privateScope(rule: PrivateRule | undefined): PrivatePeople | null {
     if (rule === undefined) return null;
     const people = privatePeople(this.db, rule.others);
-    if (people.none || (from !== undefined && people.names(from))) return null;
-    return people;
+    return people.none ? null : people;
   }
 
   private senderFilter(from: string | undefined): string | undefined {

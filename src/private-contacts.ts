@@ -138,8 +138,8 @@ export function withoutWords(view: MessageView): MessageView {
   };
 }
 
-/** A message that quotes someone kept #private keeps the quote's id and author, not its words. */
-export function withoutPrivateQuote(view: MessageView, people: PrivatePeople): MessageView {
-  if (view.quoted === undefined || !people.jids.has(view.quoted.sender)) return view;
+/** A message that quotes someone kept #private keeps the quote's id and author, not its words, unless the call named that author (`named`, a jid). */
+export function withoutPrivateQuote(view: MessageView, people: PrivatePeople, named?: string): MessageView {
+  if (view.quoted === undefined || view.quoted.sender === named || !people.jids.has(view.quoted.sender)) return view;
   return { ...view, quoted: { ...view.quoted, text: PRIVATE_TEXT } };
 }

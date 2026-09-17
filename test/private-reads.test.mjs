@@ -96,6 +96,36 @@ test("search without a chat leaves out a #private person's chat and what they wr
   assert.equal(untagged.structuredContent.private_omitted, undefined);
 });
 
+test("search from one #private person shows what they wrote, and a quote of another one still without its words", async () => {
+  const { svc, arrive } = account();
+  const { call } = schemaCheckedTools(svc, { allowWrite: false });
+  const at = Date.now() - 10 * MINUTE;
+  const asked = arrive(GROUP, "am nevoie de un împrumut pentru chirie", { participant: ELA, at });
+  arrive(
+    GROUP,
+    { extendedTextMessage: { text: "chiria o plătesc eu luna asta", contextInfo: { stanzaId: keyOf(asked), participant: ELA, quotedMessage: { conversation: "am nevoie de un împrumut pentru chirie" } } } },
+    { participant: ANA, at: at + MINUTE }
+  );
+  arrive(
+    GROUP,
+    { extendedTextMessage: { text: "chiria rămâne cum am zis", contextInfo: { stanzaId: "Q2", participant: ANA, quotedMessage: { conversation: "am vorbit cu proprietarul" } } } },
+    { participant: ANA, at: at + 2 * MINUTE }
+  );
+  svc.db.identity.updateFields(ANA, { addTags: ["private"] });
+  svc.db.identity.updateFields(ELA, { addTags: ["private"] });
+
+  const result = await call("search", { query: "chiria", match: "words", from: ANA });
+  assert.deepEqual(
+    result.structuredContent.messages.map((m) => [m.text, m.quoted.sender, m.quoted.text]),
+    [
+      ["chiria rămâne cum am zis", ANA, "am vorbit cu proprietarul"],
+      ["chiria o plătesc eu luna asta", ELA, "[private]"],
+    ],
+    "hers are named, Ela's are not"
+  );
+  assert.ok(!everything(result).includes("împrumut"));
+});
+
 test("wait_for_messages keeps what arrived from someone #private without their words, in their chat and in a group, unless it waits on their chat", async () => {
   const { svc, arrive } = account();
   const { call } = schemaCheckedTools(svc, { allowWrite: false });
