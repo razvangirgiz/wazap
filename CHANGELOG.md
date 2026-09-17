@@ -94,9 +94,24 @@ answers.
   something else, or one that comes after the talk moved to another subject, is
   not, and the preview is shown again instead. The rule reads the same in the
   draft's `next`, in `send_message`'s and `confirm_send`'s descriptions, in the
-  server's instructions and in the send skill. `confirm_send` is unchanged: same
-  arguments, same idempotence, no new state — the server never decides by itself
-  what counts as approval.
+  server's instructions and in the send skill. `confirm_send` keeps its
+  arguments and its idempotence; what words are approval it still reads from
+  the conversation, with the one stop below.
+- **A draft the talk moved past is refused, not sent** (`DRAFT_STALE`, new
+  code). When the session made any other tool call after a draft, the yes it
+  now has answered that call, not this preview: `confirm_send` refuses without
+  sending, the draft is left untouched, and the fix says to call `send_message`
+  again, show the new preview and ask for a yes to it — words alone had an
+  assistant answer another question and then send on the "yes, great" that
+  followed. A draft confirmed with nothing in between sends as before, so does
+  a message whose request already carried the send, and a confirm that reached
+  WhatsApp keeps answering its receipt or `SEND_OUTCOME_UNKNOWN`. Several
+  messages are drafted and confirmed one at a time, not all drafted and then
+  all confirmed. **Sessions on a static token are not held to it:** a builder's
+  own program (Calfa and the like) has its own approval flow, and the five
+  tools it calls keep their behavior. The stop applies to an assistant's
+  session — stdio and the daemon's bridge (`local`, `local:<client>`) and a
+  hosted agent that signed in (`oauth:<client_id>`).
 - **A session that only reads says so.** Its server instructions say it
   cannot draft or send, and that a request to send is answered by saying so and
   offering the text for the user to send from their phone; a contact
