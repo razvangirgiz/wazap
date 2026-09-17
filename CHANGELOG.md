@@ -37,24 +37,30 @@ answers.
 | `join_group` | `manage_group` with `action: "join"`, `invite` or `message_id`, `confirm` |
 | `save_contact`, `remove_contact`, `set_profile_picture` | removed, see below |
 
-- **What an assistant is sent is 4,779 tokens instead of 14,397**: the names,
+- **What an assistant is sent is 4,778 tokens instead of 14,397**: the names,
   descriptions, input schemas and annotations of a session that can write, as
-  an SDK client lists them (2,935 in a read session). Every description fits in
+  an SDK client lists them (2,934 in a read session). Every description fits in
   300 characters, `account_id` is explained once, in the server's instructions
-  and in `learn`, and `learn`'s guide is 1,857 tokens of text with no copy in
+  and in `learn`, and `learn`'s guide is 1,924 tokens of text with no copy in
   structured content. `node scripts/tool-budget.mjs` prints the table per tool,
   and a test holds the budget.
 - **Output schemas on every tool** but the five Calfa calls and `learn`:
-  5,930 tokens in all, 2,238 of them `catch_up`'s and 1,440 `find_contact`'s.
+  6,051 tokens in all, 2,238 of them `catch_up`'s and 1,440 `find_contact`'s.
   A refusal from such a tool is `{ error, message, fix, account_id }` as text.
 - **Annotations stated per tool**, for its most far-reaching action, on one
-  rule: read-only means it changes nothing the user owns (WhatsApp, notes,
-  tags, files) and bills nothing, so `catch_up` moving its own mark is
-  read-only and `remember` is not:
-  `link_account` (it starts a pairing) and `get_media` (a file on each call, a
-  transcript an API may bill) are not read-only; `learn`, `get_status` and
-  `remember` are closed-world; `manage_chat` stays destructive, for `clear`,
-  `delete` and `block`; `edit_message` is destructive.
+  rule: read-only means it changes nothing on WhatsApp and nothing the user
+  keeps in wazap (notes, tags, details, `handled`). wazap's own bookkeeping
+  (`catch_up`'s mark, caches), a file saved where a local call asked and a
+  transcript the user configured are not changes, so `catch_up` and
+  `get_media` are read-only and `remember` is not. `link_account` (it starts a
+  pairing) is not read-only either; `get_media` is not idempotent (each
+  `save_to` writes another file); `learn`, `get_status` and `remember` are
+  closed-world; `manage_chat` stays destructive, for `clear`, `delete` and
+  `block`; `edit_message` is destructive. `get_media` read-only departs from
+  the 1.0 design, which counted a billable transcription against it: a session
+  over OAuth (ChatGPT, claude.ai) cannot pass `save_to`, so there it only
+  reads; the transcript is the one the user set up, at most ten a minute; and a
+  confirmation on every voice note would break "what does it say?".
 - **`send_message` refuses what does not belong to its draft** instead of
   dropping it: two kinds at once, `reply_to` or `mention_ids` on media, a poll
   without its question, a forward with text, text on a voice note or an audio
@@ -82,7 +88,8 @@ answers.
   send, carries the last 8 messages both ways and how the user writes there
   (language, diacritics, tu or dumneavoastră, length, emoji), from the user's
   own messages, never from what wazap sent. On by default; a contact tagged
-  `#private` gets the style only, and `wazap config draft-context off
+  `#private` on any linked account gets the style only, a group's context
+  leaves out what they wrote, and `wazap config draft-context off
   [--account <id>]` turns it off for an account (`draft_context: false` in
   `accounts.json`).
 - **`style_check` on `send_message` drafts.** A text draft to someone the user
@@ -126,8 +133,23 @@ answers.
 - **`#private` in a catch-up**: a person tagged with it is counted and never
   quoted — their asks, what followed, their messages, their mentions and polls
   in groups, a group's quote — and their entries say `private`; their unheard
-  voice notes are counted in the footer, never named for transcription. Across
-  several accounts, both tags filed on one account hold on all of them.
+  voice notes are counted in the footer, never named for transcription. Both
+  tags filed on one linked account hold on every account a catch-up reads, with
+  `account_id` or without.
+- **`#private` in every read that does not name the person.** Their words
+  (text, caption, transcript, quote, a link's or file's preview, a poll's text)
+  reach the assistant only when a call names them: their `chat_id`, a
+  `message_id` of theirs, or `search` with `from`; a group named by `chat_id`
+  reads whole. `search` without `chat_id` leaves their chat and what they write
+  in groups out before `limit`, by meaning and words, by words and on the
+  fallback, and counts them in `private_omitted`; a quote of theirs keeps its
+  author, not its words. `wait_for_messages` without `chat_id`,
+  `list_chats`' last message and `read_messages` on `"status"` keep the entry,
+  with `text: "[private]"`, `private: true` and no preview. Filed on one
+  account, the tag holds in these reads on every other account. `remember`, `learn`, the
+  inbox and recall skills and the README (*Keeping someone private*) state the
+  rule; the output schemas declare `private_omitted` and `private`. The webhook
+  is unchanged.
 
 ### Removed
 

@@ -23,6 +23,7 @@
 import { z } from "zod";
 import type { AccountBinding } from "./account-hub.js";
 import { draftContextEnabled } from "./accounts.js";
+import { privateRule } from "./catchup.js";
 import { FIND_SCORES, LOOKUP_MIN_DIGITS, RELATIONSHIPS, inflectionForms, nameWords, type AccountDb, type ContactCandidate, type FindKind, type FindResult, type FindVerdict } from "./db/index.js";
 import { styleLine, type DraftContext } from "./draft-style.js";
 import { WazapError, asWazapError } from "./errors.js";
@@ -634,7 +635,9 @@ export async function runFindContact(args: FindContactArgs, ctx: ToolCtx): Promi
     const binding = targets.find((target) => target.id === found.accountId)!;
     if (args.include_context !== false && contextAllowed(ctx, binding, found.candidate.jid) && typeof binding.wa.draftContext === "function") {
       try {
-        const context = binding.wa.draftContext(found.candidate.jid, { recent: !hasPrivateTag(found.candidate.tags) });
+        // Tagged #private on this account or on any other live one: style only, and a group without their words.
+        const rule = await privateRule(ctx.hub, binding.id);
+        const context = binding.wa.draftContext(found.candidate.jid, { recent: !hasPrivateTag(found.candidate.tags), private: rule });
         if (context !== null) structured.context = context;
       } catch {
         /* the contact stands without its context */

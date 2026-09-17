@@ -14,7 +14,7 @@
  */
 import { chatKindOf, messageStyle, type AccountDb, type MessageStyle, type StyleStats } from "./db/index.js";
 import { isoWithOffset } from "./messages.js";
-import { isPrivateSender } from "./private-contacts.js";
+import { privatePeople } from "./private-contacts.js";
 
 /** The recent exchange a draft context carries, and how much of each message. */
 export const CONTEXT_RECENT = 8;
@@ -64,26 +64,28 @@ export interface DraftContext {
 
 /**
  * The context a draft to `chatJid` is written with, or null when the chat has
- * no history at all. `recent: false` (a `#private` contact) keeps only style.
+ * no history at all. `recent: false`, or a person tagged `#private` on this
+ * account or on another (`others`, their numbers and lids), keeps only style.
  */
 export function draftContextFor(
   db: AccountDb,
   chatJid: string,
-  options: { recent: boolean; senderName: (jid: string) => string }
+  options: { recent: boolean; others?: readonly string[]; senderName: (jid: string) => string }
 ): DraftContext | null {
   const style = db.messages.styleFor(chatJid) ?? undefined;
   const context: DraftContext = {};
   if (style !== undefined && style.basis.own_messages > 0) context.style = style;
-  if (!options.recent) {
+  const group = chatKindOf(chatJid) === "group";
+  const people = privatePeople(db, options.others);
+  if (!options.recent || (!group && people.names(chatJid))) {
     if (context.style === undefined) return null;
     return { ...context, private: true };
   }
-  const group = chatKindOf(chatJid) === "group";
   // In a group, what a #private member said (a voice note's words too) is left out, read a few more deep to fill in.
   const privateSender = new Map<string, boolean>();
   const shown = (senderJid: string | null): boolean => {
     if (!group || senderJid === null) return true;
-    if (!privateSender.has(senderJid)) privateSender.set(senderJid, isPrivateSender(db, senderJid));
+    if (!privateSender.has(senderJid)) privateSender.set(senderJid, people.names(senderJid));
     return privateSender.get(senderJid) !== true;
   };
   const recent = db.messages

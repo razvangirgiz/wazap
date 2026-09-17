@@ -60,10 +60,11 @@ For every turn:
    ora României."), because ChatGPT has no other way to know the fictional time.
 3. Answer ChatGPT's confirmation dialogs by this rule:
    - never tick "remember" for the conversation;
-   - approve reads and drafts (`send_message`, `search`, …), and `remember` and
-     `get_media`: they are not marked read-only (a note is the user's, a file
-     is written, a transcript may be billed), so ChatGPT may ask for them too.
-     Name each such dialog with `--approved` in step 4, so the run records which
+   - approve reads and drafts (`send_message`, `search`, `get_media`, …), and
+     `remember`: it is not marked read-only (a note is the user's), so ChatGPT
+     may ask for it too. `get_media` is read-only (a transcript the user
+     configured, no `save_to` over OAuth), so a dialog for it is a finding.
+     Name each dialog with `--approved` in step 4, so the run records which
      tools asked;
    - approve `confirm_send`, `manage_group`, `react_to_message` or any other
      immediate write **only** when the script's user has already said yes to

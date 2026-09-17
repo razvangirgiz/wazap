@@ -215,7 +215,8 @@ export interface ChatSummary {
   note?: string;
   type: ChatType;
   unread_count: number;
-  last_message: { text: string; timestamp: string; from_me: boolean } | null;
+  /** `private`: written by someone tagged #private, or in their chat, in a list that did not ask for them; `text` holds no words. */
+  last_message: { text: string; timestamp: string; from_me: boolean; private?: true } | null;
   archived: boolean;
   pinned: boolean;
   muted_until: string | null;
@@ -263,6 +264,8 @@ export interface MessageView {
   edited: boolean;
   /** On the account's own messages: how far it got. Absent while WhatsApp has confirmed nothing. */
   delivery?: Delivery;
+  /** In a broad read, from someone tagged #private: who, when and what kind, no words (src/private-contacts.ts). */
+  private?: true;
 }
 
 export type DeliveryStatus = "error" | "pending" | "sent" | "delivered" | "read" | "played";
@@ -365,6 +368,8 @@ export interface WaitOptions {
   /** Only messages that address the linked account: any direct message, or a group message that @-mentions it or replies to one of its own. */
   addressedToMe: boolean;
   cursor?: string;
+  /** Without a chat, a #private person's messages come without their words; a chat named reads whole. */
+  private?: PrivateRule;
 }
 
 export interface WaitResult {
@@ -406,6 +411,17 @@ export interface SearchOptions {
   untilMs?: number;
   /** "me", or a contact / chat id: only messages that person sent. */
   from?: string;
+  /** Without a chat, the #private rule (src/private-contacts.ts): their messages are left out and counted, unless `from` names them. */
+  private?: PrivateRule;
+}
+
+/**
+ * A broad read's #private rule (src/private-contacts.ts): the words of someone
+ * tagged #private stay out of what the call did not ask of them by name.
+ * `others` are the people another account of the call tagged, by number or lid.
+ */
+export interface PrivateRule {
+  others: readonly string[];
 }
 
 /** One recall hit: the message plus the score it ranked by. */
@@ -427,6 +443,8 @@ export interface RecallAnswer {
   index: RecallStatus;
   /** More messages held the query's words than the word side examined: older word matches may be missing. */
   lexicalCapped: boolean;
+  /** Matches from people kept #private that ranked among these, left out; absent when none were. */
+  privateOmitted?: number;
 }
 
 export interface HandledResult {
@@ -646,6 +664,8 @@ export interface Synced<T> {
 export interface SearchAnswer extends Synced<MessageView[]> {
   /** Set when the scan limit stopped the search before the history ran out: older messages were not searched. */
   scanCapped?: { searchedBackTo: string };
+  /** Matches from people kept #private, left out before the limit; absent when none were. */
+  privateOmitted?: number;
 }
 
 export interface ContactSyncResult {
@@ -674,7 +694,8 @@ export interface WhatsAppApi {
   searchCoverage?(chatId: string | undefined, opts?: { sinceMs?: number; untilMs?: number }): SearchCoverage | null;
   hasDraft(id: string): boolean;
   link(phone: string): Promise<PairingInfo>;
-  listChats(filter: ChatFilter, limit: number): Promise<Synced<ChatSummary[]>>;
+  /** With `private`, a last message from someone tagged #private, or in their chat, comes without its words. */
+  listChats(filter: ChatFilter, limit: number, opts?: { private?: PrivateRule }): Promise<Synced<ChatSummary[]>>;
   readMessages(chatId: string, limit: number, before?: string, types?: MessageType[]): Promise<Synced<MessageView[]>>;
   getRecentMessages(
     hours: number,
@@ -702,7 +723,7 @@ export interface WhatsAppApi {
   /** Who a name, nickname or relationship means on this account; asks WhatsApp for an empty address book once per boot first. */
   findContact?(query: FindContactQuery): Promise<AccountFind>;
   /** The recent exchange (unless `recent: false`) and the user's style in a chat, or null when it has no history. */
-  draftContext?(chatJid: string, options: { recent: boolean }): DraftContext | null;
+  draftContext?(chatJid: string, options: { recent: boolean; private?: PrivateRule }): DraftContext | null;
   /** How a text draft to a direct chat compares with the user's own messages there; null without enough of them. */
   styleCheck?(chatJid: string, text: string): StyleCheck | null;
   updateContactDetails(contactId: string, edit: ContactDetailsEdit): Promise<ContactSummary>;
@@ -710,7 +731,8 @@ export interface WhatsAppApi {
   downloadMedia(messageId: string, saveTo?: string): Promise<MediaResult>;
   transcribeAudio(messageId: string, language?: string, opts?: TranscribeOptions): Promise<TranscribeResult>;
   waitForMessages(opts: WaitOptions): Promise<WaitResult>;
-  getStories(hours: number): Promise<Synced<MessageView[]>>;
+  /** With `private`, a story of someone tagged #private comes without its words. */
+  getStories(hours: number, opts?: { private?: PrivateRule }): Promise<Synced<MessageView[]>>;
   setContactNote(contactId: string, note: string): Promise<ContactSummary>;
   markHandled(chatId: string): Promise<HandledResult>;
   previews(messageIds: string[], max: number): Promise<Preview[]>;

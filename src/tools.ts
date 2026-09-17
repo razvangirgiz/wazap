@@ -12,7 +12,7 @@ import {
   type ToolResult,
 } from "./tool-runtime.js";
 export { toolError, type ToolCtx, type RegisterOpts } from "./tool-runtime.js";
-import { CATCHUP_INPUT, CATCHUP_OUTPUT, runCatchUp } from "./catchup.js";
+import { CATCHUP_INPUT, CATCHUP_OUTPUT, privateRule, runCatchUp } from "./catchup.js";
 import { coverageNote, indexCoverageNote, searchCoverage } from "./coverage.js";
 import { describeTarget, looksUnnamed, renderDraft, type DraftPayload, type DraftView } from "./drafts.js";
 import { ERROR_GUIDE, WazapError, asWazapError } from "./errors.js";
@@ -68,10 +68,23 @@ const OPEN_OBJECT = z.object({}).passthrough();
 const LIST_CHATS_OUTPUT = {
   filter: z.string(),
   count: z.number(),
-  chats: z.array(z.object({ chat_id: z.string(), name: z.string(), type: z.string(), unread_count: z.number() }).passthrough()),
+  chats: z.array(
+    z
+      .object({
+        chat_id: z.string(),
+        name: z.string(),
+        type: z.string(),
+        unread_count: z.number(),
+        last_message: z.object({ private: z.literal(true).optional().describe("Tagged #private: no words") }).passthrough().nullable().optional(),
+      })
+      .passthrough()
+  ),
   sync: z.string(),
   account_id: z.string(),
 };
+
+/** A message in a broad read, which may be someone's kept #private (src/private-contacts.ts). */
+const BROAD_MESSAGE_OUT = MESSAGE_OUT.extend({ private: z.literal(true).optional().describe("Tagged #private: no words") }).passthrough();
 
 const READ_OUTPUT = {
   chat_id: z.string(),
@@ -80,14 +93,14 @@ const READ_OUTPUT = {
   count: z.number(),
   omitted: z.number().optional().describe("Older stories left out by limit"),
   preview_count: z.number(),
-  messages: z.array(MESSAGE_OUT),
+  messages: z.array(BROAD_MESSAGE_OUT),
   sync: z.string(),
   account_id: z.string(),
 };
 
 const WAIT_OUTPUT = {
   count: z.number(),
-  messages: z.array(MESSAGE_OUT),
+  messages: z.array(BROAD_MESSAGE_OUT),
   cursor: z.string().describe("Pass to the next call"),
   timed_out: z.boolean(),
   cursor_reset: z.boolean().describe("The cursor was from another run; the wait started now"),
@@ -134,6 +147,7 @@ const SEARCH_OUTPUT = {
     }).passthrough()
   ),
   scan_capped: z.boolean().optional().describe("Older matches may be missing: narrow the search"),
+  private_omitted: z.number().optional().describe("Matches from people tagged #private, left out: chat_id or from shows them"),
   searched_back_to: z.string().optional().describe("Older messages were not searched: narrow the search"),
   coverage: OPEN_OBJECT.nullable().optional().describe("null: it could not be counted"),
   index: OPEN_OBJECT.optional(),
@@ -205,12 +219,15 @@ const hint = (readOnlyHint: boolean, destructiveHint: boolean, idempotentHint: b
 
 /**
  * Each tool's annotations, true of its most far-reaching action, on one rule:
- * - readOnlyHint: the tool changes nothing the user owns (WhatsApp, their
- *   notes, tags and details, files on disk) and costs nothing. wazap's own
- *   bookkeeping is not the user's: catch_up moving its mark stays read-only,
- *   while remember (the user's notes) and get_media (a file written, a
- *   transcript an API may bill) are not. A client that confirms every tool
- *   that is not read-only asks for those two; F2-6's ChatGPT arm checks it.
+ * - readOnlyHint: the tool changes nothing on WhatsApp and nothing the user
+ *   keeps in wazap (notes, tags, details, handled). Not a change: wazap's own
+ *   bookkeeping (catch_up's mark, the caches), a file saved where a local call
+ *   asked (get_media's save_to), a transcript the user configured (billed by
+ *   the provider they chose, at most ten a minute). So catch_up and get_media
+ *   are read-only and remember is not: a client that confirms every tool that
+ *   is not read-only asks for remember alone. A session over OAuth cannot pass
+ *   save_to, so get_media only reads there, and a dialog on every voice note
+ *   would break "what does it say?". F2-6's ChatGPT arm checks it.
  * - openWorldHint: the tool reaches WhatsApp or a provider. A read that only
  *   mirrors WhatsApp still reaches it (older history, group metadata, the
  *   address book), so only learn, get_status and remember are closed-world.
@@ -231,8 +248,8 @@ const HINTS: Record<string, ToolHints> = {
   get_message: hint(true, false, true, true),
   find_contact: hint(true, false, true, true),
   get_group_info: hint(true, false, true, true),
-  // It saves a file on each call, and a transcript may be billed by an API.
-  get_media: hint(false, false, false, true),
+  // Read-only by the rule above, though save_to writes another file on each call: not idempotent.
+  get_media: hint(true, false, false, true),
   // A draft is not a send, but each call makes another.
   send_message: hint(false, false, false, true),
   // Confirming a draft again answers the same receipt.
@@ -287,6 +304,16 @@ function scanCapNote(result: SearchAnswer): string | null {
   return `The search stopped at its scan limit; messages before ${result.scanCapped.searchedBackTo.slice(0, 10)} were not searched — narrow it with chat_id, since/until or a longer query.`;
 }
 
+/** `private_omitted`, only when a search left someone #private out. */
+function privateFields(omitted: number | undefined): Record<string, unknown> {
+  return omitted === undefined ? {} : { private_omitted: omitted };
+}
+
+function privateNote(omitted: number | undefined): string | null {
+  if (omitted === undefined) return null;
+  return `${omitted} ${omitted === 1 ? "match" : "matches"} from people tagged #private left out: name the chat (chat_id) or the person (from) to search them.`;
+}
+
 const chatId = z.string().min(1).describe("Chat id, or a phone number");
 
 const messageId = z.string().min(5);
@@ -331,6 +358,10 @@ Call get_status when anything fails, and link_account when it says not_linked.
   contabilitate"). resolved gives the chat_id; ambiguous or not_found: ask the
   user, never guess. remember keeps what the user says about a person (note,
   tags, fields such as relatie), on this machine; find_contact(tag) lists a tag.
+- #private: a person's words come only when a call names them: their chat_id,
+  a message_id of theirs, search's from; a group's chat_id reads whole. Elsewhere
+  their entries say private, with no words, and search counts private_omitted.
+  Fetch them only when asked.
 - Send: send_message drafts text, media, a poll, a location or a forward, and
   sends nothing. Show the preview; after the user's yes, confirm_send(draft_id)
   is the only call that sends. A draft lasts 15 minutes. Fix style_check.warnings
@@ -428,8 +459,8 @@ const TOOLS: readonly ToolDef[] = [
     },
     outputSchema: LIST_CHATS_OUTPUT,
     write: false,
-    handler: async ({ filter, limit }, { wa }) => {
-      const result = await wa.listChats(filter, limit);
+    handler: async ({ filter, limit }, ctx) => {
+      const result = await ctx.wa.listChats(filter, limit, { private: await privateRule(ctx.hub, ctx.accountId) });
       return ok(
         renderChats(result.data, filter),
         synced(result, { filter, count: result.data.length, chats: result.data })
@@ -451,18 +482,21 @@ const TOOLS: readonly ToolDef[] = [
     },
     outputSchema: READ_OUTPUT,
     write: false,
-    handler: async ({ chat_id, limit, before, types, include_previews, hours }, { wa }) => {
+    handler: async ({ chat_id, limit, before, types, include_previews, hours }, ctx) => {
+      const { wa } = ctx;
       if (isStatusChat(chat_id)) {
         if (before !== undefined) {
           throw new WazapError("INVALID_ID", "Stories are not paged: before does not apply to status.", "Pass hours (1-24) instead");
         }
         const window = hours ?? 24;
-        const result = await wa.getStories(window);
+        const result = await wa.getStories(window, { private: await privateRule(ctx.hub, ctx.accountId) });
         const matching = types === undefined ? result.data : result.data.filter((m) => types.includes(m.type));
         const stories = matching.slice(0, limit);
-        const previews = include_previews ? await wa.previews(newestFirst(stories), MAX_PREVIEWS) : [];
+        // A story of someone tagged #private gets no preview: what it shows is its words.
+        const open = stories.filter((m) => m.private !== true);
+        const previews = include_previews ? await wa.previews(newestFirst(open), MAX_PREVIEWS) : [];
         const omitted = matching.length - stories.length;
-        const note = [previewNote(stories, previews, include_previews), omitted > 0 ? `${omitted} older stories left out; raise limit for them.` : null]
+        const note = [previewNote(open, previews, include_previews), omitted > 0 ? `${omitted} older stories left out; raise limit for them.` : null]
           .filter(Boolean)
           .join(" ");
         return ok(
@@ -507,7 +541,7 @@ const TOOLS: readonly ToolDef[] = [
   tool({
     name: "remember",
     title: "Remember something about a person",
-    description: `Keep what the user says about someone, locally, never on WhatsApp: a note, tags, details find_contact matches ({"relatie": "mama"}), or handled: true for an ask dealt with elsewhere. #private keeps their words out of catch_up and find_contact's draft context; #no-catchup keeps them out of catch_up.`,
+    description: `Keep what the user says about someone, locally, never on WhatsApp: a note, tags, details find_contact matches ({"relatie": "mama"}), or handled: true for an ask dealt with elsewhere. #private keeps their words out of what you did not ask about them by name; #no-catchup keeps them out of catch_up.`,
     schema: {
       chat_id: chatId,
       note: z.string().max(200).optional().describe('"" removes it'),
@@ -565,12 +599,13 @@ const TOOLS: readonly ToolDef[] = [
     },
     outputSchema: WAIT_OUTPUT,
     write: false,
-    handler: async ({ timeout_seconds, chat_id, addressed_to_me, cursor }, { wa }) => {
-      const result = await wa.waitForMessages({
+    handler: async ({ timeout_seconds, chat_id, addressed_to_me, cursor }, ctx) => {
+      const result = await ctx.wa.waitForMessages({
         timeoutMs: timeout_seconds * 1000,
         chatId: chat_id,
         addressedToMe: addressed_to_me,
         cursor,
+        ...(chat_id === undefined ? { private: await privateRule(ctx.hub, ctx.accountId) } : {}),
       });
       return ok(renderWait(result), { ...result, count: result.messages.length });
     },
@@ -591,11 +626,13 @@ const TOOLS: readonly ToolDef[] = [
     },
     outputSchema: SEARCH_OUTPUT,
     write: false,
-    handler: async ({ query, match, chat_id, limit, since, until, from }, { wa }) => {
+    handler: async ({ query, match, chat_id, limit, since, until, from }, ctx) => {
+      const { wa } = ctx;
       const resolvedFrom = await resolveSenderFilter(wa, from);
       const sinceMs = parseMoment(since, "since");
       const untilMs = parseMoment(until, "until", true);
-      const filters = { sinceMs, untilMs, from: resolvedFrom };
+      // Without a chat, someone tagged #private is left out unless from names them (src/private-contacts.ts).
+      const filters = { sinceMs, untilMs, from: resolvedFrom, ...(chat_id === undefined ? { private: await privateRule(ctx.hub, ctx.accountId) } : {}) };
       const scope = [
         chat_id ? `in ${chat_id}` : null,
         from ? `from ${from}` : null,
@@ -631,6 +668,7 @@ const TOOLS: readonly ToolDef[] = [
             capped
               ? 'More messages hold these words than were ranked, so older matches may be missing: narrow it with chat_id or since/until, or pass match: "words" to list them newest first.'
               : null,
+            privateNote(result.data.privateOmitted),
             result.data.index.state === "indexing" ? null : indexCoverageNote(result.data.index),
             freshnessNote(fresh),
           ]
@@ -644,6 +682,7 @@ const TOOLS: readonly ToolDef[] = [
               count: hits.length,
               messages: hits.map(({ message, ...rank }) => ({ ...message, ...rank })),
               scan_capped: capped,
+              ...privateFields(result.data.privateOmitted),
               index: result.data.index,
               freshness: fresh,
             })
@@ -659,7 +698,9 @@ const TOOLS: readonly ToolDef[] = [
         unavailable === null
           ? null
           : `Meaning search is unavailable (${unavailable.message}); these results match the words only.${unavailable.fix ? ` ${unavailable.fix}` : ""}`;
-      const note = [fallback, scanCapNote(found), coverageNote(cov, chat_id !== undefined), freshnessNote(fresh)].filter(Boolean).join(" ");
+      const note = [fallback, scanCapNote(found), privateNote(found.privateOmitted), coverageNote(cov, chat_id !== undefined), freshnessNote(fresh)]
+        .filter(Boolean)
+        .join(" ");
       return ok(
         renderMessages(title, messages, new Map(), note),
         synced(found, {
@@ -671,6 +712,7 @@ const TOOLS: readonly ToolDef[] = [
           count: messages.length,
           messages,
           ...scanCapFields(found),
+          ...privateFields(found.privateOmitted),
           coverage: cov,
           freshness: fresh,
         })

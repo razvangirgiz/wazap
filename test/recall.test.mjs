@@ -567,6 +567,80 @@ test("the default search leaves the stories out, by words and by meaning", async
   }
 });
 
+test("the default search leaves a #private person out before its limit and counts them, by meaning and words as by words alone, and names them on request", async () => {
+  const ANA = "40700000005@s.whatsapp.net";
+  const GROUP = "120363000000000009@g.us";
+  const stub = await stubEmbedServer();
+  const { svc, sock } = await serviceWith({ WAZAP_RECALL: "local", WAZAP_EMBED_URL: stub.url });
+  try {
+    const at = Math.floor(Date.now() / 1000) - 3_600;
+    const from = (chat, id, body, ts, key = {}) => ({ key: { remoteJid: chat, fromMe: false, id, ...key }, messageTimestamp: ts, message: { conversation: body } });
+    // Hers rank first: the newest, and the closest to the query. Six public ones follow, each in its own chat.
+    deliver(sock, [
+      from(ANA, "A1", "factura terapie", at + 30),
+      from(ANA, "A2", "factura mâine", at + 29, { fromMe: true }),
+      from(GROUP, "A3", "factura clinică", at + 28, { participant: ANA }),
+      ...["service auto de ieri", "la curent pe luna august", "comună a blocului nostru", "de la grădiniță pentru copii", "pentru chirie și utilități", "la telefon din iulie trecut"].map((rest, i) =>
+        from(i === 2 ? GROUP : `4070000010${i}@s.whatsapp.net`, `P${i}`, `factura ${rest}`, at + 20 - i, i === 2 ? { participant: PEER } : {})
+      ),
+    ]);
+    await svc.recallIdle();
+    svc.db.identity.updateFields(ANA, { addTags: ["private"] });
+    const { call } = schemaCheckedTools(svc, { allowWrite: false });
+    for (const match of ["hybrid", "words"]) {
+      const broad = await call("search", { query: "factura", match, limit: 5 });
+      assert.equal(broad.structuredContent.mode, match);
+      assert.equal(broad.structuredContent.count, 5, `${match}: the limit counts what is shown`);
+      assert.equal(broad.structuredContent.private_omitted, 3, match);
+      assert.ok(broad.structuredContent.messages.every((m) => !m.message_id.includes(ANA) && m.message_id.split("_").pop() !== "A3"), match);
+      for (const words of ["terapie", "mâine", "clinică"]) assert.ok(!broad.content[0].text.includes(words), `${match}: ${words}`);
+      assert.match(broad.content[0].text, /3 matches from people tagged #private left out/);
+
+      const chat = await call("search", { query: "factura", match, chat_id: ANA });
+      assert.deepEqual(chat.structuredContent.messages.map((m) => m.message_id.split("_").pop()).sort(), ["A1", "A2"], match);
+      const author = await call("search", { query: "factura", match, from: ANA });
+      assert.deepEqual(author.structuredContent.messages.map((m) => m.message_id.split("_").pop()).sort(), ["A1", "A3"], match);
+      assert.equal(author.structuredContent.private_omitted, undefined, match);
+    }
+  } finally {
+    await svc.stop();
+    stub.server.close();
+  }
+});
+
+test("someone tagged #private who does not match leaves the default search's ranking as it was: the variety rules walk the same window", async () => {
+  const stub = await stubEmbedServer();
+  const { svc, sock } = await serviceWith({ WAZAP_RECALL: "local", WAZAP_EMBED_URL: stub.url });
+  try {
+    const at = Math.floor(Date.now() / 1000) - 3_600;
+    const busy = "40700000101@s.whatsapp.net";
+    const quiet = "40700000102@s.whatsapp.net";
+    const sids = [];
+    for (const [chat, count] of [[busy, 100], [quiet, 50]]) {
+      for (let i = 0; i < count; i++) {
+        deliver(sock, [{ key: { remoteJid: chat, fromMe: false, id: `${chat.slice(10, 12)}${i}` }, messageTimestamp: at - sids.length, message: { conversation: `factura ${sids.length}` } }]);
+        sids.push(`false_${chat}_${chat.slice(10, 12)}${i}`);
+      }
+    }
+    // The ranking itself is not under test: the busy chat's hundred first, then the quiet one's fifty, as many as asked for.
+    const rows = sids.map((sid) => svc.db.messages.get(sid));
+    svc.db.vectors.hybrid = (input) => ({
+      hits: rows.slice(0, input.limit).map((message, i) => ({ message, score: 1 - i / 1000, lexicalRank: i + 1, semanticRank: null, similarity: null })),
+      semantic: true,
+      lexicalCapped: false,
+    });
+    const { call } = schemaCheckedTools(svc, { allowWrite: false });
+    const ranked = async () => (await call("search", { query: "factura", limit: 5 })).structuredContent.messages.map((m) => m.chat_id);
+    const before = await ranked();
+    assert.deepEqual(before, [busy, busy, busy, busy, busy], "three slots to the busy chat, then its overflow: the quiet chat is past the window");
+    svc.db.identity.updateFields("40700000103@s.whatsapp.net", { addTags: ["private"] });
+    assert.deepEqual(await ranked(), before);
+  } finally {
+    await svc.stop();
+    stub.server.close();
+  }
+});
+
 test("a revoked message leaves the default search, by words and by meaning", async () => {
   const stub = await stubEmbedServer();
   const { svc, sock } = await serviceWith({ WAZAP_RECALL: "local", WAZAP_EMBED_URL: stub.url });

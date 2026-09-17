@@ -50,7 +50,7 @@ import { asWazapError, WazapError } from "./errors.js";
 import { isoWithOffset } from "./messages.js";
 import { signalsOf, type Signal } from "./signals.js";
 import type { ToolResult } from "./tool-runtime.js";
-import type { WhatsAppApi } from "./wa-types.js";
+import type { PrivateRule, WhatsAppApi } from "./wa-types.js";
 
 export const DEFAULT_BUDGET_TOKENS = 2_500;
 export const MIN_BUDGET_TOKENS = 500;
@@ -801,8 +801,8 @@ function specOf(args: CatchupArgs, now: number): CatchupWindowSpec {
   return { kind: "since", ms: sinceOf(since, now) };
 }
 
-/** Everyone tagged #private or #no-catchup on any of the accounts, by jid; an account that cannot say adds nobody. */
-async function taggedAcross(targets: ReadonlyArray<{ wa: WhatsAppApi }>): Promise<CatchupTagJids> {
+/** Everyone tagged #private or #no-catchup on any of the live accounts, by jid; an account that cannot say adds nobody. The broad reads take its #private half. */
+export async function taggedAcross(targets: ReadonlyArray<{ wa: WhatsAppApi }>): Promise<CatchupTagJids> {
   const privateJids = new Set<string>();
   const noCatchup = new Set<string>();
   for (const target of targets) {
@@ -815,6 +815,16 @@ async function taggedAcross(targets: ReadonlyArray<{ wa: WhatsAppApi }>): Promis
     }
   }
   return { private: [...privateJids], noCatchup: [...noCatchup] };
+}
+
+/**
+ * A read on one account under the #private rule (src/private-contacts.ts): the
+ * account reads its own tags, and every other live account names the people it
+ * tagged, by number and lid. With one account nobody else is asked.
+ */
+export async function privateRule(hub: AccountSource, accountId: string): Promise<PrivateRule> {
+  const others = hub.bindings().filter((binding) => binding.id !== accountId);
+  return { others: others.length === 0 ? [] : (await taggedAcross(others)).private };
 }
 
 function missingSupport(id: string): WazapError {
@@ -867,8 +877,9 @@ export async function runCatchUp(args: CatchupArgs, ctx: CatchupContext): Promis
   const multi = targets.length > 1;
   const now = asked;
 
-  // A person tagged on one account of the catch-up is tagged on every one.
-  const tags = multi ? await taggedAcross(targets) : undefined;
+  // A person tagged on any live account is tagged on every one read, with account_id or without.
+  const everyone = ctx.hub.bindings();
+  const tags = everyone.length > 1 ? await taggedAcross(everyone) : undefined;
   // Each account's scan; one that fails is reported, the others still answer.
   const views: AccountView[] = await Promise.all(
     targets.map(async (target): Promise<AccountView> => {

@@ -28,7 +28,7 @@
 import { readsAsAsk } from "./asks.js";
 import type { AccountDb, ChatRecord, DigestMedia, DigestSpan, InboundAggregate, TailMessage, WindowMessage } from "./db/index.js";
 import { idLowerBound, secondOfId } from "./db/index.js";
-import { PRIVATE_TAG } from "./private-contacts.js";
+import { PRIVATE_TAG, privatePeople } from "./private-contacts.js";
 import { signalsOf, type Signal } from "./signals.js";
 
 export const CATCHUP_SECTIONS = ["waiting", "addressed", "calls", "direct", "groups", "stories"] as const;
@@ -411,8 +411,8 @@ function emptySkips(): CatchupScan["skipped"] {
 // ---------------------------------------------------------------- tags
 
 /**
- * #private and #no-catchup as a catch-up reads them — the one place that does,
- * so find_contact's shared predicate (isPrivateSender) can take it over:
+ * #private and #no-catchup as a catch-up reads them, #private through the set
+ * every broad read takes (privatePeople, src/private-contacts.ts):
  * - #no-catchup keeps a person out of every catch-up: their chat is left out
  *   and counted, and nothing they send anywhere else — an ask, a mention, a
  *   poll, a quote, a group call, a story — is read at all (`excludedSenders`
@@ -420,8 +420,9 @@ function emptySkips(): CatchupScan["skipped"] {
  * - #private keeps a person in, counted, but never quoted: their chat, and
  *   what they send in a group.
  * A tag is filed on a contact (a group keeps notes on its own row too). With
- * several accounts in one catch-up, a person tagged on any of them is tagged
- * on all: the accounts pass each other the jids (taggedJids, `extra`).
+ * several live accounts, a person tagged on any of them is tagged on every one
+ * a catch-up reads, account_id or not: the accounts pass each other the jids
+ * (taggedJids, `extra`).
  */
 export interface CatchupTagJids {
   private: readonly string[];
@@ -442,15 +443,13 @@ interface CatchupTags {
 }
 
 function catchupTags(db: AccountDb, extra: CatchupTagJids | undefined): CatchupTags {
-  const privacy = db.digest.tagged(PRIVATE_TAG, extra?.private);
+  const privacy = privatePeople(db, extra?.private);
   const excluded = db.digest.tagged(NO_CATCHUP_TAG, extra?.noCatchup);
-  const tagged = (tag: { contactIds: ReadonlySet<number>; jids: ReadonlySet<string> }, chat: ChatRecord): boolean =>
-    (chat.contactId !== null && tag.contactIds.has(chat.contactId)) || tag.jids.has(chat.jid);
   return {
-    privateChat: (chat) => tagged(privacy, chat),
-    privateSender: (senderId) => senderId !== null && privacy.contactIds.has(senderId),
+    privateChat: privacy.chat,
+    privateSender: privacy.sender,
     privateSenders: privacy.contactIds,
-    excludedChat: (chat) => tagged(excluded, chat),
+    excludedChat: (chat) => (chat.contactId !== null && excluded.contactIds.has(chat.contactId)) || excluded.jids.has(chat.jid),
     excludedSenders: excluded.contactIds,
   };
 }
