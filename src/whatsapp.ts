@@ -1302,7 +1302,13 @@ export class WhatsAppService implements WhatsAppApi {
       info.pairing = this.pairing;
       hints.push("Enter the code on the phone; call get_status again in 10 s");
     }
-    hints.push(...writesHints({ readOnly: this.effectiveReadOnly }));
+    hints.push(
+      ...writesHints({
+        readOnly: this.effectiveReadOnly,
+        transport: this.config.transport,
+        publicUrl: this.config.publicUrl,
+      })
+    );
     const stale = inboundAt !== null && Date.now() - inboundAt > STALE_INBOUND_MS;
     if (this.status === "connected" && stale) {
       hints.push("No messages received for 24h; the phone may be offline.");

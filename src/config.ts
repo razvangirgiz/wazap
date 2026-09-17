@@ -244,8 +244,8 @@ export const WRITES_ENABLE_FIX = "run `wazap config writes on`, then restart the
 export const WRITES_ENABLE_HINT =
   "Write tools are not registered. Run `wazap config writes on` and restart the server.";
 
-/** Operator-facing lines for status, doctor, setup and HTTP connect. */
-export function writesHints(config: Pick<Config, "readOnly">): string[] {
+/** Operator-facing lines for status, doctor, setup and HTTP connect. Only `readOnly` decides them. */
+export function writesHints(config: Pick<Config, "readOnly"> & Partial<Config>): string[] {
   return config.readOnly ? [WRITES_ENABLE_HINT] : [];
 }
 
