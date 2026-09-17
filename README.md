@@ -560,7 +560,10 @@ is missing. `wazap status` runs the three checks — `recall`, `llama-server`,
 `search_messages`. Hits rank by a fused score (reciprocal rank fusion of the
 word and meaning rankings), and a hit found only by meaning must clear the
 similarity floor, so a question with no answer comes back empty. A match found
-by meaning counts half as much a month on, one chat takes at most three leading
+by meaning weighs a little less with age — 85% a month on, never under 70%, for
+its rank and for the floor — so the fresher of two close matches comes first
+while a clearly closer old one still does, and a word hit whose meaning falls
+under the floor ranks by its words alone. One chat takes at most three leading
 places before other chats' hits, and a near-duplicate trails the list. The vectors
 live in the account database next to their messages, are made in the
 background for every message that has none, and leave with their message when

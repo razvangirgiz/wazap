@@ -8,6 +8,13 @@
   we meeting" keeps a hit sharing one of them; "the", „când” or „este” never
   count as a match, and a query made only of such words needs its hits'
   meaning to clear the floor.
+- **`recall` finds an old message that matches closely again.** Meaning
+  candidates were cut after an age decay that halved a match every month, so
+  fresh weak matches crowded out an older close one, and a hit sharing a word
+  was lifted by a meaning under the floor. Candidates are now the most similar
+  messages, age weighs a match down to 85% a month on and never under 70%, for
+  its rank and for the floor, and a meaning under the floor adds nothing to a
+  hit's score.
 
 ## 0.23.0
 ### Changed
