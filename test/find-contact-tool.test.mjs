@@ -125,7 +125,7 @@ test("a session that may write gets no draft context for an account that may not
   home.status = "disconnected";
   const down = await find({ name: "Ana Pop" });
   assert.equal(down.isError, true);
-  assert.equal(down.structuredContent.error, "NOT_CONNECTED");
+  assert.equal(JSON.parse(down.content[0].text).error, "NOT_CONNECTED");
   await hub.stop();
 });
 
@@ -134,5 +134,6 @@ test("a stand-in without the service behind it answers SERVICE_ERROR, never a cr
   registerTools(server, asToolSource({}), { allowWrite: false });
   const result = await server.tools.get("find_contact").handler({ name: "Ana" });
   assert.equal(result.isError, true);
-  assert.equal(result.structuredContent.error, "SERVICE_ERROR");
+  assert.equal(result.structuredContent, undefined, "a tool with an output schema answers errors as text");
+  assert.equal(JSON.parse(result.content[0].text).error, "SERVICE_ERROR");
 });

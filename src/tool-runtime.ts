@@ -33,7 +33,7 @@ export interface ToolDef {
   title: string;
   description: string;
   schema: z.ZodRawShape;
-  /** The shape of structuredContent on success; the SDK checks every answer against it. */
+  /** The structured content's shape, when the tool declares one. */
   outputSchema?: z.ZodRawShape;
   write: boolean;
   destructive?: boolean;
@@ -62,6 +62,16 @@ export function toolError(err: WazapError): ToolResult {
   const payload: Record<string, unknown> = { error: err.code, message: err.message };
   if (err.fix) payload.fix = err.fix;
   return { content: [{ type: "text", text: JSON.stringify(payload) }], structuredContent: payload, isError: true };
+}
+
+/**
+ * An error from a tool that declares an outputSchema: the same text, no
+ * structured content. SDK clients check structured content against the schema
+ * on errors too, and `{ error, message, fix }` is not the tool's shape.
+ */
+function schemaSafeError(result: ToolResult): ToolResult {
+  const { structuredContent: _structured, ...rest } = result;
+  return rest;
 }
 
 const READ_ONLY_HINTS = {
@@ -183,6 +193,7 @@ export function createToolRegistrar(defs: readonly ToolDef[]) {
             return attachAccountId(result, resolved.id);
           } catch (err) {
             const result = toolError(asWazapError(err));
+            if (def.outputSchema !== undefined) return schemaSafeError(result);
             const id = resolved?.id ?? stringArg(parsed, "account_id");
             return id === undefined ? result : attachAccountId(result, id);
           } finally {

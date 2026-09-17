@@ -173,6 +173,16 @@ function readJsonBody(req) {
   });
 }
 
+/** The `{ error, message }` an error result carries as its first text block, or null. */
+function textError(result) {
+  try {
+    const body = JSON.parse(result?.content?.find((block) => block.type === "text")?.text ?? "");
+    return body !== null && typeof body === "object" ? body : null;
+  } catch {
+    return null;
+  }
+}
+
 /** A case file's world patch, and the case. */
 export function caseWorld(casePath) {
   const theCase = casePath ? JSON.parse(readFileSync(casePath, "utf8")) : null;
@@ -265,12 +275,14 @@ export async function startEvalServer(options = {}) {
         try {
           const result = await callback(args, extra);
           const structured = result?.structuredContent ?? null;
+          // A tool with an outputSchema answers an error as text only: { error, message, fix }.
+          const failure = result?.isError ? (structured ?? textError(result)) : null;
           Object.assign(entry, {
             ms: Date.now() - started,
             account: typeof structured?.account_id === "string" ? structured.account_id : null,
             is_error: result?.isError === true,
-            error: result?.isError ? (structured?.error ?? "UNKNOWN") : null,
-            message: result?.isError ? (structured?.message ?? null) : null,
+            error: result?.isError ? (failure?.error ?? "UNKNOWN") : null,
+            message: result?.isError ? (failure?.message ?? null) : null,
             result: structured,
             text: (result?.content ?? []).filter((block) => block.type === "text").map((block) => block.text).join("\n"),
             images: (result?.content ?? []).filter((block) => block.type === "image").length,
