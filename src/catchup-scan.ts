@@ -400,8 +400,11 @@ export async function scanCatchup(db: AccountDb, host: CatchupHost, request: Cat
     skipped.noCatchup.messages += messages;
   };
   const voiceIds: string[] = [];
+  const voiceSeen = new Set<string>();
   let voiceCount = 0;
   const noteVoice = (sid: string): void => {
+    if (voiceSeen.has(sid)) return;
+    voiceSeen.add(sid);
     voiceCount++;
     if (voiceIds.length < VOICE_IDS_MAX) voiceIds.push(sid);
   };
@@ -577,11 +580,9 @@ export async function scanCatchup(db: AccountDb, host: CatchupHost, request: Cat
     }
     // A direct chat.
     if (aggregate.voiceUntranscribed > 0) {
-      for (const voice of digest.untranscribedVoice(family, floor, untilId, now, VOICE_IDS_MAX)) {
-        const sid = sidOf(chat.jid, voice.keyId);
-        if (!voiceIds.includes(sid)) noteVoice(sid);
-      }
-      voiceCount += Math.max(0, aggregate.voiceUntranscribed - VOICE_IDS_MAX);
+      const voices = digest.untranscribedVoice(family, floor, untilId, now, VOICE_IDS_MAX);
+      for (const voice of voices) noteVoice(sidOf(chat.jid, voice.keyId));
+      voiceCount += Math.max(0, aggregate.voiceUntranscribed - voices.length);
     }
     if (!include.has("direct") || waitingChats.has(chat.id)) continue;
     const newest = digest.inboundTail(family, floor, untilId, now, 5, 400).find(quotable);
