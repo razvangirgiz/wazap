@@ -524,7 +524,7 @@ test("the filing is capped, like a note, not a document", async () => {
   );
 });
 
-test("update_contact_details is a local tool: registered without writes, off WhatsApp entirely", async () => {
+test("remember is a local tool: registered without writes, off WhatsApp entirely", async () => {
   const calls = [];
   const server = fakeServer();
   registerTools(
@@ -545,12 +545,12 @@ test("update_contact_details is a local tool: registered without writes, off Wha
     }),
     { allowWrite: false }
   );
-  const tool = server.tools.get("update_contact_details");
+  const tool = server.tools.get("remember");
   assert.ok(tool, "local tools register in read-only sessions");
   assert.equal(tool.meta.annotations.openWorldHint, false, "it reaches nothing outside this machine");
 
   const result = await tool.handler({
-    contact_id: "40700000061@s.whatsapp.net",
+    chat_id: "40700000061@s.whatsapp.net",
     add_tags: ["#Client"],
     fields: { role: "contabil" },
   });

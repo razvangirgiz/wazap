@@ -12,10 +12,17 @@ import { fileURLToPath } from "node:url";
 
 import { randomUUID } from "node:crypto";
 
+import assert from "node:assert/strict";
+
+import { toJsonSchemaCompat } from "@modelcontextprotocol/sdk/server/zod-json-schema-compat.js";
+import { AjvJsonSchemaValidator } from "@modelcontextprotocol/sdk/validation/ajv";
+import { z } from "zod";
+
 import { singletonSource } from "../dist/account-hub.js";
 import { accountPaths } from "../dist/config.js";
 import { sqlite } from "../dist/db/sqlite.js";
 import { DRAFT_TTL_MS, DraftStore, draftExpired, draftNotFound, formatDraftPreview } from "../dist/drafts.js";
+import { registerTools } from "../dist/tools.js";
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
 export const BINARY = join(repoRoot, "dist", "index.js");
@@ -202,6 +209,42 @@ export function asToolSource(source) {
     return source;
   }
   return singletonSource(source && typeof source === "object" ? source : {});
+}
+
+/**
+ * The tools of `source` on a stand-in server, called the way an MCP client
+ * calls them: arguments through the input schema, defaults applied, and a
+ * tool's structured content checked against its output schema by the SDK's
+ * own converter and AJV validator, which is what its Client runs on every
+ * answer — a key the schema does not declare is refused, not stripped the way
+ * a zod parse strips it. An error from such a tool carries no structured content.
+ */
+export function schemaCheckedTools(source, opts = { allowWrite: true }) {
+  const tools = new Map();
+  registerTools({ registerTool: (name, meta, handler) => tools.set(name, { meta, handler }) }, asToolSource(source), opts);
+  const validator = new AjvJsonSchemaValidator();
+  const call = async (name, args = {}) => {
+    const entry = tools.get(name);
+    assert.ok(entry, `${name} is registered`);
+    const result = await entry.handler(z.object(entry.meta.inputSchema).parse(args));
+    if (entry.meta.outputSchema !== undefined) {
+      if (result.isError) {
+        assert.equal(result.structuredContent, undefined, `${name}: an error with an output schema is text only`);
+      } else {
+        const schema = toJsonSchemaCompat(z.object(entry.meta.outputSchema), { strictUnions: true, pipeStrategy: "output" });
+        const verdict = validator.getValidator(schema)(result.structuredContent);
+        assert.ok(verdict.valid, `${name}: ${verdict.errorMessage}`);
+      }
+    }
+    return result;
+  };
+  return { tools, call };
+}
+
+/** An error answered as text only, by a tool with an output schema: its `{ error, message, fix }`. */
+export function textError(result) {
+  assert.equal(result.isError, true);
+  return JSON.parse(result.content[0].text);
 }
 
 /** A connected service fed only by events, so no socket and no disk are involved. */

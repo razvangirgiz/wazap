@@ -126,7 +126,7 @@ test("mama is Elena through what the user filed, never the group Mama Anei or Ma
   assert.equal(tata.structuredContent.status, "not_found");
   assert.deepEqual(tata.structuredContent.closest, [], "who he is is the user's to say");
   assert.match(tata.structuredContent.fix, /Ask the user who it is/);
-  assert.match(tata.structuredContent.fix, /update_contact_details\(\{contact_id, fields: \{relatie: "tata"\}\}\)/);
+  assert.match(tata.structuredContent.fix, /remember\(\{chat_id, fields: \{relatie: "tata"\}\}\)/);
   assertNothingPrivate(tata);
   await s.close();
 });

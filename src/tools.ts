@@ -41,6 +41,7 @@ import { MESSAGE_TYPES } from "./wa-types.js";
 import type {
   ChatSummary,
   ContactSummary,
+  HandledResult,
   JoinGroupResult,
   JoinRequest,
   MessageView,
@@ -64,6 +65,19 @@ const ACCOUNT_ID = z
   .describe(
     "Registry account id (default, work, …). Omit to resolve from chat_id or message_id, or the default account."
   );
+
+const REMEMBER_OUTPUT = {
+  chat_id: z.string(),
+  name: z.string(),
+  note: z.string().optional(),
+  tags: z.array(z.string()).optional(),
+  fields: z.record(z.string()).optional(),
+  number: z.string().nullable().optional(),
+  is_my_contact: z.boolean().optional(),
+  is_business: z.boolean().optional(),
+  handled: z.object({ ask_id: z.string().nullable(), ask_text: z.string().nullable() }).optional().describe("The ask taken off the waiting list; null when nothing was open"),
+  account_id: z.string(),
+};
 
 function tool<S extends z.ZodRawShape>(def: {
   name: string;
@@ -172,13 +186,11 @@ link_account when it says no account is linked yet.
   get_recent_messages(hours); include_previews: true shows the photos.
 - Who is waiting on the user: get_unanswered. It returns only chats whose last
   word is theirs and asks for something, with the ask quoted. When the user
-  says they dealt with one outside WhatsApp, mark_handled(chat_id) takes it
+  says they dealt with one outside WhatsApp, remember(chat_id, handled: true) takes it
   off the list until they write again.
-- Who is who: set_contact_note(contact_id, note) remembers what the user
-  says about a person, locally; the note then shows next to their name.
-  update_contact_details files tags and key-value details ("role": "contabil"),
-  which search_contacts matches — so "the accountant" resolves, and tag:
-  "furnizori" lists everyone filed under it. All of it stays on this machine.
+- Who is who: remember(chat_id, note) keeps what the user says about a person,
+  locally; tags and fields ("role": "contabil") file them so find_contact
+  resolves "the accountant". All of it stays on this machine.
 - Stories: get_stories lists the status updates received in the last day, by
   author; they show nowhere else.
 - Stay on the line: wait_for_messages blocks up to 55 s until something arrives,
@@ -562,82 +574,52 @@ chats, catch-ups or waits; this is the only place they show.`,
   }),
 
   tool({
-    name: "set_contact_note",
-    title: "Note something about a contact",
-    description: `Remember something about a person, on this machine only: "Hermi, my own agent",
-"the accountant", "always answers late". The note then rides along wherever
-the contact shows: list_chats, search_contacts, get_contact, get_recent_messages
-and get_unanswered. Nothing is sent to WhatsApp and the contact never sees it.
-An empty note removes it.`,
+    name: "remember",
+    title: "Remember something about a person",
+    description: `Keep what the user says about someone, locally; nothing reaches WhatsApp: a note, tags, details find_contact matches ({"relatie": "mama"}), or handled: true when their open ask was dealt with elsewhere. Tag #private keeps their words out of answers, #no-catchup keeps them out of catch_up.`,
     schema: {
-      contact_id: chatId.describe("Contact id or phone number"),
-      note: z.string().max(200).describe('What to remember, or "" to remove the note'),
+      chat_id: chatId,
+      note: z.string().max(200).optional().describe('"" removes it'),
+      add_tags: z.array(z.string().min(1).max(40)).max(30).optional().describe('e.g. ["client"]'),
+      remove_tags: z.array(z.string().min(1).max(40)).optional(),
+      fields: z.record(z.string().max(200)).optional().describe('e.g. {"nickname": "Mișu", "role": "contabil"}; "" deletes a key'),
+      remove_fields: z.array(z.string().min(1).max(40)).optional(),
+      handled: z.literal(true).optional().describe("Off catch_up's waiting until they write again"),
     },
+    outputSchema: REMEMBER_OUTPUT,
     write: false,
     local: true,
-    handler: async ({ contact_id, note }, { wa }) => {
-      const c = await wa.setContactNote(contact_id, note);
-      return ok(
-        c.note ? `Noted for ${c.name}: ${c.note}` : `Removed the note on ${c.name}.`,
-        c as unknown as Record<string, unknown>
-      );
-    },
-  }),
-
-  tool({
-    name: "update_contact_details",
-    title: "Tag and annotate a contact",
-    description: `File local, searchable details on a person: tags like "client" or "echipa",
-and key-value fields like {"role": "contabil", "oras": "Cluj"}. This is how
-"the accountant" or "all suppliers" resolve later — search_contacts matches
-tag and field text, and its tag filter lists everyone carrying one. Nothing
-is sent to WhatsApp: the contact never sees it and the phone is unchanged.
-A field set to "" is deleted; remove_tags / remove_fields take keys away.
-Pass at least one of the four edits. The person need not be a saved contact.`,
-    schema: {
-      contact_id: chatId.describe("Contact id or phone number"),
-      add_tags: z
-        .array(z.string().min(1).max(40))
-        .max(30)
-        .optional()
-        .describe('Tags to file under, e.g. ["client", "echipa"]; lowercase tokens, "#" optional'),
-      remove_tags: z.array(z.string().min(1).max(40)).optional().describe("Tags to take off"),
-      fields: z
-        .record(z.string().max(200))
-        .optional()
-        .describe('Details to set, e.g. {"role": "contabil"}; an empty value deletes the key'),
-      remove_fields: z.array(z.string().min(1).max(40)).optional().describe("Detail keys to delete"),
-    },
-    write: false,
-    local: true,
-    handler: async ({ contact_id, add_tags, remove_tags, fields, remove_fields }, { wa }) => {
-      const c = await wa.updateContactDetails(contact_id, {
-        addTags: add_tags,
-        removeTags: remove_tags,
-        fields,
-        removeFields: remove_fields,
-      });
-      return ok(renderContactCard(c), c as unknown as Record<string, unknown>);
-    },
-  }),
-
-  tool({
-    name: "mark_handled",
-    title: "Take a chat off the waiting list",
-    description: `The user dealt with what this chat was asking, outside WhatsApp or by a
-reply wazap did not see: a phone call, a meeting, a decision. The open ask is
-remembered as handled and the chat leaves get_unanswered. The next message
-from the other side makes a new ask and the chat comes back on its own.
-Kept on this machine only; nothing is sent or marked read on WhatsApp.`,
-    schema: { chat_id: chatId },
-    write: false,
-    local: true,
-    handler: async ({ chat_id }, { wa }) => {
-      const r = await wa.markHandled(chat_id);
-      const text = r.ask_id
-        ? `${r.name} is off the waiting list until they write again. Handled: "${truncate(r.ask_text ?? "", 120)}"`
-        : `${r.name} had nothing open; nothing to mark.`;
-      return ok(text, r as unknown as Record<string, unknown>);
+    handler: async ({ chat_id, note, add_tags, remove_tags, fields, remove_fields, handled }, { wa }) => {
+      const details = add_tags !== undefined || remove_tags !== undefined || fields !== undefined || remove_fields !== undefined;
+      if (!details && note === undefined && handled === undefined) {
+        throw new WazapError("INVALID_ID", "Nothing to remember.", "Pass note, add_tags, remove_tags, fields, remove_fields or handled: true");
+      }
+      const lines: string[] = [];
+      let card: ContactSummary | undefined;
+      // Details first: they are the edit most likely to be refused, and a refusal must leave nothing half-filed.
+      if (details) {
+        card = await wa.updateContactDetails(chat_id, { addTags: add_tags, removeTags: remove_tags, fields, removeFields: remove_fields });
+      }
+      if (note !== undefined) {
+        card = await wa.setContactNote(chat_id, note);
+        lines.push(card.note ? `Noted for ${card.name}: ${card.note}` : `Removed the note on ${card.name}.`);
+      }
+      if (details && card !== undefined) lines.push(renderContactCard(card));
+      let marked: HandledResult | undefined;
+      if (handled === true) {
+        marked = await wa.markHandled(chat_id);
+        lines.push(
+          marked.ask_id
+            ? `${marked.name} is off the waiting list until they write again. Handled: "${truncate(marked.ask_text ?? "", 120)}"`
+            : `${marked.name} had nothing open; nothing to mark.`
+        );
+      }
+      const structured: Record<string, unknown> = card === undefined
+        ? { chat_id: marked!.chat_id, name: marked!.name }
+        : { ...card, chat_id: card.contact_id };
+      delete structured.contact_id;
+      if (marked !== undefined) structured.handled = { ask_id: marked.ask_id, ask_text: marked.ask_text };
+      return ok(lines.join("\n"), structured);
     },
   }),
 
@@ -980,7 +962,7 @@ is the name \`name\` shows) and \`name_source\` ("contact", "pushname" or
     title: "Search WhatsApp contacts",
     description: `Find contacts by name, phone number, tag or detail: a substring match on the
 name, a digit match on the number, or a word from a local tag or detail — so
-"contabil" finds the person filed under role: contabil by update_contact_details.
+"contabil" finds the person filed under role: contabil by remember.
 With only tag it lists everyone carrying that tag. Returns contact_id values
 usable as chat_id.`,
     schema: {
@@ -1114,7 +1096,7 @@ ambiguous or not_found: ask the user, then call again; never send to a guess.`,
 number, or a new name for an existing one. The name syncs to every linked
 device, and with save_on_phone (default) also into the phone's own address
 book. WhatsApp keeps no other fields — email, "my accountant" and the like go
-to set_contact_note, which stays on this machine.`,
+to remember, which stays on this machine.`,
     schema: {
       contact_id: chatId.describe("Contact id from search_contacts / get_contact, or a phone number"),
       name: z.string().min(1).max(100).describe("Full name to save the contact under"),

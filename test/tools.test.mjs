@@ -38,9 +38,7 @@ const READ_TOOLS = [
   "catch_up",
   "wait_for_messages",
   "get_stories",
-  "set_contact_note",
-  "update_contact_details",
-  "mark_handled",
+  "remember",
 ];
 
 const WRITE_TOOLS = [

@@ -216,7 +216,7 @@ function fixFor(outcome: FindOutcome, query: FindResult["query"], asked: string,
   if (query.relationship !== null) {
     const word = relationWordOf(query);
     lines.push(
-      `No saved name, tag, detail or note says who "${word}" is, and messages are never read for it. Ask the user who it is, find that person with find_contact, then file it with update_contact_details({contact_id, fields: {relatie: "${word}"}}) so "${word}" resolves next time.`
+      `No saved name, tag, detail or note says who "${word}" is, and messages are never read for it. Ask the user who it is, find that person with find_contact, then file it with remember({chat_id, fields: {relatie: "${word}"}}) so "${word}" resolves next time.`
     );
   } else {
     lines.push(

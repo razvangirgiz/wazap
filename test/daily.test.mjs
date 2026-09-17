@@ -5,12 +5,10 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { proto } from "baileys";
-import { z } from "zod";
 
 import { WhatsAppService } from "../dist/whatsapp.js";
-import { registerTools } from "../dist/tools.js";
 import { compactConversations } from "../dist/compact.js";
-import { asToolSource, connectedService, databaseHolds, offlineConfig, openService } from "./helpers.mjs";
+import { connectedService, databaseHolds, offlineConfig, openService, schemaCheckedTools, textError } from "./helpers.mjs";
 
 const ME = "40700000001@s.whatsapp.net";
 const ANA = "40700000002@s.whatsapp.net";
@@ -20,14 +18,7 @@ const hour = 3_600_000;
 
 function setup(config = {}) {
   const { svc, sock } = connectedService(WhatsAppService, { prefix: "wazap-daily-", id: ME, name: "Răzvan", config });
-  const tools = new Map();
-  registerTools({ registerTool: (name, meta, handler) => tools.set(name, { meta, handler }) }, asToolSource(svc), {
-    allowWrite: false,
-  });
-  const call = (name, args = {}) => {
-    const { meta, handler } = tools.get(name);
-    return handler(z.object(meta.inputSchema).parse(args));
-  };
+  const { tools, call } = schemaCheckedTools(svc, { allowWrite: false });
   let seq = 0;
   const arrive = (chat, text, { fromMe = false, participant, at = Date.now() } = {}) => {
     const id = `M${++seq}`;
@@ -55,7 +46,7 @@ function setup(config = {}) {
 test("a note on a contact rides along wherever the person shows, and lives in the account database", async () => {
   const { svc, call, arrive } = setup();
   arrive(DAN, "salut");
-  const noted = await call("set_contact_note", { contact_id: "+40 700 000 003", note: "Hermi, my own agent" });
+  const noted = await call("remember", { chat_id: "+40 700 000 003", note: "Hermi, my own agent" });
   assert.match(noted.content[0].text, /Noted for Dan: Hermi, my own agent/);
   assert.match(
     (await call("search_contacts", { query: "dan" })).content[0].text,
@@ -70,11 +61,29 @@ test("a note on a contact rides along wherever the person shows, and lives in th
   assert.equal(again.db.identity.notes(DAN).note, "Hermi, my own agent", "a restart reads it back");
   await again.stop();
 
-  await call("set_contact_note", { contact_id: DAN, note: "" });
+  await call("remember", { chat_id: DAN, note: "" });
   assert.doesNotMatch((await call("search_contacts", { query: "dan" })).content[0].text, /Hermi/);
 });
 
-test("mark_handled takes a chat off the waiting list until the other side writes again", async () => {
+test("remember files a note, tags and details in one call, and a refused edit files none of them", async () => {
+  const { svc, call, arrive } = setup();
+  arrive(DAN, "salut");
+  const filed = await call("remember", { chat_id: DAN, note: "colegul de birou", add_tags: ["#Echipa"], fields: { role: "contabil" } });
+  assert.equal(filed.structuredContent.chat_id, DAN);
+  assert.equal(filed.structuredContent.note, "colegul de birou");
+  assert.deepEqual(filed.structuredContent.tags, ["echipa"]);
+  assert.deepEqual(filed.structuredContent.fields, { role: "contabil" });
+  assert.match(filed.content[0].text, /Noted for Dan: colegul de birou/);
+  assert.match(filed.content[0].text, /\*\*role\*\*: contabil/);
+
+  const refused = await call("remember", { chat_id: DAN, note: "altceva", add_tags: ["#"] });
+  assert.equal(textError(refused).error, "INVALID_ID");
+  assert.equal(svc.db.identity.notes(DAN).note, "colegul de birou", "the note waits on the details it came with");
+
+  assert.equal(textError(await call("remember", { chat_id: DAN })).error, "INVALID_ID");
+});
+
+test("remember handled: true takes a chat off the waiting list until the other side writes again", async () => {
   const { call, arrive } = setup();
   arrive(ANA, "poți să mă suni?", { at: Date.now() - 2 * hour });
   assert.deepEqual(
@@ -82,9 +91,9 @@ test("mark_handled takes a chat off the waiting list until the other side writes
     ["Ana"]
   );
 
-  const marked = await call("mark_handled", { chat_id: ANA });
+  const marked = await call("remember", { chat_id: ANA, handled: true });
   assert.match(marked.content[0].text, /Ana is off the waiting list until they write again/);
-  assert.equal(marked.structuredContent.ask_text, "poți să mă suni?");
+  assert.equal(marked.structuredContent.handled.ask_text, "poți să mă suni?");
   assert.deepEqual((await call("get_unanswered", {})).structuredContent.chats, []);
 
   arrive(ANA, "și mâine?", { at: Date.now() - hour });
@@ -94,7 +103,7 @@ test("mark_handled takes a chat off the waiting list until the other side writes
     "a new ask reopens it"
   );
 
-  const nothing = await call("mark_handled", { chat_id: DAN });
+  const nothing = await call("remember", { chat_id: DAN, handled: true });
   assert.match(nothing.content[0].text, /had nothing open/);
 });
 
@@ -322,7 +331,7 @@ test("download_media refuses a file over the cap before touching the network", a
 
 test("in a group the note introduces the sender once, then the name alone", async () => {
   const { call, arrive } = setup();
-  await call("set_contact_note", { contact_id: DAN, note: "Hermi" });
+  await call("remember", { chat_id: DAN, note: "Hermi" });
   const t = Date.now() - hour;
   arrive(GROUP, "sunt aici", { participant: DAN, at: t });
   arrive(GROUP, "și tu?", { participant: ANA, at: t + 10 * 60_000 });

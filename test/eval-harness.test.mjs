@@ -78,7 +78,7 @@ const ORACLE = {
   ],
   P17: [
     async (s, r) => {
-      await s.call("mark_handled", { chat_id: r.contacts.ana_ionescu.jid, account_id: "personal" });
+      await s.call("remember", { chat_id: r.contacts.ana_ionescu.jid, handled: true, account_id: "personal" });
       return "Am notat că ai rezolvat cu Ana Ionescu; nu mai apare în lista de așteptare.";
     },
   ],
@@ -160,6 +160,9 @@ const ORACLE = {
   ],
 };
 
+/** Cases whose oracle already calls the consolidated tools, scored on the 1.0 map. */
+const ON_1_0 = new Set(["P17"]);
+
 const NULL_AGENT = new Proxy({}, { get: () => new Array(5).fill(async () => "Nu știu.") });
 
 describe("evaluation harness", () => {
@@ -167,6 +170,7 @@ describe("evaluation harness", () => {
   let control;
   let ready;
   let toolMap;
+  let map10;
   let cases;
 
   before(async () => {
@@ -174,6 +178,8 @@ describe("evaluation harness", () => {
     ready = await server.ready;
     control = controlClient(ready.control_url, ready.control_token);
     toolMap = loadToolMap("0.23");
+    map10 = JSON.parse(readFileSync(join(ROOT, "eval", "tool-map", "1.0.json"), "utf8"));
+    delete map10.placeholder;
     cases = loadCases();
   });
 
@@ -258,13 +264,14 @@ describe("evaluation harness", () => {
   for (const id of Object.keys(ORACLE)) {
     test(`${id}: the oracle passes, the null agent fails`, async () => {
       const theCase = cases.find((entry) => entry.id === id);
-      const oracle = await play(theCase, ORACLE);
+      const map = ON_1_0.has(id) ? map10 : toolMap;
+      const oracle = await play(theCase, ORACLE, map);
       assert.deepEqual(
         oracle.assertions.filter((entry) => !entry.passed).map((entry) => `${entry.name}: ${entry.detail}`),
         [],
         `${id} oracle`
       );
-      const idle = await play(theCase, NULL_AGENT);
+      const idle = await play(theCase, NULL_AGENT, map);
       assert.equal(idle.passed, false, `${id}: an agent that does nothing must fail`);
     });
   }
