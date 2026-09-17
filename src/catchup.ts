@@ -38,6 +38,7 @@ import {
   type CatchupQuote,
   type CatchupScan,
   type CatchupSection,
+  type CatchupTagJids,
   type CatchupWindow,
   type CatchupWindowSpec,
   type DirectEntry,
@@ -666,6 +667,22 @@ function specOf(args: CatchupArgs, now: number): CatchupWindowSpec {
   return { kind: "since", ms: sinceOf(since, now) };
 }
 
+/** Everyone tagged #private or #no-catchup on any of the accounts, by jid; an account that cannot say adds nobody. */
+async function taggedAcross(targets: ReadonlyArray<{ wa: WhatsAppApi }>): Promise<CatchupTagJids> {
+  const privateJids = new Set<string>();
+  const noCatchup = new Set<string>();
+  for (const target of targets) {
+    try {
+      const tagged = await target.wa.catchUpTags?.();
+      for (const jid of tagged?.private ?? []) privateJids.add(jid);
+      for (const jid of tagged?.noCatchup ?? []) noCatchup.add(jid);
+    } catch {
+      // Its scan reports what is wrong with it.
+    }
+  }
+  return { private: [...privateJids], noCatchup: [...noCatchup] };
+}
+
 function missingSupport(id: string): WazapError {
   return new WazapError("SERVICE_ERROR", `Account "${id}" cannot give a catch-up.`, "Restart the wazap server so every account runs this version");
 }
@@ -716,6 +733,8 @@ export async function runCatchUp(args: CatchupArgs, ctx: CatchupContext): Promis
   const multi = targets.length > 1;
   const now = asked;
 
+  // A person tagged on one account of the catch-up is tagged on every one.
+  const tags = multi ? await taggedAcross(targets) : undefined;
   // Each account's scan; one that fails is reported, the others still answer.
   const views: AccountView[] = await Promise.all(
     targets.map(async (target): Promise<AccountView> => {
@@ -723,7 +742,7 @@ export async function runCatchUp(args: CatchupArgs, ctx: CatchupContext): Promis
       const view: AccountView = { id: target.id, name, source: target.wa, scan: null, error: null };
       try {
         if (typeof target.wa.catchUpScan !== "function") throw missingSupport(target.id);
-        view.scan = await target.wa.catchUpScan({ client: ctx.client, include, at: now, window: spec });
+        view.scan = await target.wa.catchUpScan({ client: ctx.client, include, at: now, window: spec, ...(tags === undefined ? {} : { tags }) });
       } catch (err) {
         view.error = asWazapError(err);
       }

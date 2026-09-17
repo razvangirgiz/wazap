@@ -2,7 +2,7 @@
 
 import type { SearchCoverage } from "./coverage.js";
 import type { DraftPayload, DraftView } from "./drafts.js";
-import type { CatchupQuote, CatchupScan, CatchupScanRequest, CatchupWindow } from "./catchup-scan.js";
+import type { CatchupQuote, CatchupScan, CatchupScanRequest, CatchupTagJids, CatchupWindow } from "./catchup-scan.js";
 import type { RecallStatus } from "./recall/index.js";
 import type { ProviderName } from "./transcribe/index.js";
 
@@ -650,6 +650,8 @@ export interface WhatsAppApi {
   getStatus(): StatusInfo;
   /** catch_up (F2-2): the account's entries over a window, unbudgeted; see catchup-scan.ts. */
   catchUpScan?(request: CatchupScanRequest): Promise<CatchupScan>;
+  /** Who this account tagged #private or #no-catchup, by jid, for the other accounts of a catch-up. */
+  catchUpTags?(): Promise<CatchupTagJids>;
   /** The messages a catch-up page quotes, read in full by id. */
   catchUpQuotes?(ids: number[]): Promise<CatchupQuote[]>;
   /** Moves `client`'s catch-up mark to the top of `window`, while it still is the window's `expected` (compare-and-set). */

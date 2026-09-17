@@ -349,7 +349,8 @@ elsewhere shows either: no ask, mention, poll or quote of theirs in a group, no
 group call, no story. Tag them `#private`
 instead and they stay in, counted, but nothing they wrote is quoted — not the
 ask, not a mention or a poll of theirs in a group, not a group's quote — and
-their entries say `private`.
+their entries say `private`. A catch-up across several accounts reads a person
+tagged on any of them as tagged on all, by number or lid.
 
 ### Seeing, waiting, following up
 

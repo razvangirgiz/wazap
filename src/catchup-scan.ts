@@ -89,6 +89,8 @@ export interface CatchupScanRequest {
   client: string;
   window: CatchupWindowSpec;
   include: readonly CatchupSection[];
+  /** The people another account of the same catch-up tagged, by jid: they hold here too. */
+  tags?: CatchupTagJids;
   /** The instant the digest started, shared by every account it covers; the host's clock when omitted. */
   at?: number;
 }
@@ -418,8 +420,20 @@ function emptySkips(): CatchupScan["skipped"] {
  *   goes into every span);
  * - #private keeps a person in, counted, but never quoted: their chat, and
  *   what they send in a group.
- * A tag is filed on a contact (a group keeps notes on its own row too).
+ * A tag is filed on a contact (a group keeps notes on its own row too). With
+ * several accounts in one catch-up, a person tagged on any of them is tagged
+ * on all: the accounts pass each other the jids (taggedJids, `extra`).
  */
+export interface CatchupTagJids {
+  private: readonly string[];
+  noCatchup: readonly string[];
+}
+
+/** Everyone tagged on this account, by number and lid, for the other accounts of a catch-up. */
+export function taggedJids(db: AccountDb): CatchupTagJids {
+  return { private: [...db.digest.tagged(PRIVATE_TAG).jids], noCatchup: [...db.digest.tagged(NO_CATCHUP_TAG).jids] };
+}
+
 interface CatchupTags {
   privateChat(chat: ChatRecord): boolean;
   privateSender(senderId: number | null): boolean;
@@ -428,9 +442,9 @@ interface CatchupTags {
   excludedSenders: ReadonlySet<number>;
 }
 
-function catchupTags(db: AccountDb): CatchupTags {
-  const privacy = db.digest.tagged(PRIVATE_TAG);
-  const excluded = db.digest.tagged(NO_CATCHUP_TAG);
+function catchupTags(db: AccountDb, extra: CatchupTagJids | undefined): CatchupTags {
+  const privacy = db.digest.tagged(PRIVATE_TAG, extra?.private);
+  const excluded = db.digest.tagged(NO_CATCHUP_TAG, extra?.noCatchup);
   const tagged = (tag: { contactIds: ReadonlySet<number>; jids: ReadonlySet<string> }, chat: ChatRecord): boolean =>
     (chat.contactId !== null && tag.contactIds.has(chat.contactId)) || tag.jids.has(chat.jid);
   return {
@@ -454,7 +468,7 @@ export async function scanCatchup(db: AccountDb, host: CatchupHost, request: Cat
   const window = resolveWindow(db, request.client, request.window, request.at ?? host.now());
   const now = window.at;
   const { sinceId, untilId, afterSeq, untilSeq } = window;
-  const tags = catchupTags(db);
+  const tags = catchupTags(db, request.tags);
   const { privateChat, privateSender } = tags;
   const excludeSenders = tags.excludedSenders;
   /** The window from `afterId` up, the client's mark included; nothing from anyone #no-catchup. */

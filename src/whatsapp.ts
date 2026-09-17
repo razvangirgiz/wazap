@@ -41,10 +41,12 @@ import {
   GROUP_META_MS,
   quotesOf,
   scanCatchup,
+  taggedJids,
   type CatchupHost,
   type CatchupQuote,
   type CatchupScan,
   type CatchupScanRequest,
+  type CatchupTagJids,
   type CatchupWindow,
 } from "./catchup-scan.js";
 import { BAILEYS_VERSION, WAZAP_VERSION, writesHints, type AccountPaths, type Config } from "./config.js";
@@ -1995,6 +1997,10 @@ export class WhatsAppService implements WhatsAppApi {
       if (this.status === "not_linked" || this.status === "linking") this.ensureConnected();
       return scanCatchup(this.db, this.catchupHost(), request, { id: this.accountRecord.id, name: this.accountRecord.name });
     });
+  }
+
+  catchUpTags(): Promise<CatchupTagJids> {
+    return this.guarded(async () => taggedJids(this.db));
   }
 
   catchUpQuotes(ids: number[]): Promise<CatchupQuote[]> {

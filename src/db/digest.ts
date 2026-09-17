@@ -487,12 +487,14 @@ export class Digest {
   }
 
   /**
-   * The contacts (people, and the rows groups keep notes on) filed under `tag`:
-   * every row that is them — the row a tagged one merges into, and the rows
-   * still merging into that (digest.contacts reads them as it), so a message
-   * whose sender has not moved over yet is theirs too — with their jids.
+   * The contacts (people, and the rows groups keep notes on) filed under `tag`,
+   * and the people another account filed under it, named by `jids` (a number
+   * or a lid, this account's lid pairings included): every row that is them —
+   * the row a tagged one merges into, and the rows still merging into that
+   * (digest.contacts reads them as it), so a message whose sender has not
+   * moved over yet is theirs too — with their jids and `jids` themselves.
    */
-  tagged(tag: string): { contactIds: Set<number>; jids: Set<string> } {
+  tagged(tag: string, jids: readonly string[] = []): { contactIds: Set<number>; jids: Set<string> } {
     const needle = JSON.stringify(tag);
     const survivors = new Set<number>();
     for (const row of this.c.all<{ survivor: number; tags: string }>(
@@ -508,19 +510,30 @@ export class Digest {
       }
       if (Array.isArray(tags) && tags.includes(tag)) survivors.add(row.survivor);
     }
+    if (jids.length > 0) {
+      for (const row of this.c.all<{ survivor: number }>(
+        `SELECT coalesce(k.merged_into, k.id) AS survivor FROM json_each(?1) j CROSS JOIN contacts k ON k.phone_jid = j.value
+         UNION SELECT coalesce(k.merged_into, k.id) FROM json_each(?1) j CROSS JOIN contacts k ON k.lid = j.value
+         UNION SELECT coalesce(k.merged_into, k.id) FROM json_each(?1) j CROSS JOIN lid_phones p ON p.lid = j.value
+           CROSS JOIN contacts k ON k.phone_jid = p.phone_jid`,
+        JSON.stringify([...new Set(jids)])
+      )) {
+        survivors.add(row.survivor);
+      }
+    }
     const contactIds = new Set<number>();
-    const jids = new Set<string>();
-    if (survivors.size === 0) return { contactIds, jids };
+    const named = new Set<string>(jids);
+    if (survivors.size === 0) return { contactIds, jids: named };
     for (const row of this.c.all<{ id: number; phone_jid: string | null; lid: string | null }>(
       `SELECT id, phone_jid, lid FROM contacts WHERE id IN (SELECT value FROM json_each(?1))
        UNION SELECT id, phone_jid, lid FROM contacts INDEXED BY contacts_merging WHERE merged_into IN (SELECT value FROM json_each(?1))`,
       JSON.stringify([...survivors])
     )) {
       contactIds.add(row.id);
-      if (row.phone_jid !== null) jids.add(row.phone_jid);
-      if (row.lid !== null) jids.add(row.lid);
+      if (row.phone_jid !== null) named.add(row.phone_jid);
+      if (row.lid !== null) named.add(row.lid);
     }
-    return { contactIds, jids };
+    return { contactIds, jids: named };
   }
 
   /** The status feed's chat row, if any story ever arrived. */
