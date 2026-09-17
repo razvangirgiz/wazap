@@ -261,7 +261,6 @@ function asInt(value: string | undefined, fallback: number): number {
  * startup and changes nothing.
  */
 export const RETIRED_SETTINGS: Readonly<Record<string, string>> = {
-  WAZAP_TRANSPORT: "HTTP is the `--http` flag, as in `wazap serve --http`",
   WAZAP_SYNC_FULL_HISTORY:
     "wazap takes WhatsApp's default history sync, and `read_messages` with `before` pulls older messages",
   WAZAP_RATE_LIMIT: "writes are limited to 20 a minute, unless an account sets `rate_limit` in accounts.json",
@@ -274,11 +273,25 @@ export const RETIRED_SETTINGS: Readonly<Record<string, string>> = {
   WAZAP_TYPEWRITER: "the setup screens always type out at a terminal",
 };
 
-/** One line per retired setting that is still set, naming what replaced it. */
-export function retiredSettingWarnings(env: NodeJS.ProcessEnv = process.env): string[] {
-  return Object.entries(RETIRED_SETTINGS)
-    .filter(([key]) => env[key] !== undefined)
-    .map(([key, now]) => `${key} is no longer read and was ignored: ${now}. Remove it from your environment or .env.`);
+/**
+ * Settings still honoured through 1.x, each with the supported way. One set in
+ * the environment or `.env` works as before and costs a warning line at startup.
+ */
+export const DEPRECATED_SETTINGS: Readonly<Record<string, string>> = {
+  WAZAP_TRANSPORT: "pass `--http` instead, as in `wazap serve --http`",
+};
+
+/** One line per retired or deprecated setting that is still set, saying what to use instead. */
+export function settingWarnings(env: NodeJS.ProcessEnv = process.env): string[] {
+  const set = ([key]: [string, string]): boolean => env[key] !== undefined;
+  return [
+    ...Object.entries(DEPRECATED_SETTINGS)
+      .filter(set)
+      .map(([key, instead]) => `${key} still works but is deprecated and goes away in 2.0: ${instead}.`),
+    ...Object.entries(RETIRED_SETTINGS)
+      .filter(set)
+      .map(([key, now]) => `${key} is no longer read and was ignored: ${now}. Remove it from your environment or .env.`),
+  ];
 }
 
 /**
@@ -380,6 +393,8 @@ export function parseCli(argv: string[] = process.argv.slice(2)): CliInvocation 
     return process.env[key] === undefined ? "default" : ".env";
   };
 
+  const httpFromEnv = process.env.WAZAP_TRANSPORT?.trim().toLowerCase() === "http";
+
   return {
     kind: "run",
     config: {
@@ -388,7 +403,7 @@ export function parseCli(argv: string[] = process.argv.slice(2)): CliInvocation 
       syncFullHistory: false,
       persistHistory: asBool(process.env.WAZAP_PERSIST_HISTORY, true),
       retention: asBool(process.env.WAZAP_RETENTION, false),
-      transport: values.http === true ? "http" : "stdio",
+      transport: values.http === true || httpFromEnv ? "http" : "stdio",
       httpHost: values.host ?? (process.env.WAZAP_HOST?.trim() || "127.0.0.1"),
       httpPort: values.port ? asInt(values.port, 8766) : asInt(process.env.WAZAP_PORT, 8766),
       trustedProxies: trustedProxies(process.env.WAZAP_TRUST_PROXY),
@@ -405,7 +420,7 @@ export function parseCli(argv: string[] = process.argv.slice(2)): CliInvocation 
         // Resolved before dotenv runs, so the data dir's own .env cannot name it.
         dataDir: values["data-dir"] !== undefined ? "flag" : shell.has("WAZAP_DATA_DIR") ? "env" : "default",
         readOnly: sourceOf("WAZAP_READ_ONLY", values["read-only"] === true),
-        transport: values.http === true ? "flag" : "default",
+        transport: sourceOf("WAZAP_TRANSPORT", values.http === true),
         rateLimit: "default",
         transcribe: sourceOf("WAZAP_TRANSCRIBE", false),
         webhook: sourceOf("WAZAP_WEBHOOK", false),

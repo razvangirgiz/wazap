@@ -1,7 +1,9 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { once } from "node:events";
+import { createServer as createNetServer } from "node:net";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -9,7 +11,7 @@ import { promisify } from "node:util";
 
 import { greetNext, leftoverFix, leftoverRefusal, parseLinkChoice, tunnelRefusal } from "../dist/cli.js";
 import { SUPERVISORS } from "../dist/service.js";
-import { childEnv } from "./helpers.mjs";
+import { childEnv, spawnWazap, waitFor } from "./helpers.mjs";
 import { runSmoke } from "./smoke-stdio.mjs";
 
 const run = promisify(execFile);
@@ -39,14 +41,47 @@ test("--help explains every command and exits 0", async () => {
 
 test("a retired setting in .env warns once and the command still succeeds", async () => {
   const dir = mkdtempSync(join(tmpdir(), "wazap-retired-"));
-  writeFileSync(join(dir, ".env"), "WAZAP_TRANSPORT=http\nWAZAP_RATE_LIMIT=5\n");
+  writeFileSync(join(dir, ".env"), "WAZAP_RATE_LIMIT=5\n");
   const { stdout, stderr } = await run(process.execPath, [binary, "status", "--json", "--data-dir", dir], {
     env: childEnv(),
   });
   assert.equal(JSON.parse(stdout).data_dir, dir, "stdout stays the report");
-  assert.equal(stderr.match(/WAZAP_TRANSPORT is no longer read/g)?.length, 1);
-  assert.match(stderr, /WAZAP_TRANSPORT is no longer read and was ignored: HTTP is the `--http` flag/);
+  assert.equal(stderr.match(/WAZAP_RATE_LIMIT is no longer read/g)?.length, 1);
   assert.match(stderr, /WAZAP_RATE_LIMIT is no longer read and was ignored: writes are limited to 20 a minute/);
+});
+
+test("WAZAP_TRANSPORT=http without --http still serves HTTP, and says once that the flag is the supported way", async (t) => {
+  const dataDir = mkdtempSync(join(tmpdir(), "wazap-transport-env-"));
+  const probe = createNetServer();
+  await new Promise((resolve) => probe.listen(0, "127.0.0.1", resolve));
+  const { port } = probe.address();
+  await new Promise((resolve) => probe.close(resolve));
+  const { child, stderr } = spawnWazap({
+    dataDir,
+    args: ["serve"],
+    env: { WAZAP_TRANSPORT: "http", WAZAP_HOST: "127.0.0.1", WAZAP_PORT: String(port), WAZAP_NO_SHARE: "1" },
+  });
+  t.after(async () => {
+    if (child.exitCode === null && child.signalCode === null) {
+      const exited = once(child, "exit");
+      child.kill("SIGTERM");
+      await exited;
+    }
+    rmSync(dataDir, { recursive: true, force: true });
+  });
+  const health = await waitFor(
+    () =>
+      fetch(`http://127.0.0.1:${port}/healthz`, { signal: AbortSignal.timeout(1_000) }).then(
+        (res) => res.json(),
+        () => null
+      ),
+    20_000,
+    "wazap serve to answer HTTP on the port WAZAP_PORT named"
+  );
+  assert.equal(typeof health.status, "string");
+  const log = stderr.join("");
+  assert.equal(log.match(/WAZAP_TRANSPORT still works but is deprecated/g)?.length, 1, log);
+  assert.match(log, /goes away in 2\.0: pass `--http` instead, as in `wazap serve --http`/);
 });
 
 test("--version prints the package version and exits 0", async () => {

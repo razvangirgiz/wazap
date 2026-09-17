@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { RETIRED_SETTINGS, parseCli, readOnlySetting, retiredSettingWarnings, writesHints } from "../dist/config.js";
+import { DEPRECATED_SETTINGS, RETIRED_SETTINGS, parseCli, readOnlySetting, settingWarnings, writesHints } from "../dist/config.js";
 
 const CASES = [
   [undefined, false, "unset registers write tools; config prints writes: on (default)"],
@@ -53,7 +53,6 @@ test("writesHints carry no bearer-token note, whatever the transport", () => {
 });
 
 const RETIRED_VALUES = {
-  WAZAP_TRANSPORT: "http",
   WAZAP_SYNC_FULL_HISTORY: "1",
   WAZAP_RATE_LIMIT: "0",
   WAZAP_MAX_INFLIGHT: "12",
@@ -61,8 +60,8 @@ const RETIRED_VALUES = {
   WAZAP_HTTP_BUDGET: "1000",
 };
 
-test("retired settings change nothing: the limits are fixed, and HTTP is only the flag", () => {
-  const keys = [...Object.keys(RETIRED_VALUES), "WAZAP_RETENTION"];
+test("retired settings change nothing, and WAZAP_TRANSPORT=http still serves HTTP", () => {
+  const keys = [...Object.keys(RETIRED_VALUES), "WAZAP_RETENTION", "WAZAP_TRANSPORT"];
   const previous = Object.fromEntries(keys.map((key) => [key, process.env[key]]));
   const dir = mkdtempSync(join(tmpdir(), "wazap-limits-config-"));
   const load = (...flags) => parseCli(["serve", ...flags, "--data-dir", dir]).config;
@@ -98,6 +97,13 @@ test("retired settings change nothing: the limits are fixed, and HTTP is only th
     const http = load("--http");
     assert.equal(http.transport, "http");
     assert.equal(http.sources.transport, "flag");
+
+    process.env.WAZAP_TRANSPORT = "http";
+    const deprecated = load();
+    assert.equal(deprecated.transport, "http", "a supervisor relying on the variable must not fall back to stdio");
+    assert.equal(deprecated.sources.transport, "env");
+    process.env.WAZAP_TRANSPORT = "stdio";
+    assert.equal(load().transport, "stdio");
   } finally {
     for (const key of keys) {
       if (previous[key] === undefined) delete process.env[key];
@@ -116,7 +122,7 @@ test("WAZAP_PERSIST_HISTORY is still honoured: 0 keeps no messages, unset keeps 
     assert.equal(load().persistHistory, true);
     process.env.WAZAP_PERSIST_HISTORY = "0";
     assert.equal(load().persistHistory, false);
-    assert.deepEqual(retiredSettingWarnings({ WAZAP_PERSIST_HISTORY: "0" }), [], "a privacy setting is not a retired one");
+    assert.deepEqual(settingWarnings({ WAZAP_PERSIST_HISTORY: "0" }), [], "a privacy setting is not a retired one");
     process.env.WAZAP_PERSIST_HISTORY = "1";
     assert.equal(load().persistHistory, true);
   } finally {
@@ -126,14 +132,22 @@ test("WAZAP_PERSIST_HISTORY is still honoured: 0 keeps no messages, unset keeps 
   }
 });
 
-test("each retired setting that is set gets one warning naming what replaced it, and nothing else does", () => {
-  assert.deepEqual(retiredSettingWarnings({}), []);
-  assert.deepEqual(retiredSettingWarnings({ WAZAP_READ_ONLY: "1", WAZAP_RECALL: "local", WAZAP_NO_SHARE: "1", WAZAP_PERSIST_HISTORY: "0" }), []);
+test("each retired or deprecated setting that is set gets one warning saying what to use, and nothing else does", () => {
+  assert.deepEqual(settingWarnings({}), []);
+  assert.deepEqual(settingWarnings({ WAZAP_READ_ONLY: "1", WAZAP_RECALL: "local", WAZAP_NO_SHARE: "1", WAZAP_PERSIST_HISTORY: "0" }), []);
   for (const key of Object.keys(RETIRED_SETTINGS)) {
-    const [line, ...rest] = retiredSettingWarnings({ [key]: "" });
+    const [line, ...rest] = settingWarnings({ [key]: "" });
     assert.deepEqual(rest, [], key);
     assert.ok(line.startsWith(`${key} is no longer read and was ignored: `), line);
   }
-  assert.match(retiredSettingWarnings({ WAZAP_TRANSPORT: "http" })[0], /wazap serve --http/);
-  assert.equal(retiredSettingWarnings(RETIRED_VALUES).length, Object.keys(RETIRED_VALUES).length);
+  for (const key of Object.keys(DEPRECATED_SETTINGS)) {
+    assert.equal(RETIRED_SETTINGS[key], undefined, `${key} cannot be both deprecated and retired`);
+    const [line, ...rest] = settingWarnings({ [key]: "" });
+    assert.deepEqual(rest, [], key);
+    assert.ok(line.startsWith(`${key} still works but is deprecated and goes away in 2.0: `), line);
+  }
+  assert.deepEqual(settingWarnings({ WAZAP_TRANSPORT: "http" }), [
+    "WAZAP_TRANSPORT still works but is deprecated and goes away in 2.0: pass `--http` instead, as in `wazap serve --http`.",
+  ]);
+  assert.equal(settingWarnings(RETIRED_VALUES).length, Object.keys(RETIRED_VALUES).length);
 });

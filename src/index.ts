@@ -14,7 +14,7 @@ import {
   runStatus,
   runTranscribe,
 } from "./cli.js";
-import { WAZAP_VERSION, parseCli, pickDefaultAction, retiredSettingWarnings } from "./config.js";
+import { WAZAP_VERSION, parseCli, pickDefaultAction, settingWarnings } from "./config.js";
 import { migrateLayout } from "./migrate.js";
 import { CLIENT_NAMES, runConnect } from "./connect.js";
 import { SKILL_TARGET_NAMES, runSkills } from "./skills.js";
@@ -114,7 +114,7 @@ async function main(): Promise<void> {
   }
 
   const { config } = invocation;
-  for (const line of retiredSettingWarnings()) say(warn(line));
+  for (const line of settingWarnings()) say(warn(line));
   // Rollback is the inverse of this move. Running it first would re-apply a
   // half-finished migrate and then fail to undo it. The other exempt commands
   // never open account state, and `service stop` is how a lock that blocks the
