@@ -33,7 +33,7 @@
 - **The address book is asked for when `find_contact` needs it.** With no
   contact carrying a saved name, the first `find_contact` of a server run asks
   WhatsApp for the address book, as `sync_contacts` does, and waits up to 15
-  seconds before answering.
+  seconds before answering, at most once a week.
 
 ### Removed
 

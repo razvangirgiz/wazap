@@ -366,7 +366,10 @@ on. It never blocks a draft; words you dictated stay as they are.
 **The address book.** Names come from the phone. When no contact has a saved
 name yet, the first `find_contact` of a server run asks WhatsApp for the
 address book, the way `sync_contacts` does, and waits up to 15 seconds for it
-before answering.
+before answering; finds that arrive meanwhile wait for the same answer. It does
+not ask while the connection is still receiving its first sync, nor again
+within 7 days of the last ask, the same rule wazap heals a missing address book
+by at connect.
 
 ## Voice messages
 

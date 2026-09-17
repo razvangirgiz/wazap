@@ -479,8 +479,8 @@ export class WhatsAppService implements WhatsAppApi {
   private historyWaiters: Array<() => void> = [];
   private callSweepTimer: ReturnType<typeof setInterval> | null = null;
   private contactResyncTried = false;
-  /** find_contact asked WhatsApp for an empty address book this boot (F2-3). */
-  private findAskedForContacts = false;
+  /** find_contact's one ask this boot for an address book that looked empty, shared by every find waiting on it (F2-3). */
+  private addressBookAsk: Promise<void> | null = null;
   private readonly blocked = new Set<string>();
   private readonly groupCache = new Map<string, GroupMetadata>();
   /** Groups whose metadata WhatsApp refused, so we stop asking on every read. */
@@ -1756,28 +1756,51 @@ export class WhatsAppService implements WhatsAppApi {
   /**
    * Who a name means on this account (src/find-contact.ts), from what the
    * account stores: no connection is needed, only a database that answers.
-   * While connected, an address book that looks empty (no contact carries a
-   * saved name) is asked for once per boot first, the way sync_contacts asks,
-   * waiting up to 15 s for names; a failed ask is logged and the answer comes
-   * from what is stored.
+   * While connected, an address book that looks empty is first asked for (see
+   * askForEmptyAddressBook).
    */
   findContact(query: FindContactQuery): Promise<AccountFind> {
     return this.guarded(async () => {
       let db = this.db;
       if (this.status === "connected") {
         await this.waitForSync();
-        if (!this.findAskedForContacts && this.namedContacts() === 0) {
-          this.findAskedForContacts = true;
-          try {
-            await this.syncContacts();
-          } catch (err) {
-            logError("contact sync", err);
-          }
-        }
+        await this.askForEmptyAddressBook();
         db = this.db;
       }
       return findInAccount(db, this.accountRecord.id, query);
     });
+  }
+
+  /**
+   * No contact carries a saved name: ask WhatsApp for the address book, at
+   * most once per boot and on the same rule as the self-heal
+   * (needsContactResync: not while the connection is still syncing, not within
+   * 7 days of the last ask), then wait up to 15 s for names. Every find that
+   * comes in meanwhile waits on the same ask. A failure is logged; the answer
+   * comes from what is stored.
+   */
+  private askForEmptyAddressBook(): Promise<void> {
+    if (this.addressBookAsk === null) {
+      if (this.namedContacts() > 0) return Promise.resolve();
+      this.addressBookAsk = (async () => {
+        try {
+          const sock = this.ensureConnected();
+          const decision = {
+            named: this.namedContacts(),
+            storedVersions: await this.hasAppStateVersions(sock),
+            resyncedAt: this.contactsResyncedAt(),
+            now: Date.now(),
+          };
+          if (!needsContactResync(decision)) return;
+          log("address book missing; requesting a full contact sync before find_contact answers");
+          await this.resyncContacts(sock);
+          await this.waitForNames(0, Date.now() + CONTACT_SETTLE_MS);
+        } catch (err) {
+          logError("contact sync", err);
+        }
+      })();
+    }
+    return this.addressBookAsk;
   }
 
   /** The recent exchange and the user's style in a chat, for a contact find_contact resolved. */

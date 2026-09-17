@@ -11,6 +11,7 @@ import { AccountHub } from "../dist/account-hub.js";
 import { AccountRegistry } from "../dist/accounts.js";
 import { registerTools } from "../dist/tools.js";
 import { WhatsAppService } from "../dist/whatsapp.js";
+import { IMPORT_META } from "../dist/legacy-import/index.js";
 import { asToolSource, connectedService, fakeSocket, offlineConfig } from "./helpers.mjs";
 
 const ME = "40700000001@s.whatsapp.net";
@@ -42,9 +43,9 @@ function seed(svc, jid, name) {
   svc.db.messages.upsert({ chatJid: jid, keyId: `${name}2`, fromMe: true, ts: now - 30_000, type: "text", text: "hai ca vin" });
 }
 
-test("an empty address book is asked for once per boot before the first answer, then never again", async () => {
-  const { svc, sock } = connectedService(WhatsAppService, { prefix: "wazap-find-sync-", id: ME, name: "Andrei" });
-  const stored = Object.fromEntries(COLLECTIONS.map((name) => [name, { version: 3 }]));
+/** A socket that stores app state versions and answers a resync with the address book, after `delayMs`. */
+function syncable(sock, { versions = true, delayMs = 0 } = {}) {
+  const stored = versions ? Object.fromEntries(COLLECTIONS.map((name) => [name, { version: 3 }])) : {};
   sock.authState = {
     keys: {
       get: async (_type, ids) => Object.fromEntries(ids.map((id) => [id, stored[id]])),
@@ -54,19 +55,41 @@ test("an empty address book is asked for once per boot before the first answer, 
     },
   };
   const asked = [];
-  // WhatsApp answers the resync with the address book, the way the snapshot arrives.
   sock.resyncAppState = async (collections) => {
     asked.push(collections);
-    sock.ev.emit("contacts.upsert", [{ id: ANA, name: "Ana Pop" }]);
+    setTimeout(() => sock.ev.emit("contacts.upsert", [{ id: ANA, name: "Ana Pop" }]), delayMs);
   };
+  return asked;
+}
 
-  const first = await svc.findContact({ name: "Ana" });
-  assert.equal(asked.length, 1, "asked before answering");
-  assert.equal(first.verdict, "resolved", "and the answer already reads the names that came back");
+test("an empty address book is asked for once, and every find waiting on it answers from the names that came back", async () => {
+  const { svc, sock } = connectedService(WhatsAppService, { prefix: "wazap-find-sync-", id: ME, name: "Andrei" });
+  const asked = syncable(sock, { delayMs: 200 });
+  const [first, second] = await Promise.all([svc.findContact({ name: "Ana" }), svc.findContact({ name: "Ana" })]);
+  assert.equal(asked.length, 1, "one ask for two finds at once");
+  assert.equal(first.verdict, "resolved", "the first answer reads the names that came back");
+  assert.equal(second.verdict, "resolved", "and so does the one that came in during the wait");
   assert.equal(first.candidates[0].candidate.jid, ANA);
   await svc.findContact({ name: "Ana" });
   assert.equal(asked.length, 1, "once per boot");
   await svc.stop();
+
+  // Another boot, whose account asked for its address book yesterday: the 7-day cooldown holds, and nothing waits.
+  const again = connectedService(WhatsAppService, { prefix: "wazap-find-sync-", id: ME, name: "Andrei" });
+  const askedAgain = syncable(again.sock);
+  again.svc.db.setMeta(IMPORT_META.contactsResyncedAt, String(Date.now() - 86_400_000));
+  const started = Date.now();
+  await again.svc.findContact({ name: "Ana" });
+  assert.equal(askedAgain.length, 0);
+  assert.ok(Date.now() - started < 5_000);
+  await again.svc.stop();
+
+  // No stored versions: the connection is already syncing, nothing to ask.
+  const fresh = connectedService(WhatsAppService, { prefix: "wazap-find-sync-", id: ME, name: "Andrei" });
+  const askedFresh = syncable(fresh.sock, { versions: false });
+  await fresh.svc.findContact({ name: "Ana" });
+  assert.equal(askedFresh.length, 0);
+  await fresh.svc.stop();
 
   const named = connectedService(WhatsAppService, { prefix: "wazap-find-sync-", id: ME, name: "Andrei" });
   named.sock.resyncAppState = async () => assert.fail("an address book with names is not asked for");
