@@ -1,6 +1,6 @@
 {
   "version": "1.0",
-  "description": "Capabilities the cases assert on, mapped to the 20 tools of wazap 1.0 (design §D1). One tool serves several capabilities where 1.0 folded tools together: catch_up is the catch-up and who is waiting, read_messages reads stories with chat_id \"status\", get_media downloads and transcribes. `normalize` gives each call the portable fields assertions read, so a case written for 0.23 scores the same intent here.",
+  "description": "Capabilities the cases assert on, mapped to the 20 tools of wazap 1.0 (design §D1). One tool serves several capabilities where 1.0 folded tools together: catch_up is the catch-up and who is waiting, read_messages reads stories with chat_id \"status\", get_media downloads and transcribes. `only_when` narrows a tool that serves several capabilities: a get_media call is transcribe only when its answer carries transcript or transcript_unavailable, or the message it names is a voice note or audio. `normalize` gives each call the portable fields assertions read, so a case written for 0.23 scores the same intent here.",
   "capabilities": {
     "meta": ["learn"],
     "accounts": ["get_status"],
@@ -18,6 +18,11 @@
     "immediate_write": ["react_to_message", "edit_message", "delete_message", "manage_chat", "manage_group"],
     "wait": ["wait_for_messages"],
     "link": ["link_account"]
+  },
+  "only_when": {
+    "transcribe": {
+      "get_media": { "any_of": ["result.transcript", "result.transcript_unavailable"], "message_type": ["voice", "audio"] }
+    }
   },
   "groups": {
     "write": ["draft", "commit", "immediate_write"],

@@ -163,6 +163,40 @@ const ORACLE = {
 
 const NULL_AGENT = new Proxy({}, { get: () => new Array(5).fill(async () => "Nu știu.") });
 
+describe("scoring get_media on the 1.0 map", () => {
+  const map = loadToolMap("1.0");
+  const refs = { messages: { dan_voice: { id: "false_40711000003@s.whatsapp.net_DV", type: "voice" }, meter_photo: { id: "false_40711000004@s.whatsapp.net_MP", type: "image" } } };
+  const getMedia = (seq, message, { result = null, error = null } = {}) => ({
+    seq,
+    turn: 1,
+    tool: "get_media",
+    session: "s1",
+    account: result === null ? null : "personal",
+    args: { message_id: refs.messages[message].id },
+    is_error: error !== null,
+    error,
+    result,
+  });
+  const photo = (seq) => getMedia(seq, "meter_photo", { result: { type: "image", path: "/data/accounts/personal/media/1.jpeg", image_attached: true } });
+  const heard = (seq) => getMedia(seq, "dan_voice", { result: { type: "voice", transcript_unavailable: { code: "TRANSCRIBE_UNAVAILABLE", message: "transcription is off" }, path: "/x.ogg" } });
+  const score = (id, trace, text) =>
+    Object.fromEntries(
+      scoreAttempt({ theCase: loadCases().find((entry) => entry.id === id), trace, effects: [], turns: [{ user: "", text }], state: {}, refs, toolMap: map }).assertions.map((entry) => [entry.name, entry.passed])
+    );
+
+  test("opening a photo is media, never a transcription", () => {
+    const verdict = score("N5", [photo(1)], "Mama a zis că duminică la 7 e cina.");
+    assert.equal(verdict.no_transcribe_call, true);
+  });
+
+  test("a get_media that transcribed, or named a voice note, is a transcription, even when it failed", () => {
+    const cached = getMedia(1, "dan_voice", { result: { type: "voice", transcript: { text: "vin la 7", provider: "local", cached: true } } });
+    assert.equal(score("N5", [cached], "duminică la 7").no_transcribe_call, false);
+    assert.equal(score("P16", [heard(1), photo(2), photo(3)], "Transcrierea e oprită.").transcribe_at_most_once, true, "one transcription and two photos");
+    assert.equal(score("P16", [heard(1), getMedia(2, "dan_voice", { error: "MEDIA_UNAVAILABLE" })], "Transcrierea e oprită.").transcribe_at_most_once, false, "an error on the same voice note counts too");
+  });
+});
+
 describe("evaluation harness", () => {
   let server;
   let control;
@@ -218,6 +252,7 @@ describe("evaluation harness", () => {
     for (const theCase of cases) assert.doesNotThrow(() => resolveCase(theCase, refs), theCase.id);
     assert.equal(selectCases(cases, "baseline-0.23").length, 26);
     assert.equal(selectCases(cases, "chatgpt").length, 22);
+    assert.deepEqual([refs.messages.dan_voice.type, refs.messages.meter_photo.type, refs.messages.extras_pdf.type], ["voice", "image", "document"], "the scorer reads a message's type off the references");
   });
 
   /** Plays `agent` through `theCase` on a fresh world and scores it, against `map` (1.0 unless given). */

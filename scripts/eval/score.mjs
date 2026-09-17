@@ -130,9 +130,38 @@ export function toolsOf(toolMap, names) {
   return out;
 }
 
+/** Capability and group names → the capability names they stand for. */
+function capabilityNames(toolMap, names) {
+  const out = new Set();
+  const visit = (name) => {
+    if (toolMap.capabilities[name]) out.add(name);
+    else if (toolMap.groups?.[name]) toolMap.groups[name].forEach(visit);
+    else throw new Error(`Unknown capability "${name}" in tool map ${toolMap.version}`);
+  };
+  [names].flat().forEach(visit);
+  return out;
+}
+
+/**
+ * Whether a call is `capability`: its tool serves it, and the map's
+ * `only_when` for that tool, if any, holds. A rule holds when a path of the
+ * call (`any_of`) has a value, or the message the call names is of a
+ * `message_type`: the type its answer gives, or, for a call that answered
+ * none, the type the world's references give.
+ */
+export function callIs(call, capability, toolMap, refs = {}) {
+  if (!toolMap.capabilities[capability]?.includes(call.tool)) return false;
+  const rule = toolMap.only_when?.[capability]?.[call.tool];
+  if (rule === undefined) return true;
+  if ((rule.any_of ?? []).some((path) => getPath(call, path) !== undefined && getPath(call, path) !== null)) return true;
+  const named = call.args?.message_id;
+  const type = call.result?.type ?? Object.values(refs.messages ?? {}).find((message) => message.id === named)?.type;
+  return (rule.message_type ?? []).includes(type);
+}
+
 /** A trace entry with the portable fields the map defines. */
-export function normalizeCall(entry, toolMap) {
-  const call = { ...entry, capabilities: Object.entries(toolMap.capabilities).filter(([, tools]) => tools.includes(entry.tool)).map(([name]) => name) };
+export function normalizeCall(entry, toolMap, refs = {}) {
+  const call = { ...entry, capabilities: Object.keys(toolMap.capabilities).filter((name) => callIs(entry, name, toolMap, refs)) };
   // The accounts a call read: the one it resolved to, or each one a call that
   // answered for several lists (catch_up without account_id; account null).
   call.accounts =
@@ -166,10 +195,10 @@ function turnMatches(turn, spec) {
 }
 
 export function selectCalls(calls, selector = {}, ctx = {}) {
-  const tools = selector.capability === undefined ? null : toolsOf(ctx.toolMap, selector.capability);
+  const capabilities = selector.capability === undefined ? null : [...capabilityNames(ctx.toolMap, selector.capability)];
   const named = selector.tool === undefined ? null : new Set([selector.tool].flat());
   return calls.filter((call) => {
-    if (tools && !tools.has(call.tool)) return false;
+    if (capabilities && !capabilities.some((name) => callIs(call, name, ctx.toolMap, ctx.refs))) return false;
     if (named && !named.has(call.tool)) return false;
     if (!turnMatches(call.turn, selector.turn)) return false;
     if (selector.session !== undefined && call.session !== selector.session) return false;
@@ -374,7 +403,7 @@ export function evaluate(assertion, ctx) {
 /** Every assertion of `theCase` against one attempt's records. */
 export function scoreAttempt({ theCase, trace, effects, turns, state, refs, toolMap }) {
   const resolved = resolveCase(theCase, refs);
-  const calls = trace.map((entry) => normalizeCall(entry, toolMap));
+  const calls = trace.map((entry) => normalizeCall(entry, toolMap, refs));
   const ctx = { calls, effects, turns, state, refs, toolMap };
   const assertions = resolved.assert.map((assertion) => {
     try {
