@@ -24,7 +24,7 @@ answers.
 | `mark_handled` | `remember` with `handled: true` |
 | `search_messages` | `search` with `match: "words"` |
 | `recall` | `search` (by meaning and words by default; when meaning search cannot run — off, a failing embedding server, a sidecar not up within 8 s — it matches words and says `mode: "keyword_fallback"`, with `recall_unavailable.code`) |
-| `search_contacts` | `find_contact` by `name` (a name, or a number however it is written), or with `tag` to list everyone filed under it |
+| `search_contacts` | `find_contact` by `name` (a name, or a number however it is written), or with `tag` to list everyone filed under it (the limit shared between accounts, `omitted` counting the rest on each) |
 | `get_contact` | `find_contact` with the number or the id as `name`: a resolved person carries their number, note, tags and details; `about`, the profile picture and `is_blocked` are removed (below) |
 | `sync_contacts` | automatic: `find_contact` asks for an address book that looks empty; `wazap contacts resync` while no server runs |
 | `download_media` | `get_media` (`save_to`); on a voice note or audio, `save_to` gives the file and starts no transcription |

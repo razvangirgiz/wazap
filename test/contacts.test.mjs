@@ -389,7 +389,8 @@ test("find_contact asks for a name or a tag, and lists a tag with each person's 
   assert.equal(textError(await call("find_contact", {})).error, "INVALID_ID");
 
   const listed = await call("find_contact", { tag: "#Furnizori", limit: 10 });
-  assert.deepEqual(calls[0], ["", 10, { tag: "#Furnizori" }]);
+  assert.deepEqual([calls[0][0], calls[0][2]], ["", { tag: "#Furnizori" }]);
+  assert.ok(calls[0][1] > 10, "more than the limit is asked for, so what the limit leaves out can be counted");
   assert.equal(listed.structuredContent.status, "listed");
   assert.deepEqual(listed.structuredContent.contacts, [
     { chat_id: "40700000061@s.whatsapp.net", name: "Ionut", number: "40700000061", saved: true, tags: ["furnizori"], fields: { role: "contabil" } },

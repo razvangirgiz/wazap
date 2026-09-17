@@ -400,7 +400,8 @@ filed on them (note, tags, details). A number, however it is written
 is looked up as such: `resolved` with `matched.source` `number` or `id`, or
 `not_found` telling the agent to check the number.
 `find_contact({ tag: "client" })` lists everyone filed under a tag instead,
-each with their `chat_id`.
+each with their `chat_id`: up to `limit` (50), shared between the accounts, with
+`omitted` counting on each account whoever the limit left out.
 
 **Draft context.** A resolved contact also carries what a message to them is
 written after: the last 8 messages both ways (each cut to 200 characters,

@@ -319,6 +319,48 @@ test("a number, however it is written, or an id resolves to who it is, with what
   await hub.stop();
 });
 
+test("a tag listed over two accounts shares the limit between them and counts what it left out on each", async () => {
+  const config = offlineConfig("wazap-find-tag-share-", { readOnly: false });
+  const registry = AccountRegistry.load(config.dataDir);
+  registry.add("work", "Work");
+  const hub = new AccountHub(config, AccountRegistry.load(config.dataDir));
+  const home = hub.get("default");
+  const work = hub.get("work");
+  connect(home, ME);
+  connect(work, WORK_ME);
+  const server = fakeServer();
+  registerTools(server, asToolSource(hub), { allowWrite: false });
+  const call = async (name, args) => (await server.tools.get(name).handler(args)).structuredContent;
+  for (const [svc, account, first] of [
+    [home, "default", 40722100000],
+    [work, "work", 40722200000],
+  ]) {
+    for (let i = 1; i <= 4; i++) {
+      const jid = `${first + i}@s.whatsapp.net`;
+      svc.db.identity.upsertContact({ jid, name: `Client ${account} ${i}`, listed: true });
+      await call("remember", { chat_id: jid, add_tags: ["client"], account_id: account });
+    }
+  }
+
+  const cut = await call("find_contact", { tag: "client", limit: 5 });
+  assert.equal(cut.status, "listed");
+  const per = (account) => cut.contacts.filter((c) => c.account_id === account).length;
+  assert.deepEqual([per("default"), per("work")], [3, 2], "neither account's list crowds out the other's");
+  assert.deepEqual(cut.omitted, [
+    { account_id: "default", count: 1 },
+    { account_id: "work", count: 2 },
+  ]);
+  const text = (await server.tools.get("find_contact").handler({ tag: "client", limit: 5 })).content[0].text;
+  assert.match(text, /3 more not shown \(1 on default, 2 on work\)/);
+
+  const whole = await call("find_contact", { tag: "client" });
+  assert.equal(whole.contacts.length, 8);
+  assert.equal(whole.omitted, undefined, "nothing left out, nothing said");
+  const one = await call("find_contact", { tag: "client", limit: 3, account_id: "work" });
+  assert.deepEqual([one.contacts.length, one.omitted], [3, [{ account_id: "work", count: 1 }]]);
+  await hub.stop();
+});
+
 test("find_contact's limit says ambiguous answers list at most five people from each account", () => {
   const server = fakeServer();
   registerTools(server, asToolSource({}), { allowWrite: false });

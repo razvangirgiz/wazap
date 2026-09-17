@@ -330,8 +330,15 @@ export function renderFindContact(structured: Record<string, unknown>): string {
       const contacts = structured.contacts as Array<Record<string, unknown>>;
       const tag = (structured.query as { tag: string }).tag;
       if (contacts.length === 0) return [`Nobody is filed under #${tag}.`, unsearched].filter(Boolean).join("\n");
+      const omitted = (structured.omitted as Array<{ account_id: string; count: number }> | undefined) ?? [];
+      const left = omitted.reduce((sum, entry) => sum + entry.count, 0);
+      const cut =
+        left === 0
+          ? null
+          : `${left} more not shown (${omitted.map((entry) => `${entry.count} on ${entry.account_id}`).join(", ")}): raise limit, up to ${MAX_LISTED}, or narrow it with name or account_id.`;
       return [
         `# Filed under #${tag} (${contacts.length})`,
+        cut,
         ...contacts.map(
           (c) =>
             `- ${c.name as string}${c.account_id ? ` (account ${c.account_id as string})` : ""} — ${c.chat_id as string}${c.number ? ` (${c.number as string})` : ""}${c.saved ? " · saved" : ""}${filedLine(c) ? ` · ${filedLine(c)}` : ""}`
@@ -454,6 +461,10 @@ export const FIND_CONTACT_OUTPUT = {
   candidates: z.array(candidateSchema).optional().describe("Only when ambiguous; best first"),
   closest: z.array(candidateSchema).optional().describe("Only when not_found"),
   contacts: z.array(listedSchema).optional().describe("Only when listed: everyone filed under the tag"),
+  omitted: z
+    .array(z.object({ account_id: z.string(), count: z.number().int() }))
+    .optional()
+    .describe("Only when listed and cut by limit: how many more on each account"),
   fix: z.string().optional().describe("What to do next, when not resolved"),
   accounts_searched: z.array(z.string()).optional(),
   accounts_unavailable: z.array(z.object({ account_id: z.string(), error: z.string() })).optional(),
@@ -493,6 +504,8 @@ function contextAllowed(ctx: ToolCtx, binding: Pick<AccountBinding, "id" | "wa">
 
 /** A tag lists at most this many people. */
 const MAX_LISTED = 50;
+/** People one account is asked for under a tag: more than any list shows, so what the limit leaves out can be counted. */
+const TAG_SCAN_MAX = 10_000;
 
 /**
  * Everyone the user filed under a tag, on one account or every one: a list
@@ -504,8 +517,8 @@ async function listTagged(args: FindContactArgs & { tag: string }, ctx: ToolCtx)
   const everyone = args.account_id === undefined ? ctx.hub.bindings() : [];
   const multi = everyone.length > 1;
   const targets: Array<Pick<AccountBinding, "id" | "wa">> = multi ? everyone : [{ id: ctx.accountId, wa: ctx.wa }];
-  const settled = await Promise.allSettled(targets.map((target) => target.wa.searchContacts(args.name ?? "", limit, { tag: args.tag })));
-  const contacts: Array<Record<string, unknown>> = [];
+  const settled = await Promise.allSettled(targets.map((target) => target.wa.searchContacts(args.name ?? "", TAG_SCAN_MAX, { tag: args.tag })));
+  const perAccount: Array<{ accountId: string; rows: Array<Record<string, unknown>> }> = [];
   const unavailable: UnavailableAccount[] = [];
   settled.forEach((result, index) => {
     const accountId = targets[index]!.id;
@@ -513,8 +526,10 @@ async function listTagged(args: FindContactArgs & { tag: string }, ctx: ToolCtx)
       unavailable.push({ account_id: accountId, error: asWazapError(result.reason).code });
       return;
     }
+    const rows: Array<Record<string, unknown>> = [];
+    perAccount.push({ accountId, rows });
     for (const c of result.value) {
-      contacts.push({
+      rows.push({
         ...(multi ? { account_id: accountId } : {}),
         chat_id: c.contact_id,
         name: c.name,
@@ -530,10 +545,27 @@ async function listTagged(args: FindContactArgs & { tag: string }, ctx: ToolCtx)
   if (unavailable.length === targets.length) {
     throw asWazapError(settled.find((result): result is PromiseRejectedResult => result.status === "rejected")?.reason);
   }
+  // The limit is shared out a person per account a round, so one account's long list never crowds out another's.
+  const taken = perAccount.map(() => 0);
+  for (let round = 0, left = limit; left > 0; round++) {
+    let more = false;
+    perAccount.forEach((account, index) => {
+      if (left > 0 && round < account.rows.length) {
+        taken[index]!++;
+        left--;
+        more = true;
+      }
+    });
+    if (!more) break;
+  }
+  const omitted = perAccount
+    .map((account, index) => ({ account_id: account.accountId, count: account.rows.length - taken[index]! }))
+    .filter((entry) => entry.count > 0);
   const structured: Record<string, unknown> = {
     status: "listed",
     query: { tag: args.tag, ...(args.name === undefined ? {} : { name: args.name }), kind: "person", words: [], relationship: null },
-    contacts: contacts.slice(0, limit),
+    contacts: perAccount.flatMap((account, index) => account.rows.slice(0, taken[index])),
+    ...(omitted.length > 0 ? { omitted } : {}),
   };
   if (multi) {
     structured.accounts_searched = targets.map((target) => target.id);
