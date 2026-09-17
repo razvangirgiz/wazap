@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+### Fixed
+
+- **`recall` again answers a short question padded with function words.** The
+  two-word rule for long queries counts only content words, so "what time are
+  we meeting" keeps a hit sharing one of them; "the", „când” or „este” never
+  count as a match, and a query made only of such words needs its hits'
+  meaning to clear the floor.
+
 ## 0.23.0
 ### Changed
 
