@@ -32,7 +32,6 @@ const READ_TOOLS = [
   "get_unanswered",
   "catch_up",
   "wait_for_messages",
-  "get_stories",
   "remember",
 ];
 

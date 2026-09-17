@@ -5400,7 +5400,7 @@ export class WhatsAppService implements WhatsAppApi {
 
   /**
    * A story is a message on the status feed with its author as the sender. It
-   * lists nowhere but get_stories, wakes no wait, and goes after a day, as on
+   * lists nowhere but read_messages on "status", wakes no wait, and goes after a day, as on
    * the phone; a revoked one leaves nothing behind.
    */
   private ingestStory(raw: WAMessage): void {

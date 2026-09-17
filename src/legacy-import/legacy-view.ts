@@ -41,7 +41,7 @@ export interface LegacyMarks {
 
 export interface LegacyView {
   chats: LegacyChat[];
-  /** Stories get_stories would list for the last day. */
+  /** Stories read_messages on "status" would list for the last day. */
   stories: LegacyMessage[];
   /** Retention after the boot: every spelling of every deleted, revoked or expired message. */
   deleted: string[];

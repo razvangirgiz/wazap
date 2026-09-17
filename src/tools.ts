@@ -255,7 +255,7 @@ link_account when it says no account is linked yet.
 - Who is who: remember(chat_id, note) keeps what the user says about a person,
   locally; tags and fields ("role": "contabil") file them so find_contact
   resolves "the accountant". All of it stays on this machine.
-- Stories: get_stories lists the status updates received in the last day, by
+- Stories: read_messages(chat_id: "status") lists the status updates received in the last day, by
   author; they show nowhere else.
 - Stay on the line: wait_for_messages blocks up to 55 s until something arrives,
   and returns a cursor; call it again with that cursor to miss nothing between
@@ -468,20 +468,47 @@ from_me}, archived, pinned, muted_until, and left (groups you are no longer in).
   tool({
     name: "read_messages",
     title: "Read messages from a WhatsApp chat",
-    description: `Read messages from one chat, oldest to newest.
-
-Without \`before\` you get the most recent messages. Pass \`before\` (the oldest
-message_id you already have) to page further back; wazap asks the phone for
-older history when the local store runs out, which takes a few seconds.`,
+    description: `Read one chat, oldest to newest: the latest messages, or older ones with before (wazap asks the phone when the local history runs out). chat_id "status" reads the stories people posted, newest first, from the last hours (at most a day); they show nowhere else.`,
     schema: {
-      chat_id: chatId,
-      limit: z.number().int().min(1).max(200).default(20).describe("Maximum number of messages (1-200)"),
-      before: messageId.optional().describe("Return the messages immediately older than this message_id"),
+      chat_id: chatId.describe('Chat id from another tool, a phone number, or "status" for stories'),
+      limit: z.number().int().min(1).max(200).default(20),
+      before: messageId.optional().describe("The oldest message_id you have"),
       types: messageTypes,
       include_previews: includePreviews,
+      hours: z.number().int().min(1).max(24).optional().describe('"status" only: how far back, 24 by default'),
     },
     write: false,
-    handler: async ({ chat_id, limit, before, types, include_previews }, { wa }) => {
+    handler: async ({ chat_id, limit, before, types, include_previews, hours }, { wa }) => {
+      if (isStatusChat(chat_id)) {
+        if (before !== undefined) {
+          throw new WazapError("INVALID_ID", "Stories are not paged: before does not apply to status.", "Pass hours (1-24) instead");
+        }
+        const window = hours ?? 24;
+        const result = await wa.getStories(window);
+        const matching = types === undefined ? result.data : result.data.filter((m) => types.includes(m.type));
+        const stories = matching.slice(0, limit);
+        const previews = include_previews ? await wa.previews(newestFirst(stories), MAX_PREVIEWS) : [];
+        const omitted = matching.length - stories.length;
+        const note = [previewNote(stories, previews, include_previews), omitted > 0 ? `${omitted} older stories left out; raise limit for them.` : null]
+          .filter(Boolean)
+          .join(" ");
+        return ok(
+          renderStories(stories, window, previewLabels(previews), note || null),
+          synced(result, {
+            chat_id: "status",
+            hours: window,
+            ...(types === undefined ? {} : { types }),
+            count: stories.length,
+            ...(omitted > 0 ? { omitted } : {}),
+            preview_count: previews.length,
+            messages: stories,
+          }),
+          previewBlocks(previews)
+        );
+      }
+      if (hours !== undefined) {
+        throw new WazapError("INVALID_ID", 'hours applies to chat_id "status" only.', "Page back through a chat with before instead");
+      }
       const result = await wa.readMessages(chat_id, limit, before, types);
       const previews = include_previews ? await wa.previews(newestFirst(result.data), MAX_PREVIEWS) : [];
       return ok(
@@ -502,7 +529,6 @@ older history when the local store runs out, which takes a few seconds.`,
       );
     },
   }),
-
   tool({
     name: "get_recent_messages",
     title: "Get every WhatsApp conversation from the last N hours",
@@ -600,36 +626,6 @@ get_recent_messages for what happened, and this for who is still waiting.`,
       return ok(
         renderUnanswered(result.data, min_age_hours),
         synced(result, { min_age_hours, max_age_hours, count: result.data.length, chats: result.data })
-      );
-    },
-  }),
-
-  tool({
-    name: "get_stories",
-    title: "See the stories people posted",
-    description: `The stories (status updates) the linked account has received in the last N
-hours, newest first, each with its author, its text or caption and its time.
-WhatsApp keeps a story for a day and so does wazap; nothing older is held.
-With include_previews the photos come as small images, and get_media
-works on a story's message_id like on any message. Stories never appear in
-chats, catch-ups or waits; this is the only place they show.`,
-    schema: {
-      hours: z.number().int().min(1).max(24).default(24).describe("Look-back window in hours (1-24)"),
-      include_previews: includePreviews,
-    },
-    write: false,
-    handler: async ({ hours, include_previews }, { wa }) => {
-      const result = await wa.getStories(hours);
-      const previews = include_previews ? await wa.previews(newestFirst(result.data), MAX_PREVIEWS) : [];
-      return ok(
-        renderStories(
-          result.data,
-          hours,
-          previewLabels(previews),
-          previewNote(result.data, previews, include_previews)
-        ),
-        synced(result, { hours, count: result.data.length, preview_count: previews.length, stories: result.data }),
-        previewBlocks(previews)
       );
     },
   }),
@@ -1333,6 +1329,12 @@ function renderChats(chats: ChatSummary[], filter: string): string {
     lines.push("");
   }
   return lines.join("\n");
+}
+
+/** What read_messages takes for the stories: "status", or WhatsApp's own id for them. */
+function isStatusChat(chatId: string): boolean {
+  const id = chatId.trim().toLowerCase();
+  return id === "status" || id === "status@broadcast";
 }
 
 /** A date or an ISO timestamp as epoch ms; a bare date for `until` means the end of that day. */
