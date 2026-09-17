@@ -444,7 +444,8 @@ test("a logout whose clear step throws propagates the error and leaves the accou
     chmodSync(locked, 0o500);
   });
   t.after(() => chmodSync(locked, 0o700));
-  await assert.rejects(hub.logout("work"), (err) => err.code === "EACCES");
+  // Node 22 reports the read-only folder as EACCES; Node 24's recursive delete as ENOTEMPTY.
+  await assert.rejects(hub.logout("work"), (err) => ["EACCES", "EPERM", "ENOTEMPTY"].includes(err.code));
   assert.equal(work.stopped, true);
   await assertServedAgain(hub, "work", work);
 });

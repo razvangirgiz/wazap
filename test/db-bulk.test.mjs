@@ -17,7 +17,10 @@ const turn = () => new Promise((resolve) => setImmediate(resolve));
 
 const OTHER = "40700000003@s.whatsapp.net";
 /** Generous on purpose: a 200-row chunk takes a few ms; the bound only catches a loop that never yields. */
-const MAX_BLOCK_MS = 250;
+// The bound proves chunks stay small, not how fast a machine is: shared CI
+// runners stall several times longer on the same chunk, and the turn count
+// above each check already proves the loop ran between chunks.
+const MAX_BLOCK_MS = process.env.CI ? 1_000 : 250;
 
 /** Counts event-loop turns and the longest stall while `work` runs. */
 async function watchLoop(work) {
