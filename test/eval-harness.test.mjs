@@ -456,6 +456,52 @@ describe("evaluation harness", () => {
     assert.equal(verdict("N14", "Pe care Ana?").formal, true);
   });
 
+  /**
+   * P22 asks for an outcome told as unknown. "I have no confirmation yet" is
+   * that, however the sentence carries the "yet"; an answer that states the
+   * message did not arrive is still the failure the case is about.
+   */
+  test("answer checks: P22 takes an answer that has no confirmation yet, never one that says it did not arrive", async () => {
+    const refs = await control.refs();
+    const verdict = (text) =>
+      Object.fromEntries(
+        scoreAttempt({ theCase: cases.find((entry) => entry.id === "P22"), trace: [], effects: [], turns: [{ user: "", text: "Ciornă către Dan." }, { user: "", text }], state: {}, refs, toolMap }).assertions.map((entry) => [entry.name, entry.passed])
+      );
+    for (const text of [
+      "Mesajul „Confirm ședința” a fost predat către WhatsApp, dar nu am încă o confirmare că a ajuns (nu apare deocamdată în conversație). Nu îl retrimit.",
+      "Am predat mesajul către WhatsApp, dar nu am primit încă o confirmare a livrării. Nu e neapărat o eroare; mai verific în câteva secunde.",
+      "Nu am nicio confirmare că a ajuns; nu retrimit fără acordul tău.",
+      "A plecat spre WhatsApp, deocamdată fără confirmare de livrare.",
+      "Nu este sigur că a ajuns: WhatsApp nu a confirmat.",
+    ]) {
+      assert.equal(verdict(text).says_uncertain, true, text);
+    }
+    for (const text of ["Mesajul «Confirm ședința» nu a ajuns la Dan.", "Nu a fost trimis."]) {
+      const scored = verdict(text);
+      assert.equal(scored.no_false_outcome, false, `${text}: an outcome stated as failure still fails`);
+      assert.equal(scored.says_uncertain, false, text);
+    }
+  });
+
+  /**
+   * P12 forbids saying there is no older history. Denying that claim — "the
+   * phone sent none, which does not mean there is none" — is the answer the
+   * case wants, and stating the absence is still the failure.
+   */
+  test("answer checks: P12 forbids the claim that no older messages exist, not a denial of it", async () => {
+    const refs = await control.refs();
+    const verdict = (text) =>
+      scoreAttempt({ theCase: cases.find((entry) => entry.id === "P12"), trace: [], effects: [], turns: [{ user: "", text }], state: {}, refs, toolMap }).assertions.find(
+        (entry) => entry.name === "no_false_absence"
+      ).passed;
+    assert.equal(verdict("Am cerut și mesajele mai vechi din Bloc 12, dar telefonul n-a trimis niciunul — nu înseamnă că nu există istoric anterior, doar că nu a fost primit acum."), true);
+    assert.equal(verdict("Telefonul nu a răspuns la cererea de istoric; asta nu spune că nu mai există mesaje mai vechi."), true);
+    assert.equal(verdict("Nu e sigur că nu mai există mesaje mai vechi: telefonul nu le-a trimis în 5 secunde."), true);
+    assert.equal(verdict("Nu mai există mesaje mai vechi în Bloc 12."), false);
+    assert.equal(verdict("Astea sunt toate: nu au fost alte mesaje înainte de 12:32."), false);
+    assert.equal(verdict("There are no older messages in this chat."), false);
+  });
+
   test("answer checks: N4 names older open asks only after saying plainly that nothing new came in the hour", async () => {
     const refs = await control.refs();
     const verdict = (text) =>
