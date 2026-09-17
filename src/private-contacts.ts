@@ -15,7 +15,9 @@
  * - wait_for_messages, unless it waits on their chat, keeps what arrived from
  *   them without its words (withoutWords), marked `private`;
  * - list_chats keeps the last message of their chat, or theirs in a group,
- *   without its words, marked `private`.
+ *   without its words, marked `private`;
+ * - read_messages on "status" keeps their stories without text, caption or
+ *   preview, marked `private`: a story is never asked for by name.
  *
  * The tag goes with the person, not only their chat: what they write in a
  * group is theirs too. A broad read takes the whole set once per call

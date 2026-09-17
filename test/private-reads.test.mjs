@@ -170,3 +170,39 @@ test("list_chats shows the last message of a #private person's chat, and theirs 
   const group = await call("read_messages", { chat_id: GROUP });
   assert.ok(group.structuredContent.messages.some((m) => m.text === "am pierdut sarcina, nu mai vin"), "a group named reads whole");
 });
+
+test("the stories of someone #private keep their author, time and kind, without text, caption or preview", async () => {
+  const { svc, sock } = account();
+  const { call } = schemaCheckedTools(svc, { allowWrite: false });
+  const jpeg = new Uint8Array([0xff, 0xd8, 0xff, 0xe0, 9, 9, 9, 9]);
+  let seq = 0;
+  const story = (author, message, at) =>
+    sock.ev.emit("messages.upsert", {
+      type: "notify",
+      messages: [{ key: { remoteJid: "status@broadcast", fromMe: false, id: `S${++seq}`, participant: author }, message, messageTimestamp: Math.floor(at / 1000) }],
+    });
+  const at = Date.now() - 30 * MINUTE;
+  story(ANA, { extendedTextMessage: { text: "prima zi după operație" } }, at);
+  story(ANA, { imageMessage: { mimetype: "image/jpeg", caption: "salonul de la oncologie", jpegThumbnail: jpeg } }, at + MINUTE);
+  story(DAN, { imageMessage: { mimetype: "image/jpeg", caption: "la munte", jpegThumbnail: jpeg } }, at + 2 * MINUTE);
+  svc.db.identity.updateFields(ANA, { addTags: ["private"] });
+
+  const result = await call("read_messages", { chat_id: "status", include_previews: true });
+  const all = everything(result);
+  for (const words of ["operație", "oncologie"]) assert.ok(!all.includes(words), words);
+  assert.deepEqual(
+    result.structuredContent.messages.map((m) => [m.sender.name, m.type, m.text, m.private]),
+    [
+      ["Dan", "image", "[image] la munte", undefined],
+      ["Ana", "image", "[private]", true],
+      ["Ana", "text", "[private]", true],
+    ]
+  );
+  assert.equal(result.structuredContent.preview_count, 1, "Dan's photo only");
+  assert.equal(result.content.filter((block) => block.type === "image").length, 1);
+  assert.match(result.content[0].text, /1 preview attached/);
+  assert.doesNotMatch(result.content[0].text, /without a preview/, "hers is not a photo that failed");
+  assert.match(result.content[0].text, /## Ana — `40700000002@s\.whatsapp\.net`\n- \d+m ago · \[private\] · id: /);
+  const images = await call("read_messages", { chat_id: "status", types: ["image"] });
+  assert.equal(images.structuredContent.count, 2, "what kind stays: types still finds hers");
+});

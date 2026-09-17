@@ -83,6 +83,9 @@ const LIST_CHATS_OUTPUT = {
   account_id: z.string(),
 };
 
+/** A message in a broad read, which may be someone's kept #private (src/private-contacts.ts). */
+const BROAD_MESSAGE_OUT = MESSAGE_OUT.extend({ private: z.literal(true).optional().describe("Tagged #private: no words") }).passthrough();
+
 const READ_OUTPUT = {
   chat_id: z.string(),
   types: z.array(z.string()).optional(),
@@ -90,13 +93,10 @@ const READ_OUTPUT = {
   count: z.number(),
   omitted: z.number().optional().describe("Older stories left out by limit"),
   preview_count: z.number(),
-  messages: z.array(MESSAGE_OUT),
+  messages: z.array(BROAD_MESSAGE_OUT),
   sync: z.string(),
   account_id: z.string(),
 };
-
-/** A message in a broad read, which may be someone's kept #private (src/private-contacts.ts). */
-const BROAD_MESSAGE_OUT = MESSAGE_OUT.extend({ private: z.literal(true).optional().describe("Tagged #private: no words") }).passthrough();
 
 const WAIT_OUTPUT = {
   count: z.number(),
@@ -481,12 +481,14 @@ const TOOLS: readonly ToolDef[] = [
           throw new WazapError("INVALID_ID", "Stories are not paged: before does not apply to status.", "Pass hours (1-24) instead");
         }
         const window = hours ?? 24;
-        const result = await wa.getStories(window);
+        const result = await wa.getStories(window, { private: { others: [] } });
         const matching = types === undefined ? result.data : result.data.filter((m) => types.includes(m.type));
         const stories = matching.slice(0, limit);
-        const previews = include_previews ? await wa.previews(newestFirst(stories), MAX_PREVIEWS) : [];
+        // A story of someone tagged #private gets no preview: what it shows is its words.
+        const open = stories.filter((m) => m.private !== true);
+        const previews = include_previews ? await wa.previews(newestFirst(open), MAX_PREVIEWS) : [];
         const omitted = matching.length - stories.length;
-        const note = [previewNote(stories, previews, include_previews), omitted > 0 ? `${omitted} older stories left out; raise limit for them.` : null]
+        const note = [previewNote(open, previews, include_previews), omitted > 0 ? `${omitted} older stories left out; raise limit for them.` : null]
           .filter(Boolean)
           .join(" ");
         return ok(

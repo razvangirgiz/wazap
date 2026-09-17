@@ -731,7 +731,8 @@ export interface WhatsAppApi {
   downloadMedia(messageId: string, saveTo?: string): Promise<MediaResult>;
   transcribeAudio(messageId: string, language?: string, opts?: TranscribeOptions): Promise<TranscribeResult>;
   waitForMessages(opts: WaitOptions): Promise<WaitResult>;
-  getStories(hours: number): Promise<Synced<MessageView[]>>;
+  /** With `private`, a story of someone tagged #private comes without its words. */
+  getStories(hours: number, opts?: { private?: PrivateRule }): Promise<Synced<MessageView[]>>;
   setContactNote(contactId: string, note: string): Promise<ContactSummary>;
   markHandled(chatId: string): Promise<HandledResult>;
   previews(messageIds: string[], max: number): Promise<Preview[]>;

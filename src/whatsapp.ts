@@ -1907,7 +1907,7 @@ export class WhatsAppService implements WhatsAppApi {
   }
 
   /** The stories of the last `hours`, newest first, each with its author as the sender. */
-  getStories(hours: number): Promise<Synced<MessageView[]>> {
+  getStories(hours: number, opts: { private?: PrivateRule } = {}): Promise<Synced<MessageView[]>> {
     return this.guarded(async () => {
       this.ensureConnected();
       await this.waitForSync();
@@ -1921,7 +1921,10 @@ export class WhatsAppService implements WhatsAppApi {
         before = page.nextBefore;
       }
       await this.learnLidPhones(stories.flatMap((story) => (story.senderJid === null ? [] : [story.senderJid])));
-      return this.synced(this.viewsOfStored(stories));
+      const views = this.viewsOfStored(stories);
+      const people = this.privateScope(opts.private);
+      // Stories are never asked for by name: a #private person's keep who, when and what kind.
+      return this.synced(people === null ? views : views.map((view, i) => (people.message(stories[i]!) ? withoutWords(view) : view)));
     });
   }
 
