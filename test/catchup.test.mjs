@@ -395,6 +395,33 @@ test("people: saved contacts first, by how much they wrote; business and unknown
   assert.match(text(result), /- Dan · 3 new · \d\d:\d\d · 2 photos, 1 sticker — "\[image\] uite ce am găsit" \(\+2 more\) · 40700000003@s\.whatsapp\.net/);
 });
 
+test("group names come from cached metadata: at most twelve groups fetched, and a fetch that hangs costs a second, not the answer", async () => {
+  const { svc, sock, arrive } = account();
+  const { call } = toolsOf(svc);
+  const lid = "777888999000111@lid";
+  const fetched = [];
+  sock.groupMetadata = async (id) => {
+    fetched.push(id);
+    if (id.startsWith("120363000000009")) return new Promise(() => {});
+    return { id, subject: "Meniul zilei", participants: [{ id: lid, phoneNumber: "40700000040@s.whatsapp.net", name: "Rodica" }] };
+  };
+  for (let g = 0; g < 15; g++) {
+    const jid = `12036300000000${g < 10 ? `9${g}` : `8${g}`}@g.us`;
+    arrive(jid, `mesaj ${g} de la cineva din grup`, { participant: lid, at: Date.now() - HOUR + g * 1000 });
+  }
+  const started = Date.now();
+  const first = await call("catch_up", { hours: 24 });
+  const took = Date.now() - started;
+  assert.ok(took >= 900 && took < 2_500, `seven fetches hang: the answer waits about a second (${took} ms)`);
+  assert.equal(new Set(fetched).size, 12, "a dozen groups at most");
+  assert.equal(first.structuredContent.groups.length, 15);
+  assert.ok(first.structuredContent.groups.every((group) => group.top.includes("Rodica")), "a sender the address book lacks has the name a group gave them");
+  const answered = fetched.filter((id) => !id.startsWith("120363000000009"));
+  fetched.length = 0;
+  await call("catch_up", { hours: 24 });
+  assert.ok(answered.every((id) => !fetched.includes(id)), "a group fetched once is not fetched again");
+});
+
 test("a chat tagged #no-catchup is left out of every section and counted", async () => {
   const { svc, arrive } = account();
   const { call } = toolsOf(svc);

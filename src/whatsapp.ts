@@ -2022,7 +2022,6 @@ export class WhatsAppService implements WhatsAppApi {
           Promise.all(unknown.map((jid) => this.learnParticipants(jid))),
           new Promise<void>((done) => {
             timer = setTimeout(done, GROUP_META_MS);
-            timer.unref();
           }),
         ]);
         clearTimeout(timer);
