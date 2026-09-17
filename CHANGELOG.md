@@ -74,9 +74,15 @@
   takes the generic entry by hand: command `npx`, args `["-y", "wazap-mcp"]`,
   over stdio, in that client's own MCP config. A client that reaches a running
   server by URL uses `https://your-host/mcp` and signs in with OAuth. The
-  entries `connect` already wrote keep working. For OpenCode's skills,
-  `wazap skills install codex` copies them to `~/.agents/skills`, which it
-  reads too.
+  entries `connect` already wrote keep working.
+- **OpenCode**: delete the skill copies wazap put there, which `update` no
+  longer refreshes: `rm -rf ~/.config/opencode/skills/wazap-setup
+  ~/.config/opencode/skills/whatsapp-*`. Register the generic MCP entry in
+  `~/.config/opencode/opencode.json` (under `mcp.whatsapp`:
+  `{ "type": "local", "command": ["npx", "-y", "wazap-mcp"] }`) if `connect`
+  did not already write it. The server hands OpenCode the five workflows as MCP
+  prompts, and `wazap skills install codex` copies them to `~/.agents/skills`,
+  which OpenCode reads too.
 - **The Gemini extension**: `gemini extensions uninstall wazap`, then
   `npx wazap-mcp connect gemini`.
 - **Grok Bot, or any agent on a static header**: give it a URL instead.
