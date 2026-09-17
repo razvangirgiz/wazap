@@ -79,7 +79,7 @@ interface NamedCandidate {
  * The `from` filter of search. "me", an id or a phone go
  * straight through; anything else is a name and must pick out exactly one
  * person — a saved contact name, a notify name or a last-seen pushname via
- * search_contacts' index, then a one-to-one chat's display name for someone
+ * the address book's index, then a one-to-one chat's display name for someone
  * who only ever wrote and was never saved. No match and several matches are
  * both explicit errors; an exact name beats a substring when it is unique.
  */
@@ -118,7 +118,7 @@ export async function resolveSenderFilter(wa: WhatsAppApi, from: string | undefi
     throw new WazapError(
       "CONTACT_NOT_FOUND",
       `No contact or chat is named "${value}".`,
-      'Call search_contacts with the name to see the closest matches, then pass the contact_id as "from"'
+      'Call find_contact with the name to see the closest matches, then pass its chat_id as "from"'
     );
   }
   throw new WazapError(

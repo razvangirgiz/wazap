@@ -206,20 +206,20 @@ test("the user's own messages carry the same triplet, honestly unnamed", async (
   assert.equal(sender.name_source, "none", "an account name is neither contact nor pushname");
 });
 
-test("get_contact reports name_source alongside is_my_contact", async () => {
+test("find_contact reports name_source alongside saved", async () => {
   const { sock, call } = setup();
-  sock.fetchStatus = async () => [];
-  sock.profilePictureUrl = async () => null;
   sock.ev.emit("contacts.upsert", [
     { id: ANA, name: "Ana" },
     { id: DAN, notify: "danu" },
   ]);
 
-  const saved = (await call("get_contact", { contact_id: ANA })).structuredContent;
-  assert.equal(saved.is_my_contact, true);
-  assert.equal(saved.name_source, "contact");
+  const saved = (await call("find_contact", { name: "Ana" })).structuredContent;
+  assert.equal(saved.status, "resolved");
+  assert.equal(saved.contact.saved, true);
+  assert.equal(saved.contact.name_source, "contact");
 
-  const unsaved = (await call("get_contact", { contact_id: DAN })).structuredContent;
-  assert.equal(unsaved.is_my_contact, false);
-  assert.equal(unsaved.name_source, "pushname", "a notify name is what the person publishes");
+  const unsaved = (await call("find_contact", { name: "danu" })).structuredContent;
+  const dan = unsaved.contact ?? unsaved.candidates[0];
+  assert.equal(dan.name_source, "pushname", "a notify name is what the person publishes");
+  if (unsaved.contact) assert.equal(unsaved.contact.saved, false);
 });

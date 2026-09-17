@@ -9,7 +9,7 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import assert from "node:assert/strict";
 
 import { WhatsAppService, needsContactResync } from "../dist/whatsapp.js";
-import { asToolSource, connectedService, openService } from "./helpers.mjs";
+import { asToolSource, connectedService, openService, schemaCheckedTools, textError } from "./helpers.mjs";
 import { registerTools } from "../dist/tools.js";
 
 /** Stand-in for McpServer: records what got registered and lets us call it. */
@@ -161,55 +161,7 @@ test("names arriving on either contact event reach the database, and a restart r
   await revived.stop();
 });
 
-test("sync_contacts reports what the resync changed, and never counts as a write", async () => {
-  const server = fakeServer();
-  registerTools(
-    server,
-    asToolSource({ syncContacts: async () => ({ requested: true, named_before: 0, named_after: 217 }) }),
-    {
-      allowWrite: false,
-    }
-  );
-  const tool = server.tools.get("sync_contacts");
-  assert.equal(tool.meta.annotations.readOnlyHint, true, "it changes nothing on WhatsApp");
-
-  const result = await tool.handler({});
-  assert.deepEqual(result.structuredContent, {
-    requested: true,
-    named_before: 0,
-    named_after: 217,
-    account_id: "default",
-  });
-  assert.match(result.content[0].text, /217 named contacts \(was 0\)/);
-});
-
-test("sync_contacts tells an empty address book apart from one already in hand", async () => {
-  const say = async (named_before, named_after) => {
-    const server = fakeServer();
-    registerTools(
-      server,
-      asToolSource({ syncContacts: async () => ({ requested: true, named_before, named_after }) }),
-      {
-        allowWrite: true,
-      }
-    );
-    return (await server.tools.get("sync_contacts").handler({})).content[0].text;
-  };
-  assert.match(await say(0, 0), /no names at all/);
-  assert.match(await say(217, 217), /already current: 217/);
-});
-
-test("sync_contacts on a session that is not connected reports the code, not a crash", async () => {
-  const { svc } = makeService();
-  svc.status = "connecting";
-  const server = fakeServer();
-  registerTools(server, asToolSource(svc), { allowWrite: true });
-  const result = await server.tools.get("sync_contacts").handler({});
-  assert.equal(result.isError, true);
-  assert.equal(result.structuredContent.error, "NOT_CONNECTED");
-});
-
-test("get_contact answers within a deadline when WhatsApp never replies for the number", async () => {
+test("a contact lookup answers within a deadline when WhatsApp never replies for the number", async () => {
   const { svc, sock } = makeService();
   sock.fetchStatus = () => new Promise(() => {});
   sock.profilePictureUrl = () => new Promise(() => {});
@@ -221,7 +173,7 @@ test("get_contact answers within a deadline when WhatsApp never replies for the 
   assert.equal(contact.profile_pic_url, null);
 });
 
-test("search_contacts finds a number typed with the national leading zero", async () => {
+test("the address book search finds a number typed with the national leading zero", async () => {
   const { svc, sock } = makeService();
   sock.ev.emit("contacts.upsert", [{ id: "40734000111@s.whatsapp.net", name: "Ana" }]);
   const found = await svc.searchContacts("0734 000 111", 10);
@@ -401,7 +353,7 @@ test("the filing survives in the database and reloads with it", async () => {
   await revived.stop();
 });
 
-test("search_contacts resolves a role and a tag word, not just names", async () => {
+test("the address book search resolves a role and a tag word, not just names", async () => {
   const { svc, sock } = makeService();
   sock.ev.emit("contacts.upsert", [{ id: "40700000061@s.whatsapp.net", name: "Ionut" }]);
   await svc.updateContactDetails("40700000061@s.whatsapp.net", {
@@ -415,7 +367,7 @@ test("search_contacts resolves a role and a tag word, not just names", async () 
   assert.deepEqual(await svc.searchContacts("necunoscut", 10), []);
 });
 
-test("search_contacts with only a tag lists everyone filed under it", async () => {
+test("the address book search with only a tag lists everyone filed under it", async () => {
   const { svc, sock } = makeService();
   sock.ev.emit("contacts.upsert", [
     { id: "40700000061@s.whatsapp.net", name: "Ionut" },
@@ -562,33 +514,35 @@ test("remember is a local tool: registered without writes, off WhatsApp entirely
   assert.match(result.content[0].text, /\*\*role\*\*: contabil/);
 });
 
-test("search_contacts asks for a query or a tag, and reports a tag listing as one", async () => {
-  const server = fakeServer();
+test("find_contact asks for a name or a tag, and lists a tag with each person's chat_id", async () => {
   const calls = [];
-  registerTools(
-    server,
-    asToolSource({
+  const { call } = schemaCheckedTools(
+    {
       searchContacts: async (...args) => {
         calls.push(args);
-        return [];
+        return args[2].tag === "#Furnizori"
+          ? [{ contact_id: "40700000061@s.whatsapp.net", name: "Ionut", number: "40700000061", tags: ["furnizori"], fields: { role: "contabil" }, is_my_contact: true, is_business: false }]
+          : [];
       },
-    }),
+    },
     { allowWrite: false }
   );
-  const tool = server.tools.get("search_contacts");
 
-  const bare = await tool.handler({});
-  assert.equal(bare.isError, true);
-  assert.equal(bare.structuredContent.error, "INVALID_ID");
+  assert.equal(textError(await call("find_contact", {})).error, "INVALID_ID");
 
-  await tool.handler({ tag: "#Furnizori", limit: 10 });
+  const listed = await call("find_contact", { tag: "#Furnizori", limit: 10 });
   assert.deepEqual(calls[0], ["", 10, { tag: "#Furnizori" }]);
+  assert.equal(listed.structuredContent.status, "listed");
+  assert.deepEqual(listed.structuredContent.contacts, [
+    { chat_id: "40700000061@s.whatsapp.net", name: "Ionut", number: "40700000061", saved: true, tags: ["furnizori"], fields: { role: "contabil" } },
+  ]);
+  assert.match(listed.content[0].text, /Ionut — 40700000061@s\.whatsapp\.net \(40700000061\) · saved · #furnizori · role: contabil/);
 
-  const none = await tool.handler({ tag: "client" });
-  assert.match(none.content[0].text, /No contacts matching tag #client/);
+  const none = await call("find_contact", { tag: "client" });
+  assert.match(none.content[0].text, /Nobody is filed under #client/);
 });
 
-test("search_contacts matches every name a person goes by, lists the address book in the order it arrived, the account too when it is in it, and leaves out strangers", async () => {
+test("the address book search matches every name a person goes by, lists the address book in the order it arrived, the account too when it is in it, and leaves out strangers", async () => {
   const { svc, sock } = makeService();
   const BOGDAN = "40700000071@s.whatsapp.net";
   const ANA = "40700000072@s.whatsapp.net";

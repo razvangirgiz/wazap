@@ -264,8 +264,8 @@ test("find_contact's limit says ambiguous answers list at most five people from 
   const server = fakeServer();
   registerTools(server, asToolSource({}), { allowWrite: false });
   const { limit } = server.tools.get("find_contact").meta.inputSchema;
-  assert.match(limit.description, /at most 5 from each account/);
-  assert.equal(limit.safeParse(11).success, false);
+  assert.match(limit.description, /at most 5 per account/);
+  assert.equal(limit.safeParse(51).success, false);
 });
 
 test("a name with nothing to look up is refused with what to pass instead", async () => {

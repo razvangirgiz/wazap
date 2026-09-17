@@ -337,8 +337,9 @@ export async function runLiveProbe(config: Config): Promise<LiveReport> {
 
 /**
  * `wazap contacts resync`. One process owns the session, so this refuses while a
- * server holds it rather than fighting for the socket: that server has the
- * sync_contacts tool, which does the same thing.
+ * server holds it rather than fighting for the socket: that server asks
+ * WhatsApp for an address book that looks empty on its own, when find_contact
+ * needs names.
  */
 export async function runContacts(config: Config): Promise<void> {
   if (config.args[0] !== "resync") {
@@ -351,7 +352,7 @@ export async function runContacts(config: Config): Promise<void> {
   const running = takeSessionLock(p.lockFile);
   if (running !== null) {
     say(fail(`wazap is running (pid ${running}).`));
-    say(fix("ask your agent for the sync_contacts tool, or stop the server and run this again"));
+    say(fix("stop the server and run this again; a running server asks for an empty address book itself when find_contact needs it"));
     process.exit(1);
   }
 

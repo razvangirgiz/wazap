@@ -81,7 +81,7 @@ test("a find_contact error reaches an SDK client as an error result, not a schem
 test("a tool without an outputSchema keeps its structured error", async () => {
   home.status = "disconnected";
   try {
-    const result = await client.callTool({ name: "search_contacts", arguments: { query: "Ana" } });
+    const result = await client.callTool({ name: "manage_chat", arguments: { chat_id: ANA, action: "mark_read" } });
     assert.equal(result.isError, true);
     assert.equal(result.structuredContent.error, "NOT_CONNECTED");
     assert.equal(result.structuredContent.account_id, "default");

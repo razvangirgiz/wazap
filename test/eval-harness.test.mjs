@@ -137,7 +137,7 @@ const ORACLE = {
   ],
   N9: [
     async (s) => {
-      await s.call("search_contacts", { query: "Ana" });
+      await s.call("find_contact", { name: "Ana" });
       return "Am două Ane: Ana Vasile (vecina) și Ana Ionescu. Căreia să-i scriu?";
     },
     async (s, r) => {
@@ -161,7 +161,7 @@ const ORACLE = {
 };
 
 /** Cases whose oracle already calls the consolidated tools, scored on the 1.0 map. */
-const ON_1_0 = new Set(["P17"]);
+const ON_1_0 = new Set(["P17", "N9"]);
 
 const NULL_AGENT = new Proxy({}, { get: () => new Array(5).fill(async () => "Nu știu.") });
 

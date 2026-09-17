@@ -2139,7 +2139,7 @@ export class WhatsAppService implements WhatsAppApi {
 
   /**
    * The local contact file: tags and key-value details the agent files a
-   * person under, searchable by search_contacts. Nothing reaches WhatsApp —
+   * person under, found by find_contact. Nothing reaches WhatsApp —
    * the protocol stores only a name — so this is how "my accountant" and
    * "the guys from the depot" stay attached to people. The person need not
    * be a saved contact; filing a chat partner works too.

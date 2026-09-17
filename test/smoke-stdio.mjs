@@ -12,9 +12,10 @@ import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import assert from "node:assert/strict";
 
+import { TOOL_NAMES } from "../dist/tools.js";
 import { BINARY, mcpClient, spawnWazap } from "./helpers.mjs";
 
-const EXPECTED_TOOL_COUNT = 40;
+const EXPECTED_TOOL_COUNT = TOOL_NAMES.length;
 const skillsDir = join(dirname(fileURLToPath(import.meta.url)), "..", "skills");
 const SKILL_NAMES = readdirSync(skillsDir, { withFileTypes: true })
   .filter((entry) => entry.isDirectory())

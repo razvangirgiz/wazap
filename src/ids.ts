@@ -56,7 +56,7 @@ export function isNoiseJid(jid: string): boolean {
  */
 export function resolveChatId(input: string, lidToPn?: (lid: string) => string | undefined): string {
   const trimmed = (input ?? "").trim();
-  if (!trimmed) throw new WazapError("INVALID_ID", "Empty chat id.", "Pass an id from list_chats or search_contacts");
+  if (!trimmed) throw new WazapError("INVALID_ID", "Empty chat id.", "Pass an id from list_chats or find_contact");
 
   const at = trimmed.lastIndexOf("@");
   if (at === -1) return `${normalizePhone(trimmed)}@s.whatsapp.net`;

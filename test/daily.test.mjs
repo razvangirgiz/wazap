@@ -48,13 +48,11 @@ test("a note on a contact rides along wherever the person shows, and lives in th
   arrive(DAN, "salut");
   const noted = await call("remember", { chat_id: "+40 700 000 003", note: "Hermi, my own agent" });
   assert.match(noted.content[0].text, /Noted for Dan: Hermi, my own agent/);
-  assert.match(
-    (await call("search_contacts", { query: "dan" })).content[0].text,
-    /\*\*Dan\*\* \[saved\] · Hermi, my own agent/
-  );
+  const found = await call("find_contact", { name: "Dan" });
+  assert.equal(found.structuredContent.contact.note, "Hermi, my own agent");
+  assert.match(found.content[0].text, /note: Hermi, my own agent/);
   assert.match((await call("list_chats", {})).content[0].text, /## Dan · Hermi, my own agent/);
   assert.match((await call("get_recent_messages", { hours: 1 })).content[0].text, /## Dan · Hermi, my own agent —/);
-  assert.match((await call("get_contact", { contact_id: DAN })).content[0].text, /\*\*note\*\*: Hermi, my own agent/);
   assert.equal(svc.db.identity.notes(DAN).note, "Hermi, my own agent");
 
   const again = openService(WhatsAppService, { ...offlineConfig("x"), dataDir: svc.config.dataDir });
@@ -62,7 +60,7 @@ test("a note on a contact rides along wherever the person shows, and lives in th
   await again.stop();
 
   await call("remember", { chat_id: DAN, note: "" });
-  assert.doesNotMatch((await call("search_contacts", { query: "dan" })).content[0].text, /Hermi/);
+  assert.doesNotMatch((await call("find_contact", { name: "Dan" })).content[0].text, /Hermi/);
 });
 
 test("remember files a note, tags and details in one call, and a refused edit files none of them", async () => {

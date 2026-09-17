@@ -330,7 +330,7 @@ test("list_chats without a locator uses the default account", async () => {
   assert.equal(result.structuredContent.account_id, "default");
 });
 
-test("contact_id and group_id unique to work select work", async () => {
+test("a chat_id and a group_id unique to work select work", async () => {
   const { hub, workSock } = twoAccountHub();
   const group = "120363000000000001@g.us";
   workSock.ev.emit("chats.upsert", [
@@ -338,7 +338,7 @@ test("contact_id and group_id unique to work select work", async () => {
     { id: group, conversationTimestamp: Math.floor(Date.now() / 1000) },
   ]);
   const tools = toolsOf(hub);
-  const contact = await tools.get("get_contact").handler({ contact_id: ANA });
+  const contact = await tools.get("remember").handler({ chat_id: ANA, note: "de la work" });
   assert.equal(contact.structuredContent.account_id, "work");
   const info = await tools.get("get_group_info").handler({ group_id: group });
   assert.equal(info.structuredContent.account_id, "work");
@@ -468,7 +468,8 @@ test("every non-confirm write is stopped at the resolved account, not just at th
   for (const [name, { meta, handler }] of tools) {
     if (meta.annotations.readOnlyHint || meta.annotations.idempotentHint || name === "confirm_send") continue;
     const result = await handler({ account_id: "work" });
-    assert.equal(result.structuredContent.error, "READ_ONLY", name);
+    // A tool with an output schema answers its refusal as text only.
+    assert.equal(result.structuredContent?.error ?? JSON.parse(result.content[0].text).error, "READ_ONLY", name);
   }
   assert.equal(touched, 0);
 });

@@ -105,7 +105,7 @@ export function resolveToolAccount(
   const live = hub.bindings();
   if (live.length === 1) return live[0]!;
 
-  const chatId = stringArg(args, "chat_id") ?? stringArg(args, "group_id") ?? stringArg(args, "contact_id");
+  const chatId = stringArg(args, "chat_id") ?? stringArg(args, "group_id");
   const messageId = stringArg(args, "message_id");
   const draftId = stringArg(args, "draft_id");
   if (chatId !== undefined) return pickFromMatches(hub.findByChat(chatId), tool.write, hub, "chat");

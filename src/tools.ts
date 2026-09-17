@@ -32,7 +32,6 @@ import {
   type SendPolicy,
 } from "./send-guard.js";
 import {
-  nameSourceOf,
   resolveSenderFilter,
   withSenderIdentity,
   type IdentifiedMessage,
@@ -266,13 +265,10 @@ link_account when it says no account is linked yet.
 - Find a person: find_contact(name[, qualifier]) before drafting to anyone the
   user names — "mama", "Ana de la contabilitate", "Mișu". resolved gives the
   chat_id and, in a write session, how the user writes to them; ambiguous and
-  not_found mean ask the user, never guess. search_contacts → get_contact
-  still list and detail contacts. Names come from the phone's own address
-  book; find_contact asks WhatsApp for it once when it is empty, and
-  sync_contacts does it on demand. save_contact adds a number to the account's WhatsApp
-  contacts or renames an entry; remove_contact drops the entry, not the chat.
-  A word from a tag or a detail also finds them ("contabil" → role: contabil),
-  and search_contacts({tag: "client"}) lists everyone filed under a tag.
+  not_found mean ask the user, never guess. Names come from the phone's own
+  address book; find_contact asks WhatsApp for it once when it is empty. A
+  word from a tag or a detail also finds them ("contabil" → role: contabil),
+  and find_contact({tag: "client"}) lists everyone filed under a tag.
 - Find something said: search(query[, chat_id]) matches meaning and words at
   once — a paraphrase or another language still hits; match: "words" keeps
   only messages holding the words. It reaches every message the account keeps.
@@ -871,130 +867,21 @@ is the name \`name\` shows) and \`name_source\` ("contact", "pushname" or
   }),
 
   tool({
-    name: "search_contacts",
-    title: "Search WhatsApp contacts",
-    description: `Find contacts by name, phone number, tag or detail: a substring match on the
-name, a digit match on the number, or a word from a local tag or detail — so
-"contabil" finds the person filed under role: contabil by remember.
-With only tag it lists everyone carrying that tag. Returns contact_id values
-usable as chat_id.`,
-    schema: {
-      query: z
-        .string()
-        .min(2)
-        .optional()
-        .describe(
-          "Name fragment, phone number, or tag/detail text (at least 2 characters). Omit with tag to list everyone carrying it."
-        ),
-      tag: z.string().min(1).optional().describe('Only contacts filed under this tag ("client"); "#" optional'),
-      limit: z.number().int().min(1).max(50).default(10).describe("Maximum number of results (1-50)"),
-    },
-    write: false,
-    handler: async ({ query, tag, limit }, { wa }) => {
-      if (query === undefined && tag === undefined) {
-        throw new WazapError(
-          "INVALID_ID",
-          "Pass a query or a tag.",
-          'search_contacts({ query: "ion" }) or search_contacts({ tag: "client" })'
-        );
-      }
-      const contacts = await wa.searchContacts(query ?? "", limit, { tag });
-      const what = tag !== undefined ? `tag #${tag.replace(/^#+/, "")}` : `"${query}"`;
-      return ok(renderContacts(what, contacts), {
-        query: query ?? null,
-        tag: tag ?? null,
-        count: contacts.length,
-        contacts,
-      });
-    },
-  }),
-
-  tool({
-    name: "sync_contacts",
-    title: "Fetch the phone's address book again",
-    description: `Ask WhatsApp to send the linked phone's address book from scratch, and wait up
-to 15 seconds for it. Nothing on WhatsApp changes: this only refills wazap's
-own contact list.
-
-Use it when get_status reports contacts_named: 0, or when senders in a group
-read as phone numbers for people you know are saved on the phone. Returns
-named_before and named_after so you can tell whether it helped; if both are 0
-the phone has no saved contacts for these people.`,
-    schema: {},
-    write: false,
-    handler: async (_args, { wa }) => {
-      const result = await wa.syncContacts();
-      const text =
-        result.named_after > result.named_before
-          ? `Address book synced: ${result.named_after} named contacts (was ${result.named_before}).`
-          : result.named_after > 0
-            ? `Address book already current: ${result.named_after} named contacts.`
-            : "WhatsApp sent no names at all; the phone has no saved contacts for these people.";
-      return ok(text, result as unknown as Record<string, unknown>);
-    },
-  }),
-
-  tool({
-    name: "get_contact",
-    title: "Get WhatsApp contact details",
-    description: `Full details for one contact: name, number, about text, profile picture URL,
-whether they are a saved contact, a business, or blocked. \`name_source\` says
-where the shown name comes from — "contact" when it is the saved address-book
-name (is_my_contact), "pushname" when it is a name the person publishes, or
-"none" when there is no usable name.`,
-    schema: {
-      contact_id: chatId.describe("Contact id from search_contacts / list_chats, or a phone number"),
-    },
-    write: false,
-    handler: async ({ contact_id }, { wa }) => {
-      const c = await wa.getContact(contact_id);
-      const text = [
-        `# ${c.name}`,
-        `- **contact_id**: \`${c.contact_id}\``,
-        c.number ? `- **number**: ${c.number}` : null,
-        c.note ? `- **note**: ${c.note}` : null,
-        c.tags?.length ? `- **tags**: ${c.tags.map((t) => `#${t}`).join(" ")}` : null,
-        ...Object.entries(c.fields ?? {}).map(([key, value]) => `- **${key}**: ${value}`),
-        c.about ? `- **about**: ${c.about}` : null,
-        c.profile_pic_url ? `- **profile picture**: ${c.profile_pic_url}` : null,
-        `- **saved**: ${c.is_my_contact} · **business**: ${c.is_business} · **blocked**: ${c.is_blocked} · **name source**: ${nameSourceOf(c)}`,
-      ]
-        .filter((line): line is string => line !== null)
-        .join("\n");
-      return ok(text, { ...c, name_source: nameSourceOf(c) } as unknown as Record<string, unknown>);
-    },
-  }),
-
-  // ---- find_contact (F2-3) ------------------------------------------------
-  tool({
     name: "find_contact",
     title: "Find who the user means",
-    description: `Who a name, nickname, relationship ("mama") or group name means, before drafting to them.
-resolved: contact.chat_id, plus context (recent messages, how the user writes there) in a write session.
-ambiguous or not_found: ask the user, then call again; never send to a guess.`,
+    description: `Who a name, nickname, relationship ("mama") or group name means, before drafting to them. resolved: contact.chat_id, with number, note, tags, details and, in a write session, context. ambiguous or not_found: ask the user; never send to a guess. tag lists everyone filed under it.`,
     schema: {
       name: z
         .string()
         .min(1)
         .max(100)
-        .describe('What the user calls them: "Ana", "mamei", "Mișu", "fotbal"; case endings and diacritics do not matter'),
-      qualifier: z
-        .string()
-        .max(100)
         .optional()
-        .describe('What tells two of that name apart: "contabilitate", a group, or the last 4 digits of the number'),
-      kind: z.enum(["person", "group", "any"]).default("any").describe("Only people, only groups, or both"),
-      limit: z
-        .number()
-        .int()
-        .min(1)
-        .max(10)
-        .default(5)
-        .describe("Candidates listed when ambiguous (1-10): at most 5 from each account, so above 5 only across accounts"),
-      include_context: z
-        .boolean()
-        .default(true)
-        .describe("Attach the recent exchange and the user's style when resolved; only in a session that can write"),
+        .describe('What the user calls them: "Ana", "mamei", "Mișu", "fotbal"'),
+      qualifier: z.string().max(100).optional().describe('Tells two apart: "contabilitate", a group, the last 4 digits'),
+      kind: z.enum(["person", "group", "any"]).default("any"),
+      tag: z.string().min(1).optional().describe("List everyone filed under this tag instead"),
+      limit: z.number().int().min(1).max(50).optional().describe("Ambiguous: at most 5 per account; a tag list: up to 50"),
+      include_context: z.boolean().default(true).describe("Recent messages and the user's style, when resolved in a write session"),
     },
     outputSchema: FIND_CONTACT_OUTPUT,
     write: false,
@@ -1762,22 +1649,6 @@ function renderContactCard(c: ContactSummary): string {
     ...Object.entries(c.fields ?? {}).map(([key, value]) => `- **${key}**: ${value}`),
     `- **saved**: ${c.is_my_contact} · **business**: ${c.is_business}`,
   ].filter((line): line is string => line !== null);
-  return lines.join("\n");
-}
-
-function renderContacts(what: string, contacts: ContactSummary[]): string {
-  if (contacts.length === 0) return `No contacts matching ${what}.`;
-  const lines = [`# Contacts matching ${what} (${contacts.length})`, ""];
-  for (const c of contacts) {
-    const flags = [
-      c.is_my_contact ? "saved" : null,
-      c.is_business ? "business" : null,
-      ...(c.tags ?? []).map((t) => `#${t}`),
-    ].filter(Boolean);
-    lines.push(
-      `- **${c.name}**${flags.length ? ` [${flags.join(", ")}]` : ""}${c.note ? ` · ${c.note}` : ""} — \`${c.contact_id}\`${c.number ? ` (${c.number})` : ""}`
-    );
-  }
   return lines.join("\n");
 }
 
