@@ -1524,11 +1524,20 @@ function truncate(text: string, max: number): string {
 const DRAFT_NEXT =
   "Show this preview to the user exactly. Call confirm_send with draft_id only when their words approve this text and this recipient: a send asked in the same request that gave the text is that approval, so send, do not ask again. A yes about something else, or one that comes after the talk moved on, is not: show this preview again and ask.";
 
+/**
+ * A draft in the wrong language is redone before it is shown: the gate's third
+ * run put a Romanian message in front of an English speaker and asked to send
+ * it. The warning still blocks nothing — the draft stands, and every other
+ * warning leaves the step after a draft as it is.
+ */
+const DRAFT_NEXT_LANGUAGE =
+  "Draft again before showing anything: this text is not in the language the user writes to this recipient (style_check.basis.language). Call send_message with the same message in that language, then show the preview it returns and follow its next.";
+
 function drafted(view: DraftView): ToolResult {
   const warnings = view.style_check?.warnings ?? [];
   return ok(renderDraft(view), {
     ...view,
-    next: DRAFT_NEXT,
+    next: warnings.includes("language_mismatch") ? DRAFT_NEXT_LANGUAGE : DRAFT_NEXT,
     ...notesField([
       view.unnamed_recipient === true ? "The recipient is not a saved contact: say the name shown is only their public WhatsApp name or their number." : null,
       warnings.some((warning) => warning !== "length_outlier")

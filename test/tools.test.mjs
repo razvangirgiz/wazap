@@ -181,6 +181,45 @@ test("the approval rule: a yes to this text and this recipient, a send in the sa
   assert.doesNotMatch(confirm, /after the user said yes to its preview/, "the preview is not the whole of it: the words have to approve this one");
 });
 
+/**
+ * The draft's language (F2-6). The third gate run drafted Romanian for an
+ * English speaker and asked to send it, although the style check said so: the
+ * step after such a draft is to write it again in the recipient's language,
+ * and only then to show a preview. Nothing is blocked, and no other warning
+ * touches the step.
+ */
+test("a draft in the wrong language is written again before any preview is shown; other warnings leave the step alone", async () => {
+  const styled = (warnings) => ({
+    ...draftApi(),
+    styleCheck: () => ({
+      warnings,
+      basis: { own_messages: 6, days: 90, language: "en", diacritics: "unknown", address: "unknown", length_chars: { p50: 30, p90: 60 } },
+      draft: { language: "ro", diacritics: true, address: null, chars: 26 },
+    }),
+  });
+  const draft = async (warnings) => {
+    const server = fakeServer();
+    registerTools(server, asToolSource(styled(warnings)), { allowWrite: true });
+    return server.tools.get("send_message").handler({ chat_id: "+40722123456", text: "Salut, întârzii 10 minute." });
+  };
+
+  const wrongLanguage = await draft(["language_mismatch"]);
+  const { next } = wrongLanguage.structuredContent;
+  assert.match(next, /Draft again before showing anything/);
+  assert.match(next, /not in the language the user writes to this recipient \(style_check\.basis\.language\)/);
+  assert.match(next, /Call send_message with the same message in that language, then show the preview it returns/);
+  assert.doesNotMatch(next, /Show this preview to the user exactly/, "the step is the redraft, not this preview");
+  assert.equal(wrongLanguage.structuredContent.status, "draft", "the warning blocks nothing");
+  assert.deepEqual(wrongLanguage.structuredContent.style_check.warnings, ["language_mismatch"]);
+  assert.match(wrongLanguage.content[0].text, /confirm_send/, "and the rendered draft is what it was");
+
+  for (const warnings of [[], ["diacritics_mismatch", "address_mismatch"], ["length_outlier"]]) {
+    const other = await draft(warnings);
+    assert.match(other.structuredContent.next, /Show this preview to the user exactly/, JSON.stringify(warnings));
+    assert.doesNotMatch(other.structuredContent.next, /Draft again before showing anything/, JSON.stringify(warnings));
+  }
+});
+
 test("catch_up's description says account_id narrows it to one account and get_status names them", () => {
   const server = fakeServer();
   registerTools(server, asToolSource({}), { allowWrite: false });
