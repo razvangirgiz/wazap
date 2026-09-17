@@ -26,6 +26,8 @@ import { parseArgs } from "node:util";
 const DIST_DB = new URL("../dist/db/index.js", import.meta.url).href;
 const { AccountDb, contentHash, quantizeVector } = await import(DIST_DB);
 const { sqlite: sqliteModule } = await import(new URL("../dist/db/sqlite.js", import.meta.url).href);
+const { findInAccount } = await import(new URL("../dist/find-contact.js", import.meta.url).href);
+const { draftContextFor, styleCheckFor } = await import(new URL("../dist/draft-style.js", import.meta.url).href);
 
 const { values: args } = parseArgs({
   options: {
@@ -349,6 +351,18 @@ function findPhase(db) {
     const found = time(label, 20, () => db.contacts.find(input), 2);
     results.facts[`find_${input.name}`] = `${found.verdict}/${found.candidates.length + found.closest.length}`;
   }
+  // The tool's side (F2-3): the same finds with each candidate's note, a number's tail, then what a resolved contact carries.
+  for (const [label, input] of [
+    ["find_contact: Ana, with notes", { name: "Ana" }],
+    ["find_contact: number tail (Ana, 0030)", { name: "Ana", qualifier: "0030" }],
+  ]) {
+    const found = time(label, 20, () => findInAccount(db, "default", input), 2);
+    results.facts[`find_contact_${input.qualifier ?? input.name}`] = `${found.verdict}/${found.candidates.length + found.closest.length}`;
+  }
+  const direct = chatJid(GROUPS);
+  time("find_contact: draft context (style, 8 recent)", 50, () => draftContextFor(db, direct, { recent: true, senderName: (jid) => jid }));
+  const checked = time("send_message: style_check", 50, () => styleCheckFor(db, direct, "Bună, ajung în zece minute și te sun când plec de acasă."));
+  results.facts.style_check_basis = checked === null ? "too little" : `${checked.basis.own_messages} own`;
 }
 
 /**
@@ -496,6 +510,9 @@ const BUDGETS_P99 = {
   "catch_up: aggregate grouped by chat 7d": 1000,
   "find: common first name (Ana)": 50,
   "find: nobody (Zzyzx, near-spelling pass)": 100,
+  "find_contact: Ana, with notes": 50,
+  "find_contact: draft context (style, 8 recent)": 50,
+  "send_message: style_check": 50,
 };
 const STALL_BUDGET_P99 = 100;
 
