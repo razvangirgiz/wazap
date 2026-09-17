@@ -263,6 +263,8 @@ export interface MessageView {
   edited: boolean;
   /** On the account's own messages: how far it got. Absent while WhatsApp has confirmed nothing. */
   delivery?: Delivery;
+  /** In a broad read, from someone tagged #private: who, when and what kind, no words (src/private-contacts.ts). */
+  private?: true;
 }
 
 export type DeliveryStatus = "error" | "pending" | "sent" | "delivered" | "read" | "played";
@@ -365,6 +367,8 @@ export interface WaitOptions {
   /** Only messages that address the linked account: any direct message, or a group message that @-mentions it or replies to one of its own. */
   addressedToMe: boolean;
   cursor?: string;
+  /** Unless it waits on their chat, a #private person's messages come without their words. */
+  private?: PrivateRule;
 }
 
 export interface WaitResult {

@@ -131,7 +131,7 @@ import {
   type EncryptedVote,
 } from "./messages.js";
 import { readVote } from "./polls.js";
-import { privatePeople, withoutPrivateQuote, type PrivatePeople } from "./private-contacts.js";
+import { privatePeople, withoutPrivateQuote, withoutWords, type PrivatePeople } from "./private-contacts.js";
 import { PAIRING_TIMEOUT_MS, WA_BROWSER, prettyCode, socketFactory, startPairing } from "./pairing.js";
 import { diversify } from "./recall/variety.js";
 import {
@@ -1882,10 +1882,19 @@ export class WhatsAppService implements WhatsAppApi {
       const last = found.length > 0 ? found[found.length - 1]!.seq : Math.max(since, this.arrivalSeq);
       since = last;
       const db = this.readyDb();
+      let people = db === null ? null : this.privateScope(opts.private);
+      if (db !== null && people !== null && chatJid !== undefined) {
+        const chat = db.identity.chat(chatJid);
+        // Waiting on their own chat asks for them by name; a group does not.
+        if (chat !== null && people.chat(chat)) people = null;
+      }
       // A message deleted or expired since it arrived is not handed out.
       const messages = found.flatMap((a) => {
         const message = db?.messages.get(a.sid) ?? null;
-        return message === null ? [] : [this.viewOfStored(message)];
+        if (message === null) return [];
+        const view = this.viewOfStored(message);
+        if (people === null) return [view];
+        return [people.message(message) ? withoutWords(view) : withoutPrivateQuote(view, people)];
       });
       return {
         messages,

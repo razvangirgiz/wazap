@@ -95,3 +95,48 @@ test("search without a chat leaves out a #private person's chat and what they wr
   assert.deepEqual(untagged.structuredContent.messages.map((m) => keyOf(m.message_id)), ["M1", "M2", "M3", "M4", "M5"]);
   assert.equal(untagged.structuredContent.private_omitted, undefined);
 });
+
+test("wait_for_messages keeps what arrived from someone #private without their words, in their chat and in a group, unless it waits on their chat", async () => {
+  const { svc, arrive } = account();
+  const { call } = schemaCheckedTools(svc, { allowWrite: false });
+  svc.db.identity.updateFields(ANA, { addTags: ["private"] });
+  const { cursor } = (await call("wait_for_messages", { timeout_seconds: 1 })).structuredContent;
+  const at = Date.now();
+  const direct = arrive(ANA, "rezultatele de la analize au ieșit prost", { at: at - 4000 });
+  const photo = arrive(ANA, { imageMessage: { mimetype: "image/jpeg", caption: "radiografia mea", fileLength: 2048 } }, { at: at - 3000 });
+  const inGroup = arrive(GROUP, "nu spuneți nimănui de divorț", { participant: ANA, at: at - 2000 });
+  const reply = arrive(
+    GROUP,
+    { extendedTextMessage: { text: "te sun diseară", contextInfo: { stanzaId: keyOf(inGroup), participant: ANA, quotedMessage: { conversation: "nu spuneți nimănui de divorț" } } } },
+    { participant: DAN, at: at - 1000 }
+  );
+
+  const broad = await call("wait_for_messages", { timeout_seconds: 1, cursor });
+  const all = everything(broad);
+  for (const words of ["analize", "radiografia", "divorț"]) assert.ok(!all.includes(words), words);
+  const byId = new Map(broad.structuredContent.messages.map((m) => [m.message_id, m]));
+  assert.deepEqual([...byId.keys()], [direct, photo, inGroup, reply], "every arrival stays: something came from her");
+  assert.deepEqual(
+    [direct, photo, inGroup].map((id) => [byId.get(id).text, byId.get(id).private, byId.get(id).sender.name]),
+    [
+      ["[private]", true, "Ana"],
+      ["[private]", true, "Ana"],
+      ["[private]", true, "Ana"],
+    ]
+  );
+  assert.deepEqual([byId.get(photo).type, byId.get(photo).media], ["image", { mime: "image/jpeg", size: 2048 }], "what kind stays");
+  assert.deepEqual([byId.get(reply).text, byId.get(reply).private, byId.get(reply).quoted.text], ["te sun diseară", undefined, "[private]"]);
+  assert.match(broad.content[0].text, /Ana: \[private\]/);
+
+  const group = await call("wait_for_messages", { timeout_seconds: 1, cursor, chat_id: GROUP });
+  assert.deepEqual(group.structuredContent.messages.map((m) => [m.message_id, m.private]), [[inGroup, true], [reply, undefined]], "a group waited on is not her chat");
+  const theirs = await call("wait_for_messages", { timeout_seconds: 1, cursor, chat_id: ANA });
+  assert.deepEqual(
+    theirs.structuredContent.messages.map((m) => [m.text, m.private]),
+    [
+      ["rezultatele de la analize au ieșit prost", undefined],
+      ["[image] radiografia mea", undefined],
+    ],
+    "waiting on her chat asks for her by name"
+  );
+});

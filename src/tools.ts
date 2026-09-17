@@ -85,9 +85,12 @@ const READ_OUTPUT = {
   account_id: z.string(),
 };
 
+/** A message in a broad read, which may be someone's kept #private (src/private-contacts.ts). */
+const BROAD_MESSAGE_OUT = MESSAGE_OUT.extend({ private: z.literal(true).optional().describe("Tagged #private: no words") }).passthrough();
+
 const WAIT_OUTPUT = {
   count: z.number(),
-  messages: z.array(MESSAGE_OUT),
+  messages: z.array(BROAD_MESSAGE_OUT),
   cursor: z.string().describe("Pass to the next call"),
   timed_out: z.boolean(),
   cursor_reset: z.boolean().describe("The cursor was from another run; the wait started now"),
@@ -582,6 +585,7 @@ const TOOLS: readonly ToolDef[] = [
         chatId: chat_id,
         addressedToMe: addressed_to_me,
         cursor,
+        private: { others: [] },
       });
       return ok(renderWait(result), { ...result, count: result.messages.length });
     },

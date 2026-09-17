@@ -11,7 +11,9 @@
  * - catch_up counts them without quoting (src/catchup-scan.ts);
  * - find_contact's draft context keeps only the user's style for them;
  * - search without `chat_id` leaves their messages out before its limit and
- *   counts them in `private_omitted`, and a quote of theirs loses its words.
+ *   counts them in `private_omitted`, and a quote of theirs loses its words;
+ * - wait_for_messages, unless it waits on their chat, keeps what arrived from
+ *   them without its words (withoutWords), marked `private`.
  *
  * The tag goes with the person, not only their chat: what they write in a
  * group is theirs too. A broad read takes the whole set once per call
@@ -100,6 +102,33 @@ export function privatePeople(db: AccountDb, others: readonly string[] = []): Pr
       if (none || jid === "me") return false;
       return jids.has(jid) || db.identity.contactIdsOf(jid).some((id) => contactIds.has(id));
     },
+  };
+}
+
+/**
+ * A message of someone kept #private, as a broad read hands it out: who, when,
+ * in which chat and what kind, and none of its words — no text, caption,
+ * transcript, quote, mention, file name, poll or reaction — marked `private`.
+ */
+export function withoutWords(view: MessageView): MessageView {
+  const { message_id, chat_id, from_me, sender, type, timestamp, age, has_media, media, call, system, forwarded, edited, delivery } = view;
+  return {
+    message_id,
+    chat_id,
+    from_me,
+    sender,
+    type,
+    text: PRIVATE_TEXT,
+    timestamp,
+    age,
+    has_media,
+    ...(media === undefined ? {} : { media: { mime: media.mime, ...(media.size === undefined ? {} : { size: media.size }) } }),
+    ...(call === undefined ? {} : { call }),
+    ...(system === undefined ? {} : { system: { action: system.action, ...(system.actor === undefined ? {} : { actor: system.actor }), targets: system.targets } }),
+    forwarded,
+    edited,
+    ...(delivery === undefined ? {} : { delivery }),
+    private: true,
   };
 }
 
