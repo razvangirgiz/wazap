@@ -179,10 +179,15 @@ function age(ms: number, now: number): string {
   return "now";
 }
 
+/** Whitespace, line breaks included, as single spaces: what someone else wrote stays on its line. */
+function flat(text: string): string {
+  return text.replace(/\s+/g, " ").trim();
+}
+
 function cut(text: string, max: number): string {
-  const flat = text.replace(/\s+/g, " ").trim();
-  const chars = [...flat];
-  return chars.length <= max ? flat : `${chars.slice(0, max - 1).join("")}…`;
+  const line = flat(text);
+  const chars = [...line];
+  return chars.length <= max ? line : `${chars.slice(0, max - 1).join("")}…`;
 }
 
 function plural(n: number, one: string, many = `${one}s`): string {
@@ -295,8 +300,9 @@ function sigOf(quote: NonNullable<Quoted>): { sig?: string } {
 function quoteSuffix(quote: Quoted, withSignals: boolean): string {
   if (quote === null) return "";
   const markers = withSignals && quote.signals.length > 0 ? ` [${quote.signals.join(",")}]` : "";
-  const then = quote.then === undefined ? "" : ` · then "${quote.then}"`;
-  return `${quote.text === "" ? "" : ` — "${quote.text}"`}${markers}${then}`;
+  // Quoted as JSON strings: a quotation mark inside cannot end the quote and forge what follows.
+  const then = quote.then === undefined ? "" : ` · then ${JSON.stringify(quote.then)}`;
+  return `${quote.text === "" ? "" : ` — ${JSON.stringify(quote.text)}`}${markers}${then}`;
 }
 
 /** Shortest a "then" quote is worth showing. */
@@ -316,8 +322,32 @@ function composeQuote(ask: string, then: string | null, level: number): { text: 
   return room < THEN_MIN ? { text: askText } : { text: askText, then: cut(then, room) };
 }
 
+/**
+ * The scan with every name, note and title others control — a group's
+ * subject, a push name, a poll's question — on one line, so none of them can
+ * start a line of the answer.
+ */
+function flatScan(scan: CatchupScan): CatchupScan {
+  const note = <T extends { note?: string }>(entry: T): T => (entry.note === undefined ? entry : { ...entry, note: flat(entry.note) });
+  return {
+    ...scan,
+    waiting: scan.waiting.map((entry) => note({ ...entry, name: flat(entry.name), ...(entry.from === undefined ? {} : { from: flat(entry.from) }) })),
+    addressed: scan.addressed.map((entry) => ({
+      ...entry,
+      name: flat(entry.name),
+      from: flat(entry.from),
+      ...(entry.title === undefined ? {} : { title: flat(entry.title) }),
+    })),
+    calls: scan.calls.map((entry) => ({ ...entry, name: flat(entry.name), ...(entry.group === undefined ? {} : { group: flat(entry.group) }) })),
+    direct: scan.direct.map((entry) => note({ ...entry, name: flat(entry.name) })),
+    groups: scan.groups.map((entry) => ({ ...entry, name: flat(entry.name), top: entry.top.map(flat) })),
+    mutedGroups: scan.mutedGroups === null ? null : { ...scan.mutedGroups, names: scan.mutedGroups.names.map(flat) },
+    stories: scan.stories === null ? null : { ...scan.stories, authors: scan.stories.authors.map(flat) },
+  };
+}
+
 function itemsOf(view: AccountView, multi: boolean, now: number): Item[] {
-  const scan = view.scan!;
+  const scan = flatScan(view.scan!);
   const account = view.id;
   const tag = multi ? { acct: account } : {};
   const key = (chat: string): string => `${account}|${chat}`;
@@ -393,7 +423,7 @@ function itemsOf(view: AccountView, multi: boolean, now: number): Item[] {
       thenId: null,
       line: (quote) =>
         `- ${entry.name} · ${entry.from} ${verb} · ${clock(entry.ts, now)}${entry.more > 0 ? ` (+${entry.more} more)` : ""}${
-          entry.title ? `: "${cut(entry.title, TITLE_CHARS)}"` : ""
+          entry.title ? `: ${JSON.stringify(cut(entry.title, TITLE_CHARS))}` : ""
         }${entry.private ? " · private" : ""}${quoteSuffix(quote, true)} · ${entry.chat}`,
       data: (quote) => ({
         ...tag,
@@ -667,7 +697,7 @@ export async function runCatchUp(args: CatchupArgs, ctx: CatchupContext): Promis
   // Each account's scan; one that fails is reported, the others still answer.
   const views: AccountView[] = await Promise.all(
     targets.map(async (target): Promise<AccountView> => {
-      const name = ctx.hub.record(target.id)?.name ?? target.id;
+      const name = flat(ctx.hub.record(target.id)?.name ?? target.id);
       const view: AccountView = { id: target.id, name, source: target.wa, scan: null, error: null };
       try {
         if (typeof target.wa.catchUpScan !== "function") throw missingSupport(target.id);
@@ -891,7 +921,7 @@ function headerLines(views: readonly AccountView[], multi: boolean, now: number,
     `${title} · ${views.length} accounts`,
     ...views.map((view) =>
       view.scan === null
-        ? `- ${view.name} (${view.id}): unavailable — ${view.error!.code}: ${view.error!.message}`
+        ? `- ${view.name} (${view.id}): unavailable — ${view.error!.code}: ${flat(view.error!.message)}`
         : `- ${view.name} (${view.id}): ${windowPhrase(view.scan.window, now)}${stale(view)}`
     ),
   ];
