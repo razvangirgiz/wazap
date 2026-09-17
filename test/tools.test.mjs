@@ -23,13 +23,11 @@ const READ_TOOLS = [
   "link_account",
   "list_chats",
   "read_messages",
-  "get_recent_messages",
   "search",
   "get_message",
   "find_contact",
   "get_group_info",
   "get_media",
-  "get_unanswered",
   "catch_up",
   "wait_for_messages",
   "remember",
@@ -192,24 +190,6 @@ test("read_messages passes types through to the service and echoes it back", asy
 
   await server.tools.get("read_messages").handler({ chat_id: "4072@s.whatsapp.net", limit: 20 });
   assert.deepEqual(calls[1], ["4072@s.whatsapp.net", 20, undefined, undefined], "no types means every type");
-});
-
-test("get_recent_messages passes types through to the service and echoes it back", async () => {
-  const server = fakeServer();
-  const calls = [];
-  const wa = {
-    getRecentMessages: async (...args) => {
-      calls.push(args);
-      return { data: [], sync: "done" };
-    },
-  };
-  registerTools(server, asToolSource(wa), { allowWrite: true });
-
-  const result = await server.tools
-    .get("get_recent_messages")
-    .handler({ hours: 24, filter: "all", include_system: false, types: ["call", "voice"] });
-  assert.deepEqual(calls[0], [24, "all", false, ["call", "voice"]]);
-  assert.deepEqual(result.structuredContent.types, ["call", "voice"]);
 });
 
 /**

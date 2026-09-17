@@ -1,13 +1,12 @@
 /**
- * The everyday tools: a note on a person, "I handled that", a search with a
- * time or a sender, and the compact catch-up.
+ * The everyday tools: a note on a person, "I handled that", and a search with
+ * a time or a sender.
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { proto } from "baileys";
 
 import { WhatsAppService } from "../dist/whatsapp.js";
-import { compactConversations } from "../dist/compact.js";
 import { connectedService, databaseHolds, offlineConfig, openService, schemaCheckedTools, textError } from "./helpers.mjs";
 
 const ME = "40700000001@s.whatsapp.net";
@@ -52,7 +51,6 @@ test("a note on a contact rides along wherever the person shows, and lives in th
   assert.equal(found.structuredContent.contact.note, "Hermi, my own agent");
   assert.match(found.content[0].text, /note: Hermi, my own agent/);
   assert.match((await call("list_chats", {})).content[0].text, /## Dan · Hermi, my own agent/);
-  assert.match((await call("get_recent_messages", { hours: 1 })).content[0].text, /## Dan · Hermi, my own agent —/);
   assert.equal(svc.db.identity.notes(DAN).note, "Hermi, my own agent");
 
   const again = openService(WhatsAppService, { ...offlineConfig("x"), dataDir: svc.config.dataDir });
@@ -84,19 +82,20 @@ test("remember files a note, tags and details in one call, and a refused edit fi
 test("remember handled: true takes a chat off the waiting list until the other side writes again", async () => {
   const { call, arrive } = setup();
   arrive(ANA, "poți să mă suni?", { at: Date.now() - 2 * hour });
+  const waiting = async () => (await call("catch_up", { hours: 24 })).structuredContent.waiting;
   assert.deepEqual(
-    (await call("get_unanswered", {})).structuredContent.chats.map((c) => c.name),
+    (await waiting()).map((entry) => entry.name),
     ["Ana"]
   );
 
   const marked = await call("remember", { chat_id: ANA, handled: true });
   assert.match(marked.content[0].text, /Ana is off the waiting list until they write again/);
   assert.equal(marked.structuredContent.handled.ask_text, "poți să mă suni?");
-  assert.deepEqual((await call("get_unanswered", {})).structuredContent.chats, []);
+  assert.deepEqual(await waiting(), []);
 
   arrive(ANA, "și mâine?", { at: Date.now() - hour });
   assert.deepEqual(
-    (await call("get_unanswered", {})).structuredContent.chats.map((c) => c.ask.text),
+    (await waiting()).map((entry) => entry.q),
     ["și mâine?"],
     "a new ask reopens it"
   );
@@ -200,41 +199,6 @@ test("an edit rewrites the edited message's stored protobuf and leaves its neigh
   assert.notEqual(edited.editedAt, null);
 });
 
-test("compact keeps the words, folds a run into one line, and counts what it left out", async () => {
-  const { call, arrive } = setup();
-  const t = Date.now() - hour;
-  arrive(GROUP, "ați pornit?", { participant: ANA, at: t });
-  arrive(GROUP, "da, de la 8", { participant: DAN, at: t + 60_000 });
-  arrive(GROUP, "mai avem 2 ore", { participant: DAN, at: t + 120_000 });
-  arrive(GROUP, "😘😘", { participant: DAN, at: t + 130_000 });
-  arrive(GROUP, { imageMessage: { mimetype: "image/jpeg" } }, { participant: DAN, at: t + 140_000 });
-  arrive(
-    GROUP,
-    { imageMessage: { mimetype: "image/jpeg", caption: "autostrada" } },
-    { participant: DAN, at: t + 150_000 }
-  );
-  arrive(GROUP, "?", { participant: ANA, at: t + 20 * 60_000 });
-  arrive(GROUP, "am ajuns", { participant: DAN, at: t + 60 * 60_000 });
-
-  const full = await call("get_recent_messages", { hours: 2 });
-  const compact = await call("get_recent_messages", { hours: 2, compact: true });
-  const [c] = compact.structuredContent.conversations;
-  assert.deepEqual(
-    c.lines.map((l) => [l.text, l.message_ids.length]),
-    [
-      ["ați pornit?", 1],
-      ["da, de la 8 · mai avem 2 ore · [image] autostrada", 3],
-      ["?", 1],
-      ["am ajuns", 1],
-    ]
-  );
-  assert.deepEqual(c.dropped, { media: 1, wordless: 1 });
-  assert.match(compact.content[0].text, /left out: 1 media without a word, 1 wordless/);
-  assert.match(compact.content[0].text, /Dan: da, de la 8 · mai avem 2 ore · \[image\] autostrada \(3 msgs\)/);
-  assert.ok(compact.content[0].text.length < full.content[0].text.length * 0.7, "well under the full size");
-  assert.equal(compactConversations([]).length, 0);
-});
-
 test("a revoked message leaves the database, the search, and a restart", async () => {
   const { svc, sock, call, arrive } = setup({ persistHistory: true });
   const id = arrive(ANA, "parola e hunter2");
@@ -334,12 +298,7 @@ test("in a group the note introduces the sender once, then the name alone", asyn
   arrive(GROUP, "sunt aici", { participant: DAN, at: t });
   arrive(GROUP, "și tu?", { participant: ANA, at: t + 10 * 60_000 });
   arrive(GROUP, "tot aici", { participant: DAN, at: t + 20 * 60_000 });
-  const full = (await call("get_recent_messages", { hours: 2 })).content[0].text;
-  assert.equal((full.match(/Dan · Hermi:/g) || []).length, 1, "introduced once");
-  assert.match(full, /\] Dan: tot aici/);
   const read = (await call("read_messages", { chat_id: GROUP })).content[0].text;
-  assert.equal((read.match(/\*\*Dan · Hermi\*\*/g) || []).length, 1);
-  const compact = (await call("get_recent_messages", { hours: 2, compact: true })).content[0].text;
-  assert.equal((compact.match(/Dan · Hermi:/g) || []).length, 1);
-  assert.match(compact, /\] Dan: tot aici/);
+  assert.equal((read.match(/\*\*Dan · Hermi\*\*/g) || []).length, 1, "introduced once");
+  assert.equal((read.match(/\*\*Dan\*\* ·/g) || []).length, 1, "then the name alone");
 });

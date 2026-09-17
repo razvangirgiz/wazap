@@ -12,7 +12,6 @@ import {
 } from "./tool-runtime.js";
 export { toolError, type ToolCtx, type RegisterOpts } from "./tool-runtime.js";
 import { CATCHUP_INPUT, CATCHUP_OUTPUT, runCatchUp } from "./catchup.js";
-import { compactConversations, renderCompact } from "./compact.js";
 import { coverageNote, indexCoverageNote, searchCoverage } from "./coverage.js";
 import { describeTarget, looksUnnamed, renderDraft, type DraftPayload, type DraftView } from "./drafts.js";
 import { ERROR_GUIDE, WazapError } from "./errors.js";
@@ -47,12 +46,10 @@ import type {
   MessageView,
   OutgoingTarget,
   RecallAnswer,
-  RecentConversation,
   SentMessage,
   SearchAnswer,
   Synced,
   Preview,
-  UnansweredChat,
   WaitResult,
   WhatsAppApi,
 } from "./wa-types.js";
@@ -246,9 +243,8 @@ link_account when it says no account is linked yet.
 - Catch up: catch_up() says what the user missed since this client's last
   catch-up, every account at once, within a token budget: who waits on a reply,
   mentions and polls, missed calls, people, groups condensed, stories. Pass
-  more.cursor back for the rest. For every message of a window instead,
-  get_recent_messages(hours); include_previews: true shows the photos.
-- Who is waiting on the user: get_unanswered. It returns only chats whose last
+  more.cursor back for the rest; read_messages gives a chat in full.
+- Who is waiting on the user: catch_up's waiting. It lists only chats whose last
   word is theirs and asks for something, with the ask quoted. When the user
   says they dealt with one outside WhatsApp, remember(chat_id, handled: true) takes it
   off the list until they write again.
@@ -321,7 +317,7 @@ A sender whose name WhatsApp has never given us reads as their phone number, or
 as "unknown (lid …1234)" when even that is unknown — never as raw LID digits,
 which look like a phone number and are not one.
 WhatsApp's own notices (device linking, group membership, encryption) have
-\`type: "system"\` and are left out of get_recent_messages unless you pass
+\`type: "system"\` and are left out of catch_up; read_messages shows them, and you can pass
 include_system: true.
 A group notice says who made which change: "[Medeea added Ana (40723124956)]",
 with \`system: {action, actor, targets, value}\` naming the same people. Report
@@ -358,7 +354,7 @@ Call get_media(message_id) on a voice note that has no transcript yet.
 A WhatsApp call is a message with \`type: "call"\` carrying
 \`call: {kind, direction, outcome, duration_seconds}\`, reading as
 "[voice call · 6 min]" or "[missed voice call]".
-read_messages and get_recent_messages take \`types\` to narrow to a subset of
+read_messages takes \`types\` to narrow to a subset of
 these types, e.g. \`types: ["call"]\` for the call log of a chat.
 \`timestamp\` is ISO 8601 with the machine's UTC offset, \`age\` is human-readable.
 
@@ -529,106 +525,7 @@ from_me}, archived, pinned, muted_until, and left (groups you are no longer in).
       );
     },
   }),
-  tool({
-    name: "get_recent_messages",
-    title: "Get every WhatsApp conversation from the last N hours",
-    description: `Everything that happened recently, grouped by chat. This is the catch-up tool:
-one call instead of list_chats plus a read_messages per chat. WhatsApp's own
-notices — device linking, group membership changes, encryption notices — are left
-out so the counts are conversation; pass include_system to see them. A chat
-lists at most its newest 2,000 messages of the window.`,
-    schema: {
-      hours: z.number().int().min(1).max(168).default(24).describe("Look-back window in hours (1-168)"),
-      filter: z
-        .enum(["all", "unread", "groups", "individual"])
-        .default("all")
-        .describe("Restrict to unread chats, groups, or one-to-one chats"),
-      include_system: z
-        .boolean()
-        .default(false)
-        .describe(
-          "Include WhatsApp's own system notices, which are excluded from the bodies and the counts by default"
-        ),
-      types: messageTypes,
-      include_previews: includePreviews,
-      compact: z
-        .boolean()
-        .default(false)
-        .describe(
-          "Leave out media without a caption and messages with no words in them, fold what one person sent in a row into one line, and say per chat what was left out. About half the size; use it for a routine catch-up"
-        ),
-    },
-    write: false,
-    handler: async ({ hours, filter, include_system, types, include_previews, compact }, { wa }) => {
-      const result = await wa.getRecentMessages(hours, filter, include_system, types);
-      if (compact) {
-        const conversations = compactConversations(result.data);
-        return ok(
-          renderCompact(conversations, hours),
-          synced(result, { hours, filter, compact: true, conversation_count: conversations.length, conversations })
-        );
-      }
-      const messageCount = result.data.reduce((n, c) => n + c.messages.length, 0);
-      const all = result.data.flatMap((c) => c.messages);
-      const previews = include_previews ? await wa.previews(newestFirst(all), MAX_PREVIEWS) : [];
-      return ok(
-        renderConversations(result.data, hours, previewLabels(previews), previewNote(all, previews, include_previews)),
-        synced(result, {
-          hours,
-          filter,
-          include_system,
-          types,
-          conversation_count: result.data.length,
-          message_count: messageCount,
-          preview_count: previews.length,
-          conversations: result.data,
-        }),
-        previewBlocks(previews)
-      );
-    },
-  }),
-
   CATCH_UP,
-
-  tool({
-    name: "get_unanswered",
-    title: "Find who is waiting on the user",
-    description: `Chats where the last word is theirs and it asks for something: a question, a
-request ("poți", "te rog", "can you", "when"…), or a voice note nobody has heard
-yet. A conversation that ended in "ok, thanks" is not listed, and neither is an
-ask older than max_age_hours (two weeks by default): that one was abandoned, not
-left waiting. Groups count only when the user was @-mentioned or replied to
-after their own last message. A [business] account's ask is often an automatic
-reply; weigh it accordingly.
-
-People come first, then the oldest wait. Each entry quotes the ask, says how
-many of their messages arrived since the user's last one, and how long they
-have been waiting. This is the follow-up half of an inbox triage; use
-get_recent_messages for what happened, and this for who is still waiting.`,
-    schema: {
-      min_age_hours: z
-        .number()
-        .min(0)
-        .max(8760)
-        .default(0)
-        .describe("Only asks at least this old, e.g. 48 for people the user forgot for two days"),
-      max_age_hours: z
-        .number()
-        .min(1)
-        .max(8760)
-        .default(336)
-        .describe("Ignore asks older than this; an ask left for two weeks (the default) is abandoned, not waiting"),
-      limit: z.number().int().min(1).max(50).default(20).describe("Maximum number of chats (1-50)"),
-    },
-    write: false,
-    handler: async ({ min_age_hours, max_age_hours, limit }, { wa }) => {
-      const result = await wa.getUnanswered(min_age_hours, max_age_hours, limit);
-      return ok(
-        renderUnanswered(result.data, min_age_hours),
-        synced(result, { min_age_hours, max_age_hours, count: result.data.length, chats: result.data })
-      );
-    },
-  }),
 
   tool({
     name: "remember",
@@ -1554,32 +1451,6 @@ function renderRecall(title: string, answer: RecallAnswer | IdentifiedRecallAnsw
   return lines.join("\n");
 }
 
-function renderConversations(
-  conversations: RecentConversation[],
-  hours: number,
-  labels: Map<string, string> = new Map(),
-  note: string | null = null
-): string {
-  if (conversations.length === 0) return `No WhatsApp conversations in the last ${hours}h.`;
-  const total = conversations.reduce((n, c) => n + c.messages.length, 0);
-  const lines = [`# WhatsApp · last ${hours}h (${conversations.length} chats, ${total} messages)`, ""];
-  if (note) lines.splice(1, 0, note);
-  for (const c of conversations) {
-    lines.push(
-      `## ${c.chat_name}${c.type === "group" ? " [group]" : ""}${c.note ? ` · ${c.note}` : ""} — \`${c.chat_id}\``
-    );
-    const introduced = new Set<string>();
-    for (const m of c.messages) {
-      const label = labels.get(m.message_id);
-      lines.push(
-        `- [${m.timestamp}] ${senderLabel(m, introduced)}: ${truncate(m.text, 500)}${label ? ` (${label})` : ""}`
-      );
-    }
-    lines.push("");
-  }
-  return lines.join("\n");
-}
-
 function renderStories(
   stories: MessageView[],
   hours: number,
@@ -1598,23 +1469,6 @@ function renderStories(
     const label = labels.get(m.message_id);
     lines.push(`- ${m.age} · ${truncate(m.text, 300)}${label ? ` (${label})` : ""} · id: \`${m.message_id}\``);
   }
-  return lines.join("\n");
-}
-
-function renderUnanswered(chats: UnansweredChat[], minAgeHours: number): string {
-  const since = minAgeHours > 0 ? ` for ${minAgeHours}h or more` : "";
-  if (chats.length === 0) return `Nobody is waiting on you${since}.`;
-  const lines = [`# Waiting on you${since} (${chats.length})`, ""];
-  chats.forEach((c, i) => {
-    const who =
-      (c.type === "group"
-        ? `${c.name} [group] — ${c.ask.sender.name}`
-        : `${c.name}${c.business ? " [business]" : ""}`) + (c.note ? ` · ${c.note}` : "");
-    const more = c.messages_since_you > 1 ? `, ${c.messages_since_you} messages since yours` : "";
-    lines.push(`${i + 1}. **${who}** · ${c.age}${more} — \`${c.chat_id}\``);
-    lines.push(`   > ${truncate(c.ask.text, 300)}`);
-    lines.push(`   ask id: \`${c.ask.message_id}\``);
-  });
   return lines.join("\n");
 }
 
