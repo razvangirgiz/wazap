@@ -9,7 +9,7 @@ A message sent here is indistinguishable from one the user typed. The rail: **th
 
 ## Which account
 
-If more than one WhatsApp account is linked, `get_status` lists them; pass `account_id` on every tool in this flow, including `confirm_send`. A send to a chat no account knows, with two or more accounts, fails `AMBIGUOUS_ACCOUNT`; do not retry without `account_id`. A chat only one account knows selects that account.
+If more than one WhatsApp account is linked, `get_status` lists them; pass `account_id` on every tool in this flow, including `confirm_send`. A send to a chat no account knows, with two or more accounts, fails `AMBIGUOUS_ACCOUNT`; do not retry without `account_id`. A chat only one account knows selects that account; a forward goes from the account that holds the message.
 
 ## Resolve the recipient
 

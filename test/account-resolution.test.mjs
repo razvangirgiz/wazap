@@ -268,6 +268,31 @@ test("an unknown chat with two accounts: writes AMBIGUOUS, reads use default", a
   assert.equal(read.structuredContent.account_id, "default");
 });
 
+test("a forward is drafted on the account that holds the message, whoever the destination is", async () => {
+  const { hub, homeSock, workSock } = twoAccountHub();
+  for (const sock of [homeSock, workSock]) sock.onWhatsApp = async (...jids) => jids.map((jid) => ({ jid, exists: true }));
+  homeSock.ev.emit("messages.upsert", { type: "notify", messages: [message(ANA, "adresa: Str. Lalelelor 4", { id: "H1" })] });
+  // DAN's chat is known to work only; STRANGER to no account.
+  workSock.ev.emit("messages.upsert", { type: "notify", messages: [message(DAN, "salut", { id: "W1" })] });
+  const tools = toolsOf(hub);
+  const forward = (chat_id) => tools.get("send_message").handler({ chat_id, text: "", forward: `false_${ANA}_H1` });
+
+  for (const chat of [DAN, STRANGER]) {
+    const drafted = await forward(chat);
+    assert.equal(drafted.isError, undefined, `${chat}: ${JSON.stringify(drafted.structuredContent)}`);
+    assert.equal(drafted.structuredContent.kind, "forward");
+    assert.equal(drafted.structuredContent.account_id, "default");
+  }
+
+  // Held by both accounts: the one that also knows the destination sends it; knowing neither, it is a question.
+  workSock.ev.emit("messages.upsert", { type: "notify", messages: [message(ANA, "adresa: Str. Lalelelor 4", { id: "H1" })] });
+  const both = await forward(DAN);
+  assert.equal(both.structuredContent.account_id, "work");
+  const neither = await forward(STRANGER);
+  assert.equal(neither.structuredContent.error, "AMBIGUOUS_ACCOUNT");
+  assert.match(neither.structuredContent.message, /message/);
+});
+
 test("get_status lists every configured account and names the default", async () => {
   const { hub } = twoAccountHub({ workWrites: false });
   const tools = toolsOf(hub);

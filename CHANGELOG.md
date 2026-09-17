@@ -32,7 +32,7 @@ answers.
 | `send_media` | `send_message` with `file_path` or `url`, the caption as `text`, `as: "document" \| "voice" \| "gif"` |
 | `send_poll` | `send_message` with `options` (and `multi_select`), the question as `text` |
 | `send_location` | `send_message` with `latitude` and `longitude`, the place name as `text`, `address` |
-| `forward_message` | `send_message` with `forward` (the message_id) and `text: ""`, `chat_id` the destination |
+| `forward_message` | `send_message` with `forward` (the message_id) and `text: ""`, `chat_id` the destination; without `account_id` it goes from the account that holds the message, as before |
 | `create_group` | `manage_group` with `action: "create"`, the name as `value`, `participant_ids` |
 | `join_group` | `manage_group` with `action: "join"`, `invite` or `message_id`, `confirm` |
 | `save_contact`, `remove_contact`, `set_profile_picture` | removed, see below |

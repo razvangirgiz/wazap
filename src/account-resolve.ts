@@ -110,6 +110,16 @@ export function resolveToolAccount(
   const chatId = stringArg(args, "chat_id") ?? stringArg(args, "group_id");
   const messageId = stringArg(args, "message_id");
   const draftId = stringArg(args, "draft_id");
+  // A forward can only leave from the account that holds the message; the destination may be new to every account.
+  const forwarded = stringArg(args, "forward");
+  if (forwarded !== undefined) {
+    const holders = hub.findByMessage(forwarded);
+    if (holders.length === 1) return holders[0]!;
+    if (holders.length > 1) {
+      const knowChat = chatId === undefined ? [] : hub.findByChat(chatId).filter((row) => holders.some((holder) => holder.id === row.id));
+      return pickFromMatches(knowChat.length === 1 ? knowChat : holders, tool.write, hub, "message");
+    }
+  }
   if (chatId !== undefined) return pickFromMatches(hub.findByChat(chatId), tool.write, hub, "chat");
   if (messageId !== undefined) return pickFromMatches(hub.findByMessage(messageId), tool.write, hub, "message");
   if (draftId !== undefined) return pickFromMatches(hub.findByDraft(draftId), false, hub, "draft");
