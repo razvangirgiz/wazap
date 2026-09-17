@@ -37,15 +37,15 @@ answers.
 | `join_group` | `manage_group` with `action: "join"`, `invite` or `message_id`, `confirm` |
 | `save_contact`, `remove_contact`, `set_profile_picture` | removed, see below |
 
-- **What an assistant is sent is 4,778 tokens instead of 14,397**: the names,
+- **What an assistant is sent is 4,786 tokens instead of 14,397**: the names,
   descriptions, input schemas and annotations of a session that can write, as
-  an SDK client lists them (2,934 in a read session). Every description fits in
+  an SDK client lists them (2,935 in a read session). Every description fits in
   300 characters, `account_id` is explained once, in the server's instructions
-  and in `learn`, and `learn`'s guide is 1,924 tokens of text with no copy in
+  and in `learn`, and `learn`'s guide is 1,944 tokens of text with no copy in
   structured content. `node scripts/tool-budget.mjs` prints the table per tool,
   and a test holds the budget.
 - **Output schemas on every tool** but the five Calfa calls and `learn`:
-  6,051 tokens in all, 2,238 of them `catch_up`'s and 1,440 `find_contact`'s.
+  6,408 tokens in all, 2,293 of them `catch_up`'s and 1,510 `find_contact`'s.
   A refusal from such a tool is `{ error, message, fix, account_id }` as text.
 - **Annotations stated per tool**, for its most far-reaching action, on one
   rule: read-only means it changes nothing on WhatsApp and nothing the user
