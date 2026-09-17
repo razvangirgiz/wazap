@@ -144,7 +144,7 @@ answers.
   author, not its words. `wait_for_messages` (unless it waits on their chat),
   `list_chats`' last message and `read_messages` on `"status"` keep the entry,
   with `text: "[private]"`, `private: true` and no preview. Filed on one
-  account, the tag holds on every account of the call. `remember`, `learn`, the
+  account, the tag holds in these reads on every other account. `remember`, `learn`, the
   inbox and recall skills and the README (*Keeping someone private*) state the
   rule; the output schemas declare `private_omitted` and `private`. The webhook
   is unchanged.

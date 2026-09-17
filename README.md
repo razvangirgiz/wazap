@@ -461,9 +461,11 @@ and what kind, and loses the words:
   without text, caption or preview. A story cannot be named, so for now there
   is no way to read one of theirs through the assistant.
 
-The tag goes with the person: filed on one account, it holds on every account
-of a call, by number or lid. The [outbound webhook](#outbound-webhook) is not
-affected; it is the channel for what you build, not the assistant's.
+The tag goes with the person: filed on one account, it holds in `search`,
+`wait_for_messages`, `list_chats` and the stories of every other account, by
+number or lid, and in a catch-up over several accounts. The
+[outbound webhook](#outbound-webhook) is not affected; it is the channel for
+what you build, not the assistant's.
 
 ## Voice messages
 
