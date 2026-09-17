@@ -135,7 +135,7 @@ const SEARCH_OUTPUT = {
   ),
   scan_capped: z.boolean().optional(),
   searched_back_to: z.string().optional().describe("Older messages were not searched: narrow the search"),
-  coverage: OPEN_OBJECT.optional(),
+  coverage: OPEN_OBJECT.nullable().optional().describe("null: it could not be counted"),
   index: OPEN_OBJECT.optional(),
   recall_unavailable: z.object({ code: z.string(), message: z.string(), fix: z.string().optional() }).optional(),
   freshness: OPEN_OBJECT.nullable(),

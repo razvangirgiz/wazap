@@ -157,6 +157,22 @@ test("every tool with an output schema answers in its declared shape, through an
   }
 });
 
+test("a search whose coverage could not be counted still reaches an SDK client, with coverage null", async () => {
+  const db = home.db;
+  const coverage = db.search.coverage;
+  db.search.coverage = () => {
+    throw new Error("SQLITE_BUSY: database is locked");
+  };
+  try {
+    const result = await client.callTool({ name: "search", arguments: { query: "factura", match: "words" } });
+    assert.equal(result.isError, undefined, result.content?.[0]?.text);
+    assert.equal(result.structuredContent.coverage, null);
+    assert.equal(result.structuredContent.count, 1, "the messages found are still the answer");
+  } finally {
+    db.search.coverage = coverage;
+  }
+});
+
 test("only the five tools Calfa calls and learn go without an output schema", () => {
   assert.deepEqual(
     tools.filter((tool) => tool.outputSchema === undefined).map((tool) => tool.name).sort(),
