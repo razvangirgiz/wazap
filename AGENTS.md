@@ -64,6 +64,29 @@ scores a fixed case set against the running daemon, so prompt, model and
 floor changes are measured, not eyeballed. The real cases are private data
 and are not committed; `scripts/recall-eval.example.json` shows the shape.
 
+How well assistants use the tools has its own harness, `scripts/eval/`. An
+evaluation server (`scripts/eval/server.mjs`) serves the real MCP endpoint over
+a fictional two-account world (`eval/fixtures/world.json`) on fake sockets: it
+refuses `~/.wazap` and the live ports, can never open WhatsApp, and records a
+trace of every tool call and every write that would have reached WhatsApp. The
+cases (`eval/cases/*.json`) assert on capabilities, which `eval/tool-map/`
+maps to tool names per version.
+
+- `node scripts/eval/run-claude.mjs --cases baseline-0.23 --model sonnet` runs
+  headless Claude Code, isolated to the evaluation server, and scores the run.
+  Transcripts go to `~/.wazap-eval/runs/`; `--save
+  eval/results/<version>/<date>-<model>-<mode>.summary.json` keeps the summary.
+  Costs real subscription usage: `--max-budget-usd` per attempt, `--stop-at-usd`
+  for the run. Never Fable.
+- `node scripts/eval/score.mjs <run-dir> [--compare <summary.json>] [--judge]`
+  rescores a run; the LLM judge is off by default and informative only.
+- `eval/chatgpt-protocol.md` with `scripts/eval/manual.mjs` is the manual
+  ChatGPT arm.
+
+`test/eval-harness.test.mjs` keeps the harness in the gate without a model: a
+scripted oracle passes representative cases and an agent that does nothing
+fails them. The sandbox socket it shares with the server is `test/sandbox.mjs`.
+
 ## Commit style
 
 `<Area>: <what changed>` as a sentence, from `git log`:
