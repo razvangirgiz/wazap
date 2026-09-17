@@ -10,7 +10,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
 
-import { mediaContent } from "../dist/outgoing-media.js";
+import { asGifMedia, mediaContent } from "../dist/outgoing-media.js";
 import { gifToMp4 } from "../dist/gif.js";
 import { which } from "../dist/transcribe/local.js";
 import { draftStub } from "./helpers.mjs";
@@ -28,6 +28,16 @@ test("as_gif sends a video with gifPlayback, and nothing else changes", () => {
   assert.deepEqual(mediaContent(mp4, { asDocument: false, asVoice: false, asGif: false }), {
     video: mp4.buffer,
     caption: undefined,
+  });
+});
+
+test("a file that cannot loop is refused in the words send_message takes: as: \"gif\"", async () => {
+  const pdf = { buffer: Buffer.from("%PDF"), mimetype: "application/pdf", filename: "a.pdf" };
+  await assert.rejects(asGifMedia(pdf, true), (err) => {
+    assert.equal(err.code, "MEDIA_UNAVAILABLE");
+    assert.match(err.message, /^as: "gif" needs a \.gif or a video/);
+    assert.doesNotMatch(`${err.message} ${err.fix}`, /as_gif/, "as_gif is no argument of any tool");
+    return true;
   });
 });
 

@@ -105,8 +105,8 @@ export async function asGifMedia(media: LoadedMedia, asGif: boolean): Promise<Lo
   if (media.mimetype.startsWith("video/")) return media;
   throw new WazapError(
     "MEDIA_UNAVAILABLE",
-    `as_gif needs a .gif or a video, not ${media.mimetype}.`,
-    "Pass a .gif or an mp4, or drop as_gif"
+    `as: "gif" needs a .gif or a video, not ${media.mimetype}.`,
+    'Pass a .gif or an mp4, or leave out as: "gif"'
   );
 }
 

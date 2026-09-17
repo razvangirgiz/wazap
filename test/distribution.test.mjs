@@ -141,4 +141,7 @@ test("the README's tool table is the registry, and no shipped document names a r
     }
     assert.doesNotMatch(text, /\b(3[0-9]|40|2[1-9]) (read |write )?tools\b/, `${file} counts tools the old way`);
   }
+  // The settings file names tools too, and there `recall` alone is the retired tool: the setting is WAZAP_RECALL.
+  const settings = readFileSync(join(root, ".env.example"), "utf8");
+  for (const name of RETIRED_TOOLS) assert.doesNotMatch(settings, new RegExp(`\`${name}[\`(.]`), `.env.example names ${name}`);
 });
