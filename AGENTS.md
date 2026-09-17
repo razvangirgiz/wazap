@@ -129,12 +129,45 @@ from the Actions page, since that re-runs only the failed job.
 - **One process owns a data dir.** `server.lock` in the data dir enforces it;
   two servers on one dir must refuse to start, never share.
 - **No secrets, ever.** `.env`, `accounts.json`, tokens and pairing codes stay
-  out of the tree. `.env.example` is the reference for every `WAZAP_*` knob —
-  a new setting is documented there, not invented elsewhere.
+  out of the tree.
+- **Settings are few on purpose.** `.env.example` and the README's Settings
+  table list every `WAZAP_*` a user sets, and nothing else. A new user-facing
+  setting needs a reason and goes there; a knob only tests need goes under
+  Development knobs below. A setting that stops being read goes into
+  `RETIRED_SETTINGS` in `src/config.ts`, so whoever still sets it gets a warning
+  naming its replacement instead of a silent change.
 - **Secrets in errors are redacted.** The webhook secret and tokens never
   appear in error strings or logs; keep it that way.
 - **Hygiene is not behavior.** Lint, format and docs commits must not change
   what the binary does.
+
+## Development knobs
+
+Still read, deliberately left out of the README and `.env.example`: tests and
+local debugging use them, users should not need them. Do not document them as
+settings; do not remove one while a test sets it.
+
+- `WAZAP_NO_UPDATE_CHECK=1` — `status` and doctor skip the npm registry call.
+  `test/helpers.mjs` sets it for every child.
+- `WAZAP_NO_SHARE=1` — no loopback endpoint and no `daemon.json`, so a second
+  wazap on the data dir is refused instead of bridging. The daemon, control and
+  bridge tests, and `test/calfa-contract.test.mjs`, rely on it.
+- `WAZAP_LIVE_TIMEOUT_MS` — how long a live probe (`status --live`, setup's
+  check, `contacts resync`) waits for WhatsApp; 15 s by default.
+- `WAZAP_TRANSCRIBE_AUTO=0` — keeps `transcribe_audio`, stops background
+  transcription of incoming notes.
+- `WAZAP_TRANSCRIBE_URL`, `WAZAP_TRANSCRIBE_MODEL` — another OpenAI-compatible
+  endpoint and its model; the tests point the URL at a local stub.
+  `wazap config transcribe openai` still asks for the URL at a terminal.
+- `WAZAP_WHISPER_MODEL` (`turbo`, `large-v3`, `medium`), `WAZAP_WHISPER_BIN` —
+  the whisper.cpp model and binary.
+- `WAZAP_EMBED_MODEL` (`embeddinggemma-300m`, `e5-base-multilingual`),
+  `WAZAP_EMBED_BIN` — the embedding model and `llama-server` binary.
+- `WAZAP_RECALL_MIN_SIMILARITY` — the recall floor, 0..1; tests set `0` to see
+  every hit.
+- `WAZAP_EMBED_URL` — an already-running embedding server instead of the
+  sidecar; the recall tests' stub. Whatever it points at receives message and
+  query text, so never aim it at another machine you do not trust.
 
 ## Lint ignores, and why
 

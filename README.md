@@ -377,26 +377,16 @@ command to reuse the partial file when possible. Never remove an active lock.
 This coordinates cooperating versions on one host, not distributed downloads
 across machines; stop older downloaders before upgrading.
 
-| `WAZAP_WHISPER_MODEL` | File | Size |
-| --- | --- | --- |
-| `turbo` (default) | `ggml-large-v3-turbo-q5_0.bin` | 574 MB |
-| `large-v3` | `ggml-large-v3-q5_0.bin` | 1.08 GB |
-| `medium` | `ggml-medium-q5_0.bin` | 539 MB |
-
-`turbo` is the default because it is the smallest model that still gets Romanian
-right. `medium` and below drop diacritics and mangle names, which is worse than
-no transcript at all: a missing transcript is a question, a wrong name is a wrong
-answer. `large-v3` is the same accuracy for several times the wait.
+The model is whisper large-v3-turbo (`ggml-large-v3-turbo-q5_0.bin`, 574 MB),
+the smallest that still gets Romanian right. Smaller models drop diacritics and
+mangle names, which is worse than no transcript at all: a missing transcript is
+a question, a wrong name is a wrong answer.
 
 ### An API, OpenAI-compatible
 
-`wazap config transcribe openai` asks for the key without echoing it and stores
-it in `<data-dir>/.env`. The default endpoint is OpenAI; Groq works unchanged:
-
-```bash
-WAZAP_TRANSCRIBE_URL=https://api.groq.com/openai/v1
-WAZAP_TRANSCRIBE_MODEL=whisper-large-v3-turbo
-```
+`wazap config transcribe openai` asks for the key without echoing it, then for
+the base URL (OpenAI unless you type another), and stores both in
+`<data-dir>/.env`.
 
 **With this provider the audio leaves your machine.** Every voice note wazap
 transcribes is uploaded to that endpoint. If that is not acceptable, use `local`,
@@ -412,7 +402,7 @@ The key is treated as a secret rather than as a setting:
   `api key: set (…abcd)`.
 - Provider error bodies, transport exception details and malformed-JSON excerpts
   are not printed. Errors retain HTTP status, timeouts and actionable fixes.
-- A plain-`http` `WAZAP_TRANSCRIBE_URL` is refused unless it points back at this
+- A plain-`http` base URL is refused unless it points back at this
   machine. Userinfo credentials, queries and fragments are not allowed in this
   base URL; set the API key separately.
 - Redirects are refused, including same-origin redirects: configure the final
@@ -467,10 +457,9 @@ its words are searchable, recalled and carried by the webhook event.
 
 Audio *files* are left alone, since one can be an hour long, and so are notes
 you recorded and notes WhatsApp gave no length for; call
-`transcribe_audio(message_id)` for those. `WAZAP_TRANSCRIBE_AUTO=0` keeps the
-tool and stops the background work; with it, or with the provider switched
-off, a queue already stored is kept and waits, and it continues under the
-provider configured next, within the day and the local-stays-local rule.
+`transcribe_audio(message_id)` for those. With the provider switched off, a
+queue already stored is kept and waits, and it continues under the provider
+configured next, within the day and the local-stays-local rule.
 `get_status` shows the queue under `transcription` (how many wait, how long
 the current run has taken, how many were given up on, the latest reason, a
 pause and until when, never content), and `wazap status` prints a
@@ -486,7 +475,7 @@ id, a phone number, a URL — `search_messages` stays the right tool.
 
 Off by default, and fully local: a `llama-server` sidecar bound to loopback
 does the embedding, so nothing leaves the machine. It needs llama.cpp, the
-pinned model and persisted history (`WAZAP_PERSIST_HISTORY`, on by default):
+pinned model and the history the account keeps:
 
 ```bash
 brew install llama.cpp      # macOS; elsewhere build llama.cpp and put llama-server on PATH
@@ -517,16 +506,10 @@ built — is marked `index only`: `get_message` returns its text, but
 
 Embedding requests refuse redirects, cap replies at 4 MiB and validate vector
 shape and finite values. Provider bodies and decoder stderr are not copied into
-errors. The test-only `WAZAP_EMBED_URL` override is an operator-controlled sink:
-setting it to another machine sends message/query text there. Do not point it at
-an untrusted service; credentials, query strings and fragments in that URL are
-refused, and diagnostics show its host only.
+errors.
 
-The knobs — `WAZAP_RECALL`, `WAZAP_EMBED_MODEL` (`embeddinggemma-300m` by
-default, `e5-base-multilingual` for an older llama.cpp), `WAZAP_EMBED_BIN`,
-`WAZAP_RECALL_MIN_SIMILARITY` — are documented in `.env.example`.
-`WAZAP_RECALL_MAX` is still validated but no longer caps anything: every kept
-message is indexed.
+`wazap config recall local|off` sets `WAZAP_RECALL`, the one setting recall has.
+The model is embeddinggemma-300m, and every kept message is indexed.
 
 ## Skills
 
@@ -669,10 +652,6 @@ only small bounded caches stay in the process.
   week later; `WAZAP_RETENTION=1` does not shorten that week.
   **`wazap account remove`** stops the account, closes its database and deletes
   the whole folder with it.
-- **`WAZAP_PERSIST_HISTORY=0`** removes every stored message at each start and
-  stop, whatever `WAZAP_RETENTION` says, and with them every draft and the words
-  of every send record; chats, contacts, notes, deletion barriers and the send
-  records themselves stay, and recall is off.
 
 - **`wazap status`** reads each database read-only, with the server running or
   not: whether it is preparing (and the import phase), ready or imported with
@@ -744,7 +723,7 @@ embedded copy of a message.
 
 The tombstones and each chat's clear time are the barriers: message IDs and
 times, no bodies. They keep replay and backfill from resurrecting a deleted
-message, and they remain even with `WAZAP_PERSIST_HISTORY=0`. Clearing a chat
+message. Clearing a chat
 hides it at once and purges it in chunks that resume after a crash; backfill
 dated at or before the local clear time is refused. WhatsApp timestamps have
 second precision, so a message in the same second can be suppressed. A
@@ -842,9 +821,9 @@ makes every client read-only, whatever flags that client was launched with.
 When the owner exits, the bridges exit with it, and the next `wazap` a client
 starts becomes the new owner.
 
-`WAZAP_NO_SHARE=1` opts out: a second `wazap` on the same directory exits with
-code 2 naming the pid of the one already running. An explicit `--http` is a
-server of its own rather than a bridge, and is refused the same way.
+An explicit `--http` is a server of its own rather than a bridge: a second one
+on the same directory exits with code 2 naming the pid of the one already
+running.
 
 ## Read-only mode
 
@@ -859,8 +838,9 @@ An unset `WAZAP_READ_ONLY` and `WAZAP_READ_ONLY=0` both register write tools
 `wazap serve --read-only` does not register them at all. The agent never
 sees them, so it cannot message anyone from your number even by mistake.
 
-Writes are also rate limited to `WAZAP_RATE_LIMIT` per minute (default 20, `0`
-disables). Sending faster than a human is how accounts get banned.
+Writes are also rate limited to 20 a minute per account, or the account's
+`rate_limit` in `accounts.json`. Sending faster than a human is how accounts
+get banned.
 
 ## Link previews and media processing
 
@@ -965,13 +945,11 @@ can call both tools unless a trusted harness enforces approval.
 ### Request budgets
 
 MCP POSTs authenticate before JSON parsing, accept at most 100 KiB and refuse
-compressed bodies. Each credential has 240 POSTs/minute across its sessions
-(`WAZAP_HTTP_BUDGET`);
+compressed bodies. Each credential has 240 POSTs/minute across its sessions;
 429 responses include `Retry-After`. The session registry holds at most 128
 sessions overall and 32 per credential, evicting that credential's oldest first.
 Tool work is capped at eight concurrent operations per MCP session and 32
-across the process, including stdio/bridges (`WAZAP_MAX_INFLIGHT`,
-`WAZAP_MAX_INFLIGHT_TOTAL`). Slots remain held until work settles,
+across the process, including stdio/bridges. Slots remain held until work settles,
 not merely until a client disconnects. Retry once after pending work completes.
 
 The HTTP listener caps connections at 256, header receipt at ten seconds and
@@ -1219,9 +1197,6 @@ fails, and the error names the status with a hint. Either way the failure sets
 least once: a POST a crash interrupted is sent again, so dedupe on
 `message_id`. Turning the webhook off, or dropping an event from
 `WAZAP_WEBHOOK_EVENTS`, cancels what waits; nothing is queued while it is off.
-With `WAZAP_PERSIST_HISTORY=0` the stored messages are removed at every stop
-and start, so a message event still waiting then is cancelled rather than
-posted after the restart; connection events still go out.
 
 A message event is built when it is posted, from the message as it is then: an
 edit or a transcript that arrived in the meantime goes with it, and a message
@@ -1357,34 +1332,28 @@ the receiver hears the current status once, not every flap.
 
 ## Settings
 
+Most of these are written for you by `wazap config`, `wazap login` and
+`wazap expose`; `.env.example` shows them all with their comments.
+
 | Variable | Default | Meaning |
 | --- | --- | --- |
 | `WAZAP_DATA_DIR` | `~/.wazap` | Where everything is stored. |
-| `WAZAP_READ_ONLY` | unset (`0`) | `1` does not register the write tools. Unset and `0` both do. |
-| `WAZAP_SYNC_FULL_HISTORY` | `0` | Ask WhatsApp for a fuller history sync. |
-| `WAZAP_PERSIST_HISTORY` | `1` | Keep messages across restarts. `0` removes them at each start and stop; barriers, chats, contacts and notes stay. |
-| `WAZAP_RATE_LIMIT` | `20` | Write tool calls per minute; `0` disables. |
-| `WAZAP_TRANSPORT` | `stdio` | `stdio` or `http`. |
-| `WAZAP_HOST` / `WAZAP_PORT` | `127.0.0.1` / `8766` | HTTP bind address. |
+| `WAZAP_READ_ONLY` | unset (`0`) | `1` does not register the write tools. Unset and `0` both do. `wazap config writes on\|off` sets it. |
+| `WAZAP_HOST` / `WAZAP_PORT` | `127.0.0.1` / `8766` | Where `wazap serve --http` listens. |
+| `WAZAP_PUBLIC_URL` / `WAZAP_OAUTH_PASSWORD` | unset | The `https` address agents reach the server at, and the password its consent page asks for (at least 8 characters). Both together turn [OAuth](#hosted-agents-oauth) on; `wazap expose` sets them. |
 | `WAZAP_READ_TOKEN` / `WAZAP_WRITE_TOKEN` | unset | Static bearer tokens for your own code; see [Building on wazap](#building-on-wazap-http-api-for-products). |
-| `WAZAP_PUBLIC_URL` | unset | The `https` address agents reach the server at. With the password, turns OAuth on. |
-| `WAZAP_OAUTH_PASSWORD` | unset | What the consent page asks for. At least 8 characters. |
-| `WAZAP_TRUST_PROXY` | `loopback` | OAuth proxy IPs/CIDRs trusted for X-Forwarded-For, comma-separated; `none` disables proxy trust. |
-| `WAZAP_NO_UPDATE_CHECK` | `0` | `1` stops `status` asking npm for a newer version. |
-| `WAZAP_TRANSCRIBE` | `off` | `local`, `openai` or `off`. |
-| `WAZAP_TRANSCRIBE_AUTO` | `1` | Transcribe incoming voice notes in the background. |
-| `WAZAP_TRANSCRIBE_LANGUAGE` | `auto` | Spoken language, e.g. `ro`. |
-| `WAZAP_WHISPER_MODEL` | `turbo` | `turbo`, `large-v3` or `medium`. |
-| `WAZAP_WHISPER_BIN` | unset | Path to a whisper.cpp binary that is not on `PATH`. |
-| `WAZAP_TRANSCRIBE_API_KEY` | unset | API key; `OPENAI_API_KEY` is the fallback. Never a flag. |
-| `WAZAP_TRANSCRIBE_URL` | `https://api.openai.com/v1` | OpenAI-compatible base URL. |
-| `WAZAP_TRANSCRIBE_MODEL` | `gpt-4o-mini-transcribe` | Model at that URL. |
-| `WAZAP_WEBHOOK` | `off` | `on` posts the enabled events to the webhook URL. |
-| `WAZAP_WEBHOOK_URL` | unset | HTTPS endpoint. `http://` only on loopback. An account `webhook_url` wins. |
-| `WAZAP_WEBHOOK_SECRET` | unset | Shared secret for `X-Wazap-Signature`. Never a flag. An account `webhook_secret` wins. |
-| `WAZAP_WEBHOOK_EVENTS` | unset (`message_received`) | Which events to post, comma-separated, or `all`. An account `webhook_events` wins. |
+| `WAZAP_TRANSCRIBE` | `off` | `local`, `openai` or `off`. `wazap config transcribe` sets it. |
+| `WAZAP_TRANSCRIBE_API_KEY` | unset | The key for `openai`; `OPENAI_API_KEY` is the fallback. Never a flag. |
+| `WAZAP_RECALL` | `off` | `local` turns on [semantic recall](#semantic-recall). `wazap config recall` sets it. |
+| `WAZAP_WEBHOOK` | `off` | `on` posts the enabled events to the webhook URL. `wazap config webhook` sets it with the next two. |
+| `WAZAP_WEBHOOK_URL` / `WAZAP_WEBHOOK_SECRET` | unset | HTTPS endpoint (`http://` only on loopback) and the shared secret for `X-Wazap-Signature`. The secret is never a flag. An account's `webhook_url` and `webhook_secret` win. |
+| `WAZAP_WEBHOOK_EVENTS` | unset (`message_received`) | Which events to post, comma-separated, or `all`. An account's `webhook_events` wins. |
+| `WAZAP_RETENTION` | `0` | `1` turns on [strict retention](#strict-retention-wazap_retention1-off-by-default). |
+| `WAZAP_TRUST_PROXY` | `loopback` | Advanced, for a self-hosted OAuth server behind a proxy: the proxy IPs/CIDRs trusted for X-Forwarded-For, comma-separated; `none` trusts no proxy. |
 
-Flags beat environment variables, which beat `<data-dir>/.env`.
+Flags beat environment variables, which beat `<data-dir>/.env`. A setting an
+earlier wazap read and this one does not is ignored, with a warning at startup
+that says what replaced it; see the [CHANGELOG](CHANGELOG.md).
 
 ## Known limitations
 
