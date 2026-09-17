@@ -801,7 +801,7 @@ function specOf(args: CatchupArgs, now: number): CatchupWindowSpec {
   return { kind: "since", ms: sinceOf(since, now) };
 }
 
-/** Everyone tagged #private or #no-catchup on any of the accounts, by jid; an account that cannot say adds nobody. The broad reads take its #private half. */
+/** Everyone tagged #private or #no-catchup on any of the live accounts, by jid; an account that cannot say adds nobody. The broad reads take its #private half. */
 export async function taggedAcross(targets: ReadonlyArray<{ wa: WhatsAppApi }>): Promise<CatchupTagJids> {
   const privateJids = new Set<string>();
   const noCatchup = new Set<string>();
@@ -867,8 +867,9 @@ export async function runCatchUp(args: CatchupArgs, ctx: CatchupContext): Promis
   const multi = targets.length > 1;
   const now = asked;
 
-  // A person tagged on one account of the catch-up is tagged on every one.
-  const tags = multi ? await taggedAcross(targets) : undefined;
+  // A person tagged on any live account is tagged on every one read, with account_id or without.
+  const everyone = ctx.hub.bindings();
+  const tags = everyone.length > 1 ? await taggedAcross(everyone) : undefined;
   // Each account's scan; one that fails is reported, the others still answer.
   const views: AccountView[] = await Promise.all(
     targets.map(async (target): Promise<AccountView> => {

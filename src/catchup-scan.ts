@@ -420,8 +420,9 @@ function emptySkips(): CatchupScan["skipped"] {
  * - #private keeps a person in, counted, but never quoted: their chat, and
  *   what they send in a group.
  * A tag is filed on a contact (a group keeps notes on its own row too). With
- * several accounts in one catch-up, a person tagged on any of them is tagged
- * on all: the accounts pass each other the jids (taggedJids, `extra`).
+ * several live accounts, a person tagged on any of them is tagged on every one
+ * a catch-up reads, account_id or not: the accounts pass each other the jids
+ * (taggedJids, `extra`).
  */
 export interface CatchupTagJids {
   private: readonly string[];

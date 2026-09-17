@@ -889,6 +889,35 @@ test("with several accounts, #private and #no-catchup filed on one account hold 
   assert.deepEqual(result.structuredContent.footer.accounts.find((entry) => entry.acct === "work").skipped, { no_catchup: { chats: 1, messages: 1 } });
 });
 
+test("a catch-up of one account by account_id reads #private and #no-catchup filed on another account, by number or by lid", async () => {
+  const { personal, work, hub } = twoAccounts();
+  const { call } = toolsOf(hub);
+  const LID = "555666777888999@lid";
+  const own = toolsOf(personal.svc);
+  await own.call("remember", { chat_id: ANA, add_tags: ["#private"] });
+  await own.call("remember", { chat_id: BOT, add_tags: ["#no-catchup"] });
+  await own.call("remember", { chat_id: LID, add_tags: ["#private"] });
+  // The business account knows that lid as Dan's.
+  work.sock.ev.emit("chats.upsert", [{ id: GROUP, name: "Echipa" }]);
+  await work.svc.db.learnLidPhone(LID, DAN);
+  work.arrive(ANA, "îmi trimiți banii pentru chirie până vineri?", { at: Date.now() - 3 * HOUR });
+  work.arrive(BOT, "Raport: 3 sarcini gata", { at: Date.now() - 2 * HOUR });
+  work.arrive(GROUP, work.mention("@Andrei îmi spui secretul despre moștenire?"), { participant: DAN, at: Date.now() - HOUR });
+
+  const result = await call("catch_up", { account_id: "work", hours: 24, budget_tokens: 8000 });
+  assert.deepEqual(result.structuredContent.accounts.map((entry) => entry.account_id), ["work"]);
+  const all = `${text(result)}\n${JSON.stringify(result.structuredContent)}`;
+  for (const words of ["chirie", "Raport", "moștenire", "Hermi"]) assert.ok(!all.includes(words), words);
+  assert.deepEqual(
+    result.structuredContent.waiting.map((entry) => [entry.name, entry.private]),
+    [
+      ["Ana", true],
+      ["Echipa", true],
+    ]
+  );
+  assert.deepEqual(result.structuredContent.footer.skipped, { no_catchup: { chats: 1, messages: 1 } });
+});
+
 test("a disconnected account is reported as such, not as nothing new, and its mark stays", async () => {
   const { personal, work, hub } = twoAccounts();
   const { call } = toolsOf(hub);

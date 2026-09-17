@@ -336,8 +336,8 @@ group call, no story. Tag them `#private`
 instead and they stay in, counted, but nothing they wrote is quoted — not the
 ask, not a mention or a poll of theirs in a group, not a group's quote — and
 their entries say `private` ([Keeping someone private](#keeping-someone-private)).
-A catch-up across several accounts reads a person tagged on any of them as
-tagged on all, by number or lid.
+A person tagged on any linked account is tagged on every account a catch-up
+reads, by number or lid, with `account_id` or without.
 
 ### Seeing, waiting, following up
 
@@ -463,7 +463,7 @@ and what kind, and loses the words:
 
 The tag goes with the person: filed on one account, it holds in `search`,
 `wait_for_messages`, `list_chats` and the stories of every other account, by
-number or lid, and in a catch-up over several accounts. The
+number or lid, and in every catch-up. The
 [outbound webhook](#outbound-webhook) is not affected; it is the channel for
 what you build, not the assistant's.
 

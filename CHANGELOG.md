@@ -132,8 +132,9 @@ answers.
 - **`#private` in a catch-up**: a person tagged with it is counted and never
   quoted — their asks, what followed, their messages, their mentions and polls
   in groups, a group's quote — and their entries say `private`; their unheard
-  voice notes are counted in the footer, never named for transcription. Across
-  several accounts, both tags filed on one account hold on all of them.
+  voice notes are counted in the footer, never named for transcription. Both
+  tags filed on one linked account hold on every account a catch-up reads, with
+  `account_id` or without.
 - **`#private` in every read that does not name the person.** Their words
   (text, caption, transcript, quote, a link's or file's preview, a poll's text)
   reach the assistant only when a call names them: their `chat_id`, a
