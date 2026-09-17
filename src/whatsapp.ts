@@ -36,6 +36,7 @@ import { accountPolicy, type AccountRecord } from "./accounts.js";
 import { wordsAsk } from "./asks.js";
 import { clearAuth, readLinkedAccount, useAtomicAuthState, type LinkedAccount } from "./auth-state.js";
 import { CallTracker, callMessage, isTrackedCall, type CallEntry } from "./calls.js";
+import { GROUP_META_MAX, GROUP_META_MS, quotesOf, scanCatchup, type CatchupHost, type CatchupQuote, type CatchupScan, type CatchupScanRequest } from "./catchup-scan.js";
 import { BAILEYS_VERSION, WAZAP_VERSION, writesHints, type AccountPaths, type Config } from "./config.js";
 import {
   AccountDb,
@@ -1970,6 +1971,72 @@ export class WhatsAppService implements WhatsAppApi {
     });
     return ask ? { ask, theirs } : null;
   }
+
+  // ---- catch_up (F2-2): this account's side; the digest is src/catchup.ts ----
+
+  /**
+   * The account's catch-up entries over a window. It reads what the database
+   * holds whether or not the socket is up, and says which: a digest of a
+   * disconnected account is reported as such, not as "nothing new". An account
+   * never linked has nothing to read.
+   */
+  catchUpScan(request: CatchupScanRequest): Promise<CatchupScan> {
+    return this.guarded(async () => {
+      if (this.status === "not_linked" || this.status === "linking") this.ensureConnected();
+      return scanCatchup(this.db, this.catchupHost(), request, { id: this.accountRecord.id, name: this.accountRecord.name });
+    });
+  }
+
+  catchUpQuotes(ids: number[]): Promise<CatchupQuote[]> {
+    return this.guarded(async () => quotesOf(this.db, ids));
+  }
+
+  catchUpAdvance(client: string, throughId: number, expected: number | null): Promise<{ advanced: boolean }> {
+    return this.guarded(async () => ({ advanced: this.db.catchup.advance(client, throughId, { expectedThroughId: expected }).advanced }));
+  }
+
+  private catchupHost(): CatchupHost {
+    return {
+      now: () => Date.now(),
+      ownJid: () => this.ownJid(),
+      nameOf: (jid) => this.displayName(jid),
+      noteOf: (jid) => this.noteFor(jid),
+      isNoise: (jid) => isNoiseJid(jid),
+      leftGroup: (chat) => {
+        try {
+          return chat.proto !== null && leftGroup(chat.proto);
+        } catch {
+          return false;
+        }
+      },
+      // Names only: the lid table is a lookup, and group metadata is fetched for
+      // at most a dozen groups, within a second, and only while connected — a
+      // fetch that cannot run would mark the group unreadable for good.
+      prepareNames: async (groups, people) => {
+        await this.learnLidPhones(people);
+        if (this.status !== "connected") return;
+        const unknown = groups.filter((jid) => !this.groupCache.has(jid) && !this.unreadableGroups.has(jid)).slice(0, GROUP_META_MAX);
+        if (unknown.length === 0) return;
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        await Promise.race([
+          Promise.all(unknown.map((jid) => this.learnParticipants(jid))),
+          new Promise<void>((done) => {
+            timer = setTimeout(done, GROUP_META_MS);
+            timer.unref();
+          }),
+        ]);
+        clearTimeout(timer);
+      },
+      connection: () => ({
+        status: this.status,
+        since: isoWithOffset(this.statusSince),
+        sync: this.syncState(),
+        mentionsIndexing: this.readyDb()?.messages.flagsBackfillPending() ?? false,
+      }),
+    };
+  }
+
+  // ---- end catch_up -------------------------------------------------------------
 
   setContactNote(contactId: string, note: string): Promise<ContactSummary> {
     return this.guarded(async () => {
