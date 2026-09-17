@@ -141,3 +141,40 @@ export function styleOf(texts: readonly string[], basis: StyleStats["basis"], op
     ends_punct: rate(punct, messages.length),
   };
 }
+
+/** What one message says about its own style: a draft, read with the tables styleOf reads the user's messages with. */
+export interface MessageStyle {
+  language: "ro" | "en" | "other";
+  /** Whether it carries Romanian diacritics; null when it is not Romanian or too short to tell. */
+  diacritics: boolean | null;
+  /** The form of address it uses; null when it names none, or is not Romanian. */
+  address: "tu" | "dumneavoastra" | null;
+  /** Characters, emoji counting one each. */
+  chars: number;
+}
+
+/**
+ * The style of a single message, for comparing a draft with StyleStats:
+ * language by function words, diacritics once it has enough letters, and the
+ * form of address by the same markers (plural verbs count as formal only
+ * `oneToOne`).
+ */
+export function messageStyle(text: string, options: { oneToOne?: boolean } = {}): MessageStyle {
+  const trimmed = text.trim();
+  const tokens = words(trimmed);
+  let roHits = 0;
+  let enHits = 0;
+  for (const token of tokens) {
+    if (RO_WORDS.has(token) || RO_CLITIC.test(token)) roHits++;
+    else if (EN_WORDS.has(token)) enHits++;
+  }
+  const language: MessageStyle["language"] = roHits > enHits ? "ro" : enHits > roHits ? "en" : "other";
+  let diacritics: boolean | null = null;
+  let address: MessageStyle["address"] = null;
+  if (language === "ro") {
+    if ((trimmed.match(/\p{L}/gu)?.length ?? 0) >= DIACRITIC_MIN_LETTERS) diacritics = RO_DIACRITICS.test(trimmed);
+    if (tokens.some((token) => FORMAL.has(token) || (options.oneToOne === true && FORMAL_VERBS.has(token)))) address = "dumneavoastra";
+    else if (tokens.some((token) => INFORMAL.has(token))) address = "tu";
+  }
+  return { language, diacritics, address, chars: [...trimmed].length };
+}
