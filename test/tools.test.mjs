@@ -129,17 +129,20 @@ test("send_message drafts through the session and confirm_send is the only send"
   assert.match(drafted.content[0].text, /confirm_send/);
   assert.match(drafted.structuredContent.next, /Show this preview.*confirm_send.*approve this text and this recipient/s, "a client that reads structured content only still gets the step after a draft");
 
+  // Confirmed with nothing in between: a session that goes on to do something
+  // else — drafting the next message included — is asked for a new yes instead
+  // (DRAFT_STALE, test/draft-isolation.test.mjs).
+  const confirmed = await server.tools.get("confirm_send").handler({ draft_id: drafted.structuredContent.draft_id });
+  assert.deepEqual(sent, [{ chatId: "40722123456@s.whatsapp.net", text: "Joi la 10." }]);
+  assert.match(confirmed.content[0].text, /Sent to/);
+  assert.equal(confirmed.structuredContent.message_id, "mid");
+
   const poll = await server.tools.get("send_message").handler({
     chat_id: "+40722123456",
     text: "Pizza?",
     options: ["da", "nu"],
   });
   assert.equal(poll.structuredContent.status, "draft");
-
-  const confirmed = await server.tools.get("confirm_send").handler({ draft_id: drafted.structuredContent.draft_id });
-  assert.deepEqual(sent, [{ chatId: "40722123456@s.whatsapp.net", text: "Joi la 10." }]);
-  assert.match(confirmed.content[0].text, /Sent to/);
-  assert.equal(confirmed.structuredContent.message_id, "mid");
 });
 
 test("send_message says it sends nothing, so it is called as soon as the recipient and text are known, and the preview to show is the one it returns", () => {
@@ -184,11 +187,12 @@ test("catch_up's description says account_id narrows it to one account and get_s
   assert.match(server.tools.get("catch_up").meta.description, /account_id narrows it to one account; get_status names them/);
 });
 
-test("an expired draft asks for a new yes wherever it is explained: confirm_send's description and the error guide", () => {
+test("a draft that cannot be sent on the old yes — expired, missing or stale — asks for a new one, in confirm_send's description and in the error guide", () => {
   const server = fakeServer();
   registerTools(server, asToolSource({}), { allowWrite: true });
-  assert.match(server.tools.get("confirm_send").meta.description, /Expired or missing draft: draft again, show the new preview, ask again\./);
+  assert.match(server.tools.get("confirm_send").meta.description, /Expired, missing or stale: draft again, show the new preview, ask again\./);
   assert.match(ERROR_GUIDE.DRAFT_EXPIRED, /wait for a new yes; the old yes does not carry over/);
+  assert.match(ERROR_GUIDE.DRAFT_STALE, /nothing was sent: draft again with send_message, show the new preview and ask for a yes to it/);
 });
 
 test("SEND_OUTCOME_UNKNOWN is explained as unknown, never as failed: a chat that does not show the message yet proves nothing", () => {

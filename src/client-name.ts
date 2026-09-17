@@ -12,6 +12,17 @@ export const CLIENT_META_KEY = "wazap/client";
 
 export const LOCAL_CLIENT = "local";
 
+/**
+ * Whether the session is an assistant talking to a person: stdio and the
+ * daemon's bridge (`local`, `local:<client>`), and a hosted agent that signed
+ * in (`oauth:<client_id>`). A static token (`token:<label>`) is a builder's own
+ * program, which brings its own approval flow, so rules written for the turns
+ * of a conversation are not applied to it.
+ */
+export function isAssistantClient(client: string): boolean {
+  return client === LOCAL_CLIENT || client.startsWith(`${LOCAL_CLIENT}:`) || client.startsWith("oauth:");
+}
+
 /** `local:<name>` on one line and at most 64 characters; `local` for a client that gave no name. */
 export function localClient(name: unknown): string {
   if (typeof name !== "string") return LOCAL_CLIENT;

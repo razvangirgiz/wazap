@@ -998,7 +998,7 @@ const TOOLS: readonly ToolDef[] = [
   tool({
     name: "confirm_send",
     title: "Send a drafted WhatsApp message",
-    description: `Send a draft the user approved — this text, this recipient: the only call that sends, once per draft. A yes about something else: show the preview again and ask. Expired or missing draft: draft again, show the new preview, ask again. SEND_OUTCOME_UNKNOWN: read_messages, never redo it unasked.`,
+    description: `Send a draft the user approved — this text, this recipient: the only call that sends, once per draft. A yes about something else: show the preview again and ask. Expired, missing or stale: draft again, show the new preview, ask again. SEND_OUTCOME_UNKNOWN: read_messages, never redo it unasked.`,
     schema: {
       draft_id: z.string().min(1).describe("From send_message"),
     },
