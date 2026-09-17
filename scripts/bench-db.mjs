@@ -228,6 +228,10 @@ async function mainPhase() {
 
   catchUpPhase(db, path);
   findPhase(db);
+  // What an upgraded account walks once after the v5 migration; the service's detector decodes each protobuf on top.
+  db.messages.requestFlagsBackfill();
+  const backfill = await stalls("flags backfill, 14 days (no decode)", () => db.messages.backfillFlags(() => 0));
+  results.facts.flags_backfill_scanned = backfill.scanned;
 
   let n = 0;
   time("single insert (autocommit, FULL)", 500, () => {
