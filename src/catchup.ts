@@ -217,7 +217,7 @@ const storiesEntry = z.object({
 
 const skipCount = z.object({ chats: z.number(), messages: z.number() });
 const footerShape = {
-  voice_untranscribed: z.array(z.string()).optional().describe("Voice notes nobody transcribed, by message id, for transcribe_audio"),
+  voice_untranscribed: z.array(z.string()).optional().describe("Voice notes nobody transcribed, by message id, for get_media"),
   voice_untranscribed_more: z.number().optional().describe("Voice notes nobody transcribed that are not named"),
   skipped: z
     .object({ no_catchup: skipCount.optional(), left_groups: skipCount.optional(), newsletters: skipCount.optional(), broadcasts: skipCount.optional() })
@@ -1115,7 +1115,7 @@ function footerLines(views: readonly AccountView[], multi: boolean): string[] {
       lines.push(
         scan.voiceUntranscribed.length === 0
           ? `${label}Voice notes not transcribed (${scan.voiceUntranscribedCount}).`
-          : `${label}Voice notes not transcribed (${scan.voiceUntranscribedCount}): ${scan.voiceUntranscribed.join(", ")}${more > 0 ? `, +${more}` : ""} — transcribe_audio reads one.`
+          : `${label}Voice notes not transcribed (${scan.voiceUntranscribedCount}): ${scan.voiceUntranscribed.join(", ")}${more > 0 ? `, +${more}` : ""} — get_media reads one.`
       );
     }
     const skipped = skippedParts(scan);

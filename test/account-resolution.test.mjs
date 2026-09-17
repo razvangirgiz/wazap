@@ -193,7 +193,7 @@ test("a message_id the default cannot resolve is tried on every account in turn"
   assert.equal(scoped.structuredContent.error, "MESSAGE_NOT_FOUND", "an explicit account_id keeps the lookup scoped");
 });
 
-test("download_media walks the accounts until a store files the id", async () => {
+test("get_media walks the accounts until a store files the id", async () => {
   const { hub, work, workSock } = twoAccountHub();
   const LID = "888777666555444@lid";
   const OWNER = "40700000009@s.whatsapp.net";
@@ -218,7 +218,7 @@ test("download_media walks the accounts until a store files the id", async () =>
   const saveTo = mkdtempSync(join(tmpdir(), "wazap-resolve-dl-"));
   const tools = toolsOf(hub);
 
-  const result = await tools.get("download_media").handler({ message_id: lidSid, save_to: saveTo });
+  const result = await tools.get("get_media").handler({ message_id: lidSid, save_to: saveTo });
   const out = result.structuredContent;
   assert.equal(result.isError, undefined);
   assert.equal(out.mime, "audio/ogg");
@@ -227,9 +227,9 @@ test("download_media walks the accounts until a store files the id", async () =>
   assert.equal(out.sender.id, OWNER, "sender identity is resolved on the account that served the file");
 
   const scoped = await tools
-    .get("download_media")
+    .get("get_media")
     .handler({ message_id: lidSid, save_to: saveTo, account_id: "default" });
-  assert.equal(scoped.structuredContent.error, "MESSAGE_NOT_FOUND");
+  assert.equal(JSON.parse(scoped.content[0].text).error, "MESSAGE_NOT_FOUND");
 });
 
 test("a message_id no account files keeps the resolved account's miss", async () => {

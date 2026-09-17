@@ -1,5 +1,5 @@
 /**
- * The download_media contract: the bytes on disk are the decrypted file, and
+ * The get_media contract for files: the bytes on disk are the decrypted file, and
  * the structured result says what arrived with it — mime, the caption the
  * sender wrote, the name their file had — so an agent never has to decrypt or
  * guess.
@@ -10,34 +10,17 @@ import { mkdtempSync, readFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { z } from "zod";
 
 import { WhatsAppService } from "../dist/whatsapp.js";
-import { registerTools } from "../dist/tools.js";
-import { asToolSource, connectedService } from "./helpers.mjs";
+import { connectedService, schemaCheckedTools, textError } from "./helpers.mjs";
 
 const ME = "40700000001@s.whatsapp.net";
 const ANA = "40700000002@s.whatsapp.net";
 const GROUP = "120363000000000001@g.us";
 
-function fakeServer() {
-  const tools = new Map();
-  return {
-    tools,
-    registerTool(name, meta, handler) {
-      tools.set(name, { meta, handler });
-    },
-  };
-}
-
 function setup() {
   const { svc, sock } = connectedService(WhatsAppService, { prefix: "wazap-dlmedia-", id: ME, name: "Răzvan" });
-  const server = fakeServer();
-  registerTools(server, asToolSource(svc), { allowWrite: false });
-  const call = (name, args = {}) => {
-    const { meta, handler } = server.tools.get(name);
-    return handler(z.object(meta.inputSchema).parse(args));
-  };
+  const { call } = schemaCheckedTools(svc, { allowWrite: false });
   let seq = 0;
   const arrive = (chat, content, { fromMe = false, participant, at = Date.now() } = {}) => {
     const id = `M${++seq}`;
@@ -66,7 +49,7 @@ test("a group photo lands on disk as usable bytes, with its caption and mime", a
     { participant: ANA }
   );
 
-  const result = await call("download_media", { message_id: sid, save_to: saveTo });
+  const result = await call("get_media", { message_id: sid, save_to: saveTo });
   const out = result.structuredContent;
   assert.equal(out.mime, "image/jpeg");
   assert.equal(out.size, jpeg.length);
@@ -92,7 +75,7 @@ test("a document reports its caption and the sender's own filename", async () =>
     documentMessage: { mimetype: "application/pdf", fileName: "factura.pdf", fileLength: pdf.length, caption: "plata" },
   });
 
-  const result = await call("download_media", { message_id: sid, save_to: saveTo });
+  const result = await call("get_media", { message_id: sid, save_to: saveTo });
   const out = result.structuredContent;
   assert.equal(out.mime, "application/pdf");
   assert.equal(out.caption, "plata");
@@ -111,7 +94,7 @@ test("a document with no caption reports null, and so does audio", async () => {
     documentMessage: { mimetype: "application/pdf", fileName: "orar.pdf", fileLength: pdf.length },
   });
 
-  const doc = (await call("download_media", { message_id: docSid, save_to: saveTo })).structuredContent;
+  const doc = (await call("get_media", { message_id: docSid, save_to: saveTo })).structuredContent;
   assert.equal(doc.caption, null, "the filename under the tag is not a caption");
   assert.equal(doc.original_filename, "orar.pdf");
 
@@ -119,8 +102,9 @@ test("a document with no caption reports null, and so does audio", async () => {
   const audioSid = arrive(ANA, {
     audioMessage: { mimetype: "audio/ogg; codecs=opus", fileLength: ogg.length, seconds: 7 },
   });
-  const audio = (await call("download_media", { message_id: audioSid, save_to: saveTo })).structuredContent;
+  const audio = (await call("get_media", { message_id: audioSid, save_to: saveTo })).structuredContent;
   assert.equal(audio.caption, null, "audio cannot carry a caption");
+  assert.equal(audio.transcript_unavailable.message.length > 0, true, "no transcription here, so the file stands in for it");
   assert.equal(audio.original_filename, null);
   assert.deepEqual(readFileSync(audio.path), ogg);
 });
@@ -128,9 +112,8 @@ test("a document with no caption reports null, and so does audio", async () => {
 test("a message without media is MEDIA_UNAVAILABLE, not a file of nothing", async () => {
   const { call, arrive, saveTo } = setup();
   const sid = arrive(ANA, { conversation: "doar text" });
-  const result = await call("download_media", { message_id: sid, save_to: saveTo });
-  assert.equal(result.isError, true);
-  assert.equal(result.structuredContent.error, "MEDIA_UNAVAILABLE");
+  const result = await call("get_media", { message_id: sid, save_to: saveTo });
+  assert.equal(textError(result).error, "MEDIA_UNAVAILABLE");
 });
 
 test("a voice note in an unmapped lid chat downloads by its raw id, sender honestly unresolved", async () => {
@@ -142,7 +125,7 @@ test("a voice note in an unmapped lid chat downloads by its raw id, sender hones
     audioMessage: { mimetype: "audio/ogg; codecs=opus", fileLength: ogg.length, seconds: 4, ptt: true },
   });
 
-  const out = (await call("download_media", { message_id: sid, save_to: saveTo })).structuredContent;
+  const out = (await call("get_media", { message_id: sid, save_to: saveTo })).structuredContent;
   assert.equal(out.mime, "audio/ogg; codecs=opus");
   assert.deepEqual(readFileSync(out.path), ogg, "the attachment came down even with no identity behind it");
   assert.equal(out.sender.id, LID, "the sender stays the unpaired lid");
@@ -166,7 +149,7 @@ test("a message filed under the paired number answers to its raw lid id", async 
   const stanza = lidSid.split("_").at(-1);
   assert.equal(svc.db.messages.get(lidSid).sid, `false_${OWNER}_${stanza}`, "the database files it under the number");
 
-  const out = (await call("download_media", { message_id: lidSid, save_to: saveTo })).structuredContent;
+  const out = (await call("get_media", { message_id: lidSid, save_to: saveTo })).structuredContent;
   assert.equal(out.mime, "audio/ogg");
   assert.deepEqual(readFileSync(out.path), ogg);
   assert.equal(out.sender.id, OWNER, "the sender resolves through the same pairing");
@@ -192,7 +175,41 @@ test("the saved file lands in the media dir when save_to is omitted", async () =
   const jpeg = Buffer.from([0xff, 0xd8, 0xff, 0xd9]);
   svc.mediaBuffer = async () => jpeg;
   const sid = arrive(ANA, { imageMessage: { mimetype: "image/jpeg", fileLength: jpeg.length } });
-  const out = (await call("download_media", { message_id: sid })).structuredContent;
+  const out = (await call("get_media", { message_id: sid })).structuredContent;
   assert.ok(out.path.startsWith(svc.paths.mediaDir));
   assert.ok(existsSync(out.path));
+});
+
+test("a voice note comes back as its transcript without a file, and with save_to as both", async () => {
+  const { svc, call, arrive, saveTo } = setup();
+  const ogg = Buffer.from("OggS spoken");
+  let downloads = 0;
+  svc.mediaBuffer = async () => {
+    downloads++;
+    return ogg;
+  };
+  const sid = arrive(ANA, { audioMessage: { mimetype: "audio/ogg; codecs=opus", fileLength: ogg.length, seconds: 6, ptt: true } });
+  svc.transcribeAudio = async () => ({ text: "ajung la 7", language: "ro", duration_seconds: 6, provider: "local", cached: false });
+
+  const heard = await call("get_media", { message_id: sid });
+  assert.equal(heard.structuredContent.transcript.text, "ajung la 7");
+  assert.equal(heard.structuredContent.path, undefined, "a transcript is the answer; nothing was saved");
+  assert.equal(downloads, 0);
+  assert.match(heard.content[0].text, /Transcribed 0:06 \(ro, local\): "ajung la 7"/);
+
+  const kept = (await call("get_media", { message_id: sid, save_to: saveTo })).structuredContent;
+  assert.equal(kept.transcript.text, "ajung la 7");
+  assert.deepEqual(readFileSync(kept.path), ogg);
+});
+
+test("a photo too big to attach whole comes with a preview instead", async () => {
+  const { svc, call, arrive } = setup();
+  const big = Buffer.alloc(1_200_000, 1);
+  svc.mediaBuffer = async () => big;
+  const sid = arrive(ANA, { imageMessage: { mimetype: "image/jpeg", fileLength: big.length } });
+  svc.previews = async (ids) => ids.map((id) => ({ message_id: id, mime: "image/jpeg", base64: "cHJldmlldw==" }));
+  const result = await call("get_media", { message_id: sid });
+  assert.equal(result.structuredContent.image_attached, true);
+  assert.deepEqual(result.content[1], { type: "image", data: "cHJldmlldw==", mimeType: "image/jpeg" });
+  assert.match(result.content[0].text, /preview attached/);
 });

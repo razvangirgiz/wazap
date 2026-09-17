@@ -143,7 +143,7 @@ export function createToolRegistrar(defs: readonly ToolDef[]) {
           description:
             def.description +
             (opts.allowLocalFiles === false && (def.schema.file_path || def.schema.save_to)
-              ? "\nThis remote session cannot use file_path or save_to. Use public HTTP(S) URLs, forward existing messages, or download_media with its default directory."
+              ? "\nThis remote session cannot use file_path or save_to. Use public HTTP(S) URLs, forward existing messages, or get_media without save_to."
               : ""),
           inputSchema: def.schema,
           ...(def.outputSchema === undefined ? {} : { outputSchema: def.outputSchema }),
@@ -170,7 +170,7 @@ export function createToolRegistrar(defs: readonly ToolDef[]) {
               throw new WazapError(
                 "MEDIA_ACCESS_DENIED",
                 "This MCP session cannot access arbitrary host files or choose download directories.",
-                "Use a public HTTP(S) media URL, forward an existing WhatsApp message, or download_media without save_to"
+                "Use a public HTTP(S) media URL, forward an existing WhatsApp message, or get_media without save_to"
               );
             }
             own?.take();

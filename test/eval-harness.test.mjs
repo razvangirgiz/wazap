@@ -204,7 +204,7 @@ describe("evaluation harness", () => {
     assert.deepEqual(accounts.structuredContent.accounts.map((a) => [a.id, a.name]), [["personal", "Personal"], ["work", "Business"]]);
     const voice = await s.call("get_message", { message_id: refs.messages.elena_voice.id });
     assert.match(JSON.stringify(voice.structuredContent), /cina de duminică la 7/);
-    const photo = await s.call("download_media", { message_id: refs.messages.meter_photo.id });
+    const photo = await s.call("get_media", { message_id: refs.messages.meter_photo.id });
     assert.equal(photo.content.filter((block) => block.type === "image").length, 1, "the meter photo comes back inline");
     const readOnly = await mcpSession(ready.mcp_url, ready.tokens.read);
     assert.ok(!readOnly.tools.some((tool) => tool.name === "send_message"), "the read token has no send tools");

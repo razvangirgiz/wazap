@@ -51,8 +51,11 @@ const operations = (file) => [
   ["send_media", { chat_id: CHAT, file_path: file }],
   ["set_profile_picture", { file_path: file }],
   ["manage_group", { group_id: "120363000000000001@g.us", action: "set_picture", file_path: file }],
-  ["download_media", { message_id: `false_${CHAT}_msg`, save_to: "/unused/synthetic/directory" }],
+  ["get_media", { message_id: `false_${CHAT}_msg`, save_to: "/unused/synthetic/directory" }],
 ];
+
+/** A refusal's code, from structured content or, on a tool with an output schema, from its text. */
+const refusal = (result) => result.structuredContent?.error ?? JSON.parse(result.content[0].text).error;
 
 for (const index of [0, 1, 2, 3]) {
   test(`restricted tool registration rejects local filesystem operation ${index}`, async (t) => {
@@ -64,7 +67,7 @@ for (const index of [0, 1, 2, 3]) {
     });
     const [name, args] = operations(f.file)[index];
     const result = await tools.get(name)(args);
-    assert.equal(result.structuredContent.error, "MEDIA_ACCESS_DENIED");
+    assert.equal(refusal(result), "MEDIA_ACCESS_DENIED");
     assert.equal(f.reads(), 0);
     assert.equal(f.downloads(), 0);
     assert.ok(!result.content[0].text.includes(f.file));
@@ -115,7 +118,7 @@ test("HTTP on loopback is still remote; only the private bridge credential opens
   const remote = await connect(t, f.base, "remote-write");
   for (const [name, args] of operations(f.file)) {
     const result = await remote.callTool({ name, arguments: { ...args, localFiles: true, allowLocalFiles: true } });
-    assert.equal(result.structuredContent.error, "MEDIA_ACCESS_DENIED");
+    assert.equal(refusal(result), "MEDIA_ACCESS_DENIED");
   }
   assert.equal(f.reads(), 0);
   const bridge = await connect(t, f.base, "private-bridge");
@@ -128,7 +131,7 @@ test("an HTTP read token cannot choose the download directory", async (t) => {
   const f = await boot(t);
   const reader = await connect(t, f.base, "remote-read");
   const [name, args] = operations(f.file)[3];
-  assert.equal((await reader.callTool({ name, arguments: args })).structuredContent.error, "MEDIA_ACCESS_DENIED");
+  assert.equal(refusal(await reader.callTool({ name, arguments: args })), "MEDIA_ACCESS_DENIED");
   assert.equal(f.downloads(), 0);
 });
 
@@ -141,7 +144,7 @@ test("remote clients retain public URLs and default-directory downloads", async 
   });
   assert.equal(draft.structuredContent.status, "draft");
   const reader = await connect(t, f.base, "remote-read");
-  const result = await reader.callTool({ name: "download_media", arguments: { message_id: `false_${CHAT}_msg` } });
+  const result = await reader.callTool({ name: "get_media", arguments: { message_id: `false_${CHAT}_msg` } });
   assert.equal(result.structuredContent.filename, "test.txt");
   assert.equal(f.downloads(), 1);
   assert.equal(f.reads(), 0);

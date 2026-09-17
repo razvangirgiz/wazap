@@ -406,7 +406,7 @@ export class TranscribeWorker {
     for (const resolve of resolvers) resolve();
   }
 
-  /** Waiters whose note left the queue some other way: a transcribe_audio call, a delete. */
+  /** Waiters whose note left the queue some other way: a get_media call, a delete. */
   private releaseSettled(): void {
     for (const [source, bySid] of [...this.waiters]) {
       for (const sid of [...bySid.keys()]) if (!this.queued(source, sid)) this.release(source, sid);

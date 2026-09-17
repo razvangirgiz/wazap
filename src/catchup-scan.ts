@@ -508,7 +508,7 @@ export async function scanCatchup(db: AccountDb, host: CatchupHost, request: Cat
   const voiceIds: string[] = [];
   const voiceSeen = new Set<string>();
   let voiceCount = 0;
-  /** An unheard voice note, counted once; named for transcribe_audio unless its person is #private. */
+  /** An unheard voice note, counted once; named for get_media unless its person is #private. */
   const noteVoice = (sid: string, hidden: boolean): void => {
     if (voiceSeen.has(sid)) return;
     voiceSeen.add(sid);

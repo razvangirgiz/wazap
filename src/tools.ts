@@ -21,6 +21,7 @@ import { freshnessNote, readFreshness } from "./freshness.js";
 import { mediaCaptionOf } from "./media-details.js";
 import { getMessageView, getMessageViewAcross, resolveMessageId, resolveMessageIdAcross } from "./message-ref.js";
 import { clockLabel } from "./messages.js";
+import { RateLimiter } from "./ratelimit.js";
 import {
   assertSendable,
   draftTargetOf,
@@ -92,6 +93,27 @@ const SEARCH_OUTPUT = {
   sync: z.string(),
   account_id: z.string(),
 };
+
+const MEDIA_OUTPUT = {
+  message_id: z.string(),
+  type: z.string().nullable(),
+  caption: z.string().nullable(),
+  original_filename: z.string().nullable(),
+  sender: OPEN_OBJECT.nullable(),
+  path: z.string().optional(),
+  mime: z.string().optional(),
+  size: z.number().optional(),
+  filename: z.string().optional().describe("The name it was saved under"),
+  image_attached: z.boolean().optional().describe("The photo, or a small preview of it, is attached"),
+  transcript: z
+    .object({ text: z.string(), language: z.string().optional(), duration_seconds: z.number().optional(), provider: z.string(), cached: z.boolean() })
+    .optional(),
+  transcript_unavailable: z.object({ message: z.string(), fix: z.string().optional() }).optional(),
+  account_id: z.string(),
+};
+
+/** Transcripts, whichever session asks: ten a minute for the process, since the API provider bills each one. */
+const TRANSCRIBE_BUCKET = new RateLimiter(10, undefined, "Transcribe");
 
 const REMEMBER_OUTPUT = {
   chat_id: z.string(),
@@ -188,7 +210,7 @@ link_account when it says no account is linked yet.
   number in international format (+15550100 or 15550100) also works. Pass
   ids back exactly as a tool returned them.
 - message_id — the full id from read_messages / search. Needed for
-  get_message, download_media, react_to_message, edit_message, forward_message,
+  get_message, get_media, react_to_message, edit_message, forward_message,
   delete_message, manage_chat's pin_message / unpin_message / star_message /
   unstar_message, join_group on an invite message, and the reply_to of
   send_message.
@@ -257,7 +279,7 @@ link_account when it says no account is linked yet.
 - Profile picture: set_profile_picture changes the linked account's photo;
   manage_group set_picture / remove_picture changes a group's. Show the image
   and wait for a yes first; these calls hit WhatsApp immediately.
-- Media: a message with has_media=true → download_media(message_id).
+- Media: a message with has_media=true → get_media(message_id): a voice note comes back as its transcript, a photo as an image.
 - Groups: get_group_info before manage_group; most actions need admin rights.
   get_group_info also says who may edit the info (info_locked), who may add
   members (member_add_mode), whether joins need approval (join_approval) and
@@ -320,7 +342,7 @@ send no receipts at all, and a message WhatsApp said nothing about has no
 \`delivery\`.
 A voice note reads as "[voice message · 0:42]"; once transcribed, what was said
 follows the placeholder in quotes and is carried bare in \`transcript\`.
-Call transcribe_audio(message_id) on a voice note that has no transcript yet.
+Call get_media(message_id) on a voice note that has no transcript yet.
 A WhatsApp call is a message with \`type: "call"\` carrying
 \`call: {kind, direction, outcome, duration_seconds}\`, reading as
 "[voice call · 6 min]" or "[missed voice call]".
@@ -576,7 +598,7 @@ get_recent_messages for what happened, and this for who is still waiting.`,
     description: `The stories (status updates) the linked account has received in the last N
 hours, newest first, each with its author, its text or caption and its time.
 WhatsApp keeps a story for a day and so does wazap; nothing older is held.
-With include_previews the photos come as small images, and download_media
+With include_previews the photos come as small images, and get_media
 works on a story's message_id like on any message. Stories never appear in
 chats, catch-ups or waits; this is the only place they show.`,
     schema: {
@@ -1048,100 +1070,76 @@ Call this before manage_group: most group actions need admin rights.`,
   }),
 
   tool({
-    name: "download_media",
-    title: "Download media from a WhatsApp message",
-    description: `Download the photo/video/audio/document attached to a message and save it to
-disk on the machine running wazap. The file at \`path\` is already decrypted —
-open or process it as is; nothing else is needed. Images of 1 MB or less are
-also returned inline so you can look at them.
-
-The structured result carries: \`path\` (the saved file), \`mime\`, \`size\`
-(bytes), \`filename\` (the name it was saved under — a timestamped name wazap
-made, not the sender's), \`original_filename\` (the name the sender's file had,
-or null when the envelope carried none), \`caption\` (the text the sender wrote
-under the media, or null — audio and voice notes cannot carry one),
-\`message_id\` and \`sender\` (the same identity fields as search —
-is_saved, contact_name, pushname, name_source — or null when even the message
-can no longer be read back).
-
-The id resolves in its raw form too: \`false_<lid>@lid_<stanza>\` works whether
-or not the chat's number was ever learned — when it was, the lid spelling finds
-the same message filed under the paired number. An unresolved sender never
-blocks the file. Without \`account_id\` the same lookup walks every linked
-account's store in turn before failing, and the result's \`account_id\` names
-the one that served the file.
-
-Fails with MEDIA_UNAVAILABLE when WhatsApp has expired the file.`,
+    name: "get_media",
+    title: "Get the media of a WhatsApp message",
+    description: `What a message's media holds: a voice note or audio as its transcript (kept once made; an API provider bills it), a photo attached as an image, any file saved at path on the machine running wazap. MEDIA_UNAVAILABLE: WhatsApp no longer has it.`,
     schema: {
-      message_id: messageId.describe("A message with has_media=true"),
-      save_to: z.string().min(1).optional().describe("Absolute directory to save into (default: <data-dir>/media)"),
-      // Same reason as get_message: the handler branches on whether it was given.
+      message_id: messageId,
+      save_to: z.string().min(1).optional().describe("Absolute directory; default <data-dir>/media. Saves a voice note too"),
+      language: z.string().min(2).max(16).optional().describe('What is spoken, e.g. "ro"'),
+      // The handler branches on whether it was given, like get_message.
       account_id: ACCOUNT_ID.optional(),
     },
+    outputSchema: MEDIA_OUTPUT,
     write: false,
-    handler: async ({ message_id, save_to, account_id }, { wa, hub, accountId }) => {
+    handler: async ({ message_id, save_to, language, account_id }, { wa, hub, accountId }) => {
       const resolved = { id: accountId, wa };
       const found =
         account_id === undefined
           ? await resolveMessageIdAcross(hub, resolved, message_id)
           : { binding: resolved, sid: await resolveMessageId(wa, message_id) };
-      const media = await found.binding.wa.downloadMedia(found.sid, save_to);
-      // The envelope's caption, filename and sender live on the message, not the file.
-      const view = await getMessageView(found.binding.wa, found.sid).catch(() => undefined);
-      const [identified] = view === undefined ? [] : await withSenderIdentity(found.binding.wa, [view]);
-      const { inline_base64, ...structured } = media;
-      const extra: ContentBlock[] = inline_base64 ? [{ type: "image", data: inline_base64, mimeType: media.mime }] : [];
-      const text =
-        `Saved ${media.mime} (${Math.round(media.size / 1024)} KB) to:\n${media.path}` +
-        (inline_base64 ? "\n(image attached inline)" : "");
-      return ok(
-        text,
-        {
-          ...structured,
-          message_id,
-          account_id: found.binding.id,
-          caption: view === undefined ? null : mediaCaptionOf(view),
-          original_filename: view?.media?.filename ?? null,
-          sender: identified?.sender ?? null,
-        },
-        extra
-      );
-    },
-  }),
+      const source = found.binding.wa;
+      // The envelope's type, caption, filename and sender live on the message, not the file.
+      const view = await getMessageView(source, found.sid).catch(() => undefined);
+      const [identified] = view === undefined ? [] : await withSenderIdentity(source, [view]);
+      const structured: Record<string, unknown> = {
+        message_id,
+        account_id: found.binding.id,
+        type: view?.type ?? null,
+        caption: view === undefined ? null : mediaCaptionOf(view),
+        original_filename: view?.media?.filename ?? null,
+        sender: identified?.sender ?? null,
+      };
+      const lines: string[] = [];
+      const extra: ContentBlock[] = [];
 
-  tool({
-    name: "transcribe_audio",
-    title: "Transcribe a WhatsApp voice message",
-    description: `Turn a voice note or an audio message into text. The transcript is cached, so a
-second call on the same message costs nothing, and from then on the message reads
-as [voice message · 0:42] "what was said" in read_messages, get_recent_messages
-and get_message, and its words become searchable through search.
+      let transcribed = false;
+      if (view?.type === "voice" || view?.type === "audio") {
+        TRANSCRIBE_BUCKET.take();
+        try {
+          const result = await source.transcribeAudio(found.sid, language);
+          structured.transcript = result;
+          transcribed = true;
+          const clock = result.duration_seconds === undefined ? "" : ` ${clockLabel(result.duration_seconds)}`;
+          const facts = [result.language, result.provider, result.cached ? "cached" : null].filter(Boolean).join(", ");
+          lines.push(`Transcribed${clock} (${facts}): "${result.text}"`);
+        } catch (err) {
+          // No transcript here (off, unfinished, or an API upload a read-only server refuses): the file still is.
+          if (!(err instanceof WazapError) || (err.code !== "TRANSCRIBE_UNAVAILABLE" && err.code !== "READ_ONLY")) throw err;
+          structured.transcript_unavailable = { message: err.message, ...(err.fix ? { fix: err.fix } : {}) };
+          lines.push(`No transcript: ${err.message}${err.fix ? ` ${err.fix}` : ""}`);
+        }
+      }
 
-What it costs depends on how the user set transcription up: the local provider
-(whisper.cpp) is free and the audio never leaves the machine, while the API
-provider uploads the audio to a third-party service and is billed per minute.
-Either way this is capped at 10 calls a minute.
-
-TRANSCRIBE_UNAVAILABLE means transcription is off or unfinished on this machine;
-the fix names the command the user has to run. Do not retry it.`,
-    schema: {
-      message_id: messageId.describe("A message whose type is voice or audio"),
-      language: z
-        .string()
-        .min(2)
-        .max(16)
-        .optional()
-        .describe(
-          'ISO 639-1 code of what is spoken, e.g. "ro"; "auto" detects it. Omit to use the configured default.'
-        ),
-    },
-    write: false,
-    rate: 10,
-    handler: async ({ message_id, language }, { wa }) => {
-      const result = await wa.transcribeAudio(message_id, language);
-      const clock = result.duration_seconds === undefined ? "" : ` ${clockLabel(result.duration_seconds)}`;
-      const facts = [result.language, result.provider, result.cached ? "cached" : null].filter(Boolean).join(", ");
-      return ok(`Transcribed${clock} (${facts}): "${result.text}"`, result as unknown as Record<string, unknown>);
+      if (!transcribed || save_to !== undefined) {
+        const media = await source.downloadMedia(found.sid, save_to);
+        const { inline_base64, ...file } = media;
+        Object.assign(structured, file);
+        lines.push(`Saved ${media.mime} (${Math.round(media.size / 1024)} KB) to:\n${media.path}`);
+        if (inline_base64) {
+          extra.push({ type: "image", data: inline_base64, mimeType: media.mime });
+          lines.push("(image attached inline)");
+        } else if (view?.type === "image" || view?.type === "video") {
+          // Too big to attach whole: a small JPEG still shows what it is.
+          const [preview] = await source.previews([found.sid], 1).catch(() => []);
+          if (preview !== undefined) {
+            extra.push({ type: "image", data: preview.base64, mimeType: preview.mime });
+            lines.push("(preview attached)");
+          }
+        }
+      }
+      if (extra.length > 0) structured.image_attached = true;
+      return ok(lines.join("\n"), structured, extra);
     },
   }),
 
@@ -1761,7 +1759,7 @@ function renderMessages(
 /**
  * Ranked hits with the date always on the line and the score that ordered
  * them. "index only" warns that wazap holds the message only as text, so
- * download_media has nothing to open.
+ * get_media has nothing to open.
  */
 function renderRecall(title: string, answer: RecallAnswer | IdentifiedRecallAnswer): string {
   const { hits, index } = answer;

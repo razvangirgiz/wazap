@@ -2467,7 +2467,7 @@ export class WhatsAppService implements WhatsAppApi {
   }
 
   /**
-   * A stored transcript as the views and transcribe_audio take it, with the
+   * A stored transcript as the views and get_media take it, with the
    * details stored beside it. One stored without them (set directly, or by
    * an import of a record that had none) names the configured provider.
    */
@@ -4562,7 +4562,7 @@ export class WhatsAppService implements WhatsAppApi {
    * it. Only incoming voice notes whose length WhatsApp stated and kept short,
    * since an audio file is something the sender chose to attach and a
    * recording of unknown length is unbounded; anything skipped is still one
-   * transcribe_audio call away. The worker is woken at once; it reads the
+   * get_media call away. The worker is woken at once; it reads the
    * queue a turn later, once the transaction has committed.
    */
   private queueTranscript(raw: WAMessage, result: UpsertResult, live: boolean): void {
@@ -4581,7 +4581,7 @@ export class WhatsAppService implements WhatsAppApi {
   /**
    * One note off the queue, as the worker runs it: a message deleted, expired
    * or transcribed meanwhile is done with, and so is one that is no longer a
-   * short incoming voice note. The rest is transcribe_audio's own path, so a
+   * short incoming voice note. The rest is get_media's own path, so a
    * tool call asking for the same note at the same moment shares the upload.
    */
   private async transcribeQueued(sid: string): Promise<void> {

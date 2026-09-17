@@ -1,6 +1,6 @@
 /**
  * Read-side sender identity: what search_messages, recall, get_message and
- * download_media report about who wrote a message, and how the `from` filter
+ * get_media report about who wrote a message, and how the `from` filter
  * resolves a name. The service renders a sender's `id` and best `name`; this
  * module adds the two pieces an agent still cannot tell apart — the number
  * behind the id, and whether the shown name is the user's own address-book

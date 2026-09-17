@@ -654,13 +654,13 @@ test("a #private person's unheard voice notes are counted in the footer, never n
   assert.ok(!all.includes("40700000002@s.whatsapp.net_"), "no message id of hers");
   assert.deepEqual(result.structuredContent.footer.voice_untranscribed, [heard], "Dan's note is named");
   assert.equal(result.structuredContent.footer.voice_untranscribed_more, 2);
-  assert.match(text(result), /Voice notes not transcribed \(3\): false_40700000003@s\.whatsapp\.net_M\d+, \+2 — transcribe_audio reads one\./);
+  assert.match(text(result), /Voice notes not transcribed \(3\): false_40700000003@s\.whatsapp\.net_M\d+, \+2 — get_media reads one\./);
 
   await call("remember", { chat_id: DAN, add_tags: ["#private"] });
   const only = await call("catch_up", { hours: 24 });
   assert.deepEqual(only.structuredContent.footer, { voice_untranscribed_more: 3 });
   assert.match(text(only), /Voice notes not transcribed \(3\)\.$/m);
-  assert.ok(!text(only).includes("transcribe_audio"));
+  assert.ok(!text(only).includes("get_media"));
 });
 
 test("a #private person is private under every row that is them: what they wrote as a lid still folding into their number is not quoted", async () => {

@@ -417,7 +417,7 @@ export interface RecallHit {
   /** What found it: the query's words, its meaning, or both. */
   matched: "words" | "meaning" | "both";
   message: MessageView;
-  /** The database holds the message only as text (from the earlier recall index): get_message and download_media cannot open it. */
+  /** The database holds the message only as text (from the earlier recall index): get_message and get_media cannot open it. */
   from_index: boolean;
 }
 

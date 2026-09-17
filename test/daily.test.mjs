@@ -320,13 +320,13 @@ test("a storage failure inside a contact fold is logged, not thrown into the han
   }
 });
 
-test("download_media refuses a file over the cap before touching the network", async () => {
+test("get_media refuses a file over the cap before touching the network", async () => {
   const { call, arrive } = setup();
   const id = arrive(ANA, {
     documentMessage: { mimetype: "video/mp4", fileLength: 250_000_000, fileName: "big.mp4" },
   });
-  const res = await call("download_media", { message_id: `false_${ANA}_${id}` });
-  assert.equal(res.structuredContent.error, "FILE_TOO_LARGE");
+  const res = await call("get_media", { message_id: `false_${ANA}_${id}` });
+  assert.equal(textError(res).error, "FILE_TOO_LARGE");
 });
 
 test("in a group the note introduces the sender once, then the name alone", async () => {
