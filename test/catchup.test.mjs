@@ -14,7 +14,12 @@ import { callText } from "../dist/messages.js";
 import { readCallText } from "../dist/catchup-scan.js";
 import { WhatsAppService } from "../dist/whatsapp.js";
 import { registerTools } from "../dist/tools.js";
-import { asToolSource, connectedService } from "./helpers.mjs";
+import { asToolSource, clockAtHour, connectedService } from "./helpers.mjs";
+
+// Every run happens at noon: a digest says "14:20" for what came in today and
+// "Thu 22:20" for an older day, so fixtures built hours back from a real
+// midnight would read as yesterday's.
+clockAtHour(12);
 
 const ME = "40700000001@s.whatsapp.net";
 const ANA = "40700000002@s.whatsapp.net";
