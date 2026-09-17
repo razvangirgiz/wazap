@@ -352,8 +352,8 @@ drafts back. It is on by default, only in a session that can send, and only for
 a resolved contact. A contact tagged `#private`
 (`update_contact_details` with `add_tags: ["private"]`) gets the style only,
 never messages. `wazap config draft-context off [--account <id>]` turns it off
-for an account (`draft_context: false` in `accounts.json`), from the next call,
-without a restart.
+for an account (`draft_context: false` in `accounts.json`), the style check
+below included, from the next call, without a restart.
 
 **Style check.** A text draft to a person you have written to yourself (not
 through wazap) at least five times in 90 days comes back with `style_check`: `warnings` among

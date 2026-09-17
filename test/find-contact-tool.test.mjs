@@ -209,3 +209,27 @@ test("a stand-in without the service behind it answers SERVICE_ERROR, never a cr
   assert.equal(result.structuredContent, undefined, "a tool with an output schema answers errors as text");
   assert.equal(JSON.parse(result.content[0].text).error, "SERVICE_ERROR");
 });
+
+test("an account with the draft context off gets no style_check on its drafts either", async () => {
+  const config = offlineConfig("wazap-find-style-off-", { readOnly: false });
+  const hub = new AccountHub(config, AccountRegistry.load(config.dataDir));
+  const home = hub.get("default");
+  connect(home, ME);
+  home.db.identity.upsertContact({ jid: ANA, name: "Ana Pop", listed: true });
+  ["ce faci, esti acasa?", "hai ca te sun", "poti sa vii maine?", "iti zic diseara ce facem", "tu ai vorbit cu el?"].forEach((text, i) =>
+    home.db.messages.upsert({ chatJid: ANA, keyId: `E${i}`, fromMe: true, ts: Date.now() - 50_000 + i, type: "text", text })
+  );
+  const server = fakeServer();
+  registerTools(server, asToolSource(hub), { allowWrite: true });
+  const draft = () => server.tools.get("send_message").handler({ chat_id: ANA, text: "Bună ziua, vă trimit documentele mâine." });
+
+  const on = await draft();
+  assert.notEqual(on.isError, true, JSON.stringify(on.structuredContent));
+  assert.ok(on.structuredContent.style_check, "on by default");
+  AccountRegistry.load(config.dataDir).setDraftContext("default", false);
+  const off = await draft();
+  assert.notEqual(off.isError, true, JSON.stringify(off.structuredContent));
+  assert.equal(off.structuredContent.style_check, undefined, "no style statistics once the account turned the draft context off");
+  assert.doesNotMatch(off.content[0].text, /Style check/);
+  await hub.stop();
+});

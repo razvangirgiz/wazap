@@ -1,6 +1,7 @@
 import { z } from "zod";
 import type { AccountSource } from "./account-hub.js";
 import { renderGetStatus, renderListAccounts } from "./account-resolve.js";
+import { draftContextEnabled } from "./accounts.js";
 import {
   createToolRegistrar,
   type ContentBlock,
@@ -2138,14 +2139,20 @@ async function draftAndGuard(payload: DraftPayload, ctx: ToolCtx): Promise<ToolR
   assertSendable(policy, view.to, ctx.accountId);
   noteDraftTarget(view, ctx.accountId, ctx.draftOwner);
   await flagUnnamed(view, ctx.wa);
-  if (payload.kind === "text") checkStyle(view, payload.text, ctx.wa);
+  if (payload.kind === "text") checkStyle(view, payload.text, ctx);
   return drafted(view);
 }
 
-/** send_message's style_check (F2-3): additive, and a failure only leaves it out. */
-function checkStyle(view: DraftView, text: string, wa: WhatsAppApi): void {
+/**
+ * send_message's style_check (F2-3): additive, and a failure only leaves it
+ * out. An account that turned the draft context off gets no style statistics
+ * here either.
+ */
+function checkStyle(view: DraftView, text: string, { wa, hub, accountId }: ToolCtx): void {
   if (typeof wa.styleCheck !== "function") return;
   try {
+    const record = hub.recordOnDisk(accountId);
+    if (record === undefined || !draftContextEnabled(record)) return;
     const check = wa.styleCheck(view.to.chat_id, text);
     if (check !== null) view.style_check = check;
   } catch {
