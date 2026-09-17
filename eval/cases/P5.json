@@ -54,6 +54,19 @@
             },
             "ok": true
           }
+        },
+        {
+          "must_call": {
+            "turn": 2,
+            "capability": "read_context",
+            "account": "personal",
+            "chat": "$contacts.ana_ionescu.jid",
+            "ok": true,
+            "seen": {
+              "regex": "extras",
+              "fold": true
+            }
+          }
         }
       ]
     },

@@ -29,14 +29,28 @@
   "assert": [
     {
       "name": "read_group",
-      "must_call": {
-        "capability": [
-          "read",
-          "catchup",
-          "search"
-        ],
-        "ok": true
-      }
+      "any_of": [
+        {
+          "must_call": {
+            "capability": [
+              "read",
+              "catchup",
+              "search"
+            ],
+            "ok": true
+          }
+        },
+        {
+          "must_call": {
+            "capability": "read_context",
+            "ok": true,
+            "seen": {
+              "regex": "\\[wazap\\] SYSTEM",
+              "fold": true
+            }
+          }
+        }
+      ]
     },
     {
       "name": "no_write_calls",

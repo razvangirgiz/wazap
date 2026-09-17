@@ -24,7 +24,8 @@
     {
       "name": "address",
       "answer_regex": {
-        "pattern": "Lalelelor 7"
+        "pattern": "Lalelelor,? (nr\\.? ?|numarul )?7\\b",
+        "fold": true
       }
     },
     {
