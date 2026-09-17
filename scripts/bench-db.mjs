@@ -25,6 +25,7 @@ import { parseArgs } from "node:util";
 
 const DIST_DB = new URL("../dist/db/index.js", import.meta.url).href;
 const { AccountDb, contentHash, quantizeVector } = await import(DIST_DB);
+const { sqlite: sqliteModule } = await import(new URL("../dist/db/sqlite.js", import.meta.url).href);
 
 const { values: args } = parseArgs({
   options: {
@@ -84,7 +85,8 @@ function message(i) {
   const chat = Math.floor(rnd() * rnd() * CHATS);
   const jid = chatJid(chat);
   const fromMe = rnd() < 0.35;
-  const type = pick(TYPES);
+  // A call now and then, and a group message that mentions the account: what catch_up reads off partial indexes.
+  const type = i % 97 === 0 ? (pick(TYPES), "call") : pick(TYPES);
   const key = `3EB0${i.toString(16).toUpperCase().padStart(16, "0")}`;
   return {
     sid: `${fromMe}_${jid}_${key}`,
@@ -99,6 +101,7 @@ function message(i) {
     raw: rawBlob(),
     status: fromMe ? 3 : null,
     expiresAt: rnd() < 0.02 ? NOW + Math.floor(rnd() * 7 * DAY) : null,
+    flags: !fromMe && chat < GROUPS && i % 50 === 0 ? 1 : 0,
   };
 }
 
@@ -223,6 +226,9 @@ async function mainPhase() {
   const absent = time("short query absent (§x), default cap", 10, () => search("§x"), 1);
   results.facts.short_absent_capped = absent.scanCapped;
 
+  catchUpPhase(db, path);
+  findPhase(db);
+
   let n = 0;
   time("single insert (autocommit, FULL)", 500, () => {
     const m = message(10_000_000 + n++);
@@ -253,6 +259,92 @@ async function mainPhase() {
 
   db.close();
   results.facts.file_mb_after = mb(fileSize(path));
+}
+
+/**
+ * The reads catch_up is planned on (F2-2), over the v5 columns and indexes:
+ * the chats active in a window, then one aggregate per chat over its id range
+ * — messages, senders, media, newest — above the chat's own last word and its
+ * read mark; the window's mentions, calls and polls off their partial indexes.
+ */
+function catchUpPhase(db, path) {
+  const reader = new (sqliteModule().DatabaseSync)(path, { readOnly: true });
+  const MEDIA = "('image', 'video', 'audio', 'voice', 'document', 'sticker')";
+  const active = reader.prepare(
+    `SELECT id, last_message_id, last_own_id, read_through_id FROM chats INDEXED BY chats_recent
+     WHERE last_ts >= ? AND merged_into IS NULL ORDER BY last_ts DESC`
+  );
+  const perChat = reader.prepare(
+    `SELECT count(*) AS n, count(DISTINCT m.sender_id) AS senders, sum(m.type IN ${MEDIA}) AS media, max(m.id) AS newest
+     FROM messages m WHERE m.chat_id = ? AND m.id > ? AND m.id <= ? AND m.from_me = 0 AND m.deleted_at IS NULL
+       AND (m.expires_at IS NULL OR m.expires_at > ?)`
+  );
+  const grouped = reader.prepare(
+    `SELECT m.chat_id, count(*) AS n, count(DISTINCT m.sender_id) AS senders, sum(m.type IN ${MEDIA}) AS media, max(m.id) AS newest
+     FROM messages m WHERE m.id > ? AND m.id <= ? AND m.from_me = 0 AND m.deleted_at IS NULL
+       AND (m.expires_at IS NULL OR m.expires_at > ?) GROUP BY m.chat_id`
+  );
+  const mentions = reader.prepare("SELECT m.id, m.chat_id FROM messages m WHERE (m.flags & 1) <> 0 AND m.id > ? AND m.id <= ?");
+  const calls = reader.prepare("SELECT m.id, m.chat_id FROM messages m WHERE m.type = 'call' AND m.id > ? AND m.id <= ?");
+  const ownCount = reader.prepare(
+    "SELECT count(*) AS n FROM messages m WHERE m.chat_id = ? AND m.from_me = 1 AND m.deleted_at IS NULL AND m.id >= ?"
+  );
+  const idFloor = (ms) => Math.floor(ms / 1000) * 1048576;
+  const top = idFloor(NOW + 1000);
+  for (const [label, hours] of [["24h", 24], ["7d", 168]]) {
+    const since = NOW - hours * 3_600_000;
+    const lower = idFloor(since);
+    const rows = time(`catch_up: aggregate per active chat ${label}`, 20, () => {
+      const out = [];
+      for (const chat of active.all(since)) {
+        const floor = Math.max(lower, chat.last_own_id ?? 0, chat.read_through_id ?? 0);
+        const agg = perChat.get(chat.id, floor, top, NOW);
+        if (agg.n > 0) out.push(agg);
+      }
+      return out;
+    }, 1);
+    results.facts[`catch_up_chats_${label}`] = rows.length;
+    time(`catch_up: aggregate grouped by chat ${label}`, 20, () => grouped.all(lower, top, NOW), 1);
+    time(`catch_up: mentions + calls ${label}`, 50, () => [mentions.all(lower, top), calls.all(lower, top)]);
+  }
+  const busiest = db.messages.listChats({ limit: 1 }).items[0].chat;
+  time("own messages in a chat, 90d (count)", 200, () => ownCount.get(busiest.id, idFloor(NOW - 90 * DAY)).n);
+  time("draft context: style of a chat (90d)", 50, () => db.messages.styleFor(busiest.jid));
+  time("draft context: style, account-wide fallback", 50, () => db.messages.styleFor(chatJid(CHATS - 1)));
+  time("draft context: recent exchange (8)", 200, () => db.messages.recentExchange(busiest.jid));
+  reader.close();
+}
+
+/**
+ * find_contact over an address book of 10k people (names Romanian and
+ * English, a tenth with notes, tags or details) on the 100k-message account:
+ * a common first name, a full name, a relationship, a diminutive, a
+ * qualifier, and a name nobody has (the near-spelling pass over everyone).
+ */
+function findPhase(db) {
+  const FIRST = ["Ana", "Andrei", "Maria", "Mihai", "Elena", "Alexandru", "Ioana", "Cristian", "Gabriela", "Ștefan", "Daniel", "Andreea", "John", "Sarah", "Michael", "Emma"];
+  const LAST = ["Popescu", "Ionescu", "Popa", "Dumitru", "Stan", "Stoica", "Gheorghe", "Matei", "Ciobanu", "Rusu", "Smith", "Brown", "Marin", "Tudor", "Dobre", "Barbu"];
+  const PEOPLE = 10_000;
+  db.transaction(() => {
+    for (let i = 0; i < PEOPLE; i++) {
+      const jid = phone(i);
+      db.identity.upsertContact({ jid, name: i % 7 === 0 ? null : `${FIRST[i % FIRST.length]} ${LAST[(i * 7) % LAST.length]}`, pushName: FIRST[(i * 3) % FIRST.length], listed: true });
+      if (i % 10 === 0) db.identity.updateFields(jid, { addTags: [i % 20 === 0 ? "contabilitate" : "client"], set: { oras: "Iași" } });
+    }
+    db.identity.upsertContact({ jid: phone(PEOPLE + 1), name: "Mama" });
+  });
+  results.facts.find_contacts = PEOPLE;
+  for (const [label, input] of [
+    ["find: common first name (Ana)", { name: "Ana" }],
+    ["find: full name (Andrei Matei)", { name: "Andrei Matei" }],
+    ["find: relationship (mamei)", { name: "mamei" }],
+    ["find: diminutive (Cristi)", { name: "Cristi" }],
+    ["find: qualifier (Ana, contabilitate)", { name: "Ana", qualifier: "contabilitate" }],
+    ["find: nobody (Zzyzx, near-spelling pass)", { name: "Zzyzx" }],
+  ]) {
+    const found = time(label, 20, () => db.contacts.find(input), 2);
+    results.facts[`find_${input.name}`] = `${found.verdict}/${found.candidates.length + found.closest.length}`;
+  }
 }
 
 /**
@@ -396,6 +488,10 @@ const BUDGETS_P99 = {
   "short query (ok), default cap": 400,
   "single insert (autocommit, FULL)": 60,
   "tombstone single": 60,
+  "catch_up: aggregate per active chat 24h": 200,
+  "catch_up: aggregate grouped by chat 7d": 1000,
+  "find: common first name (Ana)": 50,
+  "find: nobody (Zzyzx, near-spelling pass)": 100,
 };
 const STALL_BUDGET_P99 = 100;
 

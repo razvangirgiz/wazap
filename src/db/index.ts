@@ -37,6 +37,18 @@
  *   transcript yet is still being worked on: transcripts.state(sid) says
  *   queued, failed (given up, with a reason) or null (not queued — done, never
  *   eligible, or gone). The row leaves once setTranscript stores words.
+ * - (v5) messages.flags only gain bits. The caller passes mentions_me with
+ *   the message (MessageInput.flags); via_wazap is also set by the database for
+ *   the account's own message under a confirmed send's key. Messages stored
+ *   before v5, or by an import, get their mentions from
+ *   messages.backfillFlags(detector), which the service runs once it knows the
+ *   account's own number; requestFlagsBackfill() asks for it again.
+ * - (v5) chats.read_through_id moves only through messages.markReadSelf, only
+ *   forward, and only onto someone else's message; last_own_id is kept by the
+ *   schema. catchup.advance is compare-and-set when given expectedThroughId.
+ * - (v5) contacts.find keeps the people it folded in memory, refolding a
+ *   person when any of their row changes; groups need `leftGroup` to exclude
+ *   the ones the account left.
  */
 import { CatchupMarks } from "./catchup.js";
 import { Contacts, type LeftGroup } from "./contacts.js";
