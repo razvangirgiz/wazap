@@ -642,6 +642,11 @@ CREATE INDEX events_message ON events(message_id) WHERE message_id IS NOT NULL;
  * - catchup_marks: per client of the account, the newest message id a summary
  *   covered (through_id) and the one before it (previous_id), so a summary can
  *   be repeated; advanced in one statement.
+ * - sent_keys: the WhatsApp key of every send wazap let go of (it left draft),
+ *   kept 90 days — the window the draft context reads — while the send rows
+ *   themselves go a day after they settle. Nothing but the key and when.
+ *   meta via_wazap_known_after says before when the record is incomplete: a
+ *   file that already held the account's own messages when it reached v5.
  */
 const V5 = `
 ALTER TABLE messages ADD COLUMN flags INTEGER NOT NULL DEFAULT 0;
@@ -655,6 +660,28 @@ CREATE TABLE catchup_marks(
   updated_at INTEGER NOT NULL,
   PRIMARY KEY (client)
 ) STRICT, WITHOUT ROWID;
+
+CREATE TABLE sent_keys(
+  key_id TEXT NOT NULL,
+  at INTEGER NOT NULL,
+  PRIMARY KEY (key_id)
+) STRICT, WITHOUT ROWID;
+CREATE INDEX sent_keys_at ON sent_keys(at);
+
+-- A send leaving draft (claimed, or stored past it) records its key.
+CREATE TRIGGER sends_key_sent AFTER UPDATE OF state ON sends
+WHEN old.state = 'draft' AND new.state <> 'draft'
+BEGIN
+  INSERT INTO sent_keys(key_id, at) SELECT new.key_id, new.updated_at
+  WHERE NOT EXISTS (SELECT 1 FROM sent_keys WHERE key_id = new.key_id);
+END;
+
+CREATE TRIGGER sends_key_stored AFTER INSERT ON sends
+WHEN new.state <> 'draft'
+BEGIN
+  INSERT INTO sent_keys(key_id, at) SELECT new.key_id, new.updated_at
+  WHERE NOT EXISTS (SELECT 1 FROM sent_keys WHERE key_id = new.key_id);
+END;
 
 -- The account's own messages per chat, tombstones left out: last_own_id is
 -- walked back off it, and so are the own messages of a chat in a window (who
@@ -789,6 +816,11 @@ family(key_id, chat_id) AS (
 UPDATE messages SET flags = flags | 2 WHERE id IN (
   SELECT m.id FROM family f CROSS JOIN messages m ON m.chat_id = f.chat_id AND m.from_me = 1 AND m.key_id = f.key_id
 );
+
+INSERT INTO sent_keys(key_id, at) SELECT key_id, max(updated_at) FROM sends WHERE state <> 'draft' GROUP BY key_id;
+-- Sends older than a day left no record: which of the account's own messages
+-- before now wazap sent can no longer be told.
+INSERT INTO meta(key, value) SELECT 'via_wazap_known_after', 'migrated_v5' WHERE EXISTS (SELECT 1 FROM messages WHERE from_me = 1);
 
 -- The mentions of what is already stored come from the protobuf: the service
 -- walks down from here, the newest first, as far as 14 days back.

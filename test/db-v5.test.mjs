@@ -169,6 +169,11 @@ for (const from of [1, 2, 3, 4]) {
     assert.equal(db.identity.chat(PEER).readThroughId, null);
     assert.equal(db.catchup.get("local"), null);
     assert.equal(db.getMeta("flags_backfill_before"), String(Math.max(...Object.values(ids)) + 1));
+    // The keys of the sends it still held are kept past their rows; which older own messages wazap sent is unknown.
+    assert.equal(db.sends.wasSent("SENT1"), from >= 2);
+    assert.equal(db.sends.wasSent("A"), false, "a draft never went out");
+    assert.equal(db.getMeta("via_wazap_known_after"), "migrated_v5");
+    assert.equal(db.messages.viaWazapKnownAfter(), Number(db.getMeta("migrated_v5")));
 
     // The triggers run from here on, and the fold it left behind finishes with the marks in place.
     const later = db.messages.upsert(own(PEER, "LATER", T0 + 20_000));
@@ -231,6 +236,50 @@ test("the account's own message filed under a confirmed send's key is via_wazap 
   assert.equal(db.messages.get(sid(true, PEER, "K2")).flags, 0, "a draft never went out");
   assert.equal(db.messages.get(sid(false, PEER, "K1")).flags, 0, "only the account's own message");
   db.close();
+});
+
+test("a send's key outlives its row for 90 days: a copy of its message stored later is still via_wazap", () => {
+  const { db, clock } = openTemp();
+  const HOUR = 3_600_000;
+  db.sends.insertDraft(
+    { draftId: "d1", owner: "s", chatJid: PEER, kind: "text", payload: "{}", keyId: "3EB0OLDSEND", createdAt: clock.now, expiresAt: clock.now + DAY },
+    10,
+    100
+  );
+  assert.equal(db.sends.wasSent("3EB0OLDSEND"), false, "a draft is not a send");
+  assert.equal(db.sends.claim("d1", "s", clock.now), true);
+  assert.equal(db.sends.wasSent("3EB0OLDSEND"), true);
+  db.sends.settle("d1", "{}", clock.now, clock.now + DAY);
+  clock.now += 25 * HOUR;
+  assert.equal(db.sends.sweep(clock.now, 100), 1, "the send's row is gone after a day");
+  assert.equal(db.sends.get("d1"), null);
+  // A history sync after a relink brings the message back.
+  db.messages.upsert(own(PEER, "3EB0OLDSEND", clock.now - 24 * HOUR));
+  assert.equal(db.messages.get(sid(true, PEER, "3EB0OLDSEND")).flags, VIA);
+
+  clock.now += 90 * DAY;
+  db.sends.sweep(clock.now, 100);
+  assert.equal(db.sends.wasSent("3EB0OLDSEND"), false, "gone after 90 days");
+  assert.equal(db.messages.get(sid(true, PEER, "3EB0OLDSEND")).flags, VIA, "a message keeps the flag it got");
+});
+
+test("the flags backfill adds via_wazap from the kept keys, and an import marks which own messages it cannot vouch for", async () => {
+  const { db, clock } = openTemp({ chunkSize: 2 });
+  db.messages.upsert(own(PEER, "3EB0IMPORTED", clock.now - 1000));
+  db.messages.upsert(own(PEER, "PHONE1", clock.now - 900));
+  db.sends.insertDraft(
+    { draftId: "d9", owner: "s", chatJid: PEER, kind: "text", payload: "{}", keyId: "3EB0IMPORTED", createdAt: clock.now, expiresAt: clock.now + DAY },
+    10,
+    100
+  );
+  db.sends.claim("d9", "s", clock.now);
+  assert.equal(db.messages.viaWazapKnownAfter(), 0, "a new file knows every send");
+  db.messages.requestFlagsBackfill();
+  assert.equal(db.messages.viaWazapKnownAfter(), clock.now);
+  const result = await db.messages.backfillFlags(() => 0);
+  assert.equal(result.flagged, 1);
+  assert.equal(db.messages.get(sid(true, PEER, "3EB0IMPORTED")).flags, VIA);
+  assert.equal(db.messages.get(sid(true, PEER, "PHONE1")).flags, 0);
 });
 
 test("a fold keeps the union of both copies' flags", async () => {

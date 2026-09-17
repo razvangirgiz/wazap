@@ -77,6 +77,15 @@ export interface RecentExchangeItem {
   truncated: boolean;
 }
 
+/** The meta row saying before when via_wazap is incomplete: an epoch ms, or `migrated_v5` for the migration's time. */
+const VIA_WAZAP_KNOWN_META = "via_wazap_known_after";
+/**
+ * The key shapes Baileys gives the messages it sends ("3EB0…", and "BAE5…"
+ * in older releases). Before via_wazap is known, only an own message under
+ * another shape — written on the phone — is surely the user's own words.
+ */
+const BAILEYS_KEY_SQL = "(m.key_id LIKE '3EB0%' OR m.key_id LIKE 'BAE5%')";
+
 /** The meta row holding the descending id cursor of the flags backfill. */
 export const FLAGS_BACKFILL_META = "flags_backfill_before";
 /** How far back the flags backfill reaches: what catch_up and the draft context ever read. */
@@ -110,10 +119,11 @@ export function statusRank(status: number): number {
 const rank = (column: string): string => `(CASE WHEN ${column} = 0 THEN 1.5 ELSE ${column} END)`;
 /**
  * The bits a write carries, and via_wazap whenever the account's own message
- * is filed under a confirmed send's key, whoever stores it: the send itself,
- * WhatsApp's echo, a history sync, after a restart or not.
+ * is filed under the key of a send wazap let go of in the last 90 days
+ * (sent_keys), whoever stores it: the send itself, WhatsApp's echo, a history
+ * sync, after a restart or not, after the send's own row is gone.
  */
-const FLAGS_EXPR = `(:flags | CASE WHEN :from_me = 1 AND EXISTS (SELECT 1 FROM sends WHERE key_id = :key_id AND state <> 'draft')
+const FLAGS_EXPR = `(:flags | CASE WHEN :from_me = 1 AND EXISTS (SELECT 1 FROM sent_keys WHERE key_id = :key_id)
   THEN ${MESSAGE_FLAGS.viaWazap} ELSE 0 END)`;
 const UPSERT_SQL = `
 INSERT INTO messages(id, chat_id, key_id, from_me, sender_id, ts, type, quoted_sid, quoted_from_me, quoted_key_id, status,
@@ -548,15 +558,33 @@ export class Messages {
    * Asks for the protobuf-derived flags of every stored message to be worked
    * out again, newest first, by the next backfillFlags(): what an import that
    * stored messages without them calls. Rows already flagged only gain bits.
+   * It also marks which of the account's own messages wazap sent as unknown
+   * up to now (see viaWazapKnownAfter).
    */
   requestFlagsBackfill(): void {
     this.c.write(() => {
       const top = this.c.get<{ id: number | null }>("SELECT max(id) AS id FROM messages")?.id ?? null;
       if (top === null) return;
+      // An import brings the account's own messages with no record of which wazap sent.
+      const known = this.viaWazapKnownAfter();
+      this.c.run("INSERT OR REPLACE INTO meta(key, value) VALUES (?, ?)", VIA_WAZAP_KNOWN_META, String(Math.max(known, this.c.now())));
       const current = this.c.get<{ value: string }>("SELECT value FROM meta WHERE key = ?", FLAGS_BACKFILL_META)?.value;
       const before = Math.max(top + 1, current === undefined ? 0 : Number(current) || 0);
       this.c.run("INSERT OR REPLACE INTO meta(key, value) VALUES (?, ?)", FLAGS_BACKFILL_META, String(before));
     });
+  }
+
+  /**
+   * Before when (epoch ms) via_wazap cannot be trusted to be missing: sends
+   * leave no key record older than v5 or than an import, so an own message
+   * from before then may be wazap's without saying so. 0 when the record is
+   * whole.
+   */
+  viaWazapKnownAfter(): number {
+    const value = this.c.get<{ value: string }>("SELECT value FROM meta WHERE key = ?", VIA_WAZAP_KNOWN_META)?.value;
+    if (value === undefined) return 0;
+    const at = value === "migrated_v5" ? Number(this.c.get<{ value: string }>("SELECT value FROM meta WHERE key = 'migrated_v5'")?.value) : Number(value);
+    return Number.isSafeInteger(at) && at > 0 ? at : 0;
   }
 
   /** Whether flags are still owed to stored messages: the cursor a migration or an import left. */
@@ -571,7 +599,8 @@ export class Messages {
    * commit and yield like every large operation. The cursor moves with each
    * chunk, so a stop or a crash resumes where it was; it is gone once the
    * window is walked. `detect` returns the bits for one message (0 for none)
-   * and must not write; a detector that throws counts as none.
+   * and must not write; a detector that throws counts as none. The account's
+   * own messages under a key in sent_keys gain via_wazap on the way.
    */
   backfillFlags(detect: FlagDetector, options: { windowMs?: number } = {}): Promise<{ scanned: number; flagged: number; done: boolean }> {
     this.c.assertWritable();
@@ -586,8 +615,9 @@ export class Messages {
           result.done = true;
           return false;
         }
-        const rows = this.c.all<{ id: number; from_me: number; type: string; raw: Uint8Array; chat_jid: string }>(
-          `SELECT m.id, m.from_me, m.type, m.raw, coalesce(ck.jid, c.jid) AS chat_jid
+        const rows = this.c.all<{ id: number; from_me: number; type: string; raw: Uint8Array; chat_jid: string; sent: number }>(
+          `SELECT m.id, m.from_me, m.type, m.raw, coalesce(ck.jid, c.jid) AS chat_jid,
+             (m.from_me = 1 AND EXISTS (SELECT 1 FROM sent_keys k WHERE k.key_id = m.key_id)) AS sent
            FROM messages m CROSS JOIN chats c ON c.id = m.chat_id LEFT JOIN chats ck ON ck.id = c.merged_into
            WHERE m.id < ? AND m.id >= ? AND m.deleted_at IS NULL AND m.raw IS NOT NULL
            ORDER BY m.id DESC LIMIT ?`,
@@ -605,6 +635,7 @@ export class Messages {
           } catch {
             bits = 0;
           }
+          if (row.sent === 1) bits |= MESSAGE_FLAGS.viaWazap;
           if (bits !== 0 && this.c.run("UPDATE messages SET flags = flags | ? WHERE id = ? AND flags & ? <> ?", bits, row.id, bits, bits) > 0) {
             result.flagged++;
           }
@@ -1357,15 +1388,20 @@ export class Messages {
    * `days` (90), newest first, at most STYLE_SAMPLE of them; with fewer than
    * STYLE_MIN_OWN, their own messages across the account instead (`scope`
    * says which). `excludeViaWazap` (the default) leaves out what wazap sent,
-   * so an assistant does not learn its own style back. Null for a chat the
-   * account does not know.
+   * so an assistant does not learn its own style back — and, from before
+   * via_wazap was recorded (viaWazapKnownAfter: an upgrade to v5, an import),
+   * every own message under a key shaped like Baileys' (WhatsApp Web's too),
+   * keeping what was written on the phone. Null for a chat the account does
+   * not know.
    */
   styleFor(chatJid: string, options: { days?: number; excludeViaWazap?: boolean } = {}): StyleStats | null {
     const chat = this.identity.chat(chatJid);
     if (chat === null) return null;
     const days = Math.max(1, Math.floor(options.days ?? STYLE_DAYS));
     const lower = idLowerBound(Math.max(1, this.c.now() - days * 86_400_000));
-    const skipOwnSends = options.excludeViaWazap === false ? "" : `AND (m.flags & ${MESSAGE_FLAGS.viaWazap}) = 0`;
+    const knownAfter = this.viaWazapKnownAfter();
+    const unknownBefore = knownAfter === 0 ? "" : `AND (m.ts >= ${knownAfter} OR NOT ${BAILEYS_KEY_SQL})`;
+    const skipOwnSends = options.excludeViaWazap === false ? "" : `AND (m.flags & ${MESSAGE_FLAGS.viaWazap}) = 0 ${unknownBefore}`;
     const inChat = chatCondition(this.identity.chatIdsOf(chat));
     const own = (where: string, params: Array<number | string>, limit: number): string[] =>
       this.c

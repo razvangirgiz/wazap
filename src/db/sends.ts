@@ -20,6 +20,9 @@ import type { SQLInputValue } from "./sqlite.js";
 
 export type SendState = "draft" | "sending" | "sent" | "unknown";
 
+/** How long the key of a send wazap let go of is remembered (sent_keys): the draft context's window. */
+export const SENT_KEYS_RETENTION_MS = 90 * 86_400_000;
+
 export interface SendRecord {
   draftId: string;
   /** The MCP session that drafted it; null for a draft made outside any session. */
@@ -222,14 +225,31 @@ export class Sends {
     });
   }
 
-  /** Deletes up to `limit` rows past their expires_at, never a send under way. Returns how many went. */
+  /**
+   * Deletes up to `limit` rows past their expires_at, never a send under way,
+   * and up to `limit` sent keys older than SENT_KEYS_RETENTION_MS. Returns how
+   * many send rows went.
+   */
   sweep(now: number, limit: number): number {
-    return this.change(
-      `DELETE FROM sends WHERE draft_id IN (
-         SELECT draft_id FROM sends WHERE expires_at <= ? AND state <> 'sending' ORDER BY expires_at LIMIT ?)`,
-      now,
-      Math.max(1, Math.floor(limit))
-    );
+    const cap = Math.max(1, Math.floor(limit));
+    return this.c.write(() => {
+      this.c.run(
+        "DELETE FROM sent_keys WHERE key_id IN (SELECT key_id FROM sent_keys WHERE at <= ? ORDER BY at LIMIT ?)",
+        now - SENT_KEYS_RETENTION_MS,
+        cap
+      );
+      return this.c.run(
+        `DELETE FROM sends WHERE draft_id IN (
+           SELECT draft_id FROM sends WHERE expires_at <= ? AND state <> 'sending' ORDER BY expires_at LIMIT ?)`,
+        now,
+        cap
+      );
+    });
+  }
+
+  /** Whether wazap let go of a send under this key in the last 90 days, its row swept or not. */
+  wasSent(keyId: string): boolean {
+    return this.c.get("SELECT 1 FROM sent_keys WHERE key_id = ?", keyId) !== undefined;
   }
 
   /** One statement as its own write, or as part of the caller's; the rows it changed. */

@@ -101,6 +101,25 @@ test("what wazap sent, what is older than the window, deleted or someone else's,
   assert.equal(mine.length, 5);
 });
 
+test("before wazap recorded its sends (an upgrade, an import), an own message under a Baileys-shaped key is not taken as the user's style", () => {
+  const { db, clock } = account();
+  const now = clock.now;
+  const stored = (key, daysAgo, text) => db.messages.upsert(textMessage(ANA, key, now - daysAgo * DAY, text, { fromMe: true }));
+  // Written on the phone before the upgrade: kept.
+  ["da, ajung la 6", "ok te sun dupa", "hai ca vin si eu"].forEach((text, i) => stored(`A1B2C3D4E5F6${i}`, 30 + i, text));
+  // Sent by wazap (or Calfa) before the upgrade, their send rows long gone: unknowable, so left out.
+  ["Bună ziua! Vă mulțumesc.", "Cu stimă, asistentul.", "Vă confirm programarea."].forEach((text, i) => stored(`3EB0ABCDEF${i}`, 20 + i, text));
+  stored("BAE5OLDBAILEYS", 25, "Vă stă la dispoziție echipa.");
+  db.setMeta("via_wazap_known_after", "migrated_v5");
+  db.setMeta("migrated_v5", String(now - 10 * DAY));
+  // After the upgrade every send is on record: a Baileys-shaped key the record does not name is the user's (WhatsApp Web).
+  ["mersi mult", "nu stiu inca daca pot ajunge la timp"].forEach((text, i) => stored(`3EB0WEB${i}`, 2 + i, text));
+  const style = db.messages.styleFor(ANA);
+  assert.equal(style.basis.own_messages, 5);
+  assert.equal(style.diacritics, "none");
+  assert.equal(db.messages.styleFor(ANA, { excludeViaWazap: false }).basis.own_messages, 9, "asked for everything, everything");
+});
+
 test("styleOf is deterministic on its own and mixed languages read as other", () => {
   const basis = { own_messages: 4, days: 90, scope: "chat" };
   const mixed = styleOf(["ce faci azi", "see you tomorrow at the office", "hai ca vin", "thanks for the help"], basis);

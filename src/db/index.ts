@@ -37,9 +37,12 @@
  *   transcript yet is still being worked on: transcripts.state(sid) says
  *   queued, failed (given up, with a reason) or null (not queued — done, never
  *   eligible, or gone). The row leaves once setTranscript stores words.
- * - (v5) messages.flags only gain bits. The caller passes mentions_me with
- *   the message (MessageInput.flags); via_wazap is also set by the database for
- *   the account's own message under a confirmed send's key. Messages stored
+ * - (v5) messages.flags only gain bits (a tombstone loses mentions_me). The
+ *   caller passes mentions_me with the message (MessageInput.flags); via_wazap
+ *   is also set by the database for the account's own message under the key of
+ *   a send that left draft in the last 90 days (sent_keys, pruned by
+ *   sends.sweep). Which own messages from before v5 or an import wazap sent is
+ *   unknown (messages.viaWazapKnownAfter); styleFor accounts for it. Messages stored
  *   before v5, or by an import, get their mentions from
  *   messages.backfillFlags(detector), which the service runs once it knows the
  *   account's own number; requestFlagsBackfill() asks for it again.
@@ -81,6 +84,7 @@ export { FIND_SCORES } from "./contacts.js";
 export type { ContactCandidate, Contacts, FindInput, FindKind, FindResult, FindVerdict, LeftGroup, MatchClass, MatchSource, QualifierHit, QualifierSource } from "./contacts.js";
 export { DIMINUTIVES, INFLECTIONS, RELATIONSHIPS, diminutivesOf, inflectionForms, nameWords, relationOf, relationNameMatch } from "./names.js";
 export type { NewDraft, SendRecord, SendState, Sends } from "./sends.js";
+export { SENT_KEYS_RETENTION_MS } from "./sends.js";
 export { TRANSCRIBE_MAX_ATTEMPTS, TRANSCRIBE_QUEUE_MAX_AGE_MS } from "./transcripts.js";
 export type { ProviderClass, TranscribeItem, TranscribeQueueStats, TranscribeState } from "./transcripts.js";
 export type { EventInput, EventRecord, EventState, EventStats } from "./events.js";
