@@ -222,7 +222,7 @@ test("across both accounts: candidates carry their account, one account's only m
 });
 
 test("a resolved contact carries the recent exchange and the user's style in a write session, and nothing more anywhere else", async () => {
-  let { s, refs } = await world();
+  let { s } = await world();
   const full = (await find(s, { name: "mama", account_id: "personal" })).structuredContent;
   assert.equal(full.context.style.language, "ro");
   assert.ok(full.context.style.basis.own_messages > 0);
@@ -241,6 +241,7 @@ test("a resolved contact carries the recent exchange and the user's style in a w
   assert.ok(!read.content[0].text.includes("cina de duminică"));
   await readOnly.close();
 
+  let refs;
   ({ s, refs } = await world({ accounts: { personal: { contacts: { elena: { tags: ["private"] } } } } }));
   const quiet = await find(s, { name: "mama", account_id: "personal" });
   assert.equal(quiet.structuredContent.contact.chat_id, refs.contacts.elena.jid);
