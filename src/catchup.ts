@@ -255,6 +255,7 @@ export const CATCHUP_OUTPUT = {
     .nullable()
     .describe("Set when entries are left: call catch_up again with more.cursor"),
   approx_tokens: z.number(),
+  notes: z.array(z.string()).optional().describe("Caveats to act on or tell the user"),
   account_id: z.string().nullable(),
 };
 
@@ -1069,6 +1070,20 @@ async function givePage(snapshot: Snapshot, start: number, budgetChars: number, 
     account_id: multi ? null : answered[0]!.id,
   };
   for (const item of page) (structured[STRUCTURED_KEYS[item.section]] as unknown[]).push(item.data(quotes.get(item) ?? null));
+  // What the text says the assistant must act on, for a client that hands the model only the structured content.
+  const notes = [
+    ...answered.flatMap((view) => {
+      const connection = view.scan!.connection;
+      return [
+        connection.status === "connected"
+          ? null
+          : `${view.id} is ${connection.status}${connection.since === null ? "" : ` since ${clock(Date.parse(connection.since), now)}`}: what arrived after that is not here yet.`,
+        connection.sync === "done" ? null : `${view.id}: history sync is still running; some messages may not be here yet.`,
+      ];
+    }),
+    more === null ? null : "More entries are left: call catch_up with more.cursor for them.",
+  ].filter((note): note is string => note !== null);
+  if (notes.length > 0) structured.notes = notes;
   return { content: [{ type: "text", text }], structuredContent: structured };
 }
 

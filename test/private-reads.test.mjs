@@ -76,13 +76,16 @@ test("search without a chat leaves out a #private person's chat and what they wr
   const quoted = broad.structuredContent.messages.find((m) => m.message_id === reply);
   assert.deepEqual([quoted.text, quoted.quoted.text, quoted.quoted.sender], ["am văzut factura", "[private]", ANA], "a quote of hers keeps who, not what");
   assert.match(broad.content[0].text, /3 matches from people tagged #private left out: name the chat \(chat_id\) or the person \(from\) to search them\./);
+  assert.match((broad.structuredContent.notes ?? []).join(" "), /3 matches from people tagged #private left out/, "said in the structured content too");
   const fallback = await call("search", { query: "factura", limit: 5 });
   assert.equal(fallback.structuredContent.mode, "keyword_fallback", "meaning search is off here");
   assert.deepEqual([fallback.structuredContent.count, fallback.structuredContent.private_omitted], [5, 3], "the fallback holds the same rule");
+  assert.match((fallback.structuredContent.notes ?? []).join(" "), /words only[\s\S]*#private left out/);
 
   const chat = await call("search", { query: "factura", match: "words", chat_id: ANA });
   assert.deepEqual(chat.structuredContent.messages.map((m) => m.text).sort(), ["factura pentru terapie", "factura ți-o trimit mâine"]);
   assert.equal(chat.structuredContent.private_omitted, undefined);
+  assert.doesNotMatch((chat.structuredContent.notes ?? []).join(" "), /#private/);
   const author = await call("search", { query: "factura", match: "words", from: ANA });
   assert.deepEqual(author.structuredContent.messages.map((m) => m.message_id).sort(), [inGroup, theirs].sort());
   assert.equal(author.structuredContent.private_omitted, undefined);

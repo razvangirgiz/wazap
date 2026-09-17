@@ -321,6 +321,13 @@ function filedLine(view: Record<string, unknown>): string | null {
   return parts.length === 0 ? null : parts.join(" · ");
 }
 
+/** What a tag list left out, and how to see it; null when it left out nobody. */
+function cutNote(omitted: ReadonlyArray<{ account_id: string; count: number }>): string | null {
+  const left = omitted.reduce((sum, entry) => sum + entry.count, 0);
+  if (left === 0) return null;
+  return `${left} more not shown (${omitted.map((entry) => `${entry.count} on ${entry.account_id}`).join(", ")}): raise limit, up to ${MAX_LISTED}, or narrow it with name or account_id.`;
+}
+
 export function renderFindContact(structured: Record<string, unknown>): string {
   const query = structured.query as { name: string };
   const fix = structured.fix as string | undefined;
@@ -331,12 +338,7 @@ export function renderFindContact(structured: Record<string, unknown>): string {
       const contacts = structured.contacts as Array<Record<string, unknown>>;
       const tag = (structured.query as { tag: string }).tag;
       if (contacts.length === 0) return [`Nobody is filed under #${tag}.`, unsearched].filter(Boolean).join("\n");
-      const omitted = (structured.omitted as Array<{ account_id: string; count: number }> | undefined) ?? [];
-      const left = omitted.reduce((sum, entry) => sum + entry.count, 0);
-      const cut =
-        left === 0
-          ? null
-          : `${left} more not shown (${omitted.map((entry) => `${entry.count} on ${entry.account_id}`).join(", ")}): raise limit, up to ${MAX_LISTED}, or narrow it with name or account_id.`;
+      const cut = cutNote((structured.omitted as Array<{ account_id: string; count: number }> | undefined) ?? []);
       return [
         `# Filed under #${tag} (${contacts.length})`,
         cut,
@@ -467,6 +469,7 @@ export const FIND_CONTACT_OUTPUT = {
     .optional()
     .describe("Only when listed and cut by limit: how many more on each account"),
   fix: z.string().optional().describe("What to do next, when not resolved"),
+  notes: z.array(z.string()).optional().describe("Caveats to act on or tell the user"),
   accounts_searched: z.array(z.string()).optional(),
   accounts_unavailable: z.array(z.object({ account_id: z.string(), error: z.string() })).optional(),
   account_id: z.string().nullable().optional().describe("The account that answered; null when several accounts were searched and none answered alone"),
@@ -573,6 +576,8 @@ async function listTagged(args: FindContactArgs & { tag: string }, ctx: ToolCtx)
     structured.account_id = null;
   }
   if (unavailable.length > 0) structured.accounts_unavailable = unavailable;
+  const cut = cutNote(omitted);
+  if (cut !== null) structured.notes = [cut];
   return { content: [{ type: "text", text: renderFindContact(structured) }], structuredContent: structured };
 }
 

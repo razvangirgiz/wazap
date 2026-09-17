@@ -931,6 +931,7 @@ test("a disconnected account is reported as such, not as nothing new, and its ma
   assert.match(first.status_since, /^\d{4}-/);
   assert.equal(second.mark.moved, true);
   assert.match(text(result), /- Personal \(personal\): .* · disconnected since \S+: what arrived after that is not here yet/);
+  assert.match((result.structuredContent.notes ?? []).join(" "), /personal is disconnected since \S+: what arrived after that is not here yet/, "said in the structured content too");
   assert.equal(personal.svc.db.catchup.get("local"), null);
 });
 
@@ -1006,6 +1007,7 @@ test("a digest longer than the budget pages with a cursor that sees the same win
   const pages = [page];
   assert.ok(page.structuredContent.more, "it does not fit in 500 tokens");
   assert.match(text(page), /More: \d+ entries left \(.*\)\. Call catch_up with cursor: "/);
+  assert.match((page.structuredContent.notes ?? []).join(" "), /call catch_up with more\.cursor/, "said in the structured content too");
   assert.equal(page.structuredContent.accounts[0].mark.why, "more_pages");
   assert.equal(page.structuredContent.footer, null);
   // Messages arrive between pages: a new person, one of the listed, a reply of the user's own.

@@ -72,6 +72,17 @@ answers.
 
 ### Added
 
+- **What an answer asks of the assistant is in its structured content.**
+  Claude Code hands the model a tool's structured content, not its text, so
+  guidance that lived only in the text never reached it. Short fields now carry
+  it: `next` on a `send_message` draft and on a `manage_group` join preview;
+  `notes` on `search` (meaning search unavailable, weak matches, a capped scan,
+  people tagged `#private` left out, stale history), on `read_messages`
+  (photos without a preview, stories left out), on `catch_up` (an account not
+  connected, a sync still running, entries left for `more.cursor`), on a
+  `find_contact` tag list cut by `limit`, and on a draft to someone not saved
+  or written off the user's style. The output schemas declare them; the five
+  tools Calfa calls only gain keys.
 - **`find_contact`: who "mama", "Ana de la contabilitate" or "Mișu" is.** A
   read tool, in every session. It matches saved, business and self-given names, the
   `nickname` and `relatie` details, tags, and a note that is only the

@@ -490,7 +490,8 @@ test("manage_group join without confirm only looks the group up: no accept call,
     const result = await handler(z.object(meta.inputSchema).parse({ action: "join", invite }));
     assert.equal(result.isError, undefined, invite);
     assert.deepEqual(calls, [["groupGetInviteInfo", CODE]], invite);
-    const { account_id: _account, ...answer } = result.structuredContent;
+    const { account_id: _account, next, ...answer } = result.structuredContent;
+    assert.match(next, /after their yes, call manage_group again with action "join", the same invite or message_id and confirm: true/, invite);
     assert.deepEqual(answer, {
       action: "join",
       status: "preview",

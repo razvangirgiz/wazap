@@ -66,6 +66,7 @@ test("stories are listed by author, newest first, and show nowhere else", async 
   const one = await call("read_messages", { chat_id: "status", limit: 1 });
   assert.equal(one.structuredContent.omitted, 1, "a limit says what it left out");
   assert.match(one.content[0].text, /1 older stories left out/);
+  assert.match((one.structuredContent.notes ?? []).join(" "), /1 older stories left out: raise limit/, "said in the structured content too");
   assert.equal(textError(await call("read_messages", { chat_id: "status", before: "false_x@s.whatsapp.net_Y" })).error, "INVALID_ID");
 });
 

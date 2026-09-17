@@ -65,6 +65,14 @@ const ACCOUNT_ID = z.string().min(1).describe("Account id");
 const MESSAGE_OUT = z.object({ message_id: z.string(), chat_id: z.string(), text: z.string(), timestamp: z.string() }).passthrough();
 const OPEN_OBJECT = z.object({}).passthrough();
 
+/**
+ * What the assistant must say or do about an answer, in the structured
+ * content: a client such as Claude Code hands the model that, not the text, so
+ * guidance living only in the text never reaches it. Short, imperative, in
+ * English; the text keeps its longer wording.
+ */
+const NOTES = z.array(z.string()).optional().describe("Caveats to act on or tell the user");
+
 const LIST_CHATS_OUTPUT = {
   filter: z.string(),
   count: z.number(),
@@ -94,6 +102,7 @@ const READ_OUTPUT = {
   omitted: z.number().optional().describe("Older stories left out by limit"),
   preview_count: z.number(),
   messages: z.array(BROAD_MESSAGE_OUT),
+  notes: NOTES,
   sync: z.string(),
   account_id: z.string(),
 };
@@ -153,6 +162,7 @@ const SEARCH_OUTPUT = {
   index: OPEN_OBJECT.optional(),
   recall_unavailable: z.object({ code: z.string(), message: z.string(), fix: z.string().optional() }).optional(),
   freshness: OPEN_OBJECT.nullable(),
+  notes: NOTES,
   sync: z.string(),
   account_id: z.string(),
 };
@@ -194,6 +204,7 @@ const MANAGE_GROUP_OUTPUT = {
   description: z.string().nullable().optional(),
   participant_count: z.number().nullable().optional(),
   join_approval: z.boolean().nullable().optional(),
+  next: z.string().optional().describe("join preview: the step after the user's yes"),
   account_id: z.string(),
 };
 
@@ -288,6 +299,12 @@ function ok(text: string, structured: Record<string, unknown>, extra: ContentBlo
   return { content: [{ type: "text", text }, ...extra], structuredContent: structured };
 }
 
+/** `notes`, only when there is one. */
+function notesField(notes: ReadonlyArray<string | null>): { notes?: string[] } {
+  const kept = notes.filter((note): note is string => note !== null && note !== "");
+  return kept.length === 0 ? {} : { notes: kept };
+}
+
 function synced<T>(result: Synced<T>, rest: Record<string, unknown>): Record<string, unknown> {
   return { ...rest, sync: result.sync };
 }
@@ -303,6 +320,14 @@ function scanCapNote(result: SearchAnswer): string | null {
   if (result.scanCapped === undefined) return null;
   return `The search stopped at its scan limit; messages before ${result.scanCapped.searchedBackTo.slice(0, 10)} were not searched — narrow it with chat_id, since/until or a longer query.`;
 }
+
+function scanCapNotice(result: SearchAnswer): string | null {
+  if (result.scanCapped === undefined) return null;
+  return `Messages before ${result.scanCapped.searchedBackTo.slice(0, 10)} were not searched: narrow it with chat_id, since/until or a longer query; never say none exist.`;
+}
+
+const LEXICAL_CAP_NOTE =
+  'More messages hold these words than were ranked, so older matches may be missing: narrow it with chat_id or since/until, or pass match: "words" to list them newest first.';
 
 /** `private_omitted`, only when a search left someone #private out. */
 function privateFields(omitted: number | undefined): Record<string, unknown> {
@@ -499,6 +524,7 @@ const TOOLS: readonly ToolDef[] = [
         const note = [previewNote(open, previews, include_previews), omitted > 0 ? `${omitted} older stories left out; raise limit for them.` : null]
           .filter(Boolean)
           .join(" ");
+        const notes = notesField([previewGap(open, previews, include_previews), omitted > 0 ? `${omitted} older stories left out: raise limit for them.` : null]);
         return ok(
           renderStories(stories, window, previewLabels(previews), note || null),
           synced(result, {
@@ -509,6 +535,7 @@ const TOOLS: readonly ToolDef[] = [
             ...(omitted > 0 ? { omitted } : {}),
             preview_count: previews.length,
             messages: stories,
+            ...notes,
           }),
           previewBlocks(previews)
         );
@@ -531,6 +558,7 @@ const TOOLS: readonly ToolDef[] = [
           count: result.data.length,
           preview_count: previews.length,
           messages: result.data,
+          ...notesField([previewGap(result.data, previews, include_previews)]),
         }),
         previewBlocks(previews)
       );
@@ -665,9 +693,7 @@ const TOOLS: readonly ToolDef[] = [
           const answer: IdentifiedRecallAnswer = { hits, index: result.data.index, lexicalCapped: capped };
           // While the index is still catching up renderRecall says so itself; the coverage line only repeats it.
           const note = [
-            capped
-              ? 'More messages hold these words than were ranked, so older matches may be missing: narrow it with chat_id or since/until, or pass match: "words" to list them newest first.'
-              : null,
+            capped ? LEXICAL_CAP_NOTE : null,
             privateNote(result.data.privateOmitted),
             result.data.index.state === "indexing" ? null : indexCoverageNote(result.data.index),
             freshnessNote(fresh),
@@ -685,6 +711,13 @@ const TOOLS: readonly ToolDef[] = [
               ...privateFields(result.data.privateOmitted),
               index: result.data.index,
               freshness: fresh,
+              ...notesField([
+                weakMatches(hits) ? WEAK_NOTE : null,
+                result.data.index.state === "indexing" ? "The meaning index is still catching up: more matches may appear." : null,
+                capped ? LEXICAL_CAP_NOTE : null,
+                privateNote(result.data.privateOmitted),
+                freshnessNote(fresh),
+              ]),
             })
           );
         }
@@ -715,6 +748,12 @@ const TOOLS: readonly ToolDef[] = [
           ...privateFields(found.privateOmitted),
           coverage: cov,
           freshness: fresh,
+          ...notesField([
+            unavailable === null ? null : "Meaning search is unavailable, so these match the words only: recall_unavailable says why.",
+            scanCapNotice(found),
+            privateNote(found.privateOmitted),
+            freshnessNote(fresh),
+          ]),
         })
       );
     },
@@ -1080,7 +1119,7 @@ const TOOLS: readonly ToolDef[] = [
       }
       if (action === "join") {
         const result = await wa.joinGroup({ invite, messageId: message_id, confirm: confirm === true });
-        return ok(renderJoin(result), { action, ...result });
+        return ok(renderJoin(result), { action, ...result, ...(result.status === "preview" ? { next: JOIN_NEXT } : {}) });
       }
       if (group_id === undefined) {
         throw new WazapError("INVALID_ID", `${action} needs group_id.`, 'Pass the group\'s chat id ("<id>@g.us"), from list_chats or find_contact');
@@ -1174,6 +1213,14 @@ function previewNote(messages: MessageView[], previews: Preview[], asked: boolea
   return parts.length > 0 ? `${parts.join("; ")}.` : null;
 }
 
+/** The photos an asked-for preview could not be made for, as a note; null when none is missing. */
+function previewGap(messages: MessageView[], previews: Preview[], asked: boolean): string | null {
+  if (!asked) return null;
+  const missing = messages.filter((m) => m.type === "image").length - previews.length;
+  if (missing <= 0) return null;
+  return `${missing} photo${missing === 1 ? "" : "s"} without a preview (over ${MAX_PREVIEWS} per call, expired, not JPEG, or out of time): call again for more.`;
+}
+
 /** The sender's name, with the user's note on them the first time they appear in this rendering. */
 function senderLabel(m: AnyMessage, introduced: Set<string>): string {
   if (m.from_me) return "me";
@@ -1181,6 +1228,8 @@ function senderLabel(m: AnyMessage, introduced: Set<string>): string {
   introduced.add(m.sender.id);
   return `${m.sender.name} · ${m.sender.note}`;
 }
+
+const JOIN_NEXT = 'Show this to the user; after their yes, call manage_group again with action "join", the same invite or message_id and confirm: true.';
 
 /** A manage_group join answer: the preview and the step after it, or where the join landed. */
 function renderJoin(r: JoinGroupResult): string {
@@ -1301,6 +1350,19 @@ function renderMessages(
 }
 
 /**
+ * Under ~0.55 cosine, embeddinggemma matches are usually coincidental — the
+ * agent must not present them as found facts. A hit whose words matched is
+ * not a guess, whatever its similarity.
+ */
+function weakMatches(hits: ReadonlyArray<{ matched?: string; similarity?: number | null }>): boolean {
+  if (hits.length === 0) return false;
+  const best = Math.max(0, ...hits.map((h) => h.similarity ?? 0));
+  return hits.every((h) => h.matched === "meaning") && best < 0.55;
+}
+
+const WEAK_NOTE = "Weak matches only: the query may have no real answer; treat these as guesses, not facts.";
+
+/**
  * Ranked hits with the date always on the line and the score that ordered
  * them. "index only" warns that wazap holds the message only as text, so
  * get_media has nothing to open.
@@ -1314,13 +1376,9 @@ function renderRecall(title: string, answer: RecallAnswer | IdentifiedRecallAnsw
   if (hits.length === 0) {
     return `${title}: no messages found.${catchingUp ? ` ${catchingUp}` : ""}`;
   }
-  // Under ~0.55 cosine, embeddinggemma matches are usually coincidental — the
-  // agent must not present them as found facts. A hit whose words matched is
-  // not a guess, whatever its similarity.
-  const best = Math.max(0, ...hits.map((h) => h.similarity ?? 0));
-  const weak = hits.every((h) => h.matched === "meaning") && best < 0.55;
   const lines = [`# ${title} (${hits.length})`, ""];
-  if (weak) {
+  if (weakMatches(hits)) {
+    const best = Math.max(0, ...hits.map((h) => h.similarity ?? 0));
     lines.push(
       `Weak matches only (best similarity ${best.toFixed(2)}): the query may have no real answer — treat these as guesses.`,
       ""
@@ -1429,8 +1487,22 @@ function truncate(text: string, max: number): string {
   return text.length > max ? `${text.slice(0, max)}…` : text;
 }
 
+/** The step after a draft, in the structured content a client may hand the model instead of the text. */
+const DRAFT_NEXT = "Show preview to the user exactly; call confirm_send with draft_id only after their yes to this draft.";
+
 function drafted(view: DraftView): ToolResult {
-  return ok(renderDraft(view), { ...view });
+  const warnings = view.style_check?.warnings ?? [];
+  return ok(renderDraft(view), {
+    ...view,
+    next: DRAFT_NEXT,
+    ...notesField([
+      view.unnamed_recipient === true ? "The recipient is not a saved contact: say the name shown is only their public WhatsApp name or their number." : null,
+      warnings.some((warning) => warning !== "length_outlier")
+        ? "Unless the user dictated these words, draft again to match style_check.warnings, then show that preview."
+        : null,
+      warnings.includes("length_outlier") ? "length_outlier: shorten only if nothing the user asked for is lost." : null,
+    ]),
+  });
 }
 
 /**

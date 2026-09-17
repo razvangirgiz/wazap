@@ -300,9 +300,11 @@ test("send_message: a draft with diacritics to someone the user writes to withou
   assert.equal(check.basis.own_messages, 6);
   assert.match(draft.content[0].text, /Style check[\s\S]*diacritics_mismatch/);
   assert.ok(draft.structuredContent.draft_id, "still a draft: the check never blocks");
+  assert.match((draft.structuredContent.notes ?? []).join(" "), /draft again to match style_check\.warnings/, "what to do about the warnings is structured too");
 
   const plain = await s.call("send_message", { chat_id: refs.contacts.ana_ionescu.jid, text: "Salut, poți să-mi trimiți extrasul?", account_id: "personal" });
   assert.equal(plain.structuredContent.style_check, undefined, "one message of the user's own is too little to judge");
   assert.doesNotMatch(plain.content[0].text, /Style check/);
+  assert.equal(plain.structuredContent.notes, undefined);
   await s.close();
 });

@@ -197,6 +197,8 @@ test("a photo that shipped no preview is downloaded once, shrunk here, and remem
   assert.equal(downloads, 2, "each photo fetched once");
   assert.equal(expired.structuredContent.preview_count, 0, "the expired one goes without");
   assert.match(expired.content[0].text, /1 photo without a preview/);
+  assert.match((expired.structuredContent.notes ?? []).join(" "), /1 photo without a preview/, "said in the structured content too");
+  assert.equal(first.structuredContent.notes, undefined);
   assert.equal(first.structuredContent.preview_count, 1);
   const block = first.content[1];
   assert.equal(block.type, "image");

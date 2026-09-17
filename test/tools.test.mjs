@@ -127,6 +127,7 @@ test("send_message drafts through the session and confirm_send is the only send"
   assert.match(drafted.content[0].text, /Not sent/);
   assert.match(drafted.content[0].text, /To: Ana \(\+40 722 123 456\)/);
   assert.match(drafted.content[0].text, /confirm_send/);
+  assert.match(drafted.structuredContent.next, /preview.*confirm_send.*only after their yes/, "a client that reads structured content only still gets the step after a draft");
 
   const poll = await server.tools.get("send_message").handler({
     chat_id: "+40722123456",

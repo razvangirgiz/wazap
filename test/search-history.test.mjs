@@ -222,6 +222,7 @@ test("a search the scan cap stops answers what it found, says how far back it se
     const back = Date.parse(result.structuredContent.searched_back_to);
     assert.ok(back > baseMs && back < baseMs + 25_000 * 60_000, "it names where the scan stopped");
     assert.match(result.content[0].text, /stopped at its scan limit/);
+    assert.match((result.structuredContent.notes ?? []).join(" "), /before \d{4}-\d{2}-\d{2} were not searched/, "said in the structured content too");
 
     storageCalls = 0;
     const narrowed = await call("search", { match: "words", query: "§x", until: new Date(baseMs + 60_000).toISOString() });
