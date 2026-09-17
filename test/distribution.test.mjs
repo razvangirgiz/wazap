@@ -17,7 +17,6 @@ const read = (name) => JSON.parse(readFileSync(join(root, name), "utf8"));
 const pkg = read("package.json");
 const server = read("server.json");
 const manifest = read("manifest.json");
-const extension = read("gemini-extension.json");
 
 test("server.json publishes this version of this npm package", () => {
   assert.equal(server.version, pkg.version);
@@ -98,19 +97,6 @@ test("a data directory the user did fill in still arrives", async () => {
   const chosen = mkdtempSync(join(tmpdir(), "wazap-chosen-"));
   const { report } = await statusUnder({ WAZAP_DATA_DIR: chosen });
   assert.equal(report.data_dir, chosen);
-});
-
-test("the Gemini extension launches the same server under the same name", () => {
-  assert.equal(extension.name, "wazap");
-  assert.match(extension.name, /^[a-zA-Z0-9-]+$/);
-  assert.equal(extension.version, pkg.version);
-  assert.deepEqual(extension.mcpServers.whatsapp, { command: "npx", args: ["-y", "wazap-mcp"] });
-  assert.equal(extension.contextFileName, "GEMINI.md");
-});
-
-/** One source for the workflows: the skills. GEMINI.md is only their concatenation. */
-test("GEMINI.md still matches skills/", async () => {
-  await run(process.execPath, [join(root, "scripts", "build-context.mjs"), "--check"]);
 });
 
 test("both install links carry the entry connect would have written", async () => {

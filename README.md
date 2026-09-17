@@ -38,7 +38,7 @@ and it is missing, and to restart Claude Desktop itself once it has connected it
 | --- | --- |
 | Claude Code | `/plugin marketplace add razvangirgiz/wazap`, then `/plugin install wazap@wazap` |
 | Claude Desktop | download `wazap-<version>.mcpb` from [Releases](https://github.com/razvangirgiz/wazap/releases) and double-click it |
-| Gemini CLI | `gemini extensions install https://github.com/razvangirgiz/wazap` |
+| Gemini CLI | `npx wazap-mcp connect gemini` |
 | Cursor | the [Install in Cursor](#other-mcp-clients) badge, then `npx wazap-mcp skills install cursor` |
 | VS Code | the [Install in VS Code](#other-mcp-clients) badge |
 | Codex CLI | `npx wazap-mcp connect codex`, then `npx wazap-mcp skills install codex` |
@@ -165,21 +165,6 @@ OpenCode takes the command and its arguments as one array, under `mcp`:
 </details>
 
 The `skills/` folder follows the [Agent Skills](https://agentskills.io) format, so Codex, Cursor and other skill-aware agents can load the same five skills.
-
-### Gemini CLI
-
-```bash
-gemini extensions install https://github.com/razvangirgiz/wazap
-```
-
-That reads `gemini-extension.json` at the repo root, so it registers the MCP
-server and loads `GEMINI.md` — the five skills below, concatenated, because the
-Gemini CLI takes one context file per extension rather than a skills directory.
-`wazap connect gemini` writes the server alone, without the context.
-
-`GEMINI.md` is generated: `npm run context:build` rebuilds it from
-`skills/*/SKILL.md`, and a test fails if the two have drifted, so a workflow is
-only ever edited in its skill.
 
 ### Claude Desktop, without a terminal
 

@@ -14,7 +14,7 @@ user.
   edit is not tested until `npm run build` runs. `npm test` builds first.
   `test/helpers.mjs` has the shared plumbing (`childEnv` scrubs `WAZAP_*` so a
   developer shell cannot leak into a child).
-- `scripts/*.mjs` — repo utilities (bundle, icon, context build), also plain JS.
+- `scripts/*.mjs` — repo utilities (bundle, icon, badges), also plain JS.
 - `dist-bundle/`, `node_modules/` — generated, never edit, never lint.
 
 ## Commands
@@ -99,10 +99,10 @@ Small commits per logical step.
 A release is one commit and one tag; CI does the publishing.
 
 1. Bump the version in `package.json`, `package-lock.json` (both root
-   entries), `server.json` (top level and the npm package), `manifest.json`,
-   `gemini-extension.json` and `.claude-plugin/plugin.json`.
-   `test/distribution.test.mjs` fails when `server.json`, `manifest.json` or
-   `gemini-extension.json` drift from `package.json`.
+   entries), `server.json` (top level and the npm package), `manifest.json`
+   and `.claude-plugin/plugin.json`.
+   `test/distribution.test.mjs` fails when `server.json` or `manifest.json`
+   drift from `package.json`.
 2. Add a `## X.Y.Z` section at the top of `CHANGELOG.md`. It becomes the
    GitHub Release notes, and publishing refuses a version without one.
 3. Commit as `Release X.Y.Z: <what is in it>`, tag `vX.Y.Z`, push the commit

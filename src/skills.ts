@@ -70,10 +70,7 @@ function packagedSkills(): string {
   return fileURLToPath(new URL("../skills", import.meta.url));
 }
 
-/**
- * Frontmatter is a `---` block of one-line values, the same shape
- * scripts/build-context.mjs strips to build GEMINI.md.
- */
+/** Frontmatter is a `---` block of one-line values. */
 function parseSkill(text: string): Skill | null {
   const close = text.startsWith("---\n") ? text.indexOf("\n---\n", 3) : -1;
   if (close === -1) return null;
