@@ -37,8 +37,10 @@ export function stringArg(args: Record<string, unknown>, key: string): string | 
 
 export function attachAccountId(result: ToolPayload, accountId: string): ToolPayload {
   const structured = result.structuredContent ?? {};
-  // A read that had to walk the bindings stamps the account that answered;
-  // anything else reports the one the call resolved to.
+  // A read that had to walk the bindings stamps the account that answered, or
+  // null when it answered for several (catch_up); anything else reports the one
+  // the call resolved to.
+  if (structured.account_id === null && !result.isError) return result;
   const answered = typeof structured.account_id === "string" && structured.account_id ? structured.account_id : accountId;
   return { ...result, structuredContent: { ...structured, account_id: answered } };
 }

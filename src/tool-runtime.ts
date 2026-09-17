@@ -26,6 +26,12 @@ export interface ToolCtx {
   accountId: string;
   /** Opaque, per MCP session; stored with the session's drafts, never shown to or taken from a caller. */
   draftOwner: string;
+  /**
+   * Who the session's credential names, stable across its sessions and token
+   * rotations: `oauth:<client_id>`, `token:<label>`, or `local` for stdio and
+   * the daemon's own clients. What catch_up keeps its mark under.
+   */
+  client: string;
 }
 
 export interface ToolDef {
@@ -33,7 +39,11 @@ export interface ToolDef {
   title: string;
   description: string;
   schema: z.ZodRawShape;
+  /** The structured content's shape, when the tool declares one. */
+  outputSchema?: z.ZodRawShape;
   write: boolean;
+  /** A read that changes local state a repeat call sees (catch_up's mark). */
+  idempotent?: boolean;
   destructive?: boolean;
   /** Changes only local notes, so available in read-only mode too. */
   local?: boolean;
@@ -50,6 +60,8 @@ export interface RegisterOpts {
   maxInFlight?: number;
   /** Tool calls every session together may have running at once. */
   maxInFlightTotal?: number;
+  /** See ToolCtx.client; `local` when omitted. */
+  client?: string;
 }
 
 /** Agents fan out: Claude Code routinely sends several tool calls at once, and wait_for_messages holds one for up to 55 s. */
@@ -115,11 +127,12 @@ export function createToolRegistrar(defs: readonly ToolDef[]) {
               ? "\nThis remote session cannot use file_path or save_to. Use public HTTP(S) URLs, forward existing messages, or download_media with its default directory."
               : ""),
           inputSchema: def.schema,
+          ...(def.outputSchema === undefined ? {} : { outputSchema: def.outputSchema }),
           annotations: def.write
             ? { ...WRITE_HINTS, destructiveHint: def.destructive === true }
             : def.local
               ? LOCAL_HINTS
-              : { ...READ_ONLY_HINTS, openWorldHint: def.name !== "learn" },
+              : { ...READ_ONLY_HINTS, openWorldHint: def.name !== "learn", ...(def.idempotent === false ? { idempotentHint: false } : {}) },
         },
         async (args: unknown): Promise<ToolResult> => {
           const parsed = (args ?? {}) as ToolArgs;
@@ -176,6 +189,7 @@ export function createToolRegistrar(defs: readonly ToolDef[]) {
               allowWrite: opts.allowWrite,
               accountId: resolved.id,
               draftOwner,
+              client: opts.client ?? "local",
             });
             return attachAccountId(result, resolved.id);
           } catch (err) {
