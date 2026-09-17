@@ -24,7 +24,7 @@ Done searching when you have a match, or all three query variants and the pagina
 ## Deliver
 
 - A message: quote the text verbatim, then sender, chat, timestamp. Example: *"Str. Lunii 14, ap. 3, interfon 31" — Ana, 12 Mar 14:05.*
-- A file or photo: `get_media` on the message (a photo also comes back as an image you can look at), then open the saved file with your file-reading tool and answer from its contents when the user asked a question about it (an amount, a clause, a date). Give the saved path so the user can open it.
+- A file or photo: `get_media` on the message (a photo also comes back as an image you can look at), then open the saved file with your file-reading tool and answer from its contents when the user asked a question about it (an amount, a clause, a date). Give the saved path so the user can open it. For a voice note or an audio file, pass a directory as `save_to: "…"` to get the file: without it `get_media` answers with the transcript, and gives a path only when no transcript could be made (`transcript_unavailable`).
 - A link: return the URL as sent; do not fetch it unless asked.
 - Several candidates: list up to 5 with sender and date and ask which one, rather than guessing.
 - Not found: say which chats and which phrases you tried, and whether `MEDIA_UNAVAILABLE` blocked a download (the sender must resend), `keyword_fallback` left meaning search out (`recall_unavailable` says why), or `transcript_unavailable` left voice notes unread. Count those in one closing line rather than one per note: *4 voice notes in that chat are not transcribed. Turn it on with `wazap config transcribe`.*

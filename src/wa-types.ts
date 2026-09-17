@@ -533,6 +533,14 @@ export interface MediaResult {
   inline_base64: string | null;
 }
 
+/** How a caller spends a transcription. */
+export interface TranscribeOptions {
+  /** Taken just before a provider runs: never for a transcript on hand, nor for one that cannot run. */
+  limit?: { take(): void };
+  /** Only a transcript on hand; none on hand is TRANSCRIBE_UNAVAILABLE, and no provider runs. */
+  cachedOnly?: boolean;
+}
+
 export interface TranscribeResult {
   text: string;
   language?: string;
@@ -698,7 +706,7 @@ export interface WhatsAppApi {
   updateContactDetails(contactId: string, edit: ContactDetailsEdit): Promise<ContactSummary>;
   getGroupInfo(groupId: string): Promise<GroupInfo>;
   downloadMedia(messageId: string, saveTo?: string): Promise<MediaResult>;
-  transcribeAudio(messageId: string, language?: string): Promise<TranscribeResult>;
+  transcribeAudio(messageId: string, language?: string, opts?: TranscribeOptions): Promise<TranscribeResult>;
   waitForMessages(opts: WaitOptions): Promise<WaitResult>;
   getStories(hours: number): Promise<Synced<MessageView[]>>;
   setContactNote(contactId: string, note: string): Promise<ContactSummary>;

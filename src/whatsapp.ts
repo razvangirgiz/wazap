@@ -219,6 +219,7 @@ import type {
   TranscriptionStatus,
   SyncState,
   Synced,
+  TranscribeOptions,
   TranscribeResult,
   WhatsAppApi,
   HandledResult,
@@ -2376,10 +2377,13 @@ export class WhatsAppService implements WhatsAppApi {
    * Speech into text, once per message: a transcript already on hand is returned
    * as it is, because the local provider is slow and the API one is billed.
    */
-  transcribeAudio(messageId: string, language?: string): Promise<TranscribeResult> {
+  transcribeAudio(messageId: string, language?: string, opts: TranscribeOptions = {}): Promise<TranscribeResult> {
     return this.guarded(async () => {
       const message = this.storedOrThrow(messageId);
       if (message.transcript !== null) return transcribeResult(this.transcriptRecordOf(message), true);
+      if (opts.cachedOnly === true) {
+        throw new WazapError("TRANSCRIBE_UNAVAILABLE", `No transcript of ${messageId} is on hand.`, "Call get_media without save_to to transcribe it");
+      }
       const raw = this.messageOrThrow(messageId);
 
       const type = messageType(raw);
@@ -2411,6 +2415,8 @@ export class WhatsAppService implements WhatsAppApi {
       // moment would otherwise upload it twice. They share the first run.
       const running = this.transcribing.get(message.sid);
       if (running) return await running;
+      // Only a run spends the caller's budget: what is on hand, or cannot run, cost nothing.
+      opts.limit?.take();
       const work = this.runTranscribe(message.sid, raw, info, settings, language);
       this.transcribing.set(message.sid, work);
       try {

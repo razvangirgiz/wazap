@@ -11,6 +11,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 
+import { WazapError } from "../dist/errors.js";
 import { WhatsAppService } from "../dist/whatsapp.js";
 import { connectedService, schemaCheckedTools, textError } from "./helpers.mjs";
 
@@ -104,7 +105,7 @@ test("a document with no caption reports null, and so does audio", async () => {
   });
   const audio = (await call("get_media", { message_id: audioSid, save_to: saveTo })).structuredContent;
   assert.equal(audio.caption, null, "audio cannot carry a caption");
-  assert.equal(audio.transcript_unavailable.message.length > 0, true, "no transcription here, so the file stands in for it");
+  assert.equal(audio.transcript_unavailable, undefined, "save_to asks for the file, and no transcript is attempted");
   assert.equal(audio.original_filename, null);
   assert.deepEqual(readFileSync(audio.path), ogg);
 });
@@ -180,7 +181,7 @@ test("the saved file lands in the media dir when save_to is omitted", async () =
   assert.ok(existsSync(out.path));
 });
 
-test("a voice note comes back as its transcript without a file, and with save_to as both", async () => {
+test("a voice note comes back as its transcript without a file; with save_to as its file, and a transcript only if one is on hand", async () => {
   const { svc, call, arrive, saveTo } = setup();
   const ogg = Buffer.from("OggS spoken");
   let downloads = 0;
@@ -189,17 +190,54 @@ test("a voice note comes back as its transcript without a file, and with save_to
     return ogg;
   };
   const sid = arrive(ANA, { audioMessage: { mimetype: "audio/ogg; codecs=opus", fileLength: ogg.length, seconds: 6, ptt: true } });
-  svc.transcribeAudio = async () => ({ text: "ajung la 7", language: "ro", duration_seconds: 6, provider: "local", cached: false });
+  const asked = [];
+  const transcribe = svc.transcribeAudio.bind(svc);
+  svc.transcribeAudio = async (id, language, opts = {}) => {
+    asked.push(opts);
+    if (opts.cachedOnly) return transcribe(id, language, opts);
+    return { text: "ajung la 7", language: "ro", duration_seconds: 6, provider: "local", cached: false };
+  };
+
+  // Nothing is on hand yet: save_to brings the file, makes no transcript and says nothing is missing.
+  const saved = await call("get_media", { message_id: sid, save_to: saveTo });
+  assert.deepEqual(readFileSync(saved.structuredContent.path), ogg);
+  assert.equal(saved.structuredContent.transcript, undefined);
+  assert.equal(saved.structuredContent.transcript_unavailable, undefined);
+  assert.deepEqual(asked, [{ cachedOnly: true }], "save_to never starts a transcription");
 
   const heard = await call("get_media", { message_id: sid });
   assert.equal(heard.structuredContent.transcript.text, "ajung la 7");
   assert.equal(heard.structuredContent.path, undefined, "a transcript is the answer; nothing was saved");
-  assert.equal(downloads, 0);
+  assert.equal(downloads, 1);
   assert.match(heard.content[0].text, /Transcribed 0:06 \(ro, local\): "ajung la 7"/);
+  assert.equal(typeof asked[1].limit?.take, "function", "a transcription asked for spends the bucket, when a provider runs");
 
+  svc.db.messages.setTranscript(sid, "ajung la 7", { language: "ro", duration_seconds: 6, provider: "local", at: Date.now() });
   const kept = (await call("get_media", { message_id: sid, save_to: saveTo })).structuredContent;
   assert.equal(kept.transcript.text, "ajung la 7");
+  assert.equal(kept.transcript.cached, true);
   assert.deepEqual(readFileSync(kept.path), ogg);
+});
+
+test("a recording whose transcription fails, times out or is over its limit still comes as its file, saying why there is no transcript", async () => {
+  const { svc, call, arrive } = setup();
+  const ogg = Buffer.from("OggS spoken");
+  svc.mediaBuffer = async () => ogg;
+  for (const [code, type] of [
+    ["TRANSCRIBE_FAILED", "voice"],
+    ["TIMEOUT", "audio"],
+    ["RATE_LIMITED", "voice"],
+  ]) {
+    const sid = arrive(ANA, { audioMessage: { mimetype: "audio/ogg; codecs=opus", fileLength: ogg.length, seconds: 6, ptt: type === "voice" } });
+    svc.transcribeAudio = async () => {
+      throw new WazapError(code, `${code} here`);
+    };
+    const result = await call("get_media", { message_id: sid });
+    assert.equal(result.isError, undefined, code);
+    assert.equal(result.structuredContent.type, type);
+    assert.deepEqual(result.structuredContent.transcript_unavailable, { code, message: `${code} here` });
+    assert.deepEqual(readFileSync(result.structuredContent.path), ogg, `${code}: the file stands in for the transcript`);
+  }
 });
 
 test("a photo too big to attach whole comes with a preview instead", async () => {

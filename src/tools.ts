@@ -15,7 +15,7 @@ export { toolError, type ToolCtx, type RegisterOpts } from "./tool-runtime.js";
 import { CATCHUP_INPUT, CATCHUP_OUTPUT, runCatchUp } from "./catchup.js";
 import { coverageNote, indexCoverageNote, searchCoverage } from "./coverage.js";
 import { describeTarget, looksUnnamed, renderDraft, type DraftPayload, type DraftView } from "./drafts.js";
-import { ERROR_GUIDE, WazapError } from "./errors.js";
+import { ERROR_GUIDE, WazapError, asWazapError } from "./errors.js";
 import { FIND_CONTACT_OUTPUT, runFindContact } from "./find-contact.js";
 import { freshnessNote, readFreshness } from "./freshness.js";
 import { mediaCaptionOf } from "./media-details.js";
@@ -160,11 +160,11 @@ const MEDIA_OUTPUT = {
   transcript: z
     .object({ text: z.string(), language: z.string().optional(), duration_seconds: z.number().optional(), provider: z.string(), cached: z.boolean() })
     .optional(),
-  transcript_unavailable: z.object({ message: z.string(), fix: z.string().optional() }).optional(),
+  transcript_unavailable: z.object({ code: z.string(), message: z.string(), fix: z.string().optional() }).optional(),
   account_id: z.string(),
 };
 
-/** Transcripts, whichever session asks: ten a minute for the process, since the API provider bills each one. */
+/** Transcripts made for get_media, whichever session asks: ten runs a minute for the process, since the API provider bills each one. */
 const TRANSCRIBE_BUCKET = new RateLimiter(10, undefined, "Transcribe");
 
 const MANAGE_GROUP_OUTPUT = {
@@ -319,7 +319,7 @@ Call get_status when anything fails, and link_account when it says not_linked.
   stories. To stay on the line, wait_for_messages with the cursor it returns.
 - Find something said: search(query) matches meaning and words; match: "words"
   for an exact string. get_message shows one message in full; get_media gives its
-  file, a photo as an image, a voice note's transcript.
+  file, a photo as an image, a voice note's transcript (its file with save_to).
 - Who someone is: find_contact(name) before drafting ("mama", "Ana de la
   contabilitate"). resolved gives the chat_id; ambiguous or not_found: ask the
   user, never guess. remember keeps what the user says about a person (note,
@@ -749,10 +749,10 @@ const TOOLS: readonly ToolDef[] = [
   tool({
     name: "get_media",
     title: "Get the media of a WhatsApp message",
-    description: `What a message's media holds: a voice note or audio as its transcript (kept once made; an API provider bills it), a photo attached as an image, any file saved at path on the machine running wazap. MEDIA_UNAVAILABLE: WhatsApp no longer has it.`,
+    description: `What a message's media holds: a voice note or audio as its transcript (kept once made; an API provider bills it), or with save_to its file; a photo attached as an image; any file saved at path on the machine running wazap. MEDIA_UNAVAILABLE: WhatsApp no longer has it.`,
     schema: {
       message_id: messageId,
-      save_to: z.string().min(1).optional().describe("Absolute directory; default <data-dir>/media. Saves a voice note too"),
+      save_to: z.string().min(1).optional().describe("Absolute directory; default <data-dir>/media. A recording: its file, and no new transcript"),
       language: z.string().min(2).max(16).optional().describe('What is spoken, e.g. "ro"'),
       // The handler branches on whether it was given, like get_message.
       account_id: ACCOUNT_ID.optional(),
@@ -782,19 +782,24 @@ const TOOLS: readonly ToolDef[] = [
 
       let transcribed = false;
       if (view?.type === "voice" || view?.type === "audio") {
-        TRANSCRIBE_BUCKET.take();
+        // save_to asks for the file: a transcript on hand comes along, and none is made. Without it, one is made,
+        // and the bucket is spent only when a provider runs.
+        const saving = save_to !== undefined;
         try {
-          const result = await source.transcribeAudio(found.sid, language);
+          const result = await source.transcribeAudio(found.sid, language, saving ? { cachedOnly: true } : { limit: TRANSCRIBE_BUCKET });
           structured.transcript = result;
           transcribed = true;
           const clock = result.duration_seconds === undefined ? "" : ` ${clockLabel(result.duration_seconds)}`;
           const facts = [result.language, result.provider, result.cached ? "cached" : null].filter(Boolean).join(", ");
           lines.push(`Transcribed${clock} (${facts}): "${result.text}"`);
         } catch (err) {
-          // No transcript here (off, unfinished, or an API upload a read-only server refuses): the file still is.
-          if (!(err instanceof WazapError) || (err.code !== "TRANSCRIBE_UNAVAILABLE" && err.code !== "READ_ONLY")) throw err;
-          structured.transcript_unavailable = { message: err.message, ...(err.fix ? { fix: err.fix } : {}) };
-          lines.push(`No transcript: ${err.message}${err.fix ? ` ${err.fix}` : ""}`);
+          // No transcript (off, failing, timed out, over its rate, refused read-only): the file stands in for it.
+          // A failure that is the message's own (gone, expired) comes back from the download below.
+          if (!saving) {
+            const reason = asWazapError(err);
+            structured.transcript_unavailable = { code: reason.code, message: reason.message, ...(reason.fix ? { fix: reason.fix } : {}) };
+            lines.push(`No transcript: ${reason.message}${reason.fix ? ` ${reason.fix}` : ""}`);
+          }
         }
       }
 

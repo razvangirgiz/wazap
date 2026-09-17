@@ -27,8 +27,8 @@ answers.
 | `search_contacts` | `find_contact` by `name`, or with `tag` to list everyone filed under it |
 | `get_contact` | `find_contact`: a resolved person carries their number, note, tags and details |
 | `sync_contacts` | automatic: `find_contact` asks for an address book that looks empty; `wazap contacts resync` while no server runs |
-| `download_media` | `get_media` (`save_to`) |
-| `transcribe_audio` | `get_media` on a voice note or audio (`language`) |
+| `download_media` | `get_media` (`save_to`); on a voice note or audio, `save_to` gives the file and starts no transcription |
+| `transcribe_audio` | `get_media` on a voice note or audio without `save_to` (`language`); a transcription that cannot run (off, failing, timed out, over ten a minute) answers the file with `transcript_unavailable.code`, and only a provider run counts toward the ten |
 | `send_media` | `send_message` with `file_path` or `url`, the caption as `text`, `as: "document" \| "voice" \| "gif"` |
 | `send_poll` | `send_message` with `options` (and `multi_select`), the question as `text` |
 | `send_location` | `send_message` with `latitude` and `longitude`, the place name as `text`, `address` |
