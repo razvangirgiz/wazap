@@ -13,15 +13,14 @@
  *   once the whole digest was given; a first run, or a mark more than 7 days
  *   old, reads the last 24 h;
  * - "previous" repeats the window the last complete digest covered;
- * - "hours" and an ISO "since" are explicit windows by time and never move the mark;
- * - "fixed" is a page after the first, from its cursor.
+ * - "hours" and an ISO "since" are explicit windows by time and never move the mark.
  * Nothing sent more than 14 days ago is in any window.
  *
  * Inside it, each chat starts later still: after the user's own last word
  * there and after the newest message the phone reported read (what "missed"
  * means). Nothing reads a message above the window's tops, the id and the
- * stored_seq fixed when the digest started, so a page after the first sees
- * what the first saw.
+ * stored_seq fixed when the digest started, so the digest is what the account
+ * held at that instant; its later pages are served from it (src/catchup.ts).
  *
  * `waiting` is not bound by the window: an ask stays until the user answers,
  * marks it handled, or it is 14 days old, as get_unanswered has it.
@@ -76,7 +75,7 @@ export interface CatchupWindow {
   advance: boolean;
   /** The mark (a stored_seq) the window was built on, for the compare-and-set; null when the client had none. */
   expected: number | null;
-  /** The instant the digest started; later pages judge expiry, mutes and ages against it. */
+  /** The instant the digest started; expiry, mutes and ages are judged against it. */
   at: number;
 }
 
@@ -84,8 +83,7 @@ export type CatchupWindowSpec =
   | { kind: "last" }
   | { kind: "previous" }
   | { kind: "hours"; hours: number }
-  | { kind: "since"; ms: number }
-  | { kind: "fixed"; window: CatchupWindow };
+  | { kind: "since"; ms: number };
 
 export interface CatchupScanRequest {
   client: string;
@@ -263,7 +261,6 @@ export function tsOfId(id: number): number {
  * mark. Reads the mark and the two tops in one synchronous pass, writes nothing.
  */
 export function resolveWindow(db: AccountDb, client: string, spec: CatchupWindowSpec, now: number): CatchupWindow {
-  if (spec.kind === "fixed") return spec.window;
   const untilId = db.digest.maxId();
   const untilSeq = db.digest.storedTop();
   const byTime = (basis: WindowBasis, sinceAt: number, advance: boolean, expected: number | null): CatchupWindow => ({

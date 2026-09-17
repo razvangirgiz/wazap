@@ -15,14 +15,19 @@
  * 3. when they do not all fit, the lowest-priority quotes shrink to 80
  *    characters, and then the lowest-priority ones go.
  *
- * The cursor is opaque and fixes the window (each account's floor and tops,
- * the instant the digest started) and the place (section, offset), so a
- * page reads what the first page read whatever arrived in between. The
- * client's mark moves to the window's top only after the whole digest was
- * given — a digest with no `more`, or its last page — and only by
- * compare-and-set, so two catch-ups of one client racing each other move it
- * once.
+ * Paging: the first page computes the whole digest, every account's entries,
+ * and when they do not fit it is held in memory (a snapshot) under a random
+ * cursor: later pages serve from it and never scan again, so what the phone
+ * reads, a chat that folds or an account that fails meanwhile changes none of
+ * them. A snapshot is bound to the client that made it, lives 15 minutes past
+ * its last page, and at most MAX_SNAPSHOTS are held; a cursor it no longer
+ * knows is CURSOR_EXPIRED, with no mark moved. A client's mark moves to an
+ * account's window top only once every entry of the digest was given — a
+ * digest with no `more`, or its last page — for an account whose scan
+ * answered, and only by compare-and-set, so two catch-ups of one client racing
+ * each other move it once.
  */
+import { randomBytes } from "node:crypto";
 import { z } from "zod";
 import type { AccountSource } from "./account-hub.js";
 import {
@@ -56,7 +61,10 @@ const SHORT_QUOTE = 80;
 const QUOTE_CAPS: Partial<Record<CatchupSection, number>> = { waiting: 240, addressed: 200, direct: 160, groups: 120 };
 /** A poll's question or an event's line, in the skeleton. */
 const TITLE_CHARS = 80;
-const CURSOR_VERSION = 1;
+/** How long a digest's later pages stay servable after the last page given. */
+export const SNAPSHOT_TTL_MS = 15 * 60_000;
+/** Digests held for their later pages at once, every client together; the least recently paged goes first. */
+export const MAX_SNAPSHOTS = 16;
 
 const HOUR = 3_600_000;
 
@@ -146,87 +154,8 @@ export interface CatchupContext {
   wa: WhatsAppApi;
   /** Who is catching up: an OAuth client id, a token's label, or `local`. */
   client: string;
-  /** The clock a first page starts at; Date.now when omitted (the bench fixes it). */
+  /** The clock a first page starts at and cursors expire by; Date.now when omitted (the bench fixes it). */
   now?: () => number;
-}
-
-// ---------------------------------------------------------------- cursor
-
-interface CursorAccount {
-  id: string;
-  w: CatchupWindow;
-}
-
-interface CursorState {
-  v: number;
-  /** The client the digest was built for, hashed: a cursor does not move another client's mark. */
-  k: string;
-  t: number;
-  i: CatchupSection[];
-  a: CursorAccount[];
-  sec: CatchupSection;
-  o: number;
-}
-
-function clientKey(client: string): string {
-  let hash = 2166136261;
-  for (let i = 0; i < client.length; i++) {
-    hash ^= client.charCodeAt(i);
-    hash = Math.imul(hash, 16777619);
-  }
-  return (hash >>> 0).toString(36);
-}
-
-function encodeCursor(state: CursorState): string {
-  return Buffer.from(JSON.stringify(state)).toString("base64url");
-}
-
-function badCursor(reason: string): WazapError {
-  return new WazapError("INVALID_ID", `That cursor cannot be used: ${reason}.`, "Pass more.cursor exactly as the previous catch_up returned it, or call catch_up without a cursor");
-}
-
-function decodeCursor(cursor: string, client: string): CursorState {
-  let state: CursorState;
-  try {
-    state = JSON.parse(Buffer.from(cursor, "base64url").toString("utf8")) as CursorState;
-  } catch {
-    throw badCursor("it is not a catch_up cursor");
-  }
-  const ids = (value: unknown): boolean => Number.isSafeInteger(value) && (value as number) >= 0;
-  if (
-    state === null ||
-    typeof state !== "object" ||
-    state.v !== CURSOR_VERSION ||
-    typeof state.k !== "string" ||
-    !ids(state.t) ||
-    !Array.isArray(state.i) ||
-    !state.i.every((section) => CATCHUP_SECTIONS.includes(section)) ||
-    !Array.isArray(state.a) ||
-    state.a.length === 0 ||
-    !state.a.every(
-      (account) =>
-        account !== null &&
-        typeof account.id === "string" &&
-        account.w !== null &&
-        typeof account.w === "object" &&
-        ids(account.w.sinceId) &&
-        ids(account.w.untilId) &&
-        Number.isSafeInteger(account.w.afterSeq) &&
-        account.w.afterSeq >= -1 &&
-        ids(account.w.untilSeq) &&
-        ids(account.w.sinceAt) &&
-        ids(account.w.untilAt) &&
-        typeof account.w.basis === "string" &&
-        typeof account.w.advance === "boolean" &&
-        (account.w.expected === null || ids(account.w.expected))
-    ) ||
-    !CATCHUP_SECTIONS.includes(state.sec) ||
-    !ids(state.o)
-  ) {
-    throw badCursor("it is not a catch_up cursor");
-  }
-  if (state.k !== clientKey(client)) throw badCursor("it belongs to another client's catch-up");
-  return state;
 }
 
 // ---------------------------------------------------------------- formatting
@@ -595,6 +524,72 @@ function itemsOf(view: AccountView, multi: boolean, now: number): Item[] {
   return items;
 }
 
+// ---------------------------------------------------------------- snapshots
+
+type Mark = { moved: boolean; why?: string; next_since?: string };
+
+/**
+ * A digest being given page by page: every account's entries as its first
+ * page computed them, and the cursors handed out so far. Pages served from it
+ * read no window again; only their quotes are read back by id.
+ */
+interface Snapshot {
+  client: string;
+  include: CatchupSection[];
+  now: number;
+  multi: boolean;
+  views: AccountView[];
+  answered: AccountView[];
+  /** Every entry, in section order; within a section, account by account. */
+  items: Item[];
+  cursors: Set<string>;
+  /** Set by the last page: asked for again, it answers the same marks. */
+  marks: Map<string, Mark> | null;
+  usedAt: number;
+}
+
+/** Held snapshots, the least recently paged first. */
+const held: Snapshot[] = [];
+const byCursor = new Map<string, { snapshot: Snapshot; start: number }>();
+
+function release(snapshot: Snapshot): void {
+  const at = held.indexOf(snapshot);
+  if (at !== -1) held.splice(at, 1);
+  for (const cursor of snapshot.cursors) byCursor.delete(cursor);
+}
+
+function hold(snapshot: Snapshot, asked: number): void {
+  const at = held.indexOf(snapshot);
+  if (at !== -1) held.splice(at, 1);
+  held.push(snapshot);
+  snapshot.usedAt = asked;
+  while (held.length > MAX_SNAPSHOTS) release(held[0]!);
+}
+
+function cursorFor(snapshot: Snapshot, start: number): string {
+  const cursor = randomBytes(18).toString("base64url");
+  snapshot.cursors.add(cursor);
+  byCursor.set(cursor, { snapshot, start });
+  return cursor;
+}
+
+function cursorExpired(): WazapError {
+  return new WazapError(
+    "CURSOR_EXPIRED",
+    "That catch_up cursor is unknown or expired: its digest is no longer held (15 minutes after its last page, or a restart).",
+    "Call catch_up again without cursor; the mark has not moved"
+  );
+}
+
+/** The page a cursor names, for the client that made it; anything else is CURSOR_EXPIRED. */
+function pageAt(cursor: string, client: string, asked: number): { snapshot: Snapshot; start: number } {
+  for (const snapshot of [...held]) if (asked - snapshot.usedAt > SNAPSHOT_TTL_MS) release(snapshot);
+  const found = byCursor.get(cursor);
+  if (found === undefined || found.snapshot.client !== client) throw cursorExpired();
+  hold(found.snapshot, asked);
+  return found;
+}
+
 // ---------------------------------------------------------------- the run
 
 function specOf(args: CatchupArgs): CatchupWindowSpec {
@@ -624,30 +619,17 @@ function missingSupport(id: string): WazapError {
 }
 
 /** Which accounts a call covers: the one it names, or every live account when it names none and there are several. */
-function targetsOf(args: CatchupArgs, ctx: CatchupContext, cursor: CursorState | null): Array<{ id: string; wa: WhatsAppApi }> {
-  if (cursor !== null) {
-    if (args.account_id !== undefined && (cursor.a.length !== 1 || cursor.a[0]!.id !== args.account_id)) {
-      throw badCursor(`it continues a catch-up of ${cursor.a.map((account) => account.id).join(", ")}`);
-    }
-    return cursor.a.map((account) => {
-      const binding = ctx.hub.binding(account.id);
-      if (binding === undefined) throw badCursor(`account "${account.id}" is no longer served`);
-      return binding;
-    });
-  }
+function targetsOf(args: CatchupArgs, ctx: CatchupContext): Array<{ id: string; wa: WhatsAppApi }> {
   const live = ctx.hub.bindings();
   if (args.account_id !== undefined || live.length <= 1) return [{ id: ctx.accountId, wa: ctx.wa }];
   return live;
 }
 
-type Mark = { moved: boolean; why?: string; next_since?: string };
-
-/** Moves the mark when the whole digest was given, and says why not otherwise. */
-async function settleMark(view: AccountView, client: string, final: boolean, complete: boolean): Promise<Mark> {
+/** Moves the mark once the whole digest was given, and says why not otherwise. */
+async function settleMark(view: AccountView, client: string, complete: boolean): Promise<Mark> {
   const scan = view.scan!;
   const window = scan.window;
   if (!window.advance) return { moved: false, why: window.basis === "hours" || window.basis === "since" ? "explicit_window" : "previous" };
-  if (!final) return { moved: false, why: "more_pages" };
   if (!complete) return { moved: false, why: "partial_include" };
   if (scan.connection.status !== "connected") return { moved: false, why: "not_connected" };
   if (scan.connection.sync !== "done") return { moved: false, why: "sync_in_progress" };
@@ -663,15 +645,24 @@ async function settleMark(view: AccountView, client: string, final: boolean, com
 
 export async function runCatchUp(args: CatchupArgs, ctx: CatchupContext): Promise<ToolResult> {
   const budget = Math.min(MAX_BUDGET_TOKENS, Math.max(MIN_BUDGET_TOKENS, Math.floor(args.budget_tokens ?? DEFAULT_BUDGET_TOKENS)));
-  const budgetChars = budget * 4;
-  const cursor = args.cursor === undefined ? null : decodeCursor(args.cursor, ctx.client);
+  const asked = (ctx.now ?? Date.now)();
+  if (args.cursor !== undefined) {
+    const { snapshot, start } = pageAt(args.cursor, ctx.client, asked);
+    if (args.account_id !== undefined && (snapshot.views.length !== 1 || snapshot.views[0]!.id !== args.account_id)) {
+      throw new WazapError(
+        "INVALID_ID",
+        `That cursor continues a catch-up of ${snapshot.views.map((view) => view.id).join(", ")}.`,
+        "Pass more.cursor without account_id"
+      );
+    }
+    return givePage(snapshot, start, budget * 4, ctx, asked);
+  }
   const include: CatchupSection[] =
-    cursor?.i ?? (args.include === undefined ? [...CATCHUP_SECTIONS] : CATCHUP_SECTIONS.filter((section) => args.include!.includes(section)));
-  const complete = include.length === CATCHUP_SECTIONS.length;
-  const spec = cursor === null ? specOf(args) : null;
-  const targets = targetsOf(args, ctx, cursor);
+    args.include === undefined ? [...CATCHUP_SECTIONS] : CATCHUP_SECTIONS.filter((section) => args.include!.includes(section));
+  const spec = specOf(args);
+  const targets = targetsOf(args, ctx);
   const multi = targets.length > 1;
-  const now = cursor?.t ?? (ctx.now ?? Date.now)();
+  const now = asked;
 
   // Each account's scan; one that fails is reported, the others still answer.
   const views: AccountView[] = await Promise.all(
@@ -680,13 +671,7 @@ export async function runCatchUp(args: CatchupArgs, ctx: CatchupContext): Promis
       const view: AccountView = { id: target.id, name, source: target.wa, scan: null, error: null };
       try {
         if (typeof target.wa.catchUpScan !== "function") throw missingSupport(target.id);
-        const fixed = cursor?.a.find((account) => account.id === target.id);
-        view.scan = await target.wa.catchUpScan({
-          client: ctx.client,
-          include,
-          at: now,
-          window: fixed === undefined ? spec! : { kind: "fixed", window: { ...fixed.w, at: now } },
-        });
+        view.scan = await target.wa.catchUpScan({ client: ctx.client, include, at: now, window: spec });
       } catch (err) {
         view.error = asWazapError(err);
       }
@@ -698,20 +683,18 @@ export async function runCatchUp(args: CatchupArgs, ctx: CatchupContext): Promis
 
   // Every entry in section order; within a section, account by account.
   const byAccount = answered.map((view) => itemsOf(view, multi, now));
-  const all: Item[] = CATCHUP_SECTIONS.flatMap((section) => byAccount.flatMap((items) => items.filter((item) => item.section === section)));
-  let start = 0;
-  if (cursor !== null) {
-    const order = CATCHUP_SECTIONS.indexOf(cursor.sec);
-    const sectionStart = all.findIndex((item) => CATCHUP_SECTIONS.indexOf(item.section) >= order);
-    if (sectionStart === -1) start = all.length;
-    else {
-      const inSection = all.filter((item) => item.section === cursor.sec).length;
-      start = sectionStart + (all[sectionStart]!.section === cursor.sec ? Math.min(cursor.o, inSection) : 0);
-    }
-  }
+  const items: Item[] = CATCHUP_SECTIONS.flatMap((section) => byAccount.flatMap((each) => each.filter((item) => item.section === section)));
+  const snapshot: Snapshot = { client: ctx.client, include, now, multi, views, answered, items, cursors: new Set(), marks: null, usedAt: asked };
+  return givePage(snapshot, 0, budget * 4, ctx, asked);
+}
+
+/** One page of a digest from entry `start`: the whole rest when it fits, otherwise as much as fits and a cursor to the next. */
+async function givePage(snapshot: Snapshot, start: number, budgetChars: number, ctx: CatchupContext, asked: number): Promise<ToolResult> {
+  const { now, multi, views, answered, items: all } = snapshot;
+  const complete = snapshot.include.length === CATCHUP_SECTIONS.length;
   const rest = all.slice(start);
 
-  const header = headerLines(views, multi, now, cursor !== null);
+  const header = headerLines(views, multi, now, start > 0);
   const footer = footerLines(answered, multi);
   const linesChars = (lines: readonly string[]): number => lines.reduce((n, line) => n + line.length + 1, 0);
   const headerChars = linesChars(header);
@@ -720,16 +703,7 @@ export async function runCatchUp(args: CatchupArgs, ctx: CatchupContext): Promis
   const longestName = Math.max(...answered.map((view) => view.name.length));
   const headingChars = (item: Item): number => `## ${SECTION_TITLES[item.section]}${multi ? ` · ${"x".repeat(longestName)}` : ""} (99)`.length + 1;
   const headingKey = (item: Item): string => (multi ? `${item.section}|${item.account}` : item.section);
-  const template: CursorState = {
-    v: CURSOR_VERSION,
-    k: clientKey(ctx.client),
-    t: now,
-    i: include,
-    a: answered.map((view) => ({ id: view.id, w: view.scan!.window })),
-    sec: "waiting",
-    o: 0,
-  };
-  const moreChars = 140 + encodeCursor({ ...template, sec: "addressed", o: 999 }).length;
+  const moreChars = 140 + randomBytes(18).toString("base64url").length;
 
   // 1. The skeleton: all of it with the footer, or as much as fits before a `more` line (at least one entry).
   const skeletonOf = (items: readonly Item[]): number => {
@@ -808,9 +782,14 @@ export async function runCatchUp(args: CatchupArgs, ctx: CatchupContext): Promis
   }
   const quotes = new Map(placed.filter((entry) => entry.level > 0).map((entry) => [entry.item, quoteAt(entry, entry.level)]));
 
-  // The mark, once the whole digest was given.
+  // The marks, once every entry was given: settled by the last page, and the same when it is asked for again.
   const marks = new Map<string, Mark>();
-  for (const view of answered) marks.set(view.id, await settleMark(view, ctx.client, final, complete));
+  if (!final) for (const view of answered) marks.set(view.id, { moved: false, why: "more_pages" });
+  else if (snapshot.marks !== null) for (const [id, mark] of snapshot.marks) marks.set(id, mark);
+  else {
+    for (const view of answered) marks.set(view.id, await settleMark(view, ctx.client, complete));
+    snapshot.marks = marks;
+  }
 
   // Render.
   const lines = [...header];
@@ -826,13 +805,12 @@ export async function runCatchUp(args: CatchupArgs, ctx: CatchupContext): Promis
   let more: { cursor: string; remaining: Record<string, number>; approx_tokens: number } | null = null;
   const remainingItems = all.slice(start + page.length);
   if (!final) {
-    const next = remainingItems[0]!;
-    const offset = all.slice(0, start + page.length).filter((item) => item.section === next.section).length;
+    hold(snapshot, asked);
     const remaining: Record<string, number> = {};
     for (const item of remainingItems) remaining[STRUCTURED_KEYS[item.section]] = (remaining[STRUCTURED_KEYS[item.section]] ?? 0) + 1;
     const quotesLeft = remainingItems.filter((item) => item.quoteId !== null || item.thenId !== null).length;
     const approx = Math.ceil((skeletonOf(remainingItems) + footerChars) / 4) + quotesLeft * 30;
-    more = { cursor: encodeCursor({ ...template, sec: next.section, o: offset }), remaining, approx_tokens: approx };
+    more = { cursor: cursorFor(snapshot, start + page.length), remaining, approx_tokens: approx };
     const counts = Object.entries(remaining)
       .map(([section, n]) => `${section} ${n}`)
       .join(", ");

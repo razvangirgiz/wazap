@@ -16,6 +16,7 @@
  */
 import type { Connection } from "./connection.js";
 import { StorageError } from "./errors.js";
+import { STORED_SEQ_TOP } from "./messages.js";
 
 export interface CatchupMark {
   client: string;
@@ -84,19 +85,22 @@ export class CatchupMarks {
    * Moves the client's mark to `throughSeq`, reached by a summary that started
    * at `at` (now by default), after it was given whole, keeping the mark it
    * had as the previous one — one statement, so the pair is never seen
-   * half-written. A mark at or past `throughSeq` stays as it is. With
+   * half-written. A `throughSeq` past the newest stored_seq handed out is held
+   * to it: a mark never covers what has not arrived. A mark at or past
+   * `throughSeq` stays as it is. With
    * `expectedThroughSeq`, the move happens only while the mark is still that
    * one (null: the client has none yet), so a summary built over a mark that
    * another call has moved since does not advance it.
    */
   advance(client: string, throughSeq: number, options: { at?: number; expectedThroughSeq?: number | null } = {}): CatchupAdvance {
     const name = checkClient(client);
-    const through = checkCount(throughSeq, "throughSeq");
+    const asked = checkCount(throughSeq, "throughSeq");
     const expected = options.expectedThroughSeq;
     if (expected !== undefined && expected !== null) checkCount(expected, "expectedThroughSeq");
     return this.c.write(() => {
       const now = this.c.now();
       const at = options.at === undefined ? now : checkCount(options.at, "at");
+      const through = Math.min(asked, this.c.get<{ top: number }>(`SELECT ${STORED_SEQ_TOP} AS top`)?.top ?? 0);
       let changed: number;
       if (expected === undefined || expected === null) {
         changed = this.c.run(

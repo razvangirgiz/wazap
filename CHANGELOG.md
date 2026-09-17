@@ -9,8 +9,11 @@
   included), missed calls per person, people who wrote, groups one line each,
   stories — with a footer for untranscribed voice notes and what was left out.
   It fits `budget_tokens` (2,500 by default, 500 to 8,000): the lines first,
-  then quotes by priority, and a `more.cursor` for the rest, which reads the
-  same window whatever arrives in between. A chat's messages count as missed
+  then quotes by priority, and a `more.cursor` for the rest: the first page
+  holds the whole digest for 15 minutes past each page, so the next pages give
+  exactly what it worked out, whatever arrives or is read in between. A cursor
+  only its own client can use, and an expired one is `CURSOR_EXPIRED`, with the
+  mark not moved. A chat's messages count as missed
   after the user's own last message there and after what their phone already
   read. Without `account_id` it covers every linked account, each labelled.
   See *Catching up* in the README.

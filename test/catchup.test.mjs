@@ -719,16 +719,140 @@ test("a digest longer than the budget pages with a cursor that sees the same win
   assert.deepEqual(chatsOf(next, "direct").sort(), ["40799999999@s.whatsapp.net", jids[20]].sort(), "what arrived meanwhile is the next catch-up");
 });
 
-test("a cursor is refused when another client, or no catch_up, made it", async () => {
+test("pages serve the digest the first page computed: chats read on the phone between pages skip nobody", async () => {
+  const { svc, sock, arrive, phoneRead } = account();
+  const { call } = toolsOf(svc);
+  const at = Date.now() - 5 * HOUR;
+  const sids = new Map();
+  for (let i = 0; i < 60; i++) {
+    const jid = `4071000${String(i).padStart(4, "0")}@s.whatsapp.net`;
+    sock.ev.emit("contacts.upsert", [{ id: jid, name: `Persoana ${i}` }]);
+    sids.set(jid, arrive(jid, `Persoana ${i} scrie un mesaj destul de lung despre ședința de joi și programarea la doctor ${i}`, { at: at + i * 1000 }));
+  }
+  const whole = chatsOf(await call("catch_up", { budget_tokens: 8000, include: ["direct"] }), "direct");
+  let page = await call("catch_up", { budget_tokens: 500 });
+  const pages = [page];
+  // The user opens the first two people listed, on the phone.
+  for (const jid of chatsOf(page, "direct").slice(0, 2)) phoneRead(jid, sids.get(jid));
+  while (page.structuredContent.more) {
+    page = await call("catch_up", { cursor: page.structuredContent.more.cursor, budget_tokens: 500 });
+    pages.push(page);
+    assert.ok(pages.length < 20, "pages end");
+  }
+  assert.ok(pages.length >= 2);
+  assert.deepEqual(pages.flatMap((each) => chatsOf(each, "direct")), whole, "every person once, in the first page's order");
+  assert.equal(page.structuredContent.accounts[0].mark.moved, true);
+  assert.deepEqual(chatsOf(await call("catch_up", { budget_tokens: 8000 }), "direct"), []);
+});
+
+test("pages serve the digest the first page computed: a lid chat folding into its number meanwhile skips nobody", async () => {
+  const { svc, sock, arrive } = account();
+  const LID = "123456789012345@lid";
+  // Naming the people of the first page learns the lid's number, and the lid chat folds into Ana's.
+  sock.signalRepository = { lidMapping: { getPNsForLIDs: async (lids) => lids.filter((lid) => lid === LID).map((lid) => ({ lid, pn: ANA })) } };
+  const { call } = toolsOf(svc);
+  const at = Date.now() - 5 * HOUR;
+  for (let i = 0; i < 60; i++) {
+    const jid = `4071000${String(i).padStart(4, "0")}@s.whatsapp.net`;
+    sock.ev.emit("contacts.upsert", [{ id: jid, name: `Persoana ${i}` }]);
+    arrive(jid, `Persoana ${i} scrie un mesaj despre ședința de joi ${i}`, { at: at + i * 1000 });
+    arrive(jid, `și încă unul despre programare ${i}`, { at: at + i * 1000 + 500 });
+  }
+  arrive(ANA, "mesaj de la Ana pe numărul ei, fără întrebare", { at: at + 100_000 });
+  for (let k = 0; k < 5; k++) arrive(LID, `Ana de pe lid, mesajul ${k} fără întrebare`, { at: at + 110_000 + k * 1000 });
+  let page = await call("catch_up", { budget_tokens: 700 });
+  const pages = [page];
+  await new Promise((resolve) => setTimeout(resolve, 200));
+  while (page.structuredContent.more) {
+    page = await call("catch_up", { cursor: page.structuredContent.more.cursor, budget_tokens: 700 });
+    pages.push(page);
+    assert.ok(pages.length < 20, "pages end");
+  }
+  const seen = pages.flatMap((each) => chatsOf(each, "direct"));
+  assert.ok(seen.includes(ANA) || seen.includes(LID), "Ana is on a page");
+  assert.equal(new Set(seen).size, seen.length, "nobody twice");
+  assert.equal(seen.length, 62);
+});
+
+test("with several accounts, an account failing after the first page skips none of another's entries, and each mark moves only for an account that answered", async () => {
+  const { personal, work, hub } = twoAccounts();
+  const { call } = toolsOf(hub);
+  const body = "scrie un mesaj destul de lung despre ședința de joi și programarea la doctor";
+  for (let i = 0; i < 40; i++) personal.arrive(`4071000${String(i).padStart(4, "0")}@s.whatsapp.net`, `P${i} ${body}`, { at: Date.now() - 3 * HOUR + i * 1000 });
+  for (let i = 0; i < 40; i++) work.arrive(`4072000${String(i).padStart(4, "0")}@s.whatsapp.net`, `W${i} ${body}`, { at: Date.now() - 3 * HOUR + i * 1000 });
+  const whole = (await call("catch_up", { budget_tokens: 8000, include: ["direct"] })).structuredContent.direct.map((entry) => `${entry.acct} ${entry.chat}`);
+  let page = await call("catch_up", { budget_tokens: 600 });
+  const pages = [page];
+  // The personal account's database goes away after the first page: its scan and its mark both fail.
+  personal.svc.catchUpScan = async () => {
+    throw new Error("database closed");
+  };
+  personal.svc.catchUpAdvance = async () => {
+    throw new Error("database closed");
+  };
+  while (page.structuredContent.more) {
+    page = await call("catch_up", { cursor: page.structuredContent.more.cursor, budget_tokens: 600 });
+    pages.push(page);
+    assert.ok(pages.length < 20, "pages end");
+  }
+  const seen = pages.flatMap((each) => each.structuredContent.direct.map((entry) => `${entry.acct} ${entry.chat}`));
+  assert.deepEqual(seen, whole, "both accounts' entries, once each");
+  const marks = Object.fromEntries(page.structuredContent.accounts.map((entry) => [entry.account_id, entry.mark]));
+  assert.equal(marks.work.moved, true);
+  assert.deepEqual(marks.personal, { moved: false, why: "failed: WHATSAPP_ERROR" });
+  assert.equal(personal.svc.db.catchup.get("local"), null);
+});
+
+test("a cursor is the client's own: another client's, a made-up or an edited one is CURSOR_EXPIRED and moves no mark", async () => {
   const { svc } = busyAccount({ people: 30 });
   const mine = toolsOf(svc, { client: "oauth:claude" });
   const theirs = toolsOf(svc, { client: "token:write" });
-  const page = await mine.call("catch_up", { budget_tokens: 500, hours: 24 });
-  const stolen = await theirs.call("catch_up", { cursor: page.structuredContent.more.cursor });
-  assert.equal(errorOf(stolen).error, "INVALID_ID");
-  assert.match(errorOf(stolen).message, /another client/);
-  const garbage = await mine.call("catch_up", { cursor: "bm90IGEgY3Vyc29y" });
-  assert.equal(errorOf(garbage).error, "INVALID_ID");
+  const page = await mine.call("catch_up", { budget_tokens: 500 });
+  const { cursor } = page.structuredContent.more;
+  assert.match(cursor, /^[A-Za-z0-9_-]{24}$/, "a random id, nothing in it");
+  const stolen = errorOf(await theirs.call("catch_up", { cursor }));
+  assert.equal(stolen.error, "CURSOR_EXPIRED");
+  assert.equal(stolen.fix, "Call catch_up again without cursor; the mark has not moved");
+  // What a cursor used to carry, the window's top, edited far into the future.
+  const forged = Buffer.from(
+    JSON.stringify({ v: 1, k: "0", t: Date.now(), i: ["waiting", "addressed", "calls", "direct", "groups", "stories"], a: [{ id: "default", s: 0, u: 2 ** 52 }], sec: "stories", o: 999 })
+  ).toString("base64url");
+  for (const bad of ["bm90IGEgY3Vyc29y", forged, `${cursor}x`]) assert.equal(errorOf(await mine.call("catch_up", { cursor: bad })).error, "CURSOR_EXPIRED");
+  assert.equal(svc.db.catchup.get("oauth:claude"), null);
+  assert.equal(svc.db.catchup.get("token:write"), null);
+  const next = await mine.call("catch_up", { cursor, budget_tokens: 500 });
+  assert.equal(next.isError, undefined, "the owner's cursor still pages");
+  assert.match(text(next), /^# WhatsApp catch-up, continued/);
+});
+
+test("a digest's pages are held 15 minutes past the last one given, sixteen digests at most; the same page asked again answers the same", async () => {
+  const { svc } = busyAccount({ people: 60 });
+  const { runCatchUp } = await import("../dist/catchup.js");
+  let clock = Date.now();
+  const ctx = (client = "local") => ({ hub: asToolSource(svc), accountId: "default", wa: svc, client, now: () => clock });
+  const pages = [await runCatchUp({ budget_tokens: 500 }, ctx())];
+  clock += 14 * 60_000;
+  pages.push(await runCatchUp({ budget_tokens: 500, cursor: pages[0].structuredContent.more.cursor }, ctx()));
+  assert.ok(pages[1].structuredContent.more);
+  clock += 15 * 60_000 + 1;
+  await assert.rejects(runCatchUp({ budget_tokens: 500, cursor: pages[1].structuredContent.more.cursor }, ctx()), { code: "CURSOR_EXPIRED" });
+  assert.equal(svc.db.catchup.get("local"), null, "an expired digest moved nothing");
+
+  // Pages to the end: the last one asked twice (a retry) answers the same marks.
+  let page = await runCatchUp({ budget_tokens: 500 }, ctx());
+  let last;
+  while (page.structuredContent.more) {
+    last = page.structuredContent.more.cursor;
+    page = await runCatchUp({ budget_tokens: 500, cursor: last }, ctx());
+  }
+  assert.equal(page.structuredContent.accounts[0].mark.moved, true);
+  const again = await runCatchUp({ budget_tokens: 500, cursor: last }, ctx());
+  assert.deepEqual(again.structuredContent, page.structuredContent);
+
+  const cursors = [];
+  for (let i = 0; i < 17; i++) cursors.push((await runCatchUp({ budget_tokens: 500, hours: 24 }, ctx(`client-${i}`))).structuredContent.more.cursor);
+  await assert.rejects(runCatchUp({ budget_tokens: 500, cursor: cursors[0] }, ctx("client-0")), { code: "CURSOR_EXPIRED" }, "the least recently paged goes");
+  assert.ok((await runCatchUp({ budget_tokens: 500, cursor: cursors[16] }, ctx("client-16"))).structuredContent.more !== undefined);
 });
 
 test("the structured answer carries the same entries as the text, in at most 1.3 times its size", async () => {
@@ -813,7 +937,7 @@ test("HTTP sessions catch up under the credential's name, never the token", asyn
   const refused = await client.callTool({ name: "catch_up", arguments: { cursor: "not-a-cursor" } });
   assert.equal(refused.isError, true);
   assert.equal(refused.structuredContent, undefined);
-  assert.equal(JSON.parse(refused.content[0].text).error, "INVALID_ID");
+  assert.equal(JSON.parse(refused.content[0].text).error, "CURSOR_EXPIRED");
   const failing = await client.callTool({ name: "catch_up", arguments: { since: "ieri" } });
   assert.equal(JSON.parse(failing.content[0].text).error, "INVALID_ID");
   wa.catchUpScan = async () => {

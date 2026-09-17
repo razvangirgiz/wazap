@@ -464,8 +464,17 @@ test("a fold carries the folding chat's later read mark over to the number's cha
 
 // ---------------------------------------------------------------- catchup_marks
 
+/** An account that has stored `count` messages: stored_seq 1..count handed out. */
+function storedMessages(db, count) {
+  db.transaction(() => {
+    for (let i = 0; i < count; i++) db.messages.upsert(textMessage(PEER, `S${i}`, T0 + i * 1000, `m${i}`));
+  });
+  assert.equal(db.digest.storedTop(), count);
+}
+
 test("a catch-up mark advances in one statement, only forward, keeping the one before it for a repeat", () => {
   const { db, clock } = openTemp();
+  storedMessages(db, 1000);
   assert.equal(db.catchup.get("claude"), null);
   assert.equal(db.catchup.repeat("claude"), null);
 
@@ -506,6 +515,13 @@ test("a catch-up mark advances in one statement, only forward, keeping the one b
     })
   );
   assert.equal(db.catchup.get("claude").throughSeq, 400);
+
+  // A mark never covers what has not reached the account, however far a caller asks it to go.
+  step = db.catchup.advance("claude", 2 ** 50, { expectedThroughSeq: 400 });
+  assert.deepEqual([step.advanced, step.mark.throughSeq], [true, 1000]);
+  assert.equal(db.catchup.advance("claude", 2 ** 50).advanced, false, "held to the newest, it is not past the mark");
+  db.messages.upsert(textMessage(PEER2, "NEXT", T0, "sosit după"));
+  assert.equal(db.catchup.advance("claude", 2 ** 50).mark.throughSeq, 1001);
   assert.equal(db.catchup.reset("fresh"), true);
   assert.equal(db.catchup.get("fresh"), null);
   for (const [client, seq] of [["", 1], ["x".repeat(201), 1], ["ok", -1], ["ok", 1.5]]) {
@@ -516,6 +532,7 @@ test("a catch-up mark advances in one statement, only forward, keeping the one b
 
 test("two connections advancing one client's mark cannot both move it from the same place", () => {
   const { db, path } = openTemp();
+  storedMessages(db, 40);
   db.catchup.advance("local", 10);
   const other = AccountDb.open(path, { checkpointDelayMs: 0 });
   const seenByFirst = db.catchup.get("local").throughSeq;

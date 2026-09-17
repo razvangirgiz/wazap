@@ -326,8 +326,11 @@ at once move the mark once. Nothing is marked read on WhatsApp.
 
 **Paging.** When the entries do not fit, the answer ends with `more`: how many
 are left per section, about how many tokens they take, and a `cursor`. The
-cursor fixes the window, so the next page reads exactly what the first one
-saw, whatever arrives in between.
+first page works out the whole digest and holds it, so the next pages give
+exactly the rest of it, whatever arrives or is read on the phone in between.
+A cursor is a random id that only the client that got it can use, and it lasts
+15 minutes past its page; after that, or after a restart, it is
+`CURSOR_EXPIRED`: call `catch_up` again without it, the mark has not moved.
 
 **Several accounts.** Without `account_id`, a catch-up covers every linked
 account at once, each section labelled per account, sharing the budget. A
