@@ -85,3 +85,10 @@ test("skillState calls a harness missing one skill stale, so update still refres
   for (const name of skillDirs) rmSync(join(dir, name), { recursive: true, force: true });
   assert.equal(skillState(target), "missing", "none left is a harness update leaves alone");
 });
+
+test("the send skill does not read a #private contact's thread unless the user asks", () => {
+  const text = readFileSync(join(root, "skills", "whatsapp-send", "SKILL.md"), "utf8");
+  const draft = text.slice(text.indexOf("## Draft"), text.indexOf("## Confirm, then send"));
+  assert.match(draft, /#private[^\n]*do not read (?:their|the) (?:thread|messages)[^\n]*unless the user asks/i);
+  assert.doesNotMatch(draft, /\(a read session, a contact tagged `#private`, an account that turned it off\), use `read_messages`/);
+});
