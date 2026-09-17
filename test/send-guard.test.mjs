@@ -283,9 +283,9 @@ test("an unlisted send under an allowlist fails at draft time", async () => {
   const wa = draftApi(calls);
   registerTools(server, ruledSource(wa, { send_allow: ["15550100"] }), { allowWrite: true });
 
-  const result = await server.tools.get("send_poll").handler({
+  const result = await server.tools.get("send_message").handler({
     chat_id: "+40722123456",
-    question: "Pizza?",
+    text: "Pizza?",
     options: ["da", "nu"],
   });
   assert.equal(result.structuredContent.error, "SEND_BLOCKED");

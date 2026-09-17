@@ -112,7 +112,7 @@ export const ERROR_GUIDE: Record<ErrorCode, string> = {
   DRAFT_NOT_FOUND:
     "That draft_id is unavailable in this MCP session (unknown, sent too long ago, or created in another session). Draft again here, show the new preview and obtain fresh user approval before confirm_send.",
   DRAFT_EXPIRED:
-    "The draft expired (15 minutes). Call the send tool again to draft, show the new preview, then confirm_send.",
+    "The draft expired (15 minutes). Call send_message again to draft, show the new preview, then confirm_send.",
   CURSOR_EXPIRED:
     "A catch_up cursor is held 15 minutes past its page, by the client that got it, and not across a restart. Call catch_up again without cursor: the mark has not moved, so nothing is lost.",
   SEND_OUTCOME_UNKNOWN:

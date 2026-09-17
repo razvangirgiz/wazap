@@ -48,7 +48,7 @@ function fixture(t) {
 }
 
 const operations = (file) => [
-  ["send_media", { chat_id: CHAT, file_path: file }],
+  ["send_message", { chat_id: CHAT, text: "", file_path: file }],
   ["set_profile_picture", { file_path: file }],
   ["manage_group", { group_id: "120363000000000001@g.us", action: "set_picture", file_path: file }],
   ["get_media", { message_id: `false_${CHAT}_msg`, save_to: "/unused/synthetic/directory" }],
@@ -78,7 +78,7 @@ test("stdio-compatible tool registration retains intentional local file access",
   const f = fixture(t);
   const tools = new Map();
   registerTools({ registerTool: (name, _meta, handler) => tools.set(name, handler) }, f.hub, { allowWrite: true });
-  const result = await tools.get("send_media")({ chat_id: CHAT, file_path: f.file });
+  const result = await tools.get("send_message")({ chat_id: CHAT, text: "", file_path: f.file });
   assert.equal(result.structuredContent.status, "draft");
   assert.equal(f.reads(), 1);
 });
@@ -122,7 +122,7 @@ test("HTTP on loopback is still remote; only the private bridge credential opens
   }
   assert.equal(f.reads(), 0);
   const bridge = await connect(t, f.base, "private-bridge");
-  const draft = await bridge.callTool({ name: "send_media", arguments: { chat_id: CHAT, file_path: f.file } });
+  const draft = await bridge.callTool({ name: "send_message", arguments: { chat_id: CHAT, text: "", file_path: f.file } });
   assert.equal(draft.structuredContent.status, "draft");
   assert.equal(f.reads(), 1);
 });
@@ -139,8 +139,8 @@ test("remote clients retain public URLs and default-directory downloads", async 
   const f = await boot(t);
   const remote = await connect(t, f.base, "remote-write");
   const draft = await remote.callTool({
-    name: "send_media",
-    arguments: { chat_id: CHAT, url: "https://example.com/test.jpg" },
+    name: "send_message",
+    arguments: { chat_id: CHAT, text: "", url: "https://example.com/test.jpg" },
   });
   assert.equal(draft.structuredContent.status, "draft");
   const reader = await connect(t, f.base, "remote-read");

@@ -210,7 +210,7 @@ link_account when it says no account is linked yet.
   number in international format (+15550100 or 15550100) also works. Pass
   ids back exactly as a tool returned them.
 - message_id — the full id from read_messages / search. Needed for
-  get_message, get_media, react_to_message, edit_message, forward_message,
+  get_message, get_media, react_to_message, edit_message, send_message's forward,
   delete_message, manage_chat's pin_message / unpin_message / star_message /
   unstar_message, join_group on an invite message, and the reply_to of
   send_message.
@@ -260,7 +260,7 @@ link_account when it says no account is linked yet.
 - Find something said: search(query[, chat_id]) matches meaning and words at
   once — a paraphrase or another language still hits; match: "words" keeps
   only messages holding the words. It reaches every message the account keeps.
-- Send: send_message / send_media / send_poll / send_location / forward_message
+- Send: send_message (text, media, a poll, a location or a forward)
   draft only. They return a draft_id and a preview. Show the preview to the
   user; after they say yes, call confirm_send({ draft_id }). That is the only
   call that reaches WhatsApp. A draft lasts 15 minutes. A text draft may carry
@@ -1145,107 +1145,26 @@ Call this before manage_group: most group actions need admin rights.`,
 
   tool({
     name: "send_message",
-    title: "Draft a WhatsApp text message",
-    description: `Draft a text message. Does not send. Returns a draft_id and a preview of the
-recipient and exact text. Show that preview to the user; after they say yes,
-call confirm_send. A draft lasts 15 minutes.
-
-To @-mention people, pass mention_ids and write @<number> in the text where
-each mention belongs, the digits of their id (@40722123456). A mention the
-text lacks gets its @<number> added at the end, so the preview is the text
-that goes out.
-
-A draft to someone the user writes to often may carry style_check: warnings
-where the text does not read like the user there. It never blocks.`,
+    title: "Draft a WhatsApp message",
+    description: `Draft a message; nothing is sent. Show the user the preview and call confirm_send after their yes; a draft lasts 15 minutes. The same draft carries media (file_path or url, text as caption), a poll (options), a location (latitude, longitude) or a forward. It may carry style_check warnings.`,
     schema: {
       chat_id: chatId,
-      text: z.string().min(1).max(65536).describe("The message text"),
-      reply_to: messageId.optional().describe("Quote-reply to this message"),
-      mention_ids: z
-        .array(z.string().min(1))
-        .max(50)
-        .optional()
-        .describe("Chat ids to @-mention; write @<number> in the text for each, or wazap adds it at the end"),
+      text: z.string().max(65536).describe('The message, or the caption, poll question or place name; "" for a forward'),
+      reply_to: messageId.optional(),
+      mention_ids: z.array(z.string().min(1)).max(50).optional().describe("Chat ids to @-mention; write @<number> in text for each"),
+      file_path: z.string().min(1).optional().describe("Media: absolute path on the machine running wazap"),
+      url: z.string().url().optional().describe("Media: public http(s) URL"),
+      as: z.enum(["document", "voice", "gif"]).optional().describe("Media: a plain document, a voice note, a looping GIF"),
+      options: z.array(z.string().min(1).max(100)).min(2).max(12).optional().describe("Poll answers"),
+      multi_select: z.boolean().optional().describe("Poll: several answers allowed"),
+      latitude: z.number().min(-90).max(90).optional(),
+      longitude: z.number().min(-180).max(180).optional(),
+      address: z.string().max(500).optional().describe("Location: shown under the name"),
+      forward: messageId.optional().describe("Forward this message; text \"\""),
     },
     write: true,
-    handler: async ({ chat_id, text, reply_to, mention_ids }, ctx) => {
-      return draftAndGuard({ kind: "text", chatId: chat_id, text, replyTo: reply_to, mentionIds: mention_ids }, ctx);
-    },
+    handler: async (args, ctx) => draftAndGuard(sendPayload(args), ctx),
   }),
-
-  tool({
-    name: "send_media",
-    title: "Draft a WhatsApp media message",
-    description: `Draft an image, video, audio file, document or GIF, from a local path on the machine
-running wazap or from a public URL. Does not send. Exactly one of file_path / url.
-Maximum 100 MB. Show the preview; after the user says yes, call confirm_send.
-A GIF is sent with as_gif: an mp4 goes out looping, a .gif is converted to mp4
-first (needs ffmpeg on the machine running wazap).`,
-    schema: {
-      chat_id: chatId,
-      file_path: z.string().min(1).optional().describe("Absolute path of a local file to send"),
-      url: z.string().url().optional().describe("Public http(s) URL to fetch and send"),
-      caption: z.string().max(1024).optional().describe("Text shown under the media"),
-      as_document: z.boolean().default(false).describe("Send as a plain document instead of rendered media"),
-      as_voice: z.boolean().default(false).describe("Send an audio file as a voice note (push-to-talk)"),
-      as_gif: z
-        .boolean()
-        .default(false)
-        .describe("Send a .gif or an mp4 as a looping GIF, the way WhatsApp plays them"),
-    },
-    write: true,
-    handler: async ({ chat_id, file_path, url, caption, as_document, as_voice, as_gif }, ctx) => {
-      return draftAndGuard(
-        {
-          kind: "media",
-          chatId: chat_id,
-          source: { file_path, url },
-          caption,
-          asDocument: as_document,
-          asVoice: as_voice,
-          asGif: as_gif,
-        },
-        ctx
-      );
-    },
-  }),
-
-  tool({
-    name: "send_poll",
-    title: "Draft a WhatsApp poll",
-    description: `Draft a poll. Does not send. Participants vote in WhatsApp, and their votes
-show on the poll message: read_messages counts them and get_message says who
-chose each option. Show the preview; after the user says yes, call confirm_send.`,
-    schema: {
-      chat_id: chatId,
-      question: z.string().min(1).max(255).describe("The poll question"),
-      options: z.array(z.string().min(1).max(100)).min(2).max(12).describe("Answer options (2-12)"),
-      multi_select: z.boolean().default(false).describe("Allow voters to pick more than one option"),
-    },
-    write: true,
-    handler: async ({ chat_id, question, options, multi_select }, ctx) => {
-      return draftAndGuard({ kind: "poll", chatId: chat_id, question, options, multiSelect: multi_select }, ctx);
-    },
-  }),
-
-  tool({
-    name: "send_location",
-    title: "Draft a WhatsApp location",
-    description: `Draft a map pin, optionally labelled with a place name and address. Does not
-send. Show the preview; after the user says yes, call confirm_send.`,
-    schema: {
-      chat_id: chatId,
-      latitude: z.number().min(-90).max(90).describe("Latitude in decimal degrees"),
-      longitude: z.number().min(-180).max(180).describe("Longitude in decimal degrees"),
-      name: z.string().max(255).optional().describe("Place name shown on the pin"),
-      address: z.string().max(500).optional().describe("Street address shown under the name"),
-    },
-    write: true,
-    handler: async ({ chat_id, latitude, longitude, name, address }, ctx) => {
-      return draftAndGuard({ kind: "location", chatId: chat_id, latitude, longitude, name, address }, ctx);
-    },
-  }),
-
   tool({
     name: "edit_message",
     title: "Edit a WhatsApp message you sent",
@@ -1279,32 +1198,11 @@ this within 15 minutes of sending; after that send a correction instead.`,
   }),
 
   tool({
-    name: "forward_message",
-    title: "Draft a forwarded WhatsApp message",
-    description: `Draft a forward of an existing message to another chat. Does not send. The
-recipient will see it marked as forwarded. Show the preview; after the user
-says yes, call confirm_send.`,
-    schema: { message_id: messageId, to_chat_id: chatId.describe("Destination chat") },
-    write: true,
-    handler: async ({ message_id, to_chat_id }, ctx) => {
-      return draftAndGuard({ kind: "forward", chatId: to_chat_id, messageId: message_id }, ctx);
-    },
-  }),
-
-  tool({
     name: "confirm_send",
     title: "Send a drafted WhatsApp message",
-    description: `Send a draft created by send_message, send_media, send_poll, send_location or
-forward_message. This is the only call that reaches WhatsApp, and it sends a
-draft at most once: confirming it again answers the same receipt with
-already_sent: true. Only the MCP session that created the draft may confirm it.
-After reinitializing or reconnecting with a new session, draft again and obtain
-fresh user approval. A missing or expired draft_id also means draft again and
-show the new preview before calling this. SEND_OUTCOME_UNKNOWN means WhatsApp
-may have the message: check the chat with read_messages before anything else,
-and never draft it again without asking the user.`,
+    description: `Send a draft after the user said yes to its preview: the only call that reaches WhatsApp, once per draft (again answers already_sent). Only the session that drafted it may confirm. SEND_OUTCOME_UNKNOWN: check the chat with read_messages, and never draft it again without asking.`,
     schema: {
-      draft_id: z.string().min(1).describe("The draft_id returned by a send_* tool"),
+      draft_id: z.string().min(1).describe("From send_message"),
     },
     write: true,
     handler: async ({ draft_id }, { wa, hub, accountId, draftOwner }) => {
@@ -1315,7 +1213,7 @@ and never draft it again without asking the user.`,
           throw new WazapError(
             "SEND_BLOCKED",
             `The recipient of draft ${draft_id} is not on record, so the send rules of account "${accountId}" cannot be checked.`,
-            "Draft the message again with a send tool, then confirm_send"
+            "Draft the message again with send_message, then confirm_send"
           );
         }
         assertSendable(policy, ref.target, accountId);
@@ -1981,6 +1879,87 @@ async function flagUnnamed(view: DraftView, wa: WhatsAppApi): Promise<void> {
   } catch {
     /* the shape-based answer stands */
   }
+}
+
+interface SendArgs {
+  chat_id: string;
+  text: string;
+  reply_to?: string;
+  mention_ids?: string[];
+  file_path?: string;
+  url?: string;
+  as?: "document" | "voice" | "gif";
+  options?: string[];
+  multi_select?: boolean;
+  latitude?: number;
+  longitude?: number;
+  address?: string;
+  forward?: string;
+}
+
+/**
+ * What send_message drafts, from the arguments it was given: a text, or the
+ * one other kind its arguments name. An argument that belongs to another kind
+ * is refused, never dropped, so the preview is what the caller meant.
+ */
+function sendPayload(args: SendArgs): DraftPayload {
+  const refuse = (message: string, fix: string): never => {
+    throw new WazapError("INVALID_ID", message, fix);
+  };
+  const kinds = [
+    args.file_path !== undefined || args.url !== undefined ? "media (file_path or url)" : null,
+    args.options !== undefined ? "a poll (options)" : null,
+    args.latitude !== undefined || args.longitude !== undefined ? "a location (latitude, longitude)" : null,
+    args.forward !== undefined ? "a forward (forward)" : null,
+  ].filter((kind): kind is string => kind !== null);
+  if (kinds.length > 1) refuse(`One draft is one message; this names ${kinds.join(" and ")}.`, "Draft each with its own send_message");
+  const stray = (names: Array<[keyof SendArgs, string]>): void => {
+    const given = names.filter(([key]) => args[key] !== undefined).map(([, what]) => what);
+    if (given.length > 0) refuse(`${given.join(", ")} ${given.length === 1 ? "does" : "do"} not apply to this draft.`, "Leave them out, or draft the kind they belong to");
+  };
+  const media = args.file_path !== undefined || args.url !== undefined;
+  const poll = args.options !== undefined;
+  const location = args.latitude !== undefined || args.longitude !== undefined;
+  if (!media) stray([["as", "as"]]);
+  if (!poll) stray([["multi_select", "multi_select"]]);
+  if (!location) stray([["address", "address"]]);
+  if (media || poll || location || args.forward !== undefined) stray([["reply_to", "reply_to"], ["mention_ids", "mention_ids"]]);
+  const chatId = args.chat_id;
+  if (media) {
+    if (args.text.length > 1024) throw new WazapError("TEXT_TOO_LONG", "A caption holds at most 1024 characters.", "Shorten the caption, or send the rest as a text");
+    return {
+      kind: "media",
+      chatId,
+      source: { file_path: args.file_path, url: args.url },
+      ...(args.text === "" ? {} : { caption: args.text }),
+      asDocument: args.as === "document",
+      asVoice: args.as === "voice",
+      asGif: args.as === "gif",
+    };
+  }
+  if (poll) {
+    if (args.text.trim() === "") refuse("A poll needs its question in text.", 'send_message({ chat_id, text: "Pizza?", options: ["da", "nu"] })');
+    if (args.text.length > 255) throw new WazapError("TEXT_TOO_LONG", "A poll question holds at most 255 characters.", "Shorten the question");
+    return { kind: "poll", chatId, question: args.text, options: args.options!, multiSelect: args.multi_select === true };
+  }
+  if (location) {
+    if (args.latitude === undefined || args.longitude === undefined) refuse("A location needs both latitude and longitude.", "Pass both, in decimal degrees");
+    if (args.text.length > 255) throw new WazapError("TEXT_TOO_LONG", "A place name holds at most 255 characters.", "Shorten the name, or put the rest in address");
+    return {
+      kind: "location",
+      chatId,
+      latitude: args.latitude!,
+      longitude: args.longitude!,
+      ...(args.text === "" ? {} : { name: args.text }),
+      ...(args.address === undefined ? {} : { address: args.address }),
+    };
+  }
+  if (args.forward !== undefined) {
+    if (args.text !== "") refuse("A forward goes as it was; it cannot carry text.", 'Pass text: "" to forward, and send the comment as its own send_message');
+    return { kind: "forward", chatId, messageId: args.forward };
+  }
+  if (args.text === "") refuse("The message is empty.", "Pass the words to send in text");
+  return { kind: "text", chatId, text: args.text, replyTo: args.reply_to, mentionIds: args.mention_ids };
 }
 
 /**

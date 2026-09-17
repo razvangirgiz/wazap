@@ -206,7 +206,7 @@ function previewApi(to, store = draftStub()) {
   };
 }
 
-test("every send tool renders the resolved recipient and the exact body", async () => {
+test("every kind of draft renders the resolved recipient and the exact body", async () => {
   const server = fakeServer();
   registerTools(server, asToolSource(previewApi(ANA)), { allowWrite: true });
   const call = (name, args) => server.tools.get(name).handler(args);
@@ -217,34 +217,34 @@ test("every send tool renders the resolved recipient and the exact body", async 
   assert.equal(text.structuredContent.kind, "text");
   assert.equal(text.structuredContent.to.number, "40722123456");
 
-  const media = await call("send_media", {
+  const media = await call("send_message", {
     chat_id: ANA.chat_id,
     file_path: "/tmp/acte finale.pdf",
-    caption: "contract",
+    text: "contract",
   });
   assert.match(media.content[0].text, /\[media\] acte finale\.pdf\n"contract"/);
   assert.equal(media.structuredContent.kind, "media");
 
-  const poll = await call("send_poll", {
+  const poll = await call("send_message", {
     chat_id: ANA.chat_id,
-    question: "Pizza sau paste?",
+    text: "Pizza sau paste?",
     options: ["Pizza", "Paste"],
     multi_select: true,
   });
   assert.match(poll.content[0].text, /\[poll\] Pizza sau paste\? \(multiple answers\)\nPizza \/ Paste/);
   assert.equal(poll.structuredContent.kind, "poll");
 
-  const location = await call("send_location", {
+  const location = await call("send_message", {
     chat_id: ANA.chat_id,
     latitude: 44.4,
     longitude: 26.1,
-    name: "Notar",
+    text: "Notar",
     address: "Str. Lunii 14",
   });
   assert.match(location.content[0].text, /\[location\] Notar\nStr\. Lunii 14/);
   assert.equal(location.structuredContent.kind, "location");
 
-  const forward = await call("forward_message", { message_id: "m-1", to_chat_id: ANA.chat_id });
+  const forward = await call("send_message", { chat_id: ANA.chat_id, text: "", forward: "m-1" });
   assert.match(forward.content[0].text, /To: Ana \(\+40 722 123 456\)\nForward: "factura de plătit"/);
   assert.equal(forward.structuredContent.kind, "forward");
 });

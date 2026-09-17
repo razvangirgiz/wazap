@@ -87,7 +87,7 @@ export function draftNotFound(id: string): WazapError {
   return new WazapError(
     "DRAFT_NOT_FOUND",
     `No draft ${id}.`,
-    "Call send_message (or send_media / send_poll / send_location / forward_message) again to draft, then confirm_send"
+    "Call send_message again to draft, then confirm_send"
   );
 }
 
@@ -95,7 +95,7 @@ export function draftExpired(id: string): WazapError {
   return new WazapError(
     "DRAFT_EXPIRED",
     `Draft ${id} expired.`,
-    "Call the send tool again to draft, show the new preview, then confirm_send"
+    "Call send_message again to draft, show the new preview, then confirm_send"
   );
 }
 

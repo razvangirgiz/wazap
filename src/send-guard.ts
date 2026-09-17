@@ -176,7 +176,7 @@ export function requireDraftOwner(draftId: string, owner: string, accountId?: st
     throw new WazapError(
       "DRAFT_NOT_FOUND",
       "No draft available in this MCP session.",
-      "Call send_message (or another send tool) again in this session, show the new preview and ask the user to confirm before calling confirm_send"
+      "Call send_message again in this session, show the new preview and ask the user to confirm before calling confirm_send"
     );
   }
   return ref;

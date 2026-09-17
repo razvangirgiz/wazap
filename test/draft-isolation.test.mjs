@@ -16,11 +16,12 @@ import { asToolSource, childEnv, draftStub, mcpClient, offlineConfig } from "./h
 const CHAT = "40722123456@s.whatsapp.net";
 const CASES = [
   ["send_message", { chat_id: CHAT, text: "hello" }],
-  ["send_media", { chat_id: CHAT, file_path: "/unused/stub.png" }],
-  ["send_poll", { chat_id: CHAT, question: "Lunch?", options: ["yes", "no"] }],
-  ["send_location", { chat_id: CHAT, latitude: 44, longitude: 26 }],
-  ["forward_message", { to_chat_id: CHAT, message_id: `false_${CHAT}_message` }],
+  ["send_message", { chat_id: CHAT, text: "", file_path: "/unused/stub.png" }],
+  ["send_message", { chat_id: CHAT, text: "Lunch?", options: ["yes", "no"] }],
+  ["send_message", { chat_id: CHAT, text: "", latitude: 44, longitude: 26 }],
+  ["send_message", { chat_id: CHAT, text: "", forward: `false_${CHAT}_message` }],
 ];
+const KINDS = ["text", "media", "poll", "location", "forward"];
 
 function fixture({ now, beforeConfirm } = {}) {
   const store = draftStub(now);
@@ -51,8 +52,8 @@ function fixture({ now, beforeConfirm } = {}) {
   return { hub, wa, client, confirms: () => confirms, sends: () => sends };
 }
 
-for (const [name, args] of CASES) {
-  test(`${name}: another registration cannot confirm or consume the owner's draft`, async () => {
+for (const [index, [name, args]] of CASES.entries()) {
+  test(`${name} (${KINDS[index]}): another registration cannot confirm or consume the owner's draft`, async () => {
     const f = fixture();
     const owner = f.client();
     const other = f.client();
