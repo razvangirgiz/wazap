@@ -388,11 +388,13 @@ test("a reaction lands on the message it answers, never as a line of its own, an
 test("in a group, read_messages counts the reactions and get_message says who left each one", async () => {
   const { call, arrive } = setup();
   const photo = arrive(GROUP, { imageMessage: { mimetype: "image/jpeg" } }, { participant: ANA });
+  // Every reaction in the same second, so their order is the order they arrived even when a slow run crosses a second.
+  const at = Date.now();
   const react = (text, from) =>
     arrive(
       GROUP,
       { reactionMessage: { key: { remoteJid: GROUP, fromMe: false, id: photo, participant: ANA }, text } },
-      from === ME ? { fromMe: true } : { participant: from }
+      from === ME ? { fromMe: true, at } : { participant: from, at }
     );
   react("❤️", ANA);
   react("😍", DAN);
