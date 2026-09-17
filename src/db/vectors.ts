@@ -29,12 +29,42 @@ const DEFAULT_BACKLOG_SCAN = 20_000;
 const MIN_TOKEN_CHARS = 4;
 const MAX_TOKENS = 8;
 /**
- * From this many query words up, a hit the words alone vouch for must carry
- * LEXICAL_MIN_MATCHES of them: one shared word of a longer question is the
- * noise a long message picks up, not an answer.
+ * From this many content words of a query up, a hit the words alone vouch for
+ * must carry LEXICAL_MIN_MATCHES of them: one shared word of a longer question
+ * is the noise a long message picks up, not an answer.
  */
 const LEXICAL_PAIR_FROM = 3;
 const LEXICAL_MIN_MATCHES = 2;
+/**
+ * Function words of English and Romanian — articles, pronouns, auxiliaries,
+ * prepositions, conjunctions, question words — folded the way the trigram
+ * index folds. A query word in this list is still looked up and still ranks
+ * its matches, but it is not what the query asks about: the rule above counts
+ * a query's words, and a hit's matches, without these, and a query made only
+ * of them needs its hits' meaning. A function word that folds to a word with
+ * meaning of its own stays out: „cât” is "cat", „mai” is also May, and "era"
+ * and "ale" are English words.
+ */
+export const QUERY_STOPWORDS: ReadonlySet<string> = new Set(
+  [
+    // English
+    "a", "an", "the", "this", "that", "these", "those", "some", "any",
+    "i", "me", "my", "we", "us", "our", "you", "your", "he", "him", "his", "she", "her", "it", "its", "they", "them", "their",
+    "am", "is", "are", "was", "were", "be", "been", "do", "does", "did", "have", "has", "had",
+    "will", "would", "can", "could", "should",
+    "what", "when", "where", "which", "who", "whom", "whose", "why", "how",
+    "to", "of", "in", "on", "at", "for", "with", "from", "by", "about", "as",
+    "and", "or", "but", "if", "so", "than", "then", "there", "not",
+    // Romanian
+    "o", "un", "unui", "unei", "cel", "cea", "cei", "cele", "al", "lui", "lor",
+    "eu", "tu", "el", "ea", "noi", "voi", "ei", "ele", "mă", "mi", "te", "ți", "îl", "îi", "ne", "vă", "le", "se", "își",
+    "meu", "mea", "tău", "ta", "său", "asta", "ăsta", "acest", "această", "acesta", "aceasta",
+    "e", "este", "ești", "sunt", "fost", "fi", "ai", "au", "ați", "aș", "ar", "va", "vor", "să",
+    "la", "de", "pe", "în", "cu", "din", "pentru", "despre", "după", "prin", "spre", "către", "fără", "până",
+    "și", "sau", "dar", "că", "ca", "dacă", "nu",
+    "ce", "când", "unde", "cine", "cum", "care",
+  ].map(foldText)
+);
 const NO_UPPER_BOUND = Number.MAX_SAFE_INTEGER;
 /** The model the embedding queue is kept for; the queue triggers test for this key. */
 const FEED_MODEL_META = "embed_model";
@@ -557,7 +587,8 @@ export class Vectors {
    * many words they carry; the semantic side ranks by cosine. Reciprocal Rank
    * Fusion merges the two. A hit only the semantic side found must clear
    * `minSimilarity`, so a question with no answer comes back empty; so must a
-   * lexical hit carrying a single word of a query of three words or more,
+   * lexical hit carrying a single content word of a query of three content
+   * words or more, or any lexical hit of a query made only of function words,
    * unless it holds the whole query.
    */
   hybrid(input: HybridSearchInput): HybridResult {
@@ -614,10 +645,12 @@ export class Vectors {
    * short-query scan. Candidates are scored by the words they carry, each
    * weighted by its rarity among the matches seen, plus a bonus when the whole
    * query appears verbatim; ties go to the newest. `capped` says some source had
-   * more matches than were examined. `weak` lists the returned candidates that
-   * carry fewer than LEXICAL_MIN_MATCHES distinct words of a query of
-   * LEXICAL_PAIR_FROM words or more and not the query verbatim: the words alone
-   * do not vouch for them.
+   * more matches than were examined. `weak` lists the returned candidates the
+   * words alone do not vouch for, unless they hold the query verbatim: those
+   * carrying fewer than LEXICAL_MIN_MATCHES distinct content words of a query
+   * of LEXICAL_PAIR_FROM content words or more, and every one of a query whose
+   * words are all QUERY_STOPWORDS. A function word still counts toward the
+   * score, never toward those matches.
    */
   private lexicalCandidates(
     query: string,
@@ -651,7 +684,9 @@ export class Vectors {
     if (candidates.size === 0) return { ids: [], weak: [], capped };
     const phrase = foldText(query).replace(/\s+/g, " ").trim();
     const scores = new Map<number, number>();
-    const needsPair = tokens.length >= LEXICAL_PAIR_FROM;
+    const content = tokens.filter((token) => !QUERY_STOPWORDS.has(token)).length;
+    // Content words a hit must carry: two of a long question, one of a query of function words alone, else none.
+    const required = content === 0 ? 1 : content >= LEXICAL_PAIR_FROM ? LEXICAL_MIN_MATCHES : 0;
     const weak = new Set<number>();
     for (const row of this.c.all<{ id: number; text: string | null; transcript: string | null }>(
       "SELECT id, text, transcript FROM messages WHERE id IN (SELECT value FROM json_each(?))",
@@ -663,12 +698,12 @@ export class Vectors {
       for (const token of tokens) {
         if (!haystack.includes(token)) continue;
         score += weights.get(token)!;
-        matched++;
+        if (!QUERY_STOPWORDS.has(token)) matched++;
       }
       const verbatim = tokens.length > 1 && haystack.replace(/\s+/g, " ").includes(phrase);
       if (verbatim) score += 1;
       scores.set(row.id, score);
-      if (needsPair && matched < LEXICAL_MIN_MATCHES && !verbatim) weak.add(row.id);
+      if (matched < required && !verbatim) weak.add(row.id);
     }
     const ids = [...candidates].sort((a, b) => (scores.get(b) ?? 0) - (scores.get(a) ?? 0) || b - a).slice(0, want);
     return { ids, weak: ids.filter((id) => weak.has(id)), capped };

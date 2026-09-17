@@ -360,6 +360,57 @@ test("hybrid: a hit sharing one word of a three-word query is noise unless its m
   db.close();
 });
 
+test("hybrid: function words do not make a question long, so one content word of a two-word question still answers it", () => {
+  const { db } = openTemp();
+  const put = (key, ts, text, vector) => {
+    db.messages.upsert(textMessage(PEER, key, ts, text));
+    assert.equal(db.vectors.put(sid(false, PEER, key), MODEL, vector, wordsOf(db, sid(false, PEER, key))), true);
+  };
+  // Each carries one content word of the question, and a meaning just under the floor.
+  put("TIME", T0, "Let's say 7pm, if that time still works for you", direction(0, 1, 1.78));
+  put("VEDEM", T0 + 1000, "Ne vedem la șapte la Ana acasă", direction(0, 2, 1.78));
+  const search = (query) => db.vectors.hybrid({ query, vector: direction(0), model: MODEL, limit: 10, minSimilarity: 0.5 });
+  const keys = (result) => result.hits.map((hit) => hit.message.keyId);
+
+  // "what", "are", "we": three looked-up words, two of them content words.
+  const english = search("what time are we meeting");
+  assert.deepEqual(keys(english), ["TIME"]);
+  assert.ok(english.hits[0].similarity > 0.45 && english.hits[0].similarity < 0.5, "kept for its word, its meaning under the floor");
+  assert.deepEqual(keys(search("Când ne vedem mâine?")), ["VEDEM"], "„când” is a function word, „vedem” and „mâine” the question");
+  assert.deepEqual(keys(search("la ce oră ne vedem")), ["VEDEM"]);
+  // Three content words still need two of them.
+  assert.deepEqual(keys(search("what time is the team meeting")), []);
+  db.close();
+});
+
+test("hybrid: function words answer nothing, neither beside a long question nor alone", () => {
+  const { db } = openTemp();
+  const put = (key, ts, text, vector) => {
+    db.messages.upsert(textMessage(PEER, key, ts, text));
+    assert.equal(db.vectors.put(sid(false, PEER, key), MODEL, vector, wordsOf(db, sid(false, PEER, key))), true);
+  };
+  put("PADDED", T0, "What did they say about the plasma donation on Saturday?", direction(1));
+  put("WHO", T0 + 1000, "Are you sure the plumber said Tuesday? Who told you that", direction(2));
+  put("ESTE", T0 + 2000, "Ședința este mâine la zece, asta e tot ce știu", direction(3));
+  put("PHRASE", T0 + 3000, "Sorry, who are you?", direction(4));
+  put("NEAR", T0 + 4000, "Are you the new neighbour?", direction(0, 5, 0.3));
+  const search = (query, over = {}) => db.vectors.hybrid({ query, vector: direction(7), model: MODEL, limit: 10, minSimilarity: 0.5, ...over });
+  const keys = (result) => result.hits.map((hit) => hit.message.keyId);
+
+  assert.deepEqual(keys(search("plasma containment field calibration procedure")), []);
+  assert.deepEqual(keys(search("what is the plasma containment field calibration procedure")), [], "„what” is no second word of the question");
+
+  // A query of function words alone: only the phrase itself, or a meaning at the floor, answers it.
+  assert.deepEqual(keys(search("who are you")), ["PHRASE"]);
+  assert.deepEqual(keys(search("ce este asta")), []);
+  assert.deepEqual(keys(search("the")), []);
+  assert.deepEqual(keys(search("the", { vector: null })), []);
+  const near = search("the", { vector: direction(0) });
+  assert.deepEqual(keys(near), ["NEAR"]);
+  assert.ok(near.hits[0].lexicalRank !== null && near.hits[0].similarity > 0.9, "a function-word hit its meaning vouches for stays, as both");
+  db.close();
+});
+
 test("hybrid lexical ranking prefers candidates carrying more of the query words", () => {
   const { db } = openTemp();
   db.messages.upsert(textMessage(PEER, "ONE", T0 + 2000, "contractul e gata"));
