@@ -8,6 +8,8 @@ import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 
 import { launcher } from "../dist/connect.js";
+import { TOOL_NAMES } from "../dist/tools.js";
+import { RETIRED_TOOLS } from "./helpers.mjs";
 
 const run = promisify(execFile);
 
@@ -122,4 +124,21 @@ test("the icon is a PNG the bundle can point at", () => {
   assert.deepEqual([...png.subarray(0, 8)], [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
   assert.equal(png.readUInt32BE(16), 512);
   assert.equal(png.readUInt32BE(20), 512);
+});
+
+test("the README's tool table is the registry, and no shipped document names a retired tool", () => {
+  const readme = readFileSync(join(root, "README.md"), "utf8");
+  const table = readme.slice(readme.indexOf("| Tool | Kind | What it does |"), readme.indexOf("### Sending once"));
+  const listed = [...table.matchAll(/^\| `([a-z_]+)` \|/gm)].map((match) => match[1]);
+  assert.deepEqual([...listed].sort(), [...TOOL_NAMES].sort());
+  for (const file of ["README.md", "AGENT.md", "AGENTS.md", "docs/security-audit.md", "manifest.json", "server.json", ".claude-plugin/plugin.json"]) {
+    const text = readFileSync(join(root, file), "utf8");
+    for (const name of RETIRED_TOOLS) {
+      // The audit keeps what a finding was about when it was found, next to its 1.0 name;
+      // `recall` still names the setting and its status check.
+      if ((file === "docs/security-audit.md" && name === "download_media") || name === "recall") continue;
+      assert.doesNotMatch(text, new RegExp(`\`${name}[\`(.]`), `${file} names ${name}`);
+    }
+    assert.doesNotMatch(text, /\b(3[0-9]|40|2[1-9]) (read |write )?tools\b/, `${file} counts tools the old way`);
+  }
 });

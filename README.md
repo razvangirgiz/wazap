@@ -215,46 +215,26 @@ them. `--dry-run` prints the plan and touches nothing.
 
 | Tool | Kind | What it does |
 | --- | --- | --- |
-| `learn` | read | The guide to every tool, id format and error code. Call it first. |
-| `get_status` | read | Connection status, sync state, linked account, named-contact count, versions, data dir. Top-level fields are the default account; `accounts` lists every live one. Optional `account_id` on this and every other tool. |
-| `list_accounts` | read | Every configured account: id, name, status, masked phone, owner name, writes policy. Call this first when more than one account is linked. |
+| `learn` | read | The guide to every tool, id format and error code, as text. Call it first. |
+| `get_status` | read | Connection status, sync state, linked account, how fresh the history is, webhook delivery, versions, data dir. Top-level fields are the default account; `accounts` lists every configured one and `default` names it. Optional `account_id` on this and every other tool. |
 | `link_account` | read | Pair an account that already exists (`wazap account add`). Returns the code to type into the phone. Registered in read-only mode too. |
 | `list_chats` | read | Conversations newest-first; filter `all`/`unread`/`groups`/`individual`/`archived`. |
-| `read_messages` | read | Messages in a chat; `before` pages further back, pulling older history from the phone; `types` narrows to one or more message types, e.g. `["call"]`; `include_previews` attaches a small image of each photo. |
+| `read_messages` | read | Messages in a chat; `before` pages further back, pulling older history from the phone; `types` narrows to one or more message types, e.g. `["call"]`; `include_previews` attaches a small image of each photo. `chat_id: "status"` reads the stories of the last `hours`, which show nowhere else. |
 | `catch_up` | read | What the user missed, in one call and within a token budget, across every linked account: who is waiting on a reply, mentions, replies and open polls, missed calls, people, groups condensed, stories. Pages with a cursor. See [Catching up](#catching-up). |
-| `get_recent_messages` | read | Every message from the last N hours, grouped by chat. `include_system` adds WhatsApp's own notices, `types` narrows to one or more message types, `include_previews` attaches a small image of each photo, `compact` halves it for a routine catch-up. |
-| `get_unanswered` | read | Who is waiting on the user: chats whose last word is theirs and asks for something, with the ask quoted. Groups only when the user was @-mentioned or replied to. |
-| `set_contact_note` | local | Remember something about a person, on this machine only; it then shows next to their name everywhere. |
-| `update_contact_details` | local | File tags and key-value details on a person ("role": "contabil", tag "client"); `search_contacts` matches them, so roles and groups of people resolve. |
-| `mark_handled` | local | Take a chat off `get_unanswered` and `catch_up`'s waiting list until the other side writes again. Nothing changes on WhatsApp. |
-| `get_stories` | read | The stories (status updates) received in the last day, by author, with previews on request. They show nowhere else. |
-| `wait_for_messages` | read | Block up to 55 s until a message arrives, then return it with a cursor for the next call. `addressed_to_me` wakes only for direct messages, @-mentions and replies. |
-| `search_messages` | read | Text search across every message the account keeps; `since`, `until` and `from` narrow it, and the answer says how many messages it searched, or how far back when a very short or common query reached the scan limit. |
-| `recall` | read | Search by meaning and by words at once over the whole kept history, so a paraphrase or another language still hits. Off until [turned on](#semantic-recall). |
-| `get_message` | read | One message in full, with its quoted message, each reaction with who left it, and who voted for each option of a poll or answered an event. On your own messages, `delivery` says whether it was sent, delivered, read or played, and in a group who read it and when; it stops at delivered or is missing when read receipts are off on either side, and large groups may send none. |
-| `search_contacts` | read | Find contacts by name, number, tag or detail; `tag` alone lists everyone filed under it. |
-| `sync_contacts` | read | Fetch the phone's address book from WhatsApp again, when names are missing. |
-| `get_contact` | read | Name, number, about text, profile picture. |
-| `find_contact` | read | Who a name, nickname, relationship ("mama") or group name means. Resolved: the `chat_id`, plus the recent exchange and how you write there in a session that can send. Otherwise the candidates that tell people apart, to ask you. See [Finding people](#finding-people). |
+| `search` | read | Messages by meaning and by words at once, over everything the account keeps, so a paraphrase or another language still hits; `match: "words"` keeps only messages holding the words. `chat_id`, `since`, `until` and `from` narrow it, and the answer says how much it searched. Without [semantic recall](#semantic-recall) it matches words and says so. |
+| `get_message` | read | One message in full, with its quoted message, each reaction with who left it, and who voted for each option of a poll or answered an event. On your own messages, `delivery` says whether it was sent, delivered, read or played, and in a group who read it and when. |
+| `find_contact` | read | Who a name, nickname, relationship ("mama") or group name means. Resolved: the `chat_id`, number, note, tags and details, plus the recent exchange and how you write there in a session that can send. Otherwise the candidates that tell people apart, to ask you. `tag` lists everyone filed under a tag. See [Finding people](#finding-people). |
 | `get_group_info` | read | Participants, admins, announcement mode, who may edit the info or add members, join approval, disappearing messages, community, invite link (when you are admin). |
-| `download_media` | read | Save an attachment to disk; small images also come back inline. |
-| `transcribe_audio` | read | Turn a voice note or audio message into text, with the local or the API provider. |
-| `send_message` | write | Draft text, optionally as a reply, with @-mentions. Does not send. A draft to someone you write to often carries `style_check`: where it does not read like you. |
-| `send_media` | write | Draft an image, video, audio, voice note, document or GIF (`as_gif`: an mp4 loops, a .gif is converted with ffmpeg) from a path or URL. Does not send. |
-| `send_poll` | write | Draft a poll with 2–12 options. Does not send. The votes then show on the poll message. |
-| `send_location` | write | Draft a map pin. Does not send. |
+| `get_media` | read | A message's media: a voice note or audio as its transcript, a photo attached as an image, any file saved to disk (`save_to` picks the directory). Transcription runs on the local or the API provider. |
+| `wait_for_messages` | read | Block up to 55 s until a message arrives, then return it with a cursor for the next call. `addressed_to_me` wakes only for direct messages, @-mentions and replies. |
+| `remember` | local | Keep what the user says about a person, on this machine only: a note, tags, details (`relatie`, `nickname`, "role": "contabil") that `find_contact` matches, and `handled: true` to take an ask off `catch_up`'s waiting list until they write again. Nothing changes on WhatsApp. |
+| `send_message` | write | Draft a message: text (a reply, @-mentions), media from a path or URL (`as`: document, voice note or GIF), a poll (`options`), a location (`latitude`, `longitude`) or a forward (`forward`). Does not send. A text draft to someone you write to often carries `style_check`: where it does not read like you. |
+| `confirm_send` | write | Send a draft after the user has seen the preview and said yes. A draft is sent at most once; see [Sending once](#sending-once). |
 | `edit_message` | write | Edit your own message, within WhatsApp's 15-minute window. |
 | `react_to_message` | write | Add or remove an emoji reaction. |
-| `forward_message` | write | Draft a forward to another chat. Does not send. |
-| `confirm_send` | write | Send a draft after the user has seen the preview and said yes. A draft is sent at most once; see [Sending once](#sending-once). |
 | `delete_message` | write | `for_everyone: true` retracts your own message, within WhatsApp's 2-day window, and in a group where you are admin someone else's message too. `for_everyone: false` deletes any message for the linked account only, at any age. |
-| `set_profile_picture` | write | Set the linked account's own profile photo from a local path or URL. Hits WhatsApp immediately. |
 | `manage_chat` | write | Archive, pin, mute (8h by default), mark read/unread; pin a message for everyone (24h, 7 days or 30 days) or star it; clear or delete the chat for the linked account; block or unblock a person. |
-| `create_group` | write | Create a group and add participants. |
-| `join_group` | write | Join a group from an invite link or an invite message. Without `confirm: true` it only shows the group's name, description, size and whether an admin must approve; with it, it joins, or leaves the request waiting for an admin. |
-| `manage_group` | write | Add, remove, promote, demote, leave, rename, set or remove the group photo, invite links, list, approve or reject join requests, and change the settings: only admins post, only admins edit the info, who adds members, join approval, disappearing messages. Every member sees a change at once. |
-| `save_contact` | write | Add a number to the account's WhatsApp contacts, or rename an entry; `save_on_phone` (default) also writes the phone's own address book. |
-| `remove_contact` | write | Drop a contact entry; the chat and its history stay. |
+| `manage_group` | write | Create a group; join one from an invite link or message (without `confirm: true` it only shows the group); add, remove, promote, demote, leave, rename, set or remove the group photo, invite links, list, approve or reject join requests, and change the settings. Every member sees a change at once. |
 
 ### Sending once
 
@@ -284,10 +264,12 @@ database only — no network, except the cached member list of at most a dozen
 groups, fetched within a second — and fits its answer into `budget_tokens`
 (2,500 by default, 500 to 8,000), one line per entry, in this order:
 
-1. **Waiting on you**: people whose last word asks for something, as
-   `get_unanswered` judges it, with the ask quoted (a voice note by its
-   transcript) and what they said after it. An ask stays until the user
-   answers, calls `mark_handled` or it is two weeks old; `new` marks one that
+1. **Waiting on you**: people whose last word asks for something — a question
+   mark, a request word, or a voice note nobody has heard, never "ok, thanks"
+   or a link — with the ask quoted (a voice note by its transcript) and what
+   they said after it. In a group only when the user was @-mentioned or replied
+   to. An ask stays until the user answers, `remember` marks it `handled` or it
+   is two weeks old; `new` marks one that
    arrived since the last catch-up, and an answered call after the ask says
    it may have been dealt with by phone.
 2. **Mentions, replies and polls**: group messages that @-mention the user or
@@ -303,7 +285,7 @@ groups, fetched within a second — and fits its answer into `budget_tokens`
    Muted and archived groups share one line.
 6. **Stories**: how many, and from whom.
 
-A footer names the voice notes nobody transcribed (for `transcribe_audio`) —
+A footer names the voice notes nobody transcribed (for `get_media`) —
 only counting those of someone tagged `#private` — and counts what was left
 out: chats tagged `#no-catchup`, groups the user left, channels and broadcast
 lists. Signals — an amount, a date, a time, an address,
@@ -347,7 +329,7 @@ disconnected account is reported as disconnected, with what it had stored, and
 keeps its mark.
 
 **Leaving a chat out.** Tag a person `#no-catchup` with
-`update_contact_details` (an agent, a bot, a busy notification number) and
+`remember` (an agent, a bot, a busy notification number) and
 catch-ups skip their chat, counting it in the footer, and nothing they send
 elsewhere shows either: no ask, mention, poll or quote of theirs in a group, no
 group call, no story. Tag them `#private`
@@ -358,7 +340,7 @@ tagged on any of them as tagged on all, by number or lid.
 
 ### Seeing, waiting, following up
 
-`include_previews: true` on `get_recent_messages` or `read_messages` attaches a
+`include_previews: true` on `read_messages` attaches a
 small JPEG of each photo as an image block, newest first, up to 12 per call,
 and labels each message line with the preview it belongs to, so a catch-up can
 say "a photo of a receipt" without a download. WhatsApp used to ship such a
@@ -375,14 +357,6 @@ landed in between, so an agent can sit in a loop and miss nothing. With
 `addressed_to_me` only direct messages, @-mentions of the user and replies to
 their messages wake it; group chatter does not. The user's own messages and
 WhatsApp's notices never do.
-
-`get_unanswered` returns the chats whose last word is the other side's and reads
-as an ask: a question mark, a request word, or a voice note nobody has heard
-yet. "Ok, thanks" is not an ask, a link is not a question, and an ask older
-than two weeks (`max_age_hours`) was abandoned rather than left waiting. People
-come first, then the oldest wait, each with the ask quoted and how long they
-have been waiting; a WhatsApp Business account is marked, since its asks are
-often automatic replies.
 
 Every message comes back with a non-empty `text`: media and system messages
 carry a placeholder such as `[image] caption`, `[voice message · 0:42]`, `[deleted]` or
@@ -416,11 +390,13 @@ The answer is one of three:
   message, so the agent has to ask you and look the one you name up again.
 - **not_found** — the closest names, if any. For a relationship nobody is filed
   under, the agent is told to ask who it is and file it with
-  `update_contact_details` (`fields: {"relatie": "mama"}`).
+  `remember` (`fields: {"relatie": "mama"}`).
 
 Without `account_id`, every linked account is searched and each candidate says
 which account it is on; the answer is resolved only when one account has the
-only match.
+only match. A resolved person also comes with their number and what the user
+filed on them (note, tags, details). `find_contact({ tag: "client" })` lists
+everyone filed under a tag instead, each with their `chat_id`.
 
 **Draft context.** A resolved contact also carries what a message to them is
 written after: the last 8 messages both ways (each cut to 200 characters,
@@ -430,7 +406,7 @@ chat in the last 90 days, or across the account when there are fewer than five.
 The style never counts messages wazap sent, so an agent does not learn its own
 drafts back. It is on by default, only in a session that can send, and only for
 a resolved contact the account's [send rules](#send-rules) allow. A contact tagged `#private`
-(`update_contact_details` with `add_tags: ["private"]`) gets the style only,
+(`remember` with `add_tags: ["private"]`) gets the style only,
 never messages. `wazap config draft-context off [--account <id>]` turns it off
 for an account (`draft_context: false` in `accounts.json`), the style check
 below included, from the next call, without a restart.
@@ -447,7 +423,7 @@ people. It never blocks a draft; words you dictated stay as they are.
 
 **The address book.** Names come from the phone. When no contact has a saved
 name yet, the first `find_contact` of a server run asks WhatsApp for the
-address book, the way `sync_contacts` does, and waits up to 15 seconds for it
+address book, the way `wazap contacts resync` does, and waits up to 15 seconds for it
 before answering; finds that arrive meanwhile wait for the same answer. It does
 not ask while the connection is still receiving its first sync, nor again
 within 7 days of the last ask, the same rule wazap heals a missing address book
@@ -457,9 +433,8 @@ by at connect.
 
 A voice note is the one message an agent cannot read. Switch transcription on and
 it becomes text: `[voice message · 0:42] "sunt la notar, ajung în 20 de minute"`,
-with the bare words also in a `transcript` field. `get_recent_messages` and
-`search_messages` see that text, so a voice note becomes findable by what was
-said in it.
+with the bare words also in a `transcript` field. `catch_up` and `search` see
+that text, so a voice note becomes findable by what was said in it.
 
 Pick a provider once, in `wazap setup` or later:
 
@@ -576,8 +551,8 @@ its words are searchable, recalled and carried by the webhook event.
   answering 429 or 5xx, or whisper.cpp crashing is tried again after 10 s and
   after a minute more, three attempts in all. Media WhatsApp no longer holds,
   audio the provider refuses as input, or a file too large gives up at once.
-  A note given up on is not queued again; `transcribe_audio(message_id)`
-  still tries it on request.
+  A note given up on is not queued again; `get_media(message_id)` still tries
+  it on request.
 - **Waiting costs nothing.** A note whose account is disconnected spends no
   attempt and runs within seconds of the connection opening. A provider that
   cannot take any note — whisper.cpp or its model missing, an API refusing the
@@ -601,8 +576,8 @@ its words are searchable, recalled and carried by the webhook event.
 
 Audio *files* are left alone, since one can be an hour long, and so are notes
 you recorded and notes WhatsApp gave no length for; call
-`transcribe_audio(message_id)` for those. `WAZAP_TRANSCRIBE_AUTO=0` keeps the
-tool and stops the background work; with it, or with the provider switched
+`get_media(message_id)` for those. `WAZAP_TRANSCRIBE_AUTO=0` keeps that and
+stops the background work; with it, or with the provider switched
 off, a queue already stored is kept and waits, and it continues under the
 provider configured next, within the day and the local-stays-local rule.
 `get_status` shows the queue under `transcription` (how many wait, how long
@@ -612,11 +587,13 @@ pause and until when, never content), and `wazap status` prints a
 
 ## Semantic recall
 
-`search_messages` matches exact words; `recall` matches what was meant and the
-words at once: a paraphrase or another language still hits through its meaning,
-a short or foreign-language question through its words, and the two rankings
-are fused. Both reach every message the account keeps. For an exact string — an
-id, a phone number, a URL — `search_messages` stays the right tool.
+With recall on, `search` matches what was meant and the words at once: a
+paraphrase or another language still hits through its meaning, a short or
+foreign-language question through its words, and the two rankings are fused.
+It reaches every message the account keeps. For an exact string — an id, a
+phone number, a URL — pass `match: "words"`. With recall off, `search` matches
+the words only and says so (`mode: "keyword_fallback"`, with the command that
+turns recall on).
 
 Off by default, and fully local: a `llama-server` sidecar bound to loopback
 does the embedding, so nothing leaves the machine. It needs llama.cpp, the
@@ -633,8 +610,8 @@ is missing. `wazap status` runs the three checks — `recall`, `llama-server`,
 `embed model` — and `get_status` reports the index as `off`, `indexing`,
 `ready` or `degraded`.
 
-`chat_id`, `since`, `until` and `from` narrow a recall exactly like
-`search_messages`. Hits rank by a fused score (reciprocal rank fusion of the
+`chat_id`, `since`, `until` and `from` narrow a search by meaning exactly as
+they narrow one by words. Hits rank by a fused score (reciprocal rank fusion of the
 word and meaning rankings), and a hit found only by meaning must clear the
 similarity floor, so a question with no answer comes back empty. A match found
 by meaning weighs a little less with age — 85% a month on, never under 70%, for
@@ -646,8 +623,8 @@ live in the account database next to their messages, are made in the
 background for every message that has none, and leave with their message when
 it is deleted, revoked or expires; an edit makes its vector again. A message
 wazap holds only as text — carried over from the recall index an older wazap
-built — is marked `index only`: `get_message` returns its text, but
-`download_media` has nothing to open and it cannot be replied to or forwarded.
+built — is marked `from_index`: `get_message` returns its text, but
+`get_media` has nothing to open and it cannot be replied to or forwarded.
 
 Embedding requests refuse redirects, cap replies at 4 MiB and validate vector
 shape and finite values. Provider bodies and decoder stderr are not copied into
@@ -729,7 +706,7 @@ trace, so an agent can decide whether to retry, ask the user, or stop.
 | `SEND_OUTCOME_UNKNOWN` | The message reached the socket and then the send failed, so WhatsApp may have it. The draft is never sent again; check the chat before drafting anew. |
 | `SEND_BLOCKED` | The account's send rules refuse this recipient. `wazap config send` changes them; the agent must not route around. |
 | `AMBIGUOUS_ACCOUNT` | More than one account could handle this, or a write named a chat no account knows. Pass `account_id`. |
-| `ACCOUNT_NOT_FOUND` | No account with that id. Run `wazap account add`, or call `list_accounts`. |
+| `ACCOUNT_NOT_FOUND` | No account with that id. Run `wazap account add`; `get_status` lists the ids. |
 | `ACCOUNT_DISABLED` | That account is disabled. Run `wazap account enable <id>`; a running server picks it up. |
 | `TIMEOUT` / `WHATSAPP_ERROR` | WhatsApp did not answer, or rejected the operation. |
 
@@ -745,7 +722,7 @@ accounts moves into `accounts/default/` the first time a wazap command runs.
   accounts.json.required  empty marker: missing policy must not reset permissions
   accounts/<id>/
     auth/           WhatsApp credentials — treat this like a password
-    media/          downloads from download_media
+    media/          files saved by get_media
     wazap.sqlite    the account database: chats, contacts, messages, reactions,
                     receipts, transcripts, notes, recall vectors, deletion
                     barriers, the webhook outbox (plus -wal and -shm beside it)
@@ -911,8 +888,8 @@ account is `default`. Add another with `wazap account add work --name Work`,
 then `wazap login --account work`.
 
 `--account` picks one on `login`, `logout`, `status`, `config writes` and
-`webhook test`. MCP tools take an optional `account_id`. Call `list_accounts`
-first when more than one is linked. A chat only one account knows selects that
+`webhook test`. MCP tools take an optional `account_id`; `get_status` lists
+every account when more than one is linked. A chat only one account knows selects that
 account. A send to a chat no account knows, with two or more accounts, fails
 `AMBIGUOUS_ACCOUNT` instead of falling back to default.
 
@@ -1113,7 +1090,7 @@ bounds are not a DDoS shield or per-tenant fairness guarantee.
 ### Host files and remote media
 
 HTTP clients — static read/write tokens and OAuth grants — cannot use
-`file_path` or override `download_media` with `save_to`. This applies even on
+`file_path` or override `get_media`'s directory with `save_to`. This applies even on
 loopback: a reverse proxy or tunnel also reaches the server from localhost.
 The tools return `MEDIA_ACCESS_DENIED` before looking up a path or touching a
 file. A write token grants WhatsApp writes, not access to the host filesystem.
@@ -1519,7 +1496,7 @@ is the supported way, and the variable goes away in 2.0.
   would not plausibly type can get the number banned, and that is not
   recoverable from here. The rate limit helps; it is not a guarantee.
 - **Media keys expire.** WhatsApp drops old attachments from its servers, so
-  `download_media` on an old message returns `MEDIA_UNAVAILABLE`.
+  `get_media` on an old message returns `MEDIA_UNAVAILABLE`.
 - **History is what the phone syncs.** wazap sees the history WhatsApp hands the
   linked device, not your full phone archive. `read_messages` with `before` asks
   for more, within whatever WhatsApp still keeps.
@@ -1528,8 +1505,9 @@ is the supported way, and the variable goes away in 2.0.
   the mapping, and passes the `@lid` through when it has not.
 - **Names come from the phone's address book.** WhatsApp delivers it as an app
   state sync, and only to a connection asking for it from scratch. If contacts
-  read as phone numbers and `get_status` shows `contacts_named: 0`, ask for it
-  again with the `sync_contacts` tool or `wazap contacts resync`.
+  read as phone numbers and `get_status` shows `contacts_named: 0`,
+  `find_contact` asks for it once, and `wazap contacts resync` asks again while
+  no server runs.
 - **Calls are WhatsApp calls only.** A call shows up as a message with
   `type: "call"`, carrying its kind, direction, outcome and duration. WhatsApp's
   own call log and the missed-call notices arrive on their own; a call that

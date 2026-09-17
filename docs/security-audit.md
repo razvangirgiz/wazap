@@ -82,7 +82,7 @@ This is not a guarantee that every third-party dependency or proxy log is safe.
 
 An HTTP write token previously allowed selecting any local file as outgoing
 media or a profile/group picture; even read clients could choose an arbitrary
-`download_media.save_to` directory. Tests use a synthetic private file and stub
+`save_to` directory (then `download_media`, `get_media` since 1.0). Tests use a synthetic private file and stub
 WhatsApp operations to demonstrate access without transmitting anything.
 
 HTTP sessions now reject `file_path` and `save_to` before account lookup or any

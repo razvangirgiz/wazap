@@ -6,35 +6,10 @@ import { join } from "node:path";
 
 import { installSkills, loadSkills, skillState } from "../dist/skills.js";
 import { TOOL_NAMES } from "../dist/tools.js";
+import { RETIRED_TOOLS } from "./helpers.mjs";
 
 const root = new URL("..", import.meta.url).pathname;
 const toolNames = new Set(TOOL_NAMES);
-/** The names 1.0 retired, which a skill must not teach. */
-const RETIRED = [
-  "list_accounts",
-  "get_recent_messages",
-  "get_unanswered",
-  "get_stories",
-  "set_contact_note",
-  "update_contact_details",
-  "mark_handled",
-  "search_messages",
-  "recall",
-  "search_contacts",
-  "get_contact",
-  "sync_contacts",
-  "download_media",
-  "transcribe_audio",
-  "send_media",
-  "send_poll",
-  "send_location",
-  "forward_message",
-  "create_group",
-  "join_group",
-  "save_contact",
-  "remove_contact",
-  "set_profile_picture",
-];
 const skillDirs = readdirSync(join(root, "skills"));
 
 test("every skill has matching frontmatter and a trigger-bearing description", () => {
@@ -57,7 +32,7 @@ test("skills only reference tools the server registers, and no retired name", ()
     )) {
       assert.ok(toolNames.has(name), `${dir}: unknown tool \`${name}\``);
     }
-    for (const name of RETIRED) {
+    for (const name of RETIRED_TOOLS) {
       // As a tool: in backticks or called. "recall" also names a setting (`wazap config recall`) and this skill.
       assert.doesNotMatch(text, new RegExp(`\`${name}[\`(]|[^-\\w\`]${name}\\(`), `${dir}: retired tool ${name}`);
     }

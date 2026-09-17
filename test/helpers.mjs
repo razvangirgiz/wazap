@@ -211,6 +211,33 @@ export function asToolSource(source) {
   return singletonSource(source && typeof source === "object" ? source : {});
 }
 
+/** The tool names 1.0 retired, which nothing shipped may still teach. */
+export const RETIRED_TOOLS = [
+  "list_accounts",
+  "get_recent_messages",
+  "get_unanswered",
+  "get_stories",
+  "set_contact_note",
+  "update_contact_details",
+  "mark_handled",
+  "search_messages",
+  "recall",
+  "search_contacts",
+  "get_contact",
+  "sync_contacts",
+  "download_media",
+  "transcribe_audio",
+  "send_media",
+  "send_poll",
+  "send_location",
+  "forward_message",
+  "create_group",
+  "join_group",
+  "save_contact",
+  "remove_contact",
+  "set_profile_picture",
+];
+
 /** Every tool, as a session that can write lists them. */
 export const TOOL_COUNT = TOOL_NAMES.length;
 
