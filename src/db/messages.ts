@@ -26,6 +26,7 @@ import {
   type ChatRow,
   type MessageRow,
 } from "./rows.js";
+import { styleOf, type StyleStats } from "./style.js";
 import { MESSAGE_FLAGS } from "./types.js";
 import type {
   BulkDeleteResult,
@@ -55,6 +56,27 @@ import type {
 export type ScrubQuote = (raw: Uint8Array, quotedSid: string) => Uint8Array | null;
 
 const MAX_PAGE = 1_000;
+/** How far back styleFor reads the user's own messages, and how many it needs in a chat before it reads the account instead. */
+const STYLE_DAYS = 90;
+const STYLE_MIN_OWN = 5;
+const STYLE_SAMPLE = 200;
+const STYLE_ACCOUNT_SAMPLE = 500;
+
+/** One message of recentExchange. */
+export interface RecentExchangeItem {
+  id: number;
+  sid: string;
+  fromMe: boolean;
+  senderJid: string | null;
+  ts: number;
+  type: string;
+  /** The words, the transcript of a voice note, or the stored placeholder; cut to maxChars with an ellipsis. */
+  text: string;
+  /** The text is a voice note's transcript. */
+  transcribed: boolean;
+  truncated: boolean;
+}
+
 /** The meta row holding the descending id cursor of the flags backfill. */
 export const FLAGS_BACKFILL_META = "flags_backfill_before";
 /** How far back the flags backfill reaches: what catch_up and the draft context ever read. */
@@ -1326,6 +1348,96 @@ export class Messages {
         now
       ) ?? null;
     return { oldest: edge("ASC"), newest: edge("DESC") };
+  }
+
+  /**
+   * How the user writes in a chat: their own text messages there in the last
+   * `days` (90), newest first, at most STYLE_SAMPLE of them; with fewer than
+   * STYLE_MIN_OWN, their own messages across the account instead (`scope`
+   * says which). `excludeViaWazap` (the default) leaves out what wazap sent,
+   * so an assistant does not learn its own style back. Null for a chat the
+   * account does not know.
+   */
+  styleFor(chatJid: string, options: { days?: number; excludeViaWazap?: boolean } = {}): StyleStats | null {
+    const chat = this.identity.chat(chatJid);
+    if (chat === null) return null;
+    const days = Math.max(1, Math.floor(options.days ?? STYLE_DAYS));
+    const lower = idLowerBound(Math.max(1, this.c.now() - days * 86_400_000));
+    const skipOwnSends = options.excludeViaWazap === false ? "" : `AND (m.flags & ${MESSAGE_FLAGS.viaWazap}) = 0`;
+    const inChat = chatCondition(this.identity.chatIdsOf(chat));
+    const own = (where: string, params: Array<number | string>, limit: number): string[] =>
+      this.c
+        .all<{ text: string }>(
+          `SELECT m.text FROM messages m CROSS JOIN chats c ON c.id = m.chat_id
+           WHERE ${where} AND m.from_me = 1 AND m.deleted_at IS NULL AND m.id >= ? AND m.type = 'text' AND m.text IS NOT NULL
+             AND (m.expires_at IS NULL OR m.expires_at > ?) AND m.ts > coalesce(c.cleared_through_ts, 0) ${skipOwnSends}
+           ORDER BY m.id DESC LIMIT ?`,
+          ...params,
+          lower,
+          this.c.now(),
+          limit
+        )
+        .map((row) => row.text);
+    const inThisChat = own(inChat.sql, inChat.params, STYLE_SAMPLE);
+    if (inThisChat.length >= STYLE_MIN_OWN) {
+      return styleOf(inThisChat, { own_messages: inThisChat.length, days, scope: "chat" }, { oneToOne: chat.kind === "direct" });
+    }
+    const account = own("c.kind IN ('direct', 'group')", [], STYLE_ACCOUNT_SAMPLE);
+    return styleOf(account, { own_messages: account.length, days, scope: "account" });
+  }
+
+  /**
+   * The last `limit` (8) messages a reader sees in a chat, both ways, oldest
+   * first, each cut to `maxChars` (200): what a draft is written after. A
+   * voice note or audio with a transcript reads as its transcript; any other
+   * media as the placeholder it is stored with ("[image] caption"); system
+   * notices are left out.
+   */
+  recentExchange(chatJid: string, options: { limit?: number; maxChars?: number } = {}): RecentExchangeItem[] {
+    const chat = this.identity.chat(chatJid);
+    if (chat === null) return [];
+    const limit = Math.max(1, Math.min(MAX_PAGE, Math.floor(options.limit ?? 8)));
+    const maxChars = Math.max(2, Math.floor(options.maxChars ?? 200));
+    const family = this.identity.chatIdsOf(chat);
+    const inChat = chatCondition(family);
+    const once = foldTwinCondition(family, chat.id);
+    const rows = this.c.all<{
+      id: number;
+      sid: string;
+      from_me: number;
+      sender_jid: string | null;
+      ts: number;
+      type: string;
+      text: string | null;
+      transcript: string | null;
+    }>(
+      `SELECT m.id, ${SID_EXPR} AS sid, m.from_me, coalesce(s.phone_jid, s.lid, sk.phone_jid, sk.lid) AS sender_jid, m.ts, m.type, m.text, m.transcript
+       FROM messages m CROSS JOIN chats c ON c.id = m.chat_id LEFT JOIN chats ck ON ck.id = c.merged_into
+         LEFT JOIN contacts s ON s.id = m.sender_id LEFT JOIN contacts sk ON sk.id = s.merged_into
+       WHERE ${inChat.sql} AND ${VISIBLE} AND m.type <> 'system' ${once.sql}
+       ORDER BY m.id DESC LIMIT ?`,
+      ...inChat.params,
+      this.c.now(),
+      ...once.params,
+      limit
+    );
+    return rows.reverse().map((row) => {
+      const spoken = (row.type === "voice" || row.type === "audio") && row.transcript !== null && row.transcript.trim() !== "";
+      const full = spoken ? row.transcript!.trim() : (row.text ?? `[${row.type}]`);
+      const chars = [...full];
+      const truncated = chars.length > maxChars;
+      return {
+        id: row.id,
+        sid: row.sid,
+        fromMe: row.from_me === 1,
+        senderJid: row.sender_jid,
+        ts: row.ts,
+        type: row.type,
+        text: truncated ? `${chars.slice(0, maxChars - 1).join("")}…` : full,
+        transcribed: spoken,
+        truncated,
+      };
+    });
   }
 
   /** Rows and tombstones of one chat above its clear barrier; what an import compares against its source. */
