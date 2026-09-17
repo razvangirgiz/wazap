@@ -100,7 +100,7 @@ export function readTranscribeSettings(env: NodeJS.ProcessEnv, dataDir: string):
   const url = orNull(env.WAZAP_TRANSCRIBE_URL) ?? DEFAULT_URL;
   return {
     provider,
-    language: orNull(env.WAZAP_TRANSCRIBE_LANGUAGE) ?? "auto",
+    language: "auto",
     auto: provider !== null && asBool(env.WAZAP_TRANSCRIBE_AUTO, true),
     model: parseModel(env.WAZAP_WHISPER_MODEL),
     whisperBin: orNull(env.WAZAP_WHISPER_BIN),

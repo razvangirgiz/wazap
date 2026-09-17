@@ -53,22 +53,22 @@ test("explicit `wazap serve` with piped stdio still answers initialize", async (
   assert.equal(status.status, "not_linked");
 });
 
-test("child env drops a shell WAZAP_TRANSPORT unless the test sets it", () => {
-  const saved = { transport: process.env.WAZAP_TRANSPORT, share: process.env.WAZAP_NO_SHARE };
-  process.env.WAZAP_TRANSPORT = "http";
+test("child env drops a shell WAZAP_WEBHOOK unless the test sets it", () => {
+  const saved = { webhook: process.env.WAZAP_WEBHOOK, share: process.env.WAZAP_NO_SHARE };
+  process.env.WAZAP_WEBHOOK = "on";
   process.env.WAZAP_NO_SHARE = "1";
   try {
     const isolated = childEnv({});
-    assert.equal(isolated.WAZAP_TRANSPORT, undefined);
+    assert.equal(isolated.WAZAP_WEBHOOK, undefined);
     assert.equal(isolated.WAZAP_NO_SHARE, undefined);
     assert.equal(isolated.WAZAP_NO_UPDATE_CHECK, "1");
     assert.equal(isolated.WAZAP_READ_TOKEN, "");
     assert.equal(isolated.WAZAP_WRITE_TOKEN, "");
-    assert.equal(childEnv({ WAZAP_TRANSPORT: "http" }).WAZAP_TRANSPORT, "http");
+    assert.equal(childEnv({ WAZAP_WEBHOOK: "on" }).WAZAP_WEBHOOK, "on");
     assert.equal(childEnv({ WAZAP_NO_SHARE: "1" }).WAZAP_NO_SHARE, "1");
   } finally {
-    if (saved.transport === undefined) delete process.env.WAZAP_TRANSPORT;
-    else process.env.WAZAP_TRANSPORT = saved.transport;
+    if (saved.webhook === undefined) delete process.env.WAZAP_WEBHOOK;
+    else process.env.WAZAP_WEBHOOK = saved.webhook;
     if (saved.share === undefined) delete process.env.WAZAP_NO_SHARE;
     else process.env.WAZAP_NO_SHARE = saved.share;
   }

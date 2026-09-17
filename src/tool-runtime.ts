@@ -46,9 +46,9 @@ export interface RegisterOpts {
   allowWrite: boolean;
   /** Trusted local stdio defaults to true; every HTTP session explicitly sets its capability. */
   allowLocalFiles?: boolean;
-  /** Tool calls this session may have running at once (WAZAP_MAX_INFLIGHT). */
+  /** Tool calls this session may have running at once. */
   maxInFlight?: number;
-  /** Tool calls every session together may have running at once (WAZAP_MAX_INFLIGHT_TOTAL). */
+  /** Tool calls every session together may have running at once. */
   maxInFlightTotal?: number;
 }
 
@@ -128,7 +128,7 @@ export function createToolRegistrar(defs: readonly ToolDef[]) {
           try {
             if (inFlight >= (opts.maxInFlightTotal ?? MAX_IN_FLIGHT_TOTAL) || sessionInFlight >= (opts.maxInFlight ?? MAX_IN_FLIGHT)) {
               throw new WazapError("RATE_LIMITED", "Too many tool operations are still running.",
-                "Wait for pending operations to finish, then retry once; WAZAP_MAX_INFLIGHT raises the limit");
+                "Wait for pending operations to finish, then retry once");
             }
             inFlight++;
             sessionInFlight++;

@@ -37,6 +37,18 @@ test("--help explains every command and exits 0", async () => {
   }
 });
 
+test("a retired setting in .env warns once and the command still succeeds", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "wazap-retired-"));
+  writeFileSync(join(dir, ".env"), "WAZAP_TRANSPORT=http\nWAZAP_RATE_LIMIT=5\n");
+  const { stdout, stderr } = await run(process.execPath, [binary, "status", "--json", "--data-dir", dir], {
+    env: childEnv(),
+  });
+  assert.equal(JSON.parse(stdout).data_dir, dir, "stdout stays the report");
+  assert.equal(stderr.match(/WAZAP_TRANSPORT is no longer read/g)?.length, 1);
+  assert.match(stderr, /WAZAP_TRANSPORT is no longer read and was ignored: HTTP is the `--http` flag/);
+  assert.match(stderr, /WAZAP_RATE_LIMIT is no longer read and was ignored: writes are limited to 20 a minute/);
+});
+
 test("--version prints the package version and exits 0", async () => {
   const { stderr } = await wazap("--version");
   const { version } = JSON.parse(

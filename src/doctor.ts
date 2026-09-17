@@ -12,7 +12,7 @@ import { WazapError, asWazapError } from "./errors.js";
 import { lockHolder, lockPid } from "./lock.js";
 import { oauthProblem, readGrants } from "./oauth.js";
 import { EMBED_MODELS, embedModelPath, embedReady, readRecallSettings } from "./recall/index.js";
-import { installedService } from "./service.js";
+import { installedService, readService } from "./service.js";
 import { detectedTargets, skillState } from "./skills.js";
 import { storageReport, type AccountStorage, type BetaArchiveReport, type StorageReport } from "./storage-status.js";
 import {
@@ -444,8 +444,9 @@ function checkOAuth(config: Config): Check[] {
   if (!config.publicUrl && !config.oauthPassword) return [];
   const problem = oauthProblem(config);
   if (problem) return [{ name: "oauth", state: "fail", detail: problem, fix: "edit <data-dir>/.env" }];
-  if (config.transport !== "http") {
-    return [{ name: "oauth", state: "info", detail: "configured, but only served with WAZAP_TRANSPORT=http" }];
+  // The service always serves HTTP; anything else serves it only with --http.
+  if (config.transport !== "http" && readService(config.dataDir) === null) {
+    return [{ name: "oauth", state: "info", detail: "configured, but only served by `wazap serve --http`" }];
   }
   const grants = readGrants(paths(config.dataDir).oauthFile);
   if (grants.length === 0) {

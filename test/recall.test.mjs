@@ -31,7 +31,6 @@ const RECALL_ENV = [
   "WAZAP_EMBED_MODEL",
   "WAZAP_EMBED_BIN",
   "WAZAP_EMBED_URL",
-  "WAZAP_RECALL_MAX",
   "WAZAP_RECALL_MIN_SIMILARITY",
 ];
 
@@ -614,22 +613,13 @@ test("a min-similarity outside 0..1 is refused at parse, whichever model is pick
   }
 });
 
-test("the idle window parses to ms; 0 disables and bad input is refused", () => {
+test("the idle window is fixed at 30 minutes, whatever the retired setting says", () => {
   const dir = mkdtempSync(join(tmpdir(), "wazap-recall-"));
   assert.equal(readRecallSettings({}, dir).embedIdleMs, 30 * 60_000);
-  assert.equal(readRecallSettings({ WAZAP_EMBED_IDLE_MINUTES: "0" }, dir).embedIdleMs, 0);
-  assert.equal(readRecallSettings({ WAZAP_EMBED_IDLE_MINUTES: "1.5" }, dir).embedIdleMs, 90_000);
-  for (const bad of ["-1", "soon"]) {
-    assert.throws(
-      () => readRecallSettings({ WAZAP_EMBED_IDLE_MINUTES: bad }, dir),
-      (err) => {
-        assert.equal(err.code, "INVALID_ID");
-        assert.match(err.message, /IDLE/);
-        return true;
-      },
-      bad
-    );
+  for (const retired of ["0", "1.5", "soon"]) {
+    assert.equal(readRecallSettings({ WAZAP_EMBED_IDLE_MINUTES: retired }, dir).embedIdleMs, 30 * 60_000, retired);
   }
+  assert.equal(readRecallSettings({ WAZAP_RECALL_MAX: "junk" }, dir).enabled, false, "a retired cap no longer refuses to start");
 });
 
 test("weak matches are flagged, not sold as answers", async () => {

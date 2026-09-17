@@ -30,15 +30,15 @@ function dataDir() {
 test("setEnvSetting replaces its own line and keeps every other one", () => {
   const dir = dataDir();
   const envFile = join(dir, ".env");
-  writeFileSync(envFile, "# notes\nWAZAP_READ_TOKEN=abc\nWAZAP_READ_ONLY=1\nWAZAP_RATE_LIMIT=5\n");
+  writeFileSync(envFile, "# notes\nWAZAP_READ_TOKEN=abc\nWAZAP_READ_ONLY=1\nWAZAP_RETENTION=1\n");
 
   setEnvSetting(envFile, "WAZAP_READ_ONLY", "0");
-  assert.equal(readFileSync(envFile, "utf8"), "# notes\nWAZAP_READ_TOKEN=abc\nWAZAP_READ_ONLY=0\nWAZAP_RATE_LIMIT=5\n");
+  assert.equal(readFileSync(envFile, "utf8"), "# notes\nWAZAP_READ_TOKEN=abc\nWAZAP_READ_ONLY=0\nWAZAP_RETENTION=1\n");
 
   setEnvSetting(envFile, "WAZAP_HOST", "0.0.0.0");
   assert.equal(
     readFileSync(envFile, "utf8"),
-    "# notes\nWAZAP_READ_TOKEN=abc\nWAZAP_READ_ONLY=0\nWAZAP_RATE_LIMIT=5\nWAZAP_HOST=0.0.0.0\n"
+    "# notes\nWAZAP_READ_TOKEN=abc\nWAZAP_READ_ONLY=0\nWAZAP_RETENTION=1\nWAZAP_HOST=0.0.0.0\n"
   );
 });
 

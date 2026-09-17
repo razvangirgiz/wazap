@@ -24,10 +24,8 @@ export interface RecallSettings {
   /** WAZAP_EMBED_URL: an already-running server; the test seam, not a user option. */
   embedUrl: string | null;
   modelsDir: string;
-  /** WAZAP_EMBED_IDLE_MINUTES, in ms: the shared sidecar is reaped after this long without an embed; 0 keeps it resident. */
+  /** In ms: the shared sidecar is reaped after this long without an embed; 0 (tests only) keeps it resident. */
   embedIdleMs: number;
-  /** Index rows one account keeps; the oldest are evicted past this. */
-  maxRows: number;
   /** Cosine floor for a hit to count; model-dependent, tuned on the default. */
   minSimilarity: number;
 }

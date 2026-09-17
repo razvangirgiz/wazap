@@ -132,11 +132,6 @@ function charDelay(ch: string): number {
   return 12;
 }
 
-function typewriterOff(): boolean {
-  const flag = process.env.WAZAP_TYPEWRITER;
-  return flag === "0" || flag === "off";
-}
-
 function sleep(ms: number): Promise<void> {
   if (ms <= 0) return Promise.resolve();
   return new Promise((resolve) => {
@@ -394,7 +389,7 @@ class WizardImpl implements Wizard {
     const lines = this.#content();
     const placed = centerBlock(lines, cols(), rows());
     this.#spinRow = this.#spinText === null ? null : placed.length;
-    if (opts.reveal === true && !typewriterOff()) {
+    if (opts.reveal === true) {
       const resume = this.#timer !== null;
       if (this.#timer !== null) {
         clearInterval(this.#timer);

@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { parseCli, readOnlySetting, writesHints } from "../dist/config.js";
+import { RETIRED_SETTINGS, parseCli, readOnlySetting, retiredSettingWarnings, writesHints } from "../dist/config.js";
 
 const CASES = [
   [undefined, false, "unset registers write tools; config prints writes: on (default)"],
@@ -52,23 +52,53 @@ test("writesHints carry no bearer-token note, whatever the transport", () => {
   assert.doesNotMatch(hints[0], /token/i);
 });
 
-test("concurrency and HTTP budgets default generously, and only a positive number changes them", () => {
-  const keys = ["WAZAP_MAX_INFLIGHT", "WAZAP_MAX_INFLIGHT_TOTAL", "WAZAP_HTTP_BUDGET", "WAZAP_RETENTION"];
+const RETIRED_VALUES = {
+  WAZAP_TRANSPORT: "http",
+  WAZAP_SYNC_FULL_HISTORY: "1",
+  WAZAP_PERSIST_HISTORY: "0",
+  WAZAP_RATE_LIMIT: "0",
+  WAZAP_MAX_INFLIGHT: "12",
+  WAZAP_MAX_INFLIGHT_TOTAL: "64",
+  WAZAP_HTTP_BUDGET: "1000",
+};
+
+test("retired settings change nothing: the limits are fixed, and HTTP is only the flag", () => {
+  const keys = [...Object.keys(RETIRED_VALUES), "WAZAP_RETENTION"];
   const previous = Object.fromEntries(keys.map((key) => [key, process.env[key]]));
   const dir = mkdtempSync(join(tmpdir(), "wazap-limits-config-"));
-  const load = () => parseCli(["serve", "--data-dir", dir]).config;
+  const load = (...flags) => parseCli(["serve", ...flags, "--data-dir", dir]).config;
+  const fixed = ({ transport, syncFullHistory, persistHistory, rateLimitPerMinute, maxInFlight, maxInFlightTotal, httpPostBudget }) => ({
+    transport,
+    syncFullHistory,
+    persistHistory,
+    rateLimitPerMinute,
+    maxInFlight,
+    maxInFlightTotal,
+    httpPostBudget,
+  });
+  const DEFAULTS = {
+    transport: "stdio",
+    syncFullHistory: false,
+    persistHistory: true,
+    rateLimitPerMinute: 20,
+    maxInFlight: 8,
+    maxInFlightTotal: 32,
+    httpPostBudget: 240,
+  };
   try {
     for (const key of keys) delete process.env[key];
-    assert.deepEqual(
-      (({ maxInFlight, maxInFlightTotal, httpPostBudget, retention }) => ({ maxInFlight, maxInFlightTotal, httpPostBudget, retention }))(load()),
-      { maxInFlight: 8, maxInFlightTotal: 32, httpPostBudget: 240, retention: false }
-    );
-    Object.assign(process.env, { WAZAP_MAX_INFLIGHT: "12", WAZAP_MAX_INFLIGHT_TOTAL: "0", WAZAP_HTTP_BUDGET: "junk", WAZAP_RETENTION: "1" });
-    const tuned = load();
-    assert.equal(tuned.maxInFlight, 12);
-    assert.equal(tuned.maxInFlightTotal, 32, "zero does not lift a safety limit");
-    assert.equal(tuned.httpPostBudget, 240);
-    assert.equal(tuned.retention, true);
+    assert.deepEqual(fixed(load()), DEFAULTS);
+    assert.equal(load().retention, false);
+
+    Object.assign(process.env, RETIRED_VALUES, { WAZAP_RETENTION: "1" });
+    const configured = load();
+    assert.deepEqual(fixed(configured), DEFAULTS);
+    assert.equal(configured.sources.transport, "default");
+    assert.equal(configured.retention, true, "WAZAP_RETENTION is still read");
+
+    const http = load("--http");
+    assert.equal(http.transport, "http");
+    assert.equal(http.sources.transport, "flag");
   } finally {
     for (const key of keys) {
       if (previous[key] === undefined) delete process.env[key];
@@ -76,4 +106,16 @@ test("concurrency and HTTP budgets default generously, and only a positive numbe
     }
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+test("each retired setting that is set gets one warning naming what replaced it, and nothing else does", () => {
+  assert.deepEqual(retiredSettingWarnings({}), []);
+  assert.deepEqual(retiredSettingWarnings({ WAZAP_READ_ONLY: "1", WAZAP_RECALL: "local", WAZAP_NO_SHARE: "1" }), []);
+  for (const key of Object.keys(RETIRED_SETTINGS)) {
+    const [line, ...rest] = retiredSettingWarnings({ [key]: "" });
+    assert.deepEqual(rest, [], key);
+    assert.ok(line.startsWith(`${key} is no longer read and was ignored: `), line);
+  }
+  assert.match(retiredSettingWarnings({ WAZAP_TRANSPORT: "http" })[0], /wazap serve --http/);
+  assert.equal(retiredSettingWarnings(RETIRED_VALUES).length, Object.keys(RETIRED_VALUES).length);
 });

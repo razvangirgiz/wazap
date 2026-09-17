@@ -35,8 +35,9 @@ export type Command =
 export interface Config {
   dataDir: string;
   readOnly: boolean;
+  /** Always false outside tests since `WAZAP_SYNC_FULL_HISTORY` was retired. */
   syncFullHistory: boolean;
-  /** Persist chats and messages under the data dir so they survive a restart. */
+  /** Keep chats and messages in the account database. Always true outside tests since `WAZAP_PERSIST_HISTORY` was retired. */
   persistHistory: boolean;
   /**
    * Strict retention: disappearing messages expire locally, and starting with
@@ -55,13 +56,13 @@ export interface Config {
   oauthPassword: string | null;
   /** Publish a loopback endpoint and a daemon.json sidecar so a bridge can reach this session. */
   share: boolean;
-  /** Write-tool token bucket, per minute. 0 disables the limit. */
+  /** Write-tool token bucket, per minute; an account's `rate_limit` overrides it. 0 disables the limit. */
   rateLimitPerMinute: number;
-  /** Tool calls one MCP session may have running at once; default 8. */
+  /** Tool calls one MCP session may have running at once; 8 outside tests. */
   maxInFlight?: number;
-  /** Tool calls the whole process may have running at once; default 32. */
+  /** Tool calls the whole process may have running at once; 32 outside tests. */
   maxInFlightTotal?: number;
-  /** HTTP POSTs to /mcp per credential per minute; default 240. */
+  /** HTTP POSTs to /mcp per credential per minute; 240 outside tests. */
   httpPostBudget?: number;
   sources: Record<"dataDir" | "readOnly" | "transport" | "rateLimit" | "transcribe" | "webhook" | "recall", Source>;
   command: Command;
@@ -249,15 +250,37 @@ export function writesHints(config: Pick<Config, "readOnly"> & Partial<Config>):
   return config.readOnly ? [WRITES_ENABLE_HINT] : [];
 }
 
-/** A safety limit: a missing, zero or unreadable value keeps the default rather than lifting it. */
-function positiveInt(value: string | undefined, fallback: number): number {
-  const n = asInt(value, fallback);
-  return n > 0 ? n : fallback;
-}
-
 function asInt(value: string | undefined, fallback: number): number {
   const n = Number.parseInt((value ?? "").trim(), 10);
   return Number.isFinite(n) ? n : fallback;
+}
+
+/**
+ * Settings an earlier wazap read and this one ignores, each with what stands in
+ * its place now. One set in the environment or `.env` costs a warning line at
+ * startup and changes nothing.
+ */
+export const RETIRED_SETTINGS: Readonly<Record<string, string>> = {
+  WAZAP_TRANSPORT: "HTTP is the `--http` flag, as in `wazap serve --http`",
+  WAZAP_SYNC_FULL_HISTORY:
+    "wazap takes WhatsApp's default history sync, and `read_messages` with `before` pulls older messages",
+  WAZAP_PERSIST_HISTORY:
+    "messages are always kept in the account database; `wazap account remove <id>` deletes an account and everything it kept",
+  WAZAP_RATE_LIMIT: "writes are limited to 20 a minute, unless an account sets `rate_limit` in accounts.json",
+  WAZAP_MAX_INFLIGHT: "one MCP session runs at most 8 tool calls at once",
+  WAZAP_MAX_INFLIGHT_TOTAL: "all sessions together run at most 32 tool calls at once",
+  WAZAP_HTTP_BUDGET: "each HTTP credential gets 240 requests a minute",
+  WAZAP_TRANSCRIBE_LANGUAGE: "the spoken language is detected, and `transcribe_audio` takes a `language`",
+  WAZAP_EMBED_IDLE_MINUTES: "the embedding server stops after 30 idle minutes",
+  WAZAP_RECALL_MAX: "it capped nothing, and every kept message is indexed",
+  WAZAP_TYPEWRITER: "the setup screens always type out at a terminal",
+};
+
+/** One line per retired setting that is still set, naming what replaced it. */
+export function retiredSettingWarnings(env: NodeJS.ProcessEnv = process.env): string[] {
+  return Object.entries(RETIRED_SETTINGS)
+    .filter(([key]) => env[key] !== undefined)
+    .map(([key, now]) => `${key} is no longer read and was ignored: ${now}. Remove it from your environment or .env.`);
 }
 
 /**
@@ -359,17 +382,15 @@ export function parseCli(argv: string[] = process.argv.slice(2)): CliInvocation 
     return process.env[key] === undefined ? "default" : ".env";
   };
 
-  const httpFromEnv = process.env.WAZAP_TRANSPORT?.trim().toLowerCase() === "http";
-
   return {
     kind: "run",
     config: {
       dataDir,
       readOnly: values["read-only"] === true || readOnlySetting(process.env.WAZAP_READ_ONLY),
-      syncFullHistory: asBool(process.env.WAZAP_SYNC_FULL_HISTORY, false),
-      persistHistory: asBool(process.env.WAZAP_PERSIST_HISTORY, true),
+      syncFullHistory: false,
+      persistHistory: true,
       retention: asBool(process.env.WAZAP_RETENTION, false),
-      transport: values.http === true || httpFromEnv ? "http" : "stdio",
+      transport: values.http === true ? "http" : "stdio",
       httpHost: values.host ?? (process.env.WAZAP_HOST?.trim() || "127.0.0.1"),
       httpPort: values.port ? asInt(values.port, 8766) : asInt(process.env.WAZAP_PORT, 8766),
       trustedProxies: trustedProxies(process.env.WAZAP_TRUST_PROXY),
@@ -378,16 +399,16 @@ export function parseCli(argv: string[] = process.argv.slice(2)): CliInvocation 
       publicUrl: (process.env.WAZAP_PUBLIC_URL ?? "").trim().replace(/\/+$/, "") || null,
       oauthPassword: process.env.WAZAP_OAUTH_PASSWORD || null,
       share: !asBool(process.env.WAZAP_NO_SHARE, false),
-      rateLimitPerMinute: asInt(process.env.WAZAP_RATE_LIMIT, 20),
-      maxInFlight: positiveInt(process.env.WAZAP_MAX_INFLIGHT, 8),
-      maxInFlightTotal: positiveInt(process.env.WAZAP_MAX_INFLIGHT_TOTAL, 32),
-      httpPostBudget: positiveInt(process.env.WAZAP_HTTP_BUDGET, 240),
+      rateLimitPerMinute: 20,
+      maxInFlight: 8,
+      maxInFlightTotal: 32,
+      httpPostBudget: 240,
       sources: {
         // Resolved before dotenv runs, so the data dir's own .env cannot name it.
         dataDir: values["data-dir"] !== undefined ? "flag" : shell.has("WAZAP_DATA_DIR") ? "env" : "default",
         readOnly: sourceOf("WAZAP_READ_ONLY", values["read-only"] === true),
-        transport: sourceOf("WAZAP_TRANSPORT", values.http === true),
-        rateLimit: sourceOf("WAZAP_RATE_LIMIT", false),
+        transport: values.http === true ? "flag" : "default",
+        rateLimit: "default",
         transcribe: sourceOf("WAZAP_TRANSCRIBE", false),
         webhook: sourceOf("WAZAP_WEBHOOK", false),
         recall: sourceOf("WAZAP_RECALL", false),

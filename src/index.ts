@@ -14,7 +14,7 @@ import {
   runStatus,
   runTranscribe,
 } from "./cli.js";
-import { WAZAP_VERSION, parseCli, pickDefaultAction } from "./config.js";
+import { WAZAP_VERSION, parseCli, pickDefaultAction, retiredSettingWarnings } from "./config.js";
 import { migrateLayout } from "./migrate.js";
 import { CLIENT_NAMES, runConnect } from "./connect.js";
 import { SKILL_TARGET_NAMES, runSkills } from "./skills.js";
@@ -25,7 +25,7 @@ import { runUpdate } from "./update.js";
 import { runConfig, runWebhook } from "./settings.js";
 import { WazapError } from "./errors.js";
 import { logError, say } from "./logger.js";
-import { fail, fix } from "./ui.js";
+import { fail, fix, warn } from "./ui.js";
 
 // A promise that fails with nobody listening must still be seen. A thrown
 // exception outside any await means the process state is no longer
@@ -97,14 +97,9 @@ Options:
   -h, --help          Show this help
   -v, --version       Show the version
 
-Environment: WAZAP_DATA_DIR, WAZAP_READ_ONLY, WAZAP_SYNC_FULL_HISTORY, WAZAP_PERSIST_HISTORY, WAZAP_RETENTION,
-WAZAP_TRANSPORT, WAZAP_HOST, WAZAP_PORT, WAZAP_READ_TOKEN, WAZAP_WRITE_TOKEN, WAZAP_PUBLIC_URL,
-WAZAP_OAUTH_PASSWORD, WAZAP_RATE_LIMIT,
-WAZAP_NO_SHARE, WAZAP_NO_UPDATE_CHECK, WAZAP_TRANSCRIBE, WAZAP_TRANSCRIBE_AUTO,
-WAZAP_TRANSCRIBE_LANGUAGE, WAZAP_TRANSCRIBE_API_KEY, WAZAP_TRANSCRIBE_URL, WAZAP_TRANSCRIBE_MODEL,
-WAZAP_WHISPER_MODEL, WAZAP_WHISPER_BIN, WAZAP_WEBHOOK, WAZAP_WEBHOOK_URL,
-WAZAP_WEBHOOK_SECRET, WAZAP_WEBHOOK_EVENTS, WAZAP_RECALL, WAZAP_RECALL_MAX,
-WAZAP_EMBED_MODEL, WAZAP_EMBED_BIN.
+Environment: WAZAP_DATA_DIR, WAZAP_READ_ONLY, WAZAP_HOST, WAZAP_PORT, WAZAP_READ_TOKEN, WAZAP_WRITE_TOKEN,
+WAZAP_PUBLIC_URL, WAZAP_OAUTH_PASSWORD, WAZAP_TRUST_PROXY, WAZAP_TRANSCRIBE, WAZAP_TRANSCRIBE_API_KEY,
+WAZAP_RECALL, WAZAP_WEBHOOK, WAZAP_WEBHOOK_URL, WAZAP_WEBHOOK_SECRET, WAZAP_WEBHOOK_EVENTS, WAZAP_RETENTION.
 An optional <data-dir>/.env is loaded if present.`;
 
 async function main(): Promise<void> {
@@ -119,6 +114,7 @@ async function main(): Promise<void> {
   }
 
   const { config } = invocation;
+  for (const line of retiredSettingWarnings()) say(warn(line));
   // Rollback is the inverse of this move. Running it first would re-apply a
   // half-finished migrate and then fail to undo it. The other exempt commands
   // never open account state, and `service stop` is how a lock that blocks the

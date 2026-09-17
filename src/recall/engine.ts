@@ -261,7 +261,7 @@ interface SidecarEntry {
    * a server of their own.
    */
   started: Promise<void>;
-  /** WAZAP_EMBED_IDLE_MINUTES in ms; 0 leaves the server resident forever. */
+  /** In ms; 0 (tests only) leaves the server resident forever. */
   idleMs: number;
   /** The reap countdown, armed once the server is up and re-armed by every embed. */
   idleTimer: NodeJS.Timeout | null;

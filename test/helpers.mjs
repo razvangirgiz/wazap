@@ -22,8 +22,7 @@ export const BINARY = join(repoRoot, "dist", "index.js");
 
 /**
  * A child's environment must not inherit the developer's WAZAP_* shell.
- * `WAZAP_TRANSPORT=http` turns `wazap serve` into HTTP on port 8766, so the
- * stdio initialize never answers and two children race the same port.
+ * `WAZAP_WEBHOOK=on` would post test messages to a real receiver, and
  * `WAZAP_NO_SHARE=1` skips daemon.json. Tests pass explicit overrides in `extra`.
  */
 export function childEnv(extra = {}) {
