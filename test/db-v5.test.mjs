@@ -209,6 +209,7 @@ test("flags only gain bits: a replay without them keeps them, and a later mark a
   }
   db.messages.delete(stored.sid);
   assert.equal(db.messages.addFlags(stored.sid, MENTIONS), false, "a tombstone gains nothing");
+  assert.equal(db.messages.get(stored.sid, { includeHidden: true }).flags, VIA, "and loses its mention with its words");
   db.close();
 });
 
@@ -520,4 +521,20 @@ test("the planned reads use the v5 indexes, not a scan", () => {
     assert.match(detail, expected, `${label}:\n${detail}`);
     assert.doesNotMatch(detail, /SCAN m\b(?! USING)/, `${label} scans:\n${detail}`);
   }
+});
+
+test("a deleted, retracted or expired message leaves the mentions a window lists", async () => {
+  const { db, path, clock } = openTemp();
+  const mention = (key, ts, extra = {}) => db.messages.upsert(textMessage(GROUP, key, ts, "@eu", { senderJid: PEER, flags: MENTIONS, ...extra }));
+  mention("KEEP", T0);
+  const deleted = mention("DEL", T0 + 1000);
+  mention("EXP", T0 + 2000, { expiresAt: clock.now + 10 });
+  db.messages.delete(deleted.sid);
+  clock.now += 20;
+  await db.messages.expireDue();
+  db.close();
+  const reader = new (sqlite().DatabaseSync)(path, { readOnly: true });
+  const listed = reader.prepare("SELECT key_id FROM messages m WHERE (m.flags & 1) <> 0 AND m.id > 0 ORDER BY m.id").all().map((row) => row.key_id);
+  reader.close();
+  assert.deepEqual(listed, ["KEEP"]);
 });

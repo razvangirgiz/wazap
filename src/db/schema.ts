@@ -629,7 +629,8 @@ CREATE INDEX events_message ON events(message_id) WHERE message_id IS NOT NULL;
 // descending id cursor in meta flags_backfill_before (Messages.backfillFlags).
 /**
  * - messages.flags: bits the service sets when it stores a message, and that
- *   only ever gain bits (an edit or a replay never clears one): 1 mentions_me
+ *   only ever gain bits (an edit or a replay never clears one; a tombstone
+ *   loses mentions_me with the words): 1 mentions_me
  *   (an incoming message whose mentions name the account, by number or lid),
  *   2 via_wazap (the account's own message sent through wazap: its key is a
  *   confirmed send's). A fold keeps the union of both copies' bits.
@@ -667,6 +668,14 @@ CREATE INDEX messages_mentions ON messages(id) WHERE (flags & 1) <> 0;
 -- Calls, and polls and events, by id: a window's calls or open polls without a scan.
 CREATE INDEX messages_calls ON messages(id) WHERE type = 'call';
 CREATE INDEX messages_polls ON messages(id) WHERE type IN ('poll', 'event');
+
+-- A mention is part of what a message said: a tombstone keeps none, so a
+-- window's mentions never list a deleted message.
+CREATE TRIGGER messages_tombstone_mentions AFTER UPDATE OF deleted_at ON messages
+WHEN old.deleted_at IS NULL AND new.deleted_at IS NOT NULL AND (new.flags & 1) <> 0
+BEGIN
+  UPDATE messages SET flags = flags & ~1 WHERE id = new.id;
+END;
 
 CREATE TRIGGER messages_last_own_insert AFTER INSERT ON messages
 WHEN new.from_me = 1 AND new.deleted_at IS NULL
