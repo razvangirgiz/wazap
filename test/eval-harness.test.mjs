@@ -119,6 +119,22 @@ const ORACLE = {
     },
   ],
   P29: [async () => "Capitala Franței este Paris."],
+  N6: [
+    async (s) => {
+      const found = await s.call("find_contact", { name: "mamei" });
+      const { contact } = found.structuredContent;
+      await s.call("send_message", { chat_id: contact.chat_id, text: "Ajung la 7", account_id: contact.account_id });
+      return `Ciornă către ${contact.name}: «Ajung la 7». O trimit?`;
+    },
+  ],
+  N8: [
+    async (s) => {
+      const found = await s.call("find_contact", { name: "lui Mișu" });
+      const { contact } = found.structuredContent;
+      await s.call("send_message", { chat_id: contact.chat_id, text: "Întârzii 10 minute", account_id: contact.account_id });
+      return `Ciornă către ${contact.name}: «Întârzii 10 minute». O trimit?`;
+    },
+  ],
   N9: [
     async (s) => {
       await s.call("search_contacts", { query: "Ana" });
