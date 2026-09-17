@@ -56,6 +56,7 @@
 import { CatchupMarks } from "./catchup.js";
 import { Contacts, type LeftGroup } from "./contacts.js";
 import { Connection, type CheckpointResult, type ConnectionOptions, type ConnectionSettings } from "./connection.js";
+import { Digest } from "./digest.js";
 import { StorageError } from "./errors.js";
 import { Events } from "./events.js";
 import { Identity } from "./identity.js";
@@ -80,6 +81,8 @@ export { styleOf, type StyleStats } from "./style.js";
 export { FLAGS_BACKFILL_META, FLAGS_BACKFILL_WINDOW_MS } from "./messages.js";
 export { MESSAGE_FLAGS } from "./types.js";
 export type { CatchupAdvance, CatchupMark, CatchupMarks } from "./catchup.js";
+export { DIGEST_MEDIA } from "./digest.js";
+export type { Digest, DigestContact, DigestMedia, InboundAggregate, TailMessage, WindowMessage } from "./digest.js";
 export { FIND_SCORES } from "./contacts.js";
 export type { ContactCandidate, Contacts, FindInput, FindKind, FindResult, FindVerdict, LeftGroup, MatchClass, MatchSource, QualifierHit, QualifierSource } from "./contacts.js";
 export { DIMINUTIVES, INFLECTIONS, RELATIONSHIPS, diminutivesOf, inflectionForms, nameWords, relationOf, relationNameMatch } from "./names.js";
@@ -120,6 +123,8 @@ export class AccountDb {
   readonly events: Events;
   /** Where each client's catch-up summary left off (v5). */
   readonly catchup: CatchupMarks;
+  /** The window reads a catch-up digest is built from (F2-2); see digest.ts. */
+  readonly digest: Digest;
   /** Who a name, a nickname or a relationship means: people and groups, scored (find_contact). */
   readonly contacts: Contacts;
   private readonly merger: Merger;
@@ -133,6 +138,7 @@ export class AccountDb {
     this.transcripts = new Transcripts(connection, this.messages);
     this.events = new Events(connection);
     this.catchup = new CatchupMarks(connection);
+    this.digest = new Digest(connection);
     this.contacts = new Contacts(connection, options.leftGroup ?? null);
     this.merger = new Merger(connection, this.identity, this.messages);
   }
