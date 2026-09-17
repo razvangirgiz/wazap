@@ -304,12 +304,13 @@ function sameNameOnAccounts(candidates: readonly FoundContact[]): boolean {
 
 /**
  * One name on several accounts: the request itself usually says which one it
- * is about, so looking comes before asking. Nothing is sent on a guess either
- * way — a draft's preview names the recipient, the number and the account, and
- * the user says yes to that.
+ * is about, so looking comes before asking — and the two things that decide it
+ * are named, since an assistant told only to look looked at both accounts and
+ * then asked anyway. Nothing is sent on a guess either way: a draft's preview
+ * names the recipient, the number and the account, and the user says yes to it.
  */
 const SAME_NAME_ON_ACCOUNTS =
-  "The same name on several accounts, one on each. When the request says what it is about (a file, a topic, the answer one of them is waiting for), look before asking: search(query, from: the name), or find_contact again with a candidate's number_tail as qualifier and its account_id, which resolves them. Then go on with the account it points to and say which one. Ask the user only when nothing tells them apart.";
+  "The same name on several accounts, one on each: look before asking. Either of two things decides it. Exactly one candidate has waiting, an open ask of theirs, and the request answers it: that one. Or what the request is about (a file, a topic) is in one candidate's conversation: read it with search(query, from: the name), or with find_contact again with a candidate's number_tail as qualifier and its account_id, which brings their recent messages. Then go on with that account and say which one. Ask the user only when nothing tells them apart.";
 
 function fixFor(outcome: FindOutcome, query: FindResult["query"], asked: string, multi: boolean, unavailable: readonly UnavailableAccount[]): string | undefined {
   if (outcome.status === "resolved") return undefined;

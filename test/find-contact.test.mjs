@@ -254,9 +254,13 @@ test("one name on two accounts: the candidate owed an answer says since when, ca
   assert.equal(entry.at, personal.waiting.since.slice(11, 16), "and dates it the same");
 
   assert.match(body.fix, /^The same name on several accounts/);
-  assert.match(body.fix, /look before asking: search\(query, from: the name\)/);
+  assert.match(body.fix, /look before asking/);
+  // What decides it, named: the gate's second run looked at both accounts and still asked (N14).
+  assert.match(body.fix, /Exactly one candidate has waiting, an open ask of theirs, and the request answers it/);
+  assert.match(body.fix, /what the request is about \(a file, a topic\) is in one candidate's conversation/);
+  assert.match(body.fix, /search\(query, from: the name\)/);
   assert.match(body.fix, /find_contact again with a candidate's number_tail as qualifier and its account_id/);
-  assert.match(body.fix, /say which one/);
+  assert.match(body.fix, /go on with that account and say which one/);
   assert.match(body.fix, /Ask the user only when nothing tells them apart/);
   assert.doesNotMatch(body.fix, /never pick one yourself/);
 
