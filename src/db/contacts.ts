@@ -35,8 +35,8 @@
  * word after a first name ("Andreea Sora": a sister or a surname), and the
  * words that name someone else's relative ("Andrei" in "Mama lui Andrei",
  * which also takes 20 points off). A relationship word ("mama") matches only
- * what the user filed — a saved name that is the relationship alone, a tag, a
- * nickname or relationship detail — and a not_found for one carries no
+ * what the user filed — a saved name or a note that is the relationship alone,
+ * a tag, a nickname or relationship detail — and a not_found for one carries no
  * closest: who it is is a question for the user. Groups match by their name;
  * a group the account left is not a candidate.
  */
@@ -64,7 +64,7 @@ import {
 
 export type FindKind = "person" | "group" | "any";
 export type MatchClass = "exact" | "word" | "diminutive" | "prefix" | "substring" | "fuzzy";
-export type MatchSource = "nickname" | "relatie" | "tag" | "field" | "name" | "business_name" | "notify" | "push_name" | "group_name";
+export type MatchSource = "nickname" | "relatie" | "tag" | "field" | "note" | "name" | "business_name" | "notify" | "push_name" | "group_name";
 export type QualifierSource = "note" | "tag" | "field" | "business_name" | "group_name";
 export type FindVerdict = "resolved" | "ambiguous" | "not_found";
 
@@ -405,7 +405,7 @@ function pointsFor(table: ReadonlyArray<readonly [number, number]>, test: (thres
   return 0;
 }
 
-const USER_DATA_SOURCES: ReadonlySet<MatchSource> = new Set(["nickname", "relatie", "tag", "field"]);
+const USER_DATA_SOURCES: ReadonlySet<MatchSource> = new Set(["nickname", "relatie", "tag", "field", "note"]);
 const SELF_NAMED_SOURCES: ReadonlySet<MatchSource> = new Set(["notify", "push_name"]);
 
 function matchScore(match: Match, source: MatchSource): number {
@@ -547,6 +547,8 @@ export class Contacts {
           else if (NICKNAME_FIELDS.has(field.folded)) consider(asRelation(relationWordsMatch(relation, field.words)), "nickname", `${field.key}: ${field.value}`);
         }
         for (const tag of person.tags) consider(asRelation(relationWordsMatch(relation, tag.words) === "exact" ? "exact" : null), "tag", tag.tag);
+        // Free text: only a note that says nothing else ("mama", "Mama mea"), how set_contact_note filed one before details; "prietena mamei" is someone else.
+        if (relationWordsMatch(relation, person.noteWords) === "exact") consider(asRelation("exact"), "note", person.row.note!);
         if (person.saved) consider(asRelation(relationWordsMatch(relation, person.savedWords)), "name", person.row.name!);
       } else {
         for (const name of person.names) {

@@ -162,7 +162,7 @@ test("Andrei, many and none of them recent, is ambiguous with at most five candi
   assert.equal(find({ name: "Andrei", limit: 2 }).candidates.length, 2);
 });
 
-test("mama matches only what the user filed — a saved name, a tag, a detail — never a group, a business or someone else's mother", () => {
+test("mama matches only what the user filed — a saved name, a tag, a detail, a note that says only that — never a group, a business or someone else's mother", () => {
   const { db, find, person, talk } = account({ leftGroup: () => false });
   person(1, "Mama Anei");
   person(2, "Mama lui Andrei");
@@ -199,6 +199,28 @@ test("mama matches only what the user filed — a saved name, a tag, a detail �
   result = find2({ name: "mama" });
   assert.equal(result.verdict, "ambiguous", "two people filed as mother is for the user to settle");
   assert.deepEqual(result.candidates.map((c) => c.match.source).sort(), ["relatie", "tag"]);
+
+  // A note is filed too, when it says nothing but the relationship; a note that goes on is someone else.
+  const { find: find3, person: person3, db: db3 } = account();
+  person3(1, "Elena Pop");
+  db3.identity.setNote(phone(1), "Mama mea");
+  person3(2, "Ana Vasile");
+  db3.identity.setNote(phone(2), "vecina, prietena mamei");
+  person3(3, "Ioana Stan");
+  db3.identity.setNote(phone(3), "mama Anei");
+  result = find3({ name: "mamei" });
+  assert.equal(result.verdict, "resolved");
+  assert.deepEqual([result.candidates[0].displayName, result.candidates[0].match.source, result.candidates[0].match.value], ["Elena Pop", "note", "Mama mea"]);
+  assert.equal(result.candidates[0].match.score, 100 - 5 + 10);
+  person3(4, "Dan Stan");
+  db3.identity.setNote(phone(4), "tata 👴");
+  person3(5, "Irina Stan");
+  db3.identity.setNote(phone(5), "sora mea");
+  person3(6, "Maria Dobre");
+  db3.identity.setNote(phone(6), "vecina, sora lui Dan");
+  assert.deepEqual(find3({ name: "tata" }).candidates.map((c) => [c.displayName, c.match.source]), [["Dan Stan", "note"]]);
+  assert.deepEqual(find3({ name: "sora" }).candidates.map((c) => [c.displayName, c.match.source, c.match.resolvable]), [["Irina Stan", "note", true]]);
+  assert.equal(find3({ name: "sora" }).verdict, "resolved", "the neighbour who is Dan's sister is no one's here");
 });
 
 test("a qualifier lifts the Ana it describes and lowers the ones it does not", () => {
