@@ -7,7 +7,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 
-import { AccountRegistry, accountPolicy, parseAccountId, resolveAccount } from "../dist/accounts.js";
+import { AccountRegistry, accountPolicy, draftContextEnabled, parseAccountId, resolveAccount } from "../dist/accounts.js";
 import { accountPaths, paths } from "../dist/config.js";
 import { WhatsAppService } from "../dist/whatsapp.js";
 import { connectedService, DEFAULT_ACCOUNT, offlineConfig, openService } from "./helpers.mjs";
@@ -229,6 +229,40 @@ test("config writes --account stores the override in accounts.json, not .env", a
   assert.equal(existsSync(join(dir, ".env")), false);
   const file = JSON.parse(readFileSync(paths(dir).accountsFile, "utf8"));
   assert.equal(file.accounts.find((account) => account.id === "work").writes, false);
+});
+
+test("draft_context is on unless the record says false; the setter records only the exception", () => {
+  const dir = dataDir();
+  const registry = AccountRegistry.load(dir);
+  registry.add("work", "Work");
+  assert.equal(draftContextEnabled(registry.get("work")), true);
+  registry.setDraftContext("work", false);
+  assert.equal(AccountRegistry.load(dir).get("work").draft_context, false);
+  assert.equal(draftContextEnabled(AccountRegistry.load(dir).get("work")), false);
+  assert.equal(draftContextEnabled(AccountRegistry.load(dir).get("default")), true, "another account is untouched");
+  registry.setDraftContext("work", true);
+  assert.equal("draft_context" in AccountRegistry.load(dir).get("work"), false);
+
+  writeFileSync(
+    paths(dir).accountsFile,
+    JSON.stringify({ v: 2, default: "default", accounts: [{ id: "default", name: "default", enabled: true, owner: null, draft_context: "no" }] })
+  );
+  assert.throws(() => AccountRegistry.load(dir), (err) => err.code === "INVALID_ID" && /draft_context/.test(err.message));
+});
+
+test("config draft-context off --account turns one account's draft context off in accounts.json, and config shows it", async () => {
+  const dir = dataDir();
+  await wazap(dir, ["account", "add", "work"]);
+  const { stderr } = await wazap(dir, ["config", "draft-context", "off", "--account", "work"]);
+  assert.match(stderr, /draft context \(work\): off/);
+  const file = JSON.parse(readFileSync(paths(dir).accountsFile, "utf8"));
+  assert.equal(file.accounts.find((account) => account.id === "work").draft_context, false);
+  assert.equal(file.accounts.find((account) => account.id === "default").draft_context, undefined);
+  assert.match((await wazap(dir, ["config", "--account", "work"])).stderr, /draft context: off \(accounts\.json\)/);
+  assert.match((await wazap(dir, ["config"])).stderr, /draft context: on \(default\)/);
+  await wazap(dir, ["config", "draft-context", "on", "--account", "work"]);
+  assert.match((await wazap(dir, ["config", "--account", "work"])).stderr, /draft context: on \(default\)/);
+  await assert.rejects(wazap(dir, ["config", "draft-context", "maybe"]), (err) => /draft-context on\|off/.test(err.stderr));
 });
 
 test("config writes without --account still writes WAZAP_READ_ONLY", async () => {

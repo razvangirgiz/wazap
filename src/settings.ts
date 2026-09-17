@@ -1,6 +1,6 @@
 import { chmodSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
-import { AccountRegistry, accountPolicy, resolveAccount, type AccountRecord } from "./accounts.js";
+import { AccountRegistry, accountPolicy, draftContextEnabled, resolveAccount, type AccountRecord } from "./accounts.js";
 import { ask, askSecret, warnIfServerRunning } from "./cli.js";
 import { paths, writesHints, type Config } from "./config.js";
 import { WazapError, asWazapError } from "./errors.js";
@@ -121,6 +121,11 @@ const SETTINGS: readonly SettingRow[] = [
     source: (config) => config.sources.transport,
   },
   { label: "rate limit", value: effectiveRateLimit, source: rateLimitSource },
+  {
+    label: "draft context",
+    value: (config) => (draftContextEnabled(resolveAccount(config.dataDir, config.accountId).account) ? "on" : "off"),
+    source: (config) => (resolveAccount(config.dataDir, config.accountId).account.draft_context === undefined ? "default" : "accounts.json"),
+  },
 ];
 
 /** Every setting `wazap config <name> <value>` can change, and what each accepts. */
@@ -142,10 +147,14 @@ const COMMANDS: Record<string, { values: readonly string[]; apply: (config: Conf
       values: ["on", "off"],
       apply: applyWebhook,
     },
+    "draft-context": {
+      values: ["on", "off"],
+      apply: async (config, value) => applyDraftContext(config, value === "on"),
+    },
   };
 
 const USAGE_FIX =
-  "Run `wazap config writes on|off`, `wazap config transcribe local|openai|off`, `wazap config recall local|off`, `wazap config webhook on|off`, or `wazap config send allow|deny <list>|open`";
+  "Run `wazap config writes on|off`, `wazap config transcribe local|openai|off`, `wazap config recall local|off`, `wazap config webhook on|off`, `wazap config draft-context on|off`, or `wazap config send allow|deny <list>|open`";
 
 const SEND_USAGE_FIX =
   'Run `wazap config send` to see the rules, `wazap config send allow <list>` or `wazap config send deny <list>` with numbers and chat ids comma-separated (`none` empties the list), or `wazap config send open` to lift every restriction';
@@ -162,7 +171,7 @@ export async function runConfig(config: Config): Promise<void> {
     say("");
     say(
       dim(
-        "Change writes with `wazap config writes on|off`, transcription with `wazap config transcribe`, recall with `wazap config recall`, webhook with `wazap config webhook on|off`, send rules with `wazap config send`. Probe it with `wazap webhook test`."
+        "Change writes with `wazap config writes on|off`, transcription with `wazap config transcribe`, recall with `wazap config recall`, webhook with `wazap config webhook on|off`, the draft context with `wazap config draft-context on|off`, send rules with `wazap config send`. Probe it with `wazap webhook test`."
       )
     );
     const selected = resolveAccount(config.dataDir, config.accountId);
@@ -198,6 +207,27 @@ export async function runConfig(config: Config): Promise<void> {
     throw new WazapError("INVALID_ID", `Cannot set "${config.args.join(" ")}".`, USAGE_FIX);
   }
   await spec.apply(config, value);
+}
+
+/**
+ * `wazap config draft-context on|off`: whether find_contact hands an assistant
+ * the recent exchange and the user's style with a contact it resolved, for the
+ * selected account. Kept in accounts.json and read on every call, so it applies
+ * to the next find_contact without a restart. A contact tagged `#private`
+ * gets style only either way.
+ */
+function applyDraftContext(config: Config, on: boolean): void {
+  const selected = resolveAccount(config.dataDir, config.accountId);
+  const id = selected.account.id;
+  selected.registry.setDraftContext(id, on);
+  say(
+    ok(
+      on
+        ? `draft context (${id}): on — find_contact attaches the recent exchange and the user's style to a contact it resolves.`
+        : `draft context (${id}): off — find_contact attaches no messages and no style.`
+    )
+  );
+  say(dim(`Stored in ${shortPath(paths(config.dataDir).accountsFile)} — applies to the next find_contact.`));
 }
 
 /**

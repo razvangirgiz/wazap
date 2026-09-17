@@ -23,6 +23,11 @@ export interface AccountRecord {
   send_allow?: string[];
   /** Refused no matter what send_allow says. Entries are chat ids or phone numbers. */
   send_deny?: string[];
+  /**
+   * `false` stops find_contact attaching the draft context (the recent
+   * exchange and the user's style) for this account; absent means on.
+   */
+  draft_context?: boolean;
 }
 
 export interface AccountsFile {
@@ -61,6 +66,11 @@ export function accountPolicy(
     readOnly: config.readOnly || account.writes === false,
     rateLimit: account.rate_limit ?? config.rateLimitPerMinute,
   };
+}
+
+/** Whether find_contact may attach the draft context for this account: on unless the record says `draft_context: false`. */
+export function draftContextEnabled(account: Pick<AccountRecord, "draft_context">): boolean {
+  return account.draft_context !== false;
 }
 
 /** Atomic JSON write: tmp plus rename, mode 0600, the same contract as daemon.json. */
@@ -140,6 +150,12 @@ function parseAccountRecord(value: unknown, file: string): AccountRecord {
   }
   for (const field of ["send_allow", "send_deny"] as const) {
     if (value[field] !== undefined) record[field] = sendRuleList(value.id, field, value[field], ` in ${file}`);
+  }
+  if (value.draft_context !== undefined) {
+    if (typeof value.draft_context !== "boolean") {
+      throw new WazapError("INVALID_ID", `Account "${value.id}" in ${file} has a bad draft_context flag.`, FIX_POLICY);
+    }
+    record.draft_context = value.draft_context;
   }
   return {
     ...record,
@@ -330,6 +346,18 @@ export class AccountRegistry {
 
   setWrites(id: string, writes: boolean): void {
     this.commit(this.withAccount(id, (account) => ({ ...account, writes })));
+  }
+
+  /** On drops the key, so the file only ever records the exception. */
+  setDraftContext(id: string, on: boolean): void {
+    this.commit(
+      this.withAccount(id, (account) => {
+        const next = { ...account };
+        if (on) delete next.draft_context;
+        else next.draft_context = false;
+        return next;
+      })
+    );
   }
 
   /**
