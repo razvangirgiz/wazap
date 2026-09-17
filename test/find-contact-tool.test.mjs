@@ -259,3 +259,11 @@ test("an answer over several accounts that is not one contact names no account",
   assert.equal(named.account_id, "default", "one account asked, that account");
   await hub.stop();
 });
+
+test("find_contact's limit says ambiguous answers list at most five people from each account", () => {
+  const server = fakeServer();
+  registerTools(server, asToolSource({}), { allowWrite: false });
+  const { limit } = server.tools.get("find_contact").meta.inputSchema;
+  assert.match(limit.description, /at most 5 from each account/);
+  assert.equal(limit.safeParse(11).success, false);
+});

@@ -1091,7 +1091,13 @@ ambiguous or not_found: ask the user, then call again; never send to a guess.`,
         .optional()
         .describe('What tells two of that name apart: "contabilitate", a group, or the last 4 digits of the number'),
       kind: z.enum(["person", "group", "any"]).default("any").describe("Only people, only groups, or both"),
-      limit: z.number().int().min(1).max(10).default(5).describe("Candidates listed when ambiguous (1-10)"),
+      limit: z
+        .number()
+        .int()
+        .min(1)
+        .max(10)
+        .default(5)
+        .describe("Candidates listed when ambiguous (1-10): at most 5 from each account, so above 5 only across accounts"),
       include_context: z
         .boolean()
         .default(true)
