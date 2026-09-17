@@ -375,7 +375,7 @@ test("hybrid: function words do not make a question long, so one content word of
   // "what", "are", "we": three looked-up words, two of them content words.
   const english = search("what time are we meeting");
   assert.deepEqual(keys(english), ["TIME"]);
-  assert.ok(english.hits[0].similarity > 0.45 && english.hits[0].similarity < 0.5, "kept for its word, its meaning under the floor");
+  assert.deepEqual([english.hits[0].lexicalRank, english.hits[0].semanticRank], [1, null], "kept for its word, its meaning (0.49) under the floor");
   assert.deepEqual(keys(search("Când ne vedem mâine?")), ["VEDEM"], "„când” is a function word, „vedem” and „mâine” the question");
   assert.deepEqual(keys(search("la ce oră ne vedem")), ["VEDEM"]);
   // Three content words still need two of them.
@@ -408,6 +408,74 @@ test("hybrid: function words answer nothing, neither beside a long question nor 
   const near = search("the", { vector: direction(0) });
   assert.deepEqual(keys(near), ["NEAR"]);
   assert.ok(near.hits[0].lexicalRank !== null && near.hits[0].similarity > 0.9, "a function-word hit its meaning vouches for stays, as both");
+  db.close();
+});
+
+const DAY = 86_400_000;
+
+/** A vector whose cosine with direction(0) is `cosine`, bent toward `axis`. */
+function atCosine(cosine, axis) {
+  return direction(0, axis, Math.sqrt(1 / (cosine * cosine) - 1));
+}
+
+test("hybrid with recency: an old close match outranks fresh weak ones sharing its word, however few candidates meaning takes", () => {
+  const { db, clock } = openTemp();
+  clock.now = T0 + 400 * DAY;
+  const put = (key, daysAgo, text, vector) => {
+    db.messages.upsert(textMessage(PEER, key, clock.now - daysAgo * DAY, text));
+    assert.equal(db.vectors.put(sid(false, PEER, key), MODEL, vector, wordsOf(db, sid(false, PEER, key))), true);
+  };
+  put("OLD", 120, "Cafeneaua de pe Florilor 12 are terasă și deschide la opt", atCosine(0.66, 1));
+  put("F1", 1, "Cafeneaua a fost plină azi", atCosine(0.34, 2));
+  put("F2", 2, "Am uitat umbrela la cafeneaua lor", atCosine(0.3, 3));
+  put("F3", 3, "Cafeneaua era închisă", atCosine(0.25, 4));
+  const search = (over = {}) =>
+    db.vectors.hybrid({ query: "unde e cafeneaua", vector: direction(0), model: MODEL, limit: 10, minSimilarity: 0.35, recencyHalfLifeMs: 30 * DAY, ...over });
+  const keys = (result) => result.hits.map((hit) => hit.message.keyId);
+
+  const result = search();
+  assert.deepEqual(keys(result), ["OLD", "F1", "F2", "F3"], "four months old, it is still the one that answers");
+  assert.deepEqual([result.hits[0].lexicalRank, result.hits[0].semanticRank], [4, 1]);
+  assert.ok(result.hits.slice(1).every((hit) => hit.semanticRank === null && hit.similarity === null), "the fresh ones are word hits only");
+  assert.equal(keys(search({ semanticCandidates: 1 }))[0], "OLD", "the one candidate meaning takes is the most similar, not the freshest");
+  db.close();
+});
+
+test("hybrid: a word hit whose meaning is under the floor fuses as a word hit, never over a match by meaning alone", () => {
+  const { db } = openTemp();
+  const put = (key, ts, text, vector) => {
+    db.messages.upsert(textMessage(PEER, key, ts, text));
+    assert.equal(db.vectors.put(sid(false, PEER, key), MODEL, vector, wordsOf(db, sid(false, PEER, key))), true);
+  };
+  put("WORD", T0, "Factura a venit", atCosine(0.3, 1));
+  put("MEANING", T0 + 1000, "Plata pentru curent e scadentă mâine", atCosine(0.6, 2));
+  const result = db.vectors.hybrid({ query: "factura de gaz", vector: direction(0), model: MODEL, limit: 10, minSimilarity: 0.35 });
+  const byKey = new Map(result.hits.map((hit) => [hit.message.keyId, hit]));
+  assert.deepEqual([...byKey.keys()], ["MEANING", "WORD"]);
+  assert.deepEqual([byKey.get("WORD").lexicalRank, byKey.get("WORD").semanticRank, byKey.get("WORD").similarity], [1, null, null]);
+  assert.ok(byKey.get("WORD").score <= byKey.get("MEANING").score, "its meaning under the floor adds nothing to its words");
+  db.close();
+});
+
+test("hybrid with recency: equal matches go newest first, an old borderline one must be closer, a strong old one still counts", () => {
+  const { db, clock } = openTemp();
+  clock.now = T0 + 400 * DAY;
+  const put = (key, daysAgo, text, vector) => {
+    db.messages.upsert(textMessage(PEER, key, clock.now - daysAgo * DAY, text));
+    assert.equal(db.vectors.put(sid(false, PEER, key), MODEL, vector, wordsOf(db, sid(false, PEER, key))), true);
+  };
+  put("TWIN_OLD", 60, "Am lăsat cheile la portar", atCosine(0.6, 1));
+  put("TWIN_NEW", 1, "Cheile sunt la vecina de la 3", atCosine(0.6, 2));
+  put("EDGE_OLD", 36, "Ok mersi", atCosine(0.36, 3));
+  put("EDGE_NEW", 1, "Bine atunci", atCosine(0.36, 4));
+  put("STRONG_OLD", 365, "Rezerva e în cutia poștală", atCosine(0.52, 5));
+  const result = db.vectors.hybrid({ query: "zzz", vector: direction(0), model: MODEL, limit: 10, minSimilarity: 0.35, recencyHalfLifeMs: 30 * DAY });
+  assert.deepEqual(
+    result.hits.map((hit) => hit.message.keyId),
+    ["TWIN_NEW", "TWIN_OLD", "STRONG_OLD", "EDGE_NEW"],
+    "a month past its floor, a borderline guess is dropped; a year-old 0.52 keeps 70% of it"
+  );
+  assert.ok(result.hits.every((hit) => hit.lexicalRank === null));
   db.close();
 });
 

@@ -242,7 +242,7 @@ const PREVIEW_VIDEO_MAX_BYTES = 25_000_000;
 const RECENT_GROUP_META_MAX = 12;
 /** Hybrid hits recall ranks for variety before it cuts the list to the limit. */
 const RECALL_RERANK_WINDOW = 100;
-/** A match found by meaning counts half as much a month on, as the old recall index ranked it. */
+/** A match found by meaning loses half its way down to 70% each month: recency orders close matches, never buries a clearly closer old one. */
 const RECALL_RECENCY_HALF_LIFE_MS = 30 * 86_400_000;
 /** Messages get_recent_messages returns per chat: the newest of its window, as many as main's per-chat ring held. */
 const RECENT_PER_CHAT_MAX = 2_000;

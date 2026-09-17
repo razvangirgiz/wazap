@@ -840,7 +840,7 @@ test("a near-duplicate in a second chat trails the list instead of taking a slot
   }
 });
 
-test("a match found by meaning fades with age: a month-old closer match ranks below a fresh one", async () => {
+test("a match found by meaning fades with age: a two-month-old, slightly closer match ranks below a fresh one", async () => {
   const stub = await stubEmbedServer();
   const { svc, sock } = await serviceWith({ WAZAP_RECALL: "local", WAZAP_EMBED_URL: stub.url });
   try {

@@ -5,7 +5,8 @@
  * Vectors keep recall's conventions so an existing index imports without
  * re-embedding: L2-normalized, quantized to int8 as round(x * 127), so the
  * cosine similarity against a unit query is dot(query, vec) / 127. The
- * similarity floor applies to that raw cosine.
+ * similarity floor applies to that cosine, weighed by the match's age when a
+ * search asks for recency.
  *
  * The scan is exact brute force over the rows the filters leave, on the
  * calling thread. It needs only a read connection, so it can move to a
@@ -24,6 +25,14 @@ import type { MessageFilter, Page, StoredMessage } from "./types.js";
 /** Reciprocal Rank Fusion's damping constant, the value from the original paper. */
 export const RRF_K = 60;
 const DEFAULT_CANDIDATES = 100;
+/**
+ * The least a match's age leaves of its similarity when recency weighs it: a
+ * fresh match counts whole, one a half-life old halfway down to this, and none
+ * less. Recency orders close matches and holds an old borderline one to a
+ * slightly higher bar; it never buries a clearly closer old match under weaker
+ * fresh ones.
+ */
+const RECENCY_MIN_WEIGHT = 0.7;
 const DEFAULT_BACKLOG_SCAN = 20_000;
 /** A hybrid query word shorter than this names too much to be worth an index lookup. */
 const MIN_TOKEN_CHARS = 4;
@@ -102,6 +111,12 @@ export function quantizeVector(vector: ArrayLike<number>): Int8Array {
 export function contentHash(text: string | null, transcript: string | null): string {
   const part = (value: string | null): string => (value === null ? "\u0000" : `\u0001${value}`);
   return createHash("sha256").update(`${part(text)}\u0002${part(transcript)}`).digest("hex").slice(0, 32);
+}
+
+/** What recency leaves of message `id`'s similarity: 1 without a half-life or when fresh, halving the way down to RECENCY_MIN_WEIGHT each half-life. */
+function recencyWeight(id: number, now: number, halfLifeMs: number | undefined): number {
+  if (halfLifeMs === undefined) return 1;
+  return RECENCY_MIN_WEIGHT + (1 - RECENCY_MIN_WEIGHT) * Math.pow(0.5, Math.max(0, now - secondOfId(id) * 1000) / halfLifeMs);
 }
 
 /** Cosine similarity of a unit query against a stored int8 vector. */
@@ -217,9 +232,9 @@ export interface VectorSearchInput extends MessageFilter {
   model: string;
   vector: ArrayLike<number>;
   limit: number;
-  /** Raw cosine a hit must reach; 0 keeps every positive match. */
+  /** Cosine, weighed by age when a half-life is given, a hit must reach; 0 keeps every positive match. */
   minSimilarity?: number;
-  /** Rank by similarity × 0.5^(age / halfLife) instead of plain similarity; the floor still applies to similarity. */
+  /** Weigh similarity by age for the floor and the order: similarity × recencyWeight. The `limit` kept are still the most similar. */
   recencyHalfLifeMs?: number;
 }
 
@@ -235,13 +250,14 @@ export interface HybridSearchInput extends MessageFilter {
   /** The embedded query; without it the search is lexical only and says so. */
   vector?: ArrayLike<number> | null;
   limit: number;
-  /** Raw cosine a hit found only by meaning must reach; lexical hits need none. */
+  /** Cosine, weighed by age when a half-life is given, a hit must reach to count by its meaning; lexical hits need none unless they are weak. */
   minSimilarity: number;
   lexicalCandidates?: number;
+  /** How many of the most similar messages whose weighed similarity reaches the floor the semantic side ranks. */
   semanticCandidates?: number;
   /** FTS rows examined on the lexical side before it stops. */
   scanCap?: number;
-  /** Rank the semantic side by similarity × 0.5^(age / halfLife); a meaning-only hit's floor still applies to similarity. */
+  /** Weigh the semantic side's similarity by age, for the floor and the order: similarity × recencyWeight. Its candidates are still the most similar. */
   recencyHalfLifeMs?: number;
 }
 
@@ -488,7 +504,7 @@ export class Vectors {
     else this.c.run("INSERT OR REPLACE INTO meta(key, value) VALUES (?, ?)", key, value);
   }
 
-  /** Brute-force cosine over the filtered rows; the best `limit` above the floor, hydrated. */
+  /** Brute-force cosine over the filtered rows; the most similar `limit` whose weighed similarity reaches the floor, hydrated. */
   vectorSearch(input: VectorSearchInput): VectorHit[] {
     const limit = Math.max(1, Math.floor(input.limit));
     const filter = this.search.resolveFilter(input);
@@ -512,8 +528,8 @@ export class Vectors {
     halfLifeMs: number | undefined
   ): Array<{ id: number; similarity: number; score: number }> {
     const now = this.c.now();
+    // Kept by raw similarity, so fresh weak matches never crowd out an old close one; age only raises the floor and reorders.
     const top = new TopK(limit);
-    const similarities = new Map<number, number>();
     // A scan of embeddings alone cannot see a clear barrier whose purge has not
     // run yet; while one is pending, the scan goes through messages and chats.
     const joined = filter.narrowsRows || this.messages.purgePending();
@@ -526,19 +542,17 @@ export class Vectors {
       const bytes = row[1] as Uint8Array;
       if (bytes.byteLength !== unit.length) continue;
       const similarity = int8Similarity(unit, new Int8Array(bytes.buffer, bytes.byteOffset, bytes.byteLength));
-      if (similarity <= 0 || similarity < floor) continue;
-      const age = now - secondOfId(id) * 1000;
-      const score = halfLifeMs === undefined ? similarity : similarity * Math.pow(0.5, Math.max(0, age) / halfLifeMs);
-      if (score <= top.floor) continue;
+      if (similarity <= 0 || similarity < floor || similarity <= top.floor) continue;
+      if (halfLifeMs !== undefined && similarity * recencyWeight(id, now, halfLifeMs) < floor) continue;
       if (!joined && (secondOfId(id) === edgeLow || secondOfId(id) === edgeHigh) && !this.inTimeRange(id, filter)) continue;
-      top.push(score, id);
-      similarities.set(id, similarity);
+      top.push(similarity, id);
     }
     const expired = joined ? null : this.expiredIds(now);
-    return top
+    const ranked = top
       .sorted()
       .filter((hit) => expired === null || !expired.has(hit.id))
-      .map((hit) => ({ id: hit.id, similarity: similarities.get(hit.id)!, score: hit.score }));
+      .map((hit) => ({ id: hit.id, similarity: hit.score, score: hit.score * recencyWeight(hit.id, now, halfLifeMs) }));
+    return halfLifeMs === undefined ? ranked : ranked.sort((a, b) => b.score - a.score || b.id - a.id);
   }
 
   /**
@@ -584,12 +598,15 @@ export class Vectors {
   /**
    * Substring words and meaning in one call. The lexical side looks each
    * query word up in the trigram index and ranks the newest candidates by how
-   * many words they carry; the semantic side ranks by cosine. Reciprocal Rank
-   * Fusion merges the two. A hit only the semantic side found must clear
-   * `minSimilarity`, so a question with no answer comes back empty; so must a
-   * lexical hit carrying a single content word of a query of three content
-   * words or more, or any lexical hit of a query made only of function words,
-   * unless it holds the whole query.
+   * many words they carry; the semantic side takes the most similar messages
+   * whose similarity, weighed by age, reaches `minSimilarity`, and orders them
+   * by that weighed similarity. Reciprocal Rank Fusion merges the two, so a
+   * meaning under the floor adds nothing: a question with no answer comes back
+   * empty, and a word hit with a weak meaning ranks as a word hit. A word hit
+   * the words alone do not vouch for stays only when its meaning clears the
+   * floor: one carrying a single content word of a query of three content words
+   * or more, or any of a query made only of function words, unless it holds the
+   * whole query.
    */
   hybrid(input: HybridSearchInput): HybridResult {
     const limit = Math.max(1, Math.floor(input.limit));
@@ -599,8 +616,11 @@ export class Vectors {
 
     const unit = semantic ? unitVector(input.vector!) : null;
     const lexical = this.lexicalCandidates(input.query, filter, input.lexicalCandidates ?? DEFAULT_CANDIDATES, input.scanCap);
+    // Only a meaning at the floor ranks: a word hit whose weighed meaning falls under it fuses as a word hit alone.
     const semanticRanked =
-      unit === null ? [] : this.rank(filter, input.model, unit, input.semanticCandidates ?? DEFAULT_CANDIDATES, 0, input.recencyHalfLifeMs);
+      unit === null
+        ? []
+        : this.rank(filter, input.model, unit, input.semanticCandidates ?? DEFAULT_CANDIDATES, input.minSimilarity, input.recencyHalfLifeMs);
 
     const fused = new Map<number, { score: number; lexicalRank: number | null; semanticRank: number | null; similarity: number | null }>();
     lexical.ids.forEach((id, index) => {
@@ -613,18 +633,19 @@ export class Vectors {
         entry.score += contribution;
         entry.semanticRank = index + 1;
         entry.similarity = hit.similarity;
-      } else if (hit.similarity >= input.minSimilarity) {
+      } else {
         fused.set(hit.id, { score: contribution, lexicalRank: null, semanticRank: index + 1, similarity: hit.similarity });
       }
     });
     if (lexical.weak.length > 0) {
-      // A weak lexical hit stays only on its meaning, held to a meaning-only hit's bar: a positive cosine at the floor,
-      // whether or not the semantic side ranked it among its candidates.
-      const unranked = lexical.weak.filter((id) => fused.get(id)!.similarity === null);
+      // A weak lexical hit stays only on its meaning, held to a meaning-only hit's bar: a positive weighed cosine at the
+      // floor, which a ranked one has already cleared and an unranked one may clear outside the candidate count.
+      const unranked = lexical.weak.filter((id) => fused.get(id)!.semanticRank === null);
       const cosines = unit === null ? new Map<number, number>() : this.similarities(unranked, input.model, unit);
-      for (const id of lexical.weak) {
-        const similarity = fused.get(id)!.similarity ?? cosines.get(id) ?? 0;
-        if (similarity <= 0 || similarity < input.minSimilarity) fused.delete(id);
+      const now = this.c.now();
+      for (const id of unranked) {
+        const similarity = cosines.get(id) ?? 0;
+        if (similarity <= 0 || similarity * recencyWeight(id, now, input.recencyHalfLifeMs) < input.minSimilarity) fused.delete(id);
       }
     }
     const best = [...fused.entries()].sort((a, b) => b[1].score - a[1].score || b[0] - a[0]).slice(0, limit);
