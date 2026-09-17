@@ -77,28 +77,26 @@ export const CATCHUP_INPUT = {
     .string()
     .min(1)
     .optional()
-    .describe(
-      '"last" (default): since this client\'s last complete catch-up, or the last 24 h the first time; "previous": that catch-up again; or an ISO date or time (2026-09-16, 2026-09-16T18:00, with an optional offset) from the last 14 days'
-    ),
+    .describe('"last" (default); "previous" repeats that catch-up; or an ISO date or time from the last 14 days'),
   hours: z
     .number()
     .min(1)
     .max(336)
     .optional()
-    .describe("An explicit window of the last N hours instead; it never moves the catch-up mark"),
+    .describe("The last N hours instead; never moves the mark"),
   budget_tokens: z
     .number()
     .int()
     .min(MIN_BUDGET_TOKENS)
     .max(MAX_BUDGET_TOKENS)
     .default(DEFAULT_BUDGET_TOKENS)
-    .describe("How long the answer may be, in tokens (500-8000)"),
+    .describe("Answer length in tokens"),
   include: z
     .array(z.enum(CATCHUP_SECTIONS))
     .min(1)
     .optional()
-    .describe("Only these sections; the mark moves only when every section was given"),
-  cursor: z.string().min(1).optional().describe("more.cursor from the previous page"),
+    .describe("Only these sections; the mark then stays"),
+  cursor: z.string().min(1).optional().describe("more.cursor"),
 };
 
 const windowShape = z.object({
@@ -217,7 +215,7 @@ const storiesEntry = z.object({
 
 const skipCount = z.object({ chats: z.number(), messages: z.number() });
 const footerShape = {
-  voice_untranscribed: z.array(z.string()).optional().describe("Voice notes nobody transcribed, by message id, for transcribe_audio"),
+  voice_untranscribed: z.array(z.string()).optional().describe("Voice notes nobody transcribed, by message id, for get_media"),
   voice_untranscribed_more: z.number().optional().describe("Voice notes nobody transcribed that are not named"),
   skipped: z
     .object({ no_catchup: skipCount.optional(), left_groups: skipCount.optional(), newsletters: skipCount.optional(), broadcasts: skipCount.optional() })
@@ -294,6 +292,17 @@ function clock(ms: number, now: number): string {
   return `${at.getDate()} ${at.toLocaleDateString("en-GB", { month: "short" })} ${time}`;
 }
 
+/** "Wed 12:29 – Thu 12:29": an end on another day than the start says its day too, even today. */
+function span(from: number, to: number, now: number): string {
+  const start = clock(from, now);
+  if (new Date(from).toDateString() === new Date(to).toDateString()) return `${start} – ${clock(to, now)}`;
+  const end = new Date(to);
+  const time = `${String(end.getHours()).padStart(2, "0")}:${String(end.getMinutes()).padStart(2, "0")}`;
+  const day = (now - to) / 86_400_000;
+  const label = day < 6 && day > -1 ? end.toLocaleDateString("en-GB", { weekday: "short" }) : `${end.getDate()} ${end.toLocaleDateString("en-GB", { month: "short" })}`;
+  return `${start} – ${label} ${time}`;
+}
+
 function age(ms: number, now: number): string {
   const elapsed = Math.max(0, now - ms);
   if (elapsed >= 86_400_000) return `${Math.floor(elapsed / 86_400_000)}d`;
@@ -365,7 +374,7 @@ function windowPhrase(window: CatchupWindow, now: number): string {
     case "mark_expired":
       return "the last 24 h (the last catch-up was over 7 days ago)";
     case "previous":
-      return `the previous catch-up again (${clock(since, now)} – ${clock(window.untilAt, now)})`;
+      return `the previous catch-up again (${span(since, window.untilAt, now)})`;
     case "hours":
       return `the last ${Math.round((now - since) / HOUR)} h`;
     case "since":
@@ -719,8 +728,12 @@ function hold(snapshot: Snapshot, asked: number): void {
   while (held.length > MAX_SNAPSHOTS) release(held[0]!);
 }
 
+/** Random bytes in a cursor; base64url spells them in CURSOR_CHARS characters. */
+const CURSOR_BYTES = 18;
+const CURSOR_CHARS = Math.ceil((CURSOR_BYTES * 4) / 3);
+
 function cursorFor(snapshot: Snapshot, start: number): string {
-  const cursor = randomBytes(18).toString("base64url");
+  const cursor = randomBytes(CURSOR_BYTES).toString("base64url");
   snapshot.cursors.add(cursor);
   byCursor.set(cursor, { snapshot, start });
   return cursor;
@@ -895,7 +908,7 @@ async function givePage(snapshot: Snapshot, start: number, budgetChars: number, 
   const longestName = Math.max(...answered.map((view) => view.name.length));
   const headingChars = (item: Item): number => `## ${SECTION_TITLES[item.section]}${multi ? ` · ${"x".repeat(longestName)}` : ""} (99)`.length + 1;
   const headingKey = (item: Item): string => (multi ? `${item.section}|${item.account}` : item.section);
-  const moreChars = 140 + randomBytes(18).toString("base64url").length;
+  const moreChars = 140 + CURSOR_CHARS;
 
   // 1. The skeleton: all of it with the footer, or as much as fits before a `more` line (at least one entry).
   const skeletonOf = (items: readonly Item[]): number => {
@@ -1115,7 +1128,7 @@ function footerLines(views: readonly AccountView[], multi: boolean): string[] {
       lines.push(
         scan.voiceUntranscribed.length === 0
           ? `${label}Voice notes not transcribed (${scan.voiceUntranscribedCount}).`
-          : `${label}Voice notes not transcribed (${scan.voiceUntranscribedCount}): ${scan.voiceUntranscribed.join(", ")}${more > 0 ? `, +${more}` : ""} — transcribe_audio reads one.`
+          : `${label}Voice notes not transcribed (${scan.voiceUntranscribedCount}): ${scan.voiceUntranscribed.join(", ")}${more > 0 ? `, +${more}` : ""} — get_media reads one.`
       );
     }
     const skipped = skippedParts(scan);

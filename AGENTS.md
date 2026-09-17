@@ -70,7 +70,9 @@ a fictional two-account world (`eval/fixtures/world.json`) on fake sockets: it
 refuses `~/.wazap` and the live ports, can never open WhatsApp, and records a
 trace of every tool call and every write that would have reached WhatsApp. The
 cases (`eval/cases/*.json`) assert on capabilities, which `eval/tool-map/`
-maps to tool names per version.
+maps to tool names per version; `only_when` narrows a tool that serves several
+(a 1.0 `get_media` call is `transcribe` only when it transcribed or named a
+voice note or audio).
 
 - `node scripts/eval/run-claude.mjs --cases baseline-0.23 --model sonnet` runs
   headless Claude Code, isolated to the evaluation server, and scores the run.
@@ -79,7 +81,8 @@ maps to tool names per version.
   Costs real subscription usage: `--max-budget-usd` per attempt, `--stop-at-usd`
   for the run. Never Fable.
 - `node scripts/eval/score.mjs <run-dir> [--compare <summary.json>] [--judge]`
-  rescores a run; the LLM judge is off by default and informative only.
+  rescores a run on the 1.0 map; a run recorded against 0.23.x takes
+  `--tool-map 0.23`. The LLM judge is off by default and informative only.
 - `eval/chatgpt-protocol.md` with `scripts/eval/manual.mjs` is the manual
   ChatGPT arm.
 
@@ -156,7 +159,7 @@ settings; do not remove one while a test sets it.
   bridge tests, and `test/calfa-contract.test.mjs`, rely on it.
 - `WAZAP_LIVE_TIMEOUT_MS` — how long a live probe (`status --live`, setup's
   check, `contacts resync`) waits for WhatsApp; 15 s by default.
-- `WAZAP_TRANSCRIBE_AUTO=0` — keeps `transcribe_audio`, stops background
+- `WAZAP_TRANSCRIBE_AUTO=0` — keeps `get_media`'s transcripts, stops background
   transcription of incoming notes.
 - `WAZAP_TRANSCRIBE_URL`, `WAZAP_TRANSCRIBE_MODEL` — another OpenAI-compatible
   endpoint and its model; the tests point the URL at a local stub.

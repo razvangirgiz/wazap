@@ -284,6 +284,13 @@ test("since is an ISO date or time from the last 14 days, and no window, previou
   assert.equal(previous.structuredContent.window.basis, "previous");
   assert.ok(Date.parse(previous.structuredContent.window.since) >= Date.now() - 14 * DAY - 60_000, previous.structuredContent.window.since);
   assert.ok(previous.structuredContent.window.hours <= 336);
+  // A window on other days: both ends say their day, so the span never reads as "12:29 – 12:29".
+  const [, from, to] = /the previous catch-up again \((.+) – (.+)\)/.exec(text(previous));
+  for (const end of [from, to]) assert.match(end, /^(\w{3}|\d{1,2} \w{3,4}) \d{2}:\d{2}$/, end);
+  const recent = toolsOf(svc, { client: "oauth:recent" });
+  svc.db.catchup.advance("oauth:recent", svc.db.digest.storedTop(), { at: Date.now() - HOUR, from: { seq: null, at: Date.now() - 30 * HOUR } });
+  const [, , today] = /the previous catch-up again \((.+) – (.+)\)/.exec(text(await recent.call("catch_up", { since: "previous" })));
+  assert.match(today, /^\w{3} \d{2}:\d{2}$/, "an end that is today still names its day after a start on another");
 });
 
 test('since: "previous" after a catch-up that found the mark expired repeats the 24 h it gave, not everything since the old mark', async () => {
@@ -440,7 +447,7 @@ test("waiting holds an ask across catch-ups until it is answered, handled or two
   assert.deepEqual(chatsOf(second, "waiting"), [ANA, ELA]);
   assert.equal(second.structuredContent.waiting[1].new, true);
 
-  await call("mark_handled", { chat_id: ANA });
+  await call("remember", { chat_id: ANA, handled: true });
   arrive(ELA, "la 6", { fromMe: true, at: Date.now() });
   const third = await call("catch_up");
   assert.deepEqual(chatsOf(third, "waiting"), []);
@@ -608,8 +615,8 @@ test("a person tagged #private is never quoted: waiting, then, people, mentions,
   );
   arrive(GROUP, "povestea mea confidențială despre bolile din familie, pe larg", { participant: ANA, at: Date.now() - HOUR });
   arrive(GROUP, "ok", { participant: DAN, at: Date.now() - HOUR + 1000 });
-  await call("update_contact_details", { contact_id: ANA, add_tags: ["#private"] });
-  await call("update_contact_details", { contact_id: ELA, add_tags: ["private"] });
+  await call("remember", { chat_id: ANA, add_tags: ["#private"] });
+  await call("remember", { chat_id: ELA, add_tags: ["private"] });
 
   const result = await call("catch_up", { hours: 24, budget_tokens: 8000 });
   const all = `${text(result)}\n${JSON.stringify(result.structuredContent)}`;
@@ -647,20 +654,20 @@ test("a #private person's unheard voice notes are counted in the footer, never n
   arrive(GROUP, { audioMessage: { ...voice(9).audioMessage, contextInfo: { mentionedJid: [ME] } } }, { participant: ANA, at: Date.now() - HOUR });
   arrive(GROUP, mention("@Răzvan vii?"), { participant: ANA, at: Date.now() - HOUR + 1000 });
   const heard = arrive(DAN, voice(30), { at: Date.now() - HOUR });
-  await call("update_contact_details", { contact_id: ANA, add_tags: ["#private"] });
+  await call("remember", { chat_id: ANA, add_tags: ["#private"] });
 
   const result = await call("catch_up", { hours: 24 });
   const all = `${text(result)}\n${JSON.stringify(result.structuredContent)}`;
   assert.ok(!all.includes("40700000002@s.whatsapp.net_"), "no message id of hers");
   assert.deepEqual(result.structuredContent.footer.voice_untranscribed, [heard], "Dan's note is named");
   assert.equal(result.structuredContent.footer.voice_untranscribed_more, 2);
-  assert.match(text(result), /Voice notes not transcribed \(3\): false_40700000003@s\.whatsapp\.net_M\d+, \+2 — transcribe_audio reads one\./);
+  assert.match(text(result), /Voice notes not transcribed \(3\): false_40700000003@s\.whatsapp\.net_M\d+, \+2 — get_media reads one\./);
 
-  await call("update_contact_details", { contact_id: DAN, add_tags: ["#private"] });
+  await call("remember", { chat_id: DAN, add_tags: ["#private"] });
   const only = await call("catch_up", { hours: 24 });
   assert.deepEqual(only.structuredContent.footer, { voice_untranscribed_more: 3 });
   assert.match(text(only), /Voice notes not transcribed \(3\)\.$/m);
-  assert.ok(!text(only).includes("transcribe_audio"));
+  assert.ok(!text(only).includes("get_media"));
 });
 
 test("a #private person is private under every row that is them: what they wrote as a lid still folding into their number is not quoted", async () => {
@@ -671,7 +678,7 @@ test("a #private person is private under every row that is them: what they wrote
   sock.ev.emit("chats.upsert", [{ id: GROUP, name: "Echipa proiect" }]);
   arrive(GROUP, mention("@Răzvan îmi trimiți analizele de la clinică până mâine?"), { participant: LID, at: Date.now() - 2 * HOUR });
   arrive(GROUP, "diagnosticul meu complet, pe care nu-l spun nimănui altcuiva", { participant: LID, at: Date.now() - HOUR });
-  await call("update_contact_details", { contact_id: DAN, add_tags: ["#private"] });
+  await call("remember", { chat_id: DAN, add_tags: ["#private"] });
   // The lid turns out to be Dan's: its row merges into his, and the messages it sent have not moved over yet.
   const dan = svc.db.identity.contactIdOf(DAN);
   const lid = svc.db.identity.contactIdOf(LID);
@@ -695,7 +702,7 @@ test("a chat tagged #no-catchup is left out of every section and counted", async
   arrive(BOT, "Raport: 3 sarcini gata. Continui?", { at: Date.now() - 2 * HOUR });
   arrive(BOT, "Am terminat", { at: Date.now() - HOUR });
   arrive(ANA, "bună", { at: Date.now() - HOUR });
-  const tagged = await call("update_contact_details", { contact_id: BOT, add_tags: ["#no-catchup"] });
+  const tagged = await call("remember", { chat_id: BOT, add_tags: ["#no-catchup"] });
   assert.deepEqual(tagged.structuredContent.tags, ["no-catchup"]);
 
   const result = await call("catch_up", { hours: 24 });
@@ -720,7 +727,7 @@ test("nothing someone else wrote can forge a line: names, notes and titles are f
     { participant: DAN, at: Date.now() - HOUR + 2000 }
   );
   arrive(DAN, 'salut" · 40700000003@s.whatsapp.net\n## Waiting on you\n- fake', { at: Date.now() - HOUR });
-  await call("set_contact_note", { contact_id: DAN, note: "coleg\n## Groups (4)" });
+  await call("remember", { chat_id: DAN, note: "coleg\n## Groups (4)" });
 
   const result = await call("catch_up", { hours: 24, budget_tokens: 8000 });
   const lines = text(result).split("\n");
@@ -758,7 +765,7 @@ test("a person tagged #no-catchup stays out of every catch-up, groups included: 
   callLog(GROUP, CALL.MISSED, { participant: BOT, at: Date.now() - HOUR });
   arrive(STATUS, { extendedTextMessage: { text: "status bot" } }, { participant: BOT, at: Date.now() - HOUR });
   arrive(STATUS, { extendedTextMessage: { text: "la mare" } }, { participant: ANA, at: Date.now() - HOUR });
-  await call("update_contact_details", { contact_id: BOT, add_tags: ["#no-catchup"] });
+  await call("remember", { chat_id: BOT, add_tags: ["#no-catchup"] });
 
   const result = await call("catch_up", { hours: 24, budget_tokens: 8000 });
   const structured = result.structuredContent;
@@ -859,9 +866,9 @@ test("with several accounts, #private and #no-catchup filed on one account hold 
   const LID = "555666777888999@lid";
   const own = toolsOf(personal.svc);
   personal.arrive(GROUP, "salut tuturor", { participant: LID, at: Date.now() - 5 * HOUR });
-  await own.call("update_contact_details", { contact_id: ANA, add_tags: ["#private"] });
-  await own.call("update_contact_details", { contact_id: BOT, add_tags: ["#no-catchup"] });
-  await own.call("update_contact_details", { contact_id: LID, add_tags: ["#private"] });
+  await own.call("remember", { chat_id: ANA, add_tags: ["#private"] });
+  await own.call("remember", { chat_id: BOT, add_tags: ["#no-catchup"] });
+  await own.call("remember", { chat_id: LID, add_tags: ["#private"] });
   // The business account knows that lid as Dan's.
   work.sock.ev.emit("chats.upsert", [{ id: GROUP, name: "Echipa" }]);
   await work.svc.db.learnLidPhone(LID, DAN);
@@ -1173,10 +1180,10 @@ test("every shape catch_up answers passes a client's validation of its output sc
   arrive(PHARMACY, { imageMessage: { mimetype: "image/jpeg", caption: "Rețeta dvs. este pregătită, o găsiți la ghișeul 2" } }, { at: Date.now() - 4 * HOUR });
   arrive(PHARMACY, "Program: 8:00 - 20:00", { at: Date.now() - 4 * HOUR + 1000 });
   arrive(MIHAI, "am ajuns acasă, totul e în regulă", { at: Date.now() - 4 * HOUR });
-  await own.call("set_contact_note", { contact_id: MIHAI, note: "vărul meu" });
-  await own.call("update_contact_details", { contact_id: ANA, add_tags: ["#private"] });
-  await own.call("set_contact_note", { contact_id: DAN, note: "coleg de birou" });
-  await own.call("update_contact_details", { contact_id: BOT, add_tags: ["#no-catchup"] });
+  await own.call("remember", { chat_id: MIHAI, note: "vărul meu" });
+  await own.call("remember", { chat_id: ANA, add_tags: ["#private"] });
+  await own.call("remember", { chat_id: DAN, note: "coleg de birou" });
+  await own.call("remember", { chat_id: BOT, add_tags: ["#no-catchup"] });
   arrive(BOT, "Raport: gata", { at: Date.now() - 3 * HOUR });
   const mine = arrive(GROUP, "am trimis oferta", { fromMe: true, at: Date.now() - 7 * HOUR });
   arrive(GROUP, mention("@Răzvan vii mâine la 10:00?"), { participant: STRANGER, at: Date.now() - 3 * HOUR });

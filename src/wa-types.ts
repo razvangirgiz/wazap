@@ -157,7 +157,7 @@ export interface TranscriptionStatus {
   paused: { reason: string; until: string } | null;
 }
 
-/** One row of `get_status.accounts` / `list_accounts`. Policy `write_tools`, not the session bit. */
+/** One row of `get_status.accounts`. Policy `write_tools`, not the session bit. */
 export interface ListedAccount {
   id: string;
   name: string;
@@ -417,7 +417,7 @@ export interface RecallHit {
   /** What found it: the query's words, its meaning, or both. */
   matched: "words" | "meaning" | "both";
   message: MessageView;
-  /** The database holds the message only as text (from the earlier recall index): get_message and download_media cannot open it. */
+  /** The database holds the message only as text (from the earlier recall index): get_message and get_media cannot open it. */
   from_index: boolean;
 }
 
@@ -425,6 +425,8 @@ export interface RecallAnswer {
   hits: RecallHit[];
   /** The index at query time; "indexing" means more matches may still land. */
   index: RecallStatus;
+  /** More messages held the query's words than the word side examined: older word matches may be missing. */
+  lexicalCapped: boolean;
 }
 
 export interface HandledResult {
@@ -531,6 +533,14 @@ export interface MediaResult {
   filename: string;
   /** Base64 of images small enough to inline in the tool result. */
   inline_base64: string | null;
+}
+
+/** How a caller spends a transcription. */
+export interface TranscribeOptions {
+  /** Taken just before a provider runs: never for a transcript on hand, nor for one that cannot run. */
+  limit?: { take(): void };
+  /** Only a transcript on hand; none on hand is TRANSCRIBE_UNAVAILABLE, and no provider runs. */
+  cachedOnly?: boolean;
 }
 
 export interface TranscribeResult {
@@ -660,7 +670,7 @@ export interface WhatsAppApi {
   catchUpAdvance?(client: string, window: CatchupWindow): Promise<{ advanced: boolean }>;
   hasChat(jid: string): boolean;
   hasMessage(id: string): boolean;
-  /** What search_messages ran across; optional, so a stand-in need not count. */
+  /** What search ran across by words; optional, so a stand-in need not count. */
   searchCoverage?(chatId: string | undefined, opts?: { sinceMs?: number; untilMs?: number }): SearchCoverage | null;
   hasDraft(id: string): boolean;
   link(phone: string): Promise<PairingInfo>;
@@ -696,15 +706,9 @@ export interface WhatsAppApi {
   /** How a text draft to a direct chat compares with the user's own messages there; null without enough of them. */
   styleCheck?(chatJid: string, text: string): StyleCheck | null;
   updateContactDetails(contactId: string, edit: ContactDetailsEdit): Promise<ContactSummary>;
-  saveContact(
-    contactId: string,
-    name: string,
-    opts?: { firstName?: string; saveOnPhone?: boolean }
-  ): Promise<ContactSummary>;
-  removeContact(contactId: string): Promise<ContactSummary>;
   getGroupInfo(groupId: string): Promise<GroupInfo>;
   downloadMedia(messageId: string, saveTo?: string): Promise<MediaResult>;
-  transcribeAudio(messageId: string, language?: string): Promise<TranscribeResult>;
+  transcribeAudio(messageId: string, language?: string, opts?: TranscribeOptions): Promise<TranscribeResult>;
   waitForMessages(opts: WaitOptions): Promise<WaitResult>;
   getStories(hours: number): Promise<Synced<MessageView[]>>;
   setContactNote(contactId: string, note: string): Promise<ContactSummary>;
@@ -736,7 +740,6 @@ export interface WhatsAppApi {
   reactToMessage(messageId: string, emoji: string): Promise<{ message_id: string; emoji: string }>;
   forwardMessage(messageId: string, toChatId: string): Promise<SentMessage>;
   deleteMessage(messageId: string, forEveryone: boolean): Promise<{ message_id: string; for_everyone: boolean }>;
-  setOwnProfilePicture(source: MediaSource): Promise<{ profile_pic_url: string | null }>;
   manageChat(chatId: string, action: ChatAction, opts?: ChatActionOptions): Promise<ChatActionResult>;
   createGroup(name: string, participantIds: string[]): Promise<{ chat_id: string; participants: ParticipantResult[] }>;
   joinGroup(opts: { invite?: string; messageId?: string; confirm: boolean }): Promise<JoinGroupResult>;

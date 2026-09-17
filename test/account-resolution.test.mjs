@@ -65,6 +65,9 @@ function message(chat, text, { id = "M1", fromMe = false } = {}) {
   };
 }
 
+/** What a call answered: its structured content, or the `{ error, message, fix, account_id }` a tool with an output schema gives as text. */
+const answer = (result) => result.structuredContent ?? JSON.parse(result.content[0].text);
+
 function toolsOf(source, allowWrite = true) {
   const hub = asToolSource(source);
   const server = fakeServer();
@@ -86,12 +89,12 @@ test("given account_id uses that account", async () => {
 test("unknown account_id is ACCOUNT_NOT_FOUND; disabled is ACCOUNT_DISABLED", async () => {
   const { hub } = twoAccountHub({ disableWork: true });
   const tools = toolsOf(hub);
-  const missing = await tools.get("read_messages").handler({ chat_id: ANA, limit: 20, account_id: "ghost" });
-  assert.equal(missing.structuredContent.error, "ACCOUNT_NOT_FOUND");
-  assert.equal(missing.structuredContent.account_id, "ghost");
-  const disabled = await tools.get("read_messages").handler({ chat_id: ANA, limit: 20, account_id: "work" });
-  assert.equal(disabled.structuredContent.error, "ACCOUNT_DISABLED");
-  assert.match(disabled.structuredContent.message, /work/);
+  const missing = answer(await tools.get("read_messages").handler({ chat_id: ANA, limit: 20, account_id: "ghost" }));
+  assert.equal(missing.error, "ACCOUNT_NOT_FOUND");
+  assert.equal(missing.account_id, "ghost");
+  const disabled = answer(await tools.get("read_messages").handler({ chat_id: ANA, limit: 20, account_id: "work" }));
+  assert.equal(disabled.error, "ACCOUNT_DISABLED");
+  assert.match(disabled.message, /work/);
 });
 
 test("link_account on an unknown id tells the user to run wazap account add", async () => {
@@ -110,9 +113,9 @@ test("an account added after the hub started is served on the first call that na
   const tools = toolsOf(hub);
   // read_messages, not link_account: the link tool's process-wide rate bucket
   // is spent by the test above.
-  const result = await tools.get("read_messages").handler({ chat_id: ANA, limit: 20, account_id: "work" });
-  assert.notEqual(result.structuredContent.error, "ACCOUNT_NOT_FOUND");
-  assert.equal(result.structuredContent.account_id, "work");
+  const result = answer(await tools.get("read_messages").handler({ chat_id: ANA, limit: 20, account_id: "work" }));
+  assert.notEqual(result.error, "ACCOUNT_NOT_FOUND");
+  assert.equal(result.account_id, "work");
   assert.ok(hub.get("work"), "the account has a service of its own now");
   await hub.stop();
 });
@@ -124,10 +127,10 @@ test("an account added disabled after the hub started is ACCOUNT_DISABLED, namin
   fresh.add("work");
   fresh.disable("work");
   const tools = toolsOf(hub);
-  const result = await tools.get("read_messages").handler({ chat_id: ANA, limit: 20, account_id: "work" });
-  assert.equal(result.structuredContent.error, "ACCOUNT_DISABLED");
-  assert.match(result.structuredContent.fix, /account enable work/);
-  assert.doesNotMatch(result.structuredContent.fix, /restart/i);
+  const result = answer(await tools.get("read_messages").handler({ chat_id: ANA, limit: 20, account_id: "work" }));
+  assert.equal(result.error, "ACCOUNT_DISABLED");
+  assert.match(result.fix, /account enable work/);
+  assert.doesNotMatch(result.fix, /restart/i);
   assert.equal(hub.get("work"), undefined, "a disabled account gets no service");
 });
 
@@ -190,10 +193,10 @@ test("a message_id the default cannot resolve is tried on every account in turn"
   assert.equal(found.structuredContent.account_id, "work", "the account that answered is the one reported");
 
   const scoped = await tools.get("get_message").handler({ message_id: reported, account_id: "default" });
-  assert.equal(scoped.structuredContent.error, "MESSAGE_NOT_FOUND", "an explicit account_id keeps the lookup scoped");
+  assert.equal(answer(scoped).error, "MESSAGE_NOT_FOUND", "an explicit account_id keeps the lookup scoped");
 });
 
-test("download_media walks the accounts until a store files the id", async () => {
+test("get_media walks the accounts until a store files the id", async () => {
   const { hub, work, workSock } = twoAccountHub();
   const LID = "888777666555444@lid";
   const OWNER = "40700000009@s.whatsapp.net";
@@ -218,7 +221,7 @@ test("download_media walks the accounts until a store files the id", async () =>
   const saveTo = mkdtempSync(join(tmpdir(), "wazap-resolve-dl-"));
   const tools = toolsOf(hub);
 
-  const result = await tools.get("download_media").handler({ message_id: lidSid, save_to: saveTo });
+  const result = await tools.get("get_media").handler({ message_id: lidSid, save_to: saveTo });
   const out = result.structuredContent;
   assert.equal(result.isError, undefined);
   assert.equal(out.mime, "audio/ogg");
@@ -227,9 +230,9 @@ test("download_media walks the accounts until a store files the id", async () =>
   assert.equal(out.sender.id, OWNER, "sender identity is resolved on the account that served the file");
 
   const scoped = await tools
-    .get("download_media")
+    .get("get_media")
     .handler({ message_id: lidSid, save_to: saveTo, account_id: "default" });
-  assert.equal(scoped.structuredContent.error, "MESSAGE_NOT_FOUND");
+  assert.equal(JSON.parse(scoped.content[0].text).error, "MESSAGE_NOT_FOUND");
 });
 
 test("a message_id no account files keeps the resolved account's miss", async () => {
@@ -237,8 +240,8 @@ test("a message_id no account files keeps the resolved account's miss", async ()
   const tools = toolsOf(hub);
   const result = await tools.get("get_message").handler({ message_id: `false_${STRANGER}_GHOST` });
   assert.equal(result.isError, true);
-  assert.equal(result.structuredContent.error, "MESSAGE_NOT_FOUND");
-  assert.equal(result.structuredContent.account_id, "default");
+  assert.equal(answer(result).error, "MESSAGE_NOT_FOUND");
+  assert.equal(answer(result).account_id, "default");
 });
 
 test("a chat both accounts know is AMBIGUOUS_ACCOUNT naming them", async () => {
@@ -246,11 +249,11 @@ test("a chat both accounts know is AMBIGUOUS_ACCOUNT naming them", async () => {
   homeSock.ev.emit("chats.upsert", [{ id: ANA, conversationTimestamp: Math.floor(Date.now() / 1000) }]);
   workSock.ev.emit("chats.upsert", [{ id: ANA, conversationTimestamp: Math.floor(Date.now() / 1000) }]);
   const tools = toolsOf(hub);
-  const result = await tools.get("read_messages").handler({ chat_id: ANA, limit: 20 });
-  assert.equal(result.structuredContent.error, "AMBIGUOUS_ACCOUNT");
-  assert.match(result.structuredContent.message, /default/);
-  assert.match(result.structuredContent.message, /work/);
-  assert.match(result.structuredContent.fix, /account_id/);
+  const result = answer(await tools.get("read_messages").handler({ chat_id: ANA, limit: 20 }));
+  assert.equal(result.error, "AMBIGUOUS_ACCOUNT");
+  assert.match(result.message, /default/);
+  assert.match(result.message, /work/);
+  assert.match(result.fix, /account_id/);
 });
 
 test("an unknown chat with two accounts: writes AMBIGUOUS, reads use default", async () => {
@@ -265,11 +268,36 @@ test("an unknown chat with two accounts: writes AMBIGUOUS, reads use default", a
   assert.equal(read.structuredContent.account_id, "default");
 });
 
-test("list_accounts lists every configured account", async () => {
+test("a forward is drafted on the account that holds the message, whoever the destination is", async () => {
+  const { hub, homeSock, workSock } = twoAccountHub();
+  for (const sock of [homeSock, workSock]) sock.onWhatsApp = async (...jids) => jids.map((jid) => ({ jid, exists: true }));
+  homeSock.ev.emit("messages.upsert", { type: "notify", messages: [message(ANA, "adresa: Str. Lalelelor 4", { id: "H1" })] });
+  // DAN's chat is known to work only; STRANGER to no account.
+  workSock.ev.emit("messages.upsert", { type: "notify", messages: [message(DAN, "salut", { id: "W1" })] });
+  const tools = toolsOf(hub);
+  const forward = (chat_id) => tools.get("send_message").handler({ chat_id, text: "", forward: `false_${ANA}_H1` });
+
+  for (const chat of [DAN, STRANGER]) {
+    const drafted = await forward(chat);
+    assert.equal(drafted.isError, undefined, `${chat}: ${JSON.stringify(drafted.structuredContent)}`);
+    assert.equal(drafted.structuredContent.kind, "forward");
+    assert.equal(drafted.structuredContent.account_id, "default");
+  }
+
+  // Held by both accounts: the one that also knows the destination sends it; knowing neither, it is a question.
+  workSock.ev.emit("messages.upsert", { type: "notify", messages: [message(ANA, "adresa: Str. Lalelelor 4", { id: "H1" })] });
+  const both = await forward(DAN);
+  assert.equal(both.structuredContent.account_id, "work");
+  const neither = await forward(STRANGER);
+  assert.equal(neither.structuredContent.error, "AMBIGUOUS_ACCOUNT");
+  assert.match(neither.structuredContent.message, /message/);
+});
+
+test("get_status lists every configured account and names the default", async () => {
   const { hub } = twoAccountHub({ workWrites: false });
   const tools = toolsOf(hub);
-  const result = await tools.get("list_accounts").handler({});
-  assert.equal(result.structuredContent.count, 2);
+  const result = await tools.get("get_status").handler({});
+  assert.equal(result.structuredContent.accounts.length, 2);
   assert.equal(result.structuredContent.default, "default");
   assert.deepEqual(
     result.structuredContent.accounts.map((row) => row.id),
@@ -320,7 +348,7 @@ test("get_status on two accounts keeps the default on top and lists both", async
     ["default", "work"]
   );
   assert.equal(result.structuredContent.accounts[1].write_tools, false);
-  assert.match(result.content[0].text, /accounts.*default, work/);
+  assert.match(result.content[0].text, /accounts\*\* \(default: default\):\n {2}- \*\*default\*\*.*\n {2}- \*\*work\*\*/);
 });
 
 test("list_chats without a locator uses the default account", async () => {
@@ -330,7 +358,7 @@ test("list_chats without a locator uses the default account", async () => {
   assert.equal(result.structuredContent.account_id, "default");
 });
 
-test("contact_id and group_id unique to work select work", async () => {
+test("a chat_id and a group_id unique to work select work", async () => {
   const { hub, workSock } = twoAccountHub();
   const group = "120363000000000001@g.us";
   workSock.ev.emit("chats.upsert", [
@@ -338,10 +366,10 @@ test("contact_id and group_id unique to work select work", async () => {
     { id: group, conversationTimestamp: Math.floor(Date.now() / 1000) },
   ]);
   const tools = toolsOf(hub);
-  const contact = await tools.get("get_contact").handler({ contact_id: ANA });
+  const contact = await tools.get("remember").handler({ chat_id: ANA, note: "de la work" });
   assert.equal(contact.structuredContent.account_id, "work");
-  const info = await tools.get("get_group_info").handler({ group_id: group });
-  assert.equal(info.structuredContent.account_id, "work");
+  const info = answer(await tools.get("get_group_info").handler({ group_id: group }));
+  assert.equal(info.account_id, "work");
 });
 
 test("confirm_send finds a draft stored on work", async () => {
@@ -359,12 +387,12 @@ test("confirm_send finds a draft stored on work", async () => {
   assert.equal(sent.structuredContent.account_id, "work");
 });
 
-test("list_accounts ignores a bad account_id and still lists a disabled row", async () => {
+test("get_status still lists a disabled account's row", async () => {
   const { hub } = twoAccountHub({ disableWork: true });
   const tools = toolsOf(hub);
-  const result = await tools.get("list_accounts").handler({ account_id: "ghost" });
+  const result = await tools.get("get_status").handler({});
   assert.equal(result.isError, undefined);
-  assert.equal(result.structuredContent.count, 2);
+  assert.equal(result.structuredContent.accounts.length, 2);
   assert.deepEqual(
     result.structuredContent.accounts.map((row) => row.id),
     ["default", "work"]
@@ -374,7 +402,7 @@ test("list_accounts ignores a bad account_id and still lists a disabled row", as
   assert.equal(result.structuredContent.account_id, "default");
 });
 
-test("list_accounts shows the persisted owner of an account with no live socket, masked", async () => {
+test("get_status shows the persisted owner of an account with no live socket, masked", async () => {
   const config = offlineConfig("wazap-resolve-listed-");
   const registry = AccountRegistry.load(config.dataDir);
   registry.add("work", "Work");
@@ -382,7 +410,7 @@ test("list_accounts shows the persisted owner of an account with no live socket,
   registry.disable("work");
   const hub = new AccountHub(config, AccountRegistry.load(config.dataDir));
   const tools = toolsOf(hub);
-  const result = await tools.get("list_accounts").handler({});
+  const result = await tools.get("get_status").handler({});
   const work = result.structuredContent.accounts[1];
   assert.equal(work.enabled, false);
   assert.equal(work.phone_masked, "+40 7xx xxx xxx");
@@ -394,7 +422,7 @@ test("write tools stay unregistered when every enabled account is read-only", ()
   assert.equal(anyAccountAllowsWrites(hub), false);
   const tools = toolsOf(hub);
   assert.equal(tools.has("send_message"), false);
-  assert.ok(tools.has("list_accounts"));
+  assert.ok(tools.has("get_status"));
 });
 
 test("ACCOUNT_NOT_CONNECTED is not an error code", () => {
@@ -403,10 +431,9 @@ test("ACCOUNT_NOT_CONNECTED is not an error code", () => {
 
 for (const [name, args] of [
   ["send_message", { chat_id: DAN, text: "test" }],
-  ["send_media", { chat_id: DAN, file_path: "/synthetic-missing/private.txt" }],
-  ["set_profile_picture", { file_path: "/synthetic-missing/private.png" }],
+  ["send_message", { chat_id: DAN, text: "", file_path: "/synthetic-missing/private.txt" }],
 ]) {
-  test(`${name} rejects a read-only account before draft creation or media access`, async () => {
+  test(`${name}${args.file_path ? " with a file" : ""} rejects a read-only account before draft creation or media access`, async () => {
     const { hub, workSock } = twoAccountHub({ workWrites: false });
     workSock.ev.emit("chats.upsert", [{ id: DAN }]);
     const result = await toolsOf(hub)
@@ -465,10 +492,13 @@ test("every non-confirm write is stopped at the resolved account, not just at th
   });
   const original = hub.binding.bind(hub);
   hub.binding = (id) => (id === "work" ? { id, wa: trapped } : original(id));
-  for (const [name, { meta, handler }] of tools) {
-    if (meta.annotations.readOnlyHint || meta.annotations.idempotentHint || name === "confirm_send") continue;
+  const readTools = toolsOf(hub, false);
+  for (const [name, { handler }] of tools) {
+    // The write tools: what a session without writes does not get. confirm_send resolves its draft first.
+    if (readTools.has(name) || name === "confirm_send") continue;
     const result = await handler({ account_id: "work" });
-    assert.equal(result.structuredContent.error, "READ_ONLY", name);
+    // A tool with an output schema answers its refusal as text only.
+    assert.equal(result.structuredContent?.error ?? JSON.parse(result.content[0].text).error, "READ_ONLY", name);
   }
   assert.equal(touched, 0);
 });

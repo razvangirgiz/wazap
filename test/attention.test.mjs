@@ -1,6 +1,6 @@
 /**
- * The three tools that turn a catch-up into attention: waiting for what
- * arrives, seeing what was sent, and knowing who is still waiting.
+ * What turns a catch-up into attention: waiting for what arrives, seeing what
+ * was sent, and knowing who is still waiting.
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -156,22 +156,18 @@ test("include_previews attaches the preview WhatsApp shipped with a photo and la
   arrive(ANA, { imageMessage: { mimetype: "image/jpeg", jpegThumbnail: jpeg, caption: "chitanța" } });
   arrive(ANA, "gata");
 
-  const plain = await call("get_recent_messages", { hours: 1 });
+  const plain = await call("read_messages", { chat_id: ANA });
   assert.equal(plain.content.length, 1, "no image block unless asked");
 
-  const withPreviews = await call("get_recent_messages", { hours: 1, include_previews: true });
-  assert.equal(withPreviews.structuredContent.preview_count, 1);
-  assert.equal(withPreviews.content.length, 2);
-  assert.deepEqual(withPreviews.content[1], {
+  const read = await call("read_messages", { chat_id: ANA, include_previews: true });
+  assert.equal(read.structuredContent.preview_count, 1);
+  assert.equal(read.content.length, 2);
+  assert.deepEqual(read.content[1], {
     type: "image",
     data: Buffer.from(jpeg).toString("base64"),
     mimeType: "image/jpeg",
   });
-  assert.match(withPreviews.content[0].text, /1 preview attached/);
-  assert.match(withPreviews.content[0].text, /\[image\] chitanța \(preview 1\)/);
-
-  const read = await call("read_messages", { chat_id: ANA, include_previews: true });
-  assert.equal(read.content.length, 2);
+  assert.match(read.content[0].text, /1 preview attached/);
   assert.match(read.content[0].text, /\[preview 1, image\]/);
 });
 
@@ -196,10 +192,12 @@ test("a photo that shipped no preview is downloaded once, shrunk here, and remem
     return photo;
   };
 
-  const first = await call("get_recent_messages", { hours: 1, include_previews: true });
+  const first = await call("read_messages", { chat_id: ANA, include_previews: true });
+  const expired = await call("read_messages", { chat_id: DAN, include_previews: true });
   assert.equal(downloads, 2, "each photo fetched once");
-  assert.equal(first.structuredContent.preview_count, 1, "the expired one goes without");
-  assert.match(first.content[0].text, /1 preview attached.*1 photo without a preview/);
+  assert.equal(expired.structuredContent.preview_count, 0, "the expired one goes without");
+  assert.match(expired.content[0].text, /1 photo without a preview/);
+  assert.equal(first.structuredContent.preview_count, 1);
   const block = first.content[1];
   assert.equal(block.type, "image");
   const { decode } = await import("jpeg-js");
@@ -258,8 +256,8 @@ test("a video gets one frame as its preview when ffmpeg is there", async (t) => 
   assert.deepEqual([frame.width, frame.height], [320, 180], "one frame, shrunk to the preview edge");
 });
 
-test("a catch-up fetches the metadata of the groups that spoke, so their senders have names", async () => {
-  const { svc, call, arrive } = setup();
+test("the recent-messages read fetches the metadata of the groups that spoke, so their senders have names", async () => {
+  const { svc, arrive } = setup();
   const lid = "777888999000111@lid";
   let fetches = 0;
   svc.sockClient.groupMetadata = async (id) => {
@@ -271,17 +269,17 @@ test("a catch-up fetches the metadata of the groups that spoke, so their senders
     };
   };
   arrive(GROUP, "meniul de azi", { participant: lid });
-  const recent = await call("get_recent_messages", { hours: 1 });
+  const recent = await svc.getRecentMessages(1, "all");
   assert.equal(fetches, 1);
   assert.deepEqual(
-    recent.structuredContent.conversations[0].messages.map((m) => m.sender.name),
+    recent.data[0].messages.map((m) => m.sender.name),
     ["Rodica"]
   );
-  await call("get_recent_messages", { hours: 1 });
+  await svc.getRecentMessages(1, "all");
   assert.equal(fetches, 1, "and asks once");
 });
 
-test("get_unanswered lists the people whose ask is still open, oldest first, and nobody else", async () => {
+test("catch_up's waiting lists the people whose ask is still open, people first, and nobody else", async () => {
   const { call, arrive } = setup();
   const hour = 3_600_000;
   arrive(ANA, "poți să-mi trimiți contractul?", { at: Date.now() - 50 * hour });
@@ -304,45 +302,33 @@ test("get_unanswered lists the people whose ask is still open, oldest first, and
   const OLD = "40700000007@s.whatsapp.net";
   arrive(OLD, "mai ești interesat?", { at: Date.now() - 20 * 24 * hour });
 
-  const all = await call("get_unanswered", {});
+  const all = await call("catch_up", { hours: 24 });
   assert.deepEqual(
-    all.structuredContent.chats.map((c) => [c.name, c.type, c.ask.text, c.messages_since_you]),
+    all.structuredContent.waiting.map((entry) => [entry.name, entry.group === true, entry.q, entry.n ?? 1]),
     [
-      ["Ana", "individual", "poți să-mi trimiți contractul?", 1],
-      ["40700000005", "individual", "?", 2],
-      ["120363000000000001@g.us", "group", "@Răzvan tu?", 2],
-    ]
+      ["Ana", false, "poți să-mi trimiți contractul?", 1],
+      ["40700000005", false, "?", 2],
+      ["120363000000000001@g.us", true, "@Răzvan tu?", 2],
+    ],
+    "thanks, an answered ask, a link's query string and a 20-day-old ask wait on nobody"
   );
-  assert.match(all.content[0].text, /Waiting on you \(3\)/);
-  assert.match(all.content[0].text, /> poți să-mi trimiți contractul\?/);
-
-  const old = await call("get_unanswered", { min_age_hours: 48 });
-  assert.deepEqual(
-    old.structuredContent.chats.map((c) => c.name),
-    ["Ana"],
-    "a link's query string is not a question, and a 20-day-old ask is abandoned"
-  );
-
-  const everything = await call("get_unanswered", { min_age_hours: 48, max_age_hours: 8760 });
-  assert.deepEqual(
-    everything.structuredContent.chats.map((c) => c.name),
-    ["40700000007", "Ana"]
-  );
+  assert.match(all.content[0].text, /## Waiting on you \(3\)/);
+  assert.match(all.content[0].text, /"poți să-mi trimiți contractul\?"/);
 });
 
 test("a voice note nobody has heard is an ask; a transcribed one is judged on its words", async () => {
   const { svc, call, arrive } = setup();
   const voice = { audioMessage: { mimetype: "audio/ogg; codecs=opus", ptt: true, seconds: 12 } };
   const id = arrive(ANA, voice);
-  let result = await call("get_unanswered", {});
+  let result = await call("catch_up", { hours: 24 });
   assert.deepEqual(
-    result.structuredContent.chats.map((c) => c.ask.type),
+    result.structuredContent.waiting.map((entry) => entry.type),
     ["voice"]
   );
 
   svc.db.messages.setTranscript(`false_${ANA}_${id}`, "gata, am rezolvat, mersi");
-  result = await call("get_unanswered", {});
-  assert.deepEqual(result.structuredContent.chats, [], "the words say nothing was asked");
+  result = await call("catch_up", { hours: 24 });
+  assert.deepEqual(result.structuredContent.waiting, [], "the words say nothing was asked");
 });
 
 test("a reaction lands on the message it answers, never as a line of its own, and a withdrawal takes it off", async () => {

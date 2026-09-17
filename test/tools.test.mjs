@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import { registerTools, toolError, TOOL_NAMES } from "../dist/tools.js";
 import { WazapError, ERROR_GUIDE } from "../dist/errors.js";
 import { WhatsAppService } from "../dist/whatsapp.js";
-import { asToolSource, connectedService, draftStub } from "./helpers.mjs";
+import { asToolSource, connectedService, draftStub, READ_TOOL_COUNT, TOOL_COUNT } from "./helpers.mjs";
 
 /** Stand-in for McpServer: records what got registered and lets us call it. */
 function fakeServer() {
@@ -20,52 +20,35 @@ function fakeServer() {
 const READ_TOOLS = [
   "learn",
   "get_status",
-  "list_accounts",
   "link_account",
   "list_chats",
   "read_messages",
-  "get_recent_messages",
-  "search_messages",
-  "recall",
+  "search",
   "get_message",
-  "search_contacts",
-  "sync_contacts",
-  "get_contact",
   "find_contact",
   "get_group_info",
-  "download_media",
-  "transcribe_audio",
-  "get_unanswered",
+  "get_media",
   "catch_up",
   "wait_for_messages",
-  "get_stories",
-  "set_contact_note",
-  "update_contact_details",
-  "mark_handled",
+  "remember",
 ];
 
 const WRITE_TOOLS = [
   "send_message",
-  "send_media",
-  "send_poll",
-  "send_location",
   "edit_message",
   "react_to_message",
-  "forward_message",
   "confirm_send",
   "delete_message",
-  "set_profile_picture",
   "manage_chat",
-  "create_group",
   "manage_group",
-  "join_group",
-  "save_contact",
-  "remove_contact",
 ];
 
-test("the registry is exactly the 40 documented tools", () => {
+test("the registry is exactly the 20 documented tools, 13 of them in a session without writes", () => {
   assert.deepEqual([...TOOL_NAMES].sort(), [...READ_TOOLS, ...WRITE_TOOLS].sort());
-  assert.equal(TOOL_NAMES.length, 40);
+  assert.equal(TOOL_NAMES.length, 20);
+  assert.equal(TOOL_COUNT, 20);
+  assert.equal(READ_TOOLS.length, 13);
+  assert.equal(READ_TOOL_COUNT, 13);
 });
 
 test("read-only registration exposes no write tool at all", () => {
@@ -77,7 +60,7 @@ test("read-only registration exposes no write tool at all", () => {
 test("every tool declares a description and an input schema", () => {
   const server = fakeServer();
   registerTools(server, asToolSource({}), { allowWrite: true });
-  assert.equal(server.tools.size, 40);
+  assert.equal(server.tools.size, READ_TOOLS.length + WRITE_TOOLS.length);
   for (const [name, { meta }] of server.tools) {
     assert.ok(meta.description?.length > 40, `${name} needs a description an agent can act on`);
     assert.ok(meta.inputSchema, `${name} needs an input schema`);
@@ -145,9 +128,9 @@ test("send_message drafts through the session and confirm_send is the only send"
   assert.match(drafted.content[0].text, /To: Ana \(\+40 722 123 456\)/);
   assert.match(drafted.content[0].text, /confirm_send/);
 
-  const poll = await server.tools.get("send_poll").handler({
+  const poll = await server.tools.get("send_message").handler({
     chat_id: "+40722123456",
-    question: "Pizza?",
+    text: "Pizza?",
     options: ["da", "nu"],
   });
   assert.equal(poll.structuredContent.status, "draft");
@@ -158,7 +141,7 @@ test("send_message drafts through the session and confirm_send is the only send"
   assert.equal(confirmed.structuredContent.message_id, "mid");
 });
 
-test("send_media surfaces FILE_NOT_FOUND from draft", async () => {
+test("a media draft surfaces FILE_NOT_FOUND from draft", async () => {
   const server = fakeServer();
   const wa = {
     draft: async () => {
@@ -166,8 +149,9 @@ test("send_media surfaces FILE_NOT_FOUND from draft", async () => {
     },
   };
   registerTools(server, asToolSource(wa), { allowWrite: true });
-  const result = await server.tools.get("send_media").handler({
+  const result = await server.tools.get("send_message").handler({
     chat_id: "1",
+    text: "",
     file_path: "/no/such/wazap-media.bin",
   });
   assert.equal(result.structuredContent.error, "FILE_NOT_FOUND");
@@ -206,24 +190,6 @@ test("read_messages passes types through to the service and echoes it back", asy
 
   await server.tools.get("read_messages").handler({ chat_id: "4072@s.whatsapp.net", limit: 20 });
   assert.deepEqual(calls[1], ["4072@s.whatsapp.net", 20, undefined, undefined], "no types means every type");
-});
-
-test("get_recent_messages passes types through to the service and echoes it back", async () => {
-  const server = fakeServer();
-  const calls = [];
-  const wa = {
-    getRecentMessages: async (...args) => {
-      calls.push(args);
-      return { data: [], sync: "done" };
-    },
-  };
-  registerTools(server, asToolSource(wa), { allowWrite: true });
-
-  const result = await server.tools
-    .get("get_recent_messages")
-    .handler({ hours: 24, filter: "all", include_system: false, types: ["call", "voice"] });
-  assert.deepEqual(calls[0], [24, "all", false, ["call", "voice"]]);
-  assert.deepEqual(result.structuredContent.types, ["call", "voice"]);
 });
 
 /**
@@ -312,11 +278,123 @@ test("get_status on a remote write session tells the agent nothing about bearer 
   assert.equal(result.structuredContent.hint, undefined);
 });
 
-test("learn documents every error code an agent can receive", async () => {
+test("learn documents every error code an agent can receive, within 2,000 tokens and as text only", async () => {
   const server = fakeServer();
   registerTools(server, asToolSource({}), { allowWrite: true });
-  const guide = (await server.tools.get("learn").handler({})).structuredContent.guide;
+  const guide = (await server.tools.get("learn").handler({})).content[0].text;
   for (const code of Object.keys(ERROR_GUIDE)) {
     assert.ok(guide.includes(code), `learn must tell the agent what to do about ${code}`);
   }
+  assert.ok(Buffer.byteLength(guide) / 4 <= 2000, `${Math.round(Buffer.byteLength(guide) / 4)} tokens`);
+  assert.equal((await server.tools.get("learn").handler({})).structuredContent, undefined, "the guide is not repeated as structured content");
+});
+
+test("send_message drafts one kind at a time and refuses what does not belong to it", async () => {
+  const server = fakeServer();
+  const drafted = [];
+  const wa = { ...draftApi(), draft: async (payload) => (drafted.push(payload), draftApi().draft(payload)) };
+  registerTools(server, asToolSource(wa), { allowWrite: true });
+  const send = (args) => server.tools.get("send_message").handler({ chat_id: "+40722123456", ...args });
+  const refused = async (args, pattern) => {
+    const result = await send(args);
+    assert.equal(result.structuredContent.error, "INVALID_ID", JSON.stringify(args));
+    assert.match(result.structuredContent.message, pattern);
+  };
+
+  await refused({ text: "", options: ["da", "nu"], latitude: 44, longitude: 26 }, /a poll \(options\) and a location/);
+  await refused({ text: "hai", multi_select: true }, /multi_select does not apply/);
+  await refused({ text: "uite", file_path: "/tmp/a.jpg", reply_to: "false_1@s.whatsapp.net_X" }, /reply_to does not apply/);
+  await refused({ text: "citește", forward: "false_1@s.whatsapp.net_X" }, /cannot carry text/);
+  await refused({ text: "" }, /empty/);
+  await refused({ text: "", options: ["da", "nu"] }, /question in text/);
+  await refused({ text: "", latitude: 44 }, /both latitude and longitude/);
+  assert.equal(drafted.length, 0, "nothing refused reached a draft");
+
+  assert.equal((await send({ text: "", file_path: "/tmp/a.gif", as: "gif" })).structuredContent.status, "draft");
+  assert.deepEqual(drafted.at(-1), {
+    kind: "media",
+    chatId: "+40722123456",
+    source: { file_path: "/tmp/a.gif", url: undefined },
+    asDocument: false,
+    asVoice: false,
+    asGif: true,
+  });
+  await send({ text: "Notar", latitude: 44.4, longitude: 26.1 });
+  assert.deepEqual(drafted.at(-1), { kind: "location", chatId: "+40722123456", latitude: 44.4, longitude: 26.1, name: "Notar" });
+  await send({ text: "", forward: "false_1@s.whatsapp.net_X" });
+  assert.deepEqual(drafted.at(-1), { kind: "forward", chatId: "+40722123456", messageId: "false_1@s.whatsapp.net_X" });
+  await send({ text: "Joi la 10.", reply_to: "false_1@s.whatsapp.net_X" });
+  assert.deepEqual(drafted.at(-1), { kind: "text", chatId: "+40722123456", text: "Joi la 10.", replyTo: "false_1@s.whatsapp.net_X", mentionIds: undefined });
+});
+
+test("a voice note or an audio file drafted with text is refused: WhatsApp shows no caption on it", async () => {
+  const server = fakeServer();
+  const drafted = [];
+  const wa = { ...draftApi(), draft: async (payload) => (drafted.push(payload), draftApi().draft(payload)) };
+  registerTools(server, asToolSource(wa), { allowWrite: true });
+  const send = (args) => server.tools.get("send_message").handler({ chat_id: "+40722123456", ...args });
+  const words = "Ascultă până la capăt, e despre contract";
+  for (const args of [
+    { text: words, file_path: "/tmp/nota.ogg", as: "voice" },
+    { text: words, file_path: "/tmp/nota.m4a", as: "voice" },
+    { text: words, file_path: "/tmp/nota.ogg" },
+    { text: words, file_path: "/tmp/interviu.MP3" },
+    { text: words, url: "https://example.com/audio/nota.opus?x=1" },
+  ]) {
+    const result = await send(args);
+    assert.equal(result.structuredContent.error, "INVALID_ID", JSON.stringify(args));
+    assert.match(result.structuredContent.message, /no caption/);
+    assert.match(result.structuredContent.fix, /own send_message/);
+  }
+  assert.equal(drafted.length, 0, "nothing refused reached a draft");
+
+  // Without text, or as a document (which keeps its caption), the recording drafts.
+  assert.equal((await send({ text: "", file_path: "/tmp/nota.ogg", as: "voice" })).structuredContent.status, "draft");
+  assert.equal((await send({ text: "", file_path: "/tmp/nota.mp3" })).structuredContent.status, "draft");
+  assert.equal((await send({ text: "înregistrarea", file_path: "/tmp/nota.mp3", as: "document" })).structuredContent.status, "draft");
+  assert.equal(drafted.at(-1).caption, "înregistrarea");
+});
+
+test("remember says what #private hides, and promises nothing the other tools do not keep", () => {
+  const server = fakeServer();
+  registerTools(server, asToolSource({}), { allowWrite: true });
+  const described = server.tools.get("remember").meta.description;
+  // Only catch_up and find_contact's draft context leave a #private person's words out (src/private-contacts.ts);
+  // search, read_messages and wait_for_messages answer what they are asked for.
+  assert.match(described, /#private keeps their words out of catch_up and find_contact's draft context/);
+  assert.doesNotMatch(described, /out of answers/);
+});
+
+test("each tool's annotations are true of its most far-reaching action", () => {
+  const server = fakeServer();
+  registerTools(server, asToolSource({}), { allowWrite: true });
+  const hints = Object.fromEntries(
+    [...server.tools].map(([name, { meta }]) => {
+      const a = meta.annotations;
+      return [name, [a.readOnlyHint, a.destructiveHint, a.idempotentHint, a.openWorldHint].map((h) => (h ? 1 : 0)).join("")];
+    })
+  );
+  // readOnly, destructive, idempotent, openWorld
+  assert.deepEqual(hints, {
+    learn: "1010",
+    get_status: "1010",
+    link_account: "0001",
+    list_chats: "1011",
+    read_messages: "1011",
+    catch_up: "1001",
+    remember: "0010",
+    wait_for_messages: "1011",
+    search: "1011",
+    get_message: "1011",
+    find_contact: "1011",
+    get_group_info: "1011",
+    get_media: "0001",
+    send_message: "0001",
+    confirm_send: "0011",
+    edit_message: "0111",
+    delete_message: "0111",
+    react_to_message: "0011",
+    manage_chat: "0101",
+    manage_group: "0101",
+  });
 });

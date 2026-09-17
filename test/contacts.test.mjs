@@ -9,7 +9,7 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import assert from "node:assert/strict";
 
 import { WhatsAppService, needsContactResync } from "../dist/whatsapp.js";
-import { asToolSource, connectedService, openService } from "./helpers.mjs";
+import { asToolSource, connectedService, openService, schemaCheckedTools, textError } from "./helpers.mjs";
 import { registerTools } from "../dist/tools.js";
 
 /** Stand-in for McpServer: records what got registered and lets us call it. */
@@ -161,55 +161,7 @@ test("names arriving on either contact event reach the database, and a restart r
   await revived.stop();
 });
 
-test("sync_contacts reports what the resync changed, and never counts as a write", async () => {
-  const server = fakeServer();
-  registerTools(
-    server,
-    asToolSource({ syncContacts: async () => ({ requested: true, named_before: 0, named_after: 217 }) }),
-    {
-      allowWrite: false,
-    }
-  );
-  const tool = server.tools.get("sync_contacts");
-  assert.equal(tool.meta.annotations.readOnlyHint, true, "it changes nothing on WhatsApp");
-
-  const result = await tool.handler({});
-  assert.deepEqual(result.structuredContent, {
-    requested: true,
-    named_before: 0,
-    named_after: 217,
-    account_id: "default",
-  });
-  assert.match(result.content[0].text, /217 named contacts \(was 0\)/);
-});
-
-test("sync_contacts tells an empty address book apart from one already in hand", async () => {
-  const say = async (named_before, named_after) => {
-    const server = fakeServer();
-    registerTools(
-      server,
-      asToolSource({ syncContacts: async () => ({ requested: true, named_before, named_after }) }),
-      {
-        allowWrite: true,
-      }
-    );
-    return (await server.tools.get("sync_contacts").handler({})).content[0].text;
-  };
-  assert.match(await say(0, 0), /no names at all/);
-  assert.match(await say(217, 217), /already current: 217/);
-});
-
-test("sync_contacts on a session that is not connected reports the code, not a crash", async () => {
-  const { svc } = makeService();
-  svc.status = "connecting";
-  const server = fakeServer();
-  registerTools(server, asToolSource(svc), { allowWrite: true });
-  const result = await server.tools.get("sync_contacts").handler({});
-  assert.equal(result.isError, true);
-  assert.equal(result.structuredContent.error, "NOT_CONNECTED");
-});
-
-test("get_contact answers within a deadline when WhatsApp never replies for the number", async () => {
+test("a contact lookup answers within a deadline when WhatsApp never replies for the number", async () => {
   const { svc, sock } = makeService();
   sock.fetchStatus = () => new Promise(() => {});
   sock.profilePictureUrl = () => new Promise(() => {});
@@ -221,7 +173,7 @@ test("get_contact answers within a deadline when WhatsApp never replies for the 
   assert.equal(contact.profile_pic_url, null);
 });
 
-test("search_contacts finds a number typed with the national leading zero", async () => {
+test("the address book search finds a number typed with the national leading zero", async () => {
   const { svc, sock } = makeService();
   sock.ev.emit("contacts.upsert", [{ id: "40734000111@s.whatsapp.net", name: "Ana" }]);
   const found = await svc.searchContacts("0734 000 111", 10);
@@ -234,148 +186,6 @@ test("search_contacts finds a number typed with the national leading zero", asyn
     stillFound.map((c) => c.name),
     ["Ana"]
   );
-});
-
-/** The contact mutation tools need writes on; makeService stays read-only. */
-const makeWritable = () =>
-  connectedService(WhatsAppService, { prefix: "wazap-contacts-", id: ME, name: "Răzvan", config: { readOnly: false } });
-
-test("saveContact files a new number under its name and tells WhatsApp", async () => {
-  const { svc, sock } = makeWritable();
-  const saved = [];
-  sock.addOrEditContact = async (jid, contact) => saved.push({ jid, contact });
-
-  const c = await svc.saveContact("+40 700 000 099", "Ana Pop", { firstName: "Ana" });
-
-  assert.deepEqual(saved, [
-    {
-      jid: "40700000099@s.whatsapp.net",
-      contact: {
-        fullName: "Ana Pop",
-        firstName: "Ana",
-        saveOnPrimaryAddressbook: true,
-        pnJid: "40700000099@s.whatsapp.net",
-      },
-    },
-  ]);
-  assert.equal(c.contact_id, "40700000099@s.whatsapp.net");
-  assert.equal(c.name, "Ana Pop");
-  assert.equal(c.is_my_contact, true);
-});
-
-test("saveContact renames an entry and keeps it WhatsApp-only when asked", async () => {
-  const { svc, sock } = makeWritable();
-  const saved = [];
-  sock.addOrEditContact = async (jid, contact) => saved.push({ jid, contact });
-  sock.ev.emit("contacts.upsert", [{ id: "40700000061@s.whatsapp.net", name: "Ionut" }]);
-
-  const c = await svc.saveContact("40700000061@s.whatsapp.net", "Ionut Fox", { saveOnPhone: false });
-
-  assert.equal(saved[0].contact.saveOnPrimaryAddressbook, false);
-  assert.equal(c.name, "Ionut Fox");
-  assert.equal(svc.displayName("40700000061@s.whatsapp.net"), "Ionut Fox");
-});
-
-test("saveContact on a paired lid carries both jids and files under the phone one", async () => {
-  const { svc, sock } = makeWritable();
-  const saved = [];
-  sock.addOrEditContact = async (jid, contact) => saved.push({ jid, contact });
-  svc.learnLid("12345678901234@lid", "40700000077@s.whatsapp.net");
-
-  await svc.saveContact("12345678901234@lid", "Lid Guy");
-
-  assert.equal(saved[0].jid, "40700000077@s.whatsapp.net");
-  assert.equal(saved[0].contact.pnJid, "40700000077@s.whatsapp.net");
-  assert.equal(saved[0].contact.lidJid, "12345678901234@lid");
-});
-
-test("removeContact drops the saved name; the entry and its push name stay", async () => {
-  const { svc, sock } = makeWritable();
-  const removed = [];
-  sock.removeContact = async (jid) => removed.push(jid);
-  sock.ev.emit("contacts.upsert", [{ id: "40700000061@s.whatsapp.net", name: "Ionut", notify: "ionutz" }]);
-
-  const c = await svc.removeContact("40700000061@s.whatsapp.net");
-
-  assert.deepEqual(removed, ["40700000061@s.whatsapp.net"]);
-  assert.equal(c.is_my_contact, false);
-  assert.equal(c.name, "ionutz");
-});
-
-test("a group id is not a contact, in either direction", async () => {
-  const { svc, sock } = makeWritable();
-  sock.addOrEditContact = async () => assert.fail("must not reach WhatsApp");
-  sock.removeContact = async () => assert.fail("must not reach WhatsApp");
-  await assert.rejects(() => svc.saveContact("12345@g.us", "Nope"), (err) => err.code === "INVALID_ID");
-  await assert.rejects(() => svc.removeContact("12345@g.us"), (err) => err.code === "INVALID_ID");
-});
-
-test("a blank name never becomes a contact mutation", async () => {
-  const { svc, sock } = makeWritable();
-  sock.addOrEditContact = async () => assert.fail("must not reach WhatsApp");
-  await assert.rejects(
-    () => svc.saveContact("40700000099@s.whatsapp.net", "   "),
-    (err) => err.code === "INVALID_ID"
-  );
-});
-
-test("a read-only account refuses the mutation before WhatsApp sees it", async () => {
-  const { svc, sock } = makeService();
-  sock.addOrEditContact = async () => assert.fail("must not reach WhatsApp");
-  await assert.rejects(
-    () => svc.saveContact("40700000099@s.whatsapp.net", "Ana"),
-    (err) => err.code === "READ_ONLY"
-  );
-});
-
-test("save_contact and remove_contact are write tools; only removal is destructive", async () => {
-  const calls = [];
-  const server = fakeServer();
-  registerTools(
-    server,
-    asToolSource({
-      saveContact: async (...args) => {
-        calls.push(["save", ...args]);
-        return {
-          contact_id: "40700000099@s.whatsapp.net",
-          name: "Ana Pop",
-          number: "40700000099",
-          is_my_contact: true,
-          is_business: false,
-        };
-      },
-      removeContact: async (...args) => {
-        calls.push(["remove", ...args]);
-        return {
-          contact_id: "40700000099@s.whatsapp.net",
-          name: "40700000099",
-          number: "40700000099",
-          is_my_contact: false,
-          is_business: false,
-        };
-      },
-    }),
-    { allowWrite: true }
-  );
-
-  const save = server.tools.get("save_contact");
-  const drop = server.tools.get("remove_contact");
-  assert.equal(save.meta.annotations.readOnlyHint, false);
-  assert.equal(save.meta.annotations.destructiveHint, false);
-  assert.equal(drop.meta.annotations.destructiveHint, true);
-
-  const saved = await save.handler({
-    contact_id: "+40700000099",
-    name: "Ana Pop",
-    first_name: "Ana",
-    save_on_phone: false,
-  });
-  assert.deepEqual(calls[0], ["save", "+40700000099", "Ana Pop", { firstName: "Ana", saveOnPhone: false }]);
-  assert.match(saved.content[0].text, /Saved Ana Pop/);
-
-  const dropped = await drop.handler({ contact_id: "40700000099@s.whatsapp.net" });
-  assert.deepEqual(calls[1], ["remove", "40700000099@s.whatsapp.net"]);
-  assert.match(dropped.content[0].text, /Removed 40700000099@s\.whatsapp\.net/);
 });
 
 test("updateContactDetails files tags and details, normalized to lowercase tokens", async () => {
@@ -401,7 +211,7 @@ test("the filing survives in the database and reloads with it", async () => {
   await revived.stop();
 });
 
-test("search_contacts resolves a role and a tag word, not just names", async () => {
+test("the address book search resolves a role and a tag word, not just names", async () => {
   const { svc, sock } = makeService();
   sock.ev.emit("contacts.upsert", [{ id: "40700000061@s.whatsapp.net", name: "Ionut" }]);
   await svc.updateContactDetails("40700000061@s.whatsapp.net", {
@@ -415,7 +225,7 @@ test("search_contacts resolves a role and a tag word, not just names", async () 
   assert.deepEqual(await svc.searchContacts("necunoscut", 10), []);
 });
 
-test("search_contacts with only a tag lists everyone filed under it", async () => {
+test("the address book search with only a tag lists everyone filed under it", async () => {
   const { svc, sock } = makeService();
   sock.ev.emit("contacts.upsert", [
     { id: "40700000061@s.whatsapp.net", name: "Ionut" },
@@ -524,7 +334,7 @@ test("the filing is capped, like a note, not a document", async () => {
   );
 });
 
-test("update_contact_details is a local tool: registered without writes, off WhatsApp entirely", async () => {
+test("remember is a local tool: registered without writes, off WhatsApp entirely", async () => {
   const calls = [];
   const server = fakeServer();
   registerTools(
@@ -545,12 +355,12 @@ test("update_contact_details is a local tool: registered without writes, off Wha
     }),
     { allowWrite: false }
   );
-  const tool = server.tools.get("update_contact_details");
+  const tool = server.tools.get("remember");
   assert.ok(tool, "local tools register in read-only sessions");
   assert.equal(tool.meta.annotations.openWorldHint, false, "it reaches nothing outside this machine");
 
   const result = await tool.handler({
-    contact_id: "40700000061@s.whatsapp.net",
+    chat_id: "40700000061@s.whatsapp.net",
     add_tags: ["#Client"],
     fields: { role: "contabil" },
   });
@@ -562,33 +372,36 @@ test("update_contact_details is a local tool: registered without writes, off Wha
   assert.match(result.content[0].text, /\*\*role\*\*: contabil/);
 });
 
-test("search_contacts asks for a query or a tag, and reports a tag listing as one", async () => {
-  const server = fakeServer();
+test("find_contact asks for a name or a tag, and lists a tag with each person's chat_id", async () => {
   const calls = [];
-  registerTools(
-    server,
-    asToolSource({
+  const { call } = schemaCheckedTools(
+    {
       searchContacts: async (...args) => {
         calls.push(args);
-        return [];
+        return args[2].tag === "#Furnizori"
+          ? [{ contact_id: "40700000061@s.whatsapp.net", name: "Ionut", number: "40700000061", tags: ["furnizori"], fields: { role: "contabil" }, is_my_contact: true, is_business: false }]
+          : [];
       },
-    }),
+    },
     { allowWrite: false }
   );
-  const tool = server.tools.get("search_contacts");
 
-  const bare = await tool.handler({});
-  assert.equal(bare.isError, true);
-  assert.equal(bare.structuredContent.error, "INVALID_ID");
+  assert.equal(textError(await call("find_contact", {})).error, "INVALID_ID");
 
-  await tool.handler({ tag: "#Furnizori", limit: 10 });
-  assert.deepEqual(calls[0], ["", 10, { tag: "#Furnizori" }]);
+  const listed = await call("find_contact", { tag: "#Furnizori", limit: 10 });
+  assert.deepEqual([calls[0][0], calls[0][2]], ["", { tag: "#Furnizori" }]);
+  assert.ok(calls[0][1] > 10, "more than the limit is asked for, so what the limit leaves out can be counted");
+  assert.equal(listed.structuredContent.status, "listed");
+  assert.deepEqual(listed.structuredContent.contacts, [
+    { chat_id: "40700000061@s.whatsapp.net", name: "Ionut", number: "40700000061", saved: true, tags: ["furnizori"], fields: { role: "contabil" } },
+  ]);
+  assert.match(listed.content[0].text, /Ionut — 40700000061@s\.whatsapp\.net \(40700000061\) · saved · #furnizori · role: contabil/);
 
-  const none = await tool.handler({ tag: "client" });
-  assert.match(none.content[0].text, /No contacts matching tag #client/);
+  const none = await call("find_contact", { tag: "client" });
+  assert.match(none.content[0].text, /Nobody is filed under #client/);
 });
 
-test("search_contacts matches every name a person goes by, lists the address book in the order it arrived, the account too when it is in it, and leaves out strangers", async () => {
+test("the address book search matches every name a person goes by, lists the address book in the order it arrived, the account too when it is in it, and leaves out strangers", async () => {
   const { svc, sock } = makeService();
   const BOGDAN = "40700000071@s.whatsapp.net";
   const ANA = "40700000072@s.whatsapp.net";

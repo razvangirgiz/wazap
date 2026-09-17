@@ -36,19 +36,24 @@ export interface ToolCtx {
   client: string;
 }
 
+/** MCP tool annotations, stated per tool for its most far-reaching action. */
+export interface ToolHints {
+  readOnlyHint: boolean;
+  destructiveHint: boolean;
+  idempotentHint: boolean;
+  openWorldHint: boolean;
+}
+
 export interface ToolDef {
   name: string;
   title: string;
   description: string;
   schema: z.ZodRawShape;
-  /** The structured content's shape, when the tool declares one. */
-  outputSchema?: z.ZodRawShape;
+  /** The structured content's shape, when the tool declares one; an object schema may leave keys open. */
+  outputSchema?: z.ZodRawShape | z.AnyZodObject;
+  /** Registered only in a session that can write, and refused on an account that cannot. */
   write: boolean;
-  /** A read that changes local state a repeat call sees (catch_up's mark). */
-  idempotent?: boolean;
-  destructive?: boolean;
-  /** Changes only local notes, so available in read-only mode too. */
-  local?: boolean;
+  hints: ToolHints;
   /** Per-tool budget, separate from the account's write budget. */
   rate?: number;
   handler: (args: ToolArgs, ctx: ToolCtx) => Promise<ToolResult>;
@@ -77,33 +82,16 @@ export function toolError(err: WazapError): ToolResult {
 }
 
 /**
- * An error from a tool that declares an outputSchema: the same text, no
- * structured content. SDK clients check structured content against the schema
- * on errors too, and `{ error, message, fix }` is not the tool's shape.
+ * An error from a tool that declares an outputSchema: `{ error, message, fix }`
+ * and the account it concerns, as text, with no structured content. SDK
+ * clients check structured content against the schema on errors too, and an
+ * error is not the tool's shape.
  */
-function schemaSafeError(result: ToolResult): ToolResult {
-  const { structuredContent: _structured, ...rest } = result;
-  return rest;
+function schemaSafeError(err: WazapError, accountId: string | undefined): ToolResult {
+  const payload = toolError(err).structuredContent!;
+  const body = accountId === undefined ? payload : { ...payload, account_id: accountId };
+  return { content: [{ type: "text", text: JSON.stringify(body) }], isError: true };
 }
-
-const READ_ONLY_HINTS = {
-  readOnlyHint: true,
-  destructiveHint: false,
-  idempotentHint: true,
-  openWorldHint: true,
-} as const;
-const WRITE_HINTS = {
-  readOnlyHint: false,
-  destructiveHint: false,
-  idempotentHint: false,
-  openWorldHint: true,
-} as const;
-const LOCAL_HINTS = {
-  readOnlyHint: false,
-  destructiveHint: false,
-  idempotentHint: true,
-  openWorldHint: false,
-} as const;
 
 function rateLabel(name: string): string {
   const verb = name.split("_")[0] ?? name;
@@ -143,15 +131,11 @@ export function createToolRegistrar(defs: readonly ToolDef[]) {
           description:
             def.description +
             (opts.allowLocalFiles === false && (def.schema.file_path || def.schema.save_to)
-              ? "\nThis remote session cannot use file_path or save_to. Use public HTTP(S) URLs, forward existing messages, or download_media with its default directory."
+              ? "\nThis remote session cannot use file_path or save_to. Use public HTTP(S) URLs, forward existing messages, or get_media without save_to."
               : ""),
           inputSchema: def.schema,
           ...(def.outputSchema === undefined ? {} : { outputSchema: def.outputSchema }),
-          annotations: def.write
-            ? { ...WRITE_HINTS, destructiveHint: def.destructive === true }
-            : def.local
-              ? LOCAL_HINTS
-              : { ...READ_ONLY_HINTS, openWorldHint: def.name !== "learn", ...(def.idempotent === false ? { idempotentHint: false } : {}) },
+          annotations: def.hints,
         },
         async (args: unknown, extra?: { _meta?: Record<string, unknown> }): Promise<ToolResult> => {
           const parsed = (args ?? {}) as ToolArgs;
@@ -170,7 +154,7 @@ export function createToolRegistrar(defs: readonly ToolDef[]) {
               throw new WazapError(
                 "MEDIA_ACCESS_DENIED",
                 "This MCP session cannot access arbitrary host files or choose download directories.",
-                "Use a public HTTP(S) media URL, forward an existing WhatsApp message, or download_media without save_to"
+                "Use a public HTTP(S) media URL, forward an existing WhatsApp message, or get_media without save_to"
               );
             }
             own?.take();
@@ -212,9 +196,9 @@ export function createToolRegistrar(defs: readonly ToolDef[]) {
             });
             return attachAccountId(result, resolved.id);
           } catch (err) {
-            const result = toolError(asWazapError(err));
-            if (def.outputSchema !== undefined) return schemaSafeError(result);
             const id = resolved?.id ?? stringArg(parsed, "account_id");
+            if (def.outputSchema !== undefined) return schemaSafeError(asWazapError(err), id);
+            const result = toolError(asWazapError(err));
             return id === undefined ? result : attachAccountId(result, id);
           } finally {
             if (admitted) { inFlight--; sessionInFlight--; }

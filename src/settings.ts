@@ -323,7 +323,7 @@ function recallRows(config: Config): string[] {
 
 const RECALL_SAID: Record<string, string> = {
   local: "recall: local — messages are embedded by llama.cpp on this machine; nothing leaves it.",
-  off: "recall: off — `recall` reports how to turn it on.",
+  off: "recall: off — `search` matches words only and says how to turn it on.",
 };
 
 async function applyRecall(config: Config, value: string): Promise<void> {

@@ -93,7 +93,7 @@ const MORE_PEOPLE = {
   },
 };
 
-test("find_contact is a read tool in every session, with an output schema, next to search_contacts", async () => {
+test("find_contact is a read tool in every session, with an output schema, and the only way to look people up", async () => {
   const { s } = await world();
   const readOnly = await mcpSession(ready.mcp_url, ready.tokens.read);
   for (const session of [s, readOnly]) {
@@ -102,7 +102,7 @@ test("find_contact is a read tool in every session, with an output schema, next 
     assert.equal(tool.annotations.readOnlyHint, true);
     assert.deepEqual(tool.outputSchema.required.sort(), ["query", "status"]);
     assert.ok(tool.description.length <= 300, `${tool.description.length} characters`);
-    assert.ok(session.tools.some((entry) => entry.name === "search_contacts"), "search_contacts stays until the tools are consolidated");
+    assert.ok(!session.tools.some((entry) => ["search_contacts", "get_contact", "sync_contacts"].includes(entry.name)), "the tools it replaced are gone");
   }
   await s.close();
   await readOnly.close();
@@ -126,7 +126,7 @@ test("mama is Elena through what the user filed, never the group Mama Anei or Ma
   assert.equal(tata.structuredContent.status, "not_found");
   assert.deepEqual(tata.structuredContent.closest, [], "who he is is the user's to say");
   assert.match(tata.structuredContent.fix, /Ask the user who it is/);
-  assert.match(tata.structuredContent.fix, /update_contact_details\(\{contact_id, fields: \{relatie: "tata"\}\}\)/);
+  assert.match(tata.structuredContent.fix, /remember\(\{chat_id, fields: \{relatie: "tata"\}\}\)/);
   assertNothingPrivate(tata);
   await s.close();
 });

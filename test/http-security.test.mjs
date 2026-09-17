@@ -30,10 +30,6 @@ function fixture(t) {
       read(payload.source);
       return store.view(store.put({ chat_id: CHAT, name: "Test" }, payload));
     },
-    setOwnProfilePicture: async (source) => {
-      read(source);
-      return { profile_pic_url: null };
-    },
     manageGroup: async (_group, _action, _ids, _value, source) => {
       read(source);
       return { applied: "ok" };
@@ -48,13 +44,15 @@ function fixture(t) {
 }
 
 const operations = (file) => [
-  ["send_media", { chat_id: CHAT, file_path: file }],
-  ["set_profile_picture", { file_path: file }],
+  ["send_message", { chat_id: CHAT, text: "", file_path: file }],
   ["manage_group", { group_id: "120363000000000001@g.us", action: "set_picture", file_path: file }],
-  ["download_media", { message_id: `false_${CHAT}_msg`, save_to: "/unused/synthetic/directory" }],
+  ["get_media", { message_id: `false_${CHAT}_msg`, save_to: "/unused/synthetic/directory" }],
 ];
 
-for (const index of [0, 1, 2, 3]) {
+/** A refusal's code, from structured content or, on a tool with an output schema, from its text. */
+const refusal = (result) => result.structuredContent?.error ?? JSON.parse(result.content[0].text).error;
+
+for (const index of [0, 1, 2]) {
   test(`restricted tool registration rejects local filesystem operation ${index}`, async (t) => {
     const f = fixture(t);
     const tools = new Map();
@@ -64,7 +62,7 @@ for (const index of [0, 1, 2, 3]) {
     });
     const [name, args] = operations(f.file)[index];
     const result = await tools.get(name)(args);
-    assert.equal(result.structuredContent.error, "MEDIA_ACCESS_DENIED");
+    assert.equal(refusal(result), "MEDIA_ACCESS_DENIED");
     assert.equal(f.reads(), 0);
     assert.equal(f.downloads(), 0);
     assert.ok(!result.content[0].text.includes(f.file));
@@ -75,7 +73,7 @@ test("stdio-compatible tool registration retains intentional local file access",
   const f = fixture(t);
   const tools = new Map();
   registerTools({ registerTool: (name, _meta, handler) => tools.set(name, handler) }, f.hub, { allowWrite: true });
-  const result = await tools.get("send_media")({ chat_id: CHAT, file_path: f.file });
+  const result = await tools.get("send_message")({ chat_id: CHAT, text: "", file_path: f.file });
   assert.equal(result.structuredContent.status, "draft");
   assert.equal(f.reads(), 1);
 });
@@ -115,11 +113,11 @@ test("HTTP on loopback is still remote; only the private bridge credential opens
   const remote = await connect(t, f.base, "remote-write");
   for (const [name, args] of operations(f.file)) {
     const result = await remote.callTool({ name, arguments: { ...args, localFiles: true, allowLocalFiles: true } });
-    assert.equal(result.structuredContent.error, "MEDIA_ACCESS_DENIED");
+    assert.equal(refusal(result), "MEDIA_ACCESS_DENIED");
   }
   assert.equal(f.reads(), 0);
   const bridge = await connect(t, f.base, "private-bridge");
-  const draft = await bridge.callTool({ name: "send_media", arguments: { chat_id: CHAT, file_path: f.file } });
+  const draft = await bridge.callTool({ name: "send_message", arguments: { chat_id: CHAT, text: "", file_path: f.file } });
   assert.equal(draft.structuredContent.status, "draft");
   assert.equal(f.reads(), 1);
 });
@@ -127,8 +125,8 @@ test("HTTP on loopback is still remote; only the private bridge credential opens
 test("an HTTP read token cannot choose the download directory", async (t) => {
   const f = await boot(t);
   const reader = await connect(t, f.base, "remote-read");
-  const [name, args] = operations(f.file)[3];
-  assert.equal((await reader.callTool({ name, arguments: args })).structuredContent.error, "MEDIA_ACCESS_DENIED");
+  const [name, args] = operations(f.file)[2];
+  assert.equal(refusal(await reader.callTool({ name, arguments: args })), "MEDIA_ACCESS_DENIED");
   assert.equal(f.downloads(), 0);
 });
 
@@ -136,12 +134,12 @@ test("remote clients retain public URLs and default-directory downloads", async 
   const f = await boot(t);
   const remote = await connect(t, f.base, "remote-write");
   const draft = await remote.callTool({
-    name: "send_media",
-    arguments: { chat_id: CHAT, url: "https://example.com/test.jpg" },
+    name: "send_message",
+    arguments: { chat_id: CHAT, text: "", url: "https://example.com/test.jpg" },
   });
   assert.equal(draft.structuredContent.status, "draft");
   const reader = await connect(t, f.base, "remote-read");
-  const result = await reader.callTool({ name: "download_media", arguments: { message_id: `false_${CHAT}_msg` } });
+  const result = await reader.callTool({ name: "get_media", arguments: { message_id: `false_${CHAT}_msg` } });
   assert.equal(result.structuredContent.filename, "test.txt");
   assert.equal(f.downloads(), 1);
   assert.equal(f.reads(), 0);

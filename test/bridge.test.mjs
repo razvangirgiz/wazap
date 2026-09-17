@@ -11,7 +11,7 @@ import { join } from "node:path";
 
 import { bridgedCall } from "../dist/bridge.js";
 import { readDaemon } from "../dist/daemon.js";
-import { mcpClient, spawnWazap, waitFor } from "./helpers.mjs";
+import { READ_TOOL_COUNT, mcpClient, spawnWazap, waitFor } from "./helpers.mjs";
 
 /** A data dir and the children started against it, all killed when the case ends. */
 function scene() {
@@ -105,7 +105,7 @@ test("a second serve answers out of the session the first one holds", async () =
 
     const bad = await bridge.request("tools/call", { name: "read_messages", arguments: { chat_id: "not-a-chat" } });
     assert.equal(bad.result.isError, true);
-    assert.deepEqual(Object.keys(bad.result.structuredContent).sort(), ["account_id", "error", "fix", "message"]);
+    assert.deepEqual(Object.keys(JSON.parse(bad.result.content[0].text)).sort(), ["account_id", "error", "fix", "message"]);
 
     assert.equal(readDaemon(s.daemonFile).pid, a.child.pid, "the bridge published itself over the daemon");
     assert.equal(readFileSync(s.lockFile, "utf8").trim(), String(a.child.pid), "the bridge took the lock");
@@ -226,7 +226,7 @@ test("a bridge serves what the owner exposes, so --read-only reaches every clien
     const b = s.start();
     const mcp = await session(b.child);
     const names = (await toolShape(mcp)).map((tool) => tool.name);
-    assert.equal(names.length, 24);
+    assert.equal(names.length, READ_TOOL_COUNT);
     assert.ok(!names.includes("send_message"), names.join(", "));
 
     const status = await mcp.request("tools/call", { name: "get_status", arguments: {} });

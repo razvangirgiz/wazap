@@ -7,11 +7,9 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
-import { z } from "zod";
 
 import { WhatsAppService } from "../dist/whatsapp.js";
-import { registerTools } from "../dist/tools.js";
-import { asToolSource, connectedService } from "./helpers.mjs";
+import { connectedService, schemaCheckedTools, textError } from "./helpers.mjs";
 
 const ME = "40700000001@s.whatsapp.net";
 const ANA = "40700000002@s.whatsapp.net";
@@ -23,24 +21,9 @@ const LID_DAN = "999888777666555@lid";
 const LID_VLAD = "111000111000111@lid";
 const LID_NOBODY = "4226298167515@lid";
 
-function fakeServer() {
-  const tools = new Map();
-  return {
-    tools,
-    registerTool(name, meta, handler) {
-      tools.set(name, { meta, handler });
-    },
-  };
-}
-
 function setup() {
   const { svc, sock } = connectedService(WhatsAppService, { prefix: "wazap-senderid-", id: ME, name: "Răzvan" });
-  const server = fakeServer();
-  registerTools(server, asToolSource(svc), { allowWrite: false });
-  const call = (name, args = {}) => {
-    const { meta, handler } = server.tools.get(name);
-    return handler(z.object(meta.inputSchema).parse(args));
-  };
+  const { call } = schemaCheckedTools(svc, { allowWrite: false });
   let seq = 0;
   const arrive = (chat, text, { fromMe = false, participant, pushName, at = Date.now() } = {}) => {
     const id = `M${++seq}`;
@@ -79,7 +62,7 @@ function stubGroupMetadata(svc) {
   return () => fetches;
 }
 
-test("search_messages resolves a group's senders — number, address-book name, pushname — and never a bare lid", async () => {
+test("search resolves a group's senders — number, address-book name, pushname — and never a bare lid", async () => {
   const { svc, sock, call, arrive } = setup();
   sock.ev.emit("contacts.upsert", [
     { id: ANA, name: "Ana" },
@@ -90,7 +73,7 @@ test("search_messages resolves a group's senders — number, address-book name, 
   arrive(GROUP, "rulaj și la mine", { participant: LID_VLAD, pushName: "Vlăduț" });
   arrive(GROUP, "rulaj de la nimeni", { participant: LID_NOBODY });
 
-  const result = await call("search_messages", { query: "rulaj", chat_id: GROUP });
+  const result = await call("search", { match: "words", query: "rulaj", chat_id: GROUP });
   const byText = new Map(result.structuredContent.messages.map((m) => [m.text, m.sender]));
   assert.equal(result.structuredContent.count, 3);
 
@@ -158,7 +141,7 @@ test("the `from` filter takes a name when it picks out exactly one person", asyn
   arrive(ANA, "salut de la ana");
   arrive(DAN, "salut de la dan");
 
-  const result = await call("search_messages", { query: "salut", from: "ana" });
+  const result = await call("search", { match: "words", query: "salut", from: "ana" });
   assert.equal(result.structuredContent.from_resolved, ANA);
   assert.deepEqual(
     result.structuredContent.messages.map((m) => m.sender.id),
@@ -174,7 +157,7 @@ test("the `from` filter also finds a person only ever known by pushname", async 
   arrive(CARMEN, "salut de la carmen", { pushName: "Carmen" });
   arrive(ANA, "salut de la ana");
 
-  const result = await call("search_messages", { query: "salut", from: "carmen" });
+  const result = await call("search", { match: "words", query: "salut", from: "carmen" });
   assert.equal(result.structuredContent.from_resolved, CARMEN);
   assert.deepEqual(
     result.structuredContent.messages.map((m) => m.sender.id),
@@ -190,22 +173,20 @@ test("an ambiguous `from` names its candidates, an unknown one says so", async (
   ]);
   arrive(ANA, "salut");
 
-  const ambiguous = await call("search_messages", { query: "salut", from: "maria" });
-  assert.equal(ambiguous.isError, true);
-  assert.equal(ambiguous.structuredContent.error, "INVALID_ID");
-  assert.match(ambiguous.structuredContent.message, /Maria Pop/);
-  assert.match(ambiguous.structuredContent.message, /Maria Ion/);
+  const ambiguous = await call("search", { match: "words", query: "salut", from: "maria" });
+  assert.equal(textError(ambiguous).error, "INVALID_ID");
+  assert.match(textError(ambiguous).message, /Maria Pop/);
+  assert.match(textError(ambiguous).message, /Maria Ion/);
 
-  const unknown = await call("search_messages", { query: "salut", from: "Nimeni" });
-  assert.equal(unknown.isError, true);
-  assert.equal(unknown.structuredContent.error, "CONTACT_NOT_FOUND");
+  const unknown = await call("search", { match: "words", query: "salut", from: "Nimeni" });
+  assert.equal(textError(unknown).error, "CONTACT_NOT_FOUND");
 });
 
 test("a sender with no name at all shows the number, source none", async () => {
   const { call, arrive } = setup();
   const STRANGER = "40700000009@s.whatsapp.net";
   arrive(STRANGER, "cine e asta");
-  const result = await call("search_messages", { query: "cine e asta" });
+  const result = await call("search", { match: "words", query: "cine e asta" });
   const sender = result.structuredContent.messages[0].sender;
   assert.equal(sender.name, "40700000009", "the digits are a number, not a name");
   assert.equal(sender.phone, "40700000009");
@@ -218,27 +199,27 @@ test("a sender with no name at all shows the number, source none", async () => {
 test("the user's own messages carry the same triplet, honestly unnamed", async () => {
   const { call, arrive } = setup();
   arrive(ANA, "salut", { fromMe: true });
-  const result = await call("search_messages", { query: "salut" });
+  const result = await call("search", { match: "words", query: "salut" });
   const sender = result.structuredContent.messages[0].sender;
   assert.equal(sender.name, "Răzvan", "the account's own name");
   assert.equal(sender.is_saved, false, "the user is not a saved contact of themselves");
   assert.equal(sender.name_source, "none", "an account name is neither contact nor pushname");
 });
 
-test("get_contact reports name_source alongside is_my_contact", async () => {
+test("find_contact reports name_source alongside saved", async () => {
   const { sock, call } = setup();
-  sock.fetchStatus = async () => [];
-  sock.profilePictureUrl = async () => null;
   sock.ev.emit("contacts.upsert", [
     { id: ANA, name: "Ana" },
     { id: DAN, notify: "danu" },
   ]);
 
-  const saved = (await call("get_contact", { contact_id: ANA })).structuredContent;
-  assert.equal(saved.is_my_contact, true);
-  assert.equal(saved.name_source, "contact");
+  const saved = (await call("find_contact", { name: "Ana" })).structuredContent;
+  assert.equal(saved.status, "resolved");
+  assert.equal(saved.contact.saved, true);
+  assert.equal(saved.contact.name_source, "contact");
 
-  const unsaved = (await call("get_contact", { contact_id: DAN })).structuredContent;
-  assert.equal(unsaved.is_my_contact, false);
-  assert.equal(unsaved.name_source, "pushname", "a notify name is what the person publishes");
+  const unsaved = (await call("find_contact", { name: "danu" })).structuredContent;
+  const dan = unsaved.contact ?? unsaved.candidates[0];
+  assert.equal(dan.name_source, "pushname", "a notify name is what the person publishes");
+  if (unsaved.contact) assert.equal(unsaved.contact.saved, false);
 });

@@ -112,6 +112,7 @@ function trigger(description: string): string {
 export function skillInstructions(skills: readonly Skill[]): string {
   const intro =
     "Call `learn` first: it returns every tool, the id formats and every error code with what to do about it. " +
+    "With several WhatsApp accounts, `get_status` lists them and every tool takes `account_id`: without it, a chat or message only one account knows picks that account, `catch_up` and `find_contact` cover them all, other reads use the default, and a write to a chat no account knows fails AMBIGUOUS_ACCOUNT. " +
     "An agent that should act as messages arrive calls `wait_for_messages` in a loop with the cursor it returns, instead of polling.";
   if (skills.length === 0) return intro;
   return [

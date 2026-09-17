@@ -278,7 +278,7 @@ test("a transcript landing during shutdown does not hold the process open", asyn
   assert.equal(svc.accountDb.isOpen, false, "and its database is closed, not written behind the stop");
 });
 
-test("search_messages finds a word that exists only in a transcript", async () => {
+test("a search by words finds a word that exists only in a transcript", async () => {
   const { svc, sock } = serviceWith();
   const at = Date.now() - 60_000;
   deliver(sock, [voiceNote("V1", { seconds: 6, at }), textMessage("T1", "nimic aici", at + 1000)]);
@@ -299,7 +299,7 @@ test("search_messages finds a word that exists only in a transcript", async () =
   await svc.stop();
 });
 
-test("transcribe_audio names the reason it cannot answer", async () => {
+test("transcription names the reason it cannot answer", async () => {
   const { svc, sock } = serviceWith(MANUAL);
   stub(svc, mockProvider());
   deliver(sock, [textMessage("T1", "salut")]);
@@ -347,7 +347,7 @@ test("no tool output carries the API key, whatever the tool", async () => {
   const server = fakeServer();
   registerTools(server, asToolSource(svc), { allowWrite: true });
   const said = [JSON.stringify(await svc.transcribeAudio(sidOf("V1")))];
-  for (const name of ["get_status", "read_messages", "search_messages"]) {
+  for (const name of ["get_status", "read_messages", "search"]) {
     said.push(JSON.stringify(await server.tools.get(name).handler({ chat_id: PEER, query: "salut" })));
   }
 
@@ -362,36 +362,48 @@ test("no tool output carries the API key, whatever the tool", async () => {
   await svc.stop();
 });
 
-test("transcribe_audio spends a bucket of its own, ten a minute", async () => {
+test("get_media spends a bucket of its own only on a provider run, ten a minute, and past it the file still comes", async () => {
+  // The bucket is the process's: this is the only test in this file that spends it.
+  const { svc, sock } = serviceWith(MANUAL);
+  const provider = stub(svc, mockProvider());
+  deliver(sock, Array.from({ length: 12 }, (_, i) => voiceNote(`V${i + 1}`, { seconds: 6 })));
   const server = fakeServer();
-  const wa = {
-    transcribeAudio: async () => ({
-      text: "salut",
-      language: "ro",
-      duration_seconds: 6,
-      provider: "local",
-      cached: true,
-    }),
-  };
-  registerTools(server, asToolSource(wa), { allowWrite: true });
-  const transcribe = server.tools.get("transcribe_audio").handler;
+  registerTools(server, asToolSource(svc), { allowWrite: true });
+  const getMedia = (id, tools = server) => tools.tools.get("get_media").handler({ message_id: sidOf(id) });
 
-  const first = await transcribe({ message_id: sidOf("V1") });
-  assert.equal(first.content[0].text, 'Transcribed 0:06 (ro, local, cached): "salut"');
-  for (let call = 2; call <= 10; call++) {
-    assert.equal((await transcribe({ message_id: sidOf("V1") })).isError, undefined, `call ${call}`);
-  }
+  const first = await getMedia("V1");
+  assert.equal(first.content[0].text, 'Transcribed 0:06 (ro, openai): "salut"');
+  // A transcript on hand is no run: asked again and again, it costs nothing.
+  for (let call = 0; call < 15; call++) assert.equal((await getMedia("V1")).structuredContent.transcript.cached, true);
+  for (let n = 2; n <= 10; n++) assert.equal((await getMedia(`V${n}`)).structuredContent.transcript.cached, false, `V${n}`);
+  assert.equal(provider.state.calls, 10);
 
-  const limited = await transcribe({ message_id: sidOf("V1") });
-  assert.equal(limited.structuredContent.error, "RATE_LIMITED");
-  assert.equal(limited.structuredContent.message, "Transcribe rate limit reached (10/minute).");
+  const limited = (await getMedia("V11")).structuredContent;
+  assert.equal(limited.transcript, undefined);
+  assert.equal(limited.transcript_unavailable.code, "RATE_LIMITED");
+  assert.equal(limited.transcript_unavailable.message, "Transcribe rate limit reached (10/minute).");
+  assert.ok(limited.path, "the recording still comes, as a file");
+  assert.equal(provider.state.calls, 10);
 
   // An HTTP client that re-initializes gets a fresh McpServer; the bucket is the
   // process's and must not arrive fresh with it.
   const rejoined = fakeServer();
-  registerTools(rejoined, asToolSource(wa), { allowWrite: true });
-  const again = await rejoined.tools.get("transcribe_audio").handler({ message_id: sidOf("V1") });
-  assert.equal(again.structuredContent.error, "RATE_LIMITED", "a new session must not come with ten more");
+  registerTools(rejoined, asToolSource(svc), { allowWrite: true });
+  assert.equal((await getMedia("V12", rejoined)).structuredContent.transcript_unavailable.code, "RATE_LIMITED", "a new session must not come with ten more");
+  await svc.stop();
+
+  // Transcription off: nothing runs, so nothing is spent, however many notes are asked for.
+  const off = serviceWith();
+  off.svc.mediaBuffer = async () => Buffer.from("OggS");
+  deliver(off.sock, Array.from({ length: 3 }, (_, i) => voiceNote(`O${i + 1}`, { seconds: 6 })));
+  const offServer = fakeServer();
+  registerTools(offServer, asToolSource(off.svc), { allowWrite: true });
+  for (const id of ["O1", "O2", "O3"]) {
+    const out = (await getMedia(id, offServer)).structuredContent;
+    assert.equal(out.transcript_unavailable.code, "TRANSCRIBE_UNAVAILABLE", `${id}: off, not over a limit`);
+    assert.ok(out.path);
+  }
+  await off.svc.stop();
 });
 
 test("a history sync queues the voice notes of the last day, never the archive behind them", async () => {
@@ -415,7 +427,7 @@ test("a history sync queues the voice notes of the last day, never the archive b
   assert.deepEqual(
     ["H1", "H2", "H3"].filter((id) => svc.db.messages.get(sidOf(id))?.transcript != null),
     ["H1"],
-    "the note of the last hour is read; the ones older than a day are left to transcribe_audio"
+    "the note of the last hour is read; the ones older than a day are left to get_media"
   );
   assert.equal(svc.db.transcripts.state(sidOf("H2")), null, "and nothing older waits on the queue either");
 

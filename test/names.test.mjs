@@ -113,7 +113,7 @@ test("pushNames survive a restart, so a restart does not forget who wrote", asyn
   await revived.stop();
 });
 
-test("search_contacts finds someone by the name the chat list shows them under", async () => {
+test("the address book search finds someone by the name the chat list shows them under", async () => {
   const { svc, sock } = makeService();
   sock.ev.emit("contacts.upsert", [{ id: "40700000012@s.whatsapp.net" }]);
   sock.ev.emit("messages.upsert", {
@@ -256,7 +256,7 @@ test("namedContacts counts the address book, not the store", () => {
   assert.equal(svc.getStatus().contacts_named, 1);
 });
 
-test("search_contacts still finds a masked contact by number, and never by dots", async () => {
+test("the address book search still finds a masked contact by number, and never by dots", async () => {
   const { svc, sock } = makeService();
   sock.ev.emit("contacts.upsert", [{ id: "40700000041@s.whatsapp.net", name: "+40∙∙∙∙∙∙∙41" }]);
   assert.equal((await svc.searchContacts("∙∙", 10)).length, 0);

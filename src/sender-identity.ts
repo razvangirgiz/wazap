@@ -1,6 +1,6 @@
 /**
- * Read-side sender identity: what search_messages, recall, get_message and
- * download_media report about who wrote a message, and how the `from` filter
+ * Read-side sender identity: what search, get_message and
+ * get_media report about who wrote a message, and how the `from` filter
  * resolves a name. The service renders a sender's `id` and best `name`; this
  * module adds the two pieces an agent still cannot tell apart — the number
  * behind the id, and whether the shown name is the user's own address-book
@@ -76,10 +76,10 @@ interface NamedCandidate {
 }
 
 /**
- * The `from` filter of search_messages and recall. "me", an id or a phone go
+ * The `from` filter of search. "me", an id or a phone go
  * straight through; anything else is a name and must pick out exactly one
  * person — a saved contact name, a notify name or a last-seen pushname via
- * search_contacts' index, then a one-to-one chat's display name for someone
+ * the address book's index, then a one-to-one chat's display name for someone
  * who only ever wrote and was never saved. No match and several matches are
  * both explicit errors; an exact name beats a substring when it is unique.
  */
@@ -118,7 +118,7 @@ export async function resolveSenderFilter(wa: WhatsAppApi, from: string | undefi
     throw new WazapError(
       "CONTACT_NOT_FOUND",
       `No contact or chat is named "${value}".`,
-      'Call search_contacts with the name to see the closest matches, then pass the contact_id as "from"'
+      'Call find_contact with the name to see the closest matches, then pass its chat_id as "from"'
     );
   }
   throw new WazapError(

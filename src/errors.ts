@@ -59,73 +59,57 @@ export class WazapError extends Error {
 export const RELINK_FIX = "Run `npx wazap-mcp login`";
 export const RESET_FIX = "Run `npx wazap-mcp logout` then `npx wazap-mcp login`";
 
-/** What an agent should do about each code. Rendered by the `learn` tool. */
+/** What an agent should do about each code. Rendered by the `learn` tool, so each is one short line. */
 export const ERROR_GUIDE: Record<ErrorCode, string> = {
-  NOT_LINKED: "No WhatsApp account is linked. Tell the user to run `npx wazap-mcp login`; do not retry.",
-  ALREADY_LINKED: "The account is linked; call get_status.",
-  SESSION_EXPIRED: "The account was unlinked from the phone. Tell the user to run `npx wazap-mcp login`; do not retry.",
-  SESSION_CORRUPT:
-    "Stored credentials are unreadable. Tell the user to run `npx wazap-mcp logout` then `npx wazap-mcp login`.",
-  NOT_CONNECTED:
-    "The socket is still connecting or reconnecting, or the account is preparing its database once after an upgrade. Call get_status, wait, retry once.",
-  SYNC_IN_PROGRESS:
-    "History sync has not finished. Retry in a few seconds; earlier messages may be missing until then.",
-  INVALID_PHONE:
-    "The number is not in international format. Ask the user for a number with a country code, e.g. +15550100.",
-  INVALID_ID: "The id is not a WhatsApp chat, contact or group id. Use an id exactly as returned by another tool.",
-  NOT_ON_WHATSAPP: "That number has no WhatsApp account. Do not retry; confirm the number with the user.",
-  CHAT_NOT_FOUND: "No such chat is known. Call list_chats or search_contacts to get a valid chat_id.",
-  MESSAGE_NOT_FOUND: "No such message is loaded. Use a message_id from read_messages or search_messages.",
-  CONTACT_NOT_FOUND: "No such contact is known. Call search_contacts first.",
-  GROUP_NOT_FOUND: "No such group is known, or the id is not a group id (it must end in @g.us).",
-  NOT_A_PARTICIPANT: "The linked account is not in that group. Do not retry.",
-  NOT_ADMIN: "The linked account is not an admin of that group, so this action is refused. Do not retry.",
+  NOT_LINKED: "Nothing is linked: link_account, or the user runs `npx wazap-mcp login`.",
+  ALREADY_LINKED: "Already linked; call get_status.",
+  SESSION_EXPIRED: "The phone unlinked this device: link_account again. Do not retry.",
+  SESSION_CORRUPT: "Credentials are unreadable: link_account, or `npx wazap-mcp logout` then `login`.",
+  NOT_CONNECTED: "Connecting, or preparing the database after an upgrade: get_status, wait, retry once.",
+  SYNC_IN_PROGRESS: "History is still syncing: retry in a few seconds; older messages may be missing.",
+  INVALID_PHONE: "Ask the user for the number with its country code, e.g. +15550100.",
+  INVALID_ID: "An id or argument is unusable: read message and fix; pass ids exactly as a tool gave them.",
+  NOT_ON_WHATSAPP: "That number has no WhatsApp: confirm it with the user. Do not retry.",
+  CHAT_NOT_FOUND: "Unknown chat: take the chat_id from list_chats or find_contact.",
+  MESSAGE_NOT_FOUND: "Unknown message: use a message_id from read_messages or search.",
+  CONTACT_NOT_FOUND: "Nobody by that name: find_contact first.",
+  GROUP_NOT_FOUND: "Unknown group, or not a group id (…@g.us).",
+  NOT_A_PARTICIPANT: "The account is not in that group. Do not retry.",
+  NOT_ADMIN: "The account is not an admin of that group. Do not retry.",
   GROUP_ANNOUNCEMENT_ONLY: "Only admins may post in that group. Do not retry.",
-  MEDIA_UNAVAILABLE:
-    "The media expired on WhatsApp's servers or was never synced. Do not retry; ask the sender to resend.",
+  MEDIA_UNAVAILABLE: "WhatsApp no longer has that media; the sender must resend it. Do not retry.",
   MEDIA_ACCESS_DENIED:
-    "This session cannot access host paths/directories, or the media URL is not public HTTP(S). Do not route around the restriction. Use a public URL, forward an existing WhatsApp message, or download_media without save_to.",
-  FILE_NOT_FOUND: "The local path does not exist on the machine running wazap. Check the path with the user.",
-  FILE_TOO_LARGE:
-    "The file is too large. Chat media may be 100 MB; a profile picture may be 10 MB. Send a smaller file.",
-  INVALID_IMAGE:
-    "The file is not a JPEG, PNG or WebP. Pass a photo via file_path or url; GIF, video and documents are refused.",
-  URL_FETCH_FAILED: "The URL could not be fetched. Check it, or download the file first and pass file_path.",
-  TEXT_TOO_LONG: "The text exceeds WhatsApp's limit. Split it into several messages.",
-  EDIT_WINDOW_EXPIRED: "WhatsApp only allows editing within 15 minutes of sending. Send a correction instead.",
-  RETRACT_WINDOW_EXPIRED: "WhatsApp only allows deleting for everyone within 2 days. Do not retry.",
+    "This session cannot use host files: pass a public URL, forward a message, or get_media without save_to. Do not route around it.",
+  FILE_NOT_FOUND: "No such file on the machine running wazap: check the path with the user.",
+  FILE_TOO_LARGE: "Too large: media up to 100 MB, a group photo up to 10 MB.",
+  INVALID_IMAGE: "Not a JPEG, PNG or WebP photo.",
+  URL_FETCH_FAILED: "The URL could not be fetched: check it, or pass file_path.",
+  TEXT_TOO_LONG: "Over WhatsApp's limit: shorten it, or split it into several messages.",
+  EDIT_WINDOW_EXPIRED: "Edits are allowed for 15 minutes: send a correction instead.",
+  RETRACT_WINDOW_EXPIRED: "Deleting for everyone is allowed for 2 days. Do not retry.",
   NOT_OWN_MESSAGE:
-    "This action only works on messages the linked account sent; delete_message also takes someone else's message in a group where the account is an admin, or for the linked account alone with for_everyone: false. Do not retry.",
-  READ_ONLY:
-    "wazap runs read-only, so writes are refused. Tell the user to run `wazap config writes on` and restart the server.",
-  RATE_LIMITED: "Too many writes too fast. Wait the number of seconds in the fix, then retry once.",
-  TRANSCRIBE_UNAVAILABLE:
-    "Transcription is off, or its binaries or model are missing. Tell the user to run the command in the fix; do not retry.",
-  TRANSCRIBE_FAILED: "The transcription provider ran and failed. Read the message; retry once at most.",
-  RECALL_UNAVAILABLE:
-    "Semantic recall is off, or llama.cpp or the embedding model is missing. Tell the user to run the command in the fix; do not retry.",
-  RECALL_FAILED: "The embedding backend ran and failed. Read the message; retry once at most.",
-  RECALL_BAD_INPUT: "The embedding server refused the input itself. Do not retry it unchanged.",
-  TIMEOUT: "WhatsApp did not answer in time. Retry once; if it fails again, call get_status.",
-  SERVICE_ERROR:
-    "wazap's own background service could not be managed. This is a machine problem, not a WhatsApp one: read the fix and tell the user.",
-  DRAFT_NOT_FOUND:
-    "That draft_id is unavailable in this MCP session (unknown, sent too long ago, or created in another session). Draft again here, show the new preview and obtain fresh user approval before confirm_send.",
-  DRAFT_EXPIRED:
-    "The draft expired (15 minutes). Call the send tool again to draft, show the new preview, then confirm_send.",
-  CURSOR_EXPIRED:
-    "A catch_up cursor is held 15 minutes past its page, by the client that got it, and not across a restart. Call catch_up again without cursor: the mark has not moved, so nothing is lost.",
+    "Only the account's own message, anyone's in a group where it is admin, or any with for_everyone: false. Do not retry.",
+  READ_ONLY: "Writes are off: the user runs `wazap config writes on` and restarts the server.",
+  RATE_LIMITED: "Too fast: wait the seconds in fix, then retry once.",
+  TRANSCRIBE_UNAVAILABLE: "Transcription is off or unfinished: tell the user the command in fix. Do not retry.",
+  TRANSCRIBE_FAILED: "The transcription provider failed: retry once at most.",
+  RECALL_UNAVAILABLE: "Meaning search is off: tell the user the command in fix. Do not retry.",
+  RECALL_FAILED: "The embedding backend failed: retry once at most.",
+  RECALL_BAD_INPUT: "The embedding server refused this input: do not retry it unchanged.",
+  TIMEOUT: "WhatsApp did not answer in time: retry once, then get_status.",
+  SERVICE_ERROR: "wazap's background service failed on this machine, not WhatsApp: tell the user the fix.",
+  DRAFT_NOT_FOUND: "No such draft in this session: draft again, show the preview, get a fresh yes.",
+  DRAFT_EXPIRED: "The draft expired after 15 minutes: draft again, show the preview, then confirm_send.",
+  CURSOR_EXPIRED: "The catch_up cursor expired: call catch_up without it; nothing was lost.",
   SEND_OUTCOME_UNKNOWN:
-    "The message was handed to WhatsApp and then the link failed, so it may or may not have arrived. Do not confirm or draft it again blindly: check the conversation with read_messages, and if it is not there, tell the user and ask before sending again.",
-  SEND_BLOCKED:
-    "The account's send rules refuse this recipient. Do not retry or route around it; tell the user, who can change the rules with `wazap config send` if the send is wanted.",
-  AMBIGUOUS_ACCOUNT:
-    "More than one account could handle this, or a write named a chat no account knows. Pass account_id. Call list_accounts to see the ids.",
-  ACCOUNT_NOT_FOUND: "No account with that id. Run `wazap account add` first, or call list_accounts.",
-  ACCOUNT_DISABLED:
-    "That account is disabled. Tell the user to run `wazap account enable <id>`; a running server picks it up.",
-  WHATSAPP_ERROR: "WhatsApp rejected the operation. Read the message; do not blindly retry.",
+    "It may have been sent: check the chat with read_messages, and never confirm or draft it again without asking the user.",
+  SEND_BLOCKED: "The account's send rules refuse this recipient: tell the user. Do not retry or route around it.",
+  AMBIGUOUS_ACCOUNT: "Several accounts fit, or a write names a chat no account knows: pass account_id.",
+  ACCOUNT_NOT_FOUND: "No such account: get_status lists them, and `wazap account add` makes one.",
+  ACCOUNT_DISABLED: "The account is disabled: the user runs `wazap account enable <id>`.",
+  WHATSAPP_ERROR: "WhatsApp refused: read message. Do not blindly retry.",
 };
+
 
 /** Any thrown value as a WazapError, so no tool ever surfaces a raw error. */
 export function asWazapError(err: unknown): WazapError {

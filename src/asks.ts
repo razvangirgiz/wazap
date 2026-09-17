@@ -1,6 +1,6 @@
 /**
  * Whether a message's words ask something of the user: the judgment
- * get_unanswered and catch_up's `waiting` share, so the two lists never
+ * the service's getUnanswered and catch_up's `waiting` share, so the two lists never
  * disagree about who is waiting. Pure: it reads words, never a protobuf.
  */
 

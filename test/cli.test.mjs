@@ -11,6 +11,7 @@ import { promisify } from "node:util";
 
 import { greetNext, leftoverFix, leftoverRefusal, parseLinkChoice, tunnelRefusal } from "../dist/cli.js";
 import { SUPERVISORS } from "../dist/service.js";
+import { TOOL_NAMES } from "../dist/tools.js";
 import { childEnv, spawnWazap, waitFor } from "./helpers.mjs";
 import { runSmoke } from "./smoke-stdio.mjs";
 
@@ -176,7 +177,7 @@ test("an unknown command fails with a pointer to --help", async () => {
 
 test("the built server answers MCP over stdio with no WhatsApp session", async () => {
   const { toolNames, status } = await runSmoke();
-  assert.equal(toolNames.length, 40);
+  assert.deepEqual([...toolNames].sort(), [...TOOL_NAMES].sort());
   assert.equal(status.status, "not_linked");
 });
 
@@ -315,7 +316,7 @@ test("`contacts resync` refuses while a server owns the session", async () => {
   writeFileSync(join(dataDir, "server.lock"), String(process.pid), { mode: 0o600 });
   await assert.rejects(wazap("contacts", "resync", "--data-dir", dataDir), (err) => {
     assert.match(err.stderr, new RegExp(`wazap is running \\(pid ${process.pid}\\)`));
-    assert.match(err.stderr, /sync_contacts/);
+    assert.match(err.stderr, /stop the server and run this again/);
     return true;
   });
 });

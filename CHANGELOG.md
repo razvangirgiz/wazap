@@ -1,11 +1,73 @@
 # Changelog
 
 ## Unreleased
+
+### 20 tools instead of 40
+
+The tool surface 1.0 promises to keep stable. Every capability of the 40 tools
+has a place among the 20, or is listed under *Removed* with the reason. There
+are no aliases for the old names: clients read the tool list when they connect,
+and the five tools Calfa calls (`send_message`, `confirm_send`, `manage_chat`
+with `mark_read`, `link_account`, `get_status`) keep their names, arguments and
+answers.
+
+| 0.23 | 1.0 |
+| --- | --- |
+| `learn`, `link_account`, `list_chats`, `wait_for_messages`, `get_message`, `get_group_info`, `edit_message`, `react_to_message`, `delete_message`, `confirm_send`, `manage_chat`, `catch_up`, `find_contact` | the same name |
+| `get_status` | `get_status`, whose `accounts` now lists every configured account, disabled ones too, next to `default` |
+| `list_accounts` | `get_status` (`accounts`, `default`) |
+| `get_recent_messages` | `catch_up`; one chat in full with `read_messages` |
+| `get_unanswered` | `catch_up`'s `waiting` |
+| `get_stories` | `read_messages` with `chat_id: "status"` (and `hours`); `catch_up` counts them |
+| `set_contact_note` | `remember` with `note` |
+| `update_contact_details` | `remember` with `add_tags`, `remove_tags`, `fields`, `remove_fields` |
+| `mark_handled` | `remember` with `handled: true` |
+| `search_messages` | `search` with `match: "words"` |
+| `recall` | `search` (by meaning and words by default; when meaning search cannot run — off, a failing embedding server, a sidecar not up within 8 s — it matches words and says `mode: "keyword_fallback"`, with `recall_unavailable.code`) |
+| `search_contacts` | `find_contact` by `name` (a name, or a number however it is written), or with `tag` to list everyone filed under it (the limit shared between accounts, `omitted` counting the rest on each) |
+| `get_contact` | `find_contact` with the number or the id as `name`: a resolved person carries their number, note, tags and details; `about`, the profile picture and `is_blocked` are removed (below) |
+| `sync_contacts` | automatic: `find_contact` asks for an address book that looks empty; `wazap contacts resync` while no server runs |
+| `download_media` | `get_media` (`save_to`); on a voice note or audio, `save_to` gives the file and starts no transcription |
+| `transcribe_audio` | `get_media` on a voice note or audio without `save_to` (`language`); a transcription that cannot run (off, failing, timed out, over ten a minute) answers the file with `transcript_unavailable.code`, and only a provider run counts toward the ten |
+| `send_media` | `send_message` with `file_path` or `url`, the caption as `text`, `as: "document" \| "voice" \| "gif"` |
+| `send_poll` | `send_message` with `options` (and `multi_select`), the question as `text` |
+| `send_location` | `send_message` with `latitude` and `longitude`, the place name as `text`, `address` |
+| `forward_message` | `send_message` with `forward` (the message_id) and `text: ""`, `chat_id` the destination; without `account_id` it goes from the account that holds the message, as before |
+| `create_group` | `manage_group` with `action: "create"`, the name as `value`, `participant_ids` |
+| `join_group` | `manage_group` with `action: "join"`, `invite` or `message_id`, `confirm` |
+| `save_contact`, `remove_contact`, `set_profile_picture` | removed, see below |
+
+- **What an assistant is sent is 4,779 tokens instead of 14,397**: the names,
+  descriptions, input schemas and annotations of a session that can write, as
+  an SDK client lists them (2,935 in a read session). Every description fits in
+  300 characters, `account_id` is explained once, in the server's instructions
+  and in `learn`, and `learn`'s guide is 1,857 tokens of text with no copy in
+  structured content. `node scripts/tool-budget.mjs` prints the table per tool,
+  and a test holds the budget.
+- **Output schemas on every tool** but the five Calfa calls and `learn`:
+  5,930 tokens in all, 2,238 of them `catch_up`'s and 1,440 `find_contact`'s.
+  A refusal from such a tool is `{ error, message, fix, account_id }` as text.
+- **Annotations stated per tool**, for its most far-reaching action, on one
+  rule: read-only means it changes nothing the user owns (WhatsApp, notes,
+  tags, files) and bills nothing, so `catch_up` moving its own mark is
+  read-only and `remember` is not:
+  `link_account` (it starts a pairing) and `get_media` (a file on each call, a
+  transcript an API may bill) are not read-only; `learn`, `get_status` and
+  `remember` are closed-world; `manage_chat` stays destructive, for `clear`,
+  `delete` and `block`; `edit_message` is destructive.
+- **`send_message` refuses what does not belong to its draft** instead of
+  dropping it: two kinds at once, `reply_to` or `mention_ids` on media, a poll
+  without its question, a forward with text, text on a voice note or an audio
+  file. WhatsApp shows no caption there, so the preview no longer shows one and
+  `confirm_send` no longer reports words that never went.
+- **The eval tool map 1.0** names the 20 tools and is the default of
+  `run-claude`, `score` and `manual`; a run recorded against 0.23.x scores with
+  `--tool-map 0.23`.
+
 ### Added
 
 - **`find_contact`: who "mama", "Ana de la contabilitate" or "Mișu" is.** A
-  read tool, in every session, next to `search_contacts` and `get_contact`
-  (which stay for now). It matches saved, business and self-given names, the
+  read tool, in every session. It matches saved, business and self-given names, the
   `nickname` and `relatie` details, tags, and a note that is only the
   relationship; diacritics and Romanian case endings do not matter, short forms
   find the full name, groups are found by name. It answers `resolved` with the
@@ -32,7 +94,7 @@
   blocks a draft.
 - **The address book is asked for when `find_contact` needs it.** With no
   contact carrying a saved name, the first `find_contact` of a server run asks
-  WhatsApp for the address book, as `sync_contacts` does, and waits up to 15
+  WhatsApp for the address book, as `wazap contacts resync` does, and waits up to 15
   seconds before answering, at most once a week.
 - **`catch_up`: what the user missed, in one call.** Ranked sections — who is
   waiting on a reply (the ask quoted, a voice note by its transcript, and what
@@ -58,7 +120,7 @@
   wazap, not their timestamps, so a message filed late (a missed call stored
   when it stops ringing, a retried decryption, a clock ahead) is in the next
   catch-up instead of under the mark.
-- **`#no-catchup`**: a person tagged with it through `update_contact_details`
+- **`#no-catchup`**: a person tagged with it through `remember`
   stays out of every catch-up: their chat is left out and counted in the
   footer, and nothing they send in a group or post as a story shows.
 - **`#private` in a catch-up**: a person tagged with it is counted and never
@@ -66,13 +128,23 @@
   in groups, a group's quote — and their entries say `private`; their unheard
   voice notes are counted in the footer, never named for transcription. Across
   several accounts, both tags filed on one account hold on all of them.
-- **Output schemas on `find_contact` and `catch_up`**, the first tools to
-  declare one. A tool with an output schema answers an error with
-  `{ error, message, fix }` in its text only, since MCP clients validate
-  structured content against the schema on errors too.
 
 ### Removed
 
+- **`save_contact`, `remove_contact` and `set_profile_picture`.** An
+  assistant filing people does it with `remember`, which stays on this machine;
+  editing the phone's address book or the account's own photo is something the
+  user does on the phone. A group's photo stays in `manage_group`.
+- **What the old catch-up tools did beyond `catch_up`:** `get_recent_messages`
+  with `compact`, `include_system`, `types` or `include_previews` over a whole
+  window (`read_messages` keeps `types` and `include_previews` for one chat),
+  and `get_unanswered`'s `min_age_hours` and `max_age_hours` (`catch_up`'s
+  `waiting` keeps asks for 14 days). A digest within a token budget replaces a
+  dump that ran to 100k tokens over a week.
+- **`sync_contacts` on demand, and `get_contact`'s `about`, `profile_pic_url`
+  and `is_blocked`.** `find_contact` asks WhatsApp for an address book that
+  looks empty on its own, and `wazap contacts resync` still forces it while no
+  server runs.
 - **The Gemini CLI extension.** `gemini-extension.json`, the generated
   `GEMINI.md` and `npm run context:build` are gone. `wazap connect gemini`
   still writes the MCP entry, and the Gemini CLI gets the five workflows from
@@ -106,7 +178,7 @@
   | `WAZAP_RATE_LIMIT` | 20 writes a minute, unless the account sets `rate_limit` in `accounts.json` |
   | `WAZAP_MAX_INFLIGHT` / `WAZAP_MAX_INFLIGHT_TOTAL` | 8 tool calls per MCP session, 32 in all |
   | `WAZAP_HTTP_BUDGET` | 240 requests a minute per HTTP credential |
-  | `WAZAP_TRANSCRIBE_LANGUAGE` | the language is detected; `transcribe_audio` still takes `language` |
+  | `WAZAP_TRANSCRIBE_LANGUAGE` | the language is detected; `get_media` still takes `language` |
   | `WAZAP_EMBED_IDLE_MINUTES` | the embedding server stops after 30 idle minutes |
   | `WAZAP_RECALL_MAX` | nothing: it capped nothing since 0.22 |
   | `WAZAP_TYPEWRITER` | the setup screens always type out at a terminal |
@@ -133,9 +205,10 @@
 
 ### Changed
 
-- **The `whatsapp-inbox` skill collects with `catch_up`**, falling back to
-  `get_unanswered` for replies forgotten for days and `get_recent_messages` for
-  every message of a window. `learn` points a catch-up there too.
+- **The five skills use the 1.0 tools.** `whatsapp-inbox` collects with
+  `catch_up` and reads a busy chat with `read_messages`; `whatsapp-send` drafts
+  every kind with `send_message` and files people with `remember`;
+  `whatsapp-recall` searches with `search` and opens files with `get_media`.
 - **The account database moves to schema version 5** the first time the server
   starts, in one transaction. It adds what the coming `catch_up` and
   `find_contact` read: whether a message mentions the account or was sent

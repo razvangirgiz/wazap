@@ -1,14 +1,13 @@
 {
   "version": "1.0",
-  "placeholder": true,
-  "description": "PLACEHOLDER for the phase 2 tool surface (design §D1). F2-4 fills in the final names, arguments and `normalize` rules once the tools exist; until then the scorer refuses to run with this map.",
+  "description": "Capabilities the cases assert on, mapped to the 20 tools of wazap 1.0 (design §D1). One tool serves several capabilities where 1.0 folded tools together: catch_up is the catch-up and who is waiting, read_messages reads stories with chat_id \"status\", get_media downloads and transcribes. `only_when` narrows a tool that serves several capabilities: a get_media call is transcribe only when its answer carries transcript or transcript_unavailable, or the message it names is a voice note or audio. `normalize` gives each call the portable fields assertions read, so a case written for 0.23 scores the same intent here.",
   "capabilities": {
     "meta": ["learn"],
     "accounts": ["get_status"],
     "catchup": ["catch_up"],
     "waiting": ["catch_up"],
-    "stories": ["read_messages"],
-    "read": ["read_messages", "get_message", "get_group_info"],
+    "stories": ["read_messages", "catch_up"],
+    "read": ["read_messages", "get_message", "get_group_info", "list_chats"],
     "search": ["search"],
     "contact": ["find_contact"],
     "remember": ["remember"],
@@ -20,6 +19,11 @@
     "wait": ["wait_for_messages"],
     "link": ["link_account"]
   },
+  "only_when": {
+    "transcribe": {
+      "get_media": { "any_of": ["result.transcript", "result.transcript_unavailable"], "message_type": ["voice", "audio"] }
+    }
+  },
   "groups": {
     "write": ["draft", "commit", "immediate_write"],
     "whatsapp_read": ["catchup", "waiting", "stories", "read", "search", "contact", "media", "transcribe", "wait"],
@@ -28,8 +32,8 @@
   "normalize": {
     "chat": ["args.chat_id", "args.group_id"],
     "text": ["args.text"],
-    "query": ["args.query", "args.name"],
-    "message": ["args.message_id"],
+    "query": ["args.query", "args.name", "args.tag"],
+    "message": ["args.message_id", "args.forward"],
     "draft": ["args.draft_id", "result.draft_id"],
     "before": ["args.before"],
     "window_hours": [{ "tool": "catch_up", "from": "result.window.hours", "default": 24 }],

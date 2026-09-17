@@ -65,7 +65,7 @@ let maxNoiseSim = -Infinity;
 for (const c of cases) {
   const limit = c.limit ?? defaultLimit;
   const result = await client.callTool({
-    name: "recall",
+    name: "search",
     arguments: {
       query: c.query,
       limit,
@@ -75,8 +75,14 @@ for (const c of cases) {
       ...(c.until ? { until: c.until } : {}),
     },
   });
-  const hits = result.structuredContent?.hits ?? [];
-  const hitText = (h) => h.message?.text ?? h.record?.text ?? "";
+  const answer = result.structuredContent;
+  if (answer !== undefined && answer.mode !== "hybrid") {
+    const why = answer.recall_unavailable;
+    console.error(`search answered mode ${answer.mode}, not a meaning search: ${why === undefined ? "is recall on?" : `${why.code}: ${why.message}${why.fix ? ` ${why.fix}` : ""}`}`);
+    process.exit(2);
+  }
+  const hits = answer?.messages ?? [];
+  const hitText = (h) => h.text ?? "";
   const needles = c.expect === undefined ? [] : fold(Array.isArray(c.expect) ? c.expect.join("\n") : c.expect).split("\n");
   const match = c.expectNone
     ? null
@@ -90,7 +96,7 @@ for (const c of cases) {
     report.push({ query: c.query, kind: "negative", pass, noise: hits.length, topSim: top?.similarity ?? null });
     if (!asJson)
       console.log(
-        `${pass ? "PASS" : "FAIL"}  negative  "${c.query}" → ${hits.length === 0 ? "no hits" : `${hits.length} hits (top sim ${top.similarity.toFixed(3)}: "${snippet(hitText(top))}")`}`
+        `${pass ? "PASS" : "FAIL"}  negative  "${c.query}" → ${hits.length === 0 ? "no hits" : `${hits.length} hits (top sim ${(top.similarity ?? 0).toFixed(3)}: "${snippet(hitText(top))}")`}`
       );
   } else {
     const pass = match !== -1;
@@ -99,7 +105,7 @@ for (const c of cases) {
     if (matched) minExpectedSim = Math.min(minExpectedSim, matched.similarity);
     // Hits above a missing expected one are calibration noise only when the
     // query genuinely has an answer that lost — count them toward noise.
-    if (!pass && hits[0]) maxNoiseSim = Math.max(maxNoiseSim, hits[0].similarity);
+    if (!pass && hits[0]) maxNoiseSim = Math.max(maxNoiseSim, hits[0].similarity ?? 0);
     report.push({
       query: c.query,
       kind: "positive",

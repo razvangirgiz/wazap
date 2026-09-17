@@ -107,7 +107,7 @@ export function caseOrder(a, b) {
   return x[0] - y[0] || x[1] - y[1] || x[2] - y[2];
 }
 
-export function loadToolMap(nameOrPath = "0.23") {
+export function loadToolMap(nameOrPath = "1.0") {
   const path = nameOrPath.endsWith(".json") ? resolve(nameOrPath) : join(TOOL_MAP_DIR, `${nameOrPath}.json`);
   const map = JSON.parse(readFileSync(path, "utf8"));
   if (map.placeholder) throw new Error(`${basename(path)} is a placeholder; fill it in before scoring against it`);

@@ -23,9 +23,10 @@
 import { z } from "zod";
 import type { AccountBinding } from "./account-hub.js";
 import { draftContextEnabled } from "./accounts.js";
-import { FIND_SCORES, RELATIONSHIPS, inflectionForms, nameWords, type AccountDb, type ContactCandidate, type FindKind, type FindResult, type FindVerdict } from "./db/index.js";
+import { FIND_SCORES, LOOKUP_MIN_DIGITS, RELATIONSHIPS, inflectionForms, nameWords, type AccountDb, type ContactCandidate, type FindKind, type FindResult, type FindVerdict } from "./db/index.js";
 import { styleLine, type DraftContext } from "./draft-style.js";
 import { WazapError, asWazapError } from "./errors.js";
+import { resolveChatId } from "./ids.js";
 import { formatAge, isoWithOffset } from "./messages.js";
 import { hasPrivateTag } from "./private-contacts.js";
 import { assertSendable, sendPolicyOf } from "./send-guard.js";
@@ -40,11 +41,12 @@ export interface FindContactQuery {
   limit?: number;
 }
 
-/** A candidate as one account found it, with the note the user filed on them. */
+/** A candidate as one account found it, with the note and details the user filed on them. */
 export interface FoundContact {
   accountId: string;
   candidate: ContactCandidate;
   note: string | null;
+  fields: Record<string, string> | null;
 }
 
 /** One account's answer, before the tool merges accounts and decides on context. */
@@ -62,25 +64,45 @@ function numberTailOf(qualifier: string): string | null {
   return qualifier.trim() !== "" && !/\p{L}/u.test(qualifier) && digits.length >= 4 ? digits : null;
 }
 
+/** A name that is a phone number or a WhatsApp id, which find_contact looks up as such instead of matching names. */
+export type Lookup = { source: "number"; digits: string } | { source: "id"; id: string };
+
+/** "+40 722 001 111", "0722-001-111", "0040722001111": a number; "…@s.whatsapp.net", "…@lid", "…@g.us": an id. */
+export function lookupOf(name: string): Lookup | null {
+  const trimmed = name.trim();
+  if (/^[^\s@]+@(s\.whatsapp\.net|c\.us|lid|g\.us)$/i.test(trimmed)) return { source: "id", id: trimmed };
+  if (!/^\+?[\d\s().-]+$/.test(trimmed)) return null;
+  const digits = trimmed.replace(/\D/g, "");
+  if (digits.length < LOOKUP_MIN_DIGITS) return null;
+  return { source: "number", digits: trimmed.startsWith("00") ? digits.slice(2) : digits };
+}
+
 /**
  * db.contacts.find on one account, with a digits-only qualifier read as the
- * end of a phone number (numberTail), and each returned person's note. The
- * service calls it.
+ * end of a phone number (numberTail), and each returned person's note; a
+ * number or an id is looked up instead (db.contacts.lookup), `resolveId`
+ * giving the number a lid is paired with. The service calls it.
  */
-export function findInAccount(db: AccountDb, accountId: string, query: FindContactQuery): AccountFind {
+export function findInAccount(db: AccountDb, accountId: string, query: FindContactQuery, resolveId?: (id: string) => string): AccountFind {
   const tail = numberTailOf(query.qualifier ?? "");
-  const { verdict, candidates, closest, ...found } = db.contacts.find({
-    name: query.name,
-    qualifier: tail === null ? (query.qualifier ?? null) : null,
-    numberTail: tail,
-    kind: query.kind ?? "any",
-    limit: query.limit,
-  });
-  const withNote = (candidate: ContactCandidate): FoundContact => ({
-    accountId,
-    candidate,
-    note: candidate.kind === "person" ? (db.identity.notes(candidate.jid)?.note ?? null) : null,
-  });
+  const lookup = lookupOf(query.name);
+  const kind = query.kind ?? "any";
+  const { verdict, candidates, closest, ...found } =
+    lookup === null
+      ? db.contacts.find({
+          name: query.name,
+          qualifier: tail === null ? (query.qualifier ?? null) : null,
+          numberTail: tail,
+          kind,
+          limit: query.limit,
+        })
+      : lookup.source === "number"
+        ? db.contacts.lookup({ source: "number", digits: lookup.digits, kind, limit: query.limit })
+        : db.contacts.lookup({ source: "id", jids: [...new Set([resolveChatId(lookup.id), resolveId?.(lookup.id) ?? lookup.id])], kind, limit: query.limit });
+  const withNote = (candidate: ContactCandidate): FoundContact => {
+    const filed = candidate.kind === "person" ? db.identity.notes(candidate.jid) : null;
+    return { accountId, candidate, note: filed?.note ?? null, fields: filed === null || Object.keys(filed.fields).length === 0 ? null : filed.fields };
+  };
   return { accountId, verdict, query: found.query, candidates: candidates.map(withNote), closest: closest.map(withNote) };
 }
 
@@ -162,6 +184,7 @@ function candidateView(found: FoundContact, labelAccount: boolean): Record<strin
   return view;
 }
 
+/** The one the user meant, in full: what the user filed on them, and their number. */
 function contactView(found: FoundContact): Record<string, unknown> {
   const c = found.candidate;
   const view: Record<string, unknown> = {
@@ -172,8 +195,14 @@ function contactView(found: FoundContact): Record<string, unknown> {
     account_id: found.accountId,
     matched: matchedOf(c),
   };
+  if (c.kind === "person") {
+    view.number = c.jid.endsWith("@s.whatsapp.net") ? c.jid.split("@")[0]! : null;
+    view.saved = c.saved;
+  }
+  if (c.business) view.business = true;
   if (found.note !== null) view.note = found.note;
   if (c.tags.length > 0) view.tags = c.tags;
+  if (found.fields !== null) view.fields = found.fields;
   return view;
 }
 
@@ -199,6 +228,19 @@ function unsearchedLine(unavailable: readonly UnavailableAccount[]): string | nu
 function fixFor(outcome: FindOutcome, query: FindResult["query"], asked: string, multi: boolean, unavailable: readonly UnavailableAccount[]): string | undefined {
   if (outcome.status === "resolved") return undefined;
   const unsearched = unsearchedLine(unavailable);
+  const lookup = lookupOf(asked);
+  if (lookup !== null) {
+    const accounts = new Set(outcome.candidates.map((found) => found.accountId));
+    const line =
+      outcome.status === "not_found"
+        ? lookup.source === "number"
+          ? `Nobody saved or filed has the number "${asked}": check the number with the user, in international format. A number nobody saved still takes a message as chat_id.`
+          : `Nobody saved or filed, and no group, is "${asked}": check the id, passed exactly as a message or chat gave it.`
+        : accounts.size > 1
+          ? "They are on different accounts: ask the user which account, then call find_contact again with its account_id."
+          : "Several numbers end with those digits: ask the user for the full number in international format.";
+    return [line, unsearched].filter((part) => part !== null).join(" ");
+  }
   if (outcome.status === "ambiguous") {
     const accounts = new Set(outcome.candidates.map((found) => found.accountId));
     return [
@@ -216,7 +258,7 @@ function fixFor(outcome: FindOutcome, query: FindResult["query"], asked: string,
   if (query.relationship !== null) {
     const word = relationWordOf(query);
     lines.push(
-      `No saved name, tag, detail or note says who "${word}" is, and messages are never read for it. Ask the user who it is, find that person with find_contact, then file it with update_contact_details({contact_id, fields: {relatie: "${word}"}}) so "${word}" resolves next time.`
+      `No saved name, tag, detail or note says who "${word}" is, and messages are never read for it. Ask the user who it is, find that person with find_contact, then file it with remember({chat_id, fields: {relatie: "${word}"}}) so "${word}" resolves next time.`
     );
   } else {
     lines.push(
@@ -268,18 +310,52 @@ function renderContext(context: DraftContext, name: string): string[] {
   return lines;
 }
 
+/** What the user filed on someone, on one line: note, tags, details. */
+function filedLine(view: Record<string, unknown>): string | null {
+  const parts = [
+    view.note ? `note: ${view.note as string}` : null,
+    view.tags ? (view.tags as string[]).map((tag) => `#${tag}`).join(" ") : null,
+    ...Object.entries((view.fields as Record<string, string> | undefined) ?? {}).map(([key, value]) => `${key}: ${value}`),
+  ].filter((part): part is string => part !== null);
+  return parts.length === 0 ? null : parts.join(" · ");
+}
+
 export function renderFindContact(structured: Record<string, unknown>): string {
   const query = structured.query as { name: string };
   const fix = structured.fix as string | undefined;
   const unavailable = (structured.accounts_unavailable as UnavailableAccount[] | undefined) ?? [];
   const unsearched = unavailable.length === 0 ? null : `Not searched: ${unavailable.map((entry) => `${entry.account_id} (${entry.error})`).join(", ")}.`;
   switch (structured.status) {
+    case "listed": {
+      const contacts = structured.contacts as Array<Record<string, unknown>>;
+      const tag = (structured.query as { tag: string }).tag;
+      if (contacts.length === 0) return [`Nobody is filed under #${tag}.`, unsearched].filter(Boolean).join("\n");
+      const omitted = (structured.omitted as Array<{ account_id: string; count: number }> | undefined) ?? [];
+      const left = omitted.reduce((sum, entry) => sum + entry.count, 0);
+      const cut =
+        left === 0
+          ? null
+          : `${left} more not shown (${omitted.map((entry) => `${entry.count} on ${entry.account_id}`).join(", ")}): raise limit, up to ${MAX_LISTED}, or narrow it with name or account_id.`;
+      return [
+        `# Filed under #${tag} (${contacts.length})`,
+        cut,
+        ...contacts.map(
+          (c) =>
+            `- ${c.name as string}${c.account_id ? ` (account ${c.account_id as string})` : ""} — ${c.chat_id as string}${c.number ? ` (${c.number as string})` : ""}${c.saved ? " · saved" : ""}${filedLine(c) ? ` · ${filedLine(c)}` : ""}`
+        ),
+        unsearched,
+      ]
+        .filter(Boolean)
+        .join("\n");
+    }
     case "resolved": {
       const contact = structured.contact as { name: string; chat_id: string; account_id: string; matched: { source: string; value: string; class: string } };
       const how = contact.matched.class === "exact" || contact.matched.class === "word" ? "" : `, ${contact.matched.class}`;
       const lines = [
         `"${query.name}" is ${contact.name}: chat_id ${contact.chat_id} on account ${contact.account_id} (matched ${contact.matched.source}${how}: ${contact.matched.value}).`,
       ];
+      const filed = filedLine(structured.contact as Record<string, unknown>);
+      if (filed !== null) lines.push(filed);
       if (unsearched !== null) lines.push(unsearched);
       if (structured.context !== undefined) lines.push(...renderContext(structured.context as DraftContext, contact.name));
       return lines.join("\n");
@@ -333,10 +409,23 @@ const styleSchema = z.object({
   ends_punct: z.number(),
 });
 
+const listedSchema = z.object({
+  account_id: z.string().optional(),
+  chat_id: z.string(),
+  name: z.string(),
+  number: z.string().nullable(),
+  saved: z.boolean(),
+  business: z.boolean().optional(),
+  note: z.string().optional(),
+  tags: z.array(z.string()).optional(),
+  fields: z.record(z.string()).optional(),
+});
+
 export const FIND_CONTACT_OUTPUT = {
-  status: z.enum(["resolved", "ambiguous", "not_found"]),
+  status: z.enum(["resolved", "ambiguous", "not_found", "listed"]),
   query: z.object({
-    name: z.string(),
+    name: z.string().optional(),
+    tag: z.string().optional(),
     qualifier: z.string().optional(),
     kind: z.enum(["person", "group", "any"]),
     words: z.array(z.string()),
@@ -350,8 +439,12 @@ export const FIND_CONTACT_OUTPUT = {
       kind: z.enum(["person", "group"]),
       account_id: z.string(),
       matched: matchedSchema,
+      number: z.string().nullable().optional(),
+      saved: z.boolean().optional(),
+      business: z.boolean().optional(),
       note: z.string().optional(),
       tags: z.array(z.string()).optional(),
+      fields: z.record(z.string()).optional(),
     })
     .optional()
     .describe("Only when resolved"),
@@ -367,6 +460,11 @@ export const FIND_CONTACT_OUTPUT = {
     .describe("Only when resolved, in a session that can write: what a draft to them is written after"),
   candidates: z.array(candidateSchema).optional().describe("Only when ambiguous; best first"),
   closest: z.array(candidateSchema).optional().describe("Only when not_found"),
+  contacts: z.array(listedSchema).optional().describe("Only when listed: everyone filed under the tag"),
+  omitted: z
+    .array(z.object({ account_id: z.string(), count: z.number().int() }))
+    .optional()
+    .describe("Only when listed and cut by limit: how many more on each account"),
   fix: z.string().optional().describe("What to do next, when not resolved"),
   accounts_searched: z.array(z.string()).optional(),
   accounts_unavailable: z.array(z.object({ account_id: z.string(), error: z.string() })).optional(),
@@ -376,7 +474,8 @@ export const FIND_CONTACT_OUTPUT = {
 // ---------------------------------------------------------------- the tool
 
 export interface FindContactArgs {
-  name: string;
+  name?: string;
+  tag?: string;
   qualifier?: string;
   kind?: FindKind;
   limit?: number;
@@ -403,16 +502,94 @@ function contextAllowed(ctx: ToolCtx, binding: Pick<AccountBinding, "id" | "wa">
   }
 }
 
+/** A tag lists at most this many people. */
+const MAX_LISTED = 50;
+/** People one account is asked for under a tag: more than any list shows, so what the limit leaves out can be counted. */
+const TAG_SCAN_MAX = 10_000;
+
+/**
+ * Everyone the user filed under a tag, on one account or every one: a list
+ * the user asked for by filing it, so each person comes with their chat_id.
+ * `name` narrows it the way the address book is searched.
+ */
+async function listTagged(args: FindContactArgs & { tag: string }, ctx: ToolCtx): Promise<ToolResult> {
+  const limit = Math.max(1, Math.min(MAX_LISTED, Math.floor(args.limit ?? MAX_LISTED)));
+  const everyone = args.account_id === undefined ? ctx.hub.bindings() : [];
+  const multi = everyone.length > 1;
+  const targets: Array<Pick<AccountBinding, "id" | "wa">> = multi ? everyone : [{ id: ctx.accountId, wa: ctx.wa }];
+  const settled = await Promise.allSettled(targets.map((target) => target.wa.searchContacts(args.name ?? "", TAG_SCAN_MAX, { tag: args.tag })));
+  const perAccount: Array<{ accountId: string; rows: Array<Record<string, unknown>> }> = [];
+  const unavailable: UnavailableAccount[] = [];
+  settled.forEach((result, index) => {
+    const accountId = targets[index]!.id;
+    if (result.status === "rejected") {
+      unavailable.push({ account_id: accountId, error: asWazapError(result.reason).code });
+      return;
+    }
+    const rows: Array<Record<string, unknown>> = [];
+    perAccount.push({ accountId, rows });
+    for (const c of result.value) {
+      rows.push({
+        ...(multi ? { account_id: accountId } : {}),
+        chat_id: c.contact_id,
+        name: c.name,
+        number: c.number,
+        saved: c.is_my_contact,
+        ...(c.is_business ? { business: true } : {}),
+        ...(c.note ? { note: c.note } : {}),
+        ...(c.tags?.length ? { tags: c.tags } : {}),
+        ...(c.fields && Object.keys(c.fields).length > 0 ? { fields: c.fields } : {}),
+      });
+    }
+  });
+  if (unavailable.length === targets.length) {
+    throw asWazapError(settled.find((result): result is PromiseRejectedResult => result.status === "rejected")?.reason);
+  }
+  // The limit is shared out a person per account a round, so one account's long list never crowds out another's.
+  const taken = perAccount.map(() => 0);
+  for (let round = 0, left = limit; left > 0; round++) {
+    let more = false;
+    perAccount.forEach((account, index) => {
+      if (left > 0 && round < account.rows.length) {
+        taken[index]!++;
+        left--;
+        more = true;
+      }
+    });
+    if (!more) break;
+  }
+  const omitted = perAccount
+    .map((account, index) => ({ account_id: account.accountId, count: account.rows.length - taken[index]! }))
+    .filter((entry) => entry.count > 0);
+  const structured: Record<string, unknown> = {
+    status: "listed",
+    query: { tag: args.tag, ...(args.name === undefined ? {} : { name: args.name }), kind: "person", words: [], relationship: null },
+    contacts: perAccount.flatMap((account, index) => account.rows.slice(0, taken[index])),
+    ...(omitted.length > 0 ? { omitted } : {}),
+  };
+  if (multi) {
+    structured.accounts_searched = targets.map((target) => target.id);
+    structured.account_id = null;
+  }
+  if (unavailable.length > 0) structured.accounts_unavailable = unavailable;
+  return { content: [{ type: "text", text: renderFindContact(structured) }], structuredContent: structured };
+}
+
 export async function runFindContact(args: FindContactArgs, ctx: ToolCtx): Promise<ToolResult> {
-  if (nameWords(args.name).length === 0) {
+  if (args.tag !== undefined) return listTagged({ ...args, tag: args.tag }, ctx);
+  if (args.name === undefined) {
+    throw new WazapError("INVALID_ID", "Pass who to find as name, or tag to list everyone filed under it.", 'find_contact({ name: "Ana" }) or find_contact({ tag: "client" })');
+  }
+  const name = args.name;
+  if (nameWords(name).length === 0) {
     throw new WazapError(
       "INVALID_ID",
-      `"${args.name}" has no letter or digit to look anyone up by.`,
+      `"${name}" has no letter or digit to look anyone up by.`,
       'Pass what the user calls them, as they said it: find_contact({ name: "Ana" }). A phone number goes straight to send_message as chat_id'
     );
   }
   const limit = Math.max(1, Math.min(10, Math.floor(args.limit ?? FIND_SCORES.ambiguousMax)));
-  const query: FindContactQuery = { name: args.name, qualifier: args.qualifier, kind: args.kind ?? "any", limit };
+  const query: FindContactQuery = { name, qualifier: args.qualifier, kind: args.kind ?? "any", limit };
   const everyone = args.account_id === undefined ? ctx.hub.bindings() : [];
   const multi = everyone.length > 1;
   const targets: Array<Pick<AccountBinding, "id" | "wa">> = multi ? everyone : [{ id: ctx.accountId, wa: ctx.wa }];
@@ -444,7 +621,7 @@ export async function runFindContact(args: FindContactArgs, ctx: ToolCtx): Promi
   const structured: Record<string, unknown> = {
     status: outcome.status,
     query: {
-      name: args.name,
+      name,
       ...(args.qualifier === undefined ? {} : { qualifier: args.qualifier }),
       kind: query.kind,
       words: read.words,
@@ -471,7 +648,7 @@ export async function runFindContact(args: FindContactArgs, ctx: ToolCtx): Promi
   }
   // Over several accounts, no one account answered: each candidate names its own.
   if (multi && outcome.contact === null) structured.account_id = null;
-  const fix = fixFor(outcome, read, args.name, multi, unavailable);
+  const fix = fixFor(outcome, read, name, multi, unavailable);
   if (fix !== undefined) structured.fix = fix;
   if (multi) structured.accounts_searched = targets.map((target) => target.id);
   if (unavailable.length > 0) structured.accounts_unavailable = unavailable;

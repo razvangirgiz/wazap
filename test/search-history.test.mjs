@@ -1,5 +1,5 @@
 /**
- * search_messages and the whole local history. A chat's history file — the
+ * search by words and the whole local history. A chat's history file — the
  * synced backfill an older wazap wrote, imported into the account database at
  * boot — answers the same keyword live messages do, old and new side by side,
  * across chats. There is no per-chat window any more: every message the
@@ -16,12 +16,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { proto } from "baileys";
-import { z } from "zod";
 
 import { WhatsAppService } from "../dist/whatsapp.js";
-import { registerTools } from "../dist/tools.js";
 import { accountPaths } from "../dist/config.js";
-import { asToolSource, connectedService, storedIds } from "./helpers.mjs";
+import { connectedService, schemaCheckedTools, storedIds } from "./helpers.mjs";
 
 const ME = "40700000001@s.whatsapp.net";
 const ANA = "40700000002@s.whatsapp.net";
@@ -52,14 +50,7 @@ function setup(dataDir) {
     name: "Răzvan",
     config: { persistHistory: true, dataDir },
   });
-  const tools = new Map();
-  registerTools({ registerTool: (name, meta, handler) => tools.set(name, { meta, handler }) }, asToolSource(connected.svc), {
-    allowWrite: false,
-  });
-  const call = (name, args = {}) => {
-    const { meta, handler } = tools.get(name);
-    return handler(z.object(meta.inputSchema).parse(args));
-  };
+  const { call } = schemaCheckedTools(connected.svc, { allowWrite: false });
   const live = (chat, id, body, key = {}) =>
     connected.sock.ev.emit("messages.upsert", {
       type: "notify",
@@ -68,7 +59,7 @@ function setup(dataDir) {
   return { ...connected, call, live };
 }
 
-test("search_messages reaches the synced backfill and the live ring alike, across chats", async () => {
+test("search by words reaches the synced backfill and the live ring alike, across chats", async () => {
   const dataDir = mkdtempSync(join(tmpdir(), "wazap-search-hist-"));
   const oldS = Math.floor((Date.now() - 200 * day) / 1000);
   seedHistory(dataDir, ANA, [
@@ -88,7 +79,7 @@ test("search_messages reaches the synced backfill and the live ring alike, acros
     live(ANA, "L1", "cheltuială de azi");
     live(DAN, "L2", "cheltuială la dan");
 
-    const all = await call("search_messages", { query: "cheltuială", limit: 50 });
+    const all = await call("search", { match: "words", query: "cheltuială", limit: 50 });
     assert.deepEqual(
       all.structuredContent.messages.map((m) => m.message_id).sort(),
       [`false_${ANA}_H1`, `false_${ANA}_H2`, `false_${GROUP}_H3`, `false_${ANA}_L1`, `false_${DAN}_L2`].sort(),
@@ -110,7 +101,7 @@ test("search_messages reaches the synced backfill and the live ring alike, acros
     assert.match(all.content[0].text, /Searched 5 held messages across 3 chats, \d{4}-\d{2}-\d{2} → \d{4}-\d{2}-\d{2}/);
     assert.match(all.content[0].text, /every message this device synced is kept/);
 
-    const scoped = await call("search_messages", { query: "cheltuială", chat_id: ANA });
+    const scoped = await call("search", { match: "words", query: "cheltuială", chat_id: ANA });
     assert.deepEqual(
       scoped.structuredContent.messages.map((m) => m.message_id).sort(),
       [`false_${ANA}_H1`, `false_${ANA}_H2`, `false_${ANA}_L1`].sort()
@@ -146,11 +137,11 @@ test("a backfill deeper than the old 1000 cap answers keyword search", async () 
 
     // Both markers sat beyond the old cap — positions 0 and 400 of a 1500-line
     // file were dropped from memory before the bump, and the query missed them.
-    const oldest = await call("search_messages", { query: "vechime" });
+    const oldest = await call("search", { match: "words", query: "vechime" });
     assert.equal(oldest.structuredContent.count, 1);
     assert.equal(oldest.structuredContent.messages[0].message_id, `false_${ANA}_B0`);
 
-    const middle = await call("search_messages", { query: "mijlocul unic", chat_id: ANA });
+    const middle = await call("search", { match: "words", query: "mijlocul unic", chat_id: ANA });
     assert.equal(middle.structuredContent.count, 1);
     assert.equal(middle.structuredContent.messages[0].message_id, `false_${ANA}_B400`);
   } finally {
@@ -173,7 +164,7 @@ test("there is no per-chat window: a chat past the old 2000 cap answers keyword 
     await svc.bootStorage();
     assert.equal(svc.hasMessage(`false_${ANA}_B0`), true, "the oldest is kept");
 
-    const oldest = await call("search_messages", { query: "vechime" });
+    const oldest = await call("search", { match: "words", query: "vechime" });
     assert.equal(oldest.structuredContent.count, 1, "the oldest message answers too");
     assert.equal(oldest.structuredContent.messages[0].message_id, `false_${ANA}_B0`);
 
@@ -184,13 +175,14 @@ test("there is no per-chat window: a chat past the old 2000 cap answers keyword 
     assert.equal(Date.parse(cov.oldest_at), baseS * 1000, "the window starts at the first line");
     assert.match(oldest.content[0].text, /Searched 2,100 held messages/);
 
-    const current = await call("search_messages", { query: "mesaj curent", limit: 50 });
+    const current = await call("search", { match: "words", query: "mesaj curent", limit: 50 });
     assert.equal(current.structuredContent.count, 50);
     const indexes = current.structuredContent.messages.map((m) => Number(m.message_id.split("_").at(-1).slice(1)));
     assert.deepEqual(indexes, Array.from({ length: 50 }, (_, i) => 2_099 - i), "newest first");
 
     // Time filters narrow the declared window, not just the hits.
-    const narrowed = await call("search_messages", {
+    const narrowed = await call("search", {
+      match: "words",
       query: "mesaj curent",
       chat_id: ANA,
       since: new Date((baseS + 2_000) * 1000).toISOString(),
@@ -223,7 +215,7 @@ test("a search the scan cap stops answers what it found, says how far back it se
       return text(input);
     };
 
-    const result = await call("search_messages", { query: "§x" });
+    const result = await call("search", { match: "words", query: "§x" });
     assert.equal(storageCalls, 1, "a capped page is the last page");
     assert.equal(result.structuredContent.count, 0, "the one match lies past the cap");
     assert.equal(result.structuredContent.scan_capped, true);
@@ -232,7 +224,7 @@ test("a search the scan cap stops answers what it found, says how far back it se
     assert.match(result.content[0].text, /stopped at its scan limit/);
 
     storageCalls = 0;
-    const narrowed = await call("search_messages", { query: "§x", until: new Date(baseMs + 60_000).toISOString() });
+    const narrowed = await call("search", { match: "words", query: "§x", until: new Date(baseMs + 60_000).toISOString() });
     assert.equal(narrowed.structuredContent.count, 1, "narrowing the window reaches it");
     assert.equal(narrowed.structuredContent.scan_capped, false);
     assert.equal(narrowed.structuredContent.searched_back_to, undefined);

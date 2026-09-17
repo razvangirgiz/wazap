@@ -23,7 +23,7 @@
  * held at that instant; its later pages are served from it (src/catchup.ts).
  *
  * `waiting` is not bound by the window: an ask stays until the user answers,
- * marks it handled, or it is 14 days old, as get_unanswered has it.
+ * marks it handled, or it is 14 days old, as the service's getUnanswered has it.
  */
 import { readsAsAsk } from "./asks.js";
 import type { AccountDb, ChatRecord, DigestMedia, DigestSpan, InboundAggregate, TailMessage, WindowMessage } from "./db/index.js";
@@ -45,11 +45,11 @@ const DAY = 24 * HOUR;
 /** A first run, or a mark older than MARK_MAX_AGE_MS, reads this far back. */
 export const FIRST_RUN_MS = DAY;
 export const MARK_MAX_AGE_MS = 7 * DAY;
-/** An ask older than this was abandoned, not left waiting (get_unanswered's default). */
+/** An ask older than this was abandoned, not left waiting (getUnanswered's default). */
 export const WAITING_HORIZON_MS = 14 * DAY;
 /** No window reaches further back than this: a message sent earlier and stored late is not missed, it is history. */
 export const WINDOW_FLOOR_MS = WAITING_HORIZON_MS;
-/** How many of their newest messages an ask is looked for among (get_unanswered's scan). */
+/** How many of their newest messages an ask is looked for among (getUnanswered's scan). */
 const ASK_SCAN = 30;
 /** Voice notes the footer names by id. */
 const VOICE_IDS_MAX = 10;
@@ -508,7 +508,7 @@ export async function scanCatchup(db: AccountDb, host: CatchupHost, request: Cat
   const voiceIds: string[] = [];
   const voiceSeen = new Set<string>();
   let voiceCount = 0;
-  /** An unheard voice note, counted once; named for transcribe_audio unless its person is #private. */
+  /** An unheard voice note, counted once; named for get_media unless its person is #private. */
   const noteVoice = (sid: string, hidden: boolean): void => {
     if (voiceSeen.has(sid)) return;
     voiceSeen.add(sid);

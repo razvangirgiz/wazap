@@ -267,7 +267,7 @@ export const RETIRED_SETTINGS: Readonly<Record<string, string>> = {
   WAZAP_MAX_INFLIGHT: "one MCP session runs at most 8 tool calls at once",
   WAZAP_MAX_INFLIGHT_TOTAL: "all sessions together run at most 32 tool calls at once",
   WAZAP_HTTP_BUDGET: "each HTTP credential gets 240 requests a minute",
-  WAZAP_TRANSCRIBE_LANGUAGE: "the spoken language is detected, and `transcribe_audio` takes a `language`",
+  WAZAP_TRANSCRIBE_LANGUAGE: "the spoken language is detected, and `get_media` takes a `language`",
   WAZAP_EMBED_IDLE_MINUTES: "the embedding server stops after 30 idle minutes",
   WAZAP_RECALL_MAX: "it capped nothing, and every kept message is indexed",
   WAZAP_TYPEWRITER: "the setup screens always type out at a terminal",

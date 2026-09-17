@@ -218,11 +218,18 @@ function resolveAccount(account, anchorMs, refs) {
     const sid = `${fromMe ? "true" : "false"}_${chatJid}_${keyId}`;
     if (spec.key) {
       if (refs.messages[spec.key]) throw new Error(`Message key "${spec.key}" is used twice`);
-      refs.messages[spec.key] = { id: sid, chat: chatJid, account: account.id, text: spec.text ?? spec.media?.caption ?? null };
+      refs.messages[spec.key] = { id: sid, chat: chatJid, account: account.id, type: messageTypeOf(spec), text: spec.text ?? spec.media?.caption ?? null };
     }
     return { spec, chatJid, group, sender, fromMe, keyId, sid };
   });
   return { me, people, groups, messages };
+}
+
+/** The type wazap reports for a fixture message, as the scorer's `only_when` reads it. */
+function messageTypeOf(spec) {
+  if (spec.voice) return "voice";
+  if (spec.media) return mediaBytes(spec.media.kind).mimetype.startsWith("image/") ? "image" : "document";
+  return "text";
 }
 
 /** The Baileys message a fixture message arrives as, and the media bytes behind it. */
@@ -408,7 +415,7 @@ export function deliver(world, spec, ts = Date.now()) {
   const { raw, media } = baileysMessage({ spec: { ...spec, ts }, chatJid, group, sender, fromMe, keyId, sid }, part.people);
   if (media) part.buffers.set(sid, media.bytes);
   part.sock.ev.emit("messages.upsert", { type: spec.append ? "append" : "notify", messages: [raw] });
-  if (spec.key) world.refs.messages[spec.key] = { id: sid, chat: chatJid, account: part.spec.id, text: spec.text ?? null };
+  if (spec.key) world.refs.messages[spec.key] = { id: sid, chat: chatJid, account: part.spec.id, type: messageTypeOf(spec), text: spec.text ?? null };
   return sid;
 }
 

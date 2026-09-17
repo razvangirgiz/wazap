@@ -219,6 +219,7 @@ import type {
   TranscriptionStatus,
   SyncState,
   Synced,
+  TranscribeOptions,
   TranscribeResult,
   WhatsAppApi,
   HandledResult,
@@ -261,7 +262,9 @@ const RECENT_GROUP_META_MAX = 12;
 const RECALL_RERANK_WINDOW = 100;
 /** A match found by meaning loses half its way down to 70% each month: recency orders close matches, never buries a clearly closer old one. */
 const RECALL_RECENCY_HALF_LIFE_MS = 30 * 86_400_000;
-/** Messages get_recent_messages returns per chat: the newest of its window, as many as main's per-chat ring held. */
+/** How long a search waits for its query's embedding (a sidecar starting cold takes longer) before it answers by words. */
+const RECALL_QUERY_WAIT_MS = 8_000;
+/** Messages getRecentMessages returns per chat: the newest of its window, as many as main's per-chat ring held. */
 const RECENT_PER_CHAT_MAX = 2_000;
 /** Local contact filing caps: enough to describe anyone, small enough to stay a note. */
 const MAX_CONTACT_TAGS = 30;
@@ -274,7 +277,7 @@ const MAX_FIELD_KEY_CHARS = 40;
 const PREVIEW_BUDGET_MS = 20_000;
 /** WhatsApp shows a story for a day; so does wazap. */
 const STORY_TTL_MS = 24 * 3_600_000;
-/** How far back into a chat get_unanswered reads for the ask. */
+/** How far back into a chat an open ask is looked for. */
 const UNANSWERED_SCAN = 30;
 const CALL_SWEEP_MS = 30_000;
 /** The same call reaches the store up to three ways; only nearness in time tells them apart. */
@@ -425,7 +428,7 @@ function missingMessage(messageId: string): WazapError {
   return new WazapError(
     "MESSAGE_NOT_FOUND",
     `No message "${messageId}" is loaded.`,
-    "Use a message_id from read_messages or search_messages"
+    "Use a message_id from read_messages or search"
   );
 }
 
@@ -533,6 +536,8 @@ export class WhatsAppService implements WhatsAppApi {
   private vectorCount: { at: number; count: number } | null = null;
   /** The sidecar starts on the first embedding call, never at boot. */
   private recallEngineP: Promise<EmbedEngine> | null = null;
+  /** RECALL_QUERY_WAIT_MS; a field so a test need not wait eight seconds. */
+  private recallQueryWaitMs = RECALL_QUERY_WAIT_MS;
   /**
    * Whether incoming voice notes are queued for transcription: a provider is
    * configured, auto mode is on, and the provider may run in this mode.
@@ -1573,7 +1578,7 @@ export class WhatsAppService implements WhatsAppApi {
   }
 
   /**
-   * What search_messages ran across: every visible message of the account (or
+   * What a search by words ran across: every visible message of the account (or
    * of the chat) inside the time filters, the status feed left out. Null when
    * the database cannot say; a coverage miss never takes a search down.
    */
@@ -1603,7 +1608,7 @@ export class WhatsAppService implements WhatsAppApi {
   /**
    * Words and meaning in one search: the query is embedded, then matched
    * against the account's stored vectors and its trigram index under the
-   * same filters search_messages takes, and the two rankings are fused. A hit
+   * same filters a search by words takes, and the two rankings are fused. A hit
    * found only by meaning must clear the similarity floor. A row the database
    * holds only as text (imported from the old recall index) answers with that
    * text, marked `from_index`.
@@ -1621,7 +1626,7 @@ export class WhatsAppService implements WhatsAppApi {
       limit = pageLimit(limit);
       const scope = chatId === undefined ? undefined : this.resolveId(chatId);
       const from = this.senderFilter(opts.from);
-      const [vector] = await this.recallEmbed([query], "query");
+      const vector = await this.queryVector(query);
       const db = this.db;
       // TODO(F1-b3): the hybrid scan runs on the main thread, ~160-190 ms at 100,000 vectors; it moves to a worker.
       const result = db.vectors.hybrid({
@@ -1649,7 +1654,7 @@ export class WhatsAppService implements WhatsAppApi {
         message: views[i]!,
         from_index: hit.message.raw === null,
       })) satisfies RecallAnswer["hits"];
-      return this.synced({ hits, index: this.recallStatus() });
+      return this.synced({ hits, index: this.recallStatus(), lexicalCapped: result.lexicalCapped });
     });
   }
 
@@ -1778,7 +1783,7 @@ export class WhatsAppService implements WhatsAppApi {
         await this.askForEmptyAddressBook();
         db = this.db;
       }
-      return findInAccount(db, this.accountRecord.id, query);
+      return findInAccount(db, this.accountRecord.id, query, (id) => this.resolveId(id));
     });
   }
 
@@ -2139,7 +2144,7 @@ export class WhatsAppService implements WhatsAppApi {
 
   /**
    * The local contact file: tags and key-value details the agent files a
-   * person under, searchable by search_contacts. Nothing reaches WhatsApp —
+   * person under, found by find_contact. Nothing reaches WhatsApp —
    * the protocol stores only a name — so this is how "my accountant" and
    * "the guys from the depot" stay attached to people. The person need not
    * be a saved contact; filing a chat partner works too.
@@ -2372,10 +2377,13 @@ export class WhatsAppService implements WhatsAppApi {
    * Speech into text, once per message: a transcript already on hand is returned
    * as it is, because the local provider is slow and the API one is billed.
    */
-  transcribeAudio(messageId: string, language?: string): Promise<TranscribeResult> {
+  transcribeAudio(messageId: string, language?: string, opts: TranscribeOptions = {}): Promise<TranscribeResult> {
     return this.guarded(async () => {
       const message = this.storedOrThrow(messageId);
       if (message.transcript !== null) return transcribeResult(this.transcriptRecordOf(message), true);
+      if (opts.cachedOnly === true) {
+        throw new WazapError("TRANSCRIBE_UNAVAILABLE", `No transcript of ${messageId} is on hand.`, "Call get_media without save_to to transcribe it");
+      }
       const raw = this.messageOrThrow(messageId);
 
       const type = messageType(raw);
@@ -2407,6 +2415,8 @@ export class WhatsAppService implements WhatsAppApi {
       // moment would otherwise upload it twice. They share the first run.
       const running = this.transcribing.get(message.sid);
       if (running) return await running;
+      // Only a run spends the caller's budget: what is on hand, or cannot run, cost nothing.
+      opts.limit?.take();
       const work = this.runTranscribe(message.sid, raw, info, settings, language);
       this.transcribing.set(message.sid, work);
       try {
@@ -2467,7 +2477,7 @@ export class WhatsAppService implements WhatsAppApi {
   }
 
   /**
-   * A stored transcript as the views and transcribe_audio take it, with the
+   * A stored transcript as the views and get_media take it, with the
    * details stored beside it. One stored without them (set directly, or by
    * an import of a record that had none) names the configured provider.
    */
@@ -2553,6 +2563,30 @@ export class WhatsAppService implements WhatsAppApi {
       this.recallEngineP.catch(() => (this.recallEngineP = null));
     }
     return this.recallEngineP;
+  }
+
+  /**
+   * The query's embedding, waited for at most recallQueryWaitMs: past it the
+   * search answers by words (TIMEOUT), while the sidecar keeps starting and
+   * the request under way finishes for nobody, so the next search finds it up.
+   */
+  private async queryVector(query: string): Promise<number[] | undefined> {
+    const embedding = this.recallEmbed([query], "query");
+    embedding.catch(() => {});
+    let timer: NodeJS.Timeout | undefined;
+    const late = new Promise<never>((_, reject) => {
+      timer = setTimeout(() => {
+        const seconds = Math.round(this.recallQueryWaitMs / 100) / 10;
+        reject(new WazapError("TIMEOUT", `Meaning search did not answer within ${seconds} s; the embedding model may still be starting.`, "Search again in a minute for meaning too"));
+      }, this.recallQueryWaitMs);
+      timer.unref();
+    });
+    try {
+      const [vector] = await Promise.race([embedding, late]);
+      return vector;
+    } finally {
+      clearTimeout(timer);
+    }
   }
 
   private async recallEmbed(texts: string[], kind: "query" | "document"): Promise<number[][]> {
@@ -2920,7 +2954,9 @@ export class WhatsAppService implements WhatsAppApi {
         content.jpegThumbnail = (await videoFrame(media.buffer, 32))?.toString("base64") ?? "";
       }
       const sent = await this.dispatch(sock, jid, content, {}, attempt);
-      return this.sentResult(sent, jid, opts.caption ?? `[${media.mimetype}]`);
+      // The receipt names the caption only when it went: audio (a URL that named no type) carries none.
+      const caption = (content as { caption?: string }).caption;
+      return this.sentResult(sent, jid, caption ?? `[${media.mimetype}]`);
     });
   }
 
@@ -3058,17 +3094,6 @@ export class WhatsAppService implements WhatsAppApi {
     });
   }
 
-  setOwnProfilePicture(source: MediaSource): Promise<{ profile_pic_url: string | null }> {
-    return this.guarded(async () => {
-      const media = await loadProfilePicture(source);
-      const sock = this.beginWrite();
-      const jid = this.ownJid();
-      await sock.updateProfilePicture(jid, media.buffer);
-      const picture = await orNullAfter(sock.profilePictureUrl(jid, "image"), PROFILE_LOOKUP_MS);
-      return { profile_pic_url: picture ?? null };
-    });
-  }
-
   manageChat(chatId: string, action: ChatAction, opts: ChatActionOptions = {}): Promise<ChatActionResult> {
     return this.guarded(async () => {
       const sock = this.beginWrite();
@@ -3170,56 +3195,6 @@ export class WhatsAppService implements WhatsAppApi {
       );
     }
     return raw;
-  }
-
-  /**
-   * Add a person to the account's WhatsApp contacts, or rename one already
-   * there: the same app-state mutation WhatsApp Web's "add contact" sends.
-   * With saveOnPhone it also lands in the phone's own address book; without it
-   * the entry lives inside WhatsApp and still syncs to the other linked
-   * devices. WhatsApp stores no fields beyond the name — everything else a
-   * user wants remembered stays local in set_contact_note.
-   */
-  saveContact(
-    contactId: string,
-    name: string,
-    opts: { firstName?: string; saveOnPhone?: boolean } = {}
-  ): Promise<ContactSummary> {
-    return this.guarded(async () => {
-      const sock = this.beginWrite();
-      const jid = this.personJid(contactId);
-      const fullName = name.trim();
-      if (fullName === "") {
-        throw new WazapError("INVALID_ID", "The contact needs a non-empty name.");
-      }
-      const contact: proto.SyncActionValue.IContactAction = {
-        fullName,
-        saveOnPrimaryAddressbook: opts.saveOnPhone ?? true,
-        ...this.contactJids(jid),
-      };
-      const firstName = opts.firstName?.trim();
-      if (firstName) contact.firstName = firstName;
-      await sock.addOrEditContact(jid, contact);
-      // The patch echo takes a moment; file the name now so the store is right.
-      this.db.identity.upsertContact({ jid, name: fullName, listed: true });
-      this.namedContactsCache = null;
-      return this.contactSummary(jid);
-    });
-  }
-
-  /** Take a person out of the account's contacts: the saved name goes, the chat stays. */
-  removeContact(contactId: string): Promise<ContactSummary> {
-    return this.guarded(async () => {
-      const sock = this.beginWrite();
-      const jid = this.personJid(contactId);
-      await sock.removeContact(jid);
-      const db = this.db;
-      if (db.identity.contact(jid)?.name != null) {
-        db.identity.upsertContact({ jid, name: null });
-        this.namedContactsCache = null;
-      }
-      return this.contactSummary(jid);
-    });
   }
 
   createGroup(name: string, participantIds: string[]): Promise<{ chat_id: string; participants: ParticipantResult[] }> {
@@ -3884,7 +3859,7 @@ export class WhatsAppService implements WhatsAppApi {
 
   /**
    * Who the account has blocked, asked once per connection: WhatsApp pushes the
-   * list only when it changes, so get_contact would otherwise say "not blocked"
+   * list only when it changes, so getContact would otherwise say "not blocked"
    * for everyone until then. A failure costs only that answer, so it is logged.
    */
   private async loadBlocklist(sock: WASocket, generation: number): Promise<void> {
@@ -4238,13 +4213,6 @@ export class WhatsAppService implements WhatsAppApi {
     return jid;
   }
 
-  /** The pn/lid fields a ContactAction carries, from the id itself and the lid table. */
-  private contactJids(jid: string): Pick<proto.SyncActionValue.IContactAction, "lidJid" | "pnJid"> {
-    const alias = this.lids.aliasOf(jid);
-    if (jid.endsWith("@lid")) return alias ? { lidJid: jid, pnJid: alias } : { lidJid: jid };
-    return alias ? { pnJid: jid, lidJid: alias } : { pnJid: jid };
-  }
-
   /** Canonical form, or the input unchanged for jids wazap does not address
    * (status broadcasts, newsletters). */
   private canonical(jid: string): string {
@@ -4562,7 +4530,7 @@ export class WhatsAppService implements WhatsAppApi {
    * it. Only incoming voice notes whose length WhatsApp stated and kept short,
    * since an audio file is something the sender chose to attach and a
    * recording of unknown length is unbounded; anything skipped is still one
-   * transcribe_audio call away. The worker is woken at once; it reads the
+   * get_media call away. The worker is woken at once; it reads the
    * queue a turn later, once the transaction has committed.
    */
   private queueTranscript(raw: WAMessage, result: UpsertResult, live: boolean): void {
@@ -4581,7 +4549,7 @@ export class WhatsAppService implements WhatsAppApi {
   /**
    * One note off the queue, as the worker runs it: a message deleted, expired
    * or transcribed meanwhile is done with, and so is one that is no longer a
-   * short incoming voice note. The rest is transcribe_audio's own path, so a
+   * short incoming voice note. The rest is get_media's own path, so a
    * tool call asking for the same note at the same moment shares the upload.
    */
   private async transcribeQueued(sid: string): Promise<void> {
@@ -5400,7 +5368,7 @@ export class WhatsAppService implements WhatsAppApi {
 
   /**
    * A story is a message on the status feed with its author as the sender. It
-   * lists nowhere but get_stories, wakes no wait, and goes after a day, as on
+   * lists nowhere but read_messages on "status", wakes no wait, and goes after a day, as on
    * the phone; a revoked one leaves nothing behind.
    */
   private ingestStory(raw: WAMessage): void {

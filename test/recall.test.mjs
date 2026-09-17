@@ -17,7 +17,7 @@ import { proto } from "baileys";
 import { WhatsAppService } from "../dist/whatsapp.js";
 import { registerTools } from "../dist/tools.js";
 import { EMBED_MODELS, readRecallSettings } from "../dist/recall/index.js";
-import { asToolSource, connectedService } from "./helpers.mjs";
+import { asToolSource, connectedService, schemaCheckedTools } from "./helpers.mjs";
 import { accountPaths } from "../dist/config.js";
 
 const ME = "40700000001@s.whatsapp.net";
@@ -69,8 +69,12 @@ function vectorFor(text) {
   return vector;
 }
 
-/** A stand-in llama-server: POST /embedding → [{index, embedding: [[dims]]}]. */
-function stubEmbedServer() {
+/**
+ * A stand-in llama-server: POST /embedding → [{index, embedding: [[dims]]}].
+ * `answer(texts, res)` may take a request over (answer it itself, or hold it)
+ * by returning true.
+ */
+function stubEmbedServer({ answer } = {}) {
   const seen = [];
   const server = http.createServer((req, res) => {
     if (req.method !== "POST" || req.url !== "/embedding") {
@@ -82,6 +86,7 @@ function stubEmbedServer() {
     req.on("end", () => {
       const texts = [JSON.parse(body).content].flat();
       seen.push(...texts);
+      if (answer?.(texts, res) === true) return;
       const reply = texts.map((_, index) => ({ index, embedding: [vectorFor(texts[index])] }));
       res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify(reply));
     });
@@ -404,7 +409,7 @@ test("a message held only as text cannot be quoted or forwarded, and says so bef
   }
 });
 
-test("recall off answers RECALL_UNAVAILABLE with the fix, and the tool falls back to keyword search", async () => {
+test("recall off answers RECALL_UNAVAILABLE with the fix, and search falls back to the words", async () => {
   const { svc } = await serviceWith({});
   try {
     await assert.rejects(() => svc.recall("anything", undefined, 5), (err) => {
@@ -412,21 +417,184 @@ test("recall off answers RECALL_UNAVAILABLE with the fix, and the tool falls bac
       assert.match(err.fix, /wazap config recall local/);
       return true;
     });
-    const server = fakeServer();
-    registerTools(server, asToolSource(svc), { allowWrite: true });
+    const { call } = schemaCheckedTools(svc, { allowWrite: true });
     // The tool does not dead-end: it answers from the local history and says
     // semantic recall is off, with the command that turns it on.
-    const result = await server.tools.get("recall").handler({ query: "anything" });
+    const result = await call("search", { query: "anything" });
     assert.equal(result.isError, undefined);
     assert.equal(result.structuredContent.mode, "keyword_fallback");
     assert.match(result.structuredContent.recall_unavailable.fix, /wazap config recall local/);
-    assert.match(result.content[0].text, /keyword results over the local history/);
+    assert.match(result.content[0].text, /Meaning search is unavailable .*match the words only/);
   } finally {
     await svc.stop();
   }
 });
 
-test("when even the keyword fallback cannot run, recall stays a hard error", async () => {
+/** Whether a request to the stub embeds a search query, not a stored message. */
+const isQuery = (texts) => texts.every((text) => text.startsWith(PROMPTS.query));
+
+test("an embedding server that fails or refuses the query leaves search answering by words, and saying why", async () => {
+  for (const [status, code] of [
+    [500, "RECALL_FAILED"],
+    [400, "RECALL_BAD_INPUT"],
+  ]) {
+    const stub = await stubEmbedServer({ answer: (texts, res) => isQuery(texts) && (res.writeHead(status).end(), true) });
+    const { svc, sock } = await serviceWith({ WAZAP_RECALL: "local", WAZAP_EMBED_URL: stub.url });
+    try {
+      deliver(sock, [text("M1", "IBAN RO49AAAA1B31007593840000")]);
+      await svc.recallIdle();
+      await assert.rejects(() => svc.recall("IBAN", undefined, 5), { code });
+      const { call } = schemaCheckedTools(svc, { allowWrite: false });
+      const result = await call("search", { query: "IBAN" });
+      assert.equal(result.isError, undefined, `HTTP ${status}`);
+      assert.equal(result.structuredContent.mode, "keyword_fallback");
+      assert.equal(result.structuredContent.recall_unavailable.code, code);
+      assert.match(result.structuredContent.recall_unavailable.message, new RegExp(`HTTP ${status}`));
+      assert.deepEqual(result.structuredContent.messages.map((m) => m.message_id), [`false_${PEER}_M1`]);
+      assert.match(result.content[0].text, /Meaning search is unavailable .*match the words only/);
+    } finally {
+      await svc.stop();
+      stub.server.close();
+    }
+  }
+});
+
+test("search waits for the query's meaning only so long, then answers by words; the next search has meaning again", async () => {
+  let held = null;
+  const stub = await stubEmbedServer({
+    // The first query waits the way a sidecar starting cold would; the ones after it are answered at once.
+    answer: (texts, res) => {
+      if (!isQuery(texts) || held !== null) return false;
+      held = res;
+      return true;
+    },
+  });
+  const { svc, sock } = await serviceWith({ WAZAP_RECALL: "local", WAZAP_EMBED_URL: stub.url });
+  try {
+    deliver(sock, [text("M1", "ți-am trimis factura pe e-mail ieri")]);
+    await svc.recallIdle();
+    svc.recallQueryWaitMs = 150;
+    const { call } = schemaCheckedTools(svc, { allowWrite: false });
+    const started = Date.now();
+    const cold = await call("search", { query: "factura" });
+    assert.ok(Date.now() - started < 5_000, "the answer did not wait for the embedding");
+    assert.equal(cold.structuredContent.mode, "keyword_fallback");
+    assert.equal(cold.structuredContent.recall_unavailable.code, "TIMEOUT");
+    assert.equal(cold.structuredContent.count, 1);
+    held.destroy();
+    const warm = await call("search", { query: "the invoice" });
+    assert.equal(warm.structuredContent.mode, "hybrid");
+    assert.equal(warm.structuredContent.count, 1);
+  } finally {
+    held?.destroy();
+    await svc.stop();
+    stub.server.close();
+  }
+});
+
+test("while the index catches up, search by meaning and words still finds every message the words alone find", async () => {
+  const held = [];
+  // Stored messages are never embedded here: the index stays at none, catching up.
+  const stub = await stubEmbedServer({ answer: (texts, res) => !isQuery(texts) && (held.push(res), true) });
+  const { svc, sock } = await serviceWith({ WAZAP_RECALL: "local", WAZAP_EMBED_URL: stub.url });
+  try {
+    deliver(sock, [
+      text("VERBATIM", "programarea la dentist pentru copil e joi"),
+      text("TWO", "am mutat programarea la dentist pe vineri"),
+      text("OTHER", "nimic de spus aici"),
+    ]);
+    await svc.storageIdle();
+    assert.equal(svc.getStatus().recall.state, "indexing");
+    assert.equal(svc.db.vectors.count(MODEL), 0);
+    const { call } = schemaCheckedTools(svc, { allowWrite: false });
+    const keys = (result) => result.structuredContent.messages.map((m) => m.message_id.split("_").pop()).sort();
+    for (const query of ["programarea la dentist pentru copil", "programarea la dentist"]) {
+      const hybrid = await call("search", { query });
+      const words = await call("search", { query, match: "words" });
+      assert.equal(hybrid.structuredContent.mode, "hybrid");
+      for (const key of keys(words)) assert.ok(keys(hybrid).includes(key), `${query}: ${key} is found by words but not by the default search`);
+    }
+  } finally {
+    for (const res of held) res.destroy();
+    await svc.stop();
+    stub.server.close();
+  }
+});
+
+test("a default search whose words fill more messages than it ranks says scan_capped, and tells how to narrow it", async () => {
+  const stub = await stubEmbedServer();
+  const { svc, sock } = await serviceWith({ WAZAP_RECALL: "local", WAZAP_EMBED_URL: stub.url });
+  try {
+    const at = Math.floor(Date.now() / 1000) - 3_600;
+    deliver(sock, Array.from({ length: 105 }, (_, i) => text(`F${i}`, `factura numărul ${i}`, { messageTimestamp: at + i })));
+    deliver(sock, [text("R1", "chiria pe septembrie", { messageTimestamp: at + 200 })]);
+    await svc.recallIdle();
+    const { call } = schemaCheckedTools(svc, { allowWrite: false });
+
+    const common = await call("search", { query: "factura" });
+    assert.equal(common.structuredContent.mode, "hybrid");
+    assert.equal(common.structuredContent.scan_capped, true);
+    assert.match(common.content[0].text, /older matches may be missing: narrow it with chat_id or since\/until, or pass match: "words"/);
+
+    const rare = await call("search", { query: "chiria" });
+    assert.equal(rare.structuredContent.scan_capped, false);
+    assert.doesNotMatch(rare.content[0].text, /older matches may be missing/);
+  } finally {
+    await svc.stop();
+    stub.server.close();
+  }
+});
+
+test("the default search leaves the stories out, by words and by meaning", async () => {
+  const stub = await stubEmbedServer();
+  const { svc, sock } = await serviceWith({ WAZAP_RECALL: "local", WAZAP_EMBED_URL: stub.url });
+  try {
+    const at = Math.floor(Date.now() / 1000) - 60;
+    deliver(sock, [
+      { key: { remoteJid: "status@broadcast", fromMe: false, id: "S1", participant: PEER }, messageTimestamp: at, message: { conversation: "factura la mare 🌊" }, pushName: "Ana" },
+      text("M1", "ți-am trimis factura", { messageTimestamp: at + 1 }),
+    ]);
+    await svc.recallIdle();
+    const { call } = schemaCheckedTools(svc, { allowWrite: false });
+    for (const query of ["factura", "the invoice"]) {
+      const result = await call("search", { query });
+      assert.equal(result.structuredContent.mode, "hybrid");
+      assert.deepEqual(result.structuredContent.messages.map((m) => m.chat_id), [PEER], `${query}: the chat message, never the story`);
+    }
+  } finally {
+    await svc.stop();
+    stub.server.close();
+  }
+});
+
+test("a revoked message leaves the default search, by words and by meaning", async () => {
+  const stub = await stubEmbedServer();
+  const { svc, sock } = await serviceWith({ WAZAP_RECALL: "local", WAZAP_EMBED_URL: stub.url });
+  try {
+    const at = Math.floor(Date.now() / 1000) - 60;
+    deliver(sock, [text("M1", "factura cu parola hunter2", { messageTimestamp: at }), text("M2", "altă factura", { messageTimestamp: at + 1 })]);
+    await svc.recallIdle();
+    const { call } = schemaCheckedTools(svc, { allowWrite: false });
+    const found = async (query) => (await call("search", { query })).structuredContent.messages.map((m) => m.message_id.split("_").pop()).sort();
+    assert.deepEqual(await found("factura"), ["M1", "M2"]);
+    deliver(sock, [
+      {
+        key: { remoteJid: PEER, fromMe: false, id: "R1" },
+        messageTimestamp: at + 2,
+        message: { protocolMessage: { type: proto.Message.ProtocolMessage.Type.REVOKE, key: { remoteJid: PEER, fromMe: false, id: "M1" } } },
+      },
+    ]);
+    await svc.recallIdle();
+    assert.deepEqual(await found("factura"), ["M2"], "by words");
+    assert.deepEqual(await found("the invoice"), ["M2"], "by meaning");
+    assert.deepEqual(await found("hunter2"), [], "not even its own words");
+  } finally {
+    await svc.stop();
+    stub.server.close();
+  }
+});
+
+test("when even the keyword fallback cannot run, search stays a hard error", async () => {
   const { svc } = await serviceWith({});
   // Nothing linked: recall refuses NOT_LINKED before the index question ever
   // comes up, and the fallback's own search would refuse the same way.
@@ -434,10 +602,10 @@ test("when even the keyword fallback cannot run, recall stays a hard error", asy
   try {
     const server = fakeServer();
     registerTools(server, asToolSource(svc), { allowWrite: true });
-    const dead = await server.tools.get("recall").handler({ query: "anything" });
+    const dead = await server.tools.get("search").handler({ query: "anything" });
     assert.equal(dead.isError, true);
-    assert.equal(dead.structuredContent.error, "NOT_LINKED");
-    assert.equal(dead.structuredContent.mode, undefined, "no fallback was claimed");
+    assert.equal(JSON.parse(dead.content[0].text).error, "NOT_LINKED");
+    assert.equal(dead.structuredContent, undefined, "no fallback was claimed");
   } finally {
     await svc.stop();
   }
@@ -449,10 +617,10 @@ test("a fallback that itself fails stays a hard error, not a crash", async () =>
     const server = fakeServer();
     registerTools(server, asToolSource(svc), { allowWrite: true });
     // Recall is off; the fallback then meets the same bad chat_id.
-    const result = await server.tools.get("recall").handler({ query: "x", chat_id: "x@nope.invalid" });
+    const result = await server.tools.get("search").handler({ query: "x", chat_id: "x@nope.invalid" });
     assert.equal(result.isError, true);
-    assert.equal(result.structuredContent.error, "INVALID_ID");
-    assert.equal(result.structuredContent.mode, undefined);
+    assert.equal(JSON.parse(result.content[0].text).error, "INVALID_ID");
+    assert.equal(result.structuredContent, undefined);
     assert.doesNotMatch(result.content[0].text, /keyword_fallback/);
   } finally {
     await svc.stop();
@@ -522,21 +690,21 @@ test("the tool renders each hit with its date, score, what matched and the index
     svc.embedFeed.kick(true);
     await svc.recallIdle();
 
-    const server = fakeServer();
-    registerTools(server, asToolSource(svc), { allowWrite: false });
-    const result = await server.tools.get("recall").handler({ query: "the invoice" });
+    const { call } = schemaCheckedTools(svc, { allowWrite: false });
+    const result = await call("search", { query: "the invoice" });
     assert.equal(result.isError, undefined);
     const out = result.content[0].text;
-    assert.match(out, /# Recall results for "the invoice" \(2\)/);
+    assert.match(out, /# Search results for "the invoice" \(2\)/);
     assert.match(out, /score \d\.\d{3}, meaning/);
     assert.match(out, /\[\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/);
     assert.match(out, /index only/);
     assert.match(out, /factura veche din index/);
     assert.equal(result.structuredContent.count, 2);
     assert.equal(result.structuredContent.index.state, "ready");
-    const evicted = result.structuredContent.hits.find((h) => h.from_index);
-    assert.equal(evicted.message.message_id, `false_${PEER}_M2`);
-    assert.equal(evicted.message.text, "factura veche din index");
+    assert.equal(result.structuredContent.mode, "hybrid");
+    const evicted = result.structuredContent.messages.find((m) => m.from_index);
+    assert.equal(evicted.message_id, `false_${PEER}_M2`);
+    assert.equal(evicted.text, "factura veche din index");
   } finally {
     await svc.stop();
     stub.server.close();
@@ -630,7 +798,7 @@ test("weak matches are flagged, not sold as answers", async () => {
     await svc.recallIdle();
     const server = fakeServer();
     registerTools(server, asToolSource(svc), { allowWrite: false });
-    const result = await server.tools.get("recall").handler({ query: "the invoice" });
+    const result = await server.tools.get("search").handler({ query: "the invoice" });
     assert.match(result.content[0].text, /Weak matches only/);
   } finally {
     await svc.stop();
@@ -655,15 +823,15 @@ test("a min-similarity wazap cannot parse degrades to a line, not a crash", asyn
   }
 });
 
-test("a bad since is INVALID_ID, same as search_messages", async () => {
+test("a bad since is INVALID_ID, the same with meaning as with words", async () => {
   const stub = await stubEmbedServer();
   const { svc } = await serviceWith({ WAZAP_RECALL: "local", WAZAP_EMBED_URL: stub.url });
   try {
     const server = fakeServer();
     registerTools(server, asToolSource(svc), { allowWrite: true });
-    const result = await server.tools.get("recall").handler({ query: "x", since: "last Tuesdayish" });
+    const result = await server.tools.get("search").handler({ query: "x", since: "last Tuesdayish" });
     assert.equal(result.isError, true);
-    assert.equal(result.structuredContent.error, "INVALID_ID");
+    assert.equal(JSON.parse(result.content[0].text).error, "INVALID_ID");
   } finally {
     await svc.stop();
     stub.server.close();

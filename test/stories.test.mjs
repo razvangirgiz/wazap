@@ -5,11 +5,9 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { z } from "zod";
 
 import { WhatsAppService } from "../dist/whatsapp.js";
-import { registerTools } from "../dist/tools.js";
-import { asToolSource, connectedService } from "./helpers.mjs";
+import { connectedService, schemaCheckedTools, textError } from "./helpers.mjs";
 
 const ME = "40700000001@s.whatsapp.net";
 const ANA = "40700000002@s.whatsapp.net";
@@ -18,14 +16,7 @@ const STATUS = "status@broadcast";
 
 function setup(config = {}) {
   const { svc, sock } = connectedService(WhatsAppService, { prefix: "wazap-stories-", id: ME, name: "Răzvan", config });
-  const tools = new Map();
-  registerTools({ registerTool: (name, meta, handler) => tools.set(name, { meta, handler }) }, asToolSource(svc), {
-    allowWrite: false,
-  });
-  const call = (name, args = {}) => {
-    const { meta, handler } = tools.get(name);
-    return handler(z.object(meta.inputSchema).parse(args));
-  };
+  const { call } = schemaCheckedTools(svc, { allowWrite: false });
   let seq = 0;
   const story = (author, content, { at = Date.now(), pushName } = {}) =>
     sock.ev.emit("messages.upsert", {
@@ -50,9 +41,9 @@ test("stories are listed by author, newest first, and show nowhere else", async 
   story(DAN, { imageMessage: { mimetype: "image/jpeg", caption: "apus" } }, { at: Date.now() - hour, pushName: "Dan" });
   story(ANA, "a doua", { at: Date.now() - 25 * hour });
 
-  const result = await call("get_stories", {});
+  const result = await call("read_messages", { chat_id: "status" });
   assert.deepEqual(
-    result.structuredContent.stories.map((s) => [s.sender.name, s.text]),
+    result.structuredContent.messages.map((s) => [s.sender.name, s.text]),
     [
       ["Dan", "[image] apus"],
       ["Ana", "la mare 🌊"],
@@ -62,21 +53,23 @@ test("stories are listed by author, newest first, and show nowhere else", async 
   assert.match(result.content[0].text, /## Dan — `40700000003@s.whatsapp.net`/);
   assert.match(result.content[0].text, /- 3h ago · la mare 🌊/);
 
-  const recent = await call("get_recent_messages", { hours: 24 });
-  assert.equal(recent.structuredContent.conversation_count, 0, "not a conversation");
   const chats = await call("list_chats", {});
   assert.equal(chats.structuredContent.count, 0, "not a chat");
   const wait = await call("wait_for_messages", { timeout_seconds: 1 });
   assert.equal(wait.structuredContent.timed_out, true, "not something a wait wakes for");
 
-  const narrow = await call("get_stories", { hours: 2 });
+  const narrow = await call("read_messages", { chat_id: "status@broadcast", hours: 2 });
   assert.deepEqual(
-    narrow.structuredContent.stories.map((s) => s.sender.name),
+    narrow.structuredContent.messages.map((s) => s.sender.name),
     ["Dan"]
   );
+  const one = await call("read_messages", { chat_id: "status", limit: 1 });
+  assert.equal(one.structuredContent.omitted, 1, "a limit says what it left out");
+  assert.match(one.content[0].text, /1 older stories left out/);
+  assert.equal(textError(await call("read_messages", { chat_id: "status", before: "false_x@s.whatsapp.net_Y" })).error, "INVALID_ID");
 });
 
-test("a story never leaks into search_messages either", async () => {
+test("a story never leaks into search either", async () => {
   const { sock, call, story } = setup();
   story(ANA, "la mare 🌊");
   sock.ev.emit("messages.upsert", {
@@ -90,7 +83,7 @@ test("a story never leaks into search_messages either", async () => {
     ],
   });
 
-  const result = await call("search_messages", { query: "mare" });
+  const result = await call("search", { match: "words", query: "mare" });
   assert.deepEqual(
     result.structuredContent.messages.map((m) => m.chat_id),
     [DAN],
@@ -102,10 +95,10 @@ test("a story's photo gets a preview and its message id works with the media too
   const { svc, call, story } = setup();
   const jpeg = new Uint8Array([0xff, 0xd8, 0xff, 0xe0, 9, 9, 9, 9]);
   story(ANA, { imageMessage: { mimetype: "image/jpeg", jpegThumbnail: jpeg } });
-  const result = await call("get_stories", { include_previews: true });
+  const result = await call("read_messages", { chat_id: "status", include_previews: true });
   assert.equal(result.structuredContent.preview_count, 1);
   assert.equal(result.content[1].type, "image");
-  const id = result.structuredContent.stories[0].message_id;
+  const id = result.structuredContent.messages[0].message_id;
   const one = await call("get_message", { message_id: id });
   assert.equal(one.structuredContent.sender.name, "Ana");
   assert.equal(svc.db.messages.get(id).chatJid, STATUS);

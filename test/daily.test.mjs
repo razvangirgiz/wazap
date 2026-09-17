@@ -1,16 +1,13 @@
 /**
- * The everyday tools: a note on a person, "I handled that", a search with a
- * time or a sender, and the compact catch-up.
+ * The everyday tools: a note on a person, "I handled that", and a search with
+ * a time or a sender.
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { proto } from "baileys";
-import { z } from "zod";
 
 import { WhatsAppService } from "../dist/whatsapp.js";
-import { registerTools } from "../dist/tools.js";
-import { compactConversations } from "../dist/compact.js";
-import { asToolSource, connectedService, databaseHolds, offlineConfig, openService } from "./helpers.mjs";
+import { connectedService, databaseHolds, offlineConfig, openService, schemaCheckedTools, textError } from "./helpers.mjs";
 
 const ME = "40700000001@s.whatsapp.net";
 const ANA = "40700000002@s.whatsapp.net";
@@ -20,14 +17,7 @@ const hour = 3_600_000;
 
 function setup(config = {}) {
   const { svc, sock } = connectedService(WhatsAppService, { prefix: "wazap-daily-", id: ME, name: "Răzvan", config });
-  const tools = new Map();
-  registerTools({ registerTool: (name, meta, handler) => tools.set(name, { meta, handler }) }, asToolSource(svc), {
-    allowWrite: false,
-  });
-  const call = (name, args = {}) => {
-    const { meta, handler } = tools.get(name);
-    return handler(z.object(meta.inputSchema).parse(args));
-  };
+  const { tools, call } = schemaCheckedTools(svc, { allowWrite: false });
   let seq = 0;
   const arrive = (chat, text, { fromMe = false, participant, at = Date.now() } = {}) => {
     const id = `M${++seq}`;
@@ -55,46 +45,62 @@ function setup(config = {}) {
 test("a note on a contact rides along wherever the person shows, and lives in the account database", async () => {
   const { svc, call, arrive } = setup();
   arrive(DAN, "salut");
-  const noted = await call("set_contact_note", { contact_id: "+40 700 000 003", note: "Hermi, my own agent" });
+  const noted = await call("remember", { chat_id: "+40 700 000 003", note: "Hermi, my own agent" });
   assert.match(noted.content[0].text, /Noted for Dan: Hermi, my own agent/);
-  assert.match(
-    (await call("search_contacts", { query: "dan" })).content[0].text,
-    /\*\*Dan\*\* \[saved\] · Hermi, my own agent/
-  );
+  const found = await call("find_contact", { name: "Dan" });
+  assert.equal(found.structuredContent.contact.note, "Hermi, my own agent");
+  assert.match(found.content[0].text, /note: Hermi, my own agent/);
   assert.match((await call("list_chats", {})).content[0].text, /## Dan · Hermi, my own agent/);
-  assert.match((await call("get_recent_messages", { hours: 1 })).content[0].text, /## Dan · Hermi, my own agent —/);
-  assert.match((await call("get_contact", { contact_id: DAN })).content[0].text, /\*\*note\*\*: Hermi, my own agent/);
   assert.equal(svc.db.identity.notes(DAN).note, "Hermi, my own agent");
 
   const again = openService(WhatsAppService, { ...offlineConfig("x"), dataDir: svc.config.dataDir });
   assert.equal(again.db.identity.notes(DAN).note, "Hermi, my own agent", "a restart reads it back");
   await again.stop();
 
-  await call("set_contact_note", { contact_id: DAN, note: "" });
-  assert.doesNotMatch((await call("search_contacts", { query: "dan" })).content[0].text, /Hermi/);
+  await call("remember", { chat_id: DAN, note: "" });
+  assert.doesNotMatch((await call("find_contact", { name: "Dan" })).content[0].text, /Hermi/);
 });
 
-test("mark_handled takes a chat off the waiting list until the other side writes again", async () => {
+test("remember files a note, tags and details in one call, and a refused edit files none of them", async () => {
+  const { svc, call, arrive } = setup();
+  arrive(DAN, "salut");
+  const filed = await call("remember", { chat_id: DAN, note: "colegul de birou", add_tags: ["#Echipa"], fields: { role: "contabil" } });
+  assert.equal(filed.structuredContent.chat_id, DAN);
+  assert.equal(filed.structuredContent.note, "colegul de birou");
+  assert.deepEqual(filed.structuredContent.tags, ["echipa"]);
+  assert.deepEqual(filed.structuredContent.fields, { role: "contabil" });
+  assert.match(filed.content[0].text, /Noted for Dan: colegul de birou/);
+  assert.match(filed.content[0].text, /\*\*role\*\*: contabil/);
+
+  const refused = await call("remember", { chat_id: DAN, note: "altceva", add_tags: ["#"] });
+  assert.equal(textError(refused).error, "INVALID_ID");
+  assert.equal(svc.db.identity.notes(DAN).note, "colegul de birou", "the note waits on the details it came with");
+
+  assert.equal(textError(await call("remember", { chat_id: DAN })).error, "INVALID_ID");
+});
+
+test("remember handled: true takes a chat off the waiting list until the other side writes again", async () => {
   const { call, arrive } = setup();
   arrive(ANA, "poți să mă suni?", { at: Date.now() - 2 * hour });
+  const waiting = async () => (await call("catch_up", { hours: 24 })).structuredContent.waiting;
   assert.deepEqual(
-    (await call("get_unanswered", {})).structuredContent.chats.map((c) => c.name),
+    (await waiting()).map((entry) => entry.name),
     ["Ana"]
   );
 
-  const marked = await call("mark_handled", { chat_id: ANA });
+  const marked = await call("remember", { chat_id: ANA, handled: true });
   assert.match(marked.content[0].text, /Ana is off the waiting list until they write again/);
-  assert.equal(marked.structuredContent.ask_text, "poți să mă suni?");
-  assert.deepEqual((await call("get_unanswered", {})).structuredContent.chats, []);
+  assert.equal(marked.structuredContent.handled.ask_text, "poți să mă suni?");
+  assert.deepEqual(await waiting(), []);
 
   arrive(ANA, "și mâine?", { at: Date.now() - hour });
   assert.deepEqual(
-    (await call("get_unanswered", {})).structuredContent.chats.map((c) => c.ask.text),
+    (await waiting()).map((entry) => entry.q),
     ["și mâine?"],
     "a new ask reopens it"
   );
 
-  const nothing = await call("mark_handled", { chat_id: DAN });
+  const nothing = await call("remember", { chat_id: DAN, handled: true });
   assert.match(nothing.content[0].text, /had nothing open/);
 });
 
@@ -106,41 +112,41 @@ test("search_messages narrows by time and by sender", async () => {
   arrive(ANA, "am plătit RCA", { fromMe: true, at: Date.now() - day });
   const since = new Date(Date.now() - 3 * day).toISOString().slice(0, 10);
 
-  const recent = await call("search_messages", { query: "rca", since });
+  const recent = await call("search", { match: "words", query: "rca", since });
   assert.deepEqual(
     recent.structuredContent.messages.map((m) => m.text),
     ["am plătit RCA", "RCA e gata"]
   );
-  const theirs = await call("search_messages", { query: "rca", from: ANA });
+  const theirs = await call("search", { match: "words", query: "rca", from: ANA });
   assert.deepEqual(
     theirs.structuredContent.messages.map((m) => m.text),
     ["RCA e gata", "RCA expiră luni"]
   );
-  const mine = await call("search_messages", { query: "rca", from: "me" });
+  const mine = await call("search", { match: "words", query: "rca", from: "me" });
   assert.deepEqual(
     mine.structuredContent.messages.map((m) => m.text),
     ["am plătit RCA"]
   );
   // The account's own number, however it is spelled, is "me" too.
   for (const self of [ME, ME.split("@")[0], `+${ME.split("@")[0]}`]) {
-    const spelled = await call("search_messages", { query: "rca", from: self });
+    const spelled = await call("search", { match: "words", query: "rca", from: self });
     assert.deepEqual(spelled.structuredContent.messages.map((m) => m.text), ["am plătit RCA"], `from ${self}`);
   }
-  const until = await call("search_messages", { query: "rca", until: new Date(Date.now() - 5 * day).toISOString() });
+  const until = await call("search", { match: "words", query: "rca", until: new Date(Date.now() - 5 * day).toISOString() });
   assert.deepEqual(
     until.structuredContent.messages.map((m) => m.text),
     ["RCA expiră luni"]
   );
   assert.match(recent.content[0].text, new RegExp(`since ${since}`));
 
-  const bad = await call("search_messages", { query: "rca", since: "luni" });
-  assert.equal(bad.structuredContent.error, "INVALID_ID");
+  const bad = await call("search", { match: "words", query: "rca", since: "luni" });
+  assert.equal(textError(bad).error, "INVALID_ID");
 });
 
 test("search follows an edit and a late transcript, not the words it cached first", async () => {
   const { svc, sock, call, arrive } = setup();
   arrive(ANA, "RCA expiră luni");
-  const before = await call("search_messages", { query: "zebra" });
+  const before = await call("search", { match: "words", query: "zebra" });
   assert.deepEqual(before.structuredContent.messages, []);
 
   sock.ev.emit("messages.update", [
@@ -149,24 +155,24 @@ test("search follows an edit and a late transcript, not the words it cached firs
       update: { message: { editedMessage: { message: { conversation: "zebra e a mea" } } } },
     },
   ]);
-  const after = await call("search_messages", { query: "zebra" });
+  const after = await call("search", { match: "words", query: "zebra" });
   assert.deepEqual(
     after.structuredContent.messages.map((m) => m.text),
     ["zebra e a mea"],
     "the edit replaces what the search matches"
   );
   assert.deepEqual(
-    (await call("search_messages", { query: "rca" })).structuredContent.messages,
+    (await call("search", { match: "words", query: "rca" })).structuredContent.messages,
     [],
     "and the words it replaced no longer match"
   );
 
   const vid = arrive(ANA, { audioMessage: { ptt: true, seconds: 4 } });
   const sid = `false_${ANA}_${vid}`;
-  assert.deepEqual((await call("search_messages", { query: "umbrela" })).structuredContent.messages, []);
+  assert.deepEqual((await call("search", { match: "words", query: "umbrela" })).structuredContent.messages, []);
   svc.db.messages.setTranscript(sid, "am uitat umbrela");
   assert.deepEqual(
-    (await call("search_messages", { query: "umbrela" })).structuredContent.messages.map((m) => m.message_id),
+    (await call("search", { match: "words", query: "umbrela" })).structuredContent.messages.map((m) => m.message_id),
     [sid],
     "a transcript that lands after the first search is still found"
   );
@@ -193,41 +199,6 @@ test("an edit rewrites the edited message's stored protobuf and leaves its neigh
   assert.notEqual(edited.editedAt, null);
 });
 
-test("compact keeps the words, folds a run into one line, and counts what it left out", async () => {
-  const { call, arrive } = setup();
-  const t = Date.now() - hour;
-  arrive(GROUP, "ați pornit?", { participant: ANA, at: t });
-  arrive(GROUP, "da, de la 8", { participant: DAN, at: t + 60_000 });
-  arrive(GROUP, "mai avem 2 ore", { participant: DAN, at: t + 120_000 });
-  arrive(GROUP, "😘😘", { participant: DAN, at: t + 130_000 });
-  arrive(GROUP, { imageMessage: { mimetype: "image/jpeg" } }, { participant: DAN, at: t + 140_000 });
-  arrive(
-    GROUP,
-    { imageMessage: { mimetype: "image/jpeg", caption: "autostrada" } },
-    { participant: DAN, at: t + 150_000 }
-  );
-  arrive(GROUP, "?", { participant: ANA, at: t + 20 * 60_000 });
-  arrive(GROUP, "am ajuns", { participant: DAN, at: t + 60 * 60_000 });
-
-  const full = await call("get_recent_messages", { hours: 2 });
-  const compact = await call("get_recent_messages", { hours: 2, compact: true });
-  const [c] = compact.structuredContent.conversations;
-  assert.deepEqual(
-    c.lines.map((l) => [l.text, l.message_ids.length]),
-    [
-      ["ați pornit?", 1],
-      ["da, de la 8 · mai avem 2 ore · [image] autostrada", 3],
-      ["?", 1],
-      ["am ajuns", 1],
-    ]
-  );
-  assert.deepEqual(c.dropped, { media: 1, wordless: 1 });
-  assert.match(compact.content[0].text, /left out: 1 media without a word, 1 wordless/);
-  assert.match(compact.content[0].text, /Dan: da, de la 8 · mai avem 2 ore · \[image\] autostrada \(3 msgs\)/);
-  assert.ok(compact.content[0].text.length < full.content[0].text.length * 0.7, "well under the full size");
-  assert.equal(compactConversations([]).length, 0);
-});
-
 test("a revoked message leaves the database, the search, and a restart", async () => {
   const { svc, sock, call, arrive } = setup({ persistHistory: true });
   const id = arrive(ANA, "parola e hunter2");
@@ -251,7 +222,7 @@ test("a revoked message leaves the database, the search, and a restart", async (
   });
 
   assert.equal(svc.hasMessage(sid), false, "the target is gone");
-  assert.deepEqual((await call("search_messages", { query: "hunter2" })).structuredContent.messages, []);
+  assert.deepEqual((await call("search", { match: "words", query: "hunter2" })).structuredContent.messages, []);
   const read = (await call("read_messages", { chat_id: ANA })).content[0].text;
   assert.doesNotMatch(read, /hunter2/);
   assert.match(read, /\[deleted\]/, "the placeholder stays, the way the phone shows it");
@@ -311,28 +282,23 @@ test("a storage failure inside a contact fold is logged, not thrown into the han
   }
 });
 
-test("download_media refuses a file over the cap before touching the network", async () => {
+test("get_media refuses a file over the cap before touching the network", async () => {
   const { call, arrive } = setup();
   const id = arrive(ANA, {
     documentMessage: { mimetype: "video/mp4", fileLength: 250_000_000, fileName: "big.mp4" },
   });
-  const res = await call("download_media", { message_id: `false_${ANA}_${id}` });
-  assert.equal(res.structuredContent.error, "FILE_TOO_LARGE");
+  const res = await call("get_media", { message_id: `false_${ANA}_${id}` });
+  assert.equal(textError(res).error, "FILE_TOO_LARGE");
 });
 
 test("in a group the note introduces the sender once, then the name alone", async () => {
   const { call, arrive } = setup();
-  await call("set_contact_note", { contact_id: DAN, note: "Hermi" });
+  await call("remember", { chat_id: DAN, note: "Hermi" });
   const t = Date.now() - hour;
   arrive(GROUP, "sunt aici", { participant: DAN, at: t });
   arrive(GROUP, "și tu?", { participant: ANA, at: t + 10 * 60_000 });
   arrive(GROUP, "tot aici", { participant: DAN, at: t + 20 * 60_000 });
-  const full = (await call("get_recent_messages", { hours: 2 })).content[0].text;
-  assert.equal((full.match(/Dan · Hermi:/g) || []).length, 1, "introduced once");
-  assert.match(full, /\] Dan: tot aici/);
   const read = (await call("read_messages", { chat_id: GROUP })).content[0].text;
-  assert.equal((read.match(/\*\*Dan · Hermi\*\*/g) || []).length, 1);
-  const compact = (await call("get_recent_messages", { hours: 2, compact: true })).content[0].text;
-  assert.equal((compact.match(/Dan · Hermi:/g) || []).length, 1);
-  assert.match(compact, /\] Dan: tot aici/);
+  assert.equal((read.match(/\*\*Dan · Hermi\*\*/g) || []).length, 1, "introduced once");
+  assert.equal((read.match(/\*\*Dan\*\* ·/g) || []).length, 1, "then the name alone");
 });

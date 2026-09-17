@@ -1,5 +1,5 @@
 /**
- * The media contract download_media reports: the decrypted file the service
+ * The media contract get_media reports: the decrypted file the service
  * writes, plus the metadata the envelope carried — the caption and the
  * original filename — which the saved-file result did not name before.
  */
