@@ -277,7 +277,7 @@ test("get_status says write tools are missing and how to enable them", async () 
   assert.equal(result.structuredContent.read_only, true);
   assert.match(result.content[0].text, /write tools.*not registered/i);
   assert.match(result.structuredContent.hint, /wazap config writes on/);
-  assert.match(result.structuredContent.hint, /write token is not the same as writes being enabled/i);
+  assert.doesNotMatch(result.structuredContent.hint, /token/i);
 });
 
 test("get_status on a write-enabled server hides write tools from a read-token session", async () => {
@@ -295,7 +295,7 @@ test("get_status on a write-enabled server hides write tools from a read-token s
   assert.match(result.content[0].text, /read token/);
 });
 
-test("get_status on a write session still says a read token never sees write tools when remote", async () => {
+test("get_status on a remote write session tells the agent nothing about bearer tokens", async () => {
   const { svc } = connectedService(WhatsAppService, {
     prefix: "wazap-status-remote-",
     id: "40700000001@s.whatsapp.net",
@@ -307,7 +307,7 @@ test("get_status on a write session still says a read token never sees write too
   const result = await server.tools.get("get_status").handler({});
   assert.equal(result.structuredContent.write_tools, true);
   assert.match(result.content[0].text, /write tools.*registered/i);
-  assert.match(result.structuredContent.hint, /read token never registers write tools/i);
+  assert.equal(result.structuredContent.hint, undefined);
 });
 
 test("learn documents every error code an agent can receive", async () => {

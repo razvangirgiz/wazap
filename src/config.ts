@@ -239,28 +239,14 @@ export function readOnlySetting(value: string | undefined): boolean {
     "Set WAZAP_READ_ONLY to 1 to disable writes or 0 to enable them deliberately");
 }
 
-/** HTTP serve, or a public URL that remote agents use. */
-export function isRemoteHttp(config: Pick<Config, "transport" | "publicUrl">): boolean {
-  return config.transport === "http" || Boolean(config.publicUrl);
-}
-
 export const WRITES_ENABLE_FIX = "run `wazap config writes on`, then restart the server";
 
 export const WRITES_ENABLE_HINT =
   "Write tools are not registered. Run `wazap config writes on` and restart the server.";
 
-export const WRITE_TOKEN_NOTE =
-  "A Bearer write token is not the same as writes being enabled. A read token never registers write tools.";
-
 /** Operator-facing lines for status, doctor, setup and HTTP connect. */
-export function writesHints(
-  config: Pick<Config, "readOnly" | "transport" | "publicUrl">,
-  remote: boolean = isRemoteHttp(config)
-): string[] {
-  const hints: string[] = [];
-  if (config.readOnly) hints.push(WRITES_ENABLE_HINT);
-  if (remote) hints.push(WRITE_TOKEN_NOTE);
-  return hints;
+export function writesHints(config: Pick<Config, "readOnly">): string[] {
+  return config.readOnly ? [WRITES_ENABLE_HINT] : [];
 }
 
 /** A safety limit: a missing, zero or unreadable value keeps the default rather than lifting it. */

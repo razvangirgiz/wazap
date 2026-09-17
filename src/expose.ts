@@ -251,7 +251,7 @@ async function exposeOn(config: Config, provider: TunnelProvider, { supervisor, 
   say(box(`MCP URL   ${url}/mcp`, `Password  ${fresh ? password : maskKey(password)}`));
   say("");
   say(HANDOVER);
-  for (const line of writesHints({ readOnly: config.readOnly, transport: "http", publicUrl: url })) {
+  for (const line of writesHints(config)) {
     say(info(line));
   }
 }

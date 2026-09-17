@@ -4,9 +4,7 @@ import { readLinkedAccount } from "./auth-state.js";
 import {
   WAZAP_VERSION,
   WRITES_ENABLE_FIX,
-  WRITE_TOKEN_NOTE,
   accountPaths,
-  isRemoteHttp,
   paths,
   type Config,
 } from "./config.js";
@@ -412,21 +410,11 @@ function checkWrites(config: Config): Check {
   const selected = resolveAccount(config.dataDir, config.accountId);
   const readOnly = accountPolicy(selected.account, config).readOnly;
   const source = selected.account.writes === undefined ? config.sources.readOnly : "accounts.json";
-  if (!readOnly) {
-    return {
-      name: "writes",
-      state: "ok",
-      detail: isRemoteHttp(config)
-        ? `on (${source}); a write token unlocks write tools only while this stays on`
-        : `on (${source})`,
-    };
-  }
+  if (!readOnly) return { name: "writes", state: "ok", detail: `on (${source})` };
   return {
     name: "writes",
     state: "info",
-    detail: isRemoteHttp(config)
-      ? `off (${source}); write tools are not registered. ${WRITE_TOKEN_NOTE}`
-      : `off (${source}); write tools are not registered`,
+    detail: `off (${source}); write tools are not registered`,
     fix: WRITES_ENABLE_FIX,
   };
 }

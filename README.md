@@ -41,10 +41,10 @@ and it is missing, and to restart Claude Desktop itself once it has connected it
 | Gemini CLI | `npx wazap-mcp connect gemini` |
 | Cursor | the [Install in Cursor](#other-mcp-clients) badge, then `npx wazap-mcp skills install cursor` |
 | Codex CLI | `npx wazap-mcp connect codex`, then `npx wazap-mcp skills install codex` |
-| Grok Bot | [Grok Bot / remote MCP](#grok-bot--remote-mcp) |
-| Anything else | the MCP entry `npx -y wazap-mcp` over stdio, or a [self-hosted](#self-host) URL |
+| A hosted agent (claude.ai, ChatGPT) | a URL it signs in to: [Keep it running](#keep-it-running) |
+| Anything else | the MCP entry `npx -y wazap-mcp` over stdio |
 
-Each local harness registers the server. Grok Bot is a URL you paste. Linking
+Each local harness registers the server; a hosted agent gets a URL. Linking
 the WhatsApp account is a separate, one-time step: `npx wazap-mcp login`.
 
 Or have your agent do it. Paste this:
@@ -84,27 +84,7 @@ it would write.
 | `cursor` | `~/.cursor/mcp.json` |
 | `codex` | `[mcp_servers.whatsapp]` in `~/.codex/config.toml` |
 | `gemini` | `~/.gemini/settings.json` |
-| Grok Bot | client's MCP URL field: `http://<host>:<port>/mcp` with header `Authorization: Bearer <token>` (see [Grok Bot / remote MCP](#grok-bot--remote-mcp)) |
-| anything remote | client's MCP URL field: `https://your-host/mcp` with header `Authorization: Bearer <token>`, or just the URL once [OAuth](#hosted-agents-oauth) is on (see [Self-host](#self-host)) |
-
-### Grok Bot / remote MCP
-
-Grok Bot is an HTTP MCP client. It does not launch wazap over stdio.
-
-1. On the machine that will run wazap, `npx wazap-mcp login` until the CLI says the account is linked. `get_status` and `link_account` are MCP tools; they need HTTP already serving (step 3) and Grok already connected (step 4).
-2. Answer writes yes or no at login. Writes stay on when `WAZAP_READ_ONLY` is unset. A Bearer write token is not writes being enabled. If write tools are missing, you need writes on (`wazap config writes on` and restart) and a write Bearer on this session. Config alone is not enough on HTTP.
-3. Serve HTTP with a read token:
-
-```bash
-WAZAP_READ_TOKEN=$(openssl rand -hex 32) \
-npx wazap-mcp serve --http
-```
-
-Set `WAZAP_WRITE_TOKEN` too only if this client should send, and put that value in the header in step 4.
-
-4. In Grok Bot, add an MCP server at `http://<host>:<port>/mcp` with header `Authorization: Bearer <token>`. Then call `learn`, then `get_status`. `connected` means the WhatsApp socket is up. This session can send only when write tools are registered (`write_tools: true`, or send tools appear in the tool list). Then read.
-
-`wazap setup` asks `Remote client (Grok Bot / HTTP MCP)?` and prints the same URL and header. Answering yes does not start `expose`.
+| anything remote | client's MCP URL field: `https://your-host/mcp`, signed in with [OAuth](#hosted-agents-oauth) (see [Keep it running](#keep-it-running)) |
 
 ### Other MCP clients
 
@@ -954,23 +934,20 @@ account-level prohibition use `wazap config writes off --account <id>`.
 ## HTTP mode
 
 ```bash
-WAZAP_READ_TOKEN=$(openssl rand -hex 32) \
-WAZAP_WRITE_TOKEN=$(openssl rand -hex 32) \
-npx wazap-mcp serve --http --host 0.0.0.0 --port 8766
+npx wazap-mcp serve --http
 ```
 
-Streamable HTTP at `/mcp`, with a health check at `/healthz`. That check answers
-`{ ok, status, since }`; the list of accounts and their status needs a read or write token.
-It turns 503 once the socket has been anything but
-connected for two minutes, so a tunnel or a monitor sees a real outage rather
-than a reconnect in progress. Two bearer tokens:
-the read token gets the read tools, the write token can unlock the write
-tools. A leaked read token can never message anyone. A write token is not
-the same as writes being enabled: if the server is read-only, even a write
-token session has no write tools. `get_status` says so and how to turn
-writes on. wazap refuses to bind a non-loopback address without a read
-token. Agents that cannot carry a header sign in with
-[OAuth](#hosted-agents-oauth) instead.
+Streamable HTTP at `/mcp` on `127.0.0.1:8766` (`--host` and `--port`, or
+`WAZAP_HOST` and `WAZAP_PORT`), with a health check at `/healthz`. That check
+answers `{ ok, status, since }`; the list of accounts and their status needs a
+credential. It turns 503 once the socket has been anything but connected for
+two minutes, so a tunnel or a monitor sees a real outage rather than a
+reconnect in progress.
+
+An agent reaches it by URL and signs in with [OAuth](#hosted-agents-oauth);
+`wazap expose` sets that up. A product calling wazap from its own code uses a
+static token instead: see [Building on wazap](#building-on-wazap-http-api-for-products).
+wazap refuses to bind a non-loopback address without a read token.
 
 ### Client isolation
 
@@ -1065,7 +1042,7 @@ sudo systemctl enable --now wazap
 curl -s http://127.0.0.1:8766/healthz
 ```
 
-The unit binds loopback only. Put TLS in front with the two-line [`deploy/Caddyfile`](deploy/Caddyfile) (`caddy run --config deploy/Caddyfile` after editing the hostname) or any reverse proxy, then point the client at `https://your-host/mcp` with `Authorization: Bearer <read or write token>`.
+The unit binds loopback only. Put TLS in front with the two-line [`deploy/Caddyfile`](deploy/Caddyfile) (`caddy run --config deploy/Caddyfile` after editing the hostname) or any reverse proxy, then turn on [OAuth](#hosted-agents-oauth) and give agents `https://your-host/mcp`. The tokens are for [your own code](#building-on-wazap-http-api-for-products).
 
 ### With Docker
 
@@ -1108,9 +1085,7 @@ Set `WAZAP_PUBLIC_URL=https://wazap.example.com` for OAuth and keep `cloudflared
 
 ### Which clients can reach it
 
-Claude Code, Claude Desktop, Cursor, Codex, VS Code, Poke and any client with an "MCP URL + header" field connect with the bearer token. Keep the read token in clients that only need to read; hand out the write token deliberately.
-
-claude.ai Connectors, ChatGPT and some hosted agents will not take a static header. They want OAuth, which is the next section.
+Agents sign in with OAuth, the next section: claude.ai Connectors, ChatGPT, Poke and any MCP client that signs in to a URL. Your own code calling wazap uses a static token instead; see [Building on wazap](#building-on-wazap-http-api-for-products).
 
 ### Reverse proxy trust
 
@@ -1181,6 +1156,39 @@ What to know before exposing it:
   media preparation, as well as the existing service-level send check. This is
   account policy enforcement, not per-client account ACLs; policy changes still
   require the documented server restart.
+
+## Building on wazap (HTTP API for products)
+
+A product that drives WhatsApp from its own code, such as a booking app that
+answers its customers, talks to `wazap serve --http` with static bearer tokens
+rather than a person signing in. An agent does not need this: it uses a local
+client or [OAuth](#hosted-agents-oauth).
+
+```bash
+WAZAP_READ_TOKEN=$(openssl rand -hex 32) \
+WAZAP_WRITE_TOKEN=$(openssl rand -hex 32) \
+npx wazap-mcp serve --http --host 127.0.0.1 --port 8766
+```
+
+Keep both in `<data-dir>/.env` rather than on a command line. Every request to
+`/mcp` carries `Authorization: Bearer <token>`:
+
+- **`WAZAP_READ_TOKEN`** gets the read tools. Without it, and without OAuth,
+  `/mcp` answers any process that reaches it: wazap refuses to bind a
+  non-loopback address without it, and to serve a port a tunnel points at
+  without it or OAuth.
+- **`WAZAP_WRITE_TOKEN`** can also unlock the write tools. A leaked read token
+  can never message anyone.
+
+A write token is not the same as writes being enabled: when the server or the
+account is read-only, even a write-token session has no write tools, and
+`get_status` answers `write_tools: false` with the fix (`wazap config writes on`,
+then restart). A read token never registers write tools.
+
+Sessions on the same token share an identity; see [Client isolation](#client-isolation).
+A token never grants host files; see [Host files and remote media](#host-files-and-remote-media).
+What happens on WhatsApp comes back through the [outbound webhook](#outbound-webhook),
+signed, so the product does not poll.
 
 ## Outbound webhook
 
@@ -1372,7 +1380,7 @@ the receiver hears the current status once, not every flap.
 | `WAZAP_RATE_LIMIT` | `20` | Write tool calls per minute; `0` disables. |
 | `WAZAP_TRANSPORT` | `stdio` | `stdio` or `http`. |
 | `WAZAP_HOST` / `WAZAP_PORT` | `127.0.0.1` / `8766` | HTTP bind address. |
-| `WAZAP_READ_TOKEN` / `WAZAP_WRITE_TOKEN` | unset | HTTP bearer tokens. |
+| `WAZAP_READ_TOKEN` / `WAZAP_WRITE_TOKEN` | unset | Static bearer tokens for your own code; see [Building on wazap](#building-on-wazap-http-api-for-products). |
 | `WAZAP_PUBLIC_URL` | unset | The `https` address agents reach the server at. With the password, turns OAuth on. |
 | `WAZAP_OAUTH_PASSWORD` | unset | What the consent page asks for. At least 8 characters. |
 | `WAZAP_TRUST_PROXY` | `loopback` | OAuth proxy IPs/CIDRs trusted for X-Forwarded-For, comma-separated; `none` disables proxy trust. |

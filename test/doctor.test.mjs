@@ -174,13 +174,6 @@ test("writes off is an info check that says how to turn them on", async () => {
   assert.match(stderr, /wazap config writes on/);
 });
 
-test("an HTTP read-only server also says a write token is not writes being on", async () => {
-  const { stderr } = await status(dataDir(), [], { WAZAP_READ_ONLY: "1", WAZAP_TRANSPORT: "http" });
-  assert.match(stderr, /write tools are not registered/);
-  assert.match(stderr, /write token is not the same as writes being enabled/i);
-  assert.match(stderr, /wazap config writes on/);
-});
-
 test("status --json prints one parseable object carrying the same checks", async () => {
   const dir = dataDir();
   const { stdout } = await status(dir, ["--json"]);
