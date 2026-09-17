@@ -660,6 +660,27 @@ export interface Synced<T> {
   sync: SyncState;
 }
 
+/** A send confirm_send handed to WhatsApp whose echo has not come back: it may or may not have arrived. */
+export interface UnconfirmedSend {
+  draft_id: string;
+  /** The words it went out with; empty on an account that keeps no history. */
+  text: string;
+  /** When its outcome became unknown, ISO with the local offset. */
+  handed_at: string;
+  state: "unknown";
+}
+
+/** One page of a chat, and what the read cannot vouch for. */
+export interface ChatRead extends Synced<MessageView[]> {
+  /** On the newest page of the chat: sends whose outcome is unknown, oldest first. */
+  unconfirmedSends?: UnconfirmedSend[];
+  /**
+   * Set when the page ran past what is held and the phone was asked for older
+   * messages: how many came back for it. None is not the start of the chat.
+   */
+  older?: { askedPhone: true; received: number };
+}
+
 /** A keyword search's messages, and where the storage scan limit stopped it when it did. */
 export interface SearchAnswer extends Synced<MessageView[]> {
   /** Set when the scan limit stopped the search before the history ran out: older messages were not searched. */
@@ -696,7 +717,7 @@ export interface WhatsAppApi {
   link(phone: string): Promise<PairingInfo>;
   /** With `private`, a last message from someone tagged #private, or in their chat, comes without its words. */
   listChats(filter: ChatFilter, limit: number, opts?: { private?: PrivateRule }): Promise<Synced<ChatSummary[]>>;
-  readMessages(chatId: string, limit: number, before?: string, types?: MessageType[]): Promise<Synced<MessageView[]>>;
+  readMessages(chatId: string, limit: number, before?: string, types?: MessageType[]): Promise<ChatRead>;
   getRecentMessages(
     hours: number,
     filter: Exclude<ChatFilter, "archived">,
@@ -724,8 +745,14 @@ export interface WhatsAppApi {
   findContact?(query: FindContactQuery): Promise<AccountFind>;
   /** The recent exchange (unless `recent: false`) and the user's style in a chat, or null when it has no history. */
   draftContext?(chatJid: string, options: { recent: boolean; private?: PrivateRule }): DraftContext | null;
-  /** How a text draft to a direct chat compares with the user's own messages there; null without enough of them. */
-  styleCheck?(chatJid: string, text: string): StyleCheck | null;
+  /**
+   * How a text draft to a direct chat compares with the user's own messages
+   * there; null without enough of them. With too few, the language is read off
+   * the recipient's own messages instead, so `private` carries the same rule
+   * every read does: nothing of a `#private` contact, on this account or on
+   * another, is read for it.
+   */
+  styleCheck?(chatJid: string, text: string, options?: { private?: PrivateRule }): StyleCheck | null;
   updateContactDetails(contactId: string, edit: ContactDetailsEdit): Promise<ContactSummary>;
   getGroupInfo(groupId: string): Promise<GroupInfo>;
   downloadMedia(messageId: string, saveTo?: string): Promise<MediaResult>;

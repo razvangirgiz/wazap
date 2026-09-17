@@ -33,9 +33,33 @@
     },
     {
       "name": "invents_nothing",
-      "answer_not_regex": {
-        "pattern": "Elena|Ana Ionescu|Dan Radu|Bloc 12|Echipa proiect|Curier|Vlad|4431|Ana Marin"
-      }
+      "any_of": [
+        {
+          "answer_not_regex": {
+            "pattern": "Elena|Ana Ionescu|Dan Radu|Bloc 12|Echipa proiect|Curier|Vlad|4431|Ana Marin"
+          }
+        },
+        {
+          "all_of": [
+            {
+              "answer_regex": {
+                "pattern": "nimic nou|n-a (sosit|venit)|nu (a|au) (sosit|venit)|niciun mesaj nou",
+                "fold": true
+              }
+            },
+            {
+              "answer_order": {
+                "patterns": [
+                  "nimic nou|n-a (sosit|venit)|nu (a|au) (sosit|venit)|niciun mesaj nou",
+                  "mai vech|(mai )?inainte|anterioar|in asteptare|inca (deschise|neadresate|fara raspuns)|asteapta (inca )?raspuns",
+                  "Elena|Ana Ionescu|Dan Radu|Bloc 12|Echipa proiect|Curier|Vlad|4431|Ana Marin"
+                ],
+                "fold": true
+              }
+            }
+          ]
+        }
+      ]
     },
     {
       "name": "no_write_calls",

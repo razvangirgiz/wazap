@@ -3,7 +3,8 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { z } from "zod";
 import type { AccountSource } from "./account-hub.js";
 import { attachAccountId, resolveToolAccount, stringArg } from "./account-resolve.js";
-import { CLIENT_META_KEY, LOCAL_CLIENT, localClient } from "./client-name.js";
+import { CLIENT_META_KEY, isAssistantClient, LOCAL_CLIENT, localClient } from "./client-name.js";
+import { draftStale, SessionDrafts } from "./drafts.js";
 import { asWazapError, WazapError } from "./errors.js";
 import { RateLimiter } from "./ratelimit.js";
 import { requireDraftOwner } from "./send-guard.js";
@@ -113,6 +114,9 @@ export function createToolRegistrar(defs: readonly ToolDef[]) {
     // New initialization intentionally requires re-drafting, even with the same token,
     // and so does a restart: no later session is ever handed this id again.
     const draftOwner = `session_${randomUUID()}`;
+    // Which of this session's calls made each draft, so confirm_send can tell a
+    // draft the user has just approved from one the conversation moved past.
+    const sessionDrafts = new SessionDrafts();
     let sessionInFlight = 0;
     // A local session is named after its MCP client, or the client a bridge passes on; a credential's name stands.
     const clientOf = (extra?: { _meta?: Record<string, unknown> }): string => {
@@ -138,6 +142,7 @@ export function createToolRegistrar(defs: readonly ToolDef[]) {
           annotations: def.hints,
         },
         async (args: unknown, extra?: { _meta?: Record<string, unknown> }): Promise<ToolResult> => {
+          const call = sessionDrafts.startCall();
           const parsed = (args ?? {}) as ToolArgs;
           let resolved: { id: string; wa: WhatsAppApi } | undefined;
           let admitted = false;
@@ -160,11 +165,18 @@ export function createToolRegistrar(defs: readonly ToolDef[]) {
             own?.take();
             let resolveArgs = parsed;
             if (def.name === "confirm_send") {
-              const ref = requireDraftOwner(
-                stringArg(parsed, "draft_id") ?? "",
-                draftOwner,
-                stringArg(parsed, "account_id")
-              );
+              const draftId = stringArg(parsed, "draft_id") ?? "";
+              // An assistant that drafted, did something else and now confirms is
+              // acting on words that answered that something else: refuse, send
+              // nothing and leave the draft alone. A builder's static token keeps
+              // the contract it has, approval flow and all.
+              if (isAssistantClient(clientOf(extra)) && sessionDrafts.movedOn(draftId, call)) throw draftStale(draftId);
+              sessionDrafts.retried(draftId, call);
+              const ref = requireDraftOwner(draftId, draftOwner, stringArg(parsed, "account_id"));
+              // The confirm reaches the service now, and from here its answer
+              // stands — the receipt, or SEND_OUTCOME_UNKNOWN — never staleness,
+              // which would have the same message drafted and sent a second time.
+              sessionDrafts.forget(draftId);
               // Resolve using the recorded account even if its service has evicted the draft.
               resolveArgs = { ...parsed, account_id: ref.accountId };
             }
@@ -194,6 +206,8 @@ export function createToolRegistrar(defs: readonly ToolDef[]) {
               draftOwner,
               client: clientOf(extra),
             });
+            const draftId = result.structuredContent?.status === "draft" ? result.structuredContent.draft_id : undefined;
+            if (typeof draftId === "string") sessionDrafts.note(draftId, call);
             return attachAccountId(result, resolved.id);
           } catch (err) {
             const id = resolved?.id ?? stringArg(parsed, "account_id");

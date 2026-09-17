@@ -59,12 +59,14 @@ test("a stranger's pushName is captured, the draft flags it, and saving them on 
   assert.equal(flagged.structuredContent.unnamed_recipient, true);
   assert.match(flagged.content[0].text, /To: flormidable15 \(\+40 700 000 042\)/);
   assert.match(flagged.content[0].text, /not a saved contact/);
+  assert.match((flagged.structuredContent.notes ?? []).join(" "), /not a saved contact/, "said in the structured content too");
 
   // The user saves her on the phone; the address book reaches wazap as a contacts event.
   sock.ev.emit("contacts.upsert", [{ id: peer, name: "Florentina M" }]);
 
   const clean = await sendMessage({ chat_id: peer, text: "Salut!" });
   assert.equal(clean.structuredContent.unnamed_recipient, undefined);
+  assert.equal(clean.structuredContent.notes, undefined);
   assert.match(clean.content[0].text, /To: Florentina M \(\+40 700 000 042\)/);
   await svc.stop();
 });

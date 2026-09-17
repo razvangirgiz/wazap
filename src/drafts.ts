@@ -88,7 +88,7 @@ export function draftNotFound(id: string): WazapError {
   return new WazapError(
     "DRAFT_NOT_FOUND",
     `No draft ${id}.`,
-    "Call send_message again to draft, then confirm_send"
+    "Call send_message again, show the new preview and wait for a new yes, then confirm_send"
   );
 }
 
@@ -96,8 +96,76 @@ export function draftExpired(id: string): WazapError {
   return new WazapError(
     "DRAFT_EXPIRED",
     `Draft ${id} expired.`,
-    "Call send_message again to draft, show the new preview, then confirm_send"
+    "Call send_message again, show the new preview and wait for a new yes: the yes given to the expired draft does not carry over. Then confirm_send"
   );
+}
+
+/**
+ * A draft the session made before it did something else: whatever the user has
+ * just said, it was not said to this preview. Refused before anything is sent.
+ */
+export function draftStale(id: string): WazapError {
+  return new WazapError(
+    "DRAFT_STALE",
+    `Draft ${id} was made earlier in this conversation and other calls followed it; nothing was sent.`,
+    "The talk moved on since this draft: call send_message again, show the new preview and ask for a yes to it"
+  );
+}
+
+/**
+ * What one MCP session knows of the drafts it made: which of its own tool calls
+ * answered each. An assistant that drafts, goes on to do something else and
+ * then confirms is confirming words that were never about this draft, so that
+ * confirm is refused (draftStale) and the draft is left untouched — a proper
+ * retake goes through send_message, which makes a new one.
+ *
+ * In memory and per session, like the draft ownership itself: a session that
+ * ends takes its drafts with it. A draft a confirm has reached is forgotten
+ * here, so from then on the service's own answer stands — its receipt, or
+ * SEND_OUTCOME_UNKNOWN — and the same message is never drafted twice.
+ */
+export class SessionDrafts {
+  private calls = 0;
+  /** draft_id → the session's call that answered it; capped like the session's drafts. */
+  private readonly madeAt = new Map<string, number>();
+
+  /** Counts a tool call of this session and gives its place, from 1. */
+  startCall(): number {
+    return ++this.calls;
+  }
+
+  /** The call `at` answered this draft. */
+  note(draftId: string, at: number): void {
+    if (this.madeAt.size >= DRAFT_CAP) {
+      const oldest = this.madeAt.keys().next();
+      if (oldest.done !== true) this.madeAt.delete(oldest.value);
+    }
+    this.madeAt.set(draftId, at);
+  }
+
+  /**
+   * Whether any other tool call of this session came between the draft and the
+   * call `at`. A draft this session never made, or one a confirm already
+   * reached, is not stale: nothing here speaks for it.
+   */
+  movedOn(draftId: string, at: number): boolean {
+    const made = this.madeAt.get(draftId);
+    return made !== undefined && at - made > 1;
+  }
+
+  /**
+   * A confirm of this draft was refused before the service saw it (an id this
+   * session cannot confirm, a wrong account). Confirming the same draft is not
+   * the talk moving on, so the retry that follows stands where this call does.
+   */
+  retried(draftId: string, at: number): void {
+    if (this.madeAt.has(draftId)) this.madeAt.set(draftId, at);
+  }
+
+  /** A confirm reached this draft; what becomes of it is the service's answer. */
+  forget(draftId: string): void {
+    this.madeAt.delete(draftId);
+  }
 }
 
 /** A draft handed to WhatsApp whose arrival nobody can vouch for. Never retried. */
@@ -105,7 +173,7 @@ export function sendOutcomeUnknown(id: string, cause?: string): WazapError {
   return new WazapError(
     "SEND_OUTCOME_UNKNOWN",
     `Draft ${id} was handed to WhatsApp, but whether it arrived is unknown${cause ? `: ${cause}` : "."}`,
-    "Do not confirm or draft this message again. Check the conversation with read_messages; if the message is not there, tell the user and ask before sending it again"
+    "Do not confirm or draft it again. Tell the user it may or may not have arrived. read_messages shows it once WhatsApp echoes it; not there yet does not mean it failed. Check again in a few seconds, and ask before any new send"
   );
 }
 

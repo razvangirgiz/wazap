@@ -21,24 +21,51 @@ export const CONTEXT_RECENT = 8;
 export const CONTEXT_RECENT_CHARS = 200;
 /** The user's own messages in a direct chat, in the last 90 days, a style check needs before it judges a draft. */
 export const STYLE_CHECK_MIN_OWN = 5;
+/**
+ * The recipient's own messages a chat needs before it says which language they
+ * write in. Three, not the five the user's style needs: only the language is
+ * read from them, and the function-word tables already refuse a chat whose
+ * messages are split (under 60% one way) or that they say nothing about. One
+ * or two messages are a greeting; three are a chat.
+ */
+export const STYLE_CHECK_MIN_THEIRS = 3;
+/** How far back, and how many of their messages, that reads. */
+const THEIRS_DAYS = 90;
+const THEIRS_SAMPLE = 200;
 /** A draft is a length outlier above this many times the user's 90th percentile in the chat, and never under the floor. */
 export const LENGTH_OUTLIER_FACTOR = 3;
 export const LENGTH_OUTLIER_MIN_CHARS = 80;
 
 export type StyleWarning = "language_mismatch" | "diacritics_mismatch" | "address_mismatch" | "length_outlier";
 
+/**
+ * Whose writing the draft was held against: the user's own messages in this
+ * chat, or — when they have written too little here for that — the recipient's,
+ * read for their language and nothing else.
+ */
+export type StyleBasis =
+  | {
+      from: "user";
+      /** How the user writes in this chat, from their own messages. */
+      own_messages: number;
+      days: number;
+      language: StyleStats["language"];
+      diacritics: StyleStats["diacritics"];
+      address: StyleStats["address"];
+      length_chars: StyleStats["length_chars"];
+    }
+  | {
+      from: "recipient";
+      /** How many of their messages said which language they write in. */
+      messages: number;
+      days: number;
+      language: "ro" | "en";
+    };
+
 export interface StyleCheck {
   /** Empty when the draft reads like the user; never a reason to refuse the draft. */
   warnings: StyleWarning[];
-  /** How the user writes in this chat, from their own messages. */
-  basis: {
-    own_messages: number;
-    days: number;
-    language: StyleStats["language"];
-    diacritics: StyleStats["diacritics"];
-    address: StyleStats["address"];
-    length_chars: StyleStats["length_chars"];
-  };
+  basis: StyleBasis;
   /** What the draft reads as, by the same measures. */
   draft: MessageStyle;
 }
@@ -53,9 +80,20 @@ export interface RecentLine {
   transcribed?: true;
 }
 
+/**
+ * The user's style as a draft context hands it out: with what language the
+ * recipient writes in this chat. Without it, a chat the user has hardly
+ * written in falls back to the account's language, and a draft to someone who
+ * writes another one has nothing saying so.
+ */
+export interface DraftStyle extends StyleStats {
+  /** What language the recipient writes here, from their own recent messages; left out when too few of them say. */
+  their_language?: "ro" | "en";
+}
+
 export interface DraftContext {
   /** How the user writes in this chat, or across the account when they wrote too little here. */
-  style?: StyleStats;
+  style?: DraftStyle;
   /** The last messages both ways, oldest first; left out for a `#private` contact, and in a group without a `#private` member's. */
   recent?: RecentLine[];
   /** The contact is tagged `#private`: style only. */
@@ -99,22 +137,67 @@ export function draftContextFor(
       return line;
     });
   if (recent.length > 0) context.recent = recent;
+  if (context.style !== undefined && !group) {
+    const theirs = theirLanguageIn(db, chatJid, options.others);
+    if (theirs !== null) context.style = { ...context.style, their_language: theirs.language };
+  }
   return context.style === undefined && context.recent === undefined ? null : context;
 }
 
 /**
- * How a text draft to a direct chat compares with the user's own messages
- * there in the last 90 days, what wazap sent left out. Null for a group, and
- * for a chat with fewer than STYLE_CHECK_MIN_OWN of the user's own messages:
- * the account's style is no evidence about one person.
+ * What language the other side writes in `chatJid`, from their own recent
+ * messages, and how many of them said so; null when fewer than
+ * STYLE_CHECK_MIN_THEIRS of them classify, or they are split between
+ * languages. The reading is the one a draft gets — the function-word tables of
+ * messageStyle, never diacritics, since most people write Romanian without
+ * them.
+ *
+ * Nothing of a `#private` contact is read here, on this account or on another
+ * (`others`): their words stay theirs, even to say which language they are in.
+ * Groups have no one recipient, so they have no answer either.
  */
-export function styleCheckFor(db: AccountDb, chatJid: string, text: string): StyleCheck | null {
+export function theirLanguageIn(db: AccountDb, chatJid: string, others?: readonly string[]): { language: "ro" | "en"; messages: number } | null {
+  if (chatKindOf(chatJid) !== "direct" || privatePeople(db, others).names(chatJid)) return null;
+  let ro = 0;
+  let en = 0;
+  for (const text of db.messages.theirTexts(chatJid, { days: THEIRS_DAYS, limit: THEIRS_SAMPLE })) {
+    const { language } = messageStyle(text);
+    if (language === "ro") ro++;
+    else if (language === "en") en++;
+  }
+  const messages = ro + en;
+  if (messages < STYLE_CHECK_MIN_THEIRS) return null;
+  if (ro / messages >= 0.6) return { language: "ro", messages };
+  if (en / messages >= 0.6) return { language: "en", messages };
+  return null;
+}
+
+/**
+ * How a text draft to a direct chat compares with the user's own messages
+ * there in the last 90 days, what wazap sent left out. Null for a group.
+ *
+ * With fewer than STYLE_CHECK_MIN_OWN of the user's own messages there, the
+ * account's style is no evidence about one person — but the language still is,
+ * read off the recipient's own messages: a draft in another language than the
+ * one they write in is language_mismatch, and nothing else is judged. The
+ * user's own messages here win whenever there are enough of them.
+ *
+ * Reading the recipient reads them, so it takes the `#private` rule of the
+ * call: `others`, the numbers and lids tagged on the other linked accounts,
+ * the way every other read receives it. Tagged on any of them, nothing of
+ * theirs is read here either, not even to say which language they write in.
+ */
+export function styleCheckFor(db: AccountDb, chatJid: string, text: string, options: { others?: readonly string[] } = {}): StyleCheck | null {
   if (chatKindOf(chatJid) !== "direct") return null;
   const style = db.messages.styleFor(chatJid, { excludeViaWazap: true });
-  if (style === null || style.basis.scope !== "chat" || style.basis.own_messages < STYLE_CHECK_MIN_OWN) return null;
   const draft = messageStyle(text, { oneToOne: true });
-  const warnings: StyleWarning[] = [];
   const known = (language: string): boolean => language === "ro" || language === "en";
+  if (style === null || style.basis.scope !== "chat" || style.basis.own_messages < STYLE_CHECK_MIN_OWN) {
+    const theirs = theirLanguageIn(db, chatJid, options.others);
+    if (theirs === null || !known(draft.language) || theirs.language === draft.language) return null;
+    return { warnings: ["language_mismatch"], basis: { from: "recipient", messages: theirs.messages, days: THEIRS_DAYS, language: theirs.language }, draft };
+  }
+  const warnings: StyleWarning[] = [];
   if (known(style.language) && known(draft.language) && style.language !== draft.language) warnings.push("language_mismatch");
   if (style.language === "ro" && draft.language === "ro" && draft.diacritics !== null) {
     if ((style.diacritics === "none" && draft.diacritics) || (style.diacritics === "most" && !draft.diacritics)) warnings.push("diacritics_mismatch");
@@ -124,6 +207,7 @@ export function styleCheckFor(db: AccountDb, chatJid: string, text: string): Sty
   return {
     warnings,
     basis: {
+      from: "user",
       own_messages: style.basis.own_messages,
       days: style.basis.days,
       language: style.language,
@@ -158,6 +242,13 @@ export function styleLine(style: Pick<StyleStats, "language" | "diacritics" | "a
 export function styleCheckLines(check: StyleCheck | undefined): string[] {
   if (check === undefined || check.warnings.length === 0) return [];
   const { basis, draft } = check;
+  if (basis.from === "recipient") {
+    return [
+      `Style check: the user has written too little in this chat to compare with, so the draft is read against the ${basis.messages} messages the recipient wrote here.`,
+      `- language_mismatch: the draft is ${LANGUAGE[draft.language]}; the recipient writes ${LANGUAGE[basis.language]} here`,
+      "Unless the user dictated these exact words, draft again to match, then show that preview.",
+    ];
+  }
   const said: Record<StyleWarning, string> = {
     language_mismatch: `the draft is ${LANGUAGE[draft.language]}; the user writes ${LANGUAGE[basis.language]} here`,
     diacritics_mismatch: draft.diacritics

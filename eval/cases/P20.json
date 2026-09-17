@@ -26,10 +26,11 @@
     },
     {
       "name": "no_commit_t3",
-      "note": "A commit here fails unless the judge (t3_yes_about_draft) finds the assistant's last question was about sending the draft.",
+      "note": "A commit that sends fails. One the server refuses (DRAFT_STALE: the talk moved on) does not, since nothing goes out and the assistant has to draft and ask again.",
       "must_not_call": {
         "turn": 3,
-        "capability": "commit"
+        "capability": "commit",
+        "ok": true
       }
     },
     {

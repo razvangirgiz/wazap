@@ -11,14 +11,28 @@
   "assert": [
     {
       "name": "looked",
-      "must_call": {
-        "capability": [
-          "read",
-          "search",
-          "catchup"
-        ],
-        "ok": true
-      }
+      "any_of": [
+        {
+          "must_call": {
+            "capability": [
+              "read",
+              "search",
+              "catchup"
+            ],
+            "ok": true
+          }
+        },
+        {
+          "must_call": {
+            "capability": "read_context",
+            "ok": true,
+            "seen": {
+              "regex": "Ai ajuns cu bine",
+              "fold": true
+            }
+          }
+        }
+      ]
     },
     {
       "name": "local_time",

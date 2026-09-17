@@ -258,6 +258,64 @@ export function tsOfId(id: number): number {
   return secondOfId(id) * 1000;
 }
 
+// ---------------------------------------------------------------- an open ask
+
+/** The ask still open in a chat, and the messages of theirs it was read among; see openAsk. */
+export interface OpenAsk {
+  ask: TailMessage;
+  /** Their messages since the user's last word there, newest first, at most ASK_SCAN. */
+  tail: TailMessage[];
+  /** The id their messages were read from: the user's last word there, or the 14-day floor. */
+  after: number;
+}
+
+/** What reading one chat's open ask takes: when it is judged, the newest id it may see, the chat's family and span, the user's last word there, and the handled marks. */
+export interface AskReads {
+  /** The instant ages, expiry and the 14-day horizon are judged against. */
+  now: number;
+  /** The newest id the read may see: the top the digest fixed when it started. */
+  untilId: number;
+  family: readonly number[];
+  /** The span an ask reads back over, from `afterId` up: the window's tops, whatever the client's mark. */
+  span: (afterId: number) => DigestSpan;
+  /** The newest message of the user's own at or below `untilId`; see ownThroughOf. */
+  ownThrough: number | null;
+  /** Every handled mark, by the chat it was filed under (Digest.handled). */
+  handled: ReadonlyMap<number, { askId: number | null; at: number }>;
+}
+
+/** The user's own last word in the chat at or below `untilId`: off the chat's row when that is low enough, walked back otherwise. */
+export function ownThroughOf(db: AccountDb, chat: ChatRecord, family: readonly number[], untilId: number): number | null {
+  if (chat.lastOwnId === null) return null;
+  return chat.lastOwnId <= untilId ? chat.lastOwnId : db.digest.ownThrough(family, untilId);
+}
+
+/**
+ * The ask still open in one chat: the newest message of theirs since the
+ * user's last word there that reads as an ask (in a group, only one that
+ * mentions the user or answers them). Null when the user had the last word,
+ * when nothing of theirs asks anything, when `remember handled` covered the
+ * ask, or when the ask is more than WAITING_HORIZON_MS old.
+ *
+ * catch_up's `waiting` and each find_contact candidate's `waiting` are both
+ * this, so the two never disagree about who is waiting on the user.
+ */
+export function openAsk(db: AccountDb, chat: ChatRecord, reads: AskReads): OpenAsk | null {
+  if (chat.kind !== "direct" && chat.kind !== "group") return null;
+  if (chat.archived) return null;
+  // The user had the last word, and nothing came after it before the read started.
+  if (chat.lastFromMe === true && chat.lastMessageId !== null && chat.lastMessageId <= reads.untilId) return null;
+  const after = Math.max(idBefore(reads.now - WAITING_HORIZON_MS), reads.ownThrough ?? 0);
+  const tail = db.digest.inboundTail(reads.family, reads.span(after), reads.now, ASK_SCAN);
+  if (tail.length === 0) return null;
+  const group = chat.kind === "group";
+  const ask = tail.find((message) => (!group || (message.flags & 1) !== 0 || message.quotedFromMe) && readsAsAsk(message));
+  if (ask === undefined) return null;
+  const mark = reads.handled.get(chat.id);
+  if (mark !== undefined && (mark.askId !== null ? ask.id <= mark.askId : ask.ts <= mark.at)) return null;
+  return { ask, tail, after };
+}
+
 /**
  * Where a digest for `client` starts and ends, and whether it may move the
  * mark. Reads the mark and the two tops in one synchronous pass, writes nothing.
@@ -484,9 +542,7 @@ export async function scanCatchup(db: AccountDb, host: CatchupHost, request: Cat
   const muted = (chat: ChatRecord): boolean => chat.archived || (chat.mutedUntil !== null && chat.mutedUntil > now);
   const ownThroughs = new Map<number, number | null>();
   const ownThrough = (chat: ChatRecord): number | null => {
-    if (chat.lastOwnId === null) return null;
-    if (chat.lastOwnId <= untilId) return chat.lastOwnId;
-    if (!ownThroughs.has(chat.id)) ownThroughs.set(chat.id, digest.ownThrough(familyOf(chat), untilId));
+    if (!ownThroughs.has(chat.id)) ownThroughs.set(chat.id, ownThroughOf(db, chat, familyOf(chat), untilId));
     return ownThroughs.get(chat.id) ?? null;
   };
   /**
@@ -541,21 +597,20 @@ export async function scanCatchup(db: AccountDb, host: CatchupHost, request: Cat
   if (include.has("waiting")) {
     const handled = digest.handled();
     for (const chat of digest.chatsActiveSince(horizonTs)) {
-      if (chat.kind !== "direct" && chat.kind !== "group") continue;
-      if (chat.archived || host.isNoise(chat.jid) || chat.jid === own) continue;
-      // The user had the last word, and nothing came after it before the digest started.
-      if (chat.lastFromMe === true && chat.lastMessageId !== null && chat.lastMessageId <= untilId) continue;
+      if (host.isNoise(chat.jid) || chat.jid === own) continue;
       const family = familyOf(chat);
-      const after = Math.max(horizonId, ownThrough(chat) ?? 0);
-      const tail = digest.inboundTail(family, isExcluded(chat) ? counting(openSpan(after)) : openSpan(after), now, ASK_SCAN);
-      if (tail.length === 0) continue;
+      // A chat tagged #no-catchup is read counting its person, so its own reads keep what they sent.
+      const open = openAsk(db, chat, {
+        now,
+        untilId,
+        family,
+        span: (afterId) => (isExcluded(chat) ? counting(openSpan(afterId)) : openSpan(afterId)),
+        ownThrough: ownThrough(chat),
+        handled,
+      });
+      if (open === null) continue;
+      const { ask, tail, after } = open;
       const group = chat.kind === "group";
-      const ask = tail.find(
-        (message) => (!group || (message.flags & 1) !== 0 || message.quotedFromMe) && readsAsAsk(message)
-      );
-      if (ask === undefined) continue;
-      const mark = handled.get(chat.id);
-      if (mark !== undefined && (mark.askId !== null ? ask.id <= mark.askId : ask.ts <= mark.at)) continue;
       if (group && host.leftGroup(chat)) continue;
       if (isExcluded(chat)) {
         noteExcluded(chat, 0);

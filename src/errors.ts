@@ -36,6 +36,7 @@ export type ErrorCode =
   | "SERVICE_ERROR"
   | "DRAFT_NOT_FOUND"
   | "DRAFT_EXPIRED"
+  | "DRAFT_STALE"
   | "CURSOR_EXPIRED"
   | "SEND_OUTCOME_UNKNOWN"
   | "SEND_BLOCKED"
@@ -99,10 +100,12 @@ export const ERROR_GUIDE: Record<ErrorCode, string> = {
   TIMEOUT: "WhatsApp did not answer in time: retry once, then get_status.",
   SERVICE_ERROR: "wazap's background service failed on this machine, not WhatsApp: tell the user the fix.",
   DRAFT_NOT_FOUND: "No such draft in this session: draft again, show the preview, get a fresh yes.",
-  DRAFT_EXPIRED: "The draft expired after 15 minutes: draft again, show the preview, then confirm_send.",
+  DRAFT_EXPIRED: "The draft expired after 15 minutes: draft again, show the new preview and wait for a new yes; the old yes does not carry over.",
+  DRAFT_STALE:
+    "The talk moved on after this draft, so nothing was sent: draft again with send_message, show the new preview and ask for a yes to it.",
   CURSOR_EXPIRED: "The catch_up cursor expired: call catch_up without it; nothing was lost.",
   SEND_OUTCOME_UNKNOWN:
-    "It may have been sent: check the chat with read_messages, and never confirm or draft it again without asking the user.",
+    "It may or may not have arrived: never confirm or draft it again unasked. read_messages shows it once WhatsApp echoes it; not there yet does not mean it failed.",
   SEND_BLOCKED: "The account's send rules refuse this recipient: tell the user. Do not retry or route around it.",
   AMBIGUOUS_ACCOUNT: "Several accounts fit, or a write names a chat no account knows: pass account_id.",
   ACCOUNT_NOT_FOUND: "No such account: get_status lists them, and `wazap account add` makes one.",

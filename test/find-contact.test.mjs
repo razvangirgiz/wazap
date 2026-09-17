@@ -142,6 +142,7 @@ test("Ana de la contabilitate resolves through the tag; plain Ana is two people 
   assert.equal(body.status, "ambiguous");
   assert.equal(body.contact, undefined);
   assert.equal(body.context, undefined, "no context for a guess");
+  assert.equal(body.next, undefined, "no step toward a draft for a guess");
   assert.deepEqual(body.candidates.map((c) => c.name).sort(), ["Ana Ionescu", "Ana Vasile"]);
   const vasile = body.candidates.find((c) => c.name === "Ana Vasile");
   assert.equal(vasile.number_tail, "3333");
@@ -152,8 +153,15 @@ test("Ana de la contabilitate resolves through the tag; plain Ana is two people 
   assert.equal(vasile.last_exchanged.direction, "received");
   assert.match(vasile.last_exchanged.ago, /ago$/);
   assert.equal(typeof vasile.messages_90d, "number");
-  assert.equal(body.candidates.find((c) => c.name === "Ana Ionescu").tags[0], "contabilitate");
+  const ionescu = body.candidates.find((c) => c.name === "Ana Ionescu");
+  assert.equal(ionescu.tags[0], "contabilitate");
+  // She sent the statement this morning and asked for an answer: that ask is still open, without a word of it.
+  assert.equal(ionescu.waiting.since, ionescu.last_exchanged.at);
+  assert.match(ionescu.waiting.ago, /ago$/);
+  assert.equal(vasile.waiting, undefined, "her own thread closed with a thank-you");
   assert.match(body.fix, /Ask the user which one/);
+  assert.match(body.fix, /never pick one yourself/, "different names stay the user's to settle");
+  assert.doesNotMatch(body.fix, /several accounts/);
   assert.match(ana.content[0].text, /number …3333/);
   assertNothingPrivate(ana);
 
@@ -201,6 +209,8 @@ test("across both accounts: candidates carry their account, one account's only m
     ana.structuredContent.candidates.map((c) => `${c.account_id}:${c.name}`).sort(),
     ["personal:Ana Ionescu", "personal:Ana Vasile", "work:Ana Ionescu", "work:Ana Marin"]
   );
+  assert.match(ana.structuredContent.fix, /never pick one yourself/, "four different people: the user says which");
+  assert.match(ana.structuredContent.fix, /pass account_id for the one the user means/);
   assertNothingPrivate(ana);
 
   const marin = (await find(s, { name: "Ana Marin" })).structuredContent;
@@ -213,7 +223,7 @@ test("across both accounts: candidates carry their account, one account's only m
   const accounting = await find(s, { name: "Anei", qualifier: "contabilitate" });
   assert.equal(accounting.structuredContent.status, "ambiguous", "each account resolves its own Ana Ionescu");
   assert.deepEqual(accounting.structuredContent.candidates.map((c) => c.account_id).sort(), ["personal", "work"]);
-  assert.match(accounting.structuredContent.fix, /pass account_id/);
+  assert.match(accounting.structuredContent.fix, /^The same name on several accounts/, "one name on each account: look before asking");
   assertNothingPrivate(accounting);
 
   await control.hooks([{ hook: "status", account: "work", status: "disconnected" }]);
@@ -222,15 +232,74 @@ test("across both accounts: candidates carry their account, one account's only m
   await s.close();
 });
 
+test("one name on two accounts: the candidate owed an answer says since when, catch_up agrees, and the fix says to look before asking", async () => {
+  const { s, refs } = await world();
+  const ana = await find(s, { name: "Ana Ionescu" });
+  const body = ana.structuredContent;
+  assert.equal(body.status, "ambiguous");
+  const [personal, work] = ["personal", "work"].map((id) => body.candidates.find((c) => c.account_id === id));
+  assert.ok(personal !== undefined && work !== undefined, JSON.stringify(body.candidates));
+
+  // She sent the statement at 09:12 and asked for an answer by tomorrow; the one on work only said thank you.
+  assert.match(personal.waiting.since, /T09:12:00/);
+  assert.equal(personal.waiting.since, personal.last_exchanged.at, "her open ask is her newest message");
+  assert.match(personal.waiting.ago, /ago$/);
+  assert.equal(work.waiting, undefined, "nothing of hers is open there");
+  assert.match(ana.content[0].text, /waiting on an answer since/);
+  assertNothingPrivate(ana);
+
+  const digest = await s.call("catch_up", { hours: 24 });
+  const entry = digest.structuredContent.waiting.find((row) => row.chat === refs.contacts.ana_ionescu.jid);
+  assert.ok(entry !== undefined, "catch_up reads the same ask as open");
+  assert.equal(entry.at, personal.waiting.since.slice(11, 16), "and dates it the same");
+
+  assert.match(body.fix, /^The same name on several accounts/);
+  assert.match(body.fix, /look before asking/);
+  // What decides it, named: the gate's second run looked at both accounts and still asked (N14).
+  assert.match(body.fix, /Exactly one candidate has waiting, an open ask of theirs, and the request answers it/);
+  assert.match(body.fix, /what the request is about \(a file, a topic\) is in one candidate's conversation/);
+  assert.match(body.fix, /search\(query, from: the name\)/);
+  assert.match(body.fix, /find_contact again with a candidate's number_tail as qualifier and its account_id/);
+  assert.match(body.fix, /go on with that account and say which one/);
+  // Where the preview comes from: the gate's third run picked the right account and then wrote the preview itself.
+  assert.match(body.fix, /call send_message there and show the preview it returns, never one you wrote yourself/);
+  assert.match(body.fix, /Ask the user only when nothing tells them apart/);
+  assert.doesNotMatch(body.fix, /never pick one yourself/);
+
+  // The way out the fix names: her number_tail on her account resolves her, with the messages to answer.
+  const picked = (await find(s, { name: "Ana Ionescu", qualifier: personal.number_tail, account_id: "personal" })).structuredContent;
+  assert.deepEqual([picked.status, picked.contact.chat_id], ["resolved", refs.contacts.ana_ionescu.jid]);
+  assert.ok(picked.context.recent.length > 0, "and it brings her recent messages");
+
+  // An ask filed as handled is no longer open.
+  const marked = await s.call("remember", { chat_id: refs.contacts.ana_ionescu.jid, handled: true, account_id: "personal" });
+  assert.notEqual(marked.isError, true, JSON.stringify(marked.structuredContent ?? marked.content));
+  const handled = (await find(s, { name: "Ana Ionescu" })).structuredContent;
+  assert.equal(handled.candidates.find((c) => c.account_id === "personal").waiting, undefined, "filed handled: nothing open");
+  await s.close();
+
+  // Neither is an ask the user has answered since.
+  const answered = await world({
+    accounts: { personal: { "+messages": [{ chat: "ana_ionescu", from: "me", at: "azi 09:40", text: "Verific și vă confirm până mâine." }] } },
+  });
+  const after = (await find(answered.s, { name: "Ana Ionescu" })).structuredContent;
+  assert.equal(after.candidates.find((c) => c.account_id === "personal").waiting, undefined, "answered: nothing open");
+  await answered.s.close();
+});
+
 test("a resolved contact carries the recent exchange and the user's style in a write session, and nothing more anywhere else", async () => {
   let { s } = await world();
+  assert.doesNotMatch(s.instructions, /only reads/);
   const full = (await find(s, { name: "mama", account_id: "personal" })).structuredContent;
+  assert.equal(full.can_draft, undefined);
   assert.equal(full.context.style.language, "ro");
   assert.ok(full.context.style.basis.own_messages > 0);
   const last = full.context.recent.at(-1);
   assert.deepEqual([last.from_me, last.text, last.transcribed], [false, "Nu uita de cina de duminică la 7, vine și tanti Lia.", true]);
   assert.ok(full.context.recent.some((line) => line.from_me && line.text === "Da mamă, am ajuns 😊"));
   assert.equal(full.context.recent.length, 4);
+  assert.match(full.next, /call send_message\(chat_id\) now: it sends nothing, and the preview to show is the one it returns/, "a resolved contact says how a message to them starts");
+  assert.match(full.next, /Never write a preview of your own/, "and that the preview is never written by hand");
 
   assert.equal((await find(s, { name: "mama", account_id: "personal", include_context: false })).structuredContent.context, undefined);
   await s.close();
@@ -239,6 +308,11 @@ test("a resolved contact carries the recent exchange and the user's style in a w
   const read = await find(readOnly, { name: "mama", account_id: "personal" });
   assert.equal(read.structuredContent.status, "resolved");
   assert.equal(read.structuredContent.context, undefined, "a session that cannot send gets no draft context");
+  assert.doesNotMatch(read.structuredContent.next ?? "", /send_message/, "nor a step toward a draft");
+  assert.equal(read.structuredContent.can_draft, false, "a session that cannot send says so where the step would be");
+  assert.match(read.structuredContent.next, /This connection only reads: it cannot draft or send\. Asked to send, say so, and offer the text for the user to send/);
+  assert.match(readOnly.instructions, /This connection only reads: it cannot draft or send\./, "and the server's instructions say it before any call");
+  assert.doesNotMatch(readOnly.instructions, /draft with send_message/);
   assert.ok(!read.content[0].text.includes("cina de duminică"));
   await readOnly.close();
 
@@ -287,6 +361,33 @@ test("a draft context on one account reads #private filed on another: a person's
   await s.close();
 });
 
+test("the name or id of an account is not a person: find_contact says which account it is, and the instructions name every account", async () => {
+  const { s } = await world();
+  assert.match(s.instructions, /Accounts: personal \(Personal, default\), work \(Business\)\./);
+  for (const [name, id] of [["Business", "work"], ["business", "work"], ["Personal", "personal"], ["work", "work"]]) {
+    const body = (await find(s, { name })).structuredContent;
+    assert.equal(body.status, "not_found", name);
+    assert.equal(body.fix, `"${name}" is the account ${id}: pass account_id "${id}" to catch_up, read_messages or search.`, name);
+  }
+  const person = (await find(s, { name: "Xyzzy" })).structuredContent;
+  assert.match(person.fix, /^Nobody is called "Xyzzy"/, "any other name keeps its answer");
+  await s.close();
+});
+
+test("a role filed with remember in one session finds the person in the next, in the forms the user says it", async () => {
+  const { s, refs } = await world();
+  const filed = await s.call("remember", { chat_id: refs.contacts.ioana.jid, fields: { relatie: "dentist" }, account_id: "personal" });
+  assert.notEqual(filed.isError, true, JSON.stringify(filed.structuredContent ?? filed.content));
+  await s.close();
+  const next = await mcpSession(ready.mcp_url, ready.tokens.write);
+  for (const name of ["dentista", "dentistei"]) {
+    const found = (await find(next, { name })).structuredContent;
+    assert.equal(found.status, "resolved", name);
+    assert.equal(found.contact.chat_id, refs.contacts.ioana.jid, name);
+  }
+  await next.close();
+});
+
 test("send_message: a draft with diacritics to someone the user writes to without them gets style_check; too little of the user's own writing gets none", async () => {
   const own = ["da, vin si eu la meci", "hai ca te sun cand ajung", "ok, iti zic diseara", "nu stiu daca pot sambata", "mersi frate, vorbim"];
   const { s, refs } = await world({
@@ -300,9 +401,35 @@ test("send_message: a draft with diacritics to someone the user writes to withou
   assert.equal(check.basis.own_messages, 6);
   assert.match(draft.content[0].text, /Style check[\s\S]*diacritics_mismatch/);
   assert.ok(draft.structuredContent.draft_id, "still a draft: the check never blocks");
+  assert.match((draft.structuredContent.notes ?? []).join(" "), /draft again to match style_check\.warnings/, "what to do about the warnings is structured too");
 
   const plain = await s.call("send_message", { chat_id: refs.contacts.ana_ionescu.jid, text: "Salut, poți să-mi trimiți extrasul?", account_id: "personal" });
   assert.equal(plain.structuredContent.style_check, undefined, "one message of the user's own is too little to judge");
   assert.doesNotMatch(plain.content[0].text, /Style check/);
+  assert.equal(plain.structuredContent.notes, undefined);
   await s.close();
+});
+
+/**
+ * With too little of the user's own writing in a chat, the check reads the
+ * recipient for the language — so it takes the same `#private` rule every read
+ * does, over every account of the call: tagged anywhere, not even the language
+ * they write in is volunteered.
+ */
+test("send_message: a #private contact on another account gives no language either", async () => {
+  // The same John Carter, saved on the work account and tagged there.
+  const tagged = await world({ accounts: { work: { contacts: { john_work: { phone: "40766600003", name: "John Carter", tags: ["private"] } } } } });
+  const quiet = await tagged.s.call("send_message", { chat_id: tagged.refs.contacts.john.jid, text: "Salut John, întârzii 10 minute.", account_id: "personal" });
+  assert.notEqual(quiet.isError, true, JSON.stringify(quiet.structuredContent));
+  assert.equal(quiet.structuredContent.style_check, undefined, "tagged on work: nothing of his is read on personal, his language included");
+  assert.doesNotMatch(quiet.content[0].text, /Style check/);
+  assert.ok(quiet.structuredContent.draft_id, "the draft itself stands");
+  await tagged.s.close();
+
+  // Untagged, the same draft is answered with the language he writes in.
+  const open = await world();
+  const warned = await open.s.call("send_message", { chat_id: open.refs.contacts.john.jid, text: "Salut John, întârzii 10 minute.", account_id: "personal" });
+  assert.deepEqual(warned.structuredContent.style_check.warnings, ["language_mismatch"]);
+  assert.deepEqual(warned.structuredContent.style_check.basis, { from: "recipient", messages: 3, days: 90, language: "en" });
+  await open.s.close();
 });

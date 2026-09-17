@@ -37,15 +37,15 @@ answers.
 | `join_group` | `manage_group` with `action: "join"`, `invite` or `message_id`, `confirm` |
 | `save_contact`, `remove_contact`, `set_profile_picture` | removed, see below |
 
-- **What an assistant is sent is 4,778 tokens instead of 14,397**: the names,
+- **What an assistant is sent is 4,786 tokens instead of 14,397**: the names,
   descriptions, input schemas and annotations of a session that can write, as
-  an SDK client lists them (2,934 in a read session). Every description fits in
+  an SDK client lists them (2,937 in a read session). Every description fits in
   300 characters, `account_id` is explained once, in the server's instructions
-  and in `learn`, and `learn`'s guide is 1,924 tokens of text with no copy in
+  and in `learn`, and `learn`'s guide is 1,944 tokens of text with no copy in
   structured content. `node scripts/tool-budget.mjs` prints the table per tool,
   and a test holds the budget.
 - **Output schemas on every tool** but the five Calfa calls and `learn`:
-  6,051 tokens in all, 2,238 of them `catch_up`'s and 1,440 `find_contact`'s.
+  6,473 tokens in all, 2,293 of them `catch_up`'s and 1,576 `find_contact`'s.
   A refusal from such a tool is `{ error, message, fix, account_id }` as text.
 - **Annotations stated per tool**, for its most far-reaching action, on one
   rule: read-only means it changes nothing on WhatsApp and nothing the user
@@ -72,6 +72,99 @@ answers.
 
 ### Added
 
+- **What an answer asks of the assistant is in its structured content.**
+  Claude Code hands the model a tool's structured content, not its text, so
+  guidance that lived only in the text never reached it. Short fields now carry
+  it: `next` on a `send_message` draft and on a `manage_group` join preview;
+  `notes` on `search` (meaning search unavailable, weak matches, a capped scan,
+  people tagged `#private` left out, stale history), on `read_messages`
+  (photos without a preview, stories left out), on `catch_up` (an account not
+  connected, a sync still running, entries left for `more.cursor`), on a
+  `find_contact` tag list cut by `limit`, and on a draft to someone not saved
+  or written off the user's style. The output schemas declare them; the five
+  tools Calfa calls only gain keys.
+- **A draft comes before the question.** `send_message`'s description and the
+  server's instructions say it sends nothing, so an assistant drafts as soon as
+  it has the recipient and the text and shows the preview the draft returns,
+  instead of writing a preview of its own and asking first; a contact
+  `find_contact` resolves in a session that can write says the same in `next`.
+- **The yes is a yes to one draft: this text, this recipient.** A send asked in
+  the same request that gave the text ("change it to «ajung la 6» and send") is
+  that yes, and asking again only leaves the message unsent; a yes about
+  something else, or one that comes after the talk moved to another subject, is
+  not, and the preview is shown again instead. The rule reads the same in the
+  draft's `next`, in `send_message`'s and `confirm_send`'s descriptions, in the
+  server's instructions and in the send skill. `confirm_send` keeps its
+  arguments and its idempotence; what words are approval it still reads from
+  the conversation, with the one stop below.
+- **A draft the talk moved past is refused, not sent** (`DRAFT_STALE`, new
+  code). When the session made any other tool call after a draft, the yes it
+  now has answered that call, not this preview: `confirm_send` refuses without
+  sending, the draft is left untouched, and the fix says to call `send_message`
+  again, show the new preview and ask for a yes to it — words alone had an
+  assistant answer another question and then send on the "yes, great" that
+  followed. A draft confirmed with nothing in between sends as before, so does
+  a message whose request already carried the send, and a confirm that reached
+  WhatsApp keeps answering its receipt or `SEND_OUTCOME_UNKNOWN`. Several
+  messages are drafted and confirmed one at a time, not all drafted and then
+  all confirmed. **Sessions on a static token are not held to it:** a builder's
+  own program (Calfa and the like) has its own approval flow, and the five
+  tools it calls keep their behavior. The stop applies to an assistant's
+  session — stdio and the daemon's bridge (`local`, `local:<client>`) and a
+  hosted agent that signed in (`oauth:<client_id>`).
+- **A session that only reads says so.** Its server instructions say it
+  cannot draft or send, and that a request to send is answered by saying so and
+  offering the text for the user to send from their phone; a contact
+  `find_contact` resolves there carries `can_draft: false` with the same words
+  in `next`.
+- **An expired draft asks for a new yes.** `DRAFT_EXPIRED`'s `fix`, its line in
+  `learn` and `confirm_send`'s description say to draft again, show the new
+  preview and wait for a new yes: the yes given to the expired draft does not
+  carry over to the new one. `DRAFT_NOT_FOUND` says the same. The codes are
+  unchanged.
+- **A send whose outcome is unknown is not reported as failed.**
+  `SEND_OUTCOME_UNKNOWN`'s `fix` and its line in `learn` say to tell the user
+  it may or may not have arrived, never to confirm or draft it again unasked,
+  and that a chat not showing it yet does not mean it failed. `read_messages`
+  on the newest page of that chat lists it in `unconfirmed_sends`
+  (`draft_id`, `text`, `handed_at`, `state: "unknown"`) with a note, until
+  WhatsApp echoes it and it reads as the user's own message.
+- **Older history the phone did not send is not "no messages".** When
+  `read_messages` with `before` runs past what wazap holds and asks the phone,
+  its answer carries `older: { asked_phone: true, received }`; with nothing
+  received, a note says older history may still exist on the phone.
+- **A role filed with `remember` finds the person.** A `relatie` or `role`
+  detail that is not a relationship word ("dentist", "contabil") is matched as
+  a name, whole words only, in the forms a role is said in: "dentista",
+  "dentistei" and "dentistul" find `relatie: dentist`, "profesoarei" finds
+  `role: profesor`. Such a match resolves like a name.
+- **An account's name leads to its `account_id`.** With several accounts, the
+  server's instructions name each one (`Accounts: personal (Personal,
+  default), work (Business).`, or only how many past eight); `find_contact`
+  asked for an account's name or id answers `not_found` with a `fix` naming
+  the `account_id` to pass; `catch_up`'s description says `account_id`
+  narrows it to one account.
+- **`catch_up` over an explicit window tells old asks from new.** With `hours`
+  or an ISO `since`, `waiting` still lists every ask open in the last 14 days,
+  and one asked before the window carries `before_window: true` and says "from
+  before this window"; when nothing arrived in the window, the answer says so
+  first, in the text and in `notes`. The description says `waiting` is every
+  open ask, whatever the window.
+- **One name on several accounts: look before asking.** Each `find_contact`
+  candidate with an ask of theirs still open carries `waiting`
+  (`since`, `ago`), the one `catch_up` lists — open until the user answers it,
+  files it `handled` or it is 14 days old — with no word of what they wrote.
+  When the candidates are one name with one on each account, the `fix` names
+  the two things that decide it, either one enough: exactly one candidate has
+  `waiting`, an open ask of theirs, and the request answers it; or what the
+  request is about (a file, a topic) is in one candidate's conversation, read
+  with `search` and `from`, or with `find_contact` again on a candidate's
+  `number_tail` and `account_id`. Then it says to go on with that account and
+  say which one, and to ask only when nothing tells them apart. People with different names stay the user's to settle:
+  "ask, never pick one yourself". Nothing goes out on a guess either way — a
+  draft's preview names the recipient, the number and the account, and the
+  user says yes to that. `find_contact`'s description points at the `fix`, and
+  the output schema declares `waiting`.
 - **`find_contact`: who "mama", "Ana de la contabilitate" or "Mișu" is.** A
   read tool, in every session. It matches saved, business and self-given names, the
   `nickname` and `relatie` details, tags, and a note that is only the
@@ -99,6 +192,20 @@ answers.
   on, and the preview says what does not match. Additive: the arguments and
   every field `send_message` returned before are unchanged, and it never
   blocks a draft.
+- **A chat the user has hardly written in takes its language from the
+  recipient.** With fewer than five of the user's own messages there, their
+  style falls back to the whole account, which says nothing about that one
+  chat — a draft to someone who writes another language had nothing saying so.
+  `find_contact`'s draft context now carries `style.their_language`, what the
+  recipient writes there, read off their own messages by the same function-word
+  tables (never by diacritics) and only once three of them agree; and
+  `style_check` answers `language_mismatch` against it, judging nothing else.
+  **`style_check.basis` now carries `from`**: `"user"` for the basis as it was,
+  `"recipient"` for this one, where the fields are `messages`, `days` and
+  `language`. The user's own messages in the chat win whenever there are five
+  of them, a `#private` contact on any linked account gives no language either,
+  and the warning still blocks nothing: the draft's `next` asks for it again in
+  that language before any preview is shown.
 - **The address book is asked for when `find_contact` needs it.** With no
   contact carrying a saved name, the first `find_contact` of a server run asks
   WhatsApp for the address book, as `wazap contacts resync` does, and waits up to 15

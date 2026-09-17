@@ -15,7 +15,7 @@ import { join } from "node:path";
 import { DraftStore } from "../dist/drafts.js";
 import { registerTools } from "../dist/tools.js";
 import { WhatsAppService } from "../dist/whatsapp.js";
-import { asToolSource, connectedService, storageRows, waitFor } from "./helpers.mjs";
+import { asToolSource, connectedService, schemaCheckedTools, storageRows, waitFor } from "./helpers.mjs";
 
 const ME = "40700000001@s.whatsapp.net";
 const PEER = "40700000002@s.whatsapp.net";
@@ -133,6 +133,39 @@ test("a send that fails after reaching the socket is unknown, never sent again, 
   assert.equal(receipt.already_sent, true);
   assert.equal(sendRow(svc, view.draft_id).state, "sent");
   assert.equal(sent.length, 0);
+});
+
+test("read_messages shows a send whose outcome is unknown until WhatsApp echoes it, so a chat without it yet does not read as a failure", async (t) => {
+  const { svc, sock } = serviceOn(t, dataDirFor(t));
+  const { call } = schemaCheckedTools(svc, { allowWrite: true });
+  upsert(sock, "notify", inbound("S1", "salut", STRANGER));
+  const drafted = (await call("send_message", { chat_id: PEER, text: "Confirm ședința" })).structuredContent;
+  const keys = [];
+  sock.relayMessage = async (_jid, _message, options) => {
+    keys.push(options.messageId);
+    throw new Error("Timed Out");
+  };
+  const unknown = (await call("confirm_send", { draft_id: drafted.draft_id })).structuredContent;
+  assert.equal(unknown.error, "SEND_OUTCOME_UNKNOWN");
+  assert.match(unknown.fix, /Do not confirm or draft it again\. Tell the user it may or may not have arrived\./);
+  assert.match(unknown.fix, /read_messages shows it once WhatsApp echoes it; not there yet does not mean it failed\. Check again in a few seconds, and ask before any new send/);
+
+  const waiting = (await call("read_messages", { chat_id: PEER })).structuredContent;
+  assert.equal(waiting.count, 0, "nothing echoed yet");
+  assert.deepEqual(
+    waiting.unconfirmed_sends.map(({ draft_id, text, state }) => ({ draft_id, text, state })),
+    [{ draft_id: drafted.draft_id, text: "Confirm ședința", state: "unknown" }]
+  );
+  assert.match(waiting.unconfirmed_sends[0].handed_at, /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/);
+  assert.match((waiting.notes ?? []).join(" "), /A message handed to WhatsApp at \d{2}:\d{2} has not echoed yet: its outcome is unknown, not failed\./);
+  const other = (await call("read_messages", { chat_id: STRANGER })).structuredContent;
+  assert.equal(other.unconfirmed_sends, undefined, "only in the chat it went to");
+
+  upsert(sock, "notify", own(keys[0], "Confirm ședința"));
+  const echoed = (await call("read_messages", { chat_id: PEER })).structuredContent;
+  assert.equal(echoed.unconfirmed_sends, undefined, "the echo settles it");
+  assert.equal(echoed.notes, undefined);
+  assert.deepEqual(echoed.messages.map((m) => [m.from_me, m.text]), [[true, "Confirm ședința"]]);
 });
 
 test("a crash while a send is under way leaves it unknown after the restart, until WhatsApp echoes its key", async (t) => {

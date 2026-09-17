@@ -39,9 +39,10 @@ function isAuthorized(header: string | undefined, expected: string): boolean {
  */
 function buildMcpServer(hub: AccountSource, config: Config, allowWrite: boolean, allowLocalFiles: boolean, client = LOCAL_CLIENT): McpServer {
   const skills = loadSkills();
-  const server = new McpServer({ name: "wazap", version: WAZAP_VERSION }, { instructions: skillInstructions(skills) });
+  const writes = allowWrite && !config.readOnly && anyAccountAllowsWrites(hub);
+  const server = new McpServer({ name: "wazap", version: WAZAP_VERSION }, { instructions: skillInstructions(skills, { allowWrite: writes, accounts: namedAccounts(hub) }) });
   registerTools(server, hub, {
-    allowWrite: allowWrite && !config.readOnly && anyAccountAllowsWrites(hub),
+    allowWrite: writes,
     allowLocalFiles,
     client,
     ...(config.maxInFlight === undefined ? {} : { maxInFlight: config.maxInFlight }),
@@ -49,6 +50,16 @@ function buildMcpServer(hub: AccountSource, config: Config, allowWrite: boolean,
   });
   registerSkillPrompts(server, skills);
   return server;
+}
+
+/** The live accounts as the instructions name them; none when the roster cannot be read. */
+function namedAccounts(hub: AccountSource): Array<{ id: string; name: string; default: boolean }> {
+  try {
+    const primary = hub.defaultBinding().id;
+    return hub.bindings().map((binding) => ({ id: binding.id, name: hub.record(binding.id)?.name ?? binding.id, default: binding.id === primary }));
+  } catch {
+    return [];
+  }
 }
 
 /** stdio, the daemon's loopback bridge and anonymous loopback reads: this machine's own clients, each named per call (client-name.ts). */

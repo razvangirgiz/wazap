@@ -72,7 +72,9 @@ trace of every tool call and every write that would have reached WhatsApp. The
 cases (`eval/cases/*.json`) assert on capabilities, which `eval/tool-map/`
 maps to tool names per version; `only_when` narrows a tool that serves several
 (a 1.0 `get_media` call is `transcribe` only when it transcribed or named a
-voice note or audio).
+voice note or audio; a `find_contact` call is `read_context` only when it
+brought recent messages, and a case accepting it names the message those must
+hold through `seen`).
 
 - `node scripts/eval/run-claude.mjs --cases baseline-0.23 --model sonnet` runs
   headless Claude Code, isolated to the evaluation server, and scores the run.

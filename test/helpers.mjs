@@ -87,6 +87,24 @@ export function mcpClient(child) {
   return { request, notify };
 }
 
+const realNow = Date.now;
+
+/**
+ * Put this process on a stable hour of today, so a fixture placed hours back
+ * stays on today's calendar date whenever the suite runs. Around local midnight
+ * "two hours ago" is yesterday, and a rendering that says "14:20" for today says
+ * "Thu 22:20" instead. Time still flows: the offset is fixed once, and the code
+ * under test reads the same `Date.now` the fixtures do. Call it before the first
+ * fixture; each test file runs in a process of its own.
+ */
+export function clockAtHour(hour = 12, minute = 0) {
+  const anchor = new Date(realNow());
+  anchor.setHours(hour, minute, 0, 0);
+  const shift = anchor.getTime() - realNow();
+  Date.now = () => realNow() + shift;
+  return Date.now();
+}
+
 /** Poll until `predicate` returns something truthy, or reject naming what we waited for. */
 export async function waitFor(predicate, timeoutMs, label) {
   const deadline = Date.now() + timeoutMs;

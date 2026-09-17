@@ -425,6 +425,7 @@ test("recall off answers RECALL_UNAVAILABLE with the fix, and search falls back 
     assert.equal(result.structuredContent.mode, "keyword_fallback");
     assert.match(result.structuredContent.recall_unavailable.fix, /wazap config recall local/);
     assert.match(result.content[0].text, /Meaning search is unavailable .*match the words only/);
+    assert.match((result.structuredContent.notes ?? []).join(" "), /words only/, "said in the structured content too");
   } finally {
     await svc.stop();
   }
@@ -535,10 +536,12 @@ test("a default search whose words fill more messages than it ranks says scan_ca
     assert.equal(common.structuredContent.mode, "hybrid");
     assert.equal(common.structuredContent.scan_capped, true);
     assert.match(common.content[0].text, /older matches may be missing: narrow it with chat_id or since\/until, or pass match: "words"/);
+    assert.match((common.structuredContent.notes ?? []).join(" "), /narrow it with chat_id or since\/until/, "said in the structured content too");
 
     const rare = await call("search", { query: "chiria" });
     assert.equal(rare.structuredContent.scan_capped, false);
     assert.doesNotMatch(rare.content[0].text, /older matches may be missing/);
+    assert.doesNotMatch((rare.structuredContent.notes ?? []).join(" "), /narrow/);
   } finally {
     await svc.stop();
     stub.server.close();
@@ -874,6 +877,7 @@ test("weak matches are flagged, not sold as answers", async () => {
     registerTools(server, asToolSource(svc), { allowWrite: false });
     const result = await server.tools.get("search").handler({ query: "the invoice" });
     assert.match(result.content[0].text, /Weak matches only/);
+    assert.match((result.structuredContent.notes ?? []).join(" "), /Weak matches only/, "said in the structured content too");
   } finally {
     await svc.stop();
     stub.server.close();

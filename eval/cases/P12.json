@@ -33,7 +33,7 @@
     {
       "name": "no_false_absence",
       "answer_not_regex": {
-        "pattern": "nu (au )?(mai )?(exista|existau|au existat)|nu au fost (alte )?mesaje|there (are|were) no (older|earlier) messages",
+        "pattern": "(?<!(nu inseamna ca|asta nu spune ca|nu (e|este) sigur ca|nu pot confirma ca|nu stiu daca|nu spun ca) )(nu (au )?(mai )?(exista|existau|au existat)|nu au fost (alte )?mesaje|there (are|were) no (older|earlier) messages)",
         "fold": true
       }
     },

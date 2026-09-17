@@ -44,12 +44,12 @@ function fixture({ now, beforeConfirm } = {}) {
     },
   };
   const hub = asToolSource(wa);
-  function client() {
+  function client(opts = {}) {
     const tools = new Map();
-    registerTools({ registerTool: (name, _meta, handler) => tools.set(name, handler) }, hub, { allowWrite: true });
+    registerTools({ registerTool: (name, _meta, handler) => tools.set(name, handler) }, hub, { allowWrite: true, ...opts });
     return (name, args) => tools.get(name)(args);
   }
-  return { hub, wa, client, confirms: () => confirms, sends: () => sends };
+  return { hub, wa, store, client, confirms: () => confirms, sends: () => sends };
 }
 
 for (const [index, [name, args]] of CASES.entries()) {
@@ -125,7 +125,63 @@ test("owned expired drafts still report DRAFT_EXPIRED; foreign ones reveal nothi
   now += 16 * 60_000;
   const args = { draft_id: draft.structuredContent.draft_id };
   assert.equal((await f.client()("confirm_send", args)).structuredContent.error, "DRAFT_NOT_FOUND");
-  assert.equal((await owner("confirm_send", args)).structuredContent.error, "DRAFT_EXPIRED");
+  const expired = (await owner("confirm_send", args)).structuredContent;
+  assert.equal(expired.error, "DRAFT_EXPIRED");
+  assert.match(expired.fix, /wait for a new yes: the yes given to the expired draft does not carry over/, "a redrafted message is not sent on the old yes");
+});
+
+/**
+ * A draft the talk moved past is never sent on a later yes (P20): the session
+ * did something else in between, so the user's words answered that, not this
+ * draft. Only an assistant's session is held to it — stdio and a client wazap
+ * names (`local`, `local:…`), and a hosted agent that signed in (`oauth:…`).
+ */
+const ASSISTANT_CLIENTS = [undefined, "local:claude-code", "oauth:client_7f3"];
+/** A builder's own program (Calfa and the like) keeps the contract it has. */
+const BUILDER_CLIENTS = ["token:write", "token:calfa"];
+
+for (const name of ASSISTANT_CLIENTS) {
+  test(`${name ?? "local"}: a draft another tool call came after is refused, and the draft just made sends`, async () => {
+    const f = fixture();
+    const assistant = f.client(name === undefined ? {} : { client: name });
+    const id = (await assistant(...CASES[0])).structuredContent.draft_id;
+    await assistant("learn", {});
+    const stale = (await assistant("confirm_send", { draft_id: id })).structuredContent;
+    assert.equal(stale.error, "DRAFT_STALE");
+    assert.match(stale.fix, /call send_message again, show the new preview and ask for a yes to it/);
+    assert.equal(f.confirms(), 0, "the refusal never reaches the service");
+    assert.equal(f.sends(), 0, "nothing was sent");
+    assert.doesNotThrow(() => f.store.take(id), "the draft itself is left alone");
+
+    // What the fix asks for: a new draft, confirmed on a yes to that preview.
+    const again = (await assistant(...CASES[0])).structuredContent.draft_id;
+    assert.equal((await assistant("confirm_send", { draft_id: again })).structuredContent.message_id, "sent");
+    assert.equal(f.sends(), 1);
+  });
+}
+
+for (const name of BUILDER_CLIENTS) {
+  test(`${name}: a static token sends a draft it comes back to, as before`, async () => {
+    const f = fixture();
+    const builder = f.client({ client: name });
+    const id = (await builder(...CASES[0])).structuredContent.draft_id;
+    await builder("learn", {});
+    assert.equal((await builder("confirm_send", { draft_id: id })).structuredContent.message_id, "sent");
+    assert.equal(f.sends(), 1);
+  });
+}
+
+test("a draft confirmed with nothing in between sends, and a repeat still answers the service", async () => {
+  const f = fixture();
+  const assistant = f.client();
+  const id = (await assistant(...CASES[0])).structuredContent.draft_id;
+  assert.equal((await assistant("confirm_send", { draft_id: id })).structuredContent.message_id, "sent");
+  await assistant("learn", {});
+  // Once a confirm has reached the service, its answer stands: never DRAFT_STALE,
+  // which would have the assistant draft the same message a second time.
+  const replay = (await assistant("confirm_send", { draft_id: id })).structuredContent;
+  assert.equal(replay.already_sent, true);
+  assert.equal(f.sends(), 1);
 });
 
 test("tool-runtime keeps rated tool budgets across registrations", async () => {

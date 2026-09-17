@@ -14,7 +14,12 @@ import { callText } from "../dist/messages.js";
 import { readCallText } from "../dist/catchup-scan.js";
 import { WhatsAppService } from "../dist/whatsapp.js";
 import { registerTools } from "../dist/tools.js";
-import { asToolSource, connectedService } from "./helpers.mjs";
+import { asToolSource, clockAtHour, connectedService } from "./helpers.mjs";
+
+// Every run happens at noon: a digest says "14:20" for what came in today and
+// "Thu 22:20" for an older day, so fixtures built hours back from a real
+// midnight would read as yesterday's.
+clockAtHour(12);
 
 const ME = "40700000001@s.whatsapp.net";
 const ANA = "40700000002@s.whatsapp.net";
@@ -918,6 +923,34 @@ test("a catch-up of one account by account_id reads #private and #no-catchup fil
   assert.deepEqual(result.structuredContent.footer.skipped, { no_catchup: { chats: 1, messages: 1 } });
 });
 
+test("an explicit window keeps every open ask in waiting and marks the ones asked before it, and a window nothing arrived in says so", async () => {
+  const { svc, arrive } = account();
+  const { tools, call } = toolsOf(svc);
+  assert.match(tools.get("catch_up").meta.description, /every open ask of 14 days, whatever the window/);
+  arrive(ANA, "îmi trimiți extrasul până mâine?", { at: Date.now() - 6 * HOUR });
+  arrive(DAN, "vii diseară la ședință?", { at: Date.now() - 20 * HOUR });
+
+  const quiet = await call("catch_up", { hours: 1 });
+  const older = quiet.structuredContent.waiting;
+  assert.deepEqual(older.map((entry) => entry.chat).sort(), [ANA, DAN].sort(), "an open ask stays, whatever the window");
+  assert.ok(older.every((entry) => entry.before_window === true && entry.new === undefined), JSON.stringify(older));
+  assert.match(text(quiet), /Nothing arrived in this window; still waiting from before it:/);
+  assert.match(text(quiet), /from before this window/);
+  assert.match((quiet.structuredContent.notes ?? []).join(" "), /Nothing arrived in this window: every waiting entry was asked before it and is still open\./);
+
+  arrive(ELA, "ajungi la 5?", { at: Date.now() - 10 * 60_000 });
+  const busy = await call("catch_up", { hours: 1 });
+  const byChat = Object.fromEntries(busy.structuredContent.waiting.map((entry) => [entry.chat, entry]));
+  assert.deepEqual([byChat[ELA].before_window, byChat[ELA].new, byChat[ANA].before_window], [undefined, true, true]);
+  assert.doesNotMatch((busy.structuredContent.notes ?? []).join(" "), /Nothing arrived/);
+  assert.doesNotMatch(text(busy), /Nothing arrived in this window/);
+
+  const since = await call("catch_up", { since: new Date(Date.now() - 2 * HOUR).toISOString() });
+  assert.equal(Object.fromEntries(since.structuredContent.waiting.map((entry) => [entry.chat, entry]))[ANA].before_window, true, "an ISO since is a window too");
+  const last = await call("catch_up");
+  assert.ok(last.structuredContent.waiting.every((entry) => entry.before_window === undefined), "a catch-up since the mark marks nothing so");
+});
+
 test("a disconnected account is reported as such, not as nothing new, and its mark stays", async () => {
   const { personal, work, hub } = twoAccounts();
   const { call } = toolsOf(hub);
@@ -931,6 +964,7 @@ test("a disconnected account is reported as such, not as nothing new, and its ma
   assert.match(first.status_since, /^\d{4}-/);
   assert.equal(second.mark.moved, true);
   assert.match(text(result), /- Personal \(personal\): .* · disconnected since \S+: what arrived after that is not here yet/);
+  assert.match((result.structuredContent.notes ?? []).join(" "), /personal is disconnected since \S+: what arrived after that is not here yet/, "said in the structured content too");
   assert.equal(personal.svc.db.catchup.get("local"), null);
 });
 
@@ -1006,6 +1040,7 @@ test("a digest longer than the budget pages with a cursor that sees the same win
   const pages = [page];
   assert.ok(page.structuredContent.more, "it does not fit in 500 tokens");
   assert.match(text(page), /More: \d+ entries left \(.*\)\. Call catch_up with cursor: "/);
+  assert.match((page.structuredContent.notes ?? []).join(" "), /call catch_up with more\.cursor/, "said in the structured content too");
   assert.equal(page.structuredContent.accounts[0].mark.why, "more_pages");
   assert.equal(page.structuredContent.footer, null);
   // Messages arrive between pages: a new person, one of the listed, a reply of the user's own.
@@ -1172,7 +1207,7 @@ test("every shape catch_up answers passes a client's validation of its output sc
   const section = (key) => deref(key === "groups" ? schema.properties.groups.items.anyOf[0] : schema.properties[key].items);
   for (const key of ["waiting", "addressed", "missed_calls", "direct", "stories"]) assert.equal(section(key).additionalProperties, false, key);
   assert.ok(schema.properties.groups.items.anyOf.every((shape) => deref(shape).additionalProperties === false));
-  const described = { waiting: ["acct", "n", "q", "sig", "new", "then", "at"], addressed: ["q", "sig"], missed_calls: ["n"], direct: ["n", "q", "sig"], groups: ["n", "hot", "sig"], stories: ["n"] };
+  const described = { waiting: ["acct", "n", "q", "sig", "new", "before_window", "then", "at"], addressed: ["q", "sig"], missed_calls: ["n"], direct: ["n", "q", "sig"], groups: ["n", "hot", "sig"], stories: ["n"] };
   for (const [key, names] of Object.entries(described)) {
     for (const name of names) assert.ok(deref(section(key).properties[name]).description, `${key}.${name} is described`);
   }
@@ -1256,6 +1291,7 @@ test("every shape catch_up answers passes a client's validation of its output sc
   let page = check(await client.callTool({ name: "catch_up", arguments: { budget_tokens: 500 } }));
   while (page.structuredContent.more) page = check(await client.callTool({ name: "catch_up", arguments: { cursor: page.structuredContent.more.cursor, budget_tokens: 500 } }));
   check(await client.callTool({ name: "catch_up", arguments: { hours: 24, budget_tokens: 8000 } }));
+  check(await client.callTool({ name: "catch_up", arguments: { hours: 1, budget_tokens: 8000 } }));
   work.svc.status = "disconnected";
   work.svc.statusSince = Date.now() - HOUR;
   check(await client.callTool({ name: "catch_up", arguments: { hours: 24, budget_tokens: 8000 } }));

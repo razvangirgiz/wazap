@@ -193,6 +193,7 @@ import type {
   ChatActionOptions,
   ChatActionResult,
   ChatFilter,
+  ChatRead,
   ChatSummary,
   ConnectionStatus,
   ContactDetails,
@@ -229,6 +230,7 @@ import type {
   SearchAnswer,
   SearchOptions,
   UnansweredChat,
+  UnconfirmedSend,
   WaitOptions,
   WaitResult,
 } from "./wa-types.js";
@@ -244,6 +246,8 @@ const RECONNECT_MAX_ATTEMPTS = 10;
 
 const SYNC_WAIT_MS = 10_000;
 const HISTORY_FETCH_WAIT_MS = 5_000;
+/** Unknown sends a read of one chat lists at most. */
+const UNCONFIRMED_SENDS_SHOWN = 20;
 const INLINE_IMAGE_MAX_BYTES = 1_000_000;
 const MAX_TEXT_CHARS = 65_536;
 const EDIT_WINDOW_MS = 15 * 60_000;
@@ -1429,7 +1433,7 @@ export class WhatsAppService implements WhatsAppApi {
     });
   }
 
-  readMessages(chatId: string, limit: number, before?: string, types?: MessageType[]): Promise<Synced<MessageView[]>> {
+  readMessages(chatId: string, limit: number, before?: string, types?: MessageType[]): Promise<ChatRead> {
     return this.guarded(async () => {
       const sock = this.ensureConnected();
       const jid = this.resolveId(chatId);
@@ -1438,18 +1442,37 @@ export class WhatsAppService implements WhatsAppApi {
       await this.learnLidPhones([jid]);
 
       if (before === undefined) {
-        return this.synced(this.viewsOfStored(this.pageOf(jid, limit, undefined, types)));
+        const read: ChatRead = this.synced(this.viewsOfStored(this.pageOf(jid, limit, undefined, types)));
+        // The newest page is where a send handed to WhatsApp would show: until its echo comes, say it may be on its way.
+        const unconfirmed = types === undefined ? this.unconfirmedSends(jid) : [];
+        return unconfirmed.length === 0 ? read : { ...read, unconfirmedSends: unconfirmed };
       }
 
       const anchor = this.storedOrThrow(before);
       const inChat = this.db.identity.chat(jid)?.jid === anchor.chatJid;
       let older = inChat ? this.pageOf(jid, limit, anchor.id, types) : [];
-      if (older.length === 0) {
-        await this.fetchOlder(sock, anchor, limit);
-        older = inChat ? this.pageOf(jid, limit, anchor.id, types) : [];
-      }
-      return this.synced(this.viewsOfStored(older));
+      if (older.length > 0) return this.synced(this.viewsOfStored(older));
+      await this.fetchOlder(sock, anchor, limit);
+      older = inChat ? this.pageOf(jid, limit, anchor.id, types) : [];
+      // The phone may hold more than it sent in time: an empty answer says it was asked, never that the chat starts here.
+      return { ...this.synced(this.viewsOfStored(older)), older: { askedPhone: true, received: older.length } };
     });
+  }
+
+  /**
+   * confirm_send's sends to this chat that went unknown and have not echoed:
+   * a read that does not show them yet has not shown they failed.
+   */
+  private unconfirmedSends(jid: string): UnconfirmedSend[] {
+    const db = this.readyDb();
+    if (db === null) return [];
+    const chats = [...new Set([jid, db.identity.chat(jid)?.jid].filter((id): id is string => typeof id === "string"))];
+    return db.sends.unknownIn(chats, UNCONFIRMED_SENDS_SHOWN).map((row) => ({
+      draft_id: row.draftId,
+      text: frozenReceiptText(row),
+      handed_at: isoWithOffset(row.updatedAt),
+      state: "unknown" as const,
+    }));
   }
 
   /**
@@ -1846,9 +1869,9 @@ export class WhatsAppService implements WhatsAppApi {
   }
 
   /** send_message's style check on a text draft; null when the chat gives too little to judge or the database is not ready. */
-  styleCheck(chatJid: string, text: string): StyleCheck | null {
+  styleCheck(chatJid: string, text: string, options: { private?: PrivateRule } = {}): StyleCheck | null {
     const db = this.readyDb();
-    return db === null ? null : styleCheckFor(db, chatJid, text);
+    return db === null ? null : styleCheckFor(db, chatJid, text, { others: options.private?.others });
   }
 
   // ---- end find_contact ------------------------------------------------------

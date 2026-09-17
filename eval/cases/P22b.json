@@ -76,7 +76,7 @@
       "name": "says_arrived",
       "answer_regex": {
         "turn": 2,
-        "pattern": "a ajuns|apare|a fost trimis|s-a trimis|livrat",
+        "pattern": "(?<!nu |n-)(a ajuns|apare|a fost trimis|s-a trimis)|(?<!ne)livrat",
         "fold": true
       }
     }

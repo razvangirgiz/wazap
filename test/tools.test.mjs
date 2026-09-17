@@ -127,6 +127,15 @@ test("send_message drafts through the session and confirm_send is the only send"
   assert.match(drafted.content[0].text, /Not sent/);
   assert.match(drafted.content[0].text, /To: Ana \(\+40 722 123 456\)/);
   assert.match(drafted.content[0].text, /confirm_send/);
+  assert.match(drafted.structuredContent.next, /Show this preview.*confirm_send.*approve this text and this recipient/s, "a client that reads structured content only still gets the step after a draft");
+
+  // Confirmed with nothing in between: a session that goes on to do something
+  // else — drafting the next message included — is asked for a new yes instead
+  // (DRAFT_STALE, test/draft-isolation.test.mjs).
+  const confirmed = await server.tools.get("confirm_send").handler({ draft_id: drafted.structuredContent.draft_id });
+  assert.deepEqual(sent, [{ chatId: "40722123456@s.whatsapp.net", text: "Joi la 10." }]);
+  assert.match(confirmed.content[0].text, /Sent to/);
+  assert.equal(confirmed.structuredContent.message_id, "mid");
 
   const poll = await server.tools.get("send_message").handler({
     chat_id: "+40722123456",
@@ -134,11 +143,101 @@ test("send_message drafts through the session and confirm_send is the only send"
     options: ["da", "nu"],
   });
   assert.equal(poll.structuredContent.status, "draft");
+});
 
-  const confirmed = await server.tools.get("confirm_send").handler({ draft_id: drafted.structuredContent.draft_id });
-  assert.deepEqual(sent, [{ chatId: "40722123456@s.whatsapp.net", text: "Joi la 10." }]);
-  assert.match(confirmed.content[0].text, /Sent to/);
-  assert.equal(confirmed.structuredContent.message_id, "mid");
+test("send_message says it sends nothing, so it is called as soon as the recipient and text are known, and the preview to show is the one it returns", () => {
+  const server = fakeServer();
+  registerTools(server, asToolSource({}), { allowWrite: true });
+  const { description } = server.tools.get("send_message").meta;
+  assert.match(description, /sends nothing\. Call it as soon as you have recipient and text/);
+  assert.match(description, /returns draft_id and preview \(recipient, number, exact text\)\. Show that preview/);
+});
+
+/**
+ * What the user's yes has to be a yes to (F2-6). The second gate run sent a
+ * draft on a "Da, super" about another subject (P20) and left "change it and
+ * send" undelivered (N20): the guidance said "only after a yes" without saying
+ * to what. One rule now, wherever the model reads it — the draft's own answer,
+ * both descriptions and the server's instructions.
+ */
+test("the approval rule: a yes to this text and this recipient, a send in the same request already yes, a yes about anything else not", async () => {
+  const server = fakeServer();
+  registerTools(server, asToolSource(draftApi()), { allowWrite: true });
+  const drafted = await server.tools.get("send_message").handler({ chat_id: "+40722123456", text: "Ajung la 6" });
+  const { next } = drafted.structuredContent;
+  assert.match(next, /only when their words approve this text and this recipient/);
+  assert.match(next, /a send asked in the same request that gave the text is that approval/);
+  assert.match(next, /do not ask again/);
+  assert.match(next, /A yes about something else, or one that comes after the talk moved on, is not: show this preview again and ask/);
+
+  const send = server.tools.get("send_message").meta.description;
+  assert.match(send, /confirm_send only on a yes to this text and recipient/);
+  assert.match(send, /a send in the same request is that yes/);
+  assert.doesNotMatch(send, /only after the user's yes to it/, "no longer a yes to anything");
+
+  const confirm = server.tools.get("confirm_send").meta.description;
+  assert.match(confirm, /Send a draft the user approved — this text, this recipient/);
+  assert.match(confirm, /A yes about something else: show the preview again and ask/);
+  assert.doesNotMatch(confirm, /after the user said yes to its preview/, "the preview is not the whole of it: the words have to approve this one");
+});
+
+/**
+ * The draft's language (F2-6). The third gate run drafted Romanian for an
+ * English speaker and asked to send it, although the style check said so: the
+ * step after such a draft is to write it again in the recipient's language,
+ * and only then to show a preview. Nothing is blocked, and no other warning
+ * touches the step.
+ */
+test("a draft in the wrong language is written again before any preview is shown; other warnings leave the step alone", async () => {
+  const styled = (warnings) => ({
+    ...draftApi(),
+    styleCheck: () => ({
+      warnings,
+      basis: { from: "user", own_messages: 6, days: 90, language: "en", diacritics: "unknown", address: "unknown", length_chars: { p50: 30, p90: 60 } },
+      draft: { language: "ro", diacritics: true, address: null, chars: 26 },
+    }),
+  });
+  const draft = async (warnings) => {
+    const server = fakeServer();
+    registerTools(server, asToolSource(styled(warnings)), { allowWrite: true });
+    return server.tools.get("send_message").handler({ chat_id: "+40722123456", text: "Salut, întârzii 10 minute." });
+  };
+
+  const wrongLanguage = await draft(["language_mismatch"]);
+  const { next } = wrongLanguage.structuredContent;
+  assert.match(next, /Draft again before showing anything/);
+  assert.match(next, /not in the language this chat is written in \(style_check\.basis\.language, from whoever basis\.from says\)/);
+  assert.match(next, /Call send_message with the same message in that language, then show the preview it returns/);
+  assert.doesNotMatch(next, /Show this preview to the user exactly/, "the step is the redraft, not this preview");
+  assert.equal(wrongLanguage.structuredContent.status, "draft", "the warning blocks nothing");
+  assert.deepEqual(wrongLanguage.structuredContent.style_check.warnings, ["language_mismatch"]);
+  assert.match(wrongLanguage.content[0].text, /confirm_send/, "and the rendered draft is what it was");
+
+  for (const warnings of [[], ["diacritics_mismatch", "address_mismatch"], ["length_outlier"]]) {
+    const other = await draft(warnings);
+    assert.match(other.structuredContent.next, /Show this preview to the user exactly/, JSON.stringify(warnings));
+    assert.doesNotMatch(other.structuredContent.next, /Draft again before showing anything/, JSON.stringify(warnings));
+  }
+});
+
+test("catch_up's description says account_id narrows it to one account and get_status names them", () => {
+  const server = fakeServer();
+  registerTools(server, asToolSource({}), { allowWrite: false });
+  assert.match(server.tools.get("catch_up").meta.description, /account_id narrows it to one account; get_status names them/);
+});
+
+test("a draft that cannot be sent on the old yes — expired, missing or stale — asks for a new one, in confirm_send's description and in the error guide", () => {
+  const server = fakeServer();
+  registerTools(server, asToolSource({}), { allowWrite: true });
+  assert.match(server.tools.get("confirm_send").meta.description, /Expired, missing or stale: draft again, show the new preview, ask again\./);
+  assert.match(ERROR_GUIDE.DRAFT_EXPIRED, /wait for a new yes; the old yes does not carry over/);
+  assert.match(ERROR_GUIDE.DRAFT_STALE, /nothing was sent: draft again with send_message, show the new preview and ask for a yes to it/);
+});
+
+test("SEND_OUTCOME_UNKNOWN is explained as unknown, never as failed: a chat that does not show the message yet proves nothing", () => {
+  assert.match(ERROR_GUIDE.SEND_OUTCOME_UNKNOWN, /may or may not have arrived/);
+  assert.match(ERROR_GUIDE.SEND_OUTCOME_UNKNOWN, /not there yet does not mean it failed/);
+  assert.doesNotMatch(ERROR_GUIDE.SEND_OUTCOME_UNKNOWN, /if the message is not there/);
 });
 
 test("a media draft surfaces FILE_NOT_FOUND from draft", async () => {

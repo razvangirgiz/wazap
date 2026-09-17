@@ -14,15 +14,30 @@
   "assert": [
     {
       "name": "read_work",
-      "must_call": {
-        "capability": [
-          "read",
-          "search",
-          "catchup"
-        ],
-        "account": "work",
-        "ok": true
-      }
+      "any_of": [
+        {
+          "must_call": {
+            "capability": [
+              "read",
+              "search",
+              "catchup"
+            ],
+            "account": "work",
+            "ok": true
+          }
+        },
+        {
+          "must_call": {
+            "capability": "read_context",
+            "account": "work",
+            "ok": true,
+            "seen": {
+              "regex": "1\\.250 lei",
+              "fold": true
+            }
+          }
+        }
+      ]
     },
     {
       "name": "amount_exact",

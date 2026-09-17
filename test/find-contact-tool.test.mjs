@@ -352,10 +352,12 @@ test("a tag listed over two accounts shares the limit between them and counts wh
   ]);
   const text = (await server.tools.get("find_contact").handler({ tag: "client", limit: 5 })).content[0].text;
   assert.match(text, /3 more not shown \(1 on default, 2 on work\)/);
+  assert.match((cut.notes ?? []).join(" "), /3 more not shown \(1 on default, 2 on work\): raise limit/, "said in the structured content too");
 
   const whole = await call("find_contact", { tag: "client" });
   assert.equal(whole.contacts.length, 8);
   assert.equal(whole.omitted, undefined, "nothing left out, nothing said");
+  assert.equal(whole.notes, undefined);
   const one = await call("find_contact", { tag: "client", limit: 3, account_id: "work" });
   assert.deepEqual([one.contacts.length, one.omitted], [3, [{ account_id: "work", count: 1 }]]);
   await hub.stop();

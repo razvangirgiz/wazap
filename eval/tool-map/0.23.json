@@ -8,6 +8,7 @@
     "waiting": ["get_unanswered"],
     "stories": ["get_stories"],
     "read": ["read_messages", "get_message", "get_group_info"],
+    "read_context": [],
     "search": ["search_messages", "recall"],
     "contact": ["search_contacts", "get_contact", "sync_contacts"],
     "remember": ["set_contact_note", "update_contact_details", "mark_handled"],
@@ -32,8 +33,8 @@
   },
   "groups": {
     "write": ["draft", "commit", "immediate_write"],
-    "whatsapp_read": ["catchup", "waiting", "stories", "read", "search", "contact", "media", "transcribe", "wait"],
-    "any": ["meta", "accounts", "catchup", "waiting", "stories", "read", "search", "contact", "remember", "media", "transcribe", "draft", "commit", "immediate_write", "wait", "link"]
+    "whatsapp_read": ["catchup", "waiting", "stories", "read", "read_context", "search", "contact", "media", "transcribe", "wait"],
+    "any": ["meta", "accounts", "catchup", "waiting", "stories", "read", "read_context", "search", "contact", "remember", "media", "transcribe", "draft", "commit", "immediate_write", "wait", "link"]
   },
   "normalize": {
     "chat": ["args.chat_id", "args.to_chat_id", "args.group_id", "args.contact_id"],

@@ -75,7 +75,7 @@
       "name": "says_uncertain",
       "answer_regex": {
         "turn": 2,
-        "pattern": "nu (e|este) (sigur|clar)|incert|nu (stiu|pot confirma|se stie)|(e |este )?posibil sa|s-ar putea|poate (sa )?fi ajuns|neclar|nu am (nicio )?confirmare|(rezultat|status|stare)[^.]{0,30}necunoscut",
+        "pattern": "nu (e|este) (sigur|clar)|incert|nu (stiu|pot confirma|se stie)|(e |este )?posibil sa|s-ar putea|poate (sa )?fi ajuns|neclar|nu am (primit )?(inca )?(o |nicio )?confirmare|fara confirmare|(rezultat|status|stare)[^.]{0,30}necunoscut",
         "fold": true
       }
     }

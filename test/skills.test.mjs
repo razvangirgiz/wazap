@@ -51,6 +51,47 @@ test("plugin manifest version matches package.json", () => {
   assert.equal(plugin.version, pkg.version);
 });
 
+test("the server's instructions say a draft is made before asking: send_message sends nothing, and its preview is what the user says yes to", async () => {
+  const { skillInstructions } = await import("../dist/skills.js");
+  const instructions = skillInstructions(loadSkills());
+  assert.match(instructions, /Never send without the user's yes to this text and this recipient: draft with send_message \(it sends nothing\) and show the preview it returns\./);
+  assert.doesNotMatch(instructions, /show the recipient and the exact text, then wait for it/, "no longer read as: ask before any call");
+});
+
+test("the server's instructions say what the yes has to be a yes to: the request that gave the text already said it, a yes about another subject did not", async () => {
+  const { skillInstructions } = await import("../dist/skills.js");
+  const instructions = skillInstructions(loadSkills());
+  assert.match(instructions, /A send asked in the same request that gave the text is that yes: confirm_send it, do not ask again\./);
+  assert.match(instructions, /A yes about something else, or one that comes after the talk moved on, is not: show the preview again and ask\./);
+});
+
+test("a session that only reads is told so in the server's instructions: asked to send, it says so instead of pretending", async () => {
+  const { skillInstructions } = await import("../dist/skills.js");
+  for (const skills of [loadSkills(), []]) {
+    const reads = skillInstructions(skills, { allowWrite: false });
+    assert.match(reads, /This connection only reads: it cannot draft or send\. Asked to send, say so, and offer the text for the user to send from their phone or a connection with write access\./);
+    assert.doesNotMatch(reads, /draft with send_message/);
+    const writes = skillInstructions(skills, { allowWrite: true });
+    assert.doesNotMatch(writes, /only reads/);
+    assert.match(writes, /draft with send_message \(it sends nothing\)/, "the send rule stands without skills too");
+  }
+});
+
+test("with several accounts the instructions name each one, so a name like Business reaches its account_id; one account or very many are not listed", async () => {
+  const { skillInstructions } = await import("../dist/skills.js");
+  const two = [
+    { id: "personal", name: "Personal", default: true },
+    { id: "work", name: "Business", default: false },
+  ];
+  assert.match(skillInstructions(loadSkills(), { accounts: two }), /Accounts: personal \(Personal, default\), work \(Business\)\./);
+  assert.match(skillInstructions([], { accounts: [{ id: "default", name: "default", default: true }, { id: "shop", name: "Shop", default: false }] }), /Accounts: default \(default\), shop \(Shop\)\./);
+  assert.doesNotMatch(skillInstructions(loadSkills(), { accounts: two.slice(0, 1) }), /Accounts:/);
+  const many = Array.from({ length: 12 }, (_, i) => ({ id: `t${i}`, name: `Tenant ${i}`, default: i === 0 }));
+  const listed = skillInstructions(loadSkills(), { accounts: many });
+  assert.match(listed, /12 accounts: get_status names them\./);
+  assert.doesNotMatch(listed, /Tenant 11/);
+});
+
 test("loadSkills reads the packaged skills into one registry", () => {
   const skills = loadSkills();
   assert.equal(skills.length, 5);

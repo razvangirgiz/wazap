@@ -384,8 +384,11 @@ export async function startEvalServer(options = {}) {
     signal: stop.signal,
     oauth,
     credentials: [
-      { token: tokens.write, write: true, localFiles: false },
-      { token: tokens.read, write: false },
+      // An assistant's session, not a builder's: the evaluation measures what ChatGPT or Claude
+      // get, so the draft rules that hold for local and OAuth clients hold here too. The label is
+      // also catch_up's mark key, so the two sessions keep their own marks.
+      { token: tokens.write, write: true, localFiles: false, label: "local:eval" },
+      { token: tokens.read, write: false, label: "local:eval-read" },
     ],
   });
 

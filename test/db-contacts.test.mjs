@@ -223,6 +223,38 @@ test("mama matches only what the user filed — a saved name, a tag, a detail, a
   assert.equal(find3({ name: "sora" }).verdict, "resolved", "the neighbour who is Dan's sister is no one's here");
 });
 
+test("a role or relationship filed as a detail finds the person by that word, as a role is said: dentista, dentistei, contabilul", () => {
+  const { db, find, person, talk } = account();
+  person(1, "Ioana Stan");
+  talk(1, 35, { own: 1 });
+  person(2, "Mihai Pop");
+  person(3, "Ana Vasile");
+  person(4, "Dan Radu");
+  db.identity.updateFields(phone(1), { set: { relatie: "dentist" } });
+  for (const asked of ["dentist", "dentista", "dentistei", "dentistul", "Dentistului"]) {
+    const result = find({ name: asked });
+    assert.equal(result.verdict, "resolved", asked);
+    assert.deepEqual([result.candidates[0].displayName, result.candidates[0].match.source, result.candidates[0].match.value], ["Ioana Stan", "relatie", "relatie: dentist"], asked);
+  }
+  db.identity.updateFields(phone(1), { set: { relatie: "dentista mea" } });
+  assert.equal(find({ name: "dentistei" }).verdict, "resolved", "filed the way the user said it");
+
+  db.identity.updateFields(phone(2), { set: { role: "contabilă" } });
+  for (const asked of ["contabil", "contabila", "contabilei", "contabilul"]) {
+    const result = find({ name: asked });
+    assert.equal(result.verdict, "resolved", asked);
+    assert.deepEqual([result.candidates[0].displayName, result.candidates[0].match.source], ["Mihai Pop", "field"], asked);
+  }
+  db.identity.updateFields(phone(4), { set: { role: "profesor" } });
+  assert.equal(find({ name: "profesoarei" }).candidates[0]?.displayName, "Dan Radu");
+
+  // Only a whole word of the role: its start is no name, and a person's name never reaches into it.
+  db.identity.updateFields(phone(4), { set: { role: "anatomist" } });
+  assert.equal(find({ name: "dent" }).verdict, "not_found");
+  assert.deepEqual(names(find({ name: "Ana" })), ["Ana Vasile"]);
+  assert.equal(find({ name: "Ana" }).verdict, "resolved");
+});
+
 test("a qualifier lifts the Ana it describes and lowers the ones it does not", () => {
   const { db, find, person, talk, inGroup } = account();
   person(1, "Ana Popescu");
