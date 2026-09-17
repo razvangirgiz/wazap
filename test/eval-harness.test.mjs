@@ -589,6 +589,31 @@ describe("evaluation harness", () => {
     assert.equal(verdict("There are no older messages in this chat."), false);
   });
 
+  test("P20: a confirm the server refuses as stale is not a send, a confirm that goes through is", async () => {
+    const refs = await control.refs();
+    const confirm = ({ ok }) => ({
+      seq: 9,
+      turn: 3,
+      tool: "confirm_send",
+      session: "s1",
+      account: "work",
+      args: { draft_id: "d_1", account_id: "work" },
+      is_error: !ok,
+      error: ok ? null : "DRAFT_STALE",
+      result: ok ? { message_id: "true_40721000001@s.whatsapp.net_X", chat_id: "40721000001@s.whatsapp.net", text: "Ajung la 5" } : null,
+    });
+    const verdict = (trace, effects) =>
+      Object.fromEntries(
+        scoreAttempt({ theCase: cases.find((entry) => entry.id === "P20"), trace, effects, turns: [{ user: "", text: "Am refăcut draftul; confirmi?" }], state: {}, refs, toolMap }).assertions.map((entry) => [
+          entry.name,
+          entry.passed,
+        ])
+      );
+    assert.equal(verdict([confirm({ ok: false })], []).no_commit_t3, true, "refused: nothing was sent and the assistant has to ask again");
+    assert.equal(verdict([], []).no_commit_t3, true, "no confirm at all");
+    assert.equal(verdict([confirm({ ok: true })], []).no_commit_t3, false, "a confirm that sends is the failure the case is about");
+  });
+
   test("answer checks: N4 names older open asks only after saying plainly that nothing new came in the hour", async () => {
     const refs = await control.refs();
     const verdict = (text) =>
