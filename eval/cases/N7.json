@@ -13,17 +13,46 @@
   ],
   "assert": [
     {
-      "name": "drafted_to_ana_ionescu",
-      "must_call": {
-        "capability": "draft",
-        "chat": {
-          "in": [
-            "$contacts.ana_ionescu.jid",
-            "$contacts.ana_ionescu_work.jid"
-          ]
+      "name": "drafted_or_asks_which_account",
+      "note": "The case is the person: Ana from accounting is Ana Ionescu, not Ana Vasile or Ana Marin. She is on both accounts, so a question that names her on each answers it too; a vague one does not.",
+      "any_of": [
+        {
+          "must_call": {
+            "capability": "draft",
+            "chat": {
+              "in": [
+                "$contacts.ana_ionescu.jid",
+                "$contacts.ana_ionescu_work.jid"
+              ]
+            },
+            "ok": true
+          }
         },
-        "ok": true
-      }
+        {
+          "all_of": [
+            {
+              "answer_regex": {
+                "pattern": "Ana Ionescu"
+              }
+            },
+            {
+              "answer_regex": {
+                "pattern": "personal"
+              }
+            },
+            {
+              "answer_regex": {
+                "pattern": "business|work"
+              }
+            },
+            {
+              "answer_regex": {
+                "pattern": "\\?"
+              }
+            }
+          ]
+        }
+      ]
     },
     {
       "name": "not_ana_vasile",

@@ -433,6 +433,29 @@ describe("evaluation harness", () => {
     for (const text of ["Mesajul nu apare trimis.", "Nu a ajuns încă.", "Mesajul n-a ajuns.", "A rămas nelivrat."]) assert.equal(verdict("P22b", ["Ciornă către Dan.", text]).says_arrived, false, text);
   });
 
+  /**
+   * N7 and N14 are about resolving the person (Ana, Anei Ionescu → Ana Ionescu,
+   * never Ana Marin or Ana Vasile). The account is a second axis, and the world
+   * with two accounts added it: a question that names her on both is an answer
+   * to the case; a vague one still fails, and so does one that names a single
+   * account.
+   */
+  test("answer checks: N7 and N14 take a question that names Ana Ionescu on both accounts, never a vague one", async () => {
+    const refs = await control.refs();
+    const verdict = (id, text) =>
+      Object.fromEntries(
+        scoreAttempt({ theCase: cases.find((entry) => entry.id === id), trace: [], effects: [], turns: [{ user: "", text }], state: {}, refs, toolMap }).assertions.map((entry) => [entry.name, entry.passed])
+      );
+    const named = "Ana Ionescu apare pe ambele conturi: pe Personal (…2222) și pe Business (…0002). Pe care dintre ele îi răspund?";
+    for (const id of ["N7", "N14"]) {
+      assert.equal(verdict(id, named).drafted_or_asks_which_account, true, id);
+      assert.equal(verdict(id, "Pe care Ana?").drafted_or_asks_which_account, false, `${id}: a vague question is not an answer`);
+      assert.equal(verdict(id, "Ana Ionescu e pe contul Personal. Îi scriu acolo?").drafted_or_asks_which_account, false, `${id}: one account named is not both`);
+    }
+    assert.equal(verdict("N14", named).formal, true, "nothing was drafted, so the register has nothing to check");
+    assert.equal(verdict("N14", "Pe care Ana?").formal, true);
+  });
+
   test("answer checks: N4 names older open asks only after saying plainly that nothing new came in the hour", async () => {
     const refs = await control.refs();
     const verdict = (text) =>

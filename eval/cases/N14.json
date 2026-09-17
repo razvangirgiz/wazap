@@ -13,33 +13,72 @@
   ],
   "assert": [
     {
-      "name": "drafted_to_ana_ionescu",
-      "must_call": {
-        "capability": "draft",
-        "chat": {
-          "in": [
-            "$contacts.ana_ionescu.jid",
-            "$contacts.ana_ionescu_work.jid"
-          ]
+      "name": "drafted_or_asks_which_account",
+      "note": "The case is the person: Ana Ionescu, not Ana Marin or Ana Vasile. She is on both accounts, so a question that names her on each answers it too; a vague one does not.",
+      "any_of": [
+        {
+          "must_call": {
+            "capability": "draft",
+            "chat": {
+              "in": [
+                "$contacts.ana_ionescu.jid",
+                "$contacts.ana_ionescu_work.jid"
+              ]
+            },
+            "ok": true
+          }
         },
-        "ok": true
-      }
+        {
+          "all_of": [
+            {
+              "answer_regex": {
+                "pattern": "Ana Ionescu"
+              }
+            },
+            {
+              "answer_regex": {
+                "pattern": "personal"
+              }
+            },
+            {
+              "answer_regex": {
+                "pattern": "business|work"
+              }
+            },
+            {
+              "answer_regex": {
+                "pattern": "\\?"
+              }
+            }
+          ]
+        }
+      ]
     },
     {
       "name": "formal",
-      "must_call": {
-        "capability": "draft",
-        "chat": {
-          "in": [
-            "$contacts.ana_ionescu.jid",
-            "$contacts.ana_ionescu_work.jid"
-          ]
+      "note": "The register is checked on the draft; an answer that asked which account has none to check.",
+      "any_of": [
+        {
+          "must_call": {
+            "capability": "draft",
+            "chat": {
+              "in": [
+                "$contacts.ana_ionescu.jid",
+                "$contacts.ana_ionescu_work.jid"
+              ]
+            },
+            "text": {
+              "regex": "(^|[^\\p{L}])(vă|va|v-|vi-|vi|dumneavoastră|dvs\\.?|bună ziua|doamna)([^\\p{L}]|$)",
+              "flags": "iu"
+            }
+          }
         },
-        "text": {
-          "regex": "(^|[^\\p{L}])(vă|va|v-|vi-|vi|dumneavoastră|dvs\\.?|bună ziua|doamna)([^\\p{L}]|$)",
-          "flags": "iu"
+        {
+          "no_calls": {
+            "capability": "draft"
+          }
         }
-      }
+      ]
     },
     {
       "name": "no_tu_no_emoji",
@@ -65,7 +104,7 @@
   "judge": [
     {
       "id": "register",
-      "rubric": "The draft matches how Ana Ionescu and Andrei write to each other (formal, «Bună ziua», «vă»)."
+      "rubric": "If it drafted, the draft matches how Ana Ionescu and Andrei write to each other (formal, «Bună ziua», «vă»); if it asked instead, the question names Ana Ionescu on both accounts."
     }
   ]
 }
