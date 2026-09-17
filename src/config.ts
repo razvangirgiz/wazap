@@ -274,24 +274,30 @@ export const RETIRED_SETTINGS: Readonly<Record<string, string>> = {
 };
 
 /**
- * Settings still honoured through 1.x, each with the supported way. One set in
- * the environment or `.env` works as before and costs a warning line at startup.
+ * Settings still honoured through 1.x. One set in the environment or `.env`
+ * works as before and costs a warning line at startup; the line depends on the
+ * value, since only some values do anything.
  */
-export const DEPRECATED_SETTINGS: Readonly<Record<string, string>> = {
-  WAZAP_TRANSPORT: "pass `--http` instead, as in `wazap serve --http`",
+export const DEPRECATED_SETTINGS: Readonly<Record<string, (value: string) => string>> = {
+  WAZAP_TRANSPORT: (value) =>
+    value.trim().toLowerCase() === "http"
+      ? "WAZAP_TRANSPORT=http still works but is deprecated and goes away in 2.0: pass `--http` instead, as in `wazap serve --http`."
+      : "WAZAP_TRANSPORT is deprecated and goes away in 2.0: stdio is the default; remove WAZAP_TRANSPORT.",
 };
 
 /** One line per retired or deprecated setting that is still set, saying what to use instead. */
 export function settingWarnings(env: NodeJS.ProcessEnv = process.env): string[] {
-  const set = ([key]: [string, string]): boolean => env[key] !== undefined;
-  return [
-    ...Object.entries(DEPRECATED_SETTINGS)
-      .filter(set)
-      .map(([key, instead]) => `${key} still works but is deprecated and goes away in 2.0: ${instead}.`),
-    ...Object.entries(RETIRED_SETTINGS)
-      .filter(set)
-      .map(([key, now]) => `${key} is no longer read and was ignored: ${now}. Remove it from your environment or .env.`),
-  ];
+  const lines: string[] = [];
+  for (const [key, message] of Object.entries(DEPRECATED_SETTINGS)) {
+    const value = env[key];
+    if (value !== undefined) lines.push(message(value));
+  }
+  for (const [key, now] of Object.entries(RETIRED_SETTINGS)) {
+    if (env[key] !== undefined) {
+      lines.push(`${key} is no longer read and was ignored: ${now}. Remove it from your environment or .env.`);
+    }
+  }
+  return lines;
 }
 
 /**

@@ -144,10 +144,20 @@ test("each retired or deprecated setting that is set gets one warning saying wha
     assert.equal(RETIRED_SETTINGS[key], undefined, `${key} cannot be both deprecated and retired`);
     const [line, ...rest] = settingWarnings({ [key]: "" });
     assert.deepEqual(rest, [], key);
-    assert.ok(line.startsWith(`${key} still works but is deprecated and goes away in 2.0: `), line);
+    assert.match(line, new RegExp(`^${key}\\b.* is deprecated and goes away in 2\\.0: `), line);
   }
-  assert.deepEqual(settingWarnings({ WAZAP_TRANSPORT: "http" }), [
-    "WAZAP_TRANSPORT still works but is deprecated and goes away in 2.0: pass `--http` instead, as in `wazap serve --http`.",
-  ]);
+  for (const http of ["http", " HTTP "]) {
+    assert.deepEqual(settingWarnings({ WAZAP_TRANSPORT: http }), [
+      "WAZAP_TRANSPORT=http still works but is deprecated and goes away in 2.0: pass `--http` instead, as in `wazap serve --http`.",
+    ]);
+  }
+});
+
+test("WAZAP_TRANSPORT set to anything but http is told stdio is the default, not to pass --http", () => {
+  for (const value of ["stdio", "STDIO", "", "https"]) {
+    const lines = settingWarnings({ WAZAP_TRANSPORT: value });
+    assert.deepEqual(lines, ["WAZAP_TRANSPORT is deprecated and goes away in 2.0: stdio is the default; remove WAZAP_TRANSPORT."], value);
+    assert.doesNotMatch(lines[0], /--http/);
+  }
   assert.equal(settingWarnings(RETIRED_VALUES).length, Object.keys(RETIRED_VALUES).length);
 });

@@ -39,15 +39,19 @@ test("--help explains every command and exits 0", async () => {
   }
 });
 
-test("a retired setting in .env warns once and the command still succeeds", async () => {
+test("retired and deprecated settings in .env warn once each and the command still succeeds", async () => {
   const dir = mkdtempSync(join(tmpdir(), "wazap-retired-"));
-  writeFileSync(join(dir, ".env"), "WAZAP_RATE_LIMIT=5\n");
+  // 0.23.1's .env.example shipped `WAZAP_TRANSPORT=stdio`, commented; someone uncommented it.
+  writeFileSync(join(dir, ".env"), "WAZAP_RATE_LIMIT=5\nWAZAP_TRANSPORT=stdio\n");
   const { stdout, stderr } = await run(process.execPath, [binary, "status", "--json", "--data-dir", dir], {
     env: childEnv(),
   });
   assert.equal(JSON.parse(stdout).data_dir, dir, "stdout stays the report");
   assert.equal(stderr.match(/WAZAP_RATE_LIMIT is no longer read/g)?.length, 1);
   assert.match(stderr, /WAZAP_RATE_LIMIT is no longer read and was ignored: writes are limited to 20 a minute/);
+  assert.equal(stderr.match(/WAZAP_TRANSPORT is deprecated/g)?.length, 1);
+  assert.match(stderr, /stdio is the default; remove WAZAP_TRANSPORT/);
+  assert.doesNotMatch(stderr, /pass `--http`/);
 });
 
 test("WAZAP_TRANSPORT=http without --http still serves HTTP, and says once that the flag is the supported way", async (t) => {
@@ -80,7 +84,7 @@ test("WAZAP_TRANSPORT=http without --http still serves HTTP, and says once that 
   );
   assert.equal(typeof health.status, "string");
   const log = stderr.join("");
-  assert.equal(log.match(/WAZAP_TRANSPORT still works but is deprecated/g)?.length, 1, log);
+  assert.equal(log.match(/WAZAP_TRANSPORT=http still works but is deprecated/g)?.length, 1, log);
   assert.match(log, /goes away in 2\.0: pass `--http` instead, as in `wazap serve --http`/);
 });
 
