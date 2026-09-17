@@ -284,10 +284,13 @@ test("since is an ISO date or time from the last 14 days, and no window, previou
   assert.equal(previous.structuredContent.window.basis, "previous");
   assert.ok(Date.parse(previous.structuredContent.window.since) >= Date.now() - 14 * DAY - 60_000, previous.structuredContent.window.since);
   assert.ok(previous.structuredContent.window.hours <= 336);
-  // Twelve days ago to now: both ends say their day, so the span never reads as "12:29 – 12:29".
+  // A window on other days: both ends say their day, so the span never reads as "12:29 – 12:29".
   const [, from, to] = /the previous catch-up again \((.+) – (.+)\)/.exec(text(previous));
-  assert.match(from, /^\d{1,2} \w{3,4} \d{2}:\d{2}$/, from);
-  assert.match(to, /^\w{3} \d{2}:\d{2}$/, to);
+  for (const end of [from, to]) assert.match(end, /^(\w{3}|\d{1,2} \w{3,4}) \d{2}:\d{2}$/, end);
+  const recent = toolsOf(svc, { client: "oauth:recent" });
+  svc.db.catchup.advance("oauth:recent", svc.db.digest.storedTop(), { at: Date.now() - HOUR, from: { seq: null, at: Date.now() - 30 * HOUR } });
+  const [, , today] = /the previous catch-up again \((.+) – (.+)\)/.exec(text(await recent.call("catch_up", { since: "previous" })));
+  assert.match(today, /^\w{3} \d{2}:\d{2}$/, "an end that is today still names its day after a start on another");
 });
 
 test('since: "previous" after a catch-up that found the mark expired repeats the 24 h it gave, not everything since the old mark', async () => {
