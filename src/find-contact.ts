@@ -63,29 +63,18 @@ function numberTailOf(qualifier: string): string | null {
 
 /**
  * db.contacts.find on one account, with a digits-only qualifier read as the
- * end of the number, and each returned person's note. The service calls it.
+ * end of a phone number (numberTail), and each returned person's note. The
+ * service calls it.
  */
 export function findInAccount(db: AccountDb, accountId: string, query: FindContactQuery): AccountFind {
   const tail = numberTailOf(query.qualifier ?? "");
-  const found = db.contacts.find({
+  const { verdict, candidates, closest, ...found } = db.contacts.find({
     name: query.name,
     qualifier: tail === null ? (query.qualifier ?? null) : null,
+    numberTail: tail,
     kind: query.kind ?? "any",
     limit: query.limit,
   });
-  let { verdict, candidates, closest } = found;
-  if (tail !== null) {
-    const ends = (candidate: ContactCandidate): boolean => candidate.kind === "person" && (candidate.jid.split("@")[0] ?? "").endsWith(tail);
-    const kept = candidates.filter(ends);
-    if (kept.length > 0) {
-      verdict = kept.length === 1 ? "resolved" : "ambiguous";
-      candidates = kept;
-    } else {
-      verdict = "not_found";
-      closest = [...candidates, ...closest].slice(0, FIND_SCORES.closestMax);
-      candidates = [];
-    }
-  }
   const withNote = (candidate: ContactCandidate): FoundContact => ({
     accountId,
     candidate,

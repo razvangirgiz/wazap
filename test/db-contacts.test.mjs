@@ -534,3 +534,40 @@ test("groups in common and a group a qualifier names count only messages a reade
   assert.deepEqual(byName["Ana Ionescu"].groupsInCommon, { count: 0, names: [] });
   await cleared;
 });
+
+test("a number's last digits keep only people whose phone number ends so, before the limit, and never resolve a weak name alone", () => {
+  const { db, find, person, talk } = account();
+  // The user's Ana, and a stranger known only by a lid that happens to end in the same digits.
+  person(1, "Ana Pop");
+  db.identity.upsertContact({ jid: "98765430000001@lid", pushName: "Ana" });
+  let result = find({ name: "Ana", numberTail: "0001" });
+  assert.deepEqual(result.candidates.map((c) => c.jid), [phone(1)], "a lid is not a phone number");
+  assert.equal(result.verdict, "resolved");
+
+  // Two people named Dan on numbers ending alike: a question at any limit, cut after the filter.
+  db.identity.upsertContact({ jid: "40744007777@s.whatsapp.net", name: "Dan Marin", listed: true });
+  db.identity.upsertContact({ jid: "40755007777@s.whatsapp.net", name: "Dan Toma", listed: true });
+  person(5, "Dan Ene");
+  talk(5, 1, { own: 30 });
+  for (const limit of [1, 5]) {
+    result = find({ name: "Dan", numberTail: "7777", limit });
+    assert.equal(result.verdict, "ambiguous", `limit ${limit}`);
+    assert.equal(result.candidates.length, Math.min(limit, 2));
+    assert.ok(result.candidates.every((c) => c.jid.startsWith("407") && c.jid.split("@")[0].endsWith("7777")));
+  }
+
+  // Only the start of a surname matched: the digits pick one, but it stays a question.
+  person(6, "Mihai Ionescu");
+  person(7, "Ionela Radu");
+  result = find({ name: "Ion", numberTail: phone(6).slice(7, 11) });
+  assert.equal(result.verdict, "ambiguous");
+  assert.deepEqual(result.candidates.map((c) => c.displayName), ["Mihai Ionescu"]);
+  // A whole word of the name and the digits: that is who.
+  result = find({ name: "Ionescu", numberTail: phone(6).slice(7, 11) });
+  assert.equal(result.verdict, "resolved");
+
+  // Named alike, none on that number: not found, and the ones named so are the closest.
+  result = find({ name: "Dan", numberTail: "9999" });
+  assert.equal(result.verdict, "not_found");
+  assert.ok(result.closest.length > 0 && result.closest.every((c) => c.displayName.startsWith("Dan")));
+});

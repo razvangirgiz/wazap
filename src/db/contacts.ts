@@ -127,6 +127,13 @@ export interface FindInput {
   kind?: FindKind;
   /** Candidates returned; at most 5 when ambiguous, 3 as closest. */
   limit?: number;
+  /**
+   * The last digits (4 or more) of the number the user means: only people
+   * whose phone number ends with them stay candidates, before the limit. A
+   * single one resolves when their name matched as a whole word or would
+   * resolve anyway; a weaker name match stays a question.
+   */
+  numberTail?: string | null;
 }
 
 export interface QualifierHit {
@@ -449,6 +456,8 @@ export class Contacts {
       for (const form of forms) for (const name of diminutivesOf(form)) related.add(name);
       return { word, forms: forms.slice(1), related };
     });
+    const numberTail = (input.numberTail ?? "").replace(/\D/g, "");
+    if (input.numberTail != null && numberTail.length < 4) throw new StorageError("INVALID_INPUT", "numberTail needs at least 4 digits.");
     const qualifierWords = nameWords(input.qualifier ?? "").filter((word) => !QUALIFIER_STOPWORDS.has(word));
     const qualifier = qualifierWords.map((word) => inflectionForms(word));
 
@@ -478,6 +487,23 @@ export class Contacts {
       query: { words, relationship: relation, qualifier: qualifierWords },
     };
     const eligible = scored.filter((entry) => FIND_SCORES.match[entry.candidate.match.class] >= FIND_SCORES.eligibleMatch);
+    if (numberTail !== "" && eligible.length > 0) {
+      const onNumber = eligible.filter(({ candidate }) => {
+        const [user, server] = candidate.jid.split("@");
+        return candidate.kind === "person" && server === "s.whatsapp.net" && user!.endsWith(numberTail);
+      });
+      if (onNumber.length === 0) {
+        // Named so, on other numbers: who the user may have misremembered.
+        result.closest = eligible.slice(0, Math.min(limit, FIND_SCORES.closestMax)).map((entry) => this.withGroups(entry, groupRows));
+        return result;
+      }
+      const only = onNumber[0]!.candidate;
+      const resolved = onNumber.length === 1 && (only.match.resolvable || only.match.class === "exact" || only.match.class === "word");
+      result.verdict = resolved ? "resolved" : "ambiguous";
+      const shown = resolved ? [onNumber[0]!] : onNumber.slice(0, Math.min(limit, FIND_SCORES.ambiguousMax));
+      result.candidates = shown.map((entry) => this.withGroups(entry, groupRows));
+      return result;
+    }
     if (eligible.length > 0) {
       const [top, next] = eligible.map((entry) => entry.candidate);
       const resolved =
