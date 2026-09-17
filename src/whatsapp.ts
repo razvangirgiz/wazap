@@ -5046,7 +5046,7 @@ export class WhatsAppService implements WhatsAppApi {
         if (this.applyReaction(raw, jid)) continue;
         if (this.applyVote(raw, jid)) continue;
         if (!this.keepOverEarlierCall(raw, jid)) continue;
-        const result = this.storeRaw(raw, jid);
+        const result = this.storeRaw(raw, jid, live);
         if (result === null || !this.kept(result)) continue;
         this.noteInbound(Boolean(raw.key.fromMe), messageTimestampMs(raw));
         this.foldVotesOnto(raw, jid);
@@ -5161,7 +5161,7 @@ export class WhatsAppService implements WhatsAppApi {
   }
 
   /** Stores a message and what its protobuf already carries: the receipts of a synced message of the account's own. */
-  private storeRaw(raw: WAMessage, chatJid: string): UpsertResult | null {
+  private storeRaw(raw: WAMessage, chatJid: string, live = false): UpsertResult | null {
     const prepared = this.messageInput(raw, chatJid);
     if (prepared === null) return null;
     const db = this.db;
@@ -5190,15 +5190,32 @@ export class WhatsAppService implements WhatsAppApi {
     if (prepared.input.fromMe && result.sid !== null && this.kept(result)) {
       this.settleEcho(db, prepared.input.keyId, result.sid, chatJid, prepared.input.ts);
     }
-    // Someone else's message that arrives already read: a history sync of what
-    // the phone has seen, or a receipt of the account's own devices Baileys
-    // folded into the message it buffered with.
-    const status = raw.status;
-    if (!prepared.input.fromMe && result.sid !== null && this.kept(result) && (status === proto.WebMessageInfo.Status.READ || status === proto.WebMessageInfo.Status.PLAYED)) {
-      this.readSelf.synced++;
-      if (db.messages.markReadSelf(result.sid).moved) this.readSelf.applied++;
-    }
+    if (!prepared.input.fromMe && result.sid !== null && this.kept(result)) this.noteReadOnArrival(db, raw, result.sid, chatJid, live);
     return result;
+  }
+
+  /**
+   * Someone else's message that arrives already read by the account's own
+   * devices. Live (a notify), that is a receipt Baileys folded into the message
+   * it was holding back: a one-to-one message's read status, or the account's
+   * own member receipt on a group message. It moves the chat's read mark like
+   * the receipt itself would. Anything else — a history sync, an append — is
+   * only counted as `synced`: that the phone marks read in a sync only what was
+   * read is not verified yet. Stories read nothing.
+   */
+  private noteReadOnArrival(db: AccountDb, raw: WAMessage, sid: string, chatJid: string, live: boolean): void {
+    const kind = chatKindOf(chatJid);
+    const readStatus = kind === "direct" && (raw.status === proto.WebMessageInfo.Status.READ || raw.status === proto.WebMessageInfo.Status.PLAYED);
+    const readReceipt =
+      kind === "group" &&
+      (raw.userReceipt ?? []).some((receipt) => Boolean(receipt.userJid) && this.isMe(receipt.userJid!) && Boolean(receipt.readTimestamp || receipt.playedTimestamp));
+    if (!readStatus && !readReceipt) return;
+    if (!live) {
+      this.readSelf.synced++;
+      return;
+    }
+    this.noteReadSelf(1);
+    if (db.messages.markReadSelf(sid).moved) this.readSelf.applied++;
   }
 
   /** WhatsApp echoed the key of a send a confirm could not vouch for: that send arrived, as this message. */

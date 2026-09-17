@@ -129,16 +129,62 @@ test("a receipt under the lid of a chat stored under the number marks the number
   assert.equal(mark(ANA_LID), idOf(ANA, id));
 });
 
-test("a message that arrives already read — a history sync, a receipt Baileys folded into it — marks the chat as read through it", () => {
-  const { arrive, idOf, mark, counters } = setup();
-  const synced = arrive(ANA, "din istoric", { status: STATUS.READ, type: "append" });
-  assert.equal(mark(ANA), idOf(ANA, synced));
+test("a message a history sync or an append carries as read is only counted: the mark moves on live receipts alone", async () => {
+  const { svc, sock, arrive, idOf, mark, counters } = setup();
+  arrive(ANA, "din istoric", { status: STATUS.READ, type: "append" });
+  assert.equal(mark(ANA), null, "an append's read status moves nothing until it is verified live");
+  const synced = [
+    { key: { remoteJid: ANA, fromMe: false, id: "HS1" }, message: { conversation: "sync" }, messageTimestamp: T0 - 50, status: STATUS.READ },
+    { key: { remoteJid: GROUP, fromMe: false, id: "HS2", participant: DAN }, message: { conversation: "sync" }, messageTimestamp: T0 - 40, userReceipt: [{ userJid: ME, readTimestamp: T0 }] },
+  ];
+  sock.ev.emit("messaging-history.set", { chats: [], contacts: [], messages: synced, isLatest: true, progress: 100 });
+  await svc.historyIdle();
+  assert.equal(mark(ANA), null);
+  assert.equal(mark(GROUP), null);
+  assert.deepEqual([counters().synced, counters().applied, counters().seen], [3, 0, 0]);
+
+  // Live, the same status is a receipt Baileys folded into the message it held back.
+  const live = arrive(ANA, "nou, citit pe telefon", { status: STATUS.READ });
+  assert.equal(mark(ANA), idOf(ANA, live));
   arrive(ANA, "nou, necitit", { status: STATUS.DELIVERY_ACK });
-  assert.equal(mark(ANA), idOf(ANA, synced), "delivered is not read");
-  // The account's own message carries its delivery status, never a read of the chat.
+  assert.equal(mark(ANA), idOf(ANA, live), "delivered is not read");
   arrive(ANA, "al meu", { fromMe: true, status: STATUS.READ });
-  assert.equal(mark(ANA), idOf(ANA, synced));
-  assert.deepEqual([counters().synced, counters().applied, counters().seen], [1, 1, 0]);
+  assert.equal(mark(ANA), idOf(ANA, live), "the account's own message carries its delivery status, never a read of the chat");
+  assert.deepEqual([counters().synced, counters().applied, counters().seen], [3, 1, 1]);
+});
+
+test("a group message that arrives live with the account's own read receipt folded into it moves the group's mark", () => {
+  const { sock, arrive, idOf, mark, counters } = setup();
+  const before = arrive(GROUP, "prima", { participant: DAN });
+  sock.ev.emit("messages.upsert", {
+    type: "notify",
+    messages: [
+      {
+        key: { remoteJid: GROUP, fromMe: false, id: "BUF1", participant: DAN },
+        message: { conversation: "ședința e mâine" },
+        messageTimestamp: T0 + 500,
+        userReceipt: [
+          { userJid: ANA, readTimestamp: T0 + 520 },
+          { userJid: ME, readTimestamp: T0 + 560 },
+        ],
+      },
+    ],
+  });
+  assert.equal(mark(GROUP), idOf(GROUP, "BUF1"));
+  assert.ok(idOf(GROUP, before) < idOf(GROUP, "BUF1"));
+  sock.ev.emit("messages.upsert", {
+    type: "notify",
+    messages: [
+      {
+        key: { remoteJid: GROUP, fromMe: false, id: "BUF2", participant: DAN },
+        message: { conversation: "doar Ana a citit" },
+        messageTimestamp: T0 + 600,
+        userReceipt: [{ userJid: ANA, readTimestamp: T0 + 620 }, { userJid: ME, receiptTimestamp: T0 + 610 }],
+      },
+    ],
+  });
+  assert.equal(mark(GROUP), idOf(GROUP, "BUF1"), "a member's read, or the account's delivery, is not the account reading");
+  assert.deepEqual([counters().seen, counters().applied], [1, 1]);
 });
 
 test("a receipt that arrives while a history batch is being stored lands once its message is stored", async () => {
