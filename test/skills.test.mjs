@@ -5,11 +5,36 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { installSkills, loadSkills, skillState } from "../dist/skills.js";
+import { TOOL_NAMES } from "../dist/tools.js";
 
 const root = new URL("..", import.meta.url).pathname;
-const toolNames = new Set(
-  [...readFileSync(join(root, "src/tools.ts"), "utf8").matchAll(/^\s+name: "([a-z_]+)",$/gm)].map((m) => m[1])
-);
+const toolNames = new Set(TOOL_NAMES);
+/** The names 1.0 retired, which a skill must not teach. */
+const RETIRED = [
+  "list_accounts",
+  "get_recent_messages",
+  "get_unanswered",
+  "get_stories",
+  "set_contact_note",
+  "update_contact_details",
+  "mark_handled",
+  "search_messages",
+  "recall",
+  "search_contacts",
+  "get_contact",
+  "sync_contacts",
+  "download_media",
+  "transcribe_audio",
+  "send_media",
+  "send_poll",
+  "send_location",
+  "forward_message",
+  "create_group",
+  "join_group",
+  "save_contact",
+  "remove_contact",
+  "set_profile_picture",
+];
 const skillDirs = readdirSync(join(root, "skills"));
 
 test("every skill has matching frontmatter and a trigger-bearing description", () => {
@@ -24,17 +49,20 @@ test("every skill has matching frontmatter and a trigger-bearing description", (
   }
 });
 
-test("skills only reference tools the server registers", () => {
+test("skills only reference tools the server registers, and no retired name", () => {
   for (const dir of skillDirs) {
     const text = readFileSync(join(root, "skills", dir, "SKILL.md"), "utf8");
     for (const [, name] of text.matchAll(
-      /`((?:get|list|read|search|send|edit|react|forward|delete|manage|create|download|set|confirm|find|update|sync|mark|link)_[a-z_]+)`/g
+      /`((?:get|list|read|search|send|edit|react|forward|delete|manage|create|download|set|confirm|find|update|sync|mark|link|wait|catch|transcribe|save|remove)_[a-z_]+)(?:\(|`)/g
     )) {
       assert.ok(toolNames.has(name), `${dir}: unknown tool \`${name}\``);
     }
+    for (const name of RETIRED) {
+      // As a tool: in backticks or called. "recall" also names a setting (`wazap config recall`) and this skill.
+      assert.doesNotMatch(text, new RegExp(`\`${name}[\`(]|[^-\\w\`]${name}\\(`), `${dir}: retired tool ${name}`);
+    }
   }
 });
-
 test("plugin manifest lists the skills directory and the MCP server", () => {
   const plugin = JSON.parse(readFileSync(join(root, ".claude-plugin/plugin.json"), "utf8"));
   assert.equal(plugin.name, "wazap");

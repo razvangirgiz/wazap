@@ -39,8 +39,8 @@ refuses while a server holds the lock, because one process owns the session.
 ## Link
 
 The account must already exist (`npx wazap-mcp account add <id>`). `link_account`
-does not create one. When more than one account is configured, call
-`list_accounts` and pass `account_id`. An unknown id is `ACCOUNT_NOT_FOUND`.
+does not create one. When more than one account is configured, `get_status`
+lists them under `accounts`; pass `account_id`. An unknown id is `ACCOUNT_NOT_FOUND`.
 
 Inside an MCP client that already has the `whatsapp` tools, call `link_account`
 with the user's number in international format. No terminal is involved. It
