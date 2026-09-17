@@ -478,20 +478,21 @@ function inviteMessage(sock, { expiresInSeconds = 3 * 86_400, code = "V4c0deFrom
   });
 }
 
-test("join_group without confirm only looks the group up: no accept call, and the code is not in the answer", async () => {
+test("manage_group join without confirm only looks the group up: no accept call, and the code is not in the answer", async () => {
   const { svc, sock } = writableService();
   const calls = recordInvites(sock);
   const server = fakeServer();
   registerTools(server, asToolSource(svc), { allowWrite: true });
-  const { meta, handler } = server.tools.get("join_group");
+  const { meta, handler } = server.tools.get("manage_group");
 
   for (const invite of [LINK, CODE, ` ${LINK}/?utm=x `, `chat.whatsapp.com/invite/${CODE}`]) {
     calls.length = 0;
-    const result = await handler(z.object(meta.inputSchema).parse({ invite }));
+    const result = await handler(z.object(meta.inputSchema).parse({ action: "join", invite }));
     assert.equal(result.isError, undefined, invite);
     assert.deepEqual(calls, [["groupGetInviteInfo", CODE]], invite);
     const { account_id: _account, ...answer } = result.structuredContent;
     assert.deepEqual(answer, {
+      action: "join",
       status: "preview",
       group_id: GROUP,
       name: "Bloc 12",
@@ -505,11 +506,11 @@ test("join_group without confirm only looks the group up: no accept call, and th
     assert.ok(!text.includes(CODE) && !JSON.stringify(result.structuredContent).includes(CODE));
   }
   assert.equal(meta.annotations.readOnlyHint, false);
-  assert.match(meta.description, /wait for an explicit yes/);
+  assert.match(meta.description, /preview first, then confirm: true/);
   await svc.stop();
 });
 
-test("join_group with confirm joins by link, by bare code and by invite message, and returns the group's chat_id", async () => {
+test("manage_group join with confirm joins by link, by bare code and by invite message, and returns the group's chat_id", async () => {
   const { svc, sock } = writableService();
   const calls = recordInvites(sock);
 
@@ -576,14 +577,14 @@ test("a group that needs approval leaves the request waiting, and says so", asyn
   recordInvites(sock, { joined: null });
   const server = fakeServer();
   registerTools(server, asToolSource(svc), { allowWrite: true });
-  const result = await server.tools.get("join_group").handler({ invite: LINK, confirm: true });
+  const result = await server.tools.get("manage_group").handler({ action: "join", invite: LINK, confirm: true });
   assert.equal(result.structuredContent.status, "pending_approval");
   assert.equal(result.structuredContent.group_id, null);
   assert.match(result.content[0].text, /admin of the group must approve the request/);
   await svc.stop();
 });
 
-test("join_group takes exactly one of invite or message_id, and refuses a bad one without repeating it or calling WhatsApp", async () => {
+test("a join takes exactly one of invite or message_id, and refuses a bad one without repeating it or calling WhatsApp", async () => {
   const { svc, sock } = writableService();
   const calls = recordInvites(sock);
   const plain = arrive(sock, ANA);
@@ -734,7 +735,7 @@ test("the manage_chat schema takes every new action, message_id and pin_hours, a
     assert.match(meta.description, new RegExp(action));
   }
   const guide = (await server.tools.get("learn").handler({})).structuredContent.guide;
-  assert.match(guide, /join_group/);
+  assert.match(guide, /manage_group join/);
   assert.match(guide, /for_everyone: false/);
   assert.match(guide, /mentions: \[\{id, name\}\]/);
   await svc.stop();

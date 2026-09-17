@@ -115,6 +115,22 @@ const MEDIA_OUTPUT = {
 /** Transcripts, whichever session asks: ten a minute for the process, since the API provider bills each one. */
 const TRANSCRIBE_BUCKET = new RateLimiter(10, undefined, "Transcribe");
 
+const MANAGE_GROUP_OUTPUT = {
+  action: z.string(),
+  group_id: z.string().nullable(),
+  applied: z.string().optional(),
+  participants: z.array(z.object({ id: z.string(), status: z.enum(["ok", "invite_needed", "failed"]), reason: z.string().optional() })).optional(),
+  invite_link: z.string().optional(),
+  profile_pic_url: z.string().nullable().optional(),
+  join_requests: z.array(OPEN_OBJECT).optional(),
+  status: z.enum(["preview", "joined", "pending_approval"]).optional().describe("join: preview joins nothing"),
+  name: z.string().nullable().optional(),
+  description: z.string().nullable().optional(),
+  participant_count: z.number().nullable().optional(),
+  join_approval: z.boolean().nullable().optional(),
+  account_id: z.string(),
+};
+
 const REMEMBER_OUTPUT = {
   chat_id: z.string(),
   name: z.string(),
@@ -212,7 +228,7 @@ link_account when it says no account is linked yet.
 - message_id — the full id from read_messages / search. Needed for
   get_message, get_media, react_to_message, edit_message, send_message's forward,
   delete_message, manage_chat's pin_message / unpin_message / star_message /
-  unstar_message, join_group on an invite message, and the reply_to of
+  unstar_message, manage_group join on an invite message, and the reply_to of
   send_message.
 - account_id — registry slug (\`default\`, \`work\`). Optional on every tool.
   Several accounts: get_status lists them; pass account_id. A send
@@ -290,7 +306,7 @@ link_account when it says no account is linked yet.
   Every change is visible to all members at once: say what will change and
   wait for an explicit yes. delete_message takes someone else's message for
   everyone only in a group where the linked account is an admin.
-- Join a group: join_group with the invite link, or with the message_id of an
+- Join a group: manage_group join with the invite link, or with the message_id of an
   "invite" message, previews the group (name, description, members, whether an
   admin must approve). Show it; after a yes, call it again with confirm: true.
 - Tidy a chat: manage_chat pin_message / unpin_message pins a message for
@@ -319,7 +335,7 @@ message_id of the message pinned.
 An event has \`type: "event"\` and reads as "[event] Botez · 2026-09-20T12:00:00+03:00 ·
 Biserica" with its description after it, or "[canceled event] …". A group invite
 has \`type: "invite"\` and reads as "[group invite] Familia"; the invite code is
-never shown, and join_group takes the message_id instead.
+never shown, and manage_group join takes the message_id instead.
 A message that @-mentions people carries \`mentions: [{id, name}]\`, each person
 once; read_messages tags it "mentions Ana, Dan".
 Reactions ride on the message they answer: read_messages tags them as
@@ -1332,119 +1348,67 @@ there is no draft: say what will change and wait for a yes before calling it.`,
   }),
 
   tool({
-    name: "create_group",
-    title: "Create a WhatsApp group",
-    description: `Create a group with the given name and participants; the linked account becomes
-the owner. Each participant comes back with a status: ok, invite_needed (their
-privacy settings require an invite link) or failed.`,
-    schema: {
-      name: z.string().min(1).max(100).describe("Group name"),
-      participant_ids: z.array(z.string().min(1)).min(1).max(256).describe("Chat ids or phone numbers to add (1-256)"),
-    },
-    write: true,
-    handler: async ({ name, participant_ids }, { wa }) => {
-      const result = await wa.createGroup(name, participant_ids);
-      const text = [`Group "${name}" created: ${result.chat_id}`, ...renderParticipants(result.participants)].join(
-        "\n"
-      );
-      return ok(text, { name, ...result });
-    },
-  }),
-
-  tool({
-    name: "join_group",
-    title: "Join a WhatsApp group from an invite",
-    description: `Join a group from an invite: a link (https://chat.whatsapp.com/<code>, or the
-code alone) as invite, or the message_id of an invite message someone sent
-(type "invite"). Exactly one of invite / message_id.
-
-Without confirm: true it joins nothing and returns the group's name,
-description, member count and whether an admin must approve new members.
-Show that to the user and wait for an explicit yes, then call again with the
-same invite or message_id and confirm: true. Every member sees the account
-join. The answer is the group's chat_id, or pending_approval when an admin
-must let the account in first.`,
-    schema: {
-      invite: z.string().min(1).max(512).optional().describe("A https://chat.whatsapp.com/ link, or its code"),
-      message_id: messageId.optional().describe('An invite message (type "invite") from read_messages'),
-      confirm: z
-        .boolean()
-        .default(false)
-        .describe("true joins, only after the user said yes to the preview; omit to preview"),
-    },
-    write: true,
-    handler: async ({ invite, message_id, confirm }, { wa }) => {
-      const result = await wa.joinGroup({ invite, messageId: message_id, confirm });
-      return ok(renderJoin(result), result as unknown as Record<string, unknown>);
-    },
-  }),
-
-  tool({
     name: "manage_group",
     title: "Manage a WhatsApp group",
-    description: `Administer a group. Actions:
-  - add / remove / promote / demote — need participant_ids; each participant
-    comes back with status ok, invite_needed or failed
-  - leave — DESTRUCTIVE, rejoining needs an invite
-  - set_subject / set_description — need value
-  - set_picture — needs exactly one of file_path / url: JPEG, PNG or WebP, at
-    most 10 MB. Every member sees it at once and there is no draft: show the
-    image and wait for a yes first
-  - remove_picture — takes the group photo down; ask first the same way
-  - get_invite_link / revoke_invite_link
-  - list_join_requests — who is waiting for approval, with when and how they asked
-  - approve_join_requests / reject_join_requests — need participant_ids from
-    list_join_requests; each comes back with status ok or failed
-  - set_announcement_only / set_info_locked / set_join_approval — value "on" or "off"
-  - set_add_mode — value "admins" or "all"
-  - set_disappearing — value "off", "24h", "7d" or "90d"
-
-Everything except leave requires the linked account to be a group admin; call
-get_group_info first to check. Every change is visible to all members at once:
-say what will change and wait for a yes before calling it.`,
+    description: `Create a group, join one from an invite (preview first, then confirm: true), or administer one: members, name, description, photo, invite link, join requests, settings, leave. Most actions need admin (get_group_info). Every change shows to all members at once: say what will change and wait for a yes.`,
     schema: {
-      group_id: chatId.describe('Group chat id ("<id>@g.us")'),
-      action: z
-        .enum([
-          "add",
-          "remove",
-          "promote",
-          "demote",
-          "leave",
-          "set_subject",
-          "set_description",
-          "set_picture",
-          "remove_picture",
-          "get_invite_link",
-          "revoke_invite_link",
-          "list_join_requests",
-          "approve_join_requests",
-          "reject_join_requests",
-          "set_announcement_only",
-          "set_info_locked",
-          "set_add_mode",
-          "set_join_approval",
-          "set_disappearing",
-        ])
-        .describe("Group action to perform"),
-      participant_ids: z
-        .array(z.string().min(1))
-        .max(256)
-        .optional()
-        .describe("Targets of add/remove/promote/demote/approve_join_requests/reject_join_requests"),
+      action: z.enum([
+        "create",
+        "join",
+        "add",
+        "remove",
+        "promote",
+        "demote",
+        "leave",
+        "set_subject",
+        "set_description",
+        "set_picture",
+        "remove_picture",
+        "get_invite_link",
+        "revoke_invite_link",
+        "list_join_requests",
+        "approve_join_requests",
+        "reject_join_requests",
+        "set_announcement_only",
+        "set_info_locked",
+        "set_add_mode",
+        "set_join_approval",
+        "set_disappearing",
+      ]),
+      group_id: chatId.optional().describe('"<id>@g.us"; every action but create and join'),
+      participant_ids: z.array(z.string().min(1)).max(256).optional().describe("create, add, remove, promote, demote, approve or reject"),
       value: z
         .string()
         .max(2048)
         .optional()
-        .describe(
-          'New subject or description; "on"/"off" for set_announcement_only, set_info_locked, set_join_approval; "admins"/"all" for set_add_mode; "off"/"24h"/"7d"/"90d" for set_disappearing'
-        ),
-      file_path: z.string().min(1).optional().describe("set_picture: absolute path of a local JPEG, PNG or WebP"),
-      url: z.string().url().optional().describe("set_picture: public http(s) URL to fetch and use as the photo"),
+        .describe('The name (create, set_subject) or description; "on"/"off"; set_add_mode "admins"/"all"; set_disappearing "off"/"24h"/"7d"/"90d"'),
+      file_path: z.string().min(1).optional().describe("set_picture: local JPEG, PNG or WebP"),
+      url: z.string().url().optional().describe("set_picture: public image URL"),
+      invite: z.string().min(1).max(512).optional().describe("join: a chat.whatsapp.com link or its code"),
+      message_id: messageId.optional().describe('join: an invite message instead'),
+      confirm: z.boolean().default(false).describe("join: true joins, after the user said yes to the preview"),
     },
+    outputSchema: MANAGE_GROUP_OUTPUT,
     write: true,
     destructive: true,
-    handler: async ({ group_id, action, participant_ids, value, file_path, url }, { wa }) => {
+    handler: async ({ action, group_id, participant_ids, value, file_path, url, invite, message_id, confirm }, { wa }) => {
+      if (action === "create") {
+        const name = value?.trim() ?? "";
+        if (name === "" || participant_ids === undefined || participant_ids.length === 0) {
+          throw new WazapError("INVALID_ID", "create needs the group's name in value and at least one participant.", 'manage_group({ action: "create", value: "Bloc 12", participant_ids: ["+40722…"] })');
+        }
+        if (name.length > 100) throw new WazapError("TEXT_TOO_LONG", "A group name holds at most 100 characters.", "Shorten the name");
+        const result = await wa.createGroup(name, participant_ids);
+        const text = [`Group "${name}" created: ${result.chat_id}`, ...renderParticipants(result.participants)].join("\n");
+        return ok(text, { action, group_id: result.chat_id, name, applied: `created "${name}"`, participants: result.participants });
+      }
+      if (action === "join") {
+        const result = await wa.joinGroup({ invite, messageId: message_id, confirm: confirm === true });
+        return ok(renderJoin(result), { action, ...result });
+      }
+      if (group_id === undefined) {
+        throw new WazapError("INVALID_ID", `${action} needs group_id.`, 'Pass the group\'s chat id ("<id>@g.us"), from list_chats or find_contact');
+      }
       const result = await wa.manageGroup(group_id, action, participant_ids, value, { file_path, url });
       const text = [
         result.applied,
@@ -1536,7 +1500,7 @@ function senderLabel(m: AnyMessage, introduced: Set<string>): string {
   return `${m.sender.name} · ${m.sender.note}`;
 }
 
-/** A join_group answer: the preview and the step after it, or where the join landed. */
+/** A manage_group join answer: the preview and the step after it, or where the join landed. */
 function renderJoin(r: JoinGroupResult): string {
   const name = r.name ? `"${r.name}"` : "the group";
   if (r.status === "joined") return `Joined ${name}${r.group_id ? `: \`${r.group_id}\`` : ""}.`;
@@ -1552,7 +1516,7 @@ function renderJoin(r: JoinGroupResult): string {
     r.description ? `Description: ${r.description}` : null,
     r.group_id ? `group_id: \`${r.group_id}\`` : null,
     "",
-    "Show this to the user. After they say yes, call join_group again with the same invite or message_id and confirm: true.",
+    'Show this to the user. After they say yes, call manage_group again with action "join", the same invite or message_id and confirm: true.',
   ]
     .filter((line) => line !== null)
     .join("\n");

@@ -270,7 +270,7 @@ test("the manage_group tool carries the photo through, and its description and l
   const server = fakeServer();
   registerTools(server, asToolSource(svc), { allowWrite: true });
   const tool = server.tools.get("manage_group");
-  assert.match(tool.meta.description, /set_picture/);
+  assert.ok(tool.meta.inputSchema.action.options.includes("set_picture"));
   assert.match(tool.meta.description, /wait for a yes/);
 
   const result = await tool.handler({ group_id: GROUP, action: "set_picture", file_path: jpegPath() });

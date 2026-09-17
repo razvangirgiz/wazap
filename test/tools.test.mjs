@@ -47,9 +47,7 @@ const WRITE_TOOLS = [
   "delete_message",
   "set_profile_picture",
   "manage_chat",
-  "create_group",
   "manage_group",
-  "join_group",
   "save_contact",
   "remove_contact",
 ];

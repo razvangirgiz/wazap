@@ -11,7 +11,7 @@ import { z } from "zod";
 import { isoWithOffset } from "../dist/messages.js";
 import { registerTools } from "../dist/tools.js";
 import { WhatsAppService } from "../dist/whatsapp.js";
-import { asToolSource, connectedService } from "./helpers.mjs";
+import { asToolSource, connectedService, schemaCheckedTools, textError } from "./helpers.mjs";
 
 const ME = "40700000000@s.whatsapp.net";
 const ANA = "40700000002@s.whatsapp.net";
@@ -412,18 +412,40 @@ test("the manage_group schema accepts every new action and carries value and par
   ]);
   assert.throws(() => z.object(meta.inputSchema).parse({ group_id: GROUP, action: "join_via_link" }));
 
-  const bad = await call({ group_id: GROUP, action: "set_disappearing", value: "1y" });
-  assert.equal(bad.structuredContent.error, "INVALID_ID");
-  assert.match(bad.structuredContent.fix, /"24h", "7d", "90d"/);
+  const bad = JSON.parse((await call({ group_id: GROUP, action: "set_disappearing", value: "1y" })).content[0].text);
+  assert.equal(bad.error, "INVALID_ID");
+  assert.match(bad.fix, /"24h", "7d", "90d"/);
 
   for (const action of ["list_join_requests", "set_join_approval", "set_disappearing"]) {
-    assert.match(meta.description, new RegExp(action));
+    assert.ok(meta.inputSchema.action.options.includes(action), action);
   }
-  assert.match(meta.description, /visible to all members/);
+  assert.match(meta.description, /shows to all members at once/);
   assert.match(server.tools.get("get_group_info").meta.description, /disappearing_seconds/);
   assert.match(server.tools.get("delete_message").meta.description, /admin/);
   const guide = (await server.tools.get("learn").handler({})).structuredContent.guide;
   assert.match(guide, /list_join_requests/);
   assert.match(guide, /delete_message takes someone else's message/);
+  await svc.stop();
+});
+
+test("manage_group creates a group from value and participant_ids, and asks for group_id on every other action", async () => {
+  const { svc, sock } = writableService();
+  const created = [];
+  sock.groupCreate = async (subject, ids) => {
+    created.push([subject, ids]);
+    return { id: GROUP, subject, participants: ids.map((id) => ({ id })) };
+  };
+  const { call } = schemaCheckedTools(svc, { allowWrite: true });
+
+  const made = await call("manage_group", { action: "create", value: "Bloc 12", participant_ids: [ANA] });
+  assert.equal(made.structuredContent.group_id, GROUP);
+  assert.deepEqual(made.structuredContent.participants, [{ id: ANA, status: "ok" }]);
+  assert.match(made.content[0].text, /Group "Bloc 12" created/);
+  assert.deepEqual(created, [["Bloc 12", [ANA]]]);
+
+  assert.equal(textError(await call("manage_group", { action: "create", participant_ids: [ANA] })).error, "INVALID_ID");
+  const missing = textError(await call("manage_group", { action: "leave" }));
+  assert.equal(missing.error, "INVALID_ID");
+  assert.match(missing.message, /leave needs group_id/);
   await svc.stop();
 });
