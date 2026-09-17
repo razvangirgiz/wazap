@@ -14,6 +14,7 @@
  */
 import { chatKindOf, messageStyle, type AccountDb, type MessageStyle, type StyleStats } from "./db/index.js";
 import { isoWithOffset } from "./messages.js";
+import { isPrivateSender } from "./private-contacts.js";
 
 /** The recent exchange a draft context carries, and how much of each message. */
 export const CONTEXT_RECENT = 8;
@@ -55,7 +56,7 @@ export interface RecentLine {
 export interface DraftContext {
   /** How the user writes in this chat, or across the account when they wrote too little here. */
   style?: StyleStats;
-  /** The last messages both ways, oldest first; left out for a `#private` contact. */
+  /** The last messages both ways, oldest first; left out for a `#private` contact, and in a group without a `#private` member's. */
   recent?: RecentLine[];
   /** The contact is tagged `#private`: style only. */
   private?: true;
@@ -78,12 +79,23 @@ export function draftContextFor(
     return { ...context, private: true };
   }
   const group = chatKindOf(chatJid) === "group";
-  const recent = db.messages.recentExchange(chatJid, { limit: CONTEXT_RECENT, maxChars: CONTEXT_RECENT_CHARS }).map((item) => {
-    const line: RecentLine = { at: isoWithOffset(item.ts), from_me: item.fromMe, text: item.text };
-    if (group && !item.fromMe && item.senderJid !== null) line.sender = options.senderName(item.senderJid);
-    if (item.transcribed) line.transcribed = true;
-    return line;
-  });
+  // In a group, what a #private member said (a voice note's words too) is left out, read a few more deep to fill in.
+  const privateSender = new Map<string, boolean>();
+  const shown = (senderJid: string | null): boolean => {
+    if (!group || senderJid === null) return true;
+    if (!privateSender.has(senderJid)) privateSender.set(senderJid, isPrivateSender(db, senderJid));
+    return privateSender.get(senderJid) !== true;
+  };
+  const recent = db.messages
+    .recentExchange(chatJid, { limit: group ? CONTEXT_RECENT * 3 : CONTEXT_RECENT, maxChars: CONTEXT_RECENT_CHARS })
+    .filter((item) => item.fromMe || shown(item.senderJid))
+    .slice(-CONTEXT_RECENT)
+    .map((item) => {
+      const line: RecentLine = { at: isoWithOffset(item.ts), from_me: item.fromMe, text: item.text };
+      if (group && !item.fromMe && item.senderJid !== null) line.sender = options.senderName(item.senderJid);
+      if (item.transcribed) line.transcribed = true;
+      return line;
+    });
   if (recent.length > 0) context.recent = recent;
   return context.style === undefined && context.recent === undefined ? null : context;
 }

@@ -10,7 +10,7 @@ import assert from "node:assert/strict";
 import { MESSAGE_FLAGS, messageStyle } from "../dist/db/index.js";
 import { LENGTH_OUTLIER_MIN_CHARS, STYLE_CHECK_MIN_OWN, draftContextFor, styleCheckFor, styleCheckLines } from "../dist/draft-style.js";
 import { renderDraft } from "../dist/drafts.js";
-import { PRIVATE_TAG, hasPrivateTag, isPrivateChat } from "../dist/private-contacts.js";
+import { PRIVATE_TAG, hasPrivateTag, isPrivateChat, isPrivateSender } from "../dist/private-contacts.js";
 import { GROUP, PEER, T0, openTemp, textMessage } from "./db-fixtures.mjs";
 
 const DAY = 86_400_000;
@@ -178,6 +178,28 @@ test("in a group the draft context names who wrote each message", () => {
   );
 });
 
+test("in a group the draft context leaves out what a #private member said, voice notes included", async () => {
+  const { db, write, clock } = account();
+  const LUCA = "40700000010@s.whatsapp.net";
+  db.identity.upsertContact({ jid: LUCA, name: "Luca", listed: true });
+  db.identity.updateFields(LUCA, { addTags: ["private"] });
+  write(GROUP, ["Bun venit!"], { fromMe: false, extra: { senderJid: PEER } });
+  write(GROUP, ["SECRET: nu pot joi, am analize"], { fromMe: false, extra: { senderJid: LUCA } });
+  const voice = write(GROUP, ["[voice message]"], { fromMe: false, extra: { senderJid: LUCA, type: "voice" } });
+  db.messages.setTranscript(voice[0].sid, "SECRET: avocatul zice sa ne intelegem", { language: "ro" });
+  write(GROUP, ["ok, vedem"]);
+  clock.now += 1000;
+  const context = draftContextFor(db, GROUP, { recent: true, senderName: (jid) => (jid === PEER ? "Dan" : "Luca") });
+  assert.deepEqual(
+    context.recent.map((line) => [line.from_me, line.sender, line.text]),
+    [
+      [false, "Dan", "Bun venit!"],
+      [true, undefined, "ok, vedem"],
+    ]
+  );
+  assert.equal(JSON.stringify(context).includes("SECRET"), false);
+});
+
 test("#private is a stored tag on the person, never on a group", () => {
   const { db, write } = account();
   write(ANA, ["hei"]);
@@ -188,4 +210,7 @@ test("#private is a stored tag on the person, never on a group", () => {
   db.identity.updateFields(ANA, { addTags: ["private"] });
   assert.equal(isPrivateChat(db, ANA), true);
   assert.equal(isPrivateChat(db, GROUP), false);
+  assert.equal(isPrivateSender(db, ANA), true, "the same person writing in a group");
+  assert.equal(isPrivateSender(db, PEER), false);
+  assert.equal(isPrivateSender(db, null), false, "the user's own messages carry no sender");
 });
