@@ -26,6 +26,8 @@ import { parseArgs } from "node:util";
 const DIST_DB = new URL("../dist/db/index.js", import.meta.url).href;
 const { AccountDb, contentHash, quantizeVector } = await import(DIST_DB);
 const { sqlite: sqliteModule } = await import(new URL("../dist/db/sqlite.js", import.meta.url).href);
+const { quotesOf, scanCatchup } = await import(new URL("../dist/catchup-scan.js", import.meta.url).href);
+const { runCatchUp } = await import(new URL("../dist/catchup.js", import.meta.url).href);
 
 const { values: args } = parseArgs({
   options: {
@@ -157,6 +159,19 @@ function time(name, reps, fn, warmup = 2) {
   return out;
 }
 
+async function timeAsync(name, reps, fn, warmup = 2) {
+  for (let i = 0; i < warmup; i++) await fn(i);
+  const samples = [];
+  let out;
+  for (let i = 0; i < reps; i++) {
+    const t = performance.now();
+    out = await fn(i);
+    samples.push(performance.now() - t);
+  }
+  results.timings[name] = summarize(samples);
+  return out;
+}
+
 /** Runs a chunked operation and records how long the event loop stayed blocked each time it was. */
 async function stalls(name, work) {
   const gaps = [];
@@ -227,6 +242,7 @@ async function mainPhase() {
   results.facts.short_absent_capped = absent.scanCapped;
 
   catchUpPhase(db, path);
+  await catchUpDigestPhase(db);
   findPhase(db);
   // What an upgraded account walks once after the v5 migration; the service's detector decodes each protobuf on top.
   db.messages.requestFlagsBackfill();
@@ -317,6 +333,60 @@ function catchUpPhase(db, path) {
   time("draft context: style, account-wide fallback", 50, () => db.messages.styleFor(chatJid(CHATS - 1)));
   time("draft context: recent exchange (8)", 200, () => db.messages.recentExchange(busiest.jid));
   reader.close();
+}
+
+/**
+ * catch_up itself (F2-2) on the 100k-message account: one account's scan of
+ * a window (every section, no names to fetch), and the whole digest — scan,
+ * the budget pass with its quotes read back by id, the rendering — for the
+ * last day and the last week.
+ */
+async function catchUpDigestPhase(db) {
+  const host = {
+    now: () => NOW,
+    ownJid: () => "40700000000@s.whatsapp.net",
+    nameOf: (jid) => jid.split("@")[0],
+    noteOf: () => undefined,
+    isNoise: () => false,
+    leftGroup: () => false,
+    prepareNames: async () => {},
+    connection: () => ({ status: "connected", since: null, sync: "done", mentionsIndexing: false }),
+  };
+  const account = { id: "bench", name: "Bench" };
+  const include = ["waiting", "addressed", "calls", "direct", "groups", "stories"];
+  const source = {
+    getStatus: () => ({ status: "connected", account_id: "bench" }),
+    catchUpScan: (request) => scanCatchup(db, host, request, account),
+    catchUpQuotes: async (ids) => quotesOf(db, ids),
+    catchUpAdvance: async () => ({ advanced: false }),
+  };
+  const binding = { id: "bench", wa: source };
+  const hub = {
+    binding: () => binding,
+    defaultBinding: () => binding,
+    bindings: () => [binding],
+    record: () => ({ id: "bench", name: "Bench", enabled: true, owner: null }),
+  };
+  const ctx = { hub, wa: source, accountId: "bench", client: "bench", now: () => NOW };
+  for (const [label, hours] of [["24h", 24], ["7d", 168]]) {
+    const scan = await timeAsync(`catch_up: scan ${label}`, 20, () => scanCatchup(db, host, { client: "bench", include, window: { kind: "hours", hours } }, account), 1);
+    results.facts[`catch_up_entries_${label}`] = {
+      waiting: scan.waiting.length,
+      addressed: scan.addressed.length,
+      calls: scan.calls.length,
+      direct: scan.direct.length,
+      groups: scan.groups.length,
+      muted_groups: scan.mutedGroups?.groups ?? 0,
+    };
+    for (const budget of [2500, 8000]) {
+      const digest = await timeAsync(`catch_up: digest ${label}, ${budget} tokens`, 20, () => runCatchUp({ hours, budget_tokens: budget }, ctx), 1);
+      results.facts[`catch_up_digest_${label}_${budget}`] = {
+        approx_tokens: digest.structuredContent.approx_tokens,
+        more: digest.structuredContent.more?.remaining ?? null,
+        structured_to_text: +(JSON.stringify(digest.structuredContent).length / digest.content[0].text.length).toFixed(2),
+      };
+    }
+  }
 }
 
 /**
@@ -493,6 +563,8 @@ const BUDGETS_P99 = {
   "single insert (autocommit, FULL)": 60,
   "tombstone single": 60,
   "catch_up: aggregate per active chat 24h": 200,
+  "catch_up: digest 24h, 2500 tokens": 200,
+  "catch_up: digest 7d, 8000 tokens": 1000,
   "catch_up: aggregate grouped by chat 7d": 1000,
   "find: common first name (Ana)": 50,
   "find: nobody (Zzyzx, near-spelling pass)": 100,
