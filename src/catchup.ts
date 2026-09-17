@@ -292,6 +292,17 @@ function clock(ms: number, now: number): string {
   return `${at.getDate()} ${at.toLocaleDateString("en-GB", { month: "short" })} ${time}`;
 }
 
+/** "Wed 12:29 – Thu 12:29": an end on another day than the start says its day too, even today. */
+function span(from: number, to: number, now: number): string {
+  const start = clock(from, now);
+  if (new Date(from).toDateString() === new Date(to).toDateString()) return `${start} – ${clock(to, now)}`;
+  const end = new Date(to);
+  const time = `${String(end.getHours()).padStart(2, "0")}:${String(end.getMinutes()).padStart(2, "0")}`;
+  const day = (now - to) / 86_400_000;
+  const label = day < 6 && day > -1 ? end.toLocaleDateString("en-GB", { weekday: "short" }) : `${end.getDate()} ${end.toLocaleDateString("en-GB", { month: "short" })}`;
+  return `${start} – ${label} ${time}`;
+}
+
 function age(ms: number, now: number): string {
   const elapsed = Math.max(0, now - ms);
   if (elapsed >= 86_400_000) return `${Math.floor(elapsed / 86_400_000)}d`;
@@ -363,7 +374,7 @@ function windowPhrase(window: CatchupWindow, now: number): string {
     case "mark_expired":
       return "the last 24 h (the last catch-up was over 7 days ago)";
     case "previous":
-      return `the previous catch-up again (${clock(since, now)} – ${clock(window.untilAt, now)})`;
+      return `the previous catch-up again (${span(since, window.untilAt, now)})`;
     case "hours":
       return `the last ${Math.round((now - since) / HOUR)} h`;
     case "since":
@@ -717,8 +728,12 @@ function hold(snapshot: Snapshot, asked: number): void {
   while (held.length > MAX_SNAPSHOTS) release(held[0]!);
 }
 
+/** Random bytes in a cursor; base64url spells them in CURSOR_CHARS characters. */
+const CURSOR_BYTES = 18;
+const CURSOR_CHARS = Math.ceil((CURSOR_BYTES * 4) / 3);
+
 function cursorFor(snapshot: Snapshot, start: number): string {
-  const cursor = randomBytes(18).toString("base64url");
+  const cursor = randomBytes(CURSOR_BYTES).toString("base64url");
   snapshot.cursors.add(cursor);
   byCursor.set(cursor, { snapshot, start });
   return cursor;
@@ -893,7 +908,7 @@ async function givePage(snapshot: Snapshot, start: number, budgetChars: number, 
   const longestName = Math.max(...answered.map((view) => view.name.length));
   const headingChars = (item: Item): number => `## ${SECTION_TITLES[item.section]}${multi ? ` · ${"x".repeat(longestName)}` : ""} (99)`.length + 1;
   const headingKey = (item: Item): string => (multi ? `${item.section}|${item.account}` : item.section);
-  const moreChars = 140 + randomBytes(18).toString("base64url").length;
+  const moreChars = 140 + CURSOR_CHARS;
 
   // 1. The skeleton: all of it with the footer, or as much as fits before a `more` line (at least one entry).
   const skeletonOf = (items: readonly Item[]): number => {
