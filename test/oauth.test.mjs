@@ -382,8 +382,8 @@ test("OAuth write grants never authorize host file access, and consent labels ca
       })
     );
     const result = await client.callTool({
-      name: "set_profile_picture",
-      arguments: { file_path: "/synthetic/private.png" },
+      name: "send_message",
+      arguments: { chat_id: "40722123456@s.whatsapp.net", text: "", file_path: "/synthetic/private.png" },
     });
     assert.equal(result.structuredContent.error, "MEDIA_ACCESS_DENIED");
     assert.ok(lines.some((line) => line.includes("oauth: registered client")));

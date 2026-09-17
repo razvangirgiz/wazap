@@ -87,7 +87,7 @@ export const ERROR_GUIDE: Record<ErrorCode, string> = {
     "This session cannot access host paths/directories, or the media URL is not public HTTP(S). Do not route around the restriction. Use a public URL, forward an existing WhatsApp message, or get_media without save_to.",
   FILE_NOT_FOUND: "The local path does not exist on the machine running wazap. Check the path with the user.",
   FILE_TOO_LARGE:
-    "The file is too large. Chat media may be 100 MB; a profile picture may be 10 MB. Send a smaller file.",
+    "The file is too large. Chat media may be 100 MB; a group photo may be 10 MB. Send a smaller file.",
   INVALID_IMAGE:
     "The file is not a JPEG, PNG or WebP. Pass a photo via file_path or url; GIF, video and documents are refused.",
   URL_FETCH_FAILED: "The URL could not be fetched. Check it, or download the file first and pass file_path.",

@@ -404,7 +404,6 @@ test("ACCOUNT_NOT_CONNECTED is not an error code", () => {
 for (const [name, args] of [
   ["send_message", { chat_id: DAN, text: "test" }],
   ["send_message", { chat_id: DAN, text: "", file_path: "/synthetic-missing/private.txt" }],
-  ["set_profile_picture", { file_path: "/synthetic-missing/private.png" }],
 ]) {
   test(`${name}${args.file_path ? " with a file" : ""} rejects a read-only account before draft creation or media access`, async () => {
     const { hub, workSock } = twoAccountHub({ workWrites: false });

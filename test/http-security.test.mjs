@@ -30,10 +30,6 @@ function fixture(t) {
       read(payload.source);
       return store.view(store.put({ chat_id: CHAT, name: "Test" }, payload));
     },
-    setOwnProfilePicture: async (source) => {
-      read(source);
-      return { profile_pic_url: null };
-    },
     manageGroup: async (_group, _action, _ids, _value, source) => {
       read(source);
       return { applied: "ok" };
@@ -49,7 +45,6 @@ function fixture(t) {
 
 const operations = (file) => [
   ["send_message", { chat_id: CHAT, text: "", file_path: file }],
-  ["set_profile_picture", { file_path: file }],
   ["manage_group", { group_id: "120363000000000001@g.us", action: "set_picture", file_path: file }],
   ["get_media", { message_id: `false_${CHAT}_msg`, save_to: "/unused/synthetic/directory" }],
 ];
@@ -57,7 +52,7 @@ const operations = (file) => [
 /** A refusal's code, from structured content or, on a tool with an output schema, from its text. */
 const refusal = (result) => result.structuredContent?.error ?? JSON.parse(result.content[0].text).error;
 
-for (const index of [0, 1, 2, 3]) {
+for (const index of [0, 1, 2]) {
   test(`restricted tool registration rejects local filesystem operation ${index}`, async (t) => {
     const f = fixture(t);
     const tools = new Map();
@@ -130,7 +125,7 @@ test("HTTP on loopback is still remote; only the private bridge credential opens
 test("an HTTP read token cannot choose the download directory", async (t) => {
   const f = await boot(t);
   const reader = await connect(t, f.base, "remote-read");
-  const [name, args] = operations(f.file)[3];
+  const [name, args] = operations(f.file)[2];
   assert.equal(refusal(await reader.callTool({ name, arguments: args })), "MEDIA_ACCESS_DENIED");
   assert.equal(f.downloads(), 0);
 });

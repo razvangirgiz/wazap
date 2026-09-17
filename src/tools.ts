@@ -284,8 +284,7 @@ link_account when it says no account is linked yet.
   do not retry or route around it, tell the user. A draft flagged
   unnamed_recipient goes to someone outside the address book: the name shown
   is their public profile name, not a saved contact — say so to the user.
-- Profile picture: set_profile_picture changes the linked account's photo;
-  manage_group set_picture / remove_picture changes a group's. Show the image
+- Group photo: manage_group set_picture / remove_picture changes a group's. Show the image
   and wait for a yes first; these calls hit WhatsApp immediately.
 - Media: a message with has_media=true → get_media(message_id): a voice note comes back as its transcript, a photo as an image.
 - Groups: get_group_info before manage_group; most actions need admin rights.
@@ -783,49 +782,6 @@ is the name \`name\` shows) and \`name_source\` ("contact", "pushname" or
   // ---- end find_contact ----------------------------------------------------
 
   tool({
-    name: "save_contact",
-    title: "Add or rename a WhatsApp contact",
-    description: `Save a person in the account's WhatsApp contacts: a new entry for a phone
-number, or a new name for an existing one. The name syncs to every linked
-device, and with save_on_phone (default) also into the phone's own address
-book. WhatsApp keeps no other fields — email, "my accountant" and the like go
-to remember, which stays on this machine.`,
-    schema: {
-      contact_id: chatId.describe("Contact id from search_contacts / get_contact, or a phone number"),
-      name: z.string().min(1).max(100).describe("Full name to save the contact under"),
-      first_name: z.string().min(1).max(100).optional().describe("First name, when it differs from the full name"),
-      save_on_phone: z
-        .boolean()
-        .default(true)
-        .describe("Also write the contact into the phone's address book; false keeps it inside WhatsApp"),
-    },
-    write: true,
-    handler: async ({ contact_id, name, first_name, save_on_phone }, { wa }) => {
-      const c = await wa.saveContact(contact_id, name, { firstName: first_name, saveOnPhone: save_on_phone });
-      return ok(`Saved ${c.name} (${c.contact_id}) to contacts.`, c as unknown as Record<string, unknown>);
-    },
-  }),
-
-  tool({
-    name: "remove_contact",
-    title: "Remove a WhatsApp contact",
-    description: `Take a person out of the account's WhatsApp contacts: the saved entry and its
-name go, the chat and its history stay. Nothing is sent to the contact.`,
-    schema: {
-      contact_id: chatId.describe("Contact id from search_contacts / get_contact, or a phone number"),
-    },
-    write: true,
-    destructive: true,
-    handler: async ({ contact_id }, { wa }) => {
-      const c = await wa.removeContact(contact_id);
-      return ok(
-        `Removed ${c.contact_id} from contacts; the chat is untouched.`,
-        c as unknown as Record<string, unknown>
-      );
-    },
-  }),
-
-  tool({
     name: "get_group_info",
     title: "Get WhatsApp group info",
     description: `Details of a group: name, description, owner, creation date, whether only admins
@@ -1043,27 +999,6 @@ required, and picks one of two different deletes; tell the user which:
       const result = await wa.deleteMessage(message_id, for_everyone);
       const scope = result.for_everyone ? "for everyone" : "for the linked account only";
       return ok(`Deleted ${message_id} ${scope}`, result as unknown as Record<string, unknown>);
-    },
-  }),
-
-  tool({
-    name: "set_profile_picture",
-    title: "Set the linked WhatsApp profile picture",
-    description: `Set the linked WhatsApp account's own profile picture from a local path on the
-machine running wazap or from a public URL. Exactly one of file_path / url.
-JPEG, PNG or WebP only, at most 10 MB. DESTRUCTIVE and visible to every contact.
-Show the image and wait for a yes first. This call hits WhatsApp immediately;
-there is no draft.`,
-    schema: {
-      file_path: z.string().min(1).optional().describe("Absolute path of a local JPEG, PNG or WebP"),
-      url: z.string().url().optional().describe("Public http(s) URL to fetch and use as the photo"),
-    },
-    write: true,
-    destructive: true,
-    handler: async ({ file_path, url }, { wa }) => {
-      const result = await wa.setOwnProfilePicture({ file_path, url });
-      const where = result.profile_pic_url ?? "WhatsApp has not published a URL yet";
-      return ok(`Updated the linked account's profile picture (${where})`, result);
     },
   }),
 

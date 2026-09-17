@@ -2,8 +2,8 @@
  * Contact enrichment (friction B2). A stranger's first message brings only a
  * pushName — captured into the store and shown as the sender's name — but the
  * address book is the only proof a person is a saved contact, so a draft to
- * them flags `unnamed_recipient` until save_contact files them under a real
- * name. These pin that loop end to end.
+ * them flags `unnamed_recipient` until the phone's address book files them
+ * under a real name. These pin that loop end to end.
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -45,7 +45,7 @@ function writableService() {
   return { svc, sock };
 }
 
-test("a stranger's pushName is captured, the draft flags it, save_contact clears the flag", async () => {
+test("a stranger's pushName is captured, the draft flags it, and saving them on the phone clears the flag", async () => {
   const { svc, sock } = writableService();
   const peer = "40700000042@s.whatsapp.net";
   sock.ev.emit("messages.upsert", { type: "notify", messages: [message(peer, { pushName: "flormidable15" })] });
@@ -60,8 +60,8 @@ test("a stranger's pushName is captured, the draft flags it, save_contact clears
   assert.match(flagged.content[0].text, /To: flormidable15 \(\+40 700 000 042\)/);
   assert.match(flagged.content[0].text, /not a saved contact/);
 
-  const saved = await server.tools.get("save_contact").handler({ contact_id: "+40700000042", name: "Florentina M" });
-  assert.equal(saved.structuredContent.is_my_contact, true);
+  // The user saves her on the phone; the address book reaches wazap as a contacts event.
+  sock.ev.emit("contacts.upsert", [{ id: peer, name: "Florentina M" }]);
 
   const clean = await sendMessage({ chat_id: peer, text: "Salut!" });
   assert.equal(clean.structuredContent.unnamed_recipient, undefined);
@@ -127,21 +127,6 @@ test("a draft to the account's own number is not flagged either", async () => {
   registerTools(server, asToolSource(svc), { allowWrite: true });
   const drafted = await server.tools.get("send_message").handler({ chat_id: self, text: "nota pentru mine" });
   assert.equal(drafted.structuredContent.unnamed_recipient, undefined);
-  await svc.stop();
-});
-
-test("save_contact on a pushname-only sender merges into the same entry", async () => {
-  const { svc, sock } = writableService();
-  const peer = "40700000043@s.whatsapp.net";
-  sock.ev.emit("contacts.upsert", [{ id: peer, notify: "flor" }]);
-
-  await svc.saveContact(peer, "Florentina M");
-
-  const entry = svc.db.identity.contact(peer);
-  assert.equal(entry.name, "Florentina M");
-  assert.equal(entry.notify, "flor", "the public name stays as fallback data");
-  assert.equal(svc.db.identity.listContacts().filter(({ contact }) => contact.phoneJid === peer).length, 1, "one entry, not a duplicate");
-  assert.equal(svc.displayName(peer), "Florentina M");
   await svc.stop();
 });
 

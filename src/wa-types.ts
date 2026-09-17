@@ -696,12 +696,6 @@ export interface WhatsAppApi {
   /** How a text draft to a direct chat compares with the user's own messages there; null without enough of them. */
   styleCheck?(chatJid: string, text: string): StyleCheck | null;
   updateContactDetails(contactId: string, edit: ContactDetailsEdit): Promise<ContactSummary>;
-  saveContact(
-    contactId: string,
-    name: string,
-    opts?: { firstName?: string; saveOnPhone?: boolean }
-  ): Promise<ContactSummary>;
-  removeContact(contactId: string): Promise<ContactSummary>;
   getGroupInfo(groupId: string): Promise<GroupInfo>;
   downloadMedia(messageId: string, saveTo?: string): Promise<MediaResult>;
   transcribeAudio(messageId: string, language?: string): Promise<TranscribeResult>;
@@ -736,7 +730,6 @@ export interface WhatsAppApi {
   reactToMessage(messageId: string, emoji: string): Promise<{ message_id: string; emoji: string }>;
   forwardMessage(messageId: string, toChatId: string): Promise<SentMessage>;
   deleteMessage(messageId: string, forEveryone: boolean): Promise<{ message_id: string; for_everyone: boolean }>;
-  setOwnProfilePicture(source: MediaSource): Promise<{ profile_pic_url: string | null }>;
   manageChat(chatId: string, action: ChatAction, opts?: ChatActionOptions): Promise<ChatActionResult>;
   createGroup(name: string, participantIds: string[]): Promise<{ chat_id: string; participants: ParticipantResult[] }>;
   joinGroup(opts: { invite?: string; messageId?: string; confirm: boolean }): Promise<JoinGroupResult>;

@@ -3058,17 +3058,6 @@ export class WhatsAppService implements WhatsAppApi {
     });
   }
 
-  setOwnProfilePicture(source: MediaSource): Promise<{ profile_pic_url: string | null }> {
-    return this.guarded(async () => {
-      const media = await loadProfilePicture(source);
-      const sock = this.beginWrite();
-      const jid = this.ownJid();
-      await sock.updateProfilePicture(jid, media.buffer);
-      const picture = await orNullAfter(sock.profilePictureUrl(jid, "image"), PROFILE_LOOKUP_MS);
-      return { profile_pic_url: picture ?? null };
-    });
-  }
-
   manageChat(chatId: string, action: ChatAction, opts: ChatActionOptions = {}): Promise<ChatActionResult> {
     return this.guarded(async () => {
       const sock = this.beginWrite();
@@ -3170,56 +3159,6 @@ export class WhatsAppService implements WhatsAppApi {
       );
     }
     return raw;
-  }
-
-  /**
-   * Add a person to the account's WhatsApp contacts, or rename one already
-   * there: the same app-state mutation WhatsApp Web's "add contact" sends.
-   * With saveOnPhone it also lands in the phone's own address book; without it
-   * the entry lives inside WhatsApp and still syncs to the other linked
-   * devices. WhatsApp stores no fields beyond the name — everything else a
-   * user wants remembered stays local in set_contact_note.
-   */
-  saveContact(
-    contactId: string,
-    name: string,
-    opts: { firstName?: string; saveOnPhone?: boolean } = {}
-  ): Promise<ContactSummary> {
-    return this.guarded(async () => {
-      const sock = this.beginWrite();
-      const jid = this.personJid(contactId);
-      const fullName = name.trim();
-      if (fullName === "") {
-        throw new WazapError("INVALID_ID", "The contact needs a non-empty name.");
-      }
-      const contact: proto.SyncActionValue.IContactAction = {
-        fullName,
-        saveOnPrimaryAddressbook: opts.saveOnPhone ?? true,
-        ...this.contactJids(jid),
-      };
-      const firstName = opts.firstName?.trim();
-      if (firstName) contact.firstName = firstName;
-      await sock.addOrEditContact(jid, contact);
-      // The patch echo takes a moment; file the name now so the store is right.
-      this.db.identity.upsertContact({ jid, name: fullName, listed: true });
-      this.namedContactsCache = null;
-      return this.contactSummary(jid);
-    });
-  }
-
-  /** Take a person out of the account's contacts: the saved name goes, the chat stays. */
-  removeContact(contactId: string): Promise<ContactSummary> {
-    return this.guarded(async () => {
-      const sock = this.beginWrite();
-      const jid = this.personJid(contactId);
-      await sock.removeContact(jid);
-      const db = this.db;
-      if (db.identity.contact(jid)?.name != null) {
-        db.identity.upsertContact({ jid, name: null });
-        this.namedContactsCache = null;
-      }
-      return this.contactSummary(jid);
-    });
   }
 
   createGroup(name: string, participantIds: string[]): Promise<{ chat_id: string; participants: ParticipantResult[] }> {
@@ -4236,13 +4175,6 @@ export class WhatsAppService implements WhatsAppApi {
       throw new WazapError("INVALID_ID", `"${input}" is not a person's contact id.`, "Pass a phone number or a contact id");
     }
     return jid;
-  }
-
-  /** The pn/lid fields a ContactAction carries, from the id itself and the lid table. */
-  private contactJids(jid: string): Pick<proto.SyncActionValue.IContactAction, "lidJid" | "pnJid"> {
-    const alias = this.lids.aliasOf(jid);
-    if (jid.endsWith("@lid")) return alias ? { lidJid: jid, pnJid: alias } : { lidJid: jid };
-    return alias ? { pnJid: jid, lidJid: alias } : { pnJid: jid };
   }
 
   /** Canonical form, or the input unchanged for jids wazap does not address

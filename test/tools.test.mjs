@@ -39,11 +39,8 @@ const WRITE_TOOLS = [
   "react_to_message",
   "confirm_send",
   "delete_message",
-  "set_profile_picture",
   "manage_chat",
   "manage_group",
-  "save_contact",
-  "remove_contact",
 ];
 
 test("the registry is exactly the documented tools", () => {

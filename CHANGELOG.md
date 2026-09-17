@@ -73,6 +73,19 @@
 
 ### Removed
 
+- **`save_contact`, `remove_contact` and `set_profile_picture`.** An
+  assistant filing people does it with `remember`, which stays on this machine;
+  editing the phone's address book or the account's own photo is something the
+  user does on the phone. A group's photo stays in `manage_group`.
+- **What the old catch-up tools did beyond `catch_up`:** `get_recent_messages`
+  with `compact`, `include_system`, `types` or `include_previews` over a whole
+  window (`read_messages` keeps `types` and `include_previews` for one chat),
+  and `get_unanswered`'s `min_age_hours` and `max_age_hours` (`catch_up`'s
+  `waiting` keeps asks for 14 days).
+- **`sync_contacts` on demand, and `get_contact`'s `about`, `profile_pic_url`
+  and `is_blocked`.** `find_contact` asks WhatsApp for an address book that
+  looks empty on its own, and `wazap contacts resync` still forces it while no
+  server runs.
 - **The Gemini CLI extension.** `gemini-extension.json`, the generated
   `GEMINI.md` and `npm run context:build` are gone. `wazap connect gemini`
   still writes the MCP entry, and the Gemini CLI gets the five workflows from
