@@ -48,13 +48,19 @@ answers.
   5,930 tokens in all, 2,238 of them `catch_up`'s and 1,440 `find_contact`'s.
   A refusal from such a tool is `{ error, message, fix, account_id }` as text.
 - **Annotations stated per tool**, for its most far-reaching action, on one
-  rule: read-only means it changes nothing the user owns (WhatsApp, notes,
-  tags, files) and bills nothing, so `catch_up` moving its own mark is
-  read-only and `remember` is not:
-  `link_account` (it starts a pairing) and `get_media` (a file on each call, a
-  transcript an API may bill) are not read-only; `learn`, `get_status` and
-  `remember` are closed-world; `manage_chat` stays destructive, for `clear`,
-  `delete` and `block`; `edit_message` is destructive.
+  rule: read-only means it changes nothing on WhatsApp and nothing the user
+  keeps in wazap (notes, tags, details, `handled`). wazap's own bookkeeping
+  (`catch_up`'s mark, caches), a file saved where a local call asked and a
+  transcript the user configured are not changes, so `catch_up` and
+  `get_media` are read-only and `remember` is not. `link_account` (it starts a
+  pairing) is not read-only either; `get_media` is not idempotent (each
+  `save_to` writes another file); `learn`, `get_status` and `remember` are
+  closed-world; `manage_chat` stays destructive, for `clear`, `delete` and
+  `block`; `edit_message` is destructive. `get_media` read-only departs from
+  the 1.0 design, which counted a billable transcription against it: a session
+  over OAuth (ChatGPT, claude.ai) cannot pass `save_to`, so there it only
+  reads; the transcript is the one the user set up, at most ten a minute; and a
+  confirmation on every voice note would break "what does it say?".
 - **`send_message` refuses what does not belong to its draft** instead of
   dropping it: two kinds at once, `reply_to` or `mention_ids` on media, a poll
   without its question, a forward with text, text on a voice note or an audio

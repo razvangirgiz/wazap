@@ -220,12 +220,15 @@ const hint = (readOnlyHint: boolean, destructiveHint: boolean, idempotentHint: b
 
 /**
  * Each tool's annotations, true of its most far-reaching action, on one rule:
- * - readOnlyHint: the tool changes nothing the user owns (WhatsApp, their
- *   notes, tags and details, files on disk) and costs nothing. wazap's own
- *   bookkeeping is not the user's: catch_up moving its mark stays read-only,
- *   while remember (the user's notes) and get_media (a file written, a
- *   transcript an API may bill) are not. A client that confirms every tool
- *   that is not read-only asks for those two; F2-6's ChatGPT arm checks it.
+ * - readOnlyHint: the tool changes nothing on WhatsApp and nothing the user
+ *   keeps in wazap (notes, tags, details, handled). Not a change: wazap's own
+ *   bookkeeping (catch_up's mark, the caches), a file saved where a local call
+ *   asked (get_media's save_to), a transcript the user configured (billed by
+ *   the provider they chose, at most ten a minute). So catch_up and get_media
+ *   are read-only and remember is not: a client that confirms every tool that
+ *   is not read-only asks for remember alone. A session over OAuth cannot pass
+ *   save_to, so get_media only reads there, and a dialog on every voice note
+ *   would break "what does it say?". F2-6's ChatGPT arm checks it.
  * - openWorldHint: the tool reaches WhatsApp or a provider. A read that only
  *   mirrors WhatsApp still reaches it (older history, group metadata, the
  *   address book), so only learn, get_status and remember are closed-world.
@@ -246,8 +249,8 @@ const HINTS: Record<string, ToolHints> = {
   get_message: hint(true, false, true, true),
   find_contact: hint(true, false, true, true),
   get_group_info: hint(true, false, true, true),
-  // It saves a file on each call, and a transcript may be billed by an API.
-  get_media: hint(false, false, false, true),
+  // Read-only by the rule above, though save_to writes another file on each call: not idempotent.
+  get_media: hint(true, false, false, true),
   // A draft is not a send, but each call makes another.
   send_message: hint(false, false, false, true),
   // Confirming a draft again answers the same receipt.

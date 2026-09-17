@@ -366,7 +366,7 @@ test("remember and learn state the #private rule the reads keep: no words unless
   assert.match(guide, /#private: a person's words come only when a call names them: their chat_id,\s+a message_id of theirs, search's from\. Elsewhere their entries say private,\s+with no words, and search counts private_omitted\./);
 });
 
-test("each tool's annotations are true of its most far-reaching action", () => {
+test("each tool's annotations are true of its most far-reaching action: get_media reads, remember does not", () => {
   const server = fakeServer();
   registerTools(server, asToolSource({}), { allowWrite: true });
   const hints = Object.fromEntries(
@@ -389,7 +389,7 @@ test("each tool's annotations are true of its most far-reaching action", () => {
     get_message: "1011",
     find_contact: "1011",
     get_group_info: "1011",
-    get_media: "0001",
+    get_media: "1001",
     send_message: "0001",
     confirm_send: "0011",
     edit_message: "0111",
