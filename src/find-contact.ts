@@ -194,25 +194,49 @@ function relationWordOf(query: FindResult["query"]): string {
   return inflectionForms(word).find((form) => spellings.includes(form)) ?? word;
 }
 
-function fixFor(outcome: FindOutcome, query: FindResult["query"], asked: string, multi: boolean): string | undefined {
+/** An account in scope whose database could not answer, and the error it gave. */
+export interface UnavailableAccount {
+  account_id: string;
+  error: string;
+}
+
+function unsearchedLine(unavailable: readonly UnavailableAccount[]): string | null {
+  if (unavailable.length === 0) return null;
+  const which = unavailable.map((entry) => entry.account_id).join(", ");
+  return `Account ${which} could not be searched, so someone there may be meant too: confirm with the user before using any candidate, then call find_contact again with its account_id.`;
+}
+
+function fixFor(outcome: FindOutcome, query: FindResult["query"], asked: string, multi: boolean, unavailable: readonly UnavailableAccount[]): string | undefined {
   if (outcome.status === "resolved") return undefined;
+  const unsearched = unsearchedLine(unavailable);
   if (outcome.status === "ambiguous") {
     const accounts = new Set(outcome.candidates.map((found) => found.accountId));
     return [
-      `Ask the user which one they mean, naming each by what tells them apart (last exchange, groups, note, tags, number_tail); never pick one yourself.`,
+      outcome.candidates.length > 1
+        ? `Ask the user which one they mean, naming each by what tells them apart (last exchange, groups, note, tags, number_tail); never pick one yourself.`
+        : null,
+      unsearched,
       `Then call find_contact again with the full name, a qualifier ("contabilitate", a group), or the last 4 digits as qualifier.`,
       multi && accounts.size > 1 ? "They are on different accounts: pass account_id for the one the user means." : null,
     ]
       .filter((line) => line !== null)
       .join(" ");
   }
+  const lines: string[] = [];
   if (query.relationship !== null) {
     const word = relationWordOf(query);
-    return `No saved name, tag, detail or note says who "${word}" is, and messages are never read for it. Ask the user who it is, find that person with find_contact, then file it with update_contact_details({contact_id, fields: {relatie: "${word}"}}) so "${word}" resolves next time.`;
+    lines.push(
+      `No saved name, tag, detail or note says who "${word}" is, and messages are never read for it. Ask the user who it is, find that person with find_contact, then file it with update_contact_details({contact_id, fields: {relatie: "${word}"}}) so "${word}" resolves next time.`
+    );
+  } else {
+    lines.push(
+      outcome.closest.length > 0
+        ? `Nobody is called "${asked}". Ask the user whether they mean one of closest, or for the full name or the number in international format.`
+        : `Nobody is called "${asked}". Ask the user for the full name, a detail about them, or the number in international format.`
+    );
   }
-  return outcome.closest.length > 0
-    ? `Nobody is called "${asked}". Ask the user whether they mean one of closest, or for the full name or the number in international format.`
-    : `Nobody is called "${asked}". Ask the user for the full name, a detail about them, or the number in international format.`;
+  if (unsearched !== null) lines.push(unsearched);
+  return lines.join(" ");
 }
 
 // ---------------------------------------------------------------- text
@@ -257,6 +281,8 @@ function renderContext(context: DraftContext, name: string): string[] {
 export function renderFindContact(structured: Record<string, unknown>): string {
   const query = structured.query as { name: string };
   const fix = structured.fix as string | undefined;
+  const unavailable = (structured.accounts_unavailable as UnavailableAccount[] | undefined) ?? [];
+  const unsearched = unavailable.length === 0 ? null : `Not searched: ${unavailable.map((entry) => `${entry.account_id} (${entry.error})`).join(", ")}.`;
   switch (structured.status) {
     case "resolved": {
       const contact = structured.contact as { name: string; chat_id: string; account_id: string; matched: { source: string; value: string; class: string } };
@@ -264,16 +290,20 @@ export function renderFindContact(structured: Record<string, unknown>): string {
       const lines = [
         `"${query.name}" is ${contact.name}: chat_id ${contact.chat_id} on account ${contact.account_id} (matched ${contact.matched.source}${how}: ${contact.matched.value}).`,
       ];
+      if (unsearched !== null) lines.push(unsearched);
       if (structured.context !== undefined) lines.push(...renderContext(structured.context as DraftContext, contact.name));
       return lines.join("\n");
     }
     case "ambiguous": {
       const candidates = structured.candidates as Array<Record<string, unknown>>;
-      return [`"${query.name}" could be ${candidates.length} of these:`, ...candidates.map(candidateLine), fix].filter(Boolean).join("\n");
+      const head = candidates.length === 1 ? `"${query.name}" may be this one, to confirm:` : `"${query.name}" could be ${candidates.length} of these:`;
+      return [head, ...candidates.map(candidateLine), unsearched, fix].filter(Boolean).join("\n");
     }
     default: {
       const closest = (structured.closest as Array<Record<string, unknown>> | undefined) ?? [];
-      return [`Nobody found for "${query.name}".`, ...(closest.length > 0 ? ["Closest:", ...closest.map(candidateLine)] : []), fix].filter(Boolean).join("\n");
+      return [`Nobody found for "${query.name}".`, ...(closest.length > 0 ? ["Closest:", ...closest.map(candidateLine)] : []), unsearched, fix]
+        .filter(Boolean)
+        .join("\n");
     }
   }
 }
@@ -395,7 +425,7 @@ export async function runFindContact(args: FindContactArgs, ctx: ToolCtx): Promi
     })
   );
   const answers: AccountFind[] = [];
-  const unavailable: Array<{ account_id: string; error: string }> = [];
+  const unavailable: UnavailableAccount[] = [];
   settled.forEach((result, index) => {
     if (result.status === "fulfilled") answers.push(result.value);
     else unavailable.push({ account_id: targets[index]!.id, error: asWazapError(result.reason).code });
@@ -405,7 +435,9 @@ export async function runFindContact(args: FindContactArgs, ctx: ToolCtx): Promi
     throw asWazapError(first?.reason);
   }
 
-  const outcome = mergeAccounts(answers, limit);
+  let outcome = mergeAccounts(answers, limit);
+  // One match where not every account could look is a candidate to confirm, not an answer.
+  if (outcome.contact !== null && unavailable.length > 0) outcome = { status: "ambiguous", contact: null, candidates: [outcome.contact], closest: [] };
   const read = answers[0]!.query;
   const structured: Record<string, unknown> = {
     status: outcome.status,
@@ -435,7 +467,7 @@ export async function runFindContact(args: FindContactArgs, ctx: ToolCtx): Promi
   } else {
     structured.closest = outcome.closest.map((found) => candidateView(found, multi));
   }
-  const fix = fixFor(outcome, read, args.name, multi);
+  const fix = fixFor(outcome, read, args.name, multi, unavailable);
   if (fix !== undefined) structured.fix = fix;
   if (multi) structured.accounts_searched = targets.map((target) => target.id);
   if (unavailable.length > 0) structured.accounts_unavailable = unavailable;

@@ -217,9 +217,8 @@ test("across both accounts: candidates carry their account, one account's only m
   assertNothingPrivate(accounting);
 
   await control.hooks([{ hook: "status", account: "work", status: "disconnected" }]);
-  const partial = (await find(s, { name: "Ana Marin" })).structuredContent;
-  assert.equal(partial.status, "not_found");
-  assert.deepEqual(partial.accounts_unavailable, [{ account_id: "work", error: "NOT_CONNECTED" }]);
+  const offline = (await find(s, { name: "Ana Marin" })).structuredContent;
+  assert.deepEqual([offline.status, offline.contact.account_id], ["resolved", "work"], "a disconnected account is searched in what it stores");
   await s.close();
 });
 

@@ -1754,24 +1754,29 @@ export class WhatsAppService implements WhatsAppApi {
   // ---- find_contact and the draft context (F2-3) ----------------------------
 
   /**
-   * Who a name means on this account (src/find-contact.ts). An address book
-   * that looks empty (no contact carries a saved name) is asked for once per
-   * boot first, the way sync_contacts asks, waiting up to 15 s for names; a
-   * failed ask is logged and the answer comes from what is stored.
+   * Who a name means on this account (src/find-contact.ts), from what the
+   * account stores: no connection is needed, only a database that answers.
+   * While connected, an address book that looks empty (no contact carries a
+   * saved name) is asked for once per boot first, the way sync_contacts asks,
+   * waiting up to 15 s for names; a failed ask is logged and the answer comes
+   * from what is stored.
    */
   findContact(query: FindContactQuery): Promise<AccountFind> {
     return this.guarded(async () => {
-      this.ensureConnected();
-      await this.waitForSync();
-      if (!this.findAskedForContacts && this.namedContacts() === 0) {
-        this.findAskedForContacts = true;
-        try {
-          await this.syncContacts();
-        } catch (err) {
-          logError("contact sync", err);
+      let db = this.db;
+      if (this.status === "connected") {
+        await this.waitForSync();
+        if (!this.findAskedForContacts && this.namedContacts() === 0) {
+          this.findAskedForContacts = true;
+          try {
+            await this.syncContacts();
+          } catch (err) {
+            logError("contact sync", err);
+          }
         }
+        db = this.db;
       }
-      return findInAccount(this.db, this.accountRecord.id, query);
+      return findInAccount(db, this.accountRecord.id, query);
     });
   }
 

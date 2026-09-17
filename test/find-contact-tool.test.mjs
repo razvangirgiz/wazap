@@ -117,15 +117,64 @@ test("a session that may write gets no draft context for an account that may not
   assert.ok(readServer.tools.has("find_contact"), "a read session has the tool");
   assert.equal((await readServer.tools.get("find_contact").handler({ name: "Ana Pop" })).structuredContent.context, undefined);
 
-  // One account down: the other still answers, and says which one could not.
+  await hub.stop();
+});
+
+test("find_contact reads what an account stores without a connection, and never resolves while an account could not be searched", async () => {
+  const config = offlineConfig("wazap-find-down-", { readOnly: false });
+  const registry = AccountRegistry.load(config.dataDir);
+  registry.add("work", "Work");
+  const hub = new AccountHub(config, AccountRegistry.load(config.dataDir));
+  const home = hub.get("default");
+  const work = hub.get("work");
+  connect(home, ME);
+  connect(work, WORK_ME);
+  seed(home, ANA, "Ana Pop");
+  seed(work, DAN, "Dan Radu");
+  const server = fakeServer();
+  registerTools(server, asToolSource(hub), { allowWrite: true });
+  const find = (args) => server.tools.get("find_contact").handler(args);
+
+  // Disconnected, or still connecting: the database answers.
+  home.status = "connecting";
   work.status = "disconnected";
-  const partial = (await find({ name: "Ana Pop" })).structuredContent;
-  assert.equal(partial.status, "resolved");
-  assert.deepEqual(partial.accounts_unavailable, [{ account_id: "work", error: "NOT_CONNECTED" }]);
-  home.status = "disconnected";
-  const down = await find({ name: "Ana Pop" });
-  assert.equal(down.isError, true);
-  assert.equal(JSON.parse(down.content[0].text).error, "NOT_CONNECTED");
+  const offline = (await find({ name: "Ana Pop" })).structuredContent;
+  assert.deepEqual([offline.status, offline.contact?.chat_id, offline.accounts_unavailable], ["resolved", ANA, undefined]);
+
+  // An account whose database cannot answer: the one match elsewhere is only a candidate, to confirm.
+  work.storageState = "preparing";
+  try {
+    const partial = await find({ name: "Ana Pop" });
+    const body = partial.structuredContent;
+    assert.equal(body.status, "ambiguous");
+    assert.equal(body.contact, undefined);
+    assert.deepEqual(body.candidates.map((c) => [c.account_id, c.name]), [["default", "Ana Pop"]]);
+    assert.deepEqual(body.accounts_unavailable, [{ account_id: "work", error: "NOT_CONNECTED" }]);
+    assert.match(body.fix, /work could not be searched/);
+    assert.match(body.fix, /confirm with the user/);
+    assert.match(partial.content[0].text, /Not searched: work \(NOT_CONNECTED\)/);
+
+    const missing = await find({ name: "Xyzzy" });
+    assert.match(missing.content[0].text, /Not searched: work/);
+    assert.match(missing.structuredContent.fix, /work could not be searched/);
+    seed(home, "40722000003@s.whatsapp.net", "Ana Marin");
+    const many = await find({ name: "Ana" });
+    assert.equal(many.structuredContent.status, "ambiguous");
+    assert.equal(many.structuredContent.candidates.length, 2);
+    assert.match(many.content[0].text, /Not searched: work/);
+    assert.match(many.structuredContent.fix, /Ask the user which one[\s\S]*work could not be searched/);
+
+    // Named, the account that answers resolves.
+    assert.equal((await find({ name: "Ana Pop", account_id: "default" })).structuredContent.status, "resolved");
+
+    home.storageState = "preparing";
+    const down = await find({ name: "Ana Pop" });
+    assert.equal(down.isError, true);
+    assert.equal(JSON.parse(down.content[0].text).error, "NOT_CONNECTED");
+  } finally {
+    home.storageState = "ready";
+    work.storageState = "ready";
+  }
   await hub.stop();
 });
 
