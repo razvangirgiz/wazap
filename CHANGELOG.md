@@ -47,7 +47,10 @@ answers.
 - **Output schemas on every tool** but the five Calfa calls and `learn`:
   5,806 tokens in all, 2,238 of them `catch_up`'s and 1,372 `find_contact`'s.
   A refusal from such a tool is `{ error, message, fix, account_id }` as text.
-- **Annotations stated per tool**, for its most far-reaching action:
+- **Annotations stated per tool**, for its most far-reaching action, on one
+  rule: read-only means it changes nothing the user owns (WhatsApp, notes,
+  tags, files) and bills nothing, so `catch_up` moving its own mark is
+  read-only and `remember` is not:
   `link_account` (it starts a pairing) and `get_media` (a file on each call, a
   transcript an API may bill) are not read-only; `learn`, `get_status` and
   `remember` are closed-world; `manage_chat` stays destructive, for `clear`,

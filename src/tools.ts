@@ -204,9 +204,16 @@ const hint = (readOnlyHint: boolean, destructiveHint: boolean, idempotentHint: b
 });
 
 /**
- * Each tool's annotations, true of its most far-reaching action. A read that
- * only mirrors WhatsApp still reaches it (older history, group metadata, the
- * address book), so only learn, get_status and remember are closed-world.
+ * Each tool's annotations, true of its most far-reaching action, on one rule:
+ * - readOnlyHint: the tool changes nothing the user owns (WhatsApp, their
+ *   notes, tags and details, files on disk) and costs nothing. wazap's own
+ *   bookkeeping is not the user's: catch_up moving its mark stays read-only,
+ *   while remember (the user's notes) and get_media (a file written, a
+ *   transcript an API may bill) are not. A client that confirms every tool
+ *   that is not read-only asks for those two; F2-6's ChatGPT arm checks it.
+ * - openWorldHint: the tool reaches WhatsApp or a provider. A read that only
+ *   mirrors WhatsApp still reaches it (older history, group metadata, the
+ *   address book), so only learn, get_status and remember are closed-world.
  */
 const HINTS: Record<string, ToolHints> = {
   learn: hint(true, false, true, false),
@@ -215,9 +222,9 @@ const HINTS: Record<string, ToolHints> = {
   link_account: hint(false, false, false, true),
   list_chats: hint(true, false, true, true),
   read_messages: hint(true, false, true, true),
-  // It moves this client's catch-up mark, so a repeat answers differently.
+  // Read-only by the rule above: the mark it moves is wazap's, though a repeat answers differently.
   catch_up: hint(true, false, false, true),
-  // Local notes only: never WhatsApp, and filing the same thing twice changes nothing.
+  // The user's notes, kept locally: not read-only, never WhatsApp, and filing the same thing twice changes nothing.
   remember: hint(false, false, true, false),
   wait_for_messages: hint(true, false, true, true),
   search: hint(true, false, true, true),
