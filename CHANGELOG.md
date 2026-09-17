@@ -354,6 +354,11 @@ answers.
   installed.** It used to say OAuth was only served with
   `WAZAP_TRANSPORT=http`, even while the service served it; without the
   service, it now names `wazap serve --http`.
+- **A read of an account database counts what its write-ahead log holds,
+  even when the shared memory beside it is gone.** After a crash the log can
+  outlive its `-shm` index, and `status` then reported the counts of the last
+  checkpoint as if they were current. It reads the log now; it still writes
+  nothing, and still leaves no file beside a database nothing has open.
 
 ### Upgrade notes
 

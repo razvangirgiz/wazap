@@ -7,7 +7,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { chmodSync, existsSync, linkSync, mkdirSync, readFileSync, readdirSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, copyFileSync, existsSync, linkSync, mkdirSync, readFileSync, readdirSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
@@ -16,6 +16,7 @@ import { createHash } from "node:crypto";
 import { AccountDb, SCHEMA_VERSION, StorageError, isSqliteExperimentalWarning } from "../dist/db/index.js";
 import { MIGRATIONS } from "../dist/db/schema.js";
 import { sqlite } from "../dist/db/sqlite.js";
+import { openForReading } from "../dist/legacy-files.js";
 import { PEER, T0, openTemp, tempDir, textMessage } from "./db-fixtures.mjs";
 
 const run = promisify(execFile);
@@ -24,6 +25,36 @@ const posix = process.platform !== "win32";
 
 const mode = (path) => statSync(path).mode & 0o777;
 const digest = (path) => createHash("sha256").update(readFileSync(path)).digest("hex");
+const LEGACY_FILES = JSON.stringify(join(repoRoot, "dist", "legacy-files.js"));
+
+/** Another process counting the messages the way `wazap status` does: prints the count. */
+function readerScript(path) {
+  return `
+    const { openForReading } = await import(${LEGACY_FILES});
+    const db = openForReading(${JSON.stringify(path)});
+    process.stdout.write(String(db.counts().messages));
+    db.close();
+  `;
+}
+
+/** Another process opening and closing the database over and over for `ms`: prints "<reads> <last count>". */
+function hammerScript(path, ms) {
+  return `
+    const { openForReading } = await import(${LEGACY_FILES});
+    const until = Date.now() + ${ms};
+    let reads = 0;
+    let last = 0;
+    while (Date.now() < until) {
+      const db = openForReading(${JSON.stringify(path)});
+      const seen = db.counts().messages;
+      db.close();
+      if (seen < last) { process.stdout.write("went back from " + last + " to " + seen); process.exit(3); }
+      last = seen;
+      reads++;
+    }
+    process.stdout.write(reads + " " + last);
+  `;
+}
 
 test("the file, its WAL and its shared memory are owner-only inside an owner-only directory", { skip: !posix }, () => {
   const { db, path } = openTemp();
@@ -197,6 +228,97 @@ test("an immutable read-only open of a closed file reads it and creates nothing 
   reader.close();
   assert.equal(existsSync(`${path}-wal`), false);
   assert.equal(existsSync(`${path}-shm`), false);
+});
+
+test("openForReading of a closed database reads it and leaves the directory as it found it", () => {
+  const { db, dir, path } = openTemp();
+  db.messages.upsert(textMessage(PEER, "A", T0, "salut"));
+  db.close();
+  const before = digest(path);
+  const reader = openForReading(path);
+  assert.equal(reader.counts().messages, 1);
+  reader.close();
+  assert.deepEqual(readdirSync(dirname(path)), ["wazap.sqlite"], "no -wal or -shm beside a closed database");
+  assert.equal(digest(path), before);
+  assert.ok(existsSync(dir));
+});
+
+test("a reader in another process leaves the writer's log byte-for-byte, and the commit still in it stays", async () => {
+  const { db, path } = openTemp();
+  for (let i = 0; i < 50; i++) db.messages.upsert(textMessage(PEER, `K${i}`, T0 + i * 1000, `mesaj ${i}`));
+  db.checkpoint();
+  // Committed, and nowhere but the log: what another process reading the file must neither miss nor undo.
+  db.messages.upsert(textMessage(PEER, "LATE", T0 + 60_000, "commis în jurnal"));
+  const before = { db: digest(path), wal: digest(`${path}-wal`) };
+
+  for (let round = 0; round < 3; round++) {
+    const { stdout } = await run(process.execPath, ["--input-type=module", "-e", readerScript(path)]);
+    assert.equal(stdout.trim(), "51", "the reader sees the writer's last commit");
+    assert.equal(digest(path), before.db, "the database file is untouched");
+    assert.equal(digest(`${path}-wal`), before.wal, "the write-ahead log is untouched");
+    assert.equal(db.counts().messages, 51, "the writer still holds every row");
+  }
+
+  assert.equal(db.messages.get(`false_${PEER}_LATE`).text, "commis în jurnal");
+  db.close();
+  const reopened = AccountDb.open(path);
+  assert.equal(reopened.counts().messages, 51, "and the row is on disk after a restart");
+  reopened.close();
+});
+
+test("readers opening the database while it is written cost the writer no row, on its connection or on disk", async () => {
+  const { db, path } = openTemp();
+  const { spawn } = await import("node:child_process");
+  const child = spawn(process.execPath, ["--input-type=module", "-e", hammerScript(path, 1200)], { stdio: ["ignore", "pipe", "pipe"] });
+  let output = "";
+  let stderr = "";
+  child.stdout.on("data", (chunk) => (output += chunk));
+  child.stderr.on("data", (chunk) => (stderr += chunk));
+  const exited = new Promise((resolve) => child.on("exit", resolve));
+
+  let written = 0;
+  let turns = 0;
+  while (child.exitCode === null) {
+    for (let i = 0; i < 10; i++) db.messages.upsert(textMessage(PEER, `L${written++}`, T0 + written * 1000, `sub sarcină ${written}`));
+    // Every few turns the writer also moves the log into the file and truncates
+    // it, the way a delete does: readers race a log that restarts under them.
+    if (turns++ % 5 === 0) db.checkpoint();
+    assert.equal(db.counts().messages, written, "a reader took a row from the writer's connection");
+    await new Promise((resolve) => setImmediate(resolve));
+  }
+
+  assert.equal(await exited, 0, `the reader failed: ${output}${stderr}`);
+  const [reads, seen] = output.trim().split(" ").map(Number);
+  assert.ok(reads > 5, `too few reads to race with: ${reads}`);
+  assert.ok(seen > 0 && seen <= written, `the reader saw ${seen} of ${written} rows`);
+  db.close();
+  const reopened = AccountDb.open(path);
+  assert.equal(reopened.counts().messages, written, "every row written under the readers is on disk");
+  reopened.close();
+});
+
+test("a write-ahead log that outlived its shared memory is read, not skipped for the last checkpoint", () => {
+  const { db, path } = openTemp();
+  for (let i = 0; i < 10; i++) db.messages.upsert(textMessage(PEER, `K${i}`, T0 + i * 1000, `mesaj ${i}`));
+  db.checkpoint();
+  for (let i = 0; i < 5; i++) db.messages.upsert(textMessage(PEER, `L${i}`, T0 + 20_000 + i * 1000, `în jurnal ${i}`));
+  // A crash leaves the file and its log behind; the shared memory is an index
+  // of the log, and nothing keeps it — a reboot or a cleaner takes it away.
+  const crashed = join(tempDir(), "crashed", "wazap.sqlite");
+  mkdirSync(dirname(crashed), { recursive: true });
+  for (const suffix of ["", "-wal"]) copyFileSync(`${path}${suffix}`, `${crashed}${suffix}`);
+  db.close();
+  const before = { db: digest(crashed), wal: digest(`${crashed}-wal`) };
+
+  const reader = openForReading(crashed);
+  assert.equal(reader.counts().messages, 15, "the log holds the last five, and they are what the file really says");
+  reader.close();
+  assert.equal(digest(crashed), before.db, "the database file is untouched");
+  assert.equal(digest(`${crashed}-wal`), before.wal, "the write-ahead log is untouched");
+
+  const recovered = AccountDb.open(crashed);
+  assert.equal(recovered.counts().messages, 15, "the server that opens it next recovers exactly what the reader reported");
+  recovered.close();
 });
 
 test("a read-only open of a file that still needs migrating says so instead of reading a half schema", () => {

@@ -736,9 +736,12 @@ retires them, and deletes nothing it cannot prove is its own copy.
   different number linking afterwards therefore never imports the earlier
   number's legacy files into its own history.
 - **Reporting.** Logs carry counts and error codes, never contents, file names
-  inside `history/` or numbers. `wazap status` opens a database the server
-  holds read-only, and a closed one immutable, so it creates no `-wal` or
-  `-shm` beside it; symlinked legacy entries are reported, not followed.
+  inside `history/` or numbers. `wazap status` changes no account database:
+  one with a write-ahead log beside it — a server has it, or a crash left the
+  log — opens read-only and is read log and all, so the answer holds what the
+  server committed a moment ago and neither the file nor the log is written;
+  one with no log opens immutable, so not even a `-shm` appears beside a
+  database nobody has open. Symlinked legacy entries are reported, not followed.
 
 Not covered: deletion is an unlink, not a secure erase, and copies in backups,
 snapshots or free disk blocks are outside wazap. The week is a rollback window,

@@ -90,7 +90,8 @@ export const ACCOUNT_LEGACY_ENTRIES = [
 ] as const;
 
 export const BETA_ARCHIVE = "archive.sqlite";
-const SIDE_FILES = ["-wal", "-shm"] as const;
+const WAL_FILE = "-wal";
+const SIDE_FILES = [WAL_FILE, "-shm"] as const;
 const PREVIOUS_OWNER = /^wazap\.(\d+)\.previous-owner\.sqlite(-wal|-shm)?$/;
 const MOVED_ARCHIVE = /^archive(?:\.\d+(?:\.\d+)?)?\.sqlite$/;
 const LEGACY_DIR_NAME = /^legacy(?:-\d+)?$/;
@@ -345,13 +346,25 @@ export function legacyRecordOf(db: Pick<AccountDb, "getMeta">): Record<string, s
 }
 
 /**
- * An account database opened for reading without changing anything beside
- * it: read-only while a process has it open (its -wal and -shm exist), and
- * immutable otherwise, so no -wal or -shm is created next to a closed file.
+ * An account database opened for reading, which changes neither the file nor
+ * its write-ahead log: what every process that is not the server reads through.
+ *
+ * The write-ahead log is the only place a commit can be that the database file
+ * does not hold yet, so whether one lies beside the file decides how it opens.
+ * With a log — a server has the database, or a crash left one behind — it opens
+ * read-only and reads the log too, so the answer includes what the server
+ * committed a moment ago; that takes a read lock in the -shm, SQLite's index of
+ * the log, which is shared memory the server rebuilds at will and holds nothing
+ * of its own. Without a log there is nothing to read past the file, so it opens
+ * immutable and not even a -shm appears beside a closed database.
+ *
+ * Deciding on the -shm instead would read a crashed account stale: its log is
+ * there and holds messages, and an -shm the system cleaned away is no reason to
+ * report the counts of the last checkpoint as if they were current.
  */
 export function openForReading(path: string): AccountDb {
-  const live = SIDE_FILES.every((suffix) => existsSync(`${path}${suffix}`));
-  return AccountDb.open(path, { readOnly: true, immutable: !live });
+  const log = existsSync(`${path}${WAL_FILE}`);
+  return AccountDb.open(path, { readOnly: true, immutable: !log });
 }
 
 export interface PreviousOwnerDb {
