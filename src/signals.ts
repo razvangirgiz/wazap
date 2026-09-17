@@ -13,8 +13,13 @@
  * guards are the homographs that make that trade in practice: "mai" (May /
  * "more"), "luni" (Monday / "months"), "ora" only as "ora 7", "la 10" not
  * before a unit ("la 10 km"), "calea" / "piața" only before a name, "nr. 5"
- * alone (an order number) not an address. test/signals.test.mjs holds the
- * sentence set and the precision and recall each marker must keep.
+ * alone (an order number) not an address, "15.09" a date only where a date is
+ * spoken of ("pe 15.09", not "nota 9.10"), a money word before a bare number
+ * only for a sum ("chiria e 400", not "transferat 2 fișiere"), and a question
+ * without "?" only when a question word or particle opens it — a Romanian
+ * sentence that opens with its verb ("Ești acasă", "Rămâne cum am vorbit") is
+ * as often a statement. test/signals.test.mjs holds the sentence set and the
+ * precision and recall each marker must keep.
  */
 import { foldText } from "./db/index.js";
 
@@ -31,7 +36,7 @@ const CURRENCY_PREFIXES = ["ron", "eur", "usd", "gbp", "lei"];
 /** Words that make a bare number a sum of money: "chiria e 400", "total 1200". */
 const MONEY_WORDS = [
   "pret", "pretul", "costa", "costul", "suma", "suma de", "total", "totalul", "avans", "avansul", "chirie", "chiria", "rest", "restul",
-  "platesti", "plateste", "platit", "platiti", "achita", "achitat", "achitati", "transfera", "transferat", "datorez", "datoreaza", "imprumut",
+  "plata", "platesti", "plateste", "platit", "platiti", "achita", "achitat", "achitati", "transfer", "transfera", "transferat", "virat", "vireaza", "datorez", "datoreaza", "imprumut",
   "price", "costs", "cost", "paid", "pay", "owe", "owes", "rent", "fee", "deposit",
 ];
 /** What may stand between a money word and its number without making it something else: "chiria e 400", "suma de 300". */
@@ -70,12 +75,13 @@ const STREET_SUFFIXES_EN = ["street", "st", "avenue", "ave", "road", "rd", "boul
 
 const TLDS = "ro|com|net|org|eu|io|app|dev|co|uk|de|fr|it|es|md|info|biz|me|ly|gl|to|link|shop|store|online|site|gov|edu";
 
-/** Questions without a question mark: how a sentence starts. */
-const QUESTION_STARTS_RO = [
-  "ce faci", "ce mai faci", "ce zici", "ce parere", "ce ora", "ce zi", "cand", "unde", "cum", "cine", "cat", "cati", "cate", "care", "de ce", "oare",
-  "poti", "puteti", "ai putea", "ati putea", "ai timp", "aveti", "esti", "sunteti", "vii", "veniti", "stii", "stiti", "vrei", "vreti",
-  "ramane", "e ok", "este ok", "se poate", "ai ajuns", "ai vazut", "ai primit", "ati primit",
-];
+/**
+ * Questions without a question mark: a question word or particle opening the
+ * sentence. Romanian marks a yes/no question by intonation alone, so a
+ * sentence that opens with its verb is left unmarked; English inverts its
+ * auxiliary ("do you", "are you"), which marks one.
+ */
+const QUESTION_STARTS_RO = ["ce faci", "ce mai faci", "ce zici", "ce parere", "ce ora", "ce zi", "cand", "unde", "cum", "cine", "cat", "cati", "cate", "care", "de ce", "oare"];
 const QUESTION_STARTS_EN = [
   "what", "when", "where", "who", "whom", "whose", "why", "how", "which", "can you", "could you", "would you", "will you", "do you", "did you",
   "does", "are you", "is it", "is there", "have you", "shall we", "should we", "any chance", "you coming", "u coming", "can we", "can i",
@@ -123,12 +129,22 @@ const AMOUNT_BEFORE = new RegExp(`(?:€|\\$|£)\\s?\\d|\\b(?:${words(CURRENCY_P
 const IBAN = /\b[a-z]{2}\d{2}(?:\s?[a-z0-9]{4}){3,7}(?:\s?[a-z0-9]{1,4})?\b/u;
 const MONEY_WORD = new RegExp(`\\b(?:${words(MONEY_WORDS)})\\b`, "gu");
 const QUANTITY_AFTER = new RegExp(`^(?:${UNIT_AHEAD}|[./-]\\d)`, "u");
+/** A bare number after a money word is a sum when it is large enough to be one, or says it is: "400", "1.200", "4 mii", "5k". */
+const SUM_VALUE = /^(?:\d{3,}|\d{1,3}(?:[.,\s]\d{3})+|\d+[.,]\d{1,2}|\d+\s?(?:k|mii|mil|milioane)\b)/u;
+/** What may follow such a sum without making it a count of something: "chiria e 400, o dau", "rent is 900 this month". */
+const SUM_FOLLOWERS = new Set(
+  "si iar dar cu pe la e este era pentru in din plus pana azi maine lunar deci ca ok acum this that for per a an the and plus each monthly a by until now today tomorrow".split(" ")
+);
 
 const DATE_NUMERIC = [
   new RegExp(`(?<![\\d.,/:-])${DAY}[./-](?:0?[1-9]|1[0-2])[./-](?:\\d{4}|\\d{2})(?![\\d.,/:-]|[.,]\\d)`, "u"),
   /(?<![\d.,/:-])\d{4}-(?:0[1-9]|1[0-2])-(?:0[1-9]|[12]\d|3[01])(?![\d-])/u,
-  new RegExp(`(?<![\\d.,/:-])${DAY}[./](?:0[1-9]|1[0-2])(?![\\d.,/:]|${UNIT_AHEAD})`, "u"),
 ];
+/** A day and month with no year ("15.09") reads like a decimal ("nota 9.10"): a date only where a date is spoken of. */
+const DATE_SHORT = new RegExp(`(?<![\\d.,/:-])${DAY}[./](?:0[1-9]|1[0-2])(?![\\d.,/:]|${UNIT_AHEAD})`, "gu");
+const DATE_SHORT_BEFORE =
+  /\b(?:pe|din|pana|pana pe|pana in|in|de pe|data|data de|pe data de|termen|termenul|termen limita|scadenta|scadent|incepand cu|incepand|inainte de|dupa|on|by|until|till|from|before|after|since|due|dated|deadline)\s*:?\s*$/u;
+const DATE_SHORT_AFTER = /^\s*(?:ora\b|orele\b|la\s+\d|\d{1,2}[:.]\d{2}\b|-\s*\d|–\s*\d|pana\b|si\s+\d|to\s+\d|until\b)/u;
 const HOUR_BEFORE_NUMERIC = /(?:\bla|\bora|\borele|\bpe la|\bat|\baround|\bby)\s+$/u;
 const MONTH_UNAMBIGUOUS = new RegExp(`\\b(?:${words(MONTHS_UNAMBIGUOUS)})\\b`, "u");
 /** "mai" as "more": "4 mai mulți", "2 mai devreme". */
@@ -173,10 +189,14 @@ function hasAmount(text: string): boolean {
     if (number === null || number.index > 24) continue;
     if (!MONEY_GAP.test(rest.slice(0, number.index))) continue;
     const tail = rest.slice(number.index);
-    const value = /^\d+(?:[.,]\d+)*/.exec(tail)![0];
-    const after = tail.slice(value.length);
-    // "chiria pe 3 luni", "total 5 persoane", "avans 10%": a count or a share, not a sum.
+    const value = SUM_VALUE.exec(tail);
+    // "transferat 2 fișiere", "total: 3 colete": a count, not a sum.
+    if (value === null) continue;
+    const after = tail.slice(value[0].length);
+    // "chiria pe 3 luni", "total 500 persoane", "avans 10%": a count or a share, not a sum.
     if (QUANTITY_AFTER.test(after)) continue;
+    const next = /^\s*([a-z]+)/u.exec(after);
+    if (next !== null && !SUM_FOLLOWERS.has(next[1]!)) continue;
     return true;
   }
   return false;
@@ -186,6 +206,12 @@ function hasDate(text: string): boolean {
   for (const pattern of DATE_NUMERIC) {
     const match = pattern.exec(text);
     if (match !== null && !HOUR_BEFORE_NUMERIC.test(text.slice(0, match.index))) return true;
+  }
+  for (const match of text.matchAll(DATE_SHORT)) {
+    const before = text.slice(0, match.index);
+    if (HOUR_BEFORE_NUMERIC.test(before)) continue;
+    const weekdayBefore = WEEKDAY.test(before.slice(-20)) || RELATIVE_DAY.test(before.slice(-20));
+    if (DATE_SHORT_BEFORE.test(before) || weekdayBefore || DATE_SHORT_AFTER.test(text.slice(match.index + match[0].length))) return true;
   }
   if (MONTH_UNAMBIGUOUS.test(text) || MONTH_WITH_DAY.test(text) || MONTH_NAMED.test(text)) return true;
   if (WEEKDAY.test(text) || RELATIVE_DAY.test(text)) return true;

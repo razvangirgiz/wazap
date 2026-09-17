@@ -8,8 +8,10 @@
  *
  * Thresholds (per marker, over this set):
  * - precision ≥ 0.95 for every marker: a wrong marker reorders a summary for nothing;
- * - recall ≥ 0.90 for link, amount, date, time and address, ≥ 0.85 for
- *   question, which has the most ways to be asked without a question mark.
+ * - recall ≥ 0.90 for link, amount, date, time and address, ≥ 0.80 for
+ *   question: a Romanian yes/no question without "?" that opens with its verb
+ *   ("Vii și tu diseară") is left unmarked on purpose, since as many sentences
+ *   that open the same way are statements ("Ești acasă", "Rămâne cum am vorbit").
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -251,6 +253,24 @@ const CASES = [
   ["Where I grew up it was different", ""],
   ["Mersi pentru tot", ""],
   ["Sunt obosit azi", "date"],
+
+  // the review's false positives
+  ["Ești un geniu", ""],
+  ["Ești acasă", ""],
+  ["rămâne cum am vorbit", ""],
+  ["stai liniștit, rămâne cum am vorbit", ""],
+  ["Transferat 2 fișiere", ""],
+  ["total: 3 colete", ""],
+  ["Transferat 200 de fișiere", ""],
+  ["am luat nota 9.10", ""],
+  ["update la versiunea 2.10", ""],
+  ["Media e 8.50 anul ăsta", ""],
+  ["din 12.09 până în 15.09", "date"],
+  ["Plata se face pana pe 15.10", "date"],
+  ["Scadența 25.10", "date"],
+  ["transfer 100", "amount"],
+  ["suma e 4 mii", "amount"],
+  ["Avans 500 si restul la livrare", "amount"],
   ["Hai la 2 beri", ""],
   ["Joi la 7 fix", "date time"],
   ["Ședința a fost mutată de la 14 la 16", "time"],
@@ -294,7 +314,7 @@ test("every marker keeps its precision and recall over the sentence set", () => 
   if (process.env.WAZAP_SIGNALS_REPORT) console.error(report);
   for (const row of rows) {
     assert.ok(row.precision >= 0.95, `${row.marker} precision ${row.precision}\n${report}`);
-    const floor = row.marker === "question" ? 0.85 : 0.9;
+    const floor = row.marker === "question" ? 0.8 : 0.9;
     assert.ok(row.recall >= floor, `${row.marker} recall ${row.recall}\n${report}`);
   }
 });
