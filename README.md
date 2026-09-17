@@ -42,8 +42,6 @@ and it is missing, and to restart Claude Desktop itself once it has connected it
 | Cursor | the [Install in Cursor](#other-mcp-clients) badge, then `npx wazap-mcp skills install cursor` |
 | VS Code | the [Install in VS Code](#other-mcp-clients) badge |
 | Codex CLI | `npx wazap-mcp connect codex`, then `npx wazap-mcp skills install codex` |
-| OpenCode | `npx wazap-mcp connect opencode`, then `npx wazap-mcp skills install opencode` |
-| Windsurf | `npx wazap-mcp connect windsurf` |
 | Grok Bot | [Grok Bot / remote MCP](#grok-bot--remote-mcp) |
 | Anything else | the MCP entry `npx -y wazap-mcp` over stdio, or a [self-hosted](#self-host) URL |
 
@@ -86,10 +84,7 @@ it would write.
 | `claude-desktop` | `claude_desktop_config.json` in the Claude application directory |
 | `cursor` | `~/.cursor/mcp.json` |
 | `codex` | `[mcp_servers.whatsapp]` in `~/.codex/config.toml` |
-| `vscode` | `./.vscode/mcp.json`, for the current workspace |
 | `gemini` | `~/.gemini/settings.json` |
-| `windsurf` | `~/.codeium/windsurf/mcp_config.json` |
-| `opencode` | `mcp.whatsapp` in `~/.config/opencode/opencode.json` |
 | Grok Bot | client's MCP URL field: `http://<host>:<port>/mcp` with header `Authorization: Bearer <token>` (see [Grok Bot / remote MCP](#grok-bot--remote-mcp)) |
 | anything remote | client's MCP URL field: `https://your-host/mcp` with header `Authorization: Bearer <token>`, or just the URL once [OAuth](#hosted-agents-oauth) is on (see [Self-host](#self-host)) |
 
@@ -142,24 +137,12 @@ formats, the workflows and every error code with what to do about it.
 }
 ```
 
-Claude Desktop, Cursor, Gemini CLI and Windsurf take exactly that. VS Code nests
-it under `servers` and wants a `"type": "stdio"` alongside `command`. Codex CLI
-is TOML:
+Claude Desktop, Cursor and Gemini CLI take exactly that. Codex CLI is TOML:
 
 ```toml
 [mcp_servers.whatsapp]
 command = "npx"
 args = ["-y", "wazap-mcp"]
-```
-
-OpenCode takes the command and its arguments as one array, under `mcp`:
-
-```json
-{
-  "mcp": {
-    "whatsapp": { "type": "local", "command": ["npx", "-y", "wazap-mcp"] }
-  }
-}
 ```
 
 </details>
@@ -587,7 +570,7 @@ nothing to run. The command behind it, for a harness `setup` never offered or
 for a checkout you want to install by hand:
 
 ```bash
-npx wazap-mcp skills install codex     # or claude-code, cursor, opencode, agents
+npx wazap-mcp skills install codex     # or claude-code, cursor, agents
 ```
 
 With no harness named it installs into every client it finds on this machine.
@@ -601,9 +584,8 @@ For Claude Code the other route is the plugin, which carries the server as well:
 | Harness | Where the five directories land |
 | --- | --- |
 | `claude-code` | `~/.claude/skills/` |
-| `codex` | `~/.agents/skills/`, the directory Codex documents for user skills. Cursor and OpenCode read it too |
+| `codex` | `~/.agents/skills/`, the directory Codex documents for user skills. Cursor reads it too |
 | `cursor` | `~/.cursor/skills/` |
-| `opencode` | `~/.config/opencode/skills/` |
 | `agents` | `./.agents/skills/`, in the current project, for anything that reads the cross-tool convention |
 
 Re-running overwrites, so an upgrade is the same command. `--dry-run` lists
@@ -612,8 +594,8 @@ what it would copy.
 A client with no skills directory is not left out. The server registers each of
 the five as an MCP prompt of the same name, and sends a short `instructions`
 block that names all five and says when each applies, so an agent that never saw
-the skill files still follows them. That is how Claude Desktop, VS Code and
-Windsurf get the workflows. A bridged session and a self-hosted HTTP server
+the skill files still follows them. That is how Claude Desktop, Gemini CLI and
+any client wired by hand get the workflows. A bridged session and a self-hosted HTTP server
 carry them the same way.
 
 ## Errors

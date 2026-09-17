@@ -21,7 +21,7 @@ export interface SkillTarget {
  * Each path is the one that harness's own docs name today. Codex is the
  * one that moved: `~/.codex/skills` still loads, but its docs call that
  * location deprecated and put user skills in `~/.agents/skills`, which Cursor
- * and OpenCode read too.
+ * reads too.
  */
 export const SKILL_TARGETS: readonly SkillTarget[] = [
   {
@@ -34,19 +34,13 @@ export const SKILL_TARGETS: readonly SkillTarget[] = [
     name: "codex",
     describe: "Codex CLI",
     dir: () => join(homedir(), ".agents", "skills"),
-    next: "Restart Codex. Cursor and OpenCode read this directory too.",
+    next: "Restart Codex. Cursor reads this directory too.",
   },
   {
     name: "cursor",
     describe: "Cursor",
     dir: () => join(homedir(), ".cursor", "skills"),
     next: "Reload the Cursor window.",
-  },
-  {
-    name: "opencode",
-    describe: "OpenCode",
-    dir: () => join(homedir(), ".config", "opencode", "skills"),
-    next: "Restart OpenCode.",
   },
   {
     name: "agents",

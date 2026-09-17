@@ -35,7 +35,6 @@ const TARGETS = [
   { harness: "claude-code", dir: (box) => join(box.home, ".claude", "skills") },
   { harness: "codex", dir: (box) => join(box.home, ".agents", "skills") },
   { harness: "cursor", dir: (box) => join(box.home, ".cursor", "skills") },
-  { harness: "opencode", dir: (box) => join(box.home, ".config", "opencode", "skills") },
   { harness: "agents", dir: (box) => join(box.cwd, ".agents", "skills") },
 ];
 
@@ -88,7 +87,7 @@ test("install with no harness and nothing installed names the harnesses that exi
   const box = sandbox();
   await assert.rejects(install(box), (err) => {
     assert.equal(err.code, 1);
-    assert.match(err.stderr, /claude-code, codex, cursor, opencode, agents/);
+    assert.match(err.stderr, /claude-code, codex, cursor, agents$/m);
     return true;
   });
 });
@@ -97,7 +96,7 @@ test("an unknown harness names the ones that exist", async () => {
   const box = sandbox();
   await assert.rejects(install(box, "emacs"), (err) => {
     assert.equal(err.code, 1);
-    assert.match(err.stderr, /claude-code, codex, cursor, opencode, agents/);
+    assert.match(err.stderr, /claude-code, codex, cursor, agents$/m);
     return true;
   });
 });

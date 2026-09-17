@@ -71,7 +71,6 @@ const desktopFile = (home) =>
 const FILES = [
   { client: "cursor", file: (home) => join(home, ".cursor", "mcp.json"), key: "mcpServers" },
   { client: "gemini", file: (home) => join(home, ".gemini", "settings.json"), key: "mcpServers" },
-  { client: "windsurf", file: (home) => join(home, ".codeium", "windsurf", "mcp_config.json"), key: "mcpServers" },
 ];
 
 for (const { client, file, key } of FILES) {
@@ -97,20 +96,6 @@ test("connect claude-desktop writes an absolute node path, which launchd's PATH 
   assert.ok(existsSync(entry.args[0]), `${entry.args[0]} does not exist`);
   assert.match(entry.args[0], /^\/.*index\.js$/);
   assert.equal(launchCheck(findClient("claude-desktop"), entry, GUI_PATH, () => false, "darwin").state, "ok");
-});
-
-test("connect opencode writes the one-array command its schema demands", async () => {
-  const box = sandbox();
-  await connect(box, "opencode");
-  const target = join(box.home, ".config", "opencode", "opencode.json");
-  assert.deepEqual(readJson(target).mcp.whatsapp, { type: "local", command: ["wazap"] });
-});
-
-test("connect vscode writes the workspace file with a stdio type", async () => {
-  const box = sandbox();
-  await connect(box, "vscode");
-  const target = join(box.cwd, ".vscode", "mcp.json");
-  assert.deepEqual(readJson(target).servers.whatsapp, { type: "stdio", command: "wazap", args: [] });
 });
 
 test("connect keeps the other keys, backs the file up once, and is idempotent", async () => {
@@ -402,7 +387,7 @@ test("an unknown client names the ones that exist", async () => {
   const box = sandbox();
   await assert.rejects(connect(box, "emacs"), (err) => {
     assert.equal(err.code, 1);
-    assert.match(err.stderr, /claude-code, claude-desktop, cursor, codex, vscode, gemini, windsurf, opencode/);
+    assert.match(err.stderr, /claude-code, claude-desktop, cursor, codex, gemini$/m);
     return true;
   });
 });

@@ -200,7 +200,7 @@ export const MIGRATE_USAGE = "Run `wazap migrate rollback`";
  * imports: this file cannot reach `connect` or `service` without a cycle.
  */
 const COMMAND_USAGE: Partial<Record<Command, string>> = {
-  connect: "Pick one of: claude-code, claude-desktop, cursor, codex, vscode, gemini, windsurf, opencode",
+  connect: "Pick one of: claude-code, claude-desktop, cursor, codex, gemini",
   skills: "Run `wazap skills install [<harness>]`",
   service: "Run `wazap service install|status|start|stop|restart|logs|uninstall`",
   transcribe: "Run `wazap transcribe download` or `wazap transcribe test <audio file>`",

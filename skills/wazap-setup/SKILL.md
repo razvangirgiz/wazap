@@ -65,7 +65,7 @@ the tool is unavailable. `SESSION_CORRUPT` means unreadable credentials, which
 ## Connect a client
 
 Run `npx wazap-mcp connect <client>`, where the client is one of `claude-code`,
-`claude-desktop`, `cursor`, `codex`, `vscode` or `gemini`. It writes the entry,
+`claude-desktop`, `cursor`, `codex` or `gemini`. It writes the entry,
 keeps whatever else is in the file, backs it up once, and prints the next step
 (restart, reload window, or `claude mcp list`). Running it twice is safe.
 
