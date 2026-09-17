@@ -2003,7 +2003,12 @@ export class WhatsAppService implements WhatsAppApi {
 
   catchUpAdvance(client: string, window: CatchupWindow): Promise<{ advanced: boolean }> {
     return this.guarded(async () => ({
-      advanced: this.db.catchup.advance(client, window.untilSeq, { at: window.at, expectedThroughSeq: window.expected }).advanced,
+      advanced: this.db.catchup.advance(client, window.untilSeq, {
+        at: window.at,
+        expectedThroughSeq: window.expected,
+        // What the window read from: the mark, or a time when it read by time (a first run, a mark too old).
+        from: { seq: window.afterSeq < 0 ? null : window.afterSeq, at: window.sinceAt },
+      }).advanced,
     }));
   }
 

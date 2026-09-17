@@ -522,6 +522,12 @@ test("a catch-up mark advances in one statement, only forward, keeping the one b
   assert.equal(db.catchup.advance("claude", 2 ** 50).advanced, false, "held to the newest, it is not past the mark");
   db.messages.upsert(textMessage(PEER2, "NEXT", T0, "sosit după"));
   assert.equal(db.catchup.advance("claude", 2 ** 50).mark.throughSeq, 1001);
+
+  // A summary that read by time keeps that time for its repeat, not the mark it replaced.
+  db.catchup.advance("dated", 500, { at: clock.now - 10, from: { seq: null, at: clock.now - 86_400_000 } });
+  db.messages.upsert(textMessage(PEER2, "NEXT2", T0, "încă unul"));
+  assert.equal(db.catchup.advance("dated", 1002, { expectedThroughSeq: 500, from: { seq: null, at: clock.now - 3_600_000 } }).advanced, true);
+  assert.deepEqual(db.catchup.repeat("dated"), { afterSeq: null, afterAt: clock.now - 3_600_000, throughSeq: 1002, throughAt: clock.now });
   assert.equal(db.catchup.reset("fresh"), true);
   assert.equal(db.catchup.get("fresh"), null);
   for (const [client, seq] of [["", 1], ["x".repeat(201), 1], ["ok", -1], ["ok", 1.5]]) {

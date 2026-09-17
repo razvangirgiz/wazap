@@ -91,12 +91,28 @@ export class CatchupMarks {
    * `expectedThroughSeq`, the move happens only while the mark is still that
    * one (null: the client has none yet), so a summary built over a mark that
    * another call has moved since does not advance it.
+   *
+   * `from` is where that summary's window really started, kept for `repeat`
+   * in place of the mark it replaces: a summary that read by time (a first
+   * run, or a mark too old to read from) passes `{ seq: null, at }`, so the
+   * repeat gives what it gave rather than everything since the old mark.
    */
-  advance(client: string, throughSeq: number, options: { at?: number; expectedThroughSeq?: number | null } = {}): CatchupAdvance {
+  advance(
+    client: string,
+    throughSeq: number,
+    options: { at?: number; expectedThroughSeq?: number | null; from?: { seq: number | null; at: number } } = {}
+  ): CatchupAdvance {
     const name = checkClient(client);
     const asked = checkCount(throughSeq, "throughSeq");
     const expected = options.expectedThroughSeq;
     if (expected !== undefined && expected !== null) checkCount(expected, "expectedThroughSeq");
+    const from = options.from;
+    if (from !== undefined) {
+      if (from.seq !== null) checkCount(from.seq, "from.seq");
+      checkCount(from.at, "from.at");
+    }
+    // The window a repeat gives: `from` when given, the mark being replaced otherwise.
+    const given = from === undefined ? 0 : 1;
     return this.c.write(() => {
       const now = this.c.now();
       const at = options.at === undefined ? now : checkCount(options.at, "at");
@@ -104,20 +120,31 @@ export class CatchupMarks {
       let changed: number;
       if (expected === undefined || expected === null) {
         changed = this.c.run(
-          `INSERT INTO catchup_marks(client, through_seq, through_at, previous_seq, previous_at, updated_at) VALUES (?, ?, ?, NULL, NULL, ?)
-           ON CONFLICT(client) DO UPDATE SET previous_seq = catchup_marks.through_seq, previous_at = catchup_marks.through_at,
+          `INSERT INTO catchup_marks(client, through_seq, through_at, previous_seq, previous_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)
+           ON CONFLICT(client) DO UPDATE SET
+             previous_seq = CASE WHEN ? = 1 THEN excluded.previous_seq ELSE catchup_marks.through_seq END,
+             previous_at = CASE WHEN ? = 1 THEN excluded.previous_at ELSE catchup_marks.through_at END,
              through_seq = excluded.through_seq, through_at = excluded.through_at, updated_at = excluded.updated_at
            WHERE excluded.through_seq > catchup_marks.through_seq AND ? = 0`,
           name,
           through,
           at,
+          from?.seq ?? null,
+          from?.at ?? null,
           now,
+          given,
+          given,
           expected === null ? 1 : 0
         );
       } else {
         changed = this.c.run(
-          `UPDATE catchup_marks SET previous_seq = through_seq, previous_at = through_at, through_seq = ?, through_at = ?, updated_at = ?
+          `UPDATE catchup_marks SET previous_seq = CASE WHEN ? = 1 THEN ? ELSE through_seq END,
+             previous_at = CASE WHEN ? = 1 THEN ? ELSE through_at END, through_seq = ?, through_at = ?, updated_at = ?
            WHERE client = ? AND through_seq = ? AND through_seq < ?`,
+          given,
+          from?.seq ?? null,
+          given,
+          from?.at ?? null,
           through,
           at,
           now,

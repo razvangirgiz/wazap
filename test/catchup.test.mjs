@@ -181,6 +181,25 @@ test('since: "previous" repeats the last complete catch-up, hours and an ISO sin
   assert.equal(errorOf(bad).error, "INVALID_ID");
 });
 
+test('since: "previous" after a catch-up that found the mark expired repeats the 24 h it gave, not everything since the old mark', async () => {
+  const { svc, arrive } = account();
+  const { call } = toolsOf(svc);
+  arrive(DAN, "mesaj vechi", { at: Date.now() - 60 * 24 * HOUR });
+  svc.db.catchup.advance("local", svc.db.digest.storedTop(), { at: Date.now() - 60 * 24 * HOUR });
+  arrive(ANA, "ceva de acum zece zile", { at: Date.now() - 10 * 24 * HOUR });
+  arrive(ELA, "azi", { at: Date.now() - HOUR });
+
+  const expired = await call("catch_up");
+  assert.equal(expired.structuredContent.window.basis, "mark_expired");
+  assert.deepEqual(chatsOf(expired, "direct"), [ELA]);
+  assert.equal(expired.structuredContent.accounts[0].mark.moved, true);
+
+  const previous = await call("catch_up", { since: "previous" });
+  assert.deepEqual([previous.structuredContent.window.basis, previous.structuredContent.window.hours], ["previous", 24]);
+  assert.deepEqual(chatsOf(previous, "direct"), [ELA], "the ten-day-old message was not in it, and is not now");
+  assert.deepEqual(svc.db.catchup.repeat("local").afterSeq, null, "the window it covered was by time");
+});
+
 test("two catch-ups of one client racing each other move the mark once: the one that finishes second does not", async () => {
   const { svc, arrive } = account();
   const { call } = toolsOf(svc);
