@@ -21,7 +21,13 @@
   `since` and a partial `include` leave it where it is.
 - **`#no-catchup`**: a person tagged with it through `update_contact_details`
   stays out of every catch-up, counted in its footer.
-- **An output schema on `catch_up`**, the first tool to declare one.
+- **`#private` in a catch-up**: a person tagged with it is counted and never
+  quoted — their asks, what followed, their messages, their mentions and polls
+  in groups, a group's quote — and their entries say `private`.
+- **An output schema on `catch_up`**, the first tool to declare one. A tool
+  with an output schema answers an error with `{ error, message, fix }` in its
+  text only, since MCP clients validate structured content against the schema
+  on errors too.
 
 ### Removed
 

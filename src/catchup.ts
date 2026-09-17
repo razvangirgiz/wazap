@@ -397,7 +397,7 @@ function itemsOf(view: AccountView, multi: boolean, now: number): Item[] {
       section: "waiting",
       account,
       chatKey: key(entry.chat),
-      quoteId: entry.ask.type === "voice" && !entry.ask.transcribed ? null : entry.ask.id,
+      quoteId: entry.private || (entry.ask.type === "voice" && !entry.ask.transcribed) ? null : entry.ask.id,
       thenId: entry.thenId ?? null,
       line: (quote) => {
         const who = `${entry.name}${entry.note ? ` (${entry.note})` : ""}${entry.group ? " [group]" : ""}${entry.business ? " [business]" : entry.unknown ? " [not saved]" : ""}`;
@@ -407,6 +407,7 @@ function itemsOf(view: AccountView, multi: boolean, now: number): Item[] {
           `since ${clock(entry.ask.ts, now)} (${age(entry.ask.ts, now)})`,
           ...(entry.sinceYou > 1 ? [`${entry.sinceYou} msgs since you`] : []),
           ...(entry.newSinceLast ? ["new"] : []),
+          ...(entry.private ? ["private"] : []),
           ...(entry.ask.type === "voice" || entry.ask.type === "audio"
             ? [`voice${entry.ask.voice ? ` ${entry.ask.voice}` : ""}${entry.ask.transcribed ? "" : ", not transcribed"}`]
             : []),
@@ -430,6 +431,7 @@ function itemsOf(view: AccountView, multi: boolean, now: number): Item[] {
         at: clock(entry.ask.ts, now),
         ...(entry.sinceYou > 1 ? { n: entry.sinceYou } : {}),
         ...(entry.newSinceLast ? { new: true } : {}),
+        ...(entry.private ? { private: true } : {}),
         ...(entry.ask.type === "text" ? {} : { type: entry.ask.type }),
         ...(entry.ask.voice ? { voice: entry.ask.voice } : {}),
         ...(entry.ask.type === "voice" || entry.ask.type === "audio" ? { transcribed: entry.ask.transcribed } : {}),
@@ -456,12 +458,12 @@ function itemsOf(view: AccountView, multi: boolean, now: number): Item[] {
       section: "addressed",
       account,
       chatKey: key(entry.chat),
-      quoteId: entry.kind === "mention" || entry.kind === "reply" ? entry.id : null,
+      quoteId: !entry.private && (entry.kind === "mention" || entry.kind === "reply") ? entry.id : null,
       thenId: null,
       line: (quote) =>
         `- ${entry.name} · ${entry.from} ${verb} · ${clock(entry.ts, now)}${entry.more > 0 ? ` (+${entry.more} more)` : ""}${
           entry.title ? `: "${cut(entry.title, TITLE_CHARS)}"` : ""
-        }${quoteSuffix(quote, true)} · ${entry.chat}`,
+        }${entry.private ? " · private" : ""}${quoteSuffix(quote, true)} · ${entry.chat}`,
       data: (quote) => ({
         ...tag,
         chat: entry.chat,
@@ -471,6 +473,7 @@ function itemsOf(view: AccountView, multi: boolean, now: number): Item[] {
         at: clock(entry.ts, now),
         ...(entry.more > 0 ? { more: entry.more } : {}),
         ...(entry.title ? { title: cut(entry.title, TITLE_CHARS) } : {}),
+        ...(entry.private ? { private: true } : {}),
         ...(quote ? { q: quote.text, ...sigOf(quote) } : {}),
       }),
     });
@@ -512,7 +515,7 @@ function itemsOf(view: AccountView, multi: boolean, now: number): Item[] {
       line: (quote) => {
         const who = `${entry.name}${entry.note ? ` (${entry.note})` : ""}${entry.business ? " [business]" : entry.unknown ? " [not saved]" : ""}${entry.muted ? " [muted]" : ""}`;
         const more = quote !== null && entry.count > 1 ? ` (+${entry.count - 1} more)` : "";
-        return `- ${who} · ${entry.count} new · ${clock(entry.newestTs, now)}${media ? ` · ${media}` : ""}${quoteSuffix(quote, true)}${more} · ${entry.chat}`;
+        return `- ${who} · ${entry.count} new · ${clock(entry.newestTs, now)}${media ? ` · ${media}` : ""}${entry.private ? " · private" : ""}${quoteSuffix(quote, true)}${more} · ${entry.chat}`;
       },
       data: (quote) => ({
         ...tag,
@@ -526,6 +529,7 @@ function itemsOf(view: AccountView, multi: boolean, now: number): Item[] {
         ...(entry.business ? { business: true } : {}),
         ...(entry.unknown ? { unknown: true } : {}),
         ...(entry.muted ? { muted: true } : {}),
+        ...(entry.private ? { private: true } : {}),
         ...(quote
           ? { q: quote.text, ...sigOf(quote), ...(entry.count > 1 ? { more_in_chat: entry.count - 1 } : {}) }
           : {}),

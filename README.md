@@ -332,7 +332,10 @@ keeps its mark.
 
 **Leaving a chat out.** Tag a person `#no-catchup` with
 `update_contact_details` (an agent, a bot, a busy notification number) and
-catch-ups skip their chat, counting it in the footer.
+catch-ups skip their chat, counting it in the footer. Tag them `#private`
+instead and they stay in, counted, but nothing they wrote is quoted — not the
+ask, not a mention or a poll of theirs in a group, not a group's quote — and
+their entries say `private`.
 
 ### Seeing, waiting, following up
 

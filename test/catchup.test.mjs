@@ -428,6 +428,50 @@ test("group names come from cached metadata: at most twelve groups fetched, and 
   assert.ok(answered.every((id) => !fetched.includes(id)), "a group fetched once is not fetched again");
 });
 
+test("a person tagged #private is never quoted: waiting, then, people, mentions, polls and group quotes keep counts and say private", async () => {
+  const { svc, sock, arrive, mention } = account();
+  const { call } = toolsOf(svc);
+  sock.ev.emit("chats.upsert", [{ id: GROUP, name: "Echipa proiect" }]);
+  arrive(ANA, "îmi trimiți 300 lei pentru terapie până vineri?", { at: Date.now() - 5 * HOUR });
+  arrive(ANA, "și nu spune nimănui de programare.", { at: Date.now() - 5 * HOUR + 1000 });
+  arrive(ELA, "diagnosticul a venit, e benign", { at: Date.now() - 4 * HOUR });
+  arrive(GROUP, mention("@Răzvan secretul meu de familie despre moștenire"), { participant: ELA, at: Date.now() - 3 * HOUR });
+  arrive(
+    GROUP,
+    { pollCreationMessageV3: { name: "Votăm divorțul?", options: [{ optionName: "Da" }, { optionName: "Nu" }], selectableOptionsCount: 1 } },
+    { participant: ELA, at: Date.now() - 2 * HOUR }
+  );
+  arrive(GROUP, "povestea mea confidențială despre bolile din familie, pe larg", { participant: ANA, at: Date.now() - HOUR });
+  arrive(GROUP, "ok", { participant: DAN, at: Date.now() - HOUR + 1000 });
+  await call("update_contact_details", { contact_id: ANA, add_tags: ["#private"] });
+  await call("update_contact_details", { contact_id: ELA, add_tags: ["private"] });
+
+  const result = await call("catch_up", { hours: 24, budget_tokens: 8000 });
+  const all = `${text(result)}\n${JSON.stringify(result.structuredContent)}`;
+  for (const words of ["terapie", "programare", "benign", "moștenire", "divorțul", "confidențială"]) {
+    assert.ok(!all.includes(words), `"${words}" is not quoted anywhere`);
+  }
+  const ana = result.structuredContent.waiting.find((entry) => entry.chat === ANA);
+  assert.equal(ana.private, true);
+  assert.equal(ana.q, undefined);
+  assert.equal(ana.then, undefined);
+  assert.equal(ana.sig, undefined, "not even the markers of what she wrote");
+  const ela = result.structuredContent.direct.find((entry) => entry.chat === ELA);
+  assert.deepEqual([ela.n, ela.private, ela.q], [1, true, undefined]);
+  assert.deepEqual(
+    result.structuredContent.addressed.map((entry) => [entry.kind, entry.from, entry.private, entry.q, entry.title]),
+    [
+      ["mention", "Ela", true, undefined, undefined],
+      ["poll", "Ela", true, undefined, undefined],
+    ]
+  );
+  const group = result.structuredContent.groups.find((entry) => entry.chat === GROUP);
+  assert.equal(group.n, 4, "the group still counts every message");
+  assert.equal(group.hot, undefined, "Dan's \"ok\" is too short to quote, and the rest is private");
+  assert.match(text(result), /- Ana · since [^\n]* · private · 40700000002@s\.whatsapp\.net/);
+  assert.match(text(result), /- Ela · 1 new · \d\d:\d\d · private · 40700000004@s\.whatsapp\.net/);
+});
+
 test("a chat tagged #no-catchup is left out of every section and counted", async () => {
   const { svc, arrive } = account();
   const { call } = toolsOf(svc);

@@ -33,6 +33,8 @@ export type WindowBasis = "last" | "first_run" | "mark_expired" | "previous" | "
 
 /** The tag that keeps a chat out of every catch-up (a bot, an agent). */
 export const NO_CATCHUP_TAG = "no-catchup";
+/** The tag whose person is never quoted: their entries keep counts and say "private". */
+export const PRIVATE_TAG = "private";
 
 const HOUR = 3_600_000;
 const DAY = 24 * HOUR;
@@ -116,6 +118,8 @@ export interface WaitingEntry {
   ask: { id: number; sid: string; ts: number; type: string; voice?: string; transcribed: boolean };
   /** Their newest message after the ask inside the window, worth quoting with it. */
   thenId?: number;
+  /** Tagged #private (the person, the group, or in a group the one asking): nothing they wrote is quoted. */
+  private: boolean;
   /** Their messages since the user's last one (inside the 14 days). */
   sinceYou: number;
   newSinceLast: boolean;
@@ -136,6 +140,8 @@ export interface AddressedEntry {
   more: number;
   /** A poll's question, an event's line. */
   title?: string;
+  /** From someone tagged #private, or in a group tagged so: not quoted, no title. */
+  private: boolean;
 }
 
 export interface CallsEntry {
@@ -163,6 +169,8 @@ export interface DirectEntry {
   business: boolean;
   unknown: boolean;
   muted: boolean;
+  /** Tagged #private: counted, never quoted. */
+  private: boolean;
   quoteId: number | null;
 }
 
@@ -377,6 +385,11 @@ export async function scanCatchup(db: AccountDb, host: CatchupHost, request: Cat
   const families = digest.families();
   const familyOf = (chat: ChatRecord): number[] => families.get(chat.id) ?? [chat.id];
   const excluded = digest.tagged(NO_CATCHUP_TAG);
+  // #private: a local reading of the tag until find_contact's predicate is shared.
+  const privacy = digest.tagged(PRIVATE_TAG);
+  const privateChat = (chat: ChatRecord): boolean =>
+    (chat.contactId !== null && privacy.contactIds.has(chat.contactId)) || privacy.jids.has(chat.jid);
+  const privateSender = (senderId: number | null): boolean => senderId !== null && privacy.contactIds.has(senderId);
   const isExcluded = (chat: ChatRecord): boolean =>
     (chat.contactId !== null && excluded.contactIds.has(chat.contactId)) || excluded.jids.has(chat.jid);
   const muted = (chat: ChatRecord): boolean => chat.archived || (chat.mutedUntil !== null && chat.mutedUntil > now);
@@ -456,10 +469,11 @@ export async function scanCatchup(db: AccountDb, host: CatchupHost, request: Cat
         continue;
       }
       const sinceYou = tail.length < ASK_SCAN ? tail.length : digest.inboundCount(family, after, untilId, now, 999);
+      const hidden = privateChat(chat) || (group && privateSender(ask.senderId));
       const words = ask.transcript === null ? ask.text : ask.transcript;
       const transcribed = ask.transcript !== null;
       // In a person's chat, what they said after the ask rides with it; a group's chatter has its own row.
-      const then = group ? undefined : tail.find((message) => message.id > ask.id && message.id > sinceId && quotable(message));
+      const then = group || hidden ? undefined : tail.find((message) => message.id > ask.id && message.id > sinceId && quotable(message));
       const answered = group
         ? undefined
         : (callsByChat.get(chat.id) ?? []).find((call) => call.id > ask.id && call.reading.outcome === "answered");
@@ -477,9 +491,11 @@ export async function scanCatchup(db: AccountDb, host: CatchupHost, request: Cat
           transcribed,
         },
         ...(then === undefined ? {} : { thenId: then.id }),
+        private: hidden,
         sinceYou,
         newSinceLast: ask.id > sinceId,
-        signals: ask.type === "voice" && !transcribed ? [] : [...signalsOf(words)],
+        // A private ask gives away nothing of its words, markers included.
+        signals: hidden || (ask.type === "voice" && !transcribed) ? [] : [...signalsOf(words)],
         ...(answered === undefined
           ? {}
           : {
@@ -548,6 +564,7 @@ export async function scanCatchup(db: AccountDb, host: CatchupHost, request: Cat
             sid: sidOf(chat.jid, message.keyId),
             ts: message.ts,
             more: Math.max(0, aggregate.mentions + aggregate.replies - 1),
+            private: privateChat(chat) || privateSender(message.senderId),
             senderId: message.senderId,
           });
           if (message.senderId !== null) contactIds.add(message.senderId);
@@ -594,7 +611,8 @@ export async function scanCatchup(db: AccountDb, host: CatchupHost, request: Cat
       polls: aggregate.polls,
       newestTs: aggregate.newestTs ?? 0,
       muted: muted(chat),
-      quoteId: newest?.id ?? null,
+      private: privateChat(chat),
+      quoteId: privateChat(chat) ? null : (newest?.id ?? null),
     });
     if (chat.contactId !== null) contactIds.add(chat.contactId);
     peopleToName.add(chat.jid);
@@ -607,6 +625,7 @@ export async function scanCatchup(db: AccountDb, host: CatchupHost, request: Cat
       const chat = chatsById.get(poll.chatId) ?? db.identity.chatById(poll.chatId);
       if (chat === null || chat.kind !== "group" || leftGroups.has(chat.id) || host.leftGroup(chat)) continue;
       if (isExcluded(chat)) continue;
+      const hidden = privateChat(chat) || privateSender(poll.senderId);
       rawAddressed.push({
         chat: chat.jid,
         kind: poll.type === "event" ? "event" : "poll",
@@ -614,7 +633,8 @@ export async function scanCatchup(db: AccountDb, host: CatchupHost, request: Cat
         sid: sidOf(poll.chatJid, poll.keyId),
         ts: poll.ts,
         more: 0,
-        title: poll.text.replace(/^\[(?:poll|event|canceled event)\]\s*/, ""),
+        ...(hidden ? {} : { title: poll.text.replace(/^\[(?:poll|event|canceled event)\]\s*/, "") }),
+        private: hidden,
         senderId: poll.senderId,
       });
       if (poll.senderId !== null) contactIds.add(poll.senderId);
@@ -622,13 +642,16 @@ export async function scanCatchup(db: AccountDb, host: CatchupHost, request: Cat
     }
   }
 
-  // Hot quotes: the most reacted message, or the newest one worth quoting.
+  // Hot quotes: the most reacted message, or the newest one worth quoting — never from someone #private.
   for (const group of rawGroups) {
+    if (privateChat(group.chatRecord)) continue;
     const family = familyOf(group.chatRecord);
     const floor = floorOf(group.chatRecord);
     group.hotId =
-      digest.mostReacted(family, floor, untilId, now) ??
-      digest.inboundTail(family, floor, untilId, now, 10, 400).find((message) => quotable(message) && message.text.length >= 20)?.id ??
+      digest.mostReacted(family, floor, untilId, now, { excludeSenders: privacy.contactIds }) ??
+      digest
+        .inboundTail(family, floor, untilId, now, 10, 400)
+        .find((message) => quotable(message) && message.text.length >= 20 && !privateSender(message.senderId))?.id ??
       null;
   }
 

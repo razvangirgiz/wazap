@@ -259,19 +259,27 @@ export class Digest {
       .map((row) => ({ senderId: row.sender_id, count: row.n }));
   }
 
-  /** The inbound message in (afterId, untilId] with the most reactions, when at least `min` people reacted. */
-  mostReacted(family: readonly number[], afterId: number, untilId: number, now: number, min = 2): number | null {
+  /** The inbound message in (afterId, untilId] with the most reactions, when at least `min` people reacted, from nobody in `excludeSenders`. */
+  mostReacted(
+    family: readonly number[],
+    afterId: number,
+    untilId: number,
+    now: number,
+    options: { min?: number; excludeSenders?: ReadonlySet<number> } = {}
+  ): number | null {
     const inChat = familyCondition(family);
     return (
       this.c.get<{ id: number }>(
         `SELECT m.id FROM messages m CROSS JOIN chats c ON c.id = m.chat_id CROSS JOIN reactions r ON r.message_id = m.id
          WHERE ${inChat.sql} AND m.id > ? AND m.id <= ? AND ${INBOUND}
+           AND (m.sender_id IS NULL OR m.sender_id NOT IN (SELECT value FROM json_each(?)))
          GROUP BY m.id HAVING count(*) >= ? ORDER BY count(*) DESC, m.id DESC LIMIT 1`,
         ...inChat.params,
         afterId,
         untilId,
         now,
-        min
+        JSON.stringify([...(options.excludeSenders ?? [])]),
+        options.min ?? 2
       )?.id ?? null
     );
   }
