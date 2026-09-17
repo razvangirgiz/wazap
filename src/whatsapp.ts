@@ -39,8 +39,10 @@ import { BAILEYS_VERSION, WAZAP_VERSION, writesHints, type AccountPaths, type Co
 import {
   AccountDb,
   chatKindOf,
+  MESSAGE_FLAGS,
   secondOfId,
   StorageError,
+  type FlagDetector,
   type ChatKind,
   type ChatRecord,
   type EventRecord,
@@ -543,6 +545,14 @@ export class WhatsAppService implements WhatsAppApi {
   private readonly outbox: WebhookOutbox;
   /** Sends of our own, so their `fromMe` echo is never announced as `message_sent`. */
   private readonly sentByWazap = new SentIds();
+  /**
+   * Read receipts from the account's own devices (the phone), since the
+   * process started: what get_status shows so it can be checked live that they
+   * arrive. `seen` counts receipts, `synced` incoming messages that arrived
+   * already marked read, `applied` the ones that moved a chat's read mark,
+   * `unmatched` receipts for a message not stored.
+   */
+  private readonly readSelf = { seen: 0, synced: 0, applied: 0, unmatched: 0, lastAt: null as number | null };
   /** The last connection status queued for the consumer, so several internal states collapse into one event. */
   private lastWebhookStatus: WebhookConnectionStatus | null = null;
   private readonly accountRecord: AccountRecord;
@@ -873,6 +883,8 @@ export class WhatsAppService implements WhatsAppApi {
           options: { retention: this.config.retention === true },
         });
         this.noteImport(db, report);
+        // What the import stored carries no flags yet: the backfill works them out.
+        db.messages.requestFlagsBackfill();
         this.lids = new LidRegistry();
         this.adoptDatabase(db);
       }
@@ -897,6 +909,7 @@ export class WhatsAppService implements WhatsAppApi {
     }
     this.armExpiry();
     this.outbox.start();
+    this.scheduleFlagsBackfill(db);
     if (this.embedFeed !== null) this.embedFeed.kick();
     else {
       // Recall is off, or its settings do not parse: no queue is kept that nothing
@@ -932,6 +945,7 @@ export class WhatsAppService implements WhatsAppApi {
       });
       const beta = result.phases?.beta;
       log(`account ${this.accountRecord.id}: beta archive ${result.outcome}${beta ? `, ${beta.imported} messages added` : ""}`);
+      db.messages.requestFlagsBackfill();
       this.lids = new LidRegistry();
       this.adoptDatabase(db);
     } catch (err) {
@@ -1292,6 +1306,15 @@ export class WhatsAppService implements WhatsAppApi {
       recall: this.recallStatus(),
       storage: this.storageInfo(),
       transcription: this.transcriptionStatus(),
+      diagnostics: {
+        read_self: {
+          seen: this.readSelf.seen,
+          synced: this.readSelf.synced,
+          applied: this.readSelf.applied,
+          unmatched: this.readSelf.unmatched,
+          last_at: this.readSelf.lastAt === null ? null : isoWithOffset(this.readSelf.lastAt),
+        },
+      },
     };
     const hints: string[] = [];
     if (this.storageState === "preparing") {
@@ -2692,7 +2715,9 @@ export class WhatsAppService implements WhatsAppApi {
   /** An unknown send whose message is stored is sent. */
   private reconcileSend(db: AccountDb, row: SendRecord): void {
     const receipt = this.storedReceipt(db, row.chatJid, row.keyId, frozenReceiptText(row));
-    if (receipt !== null) this.drafts.settle(db.sends, row.draftId, receipt);
+    if (receipt === null) return;
+    db.messages.addFlags(receipt.message_id, MESSAGE_FLAGS.viaWazap);
+    this.drafts.settle(db.sends, row.draftId, receipt);
   }
 
   /** `attempt` is confirm_send's: the send goes out under the draft's key, and says when it left. */
@@ -3404,17 +3429,26 @@ export class WhatsAppService implements WhatsAppApi {
     });
 
     sock.ev.on("messages.update", (updates) => {
+      const readSelf = updates.flatMap(({ key, update }) => (this.isReadSelfUpdate(key, update) ? [key] : []));
+      this.noteReadSelf(readSelf.length);
       this.markLater("messages update", () => {
         for (const { key, update } of updates) this.applyUpdate(key, update);
+        if (readSelf.length > 0) this.applyReadSelf(readSelf);
       });
     });
 
     // In a group, each member's receipt arrives on its own; the status is theirs combined.
     sock.ev.on("message-receipt.update", (items) => {
+      // A member's receipt that is the account's own: one of its devices read a group message.
+      const readSelf = items.flatMap(({ key, receipt }) =>
+        receipt.userJid && this.isMe(receipt.userJid) && (receipt.readTimestamp || receipt.playedTimestamp) ? [key] : []
+      );
+      this.noteReadSelf(readSelf.length);
       this.markLater(
         "receipts",
         () =>
           this.db.transaction(() => {
+            if (readSelf.length > 0) this.applyReadSelf(readSelf);
             for (const { key, receipt } of items) {
               const jid = key.remoteJid ? this.canonical(key.remoteJid) : undefined;
               // The account's other devices confirm its messages too; they are not members.
@@ -3519,6 +3553,43 @@ export class WhatsAppService implements WhatsAppApi {
     }
     // A receipt on a one-to-one message: sent, delivered, read, played.
     if (typeof update.status === "number" && stored.fromMe) db.messages.setStatus(stored.sid, update.status);
+  }
+
+  /**
+   * A one-to-one receipt from the account's own devices: Baileys reports one
+   * as an update to someone else's message (the key is not the account's own)
+   * that raises it to read or played. The other side's receipts are always on
+   * the account's own messages.
+   */
+  private isReadSelfUpdate(key: WAMessageKey, update: Partial<WAMessage>): boolean {
+    if (key.fromMe !== false || !key.remoteJid || !key.id) return false;
+    if (update.status !== proto.WebMessageInfo.Status.READ && update.status !== proto.WebMessageInfo.Status.PLAYED) return false;
+    const jid = this.canonical(key.remoteJid);
+    return chatKindOf(jid) === "direct" && !isNoiseJid(jid);
+  }
+
+  private noteReadSelf(count: number): void {
+    if (count === 0) return;
+    this.readSelf.seen += count;
+    this.readSelf.lastAt = Date.now();
+  }
+
+  /**
+   * Moves each chat's read mark up to the messages the account's own devices
+   * read. The key names someone else's message; its direction is not trusted,
+   * so the message is looked up under either, and one of the account's own
+   * never moves a mark.
+   */
+  private applyReadSelf(keys: readonly WAMessageKey[]): void {
+    const db = this.db;
+    db.transaction(() => {
+      for (const key of keys) {
+        if (!key.remoteJid || !key.id) continue;
+        const outcome = db.messages.markReadSelf(`${this.canonical(key.remoteJid)}_${key.id}`);
+        if (outcome.chatJid === null) this.readSelf.unmatched++;
+        else if (outcome.moved) this.readSelf.applied++;
+      }
+    });
   }
 
   private readAccount(): StatusInfo["account"] | "corrupt" {
@@ -5033,8 +5104,48 @@ export class WhatsAppService implements WhatsAppApi {
       quotedSid: quotedMessageId(raw, { canonical: (jid) => this.canonical(jid), ownId: this.ownJid(), chatId: chatJid }) ?? null,
       status: fromMe && typeof raw.status === "number" ? raw.status : null,
       expiresAt,
+      flags: this.flagsOf(raw, fromMe, keyId),
     };
     return { input, raw };
+  }
+
+  /**
+   * The flags a message is stored with: someone else's that mentions the
+   * account (by number or lid), the account's own that this process sent. The
+   * database adds via_wazap for a confirmed send's key by itself.
+   */
+  private flagsOf(raw: WAMessage, fromMe: boolean, keyId: string): number {
+    if (fromMe) return this.sentByWazap.has(keyId) ? MESSAGE_FLAGS.viaWazap : 0;
+    return mentionedJids(raw).some((jid) => this.isMe(jid)) ? MESSAGE_FLAGS.mentionsMe : 0;
+  }
+
+  /** The flags backfill's detector: the mentions a stored message's protobuf carries. */
+  private readonly storedFlags: FlagDetector = ({ raw, fromMe, chatJid }) => {
+    if (fromMe || chatJid === STATUS_JID) return 0;
+    let decoded: WAMessage;
+    try {
+      decoded = proto.WebMessageInfo.decode(raw) as WAMessage;
+    } catch {
+      return 0;
+    }
+    return mentionedJids(decoded).some((jid) => this.isMe(jid)) ? MESSAGE_FLAGS.mentionsMe : 0;
+  };
+
+  /**
+   * Flags for what was stored before this build set them, the last 14 days,
+   * in the background once the account serves. Without the account's own
+   * number no mention can be told apart, so it waits for a start that has it.
+   */
+  private scheduleFlagsBackfill(db: AccountDb): void {
+    if (this.stopped || db.readOnly || this.ownJid() === "") return;
+    try {
+      if (!db.messages.flagsBackfillPending()) return;
+    } catch {
+      return;
+    }
+    void db.messages.backfillFlags(this.storedFlags).catch((err: unknown) => {
+      if (!this.stopped && db.isOpen) logError("flags backfill", err);
+    });
   }
 
   /** The sender the database files a message under; undefined for the other side of a direct chat. */
@@ -5077,6 +5188,14 @@ export class WhatsAppService implements WhatsAppApi {
     if (prepared.input.fromMe && result.sid !== null && this.kept(result)) {
       this.settleEcho(db, prepared.input.keyId, result.sid, chatJid, prepared.input.ts);
     }
+    // Someone else's message that arrives already read: a history sync of what
+    // the phone has seen, or a receipt of the account's own devices Baileys
+    // folded into the message it buffered with.
+    const status = raw.status;
+    if (!prepared.input.fromMe && result.sid !== null && this.kept(result) && (status === proto.WebMessageInfo.Status.READ || status === proto.WebMessageInfo.Status.PLAYED)) {
+      this.readSelf.synced++;
+      if (db.messages.markReadSelf(result.sid).moved) this.readSelf.applied++;
+    }
     return result;
   }
 
@@ -5085,6 +5204,7 @@ export class WhatsAppService implements WhatsAppApi {
     try {
       const row = db.sends.unknownByKey(keyId);
       if (row === null) return;
+      db.messages.addFlags(sid, MESSAGE_FLAGS.viaWazap);
       this.drafts.settle(db.sends, row.draftId, {
         message_id: sid,
         chat_id: chatJid,

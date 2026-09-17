@@ -101,9 +101,21 @@ export interface StatusInfo {
   storage?: StorageInfo;
   /** Voice notes transcribed without being asked: the durable queue, without content. */
   transcription: TranscriptionStatus;
+  /** Counters for checking live what the account receives; no tool acts on them. */
+  diagnostics?: StatusDiagnostics;
   /** Present only while `status` is "linking". */
   pairing?: PairingInfo;
   hint?: string;
+}
+
+export interface StatusDiagnostics {
+  /**
+   * Read receipts from the account's own devices since the server started:
+   * `seen` receipts, `synced` messages that arrived already read, `applied`
+   * the ones that moved a chat's read mark, `unmatched` receipts for messages
+   * not stored, `last_at` when the latest receipt arrived.
+   */
+  read_self: { seen: number; synced: number; applied: number; unmatched: number; last_at: string | null };
 }
 
 export interface StorageInfo {
