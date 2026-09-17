@@ -225,7 +225,9 @@ test("across both accounts: candidates carry their account, one account's only m
 
 test("a resolved contact carries the recent exchange and the user's style in a write session, and nothing more anywhere else", async () => {
   let { s } = await world();
+  assert.doesNotMatch(s.instructions, /only reads/);
   const full = (await find(s, { name: "mama", account_id: "personal" })).structuredContent;
+  assert.equal(full.can_draft, undefined);
   assert.equal(full.context.style.language, "ro");
   assert.ok(full.context.style.basis.own_messages > 0);
   const last = full.context.recent.at(-1);
@@ -242,6 +244,10 @@ test("a resolved contact carries the recent exchange and the user's style in a w
   assert.equal(read.structuredContent.status, "resolved");
   assert.equal(read.structuredContent.context, undefined, "a session that cannot send gets no draft context");
   assert.doesNotMatch(read.structuredContent.next ?? "", /draft with send_message/, "nor a step toward a draft");
+  assert.equal(read.structuredContent.can_draft, false, "a session that cannot send says so where the step would be");
+  assert.match(read.structuredContent.next, /This connection only reads: it cannot draft or send\. Asked to send, say so, and offer the text for the user to send/);
+  assert.match(readOnly.instructions, /This connection only reads: it cannot draft or send\./, "and the server's instructions say it before any call");
+  assert.doesNotMatch(readOnly.instructions, /draft with send_message/);
   assert.ok(!read.content[0].text.includes("cina de duminică"));
   await readOnly.close();
 

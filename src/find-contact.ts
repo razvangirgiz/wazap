@@ -30,7 +30,7 @@ import { WazapError, asWazapError } from "./errors.js";
 import { resolveChatId } from "./ids.js";
 import { formatAge, isoWithOffset } from "./messages.js";
 import { hasPrivateTag } from "./private-contacts.js";
-import { assertSendable, sendPolicyOf } from "./send-guard.js";
+import { READ_ONLY_RULE, assertSendable, sendPolicyOf } from "./send-guard.js";
 import type { ToolCtx, ToolResult } from "./tool-runtime.js";
 import type { WhatsAppApi } from "./wa-types.js";
 
@@ -470,6 +470,7 @@ export const FIND_CONTACT_OUTPUT = {
     .describe("Only when listed and cut by limit: how many more on each account"),
   fix: z.string().optional().describe("What to do next, when not resolved"),
   next: z.string().optional().describe("Resolved: how a message to them starts"),
+  can_draft: z.literal(false).optional().describe("Resolved in a session that cannot send"),
   notes: z.array(z.string()).optional().describe("Caveats to act on or tell the user"),
   accounts_searched: z.array(z.string()).optional(),
   accounts_unavailable: z.array(z.object({ account_id: z.string(), error: z.string() })).optional(),
@@ -658,6 +659,7 @@ export async function runFindContact(args: FindContactArgs, ctx: ToolCtx): Promi
     }
     structured.account_id = found.accountId;
     if (ctx.allowWrite) structured.next = RESOLVED_NEXT;
+    else Object.assign(structured, { can_draft: false, next: READ_ONLY_RULE });
   } else if (outcome.status === "ambiguous") {
     structured.candidates = outcome.candidates.map((found) => candidateView(found, multi));
   } else {

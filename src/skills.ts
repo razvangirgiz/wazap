@@ -7,6 +7,7 @@ import { detectClients } from "./connect.js";
 import type { Config } from "./config.js";
 import { WazapError } from "./errors.js";
 import { log, say } from "./logger.js";
+import { READ_ONLY_RULE, SEND_RULE } from "./send-guard.js";
 import { info, nextHint, ok, shortPath } from "./ui.js";
 
 export interface SkillTarget {
@@ -105,23 +106,31 @@ function trigger(description: string): string {
   return sentence === null ? description : description.slice(0, sentence.index + sentence[0].length);
 }
 
+/** What the session's instructions depend on besides the skills. */
+export interface InstructionOptions {
+  /** Whether this session has the send tools; true unless said otherwise. */
+  allowWrite?: boolean;
+}
+
 /**
  * What the client shows its model before the first tool call. Short on purpose:
- * the bodies are the prompts, this is only the index to them.
+ * the bodies are the prompts, this is only the index to them. A session that
+ * only reads is told so, so a request to send is answered, never pretended.
  */
-export function skillInstructions(skills: readonly Skill[]): string {
+export function skillInstructions(skills: readonly Skill[], options: InstructionOptions = {}): string {
   const intro =
     "Call `learn` first: it returns every tool, the id formats and every error code with what to do about it. " +
     "With several WhatsApp accounts, `get_status` lists them and every tool takes `account_id`: without it, a chat or message only one account knows picks that account, `catch_up` and `find_contact` cover them all, other reads use the default, and a write to a chat no account knows fails AMBIGUOUS_ACCOUNT. " +
     "An agent that should act as messages arrive calls `wait_for_messages` in a loop with the cursor it returns, instead of polling.";
-  if (skills.length === 0) return intro;
+  const rule = options.allowWrite === false ? READ_ONLY_RULE : SEND_RULE;
+  if (skills.length === 0) return `${intro}\n\n${rule}`;
   return [
     intro,
     "",
     "The workflows behind these tools:",
     ...skills.map((skill) => `- **${skill.name}**: ${trigger(skill.description)}`),
     "",
-    "Each one is available in full as the MCP prompt of the same name. Never send without the user's explicit yes: draft with send_message (it sends nothing), show the preview it returns, and wait for the yes before confirm_send.",
+    `Each one is available in full as the MCP prompt of the same name. ${rule}`,
   ].join("\n");
 }
 

@@ -39,9 +39,10 @@ function isAuthorized(header: string | undefined, expected: string): boolean {
  */
 function buildMcpServer(hub: AccountSource, config: Config, allowWrite: boolean, allowLocalFiles: boolean, client = LOCAL_CLIENT): McpServer {
   const skills = loadSkills();
-  const server = new McpServer({ name: "wazap", version: WAZAP_VERSION }, { instructions: skillInstructions(skills) });
+  const writes = allowWrite && !config.readOnly && anyAccountAllowsWrites(hub);
+  const server = new McpServer({ name: "wazap", version: WAZAP_VERSION }, { instructions: skillInstructions(skills, { allowWrite: writes }) });
   registerTools(server, hub, {
-    allowWrite: allowWrite && !config.readOnly && anyAccountAllowsWrites(hub),
+    allowWrite: writes,
     allowLocalFiles,
     client,
     ...(config.maxInFlight === undefined ? {} : { maxInFlight: config.maxInFlight }),

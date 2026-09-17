@@ -88,6 +88,11 @@ answers.
   it has the recipient and the text and shows the preview the draft returns,
   instead of writing a preview of its own and asking first; a contact
   `find_contact` resolves in a session that can write says the same in `next`.
+- **A session that only reads says so.** Its server instructions say it
+  cannot draft or send, and that a request to send is answered by saying so and
+  offering the text for the user to send from their phone; a contact
+  `find_contact` resolves there carries `can_draft: false` with the same words
+  in `next`.
 - **`find_contact`: who "mama", "Ana de la contabilitate" or "Mișu" is.** A
   read tool, in every session. It matches saved, business and self-given names, the
   `nickname` and `relatie` details, tags, and a note that is only the

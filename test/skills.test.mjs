@@ -58,6 +58,18 @@ test("the server's instructions say a draft is made before asking: send_message 
   assert.doesNotMatch(instructions, /show the recipient and the exact text, then wait for it/, "no longer read as: ask before any call");
 });
 
+test("a session that only reads is told so in the server's instructions: asked to send, it says so instead of pretending", async () => {
+  const { skillInstructions } = await import("../dist/skills.js");
+  for (const skills of [loadSkills(), []]) {
+    const reads = skillInstructions(skills, { allowWrite: false });
+    assert.match(reads, /This connection only reads: it cannot draft or send\. Asked to send, say so, and offer the text for the user to send from their phone or a connection with write access\./);
+    assert.doesNotMatch(reads, /draft with send_message/);
+    const writes = skillInstructions(skills, { allowWrite: true });
+    assert.doesNotMatch(writes, /only reads/);
+    assert.match(writes, /draft with send_message \(it sends nothing\)/, "the send rule stands without skills too");
+  }
+});
+
 test("loadSkills reads the packaged skills into one registry", () => {
   const skills = loadSkills();
   assert.equal(skills.length, 5);

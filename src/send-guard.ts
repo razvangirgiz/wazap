@@ -12,6 +12,13 @@ import { WazapError } from "./errors.js";
 import type { AccountRecord } from "./accounts.js";
 import type { OutgoingTarget } from "./wa-types.js";
 
+/** The rule a session that can send is given, in the server's instructions. */
+export const SEND_RULE = "Never send without the user's explicit yes: draft with send_message (it sends nothing), show the preview it returns, and wait for the yes before confirm_send.";
+
+/** What a session without the send tools is told instead, and a contact it resolves repeats. */
+export const READ_ONLY_RULE =
+  "This connection only reads: it cannot draft or send. Asked to send, say so, and offer the text for the user to send from their phone or a connection with write access.";
+
 /** What a rule or a recipient can be matched on; `number` rides along when known. */
 export interface SendTarget {
   chat_id: string;
