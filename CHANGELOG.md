@@ -63,6 +63,17 @@
 
 ### Changed
 
+- **The account database moves to schema version 5** the first time the server
+  starts, in one transaction. It adds what the coming `catch_up` and
+  `find_contact` read: whether a message mentions the account or was sent
+  through wazap, each chat's newest message of the account's own and how far the
+  phone has read it, and where each client's catch-up left off. Messages of the
+  last 14 days get their mentions in the background after the start. A build
+  before this one refuses a version 5 file (`SCHEMA_TOO_NEW`), so keep a backup
+  if you may go back.
+- **`get_status` counts the read receipts the phone sends**
+  (`diagnostics.read_self`), so it can be checked that they arrive; nothing acts
+  on them yet.
 - **`wazap status` shows OAuth sign-ins when the background service is
   installed.** It used to say OAuth was only served with
   `WAZAP_TRANSPORT=http`, even while the service served it; without the
