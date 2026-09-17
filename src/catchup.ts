@@ -15,8 +15,8 @@
  * 3. when they do not all fit, the lowest-priority quotes shrink to 80
  *    characters, and then the lowest-priority ones go.
  *
- * The cursor is opaque and fixes the window (each account's since and until
- * ids, the instant the digest started) and the place (section, offset), so a
+ * The cursor is opaque and fixes the window (each account's floor and tops,
+ * the instant the digest started) and the place (section, offset), so a
  * page reads what the first page read whatever arrived in between. The
  * client's mark moves to the window's top only after the whole digest was
  * given — a digest with no `more`, or its last page — and only by
@@ -27,7 +27,6 @@ import { z } from "zod";
 import type { AccountSource } from "./account-hub.js";
 import {
   CATCHUP_SECTIONS,
-  tsOfId,
   type AddressedEntry,
   type CallsEntry,
   type CatchupQuote,
@@ -155,11 +154,7 @@ export interface CatchupContext {
 
 interface CursorAccount {
   id: string;
-  s: number;
-  u: number;
-  b: WindowBasis;
-  adv: 0 | 1;
-  x: number | null;
+  w: CatchupWindow;
 }
 
 interface CursorState {
@@ -212,11 +207,18 @@ function decodeCursor(cursor: string, client: string): CursorState {
       (account) =>
         account !== null &&
         typeof account.id === "string" &&
-        ids(account.s) &&
-        ids(account.u) &&
-        typeof account.b === "string" &&
-        (account.adv === 0 || account.adv === 1) &&
-        (account.x === null || ids(account.x))
+        account.w !== null &&
+        typeof account.w === "object" &&
+        ids(account.w.sinceId) &&
+        ids(account.w.untilId) &&
+        Number.isSafeInteger(account.w.afterSeq) &&
+        account.w.afterSeq >= -1 &&
+        ids(account.w.untilSeq) &&
+        ids(account.w.sinceAt) &&
+        ids(account.w.untilAt) &&
+        typeof account.w.basis === "string" &&
+        typeof account.w.advance === "boolean" &&
+        (account.w.expected === null || ids(account.w.expected))
     ) ||
     !CATCHUP_SECTIONS.includes(state.sec) ||
     !ids(state.o)
@@ -285,9 +287,9 @@ function mediaLabel(media: Partial<Record<string, number>>, polls: number): stri
   return parts.join(", ");
 }
 
-function windowOf(window: CatchupWindow, now: number): { since: string; until: string; hours: number; basis: WindowBasis } {
-  const since = tsOfId(window.sinceId + 1);
-  const until = window.basis === "previous" ? tsOfId(window.untilId) + 999 : now;
+function windowOf(window: CatchupWindow): { since: string; until: string; hours: number; basis: WindowBasis } {
+  const since = window.sinceAt;
+  const until = window.untilAt;
   return {
     since: isoWithOffset(since),
     until: isoWithOffset(until),
@@ -297,7 +299,7 @@ function windowOf(window: CatchupWindow, now: number): { since: string; until: s
 }
 
 function windowPhrase(window: CatchupWindow, now: number): string {
-  const since = tsOfId(window.sinceId + 1);
+  const since = window.sinceAt;
   switch (window.basis) {
     case "last":
       return `since your last catch-up (${clock(since, now)})`;
@@ -306,7 +308,7 @@ function windowPhrase(window: CatchupWindow, now: number): string {
     case "mark_expired":
       return "the last 24 h (the last catch-up was over 7 days ago)";
     case "previous":
-      return `the previous catch-up again (${clock(since, now)} – ${clock(tsOfId(window.untilId), now)})`;
+      return `the previous catch-up again (${clock(since, now)} – ${clock(window.untilAt, now)})`;
     case "hours":
       return `the last ${Math.round((now - since) / HOUR)} h`;
     case "since":
@@ -649,11 +651,11 @@ async function settleMark(view: AccountView, client: string, final: boolean, com
   if (!complete) return { moved: false, why: "partial_include" };
   if (scan.connection.status !== "connected") return { moved: false, why: "not_connected" };
   if (scan.connection.sync !== "done") return { moved: false, why: "sync_in_progress" };
-  if (window.untilId === 0 || (window.expected !== null && window.untilId <= window.expected)) return { moved: false, why: "nothing_new" };
+  if (window.expected !== null && window.untilSeq <= window.expected) return { moved: false, why: "nothing_new" };
   if (typeof view.source.catchUpAdvance !== "function") return { moved: false, why: "unsupported" };
   try {
-    const result = await view.source.catchUpAdvance(client, window.untilId, window.expected);
-    return result.advanced ? { moved: true, next_since: isoWithOffset(tsOfId(window.untilId)) } : { moved: false, why: "moved_by_another_call" };
+    const result = await view.source.catchUpAdvance(client, window);
+    return result.advanced ? { moved: true, next_since: isoWithOffset(window.at) } : { moved: false, why: "moved_by_another_call" };
   } catch (err) {
     return { moved: false, why: `failed: ${asWazapError(err).code}` };
   }
@@ -683,10 +685,7 @@ export async function runCatchUp(args: CatchupArgs, ctx: CatchupContext): Promis
           client: ctx.client,
           include,
           at: now,
-          window:
-            fixed === undefined
-              ? spec!
-              : { kind: "fixed", window: { sinceId: fixed.s, untilId: fixed.u, basis: fixed.b, advance: fixed.adv === 1, expected: fixed.x, at: now } },
+          window: fixed === undefined ? spec! : { kind: "fixed", window: { ...fixed.w, at: now } },
         });
       } catch (err) {
         view.error = asWazapError(err);
@@ -726,10 +725,7 @@ export async function runCatchUp(args: CatchupArgs, ctx: CatchupContext): Promis
     k: clientKey(ctx.client),
     t: now,
     i: include,
-    a: answered.map((view) => {
-      const window = view.scan!.window;
-      return { id: view.id, s: window.sinceId, u: window.untilId, b: window.basis, adv: window.advance ? 1 : 0, x: window.expected };
-    }),
+    a: answered.map((view) => ({ id: view.id, w: view.scan!.window })),
     sec: "waiting",
     o: 0,
   };
@@ -853,7 +849,7 @@ export async function runCatchUp(args: CatchupArgs, ctx: CatchupContext): Promis
   const text = lines.join("\n");
 
   const structured: Record<string, unknown> = {
-    window: unionWindow(answered, now),
+    window: unionWindow(answered),
     accounts: views.map((view) =>
       view.scan === null
         ? { account_id: view.id, name: view.name, status: "error", error: { code: view.error!.code, message: view.error!.message } }
@@ -863,7 +859,7 @@ export async function runCatchUp(args: CatchupArgs, ctx: CatchupContext): Promis
             status: view.scan.connection.status,
             ...(view.scan.connection.status !== "connected" && view.scan.connection.since !== null ? { status_since: view.scan.connection.since } : {}),
             ...(view.scan.connection.sync === "done" ? {} : { sync: view.scan.connection.sync }),
-            ...(multi ? { window: windowOf(view.scan.window, now) } : {}),
+            ...(multi ? { window: windowOf(view.scan.window) } : {}),
             mark: marks.get(view.id),
           }
     ),
@@ -979,8 +975,8 @@ function footerData(views: readonly AccountView[], multi: boolean): Record<strin
   return multi ? { accounts: per } : per[0]!;
 }
 
-function unionWindow(views: readonly AccountView[], now: number): { since: string; until: string; hours: number; basis: string } {
-  const each = views.map((view) => windowOf(view.scan!.window, now));
+function unionWindow(views: readonly AccountView[]): { since: string; until: string; hours: number; basis: string } {
+  const each = views.map((view) => windowOf(view.scan!.window));
   const since = Math.min(...each.map((window) => Date.parse(window.since)));
   const until = Math.max(...each.map((window) => Date.parse(window.until)));
   const bases = new Set(each.map((window) => window.basis));

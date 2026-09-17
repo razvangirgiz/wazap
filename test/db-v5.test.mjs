@@ -175,9 +175,13 @@ for (const from of [1, 2, 3, 4]) {
     assert.equal(db.getMeta("via_wazap_known_after"), "migrated_v5");
     assert.equal(db.messages.viaWazapKnownAfter(), Number(db.getMeta("migrated_v5")));
 
+    // What it held reached it before any catch-up mark: no stored_seq, and the first one stored after is 1.
+    assert.equal(db.digest.storedTop(), 0);
+
     // The triggers run from here on, and the fold it left behind finishes with the marks in place.
     const later = db.messages.upsert(own(PEER, "LATER", T0 + 20_000));
     assert.equal(db.identity.chat(PEER).lastOwnId, later.id);
+    assert.equal(db.digest.storedTop(), 1);
     await db.resume();
     assert.equal(db.identity.chat(PEER).lastOwnId, later.id);
     assert.equal(db.messages.get(sid(true, PEER, "SENT2")).flags, from >= 2 ? VIA : 0);
@@ -465,29 +469,33 @@ test("a catch-up mark advances in one statement, only forward, keeping the one b
   assert.equal(db.catchup.get("claude"), null);
   assert.equal(db.catchup.repeat("claude"), null);
 
-  let step = db.catchup.advance("claude", 100);
-  assert.deepEqual(step, { advanced: true, mark: { client: "claude", throughId: 100, previousId: null, updatedAt: clock.now } });
-  assert.deepEqual(db.catchup.repeat("claude"), { afterId: null, throughId: 100 });
+  const started = clock.now - 500;
+  let step = db.catchup.advance("claude", 100, { at: started });
+  assert.deepEqual(step, {
+    advanced: true,
+    mark: { client: "claude", throughSeq: 100, throughAt: started, previousSeq: null, previousAt: null, updatedAt: clock.now },
+  });
+  assert.deepEqual(db.catchup.repeat("claude"), { afterSeq: null, afterAt: null, throughSeq: 100, throughAt: started });
 
   clock.now += 1000;
   step = db.catchup.advance("claude", 250);
-  assert.deepEqual(step.mark, { client: "claude", throughId: 250, previousId: 100, updatedAt: clock.now });
-  assert.deepEqual(db.catchup.repeat("claude"), { afterId: 100, throughId: 250 });
+  assert.deepEqual(step.mark, { client: "claude", throughSeq: 250, throughAt: clock.now, previousSeq: 100, previousAt: started, updatedAt: clock.now });
+  assert.deepEqual(db.catchup.repeat("claude"), { afterSeq: 100, afterAt: started, throughSeq: 250, throughAt: clock.now });
 
   for (const stale of [250, 180]) {
     step = db.catchup.advance("claude", stale);
     assert.equal(step.advanced, false, `${stale} is not past the mark`);
-    assert.deepEqual(db.catchup.repeat("claude"), { afterId: 100, throughId: 250 }, "the window to repeat survives");
+    assert.equal(db.catchup.repeat("claude").afterSeq, 100, "the window to repeat survives");
   }
 
   // A summary built over a mark another call has moved since does not advance it.
-  assert.equal(db.catchup.advance("claude", 400, { expectedThroughId: 100 }).advanced, false);
-  assert.equal(db.catchup.advance("claude", 400, { expectedThroughId: null }).advanced, false, "null expects no mark at all");
-  assert.equal(db.catchup.advance("claude", 400, { expectedThroughId: 250 }).advanced, true);
-  assert.deepEqual(db.catchup.repeat("claude"), { afterId: 250, throughId: 400 });
-  assert.equal(db.catchup.advance("fresh", 7, { expectedThroughId: 3 }).advanced, false, "no mark to expect");
+  assert.equal(db.catchup.advance("claude", 400, { expectedThroughSeq: 100 }).advanced, false);
+  assert.equal(db.catchup.advance("claude", 400, { expectedThroughSeq: null }).advanced, false, "null expects no mark at all");
+  assert.equal(db.catchup.advance("claude", 400, { expectedThroughSeq: 250 }).advanced, true);
+  assert.deepEqual([db.catchup.repeat("claude").afterSeq, db.catchup.repeat("claude").throughSeq], [250, 400]);
+  assert.equal(db.catchup.advance("fresh", 7, { expectedThroughSeq: 3 }).advanced, false, "no mark to expect");
   assert.equal(db.catchup.get("fresh"), null);
-  assert.equal(db.catchup.advance("fresh", 7, { expectedThroughId: null }).advanced, true);
+  assert.equal(db.catchup.advance("fresh", 7, { expectedThroughSeq: null }).advanced, true);
 
   // Clients are independent; a mark rolls back with the transaction around it.
   assert.equal(db.catchup.get("chatgpt"), null);
@@ -497,11 +505,11 @@ test("a catch-up mark advances in one statement, only forward, keeping the one b
       throw new Error("the summary failed after all");
     })
   );
-  assert.equal(db.catchup.get("claude").throughId, 400);
+  assert.equal(db.catchup.get("claude").throughSeq, 400);
   assert.equal(db.catchup.reset("fresh"), true);
   assert.equal(db.catchup.get("fresh"), null);
-  for (const [client, id] of [["", 1], ["x".repeat(201), 1], ["ok", -1], ["ok", 1.5]]) {
-    assert.throws(() => db.catchup.advance(client, id), (err) => err instanceof StorageError && err.code === "INVALID_INPUT");
+  for (const [client, seq] of [["", 1], ["x".repeat(201), 1], ["ok", -1], ["ok", 1.5]]) {
+    assert.throws(() => db.catchup.advance(client, seq), (err) => err instanceof StorageError && err.code === "INVALID_INPUT");
   }
   db.close();
 });
@@ -510,12 +518,51 @@ test("two connections advancing one client's mark cannot both move it from the s
   const { db, path } = openTemp();
   db.catchup.advance("local", 10);
   const other = AccountDb.open(path, { checkpointDelayMs: 0 });
-  const seenByFirst = db.catchup.get("local").throughId;
-  const seenBySecond = other.catchup.get("local").throughId;
-  assert.equal(other.catchup.advance("local", 30, { expectedThroughId: seenBySecond }).advanced, true);
-  assert.equal(db.catchup.advance("local", 20, { expectedThroughId: seenByFirst }).advanced, false);
-  assert.deepEqual(db.catchup.repeat("local"), { afterId: 10, throughId: 30 });
+  const seenByFirst = db.catchup.get("local").throughSeq;
+  const seenBySecond = other.catchup.get("local").throughSeq;
+  assert.equal(other.catchup.advance("local", 30, { expectedThroughSeq: seenBySecond }).advanced, true);
+  assert.equal(db.catchup.advance("local", 20, { expectedThroughSeq: seenByFirst }).advanced, false);
+  assert.deepEqual([db.catchup.repeat("local").afterSeq, db.catchup.repeat("local").throughSeq], [10, 30]);
   other.close();
+  db.close();
+});
+
+// ---------------------------------------------------------------- stored_seq
+
+test("stored_seq orders messages as they reached the account: a late one after, a freed number never again, a replaced stub anew", () => {
+  const { db, path } = openTemp();
+  const seqOf = (messageSid) => {
+    const reader = new (sqlite().DatabaseSync)(path, { readOnly: true });
+    try {
+      return reader.prepare("SELECT stored_seq FROM messages WHERE id = ?").get(idOf(db, messageSid))?.stored_seq ?? null;
+    } finally {
+      reader.close();
+    }
+  };
+  assert.equal(db.digest.storedTop(), 0);
+  const newer = db.messages.upsert(textMessage(PEER, "NEW", T0 + 60_000, "trimis acum"));
+  const late = db.messages.upsert(textMessage(PEER, "LATE", T0, "trimis înainte, sosit după"));
+  assert.ok(late.id < newer.id, "the id orders by when it was sent");
+  assert.ok(seqOf(late.sid) > seqOf(newer.sid), "stored_seq by when it arrived");
+  assert.equal(db.digest.storedTop(), seqOf(late.sid));
+
+  // An update is not an arrival; a stub replaced by the message it stood for is.
+  db.messages.upsert(textMessage(PEER, "NEW", T0 + 60_000, "trimis acum", { status: 3 }));
+  assert.equal(seqOf(newer.sid), 1);
+  const stub = db.messages.upsert(textMessage(PEER2, "STUB", T0 + 1000, "[missing message]", { type: "system" }));
+  const stubSeq = seqOf(stub.sid);
+  db.messages.upsert(textMessage(PEER2, "STUB", T0 + 1000, "decriptat la a doua încercare"));
+  assert.ok(seqOf(stub.sid) > stubSeq);
+  assert.equal(db.digest.storedTop(), seqOf(stub.sid));
+
+  // The newest one goes for good: its number is not handed out again.
+  const story = db.messages.upsert(textMessage("status@broadcast", "STORY", T0 + 2000, "poveste", { senderJid: PEER, expiresAt: T0 + 86_400_000 }));
+  const storySeq = seqOf(story.sid);
+  db.messages.delete(story.sid);
+  assert.equal(idOf(db, story.sid), null, "the status feed keeps no tombstone");
+  assert.equal(db.digest.storedTop(), storySeq);
+  const after = db.messages.upsert(textMessage(PEER, "AFTER", T0 + 3000, "după"));
+  assert.equal(seqOf(after.sid), storySeq + 1);
   db.close();
 });
 
@@ -542,6 +589,21 @@ test("the planned reads use the v5 indexes, not a scan", () => {
       lower,
     ],
     ["mentions in a window", `SELECT m.id FROM messages m WHERE (m.flags & 1) <> 0 AND m.id > ? AND m.id <= ?`, /USING (COVERING )?INDEX messages_mentions/, lower, lower * 2],
+    [
+      "the chats something reached after a catch-up mark",
+      `SELECT m.chat_id, min(m.id) AS low FROM messages m INDEXED BY messages_stored
+       WHERE m.stored_seq > ? AND m.stored_seq <= ? AND m.id > ? AND m.id <= ? GROUP BY m.chat_id`,
+      /USING COVERING INDEX messages_stored/,
+      10,
+      40,
+      lower,
+      lower * 2,
+    ],
+    [
+      "the newest stored_seq handed out",
+      `SELECT stored_seq FROM messages INDEXED BY messages_stored WHERE stored_seq IS NOT NULL ORDER BY stored_seq DESC LIMIT 1`,
+      /USING COVERING INDEX messages_stored/,
+    ],
     ["calls in a window", `SELECT m.id FROM messages m WHERE m.type = 'call' AND m.id > ?`, /USING (COVERING )?INDEX messages_calls/, lower],
     ["polls and events in a window", `SELECT m.id FROM messages m WHERE m.type IN ('poll', 'event') AND m.id > ?`, /USING (COVERING )?INDEX messages_polls/, lower],
     [

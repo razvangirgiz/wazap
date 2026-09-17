@@ -146,7 +146,7 @@ test("the mark is per client: one client's catch-up moves its own mark and leave
   arrive(ANA, "bună, ce faci", { at: Date.now() - 1000 });
   const next = await claude.call("catch_up");
   assert.deepEqual(chatsOf(next, "direct"), [ANA], "only what arrived after the mark");
-  assert.ok(svc.db.catchup.get("oauth:claude").throughId > svc.db.catchup.get("oauth:chatgpt").throughId);
+  assert.ok(svc.db.catchup.get("oauth:claude").throughSeq > svc.db.catchup.get("oauth:chatgpt").throughSeq);
 });
 
 test("stdio sessions catch up as `local`", async () => {
@@ -205,6 +205,45 @@ test("two catch-ups of one client racing each other move the mark once: the one 
   assert.equal(late.structuredContent.accounts[0].mark.moved, false);
   assert.equal(late.structuredContent.accounts[0].mark.why, "moved_by_another_call");
   assert.deepEqual(svc.db.catchup.get("local"), moved, "the later mark stands");
+});
+
+test("what reaches the account after the mark moved is in the next catch-up, however it is dated: a call filed when it ends, a retried decryption, a clock ahead", async () => {
+  const { svc, sock, arrive } = account();
+  const { call } = toolsOf(svc);
+  // A call is ringing, a message could not be decrypted, a phone's clock runs hours ahead.
+  const ring = { id: "CALL1", from: DAN, chatId: DAN, isGroup: false, date: new Date(Date.now() - 40_000), isVideo: false, offline: false };
+  sock.ev.emit("call", [{ ...ring, status: "offer" }]);
+  arrive(ANA, "salut", { at: Date.now() - 10_000 });
+  sock.ev.emit("messages.upsert", {
+    type: "notify",
+    messages: [
+      {
+        key: { remoteJid: ELA, fromMe: false, id: "RETRY1" },
+        messageStubType: proto.WebMessageInfo.StubType.CIPHERTEXT,
+        messageStubParameters: ["Bad MAC"],
+        messageTimestamp: Math.floor((Date.now() - 30_000) / 1000),
+      },
+    ],
+  });
+  arrive(BOT, "ceasul meu o ia înainte", { at: Date.now() + 5 * HOUR });
+  const first = await call("catch_up");
+  assert.equal(first.structuredContent.accounts[0].mark.moved, true);
+  assert.deepEqual(chatsOf(first, "direct").sort(), [ANA, BOT].sort());
+  assert.deepEqual(first.structuredContent.missed_calls, [], "the call is still ringing");
+
+  // The call ends unanswered, filed at its ring; the retry decrypts the message; Ana writes on time.
+  sock.ev.emit("call", [{ ...ring, status: "timeout" }]);
+  arrive(ELA, "mesajul care nu se putea citi", { key: "RETRY1", at: Date.now() - 30_000 });
+  arrive(ANA, "ceva nou", { at: Date.now() });
+  const second = await call("catch_up");
+  assert.deepEqual(second.structuredContent.missed_calls.map((entry) => entry.chat), [DAN], "the call filed under the mark");
+  assert.deepEqual(chatsOf(second, "direct").sort(), [ANA, ELA].sort(), "the decrypted message, and what came after a message dated ahead");
+  assert.equal(second.structuredContent.accounts[0].mark.moved, true);
+
+  const third = await call("catch_up");
+  assert.deepEqual([third.structuredContent.missed_calls, chatsOf(third, "direct")], [[], []], "each is given once");
+  const previous = await call("catch_up", { since: "previous" });
+  assert.deepEqual(chatsOf(previous, "direct").sort(), [ANA, ELA].sort(), "previous repeats what reached the account in that window");
 });
 
 test("a chat's window starts after the user's own reply and after what the phone already read", async () => {
@@ -718,7 +757,7 @@ test("HTTP sessions catch up under the credential's name, never the token", asyn
     accountId: "default",
     accountName: "default",
     connection: { status: "connected", since: null, sync: "done", mentionsIndexing: false },
-    window: { sinceId: 1, untilId: 2 ** 40, basis: "first_run", advance: true, expected: null, at: request.at },
+    window: { sinceId: 1, untilId: 2 ** 40, afterSeq: -1, untilSeq: 9, sinceAt: request.at - 24 * HOUR, untilAt: request.at, basis: "first_run", advance: true, expected: null, at: request.at },
     waiting: [],
     addressed: [],
     calls: [],

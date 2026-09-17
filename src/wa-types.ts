@@ -2,7 +2,7 @@
 
 import type { SearchCoverage } from "./coverage.js";
 import type { DraftPayload, DraftView } from "./drafts.js";
-import type { CatchupQuote, CatchupScan, CatchupScanRequest } from "./catchup-scan.js";
+import type { CatchupQuote, CatchupScan, CatchupScanRequest, CatchupWindow } from "./catchup-scan.js";
 import type { RecallStatus } from "./recall/index.js";
 import type { ProviderName } from "./transcribe/index.js";
 
@@ -652,8 +652,8 @@ export interface WhatsAppApi {
   catchUpScan?(request: CatchupScanRequest): Promise<CatchupScan>;
   /** The messages a catch-up page quotes, read in full by id. */
   catchUpQuotes?(ids: number[]): Promise<CatchupQuote[]>;
-  /** Moves `client`'s catch-up mark to `throughId` while it still is `expected` (compare-and-set). */
-  catchUpAdvance?(client: string, throughId: number, expected: number | null): Promise<{ advanced: boolean }>;
+  /** Moves `client`'s catch-up mark to the top of `window`, while it still is the window's `expected` (compare-and-set). */
+  catchUpAdvance?(client: string, window: CatchupWindow): Promise<{ advanced: boolean }>;
   hasChat(jid: string): boolean;
   hasMessage(id: string): boolean;
   /** What search_messages ran across; optional, so a stand-in need not count. */

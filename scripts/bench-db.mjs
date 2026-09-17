@@ -339,7 +339,7 @@ function catchUpPhase(db, path) {
  * catch_up itself (F2-2) on the 100k-message account: one account's scan of
  * a window (every section, no names to fetch), and the whole digest — scan,
  * the budget pass with its quotes read back by id, the rendering — for the
- * last day and the last week.
+ * last day and the last week, and since a client's mark.
  */
 async function catchUpDigestPhase(db) {
   const host = {
@@ -368,6 +368,10 @@ async function catchUpDigestPhase(db) {
     record: () => ({ id: "bench", name: "Bench", enabled: true, owner: null }),
   };
   const ctx = { hub, wa: source, accountId: "bench", client: "bench", now: () => NOW };
+  // Since a client's mark: what the last 5,000 messages stored brought, off stored_seq, whenever they were sent.
+  db.catchup.advance("bench-mark", Math.max(0, db.digest.storedTop() - 5000), { at: NOW - DAY });
+  const sinceMark = await timeAsync("catch_up: digest since a mark (5k stored), 2500 tokens", 20, () => runCatchUp({ budget_tokens: 2500 }, { ...ctx, client: "bench-mark" }), 1);
+  results.facts.catch_up_digest_mark_2500 = { approx_tokens: sinceMark.structuredContent.approx_tokens, more: sinceMark.structuredContent.more?.remaining ?? null };
   for (const [label, hours] of [["24h", 24], ["7d", 168]]) {
     const scan = await timeAsync(`catch_up: scan ${label}`, 20, () => scanCatchup(db, host, { client: "bench", include, window: { kind: "hours", hours } }, account), 1);
     results.facts[`catch_up_entries_${label}`] = {
@@ -565,6 +569,7 @@ const BUDGETS_P99 = {
   "catch_up: aggregate per active chat 24h": 200,
   "catch_up: digest 24h, 2500 tokens": 200,
   "catch_up: digest 7d, 8000 tokens": 1000,
+  "catch_up: digest since a mark (5k stored), 2500 tokens": 200,
   "catch_up: aggregate grouped by chat 7d": 1000,
   "find: common first name (Ana)": 50,
   "find: nobody (Zzyzx, near-spelling pass)": 100,

@@ -18,7 +18,10 @@
   (`token:read`, `token:write`) and `local` (stdio, and clients sharing a
   running wazap) keeps its own mark per account. A catch-up moves it once all
   of it was given; `since: "previous"` repeats the last one; `hours`, an ISO
-  `since` and a partial `include` leave it where it is.
+  `since` and a partial `include` leave it where it is. The mark follows the
+  order messages reached wazap, not their timestamps, so a message filed late
+  (a missed call stored when it stops ringing, a retried decryption, a clock
+  ahead) is in the next catch-up instead of under the mark.
 - **`#no-catchup`**: a person tagged with it through `update_contact_details`
   stays out of every catch-up, counted in its footer.
 - **`#private` in a catch-up**: a person tagged with it is counted and never
@@ -97,8 +100,9 @@
 - **The account database moves to schema version 5** the first time the server
   starts, in one transaction. It adds what the coming `catch_up` and
   `find_contact` read: whether a message mentions the account or was sent
-  through wazap, each chat's newest message of the account's own and how far the
-  phone has read it, and where each client's catch-up left off. Messages of the
+  through wazap, the order messages reached the account in, each chat's newest
+  message of the account's own and how far the phone has read it, and where
+  each client's catch-up left off. Messages of the
   last 14 days get their mentions in the background after the start. A build
   before this one refuses a version 5 file (`SCHEMA_TOO_NEW`), so keep a backup
   if you may go back.

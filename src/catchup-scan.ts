@@ -6,22 +6,28 @@
  * (`CatchupHost`), so this runs against a bare AccountDb as well (the bench).
  *
  * The window (see resolveWindow):
- * - "last" starts at the client's mark and moves it once the whole digest was
- *   given; a first run, or a mark more than 7 days old, reads the last 24 h;
+ * - "last" reads what reached the account after the client's mark — by
+ *   stored_seq, the order messages were stored in, so a message filed late (a
+ *   call when it ends, dated at its ring; a retried decryption; one dated
+ *   ahead) is in the next catch-up, not under the mark — and moves the mark
+ *   once the whole digest was given; a first run, or a mark more than 7 days
+ *   old, reads the last 24 h;
  * - "previous" repeats the window the last complete digest covered;
- * - "hours" and an ISO "since" are explicit windows and never move the mark;
+ * - "hours" and an ISO "since" are explicit windows by time and never move the mark;
  * - "fixed" is a page after the first, from its cursor.
+ * Nothing sent more than 14 days ago is in any window.
  *
  * Inside it, each chat starts later still: after the user's own last word
  * there and after the newest message the phone reported read (what "missed"
- * means). Nothing reads a message above the window's top, the id fixed when
- * the digest started, so a page after the first sees what the first saw.
+ * means). Nothing reads a message above the window's tops, the id and the
+ * stored_seq fixed when the digest started, so a page after the first sees
+ * what the first saw.
  *
  * `waiting` is not bound by the window: an ask stays until the user answers,
  * marks it handled, or it is 14 days old, as get_unanswered has it.
  */
 import { readsAsAsk } from "./asks.js";
-import type { AccountDb, ChatRecord, DigestMedia, InboundAggregate, TailMessage, WindowMessage } from "./db/index.js";
+import type { AccountDb, ChatRecord, DigestMedia, DigestSpan, InboundAggregate, TailMessage, WindowMessage } from "./db/index.js";
 import { idLowerBound, secondOfId } from "./db/index.js";
 import { signalsOf, type Signal } from "./signals.js";
 
@@ -43,6 +49,8 @@ export const FIRST_RUN_MS = DAY;
 export const MARK_MAX_AGE_MS = 7 * DAY;
 /** An ask older than this was abandoned, not left waiting (get_unanswered's default). */
 export const WAITING_HORIZON_MS = 14 * DAY;
+/** No window reaches further back than this: a message sent earlier and stored late is not missed, it is history. */
+export const WINDOW_FLOOR_MS = WAITING_HORIZON_MS;
 /** How many of their newest messages an ask is looked for among (get_unanswered's scan). */
 const ASK_SCAN = 30;
 /** Voice notes the footer names by id. */
@@ -52,14 +60,21 @@ export const GROUP_META_MAX = 12;
 export const GROUP_META_MS = 1_000;
 
 export interface CatchupWindow {
-  /** Messages above this id (exclusive). */
+  /** Messages above this id (exclusive): sent after the window's start, or at most 14 days ago. */
   sinceId: number;
   /** Messages up to this id (inclusive): the newest the account held when the digest started. */
   untilId: number;
+  /** Messages stored after this stored_seq (exclusive): the client's mark; -1 for a window by time. */
+  afterSeq: number;
+  /** Messages stored up to this stored_seq (inclusive): the newest the account held when the digest started. */
+  untilSeq: number;
+  /** When the window starts and ends, as the answer says it. */
+  sinceAt: number;
+  untilAt: number;
   basis: WindowBasis;
-  /** Whether giving the whole digest moves the client's mark to untilId. */
+  /** Whether giving the whole digest moves the client's mark to untilSeq. */
   advance: boolean;
-  /** The mark the window was built on, for the compare-and-set; null when the client had none. */
+  /** The mark (a stored_seq) the window was built on, for the compare-and-set; null when the client had none. */
   expected: number | null;
   /** The instant the digest started; later pages judge expiry, mutes and ages against it. */
   at: number;
@@ -243,13 +258,21 @@ export function tsOfId(id: number): number {
   return secondOfId(id) * 1000;
 }
 
-/** Where a digest for `client` starts and ends, and whether it may move the mark. Reads the mark, writes nothing. */
+/**
+ * Where a digest for `client` starts and ends, and whether it may move the
+ * mark. Reads the mark and the two tops in one synchronous pass, writes nothing.
+ */
 export function resolveWindow(db: AccountDb, client: string, spec: CatchupWindowSpec, now: number): CatchupWindow {
   if (spec.kind === "fixed") return spec.window;
   const untilId = db.digest.maxId();
-  const recent = (basis: WindowBasis, advance: boolean, expected: number | null): CatchupWindow => ({
-    sinceId: idBefore(now - FIRST_RUN_MS),
+  const untilSeq = db.digest.storedTop();
+  const byTime = (basis: WindowBasis, sinceAt: number, advance: boolean, expected: number | null): CatchupWindow => ({
+    sinceId: idBefore(sinceAt),
     untilId,
+    afterSeq: -1,
+    untilSeq,
+    sinceAt,
+    untilAt: now,
     basis,
     advance,
     expected,
@@ -257,15 +280,20 @@ export function resolveWindow(db: AccountDb, client: string, spec: CatchupWindow
   });
   switch (spec.kind) {
     case "hours":
-      return { sinceId: idBefore(now - spec.hours * HOUR), untilId, basis: "hours", advance: false, expected: null, at: now };
+      return byTime("hours", now - spec.hours * HOUR, false, null);
     case "since":
-      return { sinceId: idBefore(spec.ms), untilId, basis: "since", advance: false, expected: null, at: now };
+      return byTime("since", spec.ms, false, null);
     case "previous": {
       const repeat = db.catchup.repeat(client);
-      if (repeat === null) return recent("first_run", false, null);
+      if (repeat === null) return byTime("first_run", now - FIRST_RUN_MS, false, null);
+      const sinceAt = repeat.afterAt ?? repeat.throughAt - FIRST_RUN_MS;
       return {
-        sinceId: repeat.afterId ?? idBefore(tsOfId(repeat.throughId) - FIRST_RUN_MS),
-        untilId: repeat.throughId,
+        sinceId: repeat.afterSeq === null ? idBefore(sinceAt) : idBefore(repeat.throughAt - WINDOW_FLOOR_MS),
+        untilId,
+        afterSeq: repeat.afterSeq ?? -1,
+        untilSeq: repeat.throughSeq,
+        sinceAt,
+        untilAt: repeat.throughAt,
         basis: "previous",
         advance: false,
         expected: null,
@@ -274,9 +302,20 @@ export function resolveWindow(db: AccountDb, client: string, spec: CatchupWindow
     }
     case "last": {
       const mark = db.catchup.get(client);
-      if (mark === null) return recent("first_run", true, null);
-      if (now - tsOfId(mark.throughId) > MARK_MAX_AGE_MS) return recent("mark_expired", true, mark.throughId);
-      return { sinceId: mark.throughId, untilId, basis: "last", advance: true, expected: mark.throughId, at: now };
+      if (mark === null) return byTime("first_run", now - FIRST_RUN_MS, true, null);
+      if (now - mark.throughAt > MARK_MAX_AGE_MS) return byTime("mark_expired", now - FIRST_RUN_MS, true, mark.throughSeq);
+      return {
+        sinceId: idBefore(now - WINDOW_FLOOR_MS),
+        untilId,
+        afterSeq: mark.throughSeq,
+        untilSeq,
+        sinceAt: mark.throughAt,
+        untilAt: now,
+        basis: "last",
+        advance: true,
+        expected: mark.throughSeq,
+        at: now,
+      };
     }
   }
 }
@@ -379,7 +418,12 @@ export async function scanCatchup(db: AccountDb, host: CatchupHost, request: Cat
   const include = new Set(request.include);
   const window = resolveWindow(db, request.client, request.window, request.at ?? host.now());
   const now = window.at;
-  const { sinceId, untilId } = window;
+  const { sinceId, untilId, afterSeq, untilSeq } = window;
+  /** The window from `afterId` up, the client's mark included. */
+  const windowSpan = (afterId: number): DigestSpan => ({ afterId, untilId, afterSeq, untilSeq });
+  /** From `afterId` up to the window's tops, whatever the mark: what an ask reads back over two weeks. */
+  const openSpan = (afterId: number): DigestSpan => ({ afterId, untilId, afterSeq: -1, untilSeq });
+  const inWindow = (message: { id: number; storedSeq: number }): boolean => message.id > sinceId && message.storedSeq > afterSeq;
   const digest = db.digest;
   const own = host.ownJid();
   const families = digest.families();
@@ -400,9 +444,12 @@ export async function scanCatchup(db: AccountDb, host: CatchupHost, request: Cat
     if (!ownThroughs.has(chat.id)) ownThroughs.set(chat.id, digest.ownThrough(familyOf(chat), untilId));
     return ownThroughs.get(chat.id) ?? null;
   };
-  /** Where "missed" starts in a chat: the window, the user's own last word, the phone's read mark. */
-  const floorOf = (chat: ChatRecord): number =>
-    Math.max(sinceId, ownThrough(chat) ?? 0, chat.readThroughId === null ? 0 : Math.min(chat.readThroughId, untilId));
+  /**
+   * Where "missed" starts in a chat: the window, the lowest id stored in it
+   * (`low`), the user's own last word, the phone's read mark.
+   */
+  const floorOf = (chat: ChatRecord, low: number): number =>
+    Math.max(sinceId, low - 1, ownThrough(chat) ?? 0, chat.readThroughId === null ? 0 : Math.min(chat.readThroughId, untilId));
   const skipped = emptySkips();
   const excludedChats = new Set<number>();
   const noteExcluded = (chat: ChatRecord, messages: number): void => {
@@ -431,7 +478,7 @@ export async function scanCatchup(db: AccountDb, host: CatchupHost, request: Cat
   const horizonTs = now - WAITING_HORIZON_MS;
   const horizonId = idBefore(horizonTs);
   const needCalls = include.has("waiting") || include.has("calls");
-  const calls = needCalls ? digest.calls(Math.min(horizonId, sinceId), untilId, now) : [];
+  const calls = needCalls ? digest.calls(openSpan(Math.min(horizonId, sinceId)), now) : [];
   const callsByChat = new Map<number, Array<WindowMessage & { reading: CallReading }>>();
   for (const call of calls) {
     const reading = readCallText(call.text);
@@ -454,7 +501,7 @@ export async function scanCatchup(db: AccountDb, host: CatchupHost, request: Cat
       if (chat.lastFromMe === true && chat.lastMessageId !== null && chat.lastMessageId <= untilId) continue;
       const family = familyOf(chat);
       const after = Math.max(horizonId, ownThrough(chat) ?? 0);
-      const tail = digest.inboundTail(family, after, untilId, now, ASK_SCAN);
+      const tail = digest.inboundTail(family, openSpan(after), now, ASK_SCAN);
       if (tail.length === 0) continue;
       const group = chat.kind === "group";
       const ask = tail.find(
@@ -468,12 +515,12 @@ export async function scanCatchup(db: AccountDb, host: CatchupHost, request: Cat
         noteExcluded(chat, 0);
         continue;
       }
-      const sinceYou = tail.length < ASK_SCAN ? tail.length : digest.inboundCount(family, after, untilId, now, 999);
+      const sinceYou = tail.length < ASK_SCAN ? tail.length : digest.inboundCount(family, openSpan(after), now, 999);
       const hidden = privateChat(chat) || (group && privateSender(ask.senderId));
       const words = ask.transcript === null ? ask.text : ask.transcript;
       const transcribed = ask.transcript !== null;
       // In a person's chat, what they said after the ask rides with it; a group's chatter has its own row.
-      const then = group || hidden ? undefined : tail.find((message) => message.id > ask.id && message.id > sinceId && quotable(message));
+      const then = group || hidden ? undefined : tail.find((message) => message.id > ask.id && inWindow(message) && quotable(message));
       const answered = group
         ? undefined
         : (callsByChat.get(chat.id) ?? []).find((call) => call.id > ask.id && call.reading.outcome === "answered");
@@ -493,7 +540,7 @@ export async function scanCatchup(db: AccountDb, host: CatchupHost, request: Cat
         ...(then === undefined ? {} : { thenId: then.id }),
         private: hidden,
         sinceYou,
-        newSinceLast: ask.id > sinceId,
+        newSinceLast: inWindow(ask),
         // A private ask gives away nothing of its words, markers included.
         signals: hidden || (ask.type === "voice" && !transcribed) ? [] : [...signalsOf(words)],
         ...(answered === undefined
@@ -516,11 +563,21 @@ export async function scanCatchup(db: AccountDb, host: CatchupHost, request: Cat
   }
 
   // -------------------------------------------------------------- the window, chat by chat
-  const sinceTs = sinceId === 0 ? 0 : tsOfId(sinceId);
-  const active = sinceId >= untilId ? [] : digest.chatsActiveSince(sinceTs);
-  const chatsById = new Map(active.map((chat) => [chat.id, chat]));
+  // Since a mark: the chats something was stored in after it, each from the lowest id stored.
+  // By time: the chats active since the window's start, from there.
+  const byStored = afterSeq >= 0;
+  const hasWindow = byStored ? afterSeq < untilSeq : sinceId < untilId;
+  const active: Array<{ chat: ChatRecord; low: number }> = !hasWindow
+    ? []
+    : byStored
+      ? (() => {
+          const lows = digest.chatsStoredIn(windowSpan(sinceId));
+          return digest.chatsByIds(lows.keys()).map(({ chat, asked }) => ({ chat, low: Math.min(...asked.map((id) => lows.get(id)!)) }));
+        })()
+      : digest.chatsActiveSince(sinceId === 0 ? 0 : tsOfId(sinceId)).map((chat) => ({ chat, low: sinceId + 1 }));
+  const chatsById = new Map(active.map(({ chat }) => [chat.id, chat]));
   type RawDirect = Omit<DirectEntry, "name" | "note" | "saved" | "business" | "unknown"> & { chatRecord: ChatRecord };
-  type RawGroup = Omit<GroupEntry, "name" | "top"> & { chatRecord: ChatRecord; topIds: number[] };
+  type RawGroup = Omit<GroupEntry, "name" | "top"> & { chatRecord: ChatRecord; floor: number; topIds: number[] };
   const rawDirect: RawDirect[] = [];
   const rawGroups: RawGroup[] = [];
   type RawAddressed = Omit<AddressedEntry, "name" | "from"> & { senderId: number | null };
@@ -528,12 +585,12 @@ export async function scanCatchup(db: AccountDb, host: CatchupHost, request: Cat
   const mutedGroups = { groups: 0, count: 0, chats: [] as Array<{ jid: string; count: number }> };
   const wantsWindow = include.has("addressed") || include.has("direct") || include.has("groups");
   const leftGroups = new Set<number>();
-  for (const chat of wantsWindow ? active : []) {
+  for (const { chat, low } of wantsWindow ? active : []) {
     if (chat.kind === "status" || host.isNoise(chat.jid) || chat.jid === own) continue;
     const family = familyOf(chat);
-    const floor = floorOf(chat);
+    const floor = floorOf(chat, low);
     if (floor >= untilId) continue;
-    const aggregate: InboundAggregate = digest.inbound(family, floor, untilId, now);
+    const aggregate: InboundAggregate = digest.inbound(family, windowSpan(floor), now);
     if (aggregate.count === 0) continue;
     if (chat.kind === "newsletter" || chat.kind === "broadcast") {
       const bucket = chat.kind === "newsletter" ? skipped.newsletters : skipped.broadcasts;
@@ -555,7 +612,7 @@ export async function scanCatchup(db: AccountDb, host: CatchupHost, request: Cat
       const addressedId = Math.max(aggregate.lastMentionId ?? 0, aggregate.lastReplyId ?? 0);
       const inWaiting = waitingChats.has(chat.id);
       if (include.has("addressed") && addressedId > 0 && !inWaiting) {
-        const [message] = digest.inboundTail(family, addressedId - 1, addressedId, now, 1);
+        const [message] = digest.inboundTail(family, { ...windowSpan(addressedId - 1), untilId: addressedId }, now, 1);
         if (message !== undefined) {
           rawAddressed.push({
             chat: chat.jid,
@@ -578,11 +635,12 @@ export async function scanCatchup(db: AccountDb, host: CatchupHost, request: Cat
         mutedGroups.chats.push({ jid: chat.jid, count: aggregate.count });
         continue;
       }
-      const top = digest.topSenders(family, floor, untilId, now, 3);
+      const top = digest.topSenders(family, windowSpan(floor), now, 3);
       for (const sender of top) contactIds.add(sender.senderId);
       rawGroups.push({
         chat: chat.jid,
         chatRecord: chat,
+        floor,
         count: aggregate.count,
         senders: aggregate.senders,
         topIds: top.map((sender) => sender.senderId),
@@ -597,12 +655,12 @@ export async function scanCatchup(db: AccountDb, host: CatchupHost, request: Cat
     }
     // A direct chat.
     if (aggregate.voiceUntranscribed > 0) {
-      const voices = digest.untranscribedVoice(family, floor, untilId, now, VOICE_IDS_MAX);
+      const voices = digest.untranscribedVoice(family, windowSpan(floor), now, VOICE_IDS_MAX);
       for (const voice of voices) noteVoice(sidOf(chat.jid, voice.keyId));
       voiceCount += Math.max(0, aggregate.voiceUntranscribed - voices.length);
     }
     if (!include.has("direct") || waitingChats.has(chat.id)) continue;
-    const newest = digest.inboundTail(family, floor, untilId, now, 5, 400).find(quotable);
+    const newest = digest.inboundTail(family, windowSpan(floor), now, 5, 400).find(quotable);
     rawDirect.push({
       chat: chat.jid,
       chatRecord: chat,
@@ -619,9 +677,9 @@ export async function scanCatchup(db: AccountDb, host: CatchupHost, request: Cat
   }
 
   // Polls and events nobody has answered for the user, even in a muted group.
-  if (include.has("addressed") && sinceId < untilId) {
+  if (include.has("addressed") && hasWindow) {
     const me = own === "" ? null : db.identity.contactIdOf(own);
-    for (const poll of digest.openPolls(sinceId, untilId, now, me)) {
+    for (const poll of digest.openPolls(windowSpan(sinceId), now, me)) {
       const chat = chatsById.get(poll.chatId) ?? db.identity.chatById(poll.chatId);
       if (chat === null || chat.kind !== "group" || leftGroups.has(chat.id) || host.leftGroup(chat)) continue;
       if (isExcluded(chat)) continue;
@@ -646,11 +704,10 @@ export async function scanCatchup(db: AccountDb, host: CatchupHost, request: Cat
   for (const group of rawGroups) {
     if (privateChat(group.chatRecord)) continue;
     const family = familyOf(group.chatRecord);
-    const floor = floorOf(group.chatRecord);
     group.hotId =
-      digest.mostReacted(family, floor, untilId, now, { excludeSenders: privacy.contactIds }) ??
+      digest.mostReacted(family, windowSpan(group.floor), now, { excludeSenders: privacy.contactIds }) ??
       digest
-        .inboundTail(family, floor, untilId, now, 10, 400)
+        .inboundTail(family, windowSpan(group.floor), now, 10, 400)
         .find((message) => quotable(message) && message.text.length >= 20 && !privateSender(message.senderId))?.id ??
       null;
   }
@@ -660,7 +717,7 @@ export async function scanCatchup(db: AccountDb, host: CatchupHost, request: Cat
   const rawCalls = new Map<string, RawCall>();
   if (include.has("calls")) {
     for (const call of calls) {
-      if (call.id <= sinceId || call.fromMe) continue;
+      if (!inWindow(call) || call.fromMe) continue;
       const reading = readCallText(call.text);
       if (reading === null || reading.outcome !== "missed") continue;
       const chat = chatsById.get(call.chatId) ?? db.identity.chatById(call.chatId);
@@ -699,10 +756,10 @@ export async function scanCatchup(db: AccountDb, host: CatchupHost, request: Cat
 
   // -------------------------------------------------------------- stories
   let rawStories: { count: number; authors: number[] } | null = null;
-  if (include.has("stories") && sinceId < untilId) {
+  if (include.has("stories") && hasWindow) {
     const statusId = digest.statusChatId();
     if (statusId !== null) {
-      const found = digest.stories(statusId, sinceId, untilId, now);
+      const found = digest.stories(statusId, windowSpan(sinceId), now);
       if (found.count > 0) {
         rawStories = found;
         for (const author of found.authors.slice(0, 5)) contactIds.add(author);
@@ -767,7 +824,7 @@ export async function scanCatchup(db: AccountDb, host: CatchupHost, request: Cat
     });
 
   const groups: GroupEntry[] = rawGroups
-    .map(({ chatRecord: _chat, topIds, ...entry }) => ({
+    .map(({ chatRecord: _chat, floor: _floor, topIds, ...entry }) => ({
       ...entry,
       name: host.nameOf(entry.chat),
       top: topIds.map((id) => personName(id, "someone")),

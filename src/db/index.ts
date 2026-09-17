@@ -48,14 +48,19 @@
  *   account's own number; requestFlagsBackfill() asks for it again.
  * - (v5) chats.read_through_id moves only through messages.markReadSelf, only
  *   forward, and only onto someone else's message; last_own_id is kept by the
- *   schema. catchup.advance is compare-and-set when given expectedThroughId.
+ *   schema. catchup.advance is compare-and-set when given expectedThroughSeq.
+ * - (v5) messages.stored_seq is handed out by every insert, one past the
+ *   highest ever given (a delete of the newest keeps it in meta), and renewed
+ *   when a system stub is replaced by the message it stood for; nothing else
+ *   writes it. Rows from before v5 have none and read as 0.
  * - (v5) contacts.find keeps the people it folded in memory, refolding a
  *   person when any of their row changes; groups need `leftGroup` to exclude
  *   the ones the account left.
  * - digest (catch_up) reads only: every read is bounded above by the untilId
- *   the caller fixed (digest.maxId() when a digest starts), and per-chat reads
- *   take the chat's family (families()), so a page after the first sees what
- *   the first saw while a lid chat folds.
+ *   and untilSeq the caller fixed (digest.maxId() and digest.storedTop() when a
+ *   digest starts, in one synchronous pass), and per-chat reads take the chat's
+ *   family (families()), so a page after the first sees what the first saw
+ *   while a lid chat folds.
  */
 import { CatchupMarks } from "./catchup.js";
 import { Contacts, type LeftGroup } from "./contacts.js";
@@ -86,7 +91,7 @@ export { FLAGS_BACKFILL_META, FLAGS_BACKFILL_WINDOW_MS } from "./messages.js";
 export { MESSAGE_FLAGS } from "./types.js";
 export type { CatchupAdvance, CatchupMark, CatchupMarks } from "./catchup.js";
 export { DIGEST_MEDIA } from "./digest.js";
-export type { Digest, DigestContact, DigestMedia, InboundAggregate, TailMessage, WindowMessage } from "./digest.js";
+export type { Digest, DigestContact, DigestMedia, DigestSpan, InboundAggregate, TailMessage, WindowMessage } from "./digest.js";
 export { FIND_SCORES } from "./contacts.js";
 export type { ContactCandidate, Contacts, FindInput, FindKind, FindResult, FindVerdict, LeftGroup, MatchClass, MatchSource, QualifierHit, QualifierSource } from "./contacts.js";
 export { DIMINUTIVES, INFLECTIONS, RELATIONSHIPS, diminutivesOf, inflectionForms, nameWords, relationOf, relationNameMatch } from "./names.js";

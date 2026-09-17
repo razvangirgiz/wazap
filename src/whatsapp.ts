@@ -36,7 +36,17 @@ import { accountPolicy, type AccountRecord } from "./accounts.js";
 import { wordsAsk } from "./asks.js";
 import { clearAuth, readLinkedAccount, useAtomicAuthState, type LinkedAccount } from "./auth-state.js";
 import { CallTracker, callMessage, isTrackedCall, type CallEntry } from "./calls.js";
-import { GROUP_META_MAX, GROUP_META_MS, quotesOf, scanCatchup, type CatchupHost, type CatchupQuote, type CatchupScan, type CatchupScanRequest } from "./catchup-scan.js";
+import {
+  GROUP_META_MAX,
+  GROUP_META_MS,
+  quotesOf,
+  scanCatchup,
+  type CatchupHost,
+  type CatchupQuote,
+  type CatchupScan,
+  type CatchupScanRequest,
+  type CatchupWindow,
+} from "./catchup-scan.js";
 import { BAILEYS_VERSION, WAZAP_VERSION, writesHints, type AccountPaths, type Config } from "./config.js";
 import {
   AccountDb,
@@ -1991,8 +2001,10 @@ export class WhatsAppService implements WhatsAppApi {
     return this.guarded(async () => quotesOf(this.db, ids));
   }
 
-  catchUpAdvance(client: string, throughId: number, expected: number | null): Promise<{ advanced: boolean }> {
-    return this.guarded(async () => ({ advanced: this.db.catchup.advance(client, throughId, { expectedThroughId: expected }).advanced }));
+  catchUpAdvance(client: string, window: CatchupWindow): Promise<{ advanced: boolean }> {
+    return this.guarded(async () => ({
+      advanced: this.db.catchup.advance(client, window.untilSeq, { at: window.at, expectedThroughSeq: window.expected }).advanced,
+    }));
   }
 
   private catchupHost(): CatchupHost {

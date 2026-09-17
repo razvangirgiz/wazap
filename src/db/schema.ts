@@ -639,9 +639,18 @@ CREATE INDEX events_message ON events(message_id) WHERE message_id IS NOT NULL;
  * - chats.read_through_id: the newest message the account's own devices (the
  *   phone) reported read in the chat; it only moves forward, and a fold keeps
  *   the later of the two.
- * - catchup_marks: per client of the account, the newest message id a summary
- *   covered (through_id) and the one before it (previous_id), so a summary can
- *   be repeated; advanced in one statement.
+ * - messages.stored_seq: the order the account stored its messages in, one
+ *   past the highest ever handed out (a physical delete of the newest keeps its
+ *   number in meta stored_seq_high), so it only grows. The id orders messages
+ *   by when they were sent; this orders them by when they reached the account,
+ *   so a message filed late — a call when it ends, dated at its ring, a message
+ *   decrypted on a retry, one the phone dates ahead — still comes after what
+ *   was stored before it. A system stub replaced by the message it stood for
+ *   (a retried decryption) takes a new one. Null for what a file held before v5.
+ * - catchup_marks: per client of the account, the stored_seq a summary
+ *   covered through and when it started (through_seq, through_at), and the
+ *   same of the one before it (previous_seq, previous_at), so a summary can be
+ *   repeated; advanced in one statement.
  * - sent_keys: the WhatsApp key of every send wazap let go of (it left draft),
  *   kept 90 days — the window the draft context reads — while the send rows
  *   themselves go a day after they settle. Nothing but the key and when.
@@ -650,16 +659,33 @@ CREATE INDEX events_message ON events(message_id) WHERE message_id IS NOT NULL;
  */
 const V5 = `
 ALTER TABLE messages ADD COLUMN flags INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE messages ADD COLUMN stored_seq INTEGER;
 ALTER TABLE chats ADD COLUMN last_own_id INTEGER;
 ALTER TABLE chats ADD COLUMN read_through_id INTEGER;
 
 CREATE TABLE catchup_marks(
   client TEXT NOT NULL,
-  through_id INTEGER NOT NULL,
-  previous_id INTEGER,
+  through_seq INTEGER NOT NULL,
+  through_at INTEGER NOT NULL,
+  previous_seq INTEGER,
+  previous_at INTEGER,
   updated_at INTEGER NOT NULL,
   PRIMARY KEY (client)
 ) STRICT, WITHOUT ROWID;
+
+-- What reached the account after a stored_seq, and the newest one handed out,
+-- off the index; chat_id rides along so a window's chats read the index alone.
+CREATE INDEX messages_stored ON messages(stored_seq, chat_id) WHERE stored_seq IS NOT NULL;
+
+-- A physical delete of the newest stored message keeps its number, so the
+-- next message never takes a stored_seq a catch-up mark already covers.
+CREATE TRIGGER messages_stored_high AFTER DELETE ON messages
+WHEN old.stored_seq IS NOT NULL AND old.stored_seq > coalesce((
+  SELECT stored_seq FROM messages INDEXED BY messages_stored WHERE stored_seq IS NOT NULL ORDER BY stored_seq DESC LIMIT 1), 0)
+BEGIN
+  INSERT INTO meta(key, value) VALUES ('stored_seq_high', CAST(old.stored_seq AS TEXT))
+  ON CONFLICT(key) DO UPDATE SET value = excluded.value WHERE CAST(excluded.value AS INTEGER) > CAST(meta.value AS INTEGER);
+END;
 
 CREATE TABLE sent_keys(
   key_id TEXT NOT NULL,

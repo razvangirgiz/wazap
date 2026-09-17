@@ -314,6 +314,10 @@ the token (`WAZAP_READ_TOKEN` and `WAZAP_WRITE_TOKEN` are two clients), or
 `local` for stdio and the clients sharing a running wazap. By default a
 catch-up reads since that client's last complete one, and moves the mark once
 all of it was given: a digest with no `more`, or the last page of one. The
+mark follows what reached wazap, not the time a message carries, so a message
+filed late — a missed call stored when it stops ringing, a message decrypted on
+a retry, one from a phone whose clock runs ahead — is in the next catch-up
+rather than under the mark; nothing sent more than two weeks ago counts. The
 first time, or when the mark is more than a week old, it reads the last 24
 hours and says so. `since: "previous"` gives the last catch-up again;
 `hours: N` or an ISO `since` read an explicit window and leave the mark where
