@@ -358,10 +358,12 @@ without a restart.
 **Style check.** A text draft to a person you have written to yourself (not
 through wazap) at least five times in 90 days comes back with `style_check`: `warnings` among
 `language_mismatch`, `diacritics_mismatch` (with diacritics where you write
-without them, or the reverse), `address_mismatch` (tu where you say
-dumneavoastră, or the reverse) and `length_outlier` (over three times your
-usual longest there, and over 80 characters), with the `basis` it was measured
-on. It never blocks a draft; words you dictated stay as they are.
+without them, or words like „mâine” without them where you use them),
+`address_mismatch` (tu where you say dumneavoastră, or the reverse) and
+`length_outlier` (over three times your usual longest there, and over 80
+characters), with the `basis` it was measured on. What the draft quotes does
+not count, nor "doamna" said of someone else, nor a plural spoken to two
+people. It never blocks a draft; words you dictated stay as they are.
 
 **The address book.** Names come from the phone. When no contact has a saved
 name yet, the first `find_contact` of a server run asks WhatsApp for the

@@ -9,7 +9,8 @@
 export interface StyleStats {
   basis: { own_messages: number; days: number; scope: "chat" | "account" };
   language: "ro" | "en" | "other";
-  diacritics: "none" | "some" | "most";
+  /** How many of the user's longer Romanian messages carry diacritics: unknown without one long enough to tell, none for other languages. */
+  diacritics: "none" | "some" | "most" | "unknown";
   address: "tu" | "dumneavoastra" | "unknown";
   length_chars: { p50: number; p90: number };
   /** Share of messages with at least one emoji, 0..1. */
@@ -41,10 +42,27 @@ const RO_CLITIC = /^(?:s|m|t|l|i|n|v|ne|mi|ti|si|le|ma|te|v-am|ne-am)-\p{L}+$/u;
 const RO_DIACRITICS = /[ăâîșşțţĂÂÎȘŞȚŢ]/u;
 /** How many letters a message needs before its lack of diacritics says anything. */
 const DIACRITIC_MIN_LETTERS = 15;
+/**
+ * Words written with a diacritic in Romanian, folded: a draft without
+ * diacritics lacks them only when it has one of these ("mâine", "și"); "ne
+ * vedem la birou" needs none. A clitic counts by its first part ("ți-am").
+ */
+const NEEDS_DIACRITICS = new Set(
+  (
+    "si sa ca in intr dintr intr-o intr-un iti imi isi ti cand cat cata cate cati dupa pana maine poimaine alaltaieri asa inca " +
+    "fara tau tai lasa acasa buna multumesc multumim poti stiu stii stie stim stiti esti ati sunteti aveti puteti vreti veniti " +
+    "spuneti trimiteti ma vad vazut facut intreb intrebat intalnire intarzii intarziere incerc inteleg astept asteptam sedinta " +
+    "saptamana sambata duminica marti sase sapte doua masina scoala gradinita impreuna niciodata odata atata placere placut " +
+    "parere pret adica cateva catre mancare mananc sotia sotul matusa"
+  ).split(" ")
+);
 
-const FORMAL = new Set(["dumneavoastra", "dvs", "dvs.", "dv", "dumneata", "domnule", "doamna"]);
-/** Second person plural verbs: formal address in a one-to-one chat. */
+/** Second person address; "doamna" and "domnule" name someone as often as they address the reader, so they do not count. */
+const FORMAL = new Set(["dumneavoastra", "dvs", "dvs.", "dv", "dumneata"]);
+/** Second person plural verbs: formal address in a one-to-one chat, unless the message speaks to several people. */
 const FORMAL_VERBS = new Set(["aveti", "puteti", "sunteti", "doriti", "stiti", "vreti", "veniti", "trimiteti", "spuneti", "ati"]);
+/** Words that make a plural verb plural, not formal: "ați ajuns amândoi?". */
+const SEVERAL_READERS = new Set(["amandoi", "amandoua", "voi", "voua", "vostru", "voastra", "vostri", "voastre", "toti", "toate", "tuturor"]);
 const INFORMAL = new Set(["tu", "te", "iti", "ti", "tine", "ta", "tau", "tale", "esti", "poti", "vrei", "stii", "vii", "faci", "zici", "crezi", "hai", "ai"]);
 const MIN_ADDRESS_MESSAGES = 2;
 
@@ -99,8 +117,9 @@ export function styleOf(texts: readonly string[], basis: StyleStats["basis"], op
     if (roHits > enHits) {
       ro++;
       romanian.push(text);
-      if (tokens.some((token) => FORMAL.has(token) || (options.oneToOne === true && FORMAL_VERBS.has(token)))) formal++;
-      else if (tokens.some((token) => INFORMAL.has(token))) informal++;
+      const address = addressOf(tokens, options.oneToOne === true);
+      if (address === "dumneavoastra") formal++;
+      else if (address === "tu") informal++;
     } else if (enHits > roHits) {
       en++;
     }
@@ -119,8 +138,12 @@ export function styleOf(texts: readonly string[], basis: StyleStats["basis"], op
   let diacritics: StyleStats["diacritics"] = "none";
   if (language === "ro") {
     const long = romanian.filter((text) => (text.match(/\p{L}/gu)?.length ?? 0) >= DIACRITIC_MIN_LETTERS);
-    const share = long.length === 0 ? 0 : long.filter((text) => RO_DIACRITICS.test(text)).length / long.length;
-    diacritics = share >= 0.6 ? "most" : share >= 0.1 ? "some" : "none";
+    if (long.length === 0) {
+      diacritics = "unknown";
+    } else {
+      const share = long.filter((text) => RO_DIACRITICS.test(text)).length / long.length;
+      diacritics = share >= 0.6 ? "most" : share >= 0.1 ? "some" : "none";
+    }
   }
 
   let address: StyleStats["address"] = "unknown";
@@ -142,10 +165,27 @@ export function styleOf(texts: readonly string[], basis: StyleStats["basis"], op
   };
 }
 
+/** The form of address a Romanian message's words use, or null for none. */
+function addressOf(tokens: readonly string[], oneToOne: boolean): "tu" | "dumneavoastra" | null {
+  const plural = oneToOne && !tokens.some((token) => SEVERAL_READERS.has(token)) && tokens.some((token) => FORMAL_VERBS.has(token));
+  if (plural || tokens.some((token) => FORMAL.has(token))) return "dumneavoastra";
+  return tokens.some((token) => INFORMAL.has(token)) ? "tu" : null;
+}
+
+/** Quoted words ("…", „…”, «…») and what follows "a zis:" or "said:" are someone else's, not the draft's style. */
+function ownWords(text: string): string {
+  const unquoted = text.replace(/„[^”"]*[”"]|“[^”]*”|"[^"]*"|«[^»]*»/gu, " ");
+  const reported = /\b(?:zis|zice|spus|spune|scris|scrie|[îi]ntrebat|[îi]ntreab[ăa]|r[ăa]spuns|said|says|wrote|writes|asked|told)\s*:/iu.exec(unquoted);
+  return reported === null ? unquoted : unquoted.slice(0, reported.index + reported[0].length);
+}
+
 /** What one message says about its own style: a draft, read with the tables styleOf reads the user's messages with. */
 export interface MessageStyle {
   language: "ro" | "en" | "other";
-  /** Whether it carries Romanian diacritics; null when it is not Romanian or too short to tell. */
+  /**
+   * Romanian only: true when it carries diacritics, false when it has words
+   * that need them and none do ("maine", "si"), null otherwise.
+   */
   diacritics: boolean | null;
   /** The form of address it uses; null when it names none, or is not Romanian. */
   address: "tu" | "dumneavoastra" | null;
@@ -155,13 +195,14 @@ export interface MessageStyle {
 
 /**
  * The style of a single message, for comparing a draft with StyleStats:
- * language by function words, diacritics once it has enough letters, and the
+ * language by function words, diacritics by the words that need them, and the
  * form of address by the same markers (plural verbs count as formal only
- * `oneToOne`).
+ * `oneToOne`, and not when speaking to several). What it quotes is left out.
  */
 export function messageStyle(text: string, options: { oneToOne?: boolean } = {}): MessageStyle {
   const trimmed = text.trim();
-  const tokens = words(trimmed);
+  const own = ownWords(trimmed);
+  const tokens = words(own);
   let roHits = 0;
   let enHits = 0;
   for (const token of tokens) {
@@ -172,9 +213,9 @@ export function messageStyle(text: string, options: { oneToOne?: boolean } = {})
   let diacritics: boolean | null = null;
   let address: MessageStyle["address"] = null;
   if (language === "ro") {
-    if ((trimmed.match(/\p{L}/gu)?.length ?? 0) >= DIACRITIC_MIN_LETTERS) diacritics = RO_DIACRITICS.test(trimmed);
-    if (tokens.some((token) => FORMAL.has(token) || (options.oneToOne === true && FORMAL_VERBS.has(token)))) address = "dumneavoastra";
-    else if (tokens.some((token) => INFORMAL.has(token))) address = "tu";
+    if (RO_DIACRITICS.test(own)) diacritics = true;
+    else if (tokens.some((token) => NEEDS_DIACRITICS.has(token) || NEEDS_DIACRITICS.has(token.split("-")[0]!))) diacritics = false;
+    address = addressOf(tokens, options.oneToOne === true);
   }
   return { language, diacritics, address, chars: [...trimmed].length };
 }

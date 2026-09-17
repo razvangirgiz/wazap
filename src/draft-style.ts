@@ -134,13 +134,19 @@ export function styleCheckFor(db: AccountDb, chatJid: string, text: string): Sty
 }
 
 const LANGUAGE: Record<string, string> = { ro: "Romanian", en: "English", other: "no clear language" };
-const DIACRITICS: Record<StyleStats["diacritics"], string> = { none: "without diacritics", some: "sometimes with diacritics", most: "with diacritics" };
+const DIACRITICS: Record<StyleStats["diacritics"], string | null> = {
+  none: "without diacritics",
+  some: "sometimes with diacritics",
+  most: "with diacritics",
+  unknown: null,
+};
 const ADDRESS: Record<string, string> = { tu: "tu", dumneavoastra: "dumneavoastră" };
 
 /** A style note in one line: "Romanian, without diacritics, on tu, ~40 characters (up to 90)". */
 export function styleLine(style: Pick<StyleStats, "language" | "diacritics" | "address" | "length_chars">): string {
   const parts = [LANGUAGE[style.language] ?? style.language];
-  if (style.language === "ro") parts.push(DIACRITICS[style.diacritics]);
+  const diacritics = DIACRITICS[style.diacritics];
+  if (style.language === "ro" && diacritics !== null) parts.push(diacritics);
   if (style.address !== "unknown") parts.push(`on ${ADDRESS[style.address]}`);
   parts.push(`~${style.length_chars.p50} characters (up to ${style.length_chars.p90})`);
   return parts.join(", ");
@@ -156,11 +162,11 @@ export function styleCheckLines(check: StyleCheck | undefined): string[] {
       ? "the draft has diacritics; the user writes here without them"
       : "the draft has no diacritics; the user writes here with them",
     address_mismatch: `the draft says ${ADDRESS[draft.address ?? ""] ?? "?"}; the user says ${ADDRESS[basis.address] ?? "?"} here`,
-    length_outlier: `the draft is ${draft.chars} characters; the user's messages here run up to ${basis.length_chars.p90}`,
+    length_outlier: `the draft is ${draft.chars} characters; the user's messages here run up to ${basis.length_chars.p90}. Shorten only if nothing the user asked for is lost`,
   };
-  return [
-    `Style check, against the user's last ${basis.own_messages} messages in this chat:`,
-    ...check.warnings.map((warning) => `- ${warning}: ${said[warning]}`),
-    "Unless the user dictated these exact words, draft again to match, then show that preview.",
-  ];
+  const lines = [`Style check, against the user's last ${basis.own_messages} messages in this chat:`, ...check.warnings.map((warning) => `- ${warning}: ${said[warning]}`)];
+  if (check.warnings.some((warning) => warning !== "length_outlier")) {
+    lines.push("Unless the user dictated these exact words, draft again to match, then show that preview.");
+  }
+  return lines;
 }

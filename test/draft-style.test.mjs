@@ -44,9 +44,31 @@ test("one message's style: language by function words, diacritics past a few let
   assert.equal(messageStyle("Sunteți disponibil mâine?").address, null, "a plural verb is formal only one-to-one");
   assert.equal(messageStyle("poti sa vii si tu mai devreme").address, "tu");
   assert.equal(messageStyle("poti sa vii si tu mai devreme").diacritics, false);
-  assert.equal(messageStyle("da, și eu").diacritics, null, "too short to say");
+  assert.equal(messageStyle("da, și eu").diacritics, true, "a diacritic is a diacritic, however short the message");
   assert.deepEqual(messageStyle("See you at the office tomorrow"), { language: "en", diacritics: null, address: null, chars: 30 });
   assert.equal(messageStyle("👍").language, "other");
+});
+
+test("no false style warnings: no evidence of diacritics, words that need none, a third person, a couple, a quote", () => {
+  const { db, write, check } = account();
+  // Short replies only: nothing says how the user writes diacritics.
+  write(ANA, ["ok", "da", "vin", "bine", "pa"]);
+  assert.equal(db.messages.styleFor(ANA).diacritics, "unknown");
+  const long = check(ANA, "Adresa e Str. Lalelelor 5, bl. A2, sc. 1, ap. 14, interfon 14. Te aștept la 7, nu întârzia");
+  assert.deepEqual(long.warnings, ["length_outlier"]);
+  assert.match(styleCheckLines(long).join("\n"), /Shorten only if nothing the user asked for is lost/);
+
+  write(JOHN, ["ce faci, esti acasa?", "hai ca te sun", "poti sa vii maine?", "iti zic diseara ce facem", "tu ai vorbit cu el?"]);
+  assert.deepEqual(check(JOHN, "Am vorbit cu doamna de la banca, zice ca e ok").warnings, [], "doamna is someone else, not the reader");
+  assert.deepEqual(check(JOHN, "Ati ajuns acasa cu bine amandoi?").warnings, [], "two people addressed, not one formally");
+  assert.deepEqual(check(JOHN, "Mi-a zis: please send the invoice to the office by Friday, thanks").warnings, [], "a quote is not the draft's language");
+  assert.deepEqual(check(JOHN, "Ti-a scris „please send the invoice to the office today” si atat").warnings, []);
+  assert.deepEqual(check(JOHN, "Sunteti acasa? Va astept").warnings, ["address_mismatch"], "a plural verb to one person still is formal");
+
+  write(NOTAR, ["Mulțumesc, ajung în zece minute la tine", "Mâine nu pot, poate joi după-amiază", "Știu, îți zic când plec de acasă", "Bine, ne vedem acolo la șapte și jumătate", "Da, am primit actele, mulțumesc frumos"]);
+  assert.equal(db.messages.styleFor(NOTAR).diacritics, "most");
+  assert.deepEqual(check(NOTAR, "Ok, ne vedem la birou la ora zece").warnings, [], "no word here needs a diacritic");
+  assert.deepEqual(check(NOTAR, "Ok, ne vedem maine la birou la ora zece").warnings, ["diacritics_mismatch"], "mâine does");
 });
 
 test("Romanian written without diacritics, and a draft with them: diacritics_mismatch", () => {

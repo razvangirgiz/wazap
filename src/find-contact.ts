@@ -324,7 +324,7 @@ const candidateSchema = z.object({
 const styleSchema = z.object({
   basis: z.object({ own_messages: z.number().int(), days: z.number().int(), scope: z.enum(["chat", "account"]) }),
   language: z.enum(["ro", "en", "other"]),
-  diacritics: z.enum(["none", "some", "most"]),
+  diacritics: z.enum(["none", "some", "most", "unknown"]),
   address: z.enum(["tu", "dumneavoastra", "unknown"]),
   length_chars: z.object({ p50: z.number(), p90: z.number() }),
   emoji_rate: z.number(),
