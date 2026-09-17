@@ -44,6 +44,7 @@ import type { Connection } from "./connection.js";
 import { StorageError } from "./errors.js";
 import { foldText } from "./fold.js";
 import { idLowerBound } from "./ids.js";
+import { VISIBLE } from "./rows.js";
 import {
   diminutivesOf,
   editDistance,
@@ -706,11 +707,13 @@ export class Contacts {
     const wroteIn = new Map<number, Set<number>>();
     if (qualifierGroups.length > 0 && people.length > 0) {
       for (const row of this.c.all<{ sender_id: number; chat_id: number }>(
-        `SELECT DISTINCT m.sender_id, m.chat_id FROM messages m
-         WHERE m.chat_id IN (SELECT value FROM json_each(?)) AND m.id >= ? AND m.sender_id IN (SELECT value FROM json_each(?))`,
+        `SELECT DISTINCT m.sender_id, c.id AS chat_id FROM messages m CROSS JOIN chats c ON c.id = m.chat_id
+         WHERE m.chat_id IN (SELECT value FROM json_each(?)) AND m.id >= ? AND m.sender_id IN (SELECT value FROM json_each(?))
+           AND ${VISIBLE}`,
         JSON.stringify(qualifierGroups.map((group) => group.id)),
         since90,
-        JSON.stringify(people.flatMap((entry) => entry.familyContacts))
+        JSON.stringify(people.flatMap((entry) => entry.familyContacts)),
+        now
       )) {
         const set = wroteIn.get(row.sender_id) ?? new Set<number>();
         set.add(row.chat_id);
@@ -757,17 +760,20 @@ export class Contacts {
     }
   }
 
-  /** The groups a person shares with the user, for a candidate that is returned: off their newest messages. */
+  /** The groups a person shares with the user, for a candidate that is returned: off their newest messages a reader may see. */
   private withGroups(entry: Scored, groupRows: readonly GroupRow[]): ContactCandidate {
     const candidate = entry.candidate;
     if (entry.person === null || entry.familyContacts.length === 0) return candidate;
     const rows = this.c.all<{ chat_id: number; merged_into: number | null; last_id: number }>(
       `SELECT m.chat_id, c.merged_into, max(m.id) AS last_id FROM (
-         SELECT chat_id, id FROM messages INDEXED BY messages_sender
-         WHERE sender_id IN (SELECT value FROM json_each(?)) ORDER BY id DESC LIMIT ?) m
+         SELECT chat_id, id, ts FROM messages INDEXED BY messages_sender
+         WHERE sender_id IN (SELECT value FROM json_each(?)) AND deleted_at IS NULL AND (expires_at IS NULL OR expires_at > ?)
+         ORDER BY id DESC LIMIT ?) m
        JOIN chats c ON c.id = m.chat_id
+       WHERE m.ts > coalesce(c.cleared_through_ts, 0)
        GROUP BY m.chat_id ORDER BY last_id DESC`,
       JSON.stringify(entry.familyContacts),
+      this.c.now(),
       GROUP_SCAN_MESSAGES
     );
     const groups = new Map(groupRows.map((group) => [group.id, group]));

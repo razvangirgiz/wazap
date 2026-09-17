@@ -490,3 +490,25 @@ test("a qualifier is never read from what messages say, and a group named after 
   assert.equal(a.find({ name: "mama" }).verdict, "not_found");
   assert.equal(a.find({ name: "tata", kind: "group" }).verdict, "not_found");
 });
+
+test("groups in common and a group a qualifier names count only messages a reader may see", async () => {
+  const { db, find, person, talk, inGroup } = account();
+  db.identity.upsertChat({ jid: group(1), name: "Contabilitate firmă" });
+  db.identity.upsertChat({ jid: group(2), name: "Fotbal marți" });
+  person(1, "Ana Pop");
+  person(2, "Ana Ionescu");
+  for (const n of [1, 2]) talk(n, 30);
+  const deleted = inGroup(1, 1, 5);
+  inGroup(2, 1, 5);
+  db.messages.delete(deleted.sid);
+  inGroup(1, 2, 5);
+  const cleared = db.messages.clearChat(group(1), T0 + 400 * DAY);
+
+  const all = find({ name: "Ana", qualifier: "contabilitate", limit: 5 });
+  const byName = Object.fromEntries(all.candidates.map((c) => [c.displayName, c]));
+  assert.deepEqual(byName["Ana Pop"].qualifier, { hits: [], score: -15 }, "her message there was deleted");
+  assert.deepEqual(byName["Ana Ionescu"].qualifier, { hits: [], score: -15 }, "the group was cleared, its rows not purged yet");
+  assert.deepEqual(byName["Ana Pop"].groupsInCommon, { count: 1, names: ["Fotbal marți"] });
+  assert.deepEqual(byName["Ana Ionescu"].groupsInCommon, { count: 0, names: [] });
+  await cleared;
+});
