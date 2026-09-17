@@ -32,6 +32,7 @@ import { z } from "zod";
 import type { AccountSource } from "./account-hub.js";
 import {
   CATCHUP_SECTIONS,
+  WINDOW_FLOOR_MS,
   type AddressedEntry,
   type CallsEntry,
   type CatchupQuote,
@@ -76,7 +77,7 @@ export const CATCHUP_INPUT = {
     .min(1)
     .optional()
     .describe(
-      '"last" (default): since this client\'s last complete catch-up, or the last 24 h the first time; "previous": that catch-up again; or an ISO date/time'
+      '"last" (default): since this client\'s last complete catch-up, or the last 24 h the first time; "previous": that catch-up again; or an ISO date or time (2026-09-16, 2026-09-16T18:00, with an optional offset) from the last 14 days'
     ),
   hours: z
     .number()
@@ -622,7 +623,37 @@ function pageAt(cursor: string, client: string, asked: number): { snapshot: Snap
 
 // ---------------------------------------------------------------- the run
 
-function specOf(args: CatchupArgs): CatchupWindowSpec {
+/** YYYY-MM-DD, or with THH:MM[:SS[.sss]] and an optional Z or ±HH:MM. */
+const ISO_SINCE = /^(\d{4})-(\d{2})-(\d{2})(?:T(\d{2}):(\d{2})(?::(\d{2})(?:\.\d{1,3})?)?(?:Z|[+-]\d{2}:\d{2})?)?$/;
+
+/**
+ * An ISO `since`, strictly: a real calendar date or time (none of the
+ * formats Date.parse guesses at, "Sep 16" read as 2001), no later than now
+ * and no earlier than the 14 days any window reaches. A date alone is local
+ * midnight, and so is a time without an offset local.
+ */
+function sinceOf(since: string, now: number): number {
+  const refuse = (why: string): WazapError =>
+    new WazapError("INVALID_ID", `since ${why}: "${since}".`, 'Pass "last", "previous", or an ISO date or time from the last 14 days, like "2026-09-16" or "2026-09-16T18:00:00+03:00"');
+  const match = ISO_SINCE.exec(since);
+  if (match === null) throw refuse('is not "last", "previous" or an ISO date or time');
+  const [, year, month, day, hour = "00", minute = "00", second = "00"] = match;
+  const fields = new Date(Date.UTC(Number(year), Number(month) - 1, Number(day), Number(hour), Number(minute), Number(second)));
+  const real =
+    fields.getUTCFullYear() === Number(year) &&
+    fields.getUTCMonth() === Number(month) - 1 &&
+    fields.getUTCDate() === Number(day) &&
+    fields.getUTCHours() === Number(hour) &&
+    fields.getUTCMinutes() === Number(minute) &&
+    fields.getUTCSeconds() === Number(second);
+  const ms = Date.parse(match[4] === undefined ? `${since}T00:00:00` : since);
+  if (!real || Number.isNaN(ms)) throw refuse("is not a real date or time");
+  if (ms > now) throw refuse("is in the future");
+  if (ms < now - WINDOW_FLOOR_MS) throw refuse("is more than 14 days ago, further than a catch-up reads");
+  return ms;
+}
+
+function specOf(args: CatchupArgs, now: number): CatchupWindowSpec {
   if (args.hours !== undefined) {
     if (args.since !== undefined && args.since.trim() !== "last") {
       throw new WazapError("INVALID_ID", "Pass either hours or since, not both.", 'Use hours: 24 for the last day, or since: "2026-09-16T18:00"');
@@ -632,16 +663,7 @@ function specOf(args: CatchupArgs): CatchupWindowSpec {
   const since = args.since?.trim() ?? "last";
   if (since === "last") return { kind: "last" };
   if (since === "previous") return { kind: "previous" };
-  const bareDate = /^\d{4}-\d{2}-\d{2}$/.test(since);
-  const ms = Date.parse(bareDate ? `${since}T00:00:00` : since);
-  if (Number.isNaN(ms)) {
-    throw new WazapError(
-      "INVALID_ID",
-      `since is not "last", "previous" or a date: "${since}".`,
-      'Pass "last", "previous", "2026-09-16" or "2026-09-16T18:00:00+03:00"'
-    );
-  }
-  return { kind: "since", ms };
+  return { kind: "since", ms: sinceOf(since, now) };
 }
 
 function missingSupport(id: string): WazapError {
@@ -689,7 +711,7 @@ export async function runCatchUp(args: CatchupArgs, ctx: CatchupContext): Promis
   }
   const include: CatchupSection[] =
     args.include === undefined ? [...CATCHUP_SECTIONS] : CATCHUP_SECTIONS.filter((section) => args.include!.includes(section));
-  const spec = specOf(args);
+  const spec = specOf(args, asked);
   const targets = targetsOf(args, ctx);
   const multi = targets.length > 1;
   const now = asked;

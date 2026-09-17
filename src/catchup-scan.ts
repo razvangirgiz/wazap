@@ -284,14 +284,16 @@ export function resolveWindow(db: AccountDb, client: string, spec: CatchupWindow
     case "previous": {
       const repeat = db.catchup.repeat(client);
       if (repeat === null) return byTime("first_run", now - FIRST_RUN_MS, false, null);
-      const sinceAt = repeat.afterAt ?? repeat.throughAt - FIRST_RUN_MS;
+      // A repeat reads two weeks back at most, like every window, however old the catch-up it repeats.
+      const floorAt = now - WINDOW_FLOOR_MS;
+      const sinceAt = Math.max(floorAt, repeat.afterAt ?? repeat.throughAt - FIRST_RUN_MS);
       return {
-        sinceId: repeat.afterSeq === null ? idBefore(sinceAt) : idBefore(repeat.throughAt - WINDOW_FLOOR_MS),
+        sinceId: idBefore(repeat.afterSeq === null ? sinceAt : Math.max(floorAt, repeat.throughAt - WINDOW_FLOOR_MS)),
         untilId,
         afterSeq: repeat.afterSeq ?? -1,
         untilSeq: repeat.throughSeq,
         sinceAt,
-        untilAt: repeat.throughAt,
+        untilAt: Math.max(sinceAt, repeat.throughAt),
         basis: "previous",
         advance: false,
         expected: null,

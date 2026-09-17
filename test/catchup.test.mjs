@@ -181,6 +181,48 @@ test('since: "previous" repeats the last complete catch-up, hours and an ISO sin
   assert.equal(errorOf(bad).error, "INVALID_ID");
 });
 
+test("since is an ISO date or time from the last 14 days, and no window, previous included, reaches further back", async () => {
+  const { svc, arrive } = account();
+  const { call } = toolsOf(svc);
+  arrive(DAN, "salut", { at: Date.now() - 2 * HOUR });
+  const DAY = 24 * HOUR;
+  const pad = (n) => String(n).padStart(2, "0");
+  const local = (ms) => {
+    const at = new Date(ms);
+    return `${at.getFullYear()}-${pad(at.getMonth() + 1)}-${pad(at.getDate())}T${pad(at.getHours())}:${pad(at.getMinutes())}`;
+  };
+  const yesterday = local(Date.now() - DAY);
+  const refused = [
+    "Sep 16",
+    "16.09.2026",
+    "2026-9-16",
+    `${yesterday.slice(0, 8)}32`,
+    `${yesterday.slice(0, 10)}T25:00`,
+    `${yesterday} +03:00`,
+    new Date(Date.now() - 15 * DAY).toISOString(),
+    new Date(Date.now() + HOUR).toISOString(),
+  ];
+  for (const since of refused) {
+    const error = errorOf(await call("catch_up", { since }));
+    assert.equal(error.error, "INVALID_ID", since);
+    assert.match(error.fix, /ISO/, since);
+  }
+  for (const since of [yesterday.slice(0, 10), yesterday, `${yesterday}:30`, new Date(Date.now() - 3 * HOUR).toISOString(), local(Date.now() - 13 * DAY)]) {
+    const result = await call("catch_up", { since });
+    assert.equal(result.isError, undefined, since);
+    assert.equal(result.structuredContent.window.basis, "since");
+  }
+  assert.equal((await call("catch_up", { since: `${yesterday}:00.000+00:00` })).isError, undefined);
+
+  // A repeat of a catch-up from weeks ago reads two weeks back at most.
+  const old = toolsOf(svc, { client: "oauth:old" });
+  svc.db.catchup.advance("oauth:old", svc.db.digest.storedTop(), { at: Date.now() - 12 * DAY, from: { seq: null, at: Date.now() - 40 * DAY } });
+  const previous = await old.call("catch_up", { since: "previous" });
+  assert.equal(previous.structuredContent.window.basis, "previous");
+  assert.ok(Date.parse(previous.structuredContent.window.since) >= Date.now() - 14 * DAY - 60_000, previous.structuredContent.window.since);
+  assert.ok(previous.structuredContent.window.hours <= 336);
+});
+
 test('since: "previous" after a catch-up that found the mark expired repeats the 24 h it gave, not everything since the old mark', async () => {
   const { svc, arrive } = account();
   const { call } = toolsOf(svc);

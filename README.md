@@ -320,8 +320,10 @@ a retry, one from a phone whose clock runs ahead — is in the next catch-up
 rather than under the mark; nothing sent more than two weeks ago counts. The
 first time, or when the mark is more than a week old, it reads the last 24
 hours and says so. `since: "previous"` gives the last catch-up again;
-`hours: N` or an ISO `since` read an explicit window and leave the mark where
-it is, and so does a catch-up limited by `include`. Two catch-ups of one client
+`hours: N` (up to 336) or `since` as an ISO date or time (`2026-09-16`,
+`2026-09-16T18:00`, an offset optional) from the last 14 days read an explicit
+window and leave the mark where it is, and so does a catch-up limited by
+`include`. No window reaches further back than 14 days. Two catch-ups of one client
 at once move the mark once. Nothing is marked read on WhatsApp.
 
 **Paging.** When the entries do not fit, the answer ends with `more`: how many

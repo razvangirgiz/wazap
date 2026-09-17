@@ -21,7 +21,7 @@
   (`token:read`, `token:write`) and `local` (stdio, and clients sharing a
   running wazap) keeps its own mark per account. A catch-up moves it once all
   of it was given; `since: "previous"` repeats the last one; `hours`, an ISO
-  `since` and a partial `include` leave it where it is. The mark follows the
+  `since` from the last 14 days and a partial `include` leave it where it is. The mark follows the
   order messages reached wazap, not their timestamps, so a message filed late
   (a missed call stored when it stops ringing, a retried decryption, a clock
   ahead) is in the next catch-up instead of under the mark.
