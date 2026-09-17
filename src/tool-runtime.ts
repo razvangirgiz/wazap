@@ -74,6 +74,12 @@ export function toolError(err: WazapError): ToolResult {
   return { content: [{ type: "text", text: JSON.stringify(payload) }], structuredContent: payload, isError: true };
 }
 
+/** An error result as text alone: `{ error, message, fix }` stays in the text block. */
+export function withoutStructuredContent(result: ToolResult): ToolResult {
+  const { structuredContent: _structured, ...rest } = result;
+  return rest;
+}
+
 const READ_ONLY_HINTS = {
   readOnlyHint: true,
   destructiveHint: false,
@@ -195,7 +201,10 @@ export function createToolRegistrar(defs: readonly ToolDef[]) {
           } catch (err) {
             const result = toolError(asWazapError(err));
             const id = resolved?.id ?? stringArg(parsed, "account_id");
-            return id === undefined ? result : attachAccountId(result, id);
+            const stamped = id === undefined ? result : attachAccountId(result, id);
+            // A client validates structuredContent against the declared outputSchema even on an
+            // error, so a tool that declares one answers an error with its JSON in the text only.
+            return def.outputSchema === undefined ? stamped : withoutStructuredContent(stamped);
           } finally {
             if (admitted) { inFlight--; sessionInFlight--; }
           }

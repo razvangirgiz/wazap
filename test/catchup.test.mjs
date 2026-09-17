@@ -78,6 +78,12 @@ function account(options = {}) {
 }
 
 const text = (result) => result.content[0].text;
+/** An error from a tool with an output schema: text only, the JSON in it. */
+function errorOf(result) {
+  assert.equal(result.isError, true);
+  assert.equal(result.structuredContent, undefined, "an error carries no structured content a client would validate");
+  return JSON.parse(text(result));
+}
 const chatsOf = (result, section) => result.structuredContent[section].map((entry) => entry.chat);
 
 test("a call's stored words read back as the call they render: every direction, outcome and length", () => {
@@ -172,7 +178,7 @@ test('since: "previous" repeats the last complete catch-up, hours and an ISO sin
   assert.deepEqual(svc.db.catchup.get("local"), mark, "neither moved it");
 
   const bad = await call("catch_up", { since: "ieri" });
-  assert.equal(bad.structuredContent.error, "INVALID_ID");
+  assert.equal(errorOf(bad).error, "INVALID_ID");
 });
 
 test("two catch-ups of one client racing each other move the mark once: the one that finishes second does not", async () => {
@@ -636,10 +642,10 @@ test("a cursor is refused when another client, or no catch_up, made it", async (
   const theirs = toolsOf(svc, { client: "token:write" });
   const page = await mine.call("catch_up", { budget_tokens: 500, hours: 24 });
   const stolen = await theirs.call("catch_up", { cursor: page.structuredContent.more.cursor });
-  assert.equal(stolen.structuredContent.error, "INVALID_ID");
-  assert.match(stolen.structuredContent.message, /another client/);
+  assert.equal(errorOf(stolen).error, "INVALID_ID");
+  assert.match(errorOf(stolen).message, /another client/);
   const garbage = await mine.call("catch_up", { cursor: "bm90IGEgY3Vyc29y" });
-  assert.equal(garbage.structuredContent.error, "INVALID_ID");
+  assert.equal(errorOf(garbage).error, "INVALID_ID");
 });
 
 test("the structured answer carries the same entries as the text, in at most 1.3 times its size", async () => {
@@ -707,4 +713,30 @@ test("HTTP sessions catch up under the credential's name, never the token", asyn
   }
   assert.deepEqual(clients, ["token:read", "advance token:read", "local", "advance local"]);
   assert.ok(!clients.some((client) => client.includes("secret")));
+
+  // The SDK's own client validates structured content against the output schema, errors included.
+  const { Client } = await import("@modelcontextprotocol/sdk/client/index.js");
+  const { StreamableHTTPClientTransport } = await import("@modelcontextprotocol/sdk/client/streamableHttp.js");
+  const client = new Client({ name: "catch-up-test", version: "1" });
+  await client.connect(
+    new StreamableHTTPClientTransport(new URL(`http://127.0.0.1:${port}/mcp`), { requestInit: { headers: { authorization: "Bearer reader-secret" } } })
+  );
+  t.after(() => client.close());
+  const listed = await client.listTools();
+  assert.ok(listed.tools.find((tool) => tool.name === "catch_up").outputSchema);
+  const good = await client.callTool({ name: "catch_up", arguments: {} });
+  assert.equal(good.isError, undefined);
+  assert.equal(good.structuredContent.account_id, "default");
+  const refused = await client.callTool({ name: "catch_up", arguments: { cursor: "not-a-cursor" } });
+  assert.equal(refused.isError, true);
+  assert.equal(refused.structuredContent, undefined);
+  assert.equal(JSON.parse(refused.content[0].text).error, "INVALID_ID");
+  const failing = await client.callTool({ name: "catch_up", arguments: { since: "ieri" } });
+  assert.equal(JSON.parse(failing.content[0].text).error, "INVALID_ID");
+  wa.catchUpScan = async () => {
+    throw new Error("the database went away");
+  };
+  const broken = await client.callTool({ name: "catch_up", arguments: {} });
+  assert.equal(broken.isError, true);
+  assert.equal(JSON.parse(broken.content[0].text).error, "WHATSAPP_ERROR");
 });
