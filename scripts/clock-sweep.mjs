@@ -29,7 +29,8 @@
  */
 
 import { spawnSync } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
@@ -212,7 +213,12 @@ if (!process.argv.includes("--no-baseline")) {
   console.log("");
 }
 
+// A cell's whole TAP is kept when it fails: the name of a test says which one
+// broke, never why, and the run that found it is forty seconds gone.
+const kept = mkdtempSync(join(tmpdir(), "clock-sweep-"));
+
 const clockBound = new Map();
+const why = new Map();
 let red = 0;
 for (const cell of cells) {
   process.stdout.write(`${cell.zone} @ ${cell.id} (${stamp(cell.zone, cell.at)}) … `);
@@ -224,12 +230,21 @@ for (const cell of cells) {
     if (!clockBound.has(name)) clockBound.set(name, []);
     clockBound.get(name).push(`${cell.zone}/${cell.id}`);
   }
-  if (fresh.length > 0) red++;
+  if (fresh.length > 0) {
+    red++;
+    why.set(`${cell.zone}/${cell.id}`, cell.why);
+    const tap = join(kept, `${cell.zone.replace(/\//g, "-")}.${cell.id}.tap`);
+    writeFileSync(tap, run.tap);
+    console.log(`  why: ${cell.why}`);
+    console.log(`  tap: ${tap}`);
+    console.log(`  again: TZ=${cell.zone} FAKE_CLOCK_MS=${cell.at} NODE_OPTIONS="--import ${CLOCK}" ${node} --test --import ./test/no-color.mjs ${files.join(" ")}`);
+  }
 }
 
 console.log(`\n=== ${clockBound.size} clock-bound test${clockBound.size === 1 ? "" : "s"} across ${red}/${cells.length} cells ===`);
 for (const [name, where] of [...clockBound].sort((a, b) => b[1].length - a[1].length)) {
   console.log(`\n${name}\n  fails at: ${where.join(", ")}`);
+  if (where.length === 1) console.log(`  one cell only — re-run it before calling it the clock's doing; a suite under load has its own races.`);
 }
 if (clockBound.size === 0) console.log("nothing the clock or the zone moves.");
 process.exit(clockBound.size === 0 ? 0 : 1);
