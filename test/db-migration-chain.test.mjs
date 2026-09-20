@@ -10,21 +10,26 @@
  * SQLite's own integrity_check and foreign_key_check pass; a second open
  * changes nothing; an upgrade cut off in the middle leaves the file at the
  * version it started from, with its rows, and the next open finishes the job;
- * and a write-ahead log a crash left behind is migrated with the commits still
- * in it.
+ * a write-ahead log a crash left behind is migrated with the commits still in
+ * it; and a file from a schema this build does not know is refused, untouched,
+ * with a message that says what to do.
  *
  * db-v5.test.mjs asserts what v5 works out from an older file (flags,
  * last_own_id, catch-up marks). This file asserts the chain itself.
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { copyFileSync, mkdirSync, readFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
 import { dirname, join } from "node:path";
 
-import { AccountDb, SCHEMA_VERSION, contentHash } from "../dist/db/index.js";
+import { AccountDb, SCHEMA_VERSION, StorageError, contentHash } from "../dist/db/index.js";
 import { MIGRATIONS } from "../dist/db/schema.js";
 import { sqlite } from "../dist/db/sqlite.js";
+import { openForReading } from "../dist/legacy-files.js";
+import { importLegacyAccount, scrubQuote } from "../dist/legacy-import/index.js";
 import { GROUP, ME, PEER, PEER_LID, T0, sid, tempDir, textMessage } from "./db-fixtures.mjs";
+import { buildLegacyAccount } from "./legacy-fixtures.mjs";
 
 /** Every version a released wazap ever wrote. Each one must reach SCHEMA_VERSION. */
 const RELEASED = MIGRATIONS.map((migration) => migration.version);
@@ -34,6 +39,7 @@ const DIMS = 768;
 const MODEL = "embeddinggemma-300m";
 const PEER2 = "40700000003@s.whatsapp.net";
 
+const digest = (path) => createHash("sha256").update(readFileSync(path)).digest("hex");
 /** A message id: the second it belongs to, then a place inside it (ids.ts). */
 const idAt = (ts, seq) => (ts / 1000) * SEQ + seq;
 const sorted = (items) => items.map((item) => item.sid).sort();
@@ -44,6 +50,17 @@ function vector(i) {
   for (let d = 0; d < DIMS; d++) out[d] = ((d * 31 + i * 17) % 200) - 100;
   return out;
 }
+
+/** The error a call threw, for assertions on more than its type. */
+function thrown(body) {
+  try {
+    body();
+  } catch (err) {
+    return err;
+  }
+  return assert.fail("nothing was thrown");
+}
+
 /**
  * A file at `version`, holding what an account of that version held: contacts
  * and their lid pairings, four chats (one folding into another, one cleared
@@ -422,4 +439,142 @@ test("a write-ahead log a crash left beside an old file is migrated with the com
   assert.deepEqual(recovered.integrityCheck(), { ok: true, problems: [] });
   recovered.close();
   assert.deepEqual(sqliteChecks(crashed), { integrity: ["ok"], foreignKeys: [], indexedRows: 14, messageRows: 14 });
+});
+
+// ------------------------------------------------- a schema from the future
+
+test("a file from a schema this build does not know is refused, untouched, with a message that says what to do", () => {
+  const { path, dir } = releasedFile(1);
+  upgrade(path).close();
+  assert.deepEqual(readdirSync(dir), ["wazap.sqlite"], "a clean close leaves nothing beside the file");
+  // user_version lives at offset 60 of the header, big-endian: as far as this
+  // build can tell, a file a later wazap wrote.
+  const bytes = readFileSync(path);
+  bytes.writeUInt32BE(SCHEMA_VERSION + 1, 60);
+  writeFileSync(path, bytes);
+  const before = digest(path);
+
+  const refusal = thrown(() => AccountDb.open(path, { checkpointDelayMs: 0 }));
+  assert.ok(refusal instanceof StorageError && refusal.code === "SCHEMA_TOO_NEW");
+  assert.match(refusal.message, new RegExp(`schema version ${SCHEMA_VERSION + 1}`), "it names the version it found");
+  assert.match(refusal.message, new RegExp(`knows up to ${SCHEMA_VERSION}`), "and the one it knows");
+  assert.match(refusal.fix, /npm i -g wazap-mcp@latest/, "and how to get out of it");
+  assert.equal(digest(path), before, "a refused open writes nothing");
+  assert.deepEqual(readdirSync(dir), ["wazap.sqlite"], "and leaves no log or shared memory behind");
+
+  // status and doctor read the same file the same way: they say so rather than
+  // read a schema they only half understand.
+  const reading = thrown(() => openForReading(path));
+  assert.ok(reading instanceof StorageError && reading.code === "SCHEMA_TOO_NEW");
+  assert.equal(digest(path), before);
+  assert.deepEqual(readdirSync(dir), ["wazap.sqlite"]);
+
+  // And the file is still one the wazap that wrote it can pick up.
+  const reader = new (sqlite().DatabaseSync)(path, { readOnly: true });
+  assert.equal(reader.prepare("PRAGMA user_version").get().user_version, SCHEMA_VERSION + 1);
+  assert.equal(reader.prepare("SELECT count(*) AS n FROM messages").get().n, 10);
+  reader.close();
+});
+
+/**
+ * A newer wazap that crashed leaves a file whose log carries the newer schema.
+ * This build must refuse it — and it does — but the refusal is not free: the
+ * read-write open is what checkpoints the log into the database file, and the
+ * close that follows the refusal deletes the log. The file connection.ts
+ * promises to leave "exactly as it was" comes back written by the older build.
+ * Nothing committed is lost (a checkpoint only moves what is already there),
+ * but the promise does not hold, and the user who meant to hand the file back
+ * to the wazap that wrote it hands back a different file.
+ *
+ * Left failing on purpose: the fix is a decision (open the file read-only, or
+ * immutable, for the version check before any read-write connection touches
+ * it), not something a test should make quietly.
+ */
+test("a newer schema that is still only in the write-ahead log is refused, and the log is left as it was", { todo: "the refusal checkpoints the log into the file and deletes it; see the note above" }, () => {
+  const { path, db } = releasedFile(SCHEMA_VERSION, { wal: true });
+  db.exec("PRAGMA wal_checkpoint(TRUNCATE)");
+  db.exec(`PRAGMA user_version = ${SCHEMA_VERSION + 1}`);
+
+  const future = join(tempDir("wazap-chain-future-"), "account", "wazap.sqlite");
+  mkdirSync(dirname(future), { recursive: true });
+  for (const suffix of ["", "-wal"]) copyFileSync(`${path}${suffix}`, `${future}${suffix}`);
+  db.close();
+  const before = { file: digest(future), wal: digest(`${future}-wal`) };
+
+  const refusal = thrown(() => AccountDb.open(future, { checkpointDelayMs: 0 }));
+  assert.ok(refusal instanceof StorageError && refusal.code === "SCHEMA_TOO_NEW", `refused with ${refusal?.code ?? refusal}`);
+  assert.match(refusal.message, new RegExp(`schema version ${SCHEMA_VERSION + 1}`), "the version in the log is the one it reports");
+  assert.equal(existsSync(`${future}-wal`), true, "the log a newer wazap left is still there");
+  assert.equal(digest(`${future}-wal`), before.wal, "and unchanged");
+  assert.equal(digest(future), before.file, "the database file is untouched");
+});
+
+test("what that refusal does do today, so the gap is on the record and not a surprise", () => {
+  const { path, db } = releasedFile(SCHEMA_VERSION, { wal: true });
+  db.exec("PRAGMA wal_checkpoint(TRUNCATE)");
+  db.exec(`PRAGMA user_version = ${SCHEMA_VERSION + 1}`);
+  const future = join(tempDir("wazap-chain-future-"), "account", "wazap.sqlite");
+  mkdirSync(dirname(future), { recursive: true });
+  for (const suffix of ["", "-wal"]) copyFileSync(`${path}${suffix}`, `${future}${suffix}`);
+  db.close();
+
+  const refusal = thrown(() => AccountDb.open(future, { checkpointDelayMs: 0 }));
+  assert.ok(refusal instanceof StorageError && refusal.code === "SCHEMA_TOO_NEW", "it is refused, which is the part that matters");
+  // What the older build did to the file on its way out. Nothing committed is
+  // gone — the version and the rows the log carried are in the file now.
+  assert.equal(existsSync(`${future}-wal`), false, "today the log is checkpointed away by the refused open");
+  const reader = new (sqlite().DatabaseSync)(future, { readOnly: true });
+  try {
+    assert.equal(reader.prepare("PRAGMA user_version").get().user_version, SCHEMA_VERSION + 1, "the newer version survived the checkpoint");
+    assert.equal(reader.prepare("SELECT count(*) AS n FROM messages").get().n, 10, "and so did every row");
+    assert.deepEqual(
+      reader
+        .prepare("PRAGMA integrity_check")
+        .all()
+        .map((row) => row.integrity_check),
+      ["ok"]
+    );
+  } finally {
+    reader.close();
+  }
+});
+
+// ----------------------------------- the whole way from the 0.21 JSON files
+
+test("an account that still has its 0.21 files and a 0.22 database reaches the current schema and then imports them", async () => {
+  const fx = await buildLegacyAccount();
+  // What a 0.22 install left beside the legacy files: an account database at
+  // schema v1, whose import had not run when the user upgraded.
+  const { path } = releasedFile(1, { dir: join(fx.dataDir, "accounts", "default"), data: false });
+  assert.equal(dumpOf(path).user_version, 1);
+
+  const db = AccountDb.open(path, { scrubQuote, checkpointDelayMs: 0, now: () => fx.now });
+  try {
+    assert.equal(db.schemaVersion, SCHEMA_VERSION, "the 0.22 file is migrated before a legacy file is read");
+    const report = await importLegacyAccount({ dataDir: fx.dataDir, accountId: "default", accountPaths: fx.paths, db, options: { now: () => fx.now } });
+    assert.equal(report.state, "done");
+    assert.equal(report.owner, ME);
+    assert.equal(report.verification.ok, true, JSON.stringify(report.verification.unexpected));
+    assert.ok(db.counts().messages > 10, "the JSON files' messages are in the database");
+    assert.ok(db.search.text({ query: "sedinta", limit: 20 }).items.length > 0, "and in the trigram index");
+    assert.deepEqual(db.integrityCheck(), { ok: true, problems: [] });
+  } finally {
+    db.close();
+  }
+  assert.deepEqual(sqliteChecks(path).integrity, ["ok"]);
+  assert.deepEqual(sqliteChecks(path).foreignKeys, []);
+});
+
+// ----------------------------------------------------- what is not covered
+
+test("nothing copies the database before it migrates it: a backup is still the user's own step", () => {
+  // Pinned on purpose rather than wished away. AccountDb.backup() exists and
+  // works (db-open.test.mjs proves it), but no code path calls it before a
+  // migration, so an upgrade's only safety net is that it is one transaction:
+  // it lands whole or rolls back, which the cut-off tests above prove. If a
+  // pre-migration copy is ever added, this is the test to change.
+  const { path, dir } = releasedFile(1);
+  upgrade(path).close();
+  assert.deepEqual(readdirSync(dir), ["wazap.sqlite"], "an upgrade leaves no copy of the old file behind");
+  assert.equal(existsSync(`${path}.v1.bak`), false);
 });
