@@ -69,6 +69,23 @@ async function legacyAccount(options) {
   return fx;
 }
 
+const PREVIOUS_OWNER = /^wazap\.(\d+)\.previous-owner\.sqlite(?:-wal|-shm)?$/;
+
+/**
+ * Date the databases a boot set aside by the moment their own names carry. The
+ * boot ran on `at`, but the filesystem stamped what it wrote with the machine's
+ * clock, and a set-aside database's week is the later of its name and its mtime
+ * — so once the machine passes the fixture's dates the week never ends.
+ */
+function dateAsides(root) {
+  if (!existsSync(root)) return;
+  for (const name of readdirSync(root)) {
+    const match = PREVIOUS_OWNER.exec(name);
+    if (match === null) continue;
+    utimesSync(join(root, name), Number(match[1]) / 1000, Number(match[1]) / 1000);
+  }
+}
+
 /** Boots a service on the data dir at `at` and stops it: what one start of the server does to the files. */
 async function bootAt(t, dataDir, at, config = {}, claim = undefined) {
   t.mock.method(Date, "now", () => at);
@@ -77,6 +94,7 @@ async function bootAt(t, dataDir, at, config = {}, claim = undefined) {
   await svc.bootStorage();
   await svc.stop();
   t.mock.restoreAll();
+  dateAsides(accountPaths(dataDir, "default").root);
   return svc;
 }
 
@@ -106,14 +124,21 @@ function setAside(root, owner, at) {
   return file;
 }
 
-/** A 0.15-beta archive with the tables its identity reads. */
-function betaArchive(path, owner, rows = 1) {
+/**
+ * A 0.15-beta archive with the tables its identity reads, dated `at` like every
+ * other fixture file. An archive's week counts from its mtime, and the mtime a
+ * write leaves is the machine's — so an archive written now and settled against
+ * a fixed `now` is read on two clocks, and once the machine passes that date its
+ * week never ends.
+ */
+function betaArchive(path, owner, rows, at) {
   const { DatabaseSync } = sqlite();
   const db = new DatabaseSync(path);
   db.exec("CREATE TABLE meta(key TEXT PRIMARY KEY, value TEXT NOT NULL); CREATE TABLE messages(sid TEXT PRIMARY KEY, ts INTEGER NOT NULL)");
   db.prepare("INSERT INTO meta VALUES('owner', ?)").run(owner);
   for (let i = 0; i < rows; i++) db.prepare("INSERT INTO messages VALUES(?, ?)").run(`s${i}`, 1_000 + i);
   db.close();
+  for (const suffix of ["", "-wal", "-shm"]) if (existsSync(`${path}${suffix}`)) utimesSync(`${path}${suffix}`, at / 1000, at / 1000);
   return { owner, rows, lastTs: rows === 0 ? null : 1_000 + rows - 1 };
 }
 
@@ -480,10 +505,11 @@ test("a beta archive no enabled account is linked to stays where it is, and says
 
 test("the beta archive waits for every enabled account linked to its number to have imported it, and no other", () => {
   const dataDir = mkdtempSync(join(tmpdir(), "wazap-legacy-beta-"));
+  const now = Date.UTC(2026, 8, 20);
   AccountRegistry.load(dataDir).save();
   for (const id of ["work", "spare"]) AccountRegistry.load(dataDir).add(id);
   const archive = join(dataDir, "archive.sqlite");
-  const identity = betaArchive(archive, ME, 3);
+  const identity = betaArchive(archive, ME, 3, now);
   const account = (id, jid, meta) => {
     const paths = accountPaths(dataDir, id);
     link(paths, jid);
@@ -495,7 +521,6 @@ test("the beta archive waits for every enabled account linked to its number to h
   account("work", OTHER, { import_state: "running" });
   account("spare", ME, { import_state: "done" });
 
-  const now = Date.UTC(2026, 8, 20);
   assert.deepEqual(settleBetaArchive(dataDir, now, false), { moved: false, deleted: 0 }, "spare is done but never took the archive");
   const spare = AccountDb.open(join(accountPaths(dataDir, "spare").root, "wazap.sqlite"));
   spare.setMeta("beta_imported", JSON.stringify([{ ...identity, rows: 2 }]));
@@ -514,9 +539,8 @@ test("an archive left in legacy/ does not block the next one: each moves under i
   const dataDir = mkdtempSync(join(tmpdir(), "wazap-legacy-leftover-"));
   const now = Date.UTC(2026, 8, 20);
   mkdirSync(join(dataDir, "legacy"));
-  betaArchive(join(dataDir, "legacy", "archive.sqlite"), OTHER, 1);
-  utimesSync(join(dataDir, "legacy", "archive.sqlite"), (now - 3 * DAY) / 1000, (now - 3 * DAY) / 1000);
-  const identity = betaArchive(join(dataDir, "archive.sqlite"), ME, 2);
+  betaArchive(join(dataDir, "legacy", "archive.sqlite"), OTHER, 1, now - 3 * DAY);
+  const identity = betaArchive(join(dataDir, "archive.sqlite"), ME, 2, now);
   link(accountPaths(dataDir, "default"), ME);
   const db = AccountDb.open(join(accountPaths(dataDir, "default").root, "wazap.sqlite"));
   db.setMeta("import_state", "done");
