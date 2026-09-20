@@ -2,8 +2,14 @@
  * Put a test process on a chosen instant, so the suite can be run at the hours
  * that break it: a minute before local midnight, a minute after, the day a zone
  * moves its clocks, 29 February. `--import ./test/fake-clock.mjs` with
- * WAZAP_FAKE_NOW set to the epoch ms to start from; without the variable the
+ * FAKE_CLOCK_MS set to the epoch ms to start from; without the variable the
  * module does nothing, so it is harmless in a normal run.
+ *
+ * The name is deliberately not WAZAP_-prefixed: test/helpers.mjs strips every
+ * WAZAP_* variable from the children it spawns, so a `wazap` the suite starts
+ * would have kept the machine's clock while its parent was on the fixture's —
+ * the two-clock split that hid the legacy fixture's decay. The sweep puts the
+ * module in NODE_OPTIONS so every node process in the tree shares one clock.
  *
  * The clock is offset, never frozen. `Date.now` keeps ticking from the instant
  * it was put on, because a stopped clock does not fail a day-boundary test — it
@@ -29,11 +35,11 @@
  */
 
 const RealDate = Date;
-const target = process.env.WAZAP_FAKE_NOW;
+const target = process.env.FAKE_CLOCK_MS;
 
 if (target !== undefined && target !== "") {
   const at = Number(target);
-  if (!Number.isFinite(at)) throw new Error(`WAZAP_FAKE_NOW is not an epoch in ms: ${target}`);
+  if (!Number.isFinite(at)) throw new Error(`FAKE_CLOCK_MS is not an epoch in ms: ${target}`);
 
   const realNow = RealDate.now;
   const shift = at - realNow();

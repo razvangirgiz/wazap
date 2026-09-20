@@ -16,14 +16,22 @@
  *   node scripts/clock-sweep.mjs --no-baseline --node <path to another node>
  *
  * The clock is set per run by test/fake-clock.mjs, which offsets it rather than
- * freezing it, so timers and TTLs still elapse. The zone is `TZ` in the child's
- * environment. Nothing touches the machine's clock.
+ * freezing it, so timers and TTLs still elapse. It goes in NODE_OPTIONS rather
+ * than on the command line, so the `wazap` processes the suite spawns are on the
+ * same clock as the test that started them; a run where only the parent moved
+ * would be the two-clock split that hid the legacy fixture's decay. The zone is
+ * `TZ` in the child's environment. Nothing touches the machine's clock.
+ *
+ * One clock stays real either way: the filesystem's. A file the product stamps
+ * with `utimes` is dated by the machine, so a test that moves its own clock into
+ * the past and then reads an mtime back is comparing two different clocks — the
+ * fixture has to date what it writes.
  */
 
 import { spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 const ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
 
@@ -147,17 +155,18 @@ function failures(tap) {
   return found;
 }
 
+const CLOCK = pathToFileURL(join(ROOT, "test", "fake-clock.mjs")).href;
+
 function runSuite({ node, zone, at, files, label }) {
-  const args = ["--test", "--test-reporter=tap", "--import", "./test/no-color.mjs"];
-  if (at !== null) args.push("--import", "./test/fake-clock.mjs");
-  args.push(...files);
+  const args = ["--test", "--test-reporter=tap", "--import", "./test/no-color.mjs", ...files];
+  const env = { ...process.env, TZ: zone };
+  if (at === null) delete env.FAKE_CLOCK_MS;
+  else {
+    env.FAKE_CLOCK_MS = String(at);
+    env.NODE_OPTIONS = `${process.env.NODE_OPTIONS ?? ""} --import ${CLOCK}`.trim();
+  }
   const began = Date.now();
-  const ran = spawnSync(node, args, {
-    cwd: ROOT,
-    encoding: "utf8",
-    maxBuffer: 256 * 1024 * 1024,
-    env: { ...process.env, TZ: zone, WAZAP_FAKE_NOW: at === null ? "" : String(at) },
-  });
+  const ran = spawnSync(node, args, { cwd: ROOT, encoding: "utf8", maxBuffer: 256 * 1024 * 1024, env });
   const tap = `${ran.stdout ?? ""}\n${ran.stderr ?? ""}`;
   return { label, zone, at, seconds: Math.round((Date.now() - began) / 1000), status: ran.status, failures: failures(tap), tap };
 }
