@@ -7,16 +7,19 @@
  * What is proven, from every historical version: the schema ends up the one a
  * new file gets, object for object; every row the file held is still there and
  * still says the same thing; the trigram index answers after the upgrade;
- * SQLite's own integrity_check and foreign_key_check pass; and a second open
- * changes nothing.
+ * SQLite's own integrity_check and foreign_key_check pass; a second open
+ * changes nothing; an upgrade cut off in the middle leaves the file at the
+ * version it started from, with its rows, and the next open finishes the job;
+ * and a write-ahead log a crash left behind is migrated with the commits still
+ * in it.
  *
  * db-v5.test.mjs asserts what v5 works out from an older file (flags,
  * last_own_id, catch-up marks). This file asserts the chain itself.
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdirSync } from "node:fs";
-import { join } from "node:path";
+import { copyFileSync, mkdirSync, readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 
 import { AccountDb, SCHEMA_VERSION, contentHash } from "../dist/db/index.js";
 import { MIGRATIONS } from "../dist/db/schema.js";
@@ -344,3 +347,79 @@ for (const from of RELEASED) {
     assert.deepEqual(dumpOf(path), after, "a second open is not a second migration");
   });
 }
+
+// --------------------------------------------- an upgrade that is cut off
+
+// A v1 file has four migrations left to run, each of which reads the clock
+// twice — to stamp its version and to fill created_at. Cutting the clock after
+// `stamps` of those reads is a process dying with that many versions' SQL
+// already run inside the migration transaction.
+for (const stamps of [0, 1, 2, 3]) {
+  test(`an upgrade cut off while it writes version ${stamps + 2} leaves the file at the version it started from, and the next open finishes it`, () => {
+    const { path, ids } = releasedFile(1);
+    const before = dumpOf(path);
+    const schema = schemaOf(path);
+
+    let reads = 0;
+    assert.throws(
+      () =>
+        upgrade(path, {
+          now: () => {
+            if (++reads > stamps * 2) throw new Error("pana de curent");
+            return T0 + DAY;
+          },
+        }),
+      /pana de curent/
+    );
+
+    const half = dumpOf(path);
+    assert.equal(half.user_version, 1, "a cut-off upgrade goes back to the version the file was at");
+    assert.deepEqual(half, before, "and to the rows it had");
+    assert.deepEqual(schemaOf(path), schema, "and to the schema it had: no half-migrated file is left behind");
+
+    const finished = upgrade(path);
+    assert.equal(finished.schemaVersion, SCHEMA_VERSION, "the next open takes it the rest of the way");
+    assert.deepEqual(finished.counts(), { messages: 8, tombstones: 1, chats: 3, contacts: 3, embeddings: 2 });
+    assert.equal(finished.messages.get(sid(false, PEER, "A1")).text, "Salut, ajungem la sase?");
+    assert.equal(finished.identity.chat(PEER).lastOwnId, ids.lid, "the v5 backfill ran over the whole file, not half of it");
+    assert.deepEqual(finished.integrityCheck(), { ok: true, problems: [] });
+    finished.close();
+    assert.deepEqual(sqliteChecks(path).integrity, ["ok"]);
+  });
+}
+
+// -------------------------------------------- a log a crash left behind
+
+test("a write-ahead log a crash left beside an old file is migrated with the commits still in it", () => {
+  const { path, db } = releasedFile(1, { wal: true });
+  db.exec("PRAGMA wal_checkpoint(TRUNCATE)");
+  // Committed after that checkpoint, so these rows live only in the log: what
+  // a crash leaves, and what the upgrade must neither miss nor undo.
+  db.exec("BEGIN IMMEDIATE");
+  for (let i = 0; i < 4; i++) {
+    const ts = T0 + 40_000 + i * 1000;
+    db.prepare("INSERT INTO messages(id, chat_id, key_id, from_me, sender_id, ts, type, text, raw) VALUES (?, 1, ?, 0, 1, ?, 'text', ?, ?)").run(
+      idAt(ts, 0),
+      `W${i}`,
+      ts,
+      `doar in jurnal ${i}`,
+      new Uint8Array([1, 2, 3])
+    );
+  }
+  db.exec("COMMIT");
+
+  const crashed = join(tempDir("wazap-chain-crash-"), "account", "wazap.sqlite");
+  mkdirSync(dirname(crashed), { recursive: true });
+  for (const suffix of ["", "-wal"]) copyFileSync(`${path}${suffix}`, `${crashed}${suffix}`);
+  db.close();
+  assert.ok(readFileSync(`${crashed}-wal`).length > 0, "the copy really carries a log nothing checkpointed");
+
+  const recovered = upgrade(crashed);
+  assert.equal(recovered.schemaVersion, SCHEMA_VERSION);
+  assert.deepEqual(recovered.counts(), { messages: 12, tombstones: 1, chats: 3, contacts: 3, embeddings: 2 }, "the eight the file showed and the four the log held");
+  assert.equal(recovered.messages.get(sid(false, PEER, "W3")).text, "doar in jurnal 3");
+  assert.equal(recovered.search.text({ query: "jurnal", limit: 20 }).items.length, 4, "the rows the log carried are in the trigram index too");
+  assert.deepEqual(recovered.integrityCheck(), { ok: true, problems: [] });
+  recovered.close();
+  assert.deepEqual(sqliteChecks(crashed), { integrity: ["ok"], foreignKeys: [], indexedRows: 14, messageRows: 14 });
+});
