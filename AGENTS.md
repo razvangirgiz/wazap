@@ -26,6 +26,12 @@ user.
   `test/`, `scripts/`; Prettier-compatible via `eslint-config-prettier`.
 - `npm run check` — the local gate: lint → typecheck → test (which builds).
   Green from a clean tree before you push.
+- `npm run check:clock` — runs the whole suite on three clocks that break day
+  arithmetic (a local midnight, a new year's eve a day ahead of UTC, an hour a
+  zone repeats) and once on the real one to tell a pre-existing red from a
+  clock-bound one, then names any test that fails only on a moved clock;
+  `npm run sweep:clock` walks the full zone × moment matrix. About three
+  minutes, so it is not in `check`.
 - `npm run hooks:install` — installs the pre-push hook; once per clone.
 - `npm run bench:db` — builds, then times the account database (`src/db/`) on
   synthetic data: 100k messages, vector and hybrid search at 13k and 100k.
