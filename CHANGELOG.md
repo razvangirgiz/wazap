@@ -283,6 +283,12 @@ answers.
   once rather than waiting the way it waits for everything else; now the wait is
   wazap's own, bounded by the same busy timeout. It comes up for a database
   restored from a backup, which a copy leaves in the plain journal mode.
+- **`docs/stability.md` states what 1.0 keeps and what it does not**: the tool
+  surface, the Calfa five, the safety behaviours, the CLI, the webhook, the
+  on-disk data, the settings and the version policy, each line naming the test
+  that holds it or saying there is none. `test/stability-doc.test.mjs` reads it
+  back against the registry, the schema version and the constants, so a promise
+  the code cannot keep fails the suite.
 
 ### Removed
 
