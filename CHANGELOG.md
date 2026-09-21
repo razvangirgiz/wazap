@@ -1,5 +1,19 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- **A receiver for services that want their own `Authorization` header.**
+  wazap signs its webhook events and sends nothing else, so Cursor Automations,
+  n8n and most hosted webhooks could not take them directly.
+  `docs/api-and-webhooks.md` now prints a 35-line, dependency-free Node script
+  that checks wazap's signature and passes the same body on with the header the
+  service wants, and hands the service's status back so wazap's retry rules
+  still apply. `test/webhook-bridge-doc.test.mjs` extracts the script from the
+  document and runs it against a local service, signed with wazap's own
+  function, so the recipe cannot rot.
+
 ## 1.0.1
 
 ### Fixed

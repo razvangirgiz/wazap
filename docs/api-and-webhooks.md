@@ -121,7 +121,74 @@ on, `wazap config` prints the events it posts on an `events:` line.
 
 HMAC: `X-Wazap-Signature` is `sha256=<hex>`, HMAC-SHA256 of the exact raw
 JSON body with the secret that signed it. Verify that raw body, not a
-re-serialized object. HTTPS only, except `http://` on loopback.
+re-serialized object. HTTPS only, except `http://` on loopback. A service that
+wants an `Authorization` header of its own cannot take the event directly; see
+[A receiver that wants its own header](#a-receiver-that-wants-its-own-header).
+
+### A receiver that wants its own header
+
+wazap sends its own signature and nothing else, so a service that authenticates
+with an `Authorization: Bearer …` header of its own (Cursor Automations, n8n and
+most hosted webhooks) cannot take the event directly. A small receiver on your
+own machine can: it checks the signature wazap put on the event, then passes the
+same body on with the header the service wants. This one needs nothing installed
+beyond Node.
+
+```js
+// webhook-bridge.mjs — TARGET=https://… TARGET_TOKEN=… WAZAP_WEBHOOK_SECRET=… node webhook-bridge.mjs
+import { createServer } from "node:http";
+import { createHmac, timingSafeEqual } from "node:crypto";
+
+const { TARGET, TARGET_TOKEN, WAZAP_WEBHOOK_SECRET, PORT = "8801" } = process.env;
+if (!TARGET || !TARGET_TOKEN || !WAZAP_WEBHOOK_SECRET) throw new Error("set TARGET, TARGET_TOKEN and WAZAP_WEBHOOK_SECRET");
+
+const sign = (body) => `sha256=${createHmac("sha256", WAZAP_WEBHOOK_SECRET).update(body).digest("hex")}`;
+const signedByWazap = (given = "", body) => {
+  const want = Buffer.from(sign(body));
+  const got = Buffer.from(given);
+  return want.length === got.length && timingSafeEqual(want, got);
+};
+
+createServer(async (req, res) => {
+  if (req.method !== "POST") return void res.writeHead(405).end();
+  const chunks = [];
+  for await (const chunk of req) chunks.push(chunk);
+  const body = Buffer.concat(chunks);
+  // Only wazap holds the secret, so anything else that reaches this port is refused.
+  if (!signedByWazap(req.headers["x-wazap-signature"], body)) return void res.writeHead(401).end();
+  try {
+    const upstream = await fetch(TARGET, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        authorization: `Bearer ${TARGET_TOKEN}`,
+        "x-wazap-event": req.headers["x-wazap-event"] ?? "",
+      },
+      body,
+      redirect: "manual",
+      signal: AbortSignal.timeout(8000), // wazap gives up on a POST after 10 s
+    });
+    res.writeHead(upstream.status).end(); // the service's verdict is wazap's: 5xx is retried, another 4xx is a refusal
+  } catch {
+    res.writeHead(502).end(); // unreachable or too slow: wazap retries it
+  }
+}).listen(Number(PORT), "127.0.0.1");
+```
+
+Point wazap at it, with the same secret the script reads. `http://` is accepted
+here because the address is loopback:
+
+```bash
+npx wazap-mcp config webhook on   # URL http://127.0.0.1:8801, and the secret
+npx wazap-mcp webhook test
+```
+
+A `401` from the service, which is what a revoked token gives, comes back to
+wazap as a `401`: the event fails at once and `wazap status` names it, as it
+would for any receiver that refuses. Keep the service's token in the
+environment of the script, not in `accounts.json` or the URL, and remember that
+the service now receives your WhatsApp messages: give it only to receivers you
+trust.
 
 `contact_id` is the sender's contact in the account database: the same number
 for the same person however WhatsApp spells their id, including after the
