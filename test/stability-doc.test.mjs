@@ -226,17 +226,24 @@ test("every test the document names as a guard is a suite file that exists", () 
 
 // ----------------------------------------------------- 3. settings and Node
 
+/** Every file under src/, as one string: a setting is read where its feature lives, not only in config.ts. */
+function sourceText() {
+  const walk = (dir) =>
+    readdirSync(join(root, dir), { withFileTypes: true }).flatMap((entry) =>
+      entry.isDirectory() ? walk(`${dir}/${entry.name}`) : entry.name.endsWith(".ts") ? [read(`${dir}/${entry.name}`)] : []
+    );
+  return walk("src").join("\n");
+}
+
 test("the settings the document calls stable are exactly the ones a user is given", () => {
   const shipped = [...new Set([...read(".env.example").matchAll(/(WAZAP_[A-Z0-9_]+)/g)].map(([, name]) => name))];
   const listed = [...new Set(identifiers(paragraph("Stable: the ")).filter((span) => span.startsWith("WAZAP_")))];
   assert.deepEqual(listed.sort(), [...shipped].sort(), "the document's stable settings are not .env.example's");
-  const readme = read("README.md");
-  const config = read("src/config.ts");
+  const settingsPage = read("docs/settings.md");
+  const source = sourceText();
   for (const name of listed) {
-    assert.ok(
-      config.includes(name) || readme.includes(name),
-      `${name} is documented as stable but nowhere in src/config.ts or the README`
-    );
+    assert.ok(source.includes(name), `${name} is documented as stable but nothing under src/ reads it`);
+    assert.ok(settingsPage.includes(name), `${name} is documented as stable but docs/settings.md does not list it`);
   }
   for (const count of [...doc.matchAll(/the (\d+) `WAZAP_\*`/g)].map(([, n]) => Number(n))) {
     assert.equal(count, shipped.length, "the document counts a different number of settings than it lists");
@@ -246,7 +253,8 @@ test("the settings the document calls stable are exactly the ones a user is give
 test("the Node floor and the platforms are package.json's and CI's", () => {
   const engines = JSON.parse(read("package.json")).engines.node;
   const floor = claim(/Node (\d+\.\d+\.\d+) or newer/, "the Node floor");
-  assert.equal(engines, `>=${floor}`);
+  assert.equal(engines, `^${floor} || >=24.0.0`, "engines is the 22 line from the floor, then 24 and newer");
+  assert.ok(section(7).includes("the 23 line lacks"), "the document says why 23 is out");
   const ci = read(".github/workflows/ci.yml");
   const matrix = [...ci.matchAll(/node: \[([^\]]+)\]/g)].flatMap(([, list]) =>
     list.split(",").map((entry) => entry.trim().replace(/"/g, ""))

@@ -27,12 +27,6 @@ const resolveFrom = (page, target) => posix.normalize(posix.join(posix.dirname(p
 const PAGES = ["README.md", ...readdirSync(join(root, "docs")).filter((name) => name.endsWith(".md")).map((name) => `docs/${name}`)];
 
 /**
- * Pages another branch is still writing, linked here on purpose. A file that
- * lands must leave this set, and the test below makes sure it does.
- */
-const PENDING = new Set(["docs/stability.md"]);
-
-/**
  * GitHub's heading slug: lowercased, everything but word characters, spaces and
  * hyphens dropped, spaces to hyphens, and a repeat of an earlier slug numbered.
  */
@@ -79,7 +73,6 @@ test("every relative link in the README and in docs/ lands on a file that exists
       if (/^[a-z][a-z0-9+.-]*:/i.test(target) || target.startsWith("#")) continue;
       const [path] = target.split("#");
       const resolved = resolveFrom(page, path);
-      if (PENDING.has(resolved)) continue;
       assert.ok(existsSync(join(root, resolved)), `${page}:${line} links to ${target}, which is not in the repo`);
     }
   }
@@ -93,15 +86,9 @@ test("every #anchor in the README and in docs/ names a heading that exists", () 
       if (hash < 0) continue;
       const anchor = target.slice(hash + 1);
       const path = hash === 0 ? page : resolveFrom(page, target.slice(0, hash));
-      if (PENDING.has(path) || !existsSync(join(root, path)) || !path.endsWith(".md")) continue;
+      if (!existsSync(join(root, path)) || !path.endsWith(".md")) continue;
       assert.ok(slugsOf(path).has(anchor), `${page}:${line} points at #${anchor}, which ${path} has no heading for`);
     }
-  }
-});
-
-test("a page this suite waits for is still missing, so the day it lands the exemption goes", () => {
-  for (const path of PENDING) {
-    assert.ok(!existsSync(join(root, path)), `${path} exists now: drop it from PENDING in test/docs-links.test.mjs`);
   }
 });
 

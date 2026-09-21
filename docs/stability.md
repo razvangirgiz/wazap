@@ -14,7 +14,7 @@ breaking.
 | CLI | command and flag names, exit code 0 vs non-zero, `status --json` | new commands, flags and JSON keys | the human text on stderr |
 | Webhook | event names, signature scheme, the payload fields below | new events (opt-in), new payload fields | delivery latency, retry timing |
 | Storage | forward-only migrations, released migrations frozen, the pre-migration copy | new schema versions | the SQLite schema as a format for other tools |
-| Settings | the 19 `WAZAP_*` in `.env.example` and the README | new settings | anything not listed there |
+| Settings | the 19 `WAZAP_*` in `.env.example` and `docs/settings.md` | new settings | anything not listed there |
 
 ## 1. The MCP surface
 
@@ -164,8 +164,8 @@ code or the tests supports a third-party reader.
 
 ## 6. Settings
 
-Stable: the 19 `WAZAP_*` listed in `.env.example` and in the README's settings
-table — `WAZAP_DATA_DIR`, `WAZAP_READ_ONLY`, `WAZAP_PERSIST_HISTORY`,
+Stable: the 19 `WAZAP_*` listed in `.env.example` and in the settings table of
+`docs/settings.md` — `WAZAP_DATA_DIR`, `WAZAP_READ_ONLY`, `WAZAP_PERSIST_HISTORY`,
 `WAZAP_HOST`, `WAZAP_PORT`, `WAZAP_READ_TOKEN`, `WAZAP_WRITE_TOKEN`,
 `WAZAP_PUBLIC_URL`, `WAZAP_OAUTH_PASSWORD`, `WAZAP_TRUST_PROXY`,
 `WAZAP_TRANSCRIBE`, `WAZAP_TRANSCRIBE_API_KEY`, `WAZAP_RECALL`,
@@ -182,7 +182,9 @@ honoured until 2.0. Guarded by: `test/config.test.mjs`, `test/cli.test.mjs`.
 
 ## 7. Versions and environment
 
-Node 22.16.0 or newer, as `engines` in `package.json` states. CI runs lint,
+Node 22.16.0 or newer on the 22 line, or 24 and newer, as `engines` in
+`package.json` states; the 23 line lacks `node:sqlite` features wazap needs, and
+`wazap status` refuses it. CI runs lint,
 typecheck and the whole suite on Node 22.16.0 and on Node 24, on Linux
 (`.github/workflows/ci.yml`). macOS is the daily development platform but is not
 in CI. Windows has code paths of its own (client configuration, executable
