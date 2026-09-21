@@ -70,7 +70,8 @@ prints an 8-character code with `--phone +15550100`.
 
 `npx wazap-mcp` on its own is safe to run: it prints where you stand and what
 to do next, and starts no server. When something is off, `npx wazap-mcp status`
-is the first thing to run.
+is the first thing to run — and it is what tells you if the Node you have is
+too old: wazap needs 22.16 or newer on the 22 line, or 24.
 
 Every step `setup` takes, every client it can write, the background service and
 the upgrade command are in **[docs/install.md](docs/install.md)**.
