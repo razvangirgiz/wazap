@@ -9,7 +9,7 @@ import { existsSync, lstatSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { AccountRegistry } from "./accounts.js";
 import { accountPaths } from "./config.js";
-import type { AccountDb, Counts } from "./db/index.js";
+import { preMigrationBackups, type AccountDb, type Counts } from "./db/index.js";
 import {
   LEGACY_DIR,
   betaArchiveStatus,
@@ -92,6 +92,12 @@ export interface AccountStorage {
   legacy: LegacyFiles;
   /** Databases set aside when a different number linked. */
   previous_owner: Array<{ file: string; bytes: number; delete_after: string }>;
+  /**
+   * Copies taken beside the database before an upgrade migrated it: the schema
+   * they were taken from, when, and when they go. Read off the file names and
+   * their mtimes, without opening them.
+   */
+  pre_migration: Array<{ file: string; from_version: number; bytes: number; taken_at: string; delete_after: string }>;
 }
 
 export interface BetaArchiveReport {
@@ -178,6 +184,13 @@ export function accountStorage(dataDir: string, accountId: string, recall: boole
     links: legacyLinksInPlace(root),
     legacy: legacyFiles(root, inPlace, null),
     previous_owner: previousOwnerDbs(root).map((db) => ({ file: db.file, bytes: db.bytes, delete_after: isoWithOffset(db.deleteAfter) })),
+    pre_migration: preMigrationBackups(root).map((copy) => ({
+      file: copy.file,
+      from_version: copy.fromVersion,
+      bytes: copy.bytes,
+      taken_at: isoWithOffset(copy.takenAt),
+      delete_after: isoWithOffset(copy.deleteAfter),
+    })),
   };
   if (!existsSync(dbPath)) {
     if (inPlace > 0) report.state = "preparing";

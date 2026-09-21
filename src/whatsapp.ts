@@ -54,6 +54,7 @@ import {
   AccountDb,
   chatKindOf,
   MESSAGE_FLAGS,
+  purgePreMigrationBackups,
   secondOfId,
   StorageError,
   type FlagDetector,
@@ -1028,6 +1029,13 @@ export class WhatsAppService implements WhatsAppApi {
     step("deleting set-aside databases", () => {
       const deleted = purgePreviousOwners(this.paths.root, now, linkedOwners(this.config.dataDir));
       if (deleted > 0) log(`account ${id}: deleted ${deleted} database(s) set aside when a different number linked`);
+    });
+    // The open database's own version is the proof its upgrade landed: a copy
+    // taken for a version it is not past yet is the safety net of an upgrade
+    // that has not finished, and stays however old it is.
+    step("deleting pre-migration copies", () => {
+      const deleted = purgePreMigrationBackups(this.paths.root, now, db.schemaVersion, retention);
+      if (deleted > 0) log(`account ${id}: deleted ${deleted} copy/copies taken before an earlier upgrade`);
     });
     step("settling the beta archive", () => {
       const { moved, deleted } = settleBetaArchive(this.config.dataDir, now, retention, (accountId) =>

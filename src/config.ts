@@ -30,6 +30,7 @@ export type Command =
   | "update"
   | "webhook"
   | "account"
+  | "backup"
   | "migrate";
 
 export interface Config {
@@ -71,6 +72,8 @@ export interface Config {
   /** Positionals after the command: the client for `connect`, the setting for `config`. */
   args: string[];
   dryRun: boolean;
+  /** `backup` only: replace a file already at the destination. */
+  force: boolean;
   /** `status` only: probe WhatsApp, and print the report as JSON. */
   live: boolean;
   json: boolean;
@@ -186,6 +189,7 @@ const COMMAND_ARGS: Record<Command, readonly number[]> = {
   update: [0],
   webhook: [1],
   account: [1, 2],
+  backup: [1],
   migrate: [1],
 };
 
@@ -195,6 +199,8 @@ export const ACCOUNT_USAGE =
   "Run `wazap account add <id> [--name <name>]`, `wazap account remove|enable|disable|default <id>`, or `wazap account list`";
 
 export const MIGRATE_USAGE = "Run `wazap migrate rollback`";
+
+export const BACKUP_USAGE = "Run `wazap backup <path> [--account <id>] [--force]`";
 
 /**
  * What to type instead of `--help` when the arity is wrong. Literals, not
@@ -211,6 +217,7 @@ const COMMAND_USAGE: Partial<Record<Command, string>> = {
     "Run `wazap config`, `wazap config writes on|off`, `wazap config transcribe local|openai|off`, `wazap config recall local|off`, `wazap config webhook on|off`, `wazap config draft-context on|off`, or `wazap config send allow|deny <list>|open`",
   webhook: "Run `wazap webhook test`",
   account: ACCOUNT_USAGE,
+  backup: BACKUP_USAGE,
   migrate: MIGRATE_USAGE,
 };
 
@@ -343,6 +350,7 @@ export function parseCli(argv: string[] = process.argv.slice(2)): CliInvocation 
         qr: { type: "boolean" },
         code: { type: "boolean" },
         "dry-run": { type: "boolean" },
+        force: { type: "boolean" },
         live: { type: "boolean" },
         json: { type: "boolean" },
         writes: { type: "boolean" },
@@ -435,6 +443,7 @@ export function parseCli(argv: string[] = process.argv.slice(2)): CliInvocation 
       explicitCommand: first !== undefined,
       args,
       dryRun: values["dry-run"] === true,
+      force: values.force === true,
       live: values.live === true,
       json: values.json === true,
       loginPhone: values.phone,

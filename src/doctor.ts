@@ -256,12 +256,19 @@ const count = (n: number): string => n.toLocaleString("en-US");
 const bytes = (n: number): string => (n < 1024 * 1024 ? `${Math.max(1, Math.round(n / 1024))} KiB` : `${Math.round(n / (1024 * 1024))} MiB`);
 const day = (iso: string): string => iso.slice(0, 10);
 
+/** How long ago a file was written, in whole days. A clock that moved backwards reads as just now. */
+function age(iso: string, now: number): string {
+  const days = Math.floor((now - Date.parse(iso)) / 86_400_000);
+  if (!Number.isFinite(days) || days <= 0) return "taken today";
+  return days === 1 ? "one day old" : `${days} days old`;
+}
+
 /**
  * Per account: the database's state, size and counts, the legacy files and
  * the databases a different number's link set aside; then the beta archive.
  * An account with nothing on disk yet says nothing.
  */
-export function storageChecks(report: StorageReport, serverRunning: boolean): Check[] {
+export function storageChecks(report: StorageReport, serverRunning: boolean, now: number = Date.now()): Check[] {
   const named = (account: AccountStorage, text: string): string =>
     report.accounts.length > 1 ? `${account.account}: ${text}` : text;
   const checks: Check[] = [];
@@ -284,6 +291,16 @@ export function storageChecks(report: StorageReport, serverRunning: boolean): Ch
         name: "previous owner",
         state: "info",
         detail: named(account, `set aside when a different number linked: ${files.join("; ")}`),
+      });
+    }
+    if (account.pre_migration.length > 0) {
+      const copies = account.pre_migration.map(
+        (copy) => `from schema v${copy.from_version}, ${age(copy.taken_at, now)} (${bytes(copy.bytes)}), deleted after ${day(copy.delete_after)}`
+      );
+      checks.push({
+        name: "pre-migration copy",
+        state: "info",
+        detail: named(account, `the account database as an upgrade found it, kept beside it: ${copies.join("; ")}`),
       });
     }
   }

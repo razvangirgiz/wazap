@@ -14,6 +14,7 @@ import {
   runStatus,
   runTranscribe,
 } from "./cli.js";
+import { runBackup } from "./backup-cli.js";
 import { WAZAP_VERSION, parseCli, pickDefaultAction, settingWarnings } from "./config.js";
 import { migrateLayout } from "./migrate.js";
 import { CLIENT_NAMES, runConnect } from "./connect.js";
@@ -60,6 +61,7 @@ Usage:
   wazap account add <id> [--name <name>]                   Add an account slot
   wazap account remove|enable|disable|default <id>         Change an account, or delete its local data
   wazap account list                                       List accounts in this data dir
+  wazap backup <path> [--account <id>] [--force]           Copy an account database to <path>; the messages in it are not encrypted
   wazap migrate rollback                                   Undo a flat-layout move into accounts/
 
 Clients for wazap connect: ${CLIENT_NAMES}.
@@ -68,7 +70,7 @@ Tunnel providers for wazap expose: ${PROVIDER_NAMES}.
 
 Options:
   --data-dir <path>   Where wazap keeps its data (default ~/.wazap, or $WAZAP_DATA_DIR)
-  --account <id>      With login, logout, status, contacts, config writes|webhook, webhook test:
+  --account <id>      With login, logout, status, contacts, backup, config writes|webhook, webhook test:
                       pick this account. A running server applies account add|enable|disable|default|remove
   --event <name>      With webhook test: message_received (default), message_sent or connection
   --name <name>       With account add: a display name
@@ -89,6 +91,7 @@ Options:
   --model <alias>     With transcribe download: turbo (default), large-v3 or medium.
                       With embed download: embeddinggemma-300m (default) or e5-base-multilingual
   --dry-run           With connect, skills install, service install or update: print what would happen, and do nothing
+  --force             With backup: replace a file already at the destination
   --live              With status: reach WhatsApp for real, then close the connection
   --json              With status: print the whole report as one JSON object on stdout
   --writes            Allow the agent to write, without login asking
@@ -99,7 +102,8 @@ Options:
 
 Environment: WAZAP_DATA_DIR, WAZAP_READ_ONLY, WAZAP_PERSIST_HISTORY, WAZAP_HOST, WAZAP_PORT, WAZAP_READ_TOKEN, WAZAP_WRITE_TOKEN,
 WAZAP_PUBLIC_URL, WAZAP_OAUTH_PASSWORD, WAZAP_TRUST_PROXY, WAZAP_TRANSCRIBE, WAZAP_TRANSCRIBE_API_KEY,
-WAZAP_RECALL, WAZAP_WEBHOOK, WAZAP_WEBHOOK_URL, WAZAP_WEBHOOK_SECRET, WAZAP_WEBHOOK_EVENTS, WAZAP_RETENTION.
+WAZAP_RECALL, WAZAP_WEBHOOK, WAZAP_WEBHOOK_URL, WAZAP_WEBHOOK_SECRET, WAZAP_WEBHOOK_EVENTS, WAZAP_RETENTION,
+WAZAP_PRE_MIGRATION_BACKUP.
 An optional <data-dir>/.env is loaded if present.`;
 
 async function main(): Promise<void> {
@@ -182,6 +186,9 @@ async function main(): Promise<void> {
       return;
     case "account":
       await runAccount(config);
+      return;
+    case "backup":
+      await runBackup(config);
       return;
     case "migrate":
       runMigrate(config);
