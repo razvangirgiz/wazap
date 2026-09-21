@@ -168,6 +168,12 @@ session and credentials alone. `wazap login` needs the session to itself, so it
 stops the service, pairs, and starts it again on its own. `wazap logout` and
 `wazap account` changes do not stop anything: the running server applies them.
 
+What it costs to leave running: on one account holding some 20,000 messages,
+the service sits between 50 and 180 MB of resident memory, the spread coming
+from what it is doing — an idle connection is at the low end, a history sync, a
+search or a catch-up at the high end. A local transcription or embedding model
+is a separate process and is not counted in that.
+
 A sleeping Mac is an offline wazap. System Settings → Lock Screen, or Battery →
 Options, has the switch that keeps it awake on power.
 

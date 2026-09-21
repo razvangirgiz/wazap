@@ -26,3 +26,7 @@ earlier wazap read and this one does not is ignored, with a warning at startup
 that says what replaced it; see the [CHANGELOG](../CHANGELOG.md).
 `WAZAP_TRANSPORT=http` still serves HTTP through 1.x, with a warning: `--http`
 is the supported way, and the variable goes away in 2.0.
+
+Anything else `WAZAP_*` that the code still reads is a development knob, not a
+setting: it is listed under **Development knobs** in
+[AGENTS.md](../AGENTS.md#development-knobs), and a user should not need it.

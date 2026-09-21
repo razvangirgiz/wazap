@@ -10,8 +10,7 @@
 **WhatsApp for your AI assistant.** wazap is an MCP server that puts your own
 WhatsApp account — chats, messages, media, contacts, groups — behind 20 tools
 any MCP client can call, so Claude, ChatGPT, Gemini, Cursor or Codex can read
-your inbox and draft your replies. Pairing-code login, no browser, no
-phone-number reseller, ~20 MB of RAM.
+your inbox and draft your replies.
 
 ## What it does
 
@@ -147,11 +146,18 @@ Findings, threat model and the limits of each of these are in
 
 ## Known limitations
 
-- **Unofficial.** Baileys reverse-engineers the WhatsApp multi-device protocol.
-  This is not the WhatsApp Business API and Meta does not support it.
-- **Ban risk is real.** Automated sending, bulk messaging or anything a human
-  would not plausibly type can get the number banned, and that is not
-  recoverable from here. The rate limit helps; it is not a guarantee.
+- **The protocol is unofficial.** wazap talks to WhatsApp through
+  [Baileys](https://github.com/WhiskeySockets/Baileys), a reverse-engineered
+  implementation of the WhatsApp multi-device protocol. This is not the
+  WhatsApp Business API, Meta does not support it, and WhatsApp can change the
+  protocol without warning — a change can break wazap until Baileys catches up.
+  An account that sends in bulk, or sends to people who did not ask to hear
+  from it, can be restricted or banned, and that is not recoverable from here.
+  What wazap does about it is the whole of the section above: sends are drafted
+  and confirmed one at a time, writes are capped at 20 a minute per account, an
+  account can be locked to a list of recipients or to reading only, and there
+  is no bulk or scheduled send to reach for. None of that is a guarantee, and
+  the risk is yours.
 - **Media keys expire.** WhatsApp drops old attachments from its servers, so
   `get_media` on an old message returns `MEDIA_UNAVAILABLE`.
 - **History is what the phone syncs.** wazap sees the history WhatsApp hands the

@@ -156,7 +156,7 @@ Set `WAZAP_PUBLIC_URL=https://wazap.example.com` for OAuth and keep `cloudflared
 
 ### Which clients can reach it
 
-Agents sign in with OAuth, the next section: claude.ai Connectors, ChatGPT, Poke and any MCP client that signs in to a URL. Your own code calling wazap uses a static token instead; see [Building on wazap](api-and-webhooks.md#building-on-wazap-http-api-for-products).
+Agents sign in with [OAuth](#hosted-agents-oauth): claude.ai Connectors, ChatGPT, Poke and any MCP client that signs in to a URL. Your own code calling wazap uses a static token instead; see [Building on wazap](api-and-webhooks.md#building-on-wazap-http-api-for-products).
 
 ### Reverse proxy trust
 
