@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- **`wazap setup` and `wazap login` no longer leave in silence after the
+  QR-or-pairing-code question.** Answering it closes stdin, and the typing of
+  the next screen ran on timers that did not keep the process open, so with
+  nothing else pending Node left in the middle of the screen, with exit code 0,
+  one character into the title (`1 / 3`, `S▍`), and nothing was linked. It
+  reproduced on macOS and Linux, on 1.0.0 and 0.23.1. The timers now hold the
+  process open until the screen is drawn.
+
 ## 1.0.0
 
 wazap 1.0 fixes the tool surface at 20 tools and writes down what it keeps

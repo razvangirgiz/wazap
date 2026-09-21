@@ -132,12 +132,15 @@ function charDelay(ch: string): number {
   return 12;
 }
 
+/**
+ * Not unref'd, on purpose: the typing is awaited by the flow that drew the
+ * screen, and after the QR-or-code question has closed stdin nothing else holds
+ * the process open yet. An unref'd timer let Node leave in the middle of that
+ * await, silently and with exit code 0, one character into the first screen.
+ */
 function sleep(ms: number): Promise<void> {
   if (ms <= 0) return Promise.resolve();
-  return new Promise((resolve) => {
-    const timer = setTimeout(resolve, ms);
-    timer.unref();
-  });
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 const TYPE_CAP_MS = 800;

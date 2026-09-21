@@ -1,5 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { spawn } from "node:child_process";
+import { pathToFileURL } from "node:url";
 
 import { BANNER_ART } from "../dist/banner.js";
 import {
@@ -52,4 +54,24 @@ test("setupWizardSteps counts link screens, then transcribe, optional install, c
   assert.equal(setupWizardSteps({ linked: true, npx: false, askWrites: false, loginCode: false }), 4);
   assert.equal(loginWizardSteps(false, true), 3);
   assert.equal(loginWizardSteps(true, true), 4);
+});
+
+test("a flow that awaits the wizard's typing is not cut off when nothing else keeps the process open", async () => {
+  // The state after the QR-or-code question: stdin closed, no socket yet. The
+  // typing's own timers were the only thing pending, and they were unref'd, so
+  // Node left mid-await with exit code 0 and the person saw one character.
+  const wizard = pathToFileURL(new URL("../dist/wizard.js", import.meta.url).pathname).href;
+  const script = `
+    const { startWizard } = await import(${JSON.stringify(wizard)});
+    const w = startWizard(3);
+    await w.next("Scan this with WhatsApp", ["a line the typing has to finish"]);
+    process.stderr.write("\\nTYPED-TO-THE-END\\n");
+    w.close();
+  `;
+  const child = spawn(process.execPath, ["--no-warnings", "--input-type=module", "-e", script], { stdio: ["ignore", "ignore", "pipe"] });
+  let stderr = "";
+  child.stderr.on("data", (chunk) => (stderr += chunk));
+  const code = await new Promise((resolve) => child.on("close", resolve));
+  assert.ok(stderr.includes("TYPED-TO-THE-END"), `the process left before the typing was done (exit ${code})`);
+  assert.equal(code, 0);
 });
