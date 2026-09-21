@@ -22,14 +22,15 @@ wazap 1.0 registers exactly 20 tools, a session without writes sees 13 of them,
 and every tool also takes an optional `account_id`. Guarded by:
 `test/tools.test.mjs`, `test/tool-names.test.mjs`.
 
-The 20, by what they require: nothing — `learn`, `get_status`, `list_chats`,
-`catch_up`, `wait_for_messages`, `find_contact`; `phone` — `link_account`;
-`query` — `search`; `group_id` — `get_group_info`; `draft_id` —
-`confirm_send`; `action` — `manage_group`; `chat_id` — `read_messages`,
-`remember`; `message_id` — `get_message`, `get_media`; and two arguments each
-for `send_message` (`chat_id`, `text`), `edit_message` (`message_id`, `text`),
-`react_to_message` (`message_id`, `emoji`), `delete_message` (`message_id`,
-`for_everyone`) and `manage_chat` (`chat_id`, `action`).
+The 20, each with what it requires: `learn` (), `get_status` (),
+`list_chats` (), `catch_up` (), `wait_for_messages` (), `find_contact` (),
+`link_account` (`phone`), `search` (`query`), `get_group_info` (`group_id`),
+`confirm_send` (`draft_id`), `manage_group` (`action`),
+`read_messages` (`chat_id`), `remember` (`chat_id`), `get_message`
+(`message_id`), `get_media` (`message_id`), `send_message` (`chat_id`, `text`),
+`edit_message` (`message_id`, `text`), `react_to_message` (`message_id`,
+`emoji`), `delete_message` (`message_id`, `for_everyone`), `manage_chat`
+(`chat_id`, `action`).
 
 Fourteen declare an output schema and answer in that shape, as an SDK client's
 own validator checks it; the six without one are the five Calfa calls and
@@ -179,7 +180,7 @@ honoured until 2.0. Guarded by: `test/config.test.mjs`, `test/cli.test.mjs`.
 ## 7. Versions and environment
 
 Node 22.16.0 or newer, as `engines` in `package.json` states. CI runs lint,
-typecheck and the whole suite on 22.16.0 and on Node 24, on Linux
+typecheck and the whole suite on Node 22.16.0 and on Node 24, on Linux
 (`.github/workflows/ci.yml`). macOS is the daily development platform but is not
 in CI; Windows is neither supported nor tested.
 
