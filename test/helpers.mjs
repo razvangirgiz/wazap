@@ -117,9 +117,20 @@ export function clockAt(at) {
   return Date.now();
 }
 
+/**
+ * How much longer than its stated bound a wait may take. A wait that succeeds
+ * returns the moment its predicate holds, so a wider bound only delays the
+ * report of a real failure; it cannot make a wrong result pass. The bounds were
+ * written for a machine with cores to spare, and on a container sharing a few
+ * they expired while the service they waited on was still starting (a webhook
+ * test failed 1 run in 12 on Linux with "timed out waiting for the outbox to
+ * settle", at exactly its 7 s). `WAZAP_TEST_WAIT_SCALE=1` gives the bounds back.
+ */
+const WAIT_SCALE = Number(process.env.WAZAP_TEST_WAIT_SCALE ?? 3);
+
 /** Poll until `predicate` returns something truthy, or reject naming what we waited for. */
 export async function waitFor(predicate, timeoutMs, label) {
-  const deadline = Date.now() + timeoutMs;
+  const deadline = Date.now() + timeoutMs * WAIT_SCALE;
   for (;;) {
     const value = await predicate();
     if (value) return value;

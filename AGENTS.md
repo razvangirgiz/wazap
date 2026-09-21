@@ -174,6 +174,10 @@ Still read, deliberately left out of the README and `.env.example`: tests and
 local debugging use them, users should not need them. Do not document them as
 settings; do not remove one while a test sets it.
 
+- `WAZAP_TEST_WAIT_SCALE` — read by `test/helpers.mjs` only: how much longer than
+  its stated bound a `waitFor` may take (default 3; `1` gives the bounds back).
+  A wait that succeeds returns at once, so a wider bound only delays the report
+  of a real failure.
 - `WAZAP_NO_UPDATE_CHECK=1` — `status` and doctor skip the npm registry call.
   `test/helpers.mjs` sets it for every child.
 - `WAZAP_NO_SHARE=1` — no loopback endpoint and no `daemon.json`, so a second
