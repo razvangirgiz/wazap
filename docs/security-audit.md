@@ -749,7 +749,7 @@ not a promise that nothing older survives: an unverified import, an archive
 nobody owns, a set-aside database whose owner is linked, links and files put
 back after the import (all reported by `wazap status`) stay until the user
 deletes them. A rollback to 0.21 brings back messages deleted during the 0.22
-period (README, "Rolling back to 0.21"). Tests: `test/legacy-files.test.mjs`,
+period (`docs/data.md`, "Rolling back to 0.21"). Tests: `test/legacy-files.test.mjs`,
 the beta cases in `test/legacy-import.test.mjs`, the logout case in
 `test/account-roster.test.mjs`, the `fs` watch in
 `test/account-database.test.mjs`.

@@ -1,0 +1,32 @@
+# Settings
+
+Most of these are written for you by `wazap config`, `wazap login` and
+`wazap expose`; `.env.example` shows them all with their comments.
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `WAZAP_DATA_DIR` | `~/.wazap` | Where everything is stored. |
+| `WAZAP_READ_ONLY` | unset (`0`) | `1` does not register the write tools. Unset and `0` both do. `wazap config writes on\|off` sets it. |
+| `WAZAP_PERSIST_HISTORY` | `1` | Privacy: `0` keeps no messages on disk, removing them at each start and stop; barriers, chats, contacts and notes stay, and recall is off. |
+| `WAZAP_HOST` / `WAZAP_PORT` | `127.0.0.1` / `8766` | Where `wazap serve --http` listens. |
+| `WAZAP_PUBLIC_URL` / `WAZAP_OAUTH_PASSWORD` | unset | The `https` address agents reach the server at, and the password its consent page asks for (at least 8 characters). Both together turn [OAuth](self-host.md#hosted-agents-oauth) on; `wazap expose` sets them. |
+| `WAZAP_READ_TOKEN` / `WAZAP_WRITE_TOKEN` | unset | Static bearer tokens for your own code; see [Building on wazap](api-and-webhooks.md#building-on-wazap-http-api-for-products). |
+| `WAZAP_TRANSCRIBE` | `off` | `local`, `openai` or `off`. `wazap config transcribe` sets it. |
+| `WAZAP_TRANSCRIBE_API_KEY` | unset | The key for `openai`; `OPENAI_API_KEY` is the fallback. Never a flag. |
+| `WAZAP_RECALL` | `off` | `local` turns on [semantic recall](recall.md#semantic-recall). `wazap config recall` sets it. |
+| `WAZAP_WEBHOOK` | `off` | `on` posts the enabled events to the webhook URL. `wazap config webhook` sets it with the next two. |
+| `WAZAP_WEBHOOK_URL` / `WAZAP_WEBHOOK_SECRET` | unset | HTTPS endpoint (`http://` only on loopback) and the shared secret for `X-Wazap-Signature`. The secret is never a flag. An account's `webhook_url` and `webhook_secret` win. |
+| `WAZAP_WEBHOOK_EVENTS` | unset (`message_received`) | Which events to post, comma-separated, or `all`. An account's `webhook_events` wins. |
+| `WAZAP_RETENTION` | `0` | `1` turns on [strict retention](data.md#strict-retention-wazap_retention1-off-by-default). |
+| `WAZAP_PRE_MIGRATION_BACKUP` | `1` | `0` upgrades the account database without first copying it beside itself. An upgrade that cannot write the copy refuses to start; this is the way past that, knowingly. |
+| `WAZAP_TRUST_PROXY` | `loopback` | Advanced, for a self-hosted OAuth server behind a proxy: the proxy IPs/CIDRs trusted for X-Forwarded-For, comma-separated; `none` trusts no proxy. |
+
+Flags beat environment variables, which beat `<data-dir>/.env`. A setting an
+earlier wazap read and this one does not is ignored, with a warning at startup
+that says what replaced it; see the [CHANGELOG](../CHANGELOG.md).
+`WAZAP_TRANSPORT=http` still serves HTTP through 1.x, with a warning: `--http`
+is the supported way, and the variable goes away in 2.0.
+
+Anything else `WAZAP_*` that the code still reads is a development knob, not a
+setting: it is listed under **Development knobs** in
+[AGENTS.md](../AGENTS.md#development-knobs), and a user should not need it.

@@ -28,6 +28,7 @@
   "files": [
     "dist",
     "skills",
+    "docs",
     "README.md",
     "AGENT.md",
     "LICENSE"

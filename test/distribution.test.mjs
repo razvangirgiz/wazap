@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { mkdtempSync, readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, readdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -110,11 +110,14 @@ test("the Cursor install link carries the entry connect would have written", asy
   assert.deepEqual(JSON.parse(Buffer.from(cursor.searchParams.get("config"), "base64").toString()), ENTRY);
 });
 
+/** Both pages that show the badge, so regenerating it cannot leave one of them behind. */
 test("the README carries the link the generator prints", async () => {
   const { markdown } = await import("../scripts/badges.mjs");
-  const readme = readFileSync(join(root, "README.md"), "utf8");
-  for (const line of markdown().split("\n")) {
-    assert.ok(readme.includes(line), `README is missing ${line.slice(0, 60)}…`);
+  for (const page of ["README.md", "docs/install.md"]) {
+    const text = readFileSync(join(root, page), "utf8");
+    for (const line of markdown().split("\n")) {
+      assert.ok(text.includes(line), `${page} is missing ${line.slice(0, 60)}…`);
+    }
   }
 });
 
@@ -126,12 +129,23 @@ test("the icon is a PNG the bundle can point at", () => {
   assert.equal(png.readUInt32BE(20), 512);
 });
 
+/**
+ * The README keeps a one-line table of the 20 and the reference lives in
+ * docs/tools.md, so both tables are read here: each is the registry, neither
+ * may drift, and the scan for a retired name covers every page in docs/.
+ */
 test("the README's tool table is the registry, and no shipped document names a retired tool", () => {
-  const readme = readFileSync(join(root, "README.md"), "utf8");
-  const table = readme.slice(readme.indexOf("| Tool | Kind | What it does |"), readme.indexOf("### Sending once"));
-  const listed = [...table.matchAll(/^\| `([a-z_]+)` \|/gm)].map((match) => match[1]);
-  assert.deepEqual([...listed].sort(), [...TOOL_NAMES].sort());
-  for (const file of ["README.md", "AGENT.md", "AGENTS.md", "docs/security-audit.md", "manifest.json", "server.json", ".claude-plugin/plugin.json"]) {
+  for (const page of ["README.md", "docs/tools.md"]) {
+    const text = readFileSync(join(root, page), "utf8");
+    const start = text.indexOf("| Tool | Kind | What it does |");
+    assert.ok(start >= 0, `${page} has no tool table`);
+    // The table ends where its rows do: the first blank line after the header.
+    const table = text.slice(start, text.indexOf("\n\n", start));
+    const listed = [...table.matchAll(/^\| `([a-z_]+)` \|/gm)].map((match) => match[1]);
+    assert.deepEqual([...listed].sort(), [...TOOL_NAMES].sort(), `${page}'s table is not the 20`);
+  }
+  const docs = readdirSync(join(root, "docs")).map((name) => `docs/${name}`);
+  for (const file of ["README.md", "AGENT.md", "AGENTS.md", ...docs, "manifest.json", "server.json", ".claude-plugin/plugin.json"]) {
     const text = readFileSync(join(root, file), "utf8");
     for (const name of RETIRED_TOOLS) {
       // The audit keeps what a finding was about when it was found, next to its 1.0 name;
