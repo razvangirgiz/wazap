@@ -360,6 +360,13 @@ answers.
 
 ### Changed
 
+- **The README is short; the reference moved to `docs/`.** What wazap is, how
+  to start it, the 20 tools in a line each, what it does about privacy and what
+  it cannot do, and nothing else. Everything the README used to carry is in
+  `docs/` word for word — install, tools, voice, recall, data, accounts, send
+  rules, self-hosting, the HTTP API and webhook, settings — linked from the
+  README's own index. `test/docs-links.test.mjs` fails on a relative link or an
+  anchor that does not resolve.
 - **The five skills use the 1.0 tools.** `whatsapp-inbox` collects with
   `catch_up` and reads a busy chat with `read_messages`; `whatsapp-send` drafts
   every kind with `send_message` and files people with `remember`;

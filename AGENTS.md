@@ -141,8 +141,8 @@ from the Actions page, since that re-runs only the failed job.
   two servers on one dir must refuse to start, never share.
 - **No secrets, ever.** `.env`, `accounts.json`, tokens and pairing codes stay
   out of the tree.
-- **Settings are few on purpose.** `.env.example` and the README's Settings
-  table list every `WAZAP_*` a user sets, and nothing else. A new user-facing
+- **Settings are few on purpose.** `.env.example` and the settings table in
+  `docs/settings.md` list every `WAZAP_*` a user sets, and nothing else. A new user-facing
   setting needs a reason and goes there; a knob only tests need goes under
   Development knobs below. A setting that stops being read goes into
   `RETIRED_SETTINGS` in `src/config.ts`, so whoever still sets it gets a warning
