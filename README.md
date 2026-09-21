@@ -159,6 +159,13 @@ Findings, threat model and the limits of each of these are in
   account can be locked to a list of recipients or to reading only, and there
   is no bulk or scheduled send to reach for. None of that is a guarantee, and
   the risk is yours.
+- **How a model behaves with the tools is measured on Claude only.** The
+  evaluation of how an assistant uses them (`eval/`: 58 cases, each run three
+  times, with the sends that must never happen counted apart) has been run on
+  Claude. ChatGPT, Gemini,
+  Cursor and Codex connect and get the same 20 tools, but nobody has measured
+  them yet, so what the section above promises is the server's doing, not the
+  model's. The manual protocol for ChatGPT is `eval/chatgpt-protocol.md`.
 - **Media keys expire.** WhatsApp drops old attachments from its servers, so
   `get_media` on an old message returns `MEDIA_UNAVAILABLE`.
 - **History is what the phone syncs.** wazap sees the history WhatsApp hands the

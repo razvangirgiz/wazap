@@ -1,6 +1,18 @@
 # Changelog
 
-## Unreleased
+## 1.0.0
+
+wazap 1.0 fixes the tool surface at 20 tools and writes down what it keeps
+stable and what it does not, in [docs/stability.md](docs/stability.md). Coming
+from 0.23, three things change under you: the tool names below, the account
+database (schema version 5, with a copy taken beside it first — there is no
+way back except that copy), and the Node range (22.16 or newer on the 22 line,
+or 24; the 23 line was already refused by `wazap status`). `npx wazap-mcp
+update` installs the package, restarts the service and refreshes the skills;
+clients read the tool list when they connect. On a 50 MB database of some
+21,000 messages, the upgrade and its copy took under a second. How models
+behave with the tools was evaluated on Claude only; ChatGPT and the others are
+not measured yet (README, Known limitations).
 
 ### 20 tools instead of 40
 
@@ -384,8 +396,9 @@ answers.
   message of the account's own and how far the phone has read it, and where
   each client's catch-up left off. Messages of the
   last 14 days get their mentions in the background after the start. A build
-  before this one refuses a version 5 file (`SCHEMA_TOO_NEW`), so keep a backup
-  if you may go back.
+  before this one refuses a version 5 file (`SCHEMA_TOO_NEW`), so the way back
+  is the copy the upgrade takes first (`wazap.4.pre-migration.sqlite`, kept
+  seven days) or one made with `wazap backup`.
 - **`get_status` counts the read receipts the phone sends**
   (`diagnostics.read_self`), so it can be checked that they arrive; nothing acts
   on them yet.
@@ -401,6 +414,9 @@ answers.
 
 ### Upgrade notes
 
+- **Node.** `engines` is now `^22.16.0 || >=24.0.0`. The 23 line lacks
+  `node:sqlite` features wazap needs, and `wazap status` already refused it;
+  npm now says so at install.
 - **A client whose `connect` target is gone** (VS Code, Windsurf, OpenCode)
   takes the generic entry by hand: command `npx`, args `["-y", "wazap-mcp"]`,
   over stdio, in that client's own MCP config. A client that reaches a running
