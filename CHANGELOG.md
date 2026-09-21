@@ -257,6 +257,26 @@ answers.
   inbox and recall skills and the README (*Keeping someone private*) state the
   rule; the output schemas declare `private_omitted` and `private`. The webhook
   is unchanged.
+- **An upgrade copies the database before it migrates it.** The first start on
+  a data dir an older wazap wrote leaves
+  `accounts/<id>/wazap.<old version>.pre-migration.sqlite` beside the account
+  database — the file as it was, whole, openable by the wazap that wrote it —
+  and only then migrates. The copy is taken under the write lock the migration
+  itself takes, so two wazaps starting at once leave one copy and never one of
+  a half-migrated file, and a copy a run already left is kept rather than taken
+  again. **If it cannot be taken, the upgrade does not start** (`BACKUP_FAILED`,
+  a storage code): a full disk is refused before the first byte, and the message
+  says what failed without naming a path. `WAZAP_PRE_MIGRATION_BACKUP=0` upgrades
+  without one, for someone who means it. The copy is deleted a week later at a
+  start — never while the upgrade it belongs to has not landed, at once under
+  `WAZAP_RETENTION=1` — and `wazap status` shows it per account, in `--json` as
+  `storage.accounts[].pre_migration` and on screen as a `pre-migration copy`
+  check with the schema it was taken from, its age and when it goes.
+- **`wazap backup <path>`** writes one copy of an account database where you
+  ask, online and read-only, with the server running or stopped: `0600`, the
+  whole account, `--account <id>` to pick one, `--force` to replace a file
+  already there, and a refusal rather than a write over the live database or a
+  link to it. The file is not encrypted and holds every message the account has.
 
 ### Removed
 

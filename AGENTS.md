@@ -151,6 +151,13 @@ from the Actions page, since that re-runs only the failed job.
   (`WAZAP_TRANSPORT` until 2.0).
 - **Secrets in errors are redacted.** The webhook secret and tokens never
   appear in error strings or logs; keep it that way.
+- **A schema migration never runs without a copy of the file beside it.**
+  `Connection.open` copies an older account database to
+  `wazap.<old version>.pre-migration.sqlite` before it writes anything, under
+  the write lock the migration itself takes, and refuses to migrate when the
+  copy cannot be written (`BACKUP_FAILED`). Only `WAZAP_PRE_MIGRATION_BACKUP=0`
+  skips it. A new migration therefore needs no rescue path of its own, and
+  nothing may move a write ahead of that copy.
 - **Hygiene is not behavior.** Lint, format and docs commits must not change
   what the binary does.
 

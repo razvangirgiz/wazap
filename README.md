@@ -773,6 +773,9 @@ accounts moves into `accounts/default/` the first time a wazap command runs.
                     notes.json and recall/, once imported; deleted a week later
     wazap.<time>.previous-owner.sqlite
                     the database a different number's link set aside; deleted a week later
+    wazap.<version>.pre-migration.sqlite
+                    the database as an upgrade found it, copied before it migrated;
+                    deleted a week later
   legacy/           the 0.15 beta archive.sqlite, once imported; deleted a week later
   models/           whisper.cpp and embedding models, when transcription or recall run locally
   server.lock       pid of the running server
@@ -819,12 +822,28 @@ only small bounded caches stay in the process.
   stop, whatever `WAZAP_RETENTION` says, and with them every draft and the words
   of every send record; chats, contacts, notes, deletion barriers and the send
   records themselves stay, and recall is off.
+- **A schema upgrade copies the file first.** When a start finds a database an
+  older wazap wrote, it writes `wazap.<old version>.pre-migration.sqlite` beside
+  it — the file as it was, whole — and only then migrates. If the copy cannot be
+  taken (no disk space, a folder it cannot write), the upgrade does not start and
+  the error says why; `WAZAP_PRE_MIGRATION_BACKUP=0` upgrades without one. The
+  copy is deleted a week later at a start, at once with `WAZAP_RETENTION=1`, and
+  never while the upgrade it belongs to has not landed. `wazap status` shows it.
+  It holds every message the account had at that moment, unencrypted: a message
+  deleted afterwards is still in the copy until the copy goes.
+- **`wazap backup <path>`** writes one copy of an account database where you ask
+  — `0600`, the whole account, `--account <id>` for a particular one, `--force`
+  to replace a file already there. It is taken online and read-only, so it works
+  with the server running or stopped and never migrates or changes the database;
+  it refuses to write over the live file or a link to it. **The copy is not
+  encrypted and holds every message the account has.** Restoring one is putting
+  it back as `accounts/<id>/wazap.sqlite` with the server stopped.
 
 - **`wazap status`** reads each database read-only, with the server running or
   not: whether it is preparing (and the import phase), ready or imported with
   unexplained differences, its size, messages, chats and embedding queue, the
-  legacy files and when they go, set-aside databases and the beta archive.
-  `--json` carries the same as `storage`.
+  legacy files and when they go, set-aside databases, the copy an upgrade left
+  and the beta archive. `--json` carries the same as `storage`.
 
 ### Upgrading to 0.22
 
@@ -1521,6 +1540,7 @@ Most of these are written for you by `wazap config`, `wazap login` and
 | `WAZAP_WEBHOOK_URL` / `WAZAP_WEBHOOK_SECRET` | unset | HTTPS endpoint (`http://` only on loopback) and the shared secret for `X-Wazap-Signature`. The secret is never a flag. An account's `webhook_url` and `webhook_secret` win. |
 | `WAZAP_WEBHOOK_EVENTS` | unset (`message_received`) | Which events to post, comma-separated, or `all`. An account's `webhook_events` wins. |
 | `WAZAP_RETENTION` | `0` | `1` turns on [strict retention](#strict-retention-wazap_retention1-off-by-default). |
+| `WAZAP_PRE_MIGRATION_BACKUP` | `1` | `0` upgrades the account database without first copying it beside itself. An upgrade that cannot write the copy refuses to start; this is the way past that, knowingly. |
 | `WAZAP_TRUST_PROXY` | `loopback` | Advanced, for a self-hosted OAuth server behind a proxy: the proxy IPs/CIDRs trusted for X-Forwarded-For, comma-separated; `none` trusts no proxy. |
 
 Flags beat environment variables, which beat `<data-dir>/.env`. A setting an
