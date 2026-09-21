@@ -136,3 +136,15 @@ test("the send skill does not read a #private contact's thread unless the user a
   assert.match(draft, /#private[^\n]*do not read (?:their|the) (?:thread|messages)[^\n]*unless the user asks/i);
   assert.doesNotMatch(draft, /\(a read session, a contact tagged `#private`, an account that turned it off\), use `read_messages`/);
 });
+
+test("the setup skill states the Node range wazap enforces, and the pairing code path from a terminal", () => {
+  const text = readFileSync(join(root, "skills", "wazap-setup", "SKILL.md"), "utf8");
+  const engines = JSON.parse(readFileSync(join(root, "package.json"), "utf8")).engines.node;
+  const floor = /\^(\d+\.\d+)/.exec(engines)?.[1];
+  assert.ok(floor, `engines is ${engines}: the test reads the floor of the 22 line from it`);
+  const rows = text.split("\n").filter((line) => line.includes("Node") || line.startsWith("| `✗ node`"));
+  assert.ok(rows.length >= 2, "the skill names the Node range in the diagnosis table and in the node row");
+  for (const row of rows) assert.ok(row.includes(floor), `a line about Node does not say ${floor}: ${row.slice(0, 80)}`);
+  assert.doesNotMatch(text, /below 20\b/, "an old floor is still in the skill");
+  assert.match(text, /login --phone \+\d+/, "the pairing code path from a terminal");
+});

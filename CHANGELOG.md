@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+### Fixed
+
+- **The setup skill states the Node range wazap enforces.** One row of its
+  diagnosis table said the Node version was "below 20", while another said 22.16
+  or 24, and `wazap status` refuses the 23 line: an agent reading the first would
+  tell a user with Node 20 that it was enough. It also names the way to link from
+  a terminal when the QR screen is too tall for the window or there is no camera:
+  `npx wazap-mcp login --phone +15550100`. `test/skills.test.mjs` ties the Node
+  floor in the skill to `engines`.
+
 ### Added
 
 - **A receiver for services that want their own `Authorization` header.**

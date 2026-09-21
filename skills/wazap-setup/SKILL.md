@@ -23,7 +23,7 @@ fixes it; run that command rather than improvising.
 
 | `checks:` line | What it means |
 | --- | --- |
-| `✗ node` | The Node version is below 20. Nothing else will work until it is upgraded. |
+| `✗ node` | The Node version is not supported: below 22.16 on the 22 line, or the 23 line, which lacks `node:sqlite` features wazap needs. Node 24 LTS or 22.16+ is what works; nothing else will until it is upgraded. |
 | `✗ data dir` | Missing, not a directory, mode other than 0700, or not writable. The line names the `chmod` to run. |
 | `– lock: stale` | A previous server died without cleaning up. Harmless; the next start reclaims it. |
 | `✓ lock: held` | A server is running. Do not run `logout` or `status --live`; ask through the client with `get_status`. |
@@ -55,6 +55,13 @@ Without those tools, run `npx wazap-mcp setup --agent` and follow what it prints
 That procedure starts `login` in the background and reads the
 `pairing code: XXXX-XXXX` line out of its output, so the user is left with the
 one part of linking a machine cannot do, typing the code into the phone.
+
+At a terminal, `npx wazap-mcp login` asks whether to link with a QR or a pairing
+code. The QR screen is 32 rows tall and needs a window of about 36; in a shorter
+one it says so instead of drawing half a code, and offers the pairing code first.
+When the user has no camera to hand or the window is short, run
+`npx wazap-mcp login --phone +15550100`: it prints the 8-character code the user
+types into the phone.
 
 `SESSION_EXPIRED` means the phone removed the device, and `NOT_LINKED` that
 nothing was ever linked. Both are `link_account`, or `npx wazap-mcp login` where
