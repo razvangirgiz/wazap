@@ -154,7 +154,9 @@ itself is current behaviour, not a promise.
 
 Guarded by: `test/db-migration-chain.test.mjs`, `test/db-open.test.mjs`. A major
 may change the schema in ways no 1.x can read; the copy above and `wazap backup`
-are the way out. **The file format is not promised.** The schema is internal — read through
+are the way out.
+
+**The file format is not promised.** The schema is internal — read through
 wazap, not by other tools — and tables, columns and indexes may change in any
 release, patches included, as long as the migration chain holds. Nothing in the
 code or the tests supports a third-party reader.
