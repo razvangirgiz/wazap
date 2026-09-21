@@ -254,5 +254,6 @@ test("the Node floor and the platforms are package.json's and CI's", () => {
   const named = [...new Set([...section(7).matchAll(/Node (\d+(?:\.\d+\.\d+)?)/g)].map(([, version]) => version))];
   assert.deepEqual(named, matrix, "the document names different Node versions than CI runs");
   assert.match(ci, /runs-on: ubuntu-latest/, "the document says Linux");
-  assert.ok(section(7).includes("Windows is neither supported nor tested"));
+  assert.ok(section(7).includes("no test or CI run exercises"), "the document says Windows is not exercised");
+  assert.doesNotMatch(ci, /windows/i, "and CI has no Windows runner, or that sentence is stale");
 });

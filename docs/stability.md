@@ -31,6 +31,7 @@ The 20, each with what it requires: `learn` (), `get_status` (),
 `edit_message` (`message_id`, `text`), `react_to_message` (`message_id`,
 `emoji`), `delete_message` (`message_id`, `for_everyone`), `manage_chat`
 (`chat_id`, `action`).
+An empty argument list means the tool requires nothing.
 
 Fourteen declare an output schema and answer in that shape, as an SDK client's
 own validator checks it; the six without one are the five Calfa calls and
@@ -184,7 +185,9 @@ honoured until 2.0. Guarded by: `test/config.test.mjs`, `test/cli.test.mjs`.
 Node 22.16.0 or newer, as `engines` in `package.json` states. CI runs lint,
 typecheck and the whole suite on Node 22.16.0 and on Node 24, on Linux
 (`.github/workflows/ci.yml`). macOS is the daily development platform but is not
-in CI; Windows is neither supported nor tested.
+in CI. Windows has code paths of its own (client configuration, executable
+extensions) that no test or CI run exercises, so it is not a supported platform
+until one does.
 
 Semver, with this file as the definition of the contract: a major changes
 something listed as stable, a minor is additive, a patch fixes behaviour without
