@@ -1,9 +1,12 @@
 /**
  * The account database schema, as ordered migrations over `PRAGMA
- * user_version`. Version N is reached by running migrations 1..N in order,
- * each in its own transaction together with the version bump, so a crash
- * leaves the file at a whole version. A migration, once released, never
- * changes: a new shape is a new entry at the end.
+ * user_version`. Version N is reached by running migrations 1..N in order.
+ * Every migration still pending, with its version bump, runs inside one
+ * transaction (`Connection.migrate`), so a crash leaves the file at the whole
+ * version it started from and the next open runs them again from there. The
+ * file as it was before that transaction is kept beside it for a week
+ * (`pre-migration.ts`). A migration, once released, never changes: a new shape
+ * is a new entry at the end.
  *
  * Units: every time column is epoch milliseconds. Message ids are
  * chronological (see ids.ts), and the CHECK on `messages` holds the id's

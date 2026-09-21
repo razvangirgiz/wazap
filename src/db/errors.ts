@@ -14,6 +14,8 @@ export type StorageErrorCode =
   | "READ_ONLY"
   /** An argument the storage layer cannot store faithfully: a zero timestamp, a malformed id. */
   | "INVALID_INPUT"
+  /** The copy taken before a migration could not be written, so the migration did not start. */
+  | "BACKUP_FAILED"
   /** The file belongs to another WhatsApp account. */
   | "OWNER_MISMATCH"
   /** More than 2^20 messages in one second; the chronological id space for it is full. */

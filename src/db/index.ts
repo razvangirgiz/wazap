@@ -62,6 +62,7 @@
  *   family (families()), so a page after the first sees what the first saw
  *   while a lid chat folds.
  */
+import { existsSync } from "node:fs";
 import { CatchupMarks } from "./catchup.js";
 import { Contacts, type LeftGroup } from "./contacts.js";
 import { Connection, type CheckpointResult, type ConnectionOptions, type ConnectionSettings } from "./connection.js";
@@ -101,6 +102,17 @@ export { TRANSCRIBE_MAX_ATTEMPTS, TRANSCRIBE_QUEUE_MAX_AGE_MS } from "./transcri
 export type { ProviderClass, TranscribeItem, TranscribeQueueStats, TranscribeState } from "./transcripts.js";
 export type { EventInput, EventRecord, EventState, EventStats } from "./events.js";
 export type { CheckpointResult, ConnectionOptions, ConnectionSettings } from "./connection.js";
+export {
+  PRE_MIGRATION_FIX,
+  PRE_MIGRATION_SETTING,
+  PRE_MIGRATION_TTL_MS,
+  preMigrationBackupEnabled,
+  preMigrationBackupHolds,
+  preMigrationBackups,
+  preMigrationName,
+  purgePreMigrationBackups,
+  type PreMigrationBackup,
+} from "./pre-migration.js";
 export type {
   BacklogItem,
   HybridHit,
@@ -113,6 +125,33 @@ export type * from "./types.js";
 
 /** Pages one incremental merge step writes; ~3 ms a step on a 100k-message index. */
 const FTS_MERGE_PAGES = 100;
+
+/**
+ * An online copy of an account database at `destination`, for `wazap backup`.
+ *
+ * Read-only from end to end: the file is never migrated, never written and
+ * never opened read-write, so the command is the same with a server running as
+ * without one — a running server's writes neither block it nor land in it, and
+ * a database an older wazap wrote is copied as it is instead of being refused.
+ * Whether a write-ahead log lies beside it decides how it opens, the rule
+ * `openForReading` follows (see src/legacy-files.ts): with a log the copy
+ * includes what the log holds, without one nothing is created beside the file.
+ *
+ * The copy is not encrypted. It holds every message the account has.
+ */
+export async function backupDatabase(path: string, destination: string): Promise<number> {
+  const db = AccountDb.open(path, {
+    readOnly: true,
+    anySchema: true,
+    immutable: !existsSync(`${path}-wal`),
+    checkpointDelayMs: 0,
+  });
+  try {
+    return await db.backup(destination);
+  } finally {
+    db.close();
+  }
+}
 
 export interface AccountDbOptions extends ConnectionOptions {
   /** Strips a quoted message's embedded copy from a quoting message's protobuf; see ScrubQuote. */

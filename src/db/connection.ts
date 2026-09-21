@@ -12,7 +12,15 @@ import { randomBytes } from "node:crypto";
 import { chmodSync, closeSync, existsSync, fsyncSync, mkdirSync, openSync, renameSync, rmSync, statSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
+import { errorCode } from "../error-code.js";
 import { StorageError } from "./errors.js";
+import {
+  PRE_MIGRATION_FIX,
+  assertRoomForBackup,
+  preMigrationBackupEnabled,
+  preMigrationBackupHolds,
+  preMigrationName,
+} from "./pre-migration.js";
 import { MIGRATIONS, SCHEMA_VERSION } from "./schema.js";
 import { sqlite, type DatabaseSync, type SQLInputValue, type StatementSync } from "./sqlite.js";
 
@@ -39,6 +47,12 @@ export interface ConnectionOptions {
    * has open.
    */
   immutable?: boolean;
+  /**
+   * With readOnly: accept a schema older than this build's, which the tables
+   * would be read wrong through. Only for copying the file (`wazap backup`),
+   * never for reading it; a newer schema is refused as always.
+   */
+  anySchema?: boolean;
   /** How long a statement waits on a lock held by another connection (busy_timeout). */
   timeoutMs?: number;
   /** The clock expiry and bookkeeping read; tests move it. Epoch ms. */
@@ -54,6 +68,12 @@ export interface ConnectionOptions {
    * 0 turns the timer off; bulk deletes always try a checkpoint when they finish.
    */
   checkpointDelayMs?: number;
+  /**
+   * The copy taken beside an existing database before it is migrated. Unset
+   * follows WAZAP_PRE_MIGRATION_BACKUP (on unless it says otherwise); false
+   * upgrades without one. Read-only opens never take one, whatever this says.
+   */
+  preMigrationBackup?: boolean;
 }
 
 export interface ConnectionSettings {
@@ -83,12 +103,171 @@ function userVersion(db: DatabaseSync): number {
   return row?.user_version ?? 0;
 }
 
+interface Copy {
+  /** Where the finished copy lands. */
+  target: string;
+  /** The exclusive file it is written to first, in the destination's own folder. */
+  temp: string;
+}
+
+/**
+ * Everything a copy of a live database needs around the bytes: the destination
+ * is not the database under another name, its folder exists and is owner-only,
+ * and the copy goes to a new exclusive `0600` temp file so nothing half-written
+ * ever carries the destination's name.
+ *
+ * A destination that is the live database — another case on a case-insensitive
+ * disk, a symlink, a hard link — is refused by comparing the files themselves,
+ * not their paths.
+ */
+function beginCopy(live: string, destination: string): Copy {
+  const target = resolve(destination);
+  if (existsSync(target)) {
+    const aimed = statSync(target);
+    for (const path of [live, `${live}-wal`, `${live}-shm`]) {
+      if (!existsSync(path)) continue;
+      const own = statSync(path);
+      if (own.dev === aimed.dev && own.ino === aimed.ino) {
+        throw new StorageError("INVALID_INPUT", "A backup cannot overwrite the database it copies.");
+      }
+    }
+  }
+  const dir = dirname(target);
+  mkdirSync(dir, { recursive: true, mode: DIR_MODE });
+  const temp = join(dir, `.${basename(target)}.${process.pid}.${randomBytes(6).toString("hex")}.tmp`);
+  closeSync(openSync(temp, "wx", FILE_MODE));
+  enforceMode(temp, FILE_MODE);
+  return { target, temp };
+}
+
+/** The written copy, on disk and under its name: fsync first, then one atomic rename. */
+function finishCopy({ target, temp }: Copy): void {
+  const fd = openSync(temp, "r");
+  try {
+    fsyncSync(fd);
+  } finally {
+    closeSync(fd);
+  }
+  renameSync(temp, target);
+}
+
+/**
+ * A copy of `db` at `destination`, taken on the calling thread.
+ *
+ * node:sqlite's own `backup()` is asynchronous, and the one caller that cannot
+ * await — `Connection.open`, which is synchronous so a service answers from the
+ * moment it exists — is the one that must copy before it migrates. `VACUUM
+ * INTO` is SQLite's synchronous way to copy a live database: it reads the
+ * source under a read transaction, so the copy is the last committed state and
+ * never a write in flight, and writes a whole database carrying the same rows,
+ * the same schema and the same `user_version`. It is not a page-for-page image
+ * — the copy is rebuilt, so its free pages are gone rather than copied — and a
+ * pre-existing empty file is what it writes into, which is how the copy keeps
+ * the temp file's `0600` from its first byte.
+ */
+function copyDatabase(db: DatabaseSync, live: string, destination: string): Copy {
+  const copy = beginCopy(live, destination);
+  try {
+    db.prepare("VACUUM INTO ?").run(copy.temp);
+    return copy;
+  } catch (err) {
+    rmSync(copy.temp, { force: true });
+    throw err;
+  }
+}
+
 function tooNew(path: string, version: number): StorageError {
   return new StorageError(
     "SCHEMA_TOO_NEW",
     `${path} has schema version ${version}; this wazap knows up to ${SCHEMA_VERSION}.`,
     "Update wazap to the version that wrote this file (npm i -g wazap-mcp@latest)"
   );
+}
+
+/**
+ * The copy itself, once the version is settled: an existing one that reads
+ * whole is left alone, anything else is written and renamed into place.
+ *
+ * Fail-closed. Every way this can go wrong — a folder that cannot be written,
+ * a disk that fills, a copy that does not read back — leaves the database
+ * exactly as it was and stops the open, because the caller is about to migrate
+ * it. The message carries the cause's code and no path or content: what failed
+ * is a code, where it failed is already in the account the log names.
+ */
+function takeCopy(db: DatabaseSync, path: string, from: number): void {
+  const dir = dirname(path);
+  const target = join(dir, preMigrationName(from));
+  // A first attempt that died after writing the copy left a usable one behind;
+  // taking it again would only copy a database that has not changed since.
+  if (preMigrationBackupHolds(target, from)) return;
+  try {
+    assertRoomForBackup(path, dir);
+    const copy = copyDatabase(db, path, target);
+    try {
+      if (!preMigrationBackupHolds(copy.temp, from)) {
+        throw new StorageError(
+          "BACKUP_FAILED",
+          "The copy taken of the account database before its upgrade did not read back whole, so nothing was migrated.",
+          PRE_MIGRATION_FIX
+        );
+      }
+      // Renamed over whatever was there: a copy that did not read whole is
+      // worth less than this one, and the swap is atomic either way.
+      finishCopy(copy);
+    } catch (err) {
+      rmSync(copy.temp, { force: true });
+      throw err;
+    }
+  } catch (err) {
+    if (err instanceof StorageError) throw err;
+    throw new StorageError(
+      "BACKUP_FAILED",
+      `The account database could not be copied before its upgrade (${errorCode(err) ?? "unknown"}), so nothing was migrated.`,
+      PRE_MIGRATION_FIX
+    );
+  }
+}
+
+/**
+ * A copy of an older database beside it, before the upgrade writes anything.
+ *
+ * Which lock this is safe under was the whole question, and SQLite answers half
+ * of it: a copy cannot be taken from a connection that is inside a write
+ * transaction, so the migration's own `BEGIN IMMEDIATE` cannot hold it. What
+ * holds it instead is a second connection to the same file, taking that very
+ * `BEGIN IMMEDIATE` — the write lock the migration uses — and holding it across
+ * the version read and the copy. So:
+ *
+ * - no other process can commit a migration while the copy is being taken, so
+ *   the copy is never of a database halfway through its upgrade and never of
+ *   one already upgraded under an older version's name;
+ * - the version the copy is named for is read under that lock, not before it,
+ *   so a process that lost the race finds the schema current and copies nothing;
+ * - the copy is read off the open connection, which is not in a transaction, so
+ *   it is the last committed state — a writer's uncommitted pages are invisible
+ *   to it (WAL) and its read lock does not block one;
+ * - a database another process is migrating right now fails to take the lock and
+ *   fails exactly where the migration would have, with the same error.
+ *
+ * The lock is released before the journal-mode switch (a pragma no transaction
+ * may hold) and taken again by `migrate()`, which re-reads the version inside
+ * it: whoever gets there second finds nothing left to do.
+ */
+function backUpBeforeMigrating(db: DatabaseSync, path: string, timeoutMs: number): void {
+  const guard = new (sqlite().DatabaseSync)(path, { timeout: timeoutMs });
+  try {
+    guard.exec("BEGIN IMMEDIATE");
+    const from = userVersion(guard);
+    if (from <= 0 || from >= SCHEMA_VERSION) return;
+    takeCopy(db, path, from);
+  } finally {
+    try {
+      if (guard.isTransaction) guard.exec("ROLLBACK");
+    } catch {
+      // The lock goes with the connection either way.
+    }
+    guard.close();
+  }
 }
 
 export class Connection {
@@ -129,7 +308,7 @@ export class Connection {
       try {
         const version = userVersion(db);
         if (version > SCHEMA_VERSION) throw tooNew(path, version);
-        if (version < SCHEMA_VERSION) {
+        if (version < SCHEMA_VERSION && options.anySchema !== true) {
           throw new StorageError(
             "SCHEMA_OUTDATED",
             `${path} has schema version ${version}; this wazap migrates it to ${SCHEMA_VERSION} when the server starts.`,
@@ -159,6 +338,13 @@ export class Connection {
       // migrate() checks again inside its transaction, where the answer holds.
       const version = userVersion(db);
       if (version > SCHEMA_VERSION) throw tooNew(path, version);
+      // A copy of what an upgrade is about to change, taken before the
+      // journal-mode switch, which is itself a write to the file. Only for a
+      // database that exists and is behind: a new file (version 0) has nothing
+      // to copy, one already current has nothing to migrate.
+      if (version > 0 && version < SCHEMA_VERSION && (options.preMigrationBackup ?? preMigrationBackupEnabled())) {
+        backUpBeforeMigrating(db, path, timeout);
+      }
       const mode = db.prepare("PRAGMA journal_mode = WAL").get() as { journal_mode: string } | undefined;
       if (mode?.journal_mode !== "wal") {
         throw new StorageError("INVALID_INPUT", `${path} could not switch to WAL journaling.`);
@@ -380,34 +566,13 @@ export class Connection {
    */
   async backup(destination: string): Promise<number> {
     this.assertOpen();
-    const target = resolve(destination);
-    if (existsSync(target)) {
-      const aimed = statSync(target);
-      for (const live of [this.path, `${this.path}-wal`, `${this.path}-shm`]) {
-        if (!existsSync(live)) continue;
-        const own = statSync(live);
-        if (own.dev === aimed.dev && own.ino === aimed.ino) {
-          throw new StorageError("INVALID_INPUT", "A backup cannot overwrite the database it copies.");
-        }
-      }
-    }
-    const dir = dirname(target);
-    mkdirSync(dir, { recursive: true, mode: DIR_MODE });
-    const temp = join(dir, `.${basename(target)}.${process.pid}.${randomBytes(6).toString("hex")}.tmp`);
-    closeSync(openSync(temp, "wx", FILE_MODE));
+    const copy = beginCopy(this.path, destination);
     try {
-      enforceMode(temp, FILE_MODE);
-      const pages = await sqlite().backup(this.db, temp);
-      const fd = openSync(temp, "r");
-      try {
-        fsyncSync(fd);
-      } finally {
-        closeSync(fd);
-      }
-      renameSync(temp, target);
+      const pages = await sqlite().backup(this.db, copy.temp);
+      finishCopy(copy);
       return pages;
     } catch (err) {
-      rmSync(temp, { force: true });
+      rmSync(copy.temp, { force: true });
       throw err;
     }
   }
