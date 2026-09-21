@@ -167,16 +167,21 @@ export function databaseBytes(path: string): number {
   }, 0);
 }
 
+/** What the filesystem holding `dir` reports as free to this user. */
+function freeSpace(dir: string): number {
+  const stats = statfsSync(dir);
+  return stats.bavail * stats.bsize;
+}
+
 /**
  * Refuses before the first byte when the disk cannot hold the copy, so a full
  * disk is one clean error instead of a half-written file. A filesystem that
  * will not answer is not an objection: the write itself then decides.
  */
-export function assertRoomForBackup(dbPath: string, dir: string): void {
+export function assertRoomForBackup(dbPath: string, dir: string, freeBytes: (dir: string) => number = freeSpace): void {
   let free: number;
   try {
-    const stats = statfsSync(dir);
-    free = stats.bavail * stats.bsize;
+    free = freeBytes(dir);
   } catch {
     return;
   }

@@ -23,7 +23,7 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { chmodSync, copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, statSync, truncateSync, writeFileSync } from "node:fs";
+import { chmodSync, copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import { dirname, join } from "node:path";
@@ -685,16 +685,27 @@ test("an upgrade that cannot write its copy does not start, and says why without
 test("a disk that cannot hold the copy is refused before the first byte is written", () => {
   const dir = tempDir("wazap-chain-space-");
   const path = join(dir, "wazap.sqlite");
-  // A database larger than any disk, without writing one: the same reading the
-  // real path takes, against free space the filesystem really reports.
-  writeFileSync(path, "");
-  truncateSync(path, 1e15);
+  // A database and a disk of known sizes, the disk handed in: a real
+  // filesystem's limits differ (ext4 refuses a sparse file of a petabyte with
+  // EFBIG), so the reading is what is under test, not the disk it ran on.
+  writeFileSync(path, Buffer.alloc(64 * 1024));
+  const disk = (free) => () => free;
 
-  const refusal = thrown(() => assertRoomForBackup(path, dir));
+  const refusal = thrown(() => assertRoomForBackup(path, dir, disk(1024 * 1024)));
   assert.ok(refusal instanceof StorageError && refusal.code === "BACKUP_FAILED", `refused with ${refusal?.code ?? refusal}`);
   assert.match(refusal.message, /less free space than the copy needs/);
   assert.match(refusal.message, /nothing was migrated/);
   assert.doesNotMatch(refusal.message, /\//, "no path in it");
+
+  assert.doesNotThrow(() => assertRoomForBackup(path, dir, disk(64 * 1024 * 1024)), "a disk with room for it and the margin is no objection");
+  assert.doesNotThrow(
+    () =>
+      assertRoomForBackup(path, dir, () => {
+        throw new Error("no answer");
+      }),
+    "a filesystem that will not say is left to the write itself"
+  );
+  assert.doesNotThrow(() => assertRoomForBackup(path, dir), "and the real reading of this disk holds a 64 KiB database");
 });
 
 test("the copy can be turned off knowingly, by the setting and by the option", () => {
