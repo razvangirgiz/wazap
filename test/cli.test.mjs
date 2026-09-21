@@ -309,6 +309,13 @@ test("parseLinkChoice treats enter and 1 as QR, 2 as a code, anything else as an
   assert.equal(parseLinkChoice("  1  "), "qr");
   assert.equal(parseLinkChoice("2"), "code");
   assert.equal(parseLinkChoice("x"), "retry");
+  // A window too short for the QR makes the pairing code the default, and still honours an explicit choice.
+  assert.equal(parseLinkChoice("", false), "code");
+  assert.equal(parseLinkChoice("  ", false), "code");
+  assert.equal(parseLinkChoice("1", false), "qr");
+  assert.equal(parseLinkChoice("2", false), "code");
+  assert.equal(parseLinkChoice("x", false), "retry");
+  assert.equal(parseLinkChoice("", true), "qr");
 });
 
 test("`contacts resync` refuses while a server owns the session", async () => {

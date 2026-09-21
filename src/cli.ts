@@ -59,14 +59,17 @@ import {
   next,
   ok,
   openScreen,
+  qrFits,
   qrSavedLine,
+  qrScreenRows,
   shortPath,
   spinner,
+  terminalRows,
   tilde,
   warn,
   type Spinner,
 } from "./ui.js";
-import { loginWizardSteps, maybeWizard, wizDim, wizFail, wizInfo, wizOk, wizWarn, type Wizard } from "./wizard.js";
+import { loginWizardSteps, maybeWizard, qrScreenBody, wizFail, wizInfo, wizOk, wizWarn, type Wizard } from "./wizard.js";
 import type { ConnectionStatus } from "./wa-types.js";
 import { WhatsAppService } from "./whatsapp.js";
 
@@ -909,18 +912,22 @@ async function linkByQr(p: AccountPaths, waiting: Countdown, w: Wizard | null): 
     await w.next("Scan this with WhatsApp");
     waiting.start("Waiting for a QR from WhatsApp…");
   }
+  // The last QR, so a resized window can redraw it: WhatsApp sends a new one
+  // every so often, and the window may change height between two of them.
+  let latest: string[] | null = null;
+  const onResize = (): void => {
+    if (w === null || latest === null) return;
+    void w.paint(qrScreenBody(latest, terminalRows(), qrSavedLine(p.qrFile)), { reveal: false }).catch(() => {});
+  };
   const onQr = async (qr: string): Promise<void> => {
     const art = await new Promise<string>((resolve) => {
       qrcodeTerminal.generate(qr, { small: true }, (drawn: string) => resolve(drawn));
     });
+    const lines = art.trimEnd().split("\n");
+    latest = lines;
     const saved = qrSavedLine(p.qrFile);
     if (w) {
-      await w.paint([
-        ...art.trimEnd().split("\n"),
-        "",
-        "WhatsApp → Settings → Linked devices → Link a device",
-        ...(saved === null ? [] : [wizDim(saved)]),
-      ]);
+      await w.paint(qrScreenBody(lines, terminalRows(), saved));
     } else {
       say(art);
       say("  Scan it with WhatsApp → Settings → Linked devices → Link a device");
@@ -930,11 +937,16 @@ async function linkByQr(p: AccountPaths, waiting: Countdown, w: Wizard | null): 
     await qrcode.toFile(p.qrFile, qr);
     waiting.start();
   };
-  const sock = await linkSession(p.authDir, { deadline: Date.now() + PAIRING_TIMEOUT_MS, onQr });
+  if (w) process.on("SIGWINCH", onResize);
   try {
-    return await settledAccount(sock, p.authDir);
+    const sock = await linkSession(p.authDir, { deadline: Date.now() + PAIRING_TIMEOUT_MS, onQr });
+    try {
+      return await settledAccount(sock, p.authDir);
+    } finally {
+      await sock.end(undefined);
+    }
   } finally {
-    await sock.end(undefined);
+    process.off("SIGWINCH", onResize);
   }
 }
 
@@ -1166,10 +1178,15 @@ const LINK_CHOICE_ATTEMPTS = 3;
 
 export type LinkChoice = "qr" | "code" | "retry";
 
-/** Empty and 1 keep the QR default. 2 is a pairing code. Anything else is another try. */
-export function parseLinkChoice(answer: string): LinkChoice {
+/**
+ * Empty takes the default: the QR, or the pairing code when the window is too
+ * short to hold the QR whole. 1 is the QR, 2 a pairing code. Anything else is
+ * another try.
+ */
+export function parseLinkChoice(answer: string, qrFits = true): LinkChoice {
   const trimmed = answer.trim();
-  if (trimmed === "" || trimmed === "1") return "qr";
+  if (trimmed === "") return qrFits ? "qr" : "code";
+  if (trimmed === "1") return "qr";
   if (trimmed === "2") return "code";
   return "retry";
 }
@@ -1183,18 +1200,25 @@ export async function chooseLoginCode(config: Config): Promise<boolean> {
   if (config.loginCode) return true;
   if (config.assumeYes || process.stdin.isTTY !== true) return false;
 
-  const menu = ["Link with a QR or a pairing code?", "  1. QR code", "  2. Pairing code (type on your phone)"];
+  // Asked before there is a QR to measure, so the height is the usual one.
+  const rows = terminalRows();
+  const fits = qrFits(rows);
+  const menu = [
+    "Link with a QR or a pairing code?",
+    fits ? "  1. QR code" : `  1. QR code (needs a window ${qrScreenRows()} rows tall; this one is ${rows})`,
+    fits ? "  2. Pairing code (type on your phone)" : "  2. Pairing code (type on your phone), which needs no room",
+  ];
   for (const line of menu) say(line);
   for (let attempt = 1; ; attempt++) {
-    const answer = await ask(`${brand("?")} Choose: [1] (enter to accept) `);
-    const picked = parseLinkChoice(answer);
+    const answer = await ask(`${brand("?")} Choose: [${fits ? 1 : 2}] (enter to accept) `);
+    const picked = parseLinkChoice(answer, fits);
     switch (picked) {
       case "qr":
         return false;
       case "code":
         return true;
       case "retry":
-        if (attempt === LINK_CHOICE_ATTEMPTS) return false;
+        if (attempt === LINK_CHOICE_ATTEMPTS) return !fits;
         say(fail("Type 1 or 2."));
         continue;
       default: {

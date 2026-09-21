@@ -11,6 +11,12 @@
   one character into the title (`1 / 3`, `S▍`), and nothing was linked. It
   reproduced on macOS and Linux, on 1.0.0 and 0.23.1. The timers now hold the
   process open until the screen is drawn.
+- **A window too short for the QR is told so, not shown half a code.** The QR
+  is 32 rows tall and its screen needs about 36; a window of the usual 24 rows
+  cut the top of the code, and a code cut at the top cannot be scanned. The
+  screen now says how many rows it needs and how to link with a pairing code
+  instead, draws the QR as soon as the window is tall enough, and the question
+  before it makes the pairing code the default when the window is too short.
 
 ## 1.0.0
 

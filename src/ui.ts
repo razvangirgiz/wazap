@@ -190,6 +190,37 @@ export function qrSavedLine(qrFile: string, cols: number = process.stderr.column
   return width(line) <= cols ? line : null;
 }
 
+/**
+ * Rows the QR from WhatsApp takes drawn in half blocks. Six real ones, from six
+ * pairing attempts, were all 32; the code is fixed by WhatsApp and cannot be
+ * drawn smaller without distorting its modules. This is the estimate for the
+ * question that comes before there is a code; once there is one, its own
+ * height is what is measured.
+ */
+export const QR_ROWS = 32;
+
+/** Lines the QR screen carries besides the code: a blank, the instruction, the saved path and the waiting line. */
+const QR_SCREEN_EXTRA = 4;
+
+/** Terminal height as the wizard reads it; a stream that reports none is taken as 24. */
+export function terminalRows(): number {
+  return process.stderr.rows ?? 24;
+}
+
+/** Rows a screen needs to show a QR of `qrRows` whole. */
+export function qrScreenRows(qrRows: number = QR_ROWS): number {
+  return qrRows + QR_SCREEN_EXTRA;
+}
+
+/**
+ * Whether the QR fits the terminal. A screen taller than the terminal keeps its
+ * last rows (see centerBlock), which cuts the top of the code, and a code cut
+ * at the top does not scan.
+ */
+export function qrFits(rows: number, qrRows: number = QR_ROWS): boolean {
+  return rows >= qrScreenRows(qrRows);
+}
+
 /** Every line padded to the widest, so a two-line box is still a rectangle. */
 export function box(...lines: string[]): string {
   const inner = Math.max(...lines.map(width));

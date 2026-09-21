@@ -4,10 +4,12 @@ import { spawn } from "node:child_process";
 import { pathToFileURL } from "node:url";
 
 import { BANNER_ART } from "../dist/banner.js";
+import { QR_ROWS, centerBlock, qrFits, qrScreenRows } from "../dist/ui.js";
 import {
   contentChars,
   isArtLine,
   loginWizardSteps,
+  qrScreenBody,
   setupWizardSteps,
   typePrefix,
   wizardLines,
@@ -54,6 +56,39 @@ test("setupWizardSteps counts link screens, then transcribe, optional install, c
   assert.equal(setupWizardSteps({ linked: true, npx: false, askWrites: false, loginCode: false }), 4);
   assert.equal(loginWizardSteps(false, true), 3);
   assert.equal(loginWizardSteps(true, true), 4);
+});
+
+/** A code of the height WhatsApp's is, each row marked so a cut shows which rows went. */
+const art = Array.from({ length: QR_ROWS }, (_, i) => `▄▀ qr-row-${i} ▀▄`);
+const SAVED = "Also saved to ~/.wazap/qr.png";
+
+test("a QR screen is exactly as tall as qrScreenRows says: whole from that height, cut at the top below it", () => {
+  const body = qrScreenBody(art, 999, SAVED);
+  for (let rows = 10; rows <= 60; rows++) {
+    // What the wizard draws: the logo and step lines, the body, and the waiting line under it.
+    const content = wizardLines(1, 5, "Scan this with WhatsApp", [...body, wizardSpinLine(0, "Waiting for your phone…")]);
+    const shown = centerBlock(content, 100, rows).map(strip);
+    const whole = art.every((line) => shown.some((shownLine) => shownLine.includes(line)));
+    assert.equal(whole, qrFits(rows), `at ${rows} rows the code is ${whole ? "whole" : "cut"}, qrFits says ${qrFits(rows)}`);
+  }
+  assert.equal(qrScreenRows(), QR_ROWS + 4);
+});
+
+test("a window that holds the QR is shown the QR and how to scan it", () => {
+  const plain = qrScreenBody(art, qrScreenRows(), SAVED).map(strip);
+  assert.deepEqual(plain.slice(0, art.length), art);
+  assert.ok(plain.some((line) => line.includes("Linked devices")));
+  assert.ok(plain.includes(SAVED), "and where the picture was saved");
+});
+
+test("a window too short for the QR is told so, and is not shown half a code", () => {
+  const rows = 24;
+  const plain = qrScreenBody(art, rows, SAVED).map(strip);
+  for (const line of art) assert.ok(!plain.some((shown) => shown.includes(line)), "no part of the code is drawn");
+  const text = plain.join("\n");
+  assert.match(text, new RegExp(`This window is ${rows} rows tall and the QR code needs ${qrScreenRows(art.length)}`));
+  assert.match(text, /taller/, "it says to make the window taller");
+  assert.match(text, /npx wazap-mcp login --phone/, "and the way that needs no room");
 });
 
 test("a flow that awaits the wizard's typing is not cut off when nothing else keeps the process open", async () => {

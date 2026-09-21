@@ -49,6 +49,9 @@ want to run it by hand.
 `npx wazap-mcp login` shows a QR code; scan it from **Settings → Linked devices
 → Link a device**. No camera handy, or linking over SSH? `npx wazap-mcp login --phone +15550100`
 prints an 8-character code you type under *Link with phone number instead*.
+The QR is 32 rows tall, so its screen needs a window of about 36 rows. A shorter
+window is told so instead of being shown half a code, and the question before it
+offers the pairing code first; making the window taller draws the QR at once.
 It ends by asking whether the agent may send messages; the answer is no unless
 you say yes, and `npx wazap-mcp config writes on` changes it later.
 

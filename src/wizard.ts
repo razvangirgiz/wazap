@@ -9,6 +9,8 @@ import {
   humanLayout,
   centerBlock,
   colorEnabled,
+  qrFits,
+  qrScreenRows,
   setSpinnerHost,
   stripAnsi,
   width,
@@ -146,6 +148,31 @@ function sleep(ms: number): Promise<void> {
 const TYPE_CAP_MS = 800;
 const LINE_GAP_MS = 28;
 const LOGO_LINES = BANNER_ART.split("\n").length;
+
+/**
+ * What the QR screen shows: the code when the window holds it whole, and
+ * otherwise what to do about it. A code cut at the top cannot be scanned, so
+ * a window that is too short is told so, not shown half a code; the screen is
+ * drawn again when the window is resized.
+ */
+export function qrScreenBody(art: readonly string[], rows: number, saved: string | null): string[] {
+  if (qrFits(rows, art.length)) {
+    return [
+      ...art,
+      "",
+      "WhatsApp → Settings → Linked devices → Link a device",
+      ...(saved === null ? [] : [wizDim(saved)]),
+    ];
+  }
+  return [
+    wizWarn(`This window is ${rows} rows tall and the QR code needs ${qrScreenRows(art.length)}.`),
+    "",
+    "Make the window taller and the code appears by itself,",
+    "or press Ctrl-C and link with a pairing code instead:",
+    "",
+    wizBold("npx wazap-mcp login --phone +15550100"),
+  ];
+}
 
 export interface RevealOpts {
   /** Default true for next/paint. False snaps the frame (errors, in-progress Finish). */

@@ -8,7 +8,10 @@ import {
   box,
   brand,
   centerBlock,
+  QR_ROWS,
+  qrFits,
   qrSavedLine,
+  qrScreenRows,
   centerLine,
   cmd,
   colorEnabled,
@@ -226,4 +229,18 @@ test("centerBlock keeps a ragged column aligned, then drops it in the middle of 
 test("width ignores ANSI, so a painted line still centers on its visible glyphs", () => {
   assert.equal(width("\x1b[32mhi\x1b[0m"), 2);
   assert.equal(centerLine("\x1b[32mhi\x1b[0m", 6), "  \x1b[32mhi\x1b[0m");
+});
+
+test("a QR of the usual 32 rows needs a window 36 rows tall, so the usual 24 does not hold it", () => {
+  assert.equal(QR_ROWS, 32);
+  assert.equal(qrScreenRows(), 36);
+  assert.equal(qrFits(24), false);
+  assert.equal(qrFits(35), false);
+  assert.equal(qrFits(36), true);
+  assert.equal(qrFits(60), true);
+});
+
+test("qrFits measures the code it is given, not only the usual one", () => {
+  assert.equal(qrFits(30, 26), true, "a 26-row code needs 30");
+  assert.equal(qrFits(29, 26), false);
 });
