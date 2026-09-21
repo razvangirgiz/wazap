@@ -47,6 +47,7 @@
     "fold:table": "npm run build && node scripts/gen-fold-table.mjs",
     "lint": "eslint .",
     "check": "node scripts/check.mjs",
+    "check:linux": "node scripts/check-linux.mjs",
     "check:clock": "npm run build && node scripts/clock-sweep.mjs --quick",
     "sweep:clock": "npm run build && node scripts/clock-sweep.mjs",
     "hooks:install": "git config core.hooksPath scripts/git-hooks && echo 'pre-push hook active (scripts/git-hooks)'"

@@ -32,6 +32,12 @@ user.
   clock-bound one, then names any test that fails only on a moved clock;
   `npm run sweep:clock` walks the full zone × moment matrix. About three
   minutes, so it is not in `check`.
+- `npm run check:linux` — runs, in Docker on Linux, the tests a change reaches
+  (the test files it edits, the ones that import a module it edits, and the
+  document guards when it edits a document) on Node 22.16.0 and 24, one file at
+  a time; `-- wizard ui` names files, `-- --all` runs the suite, `-- --dry-run`
+  says what would run. It exists because a test passed on macOS and failed on
+  ext4, and CI is not something every contributor has. It is not in `check`.
 - `npm run hooks:install` — installs the pre-push hook; once per clone.
 - `npm run bench:db` — builds, then times the account database (`src/db/`) on
   synthetic data: 100k messages, vector and hybrid search at 13k and 100k.
