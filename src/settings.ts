@@ -19,12 +19,17 @@ import {
 } from "./transcribe/index.js";
 import { brand, dim, fix, ok, shortPath, warn } from "./ui.js";
 import {
+  WEBHOOK_EVENTS_DEFAULT,
+  WEBHOOK_EVENTS_FIX,
   WEBHOOK_ON_FIX,
   WEBHOOK_TEST_FIX,
   WebhookSink,
+  describeWebhookEvents,
   parseWebhookEvent,
+  parseWebhookEvents,
   readWebhookSettings,
   requireWebhookUrl,
+  type WebhookEvent,
   type WebhookOverride,
 } from "./webhook.js";
 
@@ -407,7 +412,7 @@ export async function runWebhook(config: Config): Promise<void> {
 
 async function enableWebhook(config: Config): Promise<void> {
   // An unknown --account fails before any prompt asks for a URL or a secret.
-  if (config.accountId !== undefined) resolveAccount(config.dataDir, config.accountId);
+  const selected = config.accountId === undefined ? null : resolveAccount(config.dataDir, config.accountId);
   // A pipe is consumed whole by the first readline, so a script sets the URL
   // in the environment and only types the secret, the way transcribe does.
   let url: string;
@@ -438,7 +443,8 @@ async function enableWebhook(config: Config): Promise<void> {
     // The switch stays global; the URL and secret are this account's override.
     AccountRegistry.load(config.dataDir).setWebhook(config.accountId, { url, secret });
     setEnvSetting(p.envFile, "WAZAP_WEBHOOK", "on");
-    say(ok(`webhook: on for ${config.accountId} — messages both ways and link changes POST to ${new URL(url).host}.`));
+    say(ok(`webhook: on for ${config.accountId} — ${postedLine(selected?.account.webhook_events, url)}`));
+    hintMoreEvents(selected?.account.webhook_events);
     say(dim(`URL and secret stored in ${shortPath(p.accountsFile)}; WAZAP_WEBHOOK=on in ${shortPath(p.envFile)}.`));
     warnIfServerRunning(config);
     return;
@@ -446,9 +452,34 @@ async function enableWebhook(config: Config): Promise<void> {
   setEnvSetting(p.envFile, "WAZAP_WEBHOOK", "on");
   setEnvSetting(p.envFile, "WAZAP_WEBHOOK_URL", url);
   setEnvSetting(p.envFile, "WAZAP_WEBHOOK_SECRET", secret);
-  say(ok(`webhook: on — messages both ways and link changes POST to ${new URL(url).host}.`));
+  say(ok(`webhook: on — ${postedLine(undefined, url)}`));
+  hintMoreEvents(undefined);
   say(dim(`Stored in ${shortPath(p.envFile)}.`));
   warnIfServerRunning(config);
+}
+
+/** The events the webhook will post: the account's own list, else the global one, else the default. */
+function eventsPosted(accountList: string | undefined): readonly WebhookEvent[] | null {
+  try {
+    return parseWebhookEvents(accountList ?? process.env.WAZAP_WEBHOOK_EVENTS ?? "");
+  } catch {
+    return null; // a bad list is reported where it is read; do not guess what it means
+  }
+}
+
+/** What goes to the receiver, said as it is: the default is the messages you receive, not both ways. */
+function postedLine(accountList: string | undefined, url: string): string {
+  const events = eventsPosted(accountList);
+  const what = events === null ? "the events WAZAP_WEBHOOK_EVENTS lists" : describeWebhookEvents(events);
+  return `${what} are posted to ${new URL(url).host}.`;
+}
+
+/** Only the default list leaves out what someone would expect: say how to ask for the rest. */
+function hintMoreEvents(accountList: string | undefined): void {
+  const events = eventsPosted(accountList);
+  const isDefault = events !== null && events.length === WEBHOOK_EVENTS_DEFAULT.length && events.every((event, i) => event === WEBHOOK_EVENTS_DEFAULT[i]);
+  if (!isDefault) return;
+  say(dim(`Nothing else is posted by default: ${WEBHOOK_EVENTS_FIX}.`));
 }
 
 function setWebhookFlag(config: Config, value: "on" | "off"): void {

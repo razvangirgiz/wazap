@@ -287,6 +287,18 @@ export function parseWebhookEvents(raw: string): readonly WebhookEvent[] {
   return WEBHOOK_EVENTS.filter((event) => wanted.has(event));
 }
 
+/** An event list as a phrase for a person: "messages you receive and link changes". */
+export function describeWebhookEvents(events: readonly WebhookEvent[]): string {
+  const phrases: Record<WebhookEvent, string> = {
+    message_received: "messages you receive",
+    message_sent: "messages you send from your phone or another device",
+    connection: "link changes",
+  };
+  const list = events.map((event) => phrases[event]);
+  if (list.length <= 1) return list[0] ?? "nothing";
+  return `${list.slice(0, -1).join(", ")} and ${list[list.length - 1]}`;
+}
+
 export function webhookKind(type: MessageType): WebhookKind {
   return KIND_BY_TYPE[type];
 }

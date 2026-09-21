@@ -4,6 +4,12 @@
 
 ### Fixed
 
+- **`wazap config webhook on` says what the webhook posts.** It said "messages
+  both ways and link changes POST to …", but unless `WAZAP_WEBHOOK_EVENTS` asks
+  for more only the messages you receive are posted, as the documentation and
+  the tests say. The line now names the events that are configured (the
+  account's own list, else the global one), and with the default list adds how
+  to ask for the rest.
 - **The setup skill states the Node range wazap enforces.** One row of its
   diagnosis table said the Node version was "below 20", while another said 22.16
   or 24, and `wazap status` refuses the 23 line: an agent reading the first would

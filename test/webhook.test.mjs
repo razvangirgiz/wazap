@@ -9,7 +9,7 @@ import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import { spawn } from "node:child_process";
 import { execFile } from "node:child_process";
-import { mkdtempSync, readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -1400,6 +1400,45 @@ test("config webhook on writes url and secret, and prints neither the secret nor
   const shown = await wazap(dir, ["config"]);
   assert.ok(!shown.stderr.includes(SECRET), "config must not print the secret");
   assert.match(shown.stderr, /secret: set/);
+});
+
+test("config webhook on says what is posted: the messages you receive by default, and how to ask for more", async () => {
+  const dir = dataDir();
+  const { code, stderr } = await wazap(dir, ["config", "webhook", "on"], {
+    input: `${SECRET}\n`,
+    env: { WAZAP_WEBHOOK_URL: "http://127.0.0.1:9/hook" },
+  });
+  assert.equal(code, 0, stderr);
+  assert.match(stderr, /messages you receive are posted to 127\.0\.0\.1/);
+  assert.doesNotMatch(stderr, /both ways|link changes/, "the default does not post what the old line promised");
+  assert.match(stderr, /Nothing else is posted by default: set WAZAP_WEBHOOK_EVENTS to all/);
+});
+
+test("config webhook on names every event the list asks for, and has no hint when it asked for more", async () => {
+  const dir = dataDir();
+  const { code, stderr } = await wazap(dir, ["config", "webhook", "on"], {
+    input: `${SECRET}\n`,
+    env: { WAZAP_WEBHOOK_URL: "http://127.0.0.1:9/hook", WAZAP_WEBHOOK_EVENTS: "all" },
+  });
+  assert.equal(code, 0, stderr);
+  assert.match(stderr, /messages you receive, messages you send from your phone or another device and link changes are posted/);
+  assert.doesNotMatch(stderr, /Nothing else is posted by default/);
+});
+
+test("config webhook on --account says the events that account asked for, not the global default", async () => {
+  const dir = dataDir();
+  await wazap(dir, ["account", "add", "work"]);
+  const file = join(dir, "accounts.json");
+  const registry = JSON.parse(readFileSync(file, "utf8"));
+  registry.accounts.find((account) => account.id === "work").webhook_events = "connection";
+  writeFileSync(file, JSON.stringify(registry, null, 2));
+  const { code, stderr } = await wazap(dir, ["config", "webhook", "on", "--account", "work"], {
+    input: `${SECRET}\n`,
+    env: { WAZAP_WEBHOOK_URL: "http://127.0.0.1:9/hook" },
+  });
+  assert.equal(code, 0, stderr);
+  assert.match(stderr, /webhook: on for work — link changes are posted to 127\.0\.0\.1/);
+  assert.doesNotMatch(stderr, /messages you receive|Nothing else is posted by default/);
 });
 
 test("config webhook on keeps a secret that contains #, and webhook test signs with it", async () => {
