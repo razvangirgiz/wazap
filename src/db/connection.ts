@@ -176,6 +176,38 @@ function copyDatabase(db: DatabaseSync, live: string, destination: string): Copy
   }
 }
 
+/** SQLITE_BUSY and SQLITE_LOCKED: someone else has the file, and trying later is the answer. */
+function heldByAnother(err: unknown): boolean {
+  const code = (err as { errcode?: unknown }).errcode;
+  return code === 5 || code === 6;
+}
+
+/** A synchronous pause, for the one place that has to wait on another process without an await. */
+const PAUSE = new Int32Array(new SharedArrayBuffer(4));
+
+/**
+ * Switches the file to WAL journaling, waiting for another connection to let go.
+ *
+ * Changing the journal mode needs the database to itself, and SQLite answers
+ * SQLITE_BUSY straight away rather than calling the busy handler it calls for
+ * every other statement — so the waiting is ours, bounded by the same timeout.
+ * It only ever comes up for a file that is not in WAL yet (one restored from a
+ * backup, or written by something other than a released wazap) while a second
+ * wazap has it open; once either of them has switched it, the pragma is a
+ * no-op for everyone.
+ */
+function toWal(db: DatabaseSync, timeoutMs: number): string | undefined {
+  const deadline = Date.now() + timeoutMs;
+  for (let attempt = 0; ; attempt++) {
+    try {
+      return (db.prepare("PRAGMA journal_mode = WAL").get() as { journal_mode: string } | undefined)?.journal_mode;
+    } catch (err) {
+      if (!heldByAnother(err) || Date.now() >= deadline) throw err;
+      Atomics.wait(PAUSE, 0, 0, Math.min(50, 2 ** attempt));
+    }
+  }
+}
+
 function tooNew(path: string, version: number): StorageError {
   return new StorageError(
     "SCHEMA_TOO_NEW",
@@ -345,8 +377,8 @@ export class Connection {
       if (version > 0 && version < SCHEMA_VERSION && (options.preMigrationBackup ?? preMigrationBackupEnabled())) {
         backUpBeforeMigrating(db, path, timeout);
       }
-      const mode = db.prepare("PRAGMA journal_mode = WAL").get() as { journal_mode: string } | undefined;
-      if (mode?.journal_mode !== "wal") {
+      const mode = toWal(db, timeout);
+      if (mode !== "wal") {
         throw new StorageError("INVALID_INPUT", `${path} could not switch to WAL journaling.`);
       }
       db.exec("PRAGMA synchronous = FULL; PRAGMA secure_delete = ON; PRAGMA foreign_keys = ON;");

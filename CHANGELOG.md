@@ -277,6 +277,12 @@ answers.
   whole account, `--account <id>` to pick one, `--force` to replace a file
   already there, and a refusal rather than a write over the live database or a
   link to it. The file is not encrypted and holds every message the account has.
+- **Two wazaps opening the same database that is not in WAL yet wait for each
+  other** instead of one of them failing to start with "database is locked".
+  Switching a file's journal mode needs the whole file, and SQLite refuses at
+  once rather than waiting the way it waits for everything else; now the wait is
+  wazap's own, bounded by the same busy timeout. It comes up for a database
+  restored from a backup, which a copy leaves in the plain journal mode.
 
 ### Removed
 
