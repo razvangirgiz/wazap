@@ -14,16 +14,24 @@
  * it; and a file from a schema this build does not know is refused, untouched,
  * with a message that says what to do.
  *
+ * The copy an upgrade takes before it touches the file is proven here too: it
+ * is the file as it was, it is taken once and only for a database that is
+ * really behind, and an upgrade that cannot take it does not start.
+ *
  * db-v5.test.mjs asserts what v5 works out from an older file (flags,
  * last_own_id, catch-up marks). This file asserts the chain itself.
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
+import { chmodSync, copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, statSync, truncateSync, writeFileSync } from "node:fs";
+import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import { dirname, join } from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
+import { promisify } from "node:util";
 
-import { AccountDb, SCHEMA_VERSION, StorageError, contentHash } from "../dist/db/index.js";
+import { AccountDb, SCHEMA_VERSION, StorageError, contentHash, preMigrationName } from "../dist/db/index.js";
+import { assertRoomForBackup, preMigrationBackupEnabled } from "../dist/db/pre-migration.js";
 import { MIGRATIONS } from "../dist/db/schema.js";
 import { sqlite } from "../dist/db/sqlite.js";
 import { openForReading } from "../dist/legacy-files.js";
@@ -39,7 +47,12 @@ const DIMS = 768;
 const MODEL = "embeddinggemma-300m";
 const PEER2 = "40700000003@s.whatsapp.net";
 
+const run = promisify(execFile);
+const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
 const digest = (path) => createHash("sha256").update(readFileSync(path)).digest("hex");
+const mode = (path) => statSync(path).mode & 0o777;
+/** Permissions mean nothing to root, and Windows has none of these. */
+const modesApply = process.platform !== "win32" && process.getuid?.() !== 0;
 /** A message id: the second it belongs to, then a place inside it (ids.ts). */
 const idAt = (ts, seq) => (ts / 1000) * SEQ + seq;
 const sorted = (items) => items.map((item) => item.sid).sort();
@@ -350,6 +363,25 @@ for (const from of RELEASED) {
     db.close();
   });
 
+  test(`a version ${from} file is copied beside itself before it is migrated`, () => {
+    const { path, dir } = releasedFile(from);
+    const before = dumpOf(path);
+    const copy = join(dir, preMigrationName(from));
+    upgrade(path).close();
+
+    if (from === SCHEMA_VERSION) {
+      assert.deepEqual(readdirSync(dir), ["wazap.sqlite"], "a file already at the current schema has nothing to migrate, so nothing to copy");
+      return;
+    }
+    // One copy, not one per migration run, and no temp file beside it. Read
+    // before anything opens the database again: a reader leaves a -shm of its own.
+    assert.deepEqual(readdirSync(dir).sort(), [preMigrationName(from), "wazap.sqlite"]);
+    if (modesApply) assert.equal(mode(copy), 0o600, "owner-only, like the database it copies");
+    assert.deepEqual(sqliteChecks(copy).integrity, ["ok"], "SQLite finds nothing wrong with the copy");
+    assert.deepEqual(dumpOf(copy), before, "every row the file held, at the version it held them");
+    assert.equal(dumpOf(path).user_version, SCHEMA_VERSION, "while the database itself went on to the current schema");
+  });
+
   test(`a version ${from} file opened a second time is left exactly as the upgrade left it`, () => {
     const { path } = releasedFile(from);
     const first = upgrade(path);
@@ -446,7 +478,10 @@ test("a write-ahead log a crash left beside an old file is migrated with the com
 test("a file from a schema this build does not know is refused, untouched, with a message that says what to do", () => {
   const { path, dir } = releasedFile(1);
   upgrade(path).close();
-  assert.deepEqual(readdirSync(dir), ["wazap.sqlite"], "a clean close leaves nothing beside the file");
+  // The copy the upgrade took is the only thing beside the file: no log, no
+  // shared memory. It is the baseline the refusal below must not add to.
+  const settled = ["wazap.1.pre-migration.sqlite", "wazap.sqlite"];
+  assert.deepEqual(readdirSync(dir).sort(), settled, "a clean close leaves nothing beside the file but the copy it took");
   // user_version lives at offset 60 of the header, big-endian: as far as this
   // build can tell, a file a later wazap wrote.
   const bytes = readFileSync(path);
@@ -460,14 +495,14 @@ test("a file from a schema this build does not know is refused, untouched, with 
   assert.match(refusal.message, new RegExp(`knows up to ${SCHEMA_VERSION}`), "and the one it knows");
   assert.match(refusal.fix, /npm i -g wazap-mcp@latest/, "and how to get out of it");
   assert.equal(digest(path), before, "a refused open writes nothing");
-  assert.deepEqual(readdirSync(dir), ["wazap.sqlite"], "and leaves no log or shared memory behind");
+  assert.deepEqual(readdirSync(dir).sort(), settled, "and leaves no log, no shared memory and no copy behind");
 
   // status and doctor read the same file the same way: they say so rather than
   // read a schema they only half understand.
   const reading = thrown(() => openForReading(path));
   assert.ok(reading instanceof StorageError && reading.code === "SCHEMA_TOO_NEW");
   assert.equal(digest(path), before);
-  assert.deepEqual(readdirSync(dir), ["wazap.sqlite"]);
+  assert.deepEqual(readdirSync(dir).sort(), settled);
 
   // And the file is still one the wazap that wrote it can pick up.
   const reader = new (sqlite().DatabaseSync)(path, { readOnly: true });
@@ -565,16 +600,144 @@ test("an account that still has its 0.21 files and a 0.22 database reaches the c
   assert.deepEqual(sqliteChecks(path).foreignKeys, []);
 });
 
-// ----------------------------------------------------- what is not covered
+// ------------------------------------------ the copy taken before the upgrade
 
-test("nothing copies the database before it migrates it: a backup is still the user's own step", () => {
-  // Pinned on purpose rather than wished away. AccountDb.backup() exists and
-  // works (db-open.test.mjs proves it), but no code path calls it before a
-  // migration, so an upgrade's only safety net is that it is one transaction:
-  // it lands whole or rolls back, which the cut-off tests above prove. If a
-  // pre-migration copy is ever added, this is the test to change.
+/**
+ * This is where "nothing copies the database before it migrates it" used to be
+ * pinned. It does now: an upgrade's safety net is no longer only that it is one
+ * transaction. What the copy must be, and must not be, is below.
+ */
+
+test("a database that is new, or already current, is not copied: there is nothing to copy it from", () => {
+  const fresh = join(tempDir("wazap-chain-fresh-"), "wazap.sqlite");
+  AccountDb.open(fresh, { checkpointDelayMs: 0 }).close();
+  assert.deepEqual(readdirSync(dirname(fresh)), ["wazap.sqlite"], "a file created here was never at another version");
+
+  // And the open that follows, which finds the schema current, adds nothing.
+  AccountDb.open(fresh, { checkpointDelayMs: 0 }).close();
+  assert.deepEqual(readdirSync(dirname(fresh)), ["wazap.sqlite"]);
+});
+
+test("a read-only open never copies, whatever version it finds: status and doctor write nothing at all", () => {
   const { path, dir } = releasedFile(1);
+  const before = digest(path);
+
+  for (const open of [() => openForReading(path), () => AccountDb.open(path, { readOnly: true }), () => AccountDb.open(path, { readOnly: true, immutable: true })]) {
+    const refusal = thrown(open);
+    assert.ok(refusal instanceof StorageError && refusal.code === "SCHEMA_OUTDATED", `refused with ${refusal?.code ?? refusal}`);
+  }
+  assert.deepEqual(readdirSync(dir), ["wazap.sqlite"], "no copy, no log, no shared memory");
+  assert.equal(digest(path), before);
+});
+
+test("a copy already beside the file that reads whole is kept as it is, not taken again", () => {
+  const { path, dir } = releasedFile(1);
+  const copy = join(dir, preMigrationName(1));
+  // A first attempt that died after writing its copy: a byte-for-byte copy of
+  // the file, which is a different file on disk than a fresh one would be.
+  copyFileSync(path, copy);
+  const kept = digest(copy);
+
   upgrade(path).close();
-  assert.deepEqual(readdirSync(dir), ["wazap.sqlite"], "an upgrade leaves no copy of the old file behind");
-  assert.equal(existsSync(`${path}.v1.bak`), false);
+  assert.equal(digest(copy), kept, "the copy on disk is the one that was already there");
+  assert.equal(dumpOf(path).user_version, SCHEMA_VERSION);
+});
+
+test("a copy already beside the file that does not read whole is replaced, atomically", () => {
+  const { path, dir } = releasedFile(1);
+  const copy = join(dir, preMigrationName(1));
+  writeFileSync(copy, "not a database at all");
+
+  upgrade(path).close();
+  assert.deepEqual(sqliteChecks(copy).integrity, ["ok"], "what is there now is a database");
+  assert.equal(dumpOf(copy).user_version, 1, "at the version the name claims");
+  assert.deepEqual(readdirSync(dir).sort(), [preMigrationName(1), "wazap.sqlite"], "and no half-written temp file is left beside it");
+});
+
+test("an upgrade that cannot write its copy does not start, and says why without naming a path", { skip: !modesApply }, () => {
+  // A log and its shared memory beside the file, the way a running wazap
+  // leaves them, so the only thing the folder is needed for is the copy.
+  const { path, dir, db: live } = releasedFile(1, { wal: true });
+  const before = dumpOf(path);
+  chmodSync(dir, 0o500);
+  let refusal;
+  try {
+    refusal = thrown(() => upgrade(path));
+  } finally {
+    chmodSync(dir, 0o700);
+  }
+
+  assert.ok(refusal instanceof StorageError && refusal.code === "BACKUP_FAILED", `refused with ${refusal?.code ?? refusal}`);
+  assert.match(refusal.message, /could not be copied before its upgrade \(EACCES\)/, "the cause is a code, not a system message");
+  assert.doesNotMatch(refusal.message, /wazap\.sqlite|\//, "and no path of the user's is in it");
+  assert.match(refusal.fix, /WAZAP_PRE_MIGRATION_BACKUP=0/, "with the way out for someone who means it");
+
+  assert.deepEqual(dumpOf(path), before, "the database is at the version it was, with the rows it had");
+  assert.deepEqual(readdirSync(dir).sort(), ["wazap.sqlite", "wazap.sqlite-shm", "wazap.sqlite-wal"], "and nothing half-written is left behind");
+  live.close();
+
+  // The next start, with the folder writable again, takes the copy and migrates.
+  upgrade(path).close();
+  assert.equal(dumpOf(path).user_version, SCHEMA_VERSION);
+  assert.deepEqual(dumpOf(join(dir, preMigrationName(1))), before);
+});
+
+test("a disk that cannot hold the copy is refused before the first byte is written", () => {
+  const dir = tempDir("wazap-chain-space-");
+  const path = join(dir, "wazap.sqlite");
+  // A database larger than any disk, without writing one: the same reading the
+  // real path takes, against free space the filesystem really reports.
+  writeFileSync(path, "");
+  truncateSync(path, 1e15);
+
+  const refusal = thrown(() => assertRoomForBackup(path, dir));
+  assert.ok(refusal instanceof StorageError && refusal.code === "BACKUP_FAILED", `refused with ${refusal?.code ?? refusal}`);
+  assert.match(refusal.message, /less free space than the copy needs/);
+  assert.match(refusal.message, /nothing was migrated/);
+  assert.doesNotMatch(refusal.message, /\//, "no path in it");
+});
+
+test("the copy can be turned off knowingly, by the setting and by the option", () => {
+  const byOption = releasedFile(1);
+  upgrade(byOption.path, { preMigrationBackup: false }).close();
+  assert.deepEqual(readdirSync(byOption.dir), ["wazap.sqlite"], "the option skips it");
+  assert.equal(dumpOf(byOption.path).user_version, SCHEMA_VERSION, "and the upgrade still runs");
+
+  assert.equal(preMigrationBackupEnabled({}), true, "unset means the copy is taken");
+  assert.equal(preMigrationBackupEnabled({ WAZAP_PRE_MIGRATION_BACKUP: "1" }), true);
+  assert.equal(preMigrationBackupEnabled({ WAZAP_PRE_MIGRATION_BACKUP: "0" }), false);
+  assert.equal(preMigrationBackupEnabled({ WAZAP_PRE_MIGRATION_BACKUP: "off" }), false);
+
+  const bySetting = releasedFile(1);
+  const had = process.env.WAZAP_PRE_MIGRATION_BACKUP;
+  process.env.WAZAP_PRE_MIGRATION_BACKUP = "0";
+  try {
+    upgrade(bySetting.path).close();
+  } finally {
+    if (had === undefined) delete process.env.WAZAP_PRE_MIGRATION_BACKUP;
+    else process.env.WAZAP_PRE_MIGRATION_BACKUP = had;
+  }
+  assert.deepEqual(readdirSync(bySetting.dir), ["wazap.sqlite"], "and so does the setting");
+  assert.equal(dumpOf(bySetting.path).user_version, SCHEMA_VERSION);
+});
+
+test("two processes upgrading the same file at once leave one copy, of the file as it was", async () => {
+  const { path, dir } = releasedFile(1);
+  const before = dumpOf(path);
+  const open = `
+    const { AccountDb } = await import(${JSON.stringify(pathToFileURL(join(repoRoot, "dist", "db", "index.js")).href)});
+    const db = AccountDb.open(${JSON.stringify(path)}, { checkpointDelayMs: 0, timeoutMs: 20000 });
+    process.stdout.write(String(db.schemaVersion));
+    db.close();
+  `;
+  const both = await Promise.all([run(process.execPath, ["--input-type=module", "-e", open]), run(process.execPath, ["--input-type=module", "-e", open])]);
+  for (const done of both) assert.equal(done.stdout, String(SCHEMA_VERSION), "both ended up on the current schema");
+
+  const copies = readdirSync(dir).filter((name) => name.endsWith(".pre-migration.sqlite"));
+  assert.deepEqual(copies, [preMigrationName(1)], "one copy, not one per process");
+  assert.deepEqual(dumpOf(join(dir, copies[0])), before, "and it is the file as it was, not one halfway through its upgrade");
+  // The log and its shared memory may outlive two processes closing at once —
+  // whichever closed last could not take the lock that deletes them. A half
+  // written copy may not.
+  assert.deepEqual(readdirSync(dir).filter((name) => name.endsWith(".tmp")), [], "no temp file of a loser is left behind");
 });
