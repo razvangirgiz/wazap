@@ -117,6 +117,8 @@ export class AccountHealth {
   private detail: string | null = null;
   private lastSendError: { code: string; at: number } | null = null;
   private cap: { status: NewChatCapStatus; used: number | null; total: number | null; ends: number | null } | null = null;
+  /** Wakes the state when a timelock or a capped cycle ends, so the lift is told when it happens, not when someone asks. */
+  private expiryTimer: ReturnType<typeof setTimeout> | null = null;
 
   /**
    * `onChange` hears a change the link does not carry: a timelock or a cap that comes or goes while
@@ -156,6 +158,7 @@ export class AccountHealth {
       this.clear();
     }
     if (this.effectiveState() !== before) this.onChange();
+    this.armExpiry();
   }
 
   /** WhatsApp's cap on first messages to new people, as it reported it; an unknown status is ignored. */
@@ -163,13 +166,44 @@ export class AccountHealth {
     const status = report?.capping_status === undefined ? undefined : CAP_STATUSES[report.capping_status];
     if (report === null || report === undefined || status === undefined) return;
     const before = this.effectiveState();
+    // An update may carry only what changed: what it leaves out stays as the last report said.
+    const previous = this.cap;
     this.cap = {
       status,
-      used: typeof report.used_quota === "number" ? report.used_quota : null,
-      total: typeof report.total_quota === "number" ? report.total_quota : null,
-      ends: whenOf(report.cycle_end_timestamp),
+      used: typeof report.used_quota === "number" ? report.used_quota : (previous?.used ?? null),
+      total: typeof report.total_quota === "number" ? report.total_quota : (previous?.total ?? null),
+      ends: whenOf(report.cycle_end_timestamp) ?? previous?.ends ?? null,
     };
     if (this.effectiveState() !== before) this.onChange();
+    this.armExpiry();
+  }
+
+  /** A logout or a new link: the cap was the old session's word, and the next connect asks again. */
+  forgetNewChatCap(): void {
+    this.cap = null;
+    this.armExpiry();
+  }
+
+  /** Stop the expiry timer: the service is stopping. */
+  dispose(): void {
+    if (this.expiryTimer !== null) clearTimeout(this.expiryTimer);
+    this.expiryTimer = null;
+  }
+
+  private armExpiry(): void {
+    this.dispose();
+    const ends = [
+      this.state === "reachout_restricted" ? this.until : null,
+      this.cap !== null && this.cap.status !== "none" ? this.cap.ends : null,
+    ].filter((at): at is number => at !== null);
+    if (ends.length === 0) return;
+    const wait = Math.min(...ends) - this.now();
+    this.expiryTimer = setTimeout(() => {
+      this.expiryTimer = null;
+      this.effectiveState();
+      this.armExpiry();
+    }, Math.max(0, Math.min(wait, 2_147_483_647)) + 1);
+    this.expiryTimer.unref?.();
   }
 
   /** A send WhatsApp refused after it left: kept for get_status, whatever the code. */
@@ -198,9 +232,11 @@ export class AccountHealth {
       this.clear();
       this.onChange();
     }
-    if (this.cap?.status === "capped" && this.cap.ends !== null && this.cap.ends <= now) {
+    // A cycle that ended takes its cap and its warnings with it.
+    if (this.cap !== null && this.cap.status !== "none" && this.cap.ends !== null && this.cap.ends <= now) {
+      const wasCapped = this.cap.status === "capped";
       this.cap = { ...this.cap, status: "none", used: null };
-      if (this.state === "ok") this.onChange();
+      if (wasCapped && this.state === "ok") this.onChange();
     }
     if (this.state === "ok" && this.cap?.status === "capped") return "new_chats_capped";
     return this.state;
@@ -278,10 +314,11 @@ export class AccountHealth {
   }
 
   info(): HealthInfo {
+    const { state, until } = this.summary();
     return {
-      state: this.effectiveState(),
+      state,
       since: this.since === null ? null : isoWithOffset(this.since),
-      until: this.until === null ? null : isoWithOffset(this.until),
+      until,
       reason: this.reason,
       detail: this.detail,
       last_send_error: this.lastSendError === null ? null : { code: this.lastSendError.code, at: isoWithOffset(this.lastSendError.at) },

@@ -234,7 +234,10 @@ export class WhatsAppService implements WhatsAppApi {
   private readonly readMarks: RateLimiter;
   /** What WhatsApp says about the account itself: restrictions, bans, a session taken over (src/service/health.ts). */
   // A restriction that comes or goes while the link stays up is told to the webhook as a connection event.
-  private readonly health = new AccountHealth(Date.now, () => this.webhooks.queueConnectionWebhook(this.status));
+  // Only while linked: a change seen while the link is down is carried by the status change that brings it back.
+  private readonly health = new AccountHealth(Date.now, () => {
+    if (this.status === "connected") this.webhooks.queueConnectionWebhook(this.status);
+  });
   /** The reachout timelock question in flight, so a burst of refused sends asks once. */
   private reachoutCheck: Promise<void> | null = null;
   private readonly webhook: WebhookSink;
@@ -555,6 +558,7 @@ export class WhatsAppService implements WhatsAppApi {
 
   private async stopOnce(): Promise<void> {
     this.stopped = true;
+    this.health.dispose();
     if (this.storage.expiryTimer) clearTimeout(this.storage.expiryTimer);
     if (this.storage.legacyTimer) clearInterval(this.storage.legacyTimer);
     this.storage.legacyTimer = null;
@@ -651,6 +655,7 @@ export class WhatsAppService implements WhatsAppApi {
       this.requireUnlinked();
       // Pairing clears the credentials: not while they would come back on their own.
       if (this.health.blocksLink()) throw this.health.refusal("link");
+      this.health.forgetNewChatCap();
       // A new link supersedes a try the ban scheduled.
       if (this.reconnectTimer) {
         clearTimeout(this.reconnectTimer);
@@ -1280,6 +1285,7 @@ export class WhatsAppService implements WhatsAppApi {
       } else if (connection === "close") {
         const verdict = classifyClose(lastDisconnect?.error);
         if (verdict.kind === "logged_out") {
+          this.health.forgetNewChatCap();
           this.setStatus("logged_out");
           this.lastError = "The account was unlinked from the phone.";
           logError("auth", this.lastError);

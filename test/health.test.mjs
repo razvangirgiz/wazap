@@ -249,8 +249,9 @@ test("WhatsApp's warnings about first messages show in health and the hint, and 
   const health = new AccountHealth(() => 0);
   health.noteNewChatCap({ capping_status: "FIRST_WARNING", used_quota: 40, total_quota: 50, cycle_end_timestamp: "86400" });
   assert.equal(health.info().state, "ok");
-  assert.deepEqual(health.info().new_chat_cap, { status: "first_warning", used: 40, total: 50, cycle_ends: health.info().new_chat_cap.cycle_ends });
-  assert.equal(Date.parse(health.info().new_chat_cap.cycle_ends), 86_400_000, "seconds from WhatsApp, as an instant");
+  const { cycle_ends, ...cap } = health.info().new_chat_cap;
+  assert.deepEqual(cap, { status: "first_warning", used: 40, total: 50 });
+  assert.equal(Date.parse(cycle_ends), 86_400_000, "seconds from WhatsApp, as an instant");
   assert.match(health.hint(), /a first warning .*40 of 50 used this cycle/);
   assert.equal(health.blocksNewChats(), false);
   health.noteNewChatCap({ capping_status: "SOMETHING_NEW" });
@@ -291,3 +292,53 @@ test("WhatsApp's cap is asked for at every open and taken from its own updates; 
   assert.match(refused.message, /cap on first messages/);
 });
 
+
+test("an update that leaves fields out keeps what the last one said, so a capped cycle still ends", (t) => {
+  let now = 0;
+  const health = new AccountHealth(() => now);
+  t.after(() => health.dispose());
+  health.noteNewChatCap({ capping_status: "SECOND_WARNING", used_quota: 45, total_quota: 50, cycle_end_timestamp: 1000 });
+  health.noteNewChatCap({ capping_status: "CAPPED" });
+  assert.deepEqual({ ...health.info().new_chat_cap, cycle_ends: Date.parse(health.info().new_chat_cap.cycle_ends) }, { status: "capped", used: 45, total: 50, cycle_ends: 1_000_000 });
+  assert.equal(Date.parse(health.info().until), 1_000_000, "get_status says until when, as the webhook does");
+  now = 1_000_000;
+  assert.equal(health.info().state, "ok");
+});
+
+test("warnings end with their cycle, and a new link forgets the old session's cap", (t) => {
+  let now = 0;
+  const health = new AccountHealth(() => now);
+  t.after(() => health.dispose());
+  health.noteNewChatCap({ capping_status: "SECOND_WARNING", used_quota: 45, total_quota: 50, cycle_end_timestamp: 1000 });
+  assert.match(health.hint(), /second warning/);
+  now = 1_000_000;
+  assert.equal(health.hint(), null);
+  assert.equal(health.info().new_chat_cap.status, "none");
+  health.noteNewChatCap({ capping_status: "CAPPED", cycle_end_timestamp: 5000 });
+  health.forgetNewChatCap();
+  assert.equal(health.info().new_chat_cap, null);
+  assert.equal(health.blocksNewChats(), false);
+});
+
+test("a restriction that ends on its own clock is told when it ends, without anyone asking", async (t) => {
+  const told = [];
+  const timelock = new AccountHealth(Date.now, () => told.push("timelock"));
+  const capped = new AccountHealth(Date.now, () => told.push("cap"));
+  t.after(() => [timelock, capped].forEach((health) => health.dispose()));
+  timelock.noteReachout({ isActive: true, timeEnforcementEnds: Date.now() + 40 });
+  capped.noteNewChatCap({ capping_status: "CAPPED", cycle_end_timestamp: String((Date.now() + 40) / 1000) });
+  assert.deepEqual(told, ["timelock", "cap"]);
+  await new Promise((resolve) => setTimeout(resolve, 200));
+  assert.deepEqual(told, ["timelock", "cap", "timelock", "cap"], "each lift reached onChange by itself");
+});
+
+test("a change in health is a connection event only while linked", async (t) => {
+  const { svc, sock } = serviceOn(t);
+  const told = [];
+  svc.webhooks.queueConnectionWebhook = (status) => told.push(status);
+  sock.ev.emit("message-capping.update", { capping_status: "CAPPED", cycle_end_timestamp: String(Math.floor(Date.now() / 1000) + 86_400) });
+  assert.deepEqual(told, ["connected"]);
+  svc.status = "disconnected";
+  sock.ev.emit("message-capping.update", { capping_status: "NONE" });
+  assert.deepEqual(told, ["connected"], "the status that brings the link back carries it");
+});

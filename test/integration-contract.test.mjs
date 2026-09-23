@@ -1086,6 +1086,8 @@ describe("Integration webhook: the events and fields it parses", () => {
 
     sock.ev.emit("connection.update", { connection: "open" });
     await settled(hook, 1, "linked");
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    const restrictedAt = Date.now();
     sock.ev.emit("connection.update", { reachoutTimeLock: { isActive: true, enforcementType: "DEFAULT" } });
     await settled(hook, 2, "linked, restricted");
     sock.ev.emit("connection.update", { reachoutTimeLock: { isActive: false } });
@@ -1101,6 +1103,8 @@ describe("Integration webhook: the events and fields it parses", () => {
       bodies.map((body) => `${body.status}/${body.health.state}`),
       ["linked/ok", "linked/reachout_restricted", "linked/ok", "expired/banned"]
     );
+    // The link did not move: the restriction is dated when it came, not when the link came up.
+    assert.ok(Date.parse(bodies[1].timestamp) >= restrictedAt, "a health change is dated when it happened");
   });
 
   test("`wazap webhook test --account <slug>` posts bodies the integration accepts, with the probe chat the integration ignores", async () => {
