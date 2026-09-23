@@ -17,6 +17,7 @@ Most of these are written for you by `wazap config`, `wazap login` and
 | `WAZAP_WEBHOOK` | `off` | `on` posts the enabled events to the webhook URL. `wazap config webhook` sets it with the next two. |
 | `WAZAP_WEBHOOK_URL` / `WAZAP_WEBHOOK_SECRET` | unset | HTTPS endpoint (`http://` only on loopback) and the shared secret for `X-Wazap-Signature`. The secret is never a flag. An account's `webhook_url` and `webhook_secret` win. |
 | `WAZAP_WEBHOOK_EVENTS` | unset (`message_received`) | Which events to post, comma-separated, or `all`. An account's `webhook_events` wins. |
+| `WAZAP_WEBHOOK_AUTH` | unset | A header the receiver expects beside the signature: `Bearer <token>` goes out as `Authorization`, `<Header-Name>: <value>` as that header. `wazap config webhook auth` sets it at a prompt that does not echo it. An account's `webhook_auth` wins. |
 | `WAZAP_RETENTION` | `0` | `1` turns on [strict retention](data.md#strict-retention-wazap_retention1-off-by-default). |
 | `WAZAP_PRE_MIGRATION_BACKUP` | `1` | `0` upgrades the account database without first copying it beside itself. An upgrade that cannot write the copy refuses to start; this is the way past that, knowingly. |
 | `WAZAP_TRUST_PROXY` | `loopback` | Advanced, for a self-hosted OAuth server behind a proxy: the proxy IPs/CIDRs trusted for X-Forwarded-For, comma-separated; `none` trusts no proxy. |

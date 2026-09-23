@@ -1,5 +1,21 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- **The webhook can send the header a receiver asks for.** Cursor Automations,
+  n8n and most hosted webhooks accept a POST only with a header of their own,
+  usually `Authorization: Bearer …`, so they could not take wazap's events
+  without the bridge script in the docs. `WAZAP_WEBHOOK_AUTH` now carries it:
+  `Bearer <token>` goes out as `Authorization`, `X-Api-Key: <key>` as that
+  header, beside `X-Wazap-Signature`, which is still sent.
+  `wazap config webhook auth` asks for it at a prompt that does not echo it and
+  `wazap config webhook no-auth` drops it; with `--account` it is that
+  account's `webhook_auth` in `accounts.json`. The value never appears in
+  `wazap status`, a log line or an error, and the headers wazap sets itself
+  cannot be replaced.
+
 ## 1.0.3
 
 ### Changed

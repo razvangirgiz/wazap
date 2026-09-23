@@ -4,7 +4,7 @@ import { readLinkedAccount } from "./auth-state.js";
 import { accountPaths, paths, type AccountPaths, type Config } from "./config.js";
 import { WazapError, asWazapError } from "./errors.js";
 import { normalizeSendRule } from "./send-guard.js";
-import { parseWebhookEvents } from "./webhook.js";
+import { parseWebhookAuth, parseWebhookEvents } from "./webhook.js";
 
 export const DEFAULT_ACCOUNT_ID = "default";
 export const ACCOUNT_ID_RE = /^[a-z0-9][a-z0-9-]{0,31}$/;
@@ -19,6 +19,8 @@ export interface AccountRecord {
   webhook_url?: string;
   webhook_secret?: string;
   webhook_events?: string;
+  /** The header the receiver expects on top of the signature, as `WAZAP_WEBHOOK_AUTH` takes it. */
+  webhook_auth?: string;
   /** When present — even empty — only these recipients may be sent to. */
   send_allow?: string[];
   /** Refused no matter what send_allow says. Entries are chat ids or phone numbers. */
@@ -159,7 +161,7 @@ function parseAccountRecord(value: unknown, file: string): AccountRecord {
   }
   return {
     ...record,
-    ...webhookFields(value.id, value.webhook_url, value.webhook_secret, value.webhook_events, ` in ${file}`),
+    ...webhookFields(value.id, value.webhook_url, value.webhook_secret, value.webhook_events, ` in ${file}`, FIX_POLICY, value.webhook_auth),
   };
 }
 
@@ -188,9 +190,10 @@ function webhookFields(
   secret: unknown,
   events: unknown,
   where = "",
-  fix = FIX_POLICY
-): Pick<AccountRecord, "webhook_url" | "webhook_secret" | "webhook_events"> {
-  const fields: Pick<AccountRecord, "webhook_url" | "webhook_secret" | "webhook_events"> = {};
+  fix = FIX_POLICY,
+  auth?: unknown
+): Pick<AccountRecord, "webhook_url" | "webhook_secret" | "webhook_events" | "webhook_auth"> {
+  const fields: Pick<AccountRecord, "webhook_url" | "webhook_secret" | "webhook_events" | "webhook_auth"> = {};
   if (url !== undefined) {
     if (typeof url !== "string" || url.trim() === "") {
       throw new WazapError("INVALID_ID", `Account "${id}"${where} has a bad webhook_url.`, fix);
@@ -218,6 +221,18 @@ function webhookFields(
       );
     }
     fields.webhook_events = trimmed;
+  }
+  if (auth !== undefined) {
+    // What is wrong with it is said without the value, which is a credential.
+    if (typeof auth !== "string" || auth.trim() === "") {
+      throw new WazapError("INVALID_ID", `Account "${id}"${where} has a bad webhook_auth.`, fix);
+    }
+    try {
+      parseWebhookAuth(auth);
+    } catch (err) {
+      throw new WazapError("INVALID_ID", `Account "${id}"${where} has a bad webhook_auth: ${asWazapError(err).message}`, fix);
+    }
+    fields.webhook_auth = auth.trim();
   }
   return fields;
 }
@@ -382,12 +397,23 @@ export class AccountRegistry {
     );
   }
 
-  setWebhook(id: string, webhook: { url?: string; secret?: string }): void {
+  setWebhook(id: string, webhook: { url?: string; secret?: string; auth?: string }): void {
     this.commit(
       this.withAccount(id, (account) => ({
         ...account,
-        ...webhookFields(id, webhook.url, webhook.secret, undefined, "", "Set a non-empty webhook URL or secret"),
+        ...webhookFields(id, webhook.url, webhook.secret, undefined, "", "Set a non-empty webhook URL or secret", webhook.auth),
       }))
+    );
+  }
+
+  /** Drop only the account's auth header, so it follows `WAZAP_WEBHOOK_AUTH` again. */
+  clearWebhookAuth(id: string): void {
+    this.commit(
+      this.withAccount(id, (account) => {
+        const next = { ...account };
+        delete next.webhook_auth;
+        return next;
+      })
     );
   }
 
@@ -399,6 +425,7 @@ export class AccountRegistry {
         delete next.webhook_url;
         delete next.webhook_secret;
         delete next.webhook_events;
+        delete next.webhook_auth;
         return next;
       })
     );
