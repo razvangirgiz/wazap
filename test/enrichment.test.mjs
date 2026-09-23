@@ -49,7 +49,7 @@ test("a stranger's pushName is captured, the draft flags it, and saving them on 
   const { svc, sock } = writableService();
   const peer = "40700000042@s.whatsapp.net";
   sock.ev.emit("messages.upsert", { type: "notify", messages: [message(peer, { pushName: "flormidable15" })] });
-  assert.equal(svc.displayName(peer), "flormidable15");
+  assert.equal(svc.identity.displayName(peer), "flormidable15");
 
   const server = fakeServer();
   registerTools(server, asToolSource(svc), { allowWrite: true });

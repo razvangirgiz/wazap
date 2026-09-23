@@ -248,7 +248,7 @@ export async function verifyLegacyImport(args: VerifyArgs): Promise<Verification
   }
 
   // Named contacts.
-  const { realName } = await import("../whatsapp.js");
+  const { realName } = await import("../service/identity.js");
   let namedDb = 0;
   for (const [jid] of legacy.contactsNamed) {
     if (realName(db.identity.contact(jid)?.name)) namedDb++;

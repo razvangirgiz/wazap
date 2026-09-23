@@ -252,7 +252,7 @@ test("a pairing WhatsApp's table taught is kept, so after a restart a lid-filed 
 
   const again = openService(WhatsAppService, offlineConfig("x", { dataDir: svc.config.dataDir, persistHistory: true }));
   assert.deepEqual(again.db.identity.lidPairs(), [[LID, PHONE]], "the database keeps it");
-  assert.equal(again.lidToPn.get(LID), PHONE, "and a restart reads it back");
+  assert.equal(again.identity.lidToPn.get(LID), PHONE, "and a restart reads it back");
   await again.stop();
 });
 

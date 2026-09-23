@@ -10,7 +10,7 @@
 import { WazapError } from "./errors.js";
 import { isGroupId } from "./ids.js";
 import { phoneOf } from "./messages.js";
-import { realName } from "./whatsapp.js";
+import { realName } from "./service/identity.js";
 import type {
   ContactSummary,
   MessageSender,

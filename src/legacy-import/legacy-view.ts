@@ -76,7 +76,7 @@ export async function loadLegacyView(options: {
   }
   const replay = new LegacyReplay(options.accountPaths, { owner: options.owner, retention: options.retention, now: options.now });
   await replay.load();
-  const { realName } = await import("../whatsapp.js");
+  const { realName } = await import("../service/identity.js");
   return readView(replay, realName, options.now());
 }
 

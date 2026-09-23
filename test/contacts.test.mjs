@@ -155,9 +155,9 @@ test("names arriving on either contact event reach the database, and a restart r
 
   sock.ev.emit("contacts.update", [{ id: "40700000051@s.whatsapp.net", name: "Ionut Fox" }]);
   assert.equal(svc.db.identity.contact("40700000051@s.whatsapp.net").name, "Ionut Fox", "contacts.update");
-  assert.equal(svc.displayName("40700000051@s.whatsapp.net"), "Ionut Fox");
+  assert.equal(svc.identity.displayName("40700000051@s.whatsapp.net"), "Ionut Fox");
   const revived = openService(WhatsAppService, svc.config);
-  assert.equal(revived.displayName("40700000051@s.whatsapp.net"), "Ionut Fox");
+  assert.equal(revived.identity.displayName("40700000051@s.whatsapp.net"), "Ionut Fox");
   await revived.stop();
 });
 
@@ -284,7 +284,7 @@ test("a note and the filing live side by side without touching each other", asyn
 test("the filing follows the person when a lid turns out to be their number", async () => {
   const { svc } = makeService();
   await svc.updateContactDetails("12345678901234@lid", { addTags: ["client"], fields: { role: "contabil" } });
-  svc.learnLid("12345678901234@lid", "40700000077@s.whatsapp.net");
+  svc.identity.learnLid("12345678901234@lid", "40700000077@s.whatsapp.net");
   assert.deepEqual(svc.db.identity.notes("40700000077@s.whatsapp.net").tags, ["client"]);
   assert.deepEqual(
     svc.db.identity.notes("12345678901234@lid"),
