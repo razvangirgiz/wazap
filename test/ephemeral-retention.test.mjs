@@ -91,7 +91,7 @@ test("reads enforce the exact expiry instant even if a scheduled timer has not r
 test("an idle account expires payloads and automatic previews without another tool call", async (t) => {
   const { svc, advance } = await fixture(t, { timers: true });
   const raw = await seed(svc);
-  await svc.writePreview(sid(raw), Buffer.from("synthetic thumbnail"));
+  await svc.media.writePreview(sid(raw), Buffer.from("synthetic thumbnail"));
   assert.ok(svc.storage.expiryTimer, "a timer is armed for the deadline");
   advance(10_000);
   // Only what the timer started is awaited: no read, and no storageIdle, which would sweep on its own.
@@ -100,7 +100,7 @@ test("an idle account expires payloads and automatic previews without another to
   assert.notEqual(row.deleted_at, null, "the timer's sweep tombstoned it");
   assert.deepEqual([row.text, row.raw], [null, null]);
   assert.deepEqual(storageRows(svc, "SELECT path FROM pending_unlinks"), [], "its preview was unlinked and acknowledged");
-  await assert.rejects(readFile(svc.previewPath(sid(raw))), { code: "ENOENT" });
+  await assert.rejects(readFile(svc.media.previewPath(sid(raw))), { code: "ENOENT" });
   assert.equal(svc.hasMessage(sid(raw)), false);
   await noPayload(svc);
 });
@@ -179,7 +179,7 @@ test("a cached preview completing after expiry is not returned", async (t) => {
   const { svc, advance } = await fixture(t);
   const raw = await seed(svc, message("PHOTO", 10, { imageMessage: { mimetype: "image/jpeg" } }));
   const started = gate(); const finish = gate();
-  svc.readPreview = async () => { started.release(); return finish.promise; };
+  svc.media.readPreview = async () => { started.release(); return finish.promise; };
   const pending = svc.previews([sid(raw)], 1);
   await started.promise; advance(10_000); finish.release(Buffer.from(SECRET));
   assert.deepEqual(await pending, []);
