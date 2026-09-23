@@ -38,6 +38,13 @@ function serviceOn(t) {
   t.after(() => connected.svc.stop());
   connected.sock.onWhatsApp = async (jid) => [{ jid, exists: true }];
   connected.sock.relayMessage = async (_jid, _message, options) => options.messageId;
+  // A direct send answers the message as Baileys does, and the service stores it the moment it leaves.
+  let sent = 0;
+  connected.sock.sendMessage = async (jid, content) => ({
+    key: { remoteJid: jid, fromMe: true, id: `OUT${++sent}` },
+    message: { conversation: content.text },
+    messageTimestamp: Math.floor(Date.now() / 1000),
+  });
   return connected;
 }
 
@@ -77,6 +84,10 @@ test("a close is read the way WhatsApp's own clients read it", () => {
   assert.equal(classifyClose(closed(409), now).kind, "client_outdated");
   for (const code of [408, 411, 428, 500, 503, 515]) assert.equal(classifyClose(closed(code), now).kind, "transient", `${code}`);
   assert.equal(classifyClose(undefined, now).kind, "transient");
+  // A proxy or firewall that refuses the WebSocket with the same status is not WhatsApp speaking.
+  const refusedByProxy = { message: "WebSocket Error (Unexpected server response: 403)", output: { statusCode: 403 }, data: new Error("x") };
+  assert.equal(classifyClose(refusedByProxy, now).kind, "transient");
+  assert.equal(classifyClose({ message: "Stream Errored (conflict)", output: { statusCode: 440 }, data: { tag: "conflict", attrs: { type: "replaced" } } }, now).kind, "session_replaced");
 });
 
 test("a ban stops the reconnect loop and every write with ACCOUNT_RESTRICTED, in WhatsApp's words", async (t) => {
@@ -93,7 +104,24 @@ test("a ban stops the reconnect loop and every write with ACCOUNT_RESTRICTED, in
   assert.equal(svc.reconnectTimer, null, "no reconnect is scheduled");
   assert.equal(gaveUp, false, "a restart cannot lift a ban, so the process is not asked to exit");
   assert.equal(await refusalOf(() => svc.sendMessage(PEER, "salut")), "ACCOUNT_RESTRICTED");
-  assert.equal(await refusalOf(() => svc.listChats("all", 10)), "ACCOUNT_RESTRICTED", "reads say why too, not only NOT_CONNECTED");
+  const read = await svc.listChats("all", 10).catch((err) => err);
+  assert.equal(read.code, "ACCOUNT_RESTRICTED", "reads say why too, not only NOT_CONNECTED");
+  assert.doesNotMatch(read.message, /nothing was sent/, "a read sent nothing to begin with");
+});
+
+test("an undated temporary ban promises no retry it will not make", async (t) => {
+  const { svc, sock } = serviceOn(t);
+  close(sock, closed(402, { code: "101" }));
+  assert.equal(svc.reconnectTimer, null);
+  const refused = await svc.sendMessage(PEER, "salut").catch((err) => err);
+  assert.equal(refused.code, "ACCOUNT_RESTRICTED");
+  assert.match(refused.fix, /restart wazap once WhatsApp has lifted the ban/);
+});
+
+test("link_account does not throw away a session that comes back on its own", async (t) => {
+  const { svc, sock } = serviceOn(t);
+  close(sock, closed(402, { expire: "3600" }));
+  assert.equal(await refusalOf(() => svc.link("+40700000001")), "ACCOUNT_RESTRICTED");
 });
 
 test("a session another client took over, and a client WhatsApp no longer takes, stop the loop too", async (t) => {
@@ -148,6 +176,29 @@ test("a reachout timelock refuses a first message to a stranger before it leaves
   sock.ev.emit("connection.update", { reachoutTimeLock: { isActive: false } });
   assert.equal(svc.getStatus().health.state, "ok");
   assert.ok((await svc.draft({ kind: "text", chatId: STRANGER, text: "Bună ziua" })).draft_id, "lifted, the stranger can be written to");
+});
+
+test("a stranger who refused the first message stays a stranger: the account's own message opens nothing", async (t) => {
+  const { svc, sock } = serviceOn(t);
+  sock.fetchAccountReachoutTimelock = async () => ({ isActive: true, enforcementType: "DEFAULT" });
+  const first = await svc.sendMessage(STRANGER, "Bună ziua");
+  assert.ok(first.message_id, "no timelock yet: it leaves");
+  sock.ev.emit("messages.update", [
+    { key: { remoteJid: STRANGER, fromMe: true, id: first.message_id.split("_").at(-1) }, update: { status: 0, messageStubParameters: ["463", "Your account has been restricted"] } },
+  ]);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(svc.getStatus().health.state, "reachout_restricted");
+  assert.equal(await refusalOf(() => svc.sendMessage(STRANGER, "Mai sunteți acolo?")), "ACCOUNT_RESTRICTED", "the second attempt is the one not to make");
+});
+
+test("a contact the account holds a live privacy token for is not a stranger", async (t) => {
+  const { svc, sock } = serviceOn(t);
+  const now = Math.floor(Date.now() / 1000);
+  sock.authState = { keys: { get: async (_type, ids) => Object.fromEntries(ids.map((id) => [id, id === STRANGER ? { token: Buffer.from("tc"), timestamp: now } : undefined])) } };
+  sock.ev.emit("connection.update", { reachoutTimeLock: { isActive: true, enforcementType: "DEFAULT" } });
+  assert.ok((await svc.draft({ kind: "text", chatId: STRANGER, text: "Bună ziua" })).draft_id, "WhatsApp would take it: the token is there");
+  sock.authState = { keys: { get: async (_type, ids) => Object.fromEntries(ids.map((id) => [id, { token: Buffer.from("tc"), timestamp: now - 40 * 86_400 }])) } };
+  assert.equal(await refusalOf(() => svc.draft({ kind: "text", chatId: STRANGER, text: "Bună ziua" })), "ACCOUNT_RESTRICTED", "a token past its window is no token");
 });
 
 test("a timelock whose end has passed is over, whoever asks first", () => {

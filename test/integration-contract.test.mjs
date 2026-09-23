@@ -69,7 +69,7 @@ const CONNECTION_STATUSES = [
   "session_corrupt",
   "auth_failure",
 ];
-/** The confirm_send codes the integration reads as "definitely not sent, retry later". */
+/** The confirm_send codes the integration reads as "definitely not sent"; ACCOUNT_RESTRICTED also means do not retry. */
 const DEFINITELY_UNSENT = [
   "NOT_CONNECTED",
   "NOT_LINKED",

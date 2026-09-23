@@ -52,11 +52,22 @@ function text(value: unknown): string | null {
   return typeof value === "string" && value.trim() !== "" ? value.trim() : null;
 }
 
-/** Reads a close the way WhatsApp's own clients do. Unknown codes are a dropped link. */
+/**
+ * Whether WhatsApp itself closed the session: a `<failure>` node ("Connection Failure") or a
+ * `<stream:error>` ("Stream Errored"). A proxy or firewall that refuses the WebSocket with the
+ * same HTTP status arrives as "WebSocket Error (...)" and says nothing about the account.
+ */
+function fromWhatsApp(error: unknown): boolean {
+  const message = (error as { message?: unknown } | undefined)?.message;
+  return typeof message === "string" && /^(Connection Failure|Stream Errored)/.test(message);
+}
+
+/** Reads a close the way WhatsApp's own clients do. Unknown codes, and closes WhatsApp did not send, are a dropped link. */
 export function classifyClose(error: unknown, now: number = Date.now()): CloseVerdict {
   const code = codeOf(error);
   const data = dataOf(error);
   if (code === 401) return { kind: "logged_out" };
+  if (!fromWhatsApp(error)) return { kind: "transient" };
   if (code === 402) {
     const expire = Number(data.expire);
     return {
@@ -136,14 +147,16 @@ export class AccountHealth {
   }
 
   /** The refusal a write gets while the account is restricted: nothing left wazap, and retrying is what not to do. */
-  refusal(what: "write" | "new_chat"): WazapError {
+  refusal(what: "write" | "new_chat" | "read" | "link"): WazapError {
     const until = this.until === null ? "" : ` until ${isoWithOffset(this.until)}`;
     const said = this.detail === null ? "" : ` WhatsApp says: "${this.detail}"`;
+    // A read or a link sent nothing to begin with; saying so would read as a write refused.
+    const unsent = what === "read" || what === "link" ? "." : "; nothing was sent.";
     switch (this.state) {
       case "reachout_restricted":
         return new WazapError(
           "ACCOUNT_RESTRICTED",
-          `WhatsApp restricts this account from starting chats with people it has not written to${until}; nothing was sent.`,
+          `WhatsApp restricts this account from starting chats with people it has not written to${until}${unsent}`,
           what === "new_chat"
             ? "Do not retry: reply only in chats that already have messages, and wait for the restriction to end"
             : "Wait for the restriction to end"
@@ -151,30 +164,41 @@ export class AccountHealth {
       case "temporarily_banned":
         return new WazapError(
           "ACCOUNT_RESTRICTED",
-          `WhatsApp has temporarily banned this account${until}; nothing was sent.${said}`,
-          "Stop sending until the ban ends; wazap tries the link once more when it does"
+          `WhatsApp has temporarily banned this account${until}${unsent}${said}`,
+          this.until !== null && this.until - this.now() <= TEMP_BAN_RETRY_MAX_MS
+            ? "Stop sending until the ban ends; wazap tries the link once more when it does"
+            : "Stop sending; restart wazap once WhatsApp has lifted the ban"
         );
       case "banned":
         return new WazapError(
           "ACCOUNT_RESTRICTED",
-          `WhatsApp has banned or locked this account; nothing was sent.${said}`,
+          `WhatsApp has banned or locked this account${unsent}${said}`,
           "Open WhatsApp on the phone to see what it says; wazap will not reconnect on its own"
         );
       case "session_replaced":
         return new WazapError(
           "ACCOUNT_RESTRICTED",
-          "Another client took over this account's session; nothing was sent.",
+          `Another client took over this account's session${unsent}`,
           "Stop the other wazap or WhatsApp Web using these credentials, then restart this one"
         );
       case "client_outdated":
         return new WazapError(
           "ACCOUNT_RESTRICTED",
-          "WhatsApp no longer accepts this version of the client; nothing was sent.",
+          `WhatsApp no longer accepts this version of the client${unsent}`,
           "Update wazap (`npx wazap-mcp update`), then restart it"
         );
       default:
         return new WazapError("ACCOUNT_RESTRICTED", "WhatsApp restricts this account; nothing was sent.");
     }
+  }
+
+  /**
+   * Whether pairing again would throw away a session that comes back on its own: a temporary ban
+   * ends, a replaced session is still good, an outdated client needs an update, not a new link.
+   * A ban proper is the one state a new link may be what the owner needs.
+   */
+  blocksLink(): boolean {
+    return this.state === "temporarily_banned" || this.state === "session_replaced" || this.state === "client_outdated";
   }
 
   /** When a temporary ban ends, if it said. */
