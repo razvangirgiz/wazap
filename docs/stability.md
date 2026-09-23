@@ -34,8 +34,8 @@ The 20, each with what it requires: `learn` (), `get_status` (),
 An empty argument list means the tool requires nothing.
 
 Fourteen declare an output schema and answer in that shape, as an SDK client's
-own validator checks it; the six without one are the five Calfa calls and
-`learn` (`test/output-schema.test.mjs`). A refusal is an error result carrying
+own validator checks it; the six without one are the five of the integration
+contract and `learn` (`test/output-schema.test.mjs`). A refusal is an error result carrying
 `{ error, message, fix }`, with `account_id` added when the tool declares an
 output schema; `error` is one of the 45 codes, and `learn` documents every one
 of them. Guarded by: `test/tools.test.mjs`.
@@ -46,21 +46,26 @@ answer are additive and may land in a minor — so a client must tolerate fields
 it does not know. Removing or renaming a tool, an argument or an answer field,
 making an optional argument required, or removing an error code needs a major.
 
-### The Calfa contract
+### The integration contract
 
-Five tools are an exact contract for Calfa: `send_message`, `confirm_send`,
-`manage_chat` with the `mark_read` action, `link_account` and `get_status`.
+An integration is a program that runs `wazap serve --http` with a static token
+as the WhatsApp channel of its own product: one account per customer, drafts
+and confirmations, read receipts, pairing and a health probe.
 
-- They keep their names, keep accepting the arguments Calfa passes, and never
-  gain a required argument Calfa does not pass. `manage_chat` keeps `mark_read`
-  in its `action` enum and answers `chat_id`, `action` and `applied`, and
-  `get_status` answers a `status` from the eight Calfa maps, with `status_since`
-  and `account_id`.
-- The codes Calfa sorts as "definitely not sent" — `NOT_CONNECTED`,
+Five tools are an exact contract for an integration: `send_message`,
+`confirm_send`, `manage_chat` with the `mark_read` action, `link_account` and
+`get_status`.
+
+- They keep their names, keep accepting the arguments an integration passes,
+  and never gain a required argument it does not pass. `manage_chat` keeps
+  `mark_read` in its `action` enum and answers `chat_id`, `action` and
+  `applied`, and `get_status` answers a `status` from the eight an integration
+  maps, with `status_since` and `account_id`.
+- The codes an integration sorts as "definitely not sent" — `NOT_CONNECTED`,
   `NOT_LINKED`, `SESSION_EXPIRED`, `SESSION_CORRUPT`, `RATE_LIMITED`,
   `DRAFT_EXPIRED` — keep that meaning: nothing left wazap.
 
-Guarded by: `test/calfa-contract.test.mjs`, and for the last one also
+Guarded by: `test/integration-contract.test.mjs`, and for the last one also
 `test/sends.test.mjs`.
 
 ## 2. Safety behaviours
@@ -75,7 +80,7 @@ Guarded by: `test/calfa-contract.test.mjs`, and for the last one also
 - A draft lapses after 15 minutes as `DRAFT_EXPIRED`, once, and sends nothing;
   a confirmed one is spent, so confirming again answers the same receipt and
   sends nothing, and two concurrent confirms send once. Guarded by:
-  `test/drafts.test.mjs`, `test/sends.test.mjs`, `test/calfa-contract.test.mjs`.
+  `test/drafts.test.mjs`, `test/sends.test.mjs`, `test/integration-contract.test.mjs`.
 - A send whose outcome wazap does not know is `SEND_OUTCOME_UNKNOWN` and is
   never sent again on its own. Guarded by: `test/sends.test.mjs`.
 - Per-account send rules are enforced at draft time and re-checked at confirm
@@ -94,12 +99,12 @@ Guarded by: `test/calfa-contract.test.mjs`, and for the last one also
 
 - The command names and the flag names `wazap --help` prints, and the exit
   code — 0 on success, non-zero on failure.
-  Guarded by: `test/cli.test.mjs`, `test/calfa-contract.test.mjs`.
+  Guarded by: `test/cli.test.mjs`, `test/integration-contract.test.mjs`.
 - `wazap status --json` prints one parseable JSON object on stdout; its keys are
   additive. Guarded by: `test/doctor.test.mjs`, `test/accounts.test.mjs`,
   `test/pre-migration-backup.test.mjs`.
 - `wazap account add <id>` and `wazap logout --account <id>` work while a server
-  holds the data dir. Guarded by: `test/calfa-contract.test.mjs`.
+  holds the data dir. Guarded by: `test/integration-contract.test.mjs`.
 
 Not promised: the human-readable text. Everything printed for a person goes to
 stderr, and its wording, layout, ordering and colour may change in any release —
@@ -128,7 +133,7 @@ under `serve` is guarded by: `test/hygiene.test.mjs`.
   produces no events at all.
 
 Guarded by: `test/webhook.test.mjs`, `test/webhook-auth.test.mjs`,
-`test/calfa-contract.test.mjs`. Delivery is
+`test/integration-contract.test.mjs`. Delivery is
 at-least-once and ordered within a chat, retried on 408, 425, 429 and 5xx, and
 given up on after 24 hours (`test/webhook-outbox.test.mjs`); the retry schedule
 itself is current behaviour, not a promise.

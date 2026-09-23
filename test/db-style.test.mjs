@@ -107,7 +107,7 @@ test("before wazap recorded its sends (an upgrade, an import), an own message un
   const stored = (key, daysAgo, text) => db.messages.upsert(textMessage(ANA, key, now - daysAgo * DAY, text, { fromMe: true }));
   // Written on the phone before the upgrade: kept.
   ["da, ajung la 6", "ok te sun dupa", "hai ca vin si eu"].forEach((text, i) => stored(`A1B2C3D4E5F6${i}`, 30 + i, text));
-  // Sent by wazap (or Calfa) before the upgrade, their send rows long gone: unknowable, so left out.
+  // Sent by wazap (or an integration) before the upgrade, their send rows long gone: unknowable, so left out.
   ["Bună ziua! Vă mulțumesc.", "Cu stimă, asistentul.", "Vă confirm programarea."].forEach((text, i) => stored(`3EB0ABCDEF${i}`, 20 + i, text));
   stored("BAE5OLDBAILEYS", 25, "Vă stă la dispoziție echipa.");
   db.setMeta("via_wazap_known_after", "migrated_v5");

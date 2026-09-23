@@ -684,7 +684,7 @@ last-writer-wins, as before. A live service keeps the rate limit, webhook
 override and relaxed writes setting it started with until it next starts;
 tightened writes and send rules are read from disk on every write, as before.
 Tests: `test/account-roster.test.mjs`, `test/control.test.mjs`, and the two
-running-server cases in `test/calfa-contract.test.mjs`.
+running-server cases in `test/integration-contract.test.mjs`.
 
 ## 20. Legacy files and set-aside databases — kept a week
 

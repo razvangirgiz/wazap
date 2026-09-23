@@ -90,10 +90,10 @@ test("a tool without an outputSchema keeps its structured error", async () => {
   }
 });
 
-test("the five tools Calfa calls declare no outputSchema", () => {
-  // Calfa (test/calfa-contract.test.mjs) reads structuredContent.error on these
+test("the five tools of the integration contract declare no outputSchema", () => {
+  // An integration (test/integration-contract.test.mjs) reads structuredContent.error on these
   // tools' failures. A tool with an outputSchema answers errors as text only, so
-  // giving any of them one would break Calfa's error handling: change Calfa first.
+  // giving any of them one would break its error handling: that needs a major.
   for (const name of ["send_message", "confirm_send", "manage_chat", "link_account", "get_status"]) {
     const tool = tools.find((entry) => entry.name === name);
     assert.ok(tool, `${name} is registered`);
@@ -173,7 +173,7 @@ test("a search whose coverage could not be counted still reaches an SDK client, 
   }
 });
 
-test("only the five tools Calfa calls and learn go without an output schema", () => {
+test("only the five tools of the integration contract and learn go without an output schema", () => {
   assert.deepEqual(
     tools.filter((tool) => tool.outputSchema === undefined).map((tool) => tool.name).sort(),
     ["confirm_send", "get_status", "learn", "link_account", "manage_chat", "send_message"]

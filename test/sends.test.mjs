@@ -215,7 +215,7 @@ test("a message stored under the key before a crash makes the send sent at the r
   assert.equal(second.sent.length, 0);
 });
 
-test("failures before the send leaves give the draft back with Calfa's definitely-unsent codes, and its key stays live", async (t) => {
+test("failures before the send leaves give the draft back with an integration's definitely-unsent codes, and its key stays live", async (t) => {
   const { svc, sock, sent } = serviceOn(t, dataDirFor(t), { rateLimitPerMinute: 1 });
   const view = await svc.draft({ kind: "text", chatId: STRANGER, text: "Bună ziua." }, OWNER);
   const back = () => assert.equal(sendRow(svc, view.draft_id).state, "draft");
