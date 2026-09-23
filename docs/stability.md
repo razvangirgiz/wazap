@@ -59,8 +59,12 @@ Five tools are an exact contract for an integration: `send_message`,
 - They keep their names, keep accepting the arguments an integration passes,
   and never gain a required argument it does not pass. `manage_chat` keeps
   `mark_read` in its `action` enum and answers `chat_id`, `action` and
-  `applied`, and `get_status` answers a `status` from the eight an integration
-  maps, with `status_since` and `account_id`.
+  `applied`, and `get_status` answers a `status` from the eight statuses an
+  integration maps, with `status_since` and `account_id`.
+- Their answers keep the fields an integration reads: `send_message` answers
+  `draft_id` and `account_id`; `confirm_send` answers `message_id`, `chat_id`,
+  `text`, `timestamp` and `account_id`; `link_account` answers `code`,
+  `expires_at`, `phone_masked` and `account_id`.
 - The codes an integration sorts as "definitely not sent" — `NOT_CONNECTED`,
   `NOT_LINKED`, `SESSION_EXPIRED`, `SESSION_CORRUPT`, `RATE_LIMITED`,
   `DRAFT_EXPIRED` — keep that meaning: nothing left wazap.
@@ -103,6 +107,9 @@ Guarded by: `test/integration-contract.test.mjs`, and for the last one also
 - `wazap status --json` prints one parseable JSON object on stdout; its keys are
   additive. Guarded by: `test/doctor.test.mjs`, `test/accounts.test.mjs`,
   `test/pre-migration-backup.test.mjs`.
+- `wazap --version --json` prints one JSON object on stdout with `version`,
+  `baileys` and `node`; its keys are additive. Guarded by:
+  `test/integration-contract.test.mjs`.
 - `wazap account add <id>` and `wazap logout --account <id>` work while a server
   holds the data dir. Guarded by: `test/integration-contract.test.mjs`.
 
@@ -118,10 +125,10 @@ under `serve` is guarded by: `test/hygiene.test.mjs`.
   `message_received` only.
 - The signature is `x-wazap-signature: sha256=<hex>`, an HMAC-SHA256 over the
   exact raw request body with the configured secret; the body is JSON.
-- With `WAZAP_WEBHOOK_AUTH` set (or an account.s own), its header
+- With `WAZAP_WEBHOOK_AUTH` set (or an account's own), its header
   goes with every POST beside the signature: `Authorization` for a bare value,
   the named header for `<Header-Name>: <value>`.
-- Message-event fields: `event`, `account_id`, `account_name`, `chat_id`,
+- Message-event fields: `event`, `account_id`, `account_name`, `chat_id`, `from`,
   `message_id`, `text`, `truncated`, `kind`, `from_me`, `is_self_chat`,
   `timestamp`, `phone`, `contact_id`. `kind` is `text`, `audio`, `image` or
   `other` — a bucket, so a new message type falls into `other` rather than

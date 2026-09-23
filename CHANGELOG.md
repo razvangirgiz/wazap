@@ -4,6 +4,13 @@
 
 ### Added
 
+- **`wazap --version --json`** prints one JSON object on stdout, with `version`,
+  `baileys` and `node`, for an install script to read. Plain `--version` stays a
+  line for a person, on stderr like every other one.
+- **The integration contract says more of what it promised in practice.**
+  `docs/stability.md` now lists the answer fields of `send_message`,
+  `confirm_send` and `link_account`, and `from` among the message-event fields,
+  all of which the contract test already held.
 - **The webhook can send the header a receiver asks for.** Cursor Automations,
   n8n and most hosted webhooks accept a POST only with a header of their own,
   usually `Authorization: Bearer …`, so they could not take wazap's events

@@ -163,7 +163,7 @@ export function accountPaths(dataDir: string, accountId: string): AccountPaths {
 /** The answer to `setup`'s "keep running" question. */
 export type KeepRunning = "client" | "service" | "expose";
 
-export type CliInvocation = { kind: "help" } | { kind: "version" } | { kind: "run"; config: Config };
+export type CliInvocation = { kind: "help" } | { kind: "version"; json: boolean } | { kind: "run"; config: Config };
 
 /** How many positionals each command takes after its own name. */
 const COMMAND_ARGS: Record<Command, readonly number[]> = {
@@ -378,7 +378,7 @@ export function parseCli(argv: string[] = process.argv.slice(2)): CliInvocation 
 
   const { values, positionals } = parsed;
   if (values.help) return { kind: "help" };
-  if (values.version) return { kind: "version" };
+  if (values.version) return { kind: "version", json: values.json === true };
 
   dropUnfilledTemplates();
 
