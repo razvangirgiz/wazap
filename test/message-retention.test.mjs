@@ -73,12 +73,12 @@ test("phone deletion removes the message, its transcript and its cached preview 
   const raw = await seed(svc);
   const sid = sidOf(raw);
   svc.db.messages.setTranscript(sid, SECRET);
-  await svc.writePreview(sid, Buffer.from(SECRET));
-  await readFile(svc.previewPath(sid));
+  await svc.media.writePreview(sid, Buffer.from(SECRET));
+  await readFile(svc.media.previewPath(sid));
   remove(sock, raw);
   await idle(svc);
   await assertNoPayload(svc, raw);
-  await assert.rejects(readFile(svc.previewPath(sid)), { code: "ENOENT" });
+  await assert.rejects(readFile(svc.media.previewPath(sid)), { code: "ENOENT" });
   await svc.stop();
   const restarted = await boot();
   assert.equal(restarted.svc.hasMessage(sid), false);
@@ -121,12 +121,12 @@ test("a late preview and a later history sync cannot resurrect a deleted message
   const { svc, sock } = await fixture(t);
   const raw = await seed(svc);
   remove(sock, raw);
-  await svc.writePreview(sidOf(raw), Buffer.from(SECRET));
+  await svc.media.writePreview(sidOf(raw), Buffer.from(SECRET));
   svc.ingest.ingestMessages([raw]);
   await idle(svc);
   assert.equal(svc.hasMessage(sidOf(raw)), false);
   await assertNoPayload(svc, raw);
-  await assert.rejects(readFile(svc.previewPath(sidOf(raw))), { code: "ENOENT" });
+  await assert.rejects(readFile(svc.media.previewPath(sidOf(raw))), { code: "ENOENT" });
 });
 
 test("chat clear blocks unseen old history across a restart, but accepts newer messages", async (t) => {
@@ -151,7 +151,7 @@ test("a cached preview finishing after deletion returns no deleted image", async
   const { svc, sock } = await fixture(t);
   const raw = await seed(svc, rawMessage("PHOTO", { imageMessage: { mimetype: "image/jpeg" } }));
   const started = gate(); const finish = gate();
-  svc.readPreview = async () => { started.release(); return finish.promise; };
+  svc.media.readPreview = async () => { started.release(); return finish.promise; };
   const pending = svc.previews([sidOf(raw)]);
   await started.promise;
   remove(sock, raw);
@@ -353,16 +353,16 @@ test("a failed automatic-cache cleanup is reported instead of acknowledging clea
   const { svc } = await fixture(t);
   const raw = await seed(svc, rawMessage("PHOTO", { imageMessage: { mimetype: "image/jpeg" } }));
   const sid = sidOf(raw);
-  await svc.writePreview(sid, Buffer.from("synthetic thumbnail"));
+  await svc.media.writePreview(sid, Buffer.from("synthetic thumbnail"));
   // rm(path) cannot remove a directory: the unlink of the released preview fails.
-  await rm(svc.previewPath(sid));
-  await mkdir(svc.previewPath(sid), { recursive: true });
+  await rm(svc.media.previewPath(sid));
+  await mkdir(svc.media.previewPath(sid), { recursive: true });
   await assert.rejects(svc.deleteMessage(sid, false), (err) =>
     err.code === "WHATSAPP_ERROR" && /cleanup failed/i.test(err.message) && !err.message.includes(SECRET));
   assert.equal(svc.hasMessage(sid), false);
 
   // The failure is reported once; a later cleanup that succeeds is not failed by it.
-  await rm(svc.previewPath(sid), { recursive: true, force: true });
+  await rm(svc.media.previewPath(sid), { recursive: true, force: true });
   const next = await seed(svc, rawMessage("M2"));
   assert.deepEqual(await svc.deleteMessage(sidOf(next), false), { message_id: sidOf(next), for_everyone: false });
 });
