@@ -244,3 +244,50 @@ test("an open after a ban clears it; a Baileys without the timelock call costs n
   next.ev.emit("connection.update", { connection: "open" });
   assert.equal(svc.getStatus().health.state, "ok");
 });
+
+test("WhatsApp's warnings about first messages show in health and the hint, and block nothing", () => {
+  const health = new AccountHealth(() => 0);
+  health.noteNewChatCap({ capping_status: "FIRST_WARNING", used_quota: 40, total_quota: 50, cycle_end_timestamp: "86400" });
+  assert.equal(health.info().state, "ok");
+  assert.deepEqual(health.info().new_chat_cap, { status: "first_warning", used: 40, total: 50, cycle_ends: health.info().new_chat_cap.cycle_ends });
+  assert.equal(Date.parse(health.info().new_chat_cap.cycle_ends), 86_400_000, "seconds from WhatsApp, as an instant");
+  assert.match(health.hint(), /a first warning .*40 of 50 used this cycle/);
+  assert.equal(health.blocksNewChats(), false);
+  health.noteNewChatCap({ capping_status: "SOMETHING_NEW" });
+  assert.equal(health.info().new_chat_cap.status, "first_warning", "a status wazap does not know changes nothing");
+});
+
+test("a capped cycle stops first messages until it ends, and says so to the webhook both ways", () => {
+  let now = 0;
+  let told = 0;
+  const health = new AccountHealth(() => now, () => told++);
+  health.noteNewChatCap({ capping_status: "CAPPED", used_quota: 50, total_quota: 50, cycle_end_timestamp: 1000 });
+  assert.equal(health.info().state, "new_chats_capped");
+  assert.equal(health.blocksNewChats(), true);
+  assert.match(health.refusal("new_chat").message, /used up for this cycle \(50 of 50 used\)/);
+  assert.equal(told, 1);
+  now = 1_000_000;
+  assert.equal(health.info().state, "ok", "the cycle ended");
+  assert.equal(health.blocksNewChats(), false);
+  assert.equal(told, 2);
+});
+
+test("WhatsApp's cap is asked for at every open and taken from its own updates; capped, a stranger is refused", async (t) => {
+  const { svc, sock } = serviceOn(t);
+  let asked = 0;
+  sock.fetchNewChatMessageCap = async () => {
+    asked++;
+    return { capping_status: "NONE", used_quota: 1, total_quota: 50 };
+  };
+  sock.ev.emit("connection.update", { connection: "open" });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(asked, 1);
+  assert.equal(svc.getStatus().health.new_chat_cap.status, "none");
+
+  sock.ev.emit("message-capping.update", { capping_status: "CAPPED", used_quota: 50, total_quota: 50, cycle_end_timestamp: String(Math.floor(Date.now() / 1000) + 86_400) });
+  assert.equal(svc.getStatus().health.state, "new_chats_capped");
+  const refused = await svc.draft({ kind: "text", chatId: STRANGER, text: "Bună ziua" }).catch((err) => err);
+  assert.equal(refused.code, "ACCOUNT_RESTRICTED");
+  assert.match(refused.message, /cap on first messages/);
+});
+

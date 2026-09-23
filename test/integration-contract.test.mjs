@@ -376,6 +376,9 @@ function assertConnectionEvent(hit) {
   nonEmpty(body.account_id, "account_id");
   assert.ok(["linked", "disconnected", "expired"].includes(body.status), `status ${body.status}`);
   assertUtcTimestamp(body.timestamp);
+  // Additive: what WhatsApp says about the account itself, as get_status's health.
+  assert.equal(typeof body.health?.state, "string", "every connection event carries health.state");
+  assert.ok("until" in body.health && "reason" in body.health);
   return body;
 }
 
@@ -1073,6 +1076,31 @@ describe("Integration webhook: the events and fields it parses", () => {
       ["linked", "disconnected", "expired"]
     );
     for (const body of bodies) assert.equal(body.account_id, TENANT);
+  });
+
+  test("a restriction that comes and goes while linked is a connection event with health; a ban is expired with health banned", async (t) => {
+    const { hook, svc } = await hooked(t);
+    svc.start = async () => {};
+    const sock = fakeSocket();
+    svc.wireEvents(sock, ++svc.generation);
+
+    sock.ev.emit("connection.update", { connection: "open" });
+    await settled(hook, 1, "linked");
+    sock.ev.emit("connection.update", { reachoutTimeLock: { isActive: true, enforcementType: "DEFAULT" } });
+    await settled(hook, 2, "linked, restricted");
+    sock.ev.emit("connection.update", { reachoutTimeLock: { isActive: false } });
+    await settled(hook, 3, "linked, lifted");
+    sock.ev.emit("connection.update", {
+      connection: "close",
+      lastDisconnect: { error: { message: "Connection Failure", output: { statusCode: 403 }, data: { reason: "403" } } },
+    });
+    await settled(hook, 4, "expired, banned");
+
+    const bodies = hook.hits.map(assertConnectionEvent);
+    assert.deepEqual(
+      bodies.map((body) => `${body.status}/${body.health.state}`),
+      ["linked/ok", "linked/reachout_restricted", "linked/ok", "expired/banned"]
+    );
   });
 
   test("`wazap webhook test --account <slug>` posts bodies the integration accepts, with the probe chat the integration ignores", async () => {

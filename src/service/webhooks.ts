@@ -16,7 +16,7 @@ import {
   asWebhookPayload,
   webhookConnectionStatus,
   type WebhookConnectionPayload,
-  type WebhookConnectionStatus,
+  type WebhookHealth,
   type WebhookPayload,
   type WebhookSink,
 } from "../webhook.js";
@@ -40,11 +40,14 @@ export interface WebhooksHost {
   statusSince(): number;
   webhook(): WebhookSink;
   outbox(): WebhookOutbox;
+  /** What WhatsApp says about the account itself, for the connection event. */
+  health(): WebhookHealth;
 }
 
 export class AccountWebhooks {
   /** The last connection status queued for the consumer, so several internal states collapse into one event. */
-  private lastWebhookStatus: WebhookConnectionStatus | null = null;
+  /** The status and health state last queued, so several internal states collapse into one event. */
+  private lastWebhookKey: string | null = null;
 
   constructor(
     private readonly host: WebhooksHost,
@@ -64,7 +67,10 @@ export class AccountWebhooks {
    */
   queueConnectionWebhook(status: ConnectionStatus): void {
     const mapped = webhookConnectionStatus(status);
-    if (mapped === null || mapped === this.lastWebhookStatus || this.host.stopped()) return;
+    const health = this.host.health();
+    // A restriction that comes or goes while linked is news too; the same status and state twice is not.
+    const key = mapped === null ? null : `${mapped}|${health.state}`;
+    if (mapped === null || key === this.lastWebhookKey || this.host.stopped()) return;
     const settings = this.host.webhook().settings();
     if (settings.kind !== "ready" || !settings.events.includes("connection")) return;
     const db = this.storage.readyDb();
@@ -72,20 +78,21 @@ export class AccountWebhooks {
       this.host.outbox().dropped(`connection ${mapped}`);
       return;
     }
-    const at = this.host.statusSince();
+    // A status change is dated when the link moved; a health change while the link stayed, now.
+    const at = this.lastWebhookKey?.split("|")[0] === mapped ? Date.now() : this.host.statusSince();
     try {
       db.events.enqueue({
         kind: "connection",
         lane: CONNECTION_LANE,
         messageId: null,
-        payload: JSON.stringify(asConnectionPayload({ status: mapped, account: this.accountRecord, at })),
+        payload: JSON.stringify(asConnectionPayload({ status: mapped, account: this.accountRecord, at, health })),
         createdAt: at,
       });
     } catch (err) {
       this.host.outbox().dropped(`connection ${mapped}`, err);
       return;
     }
-    this.lastWebhookStatus = mapped;
+    this.lastWebhookKey = key;
     this.host.outbox().nudge();
   }
 

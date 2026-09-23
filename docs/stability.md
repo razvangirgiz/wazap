@@ -151,7 +151,9 @@ under `serve` is guarded by: `test/hygiene.test.mjs`.
   adding a value. `text` is cut at 2000 characters ending in an ellipsis, with
   `truncated` true. `timestamp` is the message's own instant, in UTC.
 - Connection-event fields: `event`, `account_id`, `status` and `timestamp`,
-  where `status` is `linked`, `disconnected` or `expired`.
+  where `status` is `linked`, `disconnected` or `expired`, and `health` with
+  its `state`, `until` and `reason`, as `get_status` says them. A health
+  change while the link stays up is a connection event too.
 - A message wazap itself sent produces no `message_sent`, and history sync
   produces no events at all.
 

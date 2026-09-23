@@ -118,10 +118,13 @@ export interface StatusInfo {
  * it has not written to (existing chats still work); `temporarily_banned` and
  * `banned`: WhatsApp refuses the account; `session_replaced`: another client
  * took the session over; `client_outdated`: WhatsApp no longer takes this
- * client. Every state but `ok` and `reachout_restricted` stops every write.
+ * client; `new_chats_capped`: WhatsApp's cap on first messages to new people
+ * is used up for this cycle. Every state but `ok`, `new_chats_capped` and
+ * `reachout_restricted` stops every write; those two stop first messages only.
  */
 export type HealthState =
   | "ok"
+  | "new_chats_capped"
   | "reachout_restricted"
   | "temporarily_banned"
   | "banned"
@@ -140,7 +143,15 @@ export interface HealthInfo {
   detail: string | null;
   /** The latest send WhatsApp refused after it left, by WhatsApp's code (463: a new chat refused). */
   last_send_error: { code: string; at: string } | null;
+  /**
+   * WhatsApp's cap on first messages to people who have not written, when it
+   * reported one: `status` none, first_warning, second_warning or capped, the
+   * quota `used` and `total` of the cycle, and when the cycle ends.
+   */
+  new_chat_cap: { status: NewChatCapStatus; used: number | null; total: number | null; cycle_ends: string | null } | null;
 }
+
+export type NewChatCapStatus = "none" | "first_warning" | "second_warning" | "capped";
 
 export interface StatusDiagnostics {
   /**

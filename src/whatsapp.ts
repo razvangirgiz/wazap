@@ -44,7 +44,7 @@ import { maskNumber } from "./ui.js";
 import { AccountChats } from "./service/chats.js";
 import { AccountContacts, CONTACT_SETTLE_MS, needsContactResync } from "./service/contacts.js";
 import { AccountGroups } from "./service/groups.js";
-import { AccountHealth, classifyClose, TEMP_BAN_RETRY_MAX_MS, type ReachoutLock } from "./service/health.js";
+import { AccountHealth, classifyClose, TEMP_BAN_RETRY_MAX_MS, type NewChatCapReport, type ReachoutLock } from "./service/health.js";
 import { AccountIdentity } from "./service/identity.js";
 import { AccountIngest, type MessageRef } from "./service/ingest.js";
 import { AccountMedia } from "./service/media.js";
@@ -233,7 +233,8 @@ export class WhatsAppService implements WhatsAppApi {
   /** `mark_read`'s own bucket, READ_MARK_MULTIPLIER times the writes', off when the writes' is. */
   private readonly readMarks: RateLimiter;
   /** What WhatsApp says about the account itself: restrictions, bans, a session taken over (src/service/health.ts). */
-  private readonly health = new AccountHealth();
+  // A restriction that comes or goes while the link stays up is told to the webhook as a connection event.
+  private readonly health = new AccountHealth(Date.now, () => this.webhooks.queueConnectionWebhook(this.status));
   /** The reachout timelock question in flight, so a burst of refused sends asks once. */
   private reachoutCheck: Promise<void> | null = null;
   private readonly webhook: WebhookSink;
@@ -478,6 +479,7 @@ export class WhatsAppService implements WhatsAppApi {
         statusSince: () => this.statusSince,
         webhook: () => this.webhook,
         outbox: () => this.outbox,
+        health: () => this.health.summary(),
       },
       this.identity,
       this.views,
@@ -1153,14 +1155,28 @@ export class WhatsAppService implements WhatsAppApi {
   private checkReachout(sock: WASocket, generation: number): Promise<void> {
     // One question at a time: a burst of refused sends asks once.
     this.reachoutCheck ??= (async () => {
-      const fetch = (sock as { fetchAccountReachoutTimelock?: () => Promise<ReachoutLock> }).fetchAccountReachoutTimelock;
-      if (typeof fetch !== "function") return;
-      try {
-        const lock = await fetch.call(sock);
-        if (generation !== this.generation || this.stopped) return;
-        this.health.noteReachout(lock);
-      } catch (err) {
-        logError("reachout timelock", err);
+      const asks = sock as {
+        fetchAccountReachoutTimelock?: () => Promise<ReachoutLock>;
+        fetchNewChatMessageCap?: () => Promise<NewChatCapReport>;
+      };
+      if (typeof asks.fetchAccountReachoutTimelock === "function") {
+        try {
+          const lock = await asks.fetchAccountReachoutTimelock.call(sock);
+          if (generation !== this.generation || this.stopped) return;
+          this.health.noteReachout(lock);
+        } catch (err) {
+          logError("reachout timelock", err);
+        }
+      }
+      // WhatsApp's cap on first messages to new people; an account it does not apply to may answer nothing.
+      if (typeof asks.fetchNewChatMessageCap === "function") {
+        try {
+          const cap = await asks.fetchNewChatMessageCap.call(sock);
+          if (generation !== this.generation || this.stopped) return;
+          this.health.noteNewChatCap(cap);
+        } catch (err) {
+          logError("new chat cap", err);
+        }
       }
     })().finally(() => {
       this.reachoutCheck = null;
@@ -1366,6 +1382,11 @@ export class WhatsAppService implements WhatsAppApi {
       }
       const at = Date.now();
       this.ingest.markLater("messages delete", () => this.ingest.retract(targets, at));
+    });
+
+    sock.ev.on("message-capping.update", (report) => {
+      if (generation !== this.generation) return;
+      this.health.noteNewChatCap(report as NewChatCapReport);
     });
 
     sock.ev.on("messages.update", (updates) => {

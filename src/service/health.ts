@@ -15,7 +15,7 @@
 
 import { WazapError } from "../errors.js";
 import { isoWithOffset } from "../messages.js";
-import type { HealthInfo, HealthState } from "../wa-types.js";
+import type { HealthInfo, HealthState, NewChatCapStatus } from "../wa-types.js";
 
 /** How a close is handled. */
 export type CloseVerdict =
@@ -29,6 +29,28 @@ export interface ReachoutLock {
   isActive?: boolean;
   timeEnforcementEnds?: Date | string | number;
   enforcementType?: string;
+}
+
+/** WhatsApp's report on its cap on first messages to new people (fetchNewChatMessageCap, message-capping.update). */
+export interface NewChatCapReport {
+  capping_status?: string;
+  used_quota?: number;
+  total_quota?: number;
+  cycle_end_timestamp?: string | number;
+}
+
+const CAP_STATUSES: Record<string, NewChatCapStatus> = {
+  NONE: "none",
+  FIRST_WARNING: "first_warning",
+  SECOND_WARNING: "second_warning",
+  CAPPED: "capped",
+};
+
+/** A WhatsApp timestamp in seconds, or already in milliseconds; null when there is none. */
+function whenOf(value: unknown): number | null {
+  const n = Number(value);
+  if (!Number.isFinite(n) || n <= 0) return null;
+  return n < 1e12 ? n * 1000 : n;
 }
 
 /** A temporary ban longer than this is treated as a ban: no reconnect is scheduled for it. */
@@ -94,8 +116,16 @@ export class AccountHealth {
   private reason: string | null = null;
   private detail: string | null = null;
   private lastSendError: { code: string; at: number } | null = null;
+  private cap: { status: NewChatCapStatus; used: number | null; total: number | null; ends: number | null } | null = null;
 
-  constructor(private readonly now: () => number = Date.now) {}
+  /**
+   * `onChange` hears a change the link does not carry: a timelock or a cap that comes or goes while
+   * connected. A close or an open is not announced here; the status change that goes with it is.
+   */
+  constructor(
+    private readonly now: () => number = Date.now,
+    private readonly onChange: () => void = () => {}
+  ) {}
 
   /** A close that is about the account: its state until something says otherwise. */
   noteClose(verdict: CloseVerdict): void {
@@ -114,6 +144,7 @@ export class AccountHealth {
 
   noteReachout(lock: ReachoutLock | null | undefined): void {
     if (!lock) return;
+    const before = this.effectiveState();
     if (lock.isActive === true) {
       const ends = lock.timeEnforcementEnds === undefined ? NaN : new Date(lock.timeEnforcementEnds).getTime();
       this.set("reachout_restricted", {
@@ -124,6 +155,21 @@ export class AccountHealth {
     } else if (lock.isActive === false && this.state === "reachout_restricted") {
       this.clear();
     }
+    if (this.effectiveState() !== before) this.onChange();
+  }
+
+  /** WhatsApp's cap on first messages to new people, as it reported it; an unknown status is ignored. */
+  noteNewChatCap(report: NewChatCapReport | null | undefined): void {
+    const status = report?.capping_status === undefined ? undefined : CAP_STATUSES[report.capping_status];
+    if (report === null || report === undefined || status === undefined) return;
+    const before = this.effectiveState();
+    this.cap = {
+      status,
+      used: typeof report.used_quota === "number" ? report.used_quota : null,
+      total: typeof report.total_quota === "number" ? report.total_quota : null,
+      ends: whenOf(report.cycle_end_timestamp),
+    };
+    if (this.effectiveState() !== before) this.onChange();
   }
 
   /** A send WhatsApp refused after it left: kept for get_status, whatever the code. */
@@ -138,21 +184,46 @@ export class AccountHealth {
 
   /** Whether a first message to someone never written to would be refused, and add to the restriction. */
   blocksNewChats(): boolean {
-    if (this.state !== "reachout_restricted") return false;
-    if (this.until !== null && this.until <= this.now()) {
+    const state = this.effectiveState();
+    return state === "reachout_restricted" || state === "new_chats_capped";
+  }
+
+  /**
+   * The state as of now: a timelock or a capped cycle whose end has passed is over, whoever asks
+   * first, and the one that holds wins; a cap shows only while nothing graver does.
+   */
+  private effectiveState(): HealthState {
+    const now = this.now();
+    if (this.state === "reachout_restricted" && this.until !== null && this.until <= now) {
       this.clear();
-      return false;
+      this.onChange();
     }
-    return true;
+    if (this.cap?.status === "capped" && this.cap.ends !== null && this.cap.ends <= now) {
+      this.cap = { ...this.cap, status: "none", used: null };
+      if (this.state === "ok") this.onChange();
+    }
+    if (this.state === "ok" && this.cap?.status === "capped") return "new_chats_capped";
+    return this.state;
   }
 
   /** The refusal a write gets while the account is restricted: nothing left wazap, and retrying is what not to do. */
   refusal(what: "write" | "new_chat" | "read" | "link"): WazapError {
+    const state = this.effectiveState();
     const until = this.until === null ? "" : ` until ${isoWithOffset(this.until)}`;
     const said = this.detail === null ? "" : ` WhatsApp says: "${this.detail}"`;
     // A read or a link sent nothing to begin with; saying so would read as a write refused.
     const unsent = what === "read" || what === "link" ? "." : "; nothing was sent.";
-    switch (this.state) {
+    switch (state) {
+      case "new_chats_capped": {
+        const cap = this.cap!;
+        const used = cap.used !== null && cap.total !== null ? ` (${cap.used} of ${cap.total} used)` : "";
+        const ends = cap.ends === null ? "" : ` until ${isoWithOffset(cap.ends)}`;
+        return new WazapError(
+          "ACCOUNT_RESTRICTED",
+          `WhatsApp's cap on first messages to people who have not written is used up for this cycle${used}${ends}${unsent}`,
+          "Do not retry: reply only in chats that already have messages, and wait for the next cycle"
+        );
+      }
       case "reachout_restricted":
         return new WazapError(
           "ACCOUNT_RESTRICTED",
@@ -207,21 +278,38 @@ export class AccountHealth {
   }
 
   info(): HealthInfo {
-    // A timelock whose end passed is over, whoever asks first.
-    if (this.state === "reachout_restricted") this.blocksNewChats();
     return {
-      state: this.state,
+      state: this.effectiveState(),
       since: this.since === null ? null : isoWithOffset(this.since),
       until: this.until === null ? null : isoWithOffset(this.until),
       reason: this.reason,
       detail: this.detail,
       last_send_error: this.lastSendError === null ? null : { code: this.lastSendError.code, at: isoWithOffset(this.lastSendError.at) },
+      new_chat_cap:
+        this.cap === null
+          ? null
+          : { status: this.cap.status, used: this.cap.used, total: this.cap.total, cycle_ends: this.cap.ends === null ? null : isoWithOffset(this.cap.ends) },
     };
   }
 
   /** One line for get_status's hint, or null while nothing is wrong. */
   hint(): string | null {
-    return this.info().state === "ok" ? null : this.refusal("write").message;
+    if (this.effectiveState() !== "ok") return this.refusal("write").message;
+    const cap = this.cap;
+    if (cap === null || (cap.status !== "first_warning" && cap.status !== "second_warning")) return null;
+    const used = cap.used !== null && cap.total !== null ? `: ${cap.used} of ${cap.total} used this cycle` : "";
+    const which = cap.status === "first_warning" ? "a first" : "a second";
+    return `WhatsApp gave ${which} warning about first messages to people who have not written${used}. Slow down; past the cap they are refused.`;
+  }
+
+  /** The state for a webhook event: what, until when, and WhatsApp's code for it. */
+  summary(): { state: HealthState; until: string | null; reason: string | null } {
+    const state = this.effectiveState();
+    if (state === "new_chats_capped") {
+      const ends = this.cap?.ends ?? null;
+      return { state, until: ends === null ? null : isoWithOffset(ends), reason: null };
+    }
+    return { state, until: this.until === null ? null : isoWithOffset(this.until), reason: this.reason };
   }
 
   private set(state: HealthState, fields: { until: number | null; reason: string | null; detail: string | null }): void {

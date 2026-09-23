@@ -15,7 +15,7 @@ import { logError } from "./logger.js";
 import { redact, stripPasted } from "./transcribe/index.js";
 import { discardResponse } from "./http-response.js";
 import { withCode } from "./error-code.js";
-import type { ConnectionStatus, MessageType, MessageView, WebhookDelivery, WebhookInfo } from "./wa-types.js";
+import type { ConnectionStatus, HealthState, MessageType, MessageView, WebhookDelivery, WebhookInfo } from "./wa-types.js";
 
 export const WEBHOOK_EVENTS = ["message_received", "message_sent", "connection"] as const;
 export type WebhookEvent = (typeof WEBHOOK_EVENTS)[number];
@@ -111,12 +111,21 @@ export interface WebhookMessagePayload {
   account_name: string;
 }
 
+/** What WhatsApp says about the account itself, as get_status's `health` says it. */
+export interface WebhookHealth {
+  state: HealthState;
+  until: string | null;
+  reason: string | null;
+}
+
 export interface WebhookConnectionPayload {
   event: "connection";
   status: WebhookConnectionStatus;
   timestamp: string;
   account_id: string;
   account_name: string;
+  /** Absent only on an event queued by a wazap older than the field. */
+  health?: WebhookHealth;
 }
 
 export type WebhookPayload = WebhookMessagePayload | WebhookConnectionPayload;
@@ -139,6 +148,7 @@ export interface WebhookConnectionEvent {
   status: WebhookConnectionStatus;
   account: Pick<WebhookAccount, "id" | "name">;
   at: number;
+  health?: WebhookHealth;
 }
 
 export type WebhookTestResult = { ok: true } | { ok: false; error: string; fix: string };
@@ -415,13 +425,14 @@ export function asWebhookPayload({ event, view, account, isSelfChat }: WebhookMe
   };
 }
 
-export function asConnectionPayload({ status, account, at }: WebhookConnectionEvent): WebhookConnectionPayload {
+export function asConnectionPayload({ status, account, at, health }: WebhookConnectionEvent): WebhookConnectionPayload {
   return {
     event: "connection",
     status,
     timestamp: new Date(at).toISOString(),
     account_id: account.id,
     account_name: account.name,
+    ...(health === undefined ? {} : { health }),
   };
 }
 
@@ -580,7 +591,7 @@ function enableEventFix(active: readonly WebhookEvent[], event: WebhookEvent, ac
 function testPayload(event: WebhookEvent, account?: Pick<WebhookAccount, "id" | "name">): WebhookPayload {
   const now = new Date().toISOString();
   const named = { account_id: account?.id ?? "default", account_name: account?.name ?? "default" };
-  if (event === "connection") return { event, status: "linked", timestamp: now, ...named };
+  if (event === "connection") return { event, status: "linked", timestamp: now, ...named, health: { state: "ok", until: null, reason: null } };
   return {
     event,
     from: "wazap",
