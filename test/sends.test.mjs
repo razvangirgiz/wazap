@@ -181,7 +181,7 @@ test("a crash while a send is under way leaves it unknown after the restart, unt
   await waitFor(() => keys.length === 1, 3_000, "the send handed to the socket");
   assert.equal(sendRow(first.svc, view.draft_id).state, "sending");
   // The process dies here: nothing settles the row.
-  first.svc.accountDb.close();
+  first.svc.storage.accountDb.close();
 
   const second = serviceOn(t, dataDir);
   assert.equal(sendRow(second.svc, view.draft_id).state, "unknown");
@@ -206,7 +206,7 @@ test("a message stored under the key before a crash makes the send sent at the r
   void first.svc.confirm(view.draft_id, OWNER).catch(() => {});
   await waitFor(() => keys.length === 1, 3_000, "the send handed to the socket");
   upsert(first.sock, "append", own(keys[0], "Joi la 10."));
-  first.svc.accountDb.close();
+  first.svc.storage.accountDb.close();
 
   const second = serviceOn(t, dataDir);
   assert.equal(sendRow(second.svc, view.draft_id).state, "sent");
@@ -551,7 +551,7 @@ test("an account that keeps no history forgets the words of its sends at the sta
   const dataDir = dataDirFor(t);
   const first = serviceOn(t, dataDir);
   await threeSends(first.svc, first.sock);
-  first.svc.accountDb.close();
+  first.svc.storage.accountDb.close();
 
   const second = serviceOn(t, dataDir, { persistHistory: false });
   await second.svc.bootStorage();

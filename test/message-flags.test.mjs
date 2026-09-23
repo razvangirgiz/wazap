@@ -110,7 +110,7 @@ test("the account's own message sent through wazap is via_wazap, its echo after 
   };
   void first.svc.confirm(unsure.draft_id, "s").catch(() => {});
   await waitFor(() => keys.length === 1, 3_000, "the send handed to the socket");
-  first.svc.accountDb.close();
+  first.svc.storage.accountDb.close();
 
   const second = await serviceOn(t, dataDir);
   const echo = { key: { remoteJid: ANA, fromMe: true, id: keys[0] }, message: { conversation: "Poate." }, messageTimestamp: T0 + 5 };

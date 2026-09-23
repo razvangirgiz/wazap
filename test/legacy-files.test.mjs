@@ -90,7 +90,7 @@ function dateAsides(root) {
 async function bootAt(t, dataDir, at, config = {}, claim = undefined) {
   t.mock.method(Date, "now", () => at);
   const svc = serviceOn(dataDir, config);
-  if (claim !== undefined) svc.claimDatabase(claim);
+  if (claim !== undefined) svc.storage.claimDatabase(claim);
   await svc.bootStorage();
   await svc.stop();
   t.mock.restoreAll();
@@ -196,9 +196,9 @@ test("the boot that imports an account moves its legacy files and the beta archi
   assert.match(svc.getStatus().storage.legacy_files.deleted_after, /^\d{4}-\d{2}-\d{2}T/);
   const rendered = renderGetStatus(svc.getStatus(), false, stubAccountSource(svc));
   assert.match(rendered.content[0].text, /- \*\*storage\*\*: ready; earlier message files deleted after \d{4}-\d{2}-\d{2}T/);
-  assert.equal(svc.legacyTimer.hasRef(), false, "the daily pass does not keep the process alive");
+  assert.equal(svc.storage.legacyTimer.hasRef(), false, "the daily pass does not keep the process alive");
   await svc.stop();
-  assert.equal(svc.legacyTimer, null);
+  assert.equal(svc.storage.legacyTimer, null);
 });
 
 test("a stopped service's get_status repeats the storage it last reported, not a failure", async (t) => {
@@ -337,7 +337,7 @@ test("an import a stop cut off keeps every legacy file where the next boot resum
   t.mock.method(Date, "now", () => fx.now);
   const first = serviceOn(fx.dataDir);
   const booting = first.bootStorage().catch(() => {});
-  for (let turns = 0; first.accountDb.getMeta("import_state") !== "running"; turns++) {
+  for (let turns = 0; first.storage.accountDb.getMeta("import_state") !== "running"; turns++) {
     assert.ok(turns < 10_000, "the import started");
     await new Promise((resolve) => setImmediate(resolve));
   }
@@ -427,7 +427,7 @@ test("an unverified import's legacy files are moved and kept, whatever the clock
   const fx = await legacyAccount();
   t.mock.method(Date, "now", () => fx.now);
   const first = serviceOn(fx.dataDir);
-  first.accountDb.messages.upsert({ chatJid: ANA, keyId: "STRAY", fromMe: false, ts: fx.T * 1000, type: "text", text: "stray" });
+  first.storage.accountDb.messages.upsert({ chatJid: ANA, keyId: "STRAY", fromMe: false, ts: fx.T * 1000, type: "text", text: "stray" });
   await first.bootStorage();
   assert.equal(first.db.getMeta("import_state"), "imported");
   assert.equal(first.db.getMeta("legacy_keep"), "unverified");
@@ -465,7 +465,7 @@ test("an account not linked at the upgrade imports the beta archive once its num
   // Linked, not restarted yet: the daily pass still keeps an archive this database never imported.
   t.mock.method(Date, "now", () => fx.now + DAY);
   const running = serviceOn(fx.dataDir);
-  running.accountDb.setMeta("import_state", "done");
+  running.storage.accountDb.setMeta("import_state", "done");
   assert.equal(settleBetaArchive(fx.dataDir, fx.now + DAY, true).moved, false);
   await running.stop();
   t.mock.restoreAll();

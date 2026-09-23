@@ -165,7 +165,7 @@ test("find_contact reads what an account stores without a connection, and never 
   assert.deepEqual([offline.status, offline.contact?.chat_id, offline.accounts_unavailable], ["resolved", ANA, undefined]);
 
   // An account whose database cannot answer: the one match elsewhere is only a candidate, to confirm.
-  work.storageState = "preparing";
+  work.storage.storageState = "preparing";
   try {
     const partial = await find({ name: "Ana Pop" });
     const body = partial.structuredContent;
@@ -190,13 +190,13 @@ test("find_contact reads what an account stores without a connection, and never 
     // Named, the account that answers resolves.
     assert.equal((await find({ name: "Ana Pop", account_id: "default" })).structuredContent.status, "resolved");
 
-    home.storageState = "preparing";
+    home.storage.storageState = "preparing";
     const down = await find({ name: "Ana Pop" });
     assert.equal(down.isError, true);
     assert.equal(JSON.parse(down.content[0].text).error, "NOT_CONNECTED");
   } finally {
-    home.storageState = "ready";
-    work.storageState = "ready";
+    home.storage.storageState = "ready";
+    work.storage.storageState = "ready";
   }
   await hub.stop();
 });

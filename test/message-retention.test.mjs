@@ -270,8 +270,8 @@ test("recall stops answering with a deleted message before its file cleanup fini
   const sid = sidOf(raw);
   assert.ok(svc.db.vectors.get(sid));
   const finish = gate();
-  const unlink = svc.unlinkReleased.bind(svc);
-  svc.unlinkReleased = async () => { await finish.promise; return unlink(); };
+  const unlink = svc.storage.unlinkReleased.bind(svc.storage);
+  svc.storage.unlinkReleased = async () => { await finish.promise; return unlink(); };
   remove(sock, raw);
   try {
     const answer = await svc.recall(SECRET, undefined, 10);

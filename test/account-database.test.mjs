@@ -74,7 +74,7 @@ test("an import a stop cut off resumes at the next boot and finishes", async (t)
   const first = serviceOn(fx.dataDir).svc;
   const booting = first.bootStorage().catch(() => {});
   // The import yields to the event loop between chunks: catch it there, mid-way.
-  for (let turns = 0; first.accountDb.getMeta("import_state") !== "running"; turns++) {
+  for (let turns = 0; first.storage.accountDb.getMeta("import_state") !== "running"; turns++) {
     assert.ok(turns < 10_000, "the import started");
     await new Promise((resolve) => setImmediate(resolve));
   }
@@ -104,7 +104,7 @@ async function until(predicate, label) {
 
 /** Waits, a turn of the event loop at a time, until the boot import is under way. */
 async function importRunning(svc) {
-  for (let turns = 0; svc.accountDb.getMeta("import_state") !== "running"; turns++) {
+  for (let turns = 0; svc.storage.accountDb.getMeta("import_state") !== "running"; turns++) {
     assert.ok(turns < 10_000, "the import started");
     await new Promise((resolve) => setImmediate(resolve));
   }
@@ -140,8 +140,8 @@ test("a link completed while the import runs opens the account's socket once the
   // A long import, held open until the phone has accepted the code.
   let release;
   const held = new Promise((resolve) => (release = resolve));
-  const resume = svc.accountDb.resume.bind(svc.accountDb);
-  t.mock.method(svc.accountDb, "resume", async () => {
+  const resume = svc.storage.accountDb.resume.bind(svc.storage.accountDb);
+  t.mock.method(svc.storage.accountDb, "resume", async () => {
     await held;
     return resume();
   });
@@ -171,7 +171,7 @@ test("an import whose verification finds a difference it cannot explain still se
   const { svc } = serviceOn(fx.dataDir);
   t.after(() => svc.stop());
   // A row no legacy file explains, written before the import runs.
-  svc.accountDb.messages.upsert({ chatJid: ANA, keyId: "STRAY", fromMe: false, ts: fx.T * 1000, type: "text", text: "stray" });
+  svc.storage.accountDb.messages.upsert({ chatJid: ANA, keyId: "STRAY", fromMe: false, ts: fx.T * 1000, type: "text", text: "stray" });
   const logged = [];
   t.mock.method(process.stderr, "write", (chunk) => {
     logged.push(String(chunk));
@@ -316,7 +316,7 @@ test("a different number linking sets the previous owner's database aside instea
   };
   link(ME);
   const first = openService(WhatsAppService, offlineConfig("x", { dataDir, persistHistory: true }));
-  first.claimDatabase(ME);
+  first.storage.claimDatabase(ME);
   first.db.messages.upsert({ chatJid: PEER, keyId: "OLD", fromMe: false, ts: Date.now() - 60_000, type: "text", text: "istoria altui număr" });
   await first.stop();
 
@@ -324,7 +324,7 @@ test("a different number linking sets the previous owner's database aside instea
   link(other);
   const { svc } = serviceOn(dataDir);
   t.after(() => svc.stop());
-  svc.claimDatabase(other);
+  svc.storage.claimDatabase(other);
   assert.equal(svc.db.getMeta("owner"), other);
   assert.equal(svc.hasMessage(`false_${PEER}_OLD`), false, "the new number starts empty");
   const aside = fs.readdirSync(storage.root).filter((name) => /^wazap\.\d+\.previous-owner\.sqlite$/.test(name));
