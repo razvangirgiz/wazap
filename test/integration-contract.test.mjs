@@ -1,26 +1,25 @@
 /**
- * Consumer contract: Calfa.
+ * Integration contract: a program built on wazap that runs it as the WhatsApp
+ * channel of the businesses it serves.
  *
- * Calfa runs wazap as the WhatsApp channel of every barber it serves: one
- * `wazap serve --http --host 127.0.0.1 --port 8766` under its own launchd agent,
- * one registry account per tenant slug, a static bearer token (Calfa's
- * WAZAP_TOKEN, equal to wazap's WAZAP_WRITE_TOKEN), `wazap account add` and
- * `wazap logout --account` from its API, and a signed webhook back into
- * `POST /v1/webhooks/wazap`. This file pins what Calfa reads, the way its code
- * reads it:
+ * Such an integration runs one `wazap serve --http --host 127.0.0.1 --port
+ * 8766` under its own supervisor, one registry account per customer slug, a
+ * static bearer token (equal to wazap's WAZAP_WRITE_TOKEN), `wazap account
+ * add` and `wazap logout --account` from its own code, and a signed webhook
+ * back into its API. This file pins what it reads, the way it reads it:
  *
- * - decision 0009 (docs/decisions/0009-wazap-webhook-contract.md): the three
- *   webhook events, their fields, the 2000-character cut and the signature;
- * - the channel client (apps/api/src/channel/wazap-client.ts, cli.ts,
- *   webhook.ts, wire.ts): the MCP handshake and SSE framing, the five tools and
- *   the result fields it parses, the error codes it sorts into "definitely not
- *   sent" and "ambiguous", the session-loss answers it recovers from, and the
- *   two CLI calls.
+ * - the webhook: the three events, their fields, the 2000-character cut and
+ *   the signature;
+ * - the MCP handshake and SSE framing, the five tools and the result fields it
+ *   parses, the error codes it sorts into "definitely not sent" and
+ *   "ambiguous", the session-loss answers it recovers from, and the two CLI
+ *   calls.
  *
- * Changing or removing an assertion here breaks Calfa. It needs a matching
- * Calfa change (code, config or runbook) first. A skipped test states something
- * Calfa expects that wazap does not do today: its skip note names the gap on
- * both sides, and its body is the assertion to turn on once the gap closes.
+ * docs/stability.md promises all of it ("The integration contract"). Changing
+ * or removing an assertion here breaks integrations built on wazap, so it
+ * needs a major version. A skipped test states something an integration
+ * expects that wazap does not do today: its skip note names the gap, and its
+ * body is the assertion to turn on once the gap closes.
  */
 import { after, before, describe, test } from "node:test";
 import assert from "node:assert/strict";
@@ -43,20 +42,20 @@ import { registerTools } from "../dist/tools.js";
 import { readWebhookSettings, WebhookSink } from "../dist/webhook.js";
 import { asToolSource, fakeSocket, offlineConfig, spawnWazap, stubSockets, waitFor } from "./helpers.mjs";
 
-/** A Calfa tenant slug is the wazap account id. */
-const TENANT = "mircea";
-/** The barber's own WhatsApp: the linked account, and the self chat Calfa's Manager listens on. */
+/** An integration's customer slug is the wazap account id. */
+const TENANT = "demo-salon";
+/** The business owner's own WhatsApp: the linked account, and the self chat an owner-facing assistant listens on. */
 const OWNER = "40721000111@s.whatsapp.net";
-/** A client writing to the barber. */
+/** A customer writing to the business. */
 const CLIENT = "40733000111@s.whatsapp.net";
-const READ_TOKEN = "calfa-contract-read-token";
-const WRITE_TOKEN = "calfa-contract-write-token";
-const SECRET = "calfa-contract-webhook-secret";
+const READ_TOKEN = "integration-contract-read-token";
+const WRITE_TOKEN = "integration-contract-write-token";
+const SECRET = "integration-contract-webhook-secret";
 
-/** wazap-client.ts: MCP_PROTOCOL_VERSION and CLIENT_INFO. */
+/** The protocol version and client info the integration initializes with. */
 const MCP_PROTOCOL_VERSION = "2025-06-18";
-const CLIENT_INFO = { name: "calfa", version: "1" };
-/** wazap-client.ts connectionStatusSchema: every get_status value Calfa maps onto wa_status. */
+const CLIENT_INFO = { name: "integration", version: "1" };
+/** Every get_status value the integration maps onto its own connection state. */
 const CONNECTION_STATUSES = [
   "not_linked",
   "linking",
@@ -67,29 +66,29 @@ const CONNECTION_STATUSES = [
   "session_corrupt",
   "auth_failure",
 ];
-/** wazap-client.ts sendText: the confirm_send codes Calfa reads as "definitely not sent, retry later". */
+/** The confirm_send codes the integration reads as "definitely not sent, retry later". */
 const DEFINITELY_UNSENT = ["NOT_CONNECTED", "NOT_LINKED", "SESSION_EXPIRED", "SESSION_CORRUPT", "RATE_LIMITED", "DRAFT_EXPIRED"];
-/** The arguments Calfa passes to each tool it calls, and nothing else. */
-const CALFA_CALLS = {
+/** The arguments the integration passes to each tool it calls, and nothing else. */
+const INTEGRATION_CALLS = {
   send_message: ["chat_id", "text", "account_id"],
   confirm_send: ["draft_id", "account_id"],
   manage_chat: ["chat_id", "action", "account_id"],
   link_account: ["phone", "account_id"],
   get_status: ["account_id"],
 };
-/** engine/time.ts INSTANT_PATTERN: what Calfa's parseInstant accepts. */
-const CALFA_INSTANT = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2}(?:\.\d{1,9})?)?(?:Z|[+-]\d{2}:\d{2})$/;
-/** wire.ts DIRECT_CHAT_PATTERN: a chat Calfa derives a client phone from. */
+/** An instant the integration parses: ISO 8601 with seconds optional and an offset or Z. */
+const INSTANT = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2}(?:\.\d{1,9})?)?(?:Z|[+-]\d{2}:\d{2})$/;
+/** A direct chat, which the integration derives a customer's phone from. */
 const DIRECT_CHAT = /^(\d{8,15})@s\.whatsapp\.net$/;
-/** The events Calfa routes on (decision 0009); wazap posts the last two only when asked. */
-const CALFA_EVENTS = "message_received,message_sent,connection";
+/** The events the integration routes on; wazap posts the last two only when asked. */
+const INTEGRATION_EVENTS = "message_received,message_sent,connection";
 const WEBHOOK_ENV = ["WAZAP_WEBHOOK", "WAZAP_WEBHOOK_URL", "WAZAP_WEBHOOK_SECRET", "WAZAP_WEBHOOK_EVENTS", "WAZAP_TRANSCRIBE"];
 
 // ---------------------------------------------------------------------------
-// Calfa's side of the wire, reduced to what wazap has to satisfy.
+// The integration's side of the wire, reduced to what wazap has to satisfy.
 // ---------------------------------------------------------------------------
 
-/** wazap-client.ts `post`: JSON that accepts SSE, the bearer token, the session id once there is one. */
+/** A POST as the integration sends it: JSON that accepts SSE, the bearer token, the session id once there is one. */
 function postAs(url, { token, session }, body) {
   const headers = { "content-type": "application/json", accept: "application/json, text/event-stream" };
   if (token !== undefined) headers.authorization = `Bearer ${token}`;
@@ -97,10 +96,10 @@ function postAs(url, { token, session }, body) {
   return fetch(url, { method: "POST", headers, body: JSON.stringify(body), signal: AbortSignal.timeout(10_000) });
 }
 
-/** wazap-client.ts `dataOf`: the first SSE `data:` line is the JSON-RPC envelope, and without one Calfa gives up. */
+/** The first SSE `data:` line is the JSON-RPC envelope, and without one the integration gives up. */
 function sseData(body) {
   const line = body.split("\n").find((candidate) => candidate.startsWith("data:"));
-  assert.ok(line !== undefined, `Calfa reads the first SSE data line and there is none: ${body.slice(0, 300)}`);
+  assert.ok(line !== undefined, `the integration reads the first SSE data line and there is none: ${body.slice(0, 300)}`);
   return JSON.parse(line.slice("data:".length).trim());
 }
 
@@ -108,8 +107,8 @@ function toolsCall(id, name, args) {
   return { jsonrpc: "2.0", id, method: "tools/call", params: { name, arguments: args } };
 }
 
-/** wazap-client.ts createTransport: initialize, echo the session id, then tools/call. */
-function calfaClient(url, token) {
+/** The integration's transport: initialize, echo the session id, then tools/call. */
+function integrationClient(url, token) {
   let session;
   let nextId = 0;
   const post = (body) => postAs(url, { token, session }, body);
@@ -130,10 +129,10 @@ function calfaClient(url, token) {
       const text = await response.text();
       assert.equal(response.status, 200, `initialize answered HTTP ${response.status}: ${text}`);
       const id = response.headers.get("mcp-session-id");
-      assert.ok(id, "Calfa refuses an initialize that carries no mcp-session-id");
+      assert.ok(id, "the integration refuses an initialize that carries no mcp-session-id");
       const envelope = sseData(text);
       assert.equal(envelope.error, undefined, JSON.stringify(envelope.error));
-      assert.ok(envelope.result, "Calfa refuses an initialize without a result");
+      assert.ok(envelope.result, "the integration refuses an initialize without a result");
       session = id;
       const initialized = await post({ jsonrpc: "2.0", method: "notifications/initialized" });
       await initialized.body?.cancel();
@@ -145,8 +144,8 @@ function calfaClient(url, token) {
       const text = await response.text();
       assert.ok(response.ok, `tools/call ${name} answered HTTP ${response.status}: ${text}`);
       const envelope = sseData(text);
-      assert.equal(envelope.error, undefined, `Calfa reads a JSON-RPC error as a transport failure: ${text}`);
-      assert.ok(envelope.result, `Calfa refuses an answer without a result: ${text}`);
+      assert.equal(envelope.error, undefined, `the integration reads a JSON-RPC error as a transport failure: ${text}`);
+      assert.ok(envelope.result, `the integration refuses an answer without a result: ${text}`);
       return envelope.result;
     },
   };
@@ -160,11 +159,11 @@ function nonEmpty(value, label) {
 /** The structuredContent of a call that worked. */
 function answer(result, name) {
   assert.notEqual(result.isError, true, `${name} failed: ${JSON.stringify(result.structuredContent ?? result.content)}`);
-  assert.ok(result.structuredContent, `Calfa parses structuredContent and ${name} has none`);
+  assert.ok(result.structuredContent, `the integration parses structuredContent and ${name} has none`);
   return result.structuredContent;
 }
 
-/** wazap-client.ts toolErrorSchema: `isError` with `{ error, message, fix? }`. Returns the code. */
+/** A refusal as the integration parses it: `isError` with `{ error, message, fix? }`. Returns the code. */
 function refusal(result) {
   assert.equal(result.isError, true, `expected a tool error, got ${JSON.stringify(result.structuredContent)}`);
   const body = result.structuredContent;
@@ -222,7 +221,7 @@ function scopedEnv(t, values) {
 
 /** What `serve` builds: a registry holding the tenant's account, and a hub over every enabled account. */
 function tenantHub(t, overrides = {}) {
-  const config = offlineConfig("wazap-calfa-", { readOnly: false, ...overrides });
+  const config = offlineConfig("wazap-integration-", { readOnly: false, ...overrides });
   AccountRegistry.load(config.dataDir).add(TENANT);
   const hub = new AccountHub(config, AccountRegistry.load(config.dataDir));
   const svc = hub.get(TENANT);
@@ -243,7 +242,7 @@ function openSocket(svc) {
   const sock = fakeSocket();
   svc.sockClient = sock;
   svc.wireEvents(sock, ++svc.generation);
-  svc.account = { id: OWNER, name: "Mircea", number: OWNER.split("@")[0] };
+  svc.account = { id: OWNER, name: "Ana", number: OWNER.split("@")[0] };
   svc.status = "connected";
   svc.initialSyncDone = true;
   const sent = [];
@@ -293,8 +292,8 @@ const closedWith = (statusCode) => ({
   lastDisconnect: { error: { message: "Connection Terminated", output: { statusCode } } },
 });
 
-/** Calfa's webhook route: keeps the raw bytes it verifies, and answers 204 to everything. */
-async function calfaWebhook(t) {
+/** The integration's webhook route: keeps the raw bytes it verifies, and answers 204 to everything. */
+async function integrationWebhook(t) {
   const hits = [];
   const server = createServer((req, res) => {
     const chunks = [];
@@ -308,11 +307,11 @@ async function calfaWebhook(t) {
   });
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
   t.after(() => new Promise((resolve) => server.close(resolve)));
-  return { url: `http://127.0.0.1:${server.address().port}/v1/webhooks/wazap`, hits };
+  return { url: `http://127.0.0.1:${server.address().port}/hooks/whatsapp`, hits };
 }
 
-/** webhook.ts `signed`: HMAC-SHA256 of the raw request bytes, compared timing-safe against the header. */
-function calfaVerifies(hit, secret = SECRET) {
+/** The receiver's check: HMAC-SHA256 of the raw request bytes, compared timing-safe against the header. */
+function receiverVerifies(hit, secret = SECRET) {
   const header = hit.headers["x-wazap-signature"];
   if (typeof header !== "string") return false;
   const expected = Buffer.from(`sha256=${createHmac("sha256", secret).update(hit.raw).digest("hex")}`);
@@ -322,14 +321,14 @@ function calfaVerifies(hit, secret = SECRET) {
 
 function assertUtcTimestamp(value, label = "timestamp") {
   nonEmpty(value, label);
-  assert.match(value, CALFA_INSTANT, `${label} must parse as a Calfa instant`);
+  assert.match(value, INSTANT, `${label} must parse as an instant the integration accepts`);
   assert.equal(new Date(value).toISOString(), value, `${label} must be ISO 8601 in UTC`);
 }
 
-/** wire.ts messageEventSchema, with the fields decision 0009 made part of every message event. */
+/** The fields every message event carries. */
 function assertMessageEvent(hit) {
   const body = hit.body;
-  assert.ok(calfaVerifies(hit), "Calfa answers 401 to a body its secret does not sign");
+  assert.ok(receiverVerifies(hit), "the integration answers 401 to a body its secret does not sign");
   assert.ok(["message_received", "message_sent"].includes(body.event), body.event);
   for (const key of ["account_id", "chat_id", "from", "message_id", "account_name"]) nonEmpty(body[key], key);
   assert.equal(typeof body.text, "string");
@@ -346,10 +345,10 @@ function assertMessageEvent(hit) {
   return body;
 }
 
-/** wire.ts connectionEventSchema. */
+/** The fields every connection event carries. */
 function assertConnectionEvent(hit) {
   const body = hit.body;
-  assert.ok(calfaVerifies(hit), "Calfa answers 401 to a body its secret does not sign");
+  assert.ok(receiverVerifies(hit), "the integration answers 401 to a body its secret does not sign");
   assert.equal(body.event, "connection");
   nonEmpty(body.account_id, "account_id");
   assert.ok(["linked", "disconnected", "expired"].includes(body.status), `status ${body.status}`);
@@ -358,16 +357,16 @@ function assertConnectionEvent(hit) {
 }
 
 // ---------------------------------------------------------------------------
-// 1. MCP over HTTP, against the binary started the way Calfa's launchd agent starts it.
+// 1. MCP over HTTP, against the binary started the way the integration's supervisor starts it.
 // ---------------------------------------------------------------------------
 
-describe("Calfa MCP transport: `wazap serve --http` with WAZAP_READ_TOKEN and WAZAP_WRITE_TOKEN", () => {
+describe("Integration MCP transport: `wazap serve --http` with WAZAP_READ_TOKEN and WAZAP_WRITE_TOKEN", () => {
   let dataDir;
   let server;
   let url;
 
   before(async () => {
-    dataDir = mkdtempSync(join(tmpdir(), "wazap-calfa-serve-"));
+    dataDir = mkdtempSync(join(tmpdir(), "wazap-integration-serve-"));
     const added = await cli(dataDir, ["account", "add", TENANT]);
     assert.equal(added.code, 0, added.stderr);
     const port = await freePort();
@@ -395,66 +394,66 @@ describe("Calfa MCP transport: `wazap serve --http` with WAZAP_READ_TOKEN and WA
   });
 
   test("initialize with the write token answers a session id and an SSE result; notifications/initialized is accepted", async () => {
-    const client = calfaClient(url, WRITE_TOKEN);
+    const client = integrationClient(url, WRITE_TOKEN);
     await client.initialize();
     nonEmpty(client.session, "mcp-session-id");
   });
 
-  test("the write token's session has the five tools Calfa calls, and none requires an argument Calfa does not pass", async () => {
-    const client = calfaClient(url, WRITE_TOKEN);
+  test("the write token's session has the five tools the integration calls, and none requires an argument the integration does not pass", async () => {
+    const client = integrationClient(url, WRITE_TOKEN);
     await client.initialize();
     const response = await client.post({ jsonrpc: "2.0", id: client.nextId(), method: "tools/list" });
     assert.equal(response.status, 200);
     const { tools } = sseData(await response.text()).result;
-    for (const [name, args] of Object.entries(CALFA_CALLS)) {
+    for (const [name, args] of Object.entries(INTEGRATION_CALLS)) {
       const listed = tools.find((tool) => tool.name === name);
       assert.ok(listed, `${name} is missing from a write-token session`);
       const properties = listed.inputSchema?.properties ?? {};
       for (const arg of args) assert.ok(arg in properties, `${name} no longer takes ${arg}`);
       for (const required of listed.inputSchema?.required ?? []) {
-        assert.ok(args.includes(required), `${name} now requires ${required}, which Calfa never sends`);
+        assert.ok(args.includes(required), `${name} now requires ${required}, which the integration never sends`);
       }
     }
     const manage = tools.find((tool) => tool.name === "manage_chat");
     assert.ok(manage.inputSchema.properties.action.enum.includes("mark_read"), "manage_chat lost mark_read");
   });
 
-  test("get_status for the tenant answers a status from Calfa's eight, with status_since and the account_id", async () => {
-    const client = calfaClient(url, WRITE_TOKEN);
+  test("get_status for the tenant answers a status from the integration's eight, with status_since and the account_id", async () => {
+    const client = integrationClient(url, WRITE_TOKEN);
     await client.initialize();
     const status = answer(await client.tool("get_status", { account_id: TENANT }), "get_status");
-    assert.ok(CONNECTION_STATUSES.includes(status.status), `Calfa's schema refuses status ${status.status}`);
-    assert.equal(status.status, "not_linked", "an account that never linked is not_linked (wa_status none)");
+    assert.ok(CONNECTION_STATUSES.includes(status.status), `the integration's schema refuses status ${status.status}`);
+    assert.equal(status.status, "not_linked", "an account that never linked is not_linked");
     nonEmpty(status.status_since, "status_since");
     assert.equal(status.account_id, TENANT);
   });
 
   test("a refused call is isError with structuredContent { error, message, fix }, including an unknown tenant", async () => {
-    const client = calfaClient(url, WRITE_TOKEN);
+    const client = integrationClient(url, WRITE_TOKEN);
     await client.initialize();
     const draft = await client.tool("send_message", { chat_id: CLIENT, text: "salut", account_id: TENANT });
     const code = refusal(draft);
     assert.equal(code, "NOT_LINKED");
-    assert.ok(DEFINITELY_UNSENT.includes(code), "Calfa retries a NOT_LINKED draft later");
+    assert.ok(DEFINITELY_UNSENT.includes(code), "the integration retries a NOT_LINKED draft later");
     assert.equal(
       refusal(await client.tool("manage_chat", { chat_id: CLIENT, action: "mark_read", account_id: TENANT })),
       "NOT_LINKED"
     );
-    // Calfa's operator probe counts any tool error as wazap answering (operator/loop.ts).
+    // The integration's health probe counts any tool error as wazap answering.
     assert.equal(refusal(await client.tool("get_status", { account_id: "ghost-tenant" })), "ACCOUNT_NOT_FOUND");
   });
 
   test("a read-token session has no send tools, and calling one is isError with only a text block", async () => {
-    const client = calfaClient(url, READ_TOKEN);
+    const client = integrationClient(url, READ_TOKEN);
     await client.initialize();
     const result = await client.tool("send_message", { chat_id: CLIENT, text: "salut", account_id: TENANT });
     assert.equal(result.isError, true);
-    assert.equal(typeof result.structuredContent?.error, "undefined", "Calfa reads this form as TOOL_FAILED");
+    assert.equal(typeof result.structuredContent?.error, "undefined", "the integration reads this form as TOOL_FAILED");
     assert.match(result.content?.[0]?.text ?? "", /send_message/);
   });
 
-  test("a token wazap does not hold is 401, which Calfa does not mistake for a lost session", async () => {
-    const client = calfaClient(url, WRITE_TOKEN);
+  test("a token wazap does not hold is 401, which the integration does not mistake for a lost session", async () => {
+    const client = integrationClient(url, WRITE_TOKEN);
     await client.initialize();
     const response = await postAs(
       url,
@@ -467,7 +466,7 @@ describe("Calfa MCP transport: `wazap serve --http` with WAZAP_READ_TOKEN and WA
   });
 
   test("a lost session is 404 `Session not found`, no session is 400 `send initialize first`, and initialize recovers", async () => {
-    const client = calfaClient(url, WRITE_TOKEN);
+    const client = integrationClient(url, WRITE_TOKEN);
     await client.initialize();
     const call = toolsCall(1, "get_status", { account_id: TENANT });
 
@@ -484,10 +483,10 @@ describe("Calfa MCP transport: `wazap serve --http` with WAZAP_READ_TOKEN and WA
   });
 
   test("an account added with `wazap account add` while serve runs can be linked without a restart", async () => {
-    // Calfa's POST /whatsapp/link runs `account add` and then link_account in one request (apps/api/src/http/whatsapp.ts).
+    // Linking runs `account add` and then link_account in one request.
     const added = await cli(dataDir, ["account", "add", "late-tenant"]);
     assert.equal(added.code, 0, added.stderr);
-    const client = calfaClient(url, WRITE_TOKEN);
+    const client = integrationClient(url, WRITE_TOKEN);
     await client.initialize();
     // A malformed phone is refused before any socket opens, but only once the account resolved.
     const result = await client.tool("link_account", { phone: "not-a-phone", account_id: "late-tenant" });
@@ -495,7 +494,7 @@ describe("Calfa MCP transport: `wazap serve --http` with WAZAP_READ_TOKEN and WA
   });
 
   test("`wazap logout --account <slug>` succeeds while serve holds the data dir", async () => {
-    // Calfa runs serve under its own launchd label and calls logout from DELETE /whatsapp (channel/cli.ts).
+    // The integration runs serve under its own supervisor and calls logout when a customer unlinks.
     const out = await cli(dataDir, ["logout", "--account", TENANT]);
     assert.equal(out.code, 0, out.stderr);
   });
@@ -505,11 +504,11 @@ describe("Calfa MCP transport: `wazap serve --http` with WAZAP_READ_TOKEN and WA
 // 2. The CLI, in a throwaway data dir with no server running.
 // ---------------------------------------------------------------------------
 
-describe("Calfa CLI calls: `account add` and `logout --account` (channel/cli.ts)", () => {
+describe("Integration CLI calls: `account add` and `logout --account`", () => {
   let dataDir;
 
   before(() => {
-    dataDir = mkdtempSync(join(tmpdir(), "wazap-calfa-cli-"));
+    dataDir = mkdtempSync(join(tmpdir(), "wazap-integration-cli-"));
   });
 
   after(() => {
@@ -520,14 +519,14 @@ describe("Calfa CLI calls: `account add` and `logout --account` (channel/cli.ts)
     const first = await cli(dataDir, ["account", "add", TENANT]);
     assert.equal(first.code, 0, first.stderr);
     const again = await cli(dataDir, ["account", "add", TENANT]);
-    assert.notEqual(again.code, 0, "Calfa only tolerates a repeated add by its stderr");
+    assert.notEqual(again.code, 0, "the integration only tolerates a repeated add by its stderr");
     assert.match(again.stderr, /already exists/);
   });
 
-  test("every slug Calfa mints (accounts/tenants.ts freeSlug) is an account id wazap accepts", async () => {
+  test("every slug the integration mints is an account id wazap accepts", async () => {
     const longest = `${"a".repeat(27)}-1000`;
     assert.equal(longest.length, 32);
-    for (const slug of ["abc", "123", "frizer", "salon-ana-2", longest]) assert.equal(parseAccountId(slug), slug);
+    for (const slug of ["abc", "123", "salon", "salon-ana-2", longest]) assert.equal(parseAccountId(slug), slug);
     const added = await cli(dataDir, ["account", "add", longest]);
     assert.equal(added.code, 0, added.stderr);
   });
@@ -545,10 +544,10 @@ describe("Calfa CLI calls: `account add` and `logout --account` (channel/cli.ts)
 });
 
 // ---------------------------------------------------------------------------
-// 3. The tools on a live account, through the real HTTP endpoint and Calfa's transport.
+// 3. The tools on a live account, through the real HTTP endpoint and the integration's transport.
 // ---------------------------------------------------------------------------
 
-describe("Calfa tool calls on a linked tenant (wazap-client.ts)", () => {
+describe("Integration tool calls on a linked tenant", () => {
   async function live(t, overrides) {
     // No webhook: a developer shell's WAZAP_WEBHOOK must not receive these messages.
     scopedEnv(t, {});
@@ -560,9 +559,9 @@ describe("Calfa tool calls on a linked tenant (wazap-client.ts)", () => {
     return { svc, ...socket, url };
   }
 
-  test("send_message drafts, confirm_send sends once, and each answers the fields Calfa parses", async (t) => {
+  test("send_message drafts, confirm_send sends once, and each answers the fields the integration parses", async (t) => {
     const f = await live(t);
-    const client = calfaClient(f.url, WRITE_TOKEN);
+    const client = integrationClient(f.url, WRITE_TOKEN);
     await client.initialize();
     const text = "Da, mâine la 10:00.";
 
@@ -578,7 +577,7 @@ describe("Calfa tool calls on a linked tenant (wazap-client.ts)", () => {
     for (const key of ["message_id", "chat_id", "text", "timestamp"]) nonEmpty(confirmed[key], key);
     assert.equal(confirmed.chat_id, CLIENT);
     assert.equal(confirmed.text, text);
-    assert.match(confirmed.timestamp, CALFA_INSTANT);
+    assert.match(confirmed.timestamp, INSTANT);
     assert.equal(confirmed.message_id, `true_${CLIENT}_${f.sent[0].messageId}`, "the id the webhook would use for the same message");
     assert.equal(confirmed.account_id, TENANT);
     assert.equal(f.sent.length, 1);
@@ -587,11 +586,11 @@ describe("Calfa tool calls on a linked tenant (wazap-client.ts)", () => {
   });
 
   test("a confirmed draft is spent: confirm_send again in the same session answers the same receipt and sends nothing", async (t) => {
-    // Calfa never confirms a draft twice in one session: sendText confirms once, and its
+    // The integration never confirms a draft twice in one session: it confirms once, and its
     // transport retries confirm_send only after the session is gone. A receipt it did read
-    // would parse as the same SentText, with the same message_id.
+    // would be the same receipt, with the same message_id.
     const f = await live(t);
-    const client = calfaClient(f.url, WRITE_TOKEN);
+    const client = integrationClient(f.url, WRITE_TOKEN);
     await client.initialize();
     const draft = answer(await client.tool("send_message", { chat_id: CLIENT, text: "salut", account_id: TENANT }), "draft");
     const args = { draft_id: draft.draft_id, account_id: TENANT };
@@ -602,9 +601,9 @@ describe("Calfa tool calls on a linked tenant (wazap-client.ts)", () => {
     assert.equal(f.sent.length, 1);
   });
 
-  test("after Calfa re-initializes, confirm_send of the old session's draft is DRAFT_NOT_FOUND and sends nothing", async (t) => {
+  test("after the integration re-initializes, confirm_send of the old session's draft is DRAFT_NOT_FOUND and sends nothing", async (t) => {
     const f = await live(t);
-    const client = calfaClient(f.url, WRITE_TOKEN);
+    const client = integrationClient(f.url, WRITE_TOKEN);
     await client.initialize();
     const draft = answer(await client.tool("send_message", { chat_id: CLIENT, text: "salut", account_id: TENANT }), "draft");
     await client.initialize();
@@ -615,14 +614,14 @@ describe("Calfa tool calls on a linked tenant (wazap-client.ts)", () => {
 
   test("confirm_send on a socket that is not usable answers a definitely-unsent code, sends nothing and keeps the draft", async (t) => {
     const f = await live(t);
-    const client = calfaClient(f.url, WRITE_TOKEN);
+    const client = integrationClient(f.url, WRITE_TOKEN);
     await client.initialize();
     const draft = answer(await client.tool("send_message", { chat_id: CLIENT, text: "salut", account_id: TENANT }), "draft");
     const args = { draft_id: draft.draft_id, account_id: TENANT };
     for (const status of CONNECTION_STATUSES.filter((value) => value !== "connected")) {
       f.svc.status = status;
       const code = refusal(await client.tool("confirm_send", args));
-      assert.ok(DEFINITELY_UNSENT.includes(code), `a ${status} socket answered ${code}, which Calfa reads as ambiguous`);
+      assert.ok(DEFINITELY_UNSENT.includes(code), `a ${status} socket answered ${code}, which the integration reads as ambiguous`);
       assert.equal(f.sent.length, 0, `a ${status} socket must not send`);
     }
     f.svc.status = "connected";
@@ -630,9 +629,9 @@ describe("Calfa tool calls on a linked tenant (wazap-client.ts)", () => {
     assert.equal(f.sent.length, 1);
   });
 
-  test("a send that fails once handed to the socket is SEND_OUTCOME_UNKNOWN, which Calfa files as ambiguous, and is never sent again", async (t) => {
+  test("a send that fails once handed to the socket is SEND_OUTCOME_UNKNOWN, which the integration files as ambiguous, and is never sent again", async (t) => {
     const f = await live(t);
-    const client = calfaClient(f.url, WRITE_TOKEN);
+    const client = integrationClient(f.url, WRITE_TOKEN);
     await client.initialize();
     const draft = answer(await client.tool("send_message", { chat_id: CLIENT, text: "salut", account_id: TENANT }), "draft");
     const args = { draft_id: draft.draft_id, account_id: TENANT };
@@ -644,7 +643,7 @@ describe("Calfa tool calls on a linked tenant (wazap-client.ts)", () => {
     };
     const code = refusal(await client.tool("confirm_send", args));
     assert.equal(code, "SEND_OUTCOME_UNKNOWN");
-    assert.ok(!DEFINITELY_UNSENT.includes(code), "Calfa must record it as unknown and never retry it");
+    assert.ok(!DEFINITELY_UNSENT.includes(code), "the integration must record it as unknown and never retry it");
     f.sock.relayMessage = answers;
     assert.equal(refusal(await client.tool("confirm_send", args)), "SEND_OUTCOME_UNKNOWN");
     assert.equal(attempts, 1);
@@ -653,7 +652,7 @@ describe("Calfa tool calls on a linked tenant (wazap-client.ts)", () => {
 
   test("a stop while the send is with WhatsApp never answers a definitely-unsent code", async (t) => {
     const f = await live(t);
-    const client = calfaClient(f.url, WRITE_TOKEN);
+    const client = integrationClient(f.url, WRITE_TOKEN);
     await client.initialize();
     const draft = answer(await client.tool("send_message", { chat_id: CLIENT, text: "salut", account_id: TENANT }), "draft");
     let handed = false;
@@ -667,13 +666,13 @@ describe("Calfa tool calls on a linked tenant (wazap-client.ts)", () => {
     await f.svc.stop();
     fail(new Error("Connection Closed"));
     const code = refusal(await pending);
-    assert.ok(!DEFINITELY_UNSENT.includes(code), `${code} would make Calfa draft the message again`);
+    assert.ok(!DEFINITELY_UNSENT.includes(code), `${code} would make the integration draft the message again`);
     assert.equal(code, "SEND_OUTCOME_UNKNOWN");
   });
 
   test("a number lookup WhatsApp does not answer refuses the draft with NOT_CONNECTED, never NOT_ON_WHATSAPP", async (t) => {
     const f = await live(t);
-    const client = calfaClient(f.url, WRITE_TOKEN);
+    const client = integrationClient(f.url, WRITE_TOKEN);
     await client.initialize();
     f.sock.onWhatsApp = async () => {
       throw new Error("Timed Out");
@@ -681,13 +680,13 @@ describe("Calfa tool calls on a linked tenant (wazap-client.ts)", () => {
     const stranger = "40733000999@s.whatsapp.net";
     const code = refusal(await client.tool("send_message", { chat_id: stranger, text: "salut", account_id: TENANT }));
     assert.equal(code, "NOT_CONNECTED");
-    assert.ok(DEFINITELY_UNSENT.includes(code), "Calfa retries it later instead of failing the message for good");
+    assert.ok(DEFINITELY_UNSENT.includes(code), "the integration retries it later instead of failing the message for good");
     assert.equal(f.sent.length, 0);
   });
 
   test("the account's write budget refuses with RATE_LIMITED before anything is sent", async (t) => {
     const f = await live(t, { rateLimitPerMinute: 1 });
-    const client = calfaClient(f.url, WRITE_TOKEN);
+    const client = integrationClient(f.url, WRITE_TOKEN);
     await client.initialize();
     for (const text of ["unu", "doi"]) {
       const draft = answer(await client.tool("send_message", { chat_id: CLIENT, text, account_id: TENANT }), "draft");
@@ -703,7 +702,7 @@ describe("Calfa tool calls on a linked tenant (wazap-client.ts)", () => {
     const f = await live(t);
     let now = Date.now();
     f.svc.drafts = new DraftStore(() => now);
-    const client = calfaClient(f.url, WRITE_TOKEN);
+    const client = integrationClient(f.url, WRITE_TOKEN);
     await client.initialize();
     const draft = answer(await client.tool("send_message", { chat_id: CLIENT, text: "salut", account_id: TENANT }), "draft");
     now += 16 * 60_000;
@@ -713,14 +712,14 @@ describe("Calfa tool calls on a linked tenant (wazap-client.ts)", () => {
 
   test("manage_chat mark_read answers { chat_id, action: mark_read, applied } and sends the read receipt", async (t) => {
     const f = await live(t);
-    const client = calfaClient(f.url, WRITE_TOKEN);
+    const client = integrationClient(f.url, WRITE_TOKEN);
     await client.initialize();
     const applied = answer(
       await client.tool("manage_chat", { chat_id: CLIENT, action: "mark_read", account_id: TENANT }),
       "manage_chat"
     );
     assert.equal(applied.chat_id, CLIENT);
-    assert.equal(applied.action, "mark_read", "Calfa refuses a result whose action is not the one it asked for");
+    assert.equal(applied.action, "mark_read", "the integration refuses a result whose action is not the one it asked for");
     nonEmpty(applied.applied, "applied");
     assert.deepEqual(
       f.receipts.map((key) => key.id),
@@ -728,15 +727,15 @@ describe("Calfa tool calls on a linked tenant (wazap-client.ts)", () => {
     );
   });
 
-  test("get_status follows the socket through connected, disconnected and logged_out, all in Calfa's eight", async (t) => {
+  test("get_status follows the socket through connected, disconnected and logged_out, all in the integration's eight", async (t) => {
     const f = await live(t);
     // A disconnect schedules a reconnect; this one must not open a real socket.
     f.svc.start = async () => {};
-    const client = calfaClient(f.url, WRITE_TOKEN);
+    const client = integrationClient(f.url, WRITE_TOKEN);
     await client.initialize();
     const status = async () => {
       const body = answer(await client.tool("get_status", { account_id: TENANT }), "get_status");
-      assert.ok(CONNECTION_STATUSES.includes(body.status), `Calfa's schema refuses status ${body.status}`);
+      assert.ok(CONNECTION_STATUSES.includes(body.status), `the integration's schema refuses status ${body.status}`);
       nonEmpty(body.status_since, "status_since");
       return body.status;
     };
@@ -755,28 +754,28 @@ describe("Calfa tool calls on a linked tenant (wazap-client.ts)", () => {
 // 4. Pairing: link_account, then the phone enters the code.
 // ---------------------------------------------------------------------------
 
-describe("Calfa pairing: link_account → linking → connection linked (http/whatsapp.ts)", () => {
+describe("Integration pairing: link_account → linking → connection linked", () => {
   /**
    * One test on purpose: link_account has a process-wide budget of two calls a
    * minute, and the third call is itself part of the contract.
    */
   test("connecting, not_linked, the code and its expiry, linking, the linked webhook, ALREADY_LINKED, RATE_LIMITED", async (t) => {
-    const hook = await calfaWebhook(t);
+    const hook = await integrationWebhook(t);
     scopedEnv(t, {
       WAZAP_WEBHOOK: "on",
       WAZAP_WEBHOOK_URL: hook.url,
       WAZAP_WEBHOOK_SECRET: SECRET,
-      WAZAP_WEBHOOK_EVENTS: CALFA_EVENTS,
+      WAZAP_WEBHOOK_EVENTS: INTEGRATION_EVENTS,
     });
     const { config, hub, svc } = tenantHub(t);
     const url = await tenantEndpoint(t, hub, config);
-    const client = calfaClient(url, WRITE_TOKEN);
+    const client = integrationClient(url, WRITE_TOKEN);
     await client.initialize();
     const status = async () => answer(await client.tool("get_status", { account_id: TENANT }), "get_status").status;
 
-    assert.equal(await status(), "connecting", "a service that has not started yet (wa_status pairing)");
+    assert.equal(await status(), "connecting", "a service that has not started yet");
     await svc.start();
-    assert.equal(await status(), "not_linked", "no credentials (wa_status none)");
+    assert.equal(await status(), "not_linked", "no credentials");
 
     // The socket the service opens once the pairing lands.
     svc.start = async () => {
@@ -785,7 +784,7 @@ describe("Calfa pairing: link_account → linking → connection linked (http/wh
       svc.wireEvents(sock, ++svc.generation);
       sock.ev.emit("connection.update", { connection: "open" });
     };
-    const phoneSide = fakeSocket({ pairingCode: "K7PX3MQZ", user: { id: "40721000111:12@s.whatsapp.net", name: "Mircea" } });
+    const phoneSide = fakeSocket({ pairingCode: "K7PX3MQZ", user: { id: "40721000111:12@s.whatsapp.net", name: "Ana" } });
     const pairing = stubSockets(socketFactory, [phoneSide]);
     t.after(() => {
       if (!phoneSide.ended) phoneSide.end();
@@ -797,7 +796,7 @@ describe("Calfa pairing: link_account → linking → connection linked (http/wh
     const code = answer(await linking, "link_account");
     nonEmpty(code.code, "code");
     nonEmpty(code.phone_masked, "phone_masked");
-    assert.match(code.expires_at, CALFA_INSTANT, "Calfa's parseInstant must accept expires_at");
+    assert.match(code.expires_at, INSTANT, "the integration's instant parser must accept expires_at");
     assert.ok(Date.parse(code.expires_at) > Date.now(), "a fresh code expires in the future");
     assert.equal(code.account_id, TENANT);
 
@@ -818,17 +817,17 @@ describe("Calfa pairing: link_account → linking → connection linked (http/wh
 });
 
 // ---------------------------------------------------------------------------
-// 5. The webhook, per decision 0009.
+// 5. The webhook.
 // ---------------------------------------------------------------------------
 
-describe("Calfa webhook: decision 0009 as webhook.ts and wire.ts parse it", () => {
+describe("Integration webhook: the events and fields it parses", () => {
   async function hooked(t) {
-    const hook = await calfaWebhook(t);
+    const hook = await integrationWebhook(t);
     scopedEnv(t, {
       WAZAP_WEBHOOK: "on",
       WAZAP_WEBHOOK_URL: hook.url,
       WAZAP_WEBHOOK_SECRET: SECRET,
-      WAZAP_WEBHOOK_EVENTS: CALFA_EVENTS,
+      WAZAP_WEBHOOK_EVENTS: INTEGRATION_EVENTS,
     });
     const { hub, svc } = tenantHub(t);
     return { hook, hub, svc };
@@ -840,14 +839,14 @@ describe("Calfa webhook: decision 0009 as webhook.ts and wire.ts parse it", () =
     await sleep(100);
   }
 
-  test("Calfa's wazap has to opt in to message_sent and connection; a loopback http URL is accepted", () => {
-    const url = "http://127.0.0.1:3001/v1/webhooks/wazap";
+  test("an integration's wazap has to opt in to message_sent and connection; a loopback http URL is accepted", () => {
+    const url = "http://127.0.0.1:8080/hooks/whatsapp";
     const base = { WAZAP_WEBHOOK: "on", WAZAP_WEBHOOK_URL: url, WAZAP_WEBHOOK_SECRET: SECRET };
     const unset = readWebhookSettings(base);
     assert.equal(unset.kind, "ready");
     assert.equal(unset.url, url);
     assert.deepEqual(unset.events, ["message_received"], "unset is message_received only");
-    for (const events of [CALFA_EVENTS, "all"]) {
+    for (const events of [INTEGRATION_EVENTS, "all"]) {
       assert.deepEqual(readWebhookSettings({ ...base, WAZAP_WEBHOOK_EVENTS: events }).events, [
         "message_received",
         "message_sent",
@@ -856,7 +855,7 @@ describe("Calfa webhook: decision 0009 as webhook.ts and wire.ts parse it", () =
     }
   });
 
-  test("message_received carries every field Calfa parses, signed over the raw bytes with the secret", async (t) => {
+  test("message_received carries every field the integration parses, signed over the raw bytes with the secret", async (t) => {
     const { hook, svc } = await hooked(t);
     const { sock } = openSocket(svc);
     const at = Date.parse("2026-09-16T08:30:05.000Z");
@@ -871,7 +870,7 @@ describe("Calfa webhook: decision 0009 as webhook.ts and wire.ts parse it", () =
     assert.equal(body.event, "message_received");
     assert.equal(body.account_id, TENANT);
     assert.equal(body.chat_id, CLIENT);
-    assert.match(body.chat_id, DIRECT_CHAT, "Calfa derives the client's phone from a direct chat id");
+    assert.match(body.chat_id, DIRECT_CHAT, "the integration derives the customer's phone from a direct chat id");
     assert.equal(body.message_id, `false_${CLIENT}_CLIENT1`);
     assert.equal(body.text, "Bună ziua, aveți loc mâine la 10? Mulțumesc!");
     assert.equal(body.from_me, false);
@@ -879,7 +878,7 @@ describe("Calfa webhook: decision 0009 as webhook.ts and wire.ts parse it", () =
     assert.equal(body.kind, "text");
     assert.equal(body.truncated, false);
     assert.equal(body.timestamp, "2026-09-16T08:30:05.000Z", "the message's own instant, in UTC");
-    assert.equal(calfaVerifies(hit, "another-secret"), false);
+    assert.equal(receiverVerifies(hit, "another-secret"), false);
     assert.equal(body.phone, "+40733000111", "the client's number in E.164");
     assert.ok(Number.isSafeInteger(body.contact_id), "a stable id for the client");
   });
@@ -895,7 +894,7 @@ describe("Calfa webhook: decision 0009 as webhook.ts and wire.ts parse it", () =
     assert.equal(body.truncated, true);
   });
 
-  test("a message typed on the phone is message_sent with from_me; in the barber's self chat it is also is_self_chat", async (t) => {
+  test("a message typed on the phone is message_sent with from_me; in the owner's self chat it is also is_self_chat", async (t) => {
     const { hook, svc } = await hooked(t);
     const { sock } = openSocket(svc);
     upsert(sock, "notify", message("PHONE1", "Vin eu la 10.", { fromMe: true }));
@@ -906,11 +905,11 @@ describe("Calfa webhook: decision 0009 as webhook.ts and wire.ts parse it", () =
     const [takeover, self] = hook.hits.map(assertMessageEvent);
     assert.equal(takeover.event, "message_sent");
     assert.equal(takeover.from_me, true);
-    assert.equal(takeover.is_self_chat, false, "Calfa routes this to human takeover");
+    assert.equal(takeover.is_self_chat, false, "the integration routes this to human takeover");
     assert.equal(takeover.chat_id, CLIENT);
     assert.equal(self.event, "message_sent");
     assert.equal(self.from_me, true);
-    assert.equal(self.is_self_chat, true, "Calfa routes this to the Manager");
+    assert.equal(self.is_self_chat, true, "the integration routes this to the owner-facing assistant");
     assert.equal(self.chat_id, OWNER);
   });
 
@@ -935,7 +934,7 @@ describe("Calfa webhook: decision 0009 as webhook.ts and wire.ts parse it", () =
     assert.deepEqual(
       hook.hits.map((hit) => hit.body.event),
       ["message_received"],
-      "Calfa must not hear its own reply as a takeover"
+      "the integration must not hear its own reply as a takeover"
     );
   });
 
@@ -998,14 +997,14 @@ describe("Calfa webhook: decision 0009 as webhook.ts and wire.ts parse it", () =
     for (const body of bodies) assert.equal(body.account_id, TENANT);
   });
 
-  test("`wazap webhook test --account <slug>` posts bodies Calfa accepts, with the probe chat Calfa ignores", async () => {
+  test("`wazap webhook test --account <slug>` posts bodies the integration accepts, with the probe chat the integration ignores", async () => {
     const posts = [];
     const sink = new WebhookSink(
       {
         WAZAP_WEBHOOK: "on",
-        WAZAP_WEBHOOK_URL: "http://127.0.0.1:3001/v1/webhooks/wazap",
+        WAZAP_WEBHOOK_URL: "http://127.0.0.1:8080/hooks/whatsapp",
         WAZAP_WEBHOOK_SECRET: SECRET,
-        WAZAP_WEBHOOK_EVENTS: CALFA_EVENTS,
+        WAZAP_WEBHOOK_EVENTS: INTEGRATION_EVENTS,
       },
       {
         account: { id: TENANT, name: TENANT },
@@ -1025,6 +1024,6 @@ describe("Calfa webhook: decision 0009 as webhook.ts and wire.ts parse it", () =
     assert.equal(assertConnectionEvent(connection).status, "linked");
     for (const hit of [received, sent, connection]) assert.equal(hit.body.account_id, TENANT);
     assert.equal(received.body.chat_id, "test@s.whatsapp.net");
-    assert.doesNotMatch(received.body.chat_id, DIRECT_CHAT, "Calfa routes the probe to ignore, with no client");
+    assert.doesNotMatch(received.body.chat_id, DIRECT_CHAT, "the integration routes the probe to ignore, with no client");
   });
 });

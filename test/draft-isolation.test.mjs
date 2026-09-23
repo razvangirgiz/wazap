@@ -137,8 +137,8 @@ test("owned expired drafts still report DRAFT_EXPIRED; foreign ones reveal nothi
  * names (`local`, `local:…`), and a hosted agent that signed in (`oauth:…`).
  */
 const ASSISTANT_CLIENTS = [undefined, "local:claude-code", "oauth:client_7f3"];
-/** A builder's own program (Calfa and the like) keeps the contract it has. */
-const BUILDER_CLIENTS = ["token:write", "token:calfa"];
+/** A builder's own program (an integration) keeps the contract it has. */
+const BUILDER_CLIENTS = ["token:write", "token:integration"];
 
 for (const name of ASSISTANT_CLIENTS) {
   test(`${name ?? "local"}: a draft another tool call came after is refused, and the draft just made sends`, async () => {

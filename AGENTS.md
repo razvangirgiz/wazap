@@ -190,7 +190,7 @@ settings; do not remove one while a test sets it.
   `test/helpers.mjs` sets it for every child.
 - `WAZAP_NO_SHARE=1` — no loopback endpoint and no `daemon.json`, so a second
   wazap on the data dir is refused instead of bridging. The daemon, control and
-  bridge tests, and `test/calfa-contract.test.mjs`, rely on it.
+  bridge tests, and `test/integration-contract.test.mjs`, rely on it.
 - `WAZAP_LIVE_TIMEOUT_MS` — how long a live probe (`status --live`, setup's
   check, `contacts resync`) waits for WhatsApp; 15 s by default.
 - `WAZAP_TRANSCRIBE_AUTO=0` — keeps `get_media`'s transcripts, stops background
