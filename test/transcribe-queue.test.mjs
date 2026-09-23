@@ -531,9 +531,8 @@ test("a voice note deleted while it waits is never transcribed", async () => {
 
 test("a live note stamped days ago is queued in the transaction that stores it, so a crash right after cannot lose it", async () => {
   const { svc, sock } = serviceWith(CONFIGURED);
+  // Disconnected, so the worker never picks the note up: as if the process died right after the commit.
   svc.status = "disconnected";
-  // What runs after the commit never runs: the process died there.
-  svc.queueTranscripts = () => new Map();
   deliver(sock, [voiceNote("LATE", { at: Date.now() - 3 * 86_400_000 })]);
   assert.equal(svc.db.transcripts.state(sidOf("LATE"))?.state, "queued");
   await svc.stop();
