@@ -37,6 +37,7 @@ import { AccountHub } from "../dist/account-hub.js";
 import { AccountRegistry, parseAccountId } from "../dist/accounts.js";
 import { DraftStore } from "../dist/drafts.js";
 import { socketFactory } from "../dist/pairing.js";
+import { RateLimiter } from "../dist/ratelimit.js";
 import { startHttpEndpoint } from "../dist/server.js";
 import { registerTools } from "../dist/tools.js";
 import { readWebhookSettings, WebhookSink } from "../dist/webhook.js";
@@ -771,6 +772,29 @@ describe("Integration tool calls on a linked tenant", () => {
       f.receipts.map((key) => key.id),
       ["IN1"]
     );
+  });
+
+  test("mark_read has a budget of its own: with the sends' spent it still answers, and its own runs out apart", async (t) => {
+    const f = await live(t, { rateLimitPerMinute: 1 });
+    const client = integrationClient(f.url, WRITE_TOKEN);
+    await client.initialize();
+    const send = async (text) => {
+      const draft = answer(await client.tool("send_message", { chat_id: CLIENT, text, account_id: TENANT }), "draft");
+      return client.tool("confirm_send", { draft_id: draft.draft_id, account_id: TENANT });
+    };
+    answer(await send("prima"), "confirm_send");
+    assert.equal(refusal(await send("a doua")), "RATE_LIMITED", "the sends' budget of 1 is spent");
+    const markRead = () => client.tool("manage_chat", { chat_id: CLIENT, action: "mark_read", account_id: TENANT });
+    assert.equal(answer(await markRead(), "manage_chat").action, "mark_read", "a read mark does not wait on the sends' budget");
+
+    assert.equal(f.svc.readMarks.perMinute, 3, "three times the account's writes a minute");
+
+    // Its own bucket, on a clock that does not move, so the test does not race the refill.
+    f.svc.readMarks = new RateLimiter(1, () => 0, "Read mark");
+    answer(await markRead(), "manage_chat");
+    const refused = await markRead();
+    assert.equal(refusal(refused), "RATE_LIMITED");
+    assert.match(refused.structuredContent.message, /^Read mark rate limit/);
   });
 
   test("get_status follows the socket through connected, disconnected and logged_out, all in the integration's eight", async (t) => {

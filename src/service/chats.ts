@@ -30,6 +30,8 @@ export interface ChatsHost {
   guarded<T>(work: () => Promise<T>): Promise<T>;
   /** The socket for a write: connected, not read-only, within the rate limit. */
   beginWrite(): WASocket;
+  /** The same, from mark_read's own bucket, so read marks do not spend the sends'. */
+  beginReadMark(): WASocket;
   /** Queued purges, folds, expiry sweeps and file cleanup have finished. */
   storageIdle(): Promise<void>;
 }
@@ -112,7 +114,7 @@ export class AccountChats {
 
   manageChat(chatId: string, action: ChatAction, opts: ChatActionOptions = {}): Promise<ChatActionResult> {
     return this.host.guarded(async () => {
-      const sock = this.host.beginWrite();
+      const sock = action === "mark_read" ? this.host.beginReadMark() : this.host.beginWrite();
       const jid = this.identity.resolveId(chatId);
       const last = this.views.lastMessageOf(jid);
       const lastMessages = last ? [last] : [];

@@ -1,6 +1,15 @@
 import { WazapError } from "./errors.js";
 
 /**
+ * `manage_chat` `mark_read` has a bucket of its own, this many times the
+ * account's writes a minute (60 at the default 20), so a program that marks each
+ * chat read before it replies does not spend the sends' budget on it, and an
+ * account set lower or higher moves both together. Sends and every other write
+ * keep theirs.
+ */
+export const READ_MARK_MULTIPLIER = 3;
+
+/**
  * Token bucket over the write tools. An agent that loops on send_message would
  * otherwise burn through WhatsApp's own spam thresholds and get the number
  * banned, which is not recoverable from this side.

@@ -18,7 +18,10 @@ sees them, so it cannot message anyone from your number even by mistake.
 
 Writes are also rate limited to 20 a minute per account, or the account's
 `rate_limit` in `accounts.json`. Sending faster than a human is how accounts
-get banned.
+get banned. Marking a chat read (`manage_chat` `mark_read`) has a budget of its
+own, three times that (60 a minute by default), so a program that marks each
+chat read before it replies does not spend the sends' budget on it. It follows
+the account's `rate_limit`, and is off when that is 0.
 
 ## Link previews and media processing
 
