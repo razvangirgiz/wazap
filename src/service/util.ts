@@ -1,5 +1,7 @@
 /** Small helpers more than one part of WhatsAppService (src/whatsapp.ts, src/service/) reaches for. */
 
+import { proto } from "baileys";
+
 /** How long a profile photo lookup may take before the answer goes without it. */
 export const PROFILE_LOOKUP_MS = 8_000;
 
@@ -24,4 +26,9 @@ export const FILE_MODE = 0o600;
 /** A result limit a caller left out or spelled wrong reads as the tools' own default. */
 export function pageLimit(limit: number): number {
   return Number.isFinite(limit) && limit >= 1 ? Math.floor(limit) : 20;
+}
+
+/** A group the account left: WhatsApp delivers it as read-only (see chatSummary). */
+export function leftGroup(bytes: Uint8Array): boolean {
+  return proto.Conversation.decode(bytes).readOnly === true;
 }

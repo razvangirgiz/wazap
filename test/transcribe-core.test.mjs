@@ -274,8 +274,8 @@ test("a transcript landing during shutdown does not hold the process open", asyn
 
   await svc.stop();
   await svc.transcribeIdle();
-  assert.equal(svc.expiryTimer, null, "a stopped service must not arm a fresh timer");
-  assert.equal(svc.accountDb.isOpen, false, "and its database is closed, not written behind the stop");
+  assert.equal(svc.storage.expiryTimer, null, "a stopped service must not arm a fresh timer");
+  assert.equal(svc.storage.accountDb.isOpen, false, "and its database is closed, not written behind the stop");
 });
 
 test("a search by words finds a word that exists only in a transcript", async () => {

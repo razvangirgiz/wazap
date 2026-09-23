@@ -1736,13 +1736,13 @@ test("an event the account database cannot store is counted as dropped, and post
   console.error = (...args) => lines.push(args.join(" "));
   try {
     // The database is still being prepared from an older version's files.
-    svc.storageState = "preparing";
+    svc.storage.storageState = "preparing";
     svc.setStatus("logged_out");
     const { delivery } = svc.getStatus().webhook;
     assert.equal(delivery.dropped, 1);
     assert.ok(Number.isFinite(Date.parse(delivery.last_dropped_at)));
     assert.ok(lines.some((line) => /dropped connection expired: the account database could not store it/.test(line)));
-    svc.storageState = "ready";
+    svc.storage.storageState = "ready";
     await svc.outbox.idle();
     assert.equal(server.received.length, 0);
     assert.deepEqual(outboxRows(svc), []);

@@ -65,7 +65,7 @@ test("every answer find_contact gives passes the SDK client's schema check, the 
 });
 
 test("a find_contact error reaches an SDK client as an error result, not a schema failure", async () => {
-  home.storageState = "preparing";
+  home.storage.storageState = "preparing";
   try {
     const result = await client.callTool({ name: "find_contact", arguments: { name: "Ana" } });
     assert.equal(result.isError, true);
@@ -74,7 +74,7 @@ test("a find_contact error reaches an SDK client as an error result, not a schem
     assert.equal(body.error, "NOT_CONNECTED");
     assert.ok(body.message && body.fix);
   } finally {
-    home.storageState = "ready";
+    home.storage.storageState = "ready";
   }
 });
 

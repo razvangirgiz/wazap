@@ -268,7 +268,7 @@ test("a storage failure inside a contact fold is logged, not thrown into the han
   const phone = "40700000008@s.whatsapp.net";
   svc.db.identity.setNote(lid, "nota sub lid");
   // A database that stopped answering: every write the handler tries fails.
-  svc.accountDb.close();
+  svc.storage.accountDb.close();
   let unhandled = false;
   const spy = () => (unhandled = true);
   process.on("unhandledRejection", spy);

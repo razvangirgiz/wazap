@@ -92,10 +92,10 @@ test("an idle account expires payloads and automatic previews without another to
   const { svc, advance } = await fixture(t, { timers: true });
   const raw = await seed(svc);
   await svc.writePreview(sid(raw), Buffer.from("synthetic thumbnail"));
-  assert.ok(svc.expiryTimer, "a timer is armed for the deadline");
+  assert.ok(svc.storage.expiryTimer, "a timer is armed for the deadline");
   advance(10_000);
   // Only what the timer started is awaited: no read, and no storageIdle, which would sweep on its own.
-  await svc.expirySweep;
+  await svc.storage.expirySweep;
   const [row] = storageRows(svc, "SELECT deleted_at, text, raw FROM messages WHERE key_id = ?", raw.key.id);
   assert.notEqual(row.deleted_at, null, "the timer's sweep tombstoned it");
   assert.deepEqual([row.text, row.raw], [null, null]);
@@ -360,12 +360,12 @@ test("long disappearing timers do not overflow Node's timer range", async (t) =>
 test("stop clears expiry scheduling and is idempotent, without a stale second cleanup", async (t) => {
   const { svc, advance } = await fixture(t);
   await seed(svc);
-  assert.ok(svc.expiryTimer);
-  assert.equal(svc.expiryTimer.hasRef(), false);
+  assert.ok(svc.storage.expiryTimer);
+  assert.equal(svc.storage.expiryTimer.hasRef(), false);
   const stopping = svc.stop();
   assert.equal(svc.stop(), stopping);
   await stopping;
-  assert.equal(svc.expiryTimer, null);
+  assert.equal(svc.storage.expiryTimer, null);
   const before = await readFile(svc.databasePath);
   advance(20_000);
   await svc.stop();
@@ -378,7 +378,7 @@ test("a marked outbound acknowledgement expires even without a later socket upse
   const result = svc.sends.sentResult(raw, CHAT, SECRET);
   assert.equal(svc.hasMessage(result.message_id), true);
   advance(10_000);
-  await svc.expirySweep;
+  await svc.storage.expirySweep;
   const [row] = storageRows(svc, "SELECT deleted_at, text FROM messages WHERE key_id = ?", "ACK");
   assert.notEqual(row.deleted_at, null, "the timer's sweep tombstoned it, with nothing reading it");
   assert.equal(row.text, null);
@@ -390,7 +390,7 @@ test("an outbound acknowledgement after shutdown is not stored", async (t) => {
   const { svc, boot } = await fixture(t);
   await svc.stop();
   svc.sends.sentResult(message("LATE_ACK"), CHAT, SECRET);
-  assert.equal(svc.expiryTimer, null);
+  assert.equal(svc.storage.expiryTimer, null);
   const { svc: next } = await boot();
   assert.equal(next.hasMessage(sid(message("LATE_ACK"))), false);
   assert.equal(databaseHolds(next, SECRET), false);
