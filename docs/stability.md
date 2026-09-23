@@ -37,7 +37,7 @@ Fourteen declare an output schema and answer in that shape, as an SDK client's
 own validator checks it; the six without one are the five of the integration
 contract and `learn` (`test/output-schema.test.mjs`). A refusal is an error result carrying
 `{ error, message, fix }`, with `account_id` added when the tool declares an
-output schema; `error` is one of the 45 codes, and `learn` documents every one
+output schema; `error` is one of the 46 codes, and `learn` documents every one
 of them. Guarded by: `test/tools.test.mjs`.
 
 **What "stable" means here.** A new optional argument, a new value in an enum
@@ -76,7 +76,9 @@ Five tools are an exact contract for an integration: `send_message`,
   malformed bodies answer as §8 says.
 - The codes an integration sorts as "definitely not sent" — `NOT_CONNECTED`,
   `NOT_LINKED`, `SESSION_EXPIRED`, `SESSION_CORRUPT`, `RATE_LIMITED`,
-  `DRAFT_EXPIRED` — keep that meaning: nothing left wazap.
+  `DRAFT_EXPIRED`, `ACCOUNT_RESTRICTED` — keep that meaning: nothing left
+  wazap. The last also means do not retry: WhatsApp restricts or banned the
+  account, and the status tool says what and until when.
 
 Guarded by: `test/integration-contract.test.mjs`, and for the last one also
 `test/sends.test.mjs`.

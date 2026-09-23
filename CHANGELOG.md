@@ -4,6 +4,21 @@
 
 ### Added
 
+- **wazap recognises when WhatsApp restricts or bans the account, and stops.**
+  A close WhatsApp means as a ban (403, 406), a temporary ban (402, with its
+  end), a session another client took over (440) or a client it no longer
+  takes (405, 409) used to be retried like a dropped link, over and over. Now
+  the account goes to `auth_failure` without reconnecting, a temporary ban gets
+  one try a minute after it ends, and every write answers the new
+  `ACCOUNT_RESTRICTED` (nothing sent, do not retry).
+- **The reachout timelock is read and respected.** WhatsApp can stop a
+  restricted account starting chats with people it has never written to; wazap
+  asks at every connect, listens for WhatsApp's own updates, and asks again
+  when a send comes back refused with 463. While it holds, a first message to a
+  stranger is refused before it leaves, since each attempt counts against the
+  account, and chats that already have messages go on.
+- **`get_status` has a `health` block:** `state`, `since`, `until`, `reason`,
+  `detail` (WhatsApp's own words, when it gave any) and `last_send_error`.
 - **`wazap account add <id> --json`** prints `{ account_id, created, enabled }` on stdout
   and exits 0 for an account already there (`created: false`), so a program
   making sure an account exists reads an answer instead of recognising an
