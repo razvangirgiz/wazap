@@ -242,7 +242,7 @@ test("a webhook whose body cannot be built is not posted, and the exception is e
   const logs = [];
   t.mock.method(console, "error", (...args) => logs.push(args.join(" ")));
   svc.webhook = new WebhookSink(HOOK_ENV, { post: async () => assert.fail("must not POST") });
-  svc.webhookPayload = () => { throw new Error(SECRET); };
+  svc.webhooks.webhookPayload = () => { throw new Error(SECRET); };
   sock.ev.emit("messages.upsert", { type: "notify", messages: [message()] });
   await svc.outbox.idle();
   assert.deepEqual(events(svc).map((row) => [row.state, row.last_error]), [["failed", "Webhook delivery failed."]]);
