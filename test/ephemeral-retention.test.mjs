@@ -266,7 +266,7 @@ test("a forward waiting on recipient preparation rechecks source expiry", async 
   const { svc, sock, advance } = await fixture(t);
   const raw = await seed(svc);
   const started = gate(); const finish = gate(); let sent = 0;
-  svc.prepareSend = async () => { started.release(); await finish.promise; return { sock, jid: CHAT }; };
+  svc.sends.prepareSend = async () => { started.release(); await finish.promise; return { sock, jid: CHAT }; };
   sock.sendMessage = async () => { sent++; };
   const pending = svc.forwardMessage(sid(raw), CHAT);
   const rejected = assert.rejects(pending, { code: "MESSAGE_NOT_FOUND" });
@@ -278,7 +278,7 @@ test("a reply waiting on recipient preparation does not quote an expired message
   const { svc, sock, advance } = await fixture(t);
   const raw = await seed(svc);
   const started = gate(); const finish = gate(); let sent = 0;
-  svc.prepareSend = async () => { started.release(); await finish.promise; return { sock, jid: CHAT }; };
+  svc.sends.prepareSend = async () => { started.release(); await finish.promise; return { sock, jid: CHAT }; };
   sock.sendMessage = async () => { sent++; };
   const pending = svc.sendMessage(CHAT, "synthetic reply", sid(raw));
   const rejected = assert.rejects(pending, { code: "MESSAGE_NOT_FOUND" });
@@ -375,7 +375,7 @@ test("stop clears expiry scheduling and is idempotent, without a stale second cl
 test("a marked outbound acknowledgement expires even without a later socket upsert", async (t) => {
   const { svc, advance } = await fixture(t, { timers: true });
   const raw = message("ACK"); raw.key.fromMe = true; delete raw.key.remoteJid;
-  const result = svc.sentResult(raw, CHAT, SECRET);
+  const result = svc.sends.sentResult(raw, CHAT, SECRET);
   assert.equal(svc.hasMessage(result.message_id), true);
   advance(10_000);
   await svc.expirySweep;
@@ -389,7 +389,7 @@ test("a marked outbound acknowledgement expires even without a later socket upse
 test("an outbound acknowledgement after shutdown is not stored", async (t) => {
   const { svc, boot } = await fixture(t);
   await svc.stop();
-  svc.sentResult(message("LATE_ACK"), CHAT, SECRET);
+  svc.sends.sentResult(message("LATE_ACK"), CHAT, SECRET);
   assert.equal(svc.expiryTimer, null);
   const { svc: next } = await boot();
   assert.equal(next.hasMessage(sid(message("LATE_ACK"))), false);
