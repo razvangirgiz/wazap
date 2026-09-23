@@ -1,5 +1,21 @@
 # Changelog
 
+## 1.0.3
+
+### Changed
+
+- **The service is split into parts, with nothing a user can see changing.**
+  `src/whatsapp.ts` held one account's whole service in a single 6 000-line
+  class. It now keeps the socket, the connection's state, the lifecycle and
+  the event wiring, and each thing it does is a part in `src/service/`:
+  identity and names, message views, groups, voice notes, recall, waits,
+  sending, the account database, ingest, contacts, reads, media, chat actions
+  and the webhook. Every part reaches the service through a small host it is
+  lent, so a change to sending, say, reads in one file. The tools, their
+  answers, the settings and the files on disk are as they were; the 1 978
+  tests pass unchanged apart from reaching into the part a member moved to.
+  `AGENTS.md` says where things live now.
+
 ## 1.0.2
 
 ### Fixed
