@@ -11,10 +11,15 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 const PRELOAD = new URL("./temp-root.mjs", import.meta.url).pathname;
+const FAKE_CLOCK = new URL("./fake-clock.mjs", import.meta.url).pathname;
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+/** The wall clock: under the clock sweep Date.now is moved, and file times are real. */
+const wallNow = () => performance.timeOrigin + performance.now();
 
 /** Runs `code` in a fresh node that loads the preload, as the top of a run, with `base` as the system temp. */
-function runTop(base, code) {
-  const env = { ...process.env, TMPDIR: base };
+function runTop(base, code, extraEnv = {}) {
+  const env = { ...process.env, TMPDIR: base, ...extraEnv };
   delete env.WAZAP_TEST_TMP_ROOT;
   const result = spawnSync(process.execPath, ["--import", PRELOAD, "--input-type=module", "-e", code], {
     env,
@@ -53,7 +58,7 @@ test("the next run sweeps a root a killed run left a day ago, not one still in u
   const live = join(base, "wazap-test-live");
   const unrelated = join(base, "someone-elses-dir");
   for (const dir of [stale, live, unrelated]) mkdirSync(dir);
-  const twoDaysAgo = new Date(Date.now() - 2 * 24 * 60 * 60 * 1000);
+  const twoDaysAgo = new Date(wallNow() - 2 * DAY_MS);
   utimesSync(stale, twoDaysAgo, twoDaysAgo);
   utimesSync(unrelated, twoDaysAgo, twoDaysAgo);
 
@@ -62,4 +67,19 @@ test("the next run sweeps a root a killed run left a day ago, not one still in u
   assert.equal(existsSync(stale), false);
   assert.equal(existsSync(live), true);
   assert.equal(existsSync(unrelated), true);
+});
+
+test("a clock moved days ahead does not make a live run's root look a day old", (t) => {
+  const base = mkdtempSync(join(tmpdir(), "temp-root-base-"));
+  t.after(() => rmSync(base, { recursive: true, force: true }));
+  const live = join(base, "wazap-test-live");
+  mkdirSync(live);
+
+  // What the clock sweep does: Date.now a month ahead, loaded before the preload.
+  runTop(base, "", {
+    FAKE_CLOCK_MS: String(Math.round(wallNow() + 30 * DAY_MS)),
+    NODE_OPTIONS: `${process.env.NODE_OPTIONS ?? ""} --import ${FAKE_CLOCK}`.trim(),
+  });
+
+  assert.equal(existsSync(live), true);
 });

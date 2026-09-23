@@ -15,6 +15,10 @@ import { join } from "node:path";
 const PREFIX = "wazap-test-";
 const STALE_MS = 24 * 60 * 60 * 1000;
 const base = tmpdir();
+// The wall clock, not Date.now: the clock sweep moves Date.now days away, and a
+// moved clock would call a live run's root a day old. test/fake-clock.mjs
+// leaves performance on the real clock.
+const now = () => performance.timeOrigin + performance.now();
 
 // Only the process that starts the run sweeps; the per-file processes it spawns
 // inherit the marker and nest their roots inside its root.
@@ -23,7 +27,7 @@ if (!process.env.WAZAP_TEST_TMP_ROOT) {
     if (!name.startsWith(PREFIX)) continue;
     const path = join(base, name);
     try {
-      if (Date.now() - statSync(path).mtimeMs > STALE_MS) rmSync(path, { recursive: true, force: true });
+      if (now() - statSync(path).mtimeMs > STALE_MS) rmSync(path, { recursive: true, force: true });
     } catch {
       // Another run removed it first, or it is not ours to read: leave it.
     }
