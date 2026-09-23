@@ -216,7 +216,7 @@ export class MessageViews {
    * row's own sender for someone else's message; a lookup by id for the
    * account's own, which the row does not name.
    */
-  withSenderContact(view: MessageView, message: StoredMessage, lookups?: ViewLookups): MessageView {
+  private withSenderContact(view: MessageView, message: StoredMessage, lookups?: ViewLookups): MessageView {
     const contactId =
       !message.fromMe && message.senderId !== null
         ? message.senderId
@@ -233,7 +233,7 @@ export class MessageViews {
    * with, raised by every receipt since, each person's latest moments. The
    * account itself is no recipient.
    */
-  receiptOf(message: StoredMessage, stored?: readonly StoredReceipt[]): Receipt | undefined {
+  private receiptOf(message: StoredMessage, stored?: readonly StoredReceipt[]): Receipt | undefined {
     if (!message.fromMe) return undefined;
     const merged: Receipt = {};
     if (message.status !== null) raiseStatus(merged, message.status);
@@ -249,7 +249,7 @@ export class MessageViews {
   }
 
   /** A message the database holds only as text: enough to quote it, name its chat and sender, and date it. */
-  textOnlyView(message: StoredMessage): MessageView {
+  private textOnlyView(message: StoredMessage): MessageView {
     const sender = message.fromMe ? this.identity.ownJid() : (message.senderJid ?? message.chatJid);
     const phone = phoneOf(sender);
     const note = this.identity.noteFor(sender);

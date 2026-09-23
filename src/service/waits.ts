@@ -33,10 +33,10 @@ export interface WaitsHost {
 
 export class MessageWaits {
   /** Inbound messages as they land, newest last, so a wait can resume from a cursor. */
-  readonly arrivals: Array<{ seq: number; sid: string; jid: string }> = [];
-  arrivalSeq = 0;
-  readonly bootId = randomUUID().slice(0, 8);
-  arrivalWaiters: Array<() => void> = [];
+  private readonly arrivals: Array<{ seq: number; sid: string; jid: string }> = [];
+  private arrivalSeq = 0;
+  private readonly bootId = randomUUID().slice(0, 8);
+  private arrivalWaiters: Array<() => void> = [];
 
   constructor(
     private readonly host: WaitsHost,
@@ -97,7 +97,7 @@ export class MessageWaits {
     });
   }
 
-  arrivalMatches(
+  private arrivalMatches(
     arrival: { sid: string; jid: string },
     chatJid: string | undefined,
     addressedToMe: boolean
@@ -109,7 +109,7 @@ export class MessageWaits {
     return raw !== null && this.host.addressesMe(raw);
   }
 
-  parseCursor(cursor: string | undefined): { seq: number; reset: boolean } {
+  private parseCursor(cursor: string | undefined): { seq: number; reset: boolean } {
     if (cursor === undefined) return { seq: this.arrivalSeq, reset: false };
     const [boot, rest] = cursor.split(":");
     const seq = Number(rest);
@@ -126,7 +126,7 @@ export class MessageWaits {
   }
 
   /** Resolves on the next arrival or after `ms`; a settle rides out the burst and ends only on the deadline or a stop. */
-  nextArrival(ms: number, settle = false): Promise<void> {
+  private nextArrival(ms: number, settle = false): Promise<void> {
     return new Promise((resolve) => {
       const waiter = (): void => {
         if (!settle || this.host.stopped()) done();

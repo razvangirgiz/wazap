@@ -193,7 +193,7 @@ export class AccountChats {
   }
 
   /** A message named by a chat action must be in that chat, or the action would land on another one. */
-  messageInChat(messageId: string | undefined, jid: string, action: ChatAction): WAMessage {
+  private messageInChat(messageId: string | undefined, jid: string, action: ChatAction): WAMessage {
     if (messageId === undefined) {
       throw new WazapError(
         "INVALID_ID",

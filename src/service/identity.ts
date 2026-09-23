@@ -104,11 +104,11 @@ export class AccountIdentity {
    * kept separate copies of it; tests still read both. A copy, so nothing
    * writes a pairing past learnLid.
    */
-  get lidToPn(): ReadonlyMap<string, string> {
+  private get lidToPn(): ReadonlyMap<string, string> {
     return new Map(this.lids);
   }
 
-  get lidPhones(): ReadonlyMap<string, string> {
+  private get lidPhones(): ReadonlyMap<string, string> {
     return this.lidToPn;
   }
 

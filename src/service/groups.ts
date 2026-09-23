@@ -341,7 +341,7 @@ export class AccountGroups {
   }
 
   /** The invite a message carries, checked before WhatsApp is asked about it. */
-  inviteMessageOf(messageId: string): {
+  private inviteMessageOf(messageId: string): {
     raw: WAMessage;
     message: proto.Message.IGroupInviteMessage;
     code: string;
@@ -369,14 +369,14 @@ export class AccountGroups {
     return { raw, message, code: message.inviteCode, groupJid: message.groupJid, name: message.groupName || null };
   }
 
-  async inviteLink(jid: string): Promise<string> {
+  private async inviteLink(jid: string): Promise<string> {
     const sock = this.host.ensureConnected();
     const code = await sock.groupInviteCode(jid);
     if (!code) throw new WazapError("WHATSAPP_ERROR", `WhatsApp returned no invite code for ${jid}.`);
     return `https://chat.whatsapp.com/${code}`;
   }
 
-  participantResult(
+  private participantResult(
     entry: { status: string; jid: string | undefined },
     fallback?: string,
     inviteable = true
@@ -393,7 +393,7 @@ export class AccountGroups {
    * One pending join request. Baileys hands over the raw attributes of WhatsApp's
    * node untyped: `jid`, and `request_time` (seconds) and `request_method` when sent.
    */
-  joinRequest(attrs: { [key: string]: string }): JoinRequest {
+  private joinRequest(attrs: { [key: string]: string }): JoinRequest {
     const id = this.identity.canonical(attrs.jid ?? "");
     const seconds = Number(attrs.request_time);
     return {

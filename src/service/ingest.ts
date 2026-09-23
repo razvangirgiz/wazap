@@ -135,10 +135,10 @@ export class AccountIngest {
    * reactions, receipts, deletes) that arrived while one was being stored,
    * each after the work before it; storageIdle waits on the chain.
    */
-  historyWork: Promise<void> = Promise.resolve();
+  private historyWork: Promise<void> = Promise.resolve();
   /** Batches and marks on the chain that have not run yet. */
   historyPending = 0;
-  callSweepTimer: ReturnType<typeof setInterval> | null = null;
+  private callSweepTimer: ReturnType<typeof setInterval> | null = null;
   readonly calls = new CallTracker();
   /**
    * Read receipts from the account's own devices (the phone), since the
@@ -167,7 +167,7 @@ export class AccountIngest {
    * actor's fromMe, not necessarily the original author's (an admin may
    * revoke somebody else's message), so it takes back both directions.
    */
-  revokeTargets(raw: WAMessage): MessageRef[] {
+  private revokeTargets(raw: WAMessage): MessageRef[] {
     const target = revokedTargetKey(raw);
     if (!target?.id || !raw.key?.remoteJid) return [];
     const chatJid = this.identity.canonical(raw.key.remoteJid);
@@ -429,7 +429,7 @@ export class AccountIngest {
     return reactionOf(raw) !== undefined || voteOf(raw) !== undefined || this.revokeTargets(raw).length > 0;
   }
 
-  async storeHistory({ chats, contacts, messages, lidPnMappings, isLatest, progress }: HistorySetEvent): Promise<void> {
+  private async storeHistory({ chats, contacts, messages, lidPnMappings, isLatest, progress }: HistorySetEvent): Promise<void> {
     const all = messages ?? [];
     // WhatsApp sends the history once: a stop waits for a batch it already
     // received to be stored, so nothing here gives up on `stopped`.
@@ -476,13 +476,13 @@ export class AccountIngest {
    * messages that were stored, which is what a webhook, a wait and the
    * transcription queue may act on.
    */
-  ingestMessages(messages: WAMessage[], live = false): WAMessage[] {
+  private ingestMessages(messages: WAMessage[], live = false): WAMessage[] {
     if (this.host.stopped()) return [];
     return this.fileMessages(messages, live);
   }
 
   /** `live`: the messages genuinely arrived now (a notify), which is what the transcription queue asks. */
-  fileMessages(messages: WAMessage[], live = false): WAMessage[] {
+  private fileMessages(messages: WAMessage[], live = false): WAMessage[] {
     this.retractRevokes(messages);
     const stored: WAMessage[] = [];
     this.storeMessages(messages, 0, Infinity, stored, live);
@@ -490,7 +490,7 @@ export class AccountIngest {
   }
 
   /** The revokes a batch carries, before any of its messages: a revoked message must not be stored for a moment. */
-  retractRevokes(messages: readonly WAMessage[]): void {
+  private retractRevokes(messages: readonly WAMessage[]): void {
     for (const raw of messages) {
       const targets = this.revokeTargets(raw);
       if (targets.length > 0 && !isStatusJid(raw.key.remoteJid ?? "")) this.retract(targets, messageTimestampMs(raw));
@@ -501,7 +501,7 @@ export class AccountIngest {
    * Stores `messages` from `from` on, until `budgetMs` have passed; returns
    * the index to continue from. The revokes among them are already applied.
    */
-  storeMessages(messages: readonly WAMessage[], from: number, budgetMs: number, stored: WAMessage[] = [], live = false): number {
+  private storeMessages(messages: readonly WAMessage[], from: number, budgetMs: number, stored: WAMessage[] = [], live = false): number {
     const started = performance.now();
     let index = from;
     for (; index < messages.length; index++) {
@@ -539,7 +539,7 @@ export class AccountIngest {
   }
 
   /** A timestamp the database files as given: a clock days ahead is today, as the import leaves it out. */
-  plausibleTs(ts: number): number {
+  private plausibleTs(ts: number): number {
     const now = Date.now();
     return !Number.isSafeInteger(ts) || ts <= 0 || ts > now + FUTURE_SLACK_MS ? now : ts;
   }
@@ -550,7 +550,7 @@ export class AccountIngest {
    * WAZAP_RETENTION, its disappearing deadline. A time days in the future is
    * a device's clock gone wrong: the message is filed, and dated, as now.
    */
-  messageInput(raw: WAMessage, chatJid: string): { input: MessageInput; raw: WAMessage } | null {
+  private messageInput(raw: WAMessage, chatJid: string): { input: MessageInput; raw: WAMessage } | null {
     const keyId = raw.key.id;
     if (!keyId) return null;
     const seconds = protoNumber(raw.messageTimestamp);
@@ -589,14 +589,14 @@ export class AccountIngest {
    * account (by number or lid), not in a story; the account's own that this
    * process sent. The database adds via_wazap for a confirmed send's key by itself.
    */
-  flagsOf(raw: WAMessage, fromMe: boolean, keyId: string, chatJid: string): number {
+  private flagsOf(raw: WAMessage, fromMe: boolean, keyId: string, chatJid: string): number {
     if (fromMe) return this.sends.sentByWazap.has(keyId) ? MESSAGE_FLAGS.viaWazap : 0;
     if (chatJid === STATUS_JID) return 0;
     return mentionedJids(raw).some((jid) => this.identity.isMe(jid)) ? MESSAGE_FLAGS.mentionsMe : 0;
   }
 
   /** The flags backfill's detector: the mentions a stored message's protobuf carries. */
-  readonly storedFlags: FlagDetector = ({ raw, fromMe, chatJid }) => {
+  private readonly storedFlags: FlagDetector = ({ raw, fromMe, chatJid }) => {
     if (fromMe || chatJid === STATUS_JID) return 0;
     let decoded: WAMessage;
     try {
@@ -625,7 +625,7 @@ export class AccountIngest {
   }
 
   /** The sender the database files a message under; undefined for the other side of a direct chat. */
-  senderOf(raw: WAMessage, chatJid: string): string | null | undefined {
+  private senderOf(raw: WAMessage, chatJid: string): string | null | undefined {
     if (raw.key.fromMe) return null;
     if (chatJid.endsWith("@s.whatsapp.net")) return undefined;
     const from = raw.key.participant || raw.participant || raw.key.remoteJid || "";
@@ -677,7 +677,7 @@ export class AccountIngest {
    * only counted as `synced`: that the phone marks read in a sync only what was
    * read is not verified yet. Stories read nothing.
    */
-  noteReadOnArrival(db: AccountDb, raw: WAMessage, sid: string, chatJid: string, live: boolean): void {
+  private noteReadOnArrival(db: AccountDb, raw: WAMessage, sid: string, chatJid: string, live: boolean): void {
     const kind = chatKindOf(chatJid);
     const readStatus = kind === "direct" && (raw.status === proto.WebMessageInfo.Status.READ || raw.status === proto.WebMessageInfo.Status.PLAYED);
     const readReceipt =
@@ -693,7 +693,7 @@ export class AccountIngest {
   }
 
   /** WhatsApp echoed the key of a send a confirm could not vouch for: that send arrived, as this message. */
-  settleEcho(db: AccountDb, keyId: string, sid: string, chatJid: string, ts: number): void {
+  private settleEcho(db: AccountDb, keyId: string, sid: string, chatJid: string, ts: number): void {
     try {
       const row = db.sends.unknownByKey(keyId);
       if (row === null) return;
@@ -710,7 +710,7 @@ export class AccountIngest {
   }
 
   /** A new version of a stored message: an edit, or a new date; the row keeps its id and its place in time. */
-  writeVersion(next: WAMessage, stored: StoredMessage, editedAt: number | null): void {
+  private writeVersion(next: WAMessage, stored: StoredMessage, editedAt: number | null): void {
     const prepared = this.messageInput(next, stored.chatJid);
     if (prepared === null) return;
     const { input } = prepared;
@@ -722,7 +722,7 @@ export class AccountIngest {
    * lists nowhere but read_messages on "status", wakes no wait, and goes after a day, as on
    * the phone; a revoked one leaves nothing behind.
    */
-  ingestStory(raw: WAMessage): void {
+  private ingestStory(raw: WAMessage): void {
     if (raw.key.fromMe || isControlMessage(raw) || messageType(raw) === "system") return;
     const revoked = this.revokeTargets(raw);
     if (revoked.length) {
@@ -817,7 +817,7 @@ export class AccountIngest {
   }
 
   /** Votes and responses that arrived before their poll or event fold onto it the moment it lands. */
-  foldVotesOnto(raw: WAMessage, chatJid: string): void {
+  private foldVotesOnto(raw: WAMessage, chatJid: string): void {
     if (pollOf(raw) === undefined && !isEvent(raw)) return;
     const db = this.storage.db;
     let walked = 0;
@@ -891,7 +891,7 @@ export class AccountIngest {
   }
 
   /** The name a sender publishes, as WhatsApp attaches it to their messages; written only when it changed. */
-  learnPushName(raw: WAMessage, chatJid: string): void {
+  private learnPushName(raw: WAMessage, chatJid: string): void {
     const name = raw.pushName?.trim();
     if (!name || raw.key.fromMe) return;
     const sender = this.identity.canonical(raw.key.participant || raw.participant || chatJid);

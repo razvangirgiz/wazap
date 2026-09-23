@@ -44,7 +44,7 @@ export interface WebhooksHost {
 
 export class AccountWebhooks {
   /** The last connection status queued for the consumer, so several internal states collapse into one event. */
-  lastWebhookStatus: WebhookConnectionStatus | null = null;
+  private lastWebhookStatus: WebhookConnectionStatus | null = null;
 
   constructor(
     private readonly host: WebhooksHost,
@@ -142,7 +142,7 @@ export class AccountWebhooks {
    * echo; the durable send record is what should answer it, so an echo after
    * a restart is recognised too.
    */
-  webhookOwnSend(raw: WAMessage): boolean {
+  private webhookOwnSend(raw: WAMessage): boolean {
     return Boolean(raw.key.fromMe && raw.key.id && this.sends.isOwnSend(raw.key.id));
   }
 
@@ -153,7 +153,7 @@ export class AccountWebhooks {
    * so this is the queue's own rule (`transcribable`, the history window, the
    * provider), not a copy of it.
    */
-  webhookReadyAt(message: StoredMessage, now: number): number {
+  private webhookReadyAt(message: StoredMessage, now: number): number {
     return this.voice.transcriptQueued(message) ? now + WEBHOOK_TRANSCRIPT_WAIT_MS : now;
   }
 

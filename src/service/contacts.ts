@@ -112,7 +112,7 @@ export class AccountContacts {
   /** Contacts with an address-book name; null until counted again after a name changed. */
   namedContactsCache: number | null = null;
   /** find_contact's one ask this boot for an address book that looked empty, shared by every find waiting on it (F2-3). */
-  addressBookAsk: Promise<void> | null = null;
+  private addressBookAsk: Promise<void> | null = null;
   readonly blocked = new Set<string>();
 
   constructor(
@@ -250,7 +250,7 @@ export class AccountContacts {
    * comes in meanwhile waits on the same ask. A failure is logged; the answer
    * comes from what is stored.
    */
-  askForEmptyAddressBook(): Promise<void> {
+  private askForEmptyAddressBook(): Promise<void> {
     if (this.addressBookAsk === null) {
       if (this.namedContacts() > 0) return Promise.resolve();
       this.addressBookAsk = (async () => {

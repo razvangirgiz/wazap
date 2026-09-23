@@ -112,11 +112,11 @@ export class AccountMedia {
   }
 
   /** Previews live as files, one JPEG per message, recorded against it in the database so a delete takes the file too. */
-  previewPath(sid: string): string {
+  private previewPath(sid: string): string {
     return join(this.paths.previewsDir, `${safeFilename(sid)}.jpg`);
   }
 
-  async readPreview(sid: string): Promise<Buffer | null> {
+  private async readPreview(sid: string): Promise<Buffer | null> {
     const path = this.storage.readyDb()?.messages.media(sid).find((media) => media.kind === "preview")?.path;
     if (path === undefined) return null;
     try {
@@ -132,7 +132,7 @@ export class AccountMedia {
    * meanwhile refuses the record, and the file goes at once; one deleted after
    * the record releases it through the database's unlink queue.
    */
-  async writePreview(sid: string, jpeg: Buffer): Promise<void> {
+  private async writePreview(sid: string, jpeg: Buffer): Promise<void> {
     if (!this.host.hasMessage(sid)) return;
     const path = this.previewPath(sid);
     await mkdir(this.paths.previewsDir, { recursive: true, mode: DIR_MODE });

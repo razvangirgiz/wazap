@@ -175,7 +175,7 @@ export class AccountReads {
    * A type filter pages on past what it leaves out, so `limit` counts
    * messages the caller asked for, up to a bounded walk.
    */
-  pageOf(jid: string, limit: number, before: number | undefined, types?: MessageType[]): StoredMessage[] {
+  private pageOf(jid: string, limit: number, before: number | undefined, types?: MessageType[]): StoredMessage[] {
     const db = this.storage.db;
     const wanted = types === undefined || types.length === 0 ? null : new Set<string>(types);
     const out: StoredMessage[] = [];
@@ -434,7 +434,7 @@ export class AccountReads {
    * and among them the newest that asks for something. In a group only a
    * message addressed to the user counts.
    */
-  openAsk(jid: string): { ask: StoredMessage; theirs: StoredMessage[] } | null {
+  private openAsk(jid: string): { ask: StoredMessage; theirs: StoredMessage[] } | null {
     const tail = this.storage.db.messages.chatPage(jid, { limit: UNANSWERED_SCAN }).items;
     const theirs: StoredMessage[] = [];
     for (const message of tail) {
@@ -486,7 +486,7 @@ export class AccountReads {
     }));
   }
 
-  catchupHost(): CatchupHost {
+  private catchupHost(): CatchupHost {
     return {
       now: () => Date.now(),
       ownJid: () => this.identity.ownJid(),
@@ -550,7 +550,7 @@ export class AccountReads {
     });
   }
 
-  readsAsAsk(message: StoredMessage, raw: WAMessage | null): boolean {
+  private readsAsAsk(message: StoredMessage, raw: WAMessage | null): boolean {
     if (message.type === "call") return false;
     // A voice note nobody has heard is an ask until proven otherwise.
     if (message.type === "voice" && message.transcript === null) return true;
