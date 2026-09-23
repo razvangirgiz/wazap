@@ -53,7 +53,7 @@ async function fixture(t, embedding, config = {}) {
   return { ...result, boot };
 }
 async function seed(svc, raw = rawMessage()) {
-  svc.ingestMessages([raw]);
+  svc.ingest.ingestMessages([raw]);
   await idle(svc);
   return raw;
 }
@@ -98,7 +98,7 @@ test("a revoke observed before its target rejects a delayed sync across restart"
   const raw = rawMessage();
   sock.ev.emit("messages.update", [{ key: raw.key, update: { message: null, messageStubType: proto.WebMessageInfo.StubType.REVOKE } }]);
   await idle(svc);
-  svc.ingestMessages([raw]);
+  svc.ingest.ingestMessages([raw]);
   assert.equal(svc.hasMessage(sidOf(raw)), false);
   await svc.stop();
   const { svc: next } = await boot();
@@ -122,7 +122,7 @@ test("a late preview and a later history sync cannot resurrect a deleted message
   const raw = await seed(svc);
   remove(sock, raw);
   await svc.writePreview(sidOf(raw), Buffer.from(SECRET));
-  svc.ingestMessages([raw]);
+  svc.ingest.ingestMessages([raw]);
   await idle(svc);
   assert.equal(svc.hasMessage(sidOf(raw)), false);
   await assertNoPayload(svc, raw);
@@ -188,7 +188,7 @@ for (const own of [false, true]) test(`protocol revoke normalizes the sender's p
   raw.key.fromMe = own;
   raw.key.remoteJid = "120000001@g.us";
   await seed(svc, raw);
-  svc.ingestMessages([{
+  svc.ingest.ingestMessages([{
     ...rawMessage("REVOKE"),
     key: { remoteJid: raw.key.remoteJid, fromMe: false, participant: CHAT, id: "REVOKE" },
     message: { protocolMessage: { type: proto.Message.ProtocolMessage.Type.REVOKE,
@@ -201,7 +201,7 @@ test("a revoke's embedded remoteJid cannot delete a message in another chat", as
   const { svc } = await fixture(t);
   const foreign = rawMessage(); foreign.key.remoteJid = "40700000003@s.whatsapp.net";
   await seed(svc, foreign);
-  svc.ingestMessages([{ ...rawMessage("REVOKE"), message: { protocolMessage: {
+  svc.ingest.ingestMessages([{ ...rawMessage("REVOKE"), message: { protocolMessage: {
     type: proto.Message.ProtocolMessage.Type.REVOKE, key: foreign.key,
   } } }]);
   assert.equal(svc.hasMessage(sidOf(foreign)), true);
@@ -222,7 +222,7 @@ test("history-sync chat metadata cannot retain a hidden second copy of a deleted
   const { svc, sock, boot } = await fixture(t);
   const raw = rawMessage();
   const chat = { id: CHAT, name: "kept chat metadata", messages: [{ message: raw }] };
-  svc.ingestChat(chat);
+  svc.ingest.ingestChat(chat);
   await seed(svc, raw);
   assert.equal(chat.messages.length, 1, "the socket's source object is not mutated");
   remove(sock, raw);
@@ -253,7 +253,7 @@ test("deletion wins over an in-flight embedding that has not reached the databas
     started.release(); await finish.promise; return directions(texts);
   });
   const raw = rawMessage();
-  svc.ingestMessages([raw]);
+  svc.ingest.ingestMessages([raw]);
   await started.promise;
   try {
     remove(sock, raw);
@@ -321,14 +321,14 @@ test("deleting with history off keeps the barrier, and a restart forgets every m
   await svc.stop();
   const { svc: off, sock } = await boot({ persistHistory: false, retention: true });
   assert.equal(off.hasMessage(sidOf(raw)), false, "history off forgets the messages a history-on run kept");
-  off.ingestMessages([raw]);
+  off.ingest.ingestMessages([raw]);
   assert.equal(off.hasMessage(sidOf(raw)), true);
   remove(sock, raw);
   await idle(off);
   await assertNoPayload(off, raw);
   await off.stop();
   const { svc: next } = await boot({ persistHistory: false, retention: true });
-  next.ingestMessages([raw]);
+  next.ingest.ingestMessages([raw]);
   assert.equal(next.hasMessage(sidOf(raw)), false);
 });
 
@@ -339,13 +339,13 @@ test("without WAZAP_RETENTION, history off still forgets messages at a restart, 
   await svc.stop();
   const { svc: off, sock } = await boot({ persistHistory: false });
   assert.equal(off.hasMessage(sidOf(kept)), false);
-  off.ingestMessages([raw]);
+  off.ingest.ingestMessages([raw]);
   remove(sock, raw);
   await idle(off);
   await off.stop();
   const { svc: next } = await boot({ persistHistory: false });
   assert.equal(databaseHolds(next, "synthetic kept words"), false, "a stop with history off leaves no words behind");
-  next.ingestMessages([raw]);
+  next.ingest.ingestMessages([raw]);
   assert.equal(next.hasMessage(sidOf(raw)), false);
 });
 

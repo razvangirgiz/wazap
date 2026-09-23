@@ -138,7 +138,7 @@ test("a message a history sync or an append carries as read is only counted: the
     { key: { remoteJid: GROUP, fromMe: false, id: "HS2", participant: DAN }, message: { conversation: "sync" }, messageTimestamp: T0 - 40, userReceipt: [{ userJid: ME, readTimestamp: T0 }] },
   ];
   sock.ev.emit("messaging-history.set", { chats: [], contacts: [], messages: synced, isLatest: true, progress: 100 });
-  await svc.historyIdle();
+  await svc.ingest.historyIdle();
   assert.equal(mark(ANA), null);
   assert.equal(mark(GROUP), null);
   assert.deepEqual([counters().synced, counters().applied, counters().seen], [3, 0, 0]);
@@ -197,7 +197,7 @@ test("a receipt that arrives while a history batch is being stored lands once it
   sock.ev.emit("messaging-history.set", { chats: [], contacts: [], messages, isLatest: true, progress: 100 });
   phoneRead(ANA, "H2");
   assert.equal(counters().seen, 1, "counted when it arrives");
-  await svc.historyIdle();
+  await svc.ingest.historyIdle();
   assert.equal(mark(ANA), svc.db.messages.get(`false_${ANA}_H2`).id);
   assert.equal(counters().applied, 1);
 });

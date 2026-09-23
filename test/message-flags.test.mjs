@@ -85,7 +85,7 @@ test("a group message that mentions the account is mentions_me, by number or by 
   const direct = mention(ANA, [`${ME.split("@")[0]}:7@s.whatsapp.net`], { participant: undefined });
   const synced = mention(GROUP, [ME]);
   sock.ev.emit("messaging-history.set", { chats: [], contacts: [], messages: [direct, synced], isLatest: true, progress: 100 });
-  await svc.historyIdle();
+  await svc.ingest.historyIdle();
   assert.equal(flagsOf(svc, direct), MENTIONS, "a device-suffixed spelling of the number, in a direct chat, from a history sync");
   assert.equal(flagsOf(svc, synced), MENTIONS);
 });

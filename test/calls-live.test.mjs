@@ -63,11 +63,11 @@ test("a call that was picked up is stored as answered", async () => {
 
 test("the sweep timer runs only while a call is in flight", async () => {
   const { svc, sock } = makeService();
-  assert.equal(svc.callSweepTimer, null, "nothing to sweep before any call");
+  assert.equal(svc.ingest.callSweepTimer, null, "nothing to sweep before any call");
   sock.ev.emit("call", [callEvent("offer")]);
-  assert.notEqual(svc.callSweepTimer, null, "a ringing call needs a deadline");
+  assert.notEqual(svc.ingest.callSweepTimer, null, "a ringing call needs a deadline");
   await svc.stop();
-  assert.equal(svc.callSweepTimer, null, "a stopped service must not hold the process open");
+  assert.equal(svc.ingest.callSweepTimer, null, "a stopped service must not hold the process open");
 });
 
 test("wazap's own record of a call and the stub baileys makes for it are one call", async () => {

@@ -550,7 +550,7 @@ test("a queue that refuses a note does not hide the note: it is stored, announce
   console.error = (...args) => logged.push(args.join(" "));
   let stored;
   try {
-    stored = svc.ingestMessages([voiceNote("V1")], true);
+    stored = svc.ingest.ingestMessages([voiceNote("V1")], true);
   } finally {
     console.error = realError;
   }
@@ -738,7 +738,7 @@ test("a voice note that just arrived starts at once, ahead of a history backlog"
     messages: [1, 2, 3, 4].map((n) => voiceNote(`H${n}`, { at: now - n * 3_600_000 })),
     isLatest: true,
   });
-  await svc.historyIdle();
+  await svc.ingest.historyIdle();
   assert.equal(svc.db.transcripts.stats().queued, 4);
   await sleep(5);
 
