@@ -8,7 +8,8 @@ import { test } from "node:test";
 import { mkdirSync, writeFileSync } from "node:fs";
 import assert from "node:assert/strict";
 
-import { WhatsAppService, needsContactResync } from "../dist/whatsapp.js";
+import { needsContactResync } from "../dist/service/contacts.js";
+import { WhatsAppService } from "../dist/whatsapp.js";
 import { asToolSource, connectedService, openService, schemaCheckedTools, textError } from "./helpers.mjs";
 import { registerTools } from "../dist/tools.js";
 
@@ -79,38 +80,38 @@ test("a resync forgets every stored version before it asks", async () => {
   const { svc, sock } = makeService();
   const { stored, asked } = syncableSocket(sock);
 
-  await svc.resyncContacts(sock);
+  await svc.contacts.resyncContacts(sock);
 
   assert.deepEqual(Object.keys(stored), [], "a version left behind would make WhatsApp send patches, not the snapshot");
   assert.deepEqual(asked, [{ collections: COLLECTIONS, isInitialSync: true }]);
-  assert.ok(Number.isFinite(svc.contactsResyncedAt()), "the stamp is written before the request");
+  assert.ok(Number.isFinite(svc.contacts.contactsResyncedAt()), "the stamp is written before the request");
 });
 
 test("the resync stamp survives a restart, so a restart does not repeat it", async () => {
   const { svc, sock } = makeService();
   syncableSocket(sock);
-  await svc.resyncContacts(sock);
-  const stamped = svc.contactsResyncedAt();
+  await svc.contacts.resyncContacts(sock);
+  const stamped = svc.contacts.contactsResyncedAt();
   const revived = openService(WhatsAppService, svc.config);
-  assert.equal(revived.contactsResyncedAt(), stamped);
+  assert.equal(revived.contacts.contactsResyncedAt(), stamped);
   await revived.stop();
 });
 
 test("an account that never asked, or an older snapshot written before the stamp existed, reads as never asked", async () => {
   const { svc } = makeService();
-  assert.equal(svc.contactsResyncedAt(), null);
+  assert.equal(svc.contacts.contactsResyncedAt(), null);
   const imported = connectedService(WhatsAppService, { prefix: "wazap-contacts-", id: ME, name: "Răzvan", config: { persistHistory: true } });
   mkdirSync(imported.svc.paths.root, { recursive: true });
   writeFileSync(imported.svc.paths.storeFile, JSON.stringify({ v: 1, chats: {}, contacts: {}, messages: {}, byChat: {} }));
   await imported.svc.bootStorage();
-  assert.equal(imported.svc.contactsResyncedAt(), null);
+  assert.equal(imported.svc.contacts.contactsResyncedAt(), null);
   await imported.svc.stop();
 });
 
 test("a connection that came up without the address book asks for it, once", async () => {
   const { svc, sock } = makeService();
   const { asked } = syncableSocket(sock);
-  svc.waitForNames = async () => svc.namedContacts();
+  svc.contacts.waitForNames = async () => svc.namedContacts();
 
   await svc.healContacts(sock, svc.generation);
   assert.equal(asked.length, 1);
@@ -126,13 +127,13 @@ test("a connection that already has names leaves WhatsApp alone", async () => {
 
   await svc.healContacts(sock, svc.generation);
   assert.deepEqual(asked, []);
-  assert.equal(svc.contactsResyncedAt(), null);
+  assert.equal(svc.contacts.contactsResyncedAt(), null);
 });
 
 test("a connection with no stored version is already syncing, so it is left to it", async () => {
   const { svc, sock } = makeService();
   const { asked } = syncableSocket(sock, { versions: [] });
-  svc.waitForNames = async () => svc.namedContacts();
+  svc.contacts.waitForNames = async () => svc.namedContacts();
 
   await svc.healContacts(sock, svc.generation);
   assert.deepEqual(asked, []);

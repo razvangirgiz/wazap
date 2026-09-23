@@ -9,14 +9,7 @@
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { isAbsolute, join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
-import {
-  ALL_WA_PATCH_NAMES,
-  DisconnectReason,
-  downloadMediaMessage,
-  proto,
-  type WAMessage,
-  type WASocket,
-} from "baileys";
+import { DisconnectReason, downloadMediaMessage, proto, type WAMessage, type WASocket } from "baileys";
 import type { ILogger } from "baileys/lib/Utils/logger.js";
 import { accountPolicy, type AccountRecord } from "./accounts.js";
 import { wordsAsk } from "./asks.js";
@@ -46,9 +39,8 @@ import {
 } from "./db/index.js";
 import { draftContextFor, styleCheckFor, type DraftContext, type StyleCheck } from "./draft-style.js";
 import { asWazapError, RELINK_FIX, RESET_FIX, WazapError } from "./errors.js";
-import { findInAccount, type AccountFind, type FindContactQuery } from "./find-contact.js";
+import { type AccountFind, type FindContactQuery } from "./find-contact.js";
 import { isGroupId, isNoiseJid, normalizePhone, STATUS_JID } from "./ids.js";
-import { IMPORT_META } from "./legacy-import/index.js";
 import { log, logError } from "./logger.js";
 import { describe, mediaFilename } from "./outgoing-media.js";
 import { makePreview, videoFrame } from "./previews.js";
@@ -71,8 +63,9 @@ import { transcribeFile, transcribeReady } from "./transcribe/index.js";
 import { DraftStore, frozenReceiptText, type DraftPayload, type DraftView } from "./drafts.js";
 import { RateLimiter } from "./ratelimit.js";
 import { maskNumber } from "./ui.js";
+import { AccountContacts, CONTACT_SETTLE_MS, needsContactResync } from "./service/contacts.js";
 import { AccountGroups } from "./service/groups.js";
-import { AccountIdentity, realName } from "./service/identity.js";
+import { AccountIdentity } from "./service/identity.js";
 import { AccountIngest, STORY_TTL_MS, type MessageRef } from "./service/ingest.js";
 import { AccountRecall } from "./service/recall.js";
 import { AccountSends, type SendAttempt } from "./service/send.js";
@@ -80,7 +73,7 @@ import { AccountStorage } from "./service/storage.js";
 import { MessageViews } from "./service/views.js";
 import { AccountVoice } from "./service/voice.js";
 import { MessageWaits } from "./service/waits.js";
-import { DIR_MODE, FILE_MODE, leftGroup, orNullAfter, pageLimit, PROFILE_LOOKUP_MS, statusCodeOf } from "./service/util.js";
+import { DIR_MODE, FILE_MODE, leftGroup, pageLimit, statusCodeOf } from "./service/util.js";
 import {
   WebhookSink,
   asConnectionPayload,
@@ -164,13 +157,6 @@ const PREVIEW_VIDEO_MAX_BYTES = 25_000_000;
 const RECENT_GROUP_META_MAX = 12;
 /** Messages getRecentMessages returns per chat: the newest of its window, as many as main's per-chat ring held. */
 const RECENT_PER_CHAT_MAX = 2_000;
-/** Local contact filing caps: enough to describe anyone, small enough to stay a note. */
-const MAX_CONTACT_TAGS = 30;
-const MAX_CONTACT_FIELDS = 30;
-/** A detail value is a line, like a note — not a document. */
-const MAX_FIELD_VALUE_CHARS = 200;
-const MAX_TAG_CHARS = 40;
-const MAX_FIELD_KEY_CHARS = 40;
 /** How long one call may spend downloading and shrinking photos before it returns with what it has. */
 const PREVIEW_BUDGET_MS = 20_000;
 /** How far back into a chat an open ask is looked for. */
@@ -185,35 +171,6 @@ const STOP_TRANSCRIBE_WAIT_MS = 30_000;
 const FOLD_SETTLE_MS = 2_000;
 /** Chat kinds a person can be waiting in: every one but the status feed. */
 const WAITING_KINDS: readonly ChatKind[] = ["direct", "group", "newsletter", "broadcast"];
-/** A resync asks WhatsApp for the whole address book, so it is not free. */
-const CONTACT_RESYNC_COOLDOWN_MS = 7 * 24 * 3_600_000;
-/** How long past the initial sync a slow app state sync still gets to deliver. */
-const CONTACT_SETTLE_MS = 15_000;
-
-export interface ContactResyncInput {
-  /** Contacts carrying an address-book name right now. */
-  named: number;
-  /** WhatsApp has already told us a version for at least one collection. */
-  storedVersions: boolean;
-  /** When wazap last asked for the whole address book, from the store. */
-  resyncedAt: number | null;
-  now: number;
-}
-
-/**
- * Whether this session should ask WhatsApp for the address book from scratch.
- *
- * Names arrive only in an app state sync that starts from version zero. With no
- * stored version there is nothing to heal: the connection is already doing that
- * sync. With versions stored and no names in hand, the delivery went somewhere
- * that threw it away, and only a resync gets it back. An account whose address
- * book is genuinely empty looks identical, which is what the cooldown is for.
- */
-export function needsContactResync({ named, storedVersions, resyncedAt, now }: ContactResyncInput): boolean {
-  if (named > 0 || !storedVersions) return false;
-  return resyncedAt === null || now - resyncedAt >= CONTACT_RESYNC_COOLDOWN_MS;
-}
-
 /** Baileys logs at info level to stdout by default, which corrupts the MCP
  * JSON-RPC stream on stdio. */
 const silentLogger: ILogger = {
@@ -258,17 +215,12 @@ export class WhatsAppService implements WhatsAppApi {
    */
   private pairingRun: { cancel: () => void; settled: Promise<void> } | null = null;
   private lastInboundAt: number | null = null;
-  /** Contacts with an address-book name; null until counted again after a name changed. */
-  private namedContactsCache: number | null = null;
   private initialSyncDone = false;
   private historyReceived = false;
   private syncDeadline: ReturnType<typeof setTimeout> | null = null;
   private syncWaiters: Array<() => void> = [];
   private historyWaiters: Array<() => void> = [];
   private contactResyncTried = false;
-  /** find_contact's one ask this boot for an address book that looked empty, shared by every find waiting on it (F2-3). */
-  private addressBookAsk: Promise<void> | null = null;
-  private readonly blocked = new Set<string>();
   /** Who a jid is: the lid pairings, the account's own ids, the names (src/service/identity.ts). */
   private readonly identity: AccountIdentity;
   /** The account database: open, boot, legacy files, expiry and file cleanup (src/service/storage.ts). */
@@ -287,6 +239,8 @@ export class WhatsAppService implements WhatsAppApi {
   private readonly sends: AccountSends;
   /** What WhatsApp hands the account, filed in its database (src/service/ingest.ts). */
   private readonly ingest: AccountIngest;
+  /** The address book, search, notes and details, the full resync (src/service/contacts.ts). */
+  private readonly contacts: AccountContacts;
   /** Lid chats still folding into their number's chat; list_chats lets them land. */
   private readonly folds = new Set<Promise<unknown>>();
   private stopPromise: Promise<void> | null = null;
@@ -320,7 +274,7 @@ export class WhatsAppService implements WhatsAppApi {
       folds: this.folds,
       scheduleFileCleanup: () => this.storage.scheduleFileCleanup(),
       namesChanged: () => {
-        this.namedContactsCache = null;
+        this.contacts.namedContactsCache = null;
       },
     });
     this.storage = new AccountStorage(
@@ -448,7 +402,7 @@ export class WhatsAppService implements WhatsAppApi {
         drafts: () => this.drafts,
         handling: (what, work, fallback) => this.handling(what, work, fallback),
         namesChanged: () => {
-          this.namedContactsCache = null;
+          this.contacts.namedContactsCache = null;
         },
         noteInbound: (fromMe, ts) => this.noteInbound(fromMe, ts),
         noteHistoryReceived: () => {
@@ -467,6 +421,19 @@ export class WhatsAppService implements WhatsAppApi {
       this.voice,
       this.waits,
       config
+    );
+    this.contacts = new AccountContacts(
+      {
+        stopped: () => this.stopped,
+        status: () => this.status,
+        guarded: (work) => this.guarded(work),
+        ensureConnected: () => this.ensureConnected(),
+        waitForSync: () => this.waitForSync(),
+      },
+      this.identity,
+      this.views,
+      this.storage,
+      account
     );
     this.storage.openDatabase();
     // Only the server transcribes: a short-lived command (status --live, contacts resync, the sync after a
@@ -604,7 +571,7 @@ export class WhatsAppService implements WhatsAppApi {
   private adoptDatabase(db: AccountDb): void {
     for (const [lid, phone] of db.identity.lidPairs()) this.identity.lids.learn(lid, phone);
     this.lastInboundAt = db.messages.lastInboundTs();
-    this.namedContactsCache = null;
+    this.contacts.namedContactsCache = null;
     this.recallIndex.vectorCount = null;
   }
 
@@ -710,19 +677,6 @@ export class WhatsAppService implements WhatsAppApi {
     return this.historyReceived;
   }
 
-  /**
-   * The same full resync the self-heal runs, on demand. Nothing about the
-   * account changes: this asks WhatsApp to send the address book again.
-   */
-  syncContacts(): Promise<ContactSyncResult> {
-    return this.guarded(async () => {
-      const sock = this.ensureConnected();
-      const before = this.namedContacts();
-      await this.resyncContacts(sock);
-      const after = await this.waitForNames(before, Date.now() + CONTACT_SETTLE_MS);
-      return { requested: true, named_before: before, named_after: after };
-    });
-  }
   storeCounts(): { chats: number; contacts: number; messages: number } {
     const db = this.storage.readyDb();
     if (db === null) return { chats: 0, contacts: 0, messages: 0 };
@@ -759,25 +713,6 @@ export class WhatsAppService implements WhatsAppApi {
     } catch {
       return false;
     }
-  }
-
-  /**
-   * People from the phone's address book: the only contact count worth
-   * reporting. The database also holds everyone who ever wrote or reacted, so
-   * its size says nothing about whether the address book ever arrived.
-   */
-  namedContacts(): number {
-    if (this.namedContactsCache === null) {
-      const db = this.storage.readyDb();
-      if (db === null) return 0;
-      let named = 0;
-      for (const { contact } of db.identity.listContacts()) {
-        const jid = contact.phoneJid ?? contact.lid ?? "";
-        if (!isGroupId(jid) && realName(contact.name)) named++;
-      }
-      this.namedContactsCache = named;
-    }
-    return this.namedContactsCache;
   }
 
   /** The one writer of `status`, so `status_since` can never drift from it. */
@@ -1150,125 +1085,36 @@ export class WhatsAppService implements WhatsAppApi {
     });
   }
 
-  /**
-   * Name and number matches, plus the local filing: a tag or a detail's key or
-   * value hits too, which is how "contabil" finds the person filed under
-   * `role: contabil`. With `tag` only contacts carrying it come back, so
-   * "everyone tagged furnizori" is one call. People known only through their
-   * local filing — never synced as contacts — are candidates as well.
-   */
+  /** The recent exchange and the user's style in a chat, for a contact find_contact resolved. */
+  syncContacts(): Promise<ContactSyncResult> {
+    return this.contacts.syncContacts();
+  }
+
+  /** People from the phone's address book: the only contact count worth reporting. */
+  namedContacts(): number {
+    return this.contacts.namedContacts();
+  }
+
   searchContacts(query: string, limit: number, opts: { tag?: string } = {}): Promise<ContactSummary[]> {
-    return this.guarded(async () => {
-      this.ensureConnected();
-      await this.waitForSync();
-      const needle = query.trim().toLowerCase();
-      // "0734…" typed the way a number is dialled at home matches "40734…".
-      const digits = needle.replace(/\D/g, "").replace(/^0+/, "");
-      const tag = opts.tag === undefined ? undefined : normalizeTag(opts.tag);
-      if (tag === "") {
-        throw new WazapError("INVALID_ID", `"${opts.tag}" is not a usable tag.`, 'Pass a label like "client"');
-      }
-      const matches: ContactSummary[] = [];
-      for (const { contact, notes } of this.storage.db.identity.listContacts()) {
-        const person = contact.phoneJid ?? contact.lid;
-        if (person === null || isGroupId(person) || isNoiseJid(person)) continue;
-        // The address book (the account's own entry too, when it is in it) and the people the user filed: not everyone who ever wrote.
-        if (contact.listed === null && notes === null) continue;
-        const tags = notes?.tags ?? [];
-        if (tag !== undefined && !tags.includes(tag)) continue;
-        // Every name we might show, or someone the chat list calls "Carmen"
-        // would not be findable by that name here.
-        const known = [contact.name, contact.verifiedName, contact.notify, contact.pushName].map(realName);
-        const number = person.split("@")[0] ?? "";
-        const hit =
-          needle === "" ||
-          known.some((name) => name?.toLowerCase().includes(needle)) ||
-          (digits.length >= 5 && number.includes(digits)) ||
-          tags.some((t) => t.includes(needle)) ||
-          Object.entries(notes?.fields ?? {}).some(([key, value]) => key.includes(needle) || value.toLowerCase().includes(needle));
-        if (!hit) continue;
-        matches.push(this.views.contactSummary(person));
-        if (matches.length >= limit) break;
-      }
-      return matches;
-    });
+    return this.contacts.searchContacts(query, limit, opts);
   }
 
   getContact(contactId: string): Promise<ContactDetails> {
-    return this.guarded(async () => {
-      const sock = this.ensureConnected();
-      const jid = this.identity.resolveId(contactId);
-      // A number WhatsApp does not know never answers these two queries, so
-      // they get a deadline and the contact still comes back from the store.
-      const [about, picture] = await Promise.all([
-        orNullAfter(
-          sock.fetchStatus(jid).then((entries) => statusTextOf(entries?.[0])),
-          PROFILE_LOOKUP_MS
-        ),
-        orNullAfter(sock.profilePictureUrl(jid, "image"), PROFILE_LOOKUP_MS),
-      ]);
-      return {
-        ...this.views.contactSummary(jid),
-        about,
-        profile_pic_url: picture ?? null,
-        is_blocked: this.blocked.has(jid),
-      };
-    });
+    return this.contacts.getContact(contactId);
   }
 
-  // ---- find_contact and the draft context (F2-3) ----------------------------
-
-  /**
-   * Who a name means on this account (src/find-contact.ts), from what the
-   * account stores: no connection is needed, only a database that answers.
-   * While connected, an address book that looks empty is first asked for (see
-   * askForEmptyAddressBook).
-   */
   findContact(query: FindContactQuery): Promise<AccountFind> {
-    return this.guarded(async () => {
-      let db = this.storage.db;
-      if (this.status === "connected") {
-        await this.waitForSync();
-        await this.askForEmptyAddressBook();
-        db = this.storage.db;
-      }
-      return findInAccount(db, this.accountRecord.id, query, (id) => this.identity.resolveId(id));
-    });
+    return this.contacts.findContact(query);
   }
 
-  /**
-   * No contact carries a saved name: ask WhatsApp for the address book, at
-   * most once per boot and on the same rule as the self-heal
-   * (needsContactResync: not while the connection is still syncing, not within
-   * 7 days of the last ask), then wait up to 15 s for names. Every find that
-   * comes in meanwhile waits on the same ask. A failure is logged; the answer
-   * comes from what is stored.
-   */
-  private askForEmptyAddressBook(): Promise<void> {
-    if (this.addressBookAsk === null) {
-      if (this.namedContacts() > 0) return Promise.resolve();
-      this.addressBookAsk = (async () => {
-        try {
-          const sock = this.ensureConnected();
-          const decision = {
-            named: this.namedContacts(),
-            storedVersions: await this.hasAppStateVersions(sock),
-            resyncedAt: this.contactsResyncedAt(),
-            now: Date.now(),
-          };
-          if (!needsContactResync(decision)) return;
-          log("address book missing; requesting a full contact sync before find_contact answers");
-          await this.resyncContacts(sock);
-          await this.waitForNames(0, Date.now() + CONTACT_SETTLE_MS);
-        } catch (err) {
-          logError("contact sync", err);
-        }
-      })();
-    }
-    return this.addressBookAsk;
+  setContactNote(contactId: string, note: string): Promise<ContactSummary> {
+    return this.contacts.setContactNote(contactId, note);
   }
 
-  /** The recent exchange and the user's style in a chat, for a contact find_contact resolved. */
+  updateContactDetails(contactId: string, edit: ContactDetailsEdit): Promise<ContactSummary> {
+    return this.contacts.updateContactDetails(contactId, edit);
+  }
+
   draftContext(chatJid: string, options: { recent: boolean; private?: PrivateRule }): DraftContext | null {
     return draftContextFor(this.storage.db, chatJid, { recent: options.recent, others: options.private?.others, senderName: (jid) => this.identity.displayName(jid) });
   }
@@ -1541,69 +1387,6 @@ export class WhatsAppService implements WhatsAppApi {
   }
 
   // ---- end catch_up -------------------------------------------------------------
-
-  setContactNote(contactId: string, note: string): Promise<ContactSummary> {
-    return this.guarded(async () => {
-      const jid = this.identity.resolveId(contactId);
-      this.storage.db.identity.setNote(jid, note);
-      return this.views.contactSummary(jid);
-    });
-  }
-
-  /**
-   * The local contact file: tags and key-value details the agent files a
-   * person under, found by find_contact. Nothing reaches WhatsApp —
-   * the protocol stores only a name — so this is how "my accountant" and
-   * "the guys from the depot" stay attached to people. The person need not
-   * be a saved contact; filing a chat partner works too.
-   */
-  updateContactDetails(contactId: string, edit: ContactDetailsEdit): Promise<ContactSummary> {
-    return this.guarded(async () => {
-      const jid = this.identity.personJid(contactId);
-      const addTags = (edit.addTags ?? []).map((t) => requireTag(t));
-      const removeTags = (edit.removeTags ?? []).map((t) => requireTag(t));
-      const set: Record<string, string> = {};
-      const removeFields = new Set((edit.removeFields ?? []).map((k) => requireFieldKey(k)));
-      for (const [key, value] of Object.entries(edit.fields ?? {})) {
-        const normalized = requireFieldKey(key);
-        const trimmed = value.trim();
-        if (trimmed === "") removeFields.add(normalized);
-        else {
-          if (trimmed.length > MAX_FIELD_VALUE_CHARS) {
-            throw new WazapError("TEXT_TOO_LONG", `Detail "${normalized}" is over ${MAX_FIELD_VALUE_CHARS} characters.`);
-          }
-          set[normalized] = trimmed;
-        }
-      }
-      if (
-        addTags.length === 0 &&
-        removeTags.length === 0 &&
-        Object.keys(set).length === 0 &&
-        removeFields.size === 0
-      ) {
-        throw new WazapError(
-          "INVALID_ID",
-          "Nothing to update.",
-          "Pass add_tags, remove_tags, fields or remove_fields"
-        );
-      }
-      const db = this.storage.db;
-      const current = db.identity.notes(jid);
-      const tagCount =
-        new Set([...(current?.tags ?? []), ...addTags].filter((t) => !removeTags.includes(t))).size;
-      const fieldCount = new Set(
-        [...Object.keys(current?.fields ?? {}), ...Object.keys(set)].filter((k) => !removeFields.has(k))
-      ).size;
-      if (tagCount > MAX_CONTACT_TAGS) {
-        throw new WazapError("TEXT_TOO_LONG", `A contact holds at most ${MAX_CONTACT_TAGS} tags.`);
-      }
-      if (fieldCount > MAX_CONTACT_FIELDS) {
-        throw new WazapError("TEXT_TOO_LONG", `A contact holds at most ${MAX_CONTACT_FIELDS} details.`);
-      }
-      db.identity.updateFields(jid, { addTags, removeTags, set, removeFields: [...removeFields] });
-      return this.views.contactSummary(jid);
-    });
-  }
 
   /**
    * "I dealt with that outside WhatsApp." The open ask is remembered as
@@ -1927,8 +1710,8 @@ export class WhatsAppService implements WhatsAppApi {
             );
           }
           await sock.updateBlockStatus(jid, action);
-          if (action === "block") this.blocked.add(jid);
-          else this.blocked.delete(jid);
+          if (action === "block") this.contacts.blocked.add(jid);
+          else this.contacts.blocked.delete(jid);
           break;
       }
 
@@ -2221,14 +2004,14 @@ export class WhatsAppService implements WhatsAppApi {
     sock.ev.on("group-participants.update", ({ id }) => this.groups.groupCache.delete(this.identity.canonical(id)));
 
     sock.ev.on("blocklist.set", ({ blocklist }) => {
-      this.blocked.clear();
-      for (const jid of blocklist) this.blocked.add(this.identity.canonical(jid));
+      this.contacts.blocked.clear();
+      for (const jid of blocklist) this.contacts.blocked.add(this.identity.canonical(jid));
     });
 
     sock.ev.on("blocklist.update", ({ blocklist, type }) => {
       for (const jid of blocklist) {
-        if (type === "add") this.blocked.add(this.identity.canonical(jid));
-        else this.blocked.delete(this.identity.canonical(jid));
+        if (type === "add") this.contacts.blocked.add(this.identity.canonical(jid));
+        else this.contacts.blocked.delete(this.identity.canonical(jid));
       }
     });
   }
@@ -2334,27 +2117,20 @@ export class WhatsAppService implements WhatsAppApi {
     this.contactResyncTried = true;
     try {
       await this.waitForSync();
-      const named = await this.waitForNames(0, Date.now() + CONTACT_SETTLE_MS);
+      const named = await this.contacts.waitForNames(0, Date.now() + CONTACT_SETTLE_MS);
       if (generation !== this.generation || this.stopped) return;
       const decision = {
         named,
-        storedVersions: await this.hasAppStateVersions(sock),
-        resyncedAt: this.contactsResyncedAt(),
+        storedVersions: await this.contacts.hasAppStateVersions(sock),
+        resyncedAt: this.contacts.contactsResyncedAt(),
         now: Date.now(),
       };
       if (!needsContactResync(decision)) return;
       log("address book missing; requesting a full contact sync");
-      await this.resyncContacts(sock);
+      await this.contacts.resyncContacts(sock);
     } catch (err) {
       logError("contact sync", err);
     }
-  }
-
-  /** When wazap last asked WhatsApp for the whole address book, kept in the database's meta. */
-  private contactsResyncedAt(): number | null {
-    const stored = this.storage.readyDb()?.getMeta(IMPORT_META.contactsResyncedAt) ?? null;
-    const at = stored === null ? Number.NaN : Number(stored);
-    return Number.isFinite(at) ? at : null;
   }
 
   /**
@@ -2368,38 +2144,11 @@ export class WhatsAppService implements WhatsAppApi {
     try {
       const blocklist = await sock.fetchBlocklist();
       if (generation !== this.generation || this.stopped) return;
-      this.blocked.clear();
-      for (const jid of blocklist) if (jid) this.blocked.add(this.identity.canonical(jid));
+      this.contacts.blocked.clear();
+      for (const jid of blocklist) if (jid) this.contacts.blocked.add(this.identity.canonical(jid));
     } catch (err) {
       logError("blocklist", err);
     }
-  }
-
-  /** Names still arriving mean the sync is working; only silence means it is not coming. */
-  private async waitForNames(floor: number, deadline: number): Promise<number> {
-    for (;;) {
-      const named = this.namedContacts();
-      if (named > floor || this.stopped || Date.now() >= deadline) return named;
-      await sleep(500);
-    }
-  }
-
-  private async hasAppStateVersions(sock: WASocket): Promise<boolean> {
-    const stored = await sock.authState.keys.get("app-state-sync-version", [...ALL_WA_PATCH_NAMES]);
-    return Object.values(stored).some((state) => state);
-  }
-  /**
-   * Forget every stored app state version, then resync. The order is the whole
-   * point: Baileys asks for a snapshot only when it has no version to resume
-   * from, and the snapshot is what carries the contacts. The timestamp is
-   * written before the request, so a resync interrupted halfway is not retried
-   * on every start.
-   */
-  private async resyncContacts(sock: WASocket): Promise<void> {
-    const forgotten = Object.fromEntries(ALL_WA_PATCH_NAMES.map((name) => [name, null]));
-    await sock.authState.keys.set({ "app-state-sync-version": forgotten });
-    this.storage.readyDb()?.setMeta(IMPORT_META.contactsResyncedAt, String(Date.now()));
-    await sock.resyncAppState(ALL_WA_PATCH_NAMES, true);
   }
 
   private syncState(): SyncState {
@@ -2642,35 +2391,6 @@ const PIN_SECONDS: Record<number, 86_400 | 604_800 | 2_592_000> = { 24: 86_400, 
 
 function isMissing(err: unknown): boolean {
   return (err as NodeJS.ErrnoException | undefined)?.code === "ENOENT";
-}
-
-function statusTextOf(entry: { [protocol: string]: unknown } | undefined): string | null {
-  const status = entry?.status;
-  if (status && typeof status === "object" && "status" in status) {
-    return (status as { status?: string | null }).status ?? null;
-  }
-  return typeof status === "string" ? status : null;
-}
-
-/** A tag is a lowercase token: "#Client  Ro" files as "client-ro". */
-function normalizeTag(raw: string): string {
-  return raw.trim().toLowerCase().replace(/^#+/, "").replace(/\s+/g, "-");
-}
-
-function requireTag(raw: string): string {
-  const tag = normalizeTag(raw);
-  if (tag === "" || tag.length > MAX_TAG_CHARS) {
-    throw new WazapError("INVALID_ID", `"${raw}" is not a usable tag.`, 'Pass a short label like "client"');
-  }
-  return tag;
-}
-
-function requireFieldKey(raw: string): string {
-  const key = raw.trim().toLowerCase();
-  if (key === "" || key.length > MAX_FIELD_KEY_CHARS) {
-    throw new WazapError("INVALID_ID", `"${raw}" is not a usable detail key.`, 'Pass a short key like "role"');
-  }
-  return key;
 }
 
 function safeFilename(jid: string): string {
