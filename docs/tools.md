@@ -8,7 +8,7 @@ code. The [README](../README.md#the-20-tools) has the one-line table.
 | Tool | Kind | What it does |
 | --- | --- | --- |
 | `learn` | read | The guide to every tool, id format and error code, as text. Call it first. |
-| `get_status` | read | Connection status, sync state, linked account, how fresh the history is, webhook delivery, versions, data dir. Top-level fields are the default account; `accounts` lists every configured one and `default` names it. Optional `account_id` on this and every other tool. |
+| `get_status` | read | Connection status, sync state, linked account, how fresh the history is, webhook delivery, versions, data dir, and `health`: what WhatsApp says about the account itself (a reachout timelock, a ban, a session taken over), with until when. Top-level fields are the default account; `accounts` lists every configured one and `default` names it. Optional `account_id` on this and every other tool. |
 | `link_account` | read | Pair an account that already exists (`wazap account add`). Returns the code to type into the phone. Registered in read-only mode too. |
 | `list_chats` | read | Conversations newest-first; filter `all`/`unread`/`groups`/`individual`/`archived`. |
 | `read_messages` | read | Messages in a chat; `before` pages further back, pulling older history from the phone; `types` narrows to one or more message types, e.g. `["call"]`; `include_previews` attaches a small image of each photo. `chat_id: "status"` reads the stories of the last `hours`, which show nowhere else. |
@@ -285,6 +285,7 @@ trace, so an agent can decide whether to retry, ask the user, or stop.
 | `EDIT_WINDOW_EXPIRED` / `RETRACT_WINDOW_EXPIRED` / `NOT_OWN_MESSAGE` | WhatsApp's own limits on editing and deleting. |
 | `READ_ONLY` | wazap is running read-only. |
 | `RATE_LIMITED` | Too many writes, or too many read marks, which have a budget of their own; `fix` says how long to wait. |
+| `ACCOUNT_RESTRICTED` | WhatsApp restricts or banned the account, and nothing was sent. Do not retry: `get_status` says what and until when under `health`. Under a reachout timelock only a first message to someone never written to is refused; existing chats go on. |
 | `DRAFT_NOT_FOUND` / `DRAFT_EXPIRED` | The draft is unknown, from another MCP session, sent more than 15 minutes ago, or expired unsent. Draft again. |
 | `SEND_OUTCOME_UNKNOWN` | The message reached the socket and then the send failed, so WhatsApp may have it. The draft is never sent again; check the chat before drafting anew. |
 | `SEND_BLOCKED` | The account's send rules refuse this recipient. `wazap config send` changes them; the agent must not route around. |

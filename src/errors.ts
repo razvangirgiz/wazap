@@ -43,6 +43,7 @@ export type ErrorCode =
   | "AMBIGUOUS_ACCOUNT"
   | "ACCOUNT_NOT_FOUND"
   | "ACCOUNT_DISABLED"
+  | "ACCOUNT_RESTRICTED"
   | "WHATSAPP_ERROR";
 
 export class WazapError extends Error {
@@ -67,6 +68,8 @@ export const ERROR_GUIDE: Record<ErrorCode, string> = {
   SESSION_EXPIRED: "The phone unlinked this device: link_account again. Do not retry.",
   SESSION_CORRUPT: "Credentials are unreadable: link_account, or `npx wazap-mcp logout` then `login`.",
   NOT_CONNECTED: "Connecting, or preparing the database after an upgrade: get_status, wait, retry once.",
+  ACCOUNT_RESTRICTED:
+    "Restricted or banned by WhatsApp; nothing sent. Do not retry.",
   SYNC_IN_PROGRESS: "History is still syncing: retry in a few seconds; older messages may be missing.",
   INVALID_PHONE: "Ask the user for the number with its country code, e.g. +15550100.",
   INVALID_ID: "An id or argument is unusable: read message and fix; pass ids exactly as a tool gave them.",
@@ -102,7 +105,7 @@ export const ERROR_GUIDE: Record<ErrorCode, string> = {
   DRAFT_NOT_FOUND: "No such draft in this session: draft again, show the preview, get a fresh yes.",
   DRAFT_EXPIRED: "The draft expired after 15 minutes: draft again, show the new preview and wait for a new yes; the old yes does not carry over.",
   DRAFT_STALE:
-    "The talk moved on after this draft, so nothing was sent: draft again with send_message, show the new preview and ask for a yes to it.",
+    "The talk moved on, so nothing was sent: draft again with send_message, show the new preview and ask for a yes to it.",
   CURSOR_EXPIRED: "The catch_up cursor expired: call catch_up without it; nothing was lost.",
   SEND_OUTCOME_UNKNOWN:
     "It may or may not have arrived: never confirm or draft it again unasked. read_messages shows it once WhatsApp echoes it; not there yet does not mean it failed.",

@@ -69,8 +69,16 @@ const CONNECTION_STATUSES = [
   "session_corrupt",
   "auth_failure",
 ];
-/** The confirm_send codes the integration reads as "definitely not sent, retry later". */
-const DEFINITELY_UNSENT = ["NOT_CONNECTED", "NOT_LINKED", "SESSION_EXPIRED", "SESSION_CORRUPT", "RATE_LIMITED", "DRAFT_EXPIRED"];
+/** The confirm_send codes the integration reads as "definitely not sent"; ACCOUNT_RESTRICTED also means do not retry. */
+const DEFINITELY_UNSENT = [
+  "NOT_CONNECTED",
+  "NOT_LINKED",
+  "SESSION_EXPIRED",
+  "SESSION_CORRUPT",
+  "RATE_LIMITED",
+  "DRAFT_EXPIRED",
+  "ACCOUNT_RESTRICTED",
+];
 /** The arguments the integration passes to each tool it calls, and nothing else. */
 const INTEGRATION_CALLS = {
   send_message: ["chat_id", "text", "account_id"],

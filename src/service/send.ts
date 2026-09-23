@@ -85,6 +85,8 @@ export interface SendsHost {
   storeRaw(raw: WAMessage, chatJid: string, live?: boolean): UpsertResult | null;
   kept(result: UpsertResult): boolean;
   embedFeed(): EmbedFeed | null;
+  /** Throws ACCOUNT_RESTRICTED when WhatsApp forbids this account a first message to `jid` right now. */
+  refuseNewChat(jid: string, sock: WASocket): Promise<void>;
 }
 
 export class AccountSends {
@@ -456,6 +458,8 @@ export class AccountSends {
       return jid;
     }
 
+    // Before the lookup: under a reachout timelock even asking about a stranger is not worth it.
+    await this.host.refuseNewChat(jid, sock);
     const db = this.host.db();
     if (!this.host.hasChat(jid) && db.identity.contact(jid) === null) {
       // Only an answer says a number has no WhatsApp; a lookup that got none

@@ -104,11 +104,42 @@ export interface StatusInfo {
   storage?: StorageInfo;
   /** Voice notes transcribed without being asked: the durable queue, without content. */
   transcription: TranscriptionStatus;
+  /** What WhatsApp says about the account itself: a restriction, a ban, a session taken over. */
+  health: HealthInfo;
   /** Counters for checking live what the account receives; no tool acts on them. */
   diagnostics?: StatusDiagnostics;
   /** Present only while `status` is "linking". */
   pairing?: PairingInfo;
   hint?: string;
+}
+
+/**
+ * `reachout_restricted`: WhatsApp stops the account starting chats with people
+ * it has not written to (existing chats still work); `temporarily_banned` and
+ * `banned`: WhatsApp refuses the account; `session_replaced`: another client
+ * took the session over; `client_outdated`: WhatsApp no longer takes this
+ * client. Every state but `ok` and `reachout_restricted` stops every write.
+ */
+export type HealthState =
+  | "ok"
+  | "reachout_restricted"
+  | "temporarily_banned"
+  | "banned"
+  | "session_replaced"
+  | "client_outdated";
+
+export interface HealthInfo {
+  state: HealthState;
+  /** When the account entered the state, as this process saw it. */
+  since: string | null;
+  /** When WhatsApp said it ends; null when it did not say or it does not end. */
+  until: string | null;
+  /** WhatsApp's own code for it: an enforcement type, or a ban reason. */
+  reason: string | null;
+  /** WhatsApp's own words, when it gave any. */
+  detail: string | null;
+  /** The latest send WhatsApp refused after it left, by WhatsApp's code (463: a new chat refused). */
+  last_send_error: { code: string; at: string } | null;
 }
 
 export interface StatusDiagnostics {

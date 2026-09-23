@@ -15,7 +15,7 @@
  */
 
 import { setTimeout as sleep } from "node:timers/promises";
-import { DisconnectReason, downloadMediaMessage, type WAMessage, type WASocket } from "baileys";
+import { downloadMediaMessage, type WAMessage, type WASocket } from "baileys";
 import type { ILogger } from "baileys/lib/Utils/logger.js";
 import { accountPolicy, type AccountRecord } from "./accounts.js";
 import { clearAuth, readLinkedAccount, useAtomicAuthState, type LinkedAccount } from "./auth-state.js";
@@ -44,6 +44,7 @@ import { maskNumber } from "./ui.js";
 import { AccountChats } from "./service/chats.js";
 import { AccountContacts, CONTACT_SETTLE_MS, needsContactResync } from "./service/contacts.js";
 import { AccountGroups } from "./service/groups.js";
+import { AccountHealth, classifyClose, TEMP_BAN_RETRY_MAX_MS, type ReachoutLock } from "./service/health.js";
 import { AccountIdentity } from "./service/identity.js";
 import { AccountIngest, type MessageRef } from "./service/ingest.js";
 import { AccountMedia } from "./service/media.js";
@@ -55,7 +56,6 @@ import { MessageViews } from "./service/views.js";
 import { AccountVoice } from "./service/voice.js";
 import { MessageWaits } from "./service/waits.js";
 import { AccountWebhooks } from "./service/webhooks.js";
-import { statusCodeOf } from "./service/util.js";
 import { WebhookSink } from "./webhook.js";
 import { WebhookOutbox } from "./webhook-outbox.js";
 import type { SearchCoverage } from "./coverage.js";
@@ -133,6 +133,31 @@ const silentLogger: ILogger = {
 /** How long stop waits for a cancelled pairing socket to close. */
 const PAIRING_STOP_MS = 5_000;
 
+/** Baileys' privacy-token window: tokens in the last four 7-day buckets are live (tc-token-utils). */
+const TC_TOKEN_BUCKET_S = 604_800;
+const TC_TOKEN_BUCKETS = 4;
+
+/**
+ * Whether the account holds a live privacy token (tctoken) for `jid`: what WhatsApp checks on a
+ * 1:1 send, and what a reachout timelock refuses a first message without. Baileys keeps it in the
+ * auth state under the contact's lid. A socket without the store answers false.
+ */
+async function hasPrivacyToken(sock: WASocket, jid: string): Promise<boolean> {
+  try {
+    const lid = jid.endsWith("@lid") ? jid : ((await sock.signalRepository?.lidMapping?.getLIDForPN?.(jid)) ?? jid);
+    const keys = [...new Set([lid, jid])];
+    const stored = (await sock.authState?.keys?.get("tctoken" as never, keys)) as Record<string, { token?: Uint8Array; timestamp?: number | string } | undefined> | undefined;
+    const cutoff = (Math.floor(Date.now() / 1000 / TC_TOKEN_BUCKET_S) - (TC_TOKEN_BUCKETS - 1)) * TC_TOKEN_BUCKET_S;
+    return keys.some((key) => {
+      const entry = stored?.[key];
+      const at = Number(entry?.timestamp);
+      return (entry?.token?.length ?? 0) > 0 && Number.isFinite(at) && at >= cutoff;
+    });
+  } catch {
+    return false;
+  }
+}
+
 export class WhatsAppService implements WhatsAppApi {
   private sockClient: WASocket | null = null;
   private saveCreds: (() => Promise<void>) | null = null;
@@ -207,6 +232,10 @@ export class WhatsAppService implements WhatsAppApi {
   private readonly writes: RateLimiter;
   /** `mark_read`'s own bucket, READ_MARK_MULTIPLIER times the writes', off when the writes' is. */
   private readonly readMarks: RateLimiter;
+  /** What WhatsApp says about the account itself: restrictions, bans, a session taken over (src/service/health.ts). */
+  private readonly health = new AccountHealth();
+  /** The reachout timelock question in flight, so a burst of refused sends asks once. */
+  private reachoutCheck: Promise<void> | null = null;
   private readonly webhook: WebhookSink;
   /** Posts the events the account database holds; see src/webhook-outbox.ts. */
   private readonly outbox: WebhookOutbox;
@@ -295,6 +324,11 @@ export class WhatsAppService implements WhatsAppApi {
         storeRaw: (raw, chatJid, live) => this.ingest.storeRaw(raw, chatJid, live),
         kept: (result) => this.ingest.kept(result),
         embedFeed: () => this.recallIndex.embedFeed,
+        refuseNewChat: async (jid, sock) => {
+          if (!this.health.blocksNewChats()) return;
+          if (this.heardFrom(jid) || (await hasPrivacyToken(sock, jid))) return;
+          throw this.health.refusal("new_chat");
+        },
       },
       this.identity,
       this.views,
@@ -613,6 +647,13 @@ export class WhatsAppService implements WhatsAppApi {
       if (this.linking) return this.linking;
       const number = normalizePhone(phone);
       this.requireUnlinked();
+      // Pairing clears the credentials: not while they would come back on their own.
+      if (this.health.blocksLink()) throw this.health.refusal("link");
+      // A new link supersedes a try the ban scheduled.
+      if (this.reconnectTimer) {
+        clearTimeout(this.reconnectTimer);
+        this.reconnectTimer = null;
+      }
       // The service claimed the database for these credentials at start; only they go.
       if (this.status !== "not_linked") clearAuth(this.paths.authDir);
       this.linking = this.pair(number);
@@ -766,6 +807,7 @@ export class WhatsAppService implements WhatsAppApi {
       recall: this.recallIndex.recallStatus(),
       storage: this.storage.storageInfo(),
       transcription: this.voice.transcriptionStatus(),
+      health: this.health.info(),
       diagnostics: {
         read_self: {
           seen: this.ingest.readSelf.seen,
@@ -777,6 +819,8 @@ export class WhatsAppService implements WhatsAppApi {
       },
     };
     const hints: string[] = [];
+    const restricted = this.health.hint();
+    if (restricted !== null) hints.push(restricted);
     if (this.storage.storageState === "preparing") {
       hints.push("The account is preparing its database from its earlier message files (once, after an upgrade); tools answer NOT_CONNECTED until it is done.");
     }
@@ -1102,6 +1146,58 @@ export class WhatsAppService implements WhatsAppApi {
     }
   }
 
+  /**
+   * Asks WhatsApp whether the account is under a reachout timelock: at every open, and after a first
+   * message was refused (463). Older Baileys has no such call; a failure costs only the answer.
+   */
+  private checkReachout(sock: WASocket, generation: number): Promise<void> {
+    // One question at a time: a burst of refused sends asks once.
+    this.reachoutCheck ??= (async () => {
+      const fetch = (sock as { fetchAccountReachoutTimelock?: () => Promise<ReachoutLock> }).fetchAccountReachoutTimelock;
+      if (typeof fetch !== "function") return;
+      try {
+        const lock = await fetch.call(sock);
+        if (generation !== this.generation || this.stopped) return;
+        this.health.noteReachout(lock);
+      } catch (err) {
+        logError("reachout timelock", err);
+      }
+    })().finally(() => {
+      this.reachoutCheck = null;
+    });
+    return this.reachoutCheck;
+  }
+
+  /**
+   * Whether `jid` has written to the account, among the latest messages stored: a stranger's
+   * reply opens a chat a reachout timelock leaves open. The account's own message does not
+   * count — it is stored the moment it leaves, before WhatsApp may refuse it.
+   */
+  private heardFrom(jid: string): boolean {
+    try {
+      return this.storage.readyDb()?.messages.chatPage(jid, { limit: 200 }).items.some((message) => !message.fromMe) ?? false;
+    } catch {
+      return false;
+    }
+  }
+
+  /** One try at the link when a temporary ban WhatsApp dated ends, a minute after; none for an undated or long one. */
+  private retryAfterBan(): void {
+    const until = this.health.banEndsAt();
+    if (until === null || this.stopped || this.reconnectTimer) return;
+    const wait = until - Date.now();
+    if (wait > TEMP_BAN_RETRY_MAX_MS) return;
+    this.reconnectTimer = setTimeout(() => {
+      this.reconnectTimer = null;
+      this.reconnectAttempts = 0;
+      this.start().catch((err) => {
+        logError("reconnect", err);
+        this.scheduleReconnect("reconnect after a temporary ban failed");
+      });
+    }, Math.max(0, wait) + 60_000);
+    this.reconnectTimer.unref();
+  }
+
   private scheduleReconnect(reason: string): void {
     if (this.stopped || this.reconnectTimer) return;
     this.teardownSocket();
@@ -1151,8 +1247,12 @@ export class WhatsAppService implements WhatsAppApi {
     sock.ev.on("connection.update", (update) => {
       if (generation !== this.generation) return;
       const { connection, lastDisconnect } = update;
+      // WhatsApp's own word on the reachout timelock, pushed or answering fetchAccountReachoutTimelock.
+      const reachout = (update as { reachoutTimeLock?: ReachoutLock }).reachoutTimeLock;
+      if (reachout !== undefined) this.health.noteReachout(reachout);
       if (connection === "open") {
         this.reconnectAttempts = 0;
+        this.health.noteOpen();
         this.setStatus("connected");
         this.lastError = null;
         this.adoptSocketAccount();
@@ -1160,13 +1260,23 @@ export class WhatsAppService implements WhatsAppApi {
         log("connected to WhatsApp");
         void this.healContacts(sock, generation);
         void this.loadBlocklist(sock, generation);
+        void this.checkReachout(sock, generation);
       } else if (connection === "close") {
-        const code = statusCodeOf(lastDisconnect?.error);
-        if (code === DisconnectReason.loggedOut) {
+        const verdict = classifyClose(lastDisconnect?.error);
+        if (verdict.kind === "logged_out") {
           this.setStatus("logged_out");
           this.lastError = "The account was unlinked from the phone.";
           logError("auth", this.lastError);
           this.teardownSocket();
+        } else if (verdict.kind !== "transient") {
+          // About the account, not the link: reconnecting would only knock on a closed door, and a
+          // restart cannot open it, so onGiveUp is not called. A temporary ban gets one try when it ends.
+          this.health.noteClose(verdict);
+          this.setStatus("auth_failure");
+          this.lastError = this.health.refusal("write").message;
+          logError("account", `${this.lastError} (WhatsApp close ${verdict.code})`);
+          this.teardownSocket();
+          this.retryAfterBan();
         } else if (!this.stopped) {
           this.setStatus("disconnected");
           this.lastError = lastDisconnect?.error?.message ?? "connection closed";
@@ -1259,6 +1369,14 @@ export class WhatsAppService implements WhatsAppApi {
     });
 
     sock.ev.on("messages.update", (updates) => {
+      // A send WhatsApp refused after it left comes back as status ERROR with its code first; 463 is a
+      // first message refused, which a reachout timelock explains, so the timelock is asked for.
+      for (const { update } of updates) {
+        const refused = update.status === 0 ? update.messageStubParameters?.[0] : undefined;
+        if (refused === undefined || refused === null) continue;
+        this.health.noteSendError(String(refused));
+        if (String(refused) === "463") void this.checkReachout(sock, generation);
+      }
       const readSelf = updates.flatMap(({ key, update }) => (this.ingest.isReadSelfUpdate(key, update) ? [key] : []));
       this.ingest.noteReadSelf(readSelf.length);
       this.ingest.markLater("messages update", () => {
@@ -1514,6 +1632,7 @@ export class WhatsAppService implements WhatsAppApi {
       case "logged_out":
         throw new WazapError("SESSION_EXPIRED", this.lastError ?? "The account was unlinked.", RELINK_FIX);
       case "auth_failure":
+        if (this.health.blocksWrites()) throw this.health.refusal("read");
         throw new WazapError("NOT_CONNECTED", this.lastError ?? "WhatsApp refused this session.");
       case "connecting":
       case "disconnected":
@@ -1540,6 +1659,7 @@ export class WhatsAppService implements WhatsAppApi {
           : "Run `wazap config writes on`, then restart the server"
       );
     }
+    if (this.health.blocksWrites()) throw this.health.refusal("write");
     const sock = this.ensureConnected();
     bucket.take();
     return sock;
