@@ -4,6 +4,14 @@
  * (`accounts/<id>/wazap.sqlite`, see src/db) and answers the tools from it.
  * What stays in memory is bounded by people and chats, never by messages: the
  * lid pairings, group metadata, the last arrivals a wait can replay, drafts.
+ *
+ * This class owns the socket and the connection's state (status, account,
+ * generation, sync), the lifecycle (start, pairing, reconnect, stop) and the
+ * event wiring, and is the WhatsAppApi every caller uses. What it does lives
+ * in parts under src/service/, one per concern, each reaching the service
+ * through a small host it is lent. The state and the seams tests replace
+ * (sockClient, status, account, mediaBuffer, transcriber, drafts, writes,
+ * webhook, healContacts, saveCreds) stay here.
  */
 
 import { setTimeout as sleep } from "node:timers/promises";
