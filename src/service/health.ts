@@ -166,21 +166,24 @@ export class AccountHealth {
     const status = report?.capping_status === undefined ? undefined : CAP_STATUSES[report.capping_status];
     if (report === null || report === undefined || status === undefined) return;
     const before = this.effectiveState();
-    // An update may carry only what changed: what it leaves out stays as the last report said.
-    const previous = this.cap;
+    // An update may carry only what changed: what it leaves out stays as the last report said,
+    // while that report's cycle lasts. Counts are not kept past a NONE, which may be a new cycle.
+    const previous = this.cap !== null && (this.cap.ends === null || this.cap.ends > this.now()) ? this.cap : null;
+    const kept = status === "none" ? null : previous;
     this.cap = {
       status,
-      used: typeof report.used_quota === "number" ? report.used_quota : (previous?.used ?? null),
-      total: typeof report.total_quota === "number" ? report.total_quota : (previous?.total ?? null),
+      used: typeof report.used_quota === "number" ? report.used_quota : (kept?.used ?? null),
+      total: typeof report.total_quota === "number" ? report.total_quota : (kept?.total ?? null),
       ends: whenOf(report.cycle_end_timestamp) ?? previous?.ends ?? null,
     };
     if (this.effectiveState() !== before) this.onChange();
     this.armExpiry();
   }
 
-  /** A logout or a new link: the cap was the old session's word, and the next connect asks again. */
-  forgetNewChatCap(): void {
+  /** A logout or a new link: the cap and the timelock were the old session's word, and the next connect asks again. */
+  forgetSession(): void {
     this.cap = null;
+    if (this.state === "reachout_restricted") this.clear();
     this.armExpiry();
   }
 

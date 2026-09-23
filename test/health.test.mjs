@@ -305,7 +305,7 @@ test("an update that leaves fields out keeps what the last one said, so a capped
   assert.equal(health.info().state, "ok");
 });
 
-test("warnings end with their cycle, and a new link forgets the old session's cap", (t) => {
+test("warnings end with their cycle, a new cycle starts clean, and a new link forgets the old session's cap and timelock", (t) => {
   let now = 0;
   const health = new AccountHealth(() => now);
   t.after(() => health.dispose());
@@ -314,9 +314,17 @@ test("warnings end with their cycle, and a new link forgets the old session's ca
   now = 1_000_000;
   assert.equal(health.hint(), null);
   assert.equal(health.info().new_chat_cap.status, "none");
+  // A cycle that ended lends nothing to the next one: an undated CAPPED is capped, not over at once.
+  health.noteNewChatCap({ capping_status: "CAPPED" });
+  assert.equal(health.info().new_chat_cap.cycle_ends, null);
+  assert.equal(health.blocksNewChats(), true);
+  health.noteNewChatCap({ capping_status: "NONE" });
+  assert.deepEqual(health.info().new_chat_cap, { status: "none", used: null, total: null, cycle_ends: null }, "a NONE keeps no counts");
   health.noteNewChatCap({ capping_status: "CAPPED", cycle_end_timestamp: 5000 });
-  health.forgetNewChatCap();
+  health.noteReachout({ isActive: true });
+  health.forgetSession();
   assert.equal(health.info().new_chat_cap, null);
+  assert.equal(health.info().state, "ok", "the timelock was the old session's too");
   assert.equal(health.blocksNewChats(), false);
 });
 

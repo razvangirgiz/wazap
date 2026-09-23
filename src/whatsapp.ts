@@ -655,7 +655,7 @@ export class WhatsAppService implements WhatsAppApi {
       this.requireUnlinked();
       // Pairing clears the credentials: not while they would come back on their own.
       if (this.health.blocksLink()) throw this.health.refusal("link");
-      this.health.forgetNewChatCap();
+      this.health.forgetSession();
       // A new link supersedes a try the ban scheduled.
       if (this.reconnectTimer) {
         clearTimeout(this.reconnectTimer);
@@ -1285,7 +1285,7 @@ export class WhatsAppService implements WhatsAppApi {
       } else if (connection === "close") {
         const verdict = classifyClose(lastDisconnect?.error);
         if (verdict.kind === "logged_out") {
-          this.health.forgetNewChatCap();
+          this.health.forgetSession();
           this.setStatus("logged_out");
           this.lastError = "The account was unlinked from the phone.";
           logError("auth", this.lastError);
