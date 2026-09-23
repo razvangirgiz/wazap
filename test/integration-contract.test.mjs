@@ -479,18 +479,23 @@ describe("Integration MCP transport: `wazap serve --http` with WAZAP_READ_TOKEN 
     assert.doesNotMatch(body, /Session not found|send initialize first/);
   });
 
-  test("a lost session is 404 `Session not found`, no session is 400 `send initialize first`, and initialize recovers", async () => {
+  test("a lost session is 404 and no session is 400, each a JSON-RPC error, and initialize recovers", async () => {
     const client = integrationClient(url, WRITE_TOKEN);
     await client.initialize();
     const call = toolsCall(1, "get_status", { account_id: TENANT });
 
+    // The status is the promise (docs/stability.md); the words are kept until 2.0 for an integration that still reads them.
     const lost = await postAs(url, { token: WRITE_TOKEN, session: randomUUID() }, call);
     assert.equal(lost.status, 404);
-    assert.match(await lost.text(), /Session not found/);
+    const lostBody = await lost.text();
+    assert.equal(JSON.parse(lostBody).error.code, -32001);
+    assert.match(lostBody, /Session not found/);
 
     const none = await postAs(url, { token: WRITE_TOKEN }, call);
     assert.equal(none.status, 400);
-    assert.match(await none.text(), /send initialize first/);
+    const noneBody = await none.text();
+    assert.equal(JSON.parse(noneBody).error.code, -32000);
+    assert.match(noneBody, /send initialize first/);
 
     await client.initialize();
     assert.equal(answer(await client.tool("get_status", { account_id: TENANT }), "get_status").account_id, TENANT);
@@ -535,6 +540,19 @@ describe("Integration CLI calls: `account add` and `logout --account`", () => {
     const again = await cli(dataDir, ["account", "add", TENANT]);
     assert.notEqual(again.code, 0, "the integration only tolerates a repeated add by its stderr");
     assert.match(again.stderr, /already exists/);
+  });
+
+  test("account add --json answers { account_id, created, enabled } on stdout, and an account already there is created: false with exit 0", async () => {
+    const slug = "json-tenant";
+    const first = await cliOut(dataDir, ["account", "add", slug, "--json"]);
+    assert.equal(first.code, 0, first.stderr);
+    assert.deepEqual(JSON.parse(first.stdout), { account_id: slug, created: true, enabled: true });
+    const again = await cliOut(dataDir, ["account", "add", slug, "--json"]);
+    assert.equal(again.code, 0, again.stderr);
+    assert.deepEqual(JSON.parse(again.stdout), { account_id: slug, created: false, enabled: true });
+    const bad = await cliOut(dataDir, ["account", "add", "Not A Slug", "--json"]);
+    assert.notEqual(bad.code, 0, "an id wazap refuses is still a failure");
+    assert.equal(bad.stdout, "");
   });
 
   test("every slug the integration mints is an account id wazap accepts", async () => {

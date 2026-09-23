@@ -4,6 +4,15 @@
 
 ### Added
 
+- **`wazap account add <id> --json`** prints `{ account_id, created, enabled }` on stdout
+  and exits 0 for an account already there (`created: false`), so a program
+  making sure an account exists reads an answer instead of recognising an
+  error by its wording. Without `--json` nothing changes.
+- **The HTTP session statuses are promised.** A session id wazap does not hold
+  answers 404, as the MCP specification says, a request with no session answers
+  400 and, with a read token set as well as the write token, an unknown token
+  401, each a JSON-RPC error: an integration tells them apart by the status,
+  not by the message.
 - **`wazap --version --json`** prints one JSON object on stdout, with `version`,
   `baileys` and `node`, for an install script to read. Plain `--version` stays a
   line for a person, on stderr like every other one.
