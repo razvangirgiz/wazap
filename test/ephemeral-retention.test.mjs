@@ -37,7 +37,7 @@ async function fixture(t, { embed, timers = false, retention = true } = {}) {
       for (const key of Object.keys(process.env)) if (key.startsWith("WAZAP_")) delete process.env[key];
       for (const [key, value] of saved) process.env[key] = value;
     }
-    if (embed) result.svc.recallEmbed = embed;
+    if (embed) result.svc.recallIndex.recallEmbed = embed;
     services.push(result.svc);
     await result.svc.bootStorage();
     return result;
@@ -191,7 +191,7 @@ test("a transcription completing after expiry is neither returned nor re-cached"
   const started = gate(); const finish = gate();
   svc.mediaBuffer = async () => Buffer.from("synthetic audio");
   svc.transcriber = async () => { started.release(); return finish.promise; };
-  const pending = svc.runTranscribe(sid(raw), raw, { mime: "audio/ogg" }, { provider: "local" });
+  const pending = svc.voice.runTranscribe(sid(raw), raw, { mime: "audio/ogg" }, { provider: "local" });
   const rejected = assert.rejects(pending, { code: "MESSAGE_NOT_FOUND" });
   await started.promise; advance(10_000); finish.release({ text: SECRET });
   await rejected;

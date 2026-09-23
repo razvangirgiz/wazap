@@ -362,7 +362,7 @@ test("a message the database holds only as text still answers, marked as from th
   try {
     textOnly(svc, "M1", "factura din august, plătită integral");
     await svc.bootStorage();
-    svc.embedFeed.kick(true);
+    svc.recallIndex.embedFeed.kick(true);
     await svc.recallIdle();
     const sid = `false_${PEER}_M1`;
     const { data } = await svc.recall("the paid invoice", undefined, 5);
@@ -474,7 +474,7 @@ test("search waits for the query's meaning only so long, then answers by words; 
   try {
     deliver(sock, [text("M1", "ți-am trimis factura pe e-mail ieri")]);
     await svc.recallIdle();
-    svc.recallQueryWaitMs = 150;
+    svc.recallIndex.recallQueryWaitMs = 150;
     const { call } = schemaCheckedTools(svc, { allowWrite: false });
     const started = Date.now();
     const cold = await call("search", { query: "factura" });
@@ -764,7 +764,7 @@ test("the tool renders each hit with its date, score, what matched and the index
     deliver(sock, [text("M1", "ți-am trimis factura pe e-mail ieri")]);
     // M2 is a row only the old index still had: the database keeps its words, not its protobuf.
     textOnly(svc, "M2", "factura veche din index");
-    svc.embedFeed.kick(true);
+    svc.recallIndex.embedFeed.kick(true);
     await svc.recallIdle();
 
     const { call } = schemaCheckedTools(svc, { allowWrite: false });

@@ -42,17 +42,16 @@ export interface GroupsHost {
 }
 
 export class AccountGroups {
+  /** Group metadata by jid, as last read or updated. */
+  readonly groupCache = new Map<string, GroupMetadata>();
+  /** Groups whose metadata WhatsApp refused, so we stop asking on every read. */
+  readonly unreadableGroups = new Set<string>();
+
   constructor(
     private readonly host: GroupsHost,
     private readonly identity: AccountIdentity,
     private readonly views: MessageViews
   ) {}
-
-  /** Group metadata by jid, as last read or updated. */
-  readonly groupCache = new Map<string, GroupMetadata>();
-
-  /** Groups whose metadata WhatsApp refused, so we stop asking on every read. */
-  readonly unreadableGroups = new Set<string>();
 
   getGroupInfo(groupId: string): Promise<GroupInfo> {
     return this.host.guarded(async () => {

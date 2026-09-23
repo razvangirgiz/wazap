@@ -523,7 +523,7 @@ test("a voice note deleted while it waits is never transcribed", async () => {
   assert.equal(svc.db.transcripts.stats().queued, 1, "the delete took the note off the queue");
 
   svc.status = "connected";
-  svc.transcribeWorker.kick();
+  svc.voice.transcribeWorker.kick();
   await svc.transcribeIdle();
   assert.deepEqual(provider.started, ["KEPT"]);
   await svc.stop();
@@ -752,7 +752,7 @@ test("a voice note that just arrived starts at once, ahead of a history backlog"
     return seam(...args);
   };
   deliver(sock, [voiceNote("LIVE")]);
-  const waited = svc.transcribeWorker.settled(svc.transcribeSource, sidOf("LIVE")).then(() => {
+  const waited = svc.voice.transcribeWorker.settled(svc.voice.transcribeSource, sidOf("LIVE")).then(() => {
     storedAt = performance.now();
   });
   await waited;
@@ -771,7 +771,7 @@ test("a voice note that just arrived starts at once, ahead of a history backlog"
 
 test("the shared worker is the one every service uses", () => {
   const { svc } = serviceWith(CONFIGURED);
-  assert.equal(svc.transcribeWorker, transcribeWorker);
+  assert.equal(svc.voice.transcribeWorker, transcribeWorker);
   return svc.stop();
 });
 
