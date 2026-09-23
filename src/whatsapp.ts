@@ -21,12 +21,10 @@ import {
   generateMessageIDV2,
   generateWAMessage,
   type MiscMessageGenerationOptions,
-  normalizeMessageContent,
   proto,
   type Chat as BaileysChat,
   type Contact as BaileysContact,
   type GroupMetadata,
-  type GroupParticipant,
   type WAMessage,
   type WAMessageKey,
   type WASocket,
@@ -93,7 +91,6 @@ import {
   assertMediaSource,
   describe,
   loadMedia,
-  loadProfilePicture,
   mediaContent,
   mediaFilename,
 } from "./outgoing-media.js";
@@ -167,8 +164,10 @@ import { RateLimiter } from "./ratelimit.js";
 import { IMPORT_UNVERIFIED_META, importProgress } from "./storage-status.js";
 import { maskNumber } from "./ui.js";
 import { SentIds } from "./sent-ids.js";
+import { AccountGroups, isAdmin } from "./service/groups.js";
 import { AccountIdentity, realName } from "./service/identity.js";
 import { MessageViews, missingMessage } from "./service/views.js";
+import { orNullAfter, PROFILE_LOOKUP_MS, statusCodeOf } from "./service/util.js";
 import {
   WebhookSink,
   asConnectionPayload,
@@ -203,7 +202,6 @@ import type {
   GroupActionResult,
   GroupInfo,
   JoinGroupResult,
-  JoinRequest,
   MediaResult,
   MediaSource,
   MessageType,
@@ -251,7 +249,6 @@ const INLINE_IMAGE_MAX_BYTES = 1_000_000;
 const MAX_TEXT_CHARS = 65_536;
 const EDIT_WINDOW_MS = 15 * 60_000;
 const RETRACT_WINDOW_MS = 2 * 24 * 3_600_000;
-const MAX_GROUP_PARTICIPANTS = 500;
 const STALE_INBOUND_MS = 24 * 3_600_000;
 /** How many arrivals wait_for_messages can replay to a cursor before it has to say it lost track. */
 const ARRIVALS_KEPT = 500;
@@ -371,18 +368,8 @@ const silentLogger: ILogger = {
   error: () => {},
 };
 
-const PROFILE_LOOKUP_MS = 8_000;
 /** How long stop waits for a cancelled pairing socket to close. */
 const PAIRING_STOP_MS = 5_000;
-
-/** Resolves to `null` when `work` rejects or is still pending after `ms`. */
-function orNullAfter<T>(work: Promise<T>, ms: number): Promise<T | null> {
-  let timer: NodeJS.Timeout | undefined;
-  const guard = new Promise<null>((resolve) => {
-    timer = setTimeout(() => resolve(null), ms);
-  });
-  return Promise.race([work.catch(() => null), guard]).finally(() => clearTimeout(timer));
-}
 
 /**
  * Whether an account still has files from before the account database: the
@@ -469,13 +456,12 @@ export class WhatsAppService implements WhatsAppApi {
   /** find_contact's one ask this boot for an address book that looked empty, shared by every find waiting on it (F2-3). */
   private addressBookAsk: Promise<void> | null = null;
   private readonly blocked = new Set<string>();
-  private readonly groupCache = new Map<string, GroupMetadata>();
-  /** Groups whose metadata WhatsApp refused, so we stop asking on every read. */
-  private readonly unreadableGroups = new Set<string>();
   /** Who a jid is: the lid pairings, the account's own ids, the names (src/service/identity.ts). */
   private readonly identity: AccountIdentity;
   /** What a reader sees of the database (src/service/views.ts). */
   private readonly views: MessageViews;
+  /** The account's groups and their metadata cache (src/service/groups.ts). */
+  private readonly groups: AccountGroups;
   /** The account database, opened in the constructor; null only when it could not be opened. */
   private accountDb: AccountDb | null = null;
   /**
@@ -565,7 +551,7 @@ export class WhatsAppService implements WhatsAppApi {
       sock: () => this.sockClient,
       account: () => this.account,
       stopped: () => this.stopped,
-      cachedGroup: (jid) => this.groupCache.get(jid),
+      cachedGroup: (jid) => this.groups.groupCache.get(jid),
       folds: this.folds,
       scheduleFileCleanup: () => this.scheduleFileCleanup(),
       namesChanged: () => {
@@ -580,6 +566,16 @@ export class WhatsAppService implements WhatsAppApi {
         transcriptOf: (message) => this.transcriptOf(message),
       },
       this.identity
+    );
+    this.groups = new AccountGroups(
+      {
+        guarded: (work) => this.guarded(work),
+        ensureConnected: () => this.ensureConnected(),
+        beginWrite: () => this.beginWrite(),
+        learnGroup: (meta) => this.learnGroup(meta),
+      },
+      this.identity,
+      this.views
     );
     this.accountRecord = account;
     this.webhook = new WebhookSink(process.env, { account });
@@ -1436,7 +1432,7 @@ export class WhatsAppService implements WhatsAppApi {
       const sock = this.ensureConnected();
       const jid = this.identity.resolveId(chatId);
       await this.waitForSync();
-      await this.learnParticipants(jid);
+      await this.groups.learnParticipants(jid);
       await this.identity.learnLidPhones([jid]);
 
       if (before === undefined) {
@@ -1514,8 +1510,8 @@ export class WhatsAppService implements WhatsAppApi {
       // know; fetch it for the groups that spoke in the window, once each.
       const activeGroups = active
         .map((chat) => chat.jid)
-        .filter((jid) => isGroupId(jid) && !this.groupCache.has(jid) && !this.unreadableGroups.has(jid));
-      await Promise.all(activeGroups.slice(0, RECENT_GROUP_META_MAX).map((jid) => this.learnParticipants(jid)));
+        .filter((jid) => isGroupId(jid) && !this.groups.groupCache.has(jid) && !this.groups.unreadableGroups.has(jid));
+      await Promise.all(activeGroups.slice(0, RECENT_GROUP_META_MAX).map((jid) => this.groups.learnParticipants(jid)));
 
       const db = this.db;
       const wanted = types === undefined || types.length === 0 ? null : new Set<string>(types);
@@ -2162,11 +2158,11 @@ export class WhatsAppService implements WhatsAppApi {
       prepareNames: async (groups, people) => {
         await this.identity.learnLidPhones(people);
         if (this.status !== "connected") return;
-        const unknown = groups.filter((jid) => !this.groupCache.has(jid) && !this.unreadableGroups.has(jid)).slice(0, GROUP_META_MAX);
+        const unknown = groups.filter((jid) => !this.groups.groupCache.has(jid) && !this.groups.unreadableGroups.has(jid)).slice(0, GROUP_META_MAX);
         if (unknown.length === 0) return;
         let timer: ReturnType<typeof setTimeout> | undefined;
         await Promise.race([
-          Promise.all(unknown.map((jid) => this.learnParticipants(jid))),
+          Promise.all(unknown.map((jid) => this.groups.learnParticipants(jid))),
           new Promise<void>((done) => {
             timer = setTimeout(done, GROUP_META_MS);
           }),
@@ -2346,53 +2342,6 @@ export class WhatsAppService implements WhatsAppApi {
     const waiters = this.arrivalWaiters;
     this.arrivalWaiters = [];
     for (const waiter of waiters) waiter();
-  }
-
-  getGroupInfo(groupId: string): Promise<GroupInfo> {
-    return this.guarded(async () => {
-      this.ensureConnected();
-      const jid = this.identity.resolveId(groupId);
-      if (!isGroupId(jid)) {
-        throw new WazapError("GROUP_NOT_FOUND", `"${groupId}" is not a group id.`, "Group ids end in @g.us");
-      }
-      const meta = await this.groupMeta(jid, true);
-      const mine = this.myParticipation(meta);
-      if (!mine) {
-        throw new WazapError("NOT_A_PARTICIPANT", `The linked account is not a participant of ${jid}.`);
-      }
-      const iAmAdmin = isAdmin(mine);
-
-      const info: GroupInfo = {
-        chat_id: jid,
-        name: meta.subject,
-        description: meta.desc ?? null,
-        owner: meta.owner ? this.identity.canonical(meta.owner) : null,
-        created_at: meta.creation ? isoWithOffset(meta.creation * 1000) : null,
-        participant_count: meta.participants.length,
-        participants: meta.participants.slice(0, MAX_GROUP_PARTICIPANTS).map((p) => {
-          const id = this.identity.canonical(p.id);
-          return { contact_id: id, name: this.identity.displayName(id), is_admin: isAdmin(p) };
-        }),
-        announcement_only: Boolean(meta.announce),
-        i_am_admin: iAmAdmin,
-        info_locked: Boolean(meta.restrict),
-        member_add_mode: meta.memberAddMode ? "all" : "admins",
-        join_approval: Boolean(meta.joinApprovalMode),
-        disappearing_seconds: meta.ephemeralDuration ?? 0,
-      };
-      if (meta.isCommunity || meta.linkedParent) {
-        info.community = {
-          is_community: Boolean(meta.isCommunity),
-          parent_group_id: meta.linkedParent ? this.identity.canonical(meta.linkedParent) : null,
-        };
-      }
-
-      if (iAmAdmin) {
-        const link = await this.inviteLink(jid).catch(() => null);
-        if (link) info.invite_link = link;
-      }
-      return info;
-    });
   }
 
   downloadMedia(messageId: string, saveTo?: string): Promise<MediaResult> {
@@ -3122,7 +3071,7 @@ export class WhatsAppService implements WhatsAppApi {
         // Someone else's message comes down only by a group admin's hand. Baileys
         // sends it as an admin revoke, and the key must name who sent it. Baileys
         // documents no time limit for that, so the 2-day window is not assumed here.
-        await this.assertGroupAdmin(chat, "delete_message");
+        await this.groups.assertGroupAdmin(chat, "delete_message");
         const participant = raw.key.participant || raw.participant;
         if (!participant) {
           throw new WazapError(
@@ -3247,80 +3196,16 @@ export class WhatsAppService implements WhatsAppApi {
     return raw;
   }
 
-  createGroup(name: string, participantIds: string[]): Promise<{ chat_id: string; participants: ParticipantResult[] }> {
-    return this.guarded(async () => {
-      const sock = this.beginWrite();
-      const ids = participantIds.map((id) => this.identity.resolveId(id));
-      const meta = await sock.groupCreate(name, ids);
-      this.cacheGroup(this.identity.canonical(meta.id), meta);
-      const present = new Set(meta.participants.map((p) => this.identity.canonical(p.id)));
-      return {
-        chat_id: this.identity.canonical(meta.id),
-        participants: ids.map((id) =>
-          present.has(id)
-            ? { id, status: "ok" as const }
-            : { id, status: "failed" as const, reason: "WhatsApp did not add this participant" }
-        ),
-      };
-    });
+  getGroupInfo(groupId: string): Promise<GroupInfo> {
+    return this.groups.getGroupInfo(groupId);
   }
 
-  /**
-   * Join a group from an invite: a chat.whatsapp.com link or its bare code, or
-   * an invite message someone sent. Without confirm it only looks the group up,
-   * so the user sees what they would join. The code goes to WhatsApp and
-   * nowhere else: not into a result, an error or a log line.
-   */
+  createGroup(name: string, participantIds: string[]): Promise<{ chat_id: string; participants: ParticipantResult[] }> {
+    return this.groups.createGroup(name, participantIds);
+  }
+
   joinGroup(opts: { invite?: string; messageId?: string; confirm: boolean }): Promise<JoinGroupResult> {
-    return this.guarded(async () => {
-      if ((opts.invite === undefined) === (opts.messageId === undefined)) {
-        throw new WazapError(
-          "INVALID_ID",
-          "Pass exactly one of invite or message_id.",
-          'invite takes a https://chat.whatsapp.com/ link or its code; message_id an "invite" message from read_messages'
-        );
-      }
-      const invite = opts.messageId === undefined ? undefined : this.inviteMessageOf(opts.messageId);
-      const code = invite?.code ?? inviteCodeOf(opts.invite ?? "");
-      const unknown = { description: null, participant_count: null, join_approval: null };
-
-      if (!opts.confirm) {
-        const sock = this.ensureConnected();
-        let meta: GroupMetadata;
-        try {
-          meta = await sock.groupGetInviteInfo(code);
-        } catch (err) {
-          // An invite message still names its group when WhatsApp will not describe it.
-          if (invite === undefined) throw inviteRefused(err);
-          return { status: "preview", group_id: this.identity.canonical(invite.groupJid), name: invite.name, ...unknown };
-        }
-        return {
-          status: "preview",
-          group_id: this.identity.canonical(meta.id),
-          name: meta.subject || null,
-          description: meta.desc ?? null,
-          participant_count: meta.size ?? meta.participants.length,
-          join_approval: Boolean(meta.joinApprovalMode),
-        };
-      }
-
-      const sock = this.beginWrite();
-      if (invite !== undefined) {
-        const from: unknown = await sock.groupAcceptInviteV4(invite.raw.key, invite.message).catch((err: unknown) => {
-          throw inviteRefused(err);
-        });
-        const group = typeof from === "string" && isGroupId(from) ? from : invite.groupJid;
-        return { status: "joined", group_id: this.identity.canonical(group), name: invite.name, ...unknown };
-      }
-      const group = await sock.groupAcceptInvite(code).catch((err: unknown) => {
-        throw inviteRefused(err);
-      });
-      // A group that asks for approval answers with the request, not the group,
-      // and Baileys hands back nothing: the account is not in yet.
-      return group
-        ? { status: "joined", group_id: this.identity.canonical(group), name: null, ...unknown }
-        : { status: "pending_approval", group_id: null, name: null, ...unknown };
-    });
+    return this.groups.joinGroup(opts);
   }
 
   manageGroup(
@@ -3330,111 +3215,7 @@ export class WhatsAppService implements WhatsAppApi {
     value?: string,
     source?: MediaSource
   ): Promise<GroupActionResult> {
-    return this.guarded(async () => {
-      const sock = this.beginWrite();
-      const jid = this.identity.resolveId(groupId);
-      if (!isGroupId(jid)) {
-        throw new WazapError("GROUP_NOT_FOUND", `"${groupId}" is not a group id.`, "Group ids end in @g.us");
-      }
-
-      // A setting's value is checked first, so a bad one never reaches WhatsApp, not even the admin lookup.
-      const choices = GROUP_SETTINGS[action];
-      const setting = choices ? settingFor(action, value, choices) : undefined;
-      if (ADMIN_ACTIONS.has(action)) await this.assertGroupAdmin(jid, action);
-      const ids = (participantIds ?? []).map((id) => this.identity.resolveId(id));
-      if (PARTICIPANT_ACTIONS.has(action) && ids.length === 0) {
-        throw new WazapError("INVALID_ID", `The "${action}" action needs at least one participant id.`);
-      }
-
-      switch (action) {
-        case "add":
-        case "remove":
-        case "promote":
-        case "demote": {
-          const results = await sock.groupParticipantsUpdate(jid, ids, action);
-          this.groupCache.delete(jid);
-          return {
-            group_id: jid,
-            action,
-            applied: `${action} ${ids.length} participant(s)`,
-            participants: results.map((entry, index) => this.participantResult(entry, ids[index])),
-          };
-        }
-        case "leave":
-          await sock.groupLeave(jid);
-          this.groupCache.delete(jid);
-          return { group_id: jid, action, applied: "left the group" };
-        case "set_subject": {
-          const subject = requireValue(value, "set_subject", "the new group name");
-          await sock.groupUpdateSubject(jid, subject);
-          this.groupCache.delete(jid);
-          return { group_id: jid, action, applied: `subject set to "${subject}"` };
-        }
-        case "set_description": {
-          const description = requireValue(value, "set_description", "the new description");
-          await sock.groupUpdateDescription(jid, description);
-          this.groupCache.delete(jid);
-          return { group_id: jid, action, applied: "description updated" };
-        }
-        case "set_picture": {
-          // The same loader as the account's own photo, so a bad file fails the same way.
-          const media = await loadProfilePicture(source ?? {});
-          await sock.updateProfilePicture(jid, media.buffer);
-          const picture = await orNullAfter(sock.profilePictureUrl(jid, "image"), PROFILE_LOOKUP_MS);
-          return { group_id: jid, action, applied: "group photo updated", profile_pic_url: picture ?? null };
-        }
-        case "remove_picture":
-          await sock.removeProfilePicture(jid);
-          return { group_id: jid, action, applied: "group photo removed" };
-        case "get_invite_link": {
-          const link = await this.inviteLink(jid);
-          return { group_id: jid, action, applied: "invite link fetched", invite_link: link };
-        }
-        case "revoke_invite_link": {
-          const code = await sock.groupRevokeInvite(jid);
-          const link = code ? `https://chat.whatsapp.com/${code}` : undefined;
-          return {
-            group_id: jid,
-            action,
-            applied: "invite link revoked",
-            ...(link ? { invite_link: link } : {}),
-          };
-        }
-        case "list_join_requests": {
-          const listed = await sock.groupRequestParticipantsList(jid);
-          const requests = listed.filter((attrs) => attrs.jid).map((attrs) => this.joinRequest(attrs));
-          return {
-            group_id: jid,
-            action,
-            applied: `${requests.length} pending join request(s)`,
-            join_requests: requests,
-          };
-        }
-        case "approve_join_requests":
-        case "reject_join_requests": {
-          const verdict = action === "approve_join_requests" ? "approve" : "reject";
-          const results = await sock.groupRequestParticipantsUpdate(jid, ids, verdict);
-          this.groupCache.delete(jid);
-          return {
-            group_id: jid,
-            action,
-            applied: `${verdict} ${ids.length} join request(s)`,
-            // A refused approval is not a cue to send an invite, so no invite_needed here.
-            participants: results.map((entry, index) => this.participantResult(entry, ids[index], false)),
-          };
-        }
-        case "set_announcement_only":
-        case "set_info_locked":
-        case "set_add_mode":
-        case "set_join_approval":
-        case "set_disappearing": {
-          if (!setting) throw new WazapError("INVALID_ID", `The "${action}" action needs a value.`);
-          await setting.apply(sock, jid);
-          this.groupCache.delete(jid);
-          return { group_id: jid, action, applied: setting.applied };
-        }
-      }
-    });
+    return this.groups.manageGroup(groupId, action, participantIds, value, source);
   }
 
   /** Close the current socket and mute it, so a socket we are replacing can no
@@ -3664,19 +3445,19 @@ export class WhatsAppService implements WhatsAppApi {
     });
 
     sock.ev.on("groups.upsert", (groups) => {
-      this.handling("groups", () => groups.forEach((meta) => this.cacheGroup(this.identity.canonical(meta.id), meta)), undefined);
+      this.handling("groups", () => groups.forEach((meta) => this.groups.cacheGroup(this.identity.canonical(meta.id), meta)), undefined);
     });
 
     sock.ev.on("groups.update", (updates) => {
       for (const update of updates) {
         if (!update.id) continue;
         const jid = this.identity.canonical(update.id);
-        const previous = this.groupCache.get(jid);
-        if (previous) this.groupCache.set(jid, { ...previous, ...update });
+        const previous = this.groups.groupCache.get(jid);
+        if (previous) this.groups.groupCache.set(jid, { ...previous, ...update });
       }
     });
 
-    sock.ev.on("group-participants.update", ({ id }) => this.groupCache.delete(this.identity.canonical(id)));
+    sock.ev.on("group-participants.update", ({ id }) => this.groups.groupCache.delete(this.identity.canonical(id)));
 
     sock.ev.on("blocklist.set", ({ blocklist }) => {
       this.blocked.clear();
@@ -4092,8 +3873,8 @@ export class WhatsAppService implements WhatsAppApi {
     const jid = this.identity.resolveId(chatId);
 
     if (isGroupId(jid)) {
-      const meta = await this.groupMeta(jid);
-      const mine = this.myParticipation(meta);
+      const meta = await this.groups.groupMeta(jid);
+      const mine = this.groups.myParticipation(meta);
       if (meta.announce && !(mine && isAdmin(mine))) {
         throw new WazapError("GROUP_ANNOUNCEMENT_ONLY", `Only admins may post in "${meta.subject}".`);
       }
@@ -4116,120 +3897,6 @@ export class WhatsAppService implements WhatsAppApi {
       }
     }
     return jid;
-  }
-
-  private async groupMeta(jid: string, fresh = false): Promise<GroupMetadata> {
-    const cached = this.groupCache.get(jid);
-    if (cached && !fresh) return cached;
-    const sock = this.ensureConnected();
-    let meta: GroupMetadata;
-    try {
-      meta = await sock.groupMetadata(jid);
-    } catch (err) {
-      const code = statusCodeOf(err);
-      if (code === 403) throw new WazapError("NOT_A_PARTICIPANT", `The linked account is not in ${jid}.`);
-      if (code === 404) throw new WazapError("GROUP_NOT_FOUND", `WhatsApp does not know the group ${jid}.`);
-      throw new WazapError("GROUP_NOT_FOUND", `Could not read ${jid}: ${describe(err)}`);
-    }
-    this.cacheGroup(jid, meta);
-    return meta;
-  }
-
-  private cacheGroup(jid: string, meta: GroupMetadata): void {
-    this.groupCache.set(jid, meta);
-    this.learnGroup(meta);
-  }
-
-  /**
-   * Reading a group for the first time costs one metadata fetch, after which its
-   * senders resolve from cache. A group we cannot read — left, deleted — is not
-   * worth failing the read over, and asking again on every read would cost a
-   * round trip per message page forever.
-   */
-  private async learnParticipants(jid: string): Promise<void> {
-    if (!isGroupId(jid) || this.groupCache.has(jid) || this.unreadableGroups.has(jid)) return;
-    await this.groupMeta(jid).catch(() => this.unreadableGroups.add(jid));
-  }
-
-  private myParticipation(meta: GroupMetadata): GroupParticipant | undefined {
-    return meta.participants.find((p) => this.identity.isMe(p.id) || (p.phoneNumber && this.identity.isMe(p.phoneNumber)));
-  }
-
-  private async assertGroupAdmin(jid: string, action: GroupAction | "delete_message"): Promise<void> {
-    const meta = await this.groupMeta(jid);
-    const mine = this.myParticipation(meta);
-    if (!mine) throw new WazapError("NOT_A_PARTICIPANT", `The linked account is not in ${jid}.`);
-    if (!isAdmin(mine)) {
-      throw new WazapError(
-        "NOT_ADMIN",
-        `"${action}" needs admin rights in "${meta.subject}".`,
-        "Ask an admin of the group to make the linked account an admin, or to make this change themselves"
-      );
-    }
-  }
-
-  /** The invite a message carries, checked before WhatsApp is asked about it. */
-  private inviteMessageOf(messageId: string): {
-    raw: WAMessage;
-    message: proto.Message.IGroupInviteMessage;
-    code: string;
-    groupJid: string;
-    name: string | null;
-  } {
-    const raw = this.views.messageOrThrow(messageId);
-    const message = normalizeMessageContent(raw.message)?.groupInviteMessage;
-    if (!message) {
-      throw new WazapError(
-        "INVALID_ID",
-        `Message ${messageId} is not a group invite.`,
-        'Pass a message_id whose type is "invite", or the invite link as invite'
-      );
-    }
-    const expires = protoNumber(message.inviteExpiration) ?? 0;
-    // Baileys empties the code of an invite once it has been accepted.
-    if (!message.inviteCode || !message.groupJid || (expires > 0 && expires * 1000 <= Date.now())) {
-      throw new WazapError(
-        "WHATSAPP_ERROR",
-        `The invite in ${messageId} has expired or was already used.`,
-        "Ask the sender for a fresh invite"
-      );
-    }
-    return { raw, message, code: message.inviteCode, groupJid: message.groupJid, name: message.groupName || null };
-  }
-
-  private async inviteLink(jid: string): Promise<string> {
-    const sock = this.ensureConnected();
-    const code = await sock.groupInviteCode(jid);
-    if (!code) throw new WazapError("WHATSAPP_ERROR", `WhatsApp returned no invite code for ${jid}.`);
-    return `https://chat.whatsapp.com/${code}`;
-  }
-
-  private participantResult(
-    entry: { status: string; jid: string | undefined },
-    fallback?: string,
-    inviteable = true
-  ): ParticipantResult {
-    const id = entry.jid ? this.identity.canonical(entry.jid) : (fallback ?? "");
-    if (entry.status === "200") return { id, status: "ok" };
-    if (inviteable && INVITE_NEEDED_CODES.has(entry.status)) {
-      return { id, status: "invite_needed", reason: entry.status };
-    }
-    return { id, status: "failed", reason: entry.status };
-  }
-
-  /**
-   * One pending join request. Baileys hands over the raw attributes of WhatsApp's
-   * node untyped: `jid`, and `request_time` (seconds) and `request_method` when sent.
-   */
-  private joinRequest(attrs: { [key: string]: string }): JoinRequest {
-    const id = this.identity.canonical(attrs.jid ?? "");
-    const seconds = Number(attrs.request_time);
-    return {
-      id,
-      name: this.identity.displayName(id),
-      requested_at: seconds > 0 ? isoWithOffset(seconds * 1000) : null,
-      method: attrs.request_method || null,
-    };
   }
 
   /**
@@ -5212,130 +4879,8 @@ export class WhatsAppService implements WhatsAppApi {
   }
 }
 
-const ADMIN_ACTIONS = new Set<GroupAction>([
-  "add",
-  "remove",
-  "promote",
-  "demote",
-  "set_subject",
-  "set_description",
-  "set_picture",
-  "remove_picture",
-  "get_invite_link",
-  "revoke_invite_link",
-  "list_join_requests",
-  "approve_join_requests",
-  "reject_join_requests",
-  "set_announcement_only",
-  "set_info_locked",
-  "set_add_mode",
-  "set_join_approval",
-  "set_disappearing",
-]);
-
-const PARTICIPANT_ACTIONS = new Set<GroupAction>([
-  "add",
-  "remove",
-  "promote",
-  "demote",
-  "approve_join_requests",
-  "reject_join_requests",
-]);
-
-interface GroupSetting {
-  applied: string;
-  apply: (sock: WASocket, jid: string) => Promise<void>;
-}
-
-const DAY_SECONDS = 86_400;
-
-/** The values each setting action takes, what each asks WhatsApp for, and how the result reads. */
-const GROUP_SETTINGS: Partial<Record<GroupAction, Record<string, GroupSetting>>> = {
-  set_announcement_only: {
-    on: { applied: "only admins can send messages", apply: (sock, jid) => sock.groupSettingUpdate(jid, "announcement") },
-    off: {
-      applied: "every member can send messages",
-      apply: (sock, jid) => sock.groupSettingUpdate(jid, "not_announcement"),
-    },
-  },
-  set_info_locked: {
-    on: { applied: "only admins can edit the group info", apply: (sock, jid) => sock.groupSettingUpdate(jid, "locked") },
-    off: {
-      applied: "every member can edit the group info",
-      apply: (sock, jid) => sock.groupSettingUpdate(jid, "unlocked"),
-    },
-  },
-  set_add_mode: {
-    admins: { applied: "only admins can add members", apply: (sock, jid) => sock.groupMemberAddMode(jid, "admin_add") },
-    all: { applied: "every member can add members", apply: (sock, jid) => sock.groupMemberAddMode(jid, "all_member_add") },
-  },
-  set_join_approval: {
-    on: { applied: "admins approve new members", apply: (sock, jid) => sock.groupJoinApprovalMode(jid, "on") },
-    off: { applied: "new members join without approval", apply: (sock, jid) => sock.groupJoinApprovalMode(jid, "off") },
-  },
-  // The durations WhatsApp offers; 0 is what Baileys turns into "off".
-  set_disappearing: {
-    off: { applied: "disappearing messages off", apply: (sock, jid) => sock.groupToggleEphemeral(jid, 0) },
-    "24h": {
-      applied: "disappearing messages set to 24h",
-      apply: (sock, jid) => sock.groupToggleEphemeral(jid, DAY_SECONDS),
-    },
-    "7d": {
-      applied: "disappearing messages set to 7d",
-      apply: (sock, jid) => sock.groupToggleEphemeral(jid, 7 * DAY_SECONDS),
-    },
-    "90d": {
-      applied: "disappearing messages set to 90d",
-      apply: (sock, jid) => sock.groupToggleEphemeral(jid, 90 * DAY_SECONDS),
-    },
-  },
-};
-
-/** The setting a value names, or INVALID_ID with a fix listing the values the action takes. */
-function settingFor(action: GroupAction, value: string | undefined, choices: Record<string, GroupSetting>): GroupSetting {
-  const key = (value ?? "").trim().toLowerCase();
-  if (Object.hasOwn(choices, key)) return choices[key];
-  const allowed = Object.keys(choices)
-    .map((choice) => `"${choice}"`)
-    .join(", ");
-  throw new WazapError(
-    "INVALID_ID",
-    key ? `"${value}" is not a value the "${action}" action takes.` : `The "${action}" action needs a value.`,
-    `Pass value as one of ${allowed}`
-  );
-}
-
-/** WhatsApp answers "cannot add, invite them instead" with these codes. */
-const INVITE_NEEDED_CODES = new Set(["403", "409"]);
-
 /** How long a pinned message stays pinned, by the hours manage_chat takes: WhatsApp's 24 hours, 7 days and 30 days. */
 const PIN_SECONDS: Record<number, 86_400 | 604_800 | 2_592_000> = { 24: 86_400, 168: 604_800, 720: 2_592_000 };
-
-/** The code in a chat.whatsapp.com link, or a bare code. What is refused is not repeated back. */
-function inviteCodeOf(invite: string): string {
-  const trimmed = invite.trim();
-  const match =
-    /^(?:https?:\/\/)?chat\.whatsapp\.com\/(?:invite\/)?([A-Za-z0-9]{10,64})\/?(?:[?#].*)?$/i.exec(trimmed) ??
-    /^([A-Za-z0-9]{10,64})$/.exec(trimmed);
-  if (!match?.[1]) {
-    throw new WazapError(
-      "INVALID_ID",
-      "The invite is neither a https://chat.whatsapp.com/ link nor an invite code.",
-      "Pass the link exactly as it was shared"
-    );
-  }
-  return match[1];
-}
-
-/** WhatsApp's refusal of an invite. Baileys builds its message from WhatsApp's answer, which does not carry the code. */
-function inviteRefused(err: unknown): WazapError {
-  if (err instanceof WazapError) return err;
-  return new WazapError(
-    "WHATSAPP_ERROR",
-    `WhatsApp refused the invite: ${describe(err)}.`,
-    "The link may be reset, expired or mistyped: ask for a fresh invite"
-  );
-}
 
 /**
  * A wrong WAZAP_TRANSCRIBE_* value must not take a running server down with it.
@@ -5405,22 +4950,8 @@ function definedOnly<T extends object>(value: T): Partial<T> {
   return Object.fromEntries(Object.entries(value).filter(([, v]) => v !== undefined)) as Partial<T>;
 }
 
-function isAdmin(participant: GroupParticipant): boolean {
-  return participant.admin === "admin" || participant.admin === "superadmin";
-}
-
-function requireValue(value: string | undefined, action: GroupAction, what: string): string {
-  const trimmed = (value ?? "").trim();
-  if (!trimmed) throw new WazapError("INVALID_ID", `The "${action}" action needs a value: ${what}.`);
-  return trimmed;
-}
-
 function isMissing(err: unknown): boolean {
   return (err as NodeJS.ErrnoException | undefined)?.code === "ENOENT";
-}
-
-function statusCodeOf(err: unknown): number | undefined {
-  return (err as { output?: { statusCode?: number } } | undefined)?.output?.statusCode;
 }
 
 function statusTextOf(entry: { [protocol: string]: unknown } | undefined): string | null {
