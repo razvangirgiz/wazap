@@ -42,7 +42,7 @@ async function fixture(t, embedding, config = {}) {
     }
     result.sock.chatModify = async () => {};
     result.sock.onWhatsApp = async (jid) => [{ jid, exists: true }];
-    if (embedding) result.svc.recallEmbed = embedding;
+    if (embedding) result.svc.recallIndex.recallEmbed = embedding;
     result.sock.sendMessage = async () => ({});
     services.push(result.svc);
     await result.svc.bootStorage();
@@ -165,7 +165,7 @@ test("a transcription finishing after deletion is neither cached nor returned", 
   const started = gate(); const finish = gate();
   svc.mediaBuffer = async () => Buffer.from("synthetic audio");
   svc.transcriber = async () => { started.release(); return finish.promise; };
-  const pending = svc.runTranscribe(sidOf(raw), raw, { mime: "audio/ogg" }, { provider: "local" });
+  const pending = svc.voice.runTranscribe(sidOf(raw), raw, { mime: "audio/ogg" }, { provider: "local" });
   const rejected = assert.rejects(pending, { code: "MESSAGE_NOT_FOUND" });
   await started.promise;
   remove(sock, raw);

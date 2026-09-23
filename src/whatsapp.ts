@@ -8,8 +8,7 @@
 
 import { randomUUID } from "node:crypto";
 import { existsSync, readdirSync, renameSync } from "node:fs";
-import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { isAbsolute, join, relative, sep } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import {
@@ -117,39 +116,15 @@ import {
   quotedSenderJid,
   reactionOf,
   revokedTargetKey,
-  searchableText,
   thumbnailOf,
   viewText,
-  voiceSeconds,
   voteOf,
   type EncryptedVote,
 } from "./messages.js";
 import { readVote } from "./polls.js";
 import { withoutPrivateQuote, withoutWords } from "./private-contacts.js";
 import { PAIRING_TIMEOUT_MS, WA_BROWSER, prettyCode, socketFactory, startPairing } from "./pairing.js";
-import { diversify } from "./recall/variety.js";
-import {
-  EMBED_MODELS,
-  EmbedEngine,
-  EmbedFeed,
-  embedReady,
-  RECALL_TEXT_CAP,
-  readRecallSettings,
-  type RecallSettings,
-  type RecallStatus,
-} from "./recall/index.js";
-import {
-  readTranscribeSettings,
-  PROVIDERS,
-  transcribeFile,
-  transcribeReady,
-  transcribeWorker,
-  markFailure,
-  type Transcript,
-  type TranscribeSettings,
-  type TranscribeSource,
-  type TranscriptRecord,
-} from "./transcribe/index.js";
+import { transcribeFile, transcribeReady } from "./transcribe/index.js";
 import {
   DraftStore,
   frozenReceiptText,
@@ -166,8 +141,11 @@ import { maskNumber } from "./ui.js";
 import { SentIds } from "./sent-ids.js";
 import { AccountGroups, isAdmin } from "./service/groups.js";
 import { AccountIdentity, realName } from "./service/identity.js";
-import { MessageViews, missingMessage } from "./service/views.js";
-import { orNullAfter, PROFILE_LOOKUP_MS, statusCodeOf } from "./service/util.js";
+import { AccountRecall } from "./service/recall.js";
+import { MessageViews } from "./service/views.js";
+import { AccountVoice } from "./service/voice.js";
+import { MessageWaits } from "./service/waits.js";
+import { DIR_MODE, FILE_MODE, orNullAfter, pageLimit, PROFILE_LOOKUP_MS, statusCodeOf } from "./service/util.js";
 import {
   WebhookSink,
   asConnectionPayload,
@@ -211,12 +189,10 @@ import type {
   PrivateRule,
   ParticipantResult,
   RecallAnswer,
-  RecallHit,
   RecentConversation,
   SentMessage,
   StatusInfo,
   StorageInfo,
-  TranscriptionStatus,
   SyncState,
   Synced,
   TranscribeOptions,
@@ -250,22 +226,12 @@ const MAX_TEXT_CHARS = 65_536;
 const EDIT_WINDOW_MS = 15 * 60_000;
 const RETRACT_WINDOW_MS = 2 * 24 * 3_600_000;
 const STALE_INBOUND_MS = 24 * 3_600_000;
-/** How many arrivals wait_for_messages can replay to a cursor before it has to say it lost track. */
-const ARRIVALS_KEPT = 500;
-/** After the first matching arrival, how long a wait keeps collecting the rest of the burst. */
-const ARRIVAL_SETTLE_MS = 1_000;
 /** A photo bigger than this is not downloaded for a preview. */
 const PREVIEW_SOURCE_MAX_BYTES = 6_000_000;
 /** A video bigger than this is not downloaded for a frame. */
 const PREVIEW_VIDEO_MAX_BYTES = 25_000_000;
 /** How many active groups one catch-up fetches metadata for, to name their senders. */
 const RECENT_GROUP_META_MAX = 12;
-/** Hybrid hits recall ranks for variety before it cuts the list to the limit. */
-const RECALL_RERANK_WINDOW = 100;
-/** A match found by meaning loses half its way down to 70% each month: recency orders close matches, never buries a clearly closer old one. */
-const RECALL_RECENCY_HALF_LIFE_MS = 30 * 86_400_000;
-/** How long a search waits for its query's embedding (a sidecar starting cold takes longer) before it answers by words. */
-const RECALL_QUERY_WAIT_MS = 8_000;
 /** Messages getRecentMessages returns per chat: the newest of its window, as many as main's per-chat ring held. */
 const RECENT_PER_CHAT_MAX = 2_000;
 /** Local contact filing caps: enough to describe anyone, small enough to stay a note. */
@@ -292,26 +258,14 @@ const TYPE_FILTER_SCAN = 10_000;
 const MEDIA_DOWNLOAD_MAX_BYTES = 100_000_000;
 /** Unknown sends checked against the stored messages when the database opens. */
 const SEND_RECOVERY_LIMIT = 500;
-/** Ten minutes of speech. Past that, auto-transcribing is a bill nobody asked for. */
-const AUTO_TRANSCRIBE_MAX_SECONDS = 600;
-/**
- * A voice note a history sync delivers is queued for transcription only when
- * it is this recent: the notes of the last day, not the whole archive a first
- * link brings.
- */
-const HISTORY_TRANSCRIBE_WINDOW_MS = 24 * 60 * 60_000;
 /** How long a stop waits for a transcription under way to store what it got. */
 const STOP_TRANSCRIBE_WAIT_MS = 30_000;
 /** How long list_chats waits for a lid chat still folding into its number before it lists what it has. */
 const FOLD_SETTLE_MS = 2_000;
 /** How long one transaction of a history batch may hold the event loop. */
 const HISTORY_CHUNK_MS = 20;
-/** How long the recall status reuses its count of stored vectors. */
-const VECTOR_COUNT_TTL_MS = 10_000;
 /** Chat kinds a person can be waiting in: every one but the status feed. */
 const WAITING_KINDS: readonly ChatKind[] = ["direct", "group", "newsletter", "broadcast"];
-const DIR_MODE = 0o700;
-const FILE_MODE = 0o600;
 /** The account database's file, beside the account's credentials. */
 const DB_FILE = "wazap.sqlite";
 /** How often a running service looks again at legacy files whose week may be up. */
@@ -445,11 +399,6 @@ export class WhatsAppService implements WhatsAppApi {
   private historyPending = 0;
   private syncDeadline: ReturnType<typeof setTimeout> | null = null;
   private syncWaiters: Array<() => void> = [];
-  /** Inbound messages as they land, newest last, so a wait can resume from a cursor. */
-  private readonly arrivals: Array<{ seq: number; sid: string; jid: string }> = [];
-  private arrivalSeq = 0;
-  private readonly bootId = randomUUID().slice(0, 8);
-  private arrivalWaiters: Array<() => void> = [];
   private historyWaiters: Array<() => void> = [];
   private callSweepTimer: ReturnType<typeof setInterval> | null = null;
   private contactResyncTried = false;
@@ -462,6 +411,12 @@ export class WhatsAppService implements WhatsAppApi {
   private readonly views: MessageViews;
   /** The account's groups and their metadata cache (src/service/groups.ts). */
   private readonly groups: AccountGroups;
+  /** Voice notes as text: get_media's transcription and the queue (src/service/voice.ts). */
+  private readonly voice: AccountVoice;
+  /** Search by words and meaning, and the index behind it (src/service/recall.ts). */
+  private readonly recallIndex: AccountRecall;
+  /** wait_for_messages: the last arrivals and the waits parked on them (src/service/waits.ts). */
+  private readonly waits: MessageWaits;
   /** The account database, opened in the constructor; null only when it could not be opened. */
   private accountDb: AccountDb | null = null;
   /**
@@ -488,35 +443,9 @@ export class WhatsAppService implements WhatsAppApi {
   private fileFault: WazapError | null = null;
   private readonly calls = new CallTracker();
   private readonly paths: AccountPaths;
-  /** The transcription environment, or the complaint about it. See `readTranscribeConfig`. */
-  private readonly transcribe: TranscribeSettings | WazapError;
-  /** The recall environment, or the complaint about it. Same rule as transcribe: a bad env is a line, not a crash. */
-  private readonly recallEnv: RecallSettings | WazapError;
-  /** Embeds what the database holds; null when recall is off. */
-  private readonly embedFeed: EmbedFeed | null;
-  private vectorCount: { at: number; count: number } | null = null;
-  /** The sidecar starts on the first embedding call, never at boot. */
-  private recallEngineP: Promise<EmbedEngine> | null = null;
-  /** RECALL_QUERY_WAIT_MS; a field so a test need not wait eight seconds. */
-  private recallQueryWaitMs = RECALL_QUERY_WAIT_MS;
-  /**
-   * Whether incoming voice notes are queued for transcription: a provider is
-   * configured, auto mode is on, and the provider may run in this mode.
-   */
-  private readonly autoTranscribe: boolean;
-  /** Where the configured provider sends the audio, recorded with each note queued; null with no provider. */
-  private readonly transcribeClass: "local" | "api" | null;
-  /** This account as the process's transcription worker sees it. */
-  private readonly transcribeSource: TranscribeSource;
-  /** The worker every account shares; a seam for tests. */
-  private readonly transcribeWorker = transcribeWorker;
-  /** Cancels this account's uploads and whisper.cpp runs: it is being removed. */
-  private readonly transcribeAbort = new AbortController();
   /** The seams the tests replace; production always runs the real providers. */
   private transcriber = transcribeFile;
   private transcribeReadiness = transcribeReady;
-  /** Transcriptions under way, so one recording is never uploaded twice at once. */
-  private readonly transcribing = new Map<string, Promise<TranscribeResult>>();
   private readonly drafts = new DraftStore();
   /** Confirms under way, by draft: a second confirm of the same draft by its owner waits for the first. */
   private readonly confirming = new Map<string, { owner: string | null; work: Promise<SentMessage> }>();
@@ -563,7 +492,7 @@ export class WhatsAppService implements WhatsAppApi {
         db: () => this.db,
         readyDb: () => this.readyDb(),
         settleExpired: (db, id) => this.settleExpired(db, id),
-        transcriptOf: (message) => this.transcriptOf(message),
+        transcriptOf: (message) => this.voice.transcriptOf(message),
       },
       this.identity
     );
@@ -583,45 +512,68 @@ export class WhatsAppService implements WhatsAppApi {
       db: () => this.readyDb(),
       sink: () => this.webhook,
       payload: (event, message) => this.webhookPayload(event, message),
-      awaitingTranscript: (message) => this.webhookAwaitsTranscript(message),
+      awaitingTranscript: (message) => this.voice.webhookAwaitsTranscript(message),
     });
     const policy = accountPolicy(account, config);
     this.effectiveReadOnly = policy.readOnly;
     this.effectiveRateLimit = policy.rateLimit;
     this.writes = new RateLimiter(this.effectiveRateLimit);
     this.paths = paths;
-    this.transcribe = readTranscribeConfig(config.dataDir);
-    this.recallEnv = readRecallConfig(config.dataDir);
-    const settings = this.transcribe;
-    // Read-only refuses uploading audio to an API, so notes it would refuse are not queued.
-    this.autoTranscribe =
-      !(settings instanceof WazapError) &&
-      settings.provider !== null &&
-      settings.auto &&
-      !(this.effectiveReadOnly && settings.provider === "openai");
-    this.transcribeClass = settings instanceof WazapError || settings.provider === null ? null : PROVIDERS[settings.provider].kind;
-    this.transcribeSource = {
-      name: account.id,
-      providerClass: () => this.transcribeClass ?? "local",
-      db: () => (this.stopped ? null : this.readyDb()),
-      ready: () => !this.stopped && this.status === "connected",
-      run: (sid) => this.transcribeQueued(sid),
-      settled: (sid) => this.webhookTranscriptSettled(sid),
-    };
-    const recall = this.recallEnv;
-    this.embedFeed =
-      recall instanceof WazapError || !recall.enabled || !config.persistHistory
-        ? null
-        : new EmbedFeed({
-            db: () => this.readyDb(),
-            model: recall.model,
-            words: (message) => this.recallWords(message),
-            embed: (texts) => this.recallEmbed(texts, "document"),
-          });
+    this.voice = new AccountVoice(
+      {
+        db: () => this.db,
+        readyDb: () => this.readyDb(),
+        stopped: () => this.stopped,
+        status: () => this.status,
+        guarded: (work) => this.guarded(work),
+        ensureConnected: () => this.ensureConnected(),
+        mediaBuffer: (sock, messageId, raw) => this.mediaBuffer(sock, messageId, raw),
+        transcriber: (...args) => this.transcriber(...args),
+        transcribeReadiness: (...args) => this.transcribeReadiness(...args),
+        transcribeAudio: (messageId) => this.transcribeAudio(messageId),
+        embedFeed: () => this.recallIndex.embedFeed,
+        webhookTranscriptSettled: (sid) => this.webhookTranscriptSettled(sid),
+      },
+      this.views,
+      config,
+      account,
+      this.effectiveReadOnly
+    );
+    this.recallIndex = new AccountRecall(
+      {
+        db: () => this.db,
+        readyDb: () => this.readyDb(),
+        stopped: () => this.stopped,
+        storageState: () => this.storageState,
+        guarded: (work) => this.guarded(work),
+        ensureConnected: () => {
+          this.ensureConnected();
+        },
+        waitForSync: () => this.waitForSync(),
+        synced: (data) => this.synced(data),
+        transcriptRecordOf: (message) => this.voice.transcriptRecordOf(message),
+      },
+      this.identity,
+      this.views,
+      config
+    );
+    this.waits = new MessageWaits(
+      {
+        readyDb: () => this.readyDb(),
+        stopped: () => this.stopped,
+        guarded: (work) => this.guarded(work),
+        ensureConnected: () => {
+          this.ensureConnected();
+        },
+        addressesMe: (raw) => this.addressesMe(raw),
+      },
+      this.identity,
+      this.views
+    );
     this.openDatabase();
     // Only the server transcribes: a short-lived command (status --live, contacts resync, the sync after a
     // link) queues what arrives and leaves the backlog to it.
-    if (this.autoTranscribe && config.command === "serve") this.transcribeWorker.register(this.transcribeSource);
+    if (this.voice.autoTranscribe && config.command === "serve") this.voice.transcribeWorker.register(this.voice.transcribeSource);
   }
 
   async start(): Promise<void> {
@@ -697,16 +649,16 @@ export class WhatsAppService implements WhatsAppApi {
     this.syncDeadline = null;
     this.stopCallSweep();
     this.releaseWaiters();
-    this.wakeArrivalWaiters();
+    this.waits.wakeArrivalWaiters();
     this.teardownSocket();
     await this.outbox.stop();
     await this.stopPairing();
     await this.historyIdle();
     // Before the database closes: a run under way gets a while to store the transcript it is paying for,
     // then gives its claim back, so the note waits for the next start rather than being uploaded twice.
-    await this.transcribeWorker.finish(this.transcribeSource, STOP_TRANSCRIBE_WAIT_MS);
-    this.transcribeWorker.unregister(this.transcribeSource);
-    await this.stopRecall();
+    await this.voice.transcribeWorker.finish(this.voice.transcribeSource, STOP_TRANSCRIBE_WAIT_MS);
+    this.voice.transcribeWorker.unregister(this.voice.transcribeSource);
+    await this.recallIndex.stopRecall();
     const db = this.accountDb;
     if (db !== null && db.isOpen) {
       await Promise.allSettled([this.expirySweep, ...this.folds]);
@@ -786,7 +738,7 @@ export class WhatsAppService implements WhatsAppApi {
       this.accountDb = db;
       this.adoptDatabase(db);
       this.recoverSends(db);
-      this.recoverTranscriptions(db);
+      this.voice.recoverTranscriptions(db);
       if (this.legacyPending(db)) this.storageState = "preparing";
     } catch (err) {
       this.storageFail(err);
@@ -798,7 +750,7 @@ export class WhatsAppService implements WhatsAppApi {
     for (const [lid, phone] of db.identity.lidPairs()) this.identity.lids.learn(lid, phone);
     this.lastInboundAt = db.messages.lastInboundTs();
     this.namedContactsCache = null;
-    this.vectorCount = null;
+    this.recallIndex.vectorCount = null;
   }
 
   private legacyPending(db: AccountDb): boolean {
@@ -923,7 +875,7 @@ export class WhatsAppService implements WhatsAppApi {
     this.armExpiry();
     this.outbox.start();
     this.scheduleFlagsBackfill(db);
-    if (this.embedFeed !== null) this.embedFeed.kick();
+    if (this.recallIndex.embedFeed !== null) this.recallIndex.embedFeed.kick();
     else {
       // Recall is off, or its settings do not parse: no queue is kept that nothing
       // would drain. The feed that runs again refills it once.
@@ -1266,7 +1218,7 @@ export class WhatsAppService implements WhatsAppApi {
     this.statusSince = Date.now();
     this.queueConnectionWebhook(next);
     // Notes that waited for the connection run now rather than at the worker's next look.
-    if (next === "connected" && this.autoTranscribe) this.transcribeWorker.kick();
+    if (next === "connected" && this.voice.autoTranscribe) this.voice.transcribeWorker.kick();
   }
 
   /**
@@ -1323,9 +1275,9 @@ export class WhatsAppService implements WhatsAppApi {
       rate_limit: this.effectiveRateLimit,
       last_error: this.lastError ?? this.storageFault?.message ?? null,
       webhook: this.webhookStatus(),
-      recall: this.recallStatus(),
+      recall: this.recallIndex.recallStatus(),
       storage: this.storageInfo(),
-      transcription: this.transcriptionStatus(),
+      transcription: this.voice.transcriptionStatus(),
       diagnostics: {
         read_self: {
           seen: this.readSelf.seen,
@@ -1636,100 +1588,13 @@ export class WhatsAppService implements WhatsAppApi {
     }
   }
 
-  /**
-   * Words and meaning in one search: the query is embedded, then matched
-   * against the account's stored vectors and its trigram index under the
-   * same filters a search by words takes, and the two rankings are fused. A hit
-   * found only by meaning must clear the similarity floor. A row the database
-   * holds only as text (imported from the old recall index) answers with that
-   * text, marked `from_index`.
-   */
   recall(
     query: string,
     chatId: string | undefined,
     limit: number,
     opts: SearchOptions = {}
   ): Promise<Synced<RecallAnswer>> {
-    return this.guarded(async () => {
-      this.ensureConnected();
-      await this.waitForSync();
-      const settings = this.readyRecall();
-      limit = pageLimit(limit);
-      const scope = chatId === undefined ? undefined : this.identity.resolveId(chatId);
-      const from = this.identity.senderFilter(opts.from);
-      const vector = await this.queryVector(query);
-      const db = this.db;
-      const people = scope === undefined ? this.identity.privateScope(opts.private) : null;
-      const author = people !== null && from !== undefined && people.names(from) ? from : undefined;
-      // Wide enough that the variety rules below have something to promote, and as wide again when #private hits may take slots.
-      const window = Math.max(limit + 5, RECALL_RERANK_WINDOW);
-      // TODO(F1-b3): the hybrid scan runs on the main thread, ~160-190 ms at 100,000 vectors; it moves to a worker.
-      const result = db.vectors.hybrid({
-        query,
-        model: settings.model,
-        vector: vector ?? null,
-        limit: people === null || author !== undefined ? window : 2 * window,
-        minSimilarity: settings.minSimilarity,
-        recencyHalfLifeMs: RECALL_RECENCY_HALF_LIFE_MS,
-        ...(scope === undefined ? {} : { chat: scope }),
-        ...(from === undefined ? {} : { from }),
-        ...(opts.sinceMs === undefined ? {} : { since: opts.sinceMs }),
-        ...(opts.untilMs === undefined ? {} : { until: opts.untilMs }),
-      });
-      const ranked = result.hits.filter((hit) => hit.message.chatJid !== STATUS_JID);
-      const hidden = new Set(people === null || author !== undefined ? [] : ranked.filter((hit) => people.message(hit.message)));
-      // The window the variety rules walk stays as wide as without anyone #private, so the rest rank as they would.
-      const shown = ranked.filter((hit) => !hidden.has(hit)).slice(0, window);
-      const kept = diversify(shown, (hit) => ({ chat: hit.message.chatJid, text: `${hit.message.text ?? ""} ${hit.message.transcript ?? ""}` })).slice(0, limit);
-      // The #private hits that would have been among these: ranked at or above the lowest one kept, or all of them when fewer came.
-      const floor = kept.length < limit ? -Infinity : Math.min(...kept.map((hit) => hit.score));
-      const privateOmitted = [...hidden].filter((hit) => hit.score >= floor).length;
-      const views = this.views.viewsOfStored(kept.map((hit) => hit.message)).map((view) => (people === null ? view : withoutPrivateQuote(view, people, author)));
-      const hits = kept.map((hit, i) => ({
-        score: hit.score,
-        similarity: hit.similarity,
-        matched: (hit.lexicalRank !== null && hit.semanticRank !== null ? "both" : hit.lexicalRank !== null ? "words" : "meaning") as RecallHit["matched"],
-        message: views[i]!,
-        from_index: hit.message.raw === null,
-      })) satisfies RecallAnswer["hits"];
-      return this.synced({ hits, index: this.recallStatus(), lexicalCapped: result.lexicalCapped, ...(privateOmitted > 0 ? { privateOmitted } : {}) });
-    });
-  }
-
-  /**
-   * The settings a recall query may run on, or the refusal the tool reports.
-   * "off" splits by cause: the feature disabled, or the history it derives
-   * from not persisted; "degraded" carries the line the status already found.
-   */
-  private readyRecall(): RecallSettings {
-    const status = this.recallStatus();
-    if (status.state === "degraded") {
-      throw new WazapError("RECALL_UNAVAILABLE", status.detail ?? "Semantic recall is unavailable.", status.fix);
-    }
-    if (status.state === "off" || this.recallEnv instanceof WazapError) {
-      if (this.recallEnv instanceof WazapError || !this.recallEnv.enabled) {
-        throw new WazapError("RECALL_UNAVAILABLE", "Semantic recall is off.", "Run `wazap config recall local`");
-      }
-      throw new WazapError(
-        "RECALL_UNAVAILABLE",
-        "Semantic recall needs message history kept on disk, which is off.",
-        "Set WAZAP_PERSIST_HISTORY=1 and restart the server"
-      );
-    }
-    return this.recallEnv;
-  }
-
-  /** What the index embeds for a message: the words a person chose, capped to the model's window. */
-  private recallWords(message: StoredMessage): string | null {
-    const maxChars = this.recallEnv instanceof WazapError ? RECALL_TEXT_CAP : EMBED_MODELS[this.recallEnv.model].maxChars;
-    const raw = this.views.rawOf(message);
-    let words: string | null;
-    if (raw === null) {
-      words = message.transcript === null ? message.text : `${message.text ?? ""} "${message.transcript}"`;
-    } else {
-      words = searchableText(raw, message.transcript === null ? undefined : this.transcriptRecordOf(message));
-    }
-    return words === null || words.trim() === "" ? null : words.slice(0, maxChars);
+    return this.recallIndex.recall(query, chatId, limit, opts);
   }
 
   getMessage(messageId: string): Promise<MessageView> {
@@ -1870,57 +1735,8 @@ export class WhatsAppService implements WhatsAppApi {
 
   // ---- end find_contact ------------------------------------------------------
 
-  /**
-   * Block until something arrives that matches, or until the deadline. The
-   * first match starts a short settle so a burst of messages comes back as
-   * one answer. A cursor from this run replays what landed since it, so a
-   * loop of calls misses nothing between them; one from another run is
-   * refused and the wait starts from now, and says so.
-   */
   waitForMessages(opts: WaitOptions): Promise<WaitResult> {
-    return this.guarded(async () => {
-      this.ensureConnected();
-      const chatJid = opts.chatId === undefined ? undefined : this.identity.resolveId(opts.chatId);
-      const parsed = this.parseCursor(opts.cursor);
-      let since = parsed.seq;
-      const deadline = Date.now() + opts.timeoutMs;
-      const matching = (): typeof this.arrivals =>
-        this.arrivals.filter((a) => a.seq > since && this.arrivalMatches(a, chatJid, opts.addressedToMe));
-
-      let found = matching();
-      let timedOut = false;
-      if (found.length === 0) {
-        while (!this.stopped && Date.now() < deadline) {
-          await this.nextArrival(deadline - Date.now());
-          found = matching();
-          if (found.length > 0) break;
-        }
-        if (found.length === 0) timedOut = true;
-      }
-      if (found.length > 0) {
-        await this.nextArrival(Math.min(ARRIVAL_SETTLE_MS, Math.max(0, deadline - Date.now())), true);
-        found = matching();
-      }
-      const last = found.length > 0 ? found[found.length - 1]!.seq : Math.max(since, this.arrivalSeq);
-      since = last;
-      const db = this.readyDb();
-      // A chat named by chat_id reads whole, theirs or a group's: only a wait on every chat leaves #private words out.
-      const people = db === null || chatJid !== undefined ? null : this.identity.privateScope(opts.private);
-      // A message deleted or expired since it arrived is not handed out.
-      const messages = found.flatMap((a) => {
-        const message = db?.messages.get(a.sid) ?? null;
-        if (message === null) return [];
-        const view = this.views.viewOfStored(message);
-        if (people === null) return [view];
-        return [people.message(message) ? withoutWords(view) : withoutPrivateQuote(view, people)];
-      });
-      return {
-        messages,
-        cursor: `${this.bootId}:${last}`,
-        timed_out: timedOut,
-        cursor_reset: parsed.reset,
-      };
-    });
+    return this.waits.waitForMessages(opts);
   }
 
   /** The stories of the last `hours`, newest first, each with its author as the sender. */
@@ -2269,7 +2085,7 @@ export class WhatsAppService implements WhatsAppApi {
     if (message.type === "call") return false;
     // A voice note nobody has heard is an ask until proven otherwise.
     if (message.type === "voice" && message.transcript === null) return true;
-    return wordsAsk(raw === null ? this.views.viewTextOf(message) : viewText(raw, this.transcriptOf(message)));
+    return wordsAsk(raw === null ? this.views.viewTextOf(message) : viewText(raw, this.voice.transcriptOf(message)));
   }
 
   /** A group message that @-mentions the linked account or replies to one of its messages. */
@@ -2277,71 +2093,6 @@ export class WhatsAppService implements WhatsAppApi {
     if (mentionedJids(raw).some((jid) => this.identity.isMe(jid))) return true;
     const quoted = quotedSenderJid(raw);
     return quoted !== undefined && this.identity.isMe(quoted);
-  }
-
-  private arrivalMatches(
-    arrival: { sid: string; jid: string },
-    chatJid: string | undefined,
-    addressedToMe: boolean
-  ): boolean {
-    if (chatJid !== undefined && arrival.jid !== chatJid) return false;
-    if (!addressedToMe || !isGroupId(arrival.jid)) return true;
-    const message = this.readyDb()?.messages.get(arrival.sid) ?? null;
-    const raw = message === null ? null : this.views.rawOf(message);
-    return raw !== null && this.addressesMe(raw);
-  }
-
-  private parseCursor(cursor: string | undefined): { seq: number; reset: boolean } {
-    if (cursor === undefined) return { seq: this.arrivalSeq, reset: false };
-    const [boot, rest] = cursor.split(":");
-    const seq = Number(rest);
-    const oldest = this.arrivals[0]?.seq ?? this.arrivalSeq;
-    if (
-      boot !== this.bootId ||
-      !Number.isInteger(seq) ||
-      seq > this.arrivalSeq ||
-      (seq < oldest - 1 && this.arrivals.length > 0)
-    ) {
-      return { seq: this.arrivalSeq, reset: true };
-    }
-    return { seq, reset: false };
-  }
-
-  /** Resolves on the next arrival or after `ms`; a settle rides out the burst and ends only on the deadline or a stop. */
-  private nextArrival(ms: number, settle = false): Promise<void> {
-    return new Promise((resolve) => {
-      const waiter = (): void => {
-        if (!settle || this.stopped) done();
-      };
-      const done = (): void => {
-        clearTimeout(timer);
-        const at = this.arrivalWaiters.indexOf(waiter);
-        if (at !== -1) this.arrivalWaiters.splice(at, 1);
-        resolve();
-      };
-      const timer = setTimeout(done, Math.max(0, ms));
-      this.arrivalWaiters.push(waiter);
-    });
-  }
-
-  private noteArrivals(stored: readonly WAMessage[]): void {
-    let landed = false;
-    for (const raw of stored) {
-      if (raw.key.fromMe || !raw.key.remoteJid) continue;
-      if (messageType(raw) === "system") continue;
-      const jid = this.identity.canonical(raw.key.remoteJid);
-      if (isNoiseJid(jid)) continue;
-      this.arrivals.push({ seq: ++this.arrivalSeq, sid: messageIdFor(raw.key, jid), jid });
-      landed = true;
-    }
-    while (this.arrivals.length > ARRIVALS_KEPT) this.arrivals.shift();
-    if (landed) this.wakeArrivalWaiters();
-  }
-
-  private wakeArrivalWaiters(): void {
-    const waiters = this.arrivalWaiters;
-    this.arrivalWaiters = [];
-    for (const waiter of waiters) waiter();
   }
 
   downloadMedia(messageId: string, saveTo?: string): Promise<MediaResult> {
@@ -2372,150 +2123,8 @@ export class WhatsAppService implements WhatsAppApi {
     });
   }
 
-  /**
-   * Speech into text, once per message: a transcript already on hand is returned
-   * as it is, because the local provider is slow and the API one is billed.
-   */
   transcribeAudio(messageId: string, language?: string, opts: TranscribeOptions = {}): Promise<TranscribeResult> {
-    return this.guarded(async () => {
-      const message = this.views.storedOrThrow(messageId);
-      if (message.transcript !== null) return transcribeResult(this.transcriptRecordOf(message), true);
-      if (opts.cachedOnly === true) {
-        throw new WazapError("TRANSCRIBE_UNAVAILABLE", `No transcript of ${messageId} is on hand.`, "Call get_media without save_to to transcribe it");
-      }
-      const raw = this.views.messageOrThrow(messageId);
-
-      const type = messageType(raw);
-      const info = mediaInfo(raw);
-      if (info === undefined || (type !== "voice" && type !== "audio")) {
-        throw new WazapError(
-          "MEDIA_UNAVAILABLE",
-          `Message ${messageId} is not a voice note or an audio message.`,
-          "Pass a message whose type is voice or audio"
-        );
-      }
-
-      const settings = this.transcribeSettings();
-      // Read-only has always meant no side effect anyone outside can see. The
-      // local provider keeps that promise; uploading the user's audio to a
-      // third party and spending their money does not.
-      if (this.effectiveReadOnly && settings.provider === "openai") {
-        throw new WazapError(
-          "READ_ONLY",
-          "wazap runs read-only, so it will not upload audio to the transcription API.",
-          "Run `wazap config writes on` and restart the server, or run `wazap config transcribe local`"
-        );
-      }
-      const readiness = await this.transcribeReadiness(settings);
-      if (!readiness.ok) throw new WazapError("TRANSCRIBE_UNAVAILABLE", readiness.detail, readiness.fix);
-
-      // The transcript is only written once a provider has run and been paid, so the
-      // auto queue and a tool call asking for the same message at the same
-      // moment would otherwise upload it twice. They share the first run.
-      const running = this.transcribing.get(message.sid);
-      if (running) return await running;
-      // Only a run spends the caller's budget: what is on hand, or cannot run, cost nothing.
-      opts.limit?.take();
-      const work = this.runTranscribe(message.sid, raw, info, settings, language);
-      this.transcribing.set(message.sid, work);
-      try {
-        return await work;
-      } finally {
-        this.transcribing.delete(message.sid);
-      }
-    });
-  }
-
-  private async runTranscribe(
-    messageId: string,
-    raw: WAMessage,
-    info: { mime: string; size?: number; filename?: string },
-    settings: TranscribeSettings,
-    language?: string
-  ): Promise<TranscribeResult> {
-    // Readiness is never ok while no provider is configured.
-    const provider = settings.provider!;
-    this.views.messageOrThrow(messageId);
-    const sock = this.ensureConnected();
-    const buffer = await this.mediaBuffer(sock, messageId, raw);
-    this.views.messageOrThrow(messageId);
-    // Its own temp dir, deleted straight after: nobody asked to keep this file,
-    // and the media dir is where the files the user did ask for live.
-    const dir = await mkdtemp(join(tmpdir(), "wazap-audio-"));
-    let transcript: Transcript;
-    try {
-      const file = join(dir, mediaFilename(info));
-      await writeFile(file, buffer, { mode: FILE_MODE });
-      this.views.messageOrThrow(messageId);
-      transcript = await this.transcriber(settings, file, {
-        ...(language === undefined ? {} : { language }),
-        signal: this.transcribeAbort.signal,
-      });
-    } finally {
-      await rm(dir, { recursive: true, force: true });
-    }
-
-    // An API provider answers without a duration, and WhatsApp already said
-    // how long the recording runs.
-    const seconds = transcript.duration_seconds ?? voiceSeconds(raw);
-    const record: TranscriptRecord = {
-      ...transcript,
-      ...(seconds === undefined ? {} : { duration_seconds: seconds }),
-      provider,
-      at: Date.now(),
-    };
-    // A message revoked or expired while the transcription ran keeps nothing behind.
-    this.views.messageOrThrow(messageId);
-    const sid = this.views.storedOrThrow(messageId).sid;
-    const { text, ...details } = record;
-    if (!this.db.messages.setTranscript(sid, text, details)) throw missingMessage(messageId);
-    // With the transcript on it, the voice note finally carries searchable words.
-    this.embedFeed?.kick();
-    this.views.messageOrThrow(messageId);
-    return transcribeResult(record, false);
-  }
-
-  /**
-   * A stored transcript as the views and get_media take it, with the
-   * details stored beside it. One stored without them (set directly, or by
-   * an import of a record that had none) names the configured provider.
-   */
-  private transcriptRecordOf(message: StoredMessage): TranscriptRecord {
-    const text = message.transcript ?? "";
-    const info = message.transcriptInfo;
-    if (info !== null) {
-      return {
-        text,
-        provider: info.provider as TranscriptRecord["provider"],
-        at: info.at,
-        ...(info.language === undefined ? {} : { language: info.language }),
-        ...(info.duration_seconds === undefined ? {} : { duration_seconds: info.duration_seconds }),
-      };
-    }
-    const configured = this.transcribe instanceof WazapError ? null : this.transcribe.provider;
-    return { text, provider: configured ?? "local", at: 0 };
-  }
-
-  private transcriptOf(message: StoredMessage): TranscriptRecord | undefined {
-    return message.transcript === null ? undefined : this.transcriptRecordOf(message);
-  }
-
-  /**
-   * Resolves when the background queue has nothing left to transcribe. Off the
-   * WhatsAppApi on purpose: an agent has no business waiting on it, and a test
-   * needs it so it can wait on the queue instead of sleeping.
-   */
-  /**
-   * At open, whether or not this process transcribes: a run a stopped or
-   * crashed process left marked as started waits again (its attempt counted),
-   * so no status reports a run that is not happening.
-   */
-  private recoverTranscriptions(db: AccountDb): void {
-    try {
-      db.transcripts.recover();
-    } catch (err) {
-      logError("transcribe", err);
-    }
+    return this.voice.transcribeAudio(messageId, language, opts);
   }
 
   /**
@@ -2523,74 +2132,24 @@ export class WhatsAppService implements WhatsAppApi {
    * now instead of being waited for, and gives its attempt back.
    */
   abortTranscription(): void {
-    this.transcribeAbort.abort();
+    this.voice.abortTranscription();
   }
 
+  /**
+   * Resolves when the background queue has nothing left to transcribe. Off the
+   * WhatsAppApi on purpose: an agent has no business waiting on it, and a test
+   * needs it so it can wait on the queue instead of sleeping.
+   */
   transcribeIdle(): Promise<void> {
-    return this.transcribeWorker.idle();
+    return this.voice.transcribeIdle();
   }
 
   /**
    * Resolves when the embedding feed has nothing left to embed. Same rule as
    * transcribeIdle: off the public API, here so tests can wait on it.
    */
-  async recallIdle(): Promise<void> {
-    await this.embedFeed?.idle();
-    this.vectorCount = null;
-  }
-
-  /**
-   * The sidecar, started on the first embedding request and shared with every
-   * other account in the process on the same binary and model. A failed start
-   * is not cached — the next queued batch tries again.
-   */
-  private recallEngine(): Promise<EmbedEngine> {
-    if (this.stopped) return Promise.reject(new WazapError("RECALL_UNAVAILABLE", "the service is stopping"));
-    if (this.recallEnv instanceof WazapError || !this.recallEnv.enabled) {
-      return Promise.reject(
-        new WazapError("RECALL_UNAVAILABLE", "Semantic recall is off.", "Run `wazap config recall local`")
-      );
-    }
-    if (this.recallEngineP === null) {
-      const settings = this.recallEnv;
-      this.recallEngineP = (async () => {
-        const spec = EMBED_MODELS[settings.model];
-        const readiness = await embedReady(settings, spec);
-        if (!readiness.ok) throw new WazapError("RECALL_UNAVAILABLE", readiness.detail, readiness.fix);
-        return EmbedEngine.start(settings, spec, log);
-      })();
-      this.recallEngineP.catch(() => (this.recallEngineP = null));
-    }
-    return this.recallEngineP;
-  }
-
-  /**
-   * The query's embedding, waited for at most recallQueryWaitMs: past it the
-   * search answers by words (TIMEOUT), while the sidecar keeps starting and
-   * the request under way finishes for nobody, so the next search finds it up.
-   */
-  private async queryVector(query: string): Promise<number[] | undefined> {
-    const embedding = this.recallEmbed([query], "query");
-    embedding.catch(() => {});
-    let timer: NodeJS.Timeout | undefined;
-    const late = new Promise<never>((_, reject) => {
-      timer = setTimeout(() => {
-        const seconds = Math.round(this.recallQueryWaitMs / 100) / 10;
-        reject(new WazapError("TIMEOUT", `Meaning search did not answer within ${seconds} s; the embedding model may still be starting.`, "Search again in a minute for meaning too"));
-      }, this.recallQueryWaitMs);
-      timer.unref();
-    });
-    try {
-      const [vector] = await Promise.race([embedding, late]);
-      return vector;
-    } finally {
-      clearTimeout(timer);
-    }
-  }
-
-  private async recallEmbed(texts: string[], kind: "query" | "document"): Promise<number[][]> {
-    const engine = await this.recallEngine();
-    return engine.embed(texts, kind);
+  recallIdle(): Promise<void> {
+    return this.recallIndex.recallIdle();
   }
 
   /**
@@ -2730,55 +2289,6 @@ export class WhatsAppService implements WhatsAppApi {
   private async foldsSettled(): Promise<void> {
     if (this.folds.size === 0) return;
     await Promise.race([Promise.allSettled([...this.folds]), sleep(FOLD_SETTLE_MS, undefined, { ref: false })]);
-  }
-
-  private recallStatus(): RecallStatus {
-    if (this.recallEnv instanceof WazapError) {
-      return { state: "degraded", indexed: 0, pending: 0, detail: this.recallEnv.message, fix: this.recallEnv.fix };
-    }
-    if (!this.recallEnv.enabled || !this.config.persistHistory || this.embedFeed === null) {
-      return { state: "off", indexed: 0, pending: 0 };
-    }
-    const db = this.readyDb();
-    const indexed = this.indexedCount(db, this.recallEnv.model);
-    const pending = this.embedFeed.pending;
-    if (this.embedFeed.failing !== null) {
-      return {
-        state: "degraded",
-        indexed,
-        pending,
-        detail: this.embedFeed.failing,
-        fix: "Check that the embedding server answers; indexing resumes on its own, with nothing lost",
-      };
-    }
-    if (db === null) {
-      if (this.storageState === "preparing") return { state: "indexing", indexed, pending };
-      return { state: "degraded", indexed, pending, detail: "the account database is not open" };
-    }
-    return { state: this.embedFeed.busy ? "indexing" : "ready", indexed, pending };
-  }
-
-  /** Stored vectors of the model, counted at most every few seconds: the count walks the table. */
-  private indexedCount(db: AccountDb | null, model: string): number {
-    if (db === null) return this.vectorCount?.count ?? 0;
-    const now = Date.now();
-    if (this.vectorCount === null || now - this.vectorCount.at > VECTOR_COUNT_TTL_MS) {
-      this.vectorCount = { at: now, count: db.vectors.count(model) };
-    }
-    return this.vectorCount.count;
-  }
-
-  /**
-   * The feed first, then the engine — releasing its claim on the shared
-   * sidecar unblocks an embedding call in flight. An engine still coming up is
-   * released whenever its start resolves.
-   */
-  private async stopRecall(): Promise<void> {
-    const feedStop = this.embedFeed?.stop() ?? Promise.resolve();
-    if (this.recallEngineP !== null) {
-      void this.recallEngineP.then((engine) => engine.stop()).catch(() => {});
-    }
-    await feedStop;
   }
 
   draft(payload: DraftPayload, owner?: string): Promise<DraftView> {
@@ -3511,7 +3021,7 @@ export class WhatsAppService implements WhatsAppApi {
       const next: WAMessage = { ...raw, ...(edited ? { message: edited } : {}), ...(redated === undefined ? {} : { messageTimestamp: redated }) };
       const editedAt = edited ? (protoNumber(update.messageTimestamp) ?? 0) * 1000 || Date.now() : stored.editedAt;
       this.writeVersion(next, stored, editedAt);
-      if (edited) this.embedFeed?.kick();
+      if (edited) this.recallIndex.embedFeed?.kick();
     }
     // A receipt on a one-to-one message: sent, delivered, read, played.
     if (typeof update.status === "number" && stored.fromMe) db.messages.setStatus(stored.sid, update.status);
@@ -3946,16 +3456,6 @@ export class WhatsAppService implements WhatsAppApi {
     }
   }
 
-  /** The parsed environment, or the reason it could not be parsed, as a refusal. */
-  private transcribeSettings(): TranscribeSettings {
-    if (this.transcribe instanceof WazapError) {
-      throw new WazapError("TRANSCRIBE_UNAVAILABLE", this.transcribe.message, this.transcribe.fix);
-    }
-    return this.transcribe;
-  }
-
-  // Webhook outbox --------------------------------------------------------------
-
   /**
    * Live messages both ways, queued for the webhook in the transaction that
    * stores them, and only on the notify gate transcription uses: a history
@@ -4034,30 +3534,7 @@ export class WhatsAppService implements WhatsAppApi {
    * provider), not a copy of it.
    */
   private webhookReadyAt(message: StoredMessage, now: number): number {
-    return this.transcriptQueued(message) ? now + WEBHOOK_TRANSCRIPT_WAIT_MS : now;
-  }
-
-  /**
-   * Whether an event is worth holding for a transcript right now: the note is
-   * on the durable queue, this process transcribes, the account can run it,
-   * and the provider is not paused. After a restart the queue still says so,
-   * and the worker takes the note up again.
-   */
-  private webhookAwaitsTranscript(message: StoredMessage): boolean {
-    if (!this.autoTranscribe || this.config.command !== "serve" || this.stopped) return false;
-    // A boot starts the outbox before the socket opens: an event a restart left
-    // waiting keeps waiting while the account connects, and its ready_at still
-    // caps the wait. Only a connection that dropped sends the placeholder now.
-    if (this.status !== "connected" && this.status !== "connecting") return false;
-    return this.transcribeWorker.paused() === null && this.transcriptQueued(message);
-  }
-
-  private transcriptQueued(message: StoredMessage): boolean {
-    try {
-      return this.readyDb()?.transcripts.state(message.sid)?.state === "queued";
-    } catch {
-      return false;
-    }
+    return this.voice.transcriptQueued(message) ? now + WEBHOOK_TRANSCRIPT_WAIT_MS : now;
   }
 
   /**
@@ -4096,79 +3573,6 @@ export class WhatsAppService implements WhatsAppApi {
     return this.webhook.info(delivery, undeliveredFailure(delivery));
   }
 
-  /**
-   * In the transaction that stores it, an incoming voice note joins the
-   * durable queue: every one that arrives live, however old its stamp (a note
-   * WhatsApp delivers only now is still an arrival), and one a history sync
-   * brings when it is less than a day old. A crash after the store cannot lose
-   * it. Only incoming voice notes whose length WhatsApp stated and kept short,
-   * since an audio file is something the sender chose to attach and a
-   * recording of unknown length is unbounded; anything skipped is still one
-   * get_media call away. The worker is woken at once; it reads the
-   * queue a turn later, once the transaction has committed.
-   */
-  private queueTranscript(raw: WAMessage, result: UpsertResult, live: boolean): void {
-    if (!this.autoTranscribe || result.sid === null || !transcribable(raw)) return;
-    if (result.outcome !== "inserted" && !(live && result.outcome === "updated")) return;
-    if (!live && messageTimestampMs(raw) <= Date.now() - HISTORY_TRANSCRIBE_WINDOW_MS) return;
-    if (this.transcribeClass === null) return;
-    try {
-      if (this.db.transcripts.enqueue(result.sid, this.transcribeClass)) this.transcribeWorker.kick();
-    } catch (err) {
-      // The message is stored whatever the queue says: a webhook, a wait and a read still see it.
-      logError("transcribe", err);
-    }
-  }
-
-  /**
-   * One note off the queue, as the worker runs it: a message deleted, expired
-   * or transcribed meanwhile is done with, and so is one that is no longer a
-   * short incoming voice note. The rest is get_media's own path, so a
-   * tool call asking for the same note at the same moment shares the upload.
-   */
-  private async transcribeQueued(sid: string): Promise<void> {
-    const message = this.views.storedOrThrow(sid);
-    if (message.transcript !== null) return;
-    if (!transcribable(this.views.messageOrThrow(sid))) {
-      throw markFailure(new WazapError("MEDIA_UNAVAILABLE", "Not a short incoming voice note."), "gone", "not a voice note to transcribe");
-    }
-    await this.transcribeAudio(sid);
-  }
-
-  /**
-   * The account's transcription queue for get_status, without a word of any
-   * note: how many wait, how long the run under way has been going, how many
-   * were given up on, and the latest reason.
-   */
-  private transcriptionStatus(): TranscriptionStatus {
-    const settings = this.transcribe;
-    const auto: TranscriptionStatus["auto"] =
-      settings instanceof WazapError ? "degraded" : this.autoTranscribe ? "on" : "off";
-    const pause = this.transcribeWorker.paused();
-    const status: TranscriptionStatus = {
-      auto,
-      queued: 0,
-      running_for_seconds: null,
-      failed: 0,
-      last_error: null,
-      paused: pause === null ? null : { reason: pause.reason, until: isoWithOffset(pause.until) },
-    };
-    const db = this.readyDb();
-    if (db === null) return status;
-    try {
-      const stats = db.transcripts.stats();
-      status.queued = stats.queued;
-      status.failed = stats.failed;
-      if (stats.startedAt !== null) status.running_for_seconds = Math.max(0, Math.round((Date.now() - stats.startedAt) / 1000));
-      if (stats.lastError !== null) {
-        status.last_error = { reason: stats.lastError.reason, at: isoWithOffset(stats.lastError.at), final: stats.lastError.final };
-      }
-    } catch (err) {
-      logError("transcribe status", err);
-    }
-    return status;
-  }
-
   private async fetchOlder(sock: WASocket, anchor: StoredMessage, limit: number): Promise<void> {
     const raw = this.views.rawOf(anchor) ?? this.views.keyOnly(anchor);
     const seconds = Math.floor(anchor.ts / 1000);
@@ -4199,7 +3603,7 @@ export class WhatsAppService implements WhatsAppApi {
         "sent message",
         () => {
           const result = this.storeRaw(sent, jid);
-          if (result !== null && this.kept(result)) this.embedFeed?.kick();
+          if (result !== null && this.kept(result)) this.recallIndex.embedFeed?.kick();
         },
         undefined
       );
@@ -4289,7 +3693,7 @@ export class WhatsAppService implements WhatsAppApi {
       }
       // What announced() queued goes out now, and retries a receiver back up may take.
       this.outbox.nudge();
-      this.noteArrivals(stored);
+      this.waits.noteArrivals(stored);
     }
   }
 
@@ -4440,14 +3844,14 @@ export class WhatsAppService implements WhatsAppApi {
         if (result === null || !this.kept(result)) continue;
         this.noteInbound(Boolean(raw.key.fromMe), messageTimestampMs(raw));
         this.foldVotesOnto(raw, jid);
-        this.queueTranscript(raw, result, live);
+        this.voice.queueTranscript(raw, result, live);
         stored.push(raw);
       } catch (err) {
         // One message the database refuses must not cost the rest of its batch.
         logError("message store", err);
       }
     }
-    if (stored.length > 0) this.embedFeed?.kick();
+    if (stored.length > 0) this.recallIndex.embedFeed?.kick();
     return index;
   }
 
@@ -4882,54 +4286,6 @@ export class WhatsAppService implements WhatsAppApi {
 /** How long a pinned message stays pinned, by the hours manage_chat takes: WhatsApp's 24 hours, 7 days and 30 days. */
 const PIN_SECONDS: Record<number, 86_400 | 604_800 | 2_592_000> = { 24: 86_400, 168: 604_800, 720: 2_592_000 };
 
-/**
- * A wrong WAZAP_TRANSCRIBE_* value must not take a running server down with it.
- * Everything else still works, so the complaint is logged once and kept, and the
- * tool that needs it reports it instead of transcribing.
- */
-function readTranscribeConfig(dataDir: string): TranscribeSettings | WazapError {
-  try {
-    return readTranscribeSettings(process.env, dataDir);
-  } catch (err) {
-    const fault = asWazapError(err);
-    logError("transcribe settings", fault);
-    return fault;
-  }
-}
-
-/** Same rule as transcribe: a wrong WAZAP_RECALL_* value degrades to feature-off, never a crash. */
-function readRecallConfig(dataDir: string): RecallSettings | WazapError {
-  try {
-    return readRecallSettings(process.env, dataDir);
-  } catch (err) {
-    const fault = asWazapError(err);
-    logError("recall settings", fault);
-    return fault;
-  }
-}
-
-/**
- * A voice note the service transcribes without being asked: incoming, not a
- * story, recorded as a voice note rather than attached as an audio file, and
- * of a length WhatsApp stated and kept to ten minutes.
- */
-function transcribable(raw: WAMessage): boolean {
-  if (raw.key.fromMe || isStatusJid(raw.key.remoteJid ?? "") || messageType(raw) !== "voice") return false;
-  const seconds = voiceSeconds(raw);
-  return seconds !== undefined && seconds <= AUTO_TRANSCRIBE_MAX_SECONDS;
-}
-
-/** Field by field, because `at` is the cache's bookkeeping and not the caller's business. */
-function transcribeResult(record: TranscriptRecord, cached: boolean): TranscribeResult {
-  return {
-    text: record.text,
-    ...(record.language === undefined ? {} : { language: record.language }),
-    ...(record.duration_seconds === undefined ? {} : { duration_seconds: record.duration_seconds }),
-    provider: record.provider,
-    cached,
-  };
-}
-
 /** How much a call message says. A duration is the most it can carry. */
 function callDetail(raw: WAMessage, info: CallInfo): number {
   if (info.duration_seconds !== undefined) return 2;
@@ -4985,11 +4341,6 @@ function requireFieldKey(raw: string): string {
 
 function safeFilename(jid: string): string {
   return jid.replace(/[/\\:*?"<>|]/g, "_");
-}
-
-/** A result limit a caller left out or spelled wrong reads as the tools' own default. */
-function pageLimit(limit: number): number {
-  return Number.isFinite(limit) && limit >= 1 ? Math.floor(limit) : 20;
 }
 
 /** WhatsApp's description of a chat, as the database keeps it. */

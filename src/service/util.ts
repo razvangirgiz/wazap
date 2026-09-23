@@ -16,3 +16,12 @@ export function orNullAfter<T>(work: Promise<T>, ms: number): Promise<T | null> 
 export function statusCodeOf(err: unknown): number | undefined {
   return (err as { output?: { statusCode?: number } } | undefined)?.output?.statusCode;
 }
+
+/** What the service writes: directories and files only the user can read. */
+export const DIR_MODE = 0o700;
+export const FILE_MODE = 0o600;
+
+/** A result limit a caller left out or spelled wrong reads as the tools' own default. */
+export function pageLimit(limit: number): number {
+  return Number.isFinite(limit) && limit >= 1 ? Math.floor(limit) : 20;
+}

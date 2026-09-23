@@ -2216,7 +2216,7 @@ test("a voice note's event whose wait a restart cut short goes out with the word
     await first.svc.outbox.idle();
     assert.equal(server.received.length, 0, "the event waits for the words");
     // The process goes down mid-run: the note is still queued, its event still pending.
-    transcribeWorker.unregister(first.svc.transcribeSource);
+    transcribeWorker.unregister(first.svc.voice.transcribeSource);
     await first.svc.stop();
     releaseRun();
     await transcribeWorker.idle();
