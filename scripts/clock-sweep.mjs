@@ -159,7 +159,15 @@ function failures(tap) {
 const CLOCK = pathToFileURL(join(ROOT, "test", "fake-clock.mjs")).href;
 
 function runSuite({ node, zone, at, files, label }) {
-  const args = ["--test", "--test-reporter=tap", "--import", "./test/no-color.mjs", ...files];
+  const args = [
+    "--test",
+    "--test-reporter=tap",
+    "--import",
+    "./test/no-color.mjs",
+    "--import",
+    "./test/temp-root.mjs",
+    ...files,
+  ];
   const env = { ...process.env, TZ: zone };
   if (at === null) delete env.FAKE_CLOCK_MS;
   else {
@@ -237,7 +245,7 @@ for (const cell of cells) {
     writeFileSync(tap, run.tap);
     console.log(`  why: ${cell.why}`);
     console.log(`  tap: ${tap}`);
-    console.log(`  again: TZ=${cell.zone} FAKE_CLOCK_MS=${cell.at} NODE_OPTIONS="--import ${CLOCK}" ${node} --test --import ./test/no-color.mjs ${files.join(" ")}`);
+    console.log(`  again: TZ=${cell.zone} FAKE_CLOCK_MS=${cell.at} NODE_OPTIONS="--import ${CLOCK}" ${node} --test --import ./test/no-color.mjs --import ./test/temp-root.mjs ${files.join(" ")}`);
   }
 }
 
