@@ -11,7 +11,7 @@ breaking.
 | --- | --- | --- | --- |
 | MCP tools | the 20 names, their required arguments, their error codes | new optional arguments, new enum values, new answer fields | description wording, field order, rendered text |
 | Safety | draft-then-confirm, send rules, read-only mode, session isolation | new codes for new refusals | the exact error sentences |
-| CLI | command and flag names, exit code 0 vs non-zero, `status --json` | new commands, flags and JSON keys | the human text on stderr |
+| CLI | command and flag names, exit code 0 vs non-zero, `status --json`, `--version --json`, `account add --json` | new commands, flags and JSON keys | the human text on stderr |
 | Webhook | event names, signature scheme, the payload fields below | new events (opt-in), new payload fields | delivery latency, retry timing |
 | Storage | forward-only migrations, released migrations frozen, the pre-migration copy | new schema versions | the SQLite schema as a format for other tools |
 | Settings | the 20 `WAZAP_*` in `.env.example` and `docs/settings.md` | new settings | anything not listed there |
@@ -65,6 +65,15 @@ Five tools are an exact contract for an integration: `send_message`,
   `draft_id` and `account_id`; `confirm_send` answers `message_id`, `chat_id`,
   `text`, `timestamp` and `account_id`; `link_account` answers `code`,
   `expires_at`, `phone_masked` and `account_id`.
+- Over HTTP, a well-formed request carrying a session id wazap does not hold
+  (expired, evicted or lost to a restart) answers 404, as the MCP
+  specification says, and a fresh `initialize` recovers; one with no session
+  id that is not `initialize` answers 400. With `WAZAP_READ_TOKEN` set as well
+  as `WAZAP_WRITE_TOKEN`, a token wazap does not hold answers 401; with the
+  write token alone, a request without it is served as the anonymous reader,
+  which only loopback allows. Each of these is a JSON-RPC error, and an
+  integration tells them apart by the status, not by the message. Budgets and
+  malformed bodies answer as §8 says.
 - The codes an integration sorts as "definitely not sent" — `NOT_CONNECTED`,
   `NOT_LINKED`, `SESSION_EXPIRED`, `SESSION_CORRUPT`, `RATE_LIMITED`,
   `DRAFT_EXPIRED` — keep that meaning: nothing left wazap.
@@ -111,7 +120,12 @@ Guarded by: `test/integration-contract.test.mjs`, and for the last one also
   `baileys` and `node`; its keys are additive. Guarded by:
   `test/integration-contract.test.mjs`.
 - `wazap account add <id>` and `wazap logout --account <id>` work while a server
-  holds the data dir. Guarded by: `test/integration-contract.test.mjs`.
+  holds the data dir. `wazap account add <id> --json` prints one JSON object on
+  stdout, `account_id`, `created` and `enabled`, and exits 0 for an account
+  already there (`created` false), so a program making sure an account exists
+  reads an answer rather than an error's wording. Either way a running server
+  is told to pick the account up. Two `account add` run at the same moment are
+  not serialized: provision accounts one at a time. Guarded by: `test/integration-contract.test.mjs`.
 
 Not promised: the human-readable text. Everything printed for a person goes to
 stderr, and its wording, layout, ordering and colour may change in any release —
@@ -238,8 +252,9 @@ code or the process backs a wider one yet.
 - **WhatsApp itself.** wazap talks to WhatsApp through Baileys, which is
   unofficial. WhatsApp can change its protocol or restrict an account at any
   time, and no version of wazap can promise otherwise.
-- **HTTP and OAuth as an integration surface.** The security properties in §2
-  are guarded by `test/oauth.test.mjs` and `test/http-security.test.mjs` and do
+- **HTTP and OAuth as an integration surface.** The session statuses in §1 are
+  guarded by `test/integration-contract.test.mjs`, and the security properties
+  in §2 by `test/oauth.test.mjs` and `test/http-security.test.mjs`; both
   hold. What is not promised is the shape of the OAuth endpoints, the consent
   pages, the log lines and the discovery documents: they exist so a client can
   sign in, not to be built on.

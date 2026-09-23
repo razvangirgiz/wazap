@@ -1,4 +1,4 @@
-import { AccountRegistry, ownerNumber } from "./accounts.js";
+import { AccountRegistry, ownerNumber, parseAccountId } from "./accounts.js";
 import { readLinkedAccount, type LinkedAccount } from "./auth-state.js";
 import { ask, leftoverFix } from "./cli.js";
 import { ACCOUNT_USAGE, MIGRATE_USAGE, accountPaths, paths, type Config } from "./config.js";
@@ -149,7 +149,19 @@ async function applyToRunningServer(config: Config): Promise<void> {
 }
 
 async function addAccount(config: Config, id: string): Promise<void> {
-  const record = AccountRegistry.load(config.dataDir).add(id, config.accountName);
+  const registry = AccountRegistry.load(config.dataDir);
+  if (config.json) {
+    // For a program that makes sure an account exists: one JSON line on stdout, and an account already
+    // there is an answer (created: false) rather than a failure it has to recognise by its wording.
+    // A running server is told either way: an earlier add whose reload never reached it is picked up now.
+    const slug = parseAccountId(id);
+    const created = registry.get(slug) === undefined;
+    const record = created ? registry.add(slug, config.accountName) : registry.get(slug)!;
+    process.stdout.write(`${JSON.stringify({ account_id: record.id, created, enabled: record.enabled })}\n`);
+    await applyToRunningServer(config);
+    return;
+  }
+  const record = registry.add(id, config.accountName);
   say(ok(`Account "${record.id}" added.`));
   await applyToRunningServer(config);
 }

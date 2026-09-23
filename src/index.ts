@@ -58,7 +58,7 @@ Usage:
   wazap update [--dry-run]                                 Upgrade wazap, then the service and the skills that follow it
   wazap status [--live] [--json] [--account <id>]          Check the install, the session and the server
   wazap logout [--account <id>]                            Unlink and delete local credentials
-  wazap account add <id> [--name <name>]                   Add an account slot
+  wazap account add <id> [--name <name>] [--json]          Add an account slot; --json: {account_id, created, enabled}, 0 if it exists
   wazap account remove|enable|disable|default <id>         Change an account, or delete its local data
   wazap account list                                       List accounts in this data dir
   wazap backup <path> [--account <id>] [--force]           Copy an account database to <path>; the messages in it are not encrypted
@@ -93,7 +93,7 @@ Options:
   --dry-run           With connect, skills install, service install or update: print what would happen, and do nothing
   --force             With backup: replace a file already at the destination
   --live              With status: reach WhatsApp for real, then close the connection
-  --json              With status or --version: print one JSON object on stdout
+  --json              With status, --version or account add: print one JSON object on stdout
   --writes            Allow the agent to write, without login asking
   --no-writes         Keep the agent read-only, without login asking
   -y, --yes           Do not ask anything at the end of login
