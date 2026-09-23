@@ -107,6 +107,8 @@ for (const meta of tools.values()) {
 for (const file of ["test/webhook.test.mjs", "test/integration-contract.test.mjs"]) {
   for (const [, field] of read(file).matchAll(/\bbody\.([a-z][a-z0-9_]*)/g)) vocabulary.add(field);
 }
+/** The answer fields the integration contract test reads off the five tools, which declare no output schema. */
+for (const [, field] of contractTest.matchAll(/\b(?:draft|confirmed|code|applied|status)\.([a-z][a-z0-9_]*)/g)) vocabulary.add(field);
 for (const event of WEBHOOK_EVENTS) vocabulary.add(event);
 
 // ------------------------------------------------------------- 1. the tools
@@ -181,7 +183,7 @@ test("the integration five are the five the contract test pins, with mark_read s
 
 test("the statuses and the definitely-unsent codes are the contract test's lists", () => {
   assert.equal(
-    asNumber(claim(/from the (\w+)\s+an\s+integration\s+maps/, "how many statuses an integration maps")),
+    asNumber(claim(/from the (\w+)\s+statuses\s+an\s+integration\s+maps/, "how many statuses an integration maps")),
     contractList("CONNECTION_STATUSES").length
   );
   const unsent = contractList("DEFINITELY_UNSENT");

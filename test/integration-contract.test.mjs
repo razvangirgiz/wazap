@@ -25,7 +25,7 @@ import { after, before, describe, test } from "node:test";
 import assert from "node:assert/strict";
 import { createHmac, randomUUID, timingSafeEqual } from "node:crypto";
 import { once } from "node:events";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { createServer } from "node:http";
 import { createServer as createNetServer } from "node:net";
 import { tmpdir } from "node:os";
@@ -41,6 +41,8 @@ import { startHttpEndpoint } from "../dist/server.js";
 import { registerTools } from "../dist/tools.js";
 import { readWebhookSettings, WebhookSink } from "../dist/webhook.js";
 import { asToolSource, fakeSocket, offlineConfig, spawnWazap, stubSockets, waitFor } from "./helpers.mjs";
+
+const PACKAGE_VERSION = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).version;
 
 /** An integration's customer slug is the wazap account id. */
 const TENANT = "demo-salon";
@@ -183,6 +185,18 @@ function cli(dataDir, args) {
   return new Promise((resolve, reject) => {
     child.on("error", reject);
     child.on("close", (code) => resolve({ code, stderr: stderr.join("") }));
+  });
+}
+
+/** Like cli, and keeps stdout too: what a script parses. */
+function cliOut(dataDir, args) {
+  const { child, stderr } = spawnWazap({ dataDir, args });
+  const stdout = [];
+  child.stdout.on("data", (chunk) => stdout.push(chunk.toString()));
+  child.stdin.end();
+  return new Promise((resolve, reject) => {
+    child.on("error", reject);
+    child.on("close", (code) => resolve({ code, stdout: stdout.join(""), stderr: stderr.join("") }));
   });
 }
 
@@ -529,6 +543,20 @@ describe("Integration CLI calls: `account add` and `logout --account`", () => {
     for (const slug of ["abc", "123", "salon", "salon-ana-2", longest]) assert.equal(parseAccountId(slug), slug);
     const added = await cli(dataDir, ["account", "add", longest]);
     assert.equal(added.code, 0, added.stderr);
+  });
+
+  test("--version --json is one JSON object on stdout with version, baileys and node; plain --version prints nothing on stdout", async () => {
+    const json = await cliOut(dataDir, ["--version", "--json"]);
+    assert.equal(json.code, 0, json.stderr);
+    const version = JSON.parse(json.stdout);
+    assert.equal(version.version, PACKAGE_VERSION);
+    for (const key of ["version", "baileys", "node"]) assert.match(version[key], /^\d+\.\d+\.\d+/, key);
+    assert.equal(json.stdout.trim().split("\n").length, 1, "one line, so a script reads it whole");
+
+    const plain = await cliOut(dataDir, ["--version"]);
+    assert.equal(plain.code, 0, plain.stderr);
+    assert.equal(plain.stdout, "");
+    assert.match(plain.stderr, new RegExp(PACKAGE_VERSION.replaceAll(".", "\\.")));
   });
 
   test("logout --account on an account that never linked exits 0", async () => {

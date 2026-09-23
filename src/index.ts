@@ -15,7 +15,7 @@ import {
   runTranscribe,
 } from "./cli.js";
 import { runBackup } from "./backup-cli.js";
-import { WAZAP_VERSION, parseCli, pickDefaultAction, settingWarnings } from "./config.js";
+import { BAILEYS_VERSION, WAZAP_VERSION, parseCli, pickDefaultAction, settingWarnings } from "./config.js";
 import { migrateLayout } from "./migrate.js";
 import { CLIENT_NAMES, runConnect } from "./connect.js";
 import { SKILL_TARGET_NAMES, runSkills } from "./skills.js";
@@ -93,12 +93,12 @@ Options:
   --dry-run           With connect, skills install, service install or update: print what would happen, and do nothing
   --force             With backup: replace a file already at the destination
   --live              With status: reach WhatsApp for real, then close the connection
-  --json              With status: print the whole report as one JSON object on stdout
+  --json              With status or --version: print one JSON object on stdout
   --writes            Allow the agent to write, without login asking
   --no-writes         Keep the agent read-only, without login asking
   -y, --yes           Do not ask anything at the end of login
   -h, --help          Show this help
-  -v, --version       Show the version
+  -v, --version       Show the version; with --json, one JSON object on stdout
 
 Environment: WAZAP_DATA_DIR, WAZAP_READ_ONLY, WAZAP_PERSIST_HISTORY, WAZAP_HOST, WAZAP_PORT, WAZAP_READ_TOKEN, WAZAP_WRITE_TOKEN,
 WAZAP_PUBLIC_URL, WAZAP_OAUTH_PASSWORD, WAZAP_TRUST_PROXY, WAZAP_TRANSCRIBE, WAZAP_TRANSCRIBE_API_KEY,
@@ -113,6 +113,11 @@ async function main(): Promise<void> {
     return;
   }
   if (invocation.kind === "version") {
+    // Plain, it is for a person, on stderr like every other line; --json is for a script, on stdout.
+    if (invocation.json) {
+      process.stdout.write(`${JSON.stringify({ version: WAZAP_VERSION, baileys: BAILEYS_VERSION, node: process.versions.node })}\n`);
+      return;
+    }
     say(WAZAP_VERSION);
     return;
   }
