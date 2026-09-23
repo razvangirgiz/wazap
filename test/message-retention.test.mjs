@@ -288,7 +288,7 @@ test("phone-number deletion also removes the LID-filed message and its vector", 
   await seed(svc, raw);
   const oldSid = sidOf(raw);
   assert.ok(svc.db.vectors.get(oldSid));
-  svc.learnLid(raw.key.remoteJid, CHAT);
+  svc.identity.learnLid(raw.key.remoteJid, CHAT);
   remove(sock, { key: { ...raw.key, remoteJid: CHAT } });
   await idle(svc);
   assert.equal(svc.hasMessage(oldSid), false);
@@ -308,7 +308,7 @@ for (const underLid of [true, false]) test(`a newly learned alias applies an ear
   remove(sock, { key: { ...raw.key, remoteJid: underLid ? CHAT : lid } });
   await idle(svc);
   assert.equal(svc.hasMessage(sidOf(raw)), true, "no pairing has been observed yet");
-  svc.learnLid(lid, CHAT);
+  svc.identity.learnLid(lid, CHAT);
   assert.equal(svc.hasMessage(sidOf(raw)), false);
   await idle(svc);
   assert.equal(svc.db.vectors.count(), 0);

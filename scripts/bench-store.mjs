@@ -57,8 +57,8 @@ function fillReal() {
   const file = join(homedir(), ".wazap", "accounts", "default", "store.json");
   const snapshot = JSON.parse(readFileSync(file, "utf8"));
   svc.store.hydrate(snapshot);
-  for (const contact of svc.store.contacts.values()) svc.relearnLid(contact);
-  for (const [lid, pn] of svc.store.lids) svc.learnLid(lid, pn);
+  for (const contact of svc.store.contacts.values()) svc.identity.relearnLid(contact);
+  for (const [lid, pn] of svc.store.lids) svc.identity.learnLid(lid, pn);
   for (const key of [...svc.store.byChat.keys(), ...svc.store.chats.keys(), ...svc.store.contacts.keys()]) {
     if (key.endsWith("@lid")) svc.foldAlias(key);
   }

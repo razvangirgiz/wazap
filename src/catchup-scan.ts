@@ -426,7 +426,7 @@ export function readCallText(text: string): CallReading | null {
 
 // ---------------------------------------------------------------- helpers
 
-/** Written like a phone number rather than a name (whatsapp.ts realName). */
+/** Written like a phone number rather than a name (service/identity.ts realName). */
 const NOT_A_NAME = /^[+\d\s()\-.·•∙…*]+$/u;
 
 function isRealName(value: string | null): boolean {

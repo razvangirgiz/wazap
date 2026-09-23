@@ -70,9 +70,9 @@ test("a number a lid moved away from is no longer named, or forgotten, through t
   });
   sock.ev.emit("lid-mapping.update", { lid: LID, pn: NEW });
 
-  assert.equal(svc.displayName(LID), "Nou");
-  assert.equal(svc.displayName(NEW), "Nou");
-  assert.equal(svc.displayName(OLD), "40700000002", "the old number is not named after whoever holds the lid now");
+  assert.equal(svc.identity.displayName(LID), "Nou");
+  assert.equal(svc.identity.displayName(NEW), "Nou");
+  assert.equal(svc.identity.displayName(OLD), "40700000002", "the old number is not named after whoever holds the lid now");
 
   sock.ev.emit("chats.delete", [OLD]);
   await svc.storageIdle();

@@ -303,7 +303,7 @@ test("a lid learned in the middle of a conversation joins the chat, and a restar
   const { svc } = serviceOn(dataDir);
   t.after(() => svc.stop());
   assert.deepEqual((await svc.listChats("all", 10)).data.map((chat) => chat.chat_id), [PEER]);
-  assert.equal(svc.lidToPn.get(PEER_LID), PEER);
+  assert.equal(svc.identity.lidToPn.get(PEER_LID), PEER);
   assert.equal((await svc.getMessage(`false_${PEER_LID}_L2`)).message_id, `false_${PEER}_L2`, "the lid spelling of an id still answers");
 });
 

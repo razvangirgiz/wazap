@@ -59,10 +59,8 @@ import {
   StorageError,
   type FlagDetector,
   type ChatKind,
-  type ChatRecord,
   type EventRecord,
   type MessageInput,
-  type Receipt as StoredReceipt,
   type SendRecord,
   type StoredMessage,
   type UpsertResult,
@@ -70,7 +68,7 @@ import {
 import { draftContextFor, styleCheckFor, type DraftContext, type StyleCheck } from "./draft-style.js";
 import { asWazapError, RELINK_FIX, RESET_FIX, WazapError } from "./errors.js";
 import { findInAccount, type AccountFind, type FindContactQuery } from "./find-contact.js";
-import { LidRegistry, lidKey } from "./identity.js";
+import { LidRegistry } from "./identity.js";
 import { isGroupId, isNoiseJid, isStatusJid, normalizePhone, STATUS_JID } from "./ids.js";
 import { FUTURE_SLACK_MS, IMPORT_META, importBetaArchive, importLegacyAccount, scrubQuote, type ImportReport } from "./legacy-import/index.js";
 import {
@@ -100,9 +98,8 @@ import {
   mediaFilename,
 } from "./outgoing-media.js";
 import { makePreview, videoFrame } from "./previews.js";
-import { chatMetadata, decodeChat, encode, momentsOf, raiseStatus, raiseUser, type Receipt } from "./store.js";
+import { chatMetadata, decodeChat, encode, momentsOf } from "./store.js";
 import {
-  buildMessageView,
   callInfo,
   formatAge,
   isCallPlaceholder,
@@ -117,7 +114,6 @@ import {
   messageText,
   messageTimestampMs,
   messageType,
-  phoneOf,
   pollOf,
   protoNumber,
   quotedMessageId,
@@ -132,7 +128,7 @@ import {
   type EncryptedVote,
 } from "./messages.js";
 import { readVote } from "./polls.js";
-import { PRIVATE_TEXT, privatePeople, withoutPrivateQuote, withoutWords, type PrivatePeople } from "./private-contacts.js";
+import { withoutPrivateQuote, withoutWords } from "./private-contacts.js";
 import { PAIRING_TIMEOUT_MS, WA_BROWSER, prettyCode, socketFactory, startPairing } from "./pairing.js";
 import { diversify } from "./recall/variety.js";
 import {
@@ -171,6 +167,8 @@ import { RateLimiter } from "./ratelimit.js";
 import { IMPORT_UNVERIFIED_META, importProgress } from "./storage-status.js";
 import { maskNumber } from "./ui.js";
 import { SentIds } from "./sent-ids.js";
+import { AccountIdentity, realName } from "./service/identity.js";
+import { MessageViews, missingMessage } from "./service/views.js";
 import {
   WebhookSink,
   asConnectionPayload,
@@ -332,21 +330,6 @@ interface SendAttempt {
   dispatched: boolean;
 }
 
-/**
- * A contact WhatsApp will not name for us still arrives with a `name`: the
- * masked number "+40∙∙∙∙∙∙∙98". Counting those as address-book entries would
- * make wazap believe the address book had landed, and showing one hides the
- * plain number the reader can actually dial. Anything made only of digits and
- * masking is not a name.
- */
-const NOT_A_NAME = /^[+\d\s()\-.·•∙…*]+$/u;
-
-/** The name a human wrote, or "" for a placeholder and for nothing at all. */
-export function realName(value: string | null | undefined): string {
-  const name = value?.trim() ?? "";
-  return name === "" || NOT_A_NAME.test(name) ? "" : name;
-}
-
 /** A resync asks WhatsApp for the whole address book, so it is not free. */
 const CONTACT_RESYNC_COOLDOWN_MS = 7 * 24 * 3_600_000;
 /** How long past the initial sync a slow app state sync still gets to deliver. */
@@ -430,24 +413,7 @@ interface MessageRef {
   keyId: string;
 }
 
-/** The deleted or expired message's words no longer answer anything; the row is gone to readers. */
-function missingMessage(messageId: string): WazapError {
-  return new WazapError(
-    "MESSAGE_NOT_FOUND",
-    `No message "${messageId}" is loaded.`,
-    "Use a message_id from read_messages or search"
-  );
-}
-
 type HistorySetEvent = BaileysEventMap["messaging-history.set"];
-
-/** What viewsOfStored reads once for a whole list of messages. */
-interface ViewLookups {
-  marks: ReturnType<AccountDb["messages"]["marksOf"]>;
-  nameFor: (jid: string, pushName?: string) => string;
-  noteFor: (jid: string) => string | undefined;
-  contactIdFor: (jid: string) => number | null;
-}
 
 export class WhatsAppService implements WhatsAppApi {
   private sockClient: WASocket | null = null;
@@ -506,8 +472,10 @@ export class WhatsAppService implements WhatsAppApi {
   private readonly groupCache = new Map<string, GroupMetadata>();
   /** Groups whose metadata WhatsApp refused, so we stop asking on every read. */
   private readonly unreadableGroups = new Set<string>();
-  /** Every lid ↔ number pairing, mirrored from the account database: the ids every read hands out. */
-  private lids = new LidRegistry();
+  /** Who a jid is: the lid pairings, the account's own ids, the names (src/service/identity.ts). */
+  private readonly identity: AccountIdentity;
+  /** What a reader sees of the database (src/service/views.ts). */
+  private readonly views: MessageViews;
   /** The account database, opened in the constructor; null only when it could not be opened. */
   private accountDb: AccountDb | null = null;
   /**
@@ -591,6 +559,28 @@ export class WhatsAppService implements WhatsAppApi {
     account: AccountRecord,
     paths: AccountPaths
   ) {
+    this.identity = new AccountIdentity({
+      db: () => this.db,
+      readyDb: () => this.readyDb(),
+      sock: () => this.sockClient,
+      account: () => this.account,
+      stopped: () => this.stopped,
+      cachedGroup: (jid) => this.groupCache.get(jid),
+      folds: this.folds,
+      scheduleFileCleanup: () => this.scheduleFileCleanup(),
+      namesChanged: () => {
+        this.namedContactsCache = null;
+      },
+    });
+    this.views = new MessageViews(
+      {
+        db: () => this.db,
+        readyDb: () => this.readyDb(),
+        settleExpired: (db, id) => this.settleExpired(db, id),
+        transcriptOf: (message) => this.transcriptOf(message),
+      },
+      this.identity
+    );
     this.accountRecord = account;
     this.webhook = new WebhookSink(process.env, { account });
     this.outbox = new WebhookOutbox({
@@ -684,7 +674,7 @@ export class WhatsAppService implements WhatsAppApi {
         markOnlineOnConnect: false,
         generateHighQualityLinkPreview: false,
         // Retries and poll decryption ask for a message the account already has.
-        getMessage: async (key) => this.storedProto(key),
+        getMessage: async (key) => this.views.storedProto(key),
       });
       this.sockClient = sock;
       this.wireEvents(sock, generation);
@@ -809,7 +799,7 @@ export class WhatsAppService implements WhatsAppApi {
 
   /** What the service mirrors from a database it starts reading: the pairings and the last sign of life. */
   private adoptDatabase(db: AccountDb): void {
-    for (const [lid, phone] of db.identity.lidPairs()) this.lids.learn(lid, phone);
+    for (const [lid, phone] of db.identity.lidPairs()) this.identity.lids.learn(lid, phone);
     this.lastInboundAt = db.messages.lastInboundTs();
     this.namedContactsCache = null;
     this.vectorCount = null;
@@ -868,7 +858,7 @@ export class WhatsAppService implements WhatsAppApi {
       if (restore === null && (imported || legacyFilesPresent(this.config.dataDir, this.paths))) next.setMeta(IMPORT_META.state, "skipped");
       carryLegacyRecord(legacy, next);
       next.bindOwner(owner);
-      this.lids = new LidRegistry();
+      this.identity.lids = new LidRegistry();
       this.adoptDatabase(next);
       this.storageState = this.legacyPending(next) ? "preparing" : "ready";
       // The next bootStorage() prepares the database now in place.
@@ -912,7 +902,7 @@ export class WhatsAppService implements WhatsAppApi {
         this.noteImport(db, report);
         // What the import stored carries no flags yet: the backfill works them out.
         db.messages.requestFlagsBackfill();
-        this.lids = new LidRegistry();
+        this.identity.lids = new LidRegistry();
         this.adoptDatabase(db);
       }
       await this.importLateBeta(db);
@@ -973,7 +963,7 @@ export class WhatsAppService implements WhatsAppApi {
       const beta = result.phases?.beta;
       log(`account ${this.accountRecord.id}: beta archive ${result.outcome}${beta ? `, ${beta.imported} messages added` : ""}`);
       db.messages.requestFlagsBackfill();
-      this.lids = new LidRegistry();
+      this.identity.lids = new LidRegistry();
       this.adoptDatabase(db);
     } catch (err) {
       if (this.stopped || !db.isOpen) return;
@@ -1206,16 +1196,16 @@ export class WhatsAppService implements WhatsAppApi {
   storeCounts(): { chats: number; contacts: number; messages: number } {
     const db = this.readyDb();
     if (db === null) return { chats: 0, contacts: 0, messages: 0 };
-    const chats = db.identity.listChats().filter((chat) => this.listed(chat)).length;
+    const chats = db.identity.listChats().filter((chat) => this.views.listed(chat)).length;
     return { chats, contacts: this.namedContacts(), messages: db.counts().messages };
   }
 
   /** This account already has a chat, or messages, for this jid. Contacts do not count. */
   hasChat(jid: string): boolean {
-    const id = this.canonical(jid);
+    const id = this.identity.canonical(jid);
     if (!id || isNoiseJid(id)) return false;
     const chat = this.readyDb()?.identity.chat(id) ?? null;
-    return chat !== null && this.listed(chat);
+    return chat !== null && this.views.listed(chat);
   }
 
   hasMessage(id: string): boolean {
@@ -1419,24 +1409,24 @@ export class WhatsAppService implements WhatsAppApi {
       await this.waitForSync();
       // The lookup can teach a pairing, and a pairing folds a lid chat into its
       // number's: it comes first, and the fold is let land before the list is read.
-      const lidChats = this.db.identity.listChats().filter((chat) => chat.jid.endsWith("@lid") && this.listed(chat));
-      await this.learnLidPhones(lidChats.map((chat) => chat.jid));
+      const lidChats = this.db.identity.listChats().filter((chat) => chat.jid.endsWith("@lid") && this.views.listed(chat));
+      await this.identity.learnLidPhones(lidChats.map((chat) => chat.jid));
       await this.foldsSettled();
       const db = this.db;
       const entries = db.identity
         .listChats()
-        .filter((chat) => this.listed(chat) && this.matchesChatFilter(chat, filter))
+        .filter((chat) => this.views.listed(chat) && this.views.matchesChatFilter(chat, filter))
         .map((chat) => ({ chat, proto: chat.proto === null ? null : decodeChat(Buffer.from(chat.proto).toString("base64")) }));
       const activity = (entry: (typeof entries)[number]): number => {
         const described = protoNumber(entry.proto?.conversationTimestamp);
         if (described !== undefined && described !== null) return described;
         return entry.chat.lastTs === null ? 0 : Math.floor(entry.chat.lastTs / 1000);
       };
-      const people = this.privateScope(opts.private);
+      const people = this.identity.privateScope(opts.private);
       const chats = entries
         .sort((a, b) => activity(b) - activity(a) || (b.chat.lastMessageId ?? 0) - (a.chat.lastMessageId ?? 0) || b.chat.id - a.chat.id)
         .slice(0, limit)
-        .map((entry) => this.chatSummary(entry.chat, entry.proto, people));
+        .map((entry) => this.views.chatSummary(entry.chat, entry.proto, people));
       return this.synced(chats);
     });
   }
@@ -1444,26 +1434,26 @@ export class WhatsAppService implements WhatsAppApi {
   readMessages(chatId: string, limit: number, before?: string, types?: MessageType[]): Promise<ChatRead> {
     return this.guarded(async () => {
       const sock = this.ensureConnected();
-      const jid = this.resolveId(chatId);
+      const jid = this.identity.resolveId(chatId);
       await this.waitForSync();
       await this.learnParticipants(jid);
-      await this.learnLidPhones([jid]);
+      await this.identity.learnLidPhones([jid]);
 
       if (before === undefined) {
-        const read: ChatRead = this.synced(this.viewsOfStored(this.pageOf(jid, limit, undefined, types)));
+        const read: ChatRead = this.synced(this.views.viewsOfStored(this.pageOf(jid, limit, undefined, types)));
         // The newest page is where a send handed to WhatsApp would show: until its echo comes, say it may be on its way.
         const unconfirmed = types === undefined ? this.unconfirmedSends(jid) : [];
         return unconfirmed.length === 0 ? read : { ...read, unconfirmedSends: unconfirmed };
       }
 
-      const anchor = this.storedOrThrow(before);
+      const anchor = this.views.storedOrThrow(before);
       const inChat = this.db.identity.chat(jid)?.jid === anchor.chatJid;
       let older = inChat ? this.pageOf(jid, limit, anchor.id, types) : [];
-      if (older.length > 0) return this.synced(this.viewsOfStored(older));
+      if (older.length > 0) return this.synced(this.views.viewsOfStored(older));
       await this.fetchOlder(sock, anchor, limit);
       older = inChat ? this.pageOf(jid, limit, anchor.id, types) : [];
       // The phone may hold more than it sent in time: an empty answer says it was asked, never that the chat starts here.
-      return { ...this.synced(this.viewsOfStored(older)), older: { askedPhone: true, received: older.length } };
+      return { ...this.synced(this.views.viewsOfStored(older)), older: { askedPhone: true, received: older.length } };
     });
   }
 
@@ -1519,7 +1509,7 @@ export class WhatsAppService implements WhatsAppApi {
       await this.waitForSync();
       const cutoff = Date.now() - hours * 3_600_000;
       const active = this.db.identity.listChats().filter((chat) => chat.lastTs !== null && chat.lastTs >= cutoff);
-      await this.learnLidPhones(active.map((chat) => chat.jid));
+      await this.identity.learnLidPhones(active.map((chat) => chat.jid));
       // A group's metadata is what names a sender the address book does not
       // know; fetch it for the groups that spoke in the window, once each.
       const activeGroups = active
@@ -1531,7 +1521,7 @@ export class WhatsAppService implements WhatsAppApi {
       const wanted = types === undefined || types.length === 0 ? null : new Set<string>(types);
       const chosen: Array<{ jid: string; stored: StoredMessage[] }> = [];
       for (const chat of active) {
-        if (chat.kind === "status" || isNoiseJid(chat.jid) || !this.matchesChatFilter(chat, filter)) continue;
+        if (chat.kind === "status" || isNoiseJid(chat.jid) || !this.views.matchesChatFilter(chat, filter)) continue;
         // Each chat's newest messages in the window, at most as many as main's per-chat ring held.
         const newestFirst: StoredMessage[] = [];
         for (let before: number | undefined; newestFirst.length < RECENT_PER_CHAT_MAX; ) {
@@ -1545,17 +1535,17 @@ export class WhatsAppService implements WhatsAppApi {
         if (stored.length > 0) chosen.push({ jid: chat.jid, stored });
       }
       // One read of every chosen message's reactions, votes and receipts, and each name once.
-      const lookups = this.viewLookups(chosen.flatMap((entry) => entry.stored));
+      const lookups = this.views.viewLookups(chosen.flatMap((entry) => entry.stored));
       const conversations: RecentConversation[] = [];
       for (const { jid, stored } of chosen) {
         const messages = stored
-          .map((message) => this.viewOfStored(message, lookups))
+          .map((message) => this.views.viewOfStored(message, lookups))
           .filter((view) => includeSystem || view.type !== "system");
         if (messages.length === 0) continue;
-        const note = this.noteFor(jid);
+        const note = this.identity.noteFor(jid);
         conversations.push({
           chat_id: jid,
-          chat_name: this.displayName(jid),
+          chat_name: this.identity.displayName(jid),
           ...(note ? { note } : {}),
           type: isGroupId(jid) ? "group" : "individual",
           last_activity: messages[messages.length - 1]!.timestamp,
@@ -1579,15 +1569,15 @@ export class WhatsAppService implements WhatsAppApi {
       await this.waitForSync();
       limit = pageLimit(limit);
       const db = this.db;
-      const scope = chatId === undefined ? undefined : this.resolveId(chatId);
-      const from = this.senderFilter(opts.from);
+      const scope = chatId === undefined ? undefined : this.identity.resolveId(chatId);
+      const from = this.identity.senderFilter(opts.from);
       const filter = {
         ...(scope === undefined ? {} : { chat: scope }),
         ...(from === undefined ? {} : { from }),
         ...(opts.sinceMs === undefined ? {} : { since: opts.sinceMs }),
         ...(opts.untilMs === undefined ? {} : { until: opts.untilMs }),
       };
-      const people = scope === undefined ? this.privateScope(opts.private) : null;
+      const people = scope === undefined ? this.identity.privateScope(opts.private) : null;
       // from naming one of them asks for what they wrote; a quote of anyone else kept #private still loses its words.
       const author = people !== null && from !== undefined && people.names(from) ? from : undefined;
       const found: StoredMessage[] = [];
@@ -1614,7 +1604,7 @@ export class WhatsAppService implements WhatsAppApi {
         if (page.nextBefore === null) break;
         before = page.nextBefore;
       }
-      const views = this.viewsOfStored(found);
+      const views = this.views.viewsOfStored(found);
       const answer: SearchAnswer = this.synced(people === null ? views : views.map((view) => withoutPrivateQuote(view, people, author)));
       if (capped !== null) answer.scanCapped = { searchedBackTo: isoWithOffset(secondOfId(capped) * 1000) };
       if (privateOmitted > 0) answer.privateOmitted = privateOmitted;
@@ -1631,7 +1621,7 @@ export class WhatsAppService implements WhatsAppApi {
     try {
       const db = this.readyDb();
       if (db === null) return null;
-      const scope = chatId === undefined ? undefined : this.resolveId(chatId);
+      const scope = chatId === undefined ? undefined : this.identity.resolveId(chatId);
       const cov = db.search.coverage({
         excludeKinds: ["status"],
         ...(scope === undefined ? {} : { chat: scope }),
@@ -1669,11 +1659,11 @@ export class WhatsAppService implements WhatsAppApi {
       await this.waitForSync();
       const settings = this.readyRecall();
       limit = pageLimit(limit);
-      const scope = chatId === undefined ? undefined : this.resolveId(chatId);
-      const from = this.senderFilter(opts.from);
+      const scope = chatId === undefined ? undefined : this.identity.resolveId(chatId);
+      const from = this.identity.senderFilter(opts.from);
       const vector = await this.queryVector(query);
       const db = this.db;
-      const people = scope === undefined ? this.privateScope(opts.private) : null;
+      const people = scope === undefined ? this.identity.privateScope(opts.private) : null;
       const author = people !== null && from !== undefined && people.names(from) ? from : undefined;
       // Wide enough that the variety rules below have something to promote, and as wide again when #private hits may take slots.
       const window = Math.max(limit + 5, RECALL_RERANK_WINDOW);
@@ -1698,7 +1688,7 @@ export class WhatsAppService implements WhatsAppApi {
       // The #private hits that would have been among these: ranked at or above the lowest one kept, or all of them when fewer came.
       const floor = kept.length < limit ? -Infinity : Math.min(...kept.map((hit) => hit.score));
       const privateOmitted = [...hidden].filter((hit) => hit.score >= floor).length;
-      const views = this.viewsOfStored(kept.map((hit) => hit.message)).map((view) => (people === null ? view : withoutPrivateQuote(view, people, author)));
+      const views = this.views.viewsOfStored(kept.map((hit) => hit.message)).map((view) => (people === null ? view : withoutPrivateQuote(view, people, author)));
       const hits = kept.map((hit, i) => ({
         score: hit.score,
         similarity: hit.similarity,
@@ -1736,7 +1726,7 @@ export class WhatsAppService implements WhatsAppApi {
   /** What the index embeds for a message: the words a person chose, capped to the model's window. */
   private recallWords(message: StoredMessage): string | null {
     const maxChars = this.recallEnv instanceof WazapError ? RECALL_TEXT_CAP : EMBED_MODELS[this.recallEnv.model].maxChars;
-    const raw = this.rawOf(message);
+    const raw = this.views.rawOf(message);
     let words: string | null;
     if (raw === null) {
       words = message.transcript === null ? message.text : `${message.text ?? ""} "${message.transcript}"`;
@@ -1749,7 +1739,7 @@ export class WhatsAppService implements WhatsAppApi {
   getMessage(messageId: string): Promise<MessageView> {
     return this.guarded(async () => {
       this.ensureConnected();
-      return this.viewOfStored(this.storedOrThrow(messageId));
+      return this.views.viewOfStored(this.views.storedOrThrow(messageId));
     });
   }
 
@@ -1790,7 +1780,7 @@ export class WhatsAppService implements WhatsAppApi {
           tags.some((t) => t.includes(needle)) ||
           Object.entries(notes?.fields ?? {}).some(([key, value]) => key.includes(needle) || value.toLowerCase().includes(needle));
         if (!hit) continue;
-        matches.push(this.contactSummary(person));
+        matches.push(this.views.contactSummary(person));
         if (matches.length >= limit) break;
       }
       return matches;
@@ -1800,7 +1790,7 @@ export class WhatsAppService implements WhatsAppApi {
   getContact(contactId: string): Promise<ContactDetails> {
     return this.guarded(async () => {
       const sock = this.ensureConnected();
-      const jid = this.resolveId(contactId);
+      const jid = this.identity.resolveId(contactId);
       // A number WhatsApp does not know never answers these two queries, so
       // they get a deadline and the contact still comes back from the store.
       const [about, picture] = await Promise.all([
@@ -1811,7 +1801,7 @@ export class WhatsAppService implements WhatsAppApi {
         orNullAfter(sock.profilePictureUrl(jid, "image"), PROFILE_LOOKUP_MS),
       ]);
       return {
-        ...this.contactSummary(jid),
+        ...this.views.contactSummary(jid),
         about,
         profile_pic_url: picture ?? null,
         is_blocked: this.blocked.has(jid),
@@ -1835,7 +1825,7 @@ export class WhatsAppService implements WhatsAppApi {
         await this.askForEmptyAddressBook();
         db = this.db;
       }
-      return findInAccount(db, this.accountRecord.id, query, (id) => this.resolveId(id));
+      return findInAccount(db, this.accountRecord.id, query, (id) => this.identity.resolveId(id));
     });
   }
 
@@ -1873,7 +1863,7 @@ export class WhatsAppService implements WhatsAppApi {
 
   /** The recent exchange and the user's style in a chat, for a contact find_contact resolved. */
   draftContext(chatJid: string, options: { recent: boolean; private?: PrivateRule }): DraftContext | null {
-    return draftContextFor(this.db, chatJid, { recent: options.recent, others: options.private?.others, senderName: (jid) => this.displayName(jid) });
+    return draftContextFor(this.db, chatJid, { recent: options.recent, others: options.private?.others, senderName: (jid) => this.identity.displayName(jid) });
   }
 
   /** send_message's style check on a text draft; null when the chat gives too little to judge or the database is not ready. */
@@ -1894,7 +1884,7 @@ export class WhatsAppService implements WhatsAppApi {
   waitForMessages(opts: WaitOptions): Promise<WaitResult> {
     return this.guarded(async () => {
       this.ensureConnected();
-      const chatJid = opts.chatId === undefined ? undefined : this.resolveId(opts.chatId);
+      const chatJid = opts.chatId === undefined ? undefined : this.identity.resolveId(opts.chatId);
       const parsed = this.parseCursor(opts.cursor);
       let since = parsed.seq;
       const deadline = Date.now() + opts.timeoutMs;
@@ -1919,12 +1909,12 @@ export class WhatsAppService implements WhatsAppApi {
       since = last;
       const db = this.readyDb();
       // A chat named by chat_id reads whole, theirs or a group's: only a wait on every chat leaves #private words out.
-      const people = db === null || chatJid !== undefined ? null : this.privateScope(opts.private);
+      const people = db === null || chatJid !== undefined ? null : this.identity.privateScope(opts.private);
       // A message deleted or expired since it arrived is not handed out.
       const messages = found.flatMap((a) => {
         const message = db?.messages.get(a.sid) ?? null;
         if (message === null) return [];
-        const view = this.viewOfStored(message);
+        const view = this.views.viewOfStored(message);
         if (people === null) return [view];
         return [people.message(message) ? withoutWords(view) : withoutPrivateQuote(view, people)];
       });
@@ -1951,9 +1941,9 @@ export class WhatsAppService implements WhatsAppApi {
         if (fresh.length < page.items.length || page.nextBefore === null) break;
         before = page.nextBefore;
       }
-      await this.learnLidPhones(stories.flatMap((story) => (story.senderJid === null ? [] : [story.senderJid])));
-      const views = this.viewsOfStored(stories);
-      const people = this.privateScope(opts.private);
+      await this.identity.learnLidPhones(stories.flatMap((story) => (story.senderJid === null ? [] : [story.senderJid])));
+      const views = this.views.viewsOfStored(stories);
+      const people = this.identity.privateScope(opts.private);
       // Stories are never asked for by name: a #private person's keep who, when and what kind.
       return this.synced(people === null ? views : views.map((view, i) => (people.message(stories[i]!) ? withoutWords(view) : view)));
     });
@@ -1973,7 +1963,7 @@ export class WhatsAppService implements WhatsAppApi {
       for (const sid of messageIds) {
         if (out.length >= max) break;
         const message = this.readyDb()?.messages.get(sid) ?? null;
-        const raw = message === null ? null : this.rawOf(message);
+        const raw = message === null ? null : this.views.rawOf(message);
         if (!raw) continue;
         const shipped = thumbnailOf(raw);
         if (shipped) {
@@ -2071,12 +2061,12 @@ export class WhatsAppService implements WhatsAppApi {
           if (handled?.askSid === ask.sid) continue;
           if (ask.ts > cutoff || ask.ts < horizon) continue;
           const group = isGroupId(jid);
-          const note = this.noteFor(jid);
+          const note = this.identity.noteFor(jid);
           found.push({
             chat_id: jid,
-            name: this.displayName(jid),
+            name: this.identity.displayName(jid),
             type: group ? "group" : "individual",
-            ask: this.viewOfStored(ask),
+            ask: this.views.viewOfStored(ask),
             messages_since_you: theirs.length,
             business: !group && Boolean(db.identity.contact(jid)?.verifiedName),
             ...(note ? { note } : {}),
@@ -2111,7 +2101,7 @@ export class WhatsAppService implements WhatsAppApi {
     if (theirs.length === 0) return null;
     const group = isGroupId(jid);
     const ask = [...theirs].reverse().find((message) => {
-      const raw = this.rawOf(message);
+      const raw = this.views.rawOf(message);
       if (group && (raw === null || !this.addressesMe(raw))) return false;
       return this.readsAsAsk(message, raw);
     });
@@ -2155,9 +2145,9 @@ export class WhatsAppService implements WhatsAppApi {
   private catchupHost(): CatchupHost {
     return {
       now: () => Date.now(),
-      ownJid: () => this.ownJid(),
-      nameOf: (jid) => this.displayName(jid),
-      noteOf: (jid) => this.noteFor(jid),
+      ownJid: () => this.identity.ownJid(),
+      nameOf: (jid) => this.identity.displayName(jid),
+      noteOf: (jid) => this.identity.noteFor(jid),
       isNoise: (jid) => isNoiseJid(jid),
       leftGroup: (chat) => {
         try {
@@ -2170,7 +2160,7 @@ export class WhatsAppService implements WhatsAppApi {
       // at most a dozen groups, within a second, and only while connected — a
       // fetch that cannot run would mark the group unreadable for good.
       prepareNames: async (groups, people) => {
-        await this.learnLidPhones(people);
+        await this.identity.learnLidPhones(people);
         if (this.status !== "connected") return;
         const unknown = groups.filter((jid) => !this.groupCache.has(jid) && !this.unreadableGroups.has(jid)).slice(0, GROUP_META_MAX);
         if (unknown.length === 0) return;
@@ -2196,9 +2186,9 @@ export class WhatsAppService implements WhatsAppApi {
 
   setContactNote(contactId: string, note: string): Promise<ContactSummary> {
     return this.guarded(async () => {
-      const jid = this.resolveId(contactId);
+      const jid = this.identity.resolveId(contactId);
       this.db.identity.setNote(jid, note);
-      return this.contactSummary(jid);
+      return this.views.contactSummary(jid);
     });
   }
 
@@ -2211,7 +2201,7 @@ export class WhatsAppService implements WhatsAppApi {
    */
   updateContactDetails(contactId: string, edit: ContactDetailsEdit): Promise<ContactSummary> {
     return this.guarded(async () => {
-      const jid = this.personJid(contactId);
+      const jid = this.identity.personJid(contactId);
       const addTags = (edit.addTags ?? []).map((t) => requireTag(t));
       const removeTags = (edit.removeTags ?? []).map((t) => requireTag(t));
       const set: Record<string, string> = {};
@@ -2253,7 +2243,7 @@ export class WhatsAppService implements WhatsAppApi {
         throw new WazapError("TEXT_TOO_LONG", `A contact holds at most ${MAX_CONTACT_FIELDS} details.`);
       }
       db.identity.updateFields(jid, { addTags, removeTags, set, removeFields: [...removeFields] });
-      return this.contactSummary(jid);
+      return this.views.contactSummary(jid);
     });
   }
 
@@ -2264,7 +2254,7 @@ export class WhatsAppService implements WhatsAppApi {
    */
   markHandled(chatId: string): Promise<HandledResult> {
     return this.guarded(async () => {
-      const jid = this.resolveId(chatId);
+      const jid = this.identity.resolveId(chatId);
       const db = this.db;
       const open = db.identity.chat(jid) === null ? null : this.openAsk(jid);
       const last = db.messages.chatPage(jid, { limit: 1 }).items[0] ?? null;
@@ -2272,9 +2262,9 @@ export class WhatsAppService implements WhatsAppApi {
       if (ask) db.identity.markHandled(jid, ask.sid);
       return {
         chat_id: jid,
-        name: this.displayName(jid),
+        name: this.identity.displayName(jid),
         ask_id: ask?.sid ?? null,
-        ask_text: ask ? this.viewTextOf(ask) : null,
+        ask_text: ask ? this.views.viewTextOf(ask) : null,
       };
     });
   }
@@ -2283,14 +2273,14 @@ export class WhatsAppService implements WhatsAppApi {
     if (message.type === "call") return false;
     // A voice note nobody has heard is an ask until proven otherwise.
     if (message.type === "voice" && message.transcript === null) return true;
-    return wordsAsk(raw === null ? this.viewTextOf(message) : viewText(raw, this.transcriptOf(message)));
+    return wordsAsk(raw === null ? this.views.viewTextOf(message) : viewText(raw, this.transcriptOf(message)));
   }
 
   /** A group message that @-mentions the linked account or replies to one of its messages. */
   private addressesMe(raw: WAMessage): boolean {
-    if (mentionedJids(raw).some((jid) => this.isMe(jid))) return true;
+    if (mentionedJids(raw).some((jid) => this.identity.isMe(jid))) return true;
     const quoted = quotedSenderJid(raw);
-    return quoted !== undefined && this.isMe(quoted);
+    return quoted !== undefined && this.identity.isMe(quoted);
   }
 
   private arrivalMatches(
@@ -2301,7 +2291,7 @@ export class WhatsAppService implements WhatsAppApi {
     if (chatJid !== undefined && arrival.jid !== chatJid) return false;
     if (!addressedToMe || !isGroupId(arrival.jid)) return true;
     const message = this.readyDb()?.messages.get(arrival.sid) ?? null;
-    const raw = message === null ? null : this.rawOf(message);
+    const raw = message === null ? null : this.views.rawOf(message);
     return raw !== null && this.addressesMe(raw);
   }
 
@@ -2343,7 +2333,7 @@ export class WhatsAppService implements WhatsAppApi {
     for (const raw of stored) {
       if (raw.key.fromMe || !raw.key.remoteJid) continue;
       if (messageType(raw) === "system") continue;
-      const jid = this.canonical(raw.key.remoteJid);
+      const jid = this.identity.canonical(raw.key.remoteJid);
       if (isNoiseJid(jid)) continue;
       this.arrivals.push({ seq: ++this.arrivalSeq, sid: messageIdFor(raw.key, jid), jid });
       landed = true;
@@ -2361,7 +2351,7 @@ export class WhatsAppService implements WhatsAppApi {
   getGroupInfo(groupId: string): Promise<GroupInfo> {
     return this.guarded(async () => {
       this.ensureConnected();
-      const jid = this.resolveId(groupId);
+      const jid = this.identity.resolveId(groupId);
       if (!isGroupId(jid)) {
         throw new WazapError("GROUP_NOT_FOUND", `"${groupId}" is not a group id.`, "Group ids end in @g.us");
       }
@@ -2376,12 +2366,12 @@ export class WhatsAppService implements WhatsAppApi {
         chat_id: jid,
         name: meta.subject,
         description: meta.desc ?? null,
-        owner: meta.owner ? this.canonical(meta.owner) : null,
+        owner: meta.owner ? this.identity.canonical(meta.owner) : null,
         created_at: meta.creation ? isoWithOffset(meta.creation * 1000) : null,
         participant_count: meta.participants.length,
         participants: meta.participants.slice(0, MAX_GROUP_PARTICIPANTS).map((p) => {
-          const id = this.canonical(p.id);
-          return { contact_id: id, name: this.displayName(id), is_admin: isAdmin(p) };
+          const id = this.identity.canonical(p.id);
+          return { contact_id: id, name: this.identity.displayName(id), is_admin: isAdmin(p) };
         }),
         announcement_only: Boolean(meta.announce),
         i_am_admin: iAmAdmin,
@@ -2393,7 +2383,7 @@ export class WhatsAppService implements WhatsAppApi {
       if (meta.isCommunity || meta.linkedParent) {
         info.community = {
           is_community: Boolean(meta.isCommunity),
-          parent_group_id: meta.linkedParent ? this.canonical(meta.linkedParent) : null,
+          parent_group_id: meta.linkedParent ? this.identity.canonical(meta.linkedParent) : null,
         };
       }
 
@@ -2408,24 +2398,24 @@ export class WhatsAppService implements WhatsAppApi {
   downloadMedia(messageId: string, saveTo?: string): Promise<MediaResult> {
     return this.guarded(async () => {
       const sock = this.ensureConnected();
-      const raw = this.messageOrThrow(messageId);
+      const raw = this.views.messageOrThrow(messageId);
       const info = mediaInfo(raw);
       if (!info) throw new WazapError("MEDIA_UNAVAILABLE", `Message ${messageId} carries no media.`);
       const buffer = await this.mediaBuffer(sock, messageId, raw);
-      this.messageOrThrow(messageId);
+      this.views.messageOrThrow(messageId);
 
       const dir = saveTo ?? this.paths.mediaDir;
       if (!isAbsolute(dir)) {
         throw new WazapError("FILE_NOT_FOUND", `"${dir}" is not an absolute directory path.`);
       }
       await mkdir(dir, { recursive: true, mode: DIR_MODE });
-      this.messageOrThrow(messageId);
+      this.views.messageOrThrow(messageId);
       const filename = mediaFilename(info);
       const path = join(dir, filename);
       await writeFile(path, buffer, { mode: FILE_MODE });
       // An export already written belongs to the user; never delete arbitrary
       // download paths. Do not return its bytes after expiry, however.
-      this.messageOrThrow(messageId);
+      this.views.messageOrThrow(messageId);
 
       const inline =
         info.mime.startsWith("image/") && buffer.length <= INLINE_IMAGE_MAX_BYTES ? buffer.toString("base64") : null;
@@ -2439,12 +2429,12 @@ export class WhatsAppService implements WhatsAppApi {
    */
   transcribeAudio(messageId: string, language?: string, opts: TranscribeOptions = {}): Promise<TranscribeResult> {
     return this.guarded(async () => {
-      const message = this.storedOrThrow(messageId);
+      const message = this.views.storedOrThrow(messageId);
       if (message.transcript !== null) return transcribeResult(this.transcriptRecordOf(message), true);
       if (opts.cachedOnly === true) {
         throw new WazapError("TRANSCRIBE_UNAVAILABLE", `No transcript of ${messageId} is on hand.`, "Call get_media without save_to to transcribe it");
       }
-      const raw = this.messageOrThrow(messageId);
+      const raw = this.views.messageOrThrow(messageId);
 
       const type = messageType(raw);
       const info = mediaInfo(raw);
@@ -2496,10 +2486,10 @@ export class WhatsAppService implements WhatsAppApi {
   ): Promise<TranscribeResult> {
     // Readiness is never ok while no provider is configured.
     const provider = settings.provider!;
-    this.messageOrThrow(messageId);
+    this.views.messageOrThrow(messageId);
     const sock = this.ensureConnected();
     const buffer = await this.mediaBuffer(sock, messageId, raw);
-    this.messageOrThrow(messageId);
+    this.views.messageOrThrow(messageId);
     // Its own temp dir, deleted straight after: nobody asked to keep this file,
     // and the media dir is where the files the user did ask for live.
     const dir = await mkdtemp(join(tmpdir(), "wazap-audio-"));
@@ -2507,7 +2497,7 @@ export class WhatsAppService implements WhatsAppApi {
     try {
       const file = join(dir, mediaFilename(info));
       await writeFile(file, buffer, { mode: FILE_MODE });
-      this.messageOrThrow(messageId);
+      this.views.messageOrThrow(messageId);
       transcript = await this.transcriber(settings, file, {
         ...(language === undefined ? {} : { language }),
         signal: this.transcribeAbort.signal,
@@ -2526,13 +2516,13 @@ export class WhatsAppService implements WhatsAppApi {
       at: Date.now(),
     };
     // A message revoked or expired while the transcription ran keeps nothing behind.
-    this.messageOrThrow(messageId);
-    const sid = this.storedOrThrow(messageId).sid;
+    this.views.messageOrThrow(messageId);
+    const sid = this.views.storedOrThrow(messageId).sid;
     const { text, ...details } = record;
     if (!this.db.messages.setTranscript(sid, text, details)) throw missingMessage(messageId);
     // With the transcript on it, the voice note finally carries searchable words.
     this.embedFeed?.kick();
-    this.messageOrThrow(messageId);
+    this.views.messageOrThrow(messageId);
     return transcribeResult(record, false);
   }
 
@@ -2664,7 +2654,7 @@ export class WhatsAppService implements WhatsAppApi {
   private revokeTargets(raw: WAMessage): MessageRef[] {
     const target = revokedTargetKey(raw);
     if (!target?.id || !raw.key?.remoteJid) return [];
-    const chatJid = this.canonical(raw.key.remoteJid);
+    const chatJid = this.identity.canonical(raw.key.remoteJid);
     if (raw.messageStubType === proto.WebMessageInfo.StubType.REVOKE) {
       if (isGroupId(chatJid)) {
         return [
@@ -2675,7 +2665,7 @@ export class WhatsAppService implements WhatsAppApi {
       return [{ chatJid, fromMe: Boolean(target.fromMe), keyId: target.id }];
     }
     const author = target.participant || target.remoteJid;
-    const fromMe = raw.key.fromMe ? Boolean(target.fromMe) : !target.fromMe && Boolean(author) && this.isMe(author!);
+    const fromMe = raw.key.fromMe ? Boolean(target.fromMe) : !target.fromMe && Boolean(author) && this.identity.isMe(author!);
     return [{ chatJid, fromMe, keyId: target.id }];
   }
 
@@ -2849,16 +2839,16 @@ export class WhatsAppService implements WhatsAppApi {
       const jid = await this.assertOutgoing(payload.chatId, sock);
       let stored: DraftPayload = { ...payload, chatId: jid };
       if (payload.kind === "forward") {
-        this.contentOrThrow(payload.messageId);
+        this.views.contentOrThrow(payload.messageId);
         stored = { ...payload, chatId: jid, text: (await this.getMessage(payload.messageId)).text };
       } else if (payload.kind === "text" && payload.mentionIds?.length) {
         // Mentions resolve here, and the text gains each @<user> it lacks, so the
         // preview is the text that leaves and each token matches its mentionedJid.
-        const mentionIds = payload.mentionIds.map((id) => this.resolveId(id));
+        const mentionIds = payload.mentionIds.map((id) => this.identity.resolveId(id));
         stored = { ...payload, chatId: jid, mentionIds, text: withMentionTokens(payload.text, mentionIds) };
       }
       // The key is fixed now, so a confirm whose outcome is lost can still be recognised by it.
-      const keyId = generateMessageIDV2(this.ownJid());
+      const keyId = generateMessageIDV2(this.identity.ownJid());
       return this.drafts.view(this.drafts.put(this.db.sends, this.outgoingOf(jid), stored, keyId, owner ?? null));
     });
   }
@@ -2984,8 +2974,8 @@ export class WhatsAppService implements WhatsAppApi {
         );
       }
       const { sock, jid } = await this.prepareSend(chatId);
-      const mentions = (mentionIds ?? []).map((id) => this.resolveId(id));
-      const quoted = replyTo === undefined ? undefined : this.contentOrThrow(replyTo);
+      const mentions = (mentionIds ?? []).map((id) => this.identity.resolveId(id));
+      const quoted = replyTo === undefined ? undefined : this.views.contentOrThrow(replyTo);
       const sent = await this.dispatch(
         sock,
         jid,
@@ -3069,7 +3059,7 @@ export class WhatsAppService implements WhatsAppApi {
           `The text is ${text.length} characters; WhatsApp allows ${MAX_TEXT_CHARS}.`
         );
       }
-      const raw = this.messageOrThrow(messageId);
+      const raw = this.views.messageOrThrow(messageId);
       if (!raw.key.fromMe) {
         throw new WazapError("NOT_OWN_MESSAGE", `Message ${messageId} was not sent by the linked account.`);
       }
@@ -3077,8 +3067,8 @@ export class WhatsAppService implements WhatsAppApi {
       if (age > EDIT_WINDOW_MS) {
         throw new WazapError("EDIT_WINDOW_EXPIRED", `Message ${messageId} is older than 15 minutes.`);
       }
-      const { sock, jid } = await this.prepareSend(this.chatOfOrThrow(messageId));
-      this.messageOrThrow(messageId);
+      const { sock, jid } = await this.prepareSend(this.views.chatOfOrThrow(messageId));
+      this.views.messageOrThrow(messageId);
       // No link previews: an explicit null keeps Baileys from fetching the page itself.
       await sock.sendMessage(jid, { text, edit: raw.key, linkPreview: null });
       return { message_id: messageId, chat_id: jid, text, timestamp: isoWithOffset(Date.now()) };
@@ -3087,9 +3077,9 @@ export class WhatsAppService implements WhatsAppApi {
 
   reactToMessage(messageId: string, emoji: string): Promise<{ message_id: string; emoji: string }> {
     return this.guarded(async () => {
-      const raw = this.messageOrThrow(messageId);
-      const { sock, jid } = await this.prepareSend(this.chatOfOrThrow(messageId));
-      this.messageOrThrow(messageId);
+      const raw = this.views.messageOrThrow(messageId);
+      const { sock, jid } = await this.prepareSend(this.views.chatOfOrThrow(messageId));
+      this.views.messageOrThrow(messageId);
       await sock.sendMessage(jid, { react: { text: emoji, key: raw.key } });
       return { message_id: messageId, emoji };
     });
@@ -3097,9 +3087,9 @@ export class WhatsAppService implements WhatsAppApi {
 
   forwardMessage(messageId: string, toChatId: string, attempt?: SendAttempt): Promise<SentMessage> {
     return this.guarded(async () => {
-      const raw = this.contentOrThrow(messageId);
+      const raw = this.views.contentOrThrow(messageId);
       const { sock, jid } = await this.prepareSend(toChatId);
-      this.contentOrThrow(messageId);
+      this.views.contentOrThrow(messageId);
       const sent = await this.dispatch(sock, jid, { forward: raw }, {}, attempt);
       return this.sentResult(sent, jid, messageText(raw));
     });
@@ -3107,8 +3097,8 @@ export class WhatsAppService implements WhatsAppApi {
 
   deleteMessage(messageId: string, forEveryone: boolean): Promise<{ message_id: string; for_everyone: boolean }> {
     return this.guarded(async () => {
-      const stored = this.storedOrThrow(messageId);
-      const raw = this.messageOrThrow(messageId);
+      const stored = this.views.storedOrThrow(messageId);
+      const raw = this.views.messageOrThrow(messageId);
       const chat = stored.chatJid;
       const target: MessageRef = { chatJid: chat, fromMe: stored.fromMe, keyId: stored.keyId };
       if (!forEveryone) {
@@ -3157,8 +3147,8 @@ export class WhatsAppService implements WhatsAppApi {
   manageChat(chatId: string, action: ChatAction, opts: ChatActionOptions = {}): Promise<ChatActionResult> {
     return this.guarded(async () => {
       const sock = this.beginWrite();
-      const jid = this.resolveId(chatId);
-      const last = this.lastMessageOf(jid);
+      const jid = this.identity.resolveId(chatId);
+      const last = this.views.lastMessageOf(jid);
       const lastMessages = last ? [last] : [];
       const muteHours = opts.muteHours ?? 8;
       let detail = "";
@@ -3245,8 +3235,8 @@ export class WhatsAppService implements WhatsAppApi {
         "Pass a message_id from read_messages on this chat"
       );
     }
-    const raw = this.messageOrThrow(messageId);
-    const chat = this.chatOfOrThrow(messageId);
+    const raw = this.views.messageOrThrow(messageId);
+    const chat = this.views.chatOfOrThrow(messageId);
     if (chat !== jid) {
       throw new WazapError(
         "MESSAGE_NOT_FOUND",
@@ -3260,12 +3250,12 @@ export class WhatsAppService implements WhatsAppApi {
   createGroup(name: string, participantIds: string[]): Promise<{ chat_id: string; participants: ParticipantResult[] }> {
     return this.guarded(async () => {
       const sock = this.beginWrite();
-      const ids = participantIds.map((id) => this.resolveId(id));
+      const ids = participantIds.map((id) => this.identity.resolveId(id));
       const meta = await sock.groupCreate(name, ids);
-      this.cacheGroup(this.canonical(meta.id), meta);
-      const present = new Set(meta.participants.map((p) => this.canonical(p.id)));
+      this.cacheGroup(this.identity.canonical(meta.id), meta);
+      const present = new Set(meta.participants.map((p) => this.identity.canonical(p.id)));
       return {
-        chat_id: this.canonical(meta.id),
+        chat_id: this.identity.canonical(meta.id),
         participants: ids.map((id) =>
           present.has(id)
             ? { id, status: "ok" as const }
@@ -3302,11 +3292,11 @@ export class WhatsAppService implements WhatsAppApi {
         } catch (err) {
           // An invite message still names its group when WhatsApp will not describe it.
           if (invite === undefined) throw inviteRefused(err);
-          return { status: "preview", group_id: this.canonical(invite.groupJid), name: invite.name, ...unknown };
+          return { status: "preview", group_id: this.identity.canonical(invite.groupJid), name: invite.name, ...unknown };
         }
         return {
           status: "preview",
-          group_id: this.canonical(meta.id),
+          group_id: this.identity.canonical(meta.id),
           name: meta.subject || null,
           description: meta.desc ?? null,
           participant_count: meta.size ?? meta.participants.length,
@@ -3320,7 +3310,7 @@ export class WhatsAppService implements WhatsAppApi {
           throw inviteRefused(err);
         });
         const group = typeof from === "string" && isGroupId(from) ? from : invite.groupJid;
-        return { status: "joined", group_id: this.canonical(group), name: invite.name, ...unknown };
+        return { status: "joined", group_id: this.identity.canonical(group), name: invite.name, ...unknown };
       }
       const group = await sock.groupAcceptInvite(code).catch((err: unknown) => {
         throw inviteRefused(err);
@@ -3328,7 +3318,7 @@ export class WhatsAppService implements WhatsAppApi {
       // A group that asks for approval answers with the request, not the group,
       // and Baileys hands back nothing: the account is not in yet.
       return group
-        ? { status: "joined", group_id: this.canonical(group), name: null, ...unknown }
+        ? { status: "joined", group_id: this.identity.canonical(group), name: null, ...unknown }
         : { status: "pending_approval", group_id: null, name: null, ...unknown };
     });
   }
@@ -3342,7 +3332,7 @@ export class WhatsAppService implements WhatsAppApi {
   ): Promise<GroupActionResult> {
     return this.guarded(async () => {
       const sock = this.beginWrite();
-      const jid = this.resolveId(groupId);
+      const jid = this.identity.resolveId(groupId);
       if (!isGroupId(jid)) {
         throw new WazapError("GROUP_NOT_FOUND", `"${groupId}" is not a group id.`, "Group ids end in @g.us");
       }
@@ -3351,7 +3341,7 @@ export class WhatsAppService implements WhatsAppApi {
       const choices = GROUP_SETTINGS[action];
       const setting = choices ? settingFor(action, value, choices) : undefined;
       if (ADMIN_ACTIONS.has(action)) await this.assertGroupAdmin(jid, action);
-      const ids = (participantIds ?? []).map((id) => this.resolveId(id));
+      const ids = (participantIds ?? []).map((id) => this.identity.resolveId(id));
       if (PARTICIPANT_ACTIONS.has(action) && ids.length === 0) {
         throw new WazapError("INVALID_ID", `The "${action}" action needs at least one participant id.`);
       }
@@ -3541,13 +3531,13 @@ export class WhatsAppService implements WhatsAppApi {
       // WhatsApp addresses a call node by LID as often as by number, and ownJid
       // is only ever the number, so an outgoing call reads as incoming unless
       // the two are brought into the same form first.
-      const from = this.canonical(call.from);
-      const entry = this.calls.observe({ ...call, from }, this.ownJid(), Date.now());
+      const from = this.identity.canonical(call.from);
+      const entry = this.calls.observe({ ...call, from }, this.identity.ownJid(), Date.now());
       if (entry) this.storeCall(entry);
       this.armCallSweep();
     });
 
-    sock.ev.on("lid-mapping.update", (mapping) => this.learnLid(mapping.lid, mapping.pn));
+    sock.ev.on("lid-mapping.update", (mapping) => this.identity.learnLid(mapping.lid, mapping.pn));
 
     sock.ev.on("chats.upsert", (chats) => {
       this.handling("chats", () => this.db.transaction(() => chats.forEach((chat) => this.ingestChat(chat))), undefined);
@@ -3560,7 +3550,7 @@ export class WhatsAppService implements WhatsAppApi {
           this.db.transaction(() => {
             for (const update of updates) {
               if (!update.id) continue;
-              const jid = this.canonical(update.id);
+              const jid = this.identity.canonical(update.id);
               if (isNoiseJid(jid)) continue;
               this.writeChat(jid, { ...update, id: jid });
             }
@@ -3571,7 +3561,7 @@ export class WhatsAppService implements WhatsAppApi {
 
     sock.ev.on("chats.delete", (ids) => {
       for (const id of ids) {
-        this.handling("chat delete", () => void this.forgetChat(this.canonical(id), true).catch((err: unknown) => logError("chat delete", err)), undefined);
+        this.handling("chat delete", () => void this.forgetChat(this.identity.canonical(id), true).catch((err: unknown) => logError("chat delete", err)), undefined);
       }
     });
 
@@ -3605,13 +3595,13 @@ export class WhatsAppService implements WhatsAppApi {
       // The other side asked that these go; the database honours it the way the
       // phone does, vectors and files included.
       if ("all" in item) {
-        this.handling("messages delete", () => void this.forgetChat(this.canonical(item.jid), false).catch((err: unknown) => logError("messages delete", err)), undefined);
+        this.handling("messages delete", () => void this.forgetChat(this.identity.canonical(item.jid), false).catch((err: unknown) => logError("messages delete", err)), undefined);
         return;
       }
       const targets: MessageRef[] = [];
       for (const key of item.keys) {
         if (!key.remoteJid || !key.id) continue;
-        targets.push({ chatJid: this.canonical(key.remoteJid), fromMe: Boolean(key.fromMe), keyId: key.id });
+        targets.push({ chatJid: this.identity.canonical(key.remoteJid), fromMe: Boolean(key.fromMe), keyId: key.id });
       }
       const at = Date.now();
       this.markLater("messages delete", () => this.retract(targets, at));
@@ -3630,7 +3620,7 @@ export class WhatsAppService implements WhatsAppApi {
     sock.ev.on("message-receipt.update", (items) => {
       // A member's receipt that is the account's own: one of its devices read a group message (a story it viewed is not a chat read).
       const readSelf = items.flatMap(({ key, receipt }) =>
-        key.remoteJid && chatKindOf(this.canonical(key.remoteJid)) === "group" && receipt.userJid && this.isMe(receipt.userJid) && (receipt.readTimestamp || receipt.playedTimestamp)
+        key.remoteJid && chatKindOf(this.identity.canonical(key.remoteJid)) === "group" && receipt.userJid && this.identity.isMe(receipt.userJid) && (receipt.readTimestamp || receipt.playedTimestamp)
           ? [key]
           : []
       );
@@ -3641,11 +3631,11 @@ export class WhatsAppService implements WhatsAppApi {
           this.db.transaction(() => {
             if (readSelf.length > 0) this.applyReadSelf(readSelf);
             for (const { key, receipt } of items) {
-              const jid = key.remoteJid ? this.canonical(key.remoteJid) : undefined;
+              const jid = key.remoteJid ? this.identity.canonical(key.remoteJid) : undefined;
               // The account's other devices confirm its messages too; they are not members.
-              if (!jid || !key.fromMe || !receipt.userJid || this.isMe(receipt.userJid)) continue;
+              if (!jid || !key.fromMe || !receipt.userJid || this.identity.isMe(receipt.userJid)) continue;
               const moments = momentsOf(receipt);
-              this.db.messages.receipt(messageIdFor(key, jid), this.canonical(receipt.userJid), {
+              this.db.messages.receipt(messageIdFor(key, jid), this.identity.canonical(receipt.userJid), {
                 deliveredAt: moments.delivered ?? null,
                 readAt: moments.read ?? null,
                 playedAt: moments.played ?? null,
@@ -3660,11 +3650,11 @@ export class WhatsAppService implements WhatsAppApi {
         "reactions",
         () => {
           for (const { key, reaction } of items) {
-            const jid = key.remoteJid ? this.canonical(key.remoteJid) : undefined;
+            const jid = key.remoteJid ? this.identity.canonical(key.remoteJid) : undefined;
             if (!jid) continue;
             const author = reaction.key?.fromMe
-              ? this.ownJid()
-              : this.canonical(reaction.key?.participant || reaction.key?.remoteJid || "");
+              ? this.identity.ownJid()
+              : this.identity.canonical(reaction.key?.participant || reaction.key?.remoteJid || "");
             if (!author) continue;
             const at = protoNumber(reaction.senderTimestampMs) || Date.now();
             this.react(messageIdFor(key, jid), author, reaction.text ?? "", at);
@@ -3674,29 +3664,29 @@ export class WhatsAppService implements WhatsAppApi {
     });
 
     sock.ev.on("groups.upsert", (groups) => {
-      this.handling("groups", () => groups.forEach((meta) => this.cacheGroup(this.canonical(meta.id), meta)), undefined);
+      this.handling("groups", () => groups.forEach((meta) => this.cacheGroup(this.identity.canonical(meta.id), meta)), undefined);
     });
 
     sock.ev.on("groups.update", (updates) => {
       for (const update of updates) {
         if (!update.id) continue;
-        const jid = this.canonical(update.id);
+        const jid = this.identity.canonical(update.id);
         const previous = this.groupCache.get(jid);
         if (previous) this.groupCache.set(jid, { ...previous, ...update });
       }
     });
 
-    sock.ev.on("group-participants.update", ({ id }) => this.groupCache.delete(this.canonical(id)));
+    sock.ev.on("group-participants.update", ({ id }) => this.groupCache.delete(this.identity.canonical(id)));
 
     sock.ev.on("blocklist.set", ({ blocklist }) => {
       this.blocked.clear();
-      for (const jid of blocklist) this.blocked.add(this.canonical(jid));
+      for (const jid of blocklist) this.blocked.add(this.identity.canonical(jid));
     });
 
     sock.ev.on("blocklist.update", ({ blocklist, type }) => {
       for (const jid of blocklist) {
-        if (type === "add") this.blocked.add(this.canonical(jid));
-        else this.blocked.delete(this.canonical(jid));
+        if (type === "add") this.blocked.add(this.identity.canonical(jid));
+        else this.blocked.delete(this.identity.canonical(jid));
       }
     });
   }
@@ -3708,7 +3698,7 @@ export class WhatsAppService implements WhatsAppApi {
    * new timestamp that is not a receipt's re-dates what the message shows.
    */
   private applyUpdate(key: WAMessageKey, update: Partial<WAMessage>): void {
-    const jid = key.remoteJid ? this.canonical(key.remoteJid) : undefined;
+    const jid = key.remoteJid ? this.identity.canonical(key.remoteJid) : undefined;
     if (!jid) return;
     const revoked = this.revokeTargets({ ...update, key } as WAMessage);
     if (revoked.length) {
@@ -3720,7 +3710,7 @@ export class WhatsAppService implements WhatsAppApi {
     const sid = messageIdFor(key, jid);
     const stored = db.messages.get(sid);
     if (stored === null) return;
-    const raw = this.rawOf(stored);
+    const raw = this.views.rawOf(stored);
     if (raw === null) return;
     const merged = { ...raw, ...update, key: raw.key } as WAMessage;
     if (this.config.retention === true) {
@@ -3755,7 +3745,7 @@ export class WhatsAppService implements WhatsAppApi {
   private isReadSelfUpdate(key: WAMessageKey, update: Partial<WAMessage>): boolean {
     if (key.fromMe !== false || !key.remoteJid || !key.id) return false;
     if (update.status !== proto.WebMessageInfo.Status.READ && update.status !== proto.WebMessageInfo.Status.PLAYED) return false;
-    const jid = this.canonical(key.remoteJid);
+    const jid = this.identity.canonical(key.remoteJid);
     return chatKindOf(jid) === "direct" && !isNoiseJid(jid);
   }
 
@@ -3776,7 +3766,7 @@ export class WhatsAppService implements WhatsAppApi {
     db.transaction(() => {
       for (const key of keys) {
         if (!key.remoteJid || !key.id) continue;
-        const outcome = db.messages.markReadSelf(`${this.canonical(key.remoteJid)}_${key.id}`);
+        const outcome = db.messages.markReadSelf(`${this.identity.canonical(key.remoteJid)}_${key.id}`);
         if (outcome.chatJid === null) this.readSelf.unmatched++;
         else if (outcome.moved) this.readSelf.applied++;
       }
@@ -3821,19 +3811,9 @@ export class WhatsAppService implements WhatsAppApi {
   private adoptSocketAccount(): void {
     const user = this.sockClient?.user;
     if (!user?.id) return;
-    const id = this.canonical(user.id);
+    const id = this.identity.canonical(user.id);
     this.account = { id, name: user.name ?? this.account?.name ?? "", number: id.split("@")[0] ?? "" };
-    if (user.lid) this.learnLid(user.lid, id);
-  }
-
-  private ownJid(): string {
-    const id = this.sockClient?.user?.id;
-    if (id) return this.canonical(id);
-    return this.account?.id ?? "";
-  }
-
-  private isMe(jid: string): boolean {
-    return this.lids.isSelf(jid, this.ownJid(), this.sockClient?.user?.lid);
+    if (user.lid) this.identity.learnLid(user.lid, id);
   }
 
   private armSyncDeadline(): void {
@@ -3929,7 +3909,7 @@ export class WhatsAppService implements WhatsAppApi {
       const blocklist = await sock.fetchBlocklist();
       if (generation !== this.generation || this.stopped) return;
       this.blocked.clear();
-      for (const jid of blocklist) if (jid) this.blocked.add(this.canonical(jid));
+      for (const jid of blocklist) if (jid) this.blocked.add(this.identity.canonical(jid));
     } catch (err) {
       logError("blocklist", err);
     }
@@ -4028,9 +4008,9 @@ export class WhatsAppService implements WhatsAppApi {
   }
 
   private outgoingOf(jid: string): OutgoingTarget {
-    const name = this.displayName(jid);
+    const name = this.identity.displayName(jid);
     if (isGroupId(jid)) return { chat_id: jid, name };
-    const number = this.contactSummary(jid).number;
+    const number = this.views.contactSummary(jid).number;
     return number ? { chat_id: jid, name, number } : { chat_id: jid, name };
   }
 
@@ -4083,7 +4063,7 @@ export class WhatsAppService implements WhatsAppApi {
     if (attempt === undefined) return sock.sendMessage(jid, content, options);
     const built = await generateWAMessage(jid, content, {
       ...options,
-      userJid: sock.user?.id ?? this.ownJid(),
+      userJid: sock.user?.id ?? this.identity.ownJid(),
       upload: sock.waUploadToServer,
       messageId: attempt.keyId,
     });
@@ -4109,7 +4089,7 @@ export class WhatsAppService implements WhatsAppApi {
    * fails here would fail at confirm_send too.
    */
   private async assertOutgoing(chatId: string, sock: WASocket): Promise<string> {
-    const jid = this.resolveId(chatId);
+    const jid = this.identity.resolveId(chatId);
 
     if (isGroupId(jid)) {
       const meta = await this.groupMeta(jid);
@@ -4172,7 +4152,7 @@ export class WhatsAppService implements WhatsAppApi {
   }
 
   private myParticipation(meta: GroupMetadata): GroupParticipant | undefined {
-    return meta.participants.find((p) => this.isMe(p.id) || (p.phoneNumber && this.isMe(p.phoneNumber)));
+    return meta.participants.find((p) => this.identity.isMe(p.id) || (p.phoneNumber && this.identity.isMe(p.phoneNumber)));
   }
 
   private async assertGroupAdmin(jid: string, action: GroupAction | "delete_message"): Promise<void> {
@@ -4196,7 +4176,7 @@ export class WhatsAppService implements WhatsAppApi {
     groupJid: string;
     name: string | null;
   } {
-    const raw = this.messageOrThrow(messageId);
+    const raw = this.views.messageOrThrow(messageId);
     const message = normalizeMessageContent(raw.message)?.groupInviteMessage;
     if (!message) {
       throw new WazapError(
@@ -4229,7 +4209,7 @@ export class WhatsAppService implements WhatsAppApi {
     fallback?: string,
     inviteable = true
   ): ParticipantResult {
-    const id = entry.jid ? this.canonical(entry.jid) : (fallback ?? "");
+    const id = entry.jid ? this.identity.canonical(entry.jid) : (fallback ?? "");
     if (entry.status === "200") return { id, status: "ok" };
     if (inviteable && INVITE_NEEDED_CODES.has(entry.status)) {
       return { id, status: "invite_needed", reason: entry.status };
@@ -4242,158 +4222,14 @@ export class WhatsAppService implements WhatsAppApi {
    * node untyped: `jid`, and `request_time` (seconds) and `request_method` when sent.
    */
   private joinRequest(attrs: { [key: string]: string }): JoinRequest {
-    const id = this.canonical(attrs.jid ?? "");
+    const id = this.identity.canonical(attrs.jid ?? "");
     const seconds = Number(attrs.request_time);
     return {
       id,
-      name: this.displayName(id),
+      name: this.identity.displayName(id),
       requested_at: seconds > 0 ? isoWithOffset(seconds * 1000) : null,
       method: attrs.request_method || null,
     };
-  }
-
-  private resolveId(input: string): string {
-    return this.lids.resolve(input);
-  }
-
-  /** A sender filter: the account's own id, however it is spelled, is "me" — its messages are stored without a sender. */
-  /**
-   * The people a broad read leaves the words of out (src/private-contacts.ts),
-   * read once for the call; null when the call did not ask for the rule or
-   * nobody is #private.
-   */
-  private privateScope(rule: PrivateRule | undefined): PrivatePeople | null {
-    if (rule === undefined) return null;
-    const people = privatePeople(this.db, rule.others);
-    return people.none ? null : people;
-  }
-
-  private senderFilter(from: string | undefined): string | undefined {
-    if (from === undefined) return undefined;
-    if (from === "me") return "me";
-    const jid = this.resolveId(from);
-    return this.ownJid() !== "" && this.isMe(jid) ? "me" : jid;
-  }
-
-  /** A contact mutation keys on a person: groups and noise jids are caller errors, not contacts. */
-  private personJid(input: string): string {
-    const jid = this.resolveId(input);
-    if (isGroupId(jid) || isNoiseJid(jid)) {
-      throw new WazapError("INVALID_ID", `"${input}" is not a person's contact id.`, "Pass a phone number or a contact id");
-    }
-    return jid;
-  }
-
-  /** Canonical form, or the input unchanged for jids wazap does not address
-   * (status broadcasts, newsletters). */
-  private canonical(jid: string): string {
-    return this.lids.canonical(jid);
-  }
-
-  /**
-   * The lid → number table under the two names it had while ids and naming
-   * kept separate copies of it; tests still read both. A copy, so nothing
-   * writes a pairing past learnLid.
-   */
-  private get lidToPn(): ReadonlyMap<string, string> {
-    return new Map(this.lids);
-  }
-
-  private get lidPhones(): ReadonlyMap<string, string> {
-    return this.lidToPn;
-  }
-
-  /**
-   * WhatsApp usually keys a contact by its phone jid and names the LID on the
-   * side, leaving `phoneNumber` empty, so the pairing has to be read off `id`.
-   */
-  private relearnLid(contact: BaileysContact): void {
-    if (!contact.lid) return;
-    if (contact.phoneNumber) this.learnLid(contact.lid, contact.phoneNumber);
-    else if (contact.id?.endsWith("@s.whatsapp.net")) this.learnLid(contact.lid, contact.id);
-  }
-
-  /**
-   * A pairing WhatsApp stated in a field meant for it, so ids may follow it:
-   * the number becomes canonical, and the database makes the lid and the
-   * number one person and one chat — names, notes and history included — so
-   * nothing splits. The contact and chat rows move at once; a chat's messages
-   * fold in behind it, in chunks.
-   */
-  private learnLid(lid: string, pn: string): void {
-    if (!lid || !pn || this.stopped) return;
-    const paired = this.lids.learn(lid, pn);
-    const db = this.readyDb();
-    if (db === null) return;
-    const key = lidKey(lid);
-    const phone = this.lids.phoneOf(key);
-    if (phone === undefined || (!paired && db.identity.phoneOfLid(key) === phone)) return;
-    try {
-      const fold = db.learnLidPhone(key, phone).then(
-        (report) => (report.mediaPaths.length > 0 ? this.scheduleFileCleanup() : undefined),
-        (err: unknown) => logError("lid pairing", err)
-      );
-      this.folds.add(fold);
-      void fold.finally(() => this.folds.delete(fold));
-      this.namedContactsCache = null;
-    } catch (err) {
-      logError("lid pairing", err);
-    }
-  }
-
-  /**
-   * Ask Baileys for the numbers behind the LIDs we are about to name. It answers
-   * from the table the account has already synced, so this is a lookup and not a
-   * fetch, and it covers LIDs no chat, contact or group ever paired.
-   */
-  private async learnLidPhones(jids: Iterable<string>): Promise<void> {
-    const missing = [...new Set(jids)].filter((jid) => jid.endsWith("@lid") && this.lids.phoneOf(jid) === undefined);
-    if (missing.length === 0) return;
-    const mappings = await this.sockClient?.signalRepository?.lidMapping?.getPNsForLIDs(missing).catch(() => null);
-    // A pairing from WhatsApp's own table is as good as one from a contact:
-    // the chat moves in with the phone chat, history included.
-    for (const { lid, pn } of mappings ?? []) this.learnLid(lid, pn);
-  }
-
-  /**
-   * The one place a jid becomes a name, so a sender, a chat header, a digest
-   * title and a participant list can never disagree. The last rung is never a
-   * raw LID: a LID is fifteen digits that read as a phone number and are not
-   * one, so an unresolved one says it is unknown instead.
-   *
-   * `hint` is the pushName on the message being rendered, for a sender whose
-   * name has not been ingested yet.
-   */
-  private displayName(jid: string, hint?: string): string {
-    if (!jid) return "unknown";
-    if (this.isMe(jid)) return this.account?.name || "You";
-    const db = this.readyDb();
-    if (isGroupId(jid)) {
-      return db?.identity.chat(jid)?.name || this.groupCache.get(jid)?.subject || jid;
-    }
-
-    const contact = db?.identity.contact(jid) ?? null;
-    const chat = db !== null && chatKindOf(jid) === "direct" ? db.identity.chat(jid) : null;
-    const name =
-      realName(contact?.name) ||
-      realName(contact?.verifiedName) ||
-      realName(contact?.notify) ||
-      realName(contact?.pushName) ||
-      realName(chat?.name);
-    if (name) return name;
-    const hinted = realName(hint);
-    if (hinted) return hinted;
-
-    const alias = this.lids.aliasOf(jid);
-    const phoneJid = jid.endsWith("@lid") ? alias : jid;
-    const digits = (phoneJid ?? jid).split("@")[0] ?? "";
-    if ((phoneJid ?? jid).endsWith("@s.whatsapp.net")) return digits;
-    return jid.endsWith("@lid") ? `unknown (lid …${digits.slice(-4)})` : jid;
-  }
-
-  /** The user's note on a person or a chat, from the database. */
-  private noteFor(jid: string): string | undefined {
-    return this.readyDb()?.identity.notes(jid)?.note ?? undefined;
   }
 
   /**
@@ -4418,7 +4254,7 @@ export class WhatsAppService implements WhatsAppApi {
       const chunks: Buffer[] = [];
       let bytes = 0;
       for await (const chunk of stream) {
-        this.messageOrThrow(messageId);
+        this.views.messageOrThrow(messageId);
         bytes += (chunk as Buffer).length;
         if (bytes > MEDIA_DOWNLOAD_MAX_BYTES) {
           stream.destroy();
@@ -4480,7 +4316,7 @@ export class WhatsAppService implements WhatsAppApi {
         if (this.webhookOwnSend(raw)) continue;
         event = raw.key.fromMe ? "message_sent" : "message_received";
         if (!settings.events.includes(event)) continue;
-        sid = messageIdFor(raw.key, this.canonical(raw.key.remoteJid ?? ""));
+        sid = messageIdFor(raw.key, this.identity.canonical(raw.key.remoteJid ?? ""));
       } catch (err) {
         // A message this cannot make sense of is not announced; the rest of the batch still is.
         logError("webhook", err);
@@ -4492,7 +4328,7 @@ export class WhatsAppService implements WhatsAppApi {
         kind: event,
         lane: chatLane(message.chatId),
         messageId: message.id,
-        payload: JSON.stringify({ is_self_chat: this.isMe(message.chatJid) }),
+        payload: JSON.stringify({ is_self_chat: this.identity.isMe(message.chatJid) }),
         createdAt: now,
         readyAt: this.webhookReadyAt(message, now),
       });
@@ -4580,7 +4416,7 @@ export class WhatsAppService implements WhatsAppApi {
     }
     return asWebhookPayload({
       event: event.kind === "message_sent" ? "message_sent" : "message_received",
-      view: this.viewOfStored(message),
+      view: this.views.viewOfStored(message),
       account,
       isSelfChat: stored.is_self_chat === true,
     });
@@ -4624,9 +4460,9 @@ export class WhatsAppService implements WhatsAppApi {
    * tool call asking for the same note at the same moment shares the upload.
    */
   private async transcribeQueued(sid: string): Promise<void> {
-    const message = this.storedOrThrow(sid);
+    const message = this.views.storedOrThrow(sid);
     if (message.transcript !== null) return;
-    if (!transcribable(this.messageOrThrow(sid))) {
+    if (!transcribable(this.views.messageOrThrow(sid))) {
       throw markFailure(new WazapError("MEDIA_UNAVAILABLE", "Not a short incoming voice note."), "gone", "not a voice note to transcribe");
     }
     await this.transcribeAudio(sid);
@@ -4666,233 +4502,8 @@ export class WhatsAppService implements WhatsAppApi {
     return status;
   }
 
-  /** The stored message a reader may see under any spelling of its id, or MESSAGE_NOT_FOUND. */
-  private storedOrThrow(messageId: string): StoredMessage {
-    const db = this.db;
-    const message = db.messages.get(messageId);
-    if (message !== null) return message;
-    this.settleExpired(db, messageId);
-    throw missingMessage(messageId);
-  }
-
-  /**
-   * The protobuf of a message a reader may see, for the send paths that quote,
-   * forward, react to or edit it. A row the database holds only as text (from
-   * the old recall index) stands in with its key and time.
-   */
-  /**
-   * The stored message for an action that needs its key: a message held only
-   * as text answers with a key and its timestamp, enough to react to, edit or
-   * delete it. An action that needs its content asks contentOrThrow.
-   */
-  private messageOrThrow(messageId: string): WAMessage {
-    const message = this.storedOrThrow(messageId);
-    return this.rawOf(message) ?? this.keyOnly(message);
-  }
-
-  /**
-   * The stored message with its content, for a quote or a forward: Baileys
-   * reads the content of both, and one held only as text (words carried over
-   * from an older recall index) has none to give, so it is refused here.
-   */
-  private contentOrThrow(messageId: string): WAMessage {
-    const message = this.storedOrThrow(messageId);
-    const raw = this.rawOf(message);
-    if (raw === null || !raw.message) {
-      throw new WazapError(
-        "MESSAGE_NOT_FOUND",
-        `Message ${messageId} is held only as text, so it cannot be quoted or forwarded.`,
-        "Send its words as a new message, without reply_to"
-      );
-    }
-    return raw;
-  }
-
-  private chatOfOrThrow(messageId: string): string {
-    return this.storedOrThrow(messageId).chatJid;
-  }
-
-  /**
-   * The stored protobuf as the plain object Baileys hands out: only the fields
-   * it carries, so a key without a participant has none, as on the wire.
-   * Null for a row that carries only text.
-   */
-  private rawOf(message: StoredMessage): WAMessage | null {
-    if (message.raw === null) return null;
-    try {
-      const decoded = proto.WebMessageInfo.decode(message.raw);
-      return proto.WebMessageInfo.toObject(decoded, { longs: Number }) as unknown as WAMessage;
-    } catch {
-      return null;
-    }
-  }
-
-  private keyOnly(message: StoredMessage): WAMessage {
-    return {
-      key: { remoteJid: message.chatJid, fromMe: message.fromMe, id: message.keyId },
-      messageTimestamp: Math.floor(message.ts / 1000),
-    };
-  }
-
-  /** What Baileys asks for when it retries a send or opens a poll vote: the stored protobuf's content. */
-  private storedProto(key: WAMessageKey): proto.IMessage | undefined {
-    const db = this.readyDb();
-    if (db === null || !key.remoteJid || !key.id) return undefined;
-    const message = db.messages.get(messageIdFor(key, this.canonical(key.remoteJid)));
-    return (message === null ? null : this.rawOf(message))?.message ?? undefined;
-  }
-
-  /** The words a reader sees for a message: its rendering, and the transcript after it. */
-  private viewTextOf(message: StoredMessage): string {
-    const raw = this.rawOf(message);
-    if (raw !== null) return viewText(raw, this.transcriptOf(message));
-    const text = message.text ?? "";
-    return message.transcript === null ? text : `${text} "${message.transcript}"`;
-  }
-
-  /**
-   * Views of many stored messages: their reactions, votes and receipts read in
-   * three queries for the lot, and each name and note looked up once.
-   */
-  private viewsOfStored(messages: readonly StoredMessage[]): MessageView[] {
-    if (messages.length <= 1) return messages.map((message) => this.viewOfStored(message));
-    const lookups = this.viewLookups(messages);
-    return messages.map((message) => this.viewOfStored(message, lookups));
-  }
-
-  private viewLookups(messages: readonly StoredMessage[]): ViewLookups {
-    const marks = this.db.messages.marksOf(messages.map((message) => message.id));
-    const names = new Map<string, string>();
-    const notes = new Map<string, string | undefined>();
-    const contactIds = new Map<string, number | null>();
-    const lookups: ViewLookups = {
-      marks,
-      nameFor: (jid, pushName) => {
-        const key = `${jid}\u0000${pushName ?? ""}`;
-        let name = names.get(key);
-        if (name === undefined) {
-          name = this.displayName(jid, pushName);
-          names.set(key, name);
-        }
-        return name;
-      },
-      noteFor: (jid) => {
-        if (!notes.has(jid)) notes.set(jid, this.noteFor(jid));
-        return notes.get(jid);
-      },
-      contactIdFor: (jid) => {
-        if (!contactIds.has(jid)) contactIds.set(jid, this.db.identity.contactIdOf(jid));
-        return contactIds.get(jid) ?? null;
-      },
-    };
-    return lookups;
-  }
-
-  private viewOfStored(message: StoredMessage, lookups?: ViewLookups): MessageView {
-    const raw = this.rawOf(message);
-    if (raw === null) return this.textOnlyView(message);
-    const db = this.db;
-    const nameOf = lookups?.nameFor ?? ((jid: string, pushName?: string) => this.displayName(jid, pushName));
-    const noteOf = lookups?.noteFor ?? ((jid: string) => this.noteFor(jid));
-    const chatJid = message.chatJid;
-    const sender = raw.key.fromMe
-      ? this.ownJid()
-      : chatJid.endsWith("@s.whatsapp.net")
-        ? chatJid
-        : this.canonical(raw.key.participant || raw.participant || raw.key.remoteJid || "") || this.ownJid();
-    // The pushName is what the sender calls themselves: a person the message
-    // mentions, or who reacted or voted, must not borrow it.
-    const view = buildMessageView(raw, {
-      canonical: (jid) => this.canonical(jid),
-      nameFor: (jid) => nameOf(jid, jid === sender ? (raw.pushName ?? undefined) : undefined),
-      noteFor: (jid) => noteOf(jid),
-      ownId: this.ownJid(),
-      chatId: chatJid,
-      edited: message.editedAt !== null,
-      reactions: (lookups === undefined ? db.messages.reactions(message.sid) : (lookups.marks.reactions.get(message.id) ?? [])).flatMap(
-        (reaction) => (reaction.jid === null ? [] : [{ emoji: reaction.emoji, sender: reaction.jid }])
-      ),
-      votes: (lookups === undefined ? db.messages.votes(message.sid) : (lookups.marks.votes.get(message.id) ?? [])).flatMap((vote) => {
-        const choice = parseChoice(vote.choice);
-        return vote.jid === null || choice === null ? [] : [{ voter: vote.jid, choice }];
-      }),
-      receipt: this.receiptOf(message, lookups === undefined ? undefined : (lookups.marks.receipts.get(message.id) ?? [])),
-      transcript: this.transcriptOf(message),
-    });
-    // A payload wazap does not model has no protobuf field to keep it: what it
-    // read as when it arrived is what the row says.
-    if (message.type === "unknown" && view.type !== "unknown") {
-      view.type = "unknown";
-      view.text = message.text ?? view.text;
-    }
-    return this.withSenderContact(view, message, lookups);
-  }
-
-  /**
-   * The sender's contact id, the person as the account database knows them: it
-   * stays the same when a lid's number becomes known, where `id` changes. The
-   * row's own sender for someone else's message; a lookup by id for the
-   * account's own, which the row does not name.
-   */
-  private withSenderContact(view: MessageView, message: StoredMessage, lookups?: ViewLookups): MessageView {
-    const contactId =
-      !message.fromMe && message.senderId !== null
-        ? message.senderId
-        : (lookups?.contactIdFor(view.sender.id) ?? this.db.identity.contactIdOf(view.sender.id));
-    if (contactId !== null) {
-      const { id, ...rest } = view.sender;
-      view.sender = { id, contact_id: contactId, ...rest };
-    }
-    return view;
-  }
-
-  /**
-   * How far one of the account's own messages got: the status it was stored
-   * with, raised by every receipt since, each person's latest moments. The
-   * account itself is no recipient.
-   */
-  private receiptOf(message: StoredMessage, stored?: readonly StoredReceipt[]): Receipt | undefined {
-    if (!message.fromMe) return undefined;
-    const merged: Receipt = {};
-    if (message.status !== null) raiseStatus(merged, message.status);
-    for (const receipt of stored ?? this.db.messages.receipts(message.sid)) {
-      if (receipt.jid === null || this.isMe(receipt.jid)) continue;
-      raiseUser(merged, receipt.jid, {
-        ...(receipt.deliveredAt === null ? {} : { delivered: receipt.deliveredAt }),
-        ...(receipt.readAt === null ? {} : { read: receipt.readAt }),
-        ...(receipt.playedAt === null ? {} : { played: receipt.playedAt }),
-      });
-    }
-    return merged.status === undefined ? undefined : merged;
-  }
-
-  /** A message the database holds only as text: enough to quote it, name its chat and sender, and date it. */
-  private textOnlyView(message: StoredMessage): MessageView {
-    const sender = message.fromMe ? this.ownJid() : (message.senderJid ?? message.chatJid);
-    const phone = phoneOf(sender);
-    const note = this.noteFor(sender);
-    return this.withSenderContact({
-      message_id: message.sid,
-      chat_id: message.chatJid,
-      from_me: message.fromMe,
-      sender: {
-        id: sender,
-        name: this.displayName(sender),
-        ...(phone !== undefined ? { phone } : {}),
-        ...(note !== undefined ? { note } : {}),
-      },
-      type: message.type as MessageType,
-      text: this.viewTextOf(message),
-      timestamp: isoWithOffset(message.ts),
-      age: formatAge(message.ts),
-      has_media: false,
-      forwarded: false,
-      edited: message.editedAt !== null,
-    }, message);
-  }
-
   private async fetchOlder(sock: WASocket, anchor: StoredMessage, limit: number): Promise<void> {
-    const raw = this.rawOf(anchor) ?? this.keyOnly(anchor);
+    const raw = this.views.rawOf(anchor) ?? this.views.keyOnly(anchor);
     const seconds = Math.floor(anchor.ts / 1000);
     await sock.fetchMessageHistory(limit, raw.key, seconds);
     await new Promise<void>((done) => {
@@ -4906,90 +4517,6 @@ export class WhatsAppService implements WhatsAppApi {
       };
       this.historyWaiters.push(waiter);
     });
-  }
-
-  /** The newest message of a chat a reader may see, as the protobuf a chat action names. */
-  private lastMessageOf(chatJid: string): WAMessage | null {
-    const last = this.readyDb()?.messages.chatPage(chatJid, { limit: 1 }).items[0];
-    return last === undefined ? null : (this.rawOf(last) ?? this.keyOnly(last));
-  }
-
-  /**
-   * A chat the list shows: one that has had a message, or that WhatsApp
-   * described. A deleted chat has neither until something new arrives; the
-   * status feed and noise jids are never chats.
-   */
-  private listed(chat: ChatRecord): boolean {
-    if (chat.kind === "status" || isNoiseJid(chat.jid)) return false;
-    return chat.lastMessageId !== null || chat.proto !== null;
-  }
-
-  private matchesChatFilter(chat: ChatRecord, filter: ChatFilter): boolean {
-    const group = isGroupId(chat.jid);
-    switch (filter) {
-      case "unread":
-        return !chat.archived && chat.unread > 0;
-      case "groups":
-        return !chat.archived && group;
-      case "individual":
-        return !chat.archived && !group;
-      case "archived":
-        return chat.archived;
-      case "all":
-        return !chat.archived;
-    }
-  }
-
-  private chatSummary(chat: ChatRecord, described: BaileysChat | null, people: PrivatePeople | null = null): ChatSummary {
-    const jid = chat.jid;
-    const last = chat.lastMessageId === null ? null : (this.db.messages.byIds([chat.lastMessageId])[0] ?? this.db.messages.lastVisible(chat.id));
-    // Their chat, or what they wrote last in a group: when and who, not what.
-    const hidden = last !== null && people !== null && (people.chat(chat) || people.sender(last.senderId));
-    const muteEnd = chat.mutedUntil ?? 0;
-    const note = this.noteFor(jid);
-    const phone = chat.kind === "direct" ? phoneOf(jid) : undefined;
-    const summary: ChatSummary = {
-      chat_id: jid,
-      ...(chat.kind === "direct" && chat.contactId !== null ? { contact_id: chat.contactId } : {}),
-      ...(phone === undefined ? {} : { phone: `+${phone}` }),
-      name: this.displayName(jid),
-      type: isGroupId(jid) ? "group" : "individual",
-      unread_count: Math.max(0, chat.unread),
-      last_message: last
-        ? {
-            text: hidden ? PRIVATE_TEXT : (last.text ?? ""),
-            timestamp: isoWithOffset(last.ts),
-            from_me: last.fromMe,
-            ...(hidden ? { private: true as const } : {}),
-          }
-        : null,
-      ...(note ? { note } : {}),
-      archived: chat.archived,
-      pinned: Boolean(chat.pinned),
-      muted_until: muteEnd > Date.now() ? isoWithOffset(muteEnd) : null,
-    };
-    // A group we left is delivered as read-only; individual chats never are.
-    if (isGroupId(jid) && described?.readOnly) summary.left = true;
-    return summary;
-  }
-
-  private contactSummary(jid: string): ContactSummary {
-    const db = this.db;
-    const contact = db.identity.contact(jid);
-    const phoneJid = jid.endsWith("@lid") ? (this.lids.phoneOf(jid) ?? jid) : jid;
-    const number = phoneJid.endsWith("@s.whatsapp.net") ? (phoneJid.split("@")[0] ?? null) : null;
-    const notes = db.identity.notes(jid);
-    const tags = [...(notes?.tags ?? [])].sort();
-    return {
-      contact_id: jid,
-      name: this.displayName(jid),
-      ...(notes?.note ? { note: notes.note } : {}),
-      ...(tags.length > 0 ? { tags } : {}),
-      ...(notes && Object.keys(notes.fields).length > 0 ? { fields: notes.fields } : {}),
-      number,
-      is_my_contact: realName(contact?.name) !== "",
-      is_business: Boolean(contact?.verifiedName),
-    };
   }
 
   private sentResult(sent: WAMessage | undefined, jid: string, text: string): SentMessage {
@@ -5015,8 +4542,8 @@ export class WhatsAppService implements WhatsAppApi {
 
   private ingestChat(chat: BaileysChat): void {
     if (!chat.id) return;
-    if (chat.lidJid && chat.pnJid) this.learnLid(chat.lidJid, chat.pnJid);
-    const jid = this.canonical(chat.id);
+    if (chat.lidJid && chat.pnJid) this.identity.learnLid(chat.lidJid, chat.pnJid);
+    const jid = this.identity.canonical(chat.id);
     if (isNoiseJid(jid)) return;
     this.writeChat(jid, { ...definedOnly(chat), id: jid });
   }
@@ -5045,8 +4572,8 @@ export class WhatsAppService implements WhatsAppApi {
 
   private ingestContact(contact: BaileysContact): void {
     if (!contact.id) return;
-    this.relearnLid(contact);
-    const jid = this.canonical(contact.id);
+    this.identity.relearnLid(contact);
+    const jid = this.identity.canonical(contact.id);
     if (isNoiseJid(jid) || chatKindOf(jid) !== "direct") return;
     // Baileys sends a contact with the fields it does not know set to
     // undefined; only what it states is written, or a name learned earlier
@@ -5158,7 +4685,7 @@ export class WhatsAppService implements WhatsAppApi {
     const db = this.readyDb();
     if (db === null) return;
     try {
-      for (const mapping of lidPnMappings ?? []) this.learnLid(mapping.lid, mapping.pn);
+      for (const mapping of lidPnMappings ?? []) this.identity.learnLid(mapping.lid, mapping.pn);
       db.transaction(() => {
         for (const contact of contacts) this.ingestContact(contact);
         for (const chat of chats) this.ingestChat(chat);
@@ -5236,7 +4763,7 @@ export class WhatsAppService implements WhatsAppApi {
           this.ingestStory(raw);
           continue;
         }
-        const jid = this.canonical(raw.key.remoteJid);
+        const jid = this.identity.canonical(raw.key.remoteJid);
         if (isNoiseJid(jid) || isControlMessage(raw)) continue;
         this.learnPushName(raw, jid);
         if (this.applyReaction(raw, jid)) continue;
@@ -5299,7 +4826,7 @@ export class WhatsAppService implements WhatsAppApi {
       type: messageType(raw),
       text: messageText(raw),
       raw: bytes,
-      quotedSid: quotedMessageId(raw, { canonical: (jid) => this.canonical(jid), ownId: this.ownJid(), chatId: chatJid }) ?? null,
+      quotedSid: quotedMessageId(raw, { canonical: (jid) => this.identity.canonical(jid), ownId: this.identity.ownJid(), chatId: chatJid }) ?? null,
       status: fromMe && typeof raw.status === "number" ? raw.status : null,
       expiresAt,
       flags: this.flagsOf(raw, fromMe, keyId, chatJid),
@@ -5315,7 +4842,7 @@ export class WhatsAppService implements WhatsAppApi {
   private flagsOf(raw: WAMessage, fromMe: boolean, keyId: string, chatJid: string): number {
     if (fromMe) return this.sentByWazap.has(keyId) ? MESSAGE_FLAGS.viaWazap : 0;
     if (chatJid === STATUS_JID) return 0;
-    return mentionedJids(raw).some((jid) => this.isMe(jid)) ? MESSAGE_FLAGS.mentionsMe : 0;
+    return mentionedJids(raw).some((jid) => this.identity.isMe(jid)) ? MESSAGE_FLAGS.mentionsMe : 0;
   }
 
   /** The flags backfill's detector: the mentions a stored message's protobuf carries. */
@@ -5327,7 +4854,7 @@ export class WhatsAppService implements WhatsAppApi {
     } catch {
       return 0;
     }
-    return mentionedJids(decoded).some((jid) => this.isMe(jid)) ? MESSAGE_FLAGS.mentionsMe : 0;
+    return mentionedJids(decoded).some((jid) => this.identity.isMe(jid)) ? MESSAGE_FLAGS.mentionsMe : 0;
   };
 
   /**
@@ -5336,7 +4863,7 @@ export class WhatsAppService implements WhatsAppApi {
    * number no mention can be told apart, so it waits for a start that has it.
    */
   private scheduleFlagsBackfill(db: AccountDb): void {
-    if (this.stopped || db.readOnly || this.ownJid() === "") return;
+    if (this.stopped || db.readOnly || this.identity.ownJid() === "") return;
     try {
       if (!db.messages.flagsBackfillPending()) return;
     } catch {
@@ -5353,7 +4880,7 @@ export class WhatsAppService implements WhatsAppApi {
     if (chatJid.endsWith("@s.whatsapp.net")) return undefined;
     const from = raw.key.participant || raw.participant || raw.key.remoteJid || "";
     if (!from) return null;
-    const jid = this.canonical(from);
+    const jid = this.identity.canonical(from);
     return chatKindOf(jid) === "direct" && !isNoiseJid(jid) ? jid : null;
   }
 
@@ -5365,9 +4892,9 @@ export class WhatsAppService implements WhatsAppApi {
     const result = db.messages.upsert(prepared.input);
     if (result.sid !== null && (result.outcome === "inserted" || result.outcome === "updated")) {
       for (const receipt of raw.key.fromMe ? (raw.userReceipt ?? []) : []) {
-        if (!receipt.userJid || this.isMe(receipt.userJid)) continue;
+        if (!receipt.userJid || this.identity.isMe(receipt.userJid)) continue;
         const moments = momentsOf(receipt);
-        db.messages.receipt(result.sid, this.canonical(receipt.userJid), {
+        db.messages.receipt(result.sid, this.identity.canonical(receipt.userJid), {
           deliveredAt: moments.delivered ?? null,
           readAt: moments.read ?? null,
           playedAt: moments.played ?? null,
@@ -5405,7 +4932,7 @@ export class WhatsAppService implements WhatsAppApi {
     const readStatus = kind === "direct" && (raw.status === proto.WebMessageInfo.Status.READ || raw.status === proto.WebMessageInfo.Status.PLAYED);
     const readReceipt =
       kind === "group" &&
-      (raw.userReceipt ?? []).some((receipt) => Boolean(receipt.userJid) && this.isMe(receipt.userJid!) && Boolean(receipt.readTimestamp || receipt.playedTimestamp));
+      (raw.userReceipt ?? []).some((receipt) => Boolean(receipt.userJid) && this.identity.isMe(receipt.userJid!) && Boolean(receipt.readTimestamp || receipt.playedTimestamp));
     if (!readStatus && !readReceipt) return;
     if (!live) {
       this.readSelf.synced++;
@@ -5469,7 +4996,7 @@ export class WhatsAppService implements WhatsAppApi {
   private applyReaction(raw: WAMessage, chatJid: string): boolean {
     const reaction = reactionOf(raw);
     if (!reaction) return false;
-    const author = raw.key.fromMe ? this.ownJid() : this.canonical(raw.key.participant || raw.key.remoteJid || chatJid);
+    const author = raw.key.fromMe ? this.identity.ownJid() : this.identity.canonical(raw.key.participant || raw.key.remoteJid || chatJid);
     const target = messageIdFor(reaction.targetKey, chatJid);
     if (author) this.react(target, author, reaction.text, messageTimestampMs(raw));
     return true;
@@ -5496,8 +5023,8 @@ export class WhatsAppService implements WhatsAppApi {
     const reading = readVote(vote, target.raw, this.voteSpellings(target.raw), this.voteSpellings(raw));
     if (!reading) return false;
     const voter = raw.key.fromMe
-      ? this.ownJid()
-      : this.canonical(raw.key.participant || raw.participant || raw.key.remoteJid || chatJid);
+      ? this.identity.ownJid()
+      : this.identity.canonical(raw.key.participant || raw.participant || raw.key.remoteJid || chatJid);
     // A withdrawal is kept as an empty choice, so an older vote arriving after it cannot bring it back.
     if (voter) this.db.messages.vote(target.sid, voter, JSON.stringify(reading.choice), this.plausibleTs(vote.at));
     return true;
@@ -5510,14 +5037,14 @@ export class WhatsAppService implements WhatsAppApi {
    */
   private voteTarget(vote: EncryptedVote, chatJid: string): { sid: string; raw: WAMessage } | undefined {
     const remote = vote.targetKey.remoteJid;
-    const chats = [chatJid, remote ? this.canonical(remote) : "", this.lids.phoneOf(chatJid), this.lids.lidOf(chatJid)];
+    const chats = [chatJid, remote ? this.identity.canonical(remote) : "", this.identity.lids.phoneOf(chatJid), this.identity.lids.lidOf(chatJid)];
     const mine = Boolean(vote.targetKey.fromMe);
     const db = this.db;
     for (const chat of new Set(chats)) {
       if (!chat) continue;
       for (const fromMe of [mine, !mine]) {
         const stored = db.messages.get(messageIdFor({ ...vote.targetKey, fromMe }, chat));
-        const raw = stored === null ? null : this.rawOf(stored);
+        const raw = stored === null ? null : this.views.rawOf(stored);
         if (raw && (vote.kind === "poll" ? pollOf(raw) !== undefined : isEvent(raw))) return { sid: stored!.sid, raw };
       }
     }
@@ -5532,9 +5059,9 @@ export class WhatsAppService implements WhatsAppApi {
    */
   private voteSpellings(raw: WAMessage): string[] {
     const key = raw.key;
-    return this.lids.spellings(
+    return this.identity.lids.spellings(
       key.fromMe
-        ? [this.ownJid(), this.sockClient?.user?.id, this.sockClient?.user?.lid]
+        ? [this.identity.ownJid(), this.sockClient?.user?.id, this.sockClient?.user?.lid]
         : [key.participant, key.participantAlt, raw.participant, key.remoteJid, key.remoteJidAlt]
     );
   }
@@ -5550,7 +5077,7 @@ export class WhatsAppService implements WhatsAppApi {
         walked++;
         // A vote no poll could open is stored as the system line it reads as.
         if (waiting.type !== "system" || waiting.raw === null) continue;
-        const vote = this.rawOf(waiting);
+        const vote = this.views.rawOf(waiting);
         if (vote === null || voteOf(vote)?.targetKey.id !== raw.key.id) continue;
         if (this.applyVote(vote, chatJid)) db.messages.delete(waiting.sid);
       }
@@ -5577,7 +5104,7 @@ export class WhatsAppService implements WhatsAppApi {
     const nearby = db.messages.recent({ since: Math.max(1, at - CALL_DEDUPE_WINDOW_MS), until: at + CALL_DEDUPE_WINDOW_MS, limit: 200 });
     for (const known of nearby.items) {
       if (known.type !== "call" || known.chatJid !== chat.jid || known.sid === sid) continue;
-      const other = this.rawOf(known);
+      const other = this.views.rawOf(known);
       const otherInfo = other === null ? undefined : callInfo(other);
       if (other === null || !otherInfo) continue;
       // A redial inside the window is two calls, and wazap knows it built both.
@@ -5617,8 +5144,8 @@ export class WhatsAppService implements WhatsAppApi {
   private learnPushName(raw: WAMessage, chatJid: string): void {
     const name = raw.pushName?.trim();
     if (!name || raw.key.fromMe) return;
-    const sender = this.canonical(raw.key.participant || raw.participant || chatJid);
-    if (!sender || this.isMe(sender) || isNoiseJid(sender) || chatKindOf(sender) !== "direct") return;
+    const sender = this.identity.canonical(raw.key.participant || raw.participant || chatJid);
+    if (!sender || this.identity.isMe(sender) || isNoiseJid(sender) || chatKindOf(sender) !== "direct") return;
     const db = this.db;
     if (db.identity.contact(sender)?.pushName === name) return;
     db.identity.upsertContact({ jid: sender, pushName: name });
@@ -5633,7 +5160,7 @@ export class WhatsAppService implements WhatsAppApi {
     for (const p of meta.participants) {
       const lid = p.lid ?? (p.id.endsWith("@lid") ? p.id : undefined);
       const phone = p.phoneNumber ?? (p.id.endsWith("@s.whatsapp.net") ? p.id : undefined);
-      if (lid && phone) this.learnLid(lid, phone);
+      if (lid && phone) this.identity.learnLid(lid, phone);
       const name = p.name ?? p.notify ?? p.username;
       if (name) this.ingestContact({ id: phone ?? p.id, ...(lid ? { lid } : {}), notify: name });
     }
@@ -5932,16 +5459,6 @@ function safeFilename(jid: string): string {
 /** A result limit a caller left out or spelled wrong reads as the tools' own default. */
 function pageLimit(limit: number): number {
   return Number.isFinite(limit) && limit >= 1 ? Math.floor(limit) : 20;
-}
-
-/** A stored poll choice: the JSON array of option names; null for anything else. */
-function parseChoice(choice: string): string[] | null {
-  try {
-    const parsed = JSON.parse(choice) as unknown;
-    return Array.isArray(parsed) && parsed.every((value) => typeof value === "string") ? parsed : null;
-  } catch {
-    return null;
-  }
 }
 
 /** WhatsApp's description of a chat, as the database keeps it. */
