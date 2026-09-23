@@ -23,7 +23,17 @@
   is refused before it leaves, since each attempt counts against the account;
   chats WhatsApp would take go on.
 - **`get_status` has a `health` block:** `state`, `since`, `until`, `reason`,
-  `detail` (WhatsApp's own words, when it gave any) and `last_send_error`.
+  `detail` (WhatsApp's own words, when it gave any), `last_send_error` and
+  `new_chat_cap`.
+- **WhatsApp's cap on first messages to new people is read.** wazap asks for it
+  at every connect and takes WhatsApp's own updates. Its first and second
+  warnings show in `get_status` (`health.new_chat_cap` and the hint), so an
+  integration that reads them can slow down before the cap; once it is used up
+  (`new_chats_capped`), a first message to someone who never wrote is refused
+  before it leaves until the cycle ends.
+- **The webhook's `connection` event carries `health`** (`state`, `until`,
+  `reason`), and a restriction that comes or goes while the link stays up —
+  including one that ends on its own clock — is a `connection` event too.
 - **`wazap account add <id> --json`** prints `{ account_id, created, enabled }` on stdout
   and exits 0 for an account already there (`created: false`), so a program
   making sure an account exists reads an answer instead of recognising an

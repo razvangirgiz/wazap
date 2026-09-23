@@ -47,7 +47,13 @@ The `event` field names one of three. `message_received` is a message another
 person sent. `message_sent` is a message this account sent itself, typed on
 the phone or on another linked device; a message wazap sent through its own
 tools is not announced, so a consumer can never be made to answer itself.
-`connection` says the link came up, went down or expired.
+`connection` says the link came up, went down or expired, and carries
+`health`: what WhatsApp says about the account itself (`state` ok,
+new_chats_capped, reachout_restricted, temporarily_banned, banned,
+session_replaced or client_outdated, with `until` and WhatsApp's `reason`).
+A restriction that comes or goes while the link stays up is a `connection`
+event too, with the same `status`; the pair of status and state is posted
+once per change.
 
 Ask for the other two in `WAZAP_WEBHOOK_EVENTS`, comma-separated
 (`message_received,connection`), or say `all` for the three of them. Case
