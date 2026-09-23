@@ -28,6 +28,7 @@ import {
   parseWebhookEvent,
   parseWebhookEvents,
   readWebhookSettings,
+  parseWebhookAuth,
   requireWebhookUrl,
   type WebhookEvent,
   type WebhookOverride,
@@ -149,7 +150,7 @@ const COMMANDS: Record<string, { values: readonly string[]; apply: (config: Conf
       apply: applyRecall,
     },
     webhook: {
-      values: ["on", "off"],
+      values: ["on", "off", "auth", "no-auth"],
       apply: applyWebhook,
     },
     "draft-context": {
@@ -159,7 +160,7 @@ const COMMANDS: Record<string, { values: readonly string[]; apply: (config: Conf
   };
 
 const USAGE_FIX =
-  "Run `wazap config writes on|off`, `wazap config transcribe local|openai|off`, `wazap config recall local|off`, `wazap config webhook on|off`, `wazap config draft-context on|off`, or `wazap config send allow|deny <list>|open`";
+  "Run `wazap config writes on|off`, `wazap config transcribe local|openai|off`, `wazap config recall local|off`, `wazap config webhook on|off|auth|no-auth`, `wazap config draft-context on|off`, or `wazap config send allow|deny <list>|open`";
 
 const SEND_USAGE_FIX =
   'Run `wazap config send` to see the rules, `wazap config send allow <list>` or `wazap config send deny <list>` with numbers and chat ids comma-separated (`none` empties the list), or `wazap config send open` to lift every restriction';
@@ -176,7 +177,7 @@ export async function runConfig(config: Config): Promise<void> {
     say("");
     say(
       dim(
-        "Change writes with `wazap config writes on|off`, transcription with `wazap config transcribe`, recall with `wazap config recall`, webhook with `wazap config webhook on|off`, the draft context with `wazap config draft-context on|off`, send rules with `wazap config send`. Probe it with `wazap webhook test`."
+        "Change writes with `wazap config writes on|off`, transcription with `wazap config transcribe`, recall with `wazap config recall`, webhook with `wazap config webhook on|off|auth|no-auth`, the draft context with `wazap config draft-context on|off`, send rules with `wazap config send`. Probe it with `wazap webhook test`."
       )
     );
     const selected = resolveAccount(config.dataDir, config.accountId);
@@ -346,8 +347,10 @@ function accountWebhook(config: Config): { override: WebhookOverride; source: st
     url: selected.account.webhook_url,
     secret: selected.account.webhook_secret,
     events: selected.account.webhook_events,
+    auth: selected.account.webhook_auth,
   };
-  const fromAccount = override.url !== undefined || override.secret !== undefined || override.events !== undefined;
+  const fromAccount =
+    override.url !== undefined || override.secret !== undefined || override.events !== undefined || override.auth !== undefined;
   const source = fromAccount ? "accounts.json" : config.sources.webhook;
   return { override, source };
 }
@@ -363,6 +366,7 @@ function webhookRows(config: Config): string[] {
         `webhook: on (${new URL(settings.url).host}) (${source})`,
         `secret: ${maskKey(settings.secret)}`,
         `events: ${settings.events.join(", ")}`,
+        ...(settings.auth === undefined ? [] : [`auth: ${settings.auth.name} ${maskKey(settings.auth.value)}`]),
       ];
     case "invalid":
       return [`webhook: ${settings.detail}${settings.fix === "" ? "" : ` — ${settings.fix}`}`];
@@ -376,6 +380,14 @@ function webhookRows(config: Config): string[] {
 async function applyWebhook(config: Config, value: string): Promise<void> {
   if (value === "on") {
     await enableWebhook(config);
+    return;
+  }
+  if (value === "auth") {
+    await setWebhookAuth(config);
+    return;
+  }
+  if (value === "no-auth") {
+    clearWebhookAuth(config);
     return;
   }
   if (value === "off") {
@@ -455,6 +467,48 @@ async function enableWebhook(config: Config): Promise<void> {
   say(ok(`webhook: on — ${postedLine(undefined, url)}`));
   hintMoreEvents(undefined);
   say(dim(`Stored in ${shortPath(p.envFile)}.`));
+  warnIfServerRunning(config);
+}
+
+/**
+ * The header a receiver wants on top of wazap's signature — Cursor
+ * Automations' bearer token, n8n's header auth — typed at a prompt that does
+ * not echo it, never as an argument. With --account it is that account's.
+ */
+async function setWebhookAuth(config: Config): Promise<void> {
+  // An unknown --account fails before the prompt asks for a credential.
+  if (config.accountId !== undefined) resolveAccount(config.dataDir, config.accountId);
+  const typed = (
+    await askSecret(`${brand("?")} What the receiver expects — Bearer <token>, or <Header-Name>: <value> (it is not echoed): `)
+  ).trim();
+  if (typed === "") {
+    throw new WazapError("INVALID_ID", "Nothing was typed.", "Run `wazap config webhook auth` again");
+  }
+  const auth = parseWebhookAuth(typed)!;
+  const p = paths(config.dataDir);
+  if (config.accountId !== undefined) {
+    AccountRegistry.load(config.dataDir).setWebhook(config.accountId, { auth: typed });
+    say(ok(`webhook auth: ${auth.name} goes with every POST for ${config.accountId}, beside the signature.`));
+    say(dim(`Stored in ${shortPath(p.accountsFile)}.`));
+  } else {
+    setEnvSetting(p.envFile, "WAZAP_WEBHOOK_AUTH", typed);
+    say(ok(`webhook auth: ${auth.name} goes with every POST, beside the signature.`));
+    say(dim(`Stored in ${shortPath(p.envFile)}.`));
+  }
+  warnIfServerRunning(config);
+}
+
+function clearWebhookAuth(config: Config): void {
+  const p = paths(config.dataDir);
+  if (config.accountId !== undefined) {
+    AccountRegistry.load(config.dataDir).clearWebhookAuth(config.accountId);
+    say(ok(`webhook auth removed for ${config.accountId} — WAZAP_WEBHOOK_AUTH applies, if set.`));
+    say(dim(`Stored in ${shortPath(p.accountsFile)}.`));
+  } else {
+    setEnvSetting(p.envFile, "WAZAP_WEBHOOK_AUTH", "");
+    say(ok("webhook auth: off — only the signature goes with each POST."));
+    say(dim(`Stored in ${shortPath(p.envFile)}.`));
+  }
   warnIfServerRunning(config);
 }
 

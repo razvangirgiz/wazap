@@ -60,7 +60,7 @@ const binary = join(dirname(fileURLToPath(import.meta.url)), "..", "dist", "inde
 const ME = "40700000001@s.whatsapp.net";
 const PEER = "40700000002@s.whatsapp.net";
 const SECRET = "webhook-test-secret";
-const WEBHOOK_KEYS = ["WAZAP_WEBHOOK", "WAZAP_WEBHOOK_URL", "WAZAP_WEBHOOK_SECRET", "WAZAP_WEBHOOK_EVENTS"];
+const WEBHOOK_KEYS = ["WAZAP_WEBHOOK", "WAZAP_WEBHOOK_URL", "WAZAP_WEBHOOK_SECRET", "WAZAP_WEBHOOK_EVENTS", "WAZAP_WEBHOOK_AUTH"];
 
 function dataDir() {
   return mkdtempSync(join(tmpdir(), "wazap-webhook-"), { mode: 0o700 });

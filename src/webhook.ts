@@ -34,6 +34,21 @@ export const WEBHOOK_TEST_FIX = "run `wazap webhook test`";
 export const WEBHOOK_EVENT_FIX = `pass one of ${WEBHOOK_EVENTS.join(", ")}`;
 export const WEBHOOK_EVENTS_DEFAULT: readonly WebhookEvent[] = ["message_received"] as const;
 export const WEBHOOK_EVENTS_FIX = `set WAZAP_WEBHOOK_EVENTS to all or a comma-separated list of ${WEBHOOK_EVENTS.join(", ")}`;
+export const WEBHOOK_AUTH_FIX =
+  "run `wazap config webhook auth` and paste what the receiver expects: `Bearer <token>` for Authorization, or `<Header-Name>: <value>`";
+
+/** Headers wazap sets itself, and the ones fetch owns: the auth setting cannot replace them. */
+const RESERVED_HEADERS = new Set([
+  "content-type",
+  "content-length",
+  "user-agent",
+  "host",
+  "connection",
+  "transfer-encoding",
+  "x-wazap-event",
+  "x-wazap-signature",
+]);
+const HEADER_NAME = /^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/;
 
 export const WEBHOOK_KINDS = ["text", "audio", "image", "other"] as const;
 export type WebhookKind = (typeof WEBHOOK_KINDS)[number];
@@ -44,16 +59,23 @@ const OFF = new Set(["", "off", "0", "no", "none", "false"]);
 const ON = new Set(["on", "1", "true", "yes"]);
 const LOOPBACK = new Set(["127.0.0.1", "::1", "localhost"]);
 
+/** A header the receiver asks for on top of wazap's signature: `Authorization` unless the setting names another. */
+export interface WebhookAuth {
+  name: string;
+  value: string;
+}
+
 export type WebhookSettings =
   | { kind: "off" }
-  | { kind: "ready"; url: string; secret: string; events: readonly WebhookEvent[] }
+  | { kind: "ready"; url: string; secret: string; events: readonly WebhookEvent[]; auth?: WebhookAuth }
   | { kind: "invalid"; detail: string; fix: string };
 
-/** Per-account values win over `WAZAP_WEBHOOK_URL`, `_SECRET` and `_EVENTS`. */
+/** Per-account values win over `WAZAP_WEBHOOK_URL`, `_SECRET`, `_EVENTS` and `_AUTH`. */
 export interface WebhookOverride {
   url?: string;
   secret?: string;
   events?: string;
+  auth?: string;
 }
 
 /** The account the payload names, and whose override the sink prefers. */
@@ -63,6 +85,7 @@ export interface WebhookAccount {
   webhook_url?: string;
   webhook_secret?: string;
   webhook_events?: string;
+  webhook_auth?: string;
 }
 
 export type WebhookReady = Extract<WebhookSettings, { kind: "ready" }>;
@@ -171,8 +194,17 @@ export function readWebhookSettings(
   if (missingUrl) return { kind: "invalid", detail: "on without a URL", fix: WEBHOOK_ON_FIX };
   if (missingSecret) return { kind: "invalid", detail: "on without a secret", fix: WEBHOOK_ON_FIX };
 
+  const authRaw = stripPasted(override.auth ?? "") || stripPasted(env.WAZAP_WEBHOOK_AUTH ?? "");
+
   try {
-    return { kind: "ready", url: requireWebhookUrl(urlRaw), secret, events: parseWebhookEvents(eventsRaw) };
+    const auth = parseWebhookAuth(authRaw);
+    return {
+      kind: "ready",
+      url: requireWebhookUrl(urlRaw),
+      secret,
+      events: parseWebhookEvents(eventsRaw),
+      ...(auth === null ? {} : { auth }),
+    };
   } catch (err) {
     const failure = asWazapError(err);
     return { kind: "invalid", detail: failure.message, fix: failure.fix ?? WEBHOOK_URL_FIX };
@@ -201,6 +233,34 @@ export function requireWebhookUrl(url: string): string {
   const host = parsed.hostname.replace(/^\[/, "").replace(/\]$/, "");
   if (parsed.protocol === "http:" && LOOPBACK.has(host)) return url;
   throw new WazapError("INVALID_ID", "Refusing a non-https webhook URL.", WEBHOOK_URL_FIX);
+}
+
+/**
+ * `WAZAP_WEBHOOK_AUTH` as an operator typed it: `Bearer <token>` (or any
+ * value) goes out as `Authorization`, and `<Header-Name>: <value>` as that
+ * header, for a receiver that wants `X-Api-Key` or the like. Unset is null.
+ * The value is a credential: no error here repeats it.
+ */
+export function parseWebhookAuth(raw: string): WebhookAuth | null {
+  const typed = raw.trim();
+  if (typed === "") return null;
+  // A header line puts a token, a colon and a space first; "Bearer abc:def" has a space before its colon.
+  const named = /^([^\s:]+):\s*(.*)$/.exec(typed);
+  const auth = named !== null ? { name: named[1]!, value: named[2]!.trim() } : { name: "Authorization", value: typed };
+  if (!HEADER_NAME.test(auth.name)) {
+    throw new WazapError("INVALID_ID", "The webhook auth header has a name no HTTP header can have.", WEBHOOK_AUTH_FIX);
+  }
+  if (RESERVED_HEADERS.has(auth.name.toLowerCase())) {
+    throw new WazapError("INVALID_ID", `The webhook auth cannot set ${auth.name}: wazap sets it itself.`, WEBHOOK_AUTH_FIX);
+  }
+  if (auth.value === "") {
+    throw new WazapError("INVALID_ID", `The webhook auth names ${auth.name} but gives it no value.`, WEBHOOK_AUTH_FIX);
+  }
+  // A line break would start a header of its own; no printable value needs a control character.
+  if ([...auth.value].some((char) => (char < " " && char !== "\t") || char === "\u007f")) {
+    throw new WazapError("INVALID_ID", "The webhook auth value holds a line break or a control character.", WEBHOOK_AUTH_FIX);
+  }
+  return auth;
 }
 
 /** `sha256=<hex>` of the exact UTF-8 body, the value of `X-Wazap-Signature`. */
@@ -411,6 +471,7 @@ export class WebhookSink {
       url: this.account?.webhook_url,
       secret: this.account?.webhook_secret,
       events: this.account?.webhook_events,
+      auth: this.account?.webhook_auth,
     });
   }
 
@@ -483,6 +544,7 @@ export class WebhookSink {
           "user-agent": `wazap/${WAZAP_VERSION}`,
           "x-wazap-event": payload.event,
           "x-wazap-signature": webhookSignature(body, settings.secret),
+          ...(settings.auth === undefined ? {} : { [settings.auth.name]: settings.auth.value }),
         },
         body,
         redirect: "error",
@@ -492,18 +554,18 @@ export class WebhookSink {
       if (response.ok) return { ok: true, status: response.status };
       const host = hostOf(settings.url);
       if (retryableStatus(response.status)) {
-        return failAttempt(response.status, `HTTP ${response.status} from ${host}`, settings.secret, WEBHOOK_REACH_FIX, true);
+        return failAttempt(response.status, `HTTP ${response.status} from ${host}`, settings, WEBHOOK_REACH_FIX, true);
       }
       const refused = refusal(response.status);
       return failAttempt(
         response.status,
         `HTTP ${response.status} from ${host}, not retried: ${refused.hint}`,
-        settings.secret,
+        settings,
         refused.fix,
         false
       );
     } catch (err) {
-      return failAttempt(null, describePostError(err, settings.url), settings.secret, WEBHOOK_REACH_FIX, true);
+      return failAttempt(null, describePostError(err, settings.url), settings, WEBHOOK_REACH_FIX, true);
     }
   }
 }
@@ -554,8 +616,17 @@ function describePostError(err: unknown, url: string): string {
   return `could not reach ${host}${withCode(err)}`;
 }
 
-function failAttempt(status: number | null, error: string, secret: string, fix: string, retry: boolean): WebhookAttempt {
-  return { ok: false, status, error: redact(error, secret), fix, retry };
+/** A failure line never carries the secret or the auth value, however the error around it was worded. */
+function failAttempt(status: number | null, error: string, settings: WebhookReady, fix: string, retry: boolean): WebhookAttempt {
+  let line = redact(error, settings.secret);
+  if (settings.auth !== undefined) {
+    // The whole value, then the token after its scheme: an error may quote either.
+    const { value } = settings.auth;
+    line = redact(line, value);
+    const space = value.indexOf(" ");
+    if (space !== -1) line = redact(line, value.slice(space + 1).trim());
+  }
+  return { ok: false, status, error: line, fix, retry };
 }
 
 /**

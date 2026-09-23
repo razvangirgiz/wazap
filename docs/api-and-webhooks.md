@@ -111,9 +111,9 @@ run, a count every 100 failures, and one line when delivery comes back, not a
 line per event.
 
 An account may set `webhook_url`,
-`webhook_secret` and `webhook_events` in `accounts.json`; those win over the
-global URL, secret and event list, and `config webhook off --account work`
-clears all three.
+`webhook_secret`, `webhook_events` and `webhook_auth` in `accounts.json`; those
+win over the global URL, secret, event list and auth header, and
+`config webhook off --account work` clears all four.
 
 `webhook test --event <name>` posts nothing and exits non-zero when that
 event is not enabled, and says what to enable it with. While the webhook is
@@ -122,17 +122,43 @@ on, `wazap config` prints the events it posts on an `events:` line.
 HMAC: `X-Wazap-Signature` is `sha256=<hex>`, HMAC-SHA256 of the exact raw
 JSON body with the secret that signed it. Verify that raw body, not a
 re-serialized object. HTTPS only, except `http://` on loopback. A service that
-wants an `Authorization` header of its own cannot take the event directly; see
+wants a header of its own, such as `Authorization: Bearer …`, gets it from
+`WAZAP_WEBHOOK_AUTH`; see
 [A receiver that wants its own header](#a-receiver-that-wants-its-own-header).
 
 ### A receiver that wants its own header
 
-wazap sends its own signature and nothing else, so a service that authenticates
-with an `Authorization: Bearer …` header of its own (Cursor Automations, n8n and
-most hosted webhooks) cannot take the event directly. A small receiver on your
-own machine can: it checks the signature wazap put on the event, then passes the
-same body on with the header the service wants. This one needs nothing installed
-beyond Node.
+Cursor Automations, n8n and most hosted webhooks accept a POST only with a
+header of their own, usually `Authorization: Bearer …`. wazap sends it beside its
+signature once you set it:
+
+```bash
+npx wazap-mcp config webhook auth      # asks for it; it is not echoed
+npx wazap-mcp webhook test
+npx wazap-mcp config webhook no-auth   # back to the signature alone
+```
+
+Type `Bearer <token>`, or any other value, and it goes out as
+`Authorization: Bearer <token>`. Type `X-Api-Key: <key>`, a header name, a
+colon and the value, and it goes out as that header instead. It is stored in
+`.env` as `WAZAP_WEBHOOK_AUTH`, or with `--account work` as that account's
+`webhook_auth` in `accounts.json`, which wins over the global one. It is never a
+command-line argument, and it never appears in `wazap status`, a log line or an
+error; `wazap config` shows the header's name and a masked value. The headers
+wazap sets itself (`Content-Type`, `User-Agent`, `X-Wazap-Event`,
+`X-Wazap-Signature`) cannot be replaced, and `X-Wazap-Signature` is still sent,
+so a receiver that can check it still should.
+
+A `401` from the service, which is what a revoked token gives, fails the event at
+once and `wazap status` names it; `config webhook auth` with the new token puts
+it right.
+
+#### Or a bridge on your own machine
+
+When the service wants more than a header, or its token should not live in
+wazap's data directory, a small receiver on your own machine can sit in between:
+it checks the signature wazap put on the event, then passes the same body on with
+what the service wants. This one needs nothing installed beyond Node.
 
 ```js
 // webhook-bridge.mjs — TARGET=https://… TARGET_TOKEN=… WAZAP_WEBHOOK_SECRET=… node webhook-bridge.mjs
@@ -186,7 +212,7 @@ npx wazap-mcp webhook test
 A `401` from the service, which is what a revoked token gives, comes back to
 wazap as a `401`: the event fails at once and `wazap status` names it, as it
 would for any receiver that refuses. Keep the service's token in the
-environment of the script, not in `accounts.json` or the URL, and remember that
+environment of the script, not in the URL, and remember that
 the service now receives your WhatsApp messages: give it only to receivers you
 trust.
 

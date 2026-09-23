@@ -14,7 +14,7 @@ breaking.
 | CLI | command and flag names, exit code 0 vs non-zero, `status --json` | new commands, flags and JSON keys | the human text on stderr |
 | Webhook | event names, signature scheme, the payload fields below | new events (opt-in), new payload fields | delivery latency, retry timing |
 | Storage | forward-only migrations, released migrations frozen, the pre-migration copy | new schema versions | the SQLite schema as a format for other tools |
-| Settings | the 19 `WAZAP_*` in `.env.example` and `docs/settings.md` | new settings | anything not listed there |
+| Settings | the 20 `WAZAP_*` in `.env.example` and `docs/settings.md` | new settings | anything not listed there |
 
 ## 1. The MCP surface
 
@@ -113,6 +113,9 @@ under `serve` is guarded by: `test/hygiene.test.mjs`.
   `message_received` only.
 - The signature is `x-wazap-signature: sha256=<hex>`, an HMAC-SHA256 over the
   exact raw request body with the configured secret; the body is JSON.
+- With `WAZAP_WEBHOOK_AUTH` set (or an account.s own), its header
+  goes with every POST beside the signature: `Authorization` for a bare value,
+  the named header for `<Header-Name>: <value>`.
 - Message-event fields: `event`, `account_id`, `account_name`, `chat_id`,
   `message_id`, `text`, `truncated`, `kind`, `from_me`, `is_self_chat`,
   `timestamp`, `phone`, `contact_id`. `kind` is `text`, `audio`, `image` or
@@ -124,7 +127,8 @@ under `serve` is guarded by: `test/hygiene.test.mjs`.
 - A message wazap itself sent produces no `message_sent`, and history sync
   produces no events at all.
 
-Guarded by: `test/webhook.test.mjs`, `test/calfa-contract.test.mjs`. Delivery is
+Guarded by: `test/webhook.test.mjs`, `test/webhook-auth.test.mjs`,
+`test/calfa-contract.test.mjs`. Delivery is
 at-least-once and ordered within a chat, retried on 408, 425, 429 and 5xx, and
 given up on after 24 hours (`test/webhook-outbox.test.mjs`); the retry schedule
 itself is current behaviour, not a promise.
@@ -164,13 +168,14 @@ code or the tests supports a third-party reader.
 
 ## 6. Settings
 
-Stable: the 19 `WAZAP_*` listed in `.env.example` and in the settings table of
+Stable: the 20 `WAZAP_*` listed in `.env.example` and in the settings table of
 `docs/settings.md` — `WAZAP_DATA_DIR`, `WAZAP_READ_ONLY`, `WAZAP_PERSIST_HISTORY`,
 `WAZAP_HOST`, `WAZAP_PORT`, `WAZAP_READ_TOKEN`, `WAZAP_WRITE_TOKEN`,
 `WAZAP_PUBLIC_URL`, `WAZAP_OAUTH_PASSWORD`, `WAZAP_TRUST_PROXY`,
 `WAZAP_TRANSCRIBE`, `WAZAP_TRANSCRIBE_API_KEY`, `WAZAP_RECALL`,
 `WAZAP_WEBHOOK`, `WAZAP_WEBHOOK_URL`, `WAZAP_WEBHOOK_SECRET`,
-`WAZAP_WEBHOOK_EVENTS`, `WAZAP_RETENTION`, `WAZAP_PRE_MIGRATION_BACKUP`.
+`WAZAP_WEBHOOK_EVENTS`, `WAZAP_WEBHOOK_AUTH`, `WAZAP_RETENTION`,
+`WAZAP_PRE_MIGRATION_BACKUP`.
 Any other `WAZAP_*` a running wazap reads is a development knob, documented in
 `AGENTS.md` and nowhere else; it may change or go at any time.
 
