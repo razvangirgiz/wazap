@@ -10,7 +10,7 @@
  * event wiring, and is the WhatsAppApi every caller uses. What it does lives
  * in parts under src/service/, one per concern, each reaching the service
  * through a small host it is lent. The state and the seams tests replace
- * (sockClient, status, account, mediaBuffer, transcriber, drafts, writes,
+ * (sockClient, status, account, mediaBuffer, transcriber, drafts, writes, readMarks,
  * webhook, healContacts, saveCreds) stay here.
  */
 
@@ -39,7 +39,7 @@ import { isoWithOffset, mediaInfo, messageIdFor, protoNumber } from "./messages.
 import { PAIRING_TIMEOUT_MS, WA_BROWSER, prettyCode, socketFactory, startPairing } from "./pairing.js";
 import { transcribeFile, transcribeReady } from "./transcribe/index.js";
 import { DraftStore, type DraftPayload, type DraftView } from "./drafts.js";
-import { RateLimiter } from "./ratelimit.js";
+import { READ_MARK_MULTIPLIER, RateLimiter } from "./ratelimit.js";
 import { maskNumber } from "./ui.js";
 import { AccountChats } from "./service/chats.js";
 import { AccountContacts, CONTACT_SETTLE_MS, needsContactResync } from "./service/contacts.js";
@@ -205,6 +205,8 @@ export class WhatsAppService implements WhatsAppApi {
   private transcribeReadiness = transcribeReady;
   private readonly drafts = new DraftStore();
   private readonly writes: RateLimiter;
+  /** `mark_read`'s own bucket, READ_MARK_MULTIPLIER times the writes', off when the writes' is. */
+  private readonly readMarks: RateLimiter;
   private readonly webhook: WebhookSink;
   /** Posts the events the account database holds; see src/webhook-outbox.ts. */
   private readonly outbox: WebhookOutbox;
@@ -276,6 +278,7 @@ export class WhatsAppService implements WhatsAppApi {
     this.effectiveReadOnly = policy.readOnly;
     this.effectiveRateLimit = policy.rateLimit;
     this.writes = new RateLimiter(this.effectiveRateLimit);
+    this.readMarks = new RateLimiter(this.effectiveRateLimit * READ_MARK_MULTIPLIER, Date.now, "Read mark");
     this.paths = paths;
     this.sends = new AccountSends(
       {
@@ -424,6 +427,7 @@ export class WhatsAppService implements WhatsAppApi {
       {
         guarded: (work) => this.guarded(work),
         beginWrite: () => this.beginWrite(),
+        beginReadMark: () => this.beginWrite(this.readMarks),
         storageIdle: () => this.storageIdle(),
       },
       this.identity,
@@ -1521,8 +1525,11 @@ export class WhatsAppService implements WhatsAppApi {
     }
   }
 
-  /** First statement of every write, so a broken link is reported before the bucket is spent. */
-  private beginWrite(): WASocket {
+  /**
+   * First statement of every write, so a broken link is reported before the bucket is spent. The bucket is
+   * the writes' unless a write has one of its own; read at the call, so a test's stand-in is the one taken.
+   */
+  private beginWrite(bucket: RateLimiter = this.writes): WASocket {
     if (this.effectiveReadOnly) {
       const id = this.accountRecord.id;
       throw new WazapError(
@@ -1534,7 +1541,7 @@ export class WhatsAppService implements WhatsAppApi {
       );
     }
     const sock = this.ensureConnected();
-    this.writes.take();
+    bucket.take();
     return sock;
   }
 

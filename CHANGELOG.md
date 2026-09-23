@@ -32,6 +32,15 @@
   `wazap status`, a log line or an error, and the headers wazap sets itself
   cannot be replaced.
 
+### Changed
+
+- **Marking a chat read no longer spends the sends' budget.** `manage_chat`
+  `mark_read` has a bucket of its own, three times the account's writes a
+  minute (60 at the default 20), beside the writes' bucket every send and other
+  write keeps. A program that marks each chat read before it replies could
+  otherwise run out of sends at half the rate. It follows an account's
+  `rate_limit`, and is off when that is 0.
+
 ## 1.0.3
 
 ### Changed

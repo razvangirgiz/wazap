@@ -284,7 +284,7 @@ trace, so an agent can decide whether to retry, ask the user, or stop.
 | `TEXT_TOO_LONG` | Over WhatsApp's message limit. |
 | `EDIT_WINDOW_EXPIRED` / `RETRACT_WINDOW_EXPIRED` / `NOT_OWN_MESSAGE` | WhatsApp's own limits on editing and deleting. |
 | `READ_ONLY` | wazap is running read-only. |
-| `RATE_LIMITED` | Too many writes; `fix` says how long to wait. |
+| `RATE_LIMITED` | Too many writes, or too many read marks, which have a budget of their own; `fix` says how long to wait. |
 | `DRAFT_NOT_FOUND` / `DRAFT_EXPIRED` | The draft is unknown, from another MCP session, sent more than 15 minutes ago, or expired unsent. Draft again. |
 | `SEND_OUTCOME_UNKNOWN` | The message reached the socket and then the send failed, so WhatsApp may have it. The draft is never sent again; check the chat before drafting anew. |
 | `SEND_BLOCKED` | The account's send rules refuse this recipient. `wazap config send` changes them; the agent must not route around. |
