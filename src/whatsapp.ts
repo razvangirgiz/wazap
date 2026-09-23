@@ -4,10 +4,18 @@
  * (`accounts/<id>/wazap.sqlite`, see src/db) and answers the tools from it.
  * What stays in memory is bounded by people and chats, never by messages: the
  * lid pairings, group metadata, the last arrivals a wait can replay, drafts.
+ *
+ * This class owns the socket and the connection's state (status, account,
+ * generation, sync), the lifecycle (start, pairing, reconnect, stop) and the
+ * event wiring, and is the WhatsAppApi every caller uses. What it does lives
+ * in parts under src/service/, one per concern, each reaching the service
+ * through a small host it is lent. The state and the seams tests replace
+ * (sockClient, status, account, mediaBuffer, transcriber, drafts, writes,
+ * webhook, healContacts, saveCreds) stay here.
  */
 
 import { setTimeout as sleep } from "node:timers/promises";
-import { DisconnectReason, downloadMediaMessage, proto, type WAMessage, type WASocket } from "baileys";
+import { DisconnectReason, downloadMediaMessage, type WAMessage, type WASocket } from "baileys";
 import type { ILogger } from "baileys/lib/Utils/logger.js";
 import { accountPolicy, type AccountRecord } from "./accounts.js";
 import { clearAuth, readLinkedAccount, useAtomicAuthState, type LinkedAccount } from "./auth-state.js";
@@ -19,20 +27,21 @@ import {
   type CatchupWindow,
 } from "./catchup-scan.js";
 import { BAILEYS_VERSION, WAZAP_VERSION, writesHints, type AccountPaths, type Config } from "./config.js";
-import { AccountDb, chatKindOf, StorageError, type EventRecord, type StoredMessage } from "./db/index.js";
+import { AccountDb, chatKindOf, StorageError, type StoredMessage } from "./db/index.js";
 import { type DraftContext, type StyleCheck } from "./draft-style.js";
 import { asWazapError, RELINK_FIX, RESET_FIX, WazapError } from "./errors.js";
 import { type AccountFind, type FindContactQuery } from "./find-contact.js";
-import { isGroupId, isNoiseJid, normalizePhone } from "./ids.js";
+import { isNoiseJid, normalizePhone } from "./ids.js";
 import { log, logError } from "./logger.js";
 import { describe } from "./outgoing-media.js";
 import { momentsOf } from "./store.js";
-import { isUserMessage, isoWithOffset, mediaInfo, messageIdFor, protoNumber } from "./messages.js";
+import { isoWithOffset, mediaInfo, messageIdFor, protoNumber } from "./messages.js";
 import { PAIRING_TIMEOUT_MS, WA_BROWSER, prettyCode, socketFactory, startPairing } from "./pairing.js";
 import { transcribeFile, transcribeReady } from "./transcribe/index.js";
 import { DraftStore, type DraftPayload, type DraftView } from "./drafts.js";
 import { RateLimiter } from "./ratelimit.js";
 import { maskNumber } from "./ui.js";
+import { AccountChats } from "./service/chats.js";
 import { AccountContacts, CONTACT_SETTLE_MS, needsContactResync } from "./service/contacts.js";
 import { AccountGroups } from "./service/groups.js";
 import { AccountIdentity } from "./service/identity.js";
@@ -45,23 +54,10 @@ import { AccountStorage } from "./service/storage.js";
 import { MessageViews } from "./service/views.js";
 import { AccountVoice } from "./service/voice.js";
 import { MessageWaits } from "./service/waits.js";
+import { AccountWebhooks } from "./service/webhooks.js";
 import { statusCodeOf } from "./service/util.js";
-import {
-  WebhookSink,
-  asConnectionPayload,
-  asWebhookPayload,
-  webhookConnectionStatus,
-  type WebhookConnectionPayload,
-  type WebhookConnectionStatus,
-  type WebhookPayload,
-} from "./webhook.js";
-import {
-  CONNECTION_LANE,
-  WEBHOOK_TRANSCRIPT_WAIT_MS,
-  WebhookOutbox,
-  chatLane,
-  undeliveredFailure,
-} from "./webhook-outbox.js";
+import { WebhookSink } from "./webhook.js";
+import { WebhookOutbox } from "./webhook-outbox.js";
 import type { SearchCoverage } from "./coverage.js";
 import type {
   ChatAction,
@@ -115,7 +111,6 @@ const RECONNECT_MAX_ATTEMPTS = 10;
 
 const SYNC_WAIT_MS = 10_000;
 const HISTORY_FETCH_WAIT_MS = 5_000;
-const RETRACT_WINDOW_MS = 2 * 24 * 3_600_000;
 const STALE_INBOUND_MS = 24 * 3_600_000;
 /** A download is buffered in memory, so the biggest file it may pull is bounded. */
 const MEDIA_DOWNLOAD_MAX_BYTES = 100_000_000;
@@ -197,6 +192,10 @@ export class WhatsAppService implements WhatsAppApi {
   private readonly reads: AccountReads;
   /** get_media's download and the previews reads show (src/service/media.ts). */
   private readonly media: AccountMedia;
+  /** manage_chat and delete_message, and the forgetting each asks for (src/service/chats.ts). */
+  private readonly chats: AccountChats;
+  /** What the account posts to the webhook, and its status (src/service/webhooks.ts). */
+  private readonly webhooks: AccountWebhooks;
   /** Lid chats still folding into their number's chat; list_chats lets them land. */
   private readonly folds = new Set<Promise<unknown>>();
   private stopPromise: Promise<void> | null = null;
@@ -209,8 +208,6 @@ export class WhatsAppService implements WhatsAppApi {
   private readonly webhook: WebhookSink;
   /** Posts the events the account database holds; see src/webhook-outbox.ts. */
   private readonly outbox: WebhookOutbox;
-  /** The last connection status queued for the consumer, so several internal states collapse into one event. */
-  private lastWebhookStatus: WebhookConnectionStatus | null = null;
   private readonly accountRecord: AccountRecord;
   private readonly effectiveReadOnly: boolean;
   private readonly effectiveRateLimit: number;
@@ -272,7 +269,7 @@ export class WhatsAppService implements WhatsAppApi {
     this.outbox = new WebhookOutbox({
       db: () => this.storage.readyDb(),
       sink: () => this.webhook,
-      payload: (event, message) => this.webhookPayload(event, message),
+      payload: (event, message) => this.webhooks.webhookPayload(event, message),
       awaitingTranscript: (message) => this.voice.webhookAwaitsTranscript(message),
     });
     const policy = accountPolicy(account, config);
@@ -313,7 +310,7 @@ export class WhatsAppService implements WhatsAppApi {
         transcribeReadiness: (...args) => this.transcribeReadiness(...args),
         transcribeAudio: (messageId) => this.transcribeAudio(messageId),
         embedFeed: () => this.recallIndex.embedFeed,
-        webhookTranscriptSettled: (sid) => this.webhookTranscriptSettled(sid),
+        webhookTranscriptSettled: (sid) => this.webhooks.webhookTranscriptSettled(sid),
       },
       this.views,
       config,
@@ -366,7 +363,7 @@ export class WhatsAppService implements WhatsAppApi {
           this.releaseHistoryWaiters();
         },
         markSyncDone: () => this.markSyncDone(),
-        announced: (stored, type) => this.announced(stored, type),
+        announced: (stored, type) => this.webhooks.announced(stored, type),
         nudgeOutbox: () => this.outbox.nudge(),
         embedFeed: () => this.recallIndex.embedFeed,
       },
@@ -422,6 +419,34 @@ export class WhatsAppService implements WhatsAppApi {
       this.views,
       this.storage,
       paths
+    );
+    this.chats = new AccountChats(
+      {
+        guarded: (work) => this.guarded(work),
+        beginWrite: () => this.beginWrite(),
+        storageIdle: () => this.storageIdle(),
+      },
+      this.identity,
+      this.views,
+      this.storage,
+      this.groups,
+      this.sends,
+      this.ingest,
+      this.contacts
+    );
+    this.webhooks = new AccountWebhooks(
+      {
+        stopped: () => this.stopped,
+        statusSince: () => this.statusSince,
+        webhook: () => this.webhook,
+        outbox: () => this.outbox,
+      },
+      this.identity,
+      this.views,
+      this.storage,
+      this.sends,
+      this.voice,
+      account
     );
     this.storage.openDatabase();
     // Only the server transcribes: a short-lived command (status --live, contacts resync, the sync after a
@@ -708,42 +733,9 @@ export class WhatsAppService implements WhatsAppApi {
     if (this.status === next) return;
     this.status = next;
     this.statusSince = Date.now();
-    this.queueConnectionWebhook(next);
+    this.webhooks.queueConnectionWebhook(next);
     // Notes that waited for the connection run now rather than at the worker's next look.
     if (next === "connected" && this.voice.autoTranscribe) this.voice.transcribeWorker.kick();
-  }
-
-  /**
-   * Several internal states map to one thing a consumer acts on, so the guard is
-   * on the mapped status, and it advances only once the event is in the outbox,
-   * which retries it for a day and keeps the order the link moved in. A change
-   * the webhook does not subscribe to is not queued and does not advance it.
-   */
-  private queueConnectionWebhook(status: ConnectionStatus): void {
-    const mapped = webhookConnectionStatus(status);
-    if (mapped === null || mapped === this.lastWebhookStatus || this.stopped) return;
-    const settings = this.webhook.settings();
-    if (settings.kind !== "ready" || !settings.events.includes("connection")) return;
-    const db = this.storage.readyDb();
-    if (db === null) {
-      this.outbox.dropped(`connection ${mapped}`);
-      return;
-    }
-    const at = this.statusSince;
-    try {
-      db.events.enqueue({
-        kind: "connection",
-        lane: CONNECTION_LANE,
-        messageId: null,
-        payload: JSON.stringify(asConnectionPayload({ status: mapped, account: this.accountRecord, at })),
-        createdAt: at,
-      });
-    } catch (err) {
-      this.outbox.dropped(`connection ${mapped}`, err);
-      return;
-    }
-    this.lastWebhookStatus = mapped;
-    this.outbox.nudge();
   }
 
   getStatus(): StatusInfo {
@@ -766,7 +758,7 @@ export class WhatsAppService implements WhatsAppApi {
       read_only: this.effectiveReadOnly,
       rate_limit: this.effectiveRateLimit,
       last_error: this.lastError ?? this.storage.storageFault?.message ?? null,
-      webhook: this.webhookStatus(),
+      webhook: this.webhooks.webhookStatus(),
       recall: this.recallIndex.recallStatus(),
       storage: this.storage.storageInfo(),
       transcription: this.voice.transcriptionStatus(),
@@ -971,21 +963,6 @@ export class WhatsAppService implements WhatsAppApi {
   }
 
   /**
-   * A chat cleared or deleted for this account, by manage_chat or on the phone.
-   * The barrier is stored and every message at or before it hidden before this
-   * returns, so an event handler need not wait; the rows, their vectors and
-   * their files go in chunks behind it. A deleted chat also leaves the chat
-   * list until a new message arrives.
-   */
-  private forgetChat(jid: string, deleted: boolean): Promise<void> {
-    const db = this.storage.db;
-    const at = Date.now();
-    if (deleted) db.identity.upsertChat({ jid, archived: false, pinned: null, unread: 0, proto: null });
-    const purge = deleted ? db.messages.deleteChat(jid, at) : db.messages.clearChat(jid, at);
-    return purge.then(() => this.storage.scheduleFileCleanup());
-  }
-
-  /**
    * Test and lifecycle barrier, not an MCP tool: queued purges, folds, expiry
    * sweeps and file cleanup have finished. A cleanup failure since the last
    * call is reported here, once. Deleting tools wait on it too.
@@ -1078,155 +1055,11 @@ export class WhatsAppService implements WhatsAppApi {
   }
 
   deleteMessage(messageId: string, forEveryone: boolean): Promise<{ message_id: string; for_everyone: boolean }> {
-    return this.guarded(async () => {
-      const stored = this.views.storedOrThrow(messageId);
-      const raw = this.views.messageOrThrow(messageId);
-      const chat = stored.chatJid;
-      const target: MessageRef = { chatJid: chat, fromMe: stored.fromMe, keyId: stored.keyId };
-      if (!forEveryone) {
-        // Only the linked account's copy goes, whoever sent it and however old:
-        // WhatsApp syncs that to the account's other devices, and nobody else
-        // sees a change.
-        const sock = this.beginWrite();
-        const timestamp = Math.floor(stored.ts / 1000);
-        await sock.chatModify({ deleteForMe: { deleteMedia: false, key: raw.key, timestamp } }, chat);
-        this.storage.requireCleanupOwner();
-        this.ingest.retract([target], stored.ts);
-        await this.storageIdle();
-        return { message_id: messageId, for_everyone: false };
-      }
-      let key = raw.key;
-      if (stored.fromMe) {
-        if (Date.now() - stored.ts > RETRACT_WINDOW_MS) {
-          throw new WazapError("RETRACT_WINDOW_EXPIRED", `Message ${messageId} is older than 2 days.`);
-        }
-      } else if (isGroupId(chat)) {
-        // Someone else's message comes down only by a group admin's hand. Baileys
-        // sends it as an admin revoke, and the key must name who sent it. Baileys
-        // documents no time limit for that, so the 2-day window is not assumed here.
-        await this.groups.assertGroupAdmin(chat, "delete_message");
-        const participant = raw.key.participant || raw.participant;
-        if (!participant) {
-          throw new WazapError(
-            "WHATSAPP_ERROR",
-            `WhatsApp did not say who sent ${messageId}, so it cannot be deleted as an admin.`
-          );
-        }
-        key = { ...raw.key, participant };
-      } else {
-        throw new WazapError("NOT_OWN_MESSAGE", `Message ${messageId} was not sent by the linked account.`);
-      }
-      const { sock, jid } = await this.sends.prepareSend(chat);
-      await sock.sendMessage(jid, { delete: key });
-      this.storage.requireCleanupOwner();
-      // Deleted means out of the index too — the text does not get to linger on.
-      this.ingest.retract([target], stored.ts);
-      await this.storageIdle();
-      return { message_id: messageId, for_everyone: true };
-    });
+    return this.chats.deleteMessage(messageId, forEveryone);
   }
 
   manageChat(chatId: string, action: ChatAction, opts: ChatActionOptions = {}): Promise<ChatActionResult> {
-    return this.guarded(async () => {
-      const sock = this.beginWrite();
-      const jid = this.identity.resolveId(chatId);
-      const last = this.views.lastMessageOf(jid);
-      const lastMessages = last ? [last] : [];
-      const muteHours = opts.muteHours ?? 8;
-      let detail = "";
-      let messageId: string | undefined;
-
-      switch (action) {
-        case "archive":
-        case "unarchive":
-          await sock.chatModify({ archive: action === "archive", lastMessages }, jid);
-          break;
-        case "pin":
-        case "unpin":
-          await sock.chatModify({ pin: action === "pin" }, jid);
-          break;
-        case "mute":
-          await sock.chatModify({ mute: muteHours * 3_600_000 }, jid);
-          detail = ` for ${muteHours}h`;
-          break;
-        case "unmute":
-          await sock.chatModify({ mute: null }, jid);
-          break;
-        case "mark_read":
-          if (last) await sock.readMessages([last.key]);
-          break;
-        case "mark_unread":
-          await sock.chatModify({ markRead: false, lastMessages }, jid);
-          break;
-        case "pin_message":
-        case "unpin_message": {
-          const hours = opts.pinHours ?? 168;
-          const time = PIN_SECONDS[hours];
-          if (time === undefined) {
-            throw new WazapError("INVALID_ID", `pin_hours must be 24, 168 or 720, not ${hours}.`, "Pass pin_hours as 24, 168 or 720");
-          }
-          const raw = this.messageInChat(opts.messageId, jid, action);
-          messageId = opts.messageId;
-          // A pin is a message to the chat, so every member sees it; WhatsApp ignores the time on an unpin.
-          const type = action === "pin_message" ? proto.PinInChat.Type.PIN_FOR_ALL : proto.PinInChat.Type.UNPIN_FOR_ALL;
-          await sock.sendMessage(jid, { pin: raw.key, type, time });
-          if (action === "pin_message") detail = ` for ${hours}h`;
-          break;
-        }
-        case "star_message":
-        case "unstar_message": {
-          const raw = this.messageInChat(opts.messageId, jid, action);
-          messageId = opts.messageId;
-          const starred = [{ id: raw.key.id ?? "", fromMe: Boolean(raw.key.fromMe) }];
-          await sock.chatModify({ star: { messages: starred, star: action === "star_message" } }, jid);
-          break;
-        }
-        case "clear":
-        case "delete":
-          await sock.chatModify(action === "clear" ? { clear: true, lastMessages } : { delete: true, lastMessages }, jid);
-          this.storage.requireCleanupOwner();
-          // The same forgetting the phone's own clear or delete gets, done now rather than on WhatsApp's echo.
-          await this.forgetChat(jid, action === "delete");
-          await this.storageIdle();
-          break;
-        case "block":
-        case "unblock":
-          if (isGroupId(jid) || isNoiseJid(jid)) {
-            throw new WazapError(
-              "INVALID_ID",
-              `"${action}" works only on a one-to-one chat, and ${jid} is not one.`,
-              "Pass the chat_id of a person"
-            );
-          }
-          await sock.updateBlockStatus(jid, action);
-          if (action === "block") this.contacts.blocked.add(jid);
-          else this.contacts.blocked.delete(jid);
-          break;
-      }
-
-      return { chat_id: jid, action, applied: `${action}${detail}`, ...(messageId ? { message_id: messageId } : {}) };
-    });
-  }
-
-  /** A message named by a chat action must be in that chat, or the action would land on another one. */
-  private messageInChat(messageId: string | undefined, jid: string, action: ChatAction): WAMessage {
-    if (messageId === undefined) {
-      throw new WazapError(
-        "INVALID_ID",
-        `The "${action}" action needs a message_id.`,
-        "Pass a message_id from read_messages on this chat"
-      );
-    }
-    const raw = this.views.messageOrThrow(messageId);
-    const chat = this.views.chatOfOrThrow(messageId);
-    if (chat !== jid) {
-      throw new WazapError(
-        "MESSAGE_NOT_FOUND",
-        `Message ${messageId} is not in ${jid}; it belongs to ${chat}.`,
-        "Pass the chat_id the message belongs to, or a message_id from read_messages on this chat"
-      );
-    }
-    return raw;
+    return this.chats.manageChat(chatId, action, opts);
   }
 
   getGroupInfo(groupId: string): Promise<GroupInfo> {
@@ -1375,7 +1208,7 @@ export class WhatsAppService implements WhatsAppApi {
 
     sock.ev.on("chats.delete", (ids) => {
       for (const id of ids) {
-        this.handling("chat delete", () => void this.forgetChat(this.identity.canonical(id), true).catch((err: unknown) => logError("chat delete", err)), undefined);
+        this.handling("chat delete", () => void this.chats.forgetChat(this.identity.canonical(id), true).catch((err: unknown) => logError("chat delete", err)), undefined);
       }
     });
 
@@ -1409,7 +1242,7 @@ export class WhatsAppService implements WhatsAppApi {
       // The other side asked that these go; the database honours it the way the
       // phone does, vectors and files included.
       if ("all" in item) {
-        this.handling("messages delete", () => void this.forgetChat(this.identity.canonical(item.jid), false).catch((err: unknown) => logError("messages delete", err)), undefined);
+        this.handling("messages delete", () => void this.chats.forgetChat(this.identity.canonical(item.jid), false).catch((err: unknown) => logError("messages delete", err)), undefined);
         return;
       }
       const targets: MessageRef[] = [];
@@ -1752,110 +1585,6 @@ export class WhatsAppService implements WhatsAppApi {
     }
   }
 
-  /**
-   * Live messages both ways, queued for the webhook in the transaction that
-   * stores them, and only on the notify gate transcription uses: a history
-   * sync must not post the backlog, and stubs or system notices are not events.
-   * That gate is also what keeps wazap's own sends quiet in production, since
-   * Baileys re-emits a local send as an `append`; `sentByWazap` is the id-level
-   * backstop for an echo that does arrive as `notify`. An event the webhook
-   * does not subscribe to is never written, and a message delivered twice is
-   * queued once. An incoming voice note waits for its transcript, at most
-   * WEBHOOK_TRANSCRIPT_WAIT_MS. A write the database refuses fails the whole
-   * transaction, messages included, so none is stored without its event.
-   * Returns `stored`, for the caller to go on with.
-   */
-  private announced(stored: WAMessage[], type: string): WAMessage[] {
-    if (type !== "notify" || this.stopped || stored.length === 0) return stored;
-    const settings = this.webhook.settings();
-    if (settings.kind !== "ready") return stored;
-    const db = this.storage.db;
-    const now = Date.now();
-    for (const raw of stored) {
-      let sid: string;
-      let event: "message_received" | "message_sent";
-      try {
-        if (!isUserMessage(raw)) continue;
-        if (this.webhookOwnSend(raw)) continue;
-        event = raw.key.fromMe ? "message_sent" : "message_received";
-        if (!settings.events.includes(event)) continue;
-        sid = messageIdFor(raw.key, this.identity.canonical(raw.key.remoteJid ?? ""));
-      } catch (err) {
-        // A message this cannot make sense of is not announced; the rest of the batch still is.
-        logError("webhook", err);
-        continue;
-      }
-      const message = db.messages.get(sid);
-      if (message === null || db.events.hasMessageEvent(message.id, event)) continue;
-      db.events.enqueue({
-        kind: event,
-        lane: chatLane(message.chatId),
-        messageId: message.id,
-        payload: JSON.stringify({ is_self_chat: this.identity.isMe(message.chatJid) }),
-        createdAt: now,
-        readyAt: this.webhookReadyAt(message, now),
-      });
-    }
-    return stored;
-  }
-
-  /**
-   * Seam (F1-e): whether wazap sent this message itself, so its echo is never
-   * announced as `message_sent`. Runs inside the transaction that stores the
-   * echo; the durable send record is what should answer it, so an echo after
-   * a restart is recognised too.
-   */
-  private webhookOwnSend(raw: WAMessage): boolean {
-    return Boolean(raw.key.fromMe && raw.key.id && this.sends.isOwnSend(raw.key.id));
-  }
-
-  /**
-   * Until when a message's event may wait for its words: WEBHOOK_TRANSCRIPT_WAIT_MS
-   * for a voice note the transcription queue took, due at once otherwise. The
-   * queue row is written earlier in the same transaction by queueTranscript,
-   * so this is the queue's own rule (`transcribable`, the history window, the
-   * provider), not a copy of it.
-   */
-  private webhookReadyAt(message: StoredMessage, now: number): number {
-    return this.voice.transcriptQueued(message) ? now + WEBHOOK_TRANSCRIPT_WAIT_MS : now;
-  }
-
-  /**
-   * The transcription worker is done with a note — words stored, failed, given
-   * up on, or unable to run — or with every note (`null`: the provider paused):
-   * the events held for them look again now.
-   */
-  private webhookTranscriptSettled(_sid: string | null): void {
-    this.outbox.kick();
-  }
-
-  /**
-   * The body of an event as it is posted: a message event from the message as
-   * the database holds it now, so an edit or a transcript that landed since it
-   * was queued goes with it; a connection event as it was queued, under the
-   * account's current name.
-   */
-  private webhookPayload(event: EventRecord, message: StoredMessage | null): WebhookPayload {
-    const stored = JSON.parse(event.payload) as Record<string, unknown>;
-    const account = this.accountRecord;
-    if (message === null) {
-      return { ...(stored as unknown as WebhookConnectionPayload), account_id: account.id, account_name: account.name };
-    }
-    return asWebhookPayload({
-      event: event.kind === "message_sent" ? "message_sent" : "message_received",
-      view: this.views.viewOfStored(message),
-      account,
-      isSelfChat: stored.is_self_chat === true,
-    });
-  }
-
-  /** get_status's webhook block: settings, and the outbox as the account database records it. */
-  private webhookStatus(): StatusInfo["webhook"] {
-    if (this.webhook.settings().kind !== "ready") return this.webhook.info(undefined, null);
-    const delivery = this.outbox.delivery(this.storage.readyDb());
-    return this.webhook.info(delivery, undeliveredFailure(delivery));
-  }
-
   private async fetchOlder(sock: WASocket, anchor: StoredMessage, limit: number): Promise<void> {
     const raw = this.views.rawOf(anchor) ?? this.views.keyOnly(anchor);
     const seconds = Math.floor(anchor.ts / 1000);
@@ -1874,6 +1603,3 @@ export class WhatsAppService implements WhatsAppApi {
   }
 
 }
-
-/** How long a pinned message stays pinned, by the hours manage_chat takes: WhatsApp's 24 hours, 7 days and 30 days. */
-const PIN_SECONDS: Record<number, 86_400 | 604_800 | 2_592_000> = { 24: 86_400, 168: 604_800, 720: 2_592_000 };

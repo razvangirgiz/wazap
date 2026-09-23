@@ -68,14 +68,14 @@ export interface RecallHost {
 
 export class AccountRecall {
   /** The recall environment, or the complaint about it. Same rule as transcribe: a bad env is a line, not a crash. */
-  readonly recallEnv: RecallSettings | WazapError;
+  private readonly recallEnv: RecallSettings | WazapError;
   /** Embeds what the database holds; null when recall is off. */
   readonly embedFeed: EmbedFeed | null;
   vectorCount: { at: number; count: number } | null = null;
   /** The sidecar starts on the first embedding call, never at boot. */
-  recallEngineP: Promise<EmbedEngine> | null = null;
+  private recallEngineP: Promise<EmbedEngine> | null = null;
   /** RECALL_QUERY_WAIT_MS; a field so a test need not wait eight seconds. */
-  recallQueryWaitMs = RECALL_QUERY_WAIT_MS;
+  private recallQueryWaitMs = RECALL_QUERY_WAIT_MS;
 
   constructor(
     private readonly host: RecallHost,
@@ -161,7 +161,7 @@ export class AccountRecall {
    * "off" splits by cause: the feature disabled, or the history it derives
    * from not persisted; "degraded" carries the line the status already found.
    */
-  readyRecall(): RecallSettings {
+  private readyRecall(): RecallSettings {
     const status = this.recallStatus();
     if (status.state === "degraded") {
       throw new WazapError("RECALL_UNAVAILABLE", status.detail ?? "Semantic recall is unavailable.", status.fix);
@@ -180,7 +180,7 @@ export class AccountRecall {
   }
 
   /** What the index embeds for a message: the words a person chose, capped to the model's window. */
-  recallWords(message: StoredMessage): string | null {
+  private recallWords(message: StoredMessage): string | null {
     const maxChars = this.recallEnv instanceof WazapError ? RECALL_TEXT_CAP : EMBED_MODELS[this.recallEnv.model].maxChars;
     const raw = this.views.rawOf(message);
     let words: string | null;
@@ -206,7 +206,7 @@ export class AccountRecall {
    * other account in the process on the same binary and model. A failed start
    * is not cached — the next queued batch tries again.
    */
-  recallEngine(): Promise<EmbedEngine> {
+  private recallEngine(): Promise<EmbedEngine> {
     if (this.host.stopped()) return Promise.reject(new WazapError("RECALL_UNAVAILABLE", "the service is stopping"));
     if (this.recallEnv instanceof WazapError || !this.recallEnv.enabled) {
       return Promise.reject(
@@ -231,7 +231,7 @@ export class AccountRecall {
    * search answers by words (TIMEOUT), while the sidecar keeps starting and
    * the request under way finishes for nobody, so the next search finds it up.
    */
-  async queryVector(query: string): Promise<number[] | undefined> {
+  private async queryVector(query: string): Promise<number[] | undefined> {
     const embedding = this.recallEmbed([query], "query");
     embedding.catch(() => {});
     let timer: NodeJS.Timeout | undefined;
@@ -250,7 +250,7 @@ export class AccountRecall {
     }
   }
 
-  async recallEmbed(texts: string[], kind: "query" | "document"): Promise<number[][]> {
+  private async recallEmbed(texts: string[], kind: "query" | "document"): Promise<number[][]> {
     const engine = await this.recallEngine();
     return engine.embed(texts, kind);
   }
@@ -282,7 +282,7 @@ export class AccountRecall {
   }
 
   /** Stored vectors of the model, counted at most every few seconds: the count walks the table. */
-  indexedCount(db: AccountDb | null, model: string): number {
+  private indexedCount(db: AccountDb | null, model: string): number {
     if (db === null) return this.vectorCount?.count ?? 0;
     const now = Date.now();
     if (this.vectorCount === null || now - this.vectorCount.at > VECTOR_COUNT_TTL_MS) {

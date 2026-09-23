@@ -112,15 +112,15 @@ export class AccountVoice {
    */
   readonly autoTranscribe: boolean;
   /** Where the configured provider sends the audio, recorded with each note queued; null with no provider. */
-  readonly transcribeClass: "local" | "api" | null;
+  private readonly transcribeClass: "local" | "api" | null;
   /** This account as the process's transcription worker sees it. */
   readonly transcribeSource: TranscribeSource;
   /** The worker every account shares; a seam for tests. */
   readonly transcribeWorker = transcribeWorker;
   /** Cancels this account's uploads and whisper.cpp runs: it is being removed. */
-  readonly transcribeAbort = new AbortController();
+  private readonly transcribeAbort = new AbortController();
   /** Transcriptions under way, so one recording is never uploaded twice at once. */
-  readonly transcribing = new Map<string, Promise<TranscribeResult>>();
+  private readonly transcribing = new Map<string, Promise<TranscribeResult>>();
 
   constructor(
     private readonly host: VoiceHost,
@@ -202,7 +202,7 @@ export class AccountVoice {
     });
   }
 
-  async runTranscribe(
+  private async runTranscribe(
     messageId: string,
     raw: WAMessage,
     info: { mime: string; size?: number; filename?: string },
@@ -302,7 +302,7 @@ export class AccountVoice {
   }
 
   /** The parsed environment, or the reason it could not be parsed, as a refusal. */
-  transcribeSettings(): TranscribeSettings {
+  private transcribeSettings(): TranscribeSettings {
     if (this.transcribe instanceof WazapError) {
       throw new WazapError("TRANSCRIBE_UNAVAILABLE", this.transcribe.message, this.transcribe.fix);
     }
@@ -364,7 +364,7 @@ export class AccountVoice {
    * short incoming voice note. The rest is get_media's own path, so a
    * tool call asking for the same note at the same moment shares the upload.
    */
-  async transcribeQueued(sid: string): Promise<void> {
+  private async transcribeQueued(sid: string): Promise<void> {
     const message = this.views.storedOrThrow(sid);
     if (message.transcript !== null) return;
     if (!transcribable(this.views.messageOrThrow(sid))) {

@@ -9,6 +9,14 @@ user.
 
 - `src/*.ts` — all runtime code, ESM, TypeScript strict. `npm run build` emits
   `dist/`; `dist/` is gitignored and is what actually runs.
+- `src/whatsapp.ts` is one account's service: the socket, the connection's
+  state, the lifecycle and the event wiring. Each thing it does is a part in
+  `src/service/` (identity, views, groups, voice, recall, waits, send, storage,
+  ingest, contacts, reads, media, chats, webhooks) that reaches the service
+  through a small `*Host` interface, read at each call. The state, and the
+  members tests replace on the service (`sockClient`, `status`, `mediaBuffer`,
+  `transcriber`, `drafts` …), stay on the service; a test that reaches into a
+  part does it on the part (`svc.ingest.ingestMessages`).
 - `test/*.test.mjs` — plain JS tests on `node:test`. They import the **built**
   `dist/` and spawn `dist/index.js` against throwaway data dirs, so a source
   edit is not tested until `npm run build` runs. `npm test` builds first.

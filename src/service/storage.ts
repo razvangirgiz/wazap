@@ -91,9 +91,9 @@ export class AccountStorage {
    */
   storageState: "ready" | "preparing" | "failed" = "ready";
   /** What get_status said about storage while the database was open, for a stopped service to repeat. */
-  lastStorageInfo: StorageInfo | undefined;
+  private lastStorageInfo: StorageInfo | undefined;
   storageFault: WazapError | null = null;
-  storageBoot: Promise<void> | null = null;
+  private storageBoot: Promise<void> | null = null;
   expiryTimer: ReturnType<typeof setTimeout> | null = null;
   /** The daily pass over the legacy files, the beta archive and set-aside databases. */
   legacyTimer: ReturnType<typeof setInterval> | null = null;
@@ -147,7 +147,7 @@ export class AccountStorage {
     );
   }
 
-  storageFail(err: unknown): void {
+  private storageFail(err: unknown): void {
     const message = err instanceof Error ? err.message : String(err);
     const fix = err instanceof StorageError || err instanceof WazapError ? err.fix : undefined;
     this.storageState = "failed";
@@ -177,7 +177,7 @@ export class AccountStorage {
     }
   }
 
-  legacyPending(db: AccountDb): boolean {
+  private legacyPending(db: AccountDb): boolean {
     const state = db.getMeta(IMPORT_META.state);
     if (state === "done" || state === "imported" || state === "skipped") return false;
     return state === "running" || legacyFilesPresent(this.config.dataDir, this.paths);
@@ -255,7 +255,7 @@ export class AccountStorage {
     return this.storageBoot;
   }
 
-  async bootStorageOnce(): Promise<void> {
+  private async bootStorageOnce(): Promise<void> {
     const db = this.accountDb;
     if (db === null || this.storageState === "failed") throw this.storageFault ?? new WazapError("SERVICE_ERROR", "The account database is not open.");
     if (this.host.stopped() || !db.isOpen) return;
@@ -318,7 +318,7 @@ export class AccountStorage {
    * account serves, so the archive is never retired with rows only it holds.
    * A failure is logged and retried at the next start; the archive stays.
    */
-  async importLateBeta(db: AccountDb): Promise<void> {
+  private async importLateBeta(db: AccountDb): Promise<void> {
     const archive = lateBetaArchive(this.config.dataDir, this.paths, db);
     if (archive === null || this.host.stopped() || !db.isOpen) return;
     const before = this.storageState;
@@ -410,7 +410,7 @@ export class AccountStorage {
   }
 
   /** Logs how the import went; an import with unexplained differences still serves, and says so for doctor. */
-  noteImport(db: AccountDb, report: ImportReport): void {
+  private noteImport(db: AccountDb, report: ImportReport): void {
     const counts = `${report.totals.messages} messages, ${report.totals.chats} chats`;
     if (report.state === "done") {
       db.setMeta(IMPORT_UNVERIFIED_META, null);
@@ -433,7 +433,7 @@ export class AccountStorage {
    * message is still visible (a preview made before the upgrade), removed when
    * it is not. Bounded by the files in the folder.
    */
-  async reconcilePreviews(db: AccountDb): Promise<void> {
+  private async reconcilePreviews(db: AccountDb): Promise<void> {
     let names: string[];
     try {
       names = await readdir(this.paths.previewsDir);
@@ -474,7 +474,7 @@ export class AccountStorage {
     return this.lastStorageInfo;
   }
 
-  readStorageInfo(db: AccountDb): StorageInfo {
+  private readStorageInfo(db: AccountDb): StorageInfo {
     if (this.storageState === "preparing") {
       const progress = importProgress(db);
       return progress === null ? { state: "preparing" } : { state: "preparing", progress: `${progress.phase} (${progress.step} of ${progress.steps})` };
@@ -525,7 +525,7 @@ export class AccountStorage {
     if (failure !== null) throw failure;
   }
 
-  ownsFile(path: string): boolean {
+  private ownsFile(path: string): boolean {
     const inside = relative(this.paths.previewsDir, path);
     return inside !== "" && !inside.startsWith(`..${sep}`) && inside !== ".." && !isAbsolute(inside);
   }

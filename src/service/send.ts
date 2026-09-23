@@ -89,7 +89,7 @@ export interface SendsHost {
 
 export class AccountSends {
   /** Confirms under way, by draft: a second confirm of the same draft by its owner waits for the first. */
-  readonly confirming = new Map<string, { owner: string | null; work: Promise<SentMessage> }>();
+  private readonly confirming = new Map<string, { owner: string | null; work: Promise<SentMessage> }>();
   /** Sends of our own, so their `fromMe` echo is never announced as `message_sent`. */
   readonly sentByWazap = new SentIds();
 
@@ -145,7 +145,7 @@ export class AccountSends {
     });
   }
 
-  async sendClaimed(draft: Draft): Promise<SentMessage> {
+  private async sendClaimed(draft: Draft): Promise<SentMessage> {
     const attempt: SendAttempt = { keyId: draft.keyId, dispatched: false };
     let sent: SentMessage;
     try {
@@ -175,7 +175,7 @@ export class AccountSends {
    * happened or it did not. A database that refuses (stopping, disk full)
    * leaves the row as it was; a row left sending is unknown after a restart.
    */
-  recordSend(work: () => void): void {
+  private recordSend(work: () => void): void {
     try {
       work();
     } catch (err) {
@@ -184,7 +184,7 @@ export class AccountSends {
   }
 
   /** storedReceipt of a draft that reached the socket, through a database that may be closing: null when it cannot tell. */
-  echoedReceipt(draft: Draft): SentMessage | null {
+  private echoedReceipt(draft: Draft): SentMessage | null {
     const db = this.host.readyDb();
     if (db === null) return null;
     try {
@@ -198,7 +198,7 @@ export class AccountSends {
    * The receipt of a send whose message is stored under its key, which only
    * the send itself or WhatsApp's echo of it stores: the id and time WhatsApp gave it.
    */
-  storedReceipt(db: AccountDb, chatJid: string, keyId: string, text: string): SentMessage | null {
+  private storedReceipt(db: AccountDb, chatJid: string, keyId: string, text: string): SentMessage | null {
     const stored = db.messages.get(messageIdFor({ remoteJid: chatJid, fromMe: true, id: keyId }, chatJid));
     if (stored === null || !stored.fromMe || stored.keyId !== keyId) return null;
     return { message_id: stored.sid, chat_id: stored.chatJid, text, timestamp: isoWithOffset(stored.ts) };
@@ -219,7 +219,7 @@ export class AccountSends {
   }
 
   /** An unknown send whose message is stored is sent. */
-  reconcileSend(db: AccountDb, row: SendRecord): void {
+  private reconcileSend(db: AccountDb, row: SendRecord): void {
     const receipt = this.storedReceipt(db, row.chatJid, row.keyId, frozenReceiptText(row));
     if (receipt === null) return;
     db.messages.addFlags(receipt.message_id, MESSAGE_FLAGS.viaWazap);
@@ -363,14 +363,14 @@ export class AccountSends {
     });
   }
 
-  outgoingOf(jid: string): OutgoingTarget {
+  private outgoingOf(jid: string): OutgoingTarget {
     const name = this.identity.displayName(jid);
     if (isGroupId(jid)) return { chat_id: jid, name };
     const number = this.views.contactSummary(jid).number;
     return number ? { chat_id: jid, name, number } : { chat_id: jid, name };
   }
 
-  dispatchDraft(draft: Draft, attempt: SendAttempt): Promise<SentMessage> {
+  private dispatchDraft(draft: Draft, attempt: SendAttempt): Promise<SentMessage> {
     const chatId = draft.to.chat_id;
     const payload = draft.payload;
     switch (payload.kind) {
@@ -409,7 +409,7 @@ export class AccountSends {
    * it goes out, under the key it was drafted with; it is marked as handed
    * over first, so whatever fails from there on leaves the outcome unknown.
    */
-  async dispatch(
+  private async dispatch(
     sock: WASocket,
     jid: string,
     content: AnyMessageContent,
@@ -444,7 +444,7 @@ export class AccountSends {
    * Same addressability checks as a send, without opening a write. A draft that
    * fails here would fail at confirm_send too.
    */
-  async assertOutgoing(chatId: string, sock: WASocket): Promise<string> {
+  private async assertOutgoing(chatId: string, sock: WASocket): Promise<string> {
     const jid = this.identity.resolveId(chatId);
 
     if (isGroupId(jid)) {
@@ -487,7 +487,7 @@ export class AccountSends {
     }
   }
 
-  sentResult(sent: WAMessage | undefined, jid: string, text: string): SentMessage {
+  private sentResult(sent: WAMessage | undefined, jid: string, text: string): SentMessage {
     if (!sent) {
       return { message_id: `unknown_${jid}_${randomUUID()}`, chat_id: jid, text, timestamp: isoWithOffset(Date.now()) };
     }
