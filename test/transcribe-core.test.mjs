@@ -421,7 +421,7 @@ test("a history sync queues the voice notes of the last day, never the archive b
     ],
     isLatest: true,
   });
-  await svc.historyIdle();
+  await svc.ingest.historyIdle();
   await svc.transcribeIdle();
   assert.equal(provider.state.calls, 1, "a relink would otherwise transcribe every voice note in the window");
   assert.deepEqual(

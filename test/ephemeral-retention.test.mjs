@@ -45,7 +45,7 @@ async function fixture(t, { embed, timers = false, retention = true } = {}) {
   return { ...await boot(), boot, advance(ms) { now += ms; if (timers) t.mock.timers.tick(ms); } };
 }
 async function seed(svc, raw = message()) {
-  svc.ingestMessages([raw]);
+  svc.ingest.ingestMessages([raw]);
   await svc.recallIdle();
   return raw;
 }
@@ -129,7 +129,7 @@ test("ordinary messages and a chat timer setting do not inherit a disappearing d
   const { svc, advance } = await fixture(t);
   const raw = message(); delete raw.ephemeralDuration; delete raw.ephemeralStartTimestamp;
   await seed(svc, raw);
-  svc.ingestChat({ id: CHAT, ephemeralExpiration: 1 });
+  svc.ingest.ingestChat({ id: CHAT, ephemeralExpiration: 1 });
   advance(100_000);
   assert.equal((await svc.getMessage(sid(raw))).text, SECRET);
 });
@@ -140,7 +140,7 @@ test("an edit or replay without expiry metadata cannot extend the first observed
   raw.message = { extendedTextMessage: { text: SECRET, contextInfo: { expiration: 10 } } };
   await seed(svc, raw);
   sock.ev.emit("messages.update", [{ key: raw.key, update: { message: { editedMessage: { message: { conversation: SECRET } } } } }]);
-  svc.ingestMessages([{ key: raw.key, messageTimestamp: raw.messageTimestamp, message: { conversation: SECRET } }]);
+  svc.ingest.ingestMessages([{ key: raw.key, messageTimestamp: raw.messageTimestamp, message: { conversation: SECRET } }]);
   assert.equal(svc.db.messages.get(sid(raw)).expiresAt, START + 10_000);
   await svc.stop();
   const { svc: next } = await boot();
@@ -158,7 +158,7 @@ test("restart while a message is live preserves its deadline; expired replay sta
   assert.equal((await next.getMessage(sid(raw))).text, SECRET);
   advance(1_000);
   await next.storageIdle();
-  next.ingestMessages([raw]);
+  next.ingest.ingestMessages([raw]);
   assert.equal(next.hasMessage(sid(raw)), false);
   await noPayload(next);
 });
@@ -253,7 +253,7 @@ test("a webhook whose body cannot be built is not posted, and the exception is e
 test("an in-flight embedding cannot publish a message after expiry", async (t) => {
   const started = gate(); const finish = gate();
   const { svc, advance } = await fixture(t, { embed: async (texts) => { started.release(); await finish.promise; return vectors(texts); } });
-  const raw = message(); svc.ingestMessages([raw]);
+  const raw = message(); svc.ingest.ingestMessages([raw]);
   await started.promise;
   try { advance(10_000); await svc.storageIdle(); }
   finally { finish.release(); }
@@ -342,7 +342,7 @@ test("an observed expiry stays deleted if the wall clock later moves backwards",
   advance(10_000);
   assert.equal(svc.hasMessage(sid(raw)), false);
   advance(-10_000);
-  svc.ingestMessages([raw]);
+  svc.ingest.ingestMessages([raw]);
   assert.equal(svc.hasMessage(sid(raw)), false);
 });
 
