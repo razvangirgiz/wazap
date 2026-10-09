@@ -17,7 +17,7 @@ import { runBackup } from "./backup-cli.js";
 import { runDemo } from "./demo.js";
 import { runSearch } from "./search-cli.js";
 import { BAILEYS_VERSION, WAZAP_VERSION, parseCli, pickDefaultAction, settingWarnings } from "./config.js";
-import { migrateLayout } from "./migrate.js";
+import { migrateLayout, migratesFirst } from "./migrate.js";
 import { CLIENT_NAMES, runConnect } from "./connect.js";
 import { SKILL_TARGET_NAMES, runSkills } from "./skills.js";
 import { PROVIDER_NAMES, runExpose } from "./expose.js";
@@ -145,24 +145,7 @@ async function main(): Promise<void> {
 
   const { config } = invocation;
   for (const line of settingWarnings()) say(warn(line));
-  // Rollback is the inverse of this move. Running it first would re-apply a
-  // half-finished migrate and then fail to undo it. The other exempt commands
-  // never open account state, and `service stop` is how a lock that blocks the
-  // migration is released.
-  const MIGRATE_EXEMPT: ReadonlySet<string> = new Set([
-    "migrate",
-    "service",
-    "connect",
-    "skills",
-    "expose",
-    "update",
-    "transcribe",
-    "embed",
-    "demo",
-    "supervise",
-    "tunnel",
-  ]);
-  if (!MIGRATE_EXEMPT.has(config.command)) migrateLayout(config.dataDir);
+  if (migratesFirst(config.command, config.args)) migrateLayout(config.dataDir);
   switch (config.command) {
     case "serve":
       if (config.daemon) {
