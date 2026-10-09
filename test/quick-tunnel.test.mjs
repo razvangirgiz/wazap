@@ -19,7 +19,6 @@ import {
   adoptQuickUrl,
   edgeEventIn,
   ensureCloudflared,
-  fetchVerified,
   markTunnelConnected,
   parseTunnelTarget,
   pinnedCloudflared,
@@ -74,12 +73,19 @@ test("the tunnel unit only ever points at loopback", () => {
   }
 });
 
-test("every pinned cloudflared is a release asset of the pinned version with a sha256", () => {
+test("every pinned cloudflared is a release asset of the pinned version, by exact size and sha256", () => {
   const keys = Object.keys(CLOUDFLARED_PIN.assets).sort();
   assert.deepEqual(keys, ["darwin-arm64", "darwin-x64", "linux-arm64", "linux-x64"]);
   for (const asset of Object.values(CLOUDFLARED_PIN.assets)) {
     assert.match(asset.sha256, /^[0-9a-f]{64}$/);
+    assert.ok(Number.isSafeInteger(asset.bytes) && asset.bytes > 1_000_000);
     assert.ok(asset.url.startsWith(`https://github.com/cloudflare/cloudflared/releases/download/${CLOUDFLARED_PIN.version}/`));
+    assert.equal(asset.kind, asset.url.endsWith(".tgz") ? "tgz" : "bin");
+    if (asset.kind === "tgz") {
+      // The release notes publish the binary's digest; the archive's own is a different file's.
+      assert.match(asset.binarySha256, /^[0-9a-f]{64}$/);
+      assert.notEqual(asset.binarySha256, asset.sha256);
+    }
   }
 });
 
@@ -93,18 +99,51 @@ async function serving(t, body) {
   return `http://127.0.0.1:${server.address().port}/cloudflared`;
 }
 
-test("a download becomes the binary only when its sha256 matches, and never partly", async (t) => {
+const sha = (bytes) => createHash("sha256").update(bytes).digest("hex");
+
+test("a download becomes the binary only when its size and sha256 match, and never partly", async (t) => {
   const body = Buffer.from("#!/bin/sh\necho cloudflared\n");
   const url = await serving(t, body);
   const dir = dataDir();
-  const dest = join(dir, "cloudflared");
-  await assert.rejects(fetchVerified(url, dest, "0".repeat(64), 1_000), /does not match its pinned sha256/);
+  const dest = pinnedCloudflared(dir);
+  const asset = { url, sha256: sha(body), bytes: body.length, kind: "bin" };
+  await assert.rejects(ensureCloudflared(dir, { onPath: () => null, asset: { ...asset, sha256: "0".repeat(64) } }), (err) => {
+    assert.equal(err.code, "SERVICE_ERROR");
+    assert.match(err.message, /nothing was installed: .*did not verify/);
+    assert.match(err.fix, /wazap expose quick/);
+    return true;
+  });
   assert.equal(existsSync(dest), false);
   assert.equal(existsSync(`${dest}.part`), false);
-  await assert.rejects(fetchVerified(url, dest, createHash("sha256").update(body).digest("hex"), 10), /larger than the release/);
+  await assert.rejects(ensureCloudflared(dir, { onPath: () => null, asset: { ...asset, bytes: 10 } }), /exceeds the expected size/);
   assert.equal(existsSync(dest), false);
-  await fetchVerified(url, dest, createHash("sha256").update(body).digest("hex"), 1_000);
+  assert.equal(await ensureCloudflared(dir, { onPath: () => null, asset }), dest);
   assert.deepEqual(readFileSync(dest), body);
+});
+
+test("a .tgz is checked as downloaded, and the cloudflared inside it against its own pin", { skip: process.platform === "win32" }, async (t) => {
+  const work = dataDir();
+  const binary = Buffer.from("#!/bin/sh\nexit 0\n");
+  writeFileSync(join(work, "cloudflared"), binary);
+  const tgz = join(work, "cf.tgz");
+  await run("tar", ["-czf", tgz, "-C", work, "cloudflared"]);
+  const archive = readFileSync(tgz);
+  const url = await serving(t, archive);
+  const asset = { url, sha256: sha(archive), bytes: archive.length, kind: "tgz", binarySha256: sha(binary) };
+
+  const wrong = dataDir();
+  await assert.rejects(
+    ensureCloudflared(wrong, { onPath: () => null, asset: { ...asset, binarySha256: "0".repeat(64) } }),
+    /cloudflared inside the download does not match/
+  );
+  assert.equal(existsSync(pinnedCloudflared(wrong)), false);
+  assert.equal(existsSync(`${pinnedCloudflared(wrong)}.tgz`), false, "the archive does not linger");
+  assert.equal(existsSync(`${pinnedCloudflared(wrong)}.d`), false);
+
+  const dir = dataDir();
+  const got = await ensureCloudflared(dir, { onPath: () => null, asset });
+  assert.equal(got, pinnedCloudflared(dir));
+  assert.deepEqual(readFileSync(got), binary);
 });
 
 test("ensureCloudflared takes the person's own cloudflared first, then the pinned one, fetching it once", async (t) => {
@@ -112,7 +151,7 @@ test("ensureCloudflared takes the person's own cloudflared first, then the pinne
   const url = await serving(t, body);
   const dir = dataDir();
   assert.equal(await ensureCloudflared(dir, { onPath: () => "/opt/homebrew/bin/cloudflared" }), "/opt/homebrew/bin/cloudflared");
-  const asset = { url, sha256: createHash("sha256").update(body).digest("hex"), kind: "bin", maxBytes: 1_000 };
+  const asset = { url, sha256: sha(body), bytes: body.length, kind: "bin" };
   const got = await ensureCloudflared(dir, { onPath: () => null, asset });
   assert.equal(got, pinnedCloudflared(dir));
   assert.equal(readFileSync(got, "utf8"), body.toString());

@@ -23,6 +23,7 @@ import { paths, type Config } from "./config.js";
 import { commandOnPath } from "./connect.js";
 import { WazapError } from "./errors.js";
 import { log, logError } from "./logger.js";
+import { downloadFile } from "./model-download.js";
 import { installedService, writeService, readService } from "./service.js";
 import { commandOf, whenSupervisorGone } from "./supervisor.js";
 import { setEnvSetting } from "./settings.js";
@@ -30,20 +31,24 @@ import { which } from "./transcribe/index.js";
 
 export interface CloudflaredAsset {
   url: string;
+  /** Of the file the URL serves: the binary, or the .tgz. */
   sha256: string;
+  /** Its exact size; any other is not the release. */
+  bytes: number;
   /** A bare binary, or a .tgz holding one named `cloudflared`. */
   kind: "bin" | "tgz";
-  /** At most this many bytes are taken: a larger answer is not the release. */
-  maxBytes: number;
+  /** For a .tgz, the sha256 of the `cloudflared` inside it, checked once unpacked. */
+  binarySha256?: string;
 }
 
 const RELEASES = "https://github.com/cloudflare/cloudflared/releases/download";
 
 /**
  * One cloudflared release. The Linux digests were checked against the binary
- * inside Cloudflare's own signed .deb for the same version (pkg.cloudflare.com),
- * the macOS ones are those the release notes publish. Keyed
- * `${process.platform}-${process.arch}`.
+ * inside Cloudflare's own signed .deb for the same version (pkg.cloudflare.com).
+ * For macOS the release notes publish the digest of the binary inside each
+ * .tgz (binarySha256); the .tgz digest beside it is the downloaded file's own.
+ * Keyed `${process.platform}-${process.arch}`.
  */
 export const CLOUDFLARED_PIN = {
   version: "2026.10.0",
@@ -51,26 +56,28 @@ export const CLOUDFLARED_PIN = {
     "linux-x64": {
       url: `${RELEASES}/2026.10.0/cloudflared-linux-amd64`,
       sha256: "d33ff2d14475178d2012c2c56beba87389ac5ded27649519f198a7d3134a99db",
+      bytes: 40_129_756,
       kind: "bin",
-      maxBytes: 80_000_000,
     },
     "linux-arm64": {
       url: `${RELEASES}/2026.10.0/cloudflared-linux-arm64`,
       sha256: "e6422b9d4f72d3194bc5a38676f13667c06666523217b842a877d72a80b5ac08",
+      bytes: 37_687_584,
       kind: "bin",
-      maxBytes: 80_000_000,
     },
     "darwin-x64": {
       url: `${RELEASES}/2026.10.0/cloudflared-darwin-amd64.tgz`,
-      sha256: "0560c9ab7281ac3f746055323623ed23bc0405b6dab9400474020cba33a978da",
+      sha256: "903845b81828c8cb3c5d13d816a2de71c06a3da5785469df8eb0e1b736d92f9f",
+      bytes: 21_741_581,
       kind: "tgz",
-      maxBytes: 80_000_000,
+      binarySha256: "0560c9ab7281ac3f746055323623ed23bc0405b6dab9400474020cba33a978da",
     },
     "darwin-arm64": {
       url: `${RELEASES}/2026.10.0/cloudflared-darwin-arm64.tgz`,
-      sha256: "72edfd3eea463aef4d5cb89e2e209cecb048cc756c2b01915de2e0ad7cb39830",
+      sha256: "a2f79ff7b9420aa537d74af239f376da170bbabeb529aec416002adac6a72e70",
+      bytes: 19_809_074,
       kind: "tgz",
-      maxBytes: 80_000_000,
+      binarySha256: "72edfd3eea463aef4d5cb89e2e209cecb048cc756c2b01915de2e0ad7cb39830",
     },
   } as Partial<Record<string, CloudflaredAsset>>,
 };
@@ -92,41 +99,26 @@ export function quickUrlIn(line: string): string | null {
 }
 
 /**
- * Fetch `url` to `dest` only if its sha256 is `sha256`: streamed to a file
- * beside it, hashed on the way, capped at `maxBytes`, and renamed into place
- * only once it matches. A partial or wrong download never becomes `dest`.
+ * Fetch the pinned asset to `dest` with the shared downloader: one download at
+ * a time per file, streamed to a `.part` beside it, exact in size and sha256,
+ * and renamed into place only once both match.
  */
-export async function fetchVerified(url: string, dest: string, sha256: string, maxBytes: number): Promise<void> {
-  const part = `${dest}.part`;
-  const fail = (message: string): WazapError =>
-    new WazapError("SERVICE_ERROR", message, "Check the network, then run `wazap expose quick` again");
-  let response: Response;
-  try {
-    response = await fetch(url, { signal: AbortSignal.timeout(10 * 60_000) });
-  } catch (err) {
-    throw fail(`Could not download cloudflared: ${err instanceof Error ? err.message : String(err)}`);
-  }
-  if (!response.ok || response.body === null) throw fail(`Could not download cloudflared (HTTP ${response.status}).`);
-  const hash = createHash("sha256");
-  const chunks: Buffer[] = [];
-  let size = 0;
-  for await (const chunk of response.body as unknown as AsyncIterable<Uint8Array>) {
-    size += chunk.length;
-    if (size > maxBytes) throw fail("The cloudflared download is larger than the release; nothing was installed.");
-    hash.update(chunk);
-    chunks.push(Buffer.from(chunk));
-  }
-  const got = hash.digest("hex");
-  if (got !== sha256) {
-    throw new WazapError(
-      "SERVICE_ERROR",
-      `The cloudflared download does not match its pinned sha256 (${got}); nothing was installed.`,
-      "Run `wazap expose quick` again; if it keeps failing, install cloudflared yourself (e.g. `brew install cloudflared`) and run it again"
-    );
-  }
-  mkdirSync(join(dest, ".."), { recursive: true, mode: 0o700 });
-  writeFileSync(part, Buffer.concat(chunks), { mode: 0o700 });
-  renameSync(part, dest);
+async function fetchPinned(asset: CloudflaredAsset, dest: string): Promise<void> {
+  await downloadFile({ url: asset.url, path: dest, sha256: asset.sha256, bytes: asset.bytes, command: "wazap expose quick" }).catch(
+    (err: unknown) => {
+      throw err instanceof WazapError
+        ? new WazapError(
+            "SERVICE_ERROR",
+            `Could not fetch cloudflared ${CLOUDFLARED_PIN.version}; nothing was installed: ${err.message}`,
+            "Run `wazap expose quick` again; if it keeps failing, install cloudflared yourself (e.g. `brew install cloudflared`) and run it again"
+          )
+        : err;
+    }
+  );
+}
+
+function sha256Of(file: string): string {
+  return createHash("sha256").update(readFileSync(file)).digest("hex");
 }
 
 /**
@@ -151,24 +143,34 @@ export async function ensureCloudflared(
   }
   mkdirSync(join(dataDir, "bin"), { recursive: true, mode: 0o700 });
   if (asset.kind === "bin") {
-    await fetchVerified(asset.url, pinned, asset.sha256, asset.maxBytes);
+    await fetchPinned(asset, pinned);
     chmodSync(pinned, 0o700);
     return pinned;
   }
   const archive = `${pinned}.tgz`;
-  await fetchVerified(asset.url, archive, asset.sha256, asset.maxBytes);
+  await fetchPinned(asset, archive);
   const dir = `${pinned}.d`;
   rmSync(dir, { recursive: true, force: true });
   mkdirSync(dir, { recursive: true, mode: 0o700 });
-  const unpacked = spawnSync("tar", ["-xzf", archive, "-C", dir], { encoding: "utf8" });
-  rmSync(archive, { force: true });
-  if (unpacked.status !== 0 || !existsSync(join(dir, "cloudflared"))) {
+  try {
+    const unpacked = spawnSync("tar", ["-xzf", archive, "-C", dir], { encoding: "utf8" });
+    const inside = join(dir, "cloudflared");
+    if (unpacked.status !== 0 || !existsSync(inside)) {
+      throw new WazapError("SERVICE_ERROR", "Could not unpack the cloudflared download.", "Run `wazap expose quick` again");
+    }
+    if (asset.binarySha256 !== undefined && sha256Of(inside) !== asset.binarySha256) {
+      throw new WazapError(
+        "SERVICE_ERROR",
+        "The cloudflared inside the download does not match its pinned sha256; nothing was installed.",
+        "Run `wazap expose quick` again; if it keeps failing, install cloudflared yourself (e.g. `brew install cloudflared`) and run it again"
+      );
+    }
+    chmodSync(inside, 0o700);
+    renameSync(inside, pinned);
+  } finally {
+    rmSync(archive, { force: true });
     rmSync(dir, { recursive: true, force: true });
-    throw new WazapError("SERVICE_ERROR", "Could not unpack the cloudflared download.", "Run `wazap expose quick` again");
   }
-  renameSync(join(dir, "cloudflared"), pinned);
-  rmSync(dir, { recursive: true, force: true });
-  chmodSync(pinned, 0o700);
   return pinned;
 }
 
