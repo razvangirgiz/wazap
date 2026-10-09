@@ -129,7 +129,7 @@ test("an HTTP server with no token and no sign-in is refused while a unit tunnel
 
 test(
   "serve --http refuses to start, and takes no lock, while a tunnel in its HOME reaches the port",
-  { skip: SUPERVISORS.some((supervisor) => supervisor.available()) ? false : "no launchd or systemd here" },
+  { skip: SUPERVISORS.some((supervisor) => supervisor.available()) ? false : "no supervisor here" },
   async () => {
     const home = mkdtempSync(join(tmpdir(), "wazap-tunnel-home-"));
     const dataDir = mkdtempSync(join(tmpdir(), "wazap-tunnel-data-"));
@@ -147,9 +147,16 @@ test(
       join(units, "example-tunnel.service"),
       `[Service]\nExecStart=/usr/bin/cloudflared tunnel --url http://localhost:${port} run\n`
     );
+    // And one for wazap's own supervisor, which is there wherever the other two are not.
+    const state = join(home, ".local", "state", "wazap");
+    mkdirSync(state, { recursive: true });
+    writeFileSync(
+      join(state, "example-tunnel.json"),
+      JSON.stringify({ label: "example-tunnel", argv: ["cloudflared", "--url", `http://127.0.0.1:${port}`], env: {} })
+    );
 
     const serving = run(process.execPath, [binary, "serve", "--http", "--port", String(port), "--data-dir", dataDir], {
-      env: childEnv({ HOME: home }),
+      env: childEnv({ HOME: home, XDG_STATE_HOME: "" }),
       timeout: 30_000,
     });
     await assert.rejects(serving, (err) => {
@@ -157,7 +164,7 @@ test(
       assert.match(
         err.stderr,
         new RegExp(
-          `Refusing to serve 127\\.0\\.0\\.1:${port} without a token: (com\\.example\\.tunnel|example-tunnel\\.service) tunnels to it\\.`
+          `Refusing to serve 127\\.0\\.0\\.1:${port} without a token: (com\\.example\\.tunnel|example-tunnel\\.service|example-tunnel)`
         )
       );
       assert.match(err.stderr, /WAZAP_READ_TOKEN/);

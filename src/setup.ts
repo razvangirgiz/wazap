@@ -16,7 +16,6 @@ import {
 import { paths, writesHints, type Config, type KeepRunning } from "./config.js";
 import {
   CLIENTS,
-  REAL_PROBES,
   appRunning,
   connectClient,
   connectNext,
@@ -31,13 +30,12 @@ import {
   whereInstalled,
   type ClientSpec,
   type Install,
-  type Probes,
 } from "./connect.js";
 import { DEPS, ensureDeps, ensureLlama } from "./deps.js";
 import { checkLines, webhookCheck } from "./doctor.js";
 import { downloadEmbedModel, llamaReport } from "./cli.js";
 import { WazapError } from "./errors.js";
-import { PROVIDERS, runExpose, type TunnelProvider } from "./expose.js";
+import { runExpose } from "./expose.js";
 import { INSTALL_WAIT_MS, installService, pickSupervisor } from "./service.js";
 import { lockHolder } from "./lock.js";
 import { say } from "./logger.js";
@@ -333,15 +331,11 @@ const KEEP_OPTIONS: readonly { choice: KeepRunning; describe: string }[] = [
 ];
 
 /**
- * Offering a public URL with nothing to tunnel through would be a dead end, and
- * Homebrew is one prompt away from a tunnel, so it counts as something.
+ * A public URL is always within reach: the quick tunnel needs no account and
+ * fetches its own cloudflared, so all three are offered everywhere.
  */
-export function keepRunningOptions(
-  providers: readonly TunnelProvider[] = PROVIDERS,
-  probes: Probes = REAL_PROBES
-): typeof KEEP_OPTIONS {
-  const reachable = providers.some((provider) => provider.available()) || probes.onPath("brew");
-  return reachable ? KEEP_OPTIONS : KEEP_OPTIONS.slice(0, 2);
+export function keepRunningOptions(): typeof KEEP_OPTIONS {
+  return KEEP_OPTIONS;
 }
 
 /** Only while a client has it open, unless a flag or a person says otherwise. */

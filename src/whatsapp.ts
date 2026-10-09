@@ -57,7 +57,7 @@ import { AccountMedia } from "./service/media.js";
 import { readRecallSettings, type RecallSettings, type RecallStatus } from "./recall/index.js";
 import { AccountRecall } from "./service/recall.js";
 import { AccountReads } from "./service/reads.js";
-import { AccountSends, type SendAttempt } from "./service/send.js";
+import { AccountSends, type DraftOptions, type SendAttempt } from "./service/send.js";
 import { AccountStorage } from "./service/storage.js";
 import { MessageViews } from "./service/views.js";
 import { AccountVoice } from "./service/voice.js";
@@ -1142,8 +1142,20 @@ export class WhatsAppService implements WhatsAppApi {
     await Promise.race([Promise.allSettled([...this.folds]), sleep(FOLD_SETTLE_MS, undefined, { ref: false })]);
   }
 
-  draft(payload: DraftPayload, owner?: string): Promise<DraftView> {
-    return this.sends.draft(payload, owner);
+  draft(payload: DraftPayload, owner?: string, opts?: DraftOptions): Promise<DraftView> {
+    return this.sends.draft(payload, owner, opts);
+  }
+
+  pendingDrafts(): DraftView[] {
+    return this.sends.pending();
+  }
+
+  approveDraft(draftId: string): Promise<SentMessage> {
+    return this.sends.approve(draftId);
+  }
+
+  discardDraft(draftId: string): boolean {
+    return this.sends.discard(draftId);
   }
 
   confirm(draftId: string, owner?: string): Promise<SentMessage> {

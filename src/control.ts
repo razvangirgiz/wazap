@@ -20,6 +20,7 @@
 import { timingSafeEqual } from "node:crypto";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { parseAccountId } from "./accounts.js";
+import { parseDraftId, type DraftApprovals } from "./approvals.js";
 import type { RosterChange } from "./account-hub.js";
 import { readDaemon, type DaemonInfo } from "./daemon.js";
 import { withCode } from "./error-code.js";
@@ -40,6 +41,10 @@ export const CONTROL_ROUTES = {
   reload: "/v1/accounts/reload",
   logout: "/v1/accounts/logout",
   remove: "/v1/accounts/remove",
+  // Drafts-only mode: a person on this machine approving what the agent drafted (approvals.ts).
+  drafts: "/v1/drafts/list",
+  approve: "/v1/drafts/approve",
+  discard: "/v1/drafts/discard",
 } as const;
 
 const MAX_BODY_BYTES = 4 * 1024;
@@ -99,7 +104,8 @@ function accountOf(body: Record<string, unknown>): string {
 export async function startControlEndpoint(
   target: ControlTarget,
   token: string,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  approvals?: DraftApprovals
 ): Promise<number> {
   const server = createServer(async (req, res) => {
     let route: keyof typeof CONTROL_ROUTES | undefined;
@@ -147,6 +153,28 @@ export async function startControlEndpoint(
           log(`control: remove ${id}`);
           await target.remove(id);
           send(res, 200, { ok: true, account_id: id });
+          return;
+        }
+        case "drafts":
+        case "approve":
+        case "discard": {
+          if (approvals === undefined) {
+            refuse(res, 404, "This server keeps no drafts for approval.");
+            return;
+          }
+          if (route === "drafts") {
+            send(res, 200, { ok: true, drafts: approvals.list() });
+            return;
+          }
+          const draftId = parseDraftId(body.draft_id);
+          if (route === "discard") {
+            log(`control: discard ${draftId}`);
+            send(res, 200, { ok: true, draft_id: draftId, ...approvals.discard(draftId) });
+            return;
+          }
+          log(`control: approve ${draftId}`);
+          const approved = await approvals.approve(draftId);
+          send(res, 200, { ok: true, draft_id: draftId, account_id: approved.account_id, receipt: approved.receipt });
           return;
         }
       }

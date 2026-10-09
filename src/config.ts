@@ -33,11 +33,20 @@ export type Command =
   | "backup"
   | "migrate"
   | "search"
-  | "demo";
+  | "demo"
+  | "drafts"
+  | "supervise"
+  | "tunnel";
 
 export interface Config {
   dataDir: string;
   readOnly: boolean;
+  /**
+   * Drafts only: the agent may draft, and nothing it can call sends. A person
+   * approves each draft (the approval page, `wazap drafts approve`, or the
+   * send-yourself link). `--drafts-only` or WAZAP_DRAFTS_ONLY.
+   */
+  draftsOnly: boolean;
   /** Always false outside tests since `WAZAP_SYNC_FULL_HISTORY` was retired. */
   syncFullHistory: boolean;
   /** Persist chats and messages under the data dir so they survive a restart. */
@@ -67,7 +76,7 @@ export interface Config {
   maxInFlightTotal?: number;
   /** HTTP POSTs to /mcp per credential per minute; 240 outside tests. */
   httpPostBudget?: number;
-  sources: Record<"dataDir" | "readOnly" | "transport" | "transcribe" | "webhook" | "recall", Source>;
+  sources: Record<"dataDir" | "readOnly" | "draftsOnly" | "transport" | "transcribe" | "webhook" | "recall", Source>;
   command: Command;
   /** The command was named on the command line rather than defaulted to serve. */
   explicitCommand: boolean;
@@ -82,8 +91,10 @@ export interface Config {
   loginPhone?: string;
   /** Pair with an 8-character code instead of the QR; implied by --phone. */
   loginCode: boolean;
-  /** `login` asks about writes unless a flag already answered. */
-  writesAnswer: boolean | null;
+  /** `login` asks about writes unless a flag already answered; "drafts" is `--drafts-only`. */
+  writesAnswer: WritesAnswer | null;
+  /** `serve` only: keep it running in the background under a supervisor, then return. */
+  daemon: boolean;
   /** `setup` only: print the agent procedure and exit. */
   agent: boolean;
   /** `setup` only, repeatable, overrides detection. */
@@ -171,6 +182,9 @@ export function accountPaths(dataDir: string, accountId: string): AccountPaths {
   };
 }
 
+/** What the agent may do: send (true), only read (false), or draft for a person to approve. */
+export type WritesAnswer = boolean | "drafts";
+
 /** The answer to `setup`'s "keep running" question. */
 export type KeepRunning = "client" | "service" | "expose";
 
@@ -204,6 +218,10 @@ const COMMAND_ARGS: Record<Command, readonly number[]> = {
   migrate: [1],
   search: [1],
   demo: [1],
+  drafts: [0, 1, 2],
+  // Not for people: what `wazap service start` and `wazap expose quick` run.
+  supervise: [1],
+  tunnel: [1],
 };
 
 const COMMANDS = Object.keys(COMMAND_ARGS) as readonly Command[];
@@ -227,9 +245,10 @@ const COMMAND_USAGE: Partial<Record<Command, string>> = {
   embed: "Run `wazap embed download` or `wazap embed index [--wait]`",
   search: 'Run `wazap search "<words>" [--match hybrid|meaning|words] [--limit <n>] [--json]`',
   demo: "Run `wazap demo seed --data-dir ./.wazap-demo`",
+  drafts: "Run `wazap drafts`, `wazap drafts approve <draft_id>` or `wazap drafts discard <draft_id>`",
   contacts: "Run `wazap contacts resync`",
   config:
-    "Run `wazap config`, `wazap config writes on|off`, `wazap config transcribe local|openai|off`, `wazap config recall local|off`, `wazap config webhook on|off|auth|no-auth|chats|tag|coalesce|retry-401|filter off`, `wazap config draft-context on|off`, or `wazap config send allow|deny <list>|open`",
+    "Run `wazap config`, `wazap config writes on|off|drafts`, `wazap config transcribe local|openai|off`, `wazap config recall local|off`, `wazap config webhook on|off|auth|no-auth|chats|tag|coalesce|retry-401|filter off`, `wazap config draft-context on|off`, or `wazap config send allow|deny <list>|open`",
   webhook: "Run `wazap webhook test`",
   account: ACCOUNT_USAGE,
   backup: BACKUP_USAGE,
@@ -260,6 +279,16 @@ export function readOnlySetting(value: string | undefined): boolean {
   if (["", "0", "false", "no", "off"].includes(normalized)) return false;
   throw new WazapError("INVALID_ID", "WAZAP_READ_ONLY must be a boolean value.",
     "Set WAZAP_READ_ONLY to 1 to disable writes or 0 to enable them deliberately");
+}
+
+/** WAZAP_DRAFTS_ONLY: unset and the off-values are off; anything else is refused, never guessed. */
+export function draftsOnlySetting(value: string | undefined): boolean {
+  if (value === undefined) return false;
+  const normalized = value.trim().toLowerCase();
+  if (["1", "true", "yes", "on"].includes(normalized)) return true;
+  if (["", "0", "false", "no", "off"].includes(normalized)) return false;
+  throw new WazapError("INVALID_ID", "WAZAP_DRAFTS_ONLY must be a boolean value.",
+    "Set WAZAP_DRAFTS_ONLY to 1 so the agent only drafts, or 0 to let it send");
 }
 
 export const WRITES_ENABLE_FIX = "run `wazap config writes on`, then restart the server";
@@ -358,6 +387,8 @@ export function parseCli(argv: string[] = process.argv.slice(2)): CliInvocation 
       options: {
         "data-dir": { type: "string" },
         "read-only": { type: "boolean" },
+        "drafts-only": { type: "boolean" },
+        daemon: { type: "boolean" },
         http: { type: "boolean" },
         host: { type: "string" },
         port: { type: "string" },
@@ -434,6 +465,7 @@ export function parseCli(argv: string[] = process.argv.slice(2)): CliInvocation 
     config: {
       dataDir,
       readOnly: values["read-only"] === true || readOnlySetting(process.env.WAZAP_READ_ONLY),
+      draftsOnly: values["drafts-only"] === true || draftsOnlySetting(process.env.WAZAP_DRAFTS_ONLY),
       syncFullHistory: false,
       persistHistory: asBool(process.env.WAZAP_PERSIST_HISTORY, true),
       retention: asBool(process.env.WAZAP_RETENTION, false),
@@ -454,6 +486,7 @@ export function parseCli(argv: string[] = process.argv.slice(2)): CliInvocation 
         // Resolved before dotenv runs, so the data dir's own .env cannot name it.
         dataDir: values["data-dir"] !== undefined ? "flag" : shell.has("WAZAP_DATA_DIR") ? "env" : "default",
         readOnly: sourceOf("WAZAP_READ_ONLY", values["read-only"] === true),
+        draftsOnly: sourceOf("WAZAP_DRAFTS_ONLY", values["drafts-only"] === true),
         transport: sourceOf("WAZAP_TRANSPORT", values.http === true),
         transcribe: sourceOf("WAZAP_TRANSCRIBE", false),
         webhook: sourceOf("WAZAP_WEBHOOK", false),
@@ -468,7 +501,9 @@ export function parseCli(argv: string[] = process.argv.slice(2)): CliInvocation 
       json: values.json === true,
       loginPhone: values.phone,
       loginCode: values.code === true || values.phone !== undefined,
-      writesAnswer: values.writes === true ? true : values["no-writes"] === true ? false : null,
+      writesAnswer:
+        values["drafts-only"] === true ? "drafts" : values.writes === true ? true : values["no-writes"] === true ? false : null,
+      daemon: values.daemon === true,
       agent: values.agent === true,
       clients: values.client ?? [],
       noGlobal: values["no-global"] === true,

@@ -7,6 +7,12 @@ import { captionTravels, mimeOfSource } from "./outgoing-media.js";
 import type { MediaSource, OutgoingTarget, SentMessage } from "./wa-types.js";
 
 export const DRAFT_TTL_MS = 15 * 60_000;
+/**
+ * A draft waiting for a person, in drafts-only mode: they may see it hours
+ * later, on their phone. Still bounded, so an approval page found tomorrow
+ * does not send yesterday's words.
+ */
+export const APPROVAL_TTL_MS = 24 * 60 * 60_000;
 /** Drafts one identity keeps — a session, or a credential's stable identity on HTTP; its oldest go first. */
 export const DRAFT_CAP = 20;
 /** Drafts one account keeps across every identity; the oldest go first. */
@@ -66,6 +72,12 @@ export interface DraftView {
   unnamed_recipient?: boolean;
   expires_at: string;
   kind: DraftKind;
+  /**
+   * Drafts-only mode: a wa.me link that opens WhatsApp with this text typed,
+   * for the person to send themselves. Text drafts only; a group's opens the
+   * chat picker.
+   */
+  send_yourself_url?: string;
   /**
    * A text draft to a direct chat, against how the user writes there: the
    * mismatches found (none is fine) and what they were measured on. Absent
@@ -199,14 +211,21 @@ export class DraftStore {
     private readonly accountCap: number = DRAFT_ACCOUNT_CAP
   ) {}
 
-  put(sends: Sends, to: OutgoingTarget, payload: DraftPayload, keyId: string, owner: string | null = null): Draft {
+  put(
+    sends: Sends,
+    to: OutgoingTarget,
+    payload: DraftPayload,
+    keyId: string,
+    owner: string | null = null,
+    ttlMs: number = this.ttlMs
+  ): Draft {
     const now = this.now();
     this.sweep(sends);
     const draft: Draft = {
       id: `d_${randomUUID().replaceAll("-", "").slice(0, 16)}`,
       to,
       preview: formatDraftPreview(to, payload),
-      expiresAt: now + this.ttlMs,
+      expiresAt: now + ttlMs,
       payload,
       keyId,
     };
@@ -279,7 +298,7 @@ export class DraftStore {
     this.sweep(sends);
   }
 
-  view(draft: Draft): DraftView {
+  view(draft: Draft, opts: { links?: boolean } = {}): DraftView {
     const view: DraftView = {
       status: "draft",
       draft_id: draft.id,
@@ -289,13 +308,40 @@ export class DraftStore {
       kind: draft.payload.kind,
     };
     if (looksUnnamed(draft.to)) view.unnamed_recipient = true;
+    if (opts.links === true) {
+      const url = sendYourselfUrl(draft.to, draft.payload);
+      if (url !== null) view.send_yourself_url = url;
+    }
     return view;
+  }
+
+  /** Drafts waiting for a confirm, oldest first, with the link a person can send them from. */
+  pending(sends: Sends, limit = DRAFT_ACCOUNT_CAP): Array<{ view: DraftView; owner: string | null }> {
+    return sends.pending(this.now(), limit).map((row) => ({ view: this.view(draftOf(row), { links: true }), owner: row.owner }));
+  }
+
+  /** Who drafted a draft still waiting, so a person's approval confirms it as that owner; null when none waits. */
+  waiting(sends: Sends, id: string): { owner: string | null } | null {
+    const row = sends.get(id);
+    return row === null || row.state !== "draft" || row.expiresAt <= this.now() ? null : { owner: row.owner };
   }
 
   /** Lapsed drafts and forgotten sends, a bounded chunk at a time. */
   private sweep(sends: Sends): void {
     sends.sweep(this.now(), SWEEP_CHUNK);
   }
+}
+
+/**
+ * https://wa.me/<number>?text=<words>: WhatsApp opens with the words typed in,
+ * and nothing leaves until the person presses send there. Only a text has
+ * words to carry; a group has no number, so its link opens the chat picker.
+ */
+export function sendYourselfUrl(to: OutgoingTarget, payload: DraftPayload): string | null {
+  if (payload.kind !== "text") return null;
+  const digits = (to.number ?? "").replace(/\D/g, "");
+  const path = to.chat_id.endsWith("@g.us") || digits === "" ? "" : digits;
+  return `https://wa.me/${path}?text=${encodeURIComponent(payload.text)}`;
 }
 
 /** The text a receipt shows for a stored send; empty once the message it sent was deleted. */

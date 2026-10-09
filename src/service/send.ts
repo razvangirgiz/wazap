@@ -89,6 +89,12 @@ export interface SendsHost {
   refuseNewChat(jid: string, sock: WASocket): Promise<void>;
 }
 
+/** How a draft is made: drafts-only mode keeps it longer, and adds the send-yourself link. */
+export interface DraftOptions {
+  ttlMs?: number;
+  links?: boolean;
+}
+
 export class AccountSends {
   /** Confirms under way, by draft: a second confirm of the same draft by its owner waits for the first. */
   private readonly confirming = new Map<string, { owner: string | null; work: Promise<SentMessage> }>();
@@ -102,7 +108,7 @@ export class AccountSends {
     private readonly groups: AccountGroups
   ) {}
 
-  draft(payload: DraftPayload, owner?: string): Promise<DraftView> {
+  draft(payload: DraftPayload, owner?: string, opts: DraftOptions = {}): Promise<DraftView> {
     return this.host.guarded(async () => {
       if (payload.kind === "media") await assertMediaSource(payload.source);
       const sock = this.host.ensureConnected();
@@ -119,7 +125,9 @@ export class AccountSends {
       }
       // The key is fixed now, so a confirm whose outcome is lost can still be recognised by it.
       const keyId = generateMessageIDV2(this.identity.ownJid());
-      return this.host.drafts().view(this.host.drafts().put(this.host.db().sends, this.outgoingOf(jid), stored, keyId, owner ?? null));
+      const drafts = this.host.drafts();
+      const draft = drafts.put(this.host.db().sends, this.outgoingOf(jid), stored, keyId, owner ?? null, opts.ttlMs);
+      return drafts.view(draft, { links: opts.links === true });
     });
   }
 
@@ -145,6 +153,34 @@ export class AccountSends {
         this.confirming.delete(draftId);
       }
     });
+  }
+
+  /** Drafts waiting for a confirm, for a person to approve or discard. */
+  pending(): DraftView[] {
+    const db = this.host.readyDb();
+    if (db === null) return [];
+    return this.host.drafts().pending(db.sends).map((entry) => entry.view);
+  }
+
+  /**
+   * A person's approval: confirms the draft as the owner that made it, through
+   * the same claim as confirm_send, so it still goes out at most once. A draft
+   * no longer waiting answers what became of it (its receipt, expired, unknown).
+   */
+  approve(draftId: string): Promise<SentMessage> {
+    const db = this.host.readyDb();
+    const waiting = db === null ? null : this.host.drafts().waiting(db.sends, draftId);
+    if (waiting === null) {
+      const row = db?.sends.get(draftId) ?? null;
+      return this.confirm(draftId, row?.owner ?? undefined);
+    }
+    return this.confirm(draftId, waiting.owner ?? undefined);
+  }
+
+  /** Throws a draft away before anyone sends it; false when there was none waiting. */
+  discard(draftId: string): boolean {
+    const db = this.host.readyDb();
+    return db === null ? false : db.sends.removeDraft(draftId);
   }
 
   private async sendClaimed(draft: Draft): Promise<SentMessage> {

@@ -13,6 +13,8 @@ import type { Request, Response, NextFunction } from "express";
 import type { AccountBinding, AccountSource } from "./account-hub.js";
 import { WAZAP_VERSION, paths, writesHints, type Config } from "./config.js";
 import { APPROVE_PATH, OAUTH_SCOPES, WazapOAuthProvider } from "./oauth.js";
+import { mountApprovalPage } from "./approval-page.js";
+import type { DraftApprovals } from "./approvals.js";
 import { loadSkills, registerSkillPrompts, skillInstructions } from "./skills.js";
 import { anyAccountAllowsWrites, registerTools } from "./tools.js";
 import { log } from "./logger.js";
@@ -43,13 +45,21 @@ function buildMcpServer(
   allowWrite: boolean,
   allowLocalFiles: boolean,
   client = LOCAL_CLIENT,
-  draftIdentity?: string
+  draftIdentity?: string,
+  draftsOnly = false
 ): McpServer {
   const skills = loadSkills();
   const writes = allowWrite && !config.readOnly && anyAccountAllowsWrites(hub);
-  const server = new McpServer({ name: "wazap", version: WAZAP_VERSION }, { instructions: skillInstructions(skills, { allowWrite: writes, accounts: namedAccounts(hub) }) });
+  // Drafts only, by the server's setting or by the grant this session holds:
+  // send_message is the one write registered, and a person approves each draft.
+  const approval = writes && (draftsOnly || config.draftsOnly === true);
+  const server = new McpServer(
+    { name: "wazap", version: WAZAP_VERSION },
+    { instructions: skillInstructions(skills, { allowWrite: writes, draftsOnly: approval, accounts: namedAccounts(hub) }) }
+  );
   registerTools(server, hub, {
     allowWrite: writes,
+    ...(approval ? { approval: { publicUrl: approvalBase(config) } } : {}),
     allowLocalFiles,
     client,
     ...(draftIdentity === undefined ? {} : { draftIdentity }),
@@ -58,6 +68,11 @@ function buildMcpServer(
   });
   registerSkillPrompts(server, skills);
   return server;
+}
+
+/** Where approval links point: the public URL, when sign-in (and so the approval page) is on. */
+function approvalBase(config: Config): string | null {
+  return config.publicUrl && config.oauthPassword ? config.publicUrl : null;
 }
 
 /** The live accounts as the instructions name them; none when the roster cannot be read. */
@@ -75,6 +90,8 @@ const LOCAL_CLIENT = "local";
 
 type AuthedRequest = Request & {
   mcpWrite?: boolean;
+  /** The credential allows drafts, not sends: an OAuth grant of the drafts scope. */
+  mcpDraftsOnly?: boolean;
   oauthClient?: string;
   /** Who the credential names (ToolCtx.client), never the token itself. */
   client?: string;
@@ -167,6 +184,8 @@ export interface Endpoint {
   openRead: boolean;
   /** Hosted agents sign in here instead of carrying a token. */
   oauth?: WazapOAuthProvider;
+  /** Drafts waiting for a person; with oauth, the approval page serves them. */
+  approvals?: DraftApprovals;
   /** Aborting it closes the listener and every session on it. */
   signal?: AbortSignal;
   /** Test seams for the session bounds below; production takes the constants. */
@@ -276,6 +295,17 @@ export async function startHttpEndpoint(hub: AccountSource, config: Config, endp
       express.urlencoded({ extended: false }),
       oauth.approve
     );
+    if (endpoint.approvals) {
+      mountApprovalPage(
+        app,
+        {
+          urlencoded: express.urlencoded({ extended: false, limit: "4kb" }),
+          limiter: rateLimit({ windowMs: 15 * 60 * 1000, limit: 60, standardHeaders: true, legacyHeaders: false }),
+        },
+        oauth,
+        endpoint.approvals
+      );
+    }
     log(`OAuth on: agents sign in at ${oauth.issuerUrl.href}`);
     resourceMetadataUrl = getOAuthProtectedResourceMetadataUrl(oauth.resourceUrl);
   }
@@ -285,7 +315,7 @@ export async function startHttpEndpoint(hub: AccountSource, config: Config, endp
   // the scope the person picked on the consent page.
   const bearerAccess = async (
     auth: string | undefined
-  ): Promise<{ write: boolean; localFiles: boolean; oauthClient?: string; client: string } | null> => {
+  ): Promise<{ write: boolean; draftsOnly?: boolean; localFiles: boolean; oauthClient?: string; client: string } | null> => {
     const credential = endpoint.credentials.find((entry) => isAuthorized(auth, entry.token));
     if (credential) {
       const client = credential.label ?? `token:${credential.write ? "write" : "read"}`;
@@ -294,7 +324,9 @@ export async function startHttpEndpoint(hub: AccountSource, config: Config, endp
     if (oauth && auth?.startsWith("Bearer ")) {
       try {
         const info = await oauth.verifyAccessToken(auth.slice("Bearer ".length).trim());
-        return { write: info.scopes.includes("write"), localFiles: false, oauthClient: info.clientId, client: `oauth:${info.clientId}` };
+        const write = info.scopes.includes("write");
+        const draftsOnly = !write && info.scopes.includes("drafts");
+        return { write: write || draftsOnly, draftsOnly, localFiles: false, oauthClient: info.clientId, client: `oauth:${info.clientId}` };
       } catch {
         // An unknown or expired token opens nothing.
       }
@@ -306,6 +338,7 @@ export async function startHttpEndpoint(hub: AccountSource, config: Config, endp
     const access = await bearerAccess(req.headers.authorization);
     if (access) {
       (req as AuthedRequest).mcpWrite = access.write;
+      (req as AuthedRequest).mcpDraftsOnly = access.draftsOnly === true;
       (req as AuthedRequest).oauthClient = access.oauthClient;
       (req as AuthedRequest).client = access.client;
       (req as AuthedRequest).localFiles = access.localFiles;
@@ -324,7 +357,12 @@ export async function startHttpEndpoint(hub: AccountSource, config: Config, endp
       const host = req.headers.host?.toLowerCase();
       const localHosts = ["localhost", "127.0.0.1", "[::1]"];
       const allowed = host !== undefined && localHosts.includes(host.replace(/:\d{1,5}$/, ""));
-      if (!allowed || (req.headers.origin !== undefined && req.headers.origin !== `http://${host}`)) {
+      // A request a tunnel or a proxy relayed is not from this machine, whatever
+      // Host it kept: cloudflared and the rest add these on the way in.
+      const relayed = ["x-forwarded-for", "forwarded", "cf-connecting-ip", "x-real-ip"].some(
+        (name) => req.headers[name] !== undefined
+      );
+      if (!allowed || relayed || (req.headers.origin !== undefined && req.headers.origin !== `http://${host}`)) {
         res.status(403).json({ error: "Anonymous MCP requires a loopback Host and same-origin requests. Use a bearer token." });
         return;
       }
@@ -392,7 +430,8 @@ export async function startHttpEndpoint(hub: AccountSource, config: Config, endp
           (req as AuthedRequest).mcpWrite === true,
           (req as AuthedRequest).localFiles === true,
           (req as AuthedRequest).client ?? LOCAL_CLIENT,
-          (req as AuthedRequest).draftIdentity
+          (req as AuthedRequest).draftIdentity,
+          (req as AuthedRequest).mcpDraftsOnly === true
         );
         await server.connect(newTransport);
         transport = newTransport;
@@ -478,7 +517,12 @@ export async function startHttpEndpoint(hub: AccountSource, config: Config, endp
 }
 
 /** The endpoint the user asked for: WAZAP_HOST/WAZAP_PORT and the two configured tokens. */
-export async function runHttp(hub: AccountSource, config: Config, extra?: Credential): Promise<number> {
+export async function runHttp(
+  hub: AccountSource,
+  config: Config,
+  extra?: Credential,
+  approvals?: DraftApprovals
+): Promise<number> {
   const credentials: Credential[] = [];
   if (config.readToken) credentials.push({ token: config.readToken, write: false });
   if (config.writeToken) credentials.push({ token: config.writeToken, write: true });
@@ -499,6 +543,7 @@ export async function runHttp(hub: AccountSource, config: Config, extra?: Creden
     credentials,
     openRead: !config.readToken,
     oauth,
+    ...(approvals === undefined ? {} : { approvals }),
   });
   log(`MCP server (Streamable HTTP) on http://${config.httpHost}:${port}/mcp`);
   for (const line of writesHints(config)) log(line);

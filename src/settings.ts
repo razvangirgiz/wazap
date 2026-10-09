@@ -2,7 +2,7 @@ import { chmodSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "n
 import { dirname } from "node:path";
 import { AccountRegistry, accountPolicy, draftContextEnabled, resolveAccount, type AccountRecord } from "./accounts.js";
 import { ask, askSecret, warnIfServerRunning } from "./cli.js";
-import { paths, writesHints, type Config } from "./config.js";
+import { paths, writesHints, type Config, type WritesAnswer } from "./config.js";
 import { WazapError, asWazapError } from "./errors.js";
 import { lockHolder } from "./lock.js";
 import { say } from "./logger.js";
@@ -139,8 +139,15 @@ const SETTINGS: readonly SettingRow[] = [
   {
     label: "writes",
     value: (config) =>
-      accountPolicy(resolveAccount(config.dataDir, config.accountId).account, config).readOnly ? "off" : "on",
-    source: writesSource,
+      accountPolicy(resolveAccount(config.dataDir, config.accountId).account, config).readOnly
+        ? "off"
+        : config.draftsOnly
+          ? "drafts only (a person approves each send)"
+          : "on",
+    source: (config) =>
+      !accountPolicy(resolveAccount(config.dataDir, config.accountId).account, config).readOnly && config.draftsOnly
+        ? config.sources.draftsOnly
+        : writesSource(config),
   },
   {
     label: "transport",
@@ -162,8 +169,8 @@ const SETTINGS: readonly SettingRow[] = [
 const COMMANDS: Record<string, { values: readonly string[]; apply: (config: Config, value: string) => Promise<void> }> =
   {
     writes: {
-      values: ["on", "off"],
-      apply: async (config, value) => applyWrites(config, value === "on"),
+      values: ["on", "off", "drafts"],
+      apply: async (config, value) => applyWrites(config, value === "drafts" ? "drafts" : value === "on"),
     },
     transcribe: {
       values: ["local", "openai", "off"],
@@ -184,7 +191,7 @@ const COMMANDS: Record<string, { values: readonly string[]; apply: (config: Conf
   };
 
 const USAGE_FIX =
-  "Run `wazap config writes on|off`, `wazap config transcribe local|openai|off`, `wazap config recall local|off`, `wazap config webhook on|off|auth|no-auth|chats|tag|coalesce|retry-401|filter off`, `wazap config draft-context on|off`, or `wazap config send allow|deny <list>|open`";
+  "Run `wazap config writes on|off|drafts`, `wazap config transcribe local|openai|off`, `wazap config recall local|off`, `wazap config webhook on|off|auth|no-auth|chats|tag|coalesce|retry-401|filter off`, `wazap config draft-context on|off`, or `wazap config send allow|deny <list>|open`";
 
 const WEBHOOK_OPTION_FIX =
   "Run `wazap config webhook chats <list>|none|off`, `wazap config webhook tag <name>|off`, `wazap config webhook coalesce <seconds>|off`, `wazap config webhook retry-401 on|off`, or `wazap config webhook filter off`";
@@ -204,7 +211,7 @@ export async function runConfig(config: Config): Promise<void> {
     say("");
     say(
       dim(
-        "Change writes with `wazap config writes on|off`, transcription with `wazap config transcribe`, recall with `wazap config recall`, webhook with `wazap config webhook on|off|auth|no-auth` (and `chats`, `tag`, `coalesce`, `retry-401`), the draft context with `wazap config draft-context on|off`, send rules with `wazap config send`. Probe it with `wazap webhook test`."
+        "Change writes with `wazap config writes on|off|drafts`, transcription with `wazap config transcribe`, recall with `wazap config recall`, webhook with `wazap config webhook on|off|auth|no-auth` (and `chats`, `tag`, `coalesce`, `retry-401`), the draft context with `wazap config draft-context on|off`, send rules with `wazap config send`. Probe it with `wazap webhook test`."
       )
     );
     const selected = resolveAccount(config.dataDir, config.accountId);
@@ -807,8 +814,16 @@ async function reportReadiness(env: NodeJS.ProcessEnv, dataDir: string): Promise
 }
 
 /** Persist the writes answer, then say what is now true and how to change it. */
-export function applyWrites(config: Config, allowWrites: boolean): void {
+export function applyWrites(config: Config, answer: WritesAnswer): void {
   const p = paths(config.dataDir);
+  const allowWrites = answer !== false;
+  if (answer === "drafts" && config.accountId !== undefined) {
+    throw new WazapError(
+      "INVALID_ID",
+      "Drafts-only is for the whole server, not one account.",
+      "Run `wazap config writes drafts` without --account"
+    );
+  }
   if (config.accountId !== undefined) {
     AccountRegistry.load(config.dataDir).setWrites(config.accountId, allowWrites);
     say(
@@ -825,15 +840,26 @@ export function applyWrites(config: Config, allowWrites: boolean): void {
     }
   } else {
     setEnvSetting(p.envFile, "WAZAP_READ_ONLY", allowWrites ? "0" : "1");
+    if (answer === "drafts") setEnvSetting(p.envFile, "WAZAP_DRAFTS_ONLY", "1");
+    else unsetEnvSetting(p.envFile, "WAZAP_DRAFTS_ONLY");
     config.readOnly = !allowWrites;
-    if (config.sources) config.sources.readOnly = ".env";
+    config.draftsOnly = answer === "drafts";
+    if (config.sources) {
+      config.sources.readOnly = ".env";
+      config.sources.draftsOnly = ".env";
+    }
     say(
       ok(
-        allowWrites
-          ? "writes: on — the agent can send messages, react and manage chats. Turn it off with `wazap config writes off`."
-          : "writes: off — the agent can only read. Turn it on with `wazap config writes on`."
+        answer === "drafts"
+          ? "writes: drafts only — the agent drafts, and nothing it can call sends: you approve each draft (`wazap drafts`, or the approval link). Change it with `wazap config writes on|off|drafts`."
+          : allowWrites
+            ? "writes: on — the agent can send messages, react and manage chats. Turn it off with `wazap config writes off`, or keep it to drafts with `wazap config writes drafts`."
+            : "writes: off — the agent can only read. Turn it on with `wazap config writes on`, or `wazap config writes drafts` to let it draft for your approval."
       )
     );
+    if (answer !== "drafts" && process.env.WAZAP_DRAFTS_ONLY !== undefined && config.sources?.draftsOnly === "env") {
+      say(warn("WAZAP_DRAFTS_ONLY is set in the environment, which wins over the data dir's .env."));
+    }
     say(dim(`Stored in ${shortPath(p.envFile)}.`));
   }
 

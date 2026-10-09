@@ -217,6 +217,17 @@ export class Sends {
     return this.c.get("SELECT 1 FROM sends WHERE key_id = ? AND state <> 'draft'", keyId) !== undefined;
   }
 
+  /** Drafts nobody confirmed that have not lapsed, oldest first: what waits for a person's approval. */
+  pending(now: number, limit: number): SendRecord[] {
+    return this.c
+      .all<SendRow>(
+        `SELECT ${COLUMNS} FROM sends WHERE state = 'draft' AND expires_at > ? ORDER BY created_at, draft_id LIMIT ?`,
+        now,
+        limit
+      )
+      .map(recordOf);
+  }
+
   /** Drops a draft nobody confirmed. A send under way or settled stays. */
   removeDraft(draftId: string): boolean {
     return this.change("DELETE FROM sends WHERE draft_id = ? AND state = 'draft'", draftId) === 1;

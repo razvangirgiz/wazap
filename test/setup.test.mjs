@@ -9,7 +9,7 @@ import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 
 import { CLIENTS, detectClients } from "../dist/connect.js";
-import { WAZAP_VERSION } from "../dist/config.js";
+import { WAZAP_VERSION, parseCli } from "../dist/config.js";
 import { migrateLayout } from "../dist/migrate.js";
 import { readService } from "../dist/service.js";
 import { keepRunningOptions, parseChoice } from "../dist/setup.js";
@@ -392,25 +392,10 @@ test("a 401 at logout means the phone already removed the device, not a bad pair
   assert.equal(alreadyUnlinked(undefined), false);
 });
 
-test("the keep-running menu offers a public URL only when something can tunnel", () => {
-  const noBrew = { onPath: () => false };
-  const none = keepRunningOptions([{ available: () => false }], noBrew);
+test("the keep-running menu always offers a public URL: the quick tunnel needs no account", () => {
   assert.deepEqual(
-    none.map((option) => option.choice),
-    ["client", "service"]
-  );
-
-  const some = keepRunningOptions([{ available: () => false }, { available: () => true }], noBrew);
-  assert.deepEqual(
-    some.map((option) => option.choice),
+    keepRunningOptions().map((option) => option.choice),
     ["client", "service", "expose"]
-  );
-
-  const brewable = keepRunningOptions([{ available: () => false }], { onPath: (command) => command === "brew" });
-  assert.deepEqual(
-    brewable.map((option) => option.choice),
-    ["client", "service", "expose"],
-    "brew can install one"
   );
 });
 
@@ -650,4 +635,28 @@ test("a failing npm prints the repair and setup carries on to Connect", async ()
   assert.match(stderr, /→ run `npm i -g wazap-mcp` yourself \(sudo on some Linux installs\), then `wazap setup` again/);
   assert.match(stderr, /Step 5 of 7 · Connect/);
   assert.equal(existsSync(join(box.home, ".cursor", "mcp.json")), true, "Connect must still run");
+});
+
+test("setup --agent walks install → pairing code → daemon → expose → hand-over, each step a command that needs no terminal", () => {
+  const document = readFileSync(join(root, "AGENT.md"), "utf8");
+  const order = [
+    "scripts/install.sh | sh",
+    "wazap login --phone <number> --drafts-only --yes",
+    "pairing code: XXXX-XXXX",
+    "wazap serve --daemon",
+    "wazap expose quick",
+    "## 6. Hand it over",
+  ];
+  const at = order.map((needle) => document.indexOf(needle));
+  for (const [index, position] of at.entries()) assert.ok(position >= 0, `AGENT.md names ${order[index]}`);
+  assert.deepEqual([...at].sort((a, b) => a - b), at, "in that order");
+  assert.doesNotMatch(document, /\bnpx\b/, "the installer, not npx, which needs a Node the box may not have");
+  // Every wazap command it gives is one this build parses.
+  const commands = [...document.matchAll(/`(wazap [^`]+)`/g)].map((match) => match[1]);
+  assert.ok(commands.length > 10);
+  for (const command of commands) {
+    if (/[<>|]/.test(command.replace(/<[a-z_ ]+>/g, "x"))) continue;
+    const argv = command.replace(/<[a-z_]+>/g, "x").split(/\s+/).slice(1).filter((word) => word !== "2>&1");
+    assert.doesNotThrow(() => parseCli([...argv, "--data-dir", dataDir("wazap-agent-parse-")]), command);
+  }
 });

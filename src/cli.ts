@@ -10,6 +10,7 @@ import { readLinkedAccount, type LinkedAccount } from "./auth-state.js";
 import { banner } from "./banner.js";
 import { BAILEYS_VERSION, WAZAP_VERSION, paths, type AccountPaths, type Config, type Paths } from "./config.js";
 import { connectNext, whereInstalled, type Install } from "./connect.js";
+import { Approvals, type DraftApprovals } from "./approvals.js";
 import { CONTROL_ROUTES, LOGOUT_WAIT_MS, askRunningServer, isLogoutOutcome, startControlEndpoint } from "./control.js";
 import { decideRole, readDaemon, removeDaemon, writeDaemon } from "./daemon.js";
 import { DEPS, ensureDeps, ensureLlama } from "./deps.js";
@@ -35,7 +36,7 @@ import {
 import { runEmbedIndex } from "./search-cli.js";
 import { PAIRING_TIMEOUT_MS, linkSession, prettyCode, settledAccount, startPairing } from "./pairing.js";
 import { runHttp, runStdio, startLoopbackEndpoint } from "./server.js";
-import { SUPERVISORS, fetchHealth, serviceHolding, tunnelsTo, type Supervisor } from "./service.js";
+import { SUPERVISORS, fetchHealth, readService, serviceHolding, tunnelsTo, type Supervisor } from "./service.js";
 import { applyWrites } from "./settings.js";
 import { storageReport, type StorageReport } from "./storage-status.js";
 import {
@@ -117,6 +118,14 @@ interface StatusReport {
   /** The lock holder is the background service, so it can be stopped with `wazap service stop`. */
   server_is_service?: boolean;
   daemon: { pid: number; port: number } | null;
+  /** What the agent may do: send, only read, or draft for a person to approve. */
+  writes: "on" | "off" | "drafts";
+  /**
+   * Where a hosted agent reaches this wazap, and what holds that URL open. A
+   * quick tunnel's URL changes whenever it restarts; this is always the
+   * current one, which is how an agent on this machine finds it again.
+   */
+  public: { mcp_url: string; tunnel: string | null; url_changes_on_restart: boolean } | null;
   /** Each account's database, legacy files and set-aside databases, and the beta archive; read-only. */
   storage: StorageReport;
   checks: Check[];
@@ -162,6 +171,8 @@ export async function runStatus(config: Config): Promise<StatusReport> {
     server_pid: serverPid,
     server_is_service: serverPid !== null && serviceHolding(config.dataDir, serverPid) !== null,
     daemon: sharing,
+    writes: config.readOnly ? "off" : config.draftsOnly ? "drafts" : "on",
+    public: publicReport(config),
     storage,
     checks: await runChecks(config, { storage }),
   };
@@ -183,6 +194,20 @@ export async function runStatus(config: Config): Promise<StatusReport> {
   return report;
 }
 
+/** The public URL from the data dir's .env, which the quick tunnel's unit keeps current, and what holds it. */
+function publicReport(config: Config): StatusReport["public"] {
+  if (config.publicUrl === null) return null;
+  const tunnel = readService(config.dataDir)?.tunnel?.provider ?? null;
+  return { mcp_url: `${config.publicUrl}/mcp`, tunnel, url_changes_on_restart: tunnel === "quick" };
+}
+
+/** `public:` in both renderers: the URL, and for a quick tunnel, that it moves. */
+function publicLine(report: StatusReport): string | null {
+  if (report.public === null) return null;
+  const how = report.public.tunnel === null ? "" : ` (${report.public.tunnel === "quick" ? "quick tunnel: a new URL each time it restarts; this is the current one" : report.public.tunnel})`;
+  return `${report.public.mcp_url}${how}`;
+}
+
 /** Today's phrasing, kept verbatim so pipes and log captures keep parsing. */
 function plainStatus(report: StatusReport): string[] {
   const lines = [`data dir: ${report.data_dir}`];
@@ -202,6 +227,8 @@ function plainStatus(report: StatusReport): string[] {
     `baileys: ${report.baileys_version}`,
     `install: ${describeInstall(report.install)}`,
     `server: ${serverState(report)}`,
+    ...(publicLine(report) === null ? [] : [`public: ${publicLine(report)}`]),
+    ...(report.writes === "drafts" ? ["writes: drafts only (you approve each send: `wazap drafts`)"] : []),
     "",
     "checks:",
     ...report.checks.map(checkLine)
@@ -246,6 +273,8 @@ function richStatus(report: StatusReport): string[] {
         )
       : []),
     row("server", serverState(report)),
+    ...(publicLine(report) === null ? [] : [row("public", publicLine(report)!)]),
+    ...(report.writes === "drafts" ? [row("writes", "drafts only (you approve each send: `wazap drafts`)")] : []),
     "",
     ...report.checks.flatMap(checkLines),
   ];
@@ -618,9 +647,8 @@ export function tunnelRefusal(
   registry: readonly Supervisor[] = SUPERVISORS
 ): { message: string; fix: string } | null {
   if (config.readToken || (config.publicUrl && config.oauthPassword) || config.httpPort === 0) return null;
-  const supervisor = registry.find((entry) => entry.available());
-  if (supervisor === undefined) return null;
-  const tunnels = tunnelsTo(supervisor, config.httpPort);
+  // Every supervisor this machine has: wazap's own runs beside launchd or systemd.
+  const tunnels = registry.filter((entry) => entry.available()).flatMap((entry) => tunnelsTo(entry, config.httpPort));
   if (tunnels.length === 0) return null;
   return {
     message: `Refusing to serve ${config.httpHost}:${config.httpPort} without a token: ${tunnels.map((unit) => unit.label).join(", ")} ${tunnels.length === 1 ? "tunnels" : "tunnel"} to it.`,
@@ -716,6 +744,10 @@ export async function runServe(config: Config): Promise<void> {
   };
   process.on("SIGINT", () => shutdown("SIGINT"));
   process.on("SIGTERM", () => shutdown("SIGTERM"));
+  // Under wazap's own supervisor (supervisor.ts) the IPC channel is the
+  // supervisor: once it is gone, nothing could restart or stop this process,
+  // and it would hold the data dir's lock for good.
+  if (typeof process.send === "function") process.once("disconnect", () => shutdown("supervisor gone"));
 
   // A socket WhatsApp keeps refusing is not something this process can fix, and
   // a live MCP server answering NOT_CONNECTED forever is worse than a dead one:
@@ -733,12 +765,20 @@ export async function runServe(config: Config): Promise<void> {
   // tools answer NOT_LINKED until a session exists.
   hub.start().catch((err: unknown) => logError("whatsapp start", err));
 
-  await publishControl(hub, p);
+  // A person's approval of a draft, in drafts-only mode: from the CLI over the
+  // control line, and from the approval page when sign-in is on.
+  const approvals = new Approvals(hub, config);
+  await publishControl(hub, p, approvals);
 
   const token = config.share ? randomBytes(32).toString("hex") : null;
 
   if (config.transport === "http") {
-    const port = await runHttp(hub, config, token === null ? undefined : { token, write: true, localFiles: true, label: "local" });
+    const port = await runHttp(
+      hub,
+      config,
+      token === null ? undefined : { token, write: true, localFiles: true, label: "local" },
+      approvals
+    );
     // Off-loopback binds get no sidecar: a bridge on this machine could not reach them.
     if (token !== null && SHAREABLE_HOSTS.includes(config.httpHost)) {
       writeDaemon(p.daemonFile, { pid: process.pid, port, token, version: WAZAP_VERSION });
@@ -767,10 +807,10 @@ export async function runServe(config: Config): Promise<void> {
  * for a restart. A server that cannot open it still serves; those commands then
  * behave as they do against an older wazap.
  */
-async function publishControl(hub: AccountHub, p: Paths): Promise<void> {
+async function publishControl(hub: AccountHub, p: Paths, approvals: DraftApprovals): Promise<void> {
   const token = randomBytes(32).toString("hex");
   try {
-    const port = await startControlEndpoint(hub, token);
+    const port = await startControlEndpoint(hub, token, undefined, approvals);
     writeDaemon(p.controlFile, { pid: process.pid, port, token, version: WAZAP_VERSION });
   } catch (err) {
     log(`control endpoint unavailable${withCode(err)}; account changes will need a restart`);

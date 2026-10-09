@@ -1,12 +1,12 @@
 import { spawnSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { existsSync } from "node:fs";
+import { existsSync, rmSync } from "node:fs";
+import { setTimeout as sleep } from "node:timers/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { ask } from "./cli.js";
 import { paths, writesHints, type Config } from "./config.js";
-import { REAL_PROBES, commandOnPath, type Probes } from "./connect.js";
-import { DEPS, ensureDeps } from "./deps.js";
+import { commandOnPath } from "./connect.js";
 import { WazapError } from "./errors.js";
 import { say } from "./logger.js";
 import {
@@ -14,7 +14,10 @@ import {
   TUNNEL_LABELS,
   installedService,
   secureLogs,
+  serviceScript,
   servicePath,
+  stableNode,
+  stateHome,
   tunnelsTo,
   writeService,
   type Installed,
@@ -23,8 +26,9 @@ import {
   writeUnit,
 } from "./service.js";
 import { setEnvSetting } from "./settings.js";
+import { ensureCloudflared, readTunnelState, tunnelStateFile } from "./quick-tunnel.js";
 import { maskKey, which } from "./transcribe/index.js";
-import { box, brand, dim, info, next, ok, shortPath, warn } from "./ui.js";
+import { box, brand, dim, info, ok, shortPath, warn } from "./ui.js";
 
 export type Readiness = { ok: true } | { ok: false; fix: string };
 
@@ -153,7 +157,85 @@ const cloudflare: TunnelProvider = {
 
 export const PROVIDERS: readonly TunnelProvider[] = [tailscale, cloudflare];
 
-export const PROVIDER_NAMES: string = PROVIDERS.map((provider) => provider.name).join(", ");
+/** The account-free one (quick-tunnel.ts), handled on its own: its URL is only known once it runs. */
+export const QUICK = "quick";
+
+export const PROVIDER_NAMES: string = [...PROVIDERS.map((provider) => provider.name), QUICK].join(", ");
+
+/** How long `expose quick` waits for cloudflared to announce its hostname. */
+export const QUICK_WAIT_MS = 60_000;
+
+/**
+ * `wazap expose quick`: a trycloudflare.com URL, with no account and no admin
+ * console. The tunnel's own unit learns the hostname and restarts the server
+ * onto it (quick-tunnel.ts); this sets the password first, so the server is
+ * never reachable through the tunnel without sign-in, and waits to print the URL.
+ */
+async function exposeQuick(config: Config, { supervisor, record }: Installed, deps: QuickDeps): Promise<void> {
+  const { waitMs, ensure, health = publicHealth } = deps;
+  // Fetched (and verified) here, where a person sees the download, not inside the unit.
+  await ensure(config.dataDir);
+  const p = paths(config.dataDir);
+  const fresh = config.oauthPassword === null;
+  const password = config.oauthPassword ?? newPassword();
+  if (fresh) setEnvSetting(p.envFile, "WAZAP_OAUTH_PASSWORD", password);
+  // Another provider's tunnel goes first: one tunnel to the port at a time.
+  if (record.tunnel && record.tunnel.provider !== QUICK) {
+    PROVIDERS.find((provider) => provider.name === record.tunnel?.provider)?.close(record.port);
+  }
+
+  const label = TUNNEL_LABELS[supervisor.name];
+  const ref = { label, unitFile: supervisor.unitFile(label) };
+  const argv = [stableNode(), serviceScript(), "tunnel", `http://127.0.0.1:${record.port}`];
+  const unit: UnitSpec = {
+    ...tunnelUnit(label, argv, record.logDir),
+    env: { HOME: homedir(), PATH: servicePath(argv[0]!), WAZAP_DATA_DIR: config.dataDir, ...stateHome() },
+  };
+  const started = Date.now();
+  rmSync(tunnelStateFile(config.dataDir), { force: true });
+  secureLogs(record.logDir, label);
+  writeUnit(ref.unitFile, supervisor.render(unit));
+  writeService(config.dataDir, { ...record, tunnel: { provider: QUICK, url: record.tunnel?.provider === QUICK ? record.tunnel.url : "pending" } });
+  supervisor.restart(ref);
+
+  say(info("Starting a Cloudflare quick tunnel (no account needed)…"));
+  let state = readTunnelState(config.dataDir);
+  const deadline = Date.now() + waitMs;
+  while ((state === null || state.at < started) && Date.now() < deadline) {
+    await sleep(500);
+    state = readTunnelState(config.dataDir);
+  }
+  if (state === null || state.at < started) {
+    throw new WazapError(
+      "SERVICE_ERROR",
+      "The quick tunnel did not announce a URL in time.",
+      `check its log with \`${supervisor.logs(ref)[0]}\`; it keeps trying, and \`wazap status\` shows the URL once it has one`
+    );
+  }
+  const url = state.url;
+  say(ok(`Cloudflare quick tunnel · ${url}`));
+  // The unit restarted the server onto the URL; give it a moment to answer there.
+  let status: number | null = null;
+  for (let attempt = 0; attempt < 10 && status !== 200; attempt++) {
+    status = await health(url);
+    if (status !== 200) await sleep(1_500);
+  }
+  say(
+    status === 200
+      ? ok("The public URL reaches this machine.")
+      : warn(`${url}/healthz answered ${status ?? "nothing"}; the tunnel may still be coming up.`)
+  );
+  say("");
+  say(box(`MCP URL   ${url}/mcp`, `Password  ${fresh ? password : maskKey(password)}`));
+  say("");
+  say(HANDOVER);
+  say(info(QUICK_NOTE));
+  for (const line of writesHints(config)) say(info(line));
+}
+
+/** What a quick tunnel costs, said wherever its URL is. */
+export const QUICK_NOTE =
+  "A quick tunnel's URL changes whenever it restarts (the tunnel, the service, or this machine). `wazap status` always shows the current one; give the agent the new URL when it changes. For a URL that stays: `wazap expose tailscale` or `wazap expose cloudflare`.";
 
 function findProvider(name: string, providers: readonly TunnelProvider[]): TunnelProvider {
   const found = providers.find((provider) => provider.name === name);
@@ -281,6 +363,7 @@ async function exposeOff(
   }
 
   setEnvSetting(paths(config.dataDir).envFile, "WAZAP_PUBLIC_URL", "");
+  rmSync(tunnelStateFile(config.dataDir), { force: true });
   writeService(config.dataDir, kept);
   supervisor.restart(kept);
 
@@ -288,31 +371,35 @@ async function exposeOff(
   say(info("The consent password is kept, so the next `wazap expose` hands agents the same one."));
 }
 
+/** The quick tunnel's two outside dependencies, replaced in the tests. */
+export interface QuickDeps {
+  waitMs: number;
+  ensure: (dataDir: string) => Promise<string>;
+  /** What /healthz answers on the public URL; the network, outside the tests. */
+  health?: (url: string) => Promise<number | null>;
+}
+
 export async function runExpose(
   config: Config,
   providers: readonly TunnelProvider[] = PROVIDERS,
   registry: readonly Supervisor[] = SUPERVISORS,
-  probes: Probes = REAL_PROBES
+  quick: QuickDeps = { waitMs: QUICK_WAIT_MS, ensure: ensureCloudflared }
 ): Promise<void> {
   const installed = requireService(config, registry);
   const named = config.args[0];
   if (named === "off") return exposeOff(config, providers, installed);
+  if (named === QUICK) return exposeQuick(config, installed, quick);
 
   if (named !== undefined) return exposeOn(config, findProvider(named, providers), installed);
-  const first = providers.find((provider) => provider.available());
+  // A provider already signed in gives a URL that stays; with none, the quick
+  // tunnel needs no account at all.
+  const first = providers.find((provider) => provider.available() && provider.ready().ok);
   if (first === undefined) {
-    // Cloudflare needs a domain and a login, so only Tailscale is worth offering
-    // here; it still needs `tailscale up`, which only its owner can answer for.
-    if (await ensureDeps([DEPS.tailscale], config, probes)) {
-      say(ok("Tailscale is installed."));
-      say(next("tailscale up", "then run `wazap expose` again"));
-      return;
+    for (const provider of providers.filter((entry) => entry.available())) {
+      const readiness = provider.ready();
+      if (!readiness.ok) say(info(`${provider.describe} is installed but not ready (${readiness.fix}); using a quick tunnel instead.`));
     }
-    throw new WazapError(
-      "SERVICE_ERROR",
-      "No tunnel provider is installed.",
-      `install Tailscale or cloudflared, then run \`wazap expose\` (providers: ${PROVIDER_NAMES})`
-    );
+    return exposeQuick(config, installed, quick);
   }
   return exposeOn(config, first, installed);
 }

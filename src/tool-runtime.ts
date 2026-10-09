@@ -33,6 +33,8 @@ export interface ToolCtx {
    * shown to or taken from a caller.
    */
   draftOwner: string;
+  /** Drafts-only mode: drafts wait for a person, who approves them at publicUrl's approval page or from the CLI. */
+  approval?: ApprovalMode;
   /**
    * Who the session's credential names, stable across its sessions and token
    * rotations: `oauth:<client_id>`, `token:<label>`, or for stdio and the
@@ -65,8 +67,18 @@ export interface ToolDef {
   handler: (args: ToolArgs, ctx: ToolCtx) => Promise<ToolResult>;
 }
 
+/** A drafts-only session: where its drafts are approved, null when there is no approval page (no sign-in). */
+export interface ApprovalMode {
+  publicUrl: string | null;
+}
+
+/** The one write a drafts-only session gets: drafting itself sends nothing. */
+export const DRAFTS_ONLY_WRITES: ReadonlySet<string> = new Set(["send_message"]);
+
 export interface RegisterOpts {
   allowWrite: boolean;
+  /** Drafts only: of the writes, only send_message is registered, and its drafts wait for a person. */
+  approval?: ApprovalMode;
   /** Trusted local stdio defaults to true; every HTTP session explicitly sets its capability. */
   allowLocalFiles?: boolean;
   /** Tool calls this session may have running at once. */
@@ -141,6 +153,7 @@ export function createToolRegistrar(defs: readonly ToolDef[]) {
     };
     for (const def of defs) {
       if (def.write && !opts.allowWrite) continue;
+      if (def.write && opts.approval !== undefined && !DRAFTS_ONLY_WRITES.has(def.name)) continue;
       const own = buckets.get(def.name);
       server.registerTool(
         def.name,
@@ -219,6 +232,7 @@ export function createToolRegistrar(defs: readonly ToolDef[]) {
               accountId: resolved.id,
               draftOwner,
               client: clientOf(extra),
+              ...(opts.approval === undefined ? {} : { approval: opts.approval }),
             });
             const draftId = result.structuredContent?.status === "draft" ? result.structuredContent.draft_id : undefined;
             if (typeof draftId === "string") sessionDrafts.note(draftId, call);

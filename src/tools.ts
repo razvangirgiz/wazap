@@ -4,6 +4,7 @@ import { renderGetStatus } from "./account-resolve.js";
 import { draftContextEnabled } from "./accounts.js";
 import {
   createToolRegistrar,
+  type ApprovalMode,
   type ContentBlock,
   type ToolArgs,
   type ToolCtx,
@@ -14,7 +15,9 @@ import {
 export { toolError, type ToolCtx, type RegisterOpts } from "./tool-runtime.js";
 import { CATCHUP_INPUT, CATCHUP_OUTPUT, privateRule, runCatchUp } from "./catchup.js";
 import { coverageNote, indexCoverageNote, searchCoverage } from "./coverage.js";
-import { describeTarget, looksUnnamed, renderDraft, type DraftPayload, type DraftView } from "./drafts.js";
+import { APPROVAL_TTL_MS, describeTarget, looksUnnamed, renderDraft, type DraftPayload, type DraftView } from "./drafts.js";
+import { approveUrl } from "./approvals.js";
+import { styleCheckLines } from "./draft-style.js";
 import { ERROR_GUIDE, WazapError, asWazapError } from "./errors.js";
 import { FIND_CONTACT_OUTPUT, runFindContact } from "./find-contact.js";
 import { LIST_CONTACTS_INPUT, runListContacts } from "./list-contacts.js";
@@ -1547,6 +1550,10 @@ const DRAFT_NEXT =
 const DRAFT_NEXT_LANGUAGE =
   "Draft again before showing anything: this text is not in the language this chat is written in (style_check.basis.language, from whoever basis.from says). Call send_message with the same message in that language, then show the preview it returns and follow its next.";
 
+/** The step after a drafts-only draft: the user, not the agent, sends it. */
+const DRAFT_NEXT_APPROVAL =
+  "Show the user this preview exactly, with approve_url (if present), approve_command and send_yourself_url (if present). Say it is not sent until they approve it or send it themselves. Do not call any tool to send it, and never ask for the wazap password.";
+
 function drafted(view: DraftView): ToolResult {
   const warnings = view.style_check?.warnings ?? [];
   return ok(renderDraft(view), {
@@ -1559,6 +1566,41 @@ function drafted(view: DraftView): ToolResult {
         : null,
       warnings.includes("length_outlier") ? "length_outlier: shorten only if nothing the user asked for is lost." : null,
     ]),
+  });
+}
+
+/**
+ * A drafts-only session's draft: the session cannot send it, so the result
+ * says so and hands over the ways a person can. The approval link needs the
+ * wazap password, which the agent is never given.
+ */
+function draftedForApproval(view: DraftView, approval: ApprovalMode): ToolResult {
+  const approve = approval.publicUrl === null ? null : approveUrl(approval.publicUrl, view.draft_id);
+  const command = `wazap drafts approve ${view.draft_id}`;
+  const ways = [
+    approve === null ? null : `- open ${approve} and approve it with the wazap password`,
+    `- or run \`${command}\` on the machine wazap runs on`,
+    view.send_yourself_url === undefined ? null : `- or open ${view.send_yourself_url} on their phone and press send in WhatsApp`,
+  ].filter((line): line is string => line !== null);
+  const lines = [
+    `Draft ${view.draft_id}. Not sent, and this connection cannot send it.`,
+    "",
+    view.preview,
+    ...(view.unnamed_recipient === true
+      ? ["", "Note: the recipient is not a saved contact — the name shown is their public WhatsApp name, or only their number."]
+      : []),
+    ...styleCheckLines(view.style_check).flatMap((line, index) => (index === 0 ? ["", line] : [line])),
+    "",
+    "The user sends it, one of these ways:",
+    ...ways,
+    `It waits until ${view.expires_at}.`,
+  ];
+  return ok(lines.join("\n"), {
+    ...view,
+    approval_required: true,
+    ...(approve === null ? {} : { approve_url: approve }),
+    approve_command: command,
+    next: DRAFT_NEXT_APPROVAL,
   });
 }
 
@@ -1685,17 +1727,31 @@ function sendPayload(args: SendArgs): DraftPayload {
  * is recorded so confirm_send can re-check rules written after the draft.
  */
 async function draftAndGuard(payload: DraftPayload, ctx: ToolCtx): Promise<ToolResult> {
+  // A person approves what the approval page shows them. A file is shown by its
+  // name and fetched only when sent, so the bytes could change after the yes,
+  // and a forward can carry media its preview does not show: neither is drafted.
+  if (ctx.approval !== undefined && (payload.kind === "media" || payload.kind === "forward")) {
+    throw new WazapError(
+      "INVALID_ID",
+      `This connection drafts only, and a ${payload.kind === "media" ? "file" : "forward"} cannot be shown in full for the user to approve.`,
+      "Draft text, a poll or a location; tell the user to send files and forwards from their phone"
+    );
+  }
   const policy = liveSendPolicy(ctx.hub, ctx.accountId);
   // A bare @lid may still resolve to an allowed phone inside the service; only
   // the deny list can fire on it before that resolution.
   const pre = payload.chatId.trim().endsWith("@lid") ? { allow: null, deny: policy.deny } : policy;
   assertSendable(pre, { chat_id: payload.chatId }, ctx.accountId);
-  const view = await ctx.wa.draft(payload, ctx.draftOwner);
+  const view = await ctx.wa.draft(
+    payload,
+    ctx.draftOwner,
+    ctx.approval === undefined ? undefined : { ttlMs: APPROVAL_TTL_MS, links: true }
+  );
   assertSendable(policy, view.to, ctx.accountId);
   noteDraftTarget(view, ctx.accountId, ctx.draftOwner);
   await flagUnnamed(view, ctx.wa);
   if (payload.kind === "text") await checkStyle(view, payload.text, ctx);
-  return drafted(view);
+  return ctx.approval === undefined ? drafted(view) : draftedForApproval(view, ctx.approval);
 }
 
 /**
