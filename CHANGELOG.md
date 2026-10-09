@@ -136,6 +136,16 @@
 - **The Docker healthcheck uses `node`** instead of `wget`, so the same line
   works on the Alpine and the Debian image.
 
+## 1.3.3
+
+### Added
+
+- **`list_chats` can return each chat's profile photo.** With
+  `include_pictures: true` every chat gets `picture_url`, or `null` when there
+  is none or WhatsApp does not answer in time. Lookups go a few at a time and a
+  link is reused for six hours; a contact tagged `#private` gets none. Off by
+  default, so agents that do not ask see no change.
+
 ## 1.3.2
 
 ### Fixed
