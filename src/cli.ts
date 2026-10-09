@@ -202,7 +202,7 @@ function publicReport(config: Config): StatusReport["public"] {
   const report: NonNullable<StatusReport["public"]> = { mcp_url: `${config.publicUrl}/mcp`, tunnel, url_changes_on_restart: tunnel === "quick" };
   // Only once the unit has written its state: before that there is nothing to judge.
   const state = tunnel === "quick" ? readTunnelState(config.dataDir) : null;
-  if (state !== null) report.connected = state.connected_at !== undefined;
+  if (state !== null) report.connected = state.url === config.publicUrl && state.connected_at !== undefined;
   return report;
 }
 
@@ -210,7 +210,7 @@ function publicReport(config: Config): StatusReport["public"] {
 function publicLine(report: StatusReport): string | null {
   if (report.public === null) return null;
   const quick = report.public.connected === false
-    ? "quick tunnel, NOT connected to Cloudflare yet: this URL does not reach this machine; see `wazap service logs`"
+    ? "quick tunnel, NOT connected to Cloudflare: this URL does not reach this machine right now; see `wazap service logs`"
     : "quick tunnel: a new URL each time it restarts; this is the current one";
   const how = report.public.tunnel === null ? "" : ` (${report.public.tunnel === "quick" ? quick : report.public.tunnel})`;
   return `${report.public.mcp_url}${how}`;

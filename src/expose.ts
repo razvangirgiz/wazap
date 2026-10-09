@@ -220,8 +220,11 @@ async function exposeQuick(config: Config, { supervisor, record }: Installed, de
     status = await health(url);
     if (status !== 200) await sleep(1_500);
   }
+  const latest = readTunnelState(config.dataDir);
   if (status === 200) say(ok("The public URL reaches this machine."));
-  else if (readTunnelState(config.dataDir)?.connected_at === undefined) {
+  else if (latest !== null && latest.url !== url) {
+    say(warn(`cloudflared restarted meanwhile, and the URL moved to ${latest.url}; \`wazap status\` always shows the current one.`));
+  } else if (latest?.connected_at === undefined) {
     say(
       fail(
         "cloudflared got a URL but could not connect to Cloudflare from this network, so the URL does not reach this machine yet."

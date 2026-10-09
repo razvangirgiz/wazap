@@ -17,12 +17,13 @@ import { QUICK_NOTE, runExpose } from "../dist/expose.js";
 import {
   CLOUDFLARED_PIN,
   adoptQuickUrl,
+  edgeEventIn,
   ensureCloudflared,
   fetchVerified,
+  markTunnelConnected,
   parseTunnelTarget,
   pinnedCloudflared,
   quickUrlIn,
-  markTunnelConnected,
   readTunnelState,
   registeredIn,
 } from "../dist/quick-tunnel.js";
@@ -139,9 +140,27 @@ test("`wazap tunnel` runs cloudflared, passes its log through and adopts the hos
   const dir = dataDir();
   const bin = join(dir, "fake-bin");
   mkdirSync(bin);
+  // What a unit killed outright leaves: the last URL, still marked connected.
+  adoptQuickUrl(dir, URL_B, { restartServer: () => {} });
+  markTunnelConnected(dir, URL_B, 1);
   writeFileSync(
     join(bin, "cloudflared"),
-    `#!/bin/sh\necho "args: $*" >&2\necho "INF |  ${URL_A}  |" >&2\nsleep 0.3\necho "INF Registered tunnel connection connIndex=0 location=fra08 protocol=quic" >&2\ntrap 'exit 0' TERM\nwhile :; do sleep 1; done\n`
+    [
+      "#!/bin/sh",
+      "sleep 1",
+      'echo "args: $*" >&2',
+      `echo "INF |  ${URL_A}  |" >&2`,
+      "sleep 0.3",
+      'echo "2026-10-09T13:56:28Z INF Registered tunnel connection connIndex=0 connection=8f0c ip=198.41.200.13 location=fra08 protocol=http2" >&2',
+      "sleep 1",
+      'echo "2026-10-09T13:56:40Z ERR Serve tunnel error error=\\"timeout: no recent network activity\\" connIndex=0 event=0 ip=198.41.200.13" >&2',
+      'echo "2026-10-09T13:56:40Z INF Retrying connection in up to 2s connIndex=0 event=0 ip=198.41.200.13" >&2',
+      "sleep 1",
+      'echo "2026-10-09T13:56:42Z INF Registered tunnel connection connIndex=0 connection=91aa ip=198.41.192.7 location=fra12 protocol=quic" >&2',
+      "trap 'exit 0' TERM",
+      "while :; do sleep 1; done",
+      "",
+    ].join("\n")
   );
   chmodSync(join(bin, "cloudflared"), 0o755);
   const child = spawn(process.execPath, [BINARY, "tunnel", "http://127.0.0.1:8766", "--data-dir", dir], {
@@ -151,13 +170,20 @@ test("`wazap tunnel` runs cloudflared, passes its log through and adopts the hos
   let log = "";
   child.stderr.on("data", (chunk) => (log += chunk));
   t.after(() => child.kill("SIGKILL"));
+  await waitFor(() => {
+    const state = readTunnelState(dir);
+    return state?.url === URL_B && state.connected_at === undefined;
+  }, 15_000, "the stale connection cleared");
   await waitFor(() => readTunnelState(dir)?.url === URL_A, 15_000, "the hostname");
   assert.equal(env(dir).WAZAP_PUBLIC_URL, URL_A);
   await waitFor(() => readTunnelState(dir)?.connected_at !== undefined, 15_000, "the edge connection");
+  await waitFor(() => readTunnelState(dir)?.connected_at === undefined, 15_000, "the lost connection");
+  await waitFor(() => readTunnelState(dir)?.connected_at !== undefined, 15_000, "the connection back");
   assert.match(log, /args: tunnel --no-autoupdate --url http:\/\/127\.0\.0\.1:8766/);
   child.kill("SIGTERM");
   const code = await new Promise((resolve) => child.once("exit", resolve));
   assert.equal(code, 0, log);
+  assert.equal(readTunnelState(dir).connected_at, undefined, "without cloudflared the URL reaches nothing");
 });
 
 /** A supervisor stand-in whose tunnel unit "announces" URL_A as soon as it is (re)started. */
@@ -264,14 +290,28 @@ test("`wazap expose` names quick among the providers", async () => {
 
 test("a registered edge connection is told apart from a URL that never connected", () => {
   assert.equal(registeredIn("2026-10-09T13:56:28Z INF Registered tunnel connection connIndex=0 protocol=quic"), true);
+  assert.equal(registeredIn("2026-10-09T13:56:28Z INF Registered tunnel connection connIndex=0 protocol=http2"), true);
   assert.equal(registeredIn("2026-10-09T13:56:28Z ERR Failed to dial a quic connection"), false);
+  assert.equal(registeredIn("2026-10-09T13:56:28Z INF Unregistered tunnel connection connIndex=0 event=0"), false);
+  assert.deepEqual(edgeEventIn("INF Registered tunnel connection connIndex=2 protocol=http2"), { up: true, conn: "2" });
+  assert.deepEqual(edgeEventIn("INF Unregistered tunnel connection connIndex=2 event=0"), { up: false, conn: "2" });
+  assert.deepEqual(edgeEventIn("ERR Serve tunnel error error=\"EOF\" connIndex=0 event=0"), { up: false, conn: "0" });
+  assert.deepEqual(edgeEventIn("INF Retrying connection in up to 4s connIndex=0 event=0"), { up: false, conn: "0" });
+  assert.equal(edgeEventIn("INF precheck complete hard_fail=true suggested_protocol=http2"), null);
   const dir = dataDir();
-  markTunnelConnected(dir, 1);
+  markTunnelConnected(dir, URL_A, 1);
   assert.equal(readTunnelState(dir), null, "no state, nothing to mark");
   adoptQuickUrl(dir, URL_A, { restartServer: () => {} });
   assert.equal(readTunnelState(dir).connected_at, undefined);
-  markTunnelConnected(dir, 1234);
+  markTunnelConnected(dir, URL_B, 99);
+  assert.equal(readTunnelState(dir).connected_at, undefined, "another URL's connection is not this one's");
+  markTunnelConnected(dir, URL_A, 1234);
   assert.equal(readTunnelState(dir).connected_at, 1234);
+  adoptQuickUrl(dir, URL_A, { restartServer: () => {} });
+  assert.equal(readTunnelState(dir).connected_at, 1234, "the same hostname again is the same connection");
+  markTunnelConnected(dir, URL_A, null);
+  assert.equal(readTunnelState(dir).connected_at, undefined, "a lost connection is no connection");
+  markTunnelConnected(dir, URL_A, 5678);
   adoptQuickUrl(dir, URL_B, { restartServer: () => {} });
   assert.equal(readTunnelState(dir).connected_at, undefined, "a new hostname is a new connection");
 });

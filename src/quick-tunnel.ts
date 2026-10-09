@@ -177,7 +177,7 @@ export interface TunnelState {
   url: string;
   at: number;
   pid: number;
-  /** When cloudflared last registered a connection to Cloudflare's edge; absent until it has one. */
+  /** When cloudflared registered its connection to Cloudflare's edge; absent while it has none. */
   connected_at?: number;
 }
 
@@ -205,18 +205,37 @@ function writeTunnelState(dataDir: string, state: TunnelState): void {
   renameSync(tmp, file);
 }
 
-/** cloudflared's line once a connection to the edge is up: the URL answers only after this. */
-const REGISTERED = /Registered tunnel connection/;
+/**
+ * cloudflared's lines (2026.10.0, QUIC and HTTP/2 alike) for one connection to
+ * the edge coming up and going away; the URL answers only while one is up. A
+ * quick tunnel holds one (`ha-connections:1`), but they are counted by
+ * `connIndex` all the same. Case matters: "Unregistered" is not "Registered".
+ */
+const REGISTERED = /\bRegistered tunnel connection\b/;
+const LOST = /\b(?:Unregistered tunnel connection|Serve tunnel error|Retrying connection in up to)\b/;
+const CONN_INDEX = /\bconnIndex=(\d+)/;
 
 export function registeredIn(line: string): boolean {
   return REGISTERED.test(line);
 }
 
-/** Records that the tunnel reached Cloudflare, so `wazap expose` and `wazap status` can tell a dead URL from a live one. */
-export function markTunnelConnected(dataDir: string, now: number = Date.now()): void {
+/** An edge connection that came up or went away in this line, by its `connIndex`; null when neither. */
+export function edgeEventIn(line: string): { up: boolean; conn: string } | null {
+  const up = REGISTERED.test(line);
+  if (!up && !LOST.test(line)) return null;
+  return { up, conn: CONN_INDEX.exec(line)?.[1] ?? "0" };
+}
+
+/**
+ * Records whether the tunnel for `url` is connected to Cloudflare (`at`, or
+ * null once it is not), so `wazap expose` and `wazap status` can tell a dead
+ * URL from a live one. A state for another URL is left alone.
+ */
+export function markTunnelConnected(dataDir: string, url: string, at: number | null = Date.now()): void {
   const state = readTunnelState(dataDir);
-  if (state === null) return;
-  writeTunnelState(dataDir, { ...state, connected_at: now });
+  if (state === null || state.url !== url) return;
+  const { connected_at: _previous, ...rest } = state;
+  writeTunnelState(dataDir, at === null ? rest : { ...rest, connected_at: at });
 }
 
 /** What the quick tunnel's unit does once its hostname is known; injectable for the tests. */
@@ -242,7 +261,9 @@ const REAL_HOOKS: TunnelHooks = {
 export function adoptQuickUrl(dataDir: string, url: string, hooks: TunnelHooks = REAL_HOOKS): boolean {
   const p = paths(dataDir);
   const previous = readTunnelState(dataDir);
-  writeTunnelState(dataDir, { url, at: Date.now(), pid: process.pid });
+  // The same hostname again is the same tunnel: it keeps its edge connection.
+  const kept = previous?.url === url && previous.connected_at !== undefined ? { connected_at: previous.connected_at } : {};
+  writeTunnelState(dataDir, { url, at: Date.now(), pid: process.pid, ...kept });
   if (previous?.url === url) return false;
   setEnvSetting(p.envFile, "WAZAP_PUBLIC_URL", url);
   const record = readService(dataDir);
@@ -297,6 +318,9 @@ export async function runTunnel(config: Config, hooks: TunnelHooks = REAL_HOOKS)
   // A unit killed outright leaves its cloudflared running, still tunnelling to
   // the port under a URL nobody knows: one tunnel at a time.
   stopStaleCloudflared(pidFile, target);
+  // Nor its connection: a unit killed outright never cleared it.
+  const stale = readTunnelState(config.dataDir);
+  if (stale !== null) markTunnelConnected(config.dataDir, stale.url, null);
   const child = spawn(bin, ["tunnel", "--no-autoupdate", "--url", target], { stdio: ["ignore", "pipe", "pipe"] });
   if (child.pid !== undefined) writeFileSync(pidFile, `${child.pid}\n`, { mode: 0o600 });
   const stop = (why: string): void => {
@@ -306,12 +330,25 @@ export async function runTunnel(config: Config, hooks: TunnelHooks = REAL_HOOKS)
   process.on("SIGTERM", () => stop("SIGTERM"));
   process.on("SIGINT", () => stop("SIGINT"));
   if (typeof process.send === "function") process.once("disconnect", () => stop("supervisor gone"));
+  // This cloudflared's hostname, and its edge connections that are up now.
+  let adopted: string | null = null;
+  const live = new Set<string>();
   for (const stream of [child.stdout, child.stderr]) {
     createInterface({ input: stream }).on("line", (line) => {
       process.stderr.write(`${line}\n`);
       const url = quickUrlIn(line);
-      if (url !== null) adoptQuickUrl(config.dataDir, url, hooks);
-      else if (registeredIn(line)) markTunnelConnected(config.dataDir);
+      if (url !== null) {
+        if (url !== adopted) live.clear();
+        adoptQuickUrl(config.dataDir, url, hooks);
+        adopted = url;
+        return;
+      }
+      const edge = edgeEventIn(line);
+      if (edge === null || adopted === null) return;
+      if (edge.up) {
+        live.add(edge.conn);
+        markTunnelConnected(config.dataDir, adopted);
+      } else if (live.delete(edge.conn) && live.size === 0) markTunnelConnected(config.dataDir, adopted, null);
     });
   }
   const code = await new Promise<number>((resolve) => {
@@ -321,6 +358,8 @@ export async function runTunnel(config: Config, hooks: TunnelHooks = REAL_HOOKS)
     });
     child.once("exit", (exitCode) => resolve(exitCode ?? 1));
   });
+  // Without its cloudflared the URL reaches nothing, whatever it last registered.
+  if (adopted !== null) markTunnelConnected(config.dataDir, adopted, null);
   rmSync(pidFile, { force: true });
   process.exit(code);
 }

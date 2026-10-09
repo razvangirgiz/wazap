@@ -68,6 +68,10 @@ test("a fresh install verifies Node, links the package, writes the launcher and 
   assert.ok(text.includes(join(prefix, "node", "current", "bin", "node")), "the launcher runs the pinned Node, not PATH's");
   const { stdout } = await run(launcher, ["--version", "--json"], { env: childEnv({ PATH: "/usr/bin:/bin" }) });
   assert.equal(JSON.parse(stdout).version, JSON.parse(readFileSync(join(root, "package.json"), "utf8")).version);
+  // Run through the launcher, wazap knows it is the installer's, though its package is a link to this clone.
+  const status = await run(launcher, ["status", "--json", "--data-dir", join(dir, "data")], { env: childEnv({ PATH: "/usr/bin:/bin" }) });
+  const script = join(prefix, "npm", "lib", "node_modules", "wazap-mcp", "dist", "index.js");
+  assert.deepEqual(JSON.parse(status.stdout).install, { kind: "global", script, installer: true });
 
   const bashrc = readFileSync(join(home, ".bashrc"), "utf8");
   assert.equal(bashrc.split(`export PATH="${join(home, ".local", "bin")}:$PATH"`).length - 1, 1);
@@ -155,12 +159,21 @@ test("an installer install is a stable one, upgraded by the installer and never 
   const { planUpdate } = await import("../dist/update.js");
   const prefix = "/home/p/.local/share/wazap";
   const script = `${prefix}/npm/lib/node_modules/wazap-mcp/dist/index.js`;
-  const exists = (p) => p === `${prefix}/node/current` || p === "/home/p/.local/bin/wazap";
+  const exists = (p) => p === `${prefix}/node/current/bin/node` || p === "/home/p/.local/bin/wazap";
   assert.equal(installerPrefix(script, exists), prefix);
   assert.equal(installerPrefix("/srv/wazap/dist/index.js", exists), null);
   assert.equal(installerPrefix(script, () => false), null, "without its Node beside it, it is not the installer's");
+  assert.equal(installerPrefix(`/Users/p/Library/Application Support/wazap/npm/lib/node_modules/wazap-mcp/dist/index.js`, (p) => p.startsWith("/Users/p/Library/Application Support/wazap/node/current/")), "/Users/p/Library/Application Support/wazap");
+  assert.equal(installerPrefix(`/Users/p/.npm-global/lib/node_modules/wazap-mcp/dist/index.js`, () => true), null, "npm's own prefix is not the installer's");
   const install = whereInstalled(script, "/home/p/.local/bin", exists);
   assert.deepEqual(install, { kind: "global", script, installer: true });
+  // Every client, GUI or not, runs the launcher's Node by its `current` link: a Node upgrade relinks it and deletes the build behind it.
+  const { mcpEntry, findClient } = await import("../dist/connect.js");
+  const { defaultDataDir } = await import("../dist/config.js");
+  for (const client of ["claude-desktop", "claude-code"]) {
+    const entry = mcpEntry({ dataDir: defaultDataDir(), readOnly: false }, findClient(client), install);
+    assert.deepEqual(entry, { command: `${prefix}/node/current/bin/node`, args: [script] }, client);
+  }
   const plan = planUpdate({ install, service: null, targets: [] }, "99.0.0");
   assert.equal(plan.steps.some((step) => step.kind === "npm"), false);
   assert.match(plan.steps.find((step) => step.kind === "note").text, /install\.sh \| sh/);

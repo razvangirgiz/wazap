@@ -151,7 +151,12 @@ export type Install = { kind: "global" | "checkout" | "npx"; script: string; ins
 export function installerPrefix(script: string, exists: (p: string) => boolean = existsSync): string | null {
   const m = /^(.*)[/\\]npm[/\\]lib[/\\]node_modules[/\\]wazap-mcp[/\\]dist[/\\]index\.js$/.exec(script);
   if (m === null) return null;
-  return exists(join(m[1]!, "node", "current")) ? m[1]! : null;
+  return exists(installerNode(m[1]!)) ? m[1]! : null;
+}
+
+/** The installer's Node by its `current` link, which survives an upgrade that relinks it; never the build behind it. */
+function installerNode(prefix: string): string {
+  return join(prefix, "node", "current", "bin", "node");
 }
 
 /**
@@ -271,6 +276,11 @@ export function detectClients(probe: Probes = REAL_PROBES): ClientSpec[] {
  */
 export function entryFor(install: Install): McpEntry {
   if (install.kind === "npx") return { command: "npx", args: ["-y", "wazap-mcp"] };
+  // What the installer's launcher runs, by absolute paths: no PATH needed, GUI
+  // client or not, and an upgrade of either Node or wazap keeps it working.
+  // whereInstalled already found the installer's Node beside it.
+  const prefix = install.installer === true ? installerPrefix(install.script, () => true) : null;
+  if (prefix !== null) return { command: installerNode(prefix), args: [install.script] };
   if (install.kind === "global") return { command: "wazap", args: [] };
   return { command: "node", args: [install.script] };
 }
