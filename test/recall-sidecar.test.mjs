@@ -369,3 +369,42 @@ test("two accounts on one data dir share one llama-server; the last stop kills i
     }
   }
 });
+
+test("a stored-only search waits for llama-server to start; a server's search answers by words past its short wait", async () => {
+  for (const storedOnly of [true, false]) {
+    const stub = await stubEmbedServer();
+    let open;
+    const gate = new Promise((done) => (open = done));
+    const { restore } = fakeSidecars(stub.url, { gate });
+    const dataDir = mkdtempSync(join(tmpdir(), "wazap-sidecar-cold-"));
+    mkdirSync(join(dataDir, "models"), { recursive: true });
+    writeFileSync(join(dataDir, "models", SPEC.file), "stub-model");
+    const saved = RECALL_ENV.map((key) => [key, process.env[key]]);
+    for (const key of RECALL_ENV) delete process.env[key];
+    Object.assign(process.env, { WAZAP_RECALL: "local", WAZAP_EMBED_BIN: process.execPath, WAZAP_RECALL_MIN_SIMILARITY: "0" });
+    let svc = null;
+    try {
+      ({ svc } = await connectedService(WhatsAppService, { prefix: "wazap-sidecar-", id: ME, name: "Home", config: { dataDir, persistHistory: true } }));
+      await svc.bootStorage();
+      svc.recallIndex.recallQueryWaitMs = 150;
+      svc.recallIndex.storedOnly = storedOnly;
+      // A slow laptop: the model takes longer to load than a query may wait.
+      setTimeout(open, 600);
+      if (storedOnly) {
+        const answer = await svc.recall("factura", undefined, 5);
+        assert.deepEqual(answer.data.hits, []);
+      } else {
+        await assert.rejects(() => svc.recall("factura", undefined, 5), { code: "TIMEOUT" });
+      }
+    } finally {
+      open();
+      await svc?.stop();
+      restore();
+      stub.server.close();
+      for (const [key, value] of saved) {
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
+    }
+  }
+});

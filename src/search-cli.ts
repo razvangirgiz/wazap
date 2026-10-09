@@ -89,8 +89,26 @@ function row(message: MessageView, rank: Pick<SearchRow, "matched" | "score" | "
  * hybrid is what the MCP search tool does: meaning and words fused, falling
  * back to words when meaning search cannot run. meaning keeps only the hits
  * meaning found and fails when it cannot run; words never embeds anything.
+ * Two things differ from the server's search, because nothing stays up between
+ * two shell searches: the query waits for llama-server to start rather than
+ * answering by words after a few seconds, and recency does not weigh the order.
+ * With --json a failure is one JSON object on stdout too, `{ error: { code, message, fix? } }`,
+ * and the exit code is 1.
  */
 export async function runSearch(config: Config): Promise<void> {
+  try {
+    await search(config);
+  } catch (err) {
+    if (!config.json) throw err;
+    const fault = asWazapError(err);
+    process.stdout.write(`${JSON.stringify({ error: { code: fault.code, message: fault.message, ...(fault.fix ? { fix: fault.fix } : {}) } }, null, 2)}\n`);
+    say(fail(fault.message));
+    if (fault.fix) say(fix(fault.fix));
+    process.exitCode = 1;
+  }
+}
+
+async function search(config: Config): Promise<void> {
   const [query] = config.args;
   if (query === undefined || query.trim() === "") throw new WazapError("INVALID_ID", "Nothing to search for.", 'Run `wazap search "<words>"`');
   const match = parseMatch(config.match);

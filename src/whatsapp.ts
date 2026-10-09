@@ -662,6 +662,7 @@ export class WhatsAppService implements WhatsAppApi {
    */
   async openStored(opts: { index?: boolean } = {}): Promise<void> {
     this.storedOnly = true;
+    this.recallIndex.storedOnly = true;
     if (opts.index !== true) await this.recallIndex.embedFeed?.stop();
     this.initialSyncDone = true;
     this.historyReceived = true;
