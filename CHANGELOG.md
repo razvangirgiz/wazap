@@ -103,8 +103,18 @@
   the pinned llama.cpp and recall on; its build stage is Debian too, so
   `node_modules` matches the runtime's libc.
 
-### Changed
-
+- **A quick tunnel that never reached Cloudflare says so.** cloudflared prints
+  its trycloudflare hostname before it has a connection, and on a network that
+  blocks outbound QUIC and HTTP/2 to Cloudflare's edge it never gets one.
+  `wazap expose quick` used to answer "the tunnel may still be coming up"
+  forever; it now records the edge connection (`tunnel.json`
+  `connected_at`), says plainly when there is none and why, and
+  `wazap status` marks the URL `NOT connected` (`public.connected: false`).
+- **An installer install is recognised as one.** `wazap status` called it a
+  `checkout` and `wazap update` told it to `git pull`; it now shows
+  `installer`, keeps the stable entries a global install gets, and upgrades by
+  running the installer line again, never `npm i -g` into another Node. The
+  installer's npm run no longer prints npm's own update notice.
 - **An old Node fails in one line, from every entry point.** `dist/index.js`
   now checks the version before loading anything else, so the bare stdio
   server an MCP client launches, `serve`, `status` and every other command

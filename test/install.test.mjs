@@ -149,3 +149,19 @@ test("an install path that would break out of the launcher's quotes is refused",
   assert.equal(existsSync(join(home, ".local", "bin", "wazap")), false);
   assert.equal(existsSync("pwned"), false);
 });
+
+test("an installer install is a stable one, upgraded by the installer and never by npm -g", async () => {
+  const { whereInstalled, installerPrefix } = await import("../dist/connect.js");
+  const { planUpdate } = await import("../dist/update.js");
+  const prefix = "/home/p/.local/share/wazap";
+  const script = `${prefix}/npm/lib/node_modules/wazap-mcp/dist/index.js`;
+  const exists = (p) => p === `${prefix}/node/current` || p === "/home/p/.local/bin/wazap";
+  assert.equal(installerPrefix(script, exists), prefix);
+  assert.equal(installerPrefix("/srv/wazap/dist/index.js", exists), null);
+  assert.equal(installerPrefix(script, () => false), null, "without its Node beside it, it is not the installer's");
+  const install = whereInstalled(script, "/home/p/.local/bin", exists);
+  assert.deepEqual(install, { kind: "global", script, installer: true });
+  const plan = planUpdate({ install, service: null, targets: [] }, "99.0.0");
+  assert.equal(plan.steps.some((step) => step.kind === "npm"), false);
+  assert.match(plan.steps.find((step) => step.kind === "note").text, /install\.sh \| sh/);
+});

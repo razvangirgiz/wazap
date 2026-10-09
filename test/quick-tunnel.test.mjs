@@ -22,7 +22,9 @@ import {
   parseTunnelTarget,
   pinnedCloudflared,
   quickUrlIn,
+  markTunnelConnected,
   readTunnelState,
+  registeredIn,
 } from "../dist/quick-tunnel.js";
 import { installService, readService, tunnelsTo } from "../dist/service.js";
 import { builtinSupervisor } from "../dist/supervisor.js";
@@ -139,7 +141,7 @@ test("`wazap tunnel` runs cloudflared, passes its log through and adopts the hos
   mkdirSync(bin);
   writeFileSync(
     join(bin, "cloudflared"),
-    `#!/bin/sh\necho "args: $*" >&2\necho "INF |  ${URL_A}  |" >&2\ntrap 'exit 0' TERM\nwhile :; do sleep 1; done\n`
+    `#!/bin/sh\necho "args: $*" >&2\necho "INF |  ${URL_A}  |" >&2\nsleep 0.3\necho "INF Registered tunnel connection connIndex=0 location=fra08 protocol=quic" >&2\ntrap 'exit 0' TERM\nwhile :; do sleep 1; done\n`
   );
   chmodSync(join(bin, "cloudflared"), 0o755);
   const child = spawn(process.execPath, [BINARY, "tunnel", "http://127.0.0.1:8766", "--data-dir", dir], {
@@ -151,6 +153,7 @@ test("`wazap tunnel` runs cloudflared, passes its log through and adopts the hos
   t.after(() => child.kill("SIGKILL"));
   await waitFor(() => readTunnelState(dir)?.url === URL_A, 15_000, "the hostname");
   assert.equal(env(dir).WAZAP_PUBLIC_URL, URL_A);
+  await waitFor(() => readTunnelState(dir)?.connected_at !== undefined, 15_000, "the edge connection");
   assert.match(log, /args: tunnel --no-autoupdate --url http:\/\/127\.0\.0\.1:8766/);
   child.kill("SIGTERM");
   const code = await new Promise((resolve) => child.once("exit", resolve));
@@ -257,6 +260,33 @@ test("`wazap expose` names quick among the providers", async () => {
   const { stderr } = await run(process.execPath, [BINARY, "--help"], { env: childEnv() });
   assert.match(stderr, /wazap expose \[quick\|tailscale\|cloudflare\|off\]/);
   assert.match(stderr, /quick, tailscale, cloudflare|tailscale, cloudflare, quick/);
+});
+
+test("a registered edge connection is told apart from a URL that never connected", () => {
+  assert.equal(registeredIn("2026-10-09T13:56:28Z INF Registered tunnel connection connIndex=0 protocol=quic"), true);
+  assert.equal(registeredIn("2026-10-09T13:56:28Z ERR Failed to dial a quic connection"), false);
+  const dir = dataDir();
+  markTunnelConnected(dir, 1);
+  assert.equal(readTunnelState(dir), null, "no state, nothing to mark");
+  adoptQuickUrl(dir, URL_A, { restartServer: () => {} });
+  assert.equal(readTunnelState(dir).connected_at, undefined);
+  markTunnelConnected(dir, 1234);
+  assert.equal(readTunnelState(dir).connected_at, 1234);
+  adoptQuickUrl(dir, URL_B, { restartServer: () => {} });
+  assert.equal(readTunnelState(dir).connected_at, undefined, "a new hostname is a new connection");
+});
+
+test("expose quick says plainly when the tunnel never reached Cloudflare, instead of 'still coming up'", async () => {
+  const dir = dataDir();
+  const supervisor = announcingSupervisor(dir);
+  const config = { dataDir: dir, httpPort: 47_003, dryRun: false, args: ["quick"], oauthPassword: null, readOnly: false };
+  await captured(() => installService(config, supervisor, 0, { kind: "global", script: BINARY }));
+  const output = await captured(() => runExpose(config, [], [supervisor], { waitMs: 5_000, ensure: async () => {}, health: async () => 530 }));
+  assert.match(output, /could not connect to Cloudflare from this network/);
+  assert.match(output, /tail wazap-tunnel/);
+  assert.doesNotMatch(output, /may still be coming up/);
+  const status = await run(process.execPath, [BINARY, "status", "--json", "--data-dir", dir], { env: childEnv() });
+  assert.equal(JSON.parse(status.stdout).public.connected, false);
 });
 
 test("`wazap status` always shows the current public URL, and says a quick tunnel's moves", async () => {

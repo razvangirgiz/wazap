@@ -177,6 +177,8 @@ export interface TunnelState {
   url: string;
   at: number;
   pid: number;
+  /** When cloudflared last registered a connection to Cloudflare's edge; absent until it has one. */
+  connected_at?: number;
 }
 
 export function tunnelStateFile(dataDir: string): string {
@@ -187,7 +189,10 @@ export function readTunnelState(dataDir: string): TunnelState | null {
   try {
     const parsed = JSON.parse(readFileSync(tunnelStateFile(dataDir), "utf8")) as Partial<TunnelState>;
     if (typeof parsed.url !== "string" || quickUrlIn(parsed.url) !== parsed.url) return null;
-    return { url: parsed.url, at: Number(parsed.at) || 0, pid: Number(parsed.pid) || 0 };
+    const state: TunnelState = { url: parsed.url, at: Number(parsed.at) || 0, pid: Number(parsed.pid) || 0 };
+    const connectedAt = Number(parsed.connected_at);
+    if (Number.isFinite(connectedAt) && connectedAt > 0) state.connected_at = connectedAt;
+    return state;
   } catch {
     return null;
   }
@@ -198,6 +203,20 @@ function writeTunnelState(dataDir: string, state: TunnelState): void {
   const tmp = `${file}.${process.pid}.tmp`;
   writeFileSync(tmp, `${JSON.stringify(state)}\n`, { mode: 0o600 });
   renameSync(tmp, file);
+}
+
+/** cloudflared's line once a connection to the edge is up: the URL answers only after this. */
+const REGISTERED = /Registered tunnel connection/;
+
+export function registeredIn(line: string): boolean {
+  return REGISTERED.test(line);
+}
+
+/** Records that the tunnel reached Cloudflare, so `wazap expose` and `wazap status` can tell a dead URL from a live one. */
+export function markTunnelConnected(dataDir: string, now: number = Date.now()): void {
+  const state = readTunnelState(dataDir);
+  if (state === null) return;
+  writeTunnelState(dataDir, { ...state, connected_at: now });
 }
 
 /** What the quick tunnel's unit does once its hostname is known; injectable for the tests. */
@@ -292,6 +311,7 @@ export async function runTunnel(config: Config, hooks: TunnelHooks = REAL_HOOKS)
       process.stderr.write(`${line}\n`);
       const url = quickUrlIn(line);
       if (url !== null) adoptQuickUrl(config.dataDir, url, hooks);
+      else if (registeredIn(line)) markTunnelConnected(config.dataDir);
     });
   }
   const code = await new Promise<number>((resolve) => {

@@ -37,6 +37,7 @@ import { runEmbedIndex } from "./search-cli.js";
 import { PAIRING_TIMEOUT_MS, linkSession, prettyCode, settledAccount, startPairing } from "./pairing.js";
 import { runHttp, runStdio, startLoopbackEndpoint } from "./server.js";
 import { SUPERVISORS, fetchHealth, readService, serviceHolding, tunnelsTo, type Supervisor } from "./service.js";
+import { readTunnelState } from "./quick-tunnel.js";
 import { applyWrites } from "./settings.js";
 import { storageReport, type StorageReport } from "./storage-status.js";
 import {
@@ -125,7 +126,7 @@ interface StatusReport {
    * quick tunnel's URL changes whenever it restarts; this is always the
    * current one, which is how an agent on this machine finds it again.
    */
-  public: { mcp_url: string; tunnel: string | null; url_changes_on_restart: boolean } | null;
+  public: { mcp_url: string; tunnel: string | null; url_changes_on_restart: boolean; connected?: boolean } | null;
   /** Each account's database, legacy files and set-aside databases, and the beta archive; read-only. */
   storage: StorageReport;
   checks: Check[];
@@ -198,13 +199,20 @@ export async function runStatus(config: Config): Promise<StatusReport> {
 function publicReport(config: Config): StatusReport["public"] {
   if (config.publicUrl === null) return null;
   const tunnel = readService(config.dataDir)?.tunnel?.provider ?? null;
-  return { mcp_url: `${config.publicUrl}/mcp`, tunnel, url_changes_on_restart: tunnel === "quick" };
+  const report: NonNullable<StatusReport["public"]> = { mcp_url: `${config.publicUrl}/mcp`, tunnel, url_changes_on_restart: tunnel === "quick" };
+  // Only once the unit has written its state: before that there is nothing to judge.
+  const state = tunnel === "quick" ? readTunnelState(config.dataDir) : null;
+  if (state !== null) report.connected = state.connected_at !== undefined;
+  return report;
 }
 
 /** `public:` in both renderers: the URL, and for a quick tunnel, that it moves. */
 function publicLine(report: StatusReport): string | null {
   if (report.public === null) return null;
-  const how = report.public.tunnel === null ? "" : ` (${report.public.tunnel === "quick" ? "quick tunnel: a new URL each time it restarts; this is the current one" : report.public.tunnel})`;
+  const quick = report.public.connected === false
+    ? "quick tunnel, NOT connected to Cloudflare yet: this URL does not reach this machine; see `wazap service logs`"
+    : "quick tunnel: a new URL each time it restarts; this is the current one";
+  const how = report.public.tunnel === null ? "" : ` (${report.public.tunnel === "quick" ? quick : report.public.tunnel})`;
   return `${report.public.mcp_url}${how}`;
 }
 
@@ -251,7 +259,8 @@ function row(label: string, value: string): string {
 
 /** `global (/usr/local/bin/wazap)`: the kind is what decides an upgrade, the path is the proof. */
 function describeInstall(install: Install): string {
-  return install.script === "" ? install.kind : `${install.kind} (${shortPath(install.script)})`;
+  const kind = install.installer === true ? "installer" : install.kind;
+  return install.script === "" ? kind : `${kind} (${shortPath(install.script)})`;
 }
 
 function richStatus(report: StatusReport): string[] {

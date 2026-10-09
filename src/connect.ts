@@ -140,7 +140,19 @@ export function commandOnPath(
 }
 
 /** Where this wazap lives: a stable global install, a checkout, or the npx cache. */
-export type Install = { kind: "global" | "checkout" | "npx"; script: string };
+export type Install = { kind: "global" | "checkout" | "npx"; script: string; installer?: boolean };
+
+/**
+ * scripts/install.sh lays wazap out as `<prefix>/npm/lib/node_modules/wazap-mcp`
+ * beside `<prefix>/node/current`, and puts a launcher (not a link) on PATH. That
+ * is a stable install like a global one, but upgraded by running the installer
+ * again, not by `npm i -g`, which would land in some other Node's prefix.
+ */
+export function installerPrefix(script: string, exists: (p: string) => boolean = existsSync): string | null {
+  const m = /^(.*)[/\\]npm[/\\]lib[/\\]node_modules[/\\]wazap-mcp[/\\]dist[/\\]index\.js$/.exec(script);
+  if (m === null) return null;
+  return exists(join(m[1]!, "node", "current")) ? m[1]! : null;
+}
 
 /**
  * The npx cache is a throwaway copy, so nothing that has to survive a reboot may
@@ -153,6 +165,7 @@ export function whereInstalled(
 ): Install {
   const script = binPath === "" ? "" : resolve(binPath);
   if (isNpxPath(binPath)) return { kind: "npx", script };
+  if (script !== "" && installerPrefix(script, exists) !== null) return { kind: "global", script, installer: true };
   const onPath = commandPath("wazap", pathEnv, exists);
   if (onPath) {
     try {

@@ -28,7 +28,7 @@ import {
 import { setEnvSetting } from "./settings.js";
 import { ensureCloudflared, readTunnelState, tunnelStateFile } from "./quick-tunnel.js";
 import { maskKey, which } from "./transcribe/index.js";
-import { box, brand, dim, info, ok, shortPath, warn } from "./ui.js";
+import { box, brand, dim, fail, info, ok, shortPath, warn } from "./ui.js";
 
 export type Readiness = { ok: true } | { ok: false; fix: string };
 
@@ -220,11 +220,19 @@ async function exposeQuick(config: Config, { supervisor, record }: Installed, de
     status = await health(url);
     if (status !== 200) await sleep(1_500);
   }
-  say(
-    status === 200
-      ? ok("The public URL reaches this machine.")
-      : warn(`${url}/healthz answered ${status ?? "nothing"}; the tunnel may still be coming up.`)
-  );
+  if (status === 200) say(ok("The public URL reaches this machine."));
+  else if (readTunnelState(config.dataDir)?.connected_at === undefined) {
+    say(
+      fail(
+        "cloudflared got a URL but could not connect to Cloudflare from this network, so the URL does not reach this machine yet."
+      )
+    );
+    say(
+      info(
+        `Its log (\`${supervisor.logs(ref)[0]}\`) names the cause; a network that blocks outbound QUIC (UDP 7844) and HTTP/2 to *.argotunnel.com never connects. It keeps retrying; on such a network use a machine with open egress, or \`wazap expose tailscale\`.`
+      )
+    );
+  } else say(warn(`${url}/healthz answered ${status ?? "nothing"}; the tunnel may still be coming up.`));
   say("");
   say(box(`MCP URL   ${url}/mcp`, `Password  ${fresh ? password : maskKey(password)}`));
   say("");

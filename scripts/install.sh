@@ -197,7 +197,7 @@ main() {
     say "Installing $SPEC…"
     # npm's own lifecycle scripts look for `node` on PATH: make it ours.
     PATH="$PREFIX/node/current/bin:$PATH" "$NODE" "$PREFIX/node/current/lib/node_modules/npm/bin/npm-cli.js" \
-      install --global --prefix "$STAGE" --no-audit --no-fund --loglevel=error "$SPEC" >&2 ||
+      install --global --prefix "$STAGE" --no-audit --no-fund --no-update-notifier --loglevel=error "$SPEC" >&2 ||
       die "npm could not install $SPEC; the previous install, if any, is untouched." \
         "Read the npm error above, then run this again"
   fi
