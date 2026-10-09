@@ -221,6 +221,39 @@ test("`wazap config writes drafts` stores it, `writes on` clears it, and `config
   assert.match((await wazap("config")).stderr, /writes: on/);
 });
 
+test("a shell variable that would undo `config writes` is named, and fails when it grants more than asked", async () => {
+  const dataDir = mkdtempSync(join(tmpdir(), "wazap-drafts-shell-"));
+  const wazap = (env, ...args) =>
+    run(process.execPath, [BINARY, ...args, "--data-dir", dataDir], { env: childEnv(env) }).then(
+      ({ stderr }) => ({ code: 0, stderr }),
+      (err) => ({ code: err.code, stderr: err.stderr })
+    );
+
+  // dotenv never overrides the shell: drafts-only would silently not be in effect.
+  const drafts = await wazap({ WAZAP_DRAFTS_ONLY: "0" }, "config", "writes", "drafts");
+  assert.equal(drafts.code, 1, drafts.stderr);
+  assert.match(drafts.stderr, /WAZAP_DRAFTS_ONLY=0 in this shell's environment wins/);
+  assert.match(drafts.stderr, /runs with writes on/);
+  assert.match(drafts.stderr, /unset WAZAP_DRAFTS_ONLY/);
+  assert.doesNotMatch(drafts.stderr, /writes: drafts only —/, "never claims drafts-only is in effect");
+  assert.match(readFileSync(join(dataDir, ".env"), "utf8"), /^WAZAP_DRAFTS_ONLY=1$/m, "the .env still holds it, for a server started elsewhere");
+
+  const off = await wazap({ WAZAP_READ_ONLY: "0" }, "config", "writes", "off");
+  assert.equal(off.code, 1, off.stderr);
+  assert.match(off.stderr, /WAZAP_READ_ONLY=0 in this shell's environment wins/);
+
+  // Stricter than asked: said, but not a failure.
+  const on = await wazap({ WAZAP_DRAFTS_ONLY: "1" }, "config", "writes", "on");
+  assert.equal(on.code, 0, on.stderr);
+  assert.match(on.stderr, /WAZAP_DRAFTS_ONLY=1 in this shell's environment wins/);
+  assert.match(on.stderr, /runs with writes drafts only/);
+
+  // A shell that agrees changes nothing.
+  const agreed = await wazap({ WAZAP_DRAFTS_ONLY: "1" }, "config", "writes", "drafts");
+  assert.equal(agreed.code, 0, agreed.stderr);
+  assert.match(agreed.stderr, /writes: drafts only —/);
+});
+
 test("`wazap drafts` with no server running says what to start, and sends nothing", async () => {
   const dataDir = mkdtempSync(join(tmpdir(), "wazap-drafts-none-"));
   await assert.rejects(

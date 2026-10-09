@@ -2,7 +2,7 @@ import { chmodSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "n
 import { dirname } from "node:path";
 import { AccountRegistry, accountPolicy, draftContextEnabled, resolveAccount, type AccountRecord } from "./accounts.js";
 import { ask, askSecret, warnIfServerRunning } from "./cli.js";
-import { paths, writesHints, type Config, type WritesAnswer } from "./config.js";
+import { draftsOnlySetting, paths, readOnlySetting, writesHints, type Config, type WritesAnswer } from "./config.js";
 import { WazapError, asWazapError } from "./errors.js";
 import { lockHolder } from "./lock.js";
 import { say } from "./logger.js";
@@ -17,7 +17,7 @@ import {
   type Readiness,
   type TranscribeSettings,
 } from "./transcribe/index.js";
-import { brand, dim, fix, ok, shortPath, warn } from "./ui.js";
+import { brand, dim, fail, fix, ok, shortPath, warn } from "./ui.js";
 import {
   WEBHOOK_EVENTS_DEFAULT,
   WEBHOOK_EVENTS_FIX,
@@ -813,6 +813,34 @@ async function reportReadiness(env: NodeJS.ProcessEnv, dataDir: string): Promise
   if (readiness.fix !== undefined) say(fix(readiness.fix));
 }
 
+const WRITES_SAID = { false: "off", drafts: "drafts only", true: "on" } as const;
+
+/** How much the agent can do: off < drafts only < on. */
+function writesRank(answer: WritesAnswer): number {
+  return answer === false ? 0 : answer === "drafts" ? 1 : 2;
+}
+
+/**
+ * The .env now says one thing and the shell's environment another, which wins
+ * for any server started from this shell. Named variable by variable, with
+ * what to unset; it fails loudly when the shell grants more than was asked.
+ */
+function shellOverride(
+  asked: WritesAnswer,
+  effective: WritesAnswer,
+  shellReadOnly: boolean | undefined,
+  shellDraftsOnly: boolean | undefined
+): string {
+  // Only the variables that disagree with what was just stored.
+  const set: string[] = [];
+  if (shellReadOnly !== undefined && shellReadOnly !== (asked === false)) set.push(`WAZAP_READ_ONLY=${process.env.WAZAP_READ_ONLY ?? ""}`);
+  if (shellDraftsOnly !== undefined && shellDraftsOnly !== (asked === "drafts")) set.push(`WAZAP_DRAFTS_ONLY=${process.env.WAZAP_DRAFTS_ONLY ?? ""}`);
+  const names = set.map((entry) => entry.slice(0, entry.indexOf("="))).join(" ");
+  const head = `Stored writes: ${WRITES_SAID[String(asked) as keyof typeof WRITES_SAID]} in .env, but ${set.join(" and ")} in this shell's environment wins over it: a server started from here runs with writes ${WRITES_SAID[String(effective) as keyof typeof WRITES_SAID]}.`;
+  const unset = `Run \`unset ${names}\` (and remove it from your shell profile), then restart the server.`;
+  return writesRank(effective) > writesRank(asked) ? `${fail(head)}\n${fix(unset)}` : `${warn(head)}\n${fix(unset)}`;
+}
+
 /** Persist the writes answer, then say what is now true and how to change it. */
 export function applyWrites(config: Config, answer: WritesAnswer): void {
   const p = paths(config.dataDir);
@@ -839,26 +867,35 @@ export function applyWrites(config: Config, answer: WritesAnswer): void {
       say(warn("Global read-only is still on, so writes stay off until `wazap config writes on` clears it."));
     }
   } else {
+    // dotenv never overrides the real environment, so a WAZAP_READ_ONLY or
+    // WAZAP_DRAFTS_ONLY set in the shell outlives this write for every
+    // process started from it. Captured before the sources are rewritten.
+    const shellReadOnly = config.sources?.readOnly === "env" ? readOnlySetting(process.env.WAZAP_READ_ONLY) : undefined;
+    const shellDraftsOnly = config.sources?.draftsOnly === "env" ? draftsOnlySetting(process.env.WAZAP_DRAFTS_ONLY) : undefined;
     setEnvSetting(p.envFile, "WAZAP_READ_ONLY", allowWrites ? "0" : "1");
     if (answer === "drafts") setEnvSetting(p.envFile, "WAZAP_DRAFTS_ONLY", "1");
     else unsetEnvSetting(p.envFile, "WAZAP_DRAFTS_ONLY");
-    config.readOnly = !allowWrites;
-    config.draftsOnly = answer === "drafts";
+    config.readOnly = shellReadOnly ?? !allowWrites;
+    config.draftsOnly = shellDraftsOnly ?? answer === "drafts";
     if (config.sources) {
-      config.sources.readOnly = ".env";
-      config.sources.draftsOnly = ".env";
+      if (shellReadOnly === undefined) config.sources.readOnly = ".env";
+      if (shellDraftsOnly === undefined) config.sources.draftsOnly = ".env";
     }
-    say(
-      ok(
-        answer === "drafts"
-          ? "writes: drafts only — the agent drafts, and nothing it can call sends: you approve each draft (`wazap drafts`, or the approval link). Change it with `wazap config writes on|off|drafts`."
-          : allowWrites
-            ? "writes: on — the agent can send messages, react and manage chats. Turn it off with `wazap config writes off`, or keep it to drafts with `wazap config writes drafts`."
-            : "writes: off — the agent can only read. Turn it on with `wazap config writes on`, or `wazap config writes drafts` to let it draft for your approval."
-      )
-    );
-    if (answer !== "drafts" && process.env.WAZAP_DRAFTS_ONLY !== undefined && config.sources?.draftsOnly === "env") {
-      say(warn("WAZAP_DRAFTS_ONLY is set in the environment, which wins over the data dir's .env."));
+    const effective: WritesAnswer = config.readOnly ? false : config.draftsOnly ? "drafts" : true;
+    if (effective === answer) {
+      say(
+        ok(
+          answer === "drafts"
+            ? "writes: drafts only — the agent drafts, and nothing it can call sends: you approve each draft (`wazap drafts`, or the approval link). Change it with `wazap config writes on|off|drafts`."
+            : allowWrites
+              ? "writes: on — the agent can send messages, react and manage chats. Turn it off with `wazap config writes off`, or keep it to drafts with `wazap config writes drafts`."
+              : "writes: off — the agent can only read. Turn it on with `wazap config writes on`, or `wazap config writes drafts` to let it draft for your approval."
+        )
+      );
+    } else {
+      say(shellOverride(answer, effective, shellReadOnly, shellDraftsOnly));
+      // Asked for less than the shell grants: that must not read as done.
+      if (writesRank(effective) > writesRank(answer)) process.exitCode = 1;
     }
     say(dim(`Stored in ${shortPath(p.envFile)}.`));
   }

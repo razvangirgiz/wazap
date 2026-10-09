@@ -34,6 +34,12 @@ approve before they are sent" and "send messages as you without asking", and
 the second is preselected for every new grant, whatever the agent asked for.
 A grant can be narrowed on refresh, never widened.
 
+The data dir's `.env` never overrides a variable already set in the
+environment, so a `WAZAP_DRAFTS_ONLY=0` (or `WAZAP_READ_ONLY=0`) exported in
+your shell beats what `wazap config writes` stores, for every server started
+from that shell. `wazap config writes` names such a variable, and exits 1 when
+it would leave the agent able to do more than you asked.
+
 A drafts-only session registers `send_message` and no other write: no
 `confirm_send`, no edit, delete, reaction, chat or group change. Each draft it
 makes waits 24 hours instead of 15 minutes, and comes back with up to three
