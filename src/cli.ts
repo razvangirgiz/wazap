@@ -12,7 +12,7 @@ import { BAILEYS_VERSION, WAZAP_VERSION, paths, type AccountPaths, type Config, 
 import { connectNext, whereInstalled, type Install } from "./connect.js";
 import { CONTROL_ROUTES, LOGOUT_WAIT_MS, askRunningServer, isLogoutOutcome, startControlEndpoint } from "./control.js";
 import { decideRole, readDaemon, removeDaemon, writeDaemon } from "./daemon.js";
-import { DEPS, ensureDeps } from "./deps.js";
+import { DEPS, ensureDeps, ensureLlama } from "./deps.js";
 import { checkLine, checkLines, recallEnabled, runChecks, type Check } from "./doctor.js";
 import { withCode } from "./error-code.js";
 import { WazapError, asWazapError } from "./errors.js";
@@ -23,11 +23,16 @@ import { logoutAccount, logoutLines, type LogoutOutcome } from "./logout.js";
 import { clockLabel, formatAge } from "./messages.js";
 import { oauthProblem } from "./oauth.js";
 import {
+  GEMMA_MIN_LLAMA_BUILD,
   downloadEmbed,
+  embedModelPath,
   embedModelSpec,
+  llamaBuild,
+  llamaInstallFix,
   readRecallSettings,
   type RecallSettings,
 } from "./recall/index.js";
+import { runEmbedIndex } from "./search-cli.js";
 import { PAIRING_TIMEOUT_MS, linkSession, prettyCode, settledAccount, startPairing } from "./pairing.js";
 import { runHttp, runStdio, startLoopbackEndpoint } from "./server.js";
 import { SUPERVISORS, fetchHealth, serviceHolding, tunnelsTo, type Supervisor } from "./service.js";
@@ -432,19 +437,63 @@ export async function downloadTranscribeModel(settings: TranscribeSettings, spec
   }
 }
 
-/** `wazap embed download`. */
+/** `wazap embed download` and `wazap embed index [--wait]`. */
 export async function runEmbed(config: Config): Promise<void> {
   const [verb] = config.args;
+  if (verb === "index") {
+    await runEmbedIndex(config);
+    return;
+  }
   if (verb !== "download") {
     throw new WazapError(
       "INVALID_ID",
       `Cannot run \`wazap embed ${config.args.join(" ")}\`.`,
-      "Run `wazap embed download`"
+      "Run `wazap embed download` or `wazap embed index [--wait]`"
     );
   }
-  await ensureDeps([DEPS.llama], config);
+  const before = readRecallSettings(process.env, config.dataDir);
+  const llama = before.embedUrl === null ? await ensureLlama(config) : { bin: null, how: "found" as const };
+  // ensureLlama may have pointed WAZAP_EMBED_BIN at a fresh install.
   const settings = readRecallSettings(process.env, config.dataDir);
+  const spec = embedModelSpec(config.modelName ?? settings.model);
   await downloadEmbedModel(settings, config.modelName);
+  const report = llamaReport(settings.embedUrl === null ? llama.bin : null, spec.alias, settings.embedUrl !== null);
+  if (config.json) {
+    process.stdout.write(
+      `${JSON.stringify({ model: { alias: spec.alias, file: spec.file, path: embedModelPath(settings.modelsDir, spec) }, llama_server: { ...report, how: llama.how }, ready: report.problem === null }, null, 2)}\n`
+    );
+  } else if (report.problem !== null) {
+    say(warn(`The model is ready, but ${report.problem}.`));
+    if (report.fix) say(fix(report.fix));
+  } else if (report.path !== null) {
+    say(ok(`llama-server ${report.build === null ? "" : `build ${report.build} `}at ${report.path}`));
+  }
+  if (report.problem !== null) process.exitCode = 1;
+}
+
+/** What `embed download` says about llama-server once the model is in place. */
+export interface LlamaReport {
+  found: boolean;
+  path: string | null;
+  build: number | null;
+  /** Null when recall can run on this binary and model. */
+  problem: string | null;
+  fix?: string;
+}
+
+export function llamaReport(bin: string | null, model: string, external = false, build: number | null = bin === null ? null : llamaBuild(bin)): LlamaReport {
+  if (external) return { found: true, path: null, build: null, problem: null };
+  if (bin === null) return { found: false, path: null, build: null, problem: "llama-server is still missing, so nothing can be embedded", fix: llamaInstallFix() };
+  if (model === "embeddinggemma-300m" && build !== null && build < GEMMA_MIN_LLAMA_BUILD) {
+    return {
+      found: true,
+      path: bin,
+      build,
+      problem: `llama.cpp build ${build} is too old for embeddinggemma (it needs ${GEMMA_MIN_LLAMA_BUILD} or newer)`,
+      fix: "Upgrade llama.cpp, or run `wazap embed download --model e5-base-multilingual` and set WAZAP_EMBED_MODEL=e5-base-multilingual",
+    };
+  }
+  return { found: true, path: bin, build, problem: null };
 }
 
 /** The same check-then-fetch dance downloadTranscribeModel does, for the embed table. */
