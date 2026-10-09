@@ -51,9 +51,9 @@ test("wizardSpinLine keeps the copy still and only the glyph moves", () => {
   assert.equal(b.slice(2), "Syncing your chats…");
 });
 
-test("setupWizardSteps counts link screens, then transcribe, optional install, connect, keep, finish", () => {
-  assert.equal(setupWizardSteps({ linked: false, npx: true, askWrites: true, loginCode: false }), 8);
-  assert.equal(setupWizardSteps({ linked: true, npx: false, askWrites: false, loginCode: false }), 4);
+test("setupWizardSteps counts link screens, then transcribe, search, optional install, connect, keep, finish", () => {
+  assert.equal(setupWizardSteps({ linked: false, npx: true, askWrites: true, loginCode: false }), 9);
+  assert.equal(setupWizardSteps({ linked: true, npx: false, askWrites: false, loginCode: false }), 5);
   assert.equal(loginWizardSteps(false, true), 3);
   assert.equal(loginWizardSteps(true, true), 4);
 });
