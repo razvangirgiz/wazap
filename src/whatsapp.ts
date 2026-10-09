@@ -15,7 +15,13 @@
  */
 
 import { setTimeout as sleep } from "node:timers/promises";
-import { downloadMediaMessage, type WAMessage, type WASocket } from "baileys";
+import {
+  downloadMediaMessage,
+  type Chat as BaileysChat,
+  type Contact as BaileysContact,
+  type WAMessage,
+  type WASocket,
+} from "baileys";
 import type { ILogger } from "baileys/lib/Utils/logger.js";
 import { accountPolicy, type AccountRecord } from "./accounts.js";
 import { clearAuth, readLinkedAccount, useAtomicAuthState, type LinkedAccount } from "./auth-state.js";
@@ -48,6 +54,7 @@ import { AccountHealth, classifyClose, TEMP_BAN_RETRY_MAX_MS, type NewChatCapRep
 import { AccountIdentity } from "./service/identity.js";
 import { AccountIngest, type MessageRef } from "./service/ingest.js";
 import { AccountMedia } from "./service/media.js";
+import { readRecallSettings, type RecallSettings, type RecallStatus } from "./recall/index.js";
 import { AccountRecall } from "./service/recall.js";
 import { AccountReads } from "./service/reads.js";
 import { AccountSends, type SendAttempt } from "./service/send.js";
@@ -160,6 +167,14 @@ async function hasPrivacyToken(sock: WASocket, jid: string): Promise<boolean> {
   }
 }
 
+function readRecallSettingsOrNull(dataDir: string): RecallSettings | null {
+  try {
+    return readRecallSettings(process.env, dataDir);
+  } catch {
+    return null;
+  }
+}
+
 export class WhatsAppService implements WhatsAppApi {
   private sockClient: WASocket | null = null;
   private saveCreds: (() => Promise<void>) | null = null;
@@ -190,6 +205,12 @@ export class WhatsAppService implements WhatsAppApi {
   private pairingRun: { cancel: () => void; settled: Promise<void> } | null = null;
   private lastInboundAt: number | null = null;
   private initialSyncDone = false;
+  /**
+   * Opened by openStored for a one-shot CLI command (demo seed, embed index,
+   * search): the database only, no socket ever, and the reads that need
+   * nothing but what is stored answer from it.
+   */
+  private storedOnly = false;
   private historyReceived = false;
   private syncDeadline: ReturnType<typeof setTimeout> | null = null;
   private syncWaiters: Array<() => void> = [];
@@ -273,7 +294,10 @@ export class WhatsAppService implements WhatsAppApi {
         adoptDatabase: (db) => this.adoptDatabase(db),
         recoverSends: (db) => this.sends.recoverSends(db),
         recoverTranscriptions: (db) => this.voice.recoverTranscriptions(db),
-        startOutbox: () => this.outbox.start(),
+        // A stored-only service posts nothing: the webhook is the running server's.
+        startOutbox: () => {
+          if (!this.storedOnly) this.outbox.start();
+        },
         scheduleFlagsBackfill: (db) => this.ingest.scheduleFlagsBackfill(db),
         embedFeed: () => this.recallIndex.embedFeed,
       },
@@ -368,9 +392,7 @@ export class WhatsAppService implements WhatsAppApi {
         stopped: () => this.stopped,
         storageState: () => this.storage.storageState,
         guarded: (work) => this.guarded(work),
-        ensureConnected: () => {
-          this.ensureConnected();
-        },
+        ensureConnected: () => this.ensureReadable(),
         waitForSync: () => this.waitForSync(),
         synced: (data) => this.synced(data),
         transcriptRecordOf: (message) => this.voice.transcriptRecordOf(message),
@@ -441,6 +463,7 @@ export class WhatsAppService implements WhatsAppApi {
         syncState: () => this.syncState(),
         guarded: (work) => this.guarded(work),
         ensureConnected: () => this.ensureConnected(),
+        ensureReadable: () => this.ensureReadable(),
         waitForSync: () => this.waitForSync(),
         synced: (data) => this.synced(data),
         foldsSettled: () => this.foldsSettled(),
@@ -503,6 +526,7 @@ export class WhatsAppService implements WhatsAppApi {
   }
 
   async start(): Promise<void> {
+    if (this.storedOnly) throw new WazapError("WHATSAPP_ERROR", "A service opened stored-only never connects.");
     if (this.stopped || this.starting) return;
     this.starting = true;
     try {
@@ -627,6 +651,65 @@ export class WhatsAppService implements WhatsAppApi {
    */
   bootStorage(): Promise<void> {
     return this.storage.bootStorage();
+  }
+
+  /**
+   * The database alone, for a CLI command that never talks to WhatsApp: no
+   * socket is opened, now or later, and search answers from what is stored.
+   * The account's own id comes from its record, so messages of its own read
+   * as "me". start() refuses a service opened this way. The embedding feed
+   * only runs with `index`: a search or a seed leaves the queue as it is.
+   */
+  async openStored(opts: { index?: boolean } = {}): Promise<void> {
+    this.storedOnly = true;
+    if (opts.index !== true) await this.recallIndex.embedFeed?.stop();
+    this.initialSyncDone = true;
+    this.historyReceived = true;
+    const owner = this.accountRecord.owner;
+    if (owner !== null && this.account === null) {
+      this.account = { id: owner, name: this.accountRecord.name, number: owner.split("@")[0]!.split(":")[0]! };
+    }
+    await this.storage.bootStorage();
+  }
+
+  /**
+   * Files records that did not come from a socket (the demo seed) through the
+   * same ingestion WhatsApp's own events take: contacts, chats, then messages
+   * as history. Only a service opened with openStored takes them.
+   */
+  ingestStored(batch: { contacts: BaileysContact[]; chats: BaileysChat[]; messages: WAMessage[] }): void {
+    if (!this.storedOnly) throw new WazapError("WHATSAPP_ERROR", "Only a service opened with openStored takes stored records.");
+    this.storage.db.transaction(() => {
+      for (const contact of batch.contacts) this.ingest.ingestContact(contact);
+      for (const chat of batch.chats) this.ingest.ingestChat(chat);
+    });
+    this.ingest.receiveMessages(batch.messages, "append");
+  }
+
+  /**
+   * The meaning index as get_status reports it, except that a stored-only
+   * service, whose feed may not run, never calls an index with work left
+   * (queued, or a queue not yet refilled for the model) ready.
+   */
+  indexStatus(): RecallStatus {
+    const status = this.recallIndex.recallStatus();
+    if (status.state !== "ready") return status;
+    const db = this.storage.readyDb();
+    const model = readRecallSettingsOrNull(this.config.dataDir)?.model;
+    const complete = db === null || model === undefined || db.vectors.queueComplete(model);
+    return status.pending > 0 || !complete ? { ...status, state: "indexing" } : status;
+  }
+
+  /**
+   * Embeds everything queued, to the end or until the feed pauses on a failing
+   * backend, and says where the index stands. Recall must be on.
+   */
+  async buildIndex(): Promise<RecallStatus> {
+    const feed = this.recallIndex.embedFeed;
+    if (feed === null) return this.indexStatus();
+    feed.kick();
+    await this.recallIdle();
+    return this.indexStatus();
   }
 
   /** What the service mirrors from a database it starts reading: the pairings and the last sign of life. */
@@ -1649,6 +1732,16 @@ export class WhatsAppService implements WhatsAppApi {
       }
       throw asWazapError(err);
     }
+  }
+
+  /** A read that needs only what is stored: connected, or opened stored-only. */
+  private ensureReadable(): void {
+    if (!this.storedOnly) {
+      this.ensureConnected();
+      return;
+    }
+    if (this.storage.storageState === "preparing") throw this.storage.preparingError();
+    if (this.storage.storageState === "failed" && this.storage.storageFault !== null) throw this.storage.storageFault;
   }
 
   private ensureConnected(): WASocket {

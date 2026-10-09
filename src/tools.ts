@@ -178,7 +178,7 @@ const SEARCH_OUTPUT = {
 };
 
 /** What keeps search from matching by meaning: off, a failing or refusing embedding server, or one still starting. search answers by words instead. */
-const MEANING_FAILURES: ReadonlySet<string> = new Set(["RECALL_UNAVAILABLE", "RECALL_FAILED", "RECALL_BAD_INPUT", "TIMEOUT"]);
+export const MEANING_FAILURES: ReadonlySet<string> = new Set(["RECALL_UNAVAILABLE", "RECALL_FAILED", "RECALL_BAD_INPUT", "TIMEOUT"]);
 
 const MEDIA_OUTPUT = {
   message_id: z.string(),
