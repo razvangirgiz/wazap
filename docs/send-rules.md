@@ -64,6 +64,13 @@ Approving runs the same checks `confirm_send` runs: the send rules below as
 they are now, the global and per-account writes switches, and the at-most-once
 claim on the draft.
 
+Drafts waiting for you are never dropped to make room. A session keeps at most
+20 drafts and an account 200; a draft that waits for a person counts, but only
+a draft its session would confirm itself, or a lapsed one, is evicted for a
+new one. When waiting drafts fill a cap, a new draft is refused with
+`DRAFTS_WAITING`, nothing is sent, and the agent tells you to approve or
+discard what waits (`wazap drafts`).
+
 What it does not cover: an agent that also has a shell on the machine wazap
 runs on can read the data dir, the password and the WhatsApp credentials
 included, and so can do anything you can there. Drafts only holds for what

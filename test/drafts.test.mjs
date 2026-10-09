@@ -113,6 +113,63 @@ test("the account keeps at most its cap of drafts across sessions: the oldest go
   for (const kept of [second, third, fourth]) assert.equal(store.has(sends, kept.id), true);
 });
 
+test("a draft waiting for approval is never evicted by the owner's cap: the new draft is refused instead", (t) => {
+  const { store, sends, advance } = storeAt(t, 10_000, 2);
+  let keys = 0;
+  const approval = (owner, text) => store.put(sends, ANA, { ...textPayload, text }, `AKEY${++keys}`, owner, 100_000);
+  const quick = (owner, text) => store.put(sends, ANA, { ...textPayload, text }, `QKEY${++keys}`, owner);
+  const first = approval("a", "one");
+  advance(1);
+  const second = approval("a", "two");
+  advance(1);
+  assert.throws(
+    () => approval("a", "three"),
+    (err) => err.code === "DRAFTS_WAITING" && /2 drafts already wait for approval/.test(err.message) && /wazap drafts/.test(err.fix)
+  );
+  assert.throws(() => quick("a", "quick"), { code: "DRAFTS_WAITING" }, "a confirmable draft cannot push one out either");
+  assert.equal(store.has(sends, first.id), true, "nothing waiting vanished");
+  assert.equal(store.has(sends, second.id), true);
+  assert.equal(store.pending(sends).length, 2, "and nothing new was stored");
+
+  // Once one is approved or discarded there is room again.
+  sends.removeDraft(first.id);
+  approval("a", "three");
+
+  // A draft its own session would confirm still makes room, around the waiting ones.
+  const { store: mixed, sends: mixedSends, advance: tick } = storeAt(t, 10_000, 2);
+  const waiting = mixed.put(mixedSends, ANA, textPayload, "W1", "b", 100_000);
+  tick(1);
+  const confirmable = mixed.put(mixedSends, ANA, textPayload, "C1", "b");
+  tick(1);
+  mixed.put(mixedSends, ANA, textPayload, "C2", "b");
+  assert.equal(mixed.has(mixedSends, confirmable.id), false, "the confirmable draft made room");
+  assert.equal(mixed.has(mixedSends, waiting.id), true, "the older waiting draft stayed");
+
+  // A waiting draft that lapsed may go: nobody can approve it any more.
+  tick(100_000);
+  mixed.put(mixedSends, ANA, textPayload, "C3", "b");
+  assert.equal(mixed.has(mixedSends, waiting.id), false);
+});
+
+test("the account's cap never evicts another session's waiting approval: the new draft is refused, and nothing changes", (t) => {
+  const { store, sends, advance } = storeAt(t, 10_000, 5, 2);
+  const one = store.put(sends, ANA, textPayload, "A1", "approver-1", 100_000);
+  advance(1);
+  const two = store.put(sends, ANA, textPayload, "A2", "approver-2", 100_000);
+  advance(1);
+  assert.throws(() => store.put(sends, ANA, textPayload, "Q1", "full-access"), (err) => err.code === "DRAFTS_WAITING" && /^2 drafts/.test(err.message));
+  assert.equal(store.has(sends, one.id), true);
+  assert.equal(store.has(sends, two.id), true);
+
+  // With one confirmable draft among them, that one goes and the waiting ones stay.
+  sends.removeDraft(two.id);
+  const confirmable = store.put(sends, ANA, textPayload, "Q2", "full-access");
+  advance(1);
+  store.put(sends, ANA, textPayload, "A3", "approver-2", 100_000);
+  assert.equal(store.has(sends, confirmable.id), false);
+  assert.equal(store.has(sends, one.id), true);
+});
+
 test("To: line names a group without a number, and a nameless jid without parens", () => {
   assert.equal(formatToLine(BLOC), "To: Bloc 12 (group)");
   assert.equal(formatToLine({ chat_id: "x@s.whatsapp.net", name: "unknown" }), "To: unknown");

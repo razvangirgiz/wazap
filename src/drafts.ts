@@ -180,6 +180,18 @@ export class SessionDrafts {
   }
 }
 
+/**
+ * Drafts waiting for a person's approval fill a cap, so this one was not made;
+ * none of them was dropped to make room. Nothing was sent.
+ */
+export function draftsWaiting(cap: number): WazapError {
+  return new WazapError(
+    "DRAFTS_WAITING",
+    `${cap} drafts already wait for approval, so this one was not drafted; nothing was sent and none of them was dropped.`,
+    "Tell the user drafts are waiting for them: they approve or discard each with `wazap drafts` or its approval link (each lapses after 24 hours). Draft again once they have"
+  );
+}
+
 /** A draft handed to WhatsApp whose arrival nobody can vouch for. Never retried. */
 export function sendOutcomeUnknown(id: string, cause?: string): WazapError {
   return new WazapError(
@@ -198,7 +210,11 @@ export function sendOutcomeUnknown(id: string, cause?: string): WazapError {
  * other identity is told there is no such draft.
  *
  * A draft lapses after 15 minutes; an owner keeps at most 20 and an account
- * 200. Confirming claims it atomically; a send that failed before its key
+ * 200, the oldest evicted for a new one. A draft waiting for a person's
+ * approval (drafts-only, 24 hours) is never evicted: the person may be about
+ * to approve it, and nobody would tell them it is gone. When such drafts fill
+ * a cap, a new draft is refused with DRAFTS_WAITING instead, and the agent
+ * tells the person to approve or discard what waits. Confirming claims it atomically; a send that failed before its key
  * reached the socket gives it back (release), one that got further is settled
  * as sent or as unknown, and stays so. A sent draft answers its receipt again; an unknown
  * one answers SEND_OUTCOME_UNKNOWN until WhatsApp echoes its key.
@@ -230,7 +246,7 @@ export class DraftStore {
       keyId,
     };
     const frozen: FrozenDraft = { to, preview: draft.preview, payload };
-    sends.insertDraft(
+    const full = sends.insertDraft(
       {
         draftId: draft.id,
         owner,
@@ -242,8 +258,10 @@ export class DraftStore {
         expiresAt: draft.expiresAt,
       },
       this.cap,
-      this.accountCap
+      this.accountCap,
+      this.ttlMs
     );
+    if (full !== null) throw draftsWaiting(full === "owner" ? this.cap : this.accountCap);
     return draft;
   }
 
