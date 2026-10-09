@@ -113,7 +113,7 @@ else
   WANT="$(node_sha256 "$PLATFORM")"
   WORK="$(mktemp -d)"
   trap 'rm -rf "$WORK"' EXIT
-  curl -fSL --progress-bar "https://nodejs.org/dist/v$NODE_VERSION/$FILE" -o "$WORK/$FILE" || die "Could not download $FILE." "Check the network, or install Node 22 yourself"
+  curl -fSL --retry 3 --connect-timeout 20 --progress-bar "https://nodejs.org/dist/v$NODE_VERSION/$FILE" -o "$WORK/$FILE" || die "Could not download $FILE." "Check the network, or install Node 22 yourself"
   [ "$(sha256_of "$WORK/$FILE")" = "$WANT" ] || die "$FILE does not match its pinned sha256; nothing was installed."
   rm -rf "$NODE_DIR"
   mkdir -p "$NODE_DIR"

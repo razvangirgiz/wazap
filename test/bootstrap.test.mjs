@@ -339,6 +339,19 @@ test("bootstrap's test search can only pass by meaning: --match meaning, matched
   assert.ok(!fold(query).includes(fold(expect)));
 });
 
+test("bootstrap's downloads retry and time out the way install.sh's do", () => {
+  const install = readFileSync(join(root, "scripts", "install.sh"), "utf8");
+  for (const flag of ["--retry 3", "--connect-timeout 20"]) assert.match(install, new RegExp(`curl [^\\n]*${flag}`));
+  const curls = readFileSync(join(root, "scripts", "bootstrap.sh"), "utf8")
+    .split("\n")
+    .filter((line) => /^\s*curl\s/.test(line));
+  assert.ok(curls.length > 0);
+  for (const line of curls) {
+    assert.match(line, /--retry 3/, line);
+    assert.match(line, /--connect-timeout 20/, line);
+  }
+});
+
 test("bootstrap --offline-stub seeds, indexes and finds the address by meaning, with no download", { skip: !posix, timeout: 180_000 }, async () => {
   const dataDir = mkdtempSync(join(tmpdir(), "wazap-bootstrap-"));
   const result = spawnSync("bash", [join(root, "scripts", "bootstrap.sh"), "--offline-stub", "--no-build", "--data-dir", dataDir], {
