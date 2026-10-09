@@ -59,26 +59,6 @@
   and with no step that needs a terminal: install, a pairing code for the
   person, `serve --daemon`, `expose quick`, and the URL handed over.
 
-- **The webhook can post only some chats.** `WAZAP_WEBHOOK_CHATS` lists chat
-  ids and phone numbers, and `WAZAP_WEBHOOK_TAG` names a contact tag such as
-  `autopeloc`. Set either and only a matching chat is posted. A direct chat
-  matches the tag when `remember` has filed it on that contact, so the set
-  changes without a restart, and a pending event for someone just removed is
-  cancelled. A group is posted only when its chat id is listed. An empty filter
-  posts no message events. With neither setting, every chat is posted except
-  contacts tagged `#private`. An account's `webhook_chats` or `webhook_tag`
-  replaces the global filter. `wazap config webhook chats`, `tag` and
-  `filter off` write them, and `wazap config` prints the filter.
-- **Messages in one chat can share one POST.** `WAZAP_WEBHOOK_COALESCE` is a
-  quiet window in seconds, from 1 to 300. Several messages in that chat become
-  one signed body. A conversation that keeps going is still delivered by twice
-  the window, and never later than 5 minutes after the first message of the
-  burst. The existing fields name the latest message. A burst also carries
-  `count`, `message_ids`, `texts`, `first_ts` and `first_timestamp`. One
-  message is the same body as before. Order inside the chat, retries, the
-  signature and the outbox across a restart are unchanged.
-- **A 401 can be retried.** `WAZAP_WEBHOOK_RETRY_401=on` retries a 401 on the
-  same schedule as a 5xx. Unset, a 401 still fails the event at once.
 - **Search by meaning in about five minutes, without an account.**
   `scripts/bootstrap.sh` (also `npm run bootstrap`) goes from a fresh clone to
   a working search by meaning on fictional sample chats: it checks Node and
@@ -155,6 +135,48 @@
   the same way, with the e5 fallback as the way out.
 - **The Docker healthcheck uses `node`** instead of `wget`, so the same line
   works on the Alpine and the Debian image.
+
+## 1.3.1
+
+### Fixed
+
+- **A chat read on the phone no longer shows as unread.** `list_chats` took
+  WhatsApp's own unread count, which stays where it was when the user reads on
+  the phone. A chat where the user had the last word, or where the phone's read
+  receipts reached the last message, now has `unread_count` 0 and leaves the
+  `unread` filter.
+
+## 1.3.0
+
+### Added
+
+- **`get_status` can return the account's own profile photo.** With
+  `include_picture: true` it adds `picture_url`, the link WhatsApp gives for
+  the photo, or `null` when there is none or it cannot be read; the status
+  answers either way. Off by default, so nothing changes for agents that do not
+  ask. The link expires: a client that shows it keeps its own copy.
+- **The webhook can post only some chats.** `WAZAP_WEBHOOK_CHATS` lists chat
+  ids and phone numbers, and `WAZAP_WEBHOOK_TAG` names a contact tag such as
+  `autopeloc`. Set either and only a matching chat is posted. A direct chat
+  matches the tag when `remember` has filed it on that contact, so the set
+  changes without a restart, and a pending event for someone just removed is
+  cancelled. A group is posted only when its chat id is listed. An empty filter
+  posts no message events. With neither setting, every chat is posted except
+  contacts tagged `#private`. An account's `webhook_chats` or `webhook_tag`
+  replaces the global filter. `wazap config webhook chats`, `tag` and
+  `filter off` write them, and `wazap config` prints the filter.
+- **Messages in one chat can share one POST.** `WAZAP_WEBHOOK_COALESCE` is a
+  quiet window in seconds, from 1 to 300. Several messages in that chat become
+  one signed body. A conversation that keeps going is still delivered by twice
+  the window, and never later than 5 minutes after the first message of the
+  burst. The existing fields name the latest message. A burst also carries
+  `count`, `message_ids`, `texts`, `first_ts` and `first_timestamp`. One
+  message is the same body as before. Order inside the chat, retries, the
+  signature and the outbox across a restart are unchanged.
+- **A 401 can be retried.** `WAZAP_WEBHOOK_RETRY_401=on` retries a 401 on the
+  same schedule as a 5xx. Unset, a 401 still fails the event at once.
+
+### Changed
 
 - **The webhook never posts a contact tagged `#private`.** Their direct chat
   is left out, including messages the owner sent there, and so is a message
