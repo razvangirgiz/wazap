@@ -82,3 +82,10 @@ export function startEmbedStub() {
     );
   });
 }
+
+// Run directly (the bootstrap's --offline-stub): serve until killed, and print
+// the URL on stdout so the caller can point WAZAP_EMBED_URL at it.
+if (process.argv[1] && import.meta.url === new URL(`file://${process.argv[1]}`).href) {
+  const { url } = await startEmbedStub();
+  process.stdout.write(`${url}\n`);
+}
