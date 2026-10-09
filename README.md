@@ -80,6 +80,19 @@ too old: wazap needs 22.16 or newer on the 22 line, or 24.
 Every step `setup` takes, every client it can write, the background service and
 the upgrade command are in **[docs/install.md](docs/install.md)**.
 
+### Try it in 5 minutes, without an account
+
+```bash
+git clone https://github.com/razvangirgiz/wazap && cd wazap && ./scripts/bootstrap.sh --yes
+```
+
+From a fresh clone to a search by meaning over fictional sample chats, on
+macOS or Linux, with no WhatsApp account and no API key: it fetches Node 22 if
+yours is too old, builds, installs llama.cpp and the embedding model (both
+sha256-verified), seeds `./.wazap-demo`, indexes it and runs a test
+`wazap search`. Nothing touches `~/.wazap`. The flags and what each step does
+are in [docs/recall.md](docs/recall.md#try-it-in-five-minutes).
+
 ## The 21 tools
 
 Each one in a line. What every argument means, the workflows behind them and
@@ -204,7 +217,7 @@ move, and which are not — is in [docs/stability.md](docs/stability.md).
 | [docs/install.md](docs/install.md) | Every step of `setup`, each client `connect` writes, the background service, `expose`, upgrading, and the five skills |
 | [docs/tools.md](docs/tools.md) | The 21 tools in full: catching up, finding people, sending once, keeping someone private, and every error code |
 | [docs/voice.md](docs/voice.md) | Voice messages as text: whisper.cpp here, or an OpenAI-compatible API |
-| [docs/recall.md](docs/recall.md) | Semantic recall: `search` by meaning, with a local embedding model |
+| [docs/recall.md](docs/recall.md) | Semantic recall: `search` by meaning, with a local embedding model; llama.cpp on Linux, the 5-minute demo, `wazap search` from the shell |
 | [docs/data.md](docs/data.md) | The data directory, the account database, `wazap backup`, the copy an upgrade takes, deleted and disappearing messages, and upgrading from 0.21 |
 | [docs/accounts.md](docs/accounts.md) | Several WhatsApp accounts in one wazap, and several MCP clients on one server |
 | [docs/send-rules.md](docs/send-rules.md) | Read-only mode, per-account send rules, link previews and media processing |

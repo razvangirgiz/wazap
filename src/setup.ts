@@ -33,16 +33,16 @@ import {
   type Install,
   type Probes,
 } from "./connect.js";
-import { DEPS, ensureDeps } from "./deps.js";
+import { DEPS, ensureDeps, ensureLlama } from "./deps.js";
 import { checkLines, webhookCheck } from "./doctor.js";
-import { downloadEmbedModel } from "./cli.js";
+import { downloadEmbedModel, llamaReport } from "./cli.js";
 import { WazapError } from "./errors.js";
 import { PROVIDERS, runExpose, type TunnelProvider } from "./expose.js";
 import { INSTALL_WAIT_MS, installService, pickSupervisor } from "./service.js";
 import { lockHolder } from "./lock.js";
 import { say } from "./logger.js";
-import { readRecallSettings } from "./recall/index.js";
-import { applyTranscribe } from "./settings.js";
+import { EMBED_MODELS, readRecallSettings } from "./recall/index.js";
+import { applyRecall, applyTranscribe } from "./settings.js";
 import { installSkills, skillTargetFor } from "./skills.js";
 import { MODELS, findWhisper, localProvider, readTranscribeSettings, which } from "./transcribe/index.js";
 import { brand, fail, fix, humanLayout, info, ok, warn } from "./ui.js";
@@ -63,7 +63,7 @@ export async function runSetup(config: Config): Promise<void> {
 
   if (!humanLayout()) say(banner());
   const install = whereInstalled();
-  const announce = stepper(install.kind === "npx" ? 6 : 5);
+  const announce = stepper(install.kind === "npx" ? 7 : 6);
 
   const account = readLinkedAccount(resolveAccount(config.dataDir, config.accountId).paths.authDir);
   if (account === null) {
@@ -115,7 +115,8 @@ async function runSetupSteps(
   // question itself, at its own end, so here Transcribe follows Link directly.
   if (!w) announce("Transcribe");
   await chooseTranscribe(config, w, account && w ? [wizOk(`Already linked as ${describeAccount(account)}`)] : []);
-  await provisionRecall(config);
+  if (!w) announce("Search");
+  await chooseRecall(config, w);
 
   if (install.kind === "npx") {
     if (!w) announce("Install");
@@ -443,10 +444,61 @@ async function installModel(config: Config): Promise<void> {
   await downloadTranscribeModel(settings, MODELS[settings.model]);
 }
 
+const RECALL_CHOICES = ["local", "off"] as const;
+
 /**
- * Recall is opt-in through .env, so setup only closes the gap when it is
- * already on: install llama.cpp if needed and fetch the embedding model. A
- * machine without them warns and continues — recall degrades, setup finishes.
+ * Search by meaning: --recall answers it, a recall already on is kept and
+ * provisioned, and otherwise a person is asked (default yes). Nobody there
+ * to answer leaves the setting alone.
+ */
+async function chooseRecall(config: Config, w: Wizard | null = null): Promise<void> {
+  const flagged = config.recallChoice;
+  if (flagged !== undefined && !(RECALL_CHOICES as readonly string[]).includes(flagged)) {
+    throw new WazapError("INVALID_ID", `Unknown --recall ${flagged}.`, `Use --recall ${RECALL_CHOICES.join("|")}`);
+  }
+  let enabled = false;
+  try {
+    enabled = readRecallSettings(process.env, config.dataDir).enabled;
+  } catch {
+    // A bad WAZAP_RECALL_* is reported by status; the question can still fix it.
+  }
+  if (flagged === undefined && enabled) {
+    if (w) await w.next("Search", [wizOk("Search by meaning is on.")]);
+    await provisionRecall(config);
+    return;
+  }
+  const choice = flagged ?? (await askRecall(config, w));
+  if (choice === null) {
+    const line = "Search by meaning stays off. Turn it on with `wazap config recall local`.";
+    if (w) await w.next("Search", [wizInfo(line)]);
+    else say(info(line));
+    return;
+  }
+  if (w && flagged !== undefined) await w.next("Search", []);
+  await applyRecall(config, choice);
+  process.env.WAZAP_RECALL = choice;
+  if (choice === "local") await provisionRecall(config);
+}
+
+/** Null when nobody is there to answer. */
+async function askRecall(config: Config, w: Wizard | null): Promise<string | null> {
+  if (config.assumeYes || process.stdin.isTTY !== true) return null;
+  const mb = Math.round(EMBED_MODELS["embeddinggemma-300m"].bytes / 1_000_000);
+  const menu = [
+    "Search messages by meaning, not only by their words?",
+    `  Runs locally with llama.cpp and a ${mb} MB model; nothing leaves this machine.`,
+  ];
+  if (w) await w.next("Search", menu);
+  else for (const line of menu) say(line);
+  const question = "Turn it on? [Y/n] ";
+  const answer = (w ? await w.prompt(question) : await ask(`${brand("?")} ${question}`)).trim();
+  return /^n/i.test(answer) ? "off" : "local";
+}
+
+/**
+ * Install llama.cpp if needed (Homebrew, or the pinned release build) and
+ * fetch the embedding model. A machine where that fails warns and continues:
+ * recall degrades, setup finishes.
  */
 async function provisionRecall(config: Config): Promise<void> {
   let settings;
@@ -456,8 +508,17 @@ async function provisionRecall(config: Config): Promise<void> {
     return;
   }
   if (!settings.enabled || config.dryRun) return;
-  await ensureDeps([DEPS.llama], config);
+  const llama = settings.embedUrl === null ? await ensureLlama(config) : null;
+  settings = readRecallSettings(process.env, config.dataDir);
   await downloadEmbedModel(settings);
+  if (llama !== null) {
+    const report = llamaReport(llama.bin, settings.model);
+    if (report.problem !== null) {
+      say(warn(report.problem));
+      if (report.fix) say(fix(report.fix));
+      say(info("Setup continues; search answers by words until this is fixed."));
+    }
+  }
 }
 
 /**

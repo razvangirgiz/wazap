@@ -76,6 +76,13 @@ export class AccountRecall {
   private recallEngineP: Promise<EmbedEngine> | null = null;
   /** RECALL_QUERY_WAIT_MS; a field so a test need not wait eight seconds. */
   private recallQueryWaitMs = RECALL_QUERY_WAIT_MS;
+  /**
+   * A one-shot CLI search: no server stays up for the next search to find the
+   * sidecar warm, so the query waits out llama-server's start (bounded by the
+   * engine's own 90 s) before RECALL_QUERY_WAIT_MS begins, and recency does not
+   * weigh the ranking. Set by openStored.
+   */
+  storedOnly = false;
 
   constructor(
     private readonly host: RecallHost,
@@ -130,7 +137,7 @@ export class AccountRecall {
         vector: vector ?? null,
         limit: people === null || author !== undefined ? window : 2 * window,
         minSimilarity: settings.minSimilarity,
-        recencyHalfLifeMs: RECALL_RECENCY_HALF_LIFE_MS,
+        ...(this.storedOnly ? {} : { recencyHalfLifeMs: RECALL_RECENCY_HALF_LIFE_MS }),
         ...(scope === undefined ? {} : { chat: scope }),
         ...(from === undefined ? {} : { from }),
         ...(opts.sinceMs === undefined ? {} : { since: opts.sinceMs }),
@@ -232,6 +239,7 @@ export class AccountRecall {
    * the request under way finishes for nobody, so the next search finds it up.
    */
   private async queryVector(query: string): Promise<number[] | undefined> {
+    if (this.storedOnly) await this.recallEngine();
     const embedding = this.recallEmbed([query], "query");
     embedding.catch(() => {});
     let timer: NodeJS.Timeout | undefined;

@@ -385,6 +385,11 @@ export class Vectors {
     });
   }
 
+  /** Whether the queue is complete for `model`, read without changing anything: false until its refill has run to the end. */
+  queueComplete(model: string): boolean {
+    return this.meta(FEED_MODEL_META) === model && this.meta(REFILL_META) === null;
+  }
+
   /** Stops keeping the queue: no model is fed, and nothing stays queued. */
   unfeed(): void {
     this.c.write(() => {

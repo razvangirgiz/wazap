@@ -129,6 +129,8 @@ curl -s http://127.0.0.1:8766/healthz
 
 The container publishes `8766` on loopback only; add the same TLS proxy in front. Upgrading is `git pull && docker compose up -d --build`; the volume keeps the session.
 
+The image is Alpine and has no llama.cpp, so `search` matches words only. For search by meaning, build it with `docker compose build --build-arg WITH_RECALL=1` (Debian, the pinned llama.cpp, `WAZAP_RECALL=local`), then fetch the model into the volume once: `docker compose run --rm wazap embed download`. See [recall.md](recall.md#llamacpp).
+
 A proxy on the host reaches the container through the published port, so inside
 the container its address is the compose network's gateway, not loopback. The
 compose file pins that network to `172.30.87.0/24` and trusts its gateway,

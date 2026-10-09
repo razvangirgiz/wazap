@@ -365,7 +365,7 @@ const RECALL_SAID: Record<string, string> = {
   off: "recall: off — `search` matches words only and says how to turn it on.",
 };
 
-async function applyRecall(config: Config, value: string): Promise<void> {
+export async function applyRecall(config: Config, value: string): Promise<void> {
   const p = paths(config.dataDir);
   setEnvSetting(p.envFile, "WAZAP_RECALL", value);
   say(ok(RECALL_SAID[value]!));

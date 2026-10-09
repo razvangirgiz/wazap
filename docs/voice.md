@@ -32,6 +32,14 @@ wazap transcribe test recording.ogg  # prove it before you trust it
 themselves when either binary is missing, and go straight on to the model in the
 same run. `--no-brew` turns the offer off everywhere.
 
+On Linux there is no official whisper.cpp build to fetch: install ffmpeg from
+the package manager, build whisper.cpp with cmake
+(`cmake -B build && cmake --build build --target whisper-cli`) and put
+`whisper-cli` on `PATH`, or use the OpenAI-compatible API instead. Voice is
+optional for everything else, search included; `scripts/bootstrap.sh
+--with-voice` adds it to the [5-minute demo](recall.md#try-it-in-five-minutes)
+when the binaries are there.
+
 Models land in `<data-dir>/models/` and are checked against a SHA-256 pinned in
 the source. The shared whisper/embedding downloader stops an oversized response
 before excess bytes are written, independently of `Content-Length`. Only a

@@ -31,7 +31,9 @@ export type Command =
   | "webhook"
   | "account"
   | "backup"
-  | "migrate";
+  | "migrate"
+  | "search"
+  | "demo";
 
 export interface Config {
   dataDir: string;
@@ -97,6 +99,15 @@ export interface Config {
   modelName?: string;
   /** `setup` only: the answer to the transcription question, from --transcribe. */
   transcribeChoice?: string;
+  /** `setup` only: the answer to the meaning-search question, from --recall. */
+  recallChoice?: string;
+  /** `search` only: --limit as typed, and --match (hybrid, meaning or words). */
+  limit?: string;
+  match?: string;
+  /** `embed index` only: build the index to the end before exiting. */
+  wait: boolean;
+  /** `demo seed` only: the world JSON to seed instead of the bundled one. */
+  fixture?: string;
   /** `setup` only: the answer to the "keep running" question, from --service / --expose. */
   keepRunning: KeepRunning | null;
   /** `--account` on login, logout, status, config writes, webhook test, and short-lived services. */
@@ -191,6 +202,8 @@ const COMMAND_ARGS: Record<Command, readonly number[]> = {
   account: [1, 2],
   backup: [1],
   migrate: [1],
+  search: [1],
+  demo: [1],
 };
 
 const COMMANDS = Object.keys(COMMAND_ARGS) as readonly Command[];
@@ -211,7 +224,9 @@ const COMMAND_USAGE: Partial<Record<Command, string>> = {
   skills: "Run `wazap skills install [<harness>]`",
   service: "Run `wazap service install|status|start|stop|restart|logs|uninstall`",
   transcribe: "Run `wazap transcribe download` or `wazap transcribe test <audio file>`",
-  embed: "Run `wazap embed download`",
+  embed: "Run `wazap embed download` or `wazap embed index [--wait]`",
+  search: 'Run `wazap search "<words>" [--match hybrid|meaning|words] [--limit <n>] [--json]`',
+  demo: "Run `wazap demo seed --data-dir ./.wazap-demo`",
   contacts: "Run `wazap contacts resync`",
   config:
     "Run `wazap config`, `wazap config writes on|off`, `wazap config transcribe local|openai|off`, `wazap config recall local|off`, `wazap config webhook on|off|auth|no-auth|chats|tag|coalesce|retry-401|filter off`, `wazap config draft-context on|off`, or `wazap config send allow|deny <list>|open`",
@@ -362,6 +377,11 @@ export function parseCli(argv: string[] = process.argv.slice(2)): CliInvocation 
         relaunch: { type: "boolean" },
         model: { type: "string" },
         transcribe: { type: "string" },
+        recall: { type: "string" },
+        limit: { type: "string" },
+        match: { type: "string" },
+        wait: { type: "boolean" },
+        fixture: { type: "string" },
         service: { type: "boolean" },
         expose: { type: "boolean" },
         yes: { type: "boolean", short: "y" },
@@ -457,6 +477,11 @@ export function parseCli(argv: string[] = process.argv.slice(2)): CliInvocation 
       assumeYes: values.yes === true,
       modelName: values.model,
       transcribeChoice: values.transcribe,
+      recallChoice: values.recall,
+      limit: values.limit,
+      match: values.match,
+      wait: values.wait === true,
+      fixture: values.fixture,
       keepRunning: values.expose === true ? "expose" : values.service === true ? "service" : null,
       accountId: values.account,
       accountName: values.name,

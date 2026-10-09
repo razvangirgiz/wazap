@@ -15,6 +15,8 @@ import {
   runTranscribe,
 } from "./cli.js";
 import { runBackup } from "./backup-cli.js";
+import { runDemo } from "./demo.js";
+import { runSearch } from "./search-cli.js";
 import { BAILEYS_VERSION, WAZAP_VERSION, parseCli, pickDefaultAction, settingWarnings } from "./config.js";
 import { migrateLayout } from "./migrate.js";
 import { CLIENT_NAMES, runConnect } from "./connect.js";
@@ -53,7 +55,11 @@ Usage:
   wazap webhook test [--event <name>] [--account <id>]     POST a test event to the configured webhook
   wazap transcribe download [--model <alias>]              Fetch the whisper.cpp model into the data dir
   wazap transcribe test <audio file>                       Transcribe a local file with the configured provider
-  wazap embed download [--model <alias>]                   Fetch the llama.cpp embedding model for semantic recall
+  wazap embed download [--model <alias>]                   Fetch the embedding model, and llama.cpp where it is missing
+  wazap embed index [--wait] [--account <id>]              Show the meaning index, or with --wait embed what is queued
+  wazap search "<words>" [--match hybrid|meaning|words] [--limit <n>] [--json]
+                                                           Search an account's stored messages from the shell, read-only
+  wazap demo seed [--fixture <world.json>]                 Fill a throwaway --data-dir with fictional chats to try search on
   wazap contacts resync                                    Fetch the phone's address book from WhatsApp again
   wazap update [--dry-run]                                 Upgrade wazap, then the service and the skills that follow it
   wazap status [--live] [--json] [--account <id>]          Check the install, the session and the server
@@ -70,7 +76,7 @@ Tunnel providers for wazap expose: ${PROVIDER_NAMES}.
 
 Options:
   --data-dir <path>   Where wazap keeps its data (default ~/.wazap, or $WAZAP_DATA_DIR)
-  --account <id>      With login, logout, status, contacts, backup, config writes|webhook, webhook test:
+  --account <id>      With login, logout, status, contacts, backup, search, embed index, config writes|webhook, webhook test:
                       pick this account. A running server applies account add|enable|disable|default|remove
   --event <name>      With webhook test: message_received (default), message_sent or connection
   --name <name>       With account add: a display name
@@ -86,17 +92,22 @@ Options:
   --no-brew           Never offer to install a missing whisper-cpp, ffmpeg or tailscale with Homebrew
   --relaunch          With setup: restart Claude Desktop after connecting it, without asking
   --transcribe <how>  With setup: answer the transcription question (local, openai or off)
+  --recall <how>      With setup: answer the search-by-meaning question (local or off)
   --service           With setup: keep wazap running on this machine, without asking
   --expose            With setup: also give it a public URL cloud agents can reach
   --model <alias>     With transcribe download: turbo (default), large-v3 or medium.
                       With embed download: embeddinggemma-300m (default) or e5-base-multilingual
+  --wait              With embed index: embed everything queued, then exit 0 once the index is ready
+  --match <how>       With search: hybrid (default; meaning and words), meaning, or words
+  --limit <n>         With search: at most this many results, 1 to 50 (default 10)
+  --fixture <path>    With demo seed: the world JSON to seed (default: the bundled eval/fixtures/world.json)
   --dry-run           With connect, skills install, service install or update: print what would happen, and do nothing
   --force             With backup: replace a file already at the destination
   --live              With status: reach WhatsApp for real, then close the connection
-  --json              With status, --version or account add: print one JSON object on stdout
+  --json              With status, search, embed, --version or account add: print one JSON object on stdout
   --writes            Allow the agent to write, without login asking
   --no-writes         Keep the agent read-only, without login asking
-  -y, --yes           Do not ask anything at the end of login
+  -y, --yes           Do not ask anything at the end of login; with embed download, fetch llama.cpp without asking
   -h, --help          Show this help
   -v, --version       Show the version; with --json, one JSON object on stdout
 
@@ -138,6 +149,7 @@ async function main(): Promise<void> {
     "update",
     "transcribe",
     "embed",
+    "demo",
   ]);
   if (!MIGRATE_EXEMPT.has(config.command)) migrateLayout(config.dataDir);
   switch (config.command) {
@@ -198,6 +210,12 @@ async function main(): Promise<void> {
       return;
     case "migrate":
       runMigrate(config);
+      return;
+    case "search":
+      await runSearch(config);
+      return;
+    case "demo":
+      await runDemo(config);
       return;
     default: {
       const _exhaustive: never = config.command;

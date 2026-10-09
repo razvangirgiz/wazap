@@ -81,6 +81,8 @@ export interface ReadsHost {
   syncState(): SyncState;
   guarded<T>(work: () => Promise<T>): Promise<T>;
   ensureConnected(): WASocket;
+  /** A read that needs only what is stored, which a stored-only service also answers. */
+  ensureReadable(): void;
   waitForSync(): Promise<void>;
   synced<T>(data: T): Synced<T>;
   /** The folds a pairing started, let land within a bound. */
@@ -262,7 +264,7 @@ export class AccountReads {
     opts: SearchOptions = {}
   ): Promise<SearchAnswer> {
     return this.host.guarded(async () => {
-      this.host.ensureConnected();
+      this.host.ensureReadable();
       await this.host.waitForSync();
       limit = pageLimit(limit);
       const db = this.storage.db;

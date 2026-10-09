@@ -3,7 +3,7 @@
  * works in the evaluation without a model: words that mean the same thing share
  * one slot (the approach of test/recall.test.mjs), diacritics fold, and filler
  * words carry no weight. Crude on purpose: it is enough for "the address Ana
- * sent" to reach "Vă aștept pe Lalelelor 7", and it answers the same every run.
+ * sent" to reach "Vă aștept la mine, pe strada Lalelelor 7", and it answers the same every run.
  */
 import http from "node:http";
 
@@ -81,4 +81,11 @@ export function startEmbedStub() {
       })
     );
   });
+}
+
+// Run directly (the bootstrap's --offline-stub): serve until killed, and print
+// the URL on stdout so the caller can point WAZAP_EMBED_URL at it.
+if (process.argv[1] && import.meta.url === new URL(`file://${process.argv[1]}`).href) {
+  const { url } = await startEmbedStub();
+  process.stdout.write(`${url}\n`);
 }
