@@ -31,17 +31,15 @@ BUILD=1
 # None of the query's words is in the message it must find: only meaning reaches it.
 QUERY="adresa trimisă de Ana"
 EXPECT="Lalelelor"
-# The Node fetched when none fits, pinned like llama.cpp (src/recall/llama.ts):
-# one version, and each tarball's sha256 from its SHASUMS256.txt.
-NODE_VERSION=22.23.3
-node_sha256() {
-  case "$1" in
-    linux-x64) echo 1084aa36196bba4c3a5e69a1ee388a6e4ff729dad09445fbcd434b28fe3c24af ;;
-    linux-arm64) echo 5ced2d48d1d7198739b7f86804de0171aefb6823b684b12341d3321afc3cb0b2 ;;
-    darwin-arm64) echo 23b25245dcfb9af7262f8ff142e9e2e0af025368117329e7a7458a51e5922f53 ;;
-    darwin-x64) echo 8a677b0219178efd6eb0e475457c4afb452b521a92f6e67845a73bd85727f2a8 ;;
-  esac
-}
+# The Node fetched when none fits is the installer's pin, read from it so the
+# two never disagree: one version, and each tarball's sha256 from its
+# SHASUMS256.txt. install.sh keeps it at the top level because it runs from
+# `curl | sh`, where it has no sibling to read.
+eval "$(sed -n -e '/^NODE_VERSION=/p' -e '/^node_sha256() {$/,/^}$/p' "$ROOT/scripts/install.sh")"
+if [ -z "${NODE_VERSION:-}" ] || ! declare -F node_sha256 >/dev/null; then
+  echo "✗ scripts/install.sh no longer holds the Node pin (NODE_VERSION, node_sha256)." >&2
+  exit 1
+fi
 
 usage() { sed -n '2,19p' "$0" | sed 's/^# \{0,1\}//'; }
 

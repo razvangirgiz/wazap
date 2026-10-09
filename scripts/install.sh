@@ -23,7 +23,8 @@
 set -eu
 
 NODE_VERSION=22.23.3
-# From https://nodejs.org/dist/v22.23.3/SHASUMS256.txt; the same pins as scripts/bootstrap.sh.
+# From https://nodejs.org/dist/v22.23.3/SHASUMS256.txt. scripts/bootstrap.sh reads
+# NODE_VERSION and node_sha256 from here: keep both at the top level, as they are.
 node_sha256() {
   case "$1" in
     linux-x64) echo 1084aa36196bba4c3a5e69a1ee388a6e4ff729dad09445fbcd434b28fe3c24af ;;

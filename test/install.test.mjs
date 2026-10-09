@@ -122,14 +122,26 @@ test("a version that is not one, and an unknown option, are refused before anyth
   assert.equal(existsSync(join(home, ".local")), false);
 });
 
-test("the pinned Node is the one scripts/bootstrap.sh pins, with the same digests", () => {
+test("scripts/bootstrap.sh fetches the installer's pinned Node, read from install.sh, with no pin of its own", { skip }, async () => {
   const bootstrap = readFileSync(join(root, "scripts", "bootstrap.sh"), "utf8");
   const script = readFileSync(SCRIPT, "utf8");
-  assert.equal(/^NODE_VERSION=(\S+)$/m.exec(bootstrap)[1], NODE_VERSION);
-  for (const platform of ["linux-x64", "linux-arm64", "darwin-arm64", "darwin-x64"]) {
-    const digest = (text) => new RegExp(`${platform}\\) echo ([0-9a-f]{64})`).exec(text)?.[1];
-    assert.ok(digest(script), platform);
-    assert.equal(digest(script), digest(bootstrap), platform);
+  assert.doesNotMatch(bootstrap, /^NODE_VERSION=/m, "a second pin can drift from the installer's");
+  assert.doesNotMatch(bootstrap, /[0-9a-f]{64}/, "no digest of its own");
+  const reader = bootstrap.split("\n").find((line) => line.startsWith('eval "$(sed') && line.includes("scripts/install.sh"));
+  assert.ok(reader, "bootstrap.sh reads the pin from scripts/install.sh");
+  const platforms = ["linux-x64", "linux-arm64", "darwin-arm64", "darwin-x64"];
+  const { stdout } = await run("bash", [
+    "-c",
+    `set -euo pipefail; ROOT="$1"; ${reader}; echo "$NODE_VERSION"; for p in ${platforms.join(" ")}; do node_sha256 "$p"; done`,
+    "bash",
+    root,
+  ]);
+  const [version, ...digests] = stdout.trim().split("\n");
+  assert.equal(version, NODE_VERSION);
+  for (const [i, platform] of platforms.entries()) {
+    const pinned = new RegExp(`${platform}\\) echo ([0-9a-f]{64})`).exec(script)?.[1];
+    assert.ok(pinned, platform);
+    assert.equal(digests[i], pinned, platform);
   }
 });
 
