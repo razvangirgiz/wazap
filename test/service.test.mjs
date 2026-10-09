@@ -139,6 +139,45 @@ test("a second install rewrites the same files and restarts instead of starting"
   assert.deepEqual(second.calls, ["restart com.wazap.server"]);
 });
 
+for (const name of ["launchd", "systemd", "builtin"]) {
+  test(`${name}: an install for a second data dir refuses to repoint the first one's unit`, async () => {
+    const real = SUPERVISORS.find((entry) => entry.name === name);
+    const units = mkdtempSync(join(tmpdir(), "wazap-units-"));
+    const supervisorFor = () => ({ ...fakeSupervisor(units), name, render: real.render });
+    const first = join(dataDir(), "a & <b>");
+    const second = dataDir();
+
+    const owner = supervisorFor();
+    await captured(() => installService(config(first), owner, 0));
+    const record = readService(first);
+    const unit = readFileSync(record.unitFile, "utf8");
+
+    const intruder = supervisorFor();
+    await assert.rejects(installService(config(second), intruder, 0), (err) => {
+      assert.match(err.message, /already runs wazap for .*a & <b>; .* one wazap service per user/);
+      assert.match(err.fix, /wazap service uninstall --data-dir .*a & <b>/);
+      return true;
+    });
+    assert.equal(readFileSync(record.unitFile, "utf8"), unit, "the first install's unit is untouched");
+    assert.deepEqual(intruder.calls, [], "nothing is started, stopped or restarted");
+    assert.equal(readService(second), null);
+
+    // Its own data dir installs again over it, as before, also reached through a link.
+    const link = join(dataDir(), "link");
+    symlinkSync(first, link);
+    const again = supervisorFor();
+    await captured(() => installService(config(link, { httpPort: record.port }), again, 0));
+    assert.deepEqual(again.calls, [`restart ${record.label}`]);
+
+    // A unit left behind by a data dir that no longer records it: still refused, with how to remove it.
+    rmSync(paths(first).serviceFile);
+    await assert.rejects(installService(config(second), supervisorFor(), 0), (err) => {
+      assert.match(err.fix, /remove it first: .*rm /);
+      return true;
+    });
+  });
+}
+
 test("serviceScript of a global install is the real file behind that bin, not this process", () => {
   const root = mkdtempSync(join(tmpdir(), "wazap-global-script-"));
   const dist = join(root, "dist");

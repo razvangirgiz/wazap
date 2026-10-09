@@ -13,7 +13,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { homedir, userInfo } from "node:os";
-import { basename, dirname, join } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { setTimeout as sleep } from "node:timers/promises";
 import { WAZAP_VERSION, paths, type Config } from "./config.js";
@@ -308,6 +308,8 @@ const UNIT_FORMATS: Record<
     command(text: string): string;
     label(text: string, name: string): string;
     stop(label: string, unitFile: string): string;
+    /** The WAZAP_DATA_DIR the unit runs with, or null when it sets none. */
+    dataDir(text: string): string | null;
   }
 > = {
   launchd: {
@@ -315,6 +317,10 @@ const UNIT_FORMATS: Record<
     command: (text) => /<key>ProgramArguments<\/key>\s*<array>([\s\S]*?)<\/array>/.exec(text)?.[1] ?? "",
     label: (text, name) => /<key>Label<\/key>\s*<string>([^<]+)<\/string>/.exec(text)?.[1] ?? basename(name, ".plist"),
     stop: (label, unitFile) => `launchctl bootout ${guiDomain()}/${label}; rm ${unitFile}`,
+    dataDir: (text) => {
+      const found = /<key>WAZAP_DATA_DIR<\/key>\s*<string>([^<]*)<\/string>/.exec(text)?.[1];
+      return found === undefined ? null : found.replace(/&(amp|lt|gt);/g, (_all, name: string) => ({ amp: "&", lt: "<", gt: ">" })[name]!);
+    },
   },
   systemd: {
     extension: ".service",
@@ -325,6 +331,7 @@ const UNIT_FORMATS: Record<
         .join("\n"),
     label: (_text, name) => name,
     stop: (label, unitFile) => `systemctl --user disable --now ${label}; rm ${unitFile}`,
+    dataDir: (text) => /^\s*Environment=WAZAP_DATA_DIR=(.*)$/m.exec(text)?.[1]?.trim() ?? null,
   },
   builtin: {
     extension: ".json",
@@ -338,6 +345,14 @@ const UNIT_FORMATS: Record<
     },
     label: (_text, name) => basename(name, ".json"),
     stop: (_label, unitFile) => `kill $(cat ${unitFile.replace(/\.json$/, ".pid")}); rm ${unitFile}`,
+    dataDir: (text) => {
+      try {
+        const value = (JSON.parse(text) as { env?: Record<string, unknown> }).env?.WAZAP_DATA_DIR;
+        return typeof value === "string" ? value : null;
+      } catch {
+        return null;
+      }
+    },
   },
 };
 
@@ -372,6 +387,42 @@ export function tunnelsTo(supervisor: Supervisor, port: number): TunnelUnit[] {
     found.push({ label, unitFile, stop: format.stop(label, unitFile) });
   }
   return found;
+}
+
+/**
+ * The labels are one per supervisor, not per data dir: a second data dir's
+ * install would rewrite the first one's unit to point at itself, and wazap's
+ * own supervisor, finding that unit already running, would not even restart
+ * it. So the unit already there names its data dir, and another one is refused.
+ */
+function sameDir(a: string, b: string): boolean {
+  const real = (dir: string): string => {
+    try {
+      return realpathSync(dir);
+    } catch {
+      return resolve(dir);
+    }
+  };
+  return resolve(a) === resolve(b) || real(a) === real(b);
+}
+
+function refuseOtherDataDir(supervisor: Supervisor, ref: UnitRef, dataDir: string): void {
+  let text: string;
+  try {
+    text = readFileSync(ref.unitFile, "utf8");
+  } catch {
+    return;
+  }
+  const other = UNIT_FORMATS[supervisor.name].dataDir(text);
+  if (other === null || other === "" || sameDir(other, dataDir)) return;
+  const installed = readService(other)?.unitFile === ref.unitFile;
+  throw new WazapError(
+    "SERVICE_ERROR",
+    `${shortPath(ref.unitFile)} already runs wazap for ${shortPath(other)}; ${supervisor.name} holds one wazap service per user.`,
+    installed
+      ? `keep using that one, or run \`wazap service uninstall --data-dir ${other}\` first`
+      : `keep using that one, or remove it first: ${UNIT_FORMATS[supervisor.name].stop(ref.label, ref.unitFile)}`
+  );
 }
 
 const UNSUPPORTED_FIX =
@@ -604,6 +655,7 @@ export async function installService(
     installedVersion: WAZAP_VERSION,
   };
   if (existing?.tunnel) record.tunnel = existing.tunnel;
+  refuseOtherDataDir(supervisor, record, config.dataDir);
 
   const ours = existing === null ? null : supervisor.pid(record);
   const holder = portHolder(record.port);
