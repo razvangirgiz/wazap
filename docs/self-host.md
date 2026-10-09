@@ -190,8 +190,10 @@ WAZAP_OAUTH_PASSWORD=$(openssl rand -base64 18)
 Then give an agent nothing but `https://wazap.example.com/mcp`. It finds the
 authorization server at `/.well-known/oauth-protected-resource/mcp`, registers
 itself (RFC 7591, so there is no client id to paste anywhere), and sends you to
-a page on your own host that asks two things: the password above, and whether
-this agent may only read or also send. A refresh token keeps the agent signed
+a page on your own host that asks two things: the password above, and what
+this agent may do: only read, draft messages you approve before they are sent
+(preselected for every new agent, see [Drafts only](send-rules.md#drafts-only)),
+or send without asking. A refresh token keeps the agent signed
 in until you revoke it; access tokens rotate every 24 hours on their own.
 
 Tested against the flow claude.ai, ChatGPT and Poke use: S256 PKCE, public
@@ -208,7 +210,10 @@ What to know before exposing it:
   address out for fifteen minutes; twenty from anywhere pause consent for
   everyone for one minute.
 - With OAuth on, `/mcp` never answers an unauthenticated request, whether or
-  not a read token is set.
+  not a read token is set. Without it, an anonymous loopback read is refused
+  when the request carries a forwarding header (`X-Forwarded-For`,
+  `Forwarded`, `CF-Connecting-IP`, `X-Real-IP`): whatever its Host says, a
+  tunnel or a proxy relayed it.
 - Grants live in `<data-dir>/oauth.json` as hashes. Delete the file to sign
   every agent out at once, running server included; `wazap status` lists who
   holds one. Disconnecting an agent on its side revokes its refresh token and
@@ -219,8 +224,9 @@ What to know before exposing it:
   revokes the family, and older tokens are simply invalid. At most eight access
   tokens per grant remain active. A refresh token unused for ninety days is dropped. Damaged persisted grants require sign-in
   again rather than becoming unexpiring.
-- A read grant never sees a write tool, whatever scope the agent requested.
-  The radio button on the consent page is the only thing that decides. Refresh
+- A read grant never sees a write tool, and a drafts grant never sees a tool
+  that sends, whatever scope the agent requested. The radio button on the
+  consent page is the only thing that decides. Refresh
   requests may narrow scopes; asking for more gets the grant's scopes, and a
   request with none of them is rejected.
 - A supplied OAuth `resource` must be this server's exact MCP URL, including

@@ -4,6 +4,52 @@
 
 ### Added
 
+- **One pasted line installs wazap, with a Node of its own.**
+  `curl -fsSL https://raw.githubusercontent.com/razvangirgiz/wazap/main/scripts/install.sh | sh`
+  installs Node 22.23.3 (checked against its pinned sha256) and `wazap-mcp`
+  into `~/.local/share/wazap`, and a `wazap` launcher into `~/.local/bin` that
+  always runs that Node. No sudo (it refuses to run under sudo), no system
+  Node touched, macOS arm64/x64 and glibc Linux x64/arm64. A failed download or
+  install leaves the previous one in place; a `wazap` it did not write is never
+  replaced without `--force`; the shell profile gets one PATH line, once. Run
+  again, it upgrades and restarts the background service.
+- **Drafts only: the agent writes, you send.** `wazap config writes drafts`
+  (`WAZAP_DRAFTS_ONLY=1`, `--drafts-only` on `serve`, `login` and `setup`), or
+  the new middle choice on the OAuth sign-in page, preselected for every new
+  hosted agent ("draft messages that you approve before they are sent", OAuth
+  scope `drafts`). Such a session registers `send_message` and no tool that
+  sends, edits, deletes or changes a chat. Its drafts wait 24 hours and come
+  with the ways a person sends them: an approval page at
+  `<public URL>/approve/<draft_id>` that asks the wazap password, under the
+  consent page's lockout and with a one-time form token;
+  `wazap drafts approve <draft_id>` on the wazap machine, over the private
+  control line; and a `wa.me` link that opens WhatsApp with the text typed in.
+  Approving re-checks the send rules and the writes switches and sends at most
+  once. `wazap drafts` lists what waits, `wazap drafts discard` drops one.
+- **`wazap serve --daemon`, and a supervisor of wazap's own.** The same as
+  `wazap service install`, which now falls back, where neither launchd nor a
+  running systemd is there (a container with tini as PID 1), to a supervisor
+  that ships with wazap: a pidfile, logs in `~/.local/state/wazap`, restart on
+  exit with a backoff from one second to a minute, giving up (and saying so in
+  `service status`) after ten quick failures in a row, and a session of its own
+  so it outlives the shell that started it. The server it runs stops when the
+  supervisor is killed outright, so nothing holds the data dir's lock without
+  a supervisor. `service status|start|stop|restart|logs|uninstall` work as with
+  launchd and systemd; `service start` also brings back the tunnel, since
+  nothing starts this supervisor at boot.
+- **`wazap expose quick`: a public URL with no account.** A Cloudflare quick
+  tunnel (trycloudflare.com) from cloudflared 2026.10.0, downloaded into the
+  data dir and checked against its pinned sha256 (or the `cloudflared` already
+  on PATH), run as the service's second unit. The password is written before
+  the tunnel opens. A quick tunnel's URL changes when it restarts: its unit
+  adopts each new hostname and restarts the server onto it, and `wazap status`
+  (`public.mcp_url` in `--json`) always shows the current one, with that
+  trade-off spelled out. `wazap expose` with no provider signed in now takes
+  this path instead of offering Homebrew.
+- **`wazap setup --agent` covers an agent on its own Linux box**, end to end
+  and with no step that needs a terminal: install, a pairing code for the
+  person, `serve --daemon`, `expose quick`, and the URL handed over.
+
 - **The webhook can post only some chats.** `WAZAP_WEBHOOK_CHATS` lists chat
   ids and phone numbers, and `WAZAP_WEBHOOK_TAG` names a contact tag such as
   `autopeloc`. Set either and only a matching chat is posted. A direct chat
@@ -59,6 +105,25 @@
 
 ### Changed
 
+- **An old Node fails in one line, from every entry point.** `dist/index.js`
+  now checks the version before loading anything else, so the bare stdio
+  server an MCP client launches, `serve`, `status` and every other command
+  stop with `✗ wazap needs Node 22.16 or newer … this is Node <x> (<path>).
+  Fix: …` on stderr and exit 1, instead of failing on `node:sqlite` deep in
+  the import graph and being restarted until the client gives up.
+- **The sign-in page preselects drafts.** A new hosted agent is offered read,
+  drafts (checked) and send; an access the page does not offer is read.
+  Existing grants keep their scopes.
+- **systemd counts only when it runs.** `service install` uses systemd only
+  where `/run/systemd/system` exists (sd_booted), so a container that carries
+  `systemctl` without running systemd gets wazap's own supervisor instead of a
+  failing `systemctl --user`.
+- **An anonymous loopback read refuses a relayed request.** Without a token or
+  sign-in, `/mcp` already required a loopback Host; a request carrying
+  `X-Forwarded-For`, `Forwarded`, `CF-Connecting-IP` or `X-Real-IP` is now
+  refused too, so a tunnel that keeps the Host header cannot reach it.
+- **The README starts with one paragraph for people**: what wazap does, the
+  line to paste, and what stays private. The technical detail follows.
 - **`wazap embed download` says when llama-server is still missing.** The
   model is kept, the fix for the platform is printed, and the command exits 1
   (`--json`: `"ready": false`) instead of exiting 0 in silence. An installed

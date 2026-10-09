@@ -11,10 +11,26 @@
 
 [![M8ven Score](https://m8ven.ai/badge/mcp/razvangirgiz/wazap)](https://m8ven.ai/mcp/razvangirgiz/wazap)
 
-**WhatsApp for your AI assistant.** wazap is an MCP server that puts your own
-WhatsApp account — chats, messages, media, contacts, groups — behind 21 tools
-any MCP client can call, so Claude, ChatGPT, Gemini, Cursor or Codex can read
-your inbox and draft your replies.
+**wazap lets an AI assistant read your WhatsApp and write your replies, and it
+never has to send anything without you.** It connects to your own WhatsApp the
+way WhatsApp Web does, keeps your messages on the computer it runs on, and
+works with the assistant you already use: Claude, ChatGPT, Grok, Gemini,
+Cursor. To install it, paste this one line into a terminal; it needs no Node
+and no administrator password:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/razvangirgiz/wazap/main/scripts/install.sh | sh
+```
+
+Then run `wazap setup`, or tell your assistant: *"Set up WhatsApp for me: run
+`wazap setup --agent` and follow what it prints."* Your messages stay on that
+machine: there is no wazap account, no wazap server and no telemetry. An
+assistant that reaches wazap over the internet is set to **draft only** unless
+you choose otherwise: it writes the message, and you send it, either on an
+approval page that asks your wazap password, or yourself from WhatsApp with
+one tap.
+
+What follows is the technical detail.
 
 ## What it does
 
@@ -37,19 +53,28 @@ reseller, no account with us — there is no us: wazap runs on your machine.
 
 ## Get started
 
-The npm package is `wazap-mcp`; the command it installs is `wazap`.
+The npm package is `wazap-mcp`; the command it installs is `wazap`. The
+installer above (`scripts/install.sh`) brings a pinned, sha256-checked Node of
+its own into `~/.local/share/wazap`, puts `wazap` in `~/.local/bin`, and on a
+second run upgrades both and restarts the background service. With Node 22.16+
+already installed, `npx wazap-mcp setup` does the same job without it.
 
 ```bash
-npx wazap-mcp setup
+wazap setup
 ```
 
-That is the whole install. It links your account, finds the MCP clients
-installed on this machine, writes their config, copies the five skills where
-that client reads them, and tells you what to restart.
+That links your account, finds the MCP clients installed on this machine,
+writes their config, copies the five skills where that client reads them, and
+tells you what to restart.
 
 Or have your agent do it. Paste this:
 
-*Set up WhatsApp for me: run `npx wazap-mcp setup --agent` and follow what it prints.*
+*Set up WhatsApp for me: run `wazap setup --agent` and follow what it prints.*
+
+An agent on its own always-on Linux box (a hosted agent that reaches MCP
+servers by URL) follows the same document end to end, with no terminal of its
+own: install, a pairing code for you to type into your phone,
+`wazap serve --daemon`, `wazap expose quick`, and the URL handed to you.
 
 Then ask your assistant: *"what did I miss on WhatsApp today?"*
 
@@ -62,7 +87,7 @@ Then ask your assistant: *"what did I miss on WhatsApp today?"*
 | Gemini CLI | `npx wazap-mcp connect gemini` |
 | Cursor | the [Install in Cursor](docs/install.md#other-mcp-clients) badge, then `npx wazap-mcp skills install cursor` |
 | Codex CLI | `npx wazap-mcp connect codex`, then `npx wazap-mcp skills install codex` |
-| A hosted agent (claude.ai, ChatGPT) | a URL it signs in to: [Keep it running](docs/install.md#keep-it-running) |
+| A hosted agent (claude.ai, ChatGPT, Grok) | a URL it signs in to: `wazap serve --daemon`, then `wazap expose quick` ([Keep it running](docs/install.md#keep-it-running)) |
 | Anything else | the MCP entry `npx -y wazap-mcp` over stdio |
 
 [![Install in Cursor](https://cursor.com/deeplink/mcp-install-dark.png)](cursor://anysphere.cursor-deeplink/mcp/install?name=whatsapp&config=eyJjb21tYW5kIjoibnB4IiwiYXJncyI6WyIteSIsIndhemFwLW1jcCJdfQ)
@@ -72,10 +97,12 @@ the WhatsApp account is a separate, one-time step: `npx wazap-mcp login`, which
 shows a QR code to scan from **Settings → Linked devices → Link a device**, or
 prints an 8-character code with `--phone +15550100`.
 
-`npx wazap-mcp` on its own is safe to run: it prints where you stand and what
-to do next, and starts no server. When something is off, `npx wazap-mcp status`
-is the first thing to run — and it is what tells you if the Node you have is
-too old: wazap needs 22.16 or newer on the 22 line, or 24.
+`wazap` on its own is safe to run: it prints where you stand and what to do
+next, and starts no server. When something is off, `wazap status` is the first
+thing to run. Started on a Node that is too old (wazap needs 22.16 or newer on
+the 22 line, or 24), every entry point, the stdio server an MCP client
+launches included, stops with one line naming the Node it needs and the
+installer line that fixes it.
 
 Every step `setup` takes, every client it can write, the background service and
 the upgrade command are in **[docs/install.md](docs/install.md)**.
@@ -135,6 +162,16 @@ off by default and both can run entirely on this machine.
   sends, and a draft goes out at most once, even across a crash. Draft-then-
   confirm is a workflow, not independent proof of consent: an agent can call
   both tools unless the harness makes you approve the second one.
+- **Drafts only makes it more than a workflow.** With
+  `wazap config writes drafts` (or `WAZAP_DRAFTS_ONLY=1`, or the "draft
+  messages that you approve" choice on the sign-in page, which is preselected
+  for every new hosted agent), the session has `send_message` and no tool that
+  sends, edits, deletes or changes a chat. A draft leaves only when you approve
+  it: on its approval page (your wazap password, which the agent never sees),
+  with `wazap drafts approve <id>` on the machine wazap runs on, or by sending
+  it yourself from the wa.me link it comes with. An agent with a shell on the
+  machine wazap runs on is outside this promise: it can read wazap's files
+  ([docs/send-rules.md](docs/send-rules.md#drafts-only)).
 - **Read-only is a real switch.** With `WAZAP_READ_ONLY=1`, or
   `wazap config writes off`, the write tools are not registered at all — the
   assistant never sees them, so it cannot message anyone from your number even
