@@ -34,8 +34,8 @@ takes a fresh clone to a search by meaning over fictional sample chats.
 git clone https://github.com/razvangirgiz/wazap && cd wazap && ./scripts/bootstrap.sh --yes
 ```
 
-It checks Node (and fetches Node 22 into `./.tools/node`, verified against
-nodejs.org's `SHASUMS256.txt`, when yours is too old), runs `npm ci` and the
+It checks Node (and fetches Node 22.23.3 into `./.tools/node`, pinned by
+version and sha256 in the script, when yours is too old), runs `npm ci` and the
 build, installs llama.cpp and the model, seeds `./.wazap-demo` with
 `wazap demo seed`, builds the index with `wazap embed index --wait`, and ends
 with a test `wazap search`. Each step prints ✓ or ✗ with its fix, and running
@@ -47,12 +47,16 @@ demo. Its flags: `--data-dir <dir>`, `--model embeddinggemma-300m|e5-base-multil
 `npm run bootstrap -- <flags>` is the same script. Tunnels, tokens, OAuth and
 webhooks are not needed for search, so it skips them.
 
+The test search is `wazap search "adresa trimisă de Ana" --match meaning`: it
+shares no word with the message it must find ("Vă aștept la mine, pe strada
+Lalelelor 7…"), and passes only when that message is matched by meaning alone.
+
 On a CPU-only Linux box the real model embeds the ~150 sample messages in
 about 20 seconds; Apple Silicon is faster. embeddinggemma-300m is a small
-model: it ranks a near paraphrase well, but a question that shares no idea
-with the message's own words (Romanian "the address Ana sent" against
-"Vă aștept pe Lalelelor 7") can still miss, which is why `search` fuses
-meaning with words.
+model: it ranks a near paraphrase well, but it embeds only the message's own
+words, never who sent it, so a question whose meaning lives in the sender
+("the address Ana sent" against a bare "Vă aștept pe Lalelelor 7") can still
+miss, which is why `search` fuses meaning with words.
 
 ## llama.cpp
 
@@ -72,8 +76,9 @@ embeddinggemma needs llama.cpp build 6800 or newer. `embed download` reads
 the build from `llama-server --version` and refuses an older one with the
 way out: upgrade, or use `e5-base-multilingual`, which older builds run
 (`wazap embed download --model e5-base-multilingual` and
-`WAZAP_EMBED_MODEL=e5-base-multilingual` in the data dir's `.env`; the
-bootstrap switches to it on its own).
+`WAZAP_EMBED_MODEL=e5-base-multilingual` in the data dir's `.env`). The
+bootstrap switches to it and writes that line itself; with `--no-demo`, where
+it is your real install, it says so in a warning that cannot be missed.
 
 With Docker, `docker build --build-arg WITH_RECALL=1 -t wazap .` builds the
 image on Debian with the pinned llama.cpp in it and recall on; run
@@ -89,9 +94,14 @@ wazap search "the address Ana sent"  # --match hybrid|meaning|words, --limit, --
 
 Both open the account database without WhatsApp and refuse while a server
 holds the data dir — that server indexes on its own, and its MCP `search` is
-the same search. `wazap search` is read-only: it embeds the query, never the
-messages, and falls back to words (`"mode": "keyword_fallback"`) as the tool
-does; `--match meaning` fails instead.
+the same search, with two differences, since no server keeps llama-server
+warm between two shell searches: `wazap search` waits for it to start (up to
+90 s) instead of answering by words after 8 s, and the age of a message does
+not weigh its rank. It is read-only: it embeds the query, never the messages,
+and falls back to words (`"mode": "keyword_fallback"`) as the tool does when
+meaning search cannot run; `--match meaning` fails instead. With `--json`, a
+failure is one object on stdout too, `{"error": {"code", "message", "fix"}}`,
+with exit code 1.
 
 ## What the tools write
 

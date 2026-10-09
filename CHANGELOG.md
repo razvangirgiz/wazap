@@ -27,9 +27,10 @@
 - **Search by meaning in about five minutes, without an account.**
   `scripts/bootstrap.sh` (also `npm run bootstrap`) goes from a fresh clone to
   a working search by meaning on fictional sample chats: it checks Node and
-  fetches Node 22 into `./.tools/node` when yours is too old (verified against
-  nodejs.org's `SHASUMS256.txt`), builds, installs llama.cpp and the model,
-  seeds `./.wazap-demo`, builds the index and runs a test search. It never
+  fetches Node 22.23.3 into `./.tools/node` when yours is too old (pinned by
+  version and sha256, like llama.cpp), builds, installs llama.cpp and the model,
+  seeds `./.wazap-demo`, builds the index and runs a test search that only
+  meaning can pass ("adresa trimisă de Ana", `--match meaning`). It never
   touches `~/.wazap`, resumes when run again, and with `--offline-stub` runs
   with no download at all, as the test suite does. `.nvmrc` names Node 22.
 - **llama.cpp on Linux.** Where Homebrew is not there, `wazap embed download`
@@ -39,7 +40,10 @@
   a yes at a terminal.
 - **`wazap search "<words>"`** searches an account's stored messages from the
   shell, read-only, the way the MCP `search` tool does: `--match
-  hybrid|meaning|words`, `--limit`, `--account`, `--json`.
+  hybrid|meaning|words`, `--limit`, `--account`, `--json`. It waits for
+  llama-server to start (up to 90 s) rather than answering by words after 8 s,
+  ranks without recency, and with `--json` prints a failure as
+  `{"error": {...}}` on stdout.
 - **`wazap embed index [--wait]`** says where each account's meaning index
   stands, and with `--wait` embeds what is queued, with progress, exiting 0
   once every index is ready.
@@ -50,7 +54,8 @@
 - **`wazap setup` asks about search by meaning** after transcription, and
   `--recall local|off` answers it ahead of time.
 - **`docker build --build-arg WITH_RECALL=1`** builds the image on Debian with
-  the pinned llama.cpp and recall on.
+  the pinned llama.cpp and recall on; its build stage is Debian too, so
+  `node_modules` matches the runtime's libc.
 
 ### Changed
 

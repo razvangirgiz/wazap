@@ -28,9 +28,20 @@ VOICE=0
 YES=0
 STUB=0
 BUILD=1
-QUERY="invitație la petrecere pe strada Lalelelor"
+# None of the query's words is in the message it must find: only meaning reaches it.
+QUERY="adresa trimisă de Ana"
 EXPECT="Lalelelor"
-NODE_LINE=22
+# The Node fetched when none fits, pinned like llama.cpp (src/recall/llama.ts):
+# one version, and each tarball's sha256 from its SHASUMS256.txt.
+NODE_VERSION=22.23.3
+node_sha256() {
+  case "$1" in
+    linux-x64) echo 1084aa36196bba4c3a5e69a1ee388a6e4ff729dad09445fbcd434b28fe3c24af ;;
+    linux-arm64) echo 5ced2d48d1d7198739b7f86804de0171aefb6823b684b12341d3321afc3cb0b2 ;;
+    darwin-arm64) echo 23b25245dcfb9af7262f8ff142e9e2e0af025368117329e7a7458a51e5922f53 ;;
+    darwin-x64) echo 8a677b0219178efd6eb0e475457c4afb452b521a92f6e67845a73bd85727f2a8 ;;
+  esac
+}
 
 usage() { sed -n '2,19p' "$0" | sed 's/^# \{0,1\}//'; }
 
@@ -97,18 +108,15 @@ else
     Linux-aarch64|Linux-arm64) PLATFORM=linux-arm64 ;;
     Darwin-arm64) PLATFORM=darwin-arm64 ;;
     Darwin-x86_64) PLATFORM=darwin-x64 ;;
-    *) die "No Node $NODE_LINE build for $(uname -s) $(uname -m)." "Install Node 22 yourself, then run this again" ;;
+    *) die "No pinned Node build for $(uname -s) $(uname -m)." "Install Node 22 yourself, then run this again" ;;
   esac
-  printf '  node is %s; fetching Node %s LTS into .tools/node\n' "$(command -v node >/dev/null 2>&1 && node -v || echo missing)" "$NODE_LINE" >&2
-  BASE="https://nodejs.org/dist/latest-v$NODE_LINE.x"
+  printf '  node is %s; fetching Node %s into .tools/node\n' "$(command -v node >/dev/null 2>&1 && node -v || echo missing)" "$NODE_VERSION" >&2
+  FILE="node-v$NODE_VERSION-$PLATFORM.tar.gz"
+  WANT="$(node_sha256 "$PLATFORM")"
   WORK="$(mktemp -d)"
   trap 'rm -rf "$WORK"' EXIT
-  curl -fsSL "$BASE/SHASUMS256.txt" -o "$WORK/SHASUMS256.txt" || die "Could not reach nodejs.org." "Check the network, or install Node 22 yourself"
-  FILE="$(grep -oE "node-v$NODE_LINE\.[0-9]+\.[0-9]+-$PLATFORM\.tar\.gz" "$WORK/SHASUMS256.txt" | head -1)"
-  [ -n "$FILE" ] || die "nodejs.org lists no $PLATFORM tarball for Node $NODE_LINE."
-  WANT="$(grep " $FILE\$" "$WORK/SHASUMS256.txt" | cut -d' ' -f1)"
-  curl -fSL --progress-bar "$BASE/$FILE" -o "$WORK/$FILE" || die "Could not download $FILE."
-  [ "$(sha256_of "$WORK/$FILE")" = "$WANT" ] || die "$FILE does not match its sha256 in SHASUMS256.txt; nothing was installed."
+  curl -fSL --progress-bar "https://nodejs.org/dist/v$NODE_VERSION/$FILE" -o "$WORK/$FILE" || die "Could not download $FILE." "Check the network, or install Node 22 yourself"
+  [ "$(sha256_of "$WORK/$FILE")" = "$WANT" ] || die "$FILE does not match its pinned sha256; nothing was installed."
   rm -rf "$NODE_DIR"
   mkdir -p "$NODE_DIR"
   tar -xzf "$WORK/$FILE" -C "$NODE_DIR" --strip-components=1
@@ -134,6 +142,9 @@ fi
 
 export WAZAP_NO_UPDATE_CHECK=1
 wazap() { node "$ROOT/dist/index.js" "$@" --data-dir "$DATA_DIR"; }
+# A constant the built code exports, and the .env writer the CLI's own settings use.
+from_dist() { node --input-type=module -e 'const m = await import(process.argv[1]); process.stdout.write(String(m[process.argv[2]]))' "file://$ROOT/dist/$1" "$2"; }
+set_env() { node --input-type=module -e 'const { setEnvSetting } = await import(process.argv[1]); setEnvSetting(process.argv[2], process.argv[3], process.argv[4])' "file://$ROOT/dist/settings.js" "$DATA_DIR/.env" "$1" "$2"; }
 
 # 3 and 4. Recall: llama.cpp and the model --------------------------------------
 
@@ -143,7 +154,11 @@ cleanup() { [ -n "$STUB_PID" ] && kill "$STUB_PID" 2>/dev/null || true; }
 trap 'cleanup; rm -rf "${WORK:-}"' EXIT
 wazap config recall local >/dev/null 2>&1 || die "Could not turn recall on in $DATA_DIR/.env."
 ok "recall: local, in $DATA_DIR/.env"
-[ -n "$MODEL" ] && export WAZAP_EMBED_MODEL="$MODEL"
+if [ -n "$MODEL" ]; then
+  export WAZAP_EMBED_MODEL="$MODEL"
+  set_env WAZAP_EMBED_MODEL "$MODEL" || die "Could not write WAZAP_EMBED_MODEL to $DATA_DIR/.env."
+  ok "model: $MODEL, in $DATA_DIR/.env"
+fi
 
 if [ "$STUB" = 1 ]; then
   URL_FILE="$(mktemp)"
@@ -164,10 +179,18 @@ else
   if [ "$READY" = 0 ] && [ -z "$MODEL" ]; then
     # An installed llama.cpp too old for gemma: fall back to e5, which it runs.
     BUILD_NO="$(printf '%s' "$REPORT" | node -e 'let s="";process.stdin.on("data",(d)=>(s+=d)).on("end",()=>{try{process.stdout.write(String(JSON.parse(s).llama_server.build??""))}catch{}})')"
-    if [ -n "$BUILD_NO" ] && [ "$BUILD_NO" -lt 6800 ]; then
-      printf '  llama.cpp build %s cannot run embeddinggemma; using e5-base-multilingual\n' "$BUILD_NO" >&2
+    GEMMA_MIN="$(from_dist recall/index.js GEMMA_MIN_LLAMA_BUILD)"
+    if [ -n "$BUILD_NO" ] && [ "$BUILD_NO" -lt "$GEMMA_MIN" ]; then
+      E5_SWITCH="llama.cpp build $BUILD_NO is older than $GEMMA_MIN, which embeddinggemma needs"
+      if [ "$DEMO" = 0 ]; then
+        printf '\n⚠⚠⚠ %s.\n' "$E5_SWITCH" >&2
+        printf '⚠⚠⚠ Your real install in %s now embeds with e5-base-multilingual (WAZAP_EMBED_MODEL in its .env).\n' "$DATA_DIR" >&2
+        printf '⚠⚠⚠ To keep embeddinggemma: upgrade llama.cpp (or drop the old one from WAZAP_EMBED_BIN and PATH, and --yes fetches the pinned build), delete that line, and run this again.\n\n' >&2
+      else
+        printf '  %s; the demo uses e5-base-multilingual\n' "$E5_SWITCH" >&2
+      fi
       export WAZAP_EMBED_MODEL=e5-base-multilingual
-      printf 'WAZAP_EMBED_MODEL=e5-base-multilingual\n' >>"$DATA_DIR/.env"
+      set_env WAZAP_EMBED_MODEL e5-base-multilingual || die "Could not write WAZAP_EMBED_MODEL to $DATA_DIR/.env."
       REPORT="$(wazap embed download --json --model e5-base-multilingual "${DL_FLAGS[@]}")" && READY=1 || READY=0
     fi
   fi
@@ -189,6 +212,7 @@ fi
 if [ "$DEMO" = 0 ]; then
   step "Done"
   ok "recall is set up in $DATA_DIR"
+  [ -n "${E5_SWITCH:-}" ] && printf '⚠ %s, so this install embeds with e5-base-multilingual (see above)\n' "$E5_SWITCH" >&2
   cat >&2 <<EOF
   Next:
     wazap setup        link your WhatsApp, connect your client and its skills
@@ -210,14 +234,17 @@ wazap embed index --wait >&2 || die "The index did not finish." "Run \`node dist
 # 7. A test search --------------------------------------------------------------
 
 step "Test search"
-RESULT="$(wazap search "$QUERY" --json --limit 5)" || die "The test search failed."
+# --match meaning fails instead of answering by words, and the hit must be one
+# meaning alone found: the query shares no word with it.
+RESULT="$(wazap search "$QUERY" --match meaning --json --limit 5)" || die "The test search failed." "Run \`node dist/index.js status --data-dir $DATA_DIR\` and fix what it marks ✗"
 printf '%s' "$RESULT" | node -e '
   let s = "";
   process.stdin.on("data", (d) => (s += d)).on("end", () => {
     const answer = JSON.parse(s);
-    const hit = answer.hits.find((h) => h.text.includes(process.argv[1]) && (h.matched === "meaning" || h.matched === "both"));
+    const hit = answer.mode === "meaning" && answer.hits.find((h) => h.text.includes(process.argv[1]) && h.matched === "meaning");
     if (!hit) {
-      process.stderr.write(`✗ no hit containing "${process.argv[1]}" matched by meaning (mode ${answer.mode})\n`);
+      const seen = answer.hits.map((h) => `${h.text} [${h.matched}]`).join("; ") || "no hits";
+      process.stderr.write(`✗ no hit containing "${process.argv[1]}" matched by meaning alone (mode ${answer.mode}): ${seen}\n`);
       process.exit(1);
     }
     process.stderr.write(`✓ "${answer.query}" → ${hit.from}: ${hit.text}  [${hit.matched}, similarity ${hit.similarity?.toFixed(2)}]\n`);

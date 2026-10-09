@@ -65,6 +65,12 @@ test("the Dockerfile's WITH_RECALL build pins the same llama.cpp release, by the
     assert.match(dockerfile, new RegExp(`name=${arch};\\s+sum=${LLAMA_PIN.assets[key].sha256}`));
   }
   assert.match(dockerfile, /sha256sum -c -/);
+  // node_modules moves from the build stage into the runtime: both on one base for each WITH_RECALL.
+  for (const [n, base] of [["0", "node:22-alpine"], ["1", "node:22-bookworm-slim"]]) {
+    assert.match(dockerfile, new RegExp(`^FROM ${base} AS build-${n}$`, "m"));
+    assert.match(dockerfile, new RegExp(`^FROM ${base} AS runtime-${n}$`, "m"));
+  }
+  assert.match(dockerfile, /^FROM build-\$\{WITH_RECALL\} AS build$/m);
 });
 
 test("the build number is read from both --version spellings", () => {
@@ -250,7 +256,7 @@ test("demo seed, embed index --wait and search, on the stub embedder, never touc
 
     const plain = await wazap(["search", "adresa trimisă de Ana", "--data-dir", dataDir], env);
     assert.equal(plain.stdout, "", "a person's output goes to stderr");
-    assert.match(plain.stderr, /Ana Vasile: Vă aștept pe Lalelelor 7/);
+    assert.match(plain.stderr, /Ana Vasile: Vă aștept la mine, pe strada Lalelelor 7/);
 
     const work = await wazap(["search", "contract", "--account", "work", "--match", "words", "--json", "--data-dir", dataDir], env);
     assert.equal(JSON.parse(work.stdout).account, "work");
@@ -297,7 +303,41 @@ test("search refuses a bad --match or --limit", async () => {
   assert.match((await wazap(["search", "x", "--limit", "0", "--data-dir", dataDir])).stderr, /--limit must be/);
 });
 
+test("search --json reports a failure as one JSON object on stdout, and exits 1", async () => {
+  const dataDir = mkdtempSync(join(tmpdir(), "wazap-demo-"));
+  const bad = await wazap(["search", "x", "--match", "vibes", "--json", "--data-dir", dataDir]);
+  assert.equal(bad.code, 1);
+  assert.deepEqual(JSON.parse(bad.stdout), { error: { code: "INVALID_ID", message: "Unknown --match vibes.", fix: "Use --match hybrid|meaning|words" } });
+
+  assert.equal((await wazap(["demo", "seed", "--data-dir", dataDir])).code, 0);
+  const off = await wazap(["search", "Lalelelor", "--match", "meaning", "--json", "--data-dir", dataDir], { WAZAP_RECALL: "off" });
+  assert.equal(off.code, 1);
+  const { error } = JSON.parse(off.stdout);
+  assert.equal(error.code, "RECALL_UNAVAILABLE");
+  assert.match(error.fix, /wazap config recall local/);
+  assert.match(off.stderr, /Semantic recall is off/, "a person still reads it on stderr");
+});
+
 // The bootstrap script ------------------------------------------------------------
+
+test("bootstrap's test search can only pass by meaning: --match meaning, matched meaning alone, and no word of the query in the message", () => {
+  const script = readFileSync(join(root, "scripts", "bootstrap.sh"), "utf8");
+  const query = script.match(/^QUERY="([^"]+)"$/m)?.[1];
+  const expect = script.match(/^EXPECT="([^"]+)"$/m)?.[1];
+  assert.ok(query && expect);
+  assert.match(script, /wazap search "\$QUERY" --match meaning --json/);
+  assert.match(script, /h\.matched === "meaning"\)/);
+  assert.doesNotMatch(script, /matched === "both"/);
+  const world = loadWorld(DEFAULT_FIXTURE);
+  const target = world.accounts.flatMap((account) => account.messages ?? []).find((m) => m.text?.includes(expect));
+  assert.ok(target, `the demo world holds a message with ${expect}`);
+  const fold = (text) => text.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+  // Search by words matches substrings of three letters and more (the trigram index).
+  for (const word of fold(query).split(/[^\p{L}\p{N}]+/u).filter((w) => w.length >= 3)) {
+    assert.ok(!fold(target.text).includes(word), `"${word}" would let words find it`);
+  }
+  assert.ok(!fold(query).includes(fold(expect)));
+});
 
 test("bootstrap --offline-stub seeds, indexes and finds the address by meaning, with no download", { skip: !posix, timeout: 180_000 }, async () => {
   const dataDir = mkdtempSync(join(tmpdir(), "wazap-bootstrap-"));
@@ -308,7 +348,8 @@ test("bootstrap --offline-stub seeds, indexes and finds the address by meaning, 
     timeout: 170_000,
   });
   assert.equal(result.status, 0, result.stderr);
-  assert.match(result.stderr, /✓ "invitație la petrecere pe strada Lalelelor" → Ana Vasile: Vă aștept pe Lalelelor 7/);
+  // Only meaning can reach the address: the query shares no word with it.
+  assert.match(result.stderr, /✓ "adresa trimisă de Ana" → Ana Vasile: Vă aștept la mine, pe strada Lalelelor 7, ap\. 12, de la ora 18\. {2}\[meaning, similarity 0\.\d+\]/);
   assert.match(result.stderr, /no downloads/);
   assert.doesNotMatch(result.stderr, /Downloading|llama\.cpp b\d+ installed/);
   assert.equal(existsSync(join(dataDir, "models")), false, "no model was fetched");

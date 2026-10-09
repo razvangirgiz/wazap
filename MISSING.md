@@ -23,7 +23,7 @@ macOS, Homebrew llama.cpp 0.4.0 + whisper.cpp 1.8.4 + ffmpeg, both models downlo
 | llama.cpp prebuilt `llama-b11516-bin-ubuntu-x64.tar.gz` (17 MB) | works (`LD_LIBRARY_PATH` to the extracted dir needed). Not mentioned anywhere in the repo. |
 | Embedding speed, CPU-only box | ~0.9–1.0 s per message (60 msgs ≈ 55 s). Apple Silicon is much faster. |
 | Search with no account | nothing: no CLI `search`, only the MCP tool, and no data |
-| `node scripts/eval/server.mjs` (fixture world, **stub embedder**) | works: MCP `search` returns hybrid hits (e.g. "the address Ana sent" → "Vă aștept pe Lalelelor 7…"). Proves the pipeline but is dev-only, uses a fake embedder and fake sockets. |
+| `node scripts/eval/server.mjs` (fixture world, **stub embedder**) | works: MCP `search` returns hybrid hits (e.g. "the address Ana sent" → "Vă aștept la mine, pe strada Lalelelor 7…"). Proves the pipeline but is dev-only, uses a fake embedder and fake sockets. |
 | `npm test` | see bottom of this file |
 
 ## Missing pieces (concrete)

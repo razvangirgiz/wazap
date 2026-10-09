@@ -3,7 +3,7 @@
  * works in the evaluation without a model: words that mean the same thing share
  * one slot (the approach of test/recall.test.mjs), diacritics fold, and filler
  * words carry no weight. Crude on purpose: it is enough for "the address Ana
- * sent" to reach "Vă aștept pe Lalelelor 7", and it answers the same every run.
+ * sent" to reach "Vă aștept la mine, pe strada Lalelelor 7", and it answers the same every run.
  */
 import http from "node:http";
 

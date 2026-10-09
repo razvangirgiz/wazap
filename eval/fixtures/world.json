@@ -70,7 +70,7 @@
         },
 
         { "key": "party_invite", "chat": "ana_vasile", "from": "ana_vasile", "at": "-80d 12:00", "text": "Sâmbătă îmi serbez ziua și fac o mică petrecere, veniți și voi? 🎉" },
-        { "key": "party_address", "chat": "ana_vasile", "from": "ana_vasile", "at": "-80d 12:02", "text": "Vă aștept pe Lalelelor 7, ap. 12, de la ora 18." },
+        { "key": "party_address", "chat": "ana_vasile", "from": "ana_vasile", "at": "-80d 12:02", "text": "Vă aștept la mine, pe strada Lalelelor 7, ap. 12, de la ora 18." },
         { "chat": "ana_vasile", "from": "me", "at": "-80d 12:30", "text": "Sigur, venim!" },
         { "key": "meter_photo", "chat": "ana_vasile", "from": "ana_vasile", "at": "-3d 09:15", "media": { "kind": "meter_photo", "caption": "Poza cu contorul de apă, pentru asociație" } },
         { "chat": "ana_vasile", "from": "ana_vasile", "at": "ieri 09:30", "text": "Ne vedem la 6 la bloc pentru ședința de asociație?" },

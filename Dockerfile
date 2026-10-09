@@ -3,7 +3,13 @@
 #   (then `wazap embed download` once into the /data volume fetches the model)
 ARG WITH_RECALL=0
 
-FROM node:22-alpine AS build
+# The build runs on the runtime's own base: node_modules is copied into it, so
+# anything installed per platform must match its libc (musl on Alpine, glibc
+# in the recall image).
+FROM node:22-alpine AS build-0
+FROM node:22-bookworm-slim AS build-1
+
+FROM build-${WITH_RECALL} AS build
 WORKDIR /app
 COPY package.json package-lock.json tsconfig.json ./
 COPY src ./src
