@@ -17,7 +17,6 @@ import { CATCHUP_INPUT, CATCHUP_OUTPUT, privateRule, runCatchUp } from "./catchu
 import { coverageNote, indexCoverageNote, searchCoverage } from "./coverage.js";
 import { APPROVAL_TTL_MS, describeTarget, looksUnnamed, renderDraft, type DraftPayload, type DraftView } from "./drafts.js";
 import { approveUrl } from "./approvals.js";
-import { styleCheckLines } from "./draft-style.js";
 import { ERROR_GUIDE, WazapError, asWazapError } from "./errors.js";
 import { FIND_CONTACT_OUTPUT, runFindContact } from "./find-contact.js";
 import { LIST_CONTACTS_INPUT, runListContacts } from "./list-contacts.js";
@@ -1582,20 +1581,11 @@ function draftedForApproval(view: DraftView, approval: ApprovalMode): ToolResult
     `- or run \`${command}\` on the machine wazap runs on`,
     view.send_yourself_url === undefined ? null : `- or open ${view.send_yourself_url} on their phone and press send in WhatsApp`,
   ].filter((line): line is string => line !== null);
-  const lines = [
-    `Draft ${view.draft_id}. Not sent, and this connection cannot send it.`,
-    "",
-    view.preview,
-    ...(view.unnamed_recipient === true
-      ? ["", "Note: the recipient is not a saved contact — the name shown is their public WhatsApp name, or only their number."]
-      : []),
-    ...styleCheckLines(view.style_check).flatMap((line, index) => (index === 0 ? ["", line] : [line])),
-    "",
-    "The user sends it, one of these ways:",
-    ...ways,
-    `It waits until ${view.expires_at}.`,
-  ];
-  return ok(lines.join("\n"), {
+  const text = renderDraft(view, {
+    header: `Draft ${view.draft_id}. Not sent, and this connection cannot send it.`,
+    closing: ["The user sends it, one of these ways:", ...ways, `It waits until ${view.expires_at}.`],
+  });
+  return ok(text, {
     ...view,
     approval_required: true,
     ...(approve === null ? {} : { approve_url: approve }),

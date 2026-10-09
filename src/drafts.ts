@@ -450,8 +450,19 @@ export function formatDraftPreview(to: OutgoingTarget, payload: DraftPayload): s
   return `${formatToLine(to)}\n${formatBody(payload)}`;
 }
 
-export function renderDraft(view: DraftView): string {
-  const lines = [`Draft ${view.draft_id}. Not sent.`, "", view.preview];
+/**
+ * The draft as text. `frame` swaps the first line and the closing step, for a
+ * session whose drafts the agent cannot send (tools.ts); the preview, the
+ * recipient note and the style check read the same either way.
+ */
+export function renderDraft(
+  view: DraftView,
+  frame: { header: string; closing: readonly string[] } = {
+    header: `Draft ${view.draft_id}. Not sent.`,
+    closing: ["Show this to the user. After they say yes, call confirm_send with this draft_id."],
+  }
+): string {
+  const lines = [frame.header, "", view.preview];
   if (view.unnamed_recipient === true) {
     lines.push(
       "",
@@ -460,7 +471,7 @@ export function renderDraft(view: DraftView): string {
   }
   const style = styleCheckLines(view.style_check);
   if (style.length > 0) lines.push("", ...style);
-  lines.push("", "Show this to the user. After they say yes, call confirm_send with this draft_id.");
+  lines.push("", ...frame.closing);
   return lines.join("\n");
 }
 

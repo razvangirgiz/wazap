@@ -92,7 +92,12 @@ test("a drafts-only draft says it is not sent, links the approval page, the CLI 
   assert.equal(view.approve_command, `wazap drafts approve ${view.draft_id}`);
   assert.equal(view.send_yourself_url, `https://wa.me/40700000002?text=${encodeURIComponent("Ne vedem joi & vineri?")}`);
   assert.ok(Date.parse(view.expires_at) >= before + APPROVAL_TTL_MS - 5_000);
-  assert.match(result.content[0].text, /Not sent, and this connection cannot send it/);
+  const text = result.content[0].text;
+  assert.match(text, /^Draft d_\S+\. Not sent, and this connection cannot send it\.\n\n/);
+  assert.ok(text.includes(view.preview), text);
+  assert.match(text, /\nThe user sends it, one of these ways:\n/);
+  assert.ok(text.endsWith(`It waits until ${view.expires_at}.`), text);
+  assert.doesNotMatch(text, /confirm_send/, "a drafts-only session has no confirm_send to call");
   assert.match(view.next, /never ask for the wazap password/);
   assert.deepEqual(sent, [], "a draft sends nothing");
 });
