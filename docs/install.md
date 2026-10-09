@@ -55,6 +55,12 @@ offers the pairing code first; making the window taller draws the QR at once.
 It ends by asking whether the agent may send messages; the answer is no unless
 you say yes, and `npx wazap-mcp config writes on` changes it later.
 
+After linking, `setup` asks whether to transcribe voice messages
+([voice.md](voice.md)) and whether to search them by meaning
+([recall.md](recall.md)): yes installs llama.cpp where it is missing and
+fetches a ~334 MB model. `--transcribe local|openai|off` and
+`--recall local|off` answer both ahead of time.
+
 `npx wazap-mcp connect claude-code` writes the MCP entry for one client. The
 table under **Connect a client** has the rest.
 
@@ -197,7 +203,7 @@ holds a grant. See [Hosted agents (OAuth)](self-host.md#hosted-agents-oauth) for
 page does. `npx wazap-mcp expose off` takes the tunnel down and keeps the
 password, so the next `expose` hands agents the same one.
 
-`npx wazap-mcp setup` asks all of this once, as its fourth step.
+`npx wazap-mcp setup` asks all of this once, as its fifth step.
 
 ### Upgrade
 

@@ -24,8 +24,43 @@
   signature and the outbox across a restart are unchanged.
 - **A 401 can be retried.** `WAZAP_WEBHOOK_RETRY_401=on` retries a 401 on the
   same schedule as a 5xx. Unset, a 401 still fails the event at once.
+- **Search by meaning in about five minutes, without an account.**
+  `scripts/bootstrap.sh` (also `npm run bootstrap`) goes from a fresh clone to
+  a working search by meaning on fictional sample chats: it checks Node and
+  fetches Node 22 into `./.tools/node` when yours is too old (verified against
+  nodejs.org's `SHASUMS256.txt`), builds, installs llama.cpp and the model,
+  seeds `./.wazap-demo`, builds the index and runs a test search. It never
+  touches `~/.wazap`, resumes when run again, and with `--offline-stub` runs
+  with no download at all, as the test suite does. `.nvmrc` names Node 22.
+- **llama.cpp on Linux.** Where Homebrew is not there, `wazap embed download`
+  fetches a pinned llama.cpp release build (`b11516`, CPU, for Linux x64,
+  Linux arm64 and Apple Silicon; tag and sha256 in `src/recall/llama.ts`) into
+  `<data-dir>/bin/llama/` and points `WAZAP_EMBED_BIN` at it, with `--yes` or
+  a yes at a terminal.
+- **`wazap search "<words>"`** searches an account's stored messages from the
+  shell, read-only, the way the MCP `search` tool does: `--match
+  hybrid|meaning|words`, `--limit`, `--account`, `--json`.
+- **`wazap embed index [--wait]`** says where each account's meaning index
+  stands, and with `--wait` embeds what is queued, with progress, exiting 0
+  once every index is ready.
+- **`wazap demo seed`** fills a throwaway `--data-dir` with the bundled
+  fictional world (`eval/fixtures/world.json`, now in the npm package) through
+  the real ingestion, with no socket. It refuses `~/.wazap` and any dir holding
+  accounts it did not make.
+- **`wazap setup` asks about search by meaning** after transcription, and
+  `--recall local|off` answers it ahead of time.
+- **`docker build --build-arg WITH_RECALL=1`** builds the image on Debian with
+  the pinned llama.cpp and recall on.
 
 ### Changed
+
+- **`wazap embed download` says when llama-server is still missing.** The
+  model is kept, the fix for the platform is printed, and the command exits 1
+  (`--json`: `"ready": false`) instead of exiting 0 in silence. An installed
+  llama.cpp older than build 6800, which cannot run embeddinggemma, is reported
+  the same way, with the e5 fallback as the way out.
+- **The Docker healthcheck uses `node`** instead of `wget`, so the same line
+  works on the Alpine and the Debian image.
 
 - **The webhook never posts a contact tagged `#private`.** Their direct chat
   is left out, including messages the owner sent there, and so is a message
