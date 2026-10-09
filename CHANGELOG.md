@@ -39,10 +39,13 @@
   `service status`) after ten quick failures in a row, and a session of its own
   so it outlives the shell that started it. The server it runs stops when the
   supervisor is killed outright, even while the server is still starting, so
-  nothing holds the data dir's lock without a supervisor.
+  nothing holds the data dir's lock without a supervisor. A dead
+  supervisor's zombie, where PID 1 never reaps, does not keep its pidfile.
   `service status|start|stop|restart|logs|uninstall` work as with launchd and
   systemd; `service start` also brings back the tunnel, since nothing starts
-  this supervisor at boot.
+  this supervisor at boot. Under any of the three, there is one wazap service
+  per user: `service install` (or `serve --daemon`) for a second data dir is
+  refused, naming the one installed, instead of repointing its unit.
 - **`wazap expose quick`: a public URL with no account.** A Cloudflare quick
   tunnel (trycloudflare.com) from cloudflared 2026.10.0, downloaded into the
   data dir and checked against its pinned size and sha256 (on macOS the
