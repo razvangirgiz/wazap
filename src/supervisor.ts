@@ -8,7 +8,8 @@
  * session of its own so it outlives the shell and the terminal that started
  * it, keeps the unit's command running:
  *
- *   - a pidfile claimed like server.lock, so two supervisors never run one unit;
+ *   - a pidfile claimed like server.lock, so two supervisors never run one unit
+ *     (a zombie holder counts as gone, as everywhere in this file);
  *   - the command's stdout and stderr appended to the unit's two log files,
  *     which are copied aside and emptied past 10 MB;
  *   - a crash restarted after 1 s, doubling to a minute while it keeps
@@ -351,7 +352,9 @@ export async function runSupervise(
       /* nowhere to say it */
     }
   };
-  if (!writeLock(f.pid)) {
+  // Its own idea of alive: a dead supervisor's zombie, in a container whose
+  // PID 1 never reaps, would otherwise hold the unit forever.
+  if (!writeLock(f.pid, alive)) {
     note(`another supervisor (pid ${lockPid(f.pid)}) already runs ${unit.label}; this one exits`);
     return;
   }

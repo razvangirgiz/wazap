@@ -44,12 +44,15 @@ function claim(lockFile: string): boolean {
  * find the same stale lock. Each removes it only while it still names the pid
  * found dead, and a claim counts only if the file then names this process, so
  * the second one never deletes the first one's fresh lock and holds it too.
+ * `isAlive` decides what a dead holder is; a caller with a stricter idea of
+ * running than "the pid exists" (supervisor.ts, which counts a zombie as dead)
+ * passes its own, so the lock and its staleness check agree.
  */
-export function writeLock(lockFile: string): boolean {
+export function writeLock(lockFile: string, isAlive: (pid: number) => boolean = alive): boolean {
   mkdirSync(dirname(lockFile), { recursive: true, mode: 0o700 });
   if (claim(lockFile)) return true;
   const stale = lockPid(lockFile);
-  if (stale !== null && alive(stale)) return false;
+  if (stale !== null && isAlive(stale)) return false;
   if (lockPid(lockFile) === stale) {
     try {
       unlinkSync(lockFile);

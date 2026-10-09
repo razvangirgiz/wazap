@@ -4,7 +4,7 @@
  * `wazap serve --http` on an empty data dir, which never reaches WhatsApp.
  */
 import assert from "node:assert/strict";
-import { execFile, spawn } from "node:child_process";
+import { execFile, spawn, spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -178,6 +178,39 @@ test("a second supervisor of the same unit leaves at once", { skip }, async (t) 
   assert.equal(stderr, "");
   assert.match(supervisor.logs(ref).join("\n"), /already runs wazap-test; this one exits/);
   assert.equal(supervisor.pid(ref), child);
+});
+
+/** A zombie that stays one while the test runs: its parent execs into a sleep, which never reaps it. */
+async function zombie(t) {
+  const parent = spawn("sh", ["-c", "(sleep 0.3; exit 0) & echo $!; exec sleep 60"], { stdio: ["ignore", "pipe", "ignore"] });
+  t.after(() => parent.kill("SIGKILL"));
+  const pid = await new Promise((resolve, reject) => {
+    parent.stdout.once("data", (chunk) => resolve(Number.parseInt(String(chunk), 10)));
+    parent.once("error", reject);
+  });
+  const state = () => {
+    try {
+      const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
+      return stat[stat.lastIndexOf(")") + 2];
+    } catch {
+      return spawnSync("ps", ["-o", "stat=", "-p", String(pid)], { encoding: "utf8" }).stdout?.trim()[0] ?? null;
+    }
+  };
+  await until(() => state() === "Z", "the child to become a zombie");
+  return pid;
+}
+
+test("a pidfile naming a dead supervisor's zombie does not hold the unit", { skip }, async (t) => {
+  const { supervisor, ref, state } = setup(STAYS);
+  t.after(() => supervisor.stop(ref));
+  const dead = await zombie(t);
+  // Signal 0 still reaches a zombie: what server.lock's check alone would call a live holder.
+  process.kill(dead, 0);
+  writeFileSync(join(state, `${ref.label}.pid`), `${dead}\n`);
+  supervisor.start(ref);
+  const child = await until(() => supervisor.pid(ref), "the command");
+  assert.ok(alive(child));
+  assert.notEqual(Number(readFileSync(join(state, `${ref.label}.pid`), "utf8")), dead);
 });
 
 test("a command that keeps crashing at start is given up on, and status says so", { skip }, async () => {
