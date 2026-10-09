@@ -26,6 +26,11 @@
   control line; and a `wa.me` link that opens WhatsApp with the text typed in.
   Approving re-checks the send rules and the writes switches and sends at most
   once. `wazap drafts` lists what waits, `wazap drafts discard` drops one.
+  A draft waiting for approval is never evicted to make room for another:
+  when they fill a session's 20 or the account's 200, the new draft is refused
+  with the new error code `DRAFTS_WAITING`. `wazap config writes` names a
+  `WAZAP_DRAFTS_ONLY` or `WAZAP_READ_ONLY` in the shell that overrides what it
+  stores in `.env`, and exits 1 when that would leave the agent more than asked.
 - **`wazap serve --daemon`, and a supervisor of wazap's own.** The same as
   `wazap service install`, which now falls back, where neither launchd nor a
   running systemd is there (a container with tini as PID 1), to a supervisor
@@ -40,8 +45,8 @@
   this supervisor at boot.
 - **`wazap expose quick`: a public URL with no account.** A Cloudflare quick
   tunnel (trycloudflare.com) from cloudflared 2026.10.0, downloaded into the
-  data dir and checked against its pinned sha256 (or the `cloudflared` already
-  on PATH), run as the service's second unit. The password is written before
+  data dir and checked against its pinned size and sha256 (on macOS the
+  archive's, then the binary's inside it), or the `cloudflared` already on PATH, run as the service's second unit. The password is written before
   the tunnel opens. A quick tunnel's URL changes when it restarts: its unit
   adopts each new hostname and restarts the server onto it, and `wazap status`
   (`public.mcp_url` in `--json`) always shows the current one, with that
