@@ -175,7 +175,8 @@ test("`wazap tunnel` runs cloudflared, passes its log through and adopts the hos
     return state?.url === URL_B && state.connected_at === undefined;
   }, 15_000, "the stale connection cleared");
   await waitFor(() => readTunnelState(dir)?.url === URL_A, 15_000, "the hostname");
-  assert.equal(env(dir).WAZAP_PUBLIC_URL, URL_A);
+  // tunnel.json is written first, then .env.
+  await waitFor(() => env(dir).WAZAP_PUBLIC_URL === URL_A, 15_000, "the hostname in .env");
   await waitFor(() => readTunnelState(dir)?.connected_at !== undefined, 15_000, "the edge connection");
   await waitFor(() => readTunnelState(dir)?.connected_at === undefined, 15_000, "the lost connection");
   await waitFor(() => readTunnelState(dir)?.connected_at !== undefined, 15_000, "the connection back");

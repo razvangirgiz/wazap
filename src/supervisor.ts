@@ -303,6 +303,18 @@ function tail(file: string, lines: number): string[] {
   }
 }
 
+/**
+ * Run `gone` once this process's supervisor is gone, when one started it with
+ * an IPC channel (the `ipc` above). A channel that closed while this process
+ * was still loading has already fired its "disconnect" to nobody, so that is
+ * checked first: `process.connected` is false by then.
+ */
+export function whenSupervisorGone(gone: () => void): void {
+  if (typeof process.send !== "function") return;
+  if (!process.connected) gone();
+  else process.once("disconnect", gone);
+}
+
 /** The wait before restart number `quick` in a row of quick crashes (1-based). */
 export function restartDelay(quick: number): number {
   if (quick <= 1) return RESTART_MIN_MS;

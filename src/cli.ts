@@ -37,6 +37,7 @@ import { runEmbedIndex } from "./search-cli.js";
 import { PAIRING_TIMEOUT_MS, linkSession, prettyCode, settledAccount, startPairing } from "./pairing.js";
 import { runHttp, runStdio, startLoopbackEndpoint } from "./server.js";
 import { SUPERVISORS, fetchHealth, readService, serviceHolding, tunnelsTo, type Supervisor } from "./service.js";
+import { whenSupervisorGone } from "./supervisor.js";
 import { readTunnelState } from "./quick-tunnel.js";
 import { applyWrites } from "./settings.js";
 import { storageReport, type StorageReport } from "./storage-status.js";
@@ -756,7 +757,7 @@ export async function runServe(config: Config): Promise<void> {
   // Under wazap's own supervisor (supervisor.ts) the IPC channel is the
   // supervisor: once it is gone, nothing could restart or stop this process,
   // and it would hold the data dir's lock for good.
-  if (typeof process.send === "function") process.once("disconnect", () => shutdown("supervisor gone"));
+  whenSupervisorGone(() => shutdown("supervisor gone"));
 
   // A socket WhatsApp keeps refusing is not something this process can fix, and
   // a live MCP server answering NOT_CONNECTED forever is worse than a dead one:

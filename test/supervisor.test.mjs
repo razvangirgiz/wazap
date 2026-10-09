@@ -78,7 +78,10 @@ function setup(body) {
   return { dir, state, supervisor, ref, unit };
 }
 
-const STAYS = `process.on("disconnect", () => process.exit(0));\nsetInterval(() => {}, 1000);`;
+const SUPERVISOR_JS = new URL("../dist/supervisor.js", import.meta.url).href;
+
+/** A wazap command: it leaves when its supervisor does, the way `serve` and `tunnel` do. */
+const STAYS = `import { whenSupervisorGone } from ${JSON.stringify(SUPERVISOR_JS)};\nwhenSupervisorGone(() => process.exit(0));\nsetInterval(() => {}, 1000);`;
 
 test("restarts wait a second, double while the crashes stay quick, and stop growing at a minute", () => {
   assert.equal(restartDelay(1), RESTART_MIN_MS);
@@ -126,6 +129,30 @@ test("a supervisor killed outright takes its wazap command with it, and the next
   supervisor.start(ref);
   const next = await until(() => supervisor.pid(ref), "the command again");
   assert.notEqual(next, child);
+});
+
+test("a command whose supervisor died while it was still loading leaves all the same", { skip }, async () => {
+  // Its IPC channel closed before anything listened for "disconnect", which then never comes.
+  const dir = mkdtempSync(join(tmpdir(), "wazap-supervisor-"));
+  const outcome = join(dir, "outcome");
+  const child = join(dir, "child.mjs");
+  writeFileSync(
+    child,
+    [
+      `import { writeFileSync } from "node:fs";`,
+      `await new Promise((resolve) => setTimeout(resolve, 800));`,
+      `const { whenSupervisorGone } = await import(${JSON.stringify(SUPERVISOR_JS)});`,
+      `whenSupervisorGone(() => { writeFileSync(${JSON.stringify(outcome)}, "left"); process.exit(0); });`,
+      `setTimeout(() => { writeFileSync(${JSON.stringify(outcome)}, "orphaned"); process.exit(1); }, 5000);`,
+    ].join("\n")
+  );
+  const parent = join(dir, "parent.mjs");
+  writeFileSync(
+    parent,
+    `import { spawn } from "node:child_process";\nspawn(process.execPath, [${JSON.stringify(child)}], { stdio: ["ignore", "ignore", "ignore", "ipc"] });\nsetTimeout(() => process.kill(process.pid, "SIGKILL"), 200);`
+  );
+  await run(process.execPath, [parent]).catch(() => {});
+  assert.equal(await until(() => existsSync(outcome) && readFileSync(outcome, "utf8"), "the orphan's outcome"), "left");
 });
 
 test("stop also ends a command whose supervisor is gone when it cannot notice by itself", { skip }, async (t) => {

@@ -24,7 +24,7 @@ import { commandOnPath } from "./connect.js";
 import { WazapError } from "./errors.js";
 import { log, logError } from "./logger.js";
 import { installedService, writeService, readService } from "./service.js";
-import { commandOf } from "./supervisor.js";
+import { commandOf, whenSupervisorGone } from "./supervisor.js";
 import { setEnvSetting } from "./settings.js";
 import { which } from "./transcribe/index.js";
 
@@ -329,7 +329,7 @@ export async function runTunnel(config: Config, hooks: TunnelHooks = REAL_HOOKS)
   };
   process.on("SIGTERM", () => stop("SIGTERM"));
   process.on("SIGINT", () => stop("SIGINT"));
-  if (typeof process.send === "function") process.once("disconnect", () => stop("supervisor gone"));
+  whenSupervisorGone(() => stop("supervisor gone"));
   // This cloudflared's hostname, and its edge connections that are up now.
   let adopted: string | null = null;
   const live = new Set<string>();
