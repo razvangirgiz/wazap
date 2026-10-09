@@ -758,6 +758,8 @@ export async function runServe(config: Config): Promise<void> {
   // supervisor: once it is gone, nothing could restart or stop this process,
   // and it would hold the data dir's lock for good.
   whenSupervisorGone(() => shutdown("supervisor gone"));
+  // Gone before this got here: start nothing, and let the shutdown finish.
+  if (stopping) return;
 
   // A socket WhatsApp keeps refusing is not something this process can fix, and
   // a live MCP server answering NOT_CONNECTED forever is worse than a dead one:

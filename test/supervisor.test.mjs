@@ -140,7 +140,8 @@ test("a command whose supervisor died while it was still loading leaves all the 
     child,
     [
       `import { writeFileSync } from "node:fs";`,
-      `await new Promise((resolve) => setTimeout(resolve, 800));`,
+      // By the time `connected` reads false, "disconnect" has fired: however slow the runner, this listens late.
+      `while (process.connected) await new Promise((resolve) => setTimeout(resolve, 20));`,
       `const { whenSupervisorGone } = await import(${JSON.stringify(SUPERVISOR_JS)});`,
       `whenSupervisorGone(() => { writeFileSync(${JSON.stringify(outcome)}, "left"); process.exit(0); });`,
       `setTimeout(() => { writeFileSync(${JSON.stringify(outcome)}, "orphaned"); process.exit(1); }, 5000);`,

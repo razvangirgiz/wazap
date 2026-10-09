@@ -33,10 +33,11 @@
   exit with a backoff from one second to a minute, giving up (and saying so in
   `service status`) after ten quick failures in a row, and a session of its own
   so it outlives the shell that started it. The server it runs stops when the
-  supervisor is killed outright, so nothing holds the data dir's lock without
-  a supervisor. `service status|start|stop|restart|logs|uninstall` work as with
-  launchd and systemd; `service start` also brings back the tunnel, since
-  nothing starts this supervisor at boot.
+  supervisor is killed outright, even while the server is still starting, so
+  nothing holds the data dir's lock without a supervisor.
+  `service status|start|stop|restart|logs|uninstall` work as with launchd and
+  systemd; `service start` also brings back the tunnel, since nothing starts
+  this supervisor at boot.
 - **`wazap expose quick`: a public URL with no account.** A Cloudflare quick
   tunnel (trycloudflare.com) from cloudflared 2026.10.0, downloaded into the
   data dir and checked against its pinned sha256 (or the `cloudflared` already
