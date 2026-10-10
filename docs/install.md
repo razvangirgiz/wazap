@@ -9,10 +9,27 @@ each harness and the skills that come with them. The short version is in the
 The npm package is `wazap-mcp`; the command it installs is `wazap`.
 
 ```bash
-npx wazap-mcp setup
+curl -fsSL https://raw.githubusercontent.com/razvangirgiz/wazap/main/scripts/install.sh | sh
+wazap setup
 ```
 
-That is the whole install. It links your account, finds the MCP clients
+The first line is for a machine with no Node, or the wrong one. It runs as you
+(never with sudo; under sudo it refuses), downloads Node 22.23.3 from
+nodejs.org, checks it against the sha256 pinned in the script and installs it
+into `~/.local/share/wazap/node`, installs `wazap-mcp` beside it, and writes a
+`wazap` launcher into `~/.local/bin` that always runs that Node, whatever
+`node` is on PATH. It adds `~/.local/bin` to your shell profile once (or, with
+`--no-modify-path`, prints the line). It never replaces a `wazap` it did not
+write, and a failed download or install leaves the previous one in place. Run
+it again to upgrade: it installs the latest wazap and, when a background
+service is installed, restarts it on the new build. `sh -s -- --help` lists the
+options (`--version`, `--prefix`, `--bin-dir`, `--from` a clone). macOS
+(arm64, x64) and glibc Linux (x64, arm64); on Alpine, install Node from apk.
+
+With Node 22.16+ already there, `npx wazap-mcp setup` is the same install
+without the script.
+
+`wazap setup` is the whole rest of it. It links your account, finds the MCP clients
 installed on this machine, writes their config, copies the five skills where
 that client reads them, and tells you what to restart. At a terminal it is one
 black, centered screen per step: ghosted ASCII logo, step number, then the
@@ -31,7 +48,7 @@ and it is missing, and to restart Claude Desktop itself once it has connected it
 | Gemini CLI | `npx wazap-mcp connect gemini` |
 | Cursor | the [Install in Cursor](#other-mcp-clients) badge, then `npx wazap-mcp skills install cursor` |
 | Codex CLI | `npx wazap-mcp connect codex`, then `npx wazap-mcp skills install codex` |
-| A hosted agent (claude.ai, ChatGPT) | a URL it signs in to: [Keep it running](#keep-it-running) |
+| A hosted agent (claude.ai, ChatGPT, Grok) | a URL it signs in to: [Keep it running](#keep-it-running) |
 | Anything else | the MCP entry `npx -y wazap-mcp` over stdio |
 
 Each local harness registers the server; a hosted agent gets a URL. Linking
@@ -54,6 +71,12 @@ window is told so instead of being shown half a code, and the question before it
 offers the pairing code first; making the window taller draws the QR at once.
 It ends by asking whether the agent may send messages; the answer is no unless
 you say yes, and `npx wazap-mcp config writes on` changes it later.
+
+After linking, `setup` asks whether to transcribe voice messages
+([voice.md](voice.md)) and whether to search them by meaning
+([recall.md](recall.md)): yes installs llama.cpp where it is missing and
+fetches a ~334 MB model. `--transcribe local|openai|off` and
+`--recall local|off` answer both ahead of time.
 
 `npx wazap-mcp connect claude-code` writes the MCP entry for one client. The
 table under **Connect a client** has the rest.
@@ -153,12 +176,26 @@ and the session is gone until you open it again. Two commands change that.
 Staying up and being reachable are separate choices.
 
 ```bash
-npx wazap-mcp service install
+wazap serve --daemon        # the same as: wazap service install
 ```
 
 That writes a launchd agent on macOS (`~/Library/LaunchAgents/com.wazap.server.plist`)
 or a systemd user unit on Linux (`~/.config/systemd/user/wazap.service`), starts
-it, and waits for `/healthz` to answer. The unit runs `serve --http` on
+it, and waits for `/healthz` to answer.
+
+Where neither runs, as in a container whose PID 1 is tini or a shell, wazap
+uses its own supervisor: a small background process per unit, in a session of
+its own so it outlives the shell that started it, with its pidfile, unit and
+logs in `~/.local/state/wazap` (`$XDG_STATE_HOME/wazap`). It restarts wazap
+when it exits, after a second and then doubling to a minute while it keeps
+failing within a minute of starting, and gives up after ten such failures in a
+row, which `wazap service status` reports. A pidfile stops a second supervisor
+of the same unit, and the server it runs still takes the data dir's lock like
+any other: a client's own wazap on the same data dir becomes a bridge onto it.
+When the supervisor is killed outright, the server notices and stops, so
+nothing is left holding the lock. Every `service` verb works the same. What it
+cannot do is start at boot: after the machine restarts, run
+`wazap service start`, which brings the tunnel back too. The unit runs `serve --http` on
 `127.0.0.1:8766` with the absolute path of this Node and this install, so it
 survives a reboot and a logout. Point any client at
 `http://127.0.0.1:8766/mcp`, or keep using the stdio entry. A second wazap on
@@ -181,23 +218,40 @@ A sleeping Mac is an offline wazap. System Settings → Lock Screen, or Battery 
 Options, has the switch that keeps it awake on power.
 
 ```bash
-npx wazap-mcp expose
+wazap expose
 ```
 
 That gives the running service a public `https` URL, for agents that are not on
-this machine: a cloud agent, claude.ai, ChatGPT. It uses Tailscale Funnel if
-`tailscale` is installed, Cloudflare Tunnel if `cloudflared` is, opens the
-tunnel, writes `WAZAP_PUBLIC_URL` and a fresh `WAZAP_OAUTH_PASSWORD` into
-`<data-dir>/.env`, restarts the service and checks the URL from here. It then
-prints the MCP URL and the password once.
+this machine: a cloud agent, claude.ai, ChatGPT, Grok. It uses Tailscale Funnel
+if `tailscale` is installed and signed in, a Cloudflare named tunnel if
+`cloudflared` is logged in to a domain, and otherwise a **Cloudflare quick
+tunnel**, which needs no account at all (`wazap expose quick` asks for it by
+name). It writes a fresh `WAZAP_OAUTH_PASSWORD` into `<data-dir>/.env` before
+anything is reachable, opens the tunnel, sets `WAZAP_PUBLIC_URL`, restarts the
+service and checks the URL from here. It then prints the MCP URL and the
+password once.
+
+The quick tunnel runs `cloudflared tunnel --url` from cloudflared 2026.10.0,
+which wazap downloads into `<data-dir>/bin` and checks against the sha256
+pinned in `src/quick-tunnel.ts` (a `cloudflared` you installed yourself, on
+PATH, is used instead). It runs as the service's second unit, beside the
+server. The trade-off: **its URL is random, and changes whenever the tunnel,
+the service or the machine restarts.** The tunnel's unit sees the new hostname,
+writes it where the server and `wazap status` read it, and restarts the server
+onto it; `wazap status` (and `status --json`, as `public.mcp_url`) always shows
+the current one, which is how an agent on that machine finds it again. Whoever
+added the old URL to their agent has to replace it, and signs in again.
+Cloudflare offers quick tunnels without an uptime promise, for trying things
+out. For a URL that stays, use Tailscale or a Cloudflare named tunnel.
 
 Give an agent the URL only. It signs in on a consent page on your own host with
-that password and picks read or read-and-send there; `wazap status` lists who
+that password and picks read, draft-for-your-approval (preselected) or send
+there; `wazap status` lists who
 holds a grant. See [Hosted agents (OAuth)](self-host.md#hosted-agents-oauth) for what that
-page does. `npx wazap-mcp expose off` takes the tunnel down and keeps the
+page does. `wazap expose off` takes the tunnel down and keeps the
 password, so the next `expose` hands agents the same one.
 
-`npx wazap-mcp setup` asks all of this once, as its fourth step.
+`wazap setup` asks all of this once, as its fifth step.
 
 ### Upgrade
 

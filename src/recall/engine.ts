@@ -20,6 +20,7 @@ import { setTimeout as sleep } from "node:timers/promises";
 import { WazapError } from "../errors.js";
 import { discardResponse, readBoundedJson } from "../http-response.js";
 import { which } from "../transcribe/index.js";
+import { llamaInstallFix } from "./llama.js";
 import { embedModelPath, type EmbedModelSpec } from "./models.js";
 import type { RecallSettings } from "./types.js";
 
@@ -42,11 +43,6 @@ export function findLlama(settings: RecallSettings): string | null {
     if (found !== null) return found;
   }
   return null;
-}
-
-function llamaInstallFix(): string {
-  if (process.platform === "darwin") return "Run `brew install llama.cpp`";
-  return "Build llama.cpp from https://github.com/ggml-org/llama.cpp and put llama-server on PATH";
 }
 
 /** What a caller needs to know before it can embed: everything or the reason not. */

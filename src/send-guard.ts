@@ -21,6 +21,14 @@ import type { OutgoingTarget } from "./wa-types.js";
 export const SEND_RULE =
   "Never send without the user's yes to this text and this recipient: draft with send_message (it sends nothing) and show the preview it returns. A send asked in the same request that gave the text is that yes: confirm_send it, do not ask again. A yes about something else, or one that comes after the talk moved on, is not: show the preview again and ask.";
 
+/**
+ * What a drafts-only session is told: it may write the words, never send
+ * them, and the person approving is the only way out. Not an instruction the
+ * code relies on — the session simply has no tool that sends.
+ */
+export const DRAFTS_ONLY_RULE =
+  "This connection drafts only: send_message makes a draft and nothing you can call sends it. Show the user the preview and the ways it returns to send it (the approval link, `wazap drafts approve` on the wazap machine, or the send-yourself link), and say it is not sent until they do. Never ask for the wazap password, and never claim a draft was sent.";
+
 /** What a session without the send tools is told instead, and a contact it resolves repeats. */
 export const READ_ONLY_RULE =
   "This connection only reads: it cannot draft or send. Asked to send, say so, and offer the text for the user to send from their phone or a connection with write access.";

@@ -178,6 +178,31 @@ function applyMigration(dataDir: string, manifestFile: string, existing: Migrati
 }
 
 /**
+ * Whether a command moves a flat v0 data dir into accounts/ before it runs.
+ * Rollback is the inverse of this move: running it first would re-apply a
+ * half-finished migrate and then fail to undo it. `service stop` is how a lock
+ * that blocks the migration is released. The rest never open account state;
+ * of `embed`, only `download` does not (`embed index` reads every account), so
+ * an unmigrated dir would otherwise report an index of nothing.
+ */
+const MIGRATE_EXEMPT: ReadonlySet<string> = new Set([
+  "migrate",
+  "service",
+  "connect",
+  "skills",
+  "expose",
+  "update",
+  "transcribe",
+  "supervise",
+  "tunnel",
+]);
+
+export function migratesFirst(command: string, args: readonly string[]): boolean {
+  if (MIGRATE_EXEMPT.has(command)) return false;
+  return !(command === "embed" && args[0] === "download");
+}
+
+/**
  * One-shot flat layout → accounts/default. Detects leftover names at the data-dir
  * root, not only `auth/`. Same-filesystem rename, no copy, no symlinks. A
  * missing accounts.json next to an existing `accounts/default/` is created, not

@@ -460,7 +460,8 @@ export function setupWizardSteps(opts: {
     n += 1;
     if (opts.askWrites) n += 1;
   }
-  n += 1;
+  // Transcribe, then Search.
+  n += 2;
   if (opts.npx) n += 1;
   n += 3;
   return n;

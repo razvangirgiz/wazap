@@ -31,7 +31,10 @@ export interface UpdatePlan {
 
 const REGISTRY_SILENT = "the npm registry did not answer, so there is no version to compare against";
 
+export const INSTALLER_LINE = "curl -fsSL https://raw.githubusercontent.com/razvangirgiz/wazap/main/scripts/install.sh | sh";
+
 function upgradeNote(install: Install, latest: string): string {
+  if (install.installer === true) return `run the installer again to get ${latest}: \`${INSTALLER_LINE}\``;
   return install.kind === "npx"
     ? `run \`npx wazap-mcp@${latest} setup\` to refresh the npx cache and the clients`
     : "git pull && npm run build";
@@ -51,7 +54,7 @@ export function planUpdate(probes: UpdateProbes, registryLatest: string | null):
   if (registryLatest === null) steps.push({ kind: "note", text: REGISTRY_SILENT });
   else if (upgrading) {
     steps.push(
-      probes.install.kind === "global"
+      probes.install.kind === "global" && probes.install.installer !== true
         ? { kind: "npm", version: registryLatest }
         : { kind: "note", text: upgradeNote(probes.install, registryLatest) }
     );

@@ -853,8 +853,14 @@ export interface WhatsAppApi {
   markHandled(chatId: string): Promise<HandledResult>;
   previews(messageIds: string[], max: number): Promise<Preview[]>;
   getUnanswered(minAgeHours: number, maxAgeHours: number, limit: number): Promise<Synced<UnansweredChat[]>>;
-  /** `owner` is the MCP session drafting; only the same owner may confirm. */
-  draft(payload: DraftPayload, owner?: string): Promise<DraftView>;
+  /** `owner` is the MCP session drafting; only the same owner may confirm. `opts`: drafts-only mode's longer life and links. */
+  draft(payload: DraftPayload, owner?: string, opts?: { ttlMs?: number; links?: boolean }): Promise<DraftView>;
+  /** Drafts-only mode: what waits for a person's approval; optional, so a stand-in need not have it. */
+  pendingDrafts?(): DraftView[];
+  /** A person approved this draft: send it once, as its drafter's confirm would. */
+  approveDraft?(draftId: string): Promise<SentMessage>;
+  /** A person threw this draft away; false when none was waiting. */
+  discardDraft?(draftId: string): boolean;
   /**
    * Sends a draft once. Confirming it again answers the same receipt; a send
    * that reached WhatsApp and then failed is SEND_OUTCOME_UNKNOWN, and stays so.

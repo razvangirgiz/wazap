@@ -9,7 +9,7 @@ import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 
 import { CLIENTS, detectClients } from "../dist/connect.js";
-import { WAZAP_VERSION } from "../dist/config.js";
+import { WAZAP_VERSION, parseCli } from "../dist/config.js";
 import { migrateLayout } from "../dist/migrate.js";
 import { readService } from "../dist/service.js";
 import { keepRunningOptions, parseChoice } from "../dist/setup.js";
@@ -392,25 +392,10 @@ test("a 401 at logout means the phone already removed the device, not a bad pair
   assert.equal(alreadyUnlinked(undefined), false);
 });
 
-test("the keep-running menu offers a public URL only when something can tunnel", () => {
-  const noBrew = { onPath: () => false };
-  const none = keepRunningOptions([{ available: () => false }], noBrew);
+test("the keep-running menu always offers a public URL: the quick tunnel needs no account", () => {
   assert.deepEqual(
-    none.map((option) => option.choice),
-    ["client", "service"]
-  );
-
-  const some = keepRunningOptions([{ available: () => false }, { available: () => true }], noBrew);
-  assert.deepEqual(
-    some.map((option) => option.choice),
+    keepRunningOptions().map((option) => option.choice),
     ["client", "service", "expose"]
-  );
-
-  const brewable = keepRunningOptions([{ available: () => false }], { onPath: (command) => command === "brew" });
-  assert.deepEqual(
-    brewable.map((option) => option.choice),
-    ["client", "service", "expose"],
-    "brew can install one"
   );
 });
 
@@ -555,7 +540,7 @@ test(
         (rejected) => rejected
       );
 
-      assert.match(err.stderr, /Step 4 of 5 · Keep running/);
+      assert.match(err.stderr, /Step 5 of 6 · Keep running/);
       assert.match(err.stderr, new RegExp(`Running · pid \\d+ · http://127\\.0\\.0\\.1:${port}/mcp`));
       assert.match(err.stderr, /the service reports \w+/);
       assert.match(err.stderr, /→ run `wazap service logs`/);
@@ -575,8 +560,29 @@ test("setup with no answer keeps wazap running only while a client has it open",
   const box = sandbox();
   const dir = linkedDataDir();
   const stderr = await failingSetup(box, "--yes", "--client", "cursor", "--data-dir", dir);
-  assert.match(stderr, /Step 4 of 5 · Keep running/);
+  assert.match(stderr, /Step 5 of 6 · Keep running/);
   assert.equal(readService(dir), null, "the default must install nothing");
+});
+
+test("setup --recall off answers the search question and writes it to the data dir's .env", async () => {
+  const box = sandbox();
+  const dir = linkedDataDir();
+  const stderr = await failingSetup(box, "--yes", "--recall", "off", "--client", "cursor", "--data-dir", dir);
+  assert.match(stderr, /Step 3 of 6 · Search/);
+  assert.match(stderr, /recall: off/);
+  assert.match(readFileSync(join(dir, ".env"), "utf8"), /^WAZAP_RECALL=off$/m);
+});
+
+test("setup --recall with an unknown answer fails before it changes anything", async () => {
+  const box = sandbox();
+  const dir = linkedDataDir();
+  const err = await setup(box, "--yes", "--recall", "maybe", "--client", "cursor", "--data-dir", dir).then(
+    () => assert.fail("an unknown --recall must fail"),
+    (rejected) => rejected
+  );
+  assert.match(err.stderr, /Unknown --recall maybe/);
+  assert.match(err.stderr, /--recall local\|off/);
+  assert.equal(existsSync(join(dir, ".env")), false);
 });
 
 test("setup through npx installs wazap globally, then connects the client to that install", async () => {
@@ -584,7 +590,7 @@ test("setup through npx installs wazap globally, then connects the client to tha
   const calls = stubNpm(box);
   const stderr = await failingSetup(box, "--yes", "--client", "cursor", "--data-dir", linkedDataDir());
 
-  assert.match(stderr, /Step 3 of 6 · Install/);
+  assert.match(stderr, /Step 4 of 7 · Install/);
   assert.match(stderr, /wazap was started through npx/);
   assert.deepEqual(
     calls().filter((line) => line.startsWith("install")),
@@ -627,6 +633,30 @@ test("a failing npm prints the repair and setup carries on to Connect", async ()
 
   assert.match(stderr, /✗ install npm install -g wazap-mcp@.* failed \(exit 1\)/);
   assert.match(stderr, /→ run `npm i -g wazap-mcp` yourself \(sudo on some Linux installs\), then `wazap setup` again/);
-  assert.match(stderr, /Step 4 of 6 · Connect/);
+  assert.match(stderr, /Step 5 of 7 · Connect/);
   assert.equal(existsSync(join(box.home, ".cursor", "mcp.json")), true, "Connect must still run");
+});
+
+test("setup --agent walks install → pairing code → daemon → expose → hand-over, each step a command that needs no terminal", () => {
+  const document = readFileSync(join(root, "AGENT.md"), "utf8");
+  const order = [
+    "scripts/install.sh | sh",
+    "wazap login --phone <number> --drafts-only --yes",
+    "pairing code: XXXX-XXXX",
+    "wazap serve --daemon",
+    "wazap expose quick",
+    "## 6. Hand it over",
+  ];
+  const at = order.map((needle) => document.indexOf(needle));
+  for (const [index, position] of at.entries()) assert.ok(position >= 0, `AGENT.md names ${order[index]}`);
+  assert.deepEqual([...at].sort((a, b) => a - b), at, "in that order");
+  assert.doesNotMatch(document, /\bnpx\b/, "the installer, not npx, which needs a Node the box may not have");
+  // Every wazap command it gives is one this build parses.
+  const commands = [...document.matchAll(/`(wazap [^`]+)`/g)].map((match) => match[1]);
+  assert.ok(commands.length > 10);
+  for (const command of commands) {
+    if (/[<>|]/.test(command.replace(/<[a-z_ ]+>/g, "x"))) continue;
+    const argv = command.replace(/<[a-z_]+>/g, "x").split(/\s+/).slice(1).filter((word) => word !== "2>&1");
+    assert.doesNotThrow(() => parseCli([...argv, "--data-dir", dataDir("wazap-agent-parse-")]), command);
+  }
 });

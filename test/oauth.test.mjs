@@ -57,6 +57,7 @@ async function boot(
     now,
     trustedProxies,
     wa = stubWa,
+    approvals,
   } = {}
 ) {
   const dataDir = mkdtempSync(join(tmpdir(), "wazap-oauth-"));
@@ -71,6 +72,7 @@ async function boot(
     credentials,
     openRead: credentials.length === 0,
     oauth,
+    ...(approvals === undefined ? {} : { approvals }),
     signal: stop.signal,
   });
   t.after(() => {
@@ -282,7 +284,7 @@ test("an unauthenticated call is told where to sign in", async (t) => {
 
   const { body: as } = await ctx.fetchJson("/.well-known/oauth-authorization-server");
   assert.equal(as.registration_endpoint, `${ctx.base}/register`);
-  assert.deepEqual(as.scopes_supported, ["read", "write"]);
+  assert.deepEqual(as.scopes_supported, ["read", "drafts", "write"]);
   assert.deepEqual(as.code_challenge_methods_supported, ["S256"]);
 });
 
@@ -460,12 +462,15 @@ test("a read grant never sees a write tool, whatever the client asked for", asyn
   assert.ok(!names.includes("confirm_send"));
 });
 
-test("the consent page preselects what the client asked for", async (t) => {
+test("the consent page preselects drafts for a new grant, and read only when read is all the client asked", async (t) => {
   const ctx = await boot(t);
   const asksWrite = await grant(ctx, { scope: "read write" });
-  assert.match(asksWrite.html, /value="write" checked/);
+  assert.match(asksWrite.html, /value="drafts" checked/);
+  assert.doesNotMatch(asksWrite.html, /value="write" checked/, "sending without asking is never the default");
   const asksNothing = await grant(ctx);
-  assert.match(asksNothing.html, /value="read" checked/);
+  assert.match(asksNothing.html, /value="drafts" checked/);
+  const asksRead = await grant(ctx, { scope: "read" });
+  assert.match(asksRead.html, /value="read" checked/);
 });
 
 test("a wrong password stays on the page twice, the third throws the page away, five lock the caller out", async (t) => {
@@ -1101,4 +1106,152 @@ test("a draft answers to its OAuth client across sessions and token rotations, n
       .structuredContent.error,
     "DRAFT_NOT_FOUND"
   );
+});
+
+test("a drafts grant gets send_message and nothing that sends", async (t) => {
+  const ctx = await boot(t);
+  const { tokens } = await signIn(ctx, { access: "drafts", scope: "read write" });
+  assert.equal(tokens.scope, "read drafts");
+  const { status, names } = await listTools(ctx, tokens.access_token);
+  assert.equal(status, 200);
+  assert.ok(names.includes("send_message"));
+  for (const name of ["confirm_send", "edit_message", "delete_message", "react_to_message", "manage_chat", "manage_group"]) {
+    assert.ok(!names.includes(name), `${name} would act without the person`);
+  }
+});
+
+test("a refresh of a drafts grant cannot widen it to write", async (t) => {
+  const ctx = await boot(t);
+  const { tokens, client } = await signIn(ctx, { access: "drafts" });
+  const { body } = await ctx.fetchJson("/token", {
+    method: "POST",
+    headers: { "content-type": "application/x-www-form-urlencoded" },
+    body: form({ grant_type: "refresh_token", refresh_token: tokens.refresh_token, client_id: client.client_id, scope: "read drafts write" }),
+  });
+  assert.equal(body.scope, "read drafts");
+  const { names } = await listTools(ctx, body.access_token);
+  assert.ok(!names.includes("confirm_send"));
+});
+
+test("an access the consent page does not offer is read, never more", async (t) => {
+  const ctx = await boot(t);
+  const { tokens } = await signIn(ctx, { access: "admin" });
+  assert.equal(tokens.scope, "read");
+});
+
+/** A stand-in for the running server's approvals: one draft waiting, and what was asked of it. */
+function approvalsStub(text = 'See you at <script>alert(1)</script> "10"') {
+  const id = "d_0123456789abcdef";
+  const calls = [];
+  let waiting = true;
+  const entry = {
+    status: "draft",
+    draft_id: id,
+    account_id: "default",
+    to: { chat_id: CHAT, name: "Ana", number: "40722123456" },
+    preview: `To: Ana (+40 722 123 456)\n"${text}"`,
+    expires_at: new Date(Date.now() + 3_600_000).toISOString(),
+    kind: "text",
+  };
+  return {
+    id,
+    calls,
+    list: () => (waiting ? [entry] : []),
+    find: (draftId) => (waiting && draftId === id ? entry : null),
+    approve: async (draftId) => {
+      calls.push(`approve ${draftId}`);
+      waiting = false;
+      return { account_id: "default", receipt: { message_id: "m1", chat_id: CHAT, text, timestamp: "2026-10-09T12:00:00+00:00" } };
+    },
+    discard: (draftId) => {
+      calls.push(`discard ${draftId}`);
+      waiting = false;
+      return { account_id: "default" };
+    },
+  };
+}
+
+async function approvalPage(ctx, id) {
+  const { res, body } = await ctx.fetchJson(`/approve/${id}`);
+  return { res, html: body, nonce: /name="nonce" value="([0-9a-f]+)"/.exec(body)?.[1] };
+}
+
+function postApproval(ctx, id, fields, headers = {}) {
+  return ctx.fetchJson(`/approve/${id}`, {
+    method: "POST",
+    headers: { "content-type": "application/x-www-form-urlencoded", ...headers },
+    body: form(fields),
+  });
+}
+
+test("the approval page shows the draft escaped, framed by nothing, and sends it only with the password", async (t) => {
+  const approvals = approvalsStub();
+  const ctx = await boot(t, { approvals });
+  const page = await approvalPage(ctx, approvals.id);
+  assert.equal(page.res.status, 200);
+  assert.match(page.res.headers.get("content-security-policy"), /frame-ancestors 'none'/);
+  assert.equal(page.res.headers.get("cache-control"), "no-store");
+  assert.ok(page.html.includes("&lt;script&gt;alert(1)&lt;/script&gt;"), "the words are shown, never run");
+  assert.ok(!page.html.includes("<script>"));
+  assert.ok(page.nonce);
+
+  const wrong = await postApproval(ctx, approvals.id, { nonce: page.nonce, password: "nope", decision: "send" });
+  assert.equal(wrong.res.status, 401);
+  assert.deepEqual(approvals.calls, [], "a wrong password sends nothing");
+  const retry = /name="nonce" value="([0-9a-f]+)"/.exec(wrong.body)[1];
+
+  const sent = await postApproval(ctx, approvals.id, { nonce: retry, password: PASSWORD, decision: "send" });
+  assert.equal(sent.res.status, 200);
+  assert.match(sent.body, /Sent at/);
+  assert.deepEqual(approvals.calls, [`approve ${approvals.id}`]);
+
+  const replay = await postApproval(ctx, approvals.id, { nonce: retry, password: PASSWORD, decision: "send" });
+  assert.equal(replay.res.status, 400, "a spent nonce is spent");
+  assert.deepEqual(approvals.calls, [`approve ${approvals.id}`]);
+});
+
+test("the approval page refuses a post without its nonce, from another origin, or for a draft id that is not one", async (t) => {
+  const approvals = approvalsStub();
+  const ctx = await boot(t, { approvals });
+  assert.equal((await postApproval(ctx, approvals.id, { password: PASSWORD, decision: "send" })).res.status, 400);
+  const { nonce } = await approvalPage(ctx, approvals.id);
+  const forged = await postApproval(ctx, approvals.id, { nonce, password: PASSWORD, decision: "send" }, { origin: "https://evil.example" });
+  assert.equal(forged.res.status, 403);
+  assert.equal((await approvalPage(ctx, "../../etc")).res.status, 404);
+  assert.equal((await approvalPage(ctx, "d_ffffffffffffffff")).res.status, 404);
+  assert.deepEqual(approvals.calls, []);
+});
+
+test("a bearer token, even a write grant, opens nothing on the approval page", async (t) => {
+  const approvals = approvalsStub();
+  const ctx = await boot(t, { approvals, credentials: [{ token: "writer", write: true }] });
+  const { nonce } = await approvalPage(ctx, approvals.id);
+  const res = await postApproval(ctx, approvals.id, { nonce, decision: "send" }, { authorization: "Bearer writer" });
+  assert.equal(res.res.status, 401);
+  assert.deepEqual(approvals.calls, []);
+});
+
+test("wrong approval passwords share the consent page's lockout", async (t) => {
+  const approvals = approvalsStub();
+  const ctx = await boot(t, { approvals });
+  let status = 0;
+  for (let attempt = 0; attempt < 6; attempt++) {
+    const { nonce } = await approvalPage(ctx, approvals.id);
+    status = (await postApproval(ctx, approvals.id, { nonce, password: "guess", decision: "send" })).res.status;
+  }
+  assert.equal(status, 429);
+  const { nonce } = await approvalPage(ctx, approvals.id);
+  assert.equal((await postApproval(ctx, approvals.id, { nonce, password: PASSWORD, decision: "send" })).res.status, 429);
+  assert.deepEqual(approvals.calls, []);
+});
+
+test("discard on the approval page needs the password too, and sends nothing", async (t) => {
+  const approvals = approvalsStub();
+  const ctx = await boot(t, { approvals });
+  const { nonce } = await approvalPage(ctx, approvals.id);
+  const res = await postApproval(ctx, approvals.id, { nonce, password: PASSWORD, decision: "discard" });
+  assert.equal(res.res.status, 200);
+  assert.match(res.body, /Nothing was sent/);
+  assert.deepEqual(approvals.calls, [`discard ${approvals.id}`]);
+  assert.equal((await approvalPage(ctx, approvals.id)).res.status, 404);
 });

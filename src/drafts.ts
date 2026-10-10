@@ -7,6 +7,12 @@ import { captionTravels, mimeOfSource } from "./outgoing-media.js";
 import type { MediaSource, OutgoingTarget, SentMessage } from "./wa-types.js";
 
 export const DRAFT_TTL_MS = 15 * 60_000;
+/**
+ * A draft waiting for a person, in drafts-only mode: they may see it hours
+ * later, on their phone. Still bounded, so an approval page found tomorrow
+ * does not send yesterday's words.
+ */
+export const APPROVAL_TTL_MS = 24 * 60 * 60_000;
 /** Drafts one identity keeps — a session, or a credential's stable identity on HTTP; its oldest go first. */
 export const DRAFT_CAP = 20;
 /** Drafts one account keeps across every identity; the oldest go first. */
@@ -66,6 +72,12 @@ export interface DraftView {
   unnamed_recipient?: boolean;
   expires_at: string;
   kind: DraftKind;
+  /**
+   * Drafts-only mode: a wa.me link that opens WhatsApp with this text typed,
+   * for the person to send themselves. Text drafts only; a group's opens the
+   * chat picker.
+   */
+  send_yourself_url?: string;
   /**
    * A text draft to a direct chat, against how the user writes there: the
    * mismatches found (none is fine) and what they were measured on. Absent
@@ -168,6 +180,18 @@ export class SessionDrafts {
   }
 }
 
+/**
+ * Drafts waiting for a person's approval fill a cap, so this one was not made;
+ * none of them was dropped to make room. Nothing was sent.
+ */
+export function draftsWaiting(cap: number): WazapError {
+  return new WazapError(
+    "DRAFTS_WAITING",
+    `${cap} drafts already wait for approval, so this one was not drafted; nothing was sent and none of them was dropped.`,
+    "Tell the user drafts are waiting for them: they approve or discard each with `wazap drafts` or its approval link (each lapses after 24 hours). Draft again once they have"
+  );
+}
+
 /** A draft handed to WhatsApp whose arrival nobody can vouch for. Never retried. */
 export function sendOutcomeUnknown(id: string, cause?: string): WazapError {
   return new WazapError(
@@ -186,7 +210,11 @@ export function sendOutcomeUnknown(id: string, cause?: string): WazapError {
  * other identity is told there is no such draft.
  *
  * A draft lapses after 15 minutes; an owner keeps at most 20 and an account
- * 200. Confirming claims it atomically; a send that failed before its key
+ * 200, the oldest evicted for a new one. A draft waiting for a person's
+ * approval (drafts-only, 24 hours) is never evicted: the person may be about
+ * to approve it, and nobody would tell them it is gone. When such drafts fill
+ * a cap, a new draft is refused with DRAFTS_WAITING instead, and the agent
+ * tells the person to approve or discard what waits. Confirming claims it atomically; a send that failed before its key
  * reached the socket gives it back (release), one that got further is settled
  * as sent or as unknown, and stays so. A sent draft answers its receipt again; an unknown
  * one answers SEND_OUTCOME_UNKNOWN until WhatsApp echoes its key.
@@ -199,19 +227,26 @@ export class DraftStore {
     private readonly accountCap: number = DRAFT_ACCOUNT_CAP
   ) {}
 
-  put(sends: Sends, to: OutgoingTarget, payload: DraftPayload, keyId: string, owner: string | null = null): Draft {
+  put(
+    sends: Sends,
+    to: OutgoingTarget,
+    payload: DraftPayload,
+    keyId: string,
+    owner: string | null = null,
+    ttlMs: number = this.ttlMs
+  ): Draft {
     const now = this.now();
     this.sweep(sends);
     const draft: Draft = {
       id: `d_${randomUUID().replaceAll("-", "").slice(0, 16)}`,
       to,
       preview: formatDraftPreview(to, payload),
-      expiresAt: now + this.ttlMs,
+      expiresAt: now + ttlMs,
       payload,
       keyId,
     };
     const frozen: FrozenDraft = { to, preview: draft.preview, payload };
-    sends.insertDraft(
+    const full = sends.insertDraft(
       {
         draftId: draft.id,
         owner,
@@ -223,8 +258,10 @@ export class DraftStore {
         expiresAt: draft.expiresAt,
       },
       this.cap,
-      this.accountCap
+      this.accountCap,
+      this.ttlMs
     );
+    if (full !== null) throw draftsWaiting(full === "owner" ? this.cap : this.accountCap);
     return draft;
   }
 
@@ -279,7 +316,7 @@ export class DraftStore {
     this.sweep(sends);
   }
 
-  view(draft: Draft): DraftView {
+  view(draft: Draft, opts: { links?: boolean } = {}): DraftView {
     const view: DraftView = {
       status: "draft",
       draft_id: draft.id,
@@ -289,13 +326,40 @@ export class DraftStore {
       kind: draft.payload.kind,
     };
     if (looksUnnamed(draft.to)) view.unnamed_recipient = true;
+    if (opts.links === true) {
+      const url = sendYourselfUrl(draft.to, draft.payload);
+      if (url !== null) view.send_yourself_url = url;
+    }
     return view;
+  }
+
+  /** Drafts waiting for a confirm, oldest first, with the link a person can send them from. */
+  pending(sends: Sends, limit = DRAFT_ACCOUNT_CAP): Array<{ view: DraftView; owner: string | null }> {
+    return sends.pending(this.now(), limit).map((row) => ({ view: this.view(draftOf(row), { links: true }), owner: row.owner }));
+  }
+
+  /** Who drafted a draft still waiting, so a person's approval confirms it as that owner; null when none waits. */
+  waiting(sends: Sends, id: string): { owner: string | null } | null {
+    const row = sends.get(id);
+    return row === null || row.state !== "draft" || row.expiresAt <= this.now() ? null : { owner: row.owner };
   }
 
   /** Lapsed drafts and forgotten sends, a bounded chunk at a time. */
   private sweep(sends: Sends): void {
     sends.sweep(this.now(), SWEEP_CHUNK);
   }
+}
+
+/**
+ * https://wa.me/<number>?text=<words>: WhatsApp opens with the words typed in,
+ * and nothing leaves until the person presses send there. Only a text has
+ * words to carry; a group has no number, so its link opens the chat picker.
+ */
+export function sendYourselfUrl(to: OutgoingTarget, payload: DraftPayload): string | null {
+  if (payload.kind !== "text") return null;
+  const digits = (to.number ?? "").replace(/\D/g, "");
+  const path = to.chat_id.endsWith("@g.us") || digits === "" ? "" : digits;
+  return `https://wa.me/${path}?text=${encodeURIComponent(payload.text)}`;
 }
 
 /** The text a receipt shows for a stored send; empty once the message it sent was deleted. */
@@ -386,8 +450,19 @@ export function formatDraftPreview(to: OutgoingTarget, payload: DraftPayload): s
   return `${formatToLine(to)}\n${formatBody(payload)}`;
 }
 
-export function renderDraft(view: DraftView): string {
-  const lines = [`Draft ${view.draft_id}. Not sent.`, "", view.preview];
+/**
+ * The draft as text. `frame` swaps the first line and the closing step, for a
+ * session whose drafts the agent cannot send (tools.ts); the preview, the
+ * recipient note and the style check read the same either way.
+ */
+export function renderDraft(
+  view: DraftView,
+  frame: { header: string; closing: readonly string[] } = {
+    header: `Draft ${view.draft_id}. Not sent.`,
+    closing: ["Show this to the user. After they say yes, call confirm_send with this draft_id."],
+  }
+): string {
+  const lines = [frame.header, "", view.preview];
   if (view.unnamed_recipient === true) {
     lines.push(
       "",
@@ -396,7 +471,7 @@ export function renderDraft(view: DraftView): string {
   }
   const style = styleCheckLines(view.style_check);
   if (style.length > 0) lines.push("", ...style);
-  lines.push("", "Show this to the user. After they say yes, call confirm_send with this draft_id.");
+  lines.push("", ...frame.closing);
   return lines.join("\n");
 }
 

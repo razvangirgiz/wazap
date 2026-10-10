@@ -32,6 +32,8 @@ jobs:
       - run: npm run lint
       - run: npm run typecheck
       - run: npm test
+      # The first-run path a newcomer takes, with no download: seed, index, search.
+      - run: bash scripts/bootstrap.sh --offline-stub --no-build --data-dir "$RUNNER_TEMP/wazap-demo"
 
   # npm audit reads package-lock.json, not node_modules, so one run without an
   # install covers both Nodes. Only production dependencies: they are what a

@@ -7,7 +7,7 @@ import { detectClients } from "./connect.js";
 import type { Config } from "./config.js";
 import { WazapError } from "./errors.js";
 import { log, say } from "./logger.js";
-import { READ_ONLY_RULE, SEND_RULE } from "./send-guard.js";
+import { DRAFTS_ONLY_RULE, READ_ONLY_RULE, SEND_RULE } from "./send-guard.js";
 import { info, nextHint, ok, shortPath } from "./ui.js";
 
 export interface SkillTarget {
@@ -110,6 +110,8 @@ function trigger(description: string): string {
 export interface InstructionOptions {
   /** Whether this session has the send tools; true unless said otherwise. */
   allowWrite?: boolean;
+  /** The session drafts and a person sends (drafts-only mode). */
+  draftsOnly?: boolean;
   /** The live accounts, the default marked: named when there are several, so "Business" reaches its account_id. */
   accounts?: ReadonlyArray<{ id: string; name: string; default: boolean }>;
 }
@@ -139,7 +141,7 @@ export function skillInstructions(skills: readonly Skill[], options: Instruction
     "With several WhatsApp accounts, `get_status` lists them and every tool takes `account_id`: without it, a chat or message only one account knows picks that account, `catch_up` and `find_contact` cover them all, other reads use the default, and a write to a chat no account knows fails AMBIGUOUS_ACCOUNT. " +
     "An agent that should act as messages arrive calls `wait_for_messages` in a loop with the cursor it returns, instead of polling." +
     (accounts === null ? "" : ` ${accounts}`);
-  const rule = options.allowWrite === false ? READ_ONLY_RULE : SEND_RULE;
+  const rule = options.allowWrite === false ? READ_ONLY_RULE : options.draftsOnly === true ? DRAFTS_ONLY_RULE : SEND_RULE;
   if (skills.length === 0) return `${intro}\n\n${rule}`;
   return [
     intro,

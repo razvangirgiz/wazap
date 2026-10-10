@@ -4,3 +4,5 @@ dist/
 *.log
 dist-bundle/
 eval/results/
+.wazap-demo/
+.tools/

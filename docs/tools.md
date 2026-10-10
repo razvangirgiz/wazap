@@ -355,6 +355,7 @@ trace, so an agent can decide whether to retry, ask the user, or stop.
 | `RATE_LIMITED` | Too many writes, or too many read marks, which have a budget of their own; `fix` says how long to wait. |
 | `ACCOUNT_RESTRICTED` | WhatsApp restricts or banned the account, and nothing was sent. Do not retry: `get_status` says what and until when under `health`. Under a reachout timelock only a first message to someone never written to is refused; existing chats go on. |
 | `DRAFT_NOT_FOUND` / `DRAFT_EXPIRED` | The draft is unknown, from another identity (another session on stdio, another credential on HTTP), sent more than 15 minutes ago, or expired unsent. Draft again. |
+| `DRAFTS_WAITING` | Drafts waiting for a person's approval (drafts only) fill the session's 20 or the account's 200, so the new draft was not made. None of them was dropped and nothing was sent; the user approves or discards them with `wazap drafts`, then the agent drafts again. |
 | `SEND_OUTCOME_UNKNOWN` | The message reached the socket and then the send failed, so WhatsApp may have it. The draft is never sent again; check the chat before drafting anew. |
 | `SEND_BLOCKED` | The account's send rules refuse this recipient. `wazap config send` changes them; the agent must not route around. |
 | `AMBIGUOUS_ACCOUNT` | More than one account could handle this, or a write named a chat no account knows. Pass `account_id`. |

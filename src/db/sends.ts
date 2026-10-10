@@ -88,28 +88,51 @@ export class Sends {
    * Stores a draft. The owner keeps at most `cap` drafts and the account at
    * most `accountCap`, whoever drafted them: the oldest go first, in the same
    * transaction. Only drafts count; a send under way or settled is never evicted.
+   *
+   * A draft meant to live longer than `evictableLifeMs` waits for a person
+   * (drafts-only approval), and is never evicted to make room: when the drafts
+   * that may go cannot free a place, nothing changes and the cap that is full
+   * comes back, for the caller to refuse the new draft. A lapsed draft may
+   * always go. Null when the draft was stored.
    */
-  insertDraft(draft: NewDraft, cap: number, accountCap: number): void {
-    this.c.write(() => {
-      const owned = this.c.get<{ n: number }>(
-        "SELECT count(*) AS n FROM sends WHERE owner IS ? AND state = 'draft'",
+  insertDraft(draft: NewDraft, cap: number, accountCap: number, evictableLifeMs = Infinity): "owner" | "account" | null {
+    const life = Number.isFinite(evictableLifeMs) ? evictableLifeMs : Number.MAX_SAFE_INTEGER;
+    const now = draft.createdAt;
+    const evictable = "(expires_at - created_at <= ? OR expires_at <= ?)";
+    return this.c.write(() => {
+      const owned = this.c.get<{ n: number; free: number }>(
+        `SELECT count(*) AS n, coalesce(sum(${evictable}), 0) AS free FROM sends WHERE owner IS ? AND state = 'draft'`,
+        life,
+        now,
         draft.owner
-      )!.n;
-      const excess = owned - Math.max(0, cap - 1);
+      )!;
+      const excess = owned.n - Math.max(0, cap - 1);
+      if (excess > owned.free) return "owner";
+      const held = this.c.get<{ n: number; free: number }>(
+        `SELECT count(*) AS n, coalesce(sum(${evictable}), 0) AS free FROM sends WHERE state = 'draft'`,
+        life,
+        now
+      )!;
+      // What the owner's eviction frees counts toward the account's room too.
+      const freed = Math.max(0, excess);
+      const beyond = held.n - freed - Math.max(0, accountCap - 1);
+      if (beyond > held.free - freed) return "account";
       if (excess > 0) {
         this.c.run(
           `DELETE FROM sends WHERE draft_id IN (
-             SELECT draft_id FROM sends WHERE owner IS ? AND state = 'draft' ORDER BY created_at, draft_id LIMIT ?)`,
+             SELECT draft_id FROM sends WHERE owner IS ? AND state = 'draft' AND ${evictable} ORDER BY created_at, draft_id LIMIT ?)`,
           draft.owner,
+          life,
+          now,
           excess
         );
       }
-      const held = this.c.get<{ n: number }>("SELECT count(*) AS n FROM sends WHERE state = 'draft'")!.n;
-      const beyond = held - Math.max(0, accountCap - 1);
       if (beyond > 0) {
         this.c.run(
           `DELETE FROM sends WHERE draft_id IN (
-             SELECT draft_id FROM sends WHERE state = 'draft' ORDER BY created_at, draft_id LIMIT ?)`,
+             SELECT draft_id FROM sends WHERE state = 'draft' AND ${evictable} ORDER BY created_at, draft_id LIMIT ?)`,
+          life,
+          now,
           beyond
         );
       }
@@ -125,6 +148,7 @@ export class Sends {
         draft.expiresAt,
         draft.createdAt
       );
+      return null;
     });
   }
 
@@ -215,6 +239,17 @@ export class Sends {
   /** True when a confirmed draft went out, or may have, under this key. */
   hasKey(keyId: string): boolean {
     return this.c.get("SELECT 1 FROM sends WHERE key_id = ? AND state <> 'draft'", keyId) !== undefined;
+  }
+
+  /** Drafts nobody confirmed that have not lapsed, oldest first: what waits for a person's approval. */
+  pending(now: number, limit: number): SendRecord[] {
+    return this.c
+      .all<SendRow>(
+        `SELECT ${COLUMNS} FROM sends WHERE state = 'draft' AND expires_at > ? ORDER BY created_at, draft_id LIMIT ?`,
+        now,
+        limit
+      )
+      .map(recordOf);
   }
 
   /** Drops a draft nobody confirmed. A send under way or settled stays. */

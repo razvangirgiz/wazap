@@ -7,6 +7,7 @@ Most of these are written for you by `wazap config`, `wazap login` and
 | --- | --- | --- |
 | `WAZAP_DATA_DIR` | `~/.wazap` | Where everything is stored. |
 | `WAZAP_READ_ONLY` | unset (`0`) | `1` does not register the write tools. Unset and `0` both do. `wazap config writes on\|off` sets it. |
+| `WAZAP_DRAFTS_ONLY` | unset (`0`) | `1`: every session drafts and none sends; you approve each draft ([Drafts only](send-rules.md#drafts-only)). `wazap config writes drafts` sets it, `writes on` clears it. |
 | `WAZAP_PERSIST_HISTORY` | `1` | Privacy: `0` keeps no messages on disk, removing them at each start and stop; barriers, chats, contacts and notes stay, and recall is off. |
 | `WAZAP_HOST` / `WAZAP_PORT` | `127.0.0.1` / `8766` | Where `wazap serve --http` listens. |
 | `WAZAP_PUBLIC_URL` / `WAZAP_OAUTH_PASSWORD` | unset | The `https` address agents reach the server at, and the password its consent page asks for (at least 8 characters). Both together turn [OAuth](self-host.md#hosted-agents-oauth) on; `wazap expose` sets them. |

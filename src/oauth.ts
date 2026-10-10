@@ -33,7 +33,13 @@ import { WAZAP_VERSION } from "./config.js";
 import { log } from "./logger.js";
 import { logLabel } from "./http-log.js";
 
-export const OAUTH_SCOPES = ["read", "write"] as const;
+/**
+ * read: the read tools. drafts: also send_message, whose drafts a person
+ * approves (drafts-only mode, approvals.ts); nothing the session can call
+ * sends. write: also confirm_send and every other write. A grant always holds
+ * read; drafts and write each imply it.
+ */
+export const OAUTH_SCOPES = ["read", "drafts", "write"] as const;
 export type OAuthScope = (typeof OAUTH_SCOPES)[number];
 
 /** The consent form posts here; mounted by server.ts next to the SDK router. */
@@ -153,7 +159,7 @@ function sameSecret(a: string, b: string): boolean {
   return timingSafeEqual(x, y);
 }
 
-function escapeHtml(value: string): string {
+export function escapeHtml(value: string): string {
   return value.replace(
     /[&<>"']/g,
     (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c] ?? c
@@ -193,7 +199,7 @@ function validState(value: unknown): value is OAuthState {
   for (const kind of ["access", "refresh"] as const) {
     for (const [key, entry] of Object.entries(kind === "access" ? value.access : value.refresh)) {
       if (!hash(key) || !record(entry) || typeof entry.clientId !== "string" || !Object.hasOwn(clients, entry.clientId) ||
-        !Array.isArray(entry.scopes) || entry.scopes.length === 0 || !entry.scopes.every((scope) => scope === "read" || scope === "write") ||
+        !Array.isArray(entry.scopes) || entry.scopes.length === 0 || !entry.scopes.every((scope) => scope === "read" || scope === "drafts" || scope === "write") ||
         !time(entry.issuedAt) || (kind === "access" && !time(entry.expiresAt)) ||
         (entry.lastUsedAt !== undefined && !time(entry.lastUsedAt)) ||
         (entry.refresh !== undefined && !hash(entry.refresh)) || (entry.family !== undefined && !hash(entry.family)) ||
@@ -454,7 +460,10 @@ export class WazapOAuthProvider implements OAuthServerProvider {
     this.lockout.clear(caller);
     this.pending.delete(id);
 
-    const scopes: string[] = body.access === "write" ? ["read", "write"] : ["read"];
+    // Anything but an explicit choice is the narrower one: a page that posts no
+    // access, or an unknown one, gets read.
+    const scopes: string[] =
+      body.access === "write" ? ["read", "write"] : body.access === "drafts" ? ["read", "drafts"] : ["read"];
     const code = randomBytes(32).toString("hex");
     this.codes.set(code, {
       clientId: client.client_id,
@@ -603,6 +612,24 @@ export class WazapOAuthProvider implements OAuthServerProvider {
     }
   }
 
+  /**
+   * The wazap password, checked for another page (the approval page) under
+   * the same lockout as consent: five misses lock the caller out, twenty from
+   * everywhere pause it for everyone.
+   */
+  checkPassword(req: Request, password: unknown): { ok: true } | { ok: false; status: 401 | 429; message: string } {
+    const caller = callerOf(req);
+    const wait = this.lockout.lockedFor(caller);
+    if (wait > 0) return { ok: false, status: 429, message: `Too many wrong passwords. Try again in ${inMinutes(wait)}.` };
+    if (!sameSecret(typeof password === "string" ? password : "", this.options.password)) {
+      this.lockout.miss(caller);
+      log(`oauth: wrong password from ${logLabel(caller)}`);
+      return { ok: false, status: 401, message: "Wrong password." };
+    }
+    this.lockout.clear(caller);
+    return { ok: true };
+  }
+
   /** Every grant, for `wazap status` and the like. */
   grants(): Grant[] {
     this.sync();
@@ -623,7 +650,10 @@ export class WazapOAuthProvider implements OAuthServerProvider {
     const claim = client.client_name
       ? `<p>It calls itself <strong>${escapeHtml(client.client_name)}</strong>. The agent chose that name; wazap has not checked it.</p>`
       : "";
-    const wantsWrite = normalizeScopes(params.scopes).includes("write");
+    // A new grant defaults to drafts, whatever the agent asked for: it may
+    // write the messages, and you send each one. Asking for read only stays read.
+    const asked = normalizeScopes(params.scopes);
+    const readOnly = asked.length === 1 && asked[0] === "read" && (params.scopes ?? []).length > 0;
     return page(
       `Connect ${host}`,
       `
@@ -635,8 +665,9 @@ ${error ? `<p class="error">${escapeHtml(error)}</p>` : ""}
   <input type="hidden" name="request" value="${id}">
   <fieldset>
     <legend>What may it do?</legend>
-    <label><input type="radio" name="access" value="read"${wantsWrite ? "" : " checked"}> Read chats and contacts</label>
-    <label><input type="radio" name="access" value="write"${wantsWrite ? " checked" : ""}> Read, and send messages as you</label>
+    <label><input type="radio" name="access" value="read"${readOnly ? " checked" : ""}> Read chats and contacts</label>
+    <label><input type="radio" name="access" value="drafts"${readOnly ? "" : " checked"}> Read, and draft messages that you approve before they are sent</label>
+    <label><input type="radio" name="access" value="write"> Read, and send messages as you without asking</label>
   </fieldset>
   <label class="field">wazap password
     <input type="password" name="password" autocomplete="current-password" autofocus required>
@@ -686,7 +717,7 @@ function formTarget(redirectUri: string): string {
  * lay it under a decoy and have the person click Connect; nothing loads but its
  * own inline styles; no Referer and no cache, so the request id stays put.
  */
-function sendPage(res: Response, status: number, html: string, redirectUri?: string): void {
+export function sendPage(res: Response, status: number, html: string, redirectUri?: string): void {
   const formAction = redirectUri === undefined ? "'self'" : `'self' ${formTarget(redirectUri)}`;
   res.setHeader(
     "Content-Security-Policy",
@@ -698,7 +729,7 @@ function sendPage(res: Response, status: number, html: string, redirectUri?: str
   res.status(status).type("html").send(html);
 }
 
-function page(title: string, body: string): string {
+export function page(title: string, body: string): string {
   return `<!doctype html>
 <html lang="en">
 <head>
@@ -721,6 +752,8 @@ function page(title: string, body: string): string {
   button { font: inherit; padding: .55rem 1rem; border-radius: 8px; border: 1px solid #25d366; background: #25d366; color: #062b14; cursor: pointer; }
   button.secondary { background: transparent; border-color: color-mix(in srgb, CanvasText 30%, transparent); color: inherit; }
   .error { color: #c62828; font-weight: 600; }
+  .preview { white-space: pre-wrap; overflow-wrap: anywhere; padding: .75rem; margin: 0 0 1rem; border-radius: 8px; background: color-mix(in srgb, CanvasText 6%, transparent); font: inherit; }
+  button.danger { background: transparent; border-color: #c62828; color: #c62828; }
   footer { margin-top: 1.5rem; font-size: .8rem; opacity: .6; }
 </style>
 </head>

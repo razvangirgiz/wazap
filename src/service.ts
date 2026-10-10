@@ -13,17 +13,18 @@ import {
   writeFileSync,
 } from "node:fs";
 import { homedir, userInfo } from "node:os";
-import { basename, dirname, join } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { setTimeout as sleep } from "node:timers/promises";
 import { WAZAP_VERSION, paths, type Config } from "./config.js";
 import { commandOnPath, isNpxPath, whereInstalled, type Install } from "./connect.js";
 import { WazapError } from "./errors.js";
 import { lockHolder } from "./lock.js";
+import { builtinSupervisor } from "./supervisor.js";
 import { say } from "./logger.js";
 import { dim, fail, fix, info, ok, shortPath } from "./ui.js";
 
-export type SupervisorName = "launchd" | "systemd";
+export type SupervisorName = "launchd" | "systemd" | "builtin";
 
 /** `<data-dir>/service.json`: what was installed, and where the supervisor keeps it. */
 export interface ServiceRecord {
@@ -65,6 +66,8 @@ export interface Supervisor {
   pid(ref: UnitRef): number | null;
   /** The command to follow the logs with, then the last 50 lines. */
   logs(ref: UnitRef): string[];
+  /** A line about the unit beyond running or not (restarts, giving up), or null. */
+  describe?(ref: UnitRef): string | null;
 }
 
 interface Ran {
@@ -203,9 +206,18 @@ function systemdUnitName(label: string): string {
 
 const SYSTEMD_FIX = "check `systemctl --user status wazap` and `journalctl --user -u wazap`";
 
+/**
+ * sd_booted(3): systemd is the init only when this directory exists. A
+ * container can carry systemctl without systemd running, and every
+ * `systemctl --user` there fails.
+ */
+export function systemdBooted(): boolean {
+  return existsSync("/run/systemd/system");
+}
+
 const systemd: Supervisor = {
   name: "systemd",
-  available: () => process.platform === "linux" && commandOnPath("systemctl"),
+  available: () => process.platform === "linux" && systemdBooted() && commandOnPath("systemctl"),
   logDir: () => "",
   unitFile: (label) => join(homedir(), ".config", "systemd", "user", label),
   render: (unit) =>
@@ -258,16 +270,21 @@ WantedBy=default.target
   },
 };
 
-export const SUPERVISORS: readonly Supervisor[] = [launchd, systemd];
+/** wazap's own, where neither launchd nor systemd is there (supervisor.ts). Last, so it is only the fallback. */
+const builtin: Supervisor = builtinSupervisor();
+
+export const SUPERVISORS: readonly Supervisor[] = [launchd, systemd, builtin];
 
 export const SERVER_LABELS: Record<SupervisorName, string> = {
   launchd: "com.wazap.server",
   systemd: "wazap.service",
+  builtin: "wazap-server",
 };
 
 export const TUNNEL_LABELS: Record<SupervisorName, string> = {
   launchd: "com.wazap.tunnel",
   systemd: "wazap-tunnel.service",
+  builtin: "wazap-tunnel",
 };
 
 /** A unit on this machine that holds a tunnel open to the server's port. */
@@ -283,15 +300,61 @@ function reachesPort(command: string, port: number): boolean {
   return new RegExp(`(?:127\\.0\\.0\\.1|localhost):${port}(?!\\d)`).test(command);
 }
 
-/** The command a unit file runs: a plist's ProgramArguments, a unit's ExecStart lines. */
-function unitCommand(supervisor: SupervisorName, text: string): string {
-  if (supervisor === "launchd")
-    return /<key>ProgramArguments<\/key>\s*<array>([\s\S]*?)<\/array>/.exec(text)?.[1] ?? "";
-  return text
-    .split("\n")
-    .filter((line) => /^\s*ExecStart\s*=/.test(line))
-    .join("\n");
-}
+/** How each supervisor's unit files read: their extension, the command in one, the label, and what stops one for good. */
+const UNIT_FORMATS: Record<
+  SupervisorName,
+  {
+    extension: string;
+    command(text: string): string;
+    label(text: string, name: string): string;
+    stop(label: string, unitFile: string): string;
+    /** The WAZAP_DATA_DIR the unit runs with, or null when it sets none. */
+    dataDir(text: string): string | null;
+  }
+> = {
+  launchd: {
+    extension: ".plist",
+    command: (text) => /<key>ProgramArguments<\/key>\s*<array>([\s\S]*?)<\/array>/.exec(text)?.[1] ?? "",
+    label: (text, name) => /<key>Label<\/key>\s*<string>([^<]+)<\/string>/.exec(text)?.[1] ?? basename(name, ".plist"),
+    stop: (label, unitFile) => `launchctl bootout ${guiDomain()}/${label}; rm ${unitFile}`,
+    dataDir: (text) => {
+      const found = /<key>WAZAP_DATA_DIR<\/key>\s*<string>([^<]*)<\/string>/.exec(text)?.[1];
+      return found === undefined ? null : found.replace(/&(amp|lt|gt);/g, (_all, name: string) => ({ amp: "&", lt: "<", gt: ">" })[name]!);
+    },
+  },
+  systemd: {
+    extension: ".service",
+    command: (text) =>
+      text
+        .split("\n")
+        .filter((line) => /^\s*ExecStart\s*=/.test(line))
+        .join("\n"),
+    label: (_text, name) => name,
+    stop: (label, unitFile) => `systemctl --user disable --now ${label}; rm ${unitFile}`,
+    dataDir: (text) => /^\s*Environment=WAZAP_DATA_DIR=(.*)$/m.exec(text)?.[1]?.trim() ?? null,
+  },
+  builtin: {
+    extension: ".json",
+    command: (text) => {
+      try {
+        const argv = (JSON.parse(text) as { argv?: unknown }).argv;
+        return Array.isArray(argv) ? argv.join(" ") : "";
+      } catch {
+        return "";
+      }
+    },
+    label: (_text, name) => basename(name, ".json"),
+    stop: (_label, unitFile) => `kill $(cat ${unitFile.replace(/\.json$/, ".pid")}); rm ${unitFile}`,
+    dataDir: (text) => {
+      try {
+        const value = (JSON.parse(text) as { env?: Record<string, unknown> }).env?.WAZAP_DATA_DIR;
+        return typeof value === "string" ? value : null;
+      } catch {
+        return null;
+      }
+    },
+  },
+};
 
 /**
  * Every unit in the supervisor's own directory whose command reaches `port` on
@@ -300,7 +363,8 @@ function unitCommand(supervisor: SupervisorName, text: string): string {
  */
 export function tunnelsTo(supervisor: Supervisor, port: number): TunnelUnit[] {
   const dir = dirname(supervisor.unitFile(TUNNEL_LABELS[supervisor.name]));
-  const extension = supervisor.name === "launchd" ? ".plist" : ".service";
+  const format = UNIT_FORMATS[supervisor.name];
+  const extension = format.extension;
   let names: string[];
   try {
     names = readdirSync(dir)
@@ -318,19 +382,51 @@ export function tunnelsTo(supervisor: Supervisor, port: number): TunnelUnit[] {
     } catch {
       continue;
     }
-    if (!reachesPort(unitCommand(supervisor.name, text), port)) continue;
-    if (supervisor.name === "launchd") {
-      const label = /<key>Label<\/key>\s*<string>([^<]+)<\/string>/.exec(text)?.[1] ?? basename(name, extension);
-      found.push({ label, unitFile, stop: `launchctl bootout ${guiDomain()}/${label}; rm ${unitFile}` });
-    } else {
-      found.push({ label: name, unitFile, stop: `systemctl --user disable --now ${name}; rm ${unitFile}` });
-    }
+    if (!reachesPort(format.command(text), port)) continue;
+    const label = format.label(text, name);
+    found.push({ label, unitFile, stop: format.stop(label, unitFile) });
   }
   return found;
 }
 
+/**
+ * The labels are one per supervisor, not per data dir: a second data dir's
+ * install would rewrite the first one's unit to point at itself, and wazap's
+ * own supervisor, finding that unit already running, would not even restart
+ * it. So the unit already there names its data dir, and another one is refused.
+ */
+function sameDir(a: string, b: string): boolean {
+  const real = (dir: string): string => {
+    try {
+      return realpathSync(dir);
+    } catch {
+      return resolve(dir);
+    }
+  };
+  return resolve(a) === resolve(b) || real(a) === real(b);
+}
+
+function refuseOtherDataDir(supervisor: Supervisor, ref: UnitRef, dataDir: string): void {
+  let text: string;
+  try {
+    text = readFileSync(ref.unitFile, "utf8");
+  } catch {
+    return;
+  }
+  const other = UNIT_FORMATS[supervisor.name].dataDir(text);
+  if (other === null || other === "" || sameDir(other, dataDir)) return;
+  const installed = readService(other)?.unitFile === ref.unitFile;
+  throw new WazapError(
+    "SERVICE_ERROR",
+    `${shortPath(ref.unitFile)} already runs wazap for ${shortPath(other)}; ${supervisor.name} holds one wazap service per user.`,
+    installed
+      ? `keep using that one, or run \`wazap service uninstall --data-dir ${other}\` first`
+      : `keep using that one, or remove it first: ${UNIT_FORMATS[supervisor.name].stop(ref.label, ref.unitFile)}`
+  );
+}
+
 const UNSUPPORTED_FIX =
-  "wazap needs launchd (macOS) or a systemd user session (Linux). On Windows, run `wazap serve --http` from a Task Scheduler task instead";
+  "On Windows, run `wazap serve --http` from a Task Scheduler task instead";
 
 export function pickSupervisor(registry: readonly Supervisor[] = SUPERVISORS): Supervisor {
   const found = registry.find((supervisor) => supervisor.available());
@@ -361,7 +457,7 @@ export function readService(dataDir: string): ServiceRecord | null {
   }
   if (typeof parsed !== "object" || parsed === null) return null;
   const { supervisor, label, unitFile, port, logDir, installedVersion, tunnel } = parsed as Record<string, unknown>;
-  if (supervisor !== "launchd" && supervisor !== "systemd") return null;
+  if (supervisor !== "launchd" && supervisor !== "systemd" && supervisor !== "builtin") return null;
   if (typeof label !== "string" || typeof unitFile !== "string" || typeof logDir !== "string") return null;
   if (typeof installedVersion !== "string" || !isPositiveInt(port)) return null;
   const record: ServiceRecord = { supervisor, label, unitFile, port, logDir, installedVersion };
@@ -456,6 +552,27 @@ export function serviceScript(install: Install = whereInstalled()): string {
   return real;
 }
 
+/**
+ * The node a unit should run: the installer's `node/current` link when this
+ * node is the build it points at (scripts/install.sh), so upgrading Node is a
+ * relinked directory and a restart, not a unit that names a deleted build.
+ */
+export function stableNode(execPath: string = process.execPath): string {
+  const current = join(dirname(dirname(dirname(execPath))), "current", "bin", "node");
+  try {
+    if (realpathSync(current) === realpathSync(execPath)) return current;
+  } catch {
+    /* not an installer layout */
+  }
+  return execPath;
+}
+
+/** XDG_STATE_HOME when set, so a unit finds wazap's own supervisor where this shell put it. */
+export function stateHome(): Record<string, string> {
+  const value = process.env.XDG_STATE_HOME?.trim();
+  return value ? { XDG_STATE_HOME: value } : {};
+}
+
 /** whisper and ffmpeg live in these, and a launchd job inherits none of your shell PATH. */
 const SERVICE_PATH = ["/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "/bin"];
 
@@ -475,7 +592,7 @@ export function serverUnit(args: {
     label: args.label,
     describe: "wazap MCP server (WhatsApp for your AI agent)",
     argv: [args.node, args.script, "serve", "--http", "--host", "127.0.0.1", "--port", String(args.port)],
-    env: { HOME: homedir(), PATH: servicePath(args.node), WAZAP_DATA_DIR: args.dataDir },
+    env: { HOME: homedir(), PATH: servicePath(args.node), WAZAP_DATA_DIR: args.dataDir, ...stateHome() },
     logDir: args.logDir,
   };
 }
@@ -513,6 +630,9 @@ function portHolder(port: number): number | null {
   return Number.isInteger(pid) && pid > 0 ? pid : null;
 }
 
+const BUILTIN_NOTE =
+  "No launchd or systemd here, so wazap's own supervisor keeps it running and restarts it if it crashes. Nothing starts it at boot: after this machine restarts, run `wazap service start`.";
+
 const SLEEP_NOTE =
   "A Mac that sleeps is a wazap that is offline: System Settings → Lock Screen, or Battery → Options, to keep it awake on power.";
 
@@ -535,6 +655,7 @@ export async function installService(
     installedVersion: WAZAP_VERSION,
   };
   if (existing?.tunnel) record.tunnel = existing.tunnel;
+  refuseOtherDataDir(supervisor, record, config.dataDir);
 
   const ours = existing === null ? null : supervisor.pid(record);
   const holder = portHolder(record.port);
@@ -554,7 +675,7 @@ export async function installService(
     );
   }
 
-  const text = supervisor.render(serverUnit({ ...record, node: process.execPath, script, dataDir: config.dataDir }));
+  const text = supervisor.render(serverUnit({ ...record, node: stableNode(), script, dataDir: config.dataDir }));
   if (config.dryRun) {
     say(info(`would write ${shortPath(record.unitFile)}`));
     for (const line of text.split("\n")) say(`  ${dim(line)}`);
@@ -570,6 +691,7 @@ export async function installService(
   else supervisor.restart(record);
 
   say(ok(`${supervisor.name} · ${shortPath(record.unitFile)}`));
+  if (supervisor.name === "builtin") say(info(BUILTIN_NOTE));
   await report(supervisor, record, waitMs);
   say(dim(supervisor.logs(record)[0]!));
   if (process.platform === "darwin") say(info(SLEEP_NOTE));
@@ -600,6 +722,9 @@ async function serviceStatus(config: Config, registry: readonly Supervisor[]): P
   say(`${supervisor.name} · ${record.label} · ${shortPath(record.unitFile)}`);
   const pid = supervisor.pid(record);
   say(pid === null ? fail("not running") : ok(`running (pid ${pid})`));
+  const note = supervisor.describe?.(record) ?? null;
+  if (note !== null) say(info(note));
+  if (pid === null && supervisor.name === "builtin") say(fix("run `wazap service start`; nothing starts it again after this machine restarts"));
   const health = await fetchHealth(record.port, HEALTH_TIMEOUT_MS);
   say(
     health === null
@@ -635,6 +760,15 @@ const VERBS: Record<string, Verb> = {
     secureLogs(record.logDir, record.label);
     supervisor.start(record);
     say(ok(`Started ${record.label}`));
+    // A tunnel this service had comes back with it: launchd and systemd bring
+    // their own back at login, wazap's supervisor has nothing that would.
+    const tunnelLabel = TUNNEL_LABELS[supervisor.name];
+    const tunnel = { label: tunnelLabel, unitFile: supervisor.unitFile(tunnelLabel) };
+    if (record.tunnel && existsSync(tunnel.unitFile)) {
+      secureLogs(record.logDir, tunnel.label);
+      supervisor.start(tunnel);
+      say(ok(`Started ${tunnel.label}`));
+    }
   },
   stop: (config, registry) => {
     const { supervisor, record } = requireService(config, registry);
@@ -656,6 +790,11 @@ const VERBS: Record<string, Verb> = {
   },
   uninstall: uninstallService,
 };
+
+/** `wazap serve --daemon`: the service, under whichever supervisor this machine has (wazap's own as the last resort). */
+export async function runDaemon(config: Config, registry: readonly Supervisor[] = SUPERVISORS): Promise<void> {
+  await installService(config, pickSupervisor(registry));
+}
 
 export const SERVICE_VERBS: string = Object.keys(VERBS).join("|");
 

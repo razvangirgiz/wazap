@@ -1,5 +1,141 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- **One pasted line installs wazap, with a Node of its own.**
+  `curl -fsSL https://raw.githubusercontent.com/razvangirgiz/wazap/main/scripts/install.sh | sh`
+  installs Node 22.23.3 (checked against its pinned sha256) and `wazap-mcp`
+  into `~/.local/share/wazap`, and a `wazap` launcher into `~/.local/bin` that
+  always runs that Node. No sudo (it refuses to run under sudo), no system
+  Node touched, macOS arm64/x64 and glibc Linux x64/arm64. A failed download or
+  install leaves the previous one in place; a `wazap` it did not write is never
+  replaced without `--force`; the shell profile gets one PATH line, once. Run
+  again, it upgrades and restarts the background service.
+- **Drafts only: the agent writes, you send.** `wazap config writes drafts`
+  (`WAZAP_DRAFTS_ONLY=1`, `--drafts-only` on `serve`, `login` and `setup`), or
+  the new middle choice on the OAuth sign-in page, preselected for every new
+  hosted agent ("draft messages that you approve before they are sent", OAuth
+  scope `drafts`). Such a session registers `send_message` and no tool that
+  sends, edits, deletes or changes a chat. Its drafts wait 24 hours and come
+  with the ways a person sends them: an approval page at
+  `<public URL>/approve/<draft_id>` that asks the wazap password, under the
+  consent page's lockout and with a one-time form token;
+  `wazap drafts approve <draft_id>` on the wazap machine, over the private
+  control line; and a `wa.me` link that opens WhatsApp with the text typed in.
+  Approving re-checks the send rules and the writes switches and sends at most
+  once. `wazap drafts` lists what waits, `wazap drafts discard` drops one.
+  A draft waiting for approval is never evicted to make room for another:
+  when they fill a session's 20 or the account's 200, the new draft is refused
+  with the new error code `DRAFTS_WAITING`. `wazap config writes` names a
+  `WAZAP_DRAFTS_ONLY` or `WAZAP_READ_ONLY` in the shell that overrides what it
+  stores in `.env`, and exits 1 when that would leave the agent more than asked.
+- **`wazap serve --daemon`, and a supervisor of wazap's own.** The same as
+  `wazap service install`, which now falls back, where neither launchd nor a
+  running systemd is there (a container with tini as PID 1), to a supervisor
+  that ships with wazap: a pidfile, logs in `~/.local/state/wazap`, restart on
+  exit with a backoff from one second to a minute, giving up (and saying so in
+  `service status`) after ten quick failures in a row, and a session of its own
+  so it outlives the shell that started it. The server it runs stops when the
+  supervisor is killed outright, even while the server is still starting, so
+  nothing holds the data dir's lock without a supervisor. A dead
+  supervisor's zombie, where PID 1 never reaps, does not keep its pidfile.
+  `service status|start|stop|restart|logs|uninstall` work as with launchd and
+  systemd; `service start` also brings back the tunnel, since nothing starts
+  this supervisor at boot. Under any of the three, there is one wazap service
+  per user: `service install` (or `serve --daemon`) for a second data dir is
+  refused, naming the one installed, instead of repointing its unit.
+- **`wazap expose quick`: a public URL with no account.** A Cloudflare quick
+  tunnel (trycloudflare.com) from cloudflared 2026.10.0, downloaded into the
+  data dir and checked against its pinned size and sha256 (on macOS the
+  archive's, then the binary's inside it), or the `cloudflared` already on PATH, run as the service's second unit. The password is written before
+  the tunnel opens. A quick tunnel's URL changes when it restarts: its unit
+  adopts each new hostname and restarts the server onto it, and `wazap status`
+  (`public.mcp_url` in `--json`) always shows the current one, with that
+  trade-off spelled out. `wazap expose` with no provider signed in now takes
+  this path instead of offering Homebrew.
+- **`wazap setup --agent` covers an agent on its own Linux box**, end to end
+  and with no step that needs a terminal: install, a pairing code for the
+  person, `serve --daemon`, `expose quick`, and the URL handed over.
+
+- **Search by meaning in about five minutes, without an account.**
+  `scripts/bootstrap.sh` (also `npm run bootstrap`) goes from a fresh clone to
+  a working search by meaning on fictional sample chats: it checks Node and
+  fetches Node 22.23.3 into `./.tools/node` when yours is too old (pinned by
+  version and sha256, like llama.cpp), builds, installs llama.cpp and the model,
+  seeds `./.wazap-demo`, builds the index and runs a test search that only
+  meaning can pass ("adresa trimisă de Ana", `--match meaning`). It never
+  touches `~/.wazap`, resumes when run again, and with `--offline-stub` runs
+  with no download at all, as the test suite does. `.nvmrc` names Node 22.
+- **llama.cpp on Linux.** Where Homebrew is not there, `wazap embed download`
+  fetches a pinned llama.cpp release build (`b11516`, CPU, for Linux x64,
+  Linux arm64 and Apple Silicon; tag and sha256 in `src/recall/llama.ts`) into
+  `<data-dir>/bin/llama/` and points `WAZAP_EMBED_BIN` at it, with `--yes` or
+  a yes at a terminal.
+- **`wazap search "<words>"`** searches an account's stored messages from the
+  shell, read-only, the way the MCP `search` tool does: `--match
+  hybrid|meaning|words`, `--limit`, `--account`, `--json`. It waits for
+  llama-server to start (up to 90 s) rather than answering by words after 8 s,
+  ranks without recency, and with `--json` prints a failure as
+  `{"error": {...}}` on stdout.
+- **`wazap embed index [--wait]`** says where each account's meaning index
+  stands, and with `--wait` embeds what is queued, with progress, exiting 0
+  once every index is ready.
+- **`wazap demo seed`** fills a throwaway `--data-dir` with the bundled
+  fictional world (`eval/fixtures/world.json`, now in the npm package) through
+  the real ingestion, with no socket. It refuses `~/.wazap` and any dir holding
+  accounts it did not make.
+- **`wazap setup` asks about search by meaning** after transcription, and
+  `--recall local|off` answers it ahead of time.
+- **`docker build --build-arg WITH_RECALL=1`** builds the image on Debian with
+  the pinned llama.cpp and recall on; its build stage is Debian too, so
+  `node_modules` matches the runtime's libc.
+
+### Changed
+
+- **A quick tunnel that is not connected to Cloudflare says so.** cloudflared
+  prints its trycloudflare hostname before it has a connection, and on a
+  network that blocks outbound QUIC and HTTP/2 to Cloudflare's edge it never
+  gets one. `wazap expose quick` used to answer "the tunnel may still be coming
+  up" forever; the tunnel's unit now records the edge connection while it is up
+  (`tunnel.json` `connected_at`, cleared when cloudflared loses it or exits),
+  `expose` says plainly when there is none and why, and `wazap status` marks
+  the URL `NOT connected` (`public.connected: false`).
+- **An installer install is recognised as one.** `wazap status` called it a
+  `checkout` and `wazap update` told it to `git pull`; it now shows
+  `installer` and upgrades by running the installer line again, never
+  `npm i -g` into another Node. `wazap connect` writes every client, Claude
+  Desktop included, the installer's `node/current` and package by absolute
+  path, so an entry survives the installer upgrading Node. The installer's npm
+  run no longer prints npm's own update notice.
+- **An old Node fails in one line, from every entry point.** `dist/index.js`
+  now checks the version before loading anything else, so the bare stdio
+  server an MCP client launches, `serve`, `status` and every other command
+  stop with `✗ wazap needs Node 22.16 or newer … this is Node <x> (<path>).
+  Fix: …` on stderr and exit 1, instead of failing on `node:sqlite` deep in
+  the import graph and being restarted until the client gives up.
+- **The sign-in page preselects drafts.** A new hosted agent is offered read,
+  drafts (checked) and send; an access the page does not offer is read.
+  Existing grants keep their scopes.
+- **systemd counts only when it runs.** `service install` uses systemd only
+  where `/run/systemd/system` exists (sd_booted), so a container that carries
+  `systemctl` without running systemd gets wazap's own supervisor instead of a
+  failing `systemctl --user`.
+- **An anonymous loopback read refuses a relayed request.** Without a token or
+  sign-in, `/mcp` already required a loopback Host; a request carrying
+  `X-Forwarded-For`, `Forwarded`, `CF-Connecting-IP` or `X-Real-IP` is now
+  refused too, so a tunnel that keeps the Host header cannot reach it.
+- **The README starts with one paragraph for people**: what wazap does, the
+  line to paste, and what stays private. The technical detail follows.
+- **`wazap embed download` says when llama-server is still missing.** The
+  model is kept, the fix for the platform is printed, and the command exits 1
+  (`--json`: `"ready": false`) instead of exiting 0 in silence. An installed
+  llama.cpp older than build 6800, which cannot run embeddinggemma, is reported
+  the same way, with the e5 fallback as the way out.
+- **The Docker healthcheck uses `node`** instead of `wget`, so the same line
+  works on the Alpine and the Debian image.
+
 ## 1.3.6
 
 ### Changed

@@ -14,7 +14,7 @@ breaking.
 | CLI | command and flag names, exit code 0 vs non-zero, `status --json`, `--version --json`, `account add --json` | new commands, flags and JSON keys | the human text on stderr |
 | Webhook | event names, signature scheme, the payload fields below | new events (opt-in), new payload fields | delivery latency, retry timing |
 | Storage | forward-only migrations, released migrations frozen, the pre-migration copy | new schema versions | the SQLite schema as a format for other tools |
-| Settings | the 24 `WAZAP_*` in `.env.example` and `docs/settings.md` | new settings | anything not listed there |
+| Settings | the 25 `WAZAP_*` in `.env.example` and `docs/settings.md` | new settings | anything not listed there |
 
 ## 1. The MCP surface
 
@@ -38,7 +38,7 @@ Fourteen declare an output schema and answer in that shape, as an SDK client's
 own validator checks it; the seven without one are the six of the integration
 contract and `learn` (`test/output-schema.test.mjs`). A refusal is an error result carrying
 `{ error, message, fix }`, with `account_id` added when the tool declares an
-output schema; `error` is one of the 46 codes, and `learn` documents every one
+output schema; `error` is one of the 47 codes, and `learn` documents every one
 of them. Guarded by: `test/tools.test.mjs`.
 
 **What "stable" means here.** A new optional argument, a new value in an enum
@@ -216,8 +216,8 @@ code or the tests supports a third-party reader.
 
 ## 6. Settings
 
-Stable: the 24 `WAZAP_*` listed in `.env.example` and in the settings table of
-`docs/settings.md` — `WAZAP_DATA_DIR`, `WAZAP_READ_ONLY`, `WAZAP_PERSIST_HISTORY`,
+Stable: the 25 `WAZAP_*` listed in `.env.example` and in the settings table of
+`docs/settings.md` — `WAZAP_DATA_DIR`, `WAZAP_READ_ONLY`, `WAZAP_DRAFTS_ONLY`, `WAZAP_PERSIST_HISTORY`,
 `WAZAP_HOST`, `WAZAP_PORT`, `WAZAP_READ_TOKEN`, `WAZAP_WRITE_TOKEN`,
 `WAZAP_PUBLIC_URL`, `WAZAP_OAUTH_PASSWORD`, `WAZAP_TRUST_PROXY`,
 `WAZAP_TRANSCRIBE`, `WAZAP_TRANSCRIBE_API_KEY`, `WAZAP_RECALL`,

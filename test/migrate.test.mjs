@@ -20,7 +20,7 @@ import { promisify } from "node:util";
 
 import { AccountRegistry, DEFAULT_ACCOUNT_ID } from "../dist/accounts.js";
 import { accountPaths, paths } from "../dist/config.js";
-import { LAYOUT_ENTRIES, migrateLayout, rollbackMigration } from "../dist/migrate.js";
+import { LAYOUT_ENTRIES, migrateLayout, migratesFirst, rollbackMigration } from "../dist/migrate.js";
 import { TOOL_COUNT, childEnv } from "./helpers.mjs";
 import { runSmoke } from "./smoke-stdio.mjs";
 
@@ -360,4 +360,36 @@ test("service and migrate commands do not run the migration first", async () => 
     }
   );
   assert.equal(existsSync(join(dir, "auth", "creds.json")), true);
+});
+
+test("the commands that open account state migrate first; embed download and the plumbing do not", () => {
+  for (const [command, args] of [["embed", ["index"]], ["embed", ["index", "--wait"]], ["search", ["x"]], ["demo", ["seed"]], ["drafts", []], ["status", []]]) {
+    assert.equal(migratesFirst(command, args), true, `${command} ${args.join(" ")}`);
+  }
+  for (const [command, args] of [["embed", ["download"]], ["migrate", ["rollback"]], ["service", ["stop"]], ["transcribe", ["download"]], ["tunnel", []]]) {
+    assert.equal(migratesFirst(command, args), false, `${command} ${args.join(" ")}`);
+  }
+});
+
+test("embed index on a flat dir migrates it first instead of indexing nothing", async () => {
+  const dir = dataDir();
+  seedV0(dir, { linked: true });
+  await run(process.execPath, [binary, "embed", "index", "--json", "--data-dir", dir], { env: childEnv({ WAZAP_RECALL: "local" }) }).catch(
+    (err) => err
+  );
+  assert.equal(existsSync(join(dir, "auth")), false, "the flat layout is gone");
+  assert.equal(existsSync(accountPaths(dir, DEFAULT_ACCOUNT_ID).authDir), true);
+  assert.equal(existsSync(join(dir, "migration.json")), true);
+});
+
+test("demo seed on a flat dir migrates it and then refuses, leaving the real data whole", async () => {
+  const dir = dataDir();
+  seedV0(dir, { linked: true });
+  const before = snapshotEntries(dir);
+  await assert.rejects(run(process.execPath, [binary, "demo", "seed", "--data-dir", dir], { env: childEnv() }), (err) => {
+    assert.match(err.stderr, /already holds accounts/);
+    return true;
+  });
+  assert.deepEqual(snapshotEntries(accountPaths(dir, DEFAULT_ACCOUNT_ID).root), before);
+  assert.equal(existsSync(join(dir, ".wazap-demo")), false);
 });

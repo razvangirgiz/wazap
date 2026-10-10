@@ -10,9 +10,10 @@ import { readLinkedAccount, type LinkedAccount } from "./auth-state.js";
 import { banner } from "./banner.js";
 import { BAILEYS_VERSION, WAZAP_VERSION, paths, type AccountPaths, type Config, type Paths } from "./config.js";
 import { connectNext, whereInstalled, type Install } from "./connect.js";
+import { Approvals, type DraftApprovals } from "./approvals.js";
 import { CONTROL_ROUTES, LOGOUT_WAIT_MS, askRunningServer, isLogoutOutcome, startControlEndpoint } from "./control.js";
 import { decideRole, readDaemon, removeDaemon, writeDaemon } from "./daemon.js";
-import { DEPS, ensureDeps } from "./deps.js";
+import { DEPS, ensureDeps, ensureLlama } from "./deps.js";
 import { checkLine, checkLines, recallEnabled, runChecks, type Check } from "./doctor.js";
 import { withCode } from "./error-code.js";
 import { WazapError, asWazapError } from "./errors.js";
@@ -23,14 +24,21 @@ import { logoutAccount, logoutLines, type LogoutOutcome } from "./logout.js";
 import { clockLabel, formatAge } from "./messages.js";
 import { oauthProblem } from "./oauth.js";
 import {
+  GEMMA_MIN_LLAMA_BUILD,
   downloadEmbed,
+  embedModelPath,
   embedModelSpec,
+  llamaBuild,
+  llamaInstallFix,
   readRecallSettings,
   type RecallSettings,
 } from "./recall/index.js";
+import { runEmbedIndex } from "./search-cli.js";
 import { PAIRING_TIMEOUT_MS, linkSession, prettyCode, settledAccount, startPairing } from "./pairing.js";
 import { runHttp, runStdio, startLoopbackEndpoint } from "./server.js";
-import { SUPERVISORS, fetchHealth, serviceHolding, tunnelsTo, type Supervisor } from "./service.js";
+import { SUPERVISORS, fetchHealth, readService, serviceHolding, tunnelsTo, type Supervisor } from "./service.js";
+import { whenSupervisorGone } from "./supervisor.js";
+import { readTunnelState } from "./quick-tunnel.js";
 import { applyWrites } from "./settings.js";
 import { storageReport, type StorageReport } from "./storage-status.js";
 import {
@@ -112,6 +120,14 @@ interface StatusReport {
   /** The lock holder is the background service, so it can be stopped with `wazap service stop`. */
   server_is_service?: boolean;
   daemon: { pid: number; port: number } | null;
+  /** What the agent may do: send, only read, or draft for a person to approve. */
+  writes: "on" | "off" | "drafts";
+  /**
+   * Where a hosted agent reaches this wazap, and what holds that URL open. A
+   * quick tunnel's URL changes whenever it restarts; this is always the
+   * current one, which is how an agent on this machine finds it again.
+   */
+  public: { mcp_url: string; tunnel: string | null; url_changes_on_restart: boolean; connected?: boolean } | null;
   /** Each account's database, legacy files and set-aside databases, and the beta archive; read-only. */
   storage: StorageReport;
   checks: Check[];
@@ -157,6 +173,8 @@ export async function runStatus(config: Config): Promise<StatusReport> {
     server_pid: serverPid,
     server_is_service: serverPid !== null && serviceHolding(config.dataDir, serverPid) !== null,
     daemon: sharing,
+    writes: config.readOnly ? "off" : config.draftsOnly ? "drafts" : "on",
+    public: publicReport(config),
     storage,
     checks: await runChecks(config, { storage }),
   };
@@ -178,6 +196,27 @@ export async function runStatus(config: Config): Promise<StatusReport> {
   return report;
 }
 
+/** The public URL from the data dir's .env, which the quick tunnel's unit keeps current, and what holds it. */
+function publicReport(config: Config): StatusReport["public"] {
+  if (config.publicUrl === null) return null;
+  const tunnel = readService(config.dataDir)?.tunnel?.provider ?? null;
+  const report: NonNullable<StatusReport["public"]> = { mcp_url: `${config.publicUrl}/mcp`, tunnel, url_changes_on_restart: tunnel === "quick" };
+  // Only once the unit has written its state: before that there is nothing to judge.
+  const state = tunnel === "quick" ? readTunnelState(config.dataDir) : null;
+  if (state !== null) report.connected = state.url === config.publicUrl && state.connected_at !== undefined;
+  return report;
+}
+
+/** `public:` in both renderers: the URL, and for a quick tunnel, that it moves. */
+function publicLine(report: StatusReport): string | null {
+  if (report.public === null) return null;
+  const quick = report.public.connected === false
+    ? "quick tunnel, NOT connected to Cloudflare: this URL does not reach this machine right now; see `wazap service logs`"
+    : "quick tunnel: a new URL each time it restarts; this is the current one";
+  const how = report.public.tunnel === null ? "" : ` (${report.public.tunnel === "quick" ? quick : report.public.tunnel})`;
+  return `${report.public.mcp_url}${how}`;
+}
+
 /** Today's phrasing, kept verbatim so pipes and log captures keep parsing. */
 function plainStatus(report: StatusReport): string[] {
   const lines = [`data dir: ${report.data_dir}`];
@@ -197,6 +236,8 @@ function plainStatus(report: StatusReport): string[] {
     `baileys: ${report.baileys_version}`,
     `install: ${describeInstall(report.install)}`,
     `server: ${serverState(report)}`,
+    ...(publicLine(report) === null ? [] : [`public: ${publicLine(report)}`]),
+    ...(report.writes === "drafts" ? ["writes: drafts only (you approve each send: `wazap drafts`)"] : []),
     "",
     "checks:",
     ...report.checks.map(checkLine)
@@ -219,7 +260,8 @@ function row(label: string, value: string): string {
 
 /** `global (/usr/local/bin/wazap)`: the kind is what decides an upgrade, the path is the proof. */
 function describeInstall(install: Install): string {
-  return install.script === "" ? install.kind : `${install.kind} (${shortPath(install.script)})`;
+  const kind = install.installer === true ? "installer" : install.kind;
+  return install.script === "" ? kind : `${kind} (${shortPath(install.script)})`;
 }
 
 function richStatus(report: StatusReport): string[] {
@@ -241,6 +283,8 @@ function richStatus(report: StatusReport): string[] {
         )
       : []),
     row("server", serverState(report)),
+    ...(publicLine(report) === null ? [] : [row("public", publicLine(report)!)]),
+    ...(report.writes === "drafts" ? [row("writes", "drafts only (you approve each send: `wazap drafts`)")] : []),
     "",
     ...report.checks.flatMap(checkLines),
   ];
@@ -432,19 +476,63 @@ export async function downloadTranscribeModel(settings: TranscribeSettings, spec
   }
 }
 
-/** `wazap embed download`. */
+/** `wazap embed download` and `wazap embed index [--wait]`. */
 export async function runEmbed(config: Config): Promise<void> {
   const [verb] = config.args;
+  if (verb === "index") {
+    await runEmbedIndex(config);
+    return;
+  }
   if (verb !== "download") {
     throw new WazapError(
       "INVALID_ID",
       `Cannot run \`wazap embed ${config.args.join(" ")}\`.`,
-      "Run `wazap embed download`"
+      "Run `wazap embed download` or `wazap embed index [--wait]`"
     );
   }
-  await ensureDeps([DEPS.llama], config);
+  const before = readRecallSettings(process.env, config.dataDir);
+  const llama = before.embedUrl === null ? await ensureLlama(config) : { bin: null, how: "found" as const };
+  // ensureLlama may have pointed WAZAP_EMBED_BIN at a fresh install.
   const settings = readRecallSettings(process.env, config.dataDir);
+  const spec = embedModelSpec(config.modelName ?? settings.model);
   await downloadEmbedModel(settings, config.modelName);
+  const report = llamaReport(settings.embedUrl === null ? llama.bin : null, spec.alias, settings.embedUrl !== null);
+  if (config.json) {
+    process.stdout.write(
+      `${JSON.stringify({ model: { alias: spec.alias, file: spec.file, path: embedModelPath(settings.modelsDir, spec) }, llama_server: { ...report, how: llama.how }, ready: report.problem === null }, null, 2)}\n`
+    );
+  } else if (report.problem !== null) {
+    say(warn(`The model is ready, but ${report.problem}.`));
+    if (report.fix) say(fix(report.fix));
+  } else if (report.path !== null) {
+    say(ok(`llama-server ${report.build === null ? "" : `build ${report.build} `}at ${report.path}`));
+  }
+  if (report.problem !== null) process.exitCode = 1;
+}
+
+/** What `embed download` says about llama-server once the model is in place. */
+export interface LlamaReport {
+  found: boolean;
+  path: string | null;
+  build: number | null;
+  /** Null when recall can run on this binary and model. */
+  problem: string | null;
+  fix?: string;
+}
+
+export function llamaReport(bin: string | null, model: string, external = false, build: number | null = bin === null ? null : llamaBuild(bin)): LlamaReport {
+  if (external) return { found: true, path: null, build: null, problem: null };
+  if (bin === null) return { found: false, path: null, build: null, problem: "llama-server is still missing, so nothing can be embedded", fix: llamaInstallFix() };
+  if (model === "embeddinggemma-300m" && build !== null && build < GEMMA_MIN_LLAMA_BUILD) {
+    return {
+      found: true,
+      path: bin,
+      build,
+      problem: `llama.cpp build ${build} is too old for embeddinggemma (it needs ${GEMMA_MIN_LLAMA_BUILD} or newer)`,
+      fix: "Upgrade llama.cpp, or run `wazap embed download --model e5-base-multilingual` and set WAZAP_EMBED_MODEL=e5-base-multilingual",
+    };
+  }
+  return { found: true, path: bin, build, problem: null };
 }
 
 /** The same check-then-fetch dance downloadTranscribeModel does, for the embed table. */
@@ -569,9 +657,8 @@ export function tunnelRefusal(
   registry: readonly Supervisor[] = SUPERVISORS
 ): { message: string; fix: string } | null {
   if (config.readToken || (config.publicUrl && config.oauthPassword) || config.httpPort === 0) return null;
-  const supervisor = registry.find((entry) => entry.available());
-  if (supervisor === undefined) return null;
-  const tunnels = tunnelsTo(supervisor, config.httpPort);
+  // Every supervisor this machine has: wazap's own runs beside launchd or systemd.
+  const tunnels = registry.filter((entry) => entry.available()).flatMap((entry) => tunnelsTo(entry, config.httpPort));
   if (tunnels.length === 0) return null;
   return {
     message: `Refusing to serve ${config.httpHost}:${config.httpPort} without a token: ${tunnels.map((unit) => unit.label).join(", ")} ${tunnels.length === 1 ? "tunnels" : "tunnel"} to it.`,
@@ -667,6 +754,12 @@ export async function runServe(config: Config): Promise<void> {
   };
   process.on("SIGINT", () => shutdown("SIGINT"));
   process.on("SIGTERM", () => shutdown("SIGTERM"));
+  // Under wazap's own supervisor (supervisor.ts) the IPC channel is the
+  // supervisor: once it is gone, nothing could restart or stop this process,
+  // and it would hold the data dir's lock for good.
+  whenSupervisorGone(() => shutdown("supervisor gone"));
+  // Gone before this got here: start nothing, and let the shutdown finish.
+  if (stopping) return;
 
   // A socket WhatsApp keeps refusing is not something this process can fix, and
   // a live MCP server answering NOT_CONNECTED forever is worse than a dead one:
@@ -684,12 +777,20 @@ export async function runServe(config: Config): Promise<void> {
   // tools answer NOT_LINKED until a session exists.
   hub.start().catch((err: unknown) => logError("whatsapp start", err));
 
-  await publishControl(hub, p);
+  // A person's approval of a draft, in drafts-only mode: from the CLI over the
+  // control line, and from the approval page when sign-in is on.
+  const approvals = new Approvals(hub, config);
+  await publishControl(hub, p, approvals);
 
   const token = config.share ? randomBytes(32).toString("hex") : null;
 
   if (config.transport === "http") {
-    const port = await runHttp(hub, config, token === null ? undefined : { token, write: true, localFiles: true, label: "local" });
+    const port = await runHttp(
+      hub,
+      config,
+      token === null ? undefined : { token, write: true, localFiles: true, label: "local" },
+      approvals
+    );
     // Off-loopback binds get no sidecar: a bridge on this machine could not reach them.
     if (token !== null && SHAREABLE_HOSTS.includes(config.httpHost)) {
       writeDaemon(p.daemonFile, { pid: process.pid, port, token, version: WAZAP_VERSION });
@@ -718,10 +819,10 @@ export async function runServe(config: Config): Promise<void> {
  * for a restart. A server that cannot open it still serves; those commands then
  * behave as they do against an older wazap.
  */
-async function publishControl(hub: AccountHub, p: Paths): Promise<void> {
+async function publishControl(hub: AccountHub, p: Paths, approvals: DraftApprovals): Promise<void> {
   const token = randomBytes(32).toString("hex");
   try {
-    const port = await startControlEndpoint(hub, token);
+    const port = await startControlEndpoint(hub, token, undefined, approvals);
     writeDaemon(p.controlFile, { pid: process.pid, port, token, version: WAZAP_VERSION });
   } catch (err) {
     log(`control endpoint unavailable${withCode(err)}; account changes will need a restart`);
