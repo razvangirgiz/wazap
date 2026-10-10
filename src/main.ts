@@ -104,7 +104,7 @@ Options:
   --service           With setup: keep wazap running on this machine, without asking
   --expose            With setup: also give it a public URL cloud agents can reach
   --model <alias>     With transcribe download: turbo (default), large-v3 or medium.
-                      With embed download: embeddinggemma-300m (default) or e5-base-multilingual
+                      With embed download: embeddinggemma-300m (default), bge-m3 or e5-base-multilingual
   --wait              With embed index: embed everything queued, then exit 0 once the index is ready
   --match <how>       With search: hybrid (default; meaning and words), meaning, or words
   --limit <n>         With search: at most this many results, 1 to 50 (default 10)

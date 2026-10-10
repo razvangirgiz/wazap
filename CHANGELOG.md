@@ -136,6 +136,47 @@
 - **The Docker healthcheck uses `node`** instead of `wget`, so the same line
   works on the Alpine and the Debian image.
 
+## 1.3.6
+
+### Changed
+
+- **Local transcription takes every voice note, not just incoming live ones.**
+  With `WAZAP_TRANSCRIBE=local`, the user's own voice notes are transcribed
+  too, and each time the account connects the stored notes still without a
+  transcript are queued (the newest 500, behind anything new). It costs nothing
+  on this machine; an API provider keeps the old rule, so nothing new is billed.
+
+## 1.3.5
+
+### Added
+
+- **`bge-m3` as an embedding model, for a history in more than one language.**
+  Set `WAZAP_EMBED_MODEL=bge-m3` and run `wazap embed download --model bge-m3`
+  (~635 MB). Measured on real messages, it finds an answer asked in another
+  language that the default model misses ("where is my package" finds "A ajuns
+  coletul?"), and ranks the answer in the top five more often (7 of 10 against
+  4). It carries its own floor, 0.55. Gemma stays the default: bge-m3 is twice
+  its size and embed time.
+
+## 1.3.4
+
+### Fixed
+
+- **Search finds old messages by meaning again.** The similarity floor was
+  applied after age had lowered the score, so a message two months old needed a
+  0.50 match to count and most real paraphrases (0.40-0.50) were dropped. The
+  floor now reads the similarity itself; age only orders the results.
+- **One shared word no longer puts a long, unrelated message at the top.** For
+  a two-word query, a hit that carries one of the words now needs part of the
+  query's meaning (70% of the floor). Without meaning search it stays, as
+  before.
+
+### Changed
+
+- The `search` tool, its docs and the recall skill no longer promise that a
+  question in another language finds the message: with the default model such
+  matches sit under the floor. Ask in the chat's language.
+
 ## 1.3.3
 
 ### Added
