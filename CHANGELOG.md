@@ -11,6 +11,10 @@
 - **`WAZAP_TRANSCRIBE_AUTO=all`** sends the user's own voice notes to the API
   too, with `WAZAP_TRANSCRIBE_ALLOW_API=1`: only new ones recorded live after
   the server started, never history or stored notes. Thanks @bucketphobia.
+- **A Docker image with every release.** `ghcr.io/razvangirgiz/wazap`, for
+  amd64 and arm64, tagged with the version, the minor line and `latest`. The
+  compose file pulls it, so self-hosting no longer builds from source; see
+  [docs/self-host.md](docs/self-host.md#with-docker). Asked for in #63.
 
 ## 1.3.6
 
