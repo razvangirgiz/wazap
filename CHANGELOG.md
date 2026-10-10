@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- **A read-only account can transcribe through an API, when you say so.**
+  `WAZAP_TRANSCRIBE_ALLOW_API=1` separates uploading audio (and paying for it)
+  from WhatsApp writes, which stay off. Allowed this way, notes are transcribed
+  when asked; `WAZAP_TRANSCRIBE_AUTO=1` makes it automatic again.
+- **`WAZAP_TRANSCRIBE_AUTO=all`** sends the user's own voice notes to the API
+  too, with `WAZAP_TRANSCRIBE_ALLOW_API=1`: only new ones recorded live after
+  the server started, never history or stored notes. Thanks @bucketphobia.
+
 ## 1.3.6
 
 ### Changed
