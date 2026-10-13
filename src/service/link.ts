@@ -10,7 +10,8 @@
  *   so the exit that hands a long outage to the supervisor does not restart it, nor tell it twice.
  *   A clean stop forgets an outage nobody was told about; the next start counts from itself.
  * - Alerts, posted as the webhook's `alert` event and logged on stderr: `disconnected` once the
- *   link has been down ALERT_AFTER_MS, `recovered` when it comes back after one, and
+ *   link has been down without a break for the threshold (WAZAP_ALERT_AFTER, ALERT_AFTER_MS when
+ *   unset), so drops that reconnect inside it are never told, `recovered` when it comes back after one, and
  *   `relink_required` at once when WhatsApp unlinked the device or the credentials are corrupt.
  *   Each at most once per outage, across restarts.
  * - The watchdog ticks every WATCH_TICK_MS. A tick later than WAKE_GAP_MS past its time means the
@@ -27,6 +28,7 @@
 
 import { existsSync, readFileSync, rmSync } from "node:fs";
 import { dirname } from "node:path";
+import { ALERT_AFTER_MS } from "../config.js";
 import { writeJsonFile } from "../accounts.js";
 import { isoWithOffset } from "../messages.js";
 import { log, logError } from "../logger.js";
@@ -35,8 +37,8 @@ import type { ConnectionStatus, LinkInfo } from "../wa-types.js";
 export const WATCH_TICK_MS = 15_000;
 /** A tick this much later than due means the clock jumped: the machine slept or the process was stopped. */
 export const WAKE_GAP_MS = 30_000;
-/** A link down this long is worth a message to the owner. A wake or a WhatsApp restart takes seconds. */
-export const ALERT_AFTER_MS = 5 * 60_000;
+/** A link down this long is worth a message to the owner, unless WAZAP_ALERT_AFTER says otherwise (src/config.ts). */
+export { ALERT_AFTER_MS, alertAfterSetting } from "../config.js";
 /** How often a socket that says it is connected is asked to prove it, on top of Baileys' own keepalive. */
 export const PROBE_EVERY_MS = 5 * 60_000;
 export const PROBE_TIMEOUT_MS = 20_000;
@@ -160,7 +162,9 @@ export class LinkMonitor {
   constructor(
     private readonly host: LinkHost,
     private readonly file: string | null,
-    private readonly now: () => number = Date.now
+    private readonly now: () => number = Date.now,
+    /** How long an outage lasts before it is told (WAZAP_ALERT_AFTER); a shorter one is never told. */
+    private readonly alertAfterMs: number = ALERT_AFTER_MS
   ) {
     if (file !== null) this.load(file);
   }
@@ -390,7 +394,7 @@ export class LinkMonitor {
     if (!this.host.canStart()) return;
     const status = this.host.status();
     if (status === "connected" || NO_SESSION.has(status)) return;
-    if (now - this.downSince < ALERT_AFTER_MS) return;
+    if (now - this.downSince < this.alertAfterMs) return;
     this.alerted = "disconnected";
     this.emit("disconnected", status, now);
     this.save();
@@ -447,7 +451,7 @@ export class LinkMonitor {
     return {
       down_since: this.downSince === null ? null : isoWithOffset(this.downSince),
       down_for_seconds: this.downSince === null ? null : Math.max(0, Math.round((now - this.downSince) / 1000)),
-      alert_after_seconds: ALERT_AFTER_MS / 1000,
+      alert_after_seconds: this.alertAfterMs / 1000,
       alerted: this.alerted,
       last_outage:
         this.lastOutage === null
