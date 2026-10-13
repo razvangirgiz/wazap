@@ -54,8 +54,8 @@ session_replaced or client_outdated, with `until` and WhatsApp's `reason`).
 A restriction that comes or goes while the link stays up is a `connection`
 event too, with the same `status`; the pair of status and state is posted
 once per change. `alert` is for the owner rather than an agent: the link has
-been down for 5 minutes, it came back after such an alert, or WhatsApp
-unlinked the device and it needs linking again (see
+been down for 5 minutes (`WAZAP_ALERT_AFTER`), it came back after such an
+alert, or WhatsApp unlinked the device and it needs linking again (see
 [Link alerts](#link-alerts)). `reminder` is a reminder the user set with the
 `reminder` tool, now due, and `scheduled` says what became of a scheduled
 message; see [Reminders and scheduled messages](#reminders-and-scheduled-messages).
@@ -364,6 +364,10 @@ const signedByWazap = (given = "", body) => {
   const got = Buffer.from(given);
   return want.length === got.length && timingSafeEqual(want, got);
 };
+// A Claude Code routine's API trigger (…/v1/claude_code/routines/<id>/fire) reads one freeform `text`
+// field, at most 65,536 characters, and answers 400 to any POST without `anthropic-version`.
+const ROUTINE = /\/v1\/claude_code\/routines\/[^/]+\/fire$/.test(new URL(TARGET).pathname);
+const forward = (body) => (ROUTINE ? JSON.stringify({ text: body.toString("utf8").slice(0, 65536) }) : body);
 
 createServer(async (req, res) => {
   if (req.method !== "POST") return void res.writeHead(405).end();
@@ -379,11 +383,14 @@ createServer(async (req, res) => {
         "content-type": "application/json",
         authorization: `Bearer ${TARGET_TOKEN}`,
         "x-wazap-event": req.headers["x-wazap-event"] ?? "",
+        ...(ROUTINE ? { "anthropic-version": "2023-06-01" } : {}),
       },
-      body,
+      body: forward(body),
       redirect: "manual",
       signal: AbortSignal.timeout(8000), // wazap gives up on a POST after 10 s
     });
+    // wazap records only the status; why the service refused is in its answer, so it goes to this log.
+    if (!upstream.ok) console.error(`${new Date().toISOString()} HTTP ${upstream.status}: ${(await upstream.text().catch(() => "")).slice(0, 300)}`);
     res.writeHead(upstream.status).end(); // the service's verdict is wazap's: 5xx is retried, another 4xx is a refusal
   } catch {
     res.writeHead(502).end(); // unreachable or too slow: wazap retries it
@@ -398,6 +405,17 @@ here because the address is loopback:
 npx wazap-mcp config webhook on   # URL http://127.0.0.1:8801, and the secret
 npx wazap-mcp webhook test
 ```
+
+When `TARGET` is a Claude Code routine's API trigger
+(`https://api.anthropic.com/v1/claude_code/routines/trig_…/fire`, its token in
+`TARGET_TOKEN`), the bridge sends the event as the routine's `text`, the
+event's JSON as a string, with the `anthropic-version` header the endpoint
+requires: without that header every POST is a `400`, which wazap fails at once
+and does not retry. Each POST starts a new routine session, and a routine takes
+at most 30 an hour, so post it only what it should act on: for an alert routine,
+`WAZAP_WEBHOOK_EVENTS=alert`, not `connection`, which reports every reconnect.
+A refusal's reason is in the service's answer, which the bridge writes to its
+own stderr.
 
 A `401` from the service, which is what a revoked token gives, comes back to
 wazap as a `401`: the event fails at once and `wazap status` names it, as it
@@ -503,9 +521,11 @@ the receiver hears the current status once, not every flap.
 An `alert` tells the owner something they may have to act on, once per
 outage, where `connection` reports every change. `alert` is one of:
 
-- `disconnected`: the link has been down for 5 minutes (`get_status` →
+- `disconnected`: the link has been down without a break for 5 minutes, or
+  the minutes `WAZAP_ALERT_AFTER` sets (`get_status` →
   `link.alert_after_seconds`). A dropped link, a WhatsApp restart, or a Mac
-  waking from sleep reconnects well inside that, and is not told. Time the
+  waking from sleep reconnects well inside that, and is not told, however
+  often it happens: each reconnect starts the count again. Time the
   machine spent asleep does not count: `down_since` moves forward by the
   sleep.
 - `recovered`: the link is back after a `disconnected` alert.

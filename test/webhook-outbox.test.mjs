@@ -277,6 +277,22 @@ test("408, 425, 429 and 5xx are retried; any other 4xx fails at once, after one 
   }
 });
 
+test("a 400 is posted once and never again: not after a day, not when new traffic nudges the outbox", async (t) => {
+  const h = harness(t, { post: answering(400, 400, 400) });
+  const { seq } = messageEvent(h, "S400-once");
+  await h.run();
+  assert.equal(h.post.bodies.length, 1);
+  for (const step of [60_000, 30 * 60_000, 25 * 60 * 60_000]) {
+    h.clock.now += step;
+    connectionEvent(h);
+    await h.run();
+  }
+  const row = state(h, seq);
+  assert.equal(row.state, "failed");
+  assert.equal(row.attempts, 1, "the refused event was not tried again");
+  assert.equal(h.post.bodies.filter((body) => JSON.stringify(body).includes("S400-once")).length, 1);
+});
+
 test("an unreachable receiver is retried like a 5xx, and the error names the host, not the URL", async (t) => {
   const server = createServer();
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
