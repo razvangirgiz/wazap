@@ -45,7 +45,7 @@ import { maskNumber } from "./ui.js";
 import { AccountChats } from "./service/chats.js";
 import { AccountContacts, CONTACT_SETTLE_MS, needsContactResync } from "./service/contacts.js";
 import { AccountGroups } from "./service/groups.js";
-import { AccountHealth, classifyClose, TEMP_BAN_RETRY_MAX_MS, type NewChatCapReport, type ReachoutLock } from "./service/health.js";
+import { AccountHealth, classifyClose, closeCode, TEMP_BAN_RETRY_MAX_MS, type NewChatCapReport, type ReachoutLock } from "./service/health.js";
 import { AccountIdentity } from "./service/identity.js";
 import { AccountIngest, type MessageRef } from "./service/ingest.js";
 import { AccountKeep } from "./service/keep.js";
@@ -576,7 +576,9 @@ export class WhatsAppService implements WhatsAppApi {
         retryNow: (reason) => this.retryNow(reason),
         alert: (alert) => this.webhooks.queueAlert(alert),
       },
-      config.command === "serve" ? join(paths.root, LINK_FILE) : null
+      config.command === "serve" ? join(paths.root, LINK_FILE) : null,
+      Date.now,
+      config.alertAfterMs
     );
     this.storage.openDatabase();
     // Only the server transcribes: a short-lived command (status --live, contacts resync, the sync after a
@@ -1534,7 +1536,10 @@ export class WhatsAppService implements WhatsAppApi {
           this.teardownSocket();
           this.retryAfterBan();
         } else if (!this.stopped) {
-          this.lastError = lastDisconnect?.error?.message ?? "connection closed";
+          // The close code names the cause (408 keepalive lost, 428 closed, 503 unavailable, 515 restart
+          // required) where the bare message often does not: kept for the log, get_status and the alert.
+          const code = closeCode(lastDisconnect?.error);
+          this.lastError = `${lastDisconnect?.error?.message ?? "connection closed"}${code === undefined ? "" : ` (close ${code})`}`;
           this.setStatus("disconnected");
           this.scheduleReconnect(this.lastError);
         }

@@ -141,6 +141,24 @@ test("a burst of closes cannot fan out into parallel reconnects", (t) => {
   assert.equal(sock.ended(), true, "the dead socket is closed, not left dangling");
 });
 
+test("a dropped link's last_error carries the close code, so a log of drops says what dropped them", (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  t.mock.method(Math, "random", () => 0.5);
+
+  const { svc } = makeService();
+  const sock = makeFakeSocket();
+  attach(svc, sock);
+  sock.ev.emit("connection.update", close(CONNECTION_CLOSED));
+  assert.equal(svc.getStatus().status, "disconnected");
+  assert.equal(svc.getStatus().last_error, `Connection Terminated (close ${CONNECTION_CLOSED})`);
+
+  const bare = makeFakeSocket();
+  attach(svc, bare);
+  bare.ev.emit("connection.update", { connection: "open" });
+  bare.ev.emit("connection.update", { connection: "close", lastDisconnect: { error: { message: "socket hang up" } } });
+  assert.equal(svc.getStatus().last_error, "socket hang up", "no code, nothing made up");
+});
+
 test("a superseded socket can no longer trigger reconnects", (t) => {
   t.mock.timers.enable({ apis: ["setTimeout"] });
   t.mock.method(Math, "random", () => 0.5);
