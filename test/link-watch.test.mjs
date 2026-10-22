@@ -24,8 +24,10 @@ import {
   STALLED_DOWN_MS,
   WAKE_GAP_MS,
   WATCH_TICK_MS,
+  alertAfterSetting,
   alertReason,
 } from "../dist/service/link.js";
+import { settingWarnings } from "../dist/config.js";
 import { WebhookSink, asAlertPayload, parseWebhookEvents } from "../dist/webhook.js";
 import { connectedService, openService, offlineConfig, storageRows } from "./helpers.mjs";
 
@@ -151,6 +153,67 @@ test("a short drop is not told; one past the threshold is told once, and its end
   assert.equal(host.alerts[1].reason, null);
   assert.equal(watch.info().alerted, null);
   assert.equal(watch.hint(), null);
+});
+
+test("ten drops in a day, each back inside the threshold, are never alerted", (t) => {
+  const file = tempFile(t);
+  const host = fakeHost({ statusValue: "connected" });
+  const watch = watching(t, host, file);
+  for (let i = 0; i < 10; i++) {
+    host.error = "Connection was lost (close 408)";
+    setStatus(watch, host, "disconnected");
+    // Down for just under the threshold, through the reconnect's own states.
+    awake(watch, host, ALERT_AFTER_MS - 2 * WATCH_TICK_MS);
+    setStatus(watch, host, "connecting");
+    awake(watch, host, WATCH_TICK_MS);
+    setStatus(watch, host, "connected");
+    awake(watch, host, 60 * 60_000);
+  }
+  assert.deepEqual(host.alerts, [], "no flap reached the threshold, so neither disconnected nor recovered went out");
+  assert.equal(watch.info().alerted, null);
+  assert.ok(watch.info().last_outage.seconds < ALERT_AFTER_MS / 1000, "the drops are still on record");
+});
+
+test("WAZAP_ALERT_AFTER moves the threshold: an outage alerts once past it, and its end once", (t) => {
+  const file = tempFile(t);
+  const host = fakeHost({ statusValue: "connected" });
+  const tenMinutes = alertAfterSetting({ WAZAP_ALERT_AFTER: "10" }).ms;
+  assert.equal(tenMinutes, 10 * 60_000);
+  const watch = new LinkMonitor(host, file, () => host.now, tenMinutes);
+  t.after(() => watch.dispose(false));
+  watch.arm();
+  assert.equal(watch.info().alert_after_seconds, 600);
+
+  setStatus(watch, host, "disconnected");
+  awake(watch, host, ALERT_AFTER_MS + WATCH_TICK_MS);
+  setStatus(watch, host, "connected");
+  assert.deepEqual(host.alerts, [], "past the default but inside the setting: not told");
+
+  setStatus(watch, host, "disconnected");
+  awake(watch, host, tenMinutes - WATCH_TICK_MS);
+  assert.deepEqual(host.alerts, []);
+  awake(watch, host, 2 * WATCH_TICK_MS);
+  awake(watch, host, 30 * 60_000);
+  setStatus(watch, host, "connected");
+  assert.deepEqual(
+    host.alerts.map((alert) => alert.alert),
+    ["disconnected", "recovered"],
+    "one alert for the outage and one for its end, however long it lasted"
+  );
+});
+
+test("WAZAP_ALERT_AFTER takes whole minutes from 1 to 1440; anything else keeps 5 and warns", () => {
+  assert.deepEqual(alertAfterSetting({}), { ms: ALERT_AFTER_MS, problem: null });
+  assert.equal(ALERT_AFTER_MS, 5 * 60_000);
+  assert.deepEqual(alertAfterSetting({ WAZAP_ALERT_AFTER: " 1 " }), { ms: 60_000, problem: null });
+  assert.equal(alertAfterSetting({ WAZAP_ALERT_AFTER: "1440" }).ms, 1440 * 60_000);
+  for (const bad of ["0", "1441", "2.5", "-3", "5m", "abc", "1e3"]) {
+    const setting = alertAfterSetting({ WAZAP_ALERT_AFTER: bad });
+    assert.equal(setting.ms, ALERT_AFTER_MS, bad);
+    assert.match(setting.problem, /WAZAP_ALERT_AFTER must be a whole number of minutes from 1 to 1440/, bad);
+  }
+  assert.deepEqual(settingWarnings({ WAZAP_ALERT_AFTER: "15" }), []);
+  assert.equal(settingWarnings({ WAZAP_ALERT_AFTER: "soon" }).length, 1);
 });
 
 test("the outage outlives the exit that hands it to the supervisor: told once, and its end told after", (t) => {

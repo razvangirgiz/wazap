@@ -48,6 +48,8 @@ export interface Config {
   retention?: boolean;
   /** Which arriving media is downloaded at once and kept (src/media-keep.ts); absent keeps none. */
   mediaKeep?: MediaKeepSettings;
+  /** How long the link stays down before the owner is alerted (WAZAP_ALERT_AFTER); absent is ALERT_AFTER_MS. */
+  alertAfterMs?: number;
   transport: "stdio" | "http";
   httpHost: string;
   httpPort: number;
@@ -300,6 +302,33 @@ export const DEPRECATED_SETTINGS: Readonly<Record<string, (value: string) => str
       : "WAZAP_TRANSPORT is deprecated and goes away in 2.0: stdio is the default; remove WAZAP_TRANSPORT.",
 };
 
+/**
+ * A link down this long is worth a message to the owner, unless WAZAP_ALERT_AFTER says otherwise.
+ * A wake or a WhatsApp restart takes seconds; a drop that is back inside it is not told.
+ */
+export const ALERT_AFTER_MS = 5 * 60_000;
+/** WAZAP_ALERT_AFTER, in whole minutes: from one minute to a day. */
+export const ALERT_AFTER_MIN_MINUTES = 1;
+export const ALERT_AFTER_MAX_MINUTES = 24 * 60;
+
+/**
+ * How long the link must stay down before `disconnected` is told: WAZAP_ALERT_AFTER in whole
+ * minutes, ALERT_AFTER_MS when unset. Never throws: a value that does not parse keeps the default
+ * and says so in `problem`, for the startup warnings.
+ */
+export function alertAfterSetting(env: NodeJS.ProcessEnv = process.env): { ms: number; problem: string | null } {
+  const raw = (env.WAZAP_ALERT_AFTER ?? "").trim();
+  if (raw === "") return { ms: ALERT_AFTER_MS, problem: null };
+  const minutes = /^\d+$/.test(raw) ? Number(raw) : NaN;
+  if (!Number.isSafeInteger(minutes) || minutes < ALERT_AFTER_MIN_MINUTES || minutes > ALERT_AFTER_MAX_MINUTES) {
+    return {
+      ms: ALERT_AFTER_MS,
+      problem: `WAZAP_ALERT_AFTER must be a whole number of minutes from ${ALERT_AFTER_MIN_MINUTES} to ${ALERT_AFTER_MAX_MINUTES}; link alerts wait the default ${ALERT_AFTER_MS / 60_000} minutes until it is fixed.`,
+    };
+  }
+  return { ms: minutes * 60_000, problem: null };
+}
+
 /** One line per retired or deprecated setting that is still set, saying what to use instead. */
 export function settingWarnings(env: NodeJS.ProcessEnv = process.env): string[] {
   const lines: string[] = [];
@@ -313,6 +342,8 @@ export function settingWarnings(env: NodeJS.ProcessEnv = process.env): string[] 
     }
   }
   lines.push(...mediaKeepWarnings(env));
+  const alertAfter = alertAfterSetting(env).problem;
+  if (alertAfter !== null) lines.push(alertAfter);
   return lines;
 }
 
@@ -427,6 +458,7 @@ export function parseCli(argv: string[] = process.argv.slice(2)): CliInvocation 
       persistHistory: asBool(process.env.WAZAP_PERSIST_HISTORY, true),
       retention: asBool(process.env.WAZAP_RETENTION, false),
       mediaKeep: mediaKeepSettings(process.env),
+      alertAfterMs: alertAfterSetting(process.env).ms,
       transport: values.http === true || httpFromEnv ? "http" : "stdio",
       httpHost: values.host ?? (process.env.WAZAP_HOST?.trim() || "127.0.0.1"),
       httpPort: values.port ? asInt(values.port, 8766) : asInt(process.env.WAZAP_PORT, 8766),

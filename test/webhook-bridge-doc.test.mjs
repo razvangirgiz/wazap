@@ -30,18 +30,18 @@ async function freePort() {
 }
 
 /** The service the bridge forwards to: records what it is sent and answers with `status`. */
-async function service(status) {
+async function service(status, path = "/hook") {
   const seen = [];
   const server = createServer((req, res) => {
     const chunks = [];
     req.on("data", (chunk) => chunks.push(chunk));
     req.on("end", () => {
       seen.push({ headers: req.headers, body: Buffer.concat(chunks).toString("utf8"), method: req.method });
-      res.writeHead(status.value).end();
+      res.writeHead(status.value).end(status.answer ?? "");
     });
   });
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
-  return { seen, url: `http://127.0.0.1:${server.address().port}/hook`, close: () => new Promise((resolve) => server.close(resolve)) };
+  return { seen, url: `http://127.0.0.1:${server.address().port}${path}`, close: () => new Promise((resolve) => server.close(resolve)) };
 }
 
 async function startBridge(target) {
@@ -126,4 +126,40 @@ test("the documented bridge answers 502 when the service cannot be reached, whic
   t.after(() => bridge.stop());
   const res = await post(bridge.url, event, { "x-wazap-signature": webhookSignature(event, SECRET) });
   assert.equal(res.status, 502);
+});
+
+test("to a routine's API trigger the bridge sends anthropic-version and the event as `text`, the 400 it got without them", async (t) => {
+  const status = { value: 200 };
+  const target = await service(status, "/v1/claude_code/routines/trig_test/fire");
+  const bridge = await startBridge(target.url);
+  t.after(async () => {
+    bridge.stop();
+    await target.close();
+  });
+  const alert = JSON.stringify({ event: "alert", alert: "disconnected", status: "disconnected", down_for_seconds: 300 });
+  const res = await post(bridge.url, alert, { "x-wazap-event": "alert", "x-wazap-signature": webhookSignature(alert, SECRET) });
+  assert.equal(res.status, 200);
+  const seen = target.seen[0];
+  assert.equal(seen.headers["anthropic-version"], "2023-06-01", "the header the endpoint answers 400 without");
+  assert.equal(seen.headers.authorization, `Bearer ${TOKEN}`);
+  assert.equal(seen.headers["content-type"], "application/json");
+  assert.deepEqual(Object.keys(JSON.parse(seen.body)), ["text"]);
+  assert.equal(JSON.parse(seen.body).text, alert, "the routine reads wazap's event, byte for byte, as its text");
+
+  status.value = 400;
+  status.answer = '{"type":"error","error":{"type":"invalid_request_error","message":"routine is paused"}}';
+  assert.equal((await post(bridge.url, alert, { "x-wazap-signature": webhookSignature(alert, SECRET) })).status, 400, "a refusal stays a refusal");
+});
+
+test("to any other service the bridge adds no anthropic-version and keeps the body as wazap signed it", async (t) => {
+  const status = { value: 200 };
+  const target = await service(status, "/hooks/fire");
+  const bridge = await startBridge(target.url);
+  t.after(async () => {
+    bridge.stop();
+    await target.close();
+  });
+  await post(bridge.url, event, { "x-wazap-signature": webhookSignature(event, SECRET) });
+  assert.equal(target.seen[0].headers["anthropic-version"], undefined);
+  assert.equal(target.seen[0].body, event);
 });

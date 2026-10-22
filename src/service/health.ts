@@ -56,8 +56,8 @@ function whenOf(value: unknown): number | null {
 /** A temporary ban longer than this is treated as a ban: no reconnect is scheduled for it. */
 export const TEMP_BAN_RETRY_MAX_MS = 7 * 24 * 3_600_000;
 
-/** The Boom error Baileys closes with: `output.statusCode`, and the failure node's attributes on `data`. */
-function codeOf(error: unknown): number | undefined {
+/** The status code of the Boom error Baileys closes with (`output.statusCode`), if any. */
+export function closeCode(error: unknown): number | undefined {
   const code = (error as { output?: { statusCode?: unknown } } | undefined)?.output?.statusCode;
   return typeof code === "number" ? code : undefined;
 }
@@ -91,7 +91,7 @@ function ownLogout(error: unknown): boolean {
 
 /** Reads a close the way WhatsApp's own clients do. Unknown codes, and closes WhatsApp did not send, are a dropped link. */
 export function classifyClose(error: unknown, now: number = Date.now()): CloseVerdict {
-  const code = codeOf(error);
+  const code = closeCode(error);
   const data = dataOf(error);
   // Only WhatsApp, or this process's own logout, unlinks the device. A proxy, a captive portal or a
   // firewall that answers the WebSocket upgrade with 401 says nothing about the session, and reading
