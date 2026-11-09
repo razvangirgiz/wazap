@@ -169,6 +169,14 @@ test("text, CSV, JSON and HTML are decoded; HTML loses its tags and scripts", as
   assert.equal((await send(Buffer.from('{"a": 1}'), "application/octet-stream", "date.json")).structuredContent.document_text, '{"a": 1}');
   const html = "<html><head><title>t</title><script>alert(1)</script></head><body><h1>Salut</h1><p>Vă rog &amp; mulțumesc<br>Ana</p></body></html>";
   assert.equal((await send(Buffer.from(html), "text/html", "a.html")).structuredContent.document_text, "Salut\nVă rog & mulțumesc\nAna");
+  // A saved page whose <head> carries more than any window of the budget: its body is what comes back.
+  const styled = `<html><head><style>${".c{color:red;margin:0 auto}\n".repeat(5_000)}</style></head><body><p>Total de plata: 999 lei</p></body></html>`;
+  assert.ok(styled.length > 120_000);
+  assert.equal((await send(Buffer.from(styled), "text/html", "pagina.html")).structuredContent.document_text, "Total de plata: 999 lei");
+  const scripted = `<HTML><SCRIPT type="x">${"var a=1;".repeat(13_000)}</SCRIPT ><body>Factura <b>12</b></body>`;
+  assert.equal((await send(Buffer.from(scripted), "text/html", "s.html")).structuredContent.document_text, "Factura 12");
+  const odd = "<p>5 < 6 și 7 > 3</p><svg/><p>după</p><!-- ascuns --><script>neînchis";
+  assert.equal((await send(Buffer.from(odd), "text/html", "o.html")).structuredContent.document_text, "5 < 6 și 7 > 3\ndupă");
   const long = (await send(Buffer.from("rând\n".repeat(5_000)), "text/plain", "lung.txt")).structuredContent;
   assert.equal(long.document.truncated, true);
   assert.ok(long.document_text.length <= 12_000);

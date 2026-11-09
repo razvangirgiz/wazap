@@ -47,11 +47,15 @@ export async function extractText(job: TextJob): Promise<TextResult> {
         throw err;
       }
     case "html":
-      return clip(htmlText(decodeText(job.bytes, job.budget * 8)), job.budget);
+      // The whole page up to the window, stripped before it is cut: a long <head> of styles or scripts must not use up the budget.
+      return clip(htmlText(decodeText(job.bytes, FLOW_MAX_BYTES)), job.budget);
     case "text":
       return clip(decodeText(job.bytes, job.budget * 4), job.budget);
   }
 }
+
+/** How much of a text or HTML file is decoded: far more than one answer, so the words after a long head are reached. */
+const FLOW_MAX_BYTES = 8_000_000;
 
 /** `text` within `budget` characters, cut at a line where one is near. */
 function clip(text: string, budget: number): TextResult {
@@ -95,16 +99,63 @@ export function decodeEntities(text: string): string {
   });
 }
 
-/** An HTML page's visible words: scripts and styles dropped, blocks on lines of their own. */
+/** Elements whose content is never shown: dropped up to their closing tag (an unclosed one, to the end, as a browser does). */
+const HIDDEN_ELEMENTS = new Set(["script", "style", "noscript", "template", "svg", "title", "iframe", "object"]);
+/** Closing tags that end a line of text. */
+const BLOCK_ELEMENTS = new Set(["p", "div", "li", "tr", "h1", "h2", "h3", "h4", "h5", "h6", "table", "section", "article", "blockquote", "pre", "ul", "ol"]);
+
+/**
+ * An HTML page's visible words: comments, scripts, styles and the like
+ * dropped, blocks on lines of their own, cells apart by tabs. One pass from
+ * left to right, with no pattern that can backtrack, so a hostile page of
+ * megabytes takes as long as its length. A "<" that starts no tag is text.
+ */
 export function htmlText(html: string): string {
-  const stripped = html
-    .replace(/<!--[\s\S]*?-->/g, "")
-    .replace(/<(script|style|noscript|template|svg|head)\b[\s\S]*?<\/\1\s*>/gi, "")
-    .replace(/<br\s*\/?>/gi, "\n")
-    .replace(/<\/(p|div|li|tr|h[1-6]|table|section|article|blockquote|pre|ul|ol)\s*>/gi, "\n")
-    .replace(/<\/t[dh]\s*>/gi, "\t")
-    .replace(/<[^>]*>/g, "");
-  return decodeEntities(stripped);
+  const parts: string[] = [];
+  let at = 0;
+  while (at < html.length) {
+    const open = html.indexOf("<", at);
+    if (open < 0) {
+      parts.push(html.slice(at));
+      break;
+    }
+    parts.push(html.slice(at, open));
+    if (html.startsWith("<!--", open)) {
+      const end = html.indexOf("-->", open + 4);
+      at = end < 0 ? html.length : end + 3;
+      continue;
+    }
+    const next = html.charCodeAt(open + 1);
+    const startsTag = next === 0x2f || next === 0x21 || next === 0x3f || (next >= 0x41 && next <= 0x5a) || (next >= 0x61 && next <= 0x7a);
+    if (!startsTag) {
+      parts.push("<");
+      at = open + 1;
+      continue;
+    }
+    const close = html.indexOf(">", open + 1);
+    // No ">" anywhere after: no tag can follow, and the rest is text.
+    if (close < 0) {
+      parts.push(html.slice(open));
+      break;
+    }
+    const name = /^\/?([a-zA-Z][a-zA-Z0-9:-]*)/.exec(html.slice(open + 1, Math.min(close, open + 66)));
+    const tag = name?.[1]?.toLowerCase() ?? "";
+    const closing = html[open + 1] === "/";
+    at = close + 1;
+    if (!closing && HIDDEN_ELEMENTS.has(tag) && html[close - 1] !== "/") {
+      const ending = new RegExp(`</${tag}\\s*>`, "gi");
+      ending.lastIndex = at;
+      const found = ending.exec(html);
+      at = found === null ? html.length : found.index + found[0].length;
+    } else if (tag === "br") {
+      parts.push("\n");
+    } else if (closing && BLOCK_ELEMENTS.has(tag)) {
+      parts.push("\n");
+    } else if (closing && (tag === "td" || tag === "th")) {
+      parts.push("\t");
+    }
+  }
+  return decodeEntities(parts.join(""));
 }
 
 /** XML with the given closing tags ended as lines (and cells as tabs), every tag dropped, entities decoded. */
