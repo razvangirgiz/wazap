@@ -1154,8 +1154,8 @@ export class WhatsAppService implements WhatsAppApi {
     return this.waits.waitForMessages(opts);
   }
 
-  previews(messageIds: string[], max: number): Promise<Preview[]> {
-    return this.media.previews(messageIds, max);
+  previews(messageIds: string[], max: number, signal?: AbortSignal): Promise<Preview[]> {
+    return this.media.previews(messageIds, max, signal);
   }
 
   downloadMedia(messageId: string, saveTo?: string, opts: { signal?: AbortSignal } = {}): Promise<MediaResult> {
@@ -2044,18 +2044,19 @@ export class WhatsAppService implements WhatsAppApi {
    * on demand, a download link), media whose CDN copy has expired (404/410)
    * is asked of the phone again, once, and the refreshed url is stored so the
    * next call goes straight to it. Background work (keeping media on arrival,
-   * previews) never wakes the phone.
+   * previews) never wakes the phone. `waitMs` shortens the wait for a slot in
+   * the download budget, for a caller with less time than that left.
    */
   private async mediaBuffer(
     sock: WASocket,
     messageId: string,
     raw: WAMessage,
     maxBytes = MEDIA_DOWNLOAD_MAX_BYTES,
-    opts: { reupload?: boolean; signal?: AbortSignal } = {}
+    opts: { reupload?: boolean; signal?: AbortSignal; waitMs?: number } = {}
   ): Promise<Buffer> {
     const cap = Math.min(maxBytes, MEDIA_DOWNLOAD_MAX_BYTES);
     const declared = mediaInfo(raw)?.size;
-    const signal = opts.signal;
+    const { signal, waitMs } = opts;
     const attempt = (message: WAMessage): Promise<Buffer> =>
       downloadToMemory(
         messageId,
@@ -2066,7 +2067,8 @@ export class WhatsAppService implements WhatsAppApi {
           },
         },
         // A caller that cancels stops the download at its next chunk, or its wait for a slot, instead of holding either.
-        { cap, ...(declared === undefined ? {} : { declared }), ...(signal === undefined ? {} : { signal }) }
+        // A read's previews wait for one only as long as their time budget has left (`waitMs`).
+        { cap, ...(declared === undefined ? {} : { declared }), ...(signal === undefined ? {} : { signal }), ...(waitMs === undefined ? {} : { waitMs }) }
       );
     try {
       try {

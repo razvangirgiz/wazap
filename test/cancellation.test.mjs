@@ -2,8 +2,9 @@
  * A tool call the client cancels, or whose session closes, stops waiting:
  * wait_for_messages answers at once, a media download stops at its next
  * chunk (or its wait for a slot, or for the phone to upload expired media),
- * a document read ends its worker, a native helper's queue lets it go, and a
- * run several callers share goes on until every one has left.
+ * a document read ends its worker, a native helper's queue lets it go, a
+ * read's previews stop, and a run several callers share goes on until every
+ * one has left.
  * The in-flight slot is given back when the handler settles, never before.
  */
 import { test } from "node:test";
@@ -16,7 +17,7 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { orCancelled, SharedRun } from "../dist/cancel.js";
 import { documentText } from "../dist/documents.js";
-import { DownloadBudget } from "../dist/media-budget.js";
+import { DownloadBudget, downloadBudget } from "../dist/media-budget.js";
 import { Slots } from "../dist/native-run.js";
 import { downloadToMemory } from "../dist/service/media-download.js";
 import { startHttpEndpoint } from "../dist/server.js";
@@ -427,5 +428,77 @@ test("a remote get_media cancelled mid-download answers with the cancellation at
   const atCancel = pulls;
   await sleep(200);
   assert.ok(pulls - atCancel <= 2, `${pulls - atCancel} more chunks read after the cancel`);
+  await svc.stop();
+});
+
+test("a read's previews stop when its call is cancelled, mid-download or waiting for a download slot", async (t) => {
+  const { svc, sock } = connectedService(WhatsAppService, { prefix: "wazap-cancel-previews-", id: ME, name: "Me" });
+  t.after(() => rmSync(svc.config.dataDir, { recursive: true, force: true }));
+  const tools = new Map();
+  registerTools({ registerTool: (name, meta, handler) => tools.set(name, { meta, handler }) }, asToolSource(svc), { allowWrite: false, allowLocalFiles: false });
+  let pulls = 0;
+  svc.openMediaStream = async () =>
+    new Readable({
+      read() {
+        setTimeout(() => {
+          pulls++;
+          this.push(Buffer.alloc(64 * 1024));
+        }, 20);
+      },
+    });
+  // What each preview download was given: the read's signal, and how long it may wait for a slot.
+  const given = [];
+  const download = svc.mediaBuffer.bind(svc);
+  svc.mediaBuffer = (socket, id, raw, maxBytes, opts) => {
+    given.push(opts);
+    return download(socket, id, raw, maxBytes, opts);
+  };
+  sock.ev.emit("messages.upsert", {
+    type: "notify",
+    messages: [
+      {
+        key: { remoteJid: ANA, fromMe: false, id: "PIC1" },
+        message: { imageMessage: { url: "https://mmg.whatsapp.net/v/p.enc", directPath: "/v/p.enc", mediaKey: Buffer.alloc(32, 1), mimetype: "image/jpeg", fileLength: 10_000_000 } },
+        messageTimestamp: Math.floor(Date.now() / 1000),
+      },
+    ],
+  });
+  const { meta, handler } = tools.get("read_messages");
+  const read = (signal) => handler(z.object(meta.inputSchema).parse({ chat_id: ANA, include_previews: true }), { signal });
+  const cancelledAnswer = (result) => {
+    assert.equal(result.isError, true);
+    assert.match(result.content[0].text, /"error":"TIMEOUT"[\s\S]*cancelled/);
+  };
+
+  const cancel = new AbortController();
+  const answer = read(cancel.signal);
+  while (pulls < 2) await sleep(5);
+  const at = Date.now();
+  cancel.abort();
+  cancelledAnswer(await answer);
+  assert.ok(Date.now() - at < 500, `answered ${Date.now() - at} ms after the cancel`);
+  const atCancel = pulls;
+  await sleep(200);
+  assert.ok(pulls - atCancel <= 2, `${pulls - atCancel} more chunks read after the cancel`);
+  assert.equal(given.length, 1);
+  assert.equal(given[0].signal, cancel.signal);
+  assert.ok(given[0].waitMs > 0 && given[0].waitMs <= 20_000, `waits at most what the 20 s budget has left: ${given[0].waitMs}`);
+  assert.equal(given[0].reupload, undefined, "a preview never wakes the phone");
+
+  // Every slot of the process's budget taken: the next read's preview waits in line, until its call is cancelled.
+  const held = await Promise.all([downloadBudget.acquire(1), downloadBudget.acquire(1), downloadBudget.acquire(1)]);
+  try {
+    const leaving = new AbortController();
+    const waiting = read(leaving.signal);
+    while (downloadBudget.usage.waiting === 0) await sleep(5);
+    const left = Date.now();
+    leaving.abort();
+    cancelledAnswer(await waiting);
+    assert.ok(Date.now() - left < 500, `answered ${Date.now() - left} ms after the cancel, not after the wait`);
+    assert.equal(downloadBudget.usage.waiting, 0, "it left the line");
+  } finally {
+    for (const release of held) release();
+  }
+  assert.deepEqual(downloadBudget.usage, { running: 0, reserved: 0, waiting: 0 });
   await svc.stop();
 });

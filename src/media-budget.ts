@@ -58,10 +58,11 @@ export class DownloadBudget {
 
   /**
    * Room for a download of `bytes`, in arrival order: resolves with the call
-   * that gives it back, or rejects with RATE_LIMITED after waitMs, or with the
-   * cancellation at once when `signal` aborts while it waits.
+   * that gives it back, or rejects with RATE_LIMITED after `waitMs` (the
+   * limits' own unless a caller with less time left gives its own), or with
+   * the cancellation at once when `signal` aborts while it waits.
    */
-  acquire(bytes: number, signal?: AbortSignal): Promise<() => void> {
+  acquire(bytes: number, signal?: AbortSignal, waitMs: number = this.limits.waitMs): Promise<() => void> {
     if (signal?.aborted) return Promise.reject(callCancelled());
     const take = (): (() => void) => {
       this.running++;
@@ -110,7 +111,7 @@ export class DownloadBudget {
           )
         );
         this.drain();
-      }, this.limits.waitMs);
+      }, waitMs);
       this.queue.push(waiter);
     });
   }

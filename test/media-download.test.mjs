@@ -55,6 +55,21 @@ test("a download that waits past waitMs is told to retry, and leaves the queue",
   held();
 });
 
+test("a caller with less time left waits for a slot only that long, and leaves the queue to the others", async () => {
+  // A read's previews have 20 s in all: behind other downloads they no longer wait the budget's own 30 s.
+  const budget = new DownloadBudget(limits({ concurrent: 1, waitMs: 5_000 }));
+  const held = await budget.acquire(1);
+  const patient = budget.acquire(1);
+  const started = Date.now();
+  await assert.rejects(budget.acquire(1, undefined, 40), (err) => err.code === "RATE_LIMITED");
+  assert.ok(Date.now() - started < 1_000, `gave up after ${Date.now() - started} ms, not waitMs`);
+  await assert.rejects(downloadToMemory("M", source([Buffer.from("x")]), { cap: 100, budget, waitMs: 40 }), (err) => err.code === "RATE_LIMITED");
+  assert.equal(budget.usage.waiting, 1, "only the patient caller still waits");
+  held();
+  (await patient)();
+  assert.deepEqual(budget.usage, { running: 0, reserved: 0, waiting: 0 });
+});
+
 test("the bytes come back whole, whether the envelope's size was right, short or missing", async () => {
   const budget = new DownloadBudget(limits());
   const chunks = [Buffer.from("abc"), Buffer.from("defg"), Buffer.from("h")];

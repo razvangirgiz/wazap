@@ -111,7 +111,7 @@ async function recent(args: ToolArgs, ctx: ToolCtx): Promise<ToolResult> {
     for (const id of page.accounts) {
       const wa = resolveToolAccount(ctx.hub, { account_id: id }, { name: "get_status", write: false }).wa;
       const ids = conversations.filter((row) => row.account_id === id).flatMap((row) => row.messages.filter((m) => !m.private).map((m) => m.message_id));
-      for (const preview of await wa.previews(ids, Math.max(0, 12 - images.length))) images.push({ type: "image", data: preview.base64, mimeType: preview.mime });
+      for (const preview of await wa.previews(ids, Math.max(0, 12 - images.length), ctx.signal)) images.push({ type: "image", data: preview.base64, mimeType: preview.mime });
     }
   }
   // Re-link or roster replacement may happen while a read or preview awaits.

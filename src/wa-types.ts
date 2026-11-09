@@ -1086,7 +1086,8 @@ export interface WhatsAppApi {
   getStories(hours: number, opts?: { private?: PrivateRule }): Promise<Synced<MessageView[]>>;
   setContactNote(contactId: string, note: string): Promise<ContactSummary>;
   markHandled(chatId: string): Promise<HandledResult>;
-  previews(messageIds: string[], max: number): Promise<Preview[]>;
+  /** `signal` is the read's: a cancelled read stops waiting for a download, a frame or a shrink, and answers with the cancellation. */
+  previews(messageIds: string[], max: number, signal?: AbortSignal): Promise<Preview[]>;
   getUnanswered(minAgeHours: number, maxAgeHours: number, limit: number, opts?: { private?: PrivateRule }): Promise<Synced<UnansweredChat[]>>;
   /**
    * `owner` is the MCP session drafting; only the same owner may confirm.

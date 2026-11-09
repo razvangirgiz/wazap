@@ -646,7 +646,7 @@ const TOOLS: readonly ToolDef[] = [
         const stories = matching.slice(0, limit);
         // A story of someone tagged #private gets no preview: what it shows is its words.
         const open = stories.filter((m) => m.private !== true);
-        const previews = include_previews ? await wa.previews(newestFirst(open), MAX_PREVIEWS) : [];
+        const previews = include_previews ? await wa.previews(newestFirst(open), MAX_PREVIEWS, ctx.signal) : [];
         const omitted = matching.length - stories.length;
         const note = [previewNote(open, previews, include_previews), omitted > 0 ? `${omitted} older stories left out; raise limit for them.` : null]
           .filter(Boolean)
@@ -671,7 +671,7 @@ const TOOLS: readonly ToolDef[] = [
         throw new WazapError("INVALID_ID", 'hours applies to chat_id "status" only.', "Page back through a chat with before instead");
       }
       const result = await wa.readMessages(chat_id, limit, before, types);
-      const previews = include_previews ? await wa.previews(newestFirst(result.data), MAX_PREVIEWS) : [];
+      const previews = include_previews ? await wa.previews(newestFirst(result.data), MAX_PREVIEWS, ctx.signal) : [];
       const unconfirmed = result.unconfirmedSends ?? [];
       const noOlder = result.older?.received === 0 ? OLDER_NONE_NOTE : null;
       return ok(

@@ -53,11 +53,17 @@ export function tooLarge(messageId: string, cap: number, size?: number): WazapEr
 export async function downloadToMemory(
   messageId: string,
   source: DownloadSource,
-  { declared, cap, budget = processBudget, signal }: { declared?: number; cap: number; budget?: DownloadBudget; signal?: AbortSignal }
+  {
+    declared,
+    cap,
+    budget = processBudget,
+    signal,
+    waitMs,
+  }: { declared?: number; cap: number; budget?: DownloadBudget; signal?: AbortSignal; waitMs?: number }
 ): Promise<Buffer> {
   if (declared !== undefined && declared > cap) throw tooLarge(messageId, cap, declared);
-  // A cancelled call leaves the line for a slot, and stops its download at the next chunk.
-  const release = await budget.acquire(declared ?? UNKNOWN_SIZE_RESERVE, signal);
+  // A cancelled call leaves the line for a slot, and stops its download at the next chunk; `waitMs` shortens the line's wait.
+  const release = await budget.acquire(declared ?? UNKNOWN_SIZE_RESERVE, signal, waitMs);
   const { idleMs, totalMs } = budget.limits;
   let stream: Readable | null = null;
   let stalled: Stalled | null = null;

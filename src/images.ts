@@ -122,16 +122,17 @@ export function setImageEngine(sharp: SharpFactory | null | undefined): void {
  * libvips reads (a HEIC through sips on macOS), or, without sharp, by jpeg-js
  * from a JPEG (on the event loop, the cost the fallback pays). Null for an
  * input neither can read, and for an SVG: a read would pay for drawing it
- * unasked; get_media draws one.
+ * unasked; get_media draws one. Null too when `signal` (the read's) aborts
+ * while it waits for a slot, or kills sips.
  */
-export async function previewImage(input: Buffer, mime: string): Promise<Jpeg | null> {
+export async function previewImage(input: Buffer, mime: string, signal?: AbortSignal): Promise<Jpeg | null> {
   const sharp = await loadSharp();
   if (sharp !== null) {
     if (looksLikeSvg(input)) return null;
-    const made = await preview(sharp, input);
+    const made = await preview(sharp, input, signal);
     if (made !== null || !/^image\/hei[cf]/i.test(mime)) return made;
-    const converted = await heicToJpeg(input);
-    return converted === null ? null : preview(sharp, converted);
+    const converted = await heicToJpeg(input, signal);
+    return converted === null ? null : preview(sharp, converted, signal);
   }
   if (!/^image\/jpe?g\b/i.test(mime)) return null;
   try {
@@ -142,7 +143,7 @@ export async function previewImage(input: Buffer, mime: string): Promise<Jpeg | 
   }
 }
 
-function preview(sharp: SharpFactory, input: Buffer): Promise<Jpeg | null> {
+function preview(sharp: SharpFactory, input: Buffer, signal?: AbortSignal): Promise<Jpeg | null> {
   return imageSlots
     .run(async () => {
       if (!withinHeaderCap(input) || !drawable(await sharp(input, INPUT).metadata())) return null;
@@ -154,7 +155,7 @@ function preview(sharp: SharpFactory, input: Buffer): Promise<Jpeg | null> {
         .timeout(SHARP_TIMEOUT)
         .toBuffer({ resolveWithObject: true });
       return { data, width: info.width, height: info.height };
-    })
+    }, signal)
     .catch(() => null);
 }
 

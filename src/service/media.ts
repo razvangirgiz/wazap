@@ -37,7 +37,11 @@ const PREVIEW_SOURCE_MAX_BYTES_JS = 6_000_000;
 /** A video bigger than this is not downloaded for a frame. */
 const PREVIEW_VIDEO_MAX_BYTES = 25_000_000;
 
-/** How long one call may spend downloading and shrinking photos before it returns with what it has. */
+/**
+ * How long one call may spend downloading and shrinking photos before it
+ * returns with what it has: no download starts past it, and none waits for a
+ * slot in the download budget beyond it.
+ */
 const PREVIEW_BUDGET_MS = 20_000;
 
 /**
@@ -67,9 +71,10 @@ export interface MediaHost {
   hasMessage(id: string): boolean;
   /**
    * The bytes behind a message's media, from WhatsApp; `reupload` asks the
-   * phone again for expired media, and `signal` stops the download.
+   * phone again for expired media, `signal` stops the download, and `waitMs`
+   * shortens its wait for a slot in the download budget.
    */
-  mediaBuffer(sock: WASocket, messageId: string, raw: WAMessage, opts?: { reupload?: boolean; signal?: AbortSignal }): Promise<Buffer>;
+  mediaBuffer(sock: WASocket, messageId: string, raw: WAMessage, opts?: { reupload?: boolean; signal?: AbortSignal; waitMs?: number }): Promise<Buffer>;
   /** The kept copy of a message's media, or null (src/service/keep.ts). */
   keptMedia(messageId: string, raw: WAMessage): Promise<Buffer | null>;
   /** WhatsApp's copy, just downloaded: kept too when the kept-media settings want it. */
@@ -94,15 +99,19 @@ export class AccountMedia {
    * within a time budget so the call returns with what it has. A photo that
    * has expired, is too big, or that nothing here reads (without sharp: not a
    * JPEG) simply has no preview; one that downloaded and made none is not
-   * downloaded again for an hour.
+   * downloaded again for an hour. A read its client cancelled (`signal`)
+   * stops waiting for a download slot, the download, the frame grab or the
+   * shrink, and fails with the cancellation, which nobody reads: what it
+   * would answer is thrown away, and its in-flight slot comes back sooner.
    */
-  previews(messageIds: string[], max: number): Promise<Preview[]> {
+  previews(messageIds: string[], max: number, signal?: AbortSignal): Promise<Preview[]> {
     return this.host.guarded(async () => {
       const out: Preview[] = [];
       const started = Date.now();
       const sharp = (await loadSharp()) !== null;
       for (const sid of messageIds) {
         if (out.length >= max) break;
+        throwIfCancelled(signal);
         const message = this.storage.readyDb()?.messages.get(sid) ?? null;
         const raw = message === null ? null : this.views.rawOf(message);
         if (!raw) continue;
@@ -129,11 +138,17 @@ export class AccountMedia {
           try {
             // A kept copy answers with the link down; only without one is WhatsApp asked, and only while connected.
             const sock = this.host.sock();
+            // Behind other downloads, it waits for a slot only as long as PREVIEW_BUDGET_MS has left, not the download budget's 30 s.
+            const waitMs = Math.max(0, PREVIEW_BUDGET_MS - (Date.now() - started));
             const buffer =
               (await this.host.keptMedia(sid, raw)) ??
-              (sock && this.host.status() === "connected" ? await this.host.mediaBuffer(sock, sid, raw) : null);
-            const made = buffer === null ? null : photo ? ((await previewImage(buffer, info.mime))?.data ?? null) : await videoFrame(buffer);
-            if (buffer !== null && made === null) this.rememberUnpreviewable(sid);
+              (sock && this.host.status() === "connected"
+                ? await this.host.mediaBuffer(sock, sid, raw, { waitMs, ...(signal === undefined ? {} : { signal }) })
+                : null);
+            const made =
+              buffer === null ? null : photo ? ((await previewImage(buffer, info.mime, signal))?.data ?? null) : await videoFrame(buffer, undefined, signal);
+            // A cancelled shrink or frame grab made nothing, which says nothing about the media.
+            if (buffer !== null && made === null && signal?.aborted !== true) this.rememberUnpreviewable(sid);
             if (made && this.host.hasMessage(sid)) {
               await this.writePreview(sid, made);
               chosen = { mime: "image/jpeg", base64: made.toString("base64") };
@@ -141,6 +156,7 @@ export class AccountMedia {
           } catch {
             // Expired or unreadable original: keep the shipped thumbnail when available.
           }
+          throwIfCancelled(signal);
         }
         if (chosen && this.host.hasMessage(sid)) out.push({ message_id: sid, ...chosen });
       }
