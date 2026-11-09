@@ -27,13 +27,36 @@ wazap refuses to bind a non-loopback address without a read token.
 
 ### Client isolation
 
-HTTP MCP sessions are bound to the exact bearer credential that initialized
-them (stored in memory as a SHA-256 fingerprint), including its read/write
-permissions. Another credential cannot use that session's POST, GET or DELETE
-endpoint, even if it knows the session id; it receives `404 Session not found`.
-Each request still validates the token, so expiry or revocation returns 401.
-After an OAuth access token rotates, initialize a new MCP session when the old
-session returns 404.
+HTTP MCP sessions are bound to the credential that initialized them,
+including its read/write permissions: a static token by its SHA-256
+fingerprint, an OAuth agent by its grant (its client id and granted scopes)
+rather than the access token of the day, so the daily rotation keeps its
+sessions, and its POST budget, as they were. A refresh that narrows the scopes
+is a different owner. Another credential cannot use that session's POST, GET
+or DELETE endpoint, even if it knows the session id; it receives
+`404 Session not found`. Each request still validates the token, so expiry or
+revocation returns 401.
+
+A session outlives the process holding it. Its id is `<uuid>.<mark>`, the mark
+an HMAC over the uuid, the credential and what the session handed its client
+at `initialize` (the tools, workflows and instructions, as one digest), keyed
+by `<data-dir>/session.key` (made on first use, `0600`). When a POST or GET
+arrives with an id this process does not hold — after a restart, after the
+idle sweep, after an eviction — and the mark matches the credential presenting
+it and what wazap would hand that client now, wazap opens the session again
+under that id and serves the request: the client never sees a 404 or redoes
+its handshake. A revived session has the credential's tools and drafts; what
+it loses is what the client said in its first `initialize` (its name and
+capabilities, which wazap does not use). When what the client was handed has
+changed — an update to another version, writes switched on or off, an account
+added or renamed — the session is not revived: the client gets the 404, and
+the fresh `initialize` it answers with gives it the new tools and
+instructions. Any other credential still gets 404,
+as does an id wazap did not mint; anonymous loopback sessions are never
+revived, and neither is a session its client ended with DELETE (the process
+remembers the last 1,024 ended ids; a restart forgets them). Revived sessions count against the caps below, and each revival is
+logged without the id. Deleting `session.key` and restarting makes every
+outstanding id unrevivable.
 
 Clients sharing a static token share an identity, and unauthenticated readers
 share an anonymous identity. Use distinct credentials/OAuth grants for isolation;
@@ -58,15 +81,62 @@ tools unless a trusted harness enforces approval.
 
 MCP POSTs authenticate before JSON parsing, accept at most 100 KiB and refuse
 compressed bodies. Each credential has 240 POSTs/minute across its sessions;
-429 responses include `Retry-After`. The session registry holds at most 128
-sessions overall and 32 per credential, evicting that credential's oldest first.
+429 responses include `Retry-After`. The session registry holds at most 64
+sessions overall and 32 per credential, evicting that credential's least
+recently used session first, and never one answering a request while another
+can go; it drops a session nobody has used for 24 hours. Either way a session
+comes back on its owner's next call (see [Client isolation](#client-isolation)),
+within the same caps: a POST revives it if that closes no session answering a
+request, and a GET (a client reconnecting its notification stream) only into a
+free place, so clients past the cap do not evict one another round and round.
+Otherwise the call gets the 404, and a fresh `initialize` takes the idlest
+place.
 Tool work is capped at eight concurrent operations per MCP session and 32
 across the process, including stdio/bridges. Slots remain held until work settles,
-not merely until a client disconnects. Retry once after pending work completes.
+not merely until a client disconnects. A call the client cancels
+(`notifications/cancelled`), or one whose session is closed, stops waiting,
+and the stream its answer would have taken ends at once:
+`wait_for_messages` answers at once, a media download stops at its next chunk,
+and a transcription stops being waited on. A transcription several callers
+share (two sessions, or a call and the auto queue) goes on for the others; its
+download stops only when every one of them has cancelled, and a provider
+already running finishes and keeps its transcript. Its slot comes back as soon
+as it has stopped. A disconnect alone is not a cancel, as the MCP
+specification says. Retry once after pending work completes.
+
+Answers to a POST are gzip-compressed when the client's `Accept-Encoding`
+takes gzip (Node's `fetch`, and so every TypeScript MCP client, does; so does
+`curl --compressed`), with a flush after every SSE event so a streamed answer
+is not held back. An answer under 1 KiB that is complete within 20 ms goes as
+it is; one still being written after 20 ms (a `wait_for_messages`, a slow
+tool) is streamed compressed whatever its size, which costs it about 20 bytes
+of framing. Nothing is compressed for a client that did not ask. The tool catalogue crosses the wire as 11 KB
+instead of 56 KB. The GET notification stream is never compressed.
+
+A restart (`SIGTERM` or `SIGINT`: `wazap update`, `wazap service restart`, a
+supervisor stopping the service) drains HTTP first. The listener closes at
+once, so a new connection is refused (through a tunnel, a 502); a request on
+a connection that was already open gets 503 with `Retry-After`. A
+`wait_for_messages` under way answers at once with what it has, and every
+other call under way, one whose client has left included, gets up to ten
+seconds to finish before the accounts stop. A call its client cancelled holds
+nothing up: its answer stream has already ended. The client's session is
+revived by the next process. The units `wazap service
+install` writes allow 15 seconds for that (launchd's `ExitTimeOut`, systemd's
+`TimeoutStopSec`), as does the compose file. launchd kills a job whose plist
+sets no `ExitTimeOut` about five seconds after `SIGTERM`, so under a unit
+written by an older wazap the drain lasts one second, and the log says so at
+startup: run `wazap service install` once to rewrite the unit. The next
+process warms its catalogue and transport right after it binds, so the first
+`initialize` after a restart costs about half what it did: 22–39 ms instead
+of 40–72 measured side by side on a loaded laptop over loopback, and 8–10 ms
+when the laptop was quieter.
 
 The HTTP listener caps connections at 256, header receipt at ten seconds and
 request-body receipt at thirty seconds; this does not time out legitimate SSE
-streams or long-running tools. Anonymous loopback requests must have a loopback
+streams or long-running tools. An idle keep-alive connection stays open for
+120 seconds, longer than a tunnel keeps one in its pool (cloudflared: 90), so
+the tunnel never sends a request on a socket wazap is closing. Anonymous loopback requests must have a loopback
 Host name (on any port, so a mapped container port works) and, when supplied, a
 matching Origin; browser rebinding/cross-origin
 requests are refused. Always configure credentials for a proxy/tunnel. These
@@ -98,6 +168,19 @@ request bodies and raw Accept headers; malformed-request errors are sanitized.
 Client labels are bounded and stripped of log/terminal control characters. Do
 not place secrets in client names or User-Agent labels, which remain diagnostic
 metadata.
+
+What the log does say, so the owner can tell which cloud clients connect and
+what crosses the tunnel: each `initialize` logs the client's own name and
+version, the protocol version, the kind of credential (`oauth`, `token`,
+`local` or `anonymous`, never which one) and the `Host` it came through; each
+request line ends with the body bytes sent, their encoding (`gzip` or
+`identity`) and what became of the session (`new`, `reused`, `revived`,
+`lost`). For example:
+
+```text
+MCP initialize: client="claude-ai 0.1.0" protocol=2025-06-18 credential=oauth host=wazap.example.com
+HTTP POST /mcp rpc=tools/list auth accept="json+sse" -> 200 (3ms) bytes=10953 enc=gzip session=reused client="node"
+```
 
 ## Self-host
 
@@ -157,10 +240,10 @@ wazap keeps binding loopback either way; only the tunnel reaches it.
 cloudflared tunnel login
 cloudflared tunnel create wazap
 cloudflared tunnel route dns wazap wazap.example.com
-cloudflared tunnel run --url http://127.0.0.1:8766 wazap
+cloudflared tunnel --no-autoupdate run --url http://127.0.0.1:8766 wazap
 ```
 
-Set `WAZAP_PUBLIC_URL=https://wazap.example.com` for OAuth and keep `cloudflared` running the way you keep wazap running (a systemd unit, a launchd agent). Tailscale Funnel or ngrok work the same way: whatever ends at `https://your-host` with `/mcp` behind it.
+Set `WAZAP_PUBLIC_URL=https://wazap.example.com` for OAuth and keep `cloudflared` running the way you keep wazap running (a systemd unit, a launchd agent). `--no-autoupdate` leaves updates to your package manager: a self-update restarts the tunnel whenever it lands, cutting off every call it carries. Tailscale Funnel or ngrok work the same way: whatever ends at `https://your-host` with `/mcp` behind it.
 
 </details>
 
@@ -215,6 +298,11 @@ What to know before exposing it:
   everyone for one minute.
 - With OAuth on, `/mcp` never answers an unauthenticated request, whether or
   not a read token is set.
+- The OAuth routes (`/authorize`, `/token`, `/register`, `/revoke` and the
+  consent page) read a body before anyone has signed in, so they refuse a
+  compressed one (415) and one declared larger than 64 KiB (413) before
+  reading a byte of it; a body sent without a length still meets the parsers'
+  100 KiB limit.
 - Grants live in `<data-dir>/oauth.json` as hashes. Delete the file to sign
   every agent out at once, running server included; `wazap status` lists who
   holds one. Disconnecting an agent on its side revokes its refresh token and

@@ -120,6 +120,8 @@ export interface Paths {
   controlFile: string;
   serviceFile: string;
   oauthFile: string;
+  /** The key HTTP session ids are signed with, so a session outlives a restart for the credential that opened it (session-id.ts). */
+  sessionKeyFile: string;
   envFile: string;
   accountsFile: string;
 }
@@ -147,6 +149,7 @@ export function paths(dataDir: string): Paths {
     controlFile: join(dataDir, "control.json"),
     serviceFile: join(dataDir, "service.json"),
     oauthFile: join(dataDir, "oauth.json"),
+    sessionKeyFile: join(dataDir, "session.key"),
     envFile: join(dataDir, ".env"),
     accountsFile: join(dataDir, "accounts.json"),
   };

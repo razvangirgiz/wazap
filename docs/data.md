@@ -31,6 +31,7 @@ accounts moves into `accounts/default/` the first time a wazap command runs.
   daemon.json       loopback endpoint a second wazap bridges to
   control.json      private loopback line the CLI uses to change the running server
   oauth.json        registered agents and hashed OAuth grants, when OAuth is on
+  session.key       signs HTTP session ids, so a session survives a restart
   .env              optional settings, see .env.example
   migration.json    written once when a flat dir moved into accounts/default
 ```

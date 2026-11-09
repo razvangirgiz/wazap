@@ -6,6 +6,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
+import { once } from "node:events";
 import {
   chmodSync,
   existsSync,
@@ -18,6 +19,7 @@ import {
   symlinkSync,
   writeFileSync,
 } from "node:fs";
+import { createServer as createNetServer } from "node:net";
 import { tmpdir } from "node:os";
 import { delimiter, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -26,7 +28,9 @@ import { promisify } from "node:util";
 import { AccountRegistry } from "../dist/accounts.js";
 import { paths, WAZAP_VERSION } from "../dist/config.js";
 import { yieldSession } from "../dist/cli.js";
+import { ACCOUNTS_STOP_MS, drainWithin, HTTP_DRAIN_MS } from "../dist/server.js";
 import {
+  SERVICE_STOP_S,
   SUPERVISORS,
   installService,
   readService,
@@ -34,7 +38,10 @@ import {
   serverUnit,
   servicePath,
   serviceScript,
+  serviceStopMs,
+  writeService,
 } from "../dist/service.js";
+import { spawnWazap, waitFor } from "./helpers.mjs";
 
 function dataDir() {
   return mkdtempSync(join(tmpdir(), "wazap-service-"), { mode: 0o700 });
@@ -242,7 +249,7 @@ function supervisorNamed(name) {
   return SUPERVISORS.find((entry) => entry.name === name);
 }
 
-test("the launchd plist keeps the job alive, throttled, with its own PATH", () => {
+test("the launchd plist keeps the job alive, throttled, with its own PATH and time to drain when it stops", () => {
   const plist = supervisorNamed("launchd").render(UNIT);
   assert.equal(
     plist,
@@ -280,6 +287,8 @@ test("the launchd plist keeps the job alive, throttled, with its own PATH", () =
 \t<string>Standard</string>
 \t<key>ThrottleInterval</key>
 \t<integer>10</integer>
+\t<key>ExitTimeOut</key>
+\t<integer>15</integer>
 \t<key>StandardOutPath</key>
 \t<string>/home/u/logs/com.wazap.server.out.log</string>
 \t<key>StandardErrorPath</key>
@@ -288,6 +297,67 @@ test("the launchd plist keeps the job alive, throttled, with its own PATH", () =
 </plist>
 `
   );
+});
+
+/**
+ * launchd SIGKILLs a job whose plist sets no ExitTimeOut about five seconds
+ * after SIGTERM (measured with `launchctl bootout`), which would cut the drain
+ * short and skip stopping the accounts altogether.
+ */
+test("the stop the installed unit allows decides the drain: the full ten seconds in a unit wazap writes now, one in an older launchd one", (t) => {
+  const dir = dataDir();
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const record = (supervisor, unitFile) =>
+    writeService(dir, { supervisor, label: "com.wazap.server", unitFile, port: 8766, logDir: join(dir, "logs"), installedVersion: WAZAP_VERSION });
+
+  assert.equal(serviceStopMs(dir), null, "nothing installed");
+  const plist = join(dir, "com.wazap.server.plist");
+  record("launchd", plist);
+  assert.equal(serviceStopMs(dir), null, "a unit that cannot be read says nothing");
+  writeFileSync(plist, supervisorNamed("launchd").render(UNIT));
+  assert.equal(serviceStopMs(dir), SERVICE_STOP_S * 1000);
+  writeFileSync(plist, supervisorNamed("launchd").render(UNIT).replace(/\t<key>ExitTimeOut<\/key>\n\t<integer>\d+<\/integer>\n/, ""));
+  assert.equal(serviceStopMs(dir), 5_000, "launchd's own allowance");
+  const unit = join(dir, "wazap.service");
+  record("systemd", unit);
+  writeFileSync(unit, supervisorNamed("systemd").render(UNIT));
+  assert.equal(serviceStopMs(dir), SERVICE_STOP_S * 1000);
+  writeFileSync(unit, supervisorNamed("systemd").render(UNIT).replace(/TimeoutStopSec=\d+/, "TimeoutStopSec=0"));
+  assert.equal(serviceStopMs(dir), null, "0 is systemd's never");
+
+  assert.equal(drainWithin(null), HTTP_DRAIN_MS);
+  assert.equal(drainWithin(SERVICE_STOP_S * 1000), HTTP_DRAIN_MS);
+  assert.ok(HTTP_DRAIN_MS + ACCOUNTS_STOP_MS < SERVICE_STOP_S * 1000, "the whole shutdown fits the units wazap writes");
+  assert.equal(drainWithin(5_000), 1_000);
+  assert.ok(drainWithin(5_000) + ACCOUNTS_STOP_MS < 5_000, "and an older launchd unit's");
+  assert.equal(drainWithin(2_000), 0);
+});
+
+test("a server under a launchd unit from before ExitTimeOut says so, and still stops at once on SIGTERM", { timeout: 30_000 }, async (t) => {
+  const dir = dataDir();
+  const probe = createNetServer();
+  await new Promise((resolve) => probe.listen(0, "127.0.0.1", resolve));
+  const { port } = probe.address();
+  await new Promise((resolve) => probe.close(resolve));
+  const plist = join(dir, "com.wazap.server.plist");
+  writeFileSync(plist, supervisorNamed("launchd").render(UNIT).replace(/\t<key>ExitTimeOut<\/key>\n\t<integer>\d+<\/integer>\n/, ""));
+  writeService(dir, { supervisor: "launchd", label: "com.wazap.server", unitFile: plist, port, logDir: join(dir, "logs"), installedVersion: WAZAP_VERSION });
+  const { child, stderr } = spawnWazap({ dataDir: dir, args: ["serve", "--http", "--port", String(port)], env: { WAZAP_NO_SHARE: "1" } });
+  t.after(() => {
+    if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
+    rmSync(dir, { recursive: true, force: true });
+  });
+  await waitFor(
+    () => fetch(`http://127.0.0.1:${port}/healthz`, { signal: AbortSignal.timeout(1_000) }).then((res) => res.ok || res.status === 503, () => false),
+    20_000,
+    "wazap serve --http to answer"
+  );
+  assert.match(stderr.join(""), /the service unit allows 5 s to stop, so calls under way get 1 s at a restart; run `wazap service install` once to give them 10/);
+  const exited = once(child, "exit");
+  const at = Date.now();
+  child.kill("SIGTERM");
+  await exited;
+  assert.ok(Date.now() - at < 4_500, `exited ${Date.now() - at} ms after SIGTERM`);
 });
 
 /**

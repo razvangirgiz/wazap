@@ -20,6 +20,7 @@ import { CATCHUP_INPUT, CATCHUP_OUTPUT, privateRule, runCatchUp } from "./catchu
 import { coverageNote, indexCoverageNote, searchCoverage } from "./coverage.js";
 import { describeTarget, looksUnnamed, renderDraft, type DraftPayload, type DraftView } from "./drafts.js";
 import { ERROR_GUIDE, WazapError, asWazapError } from "./errors.js";
+import { throwIfCancelled } from "./cancel.js";
 import { FIND_CONTACT_OUTPUT, runFindContact } from "./find-contact.js";
 import { LIST_CONTACTS_INPUT, runListContacts } from "./list-contacts.js";
 import { freshnessNote, readFreshness } from "./freshness.js";
@@ -761,6 +762,7 @@ const TOOLS: readonly ToolDef[] = [
         addressedToMe: addressed_to_me,
         cursor,
         ...(chat_id === undefined ? { private: await privateRule(ctx.hub, ctx.accountId) } : {}),
+        ...waitSignal(ctx),
       });
       return ok(renderWait(result), { ...result, count: result.messages.length });
     },
@@ -1024,7 +1026,7 @@ const TOOLS: readonly ToolDef[] = [
     },
     outputSchema: MEDIA_OUTPUT,
     write: false,
-    handler: async ({ message_id, save_to, language, account_id }, { wa, hub, accountId }) => {
+    handler: async ({ message_id, save_to, language, account_id }, { wa, hub, accountId, signal }) => {
       const resolved = { id: accountId, wa };
       const found =
         account_id === undefined
@@ -1051,13 +1053,14 @@ const TOOLS: readonly ToolDef[] = [
         // and the bucket is spent only when a provider runs.
         const saving = save_to !== undefined;
         try {
-          const result = await source.transcribeAudio(found.sid, language, saving ? { cachedOnly: true } : { limit: TRANSCRIBE_BUCKET });
+          const result = await source.transcribeAudio(found.sid, language, saving ? { cachedOnly: true } : { limit: TRANSCRIBE_BUCKET, ...(signal === undefined ? {} : { signal }) });
           structured.transcript = result;
           transcribed = true;
           const clock = result.duration_seconds === undefined ? "" : ` ${clockLabel(result.duration_seconds)}`;
           const facts = [result.language, result.provider, result.cached ? "cached" : null].filter(Boolean).join(", ");
           lines.push(`Transcribed${clock} (${facts}): "${result.text}"`);
         } catch (err) {
+          throwIfCancelled(signal);
           // No transcript (off, failing, timed out, over its rate, refused read-only): the file stands in for it.
           // A failure that is the message's own (gone, expired) comes back from the download below.
           if (!saving) {
@@ -1069,7 +1072,7 @@ const TOOLS: readonly ToolDef[] = [
       }
 
       if (!transcribed || save_to !== undefined) {
-        const media = await source.downloadMedia(found.sid, save_to);
+        const media = await source.downloadMedia(found.sid, save_to, signal === undefined ? undefined : { signal });
         const { inline_base64, ...file } = media;
         Object.assign(structured, file);
         lines.push(`Saved ${media.mime} (${Math.round(media.size / 1024)} KB) to:\n${media.path}`);
@@ -1424,6 +1427,13 @@ const TOOLS: readonly ToolDef[] = [
 ];
 
 export const TOOL_NAMES: readonly string[] = TOOLS.map((t) => t.name);
+
+/** A wait ends early on a cancelled call, and on a server shutting down, which still gets its answer. */
+function waitSignal(ctx: ToolCtx): { signal?: AbortSignal } {
+  const signals = [ctx.signal, ctx.stopping].filter((signal): signal is AbortSignal => signal !== undefined);
+  if (signals.length === 0) return {};
+  return { signal: signals.length === 1 ? signals[0]! : AbortSignal.any(signals) };
+}
 
 // A single registrar owns every session's shared work and rate budgets.
 export const registerTools = createToolRegistrar([

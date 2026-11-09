@@ -12,11 +12,27 @@ another write token, or an anonymous reader (when enabled) could use a write
 session if it obtained its id. GET and DELETE were affected too. The tests do
 not demonstrate a way to steal a session id.
 
-Sessions now bind to a SHA-256 fingerprint of the exact bearer credential and
-its effective read/write permission. Foreign credentials receive 404 and cannot
-touch the session's idle timeout or transport. Every request still authenticates:
-expired/revoked tokens receive 401. OAuth token rotation requires reinitializing.
-The session registry and lifecycle live in `src/http-sessions.ts`.
+Sessions now bind to the credential and its effective read/write permission:
+a static token by its SHA-256 fingerprint, an OAuth agent by its grant (client
+id and granted scopes), so an access-token rotation keeps the session while a
+narrower refresh does not. Foreign credentials receive 404 and cannot touch the
+session's idle timeout or transport. Every request still authenticates:
+expired/revoked tokens receive 401. The session registry and lifecycle live in
+`src/http-sessions.ts`.
+
+Session ids are `<uuid>.<mark>`, the mark an HMAC-SHA256 (128 bits) over the
+uuid, that owner and a digest of what the session handed its client (tools,
+workflows, instructions), keyed by `<data-dir>/session.key`
+(`src/session-id.ts`). A POST or GET carrying an id the process does not hold
+is revived only when the mark verifies for the presenting owner and for what
+wazap would hand it now, so a revival never serves a client tools or
+instructions it was not given: another credential, an anonymous
+reader, a random, altered or foreign-key id all still receive 404, and an id
+live under another owner stays a 404 as before. An id its owner ended with
+DELETE is remembered (the last 1,024, in memory) and never revived; another
+credential's DELETE ends nothing. Revivals count against the
+session caps and are logged without the id. Tests:
+`test/session-revival.test.mjs`.
 
 Regression tests: `test/session-isolation.test.mjs`, `test/oauth.test.mjs`, and
 existing lifecycle tests in `test/daemon.test.mjs`. Ten of the eleven initial
@@ -602,13 +618,21 @@ Five initial budget regressions failed; separate raw HTTP tests also reproduced
 anonymous initialization with a foreign Origin or attacker-controlled Host.
 
 - MCP POST authentication precedes JSON parsing. Bodies are explicitly capped at
-  100 KiB and compressed bodies are refused. Each exact credential gets 240 POSTs
+  100 KiB and compressed bodies are refused. The OAuth routes, which parse
+  before any credential is checked with the SDK's default-inflate parsers, now
+  refuse a compressed body (415) and a declared length over 64 KiB (413) before
+  reading it (body-parser GHSA-27r3-jxmh-p828); `test/oauth.test.mjs`. Each owner (a static token's
+  fingerprint, or an OAuth grant: every token of one client id with the same
+  scopes counts as one) gets 240 POSTs
   per minute across session resets (fixed since the 1.0 settings cut; it was `WAZAP_HTTP_BUDGET`); 429 includes `Retry-After`. The endpoint's
   credential-window map is capped at 1,024 entries, pruning expired entries and
   refusing new ones with 503 rather than growing indefinitely.
-- Session state remains capped at 128 overall, now also at 32 per exact
-  credential. Excess sessions first evict that credential's oldest session, so
-  one unchanged token cannot consume the entire registry.
+- Session state is capped at 64 overall (this note once said 128, which the
+  code never allowed), and at 32 per owner. Excess sessions first evict that credential's least recently used
+  session, so one unchanged token cannot consume the entire registry; a session answering a request is
+  evicted only when every candidate is. A revival never evicts one (it is refused with 404 instead), and a
+  GET revives only into a free place, so a GET reconnect cannot set off an eviction loop
+  (`test/session-eviction.test.mjs`).
 - Actual tool handlers have eight in-flight slots per MCP session and 32
   process-wide (fixed since the 1.0 settings cut; they were `WAZAP_MAX_INFLIGHT` and `WAZAP_MAX_INFLIGHT_TOTAL`). Capacity is returned when work settles, even if the caller
   disconnects earlier. HTTP, stdio and private bridges share the tool budget.
@@ -621,8 +645,9 @@ anonymous initialization with a foreign Origin or attacker-controlled Host.
   not ambient browser authority and retains its existing host/proxy behavior.
 
 These are bounded resource controls, not DDoS protection, fair scheduling or
-multi-tenant isolation. Credential rotation creates a different credential;
-anonymous callers and clients sharing a token share budgets. Anonymous access
+multi-tenant isolation. Rotating a static token creates a different credential;
+an OAuth access-token rotation does not, since the budget follows the grant.
+Anonymous callers and clients sharing a token share budgets. Anonymous access
 is still not authentication: a proxy can rewrite headers, and non-browser callers
 can set them. Always configure credentials for proxies/tunnels. Tests:
 `test/request-budgets.test.mjs`, session isolation and existing daemon lifecycle

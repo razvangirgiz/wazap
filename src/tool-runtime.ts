@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import type { Tool } from "@modelcontextprotocol/sdk/types.js";
 import type { z } from "zod";
 import type { AccountSource } from "./account-hub.js";
 import { attachAccountId, resolveToolAccount, stringArg } from "./account-resolve.js";
@@ -9,7 +10,7 @@ import { asWazapError, WazapError } from "./errors.js";
 import { RateLimiter } from "./ratelimit.js";
 import { requireDraftOwner } from "./send-guard.js";
 import { requireChatAction, staleChatAction } from "./chat-action-drafts.js";
-import { publishToolCatalogue } from "./tool-catalogue.js";
+import { buildToolCatalogue, publishToolCatalogue } from "./tool-catalogue.js";
 import type { WhatsAppApi } from "./wa-types.js";
 
 export type ContentBlock = { type: "text"; text: string } | { type: "image"; data: string; mimeType: string };
@@ -53,6 +54,18 @@ export interface ToolCtx {
    * catch_up keeps its mark under.
    */
   client: string;
+  /**
+   * Aborts when the client cancels this call or its session closes. A wait
+   * honours it by stopping early (wait_for_messages, a download, a
+   * transcription another call started); nothing that writes does.
+   */
+  signal?: AbortSignal;
+  /**
+   * Aborts when the server serving this session is shutting down: a wait
+   * answers now with what it has, so the shutdown need not wait out its
+   * timeout. Unlike `signal`, the answer is still delivered.
+   */
+  stopping?: AbortSignal;
 }
 
 /** MCP tool annotations, stated per tool for its most far-reaching action. */
@@ -105,6 +118,16 @@ export interface RegisterOpts {
    * drafts owned by this registration alone.
    */
   draftIdentity?: string;
+  /** See ToolCtx.stopping: the HTTP endpoint's shutdown. */
+  stopping?: AbortSignal;
+  /** Told when each call starts running and when it settles: what the HTTP endpoint's shutdown waits on. */
+  calls?: CallTracker;
+}
+
+/** Tool calls under way somewhere, counted as they start and settle. */
+export interface CallTracker {
+  begin(): void;
+  end(): void;
 }
 
 /** Agents fan out: Claude Code routinely sends several tool calls at once, and wait_for_messages holds one for up to 55 s. */
@@ -144,6 +167,20 @@ export function createToolRegistrar(defs: readonly ToolDef[]) {
       def.rate === undefined ? [] : [[def.name, new RateLimiter(def.rate, undefined, rateLabel(def.name))] as const]
     )
   );
+  // tools/list for each permission key, built on the first session that has
+  // it: converting every zod schema to JSON Schema is most of what an
+  // initialize costs, and the answer is the same for every such session.
+  const catalogues = new Map<string, readonly Tool[]>();
+  const catalogueFor = (registered: readonly ToolDef[], opts: RegisterOpts): readonly Tool[] => {
+    // Which definitions register depends on allowWrite and legacyReads alone; allowLocalFiles changes descriptions.
+    const key = `${opts.allowWrite}:${opts.legacyReads === true}:${opts.allowLocalFiles !== false}`;
+    let tools = catalogues.get(key);
+    if (tools === undefined) {
+      tools = buildToolCatalogue(registered, opts.allowLocalFiles !== false);
+      catalogues.set(key, tools);
+    }
+    return tools;
+  };
   return function registerTools(server: McpServer, hub: AccountSource, opts: RegisterOpts): void {
     // A session's drafts answer to its draft identity: a remote credential's
     // stable one where the server names it, so an async confirm over a fresh
@@ -181,7 +218,7 @@ export function createToolRegistrar(defs: readonly ToolDef[]) {
           ...(def.outputSchema === undefined ? {} : { outputSchema: def.outputSchema }),
           annotations: def.hints,
         },
-        async (args: unknown, extra?: { _meta?: Record<string, unknown> }): Promise<ToolResult> => {
+        async (args: unknown, extra?: { _meta?: Record<string, unknown>; signal?: AbortSignal }): Promise<ToolResult> => {
           const call = sessionDrafts.startCall();
           const parsed = (args ?? {}) as ToolArgs;
           let resolved: { id: string; wa: WhatsAppApi } | undefined;
@@ -193,6 +230,7 @@ export function createToolRegistrar(defs: readonly ToolDef[]) {
             }
             inFlight++;
             sessionInFlight++;
+            opts.calls?.begin();
             admitted = true;
             // Reject before any lookup/stat/read/write, including directory overrides on read tools.
             if (opts.allowLocalFiles === false && (parsed.file_path !== undefined || parsed.save_to !== undefined)) {
@@ -254,6 +292,8 @@ export function createToolRegistrar(defs: readonly ToolDef[]) {
               accountId: resolved.id,
               draftOwner,
               client: clientOf(extra),
+              ...(extra?.signal === undefined ? {} : { signal: extra.signal }),
+              ...(opts.stopping === undefined ? {} : { stopping: opts.stopping }),
             });
             const draftId = result.structuredContent?.status === "draft" ? result.structuredContent.draft_id : undefined;
             if (typeof draftId === "string") sessionDrafts.note(draftId, call);
@@ -266,11 +306,12 @@ export function createToolRegistrar(defs: readonly ToolDef[]) {
             const result = toolError(asWazapError(err));
             return id === undefined ? result : attachAccountId(result, id);
           } finally {
-            if (admitted) { inFlight--; sessionInFlight--; }
+            if (admitted) { inFlight--; sessionInFlight--; opts.calls?.end(); }
           }
         }
       );
     }
-    publishToolCatalogue(server, registered, opts.allowLocalFiles !== false);
+    // Small test doubles only collect handlers and have no catalogue to publish.
+    if ((server as { server?: unknown }).server !== undefined) publishToolCatalogue(server, catalogueFor(registered, opts));
   };
 }
