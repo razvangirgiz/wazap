@@ -633,9 +633,11 @@ export async function startHttpEndpoint(hub: AccountSource, config: Config, endp
           await transport.close().catch(() => {});
           throw err;
         }
-        // Refused a place: every session it could replace took a request meanwhile.
-        if (!sessions.holds(sid, transport)) {
-          log(NO_ROOM_TO_REVIVE(sessions.size));
+        // Refused a place, because every session it could replace took a
+        // request meanwhile; or ended for good by a DELETE that raced it.
+        const placed = sessions.holds(sid, transport);
+        if (!placed || sessions.ended(sid)) {
+          if (!placed) log(NO_ROOM_TO_REVIVE(sessions.size));
           await transport.close().catch(() => {});
           return undefined;
         }

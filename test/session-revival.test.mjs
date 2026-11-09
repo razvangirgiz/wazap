@@ -171,6 +171,20 @@ test("a session its client ended with DELETE stays ended for that credential too
   assert.equal((await again.call("writer", kept.sid)).status, 200);
 });
 
+test("a DELETE that races the revival of its lost session still ends it for good", { timeout: 20_000 }, async (t) => {
+  const dir = dataDir(t);
+  const before = await start(t, dir);
+  const lost = [];
+  for (let i = 0; i < 12; i++) lost.push((await before.call("writer", undefined, initialize)).sid);
+  before.stop();
+  const after = await start(t, dir);
+  for (const sid of lost) {
+    // The POST starts a revival; the DELETE lands while it is under way.
+    await Promise.all([after.call("writer", sid), after.call("writer", sid, ping, "DELETE")]);
+    assert.equal((await after.call("writer", sid)).status, 404, "ended, whichever came first");
+  }
+});
+
 test("the ended ids kept are bounded, oldest forgotten first", () => {
   const sessions = new HttpSessions(4);
   for (let i = 0; i <= MCP_ENDED_SESSIONS_KEPT; i++) sessions.end(`id-${i}`);
