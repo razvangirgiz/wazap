@@ -66,6 +66,10 @@ Noise: 4 promo chats.
 
 With several accounts, name the account on each item or group the report by account, and say when one is disconnected.
 
+## Watching for what arrives
+
+Asked to keep watching ("tell me when Ana answers", "handle invoices as they come"), do not loop on `wait_for_messages` across turns: each wait answers once, within 55 seconds, and an idle hour of them is dozens of round trips and turns. A cloud agent that can be started from outside is woken by wazap's webhook instead (`message_received`, with `chat_id`, `message_id` and `text`; see docs/api-and-webhooks.md, *Cloud agents: push, not poll*): say so, and that the owner points the webhook at the agent's trigger. `wait_for_messages` with its cursor is for staying on the line inside this turn, when an answer is about to come; never claim to keep watching after the turn ends.
+
 End the report with: *Handled any of these by phone outside WhatsApp? Tell me and I will drop them.* wazap sees WhatsApp calls and never cellular ones, so a call from the phone's own dialler leaves no trace here. Whatever the user answers is authoritative for the rest of the session: call `remember` with `handled: true` for each chat they name, so it leaves the next catch-up too, and do not raise it again.
 
 One line per item: who, what they want, how old. Include the `chat_id` only if the user is likely to act through another tool next. Offer to draft replies only for *Needs you* items; drafting and sending belong to the `whatsapp-send` skill.
