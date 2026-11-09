@@ -266,7 +266,9 @@ even with the link down) once, shrinks it to 320 px on this machine with sharp,
 off the event loop and for any image format, and keeps the result as a file under
 `previews/` in the data directory, so a restart does not redo it. Where sharp's
 prebuilt binary does not load, a JPEG is shrunk in pure JavaScript instead. A video gets
-one frame, taken by ffmpeg a second in, when ffmpeg is installed. The first
+one frame, taken by ffmpeg a second in, when ffmpeg is installed. An SVG is
+never drawn for a preview (`get_media` draws it), and a photo that downloaded
+but made no preview is not downloaded again for an hour. The first
 call over a day of photos takes a few seconds; the next is instant.
 
 `wait_for_messages` blocks until something arrives, up to 55 seconds, then
@@ -293,12 +295,12 @@ bridge) gets the same, plus the file saved and its `path`.
 
 | Media | What comes back |
 |---|---|
-| Photo, sticker, image sent as a document (JPEG, PNG, WebP, GIF, SVG; HEIC through macOS `sips`) | One JPEG view: long edge 1,024 px within about 110 KB, so its base64 stays under the ~150,000 characters a hosted client keeps. `detail: "high"`: 2,048 px within 1.5 MB, for small print. An animation shows its first frame; transparency sits on white. A long image (a scrolling screenshot, a receipt, a panorama: about 2.6:1 and longer) is cut into up to six strips that each repeat a little of the next, laid side by side or one under another, so its text is drawn larger than a whole fit would allow (`view.strips`, `view.strip_layout`). `view` gives its size and the original's. A Lottie sticker shows the thumbnail it shipped; a remote session gets it without a download. |
-| Video, GIF, round video | A contact sheet: six frames spread across the clip, tiled into one 1,024 px JPEG, with `frames_at` (the second of each) and `duration_seconds`. Needs ffmpeg; without it, the thumbnail WhatsApp shipped. The sound is not transcribed. |
+| Photo, sticker, image sent as a document (JPEG, PNG, WebP, GIF, SVG; HEIC through macOS `sips`) | One JPEG view (WebP, GIF, HEIC and TIFF up to 25 MP, JPEG and PNG up to 100 MP; an SVG is drawn in a process of its own, stopped after 10 s): long edge 1,024 px within about 110 KB, so its base64 stays under the ~150,000 characters a hosted client keeps. `detail: "high"`: 2,048 px within 1.5 MB, for small print. An animation shows its first frame; transparency sits on white. A long image (a scrolling screenshot, a receipt, a panorama: about 2.6:1 and longer) is cut into up to six strips that each repeat a little of the next, laid side by side or one under another, so its text is drawn larger than a whole fit would allow (`view.strips`, `view.strip_layout`). `view` gives its size and the original's. A Lottie sticker shows the thumbnail it shipped; a remote session gets it without a download. |
+| Video, GIF, round video | A contact sheet: six frames spread across the clip, tiled into one 1,024 px JPEG, with `frames_at` (the second of each) and `duration_seconds` (ffmpeg's own reading when the message overstates it). Needs ffmpeg; when no sheet can be made, one frame sized like a view, and without ffmpeg the thumbnail WhatsApp shipped. The sound is not transcribed. |
 | Voice note, audio | Its transcript (see [Voice notes](voice.md)). When none can be made, a remote session gets only `transcript_unavailable` and the recording's facts. |
 | PDF | Its text, page by page under `--- page N ---`, from page 1 until about 12,000 characters, in `document_text`, with `document.pages_total` and the pages returned. `pages: "2-4"` (or `"5"`, `"5-"`) picks others. The first asked page also comes as a picture when poppler's `pdftoppm` is installed, or on macOS for page 1 through Quick Look; a scan with no text layer is read from that picture. |
 | Word, Excel, PowerPoint, OpenDocument (docx, xlsx, pptx, odt, ods, odp) | Their text from the file's XML: paragraphs; sheets as tab-separated rows, each value under its column's header and dates as dates; slides under `--- slide N ---` (`pages` picks slides). |
-| Text, CSV, JSON, Markdown, XML, HTML | The text, decoded (HTML without its scripts, styles and tags). |
+| Text, CSV, JSON, Markdown, XML, HTML | The text, decoded (HTML without its scripts, styles and tags): UTF-8, UTF-16, the charset an HTML or XML file names, or else Windows-1250 or 1252 (Excel's CSV on Romanian or Western Windows), whichever the letters point to. |
 | Anything longer than one answer that has no pages of its own (Word, sheets, text, HTML) | Parts of about 12,000 characters under `--- part N ---`, cut at a line: `pages: "2"` reads the second, `document.unit` is `part` and `document.pages_total` says how many there are. Up to 2,000,000 characters (8 MB of a text or HTML file) are read. |
 | Anything else | Its facts only (`mime`, `size`, `original_filename`), and a note saying so. |
 
@@ -323,16 +325,23 @@ flight; one that stalls for 30 seconds or runs past three minutes is stopped.
 
 The answer's text names the next call when there is more to read (`pages: "4"
 reads on`); `document.truncated` says the asked pages were cut at the budget.
+What wazap says of a read (a refusal, a read that failed, a page past the end,
+a file read only up to its limit) is a line of the text too, not only in
+`notes`, and a file that could not be read is never called empty.
 
 Documents are read in a worker thread with a memory cap and a 20-second limit,
 two at a time; Office files go through a small ZIP reader that refuses an
 archive with too many entries, an entry that inflates past 20 MB (60 MB in all)
 or at more than 200:1, and an entry that lies about its size. A PDF's streams
 are unpacked and measured before it is read: one past 64 MB, or 256 MB in all,
-refuses the file as a compression bomb, and its page is not drawn either. While
-a document is read the server's memory is watched, and the page renderer, one
-at a time, is stopped past 512 MB. A file over 50 MB is not read. One download
-serves the view, the sheet, the text and a local session's file.
+refuses the file as a compression bomb; a stream whose dictionary cannot be
+read is measured as every filter that could expand it. That check is a first
+line a crafted file can get past; the bound is the memory watch: while a
+document is read the server's memory is watched and the read stopped past
+512 MB of growth, and the page is drawn only after the read, never for a file
+it refused or stopped, by one renderer at a time, itself stopped past 512 MB.
+A file over 50 MB is not read. One download serves the view, the sheet, the
+text and a local session's file.
 
 ### Finding people
 
