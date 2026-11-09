@@ -346,3 +346,21 @@ test("a read the memory watch stops is not drawn either", async (t) => {
   assert.equal(result.content.filter((block) => block.type === "image").length, 0);
   assert.match(result.content[0].text, /needs more memory than a document read is given/);
 });
+
+test("a number no date stands for stays a number in a date column, and the rest of the sheet still reads", async (t) => {
+  const { send } = setup(t);
+  const xlsx = zipOf({
+    "xl/workbook.xml": '<workbook><sheets><sheet name="Clienți" sheetId="1" r:id="rId1"/></sheets></workbook>',
+    "xl/_rels/workbook.xml.rels": '<Relationships><Relationship Id="rId1" Type="worksheet" Target="worksheets/sheet1.xml"/></Relationships>',
+    "xl/styles.xml": '<styleSheet><cellXfs count="2"><xf numFmtId="0"/><xf numFmtId="14"/></cellXfs></styleSheet>',
+    "xl/worksheets/sheet1.xml":
+      "<worksheet><sheetData>" +
+      '<row r="1"><c r="A1" t="inlineStr"><is><t>Ana</t></is></c><c r="B1" s="1"><v>46266</v></c></row>' +
+      // A phone number typed into the date column, a huge value, a negative one and the last day Excel shows.
+      '<row r="2"><c r="A2" t="inlineStr"><is><t>Ion</t></is></c><c r="B2" s="1"><v>40712345678</v></c></row>' +
+      '<row r="3"><c r="B3" s="1"><v>1E+20</v></c><c r="C3" s="1"><v>-700000000</v></c><c r="D3" s="1"><v>2958465</v></c><c r="E3" s="1"><v>2958466</v></c></row>' +
+      "</sheetData></worksheet>",
+  });
+  const out = (await send(xlsx, XLSX, "clienti.xlsx")).structuredContent;
+  assert.equal(out.document_text, "--- sheet Clienți ---\nAna\t2026-09-01\nIon\t40712345678\n\t1E+20\t-700000000\t9999-12-31\t2958466");
+});

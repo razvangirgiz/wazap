@@ -326,10 +326,18 @@ function dateStyles(styles: string | null): Map<number, DateKind> {
   return kinds;
 }
 
-/** A spreadsheet serial number as the date, time or both it stands for (the 1900 system, or 1904). */
-function serialDate(serial: number, kind: DateKind, from1904: boolean): string {
+/** The last day Excel shows as a date: 31 December 9999. Past it, and below 0, a date cell shows its number (Excel shows ####). */
+const SERIAL_MAX = 2_958_465;
+
+/**
+ * A spreadsheet serial number as the date, time or both it stands for (the
+ * 1900 system, or 1904); null for a number no date stands for, such as a
+ * phone number typed into a date column.
+ */
+function serialDate(serial: number, kind: DateKind, from1904: boolean): string | null {
   // Excel counts 1900 as a leap year: from March 1900 on, day 0 is 30 December 1899.
   const days = from1904 ? serial + 1462 : serial < 61 ? serial + 1 : serial;
+  if (!(serial >= 0 && days < SERIAL_MAX + 1)) return null;
   const at = new Date(Date.UTC(1899, 11, 30) + Math.round(days * 86_400) * 1000).toISOString();
   const time = at.slice(11, at.endsWith(":00.000Z") ? 16 : 19);
   return kind === "date" ? at.slice(0, 10) : kind === "time" ? time : `${at.slice(0, 10)} ${time}`;
@@ -375,7 +383,7 @@ function workbookText(zip: ZipReader): string {
         else if (type === "inlineStr") text = decodeEntities([...body.matchAll(/<t\b[^>]*>([\s\S]*?)<\/t>/g)].map((t) => t[1]).join(""));
         else if (type === "b") text = value === "1" ? "TRUE" : "FALSE";
         else if (value !== undefined && kind !== undefined && (type === undefined || type === "n") && Number.isFinite(Number(value))) {
-          text = serialDate(Number(value), kind, from1904);
+          text = serialDate(Number(value), kind, from1904) ?? value;
         } else if (value !== undefined) text = decodeEntities(value);
         cells.put(column, text);
       }
