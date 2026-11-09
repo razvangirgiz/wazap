@@ -117,7 +117,7 @@ What every argument means, and every error code, is in
 | `find_contact` | read | Who "mama", a nickname, a group name or a number means, before anything is drafted. |
 | `list_contacts` | read | The phone's address book a page at a time: saved name, number, when you last talked. |
 | `get_group_info` | read | Participants, admins, group settings, the invite link for an admin. |
-| `get_media` | read | A voice note as its transcript, a photo as an image, any file saved to disk; served from the copy kept on arrival first. |
+| `get_media` | read | A voice note as its transcript, a photo as an image, a video as a contact sheet, a document as its text; a local session also saves the file. Served from the copy kept on arrival first. |
 | `wait_for_messages` | read | Block up to 55 s until a message arrives, with a cursor so nothing is missed between calls. |
 | `remember` | local | A note, tags or details about a person, kept on this machine. Nothing changes on WhatsApp. |
 | `send_message` | write | Draft a message, media, poll, location or forward — and send nothing. `send_at` drafts it for a later time. |
