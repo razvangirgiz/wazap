@@ -15,11 +15,12 @@
  * that no browser renders on this origin (the OAuth consent page's).
  */
 import { createHash, createHmac, randomBytes, timingSafeEqual } from "node:crypto";
-import { readFileSync, writeFileSync } from "node:fs";
+import { readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Response } from "express";
 import type { AccountSource } from "./account-hub.js";
 import { asWazapError } from "./errors.js";
+import { log } from "./logger.js";
 
 /** How long a link opens the file. */
 export const MEDIA_LINK_TTL_MS = 30 * 60 * 1000;
@@ -87,6 +88,9 @@ export class MediaLinks {
 /**
  * The install's link secret: 32 random bytes made the first time and kept in
  * the data dir, readable only by its owner. Never logged, never in an answer.
+ * It is written whole to a temporary file and renamed into place, so a crash
+ * or a full disk never leaves a short key behind; a short or empty one found
+ * there (from before) is replaced the same way.
  */
 export function linkSecret(dataDir: string): Buffer {
   const file = join(dataDir, MEDIA_LINK_KEY_FILE);
@@ -101,28 +105,37 @@ export function linkSecret(dataDir: string): Buffer {
   const existing = read();
   if (existing !== null) return existing;
   const secret = randomBytes(32);
+  const temporary = `${file}.${process.pid}.${randomBytes(4).toString("hex")}.tmp`;
   try {
-    writeFileSync(file, secret, { mode: 0o600, flag: "wx" });
-    return secret;
+    writeFileSync(temporary, secret, { mode: 0o600, flag: "wx" });
+    renameSync(temporary, file);
   } catch {
-    // Made meanwhile by another call: that one stands.
-    const raced = read();
-    if (raced !== null) return raced;
+    rmSync(temporary, { force: true });
     throw new Error("The media link secret could not be written to the data dir.");
   }
+  // What is on disk now is what later runs will read: that is the secret.
+  return read() ?? secret;
 }
 
-const cached = new Map<string, MediaLinks>();
+const cached = new Map<string, MediaLinks | null>();
 
-/** Links for a server with a public URL, made once per data dir; null without one. */
+/**
+ * Links for a server with a public URL, made once per data dir; null without
+ * one, and null (said once in the log) when the secret cannot be kept: the
+ * server then runs without links rather than not at all.
+ */
 export function mediaLinksFor(config: { dataDir: string; publicUrl: string | null }): MediaLinks | null {
   if (!config.publicUrl) return null;
   const key = `${config.dataDir}\n${config.publicUrl}`;
-  let links = cached.get(key);
-  if (links === undefined) {
+  if (cached.has(key)) return cached.get(key)!;
+  let links: MediaLinks | null;
+  try {
     links = new MediaLinks(linkSecret(config.dataDir), config.publicUrl.replace(/\/+$/, ""));
-    cached.set(key, links);
+  } catch (err) {
+    log(`Media links are off: ${err instanceof Error ? err.message : "the secret could not be kept"}`);
+    links = null;
   }
+  cached.set(key, links);
   return links;
 }
 

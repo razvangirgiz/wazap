@@ -7,7 +7,8 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync, rmSync, statSync } from "node:fs";
+import { chmodSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { WhatsAppService } from "../dist/whatsapp.js";
@@ -73,6 +74,44 @@ test("the install's secret is made once, kept owner-only, and reused", (t) => {
   assert.equal(first.length, 32);
   assert.deepEqual(linkSecret(svc.config.dataDir), first);
   assert.deepEqual(readFileSync(file), first);
+});
+
+test("a short or empty key left by a crash is replaced, and the HTTP endpoint starts either way", async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "wazap-key-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const file = join(dir, MEDIA_LINK_KEY_FILE);
+  writeFileSync(file, Buffer.alloc(0), { mode: 0o600 });
+  const secret = linkSecret(dir);
+  assert.equal(secret.length, 32);
+  assert.deepEqual(readFileSync(file), secret);
+  assert.equal(statSync(file).mode & 0o777, 0o600);
+  assert.deepEqual(readdirSync(dir), [MEDIA_LINK_KEY_FILE], "no temporary file is left");
+  writeFileSync(file, Buffer.alloc(7, 1));
+  assert.ok(mediaLinksFor({ dataDir: dir, publicUrl: PUBLIC }) instanceof MediaLinks);
+  assert.equal(readFileSync(file).length, 32);
+
+  // A data dir the secret cannot be written to: no links, and no throw that would stop the listener.
+  if (process.getuid?.() === 0) return;
+  const locked = mkdtempSync(join(tmpdir(), "wazap-locked-"));
+  chmodSync(locked, 0o500);
+  t.after(() => {
+    chmodSync(locked, 0o700);
+    rmSync(locked, { recursive: true, force: true });
+  });
+  assert.throws(() => linkSecret(locked), /could not be written/);
+  assert.equal(mediaLinksFor({ dataDir: locked, publicUrl: PUBLIC }), null);
+  const stop = new AbortController();
+  t.after(() => stop.abort());
+  const { svc } = connectedService(WhatsAppService, { prefix: "wazap-nokey-", id: "40700000001@s.whatsapp.net", name: "Me" });
+  t.after(() => rmSync(svc.config.dataDir, { recursive: true, force: true }));
+  const port = await startHttpEndpoint(asToolSource(svc), { ...svc.config, dataDir: locked, publicUrl: PUBLIC }, {
+    host: "127.0.0.1",
+    port: 0,
+    openRead: false,
+    signal: stop.signal,
+    credentials: [{ token: "synthetic-reader", write: false }],
+  });
+  assert.equal((await fetch(`http://127.0.0.1:${port}/healthz`)).status, 200);
 });
 
 test("the download is named for any client, and nothing in the name escapes its header", () => {
