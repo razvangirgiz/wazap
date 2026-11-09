@@ -74,8 +74,10 @@ tools unless a trusted harness enforces approval.
 
 MCP POSTs authenticate before JSON parsing, accept at most 100 KiB and refuse
 compressed bodies. Each credential has 240 POSTs/minute across its sessions;
-429 responses include `Retry-After`. The session registry holds at most 128
-sessions overall and 32 per credential, evicting that credential's oldest first.
+429 responses include `Retry-After`. The session registry holds at most 64
+sessions overall and 32 per credential, evicting that credential's oldest first,
+and drops a session nobody has used for 24 hours; either way a session comes
+back on its owner's next call (see [Client isolation](#client-isolation)).
 Tool work is capped at eight concurrent operations per MCP session and 32
 across the process, including stdio/bridges. Slots remain held until work settles,
 not merely until a client disconnects. Retry once after pending work completes.

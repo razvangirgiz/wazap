@@ -7,6 +7,9 @@ interface Session {
   lastSeen: number;
 }
 
+/** How many sessions one credential may hold before its idlest goes. */
+export const MCP_SESSIONS_PER_OWNER = 32;
+
 /** Session ids are routing hints, not credentials. Check ownership before touching TTL. */
 export class HttpSessions {
   private readonly sessions = new Map<string, Session>();
@@ -32,7 +35,7 @@ export class HttpSessions {
   add(id: string, transport: McpTransport, owner: string): void {
     this.sessions.set(id, { transport, owner, lastSeen: Date.now() });
     const owned = [...this.sessions].filter(([, session]) => session.owner === owner);
-    if (owned.length > Math.min(32, this.max)) {
+    if (owned.length > Math.min(MCP_SESSIONS_PER_OWNER, this.max)) {
       const oldest = owned.filter(([other]) => other !== id).sort(([, a], [, b]) => a.lastSeen - b.lastSeen)[0];
       if (oldest) this.drop(oldest[0]);
     }

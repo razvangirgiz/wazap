@@ -20,10 +20,17 @@ import { sessionIds } from "./session-id.js";
 import type { ConnectionStatus } from "./wa-types.js";
 
 const UNHEALTHY_AFTER_MS = 2 * 60 * 1000;
-/** A session nobody has touched in an hour is abandoned, not kept. */
-const MCP_SESSION_TTL_MS = 60 * 60 * 1000;
+/**
+ * A session nobody has touched in a day is abandoned, not kept. Cloud agents
+ * come back to a conversation hours later; a session costs about 200 KiB of
+ * heap now that the catalogue is shared, and one swept anyway is revived on
+ * its next call.
+ */
+export const MCP_SESSION_TTL_MS = 24 * 60 * 60 * 1000;
 /** A client that never closes can still pile up sessions; past this, the idlest goes. */
-const MCP_SESSION_MAX = 64;
+export const MCP_SESSION_MAX = 64;
+/** No one credential holds more than this many of them. */
+export { MCP_SESSIONS_PER_OWNER } from "./http-sessions.js";
 const MCP_SESSION_SWEEP_MS = 5 * 60 * 1000;
 
 /**

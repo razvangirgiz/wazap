@@ -1,14 +1,23 @@
 /**
- * The listener's socket timeouts against what a tunnel in front of it does:
- * cloudflared keeps pooled origin connections idle for 90 s, so wazap must
- * hold an idle keep-alive socket longer than that, and headersTimeout must not
- * cut a socket for idling between requests.
+ * The listener's bounds against what a tunnel and a cloud agent do. cloudflared
+ * keeps pooled origin connections idle for 90 s, so wazap must hold an idle
+ * keep-alive socket longer than that, and headersTimeout must not cut a socket
+ * for idling between requests. Sessions last a day, and the numbers the docs
+ * give are the ones the code enforces.
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { rmSync } from "node:fs";
+import { readFileSync, rmSync } from "node:fs";
 import { connect } from "node:net";
-import { HTTP_HEADERS_TIMEOUT_MS, HTTP_KEEP_ALIVE_MS, HTTP_REQUEST_TIMEOUT_MS, startHttpEndpoint } from "../dist/server.js";
+import {
+  HTTP_HEADERS_TIMEOUT_MS,
+  HTTP_KEEP_ALIVE_MS,
+  HTTP_REQUEST_TIMEOUT_MS,
+  MCP_SESSION_MAX,
+  MCP_SESSION_TTL_MS,
+  MCP_SESSIONS_PER_OWNER,
+  startHttpEndpoint,
+} from "../dist/server.js";
 import { offlineConfig, stubAccountSource } from "./helpers.mjs";
 
 const wa = { getStatus: () => ({ status: "connected", status_since: new Date().toISOString() }) };
@@ -58,4 +67,12 @@ test("a keep-alive socket idle past Node's 5 s default and past headersTimeout s
   ask();
   await until(() => answers() === 2);
   assert.equal(answers(), 2);
+});
+
+test("the session bounds docs/self-host.md states are the ones the code enforces", () => {
+  const doc = readFileSync(new URL("../docs/self-host.md", import.meta.url), "utf8").replace(/\s+/g, " ");
+  assert.equal(MCP_SESSION_TTL_MS, 24 * 60 * 60 * 1000, "cloud agents come back to a conversation hours later");
+  assert.match(doc, new RegExp(`holds at most ${MCP_SESSION_MAX} sessions overall and ${MCP_SESSIONS_PER_OWNER} per credential`));
+  assert.match(doc, new RegExp(`nobody has used for ${MCP_SESSION_TTL_MS / 3_600_000} hours`));
+  assert.match(doc, new RegExp(`stays open for ${HTTP_KEEP_ALIVE_MS / 1000} seconds`));
 });
