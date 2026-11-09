@@ -156,6 +156,41 @@ test("a docx, an xlsx and a pptx are read from their XML", async (t) => {
   assert.equal(second.document_text, "--- slide 2 ---\nAl doilea");
 });
 
+test("spreadsheet values stay under their headers across empty cells, and dates read as dates", async (t) => {
+  const { send } = setup(t);
+  const xlsx = zipOf({
+    "xl/workbook.xml": '<workbook><sheets><sheet name="Facturi" sheetId="1" r:id="rId1"/></sheets></workbook>',
+    "xl/_rels/workbook.xml.rels": '<Relationships><Relationship Id="rId1" Type="worksheet" Target="worksheets/sheet1.xml"/></Relationships>',
+    "xl/styles.xml":
+      '<styleSheet><numFmts count="1"><numFmt numFmtId="164" formatCode="dd/mm/yyyy\\ hh:mm"/></numFmts>' +
+      '<cellXfs count="4"><xf numFmtId="0"/><xf numFmtId="14"/><xf numFmtId="164"/><xf numFmtId="4"/></cellXfs></styleSheet>',
+    "xl/sharedStrings.xml": "<sst><si><t>Client</t></si><si><t>Suma</t></si><si><t>Data</t></si><si><t>TVA</t></si><si><t>Total</t></si><si><t>Ana</t></si></sst>",
+    "xl/worksheets/sheet1.xml":
+      "<worksheet><sheetData>" +
+      '<row r="1"><c r="A1" t="s"><v>0</v></c><c r="B1" t="s"><v>1</v></c><c r="C1" t="s"><v>2</v></c><c r="D1" t="s"><v>3</v></c><c r="E1" t="s"><v>4</v></c></row>' +
+      '<row r="2"><c r="A2" t="s"><v>5</v></c><c r="B2" s="3"><v>100</v></c><c r="C2" s="1"/><c r="E2"><v>119</v></c></row>' +
+      '<row r="3"><c r="C3" s="1"><v>46265</v></c><c r="D3" s="2"><v>46265.5</v></c></row>' +
+      '<row r="5"><c r="B5"><v>7</v></c><c r="BZ5" t="inlineStr"><is><t>departe</t></is></c></row>' +
+      "</sheetData></worksheet>",
+  });
+  const sheet = (await send(xlsx, XLSX, "facturi.xlsx")).structuredContent;
+  assert.equal(sheet.document_text, "--- sheet Facturi ---\nClient\tSuma\tData\tTVA\tTotal\nAna\t100\t\t\t119\n\t\t2026-08-31\t2026-08-31 12:00\n\t7\tBZ5=departe");
+
+  const ods = zipOf({
+    mimetype: "application/vnd.oasis.opendocument.spreadsheet",
+    "content.xml":
+      '<office:spreadsheet><table:table table:name="Plăți"><table:table-column table:number-columns-repeated="5"/>' +
+      "<table:table-row><table:table-cell><text:p>Client</text:p></table:table-cell><table:table-cell><text:p>Suma</text:p></table:table-cell>" +
+      '<table:table-cell table:number-columns-repeated="2"/><table:table-cell><text:p>Total</text:p></table:table-cell><table:table-cell table:number-columns-repeated="1019"/></table:table-row>' +
+      '<table:table-row><table:table-cell office:value-type="string"><text:p>Ana</text:p><office:annotation><text:p>notă</text:p></office:annotation></table:table-cell><table:table-cell/>' +
+      '<table:covered-table-cell table:number-columns-repeated="2"/><table:table-cell office:value-type="float" office:value="119"><text:p>119</text:p></table:table-cell></table:table-row>' +
+      '<table:table-row table:number-rows-repeated="1048570"><table:table-cell table:number-columns-repeated="1024"/></table:table-row>' +
+      "</table:table></office:spreadsheet>",
+  });
+  const calc = (await send(ods, "application/vnd.oasis.opendocument.spreadsheet", "plati.ods")).structuredContent;
+  assert.equal(calc.document_text, "--- sheet Plăți ---\nClient\tSuma\t\t\tTotal\nAna\t\t\t\t119");
+});
+
 test("an OpenDocument text is read from content.xml", async (t) => {
   const { send } = setup(t);
   const odt = zipOf({ mimetype: "application/vnd.oasis.opendocument.text", "content.xml": '<office:text><text:h>Ofertă</text:h><text:p>Preț:<text:s text:c="2"/>100 lei</text:p></office:text>' });

@@ -199,6 +199,11 @@ async function officeText(job: TextJob): Promise<TextResult> {
       const slides = xml.split(/<draw:page\b/).slice(1);
       return pagedText(slides.map((slide) => () => xmlText(`<x${slide}`, { line: ["text:p", "text:h"] })), job, "slide");
     }
+    case "ods": {
+      const xml = zip.text("content.xml");
+      if (xml === null) return { text: "", truncated: false, note: "This ods has no content part." };
+      return clip(spreadsheetText(xml), job.budget);
+    }
     default: {
       const xml = zip.text("content.xml");
       if (xml === null) return { text: "", truncated: false, note: `This ${job.format} has no content part.` };
@@ -207,7 +212,83 @@ async function officeText(job: TextJob): Promise<TextResult> {
   }
 }
 
-/** An xlsx as tab-separated rows under each sheet's name: shared strings resolved, columns kept in place. */
+/**
+ * Empty cells written out before a value, so each value stays under its
+ * column's header. Past this column a sheet's gaps are not spelled out: the
+ * value is written with its reference instead ("AZ7=..."), so a stray cell
+ * far to the right cannot become a line of thousands of tabs.
+ */
+const PADDED_COLUMNS = 64;
+
+/** A row's cells as tab-separated text, each value at its column. */
+class RowCells {
+  private readonly cells: string[] = [];
+
+  constructor(private readonly row: number) {}
+
+  put(column: number | null, text: string): void {
+    if (text === "") return;
+    const value = text.replace(/[\t\n]/g, " ");
+    if (column === null || column === this.cells.length) this.cells.push(value);
+    else if (column < PADDED_COLUMNS && column > this.cells.length) {
+      while (this.cells.length < column) this.cells.push("");
+      this.cells.push(value);
+    } else this.cells.push(`${columnLetters(column)}${this.row}=${value}`);
+  }
+
+  line(): string | null {
+    return this.cells.length === 0 ? null : this.cells.join("\t");
+  }
+}
+
+/** A 0-based column index as its letters: 0 is A, 27 is AB. */
+function columnLetters(index: number): string {
+  let letters = "";
+  for (let n = index + 1; n > 0; n = Math.floor((n - 1) / 26)) letters = String.fromCharCode(65 + ((n - 1) % 26)) + letters;
+  return letters;
+}
+
+type DateKind = "date" | "time" | "datetime";
+
+/** What a number format shows: a date, a time, both, or (null) a plain number. */
+function formatKind(id: number, code: string | undefined): DateKind | null {
+  if ((id >= 14 && id <= 17) || (id >= 27 && id <= 36) || (id >= 50 && id <= 58)) return "date";
+  if (id === 22) return "datetime";
+  if ((id >= 18 && id <= 21) || (id >= 45 && id <= 47)) return "time";
+  if (code === undefined) return null;
+  // Quoted text, escaped characters and [colour]/[locale] sections say nothing of dates.
+  const bare = code.replace(/"[^"]*"|\\.|\[[^\]]*\]/g, "").toLowerCase();
+  const date = /[yd]/.test(bare);
+  const time = /[hs]/.test(bare);
+  return date && time ? "datetime" : date ? "date" : time ? "time" : null;
+}
+
+/** Which cell styles (by index in cellXfs) show a number as a date or a time. */
+function dateStyles(styles: string | null): Map<number, DateKind> {
+  const kinds = new Map<number, DateKind>();
+  if (styles === null) return kinds;
+  const codes = new Map(
+    [...styles.matchAll(/<numFmt\b[^>]*\bnumFmtId="(\d+)"[^>]*\bformatCode="([^"]*)"/g)].map((m) => [Number(m[1]), decodeEntities(m[2]!)])
+  );
+  const xfs = /<cellXfs\b[^>]*>([\s\S]*?)<\/cellXfs>/.exec(styles)?.[1] ?? "";
+  [...xfs.matchAll(/<xf\b([^>]*)/g)].forEach((xf, index) => {
+    const id = Number(/\bnumFmtId="(\d+)"/.exec(xf[1]!)?.[1] ?? 0);
+    const kind = formatKind(id, codes.get(id));
+    if (kind !== null) kinds.set(index, kind);
+  });
+  return kinds;
+}
+
+/** A spreadsheet serial number as the date, time or both it stands for (the 1900 system, or 1904). */
+function serialDate(serial: number, kind: DateKind, from1904: boolean): string {
+  // Excel counts 1900 as a leap year: from March 1900 on, day 0 is 30 December 1899.
+  const days = from1904 ? serial + 1462 : serial < 61 ? serial + 1 : serial;
+  const at = new Date(Date.UTC(1899, 11, 30) + Math.round(days * 86_400) * 1000).toISOString();
+  const time = at.slice(11, at.endsWith(":00.000Z") ? 16 : 19);
+  return kind === "date" ? at.slice(0, 10) : kind === "time" ? time : `${at.slice(0, 10)} ${time}`;
+}
+
+/** An xlsx as tab-separated rows under each sheet's name: shared strings resolved, values under their columns, dates as dates. */
 function workbookText(zip: ZipReader): string {
   const shared: string[] = [];
   const strings = zip.text("xl/sharedStrings.xml");
@@ -217,6 +298,8 @@ function workbookText(zip: ZipReader): string {
     }
   }
   const workbook = zip.text("xl/workbook.xml") ?? "";
+  const from1904 = /<workbookPr\b[^>]*\bdate1904="(1|true)"/.test(workbook);
+  const dates = dateStyles(zip.text("xl/styles.xml"));
   const rels = zip.text("xl/_rels/workbook.xml.rels") ?? "";
   const targets = new Map([...rels.matchAll(/<Relationship\b[^>]*\bId="([^"]+)"[^>]*\bTarget="([^"]+)"/g)].map((m) => [m[1]!, m[2]!]));
   const sheets = [...workbook.matchAll(/<sheet\b[^>]*\bname="([^"]*)"[^>]*\br:id="([^"]+)"/g)].map((m) => ({
@@ -229,25 +312,28 @@ function workbookText(zip: ZipReader): string {
     const xml = zip.text(sheet.path);
     if (xml === null) continue;
     const rows: string[] = [];
-    for (const row of xml.matchAll(/<row\b[^>]*>([\s\S]*?)<\/row>/g)) {
-      const cells: string[] = [];
-      for (const cell of row[1]!.matchAll(/<c\b([^>]*?)(?:\/>|>([\s\S]*?)<\/c>)/g)) {
+    let rowNumber = 0;
+    for (const row of xml.matchAll(/<row\b([^>]*)>([\s\S]*?)<\/row>/g)) {
+      rowNumber = Number(/\br="(\d+)"/.exec(row[1]!)?.[1] ?? rowNumber + 1);
+      const cells = new RowCells(rowNumber);
+      for (const cell of row[2]!.matchAll(/<c\b([^>]*?)(?:\/>|>([\s\S]*?)<\/c>)/g)) {
         const attrs = cell[1] ?? "";
         const body = cell[2] ?? "";
         const column = columnIndex(/\br="([A-Z]+)\d+"/.exec(attrs)?.[1]);
         const type = /\bt="([^"]+)"/.exec(attrs)?.[1];
         const value = /<v>([\s\S]*?)<\/v>/.exec(body)?.[1];
+        const kind = dates.get(Number(/\bs="(\d+)"/.exec(attrs)?.[1] ?? -1));
         let text = "";
         if (type === "s" && value !== undefined) text = shared[Number(value)] ?? "";
         else if (type === "inlineStr") text = decodeEntities([...body.matchAll(/<t\b[^>]*>([\s\S]*?)<\/t>/g)].map((t) => t[1]).join(""));
         else if (type === "b") text = value === "1" ? "TRUE" : "FALSE";
-        else if (value !== undefined) text = decodeEntities(value);
-        if (text === "") continue;
-        // A column far to the right is placed after a single gap: a sheet's empty columns are not spelled out.
-        if (column !== null && column > cells.length) cells.push(...Array<string>(Math.min(column - cells.length, 1)).fill(""));
-        cells.push(text.replace(/[\t\n]/g, " "));
+        else if (value !== undefined && kind !== undefined && (type === undefined || type === "n") && Number.isFinite(Number(value))) {
+          text = serialDate(Number(value), kind, from1904);
+        } else if (value !== undefined) text = decodeEntities(value);
+        cells.put(column, text);
       }
-      if (cells.length > 0) rows.push(cells.join("\t"));
+      const line = cells.line();
+      if (line !== null) rows.push(line);
     }
     parts.push(`--- sheet ${sheet.name} ---\n${rows.join("\n")}`);
   }
@@ -260,6 +346,39 @@ function columnIndex(letters: string | undefined): number | null {
   let n = 0;
   for (const letter of letters) n = n * 26 + (letter.charCodeAt(0) - 64);
   return n - 1;
+}
+
+/** How many times a repeated OpenDocument row or cell that holds a value is written out. */
+const REPEATS_SHOWN = 64;
+
+/**
+ * An OpenDocument spreadsheet as tab-separated rows under each sheet's name:
+ * cells repeated by `number-columns-repeated` (how ODS stores runs of empty
+ * cells) counted out, so values stay under their columns, as in an xlsx.
+ */
+function spreadsheetText(xml: string): string {
+  const parts: string[] = [];
+  for (const table of xml.matchAll(/<table:table(?=[\s>])([^>]*)>([\s\S]*?)<\/table:table>/g)) {
+    const name = decodeEntities(/\btable:name="([^"]*)"/.exec(table[1]!)?.[1] ?? "");
+    const rows: string[] = [];
+    let rowNumber = 0;
+    for (const row of table[2]!.matchAll(/<table:table-row(?=[\s>/])([^>]*?)(?:\/>|>([\s\S]*?)<\/table:table-row>)/g)) {
+      const rowRepeat = Math.max(1, Number(/\btable:number-rows-repeated="(\d+)"/.exec(row[1]!)?.[1] ?? 1));
+      const cells = new RowCells(rowNumber + 1);
+      let column = 0;
+      for (const cell of (row[2] ?? "").matchAll(/<table:(covered-table-cell|table-cell)(?=[\s>/])([^>]*?)(?:\/>|>([\s\S]*?)<\/table:\1>)/g)) {
+        const repeat = Math.max(1, Number(/\btable:number-columns-repeated="(\d+)"/.exec(cell[2]!)?.[1] ?? 1));
+        const text = xmlText(cell[3] ?? "", { line: ["text:p", "text:h"], drop: ["office:annotation"] }).trim().replace(/\s*\n\s*/g, " ");
+        if (text !== "") for (let i = 0; i < Math.min(repeat, REPEATS_SHOWN); i++) cells.put(column + i, text);
+        column += repeat;
+      }
+      const line = cells.line();
+      if (line !== null) for (let i = 0; i < Math.min(rowRepeat, REPEATS_SHOWN); i++) rows.push(line);
+      rowNumber += rowRepeat;
+    }
+    parts.push(`--- sheet ${name} ---\n${rows.join("\n")}`);
+  }
+  return parts.join("\n\n");
 }
 
 /**
