@@ -7,7 +7,7 @@ import { createServer, type Server } from "node:http";
 import { createConnection } from "node:net";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
-import { isInitializeRequest } from "@modelcontextprotocol/sdk/types.js";
+import { isInitializeRequest, LATEST_PROTOCOL_VERSION } from "@modelcontextprotocol/sdk/types.js";
 import type { Request, Response, NextFunction } from "express";
 import type { AccountBinding, AccountSource } from "./account-hub.js";
 import { WAZAP_VERSION, paths, writesHints, type Config } from "./config.js";
@@ -67,7 +67,8 @@ function buildMcpServer(
   allowWrite: boolean,
   allowLocalFiles: boolean,
   client = LOCAL_CLIENT,
-  draftIdentity?: string
+  draftIdentity?: string,
+  stopping?: AbortSignal
 ): McpServer {
   const skills = loadSkills();
   const writes = allowWrite && !config.readOnly && anyAccountAllowsWrites(hub);
@@ -82,6 +83,7 @@ function buildMcpServer(
     legacyReads: !allowLocalFiles,
     client,
     ...(draftIdentity === undefined ? {} : { draftIdentity }),
+    ...(stopping === undefined ? {} : { stopping }),
     ...(config.maxInFlight === undefined ? {} : { maxInFlight: config.maxInFlight }),
     ...(config.maxInFlightTotal === undefined ? {} : { maxInFlightTotal: config.maxInFlightTotal }),
   });
@@ -317,6 +319,30 @@ export async function startHttpEndpoint(hub: AccountSource, config: Config, endp
   const app = express();
   app.use(httpRequestLog);
 
+  // Shutting down: what is under way finishes (drainHttpEndpoints), nothing
+  // new starts. A client told 503 retries, and its session is revived by the
+  // next process.
+  const stopping = new AbortController();
+  let draining = false;
+  let postsInFlight = 0;
+  let postsSettled: (() => void) | undefined;
+  app.use((req: Request, res: Response, next: NextFunction) => {
+    if (draining) {
+      res.setHeader("Connection", "close");
+      res.setHeader("Retry-After", "2");
+      res.status(503).json({ jsonrpc: "2.0", error: { code: -32000, message: "Server is restarting; retry shortly." }, id: null });
+      return;
+    }
+    if (req.method === "POST" && req.path === "/mcp") {
+      postsInFlight++;
+      res.once("close", () => {
+        postsInFlight--;
+        if (postsInFlight === 0) postsSettled?.();
+      });
+    }
+    next();
+  });
+
   if (endpoint.openRead && !endpoint.oauth) {
     log(
       "WARNING: no WAZAP_READ_TOKEN set, the /mcp endpoint is UNAUTHENTICATED. " +
@@ -465,7 +491,7 @@ export async function startHttpEndpoint(hub: AccountSource, config: Config, endp
       if (sid) sessions.forget(sid, transport);
     };
     // The session's tools are fixed at init by the token it authenticated with.
-    const server = buildMcpServer(hub, config, req.mcpWrite === true, req.localFiles === true, req.client ?? LOCAL_CLIENT, req.draftIdentity);
+    const server = buildMcpServer(hub, config, req.mcpWrite === true, req.localFiles === true, req.client ?? LOCAL_CLIENT, req.draftIdentity, stopping.signal);
     await server.connect(transport);
     return transport;
   };
@@ -593,11 +619,36 @@ export async function startHttpEndpoint(hub: AccountSource, config: Config, endp
     app
   );
   server.maxConnections = 256;
+  let closed = false;
   const onAbort = (): void => {
+    if (closed) return;
+    closed = true;
+    live.delete(drain);
+    stopping.abort();
     clearInterval(sweep);
     sessions.close();
     server.closeAllConnections();
     server.close();
+  };
+  /**
+   * Stop taking requests, let the POSTs under way answer for up to `ms` —
+   * a wait among them answers now with what it has — then close everything.
+   */
+  const drain = async (ms: number): Promise<void> => {
+    if (closed) return;
+    draining = true;
+    server.close();
+    stopping.abort();
+    if (postsInFlight > 0) {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      await new Promise<void>((resolve) => {
+        postsSettled = resolve;
+        timer = setTimeout(resolve, ms);
+      });
+      clearTimeout(timer);
+      if (postsInFlight > 0) log(`HTTP shutdown: ${postsInFlight} request(s) still running after ${Math.round(ms / 1000)} s; closing them`);
+    }
+    onAbort();
   };
   const signal = endpoint.signal;
   signal?.addEventListener("abort", onAbort);
@@ -605,8 +656,9 @@ export async function startHttpEndpoint(hub: AccountSource, config: Config, endp
     onAbort();
     throw signal.reason instanceof Error ? signal.reason : new Error("The listen was aborted");
   }
+  let port: number;
   try {
-    return await listenHttp(server, endpoint.host, endpoint.port);
+    port = await listenHttp(server, endpoint.host, endpoint.port);
   } catch (err) {
     signal?.removeEventListener("abort", onAbort);
     clearInterval(sweep);
@@ -614,6 +666,45 @@ export async function startHttpEndpoint(hub: AccountSource, config: Config, endp
     server.close();
     throw err;
   }
+  live.add(drain);
+  // Warm what the first initialize after a restart would otherwise pay for:
+  // the transport module, the catalogue each kind of credential here gets,
+  // and one handshake through a session nobody holds. After the bind, so
+  // daemon.json and the tunnel never wait on it.
+  setImmediate(() => {
+    if (closed) return;
+    void warmUp().catch((err: unknown) => log(`HTTP warm-up failed${withCode(err)}`));
+  });
+  const warmUp = async (): Promise<void> => {
+    const { WebStandardStreamableHTTPServerTransport } = await loadTransportModule();
+    const kinds = new Set(endpoint.credentials.map((credential) => `${credential.write}:${credential.localFiles === true}`));
+    if (oauth || openRead) kinds.add("false:false");
+    if (oauth) kinds.add("true:false");
+    for (const kind of kinds) {
+      if (closed) return;
+      const [write, localFiles] = kind.split(":");
+      const transport = new WebStandardStreamableHTTPServerTransport({ sessionIdGenerator: () => "warm-up" });
+      await buildMcpServer(hub, config, write === "true", localFiles === "true").connect(transport);
+      await replayHandshake(transport, "warm-up", LATEST_PROTOCOL_VERSION);
+      await transport.close();
+    }
+  };
+  return port;
+}
+
+/** Every listening endpoint's drain, so a shutdown reaches them all. */
+const live = new Set<(ms: number) => Promise<void>>();
+
+/** How long a shutdown lets requests under way finish before it closes them. */
+export const HTTP_DRAIN_MS = 10_000;
+
+/**
+ * Shutdown's first step: every endpoint stops taking requests, answers the
+ * ones under way (a wait at once, with what it has; other work for up to
+ * `ms`), then closes. Resolves when all are closed.
+ */
+export async function drainHttpEndpoints(ms: number = HTTP_DRAIN_MS): Promise<void> {
+  await Promise.all([...live].map((drain) => drain(ms)));
 }
 
 /** The endpoint the user asked for: WAZAP_HOST/WAZAP_PORT and the two configured tokens. */

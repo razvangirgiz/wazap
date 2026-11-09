@@ -60,6 +60,12 @@ export interface ToolCtx {
    * transcription another call started); nothing that writes does.
    */
   signal?: AbortSignal;
+  /**
+   * Aborts when the server serving this session is shutting down: a wait
+   * answers now with what it has, so the shutdown need not wait out its
+   * timeout. Unlike `signal`, the answer is still delivered.
+   */
+  stopping?: AbortSignal;
 }
 
 /** MCP tool annotations, stated per tool for its most far-reaching action. */
@@ -112,6 +118,8 @@ export interface RegisterOpts {
    * drafts owned by this registration alone.
    */
   draftIdentity?: string;
+  /** See ToolCtx.stopping: the HTTP endpoint's shutdown. */
+  stopping?: AbortSignal;
 }
 
 /** Agents fan out: Claude Code routinely sends several tool calls at once, and wait_for_messages holds one for up to 55 s. */
@@ -276,6 +284,7 @@ export function createToolRegistrar(defs: readonly ToolDef[]) {
               draftOwner,
               client: clientOf(extra),
               ...(extra?.signal === undefined ? {} : { signal: extra.signal }),
+              ...(opts.stopping === undefined ? {} : { stopping: opts.stopping }),
             });
             const draftId = result.structuredContent?.status === "draft" ? result.structuredContent.draft_id : undefined;
             if (typeof draftId === "string") sessionDrafts.note(draftId, call);

@@ -31,7 +31,7 @@ import {
   type RecallSettings,
 } from "./recall/index.js";
 import { PAIRING_TIMEOUT_MS, linkSession, prettyCode, settledAccount, startPairing } from "./pairing.js";
-import { runHttp, runStdio, startLoopbackEndpoint } from "./server.js";
+import { drainHttpEndpoints, HTTP_DRAIN_MS, runHttp, runStdio, startLoopbackEndpoint } from "./server.js";
 import { SUPERVISORS, fetchHealth, serviceHolding, tunnelsTo, type Supervisor } from "./service.js";
 import { applyWrites } from "./settings.js";
 import { storageReport, type StorageReport } from "./storage-status.js";
@@ -676,9 +676,14 @@ export async function runServe(config: Config): Promise<void> {
     stopping = true;
     log(`received ${reason}, shutting down`);
     // A wedged socket must not cost the user a kill -9; the lock goes on "exit".
-    setTimeout(() => process.exit(0), 3_000).unref();
-    void hub
-      .stop()
+    // The drain's ten seconds plus the accounts' three stay inside the
+    // supervisors' stop timeouts (systemd and Docker 15 s, launchd 20 s).
+    setTimeout(() => process.exit(0), HTTP_DRAIN_MS + 3_000).unref();
+    // HTTP first: tool calls under way answer (a send in flight is not cut
+    // off), then the accounts they used stop.
+    void drainHttpEndpoints()
+      .catch((err: unknown) => logError("shutdown", err))
+      .then(() => hub.stop())
       .catch((err: unknown) => logError("shutdown", err))
       .finally(() => process.exit(0));
   };

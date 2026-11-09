@@ -762,7 +762,7 @@ const TOOLS: readonly ToolDef[] = [
         addressedToMe: addressed_to_me,
         cursor,
         ...(chat_id === undefined ? { private: await privateRule(ctx.hub, ctx.accountId) } : {}),
-        ...(ctx.signal === undefined ? {} : { signal: ctx.signal }),
+        ...waitSignal(ctx),
       });
       return ok(renderWait(result), { ...result, count: result.messages.length });
     },
@@ -1427,6 +1427,13 @@ const TOOLS: readonly ToolDef[] = [
 ];
 
 export const TOOL_NAMES: readonly string[] = TOOLS.map((t) => t.name);
+
+/** A wait ends early on a cancelled call, and on a server shutting down, which still gets its answer. */
+function waitSignal(ctx: ToolCtx): { signal?: AbortSignal } {
+  const signals = [ctx.signal, ctx.stopping].filter((signal): signal is AbortSignal => signal !== undefined);
+  if (signals.length === 0) return {};
+  return { signal: signals.length === 1 ? signals[0]! : AbortSignal.any(signals) };
+}
 
 // A single registrar owns every session's shared work and rate budgets.
 export const registerTools = createToolRegistrar([

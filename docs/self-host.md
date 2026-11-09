@@ -94,6 +94,14 @@ is not held back. A body under 1 KiB goes as it is, and nothing is compressed
 for a client that did not ask. The tool catalogue crosses the wire as 11 KB
 instead of 56 KB. The GET notification stream is never compressed.
 
+A restart (`SIGTERM` or `SIGINT`: `wazap update`, `wazap service restart`, a
+supervisor stopping the service) drains HTTP first: new requests get 503 with
+`Retry-After`, a `wait_for_messages` under way answers at once with what it
+has, and every other call under way gets its answer for up to ten seconds
+before the listener closes and the accounts stop. The next process warms its
+catalogue and transport right after it binds, so the first `initialize` after
+a restart costs about 10 ms instead of 65.
+
 The HTTP listener caps connections at 256, header receipt at ten seconds and
 request-body receipt at thirty seconds; this does not time out legitimate SSE
 streams or long-running tools. An idle keep-alive connection stays open for
