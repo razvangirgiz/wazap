@@ -33,6 +33,7 @@ import {
   type TranscriptRecord,
 } from "../transcribe/index.js";
 import type { ConnectionStatus, TranscribeOptions, TranscribeResult, TranscriptionStatus } from "../wa-types.js";
+import { cdnExpired } from "./media-download.js";
 import { FILE_MODE } from "./util.js";
 import { missingMessage, type MessageViews } from "./views.js";
 
@@ -78,6 +79,11 @@ function transcribable(raw: WAMessage, own: boolean): boolean {
   if ((raw.key.fromMe && !own) || isStatusJid(raw.key.remoteJid ?? "") || messageType(raw) !== "voice") return false;
   const seconds = voiceSeconds(raw);
   return seconds !== undefined && seconds <= AUTO_TRANSCRIBE_MAX_SECONDS;
+}
+
+/** A run's download failed because WhatsApp's CDN no longer has the file (404, 410): the phone may upload it again. */
+function expiredCopy(err: unknown): boolean {
+  return err instanceof WazapError && err.code === "MEDIA_UNAVAILABLE" && cdnExpired((err as { cause?: unknown }).cause);
 }
 
 /** Field by field, because `at` is the cache's bookkeeping and not the caller's business. */
@@ -137,8 +143,11 @@ export class AccountVoice {
   readonly transcribeWorker = transcribeWorker;
   /** Cancels this account's uploads and whisper.cpp runs: it is being removed. */
   private readonly transcribeAbort = new AbortController();
-  /** Transcriptions under way, so one recording is never uploaded twice at once. */
-  private readonly transcribing = new Map<string, SharedRun<TranscribeResult>>();
+  /**
+   * Transcriptions under way, so one recording is never uploaded twice at
+   * once, with whether the run asks the phone for media whose copy expired.
+   */
+  private readonly transcribing = new Map<string, { run: SharedRun<TranscribeResult>; reupload: boolean }>();
 
   constructor(
     private readonly host: VoiceHost,
@@ -210,16 +219,32 @@ export class AccountVoice {
       // caller has cancelled; a provider, once started, runs to its end and its
       // transcript is kept for the next ask.
       throwIfCancelled(opts.signal);
-      const running = this.transcribing.get(message.sid);
-      if (running !== undefined && !running.abandoned) return await running.join(opts.signal);
-      // Only a run spends the caller's budget: what is on hand, or cannot run, cost nothing.
-      opts.limit?.take();
       const sid = message.sid;
       const reupload = opts.reupload === true;
-      const run = new SharedRun<TranscribeResult>((signal, commit) => this.runTranscribe(sid, raw, info, settings, language, { reupload, signal, commit }));
-      this.transcribing.set(sid, run);
+      let source = raw;
+      const running = this.transcribing.get(sid);
+      if (running !== undefined && !running.run.abandoned) {
+        if (running.reupload || !reupload) return await running.run.join(opts.signal);
+        // The queue's run never wakes the phone; a person's call does. It shares that run all the same (the copy is
+        // usually still there), and asks the phone itself, with a run of its own, only when the run found it expired.
+        try {
+          return await running.run.join(opts.signal);
+        } catch (err) {
+          if (!expiredCopy(err)) throw err;
+        }
+        throwIfCancelled(opts.signal);
+        const now = this.views.storedOrThrow(messageId);
+        if (now.transcript !== null) return transcribeResult(this.transcriptRecordOf(now), true);
+        const next = this.transcribing.get(sid);
+        if (next !== undefined && next.reupload && !next.run.abandoned) return await next.run.join(opts.signal);
+        source = this.views.messageOrThrow(messageId);
+      }
+      // Only a run spends the caller's budget: what is on hand, or cannot run, cost nothing.
+      opts.limit?.take();
+      const run = new SharedRun<TranscribeResult>((signal, commit) => this.runTranscribe(sid, source, info, settings, language, { reupload, signal, commit }));
+      this.transcribing.set(sid, { run, reupload });
       const forget = (): void => {
-        if (this.transcribing.get(sid) === run) this.transcribing.delete(sid);
+        if (this.transcribing.get(sid)?.run === run) this.transcribing.delete(sid);
       };
       void run.work.then(forget, forget);
       return await run.join(opts.signal);

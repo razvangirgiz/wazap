@@ -11,6 +11,7 @@ import { WhatsAppService } from "../dist/whatsapp.js";
 import { clockLabel } from "../dist/messages.js";
 import { registerTools } from "../dist/tools.js";
 import { mkdirSync, writeFileSync } from "node:fs";
+import { Readable } from "node:stream";
 
 import { asToolSource, connectedService } from "./helpers.mjs";
 
@@ -274,6 +275,62 @@ test("a caller that cancels while the provider runs stops waiting at once, and t
   assert.equal(later.text, "salut");
   assert.equal(provider.state.calls, 1);
   assert.equal((await svc.transcribeAudio(sidOf("VC3"))).cached, true);
+  await svc.stop();
+});
+
+/** The error Baileys' getHttpStream throws for a CDN status: a Boom, with the code in output.statusCode. */
+const cdnError = (statusCode) =>
+  Object.assign(new Error("Failed to fetch stream from https://mmg.whatsapp.net/x"), { isBoom: true, output: { statusCode } });
+
+test("get_media joining the queue's run asks the phone itself when that run finds WhatsApp's copy expired", async () => {
+  const { svc, sock } = serviceWith(MANUAL);
+  const provider = mockProvider({ delayMs: 5 });
+  svc.transcriber = provider.transcribe;
+  const audio = { mimetype: "audio/ogg; codecs=opus", ptt: true, seconds: 6, url: "https://mmg.whatsapp.net/old", directPath: "/old", mediaKey: Buffer.alloc(32, 7) };
+  deliver(sock, [{ ...voiceNote("VX1", { seconds: 6, at: Date.now() - 60 * 86_400_000 }), message: { audioMessage: audio } }]);
+  // The CDN let the old path go; the phone's fresh upload serves the file.
+  const opened = [];
+  svc.openMediaStream = async (message) => {
+    const path = message.message.audioMessage.directPath;
+    opened.push(path);
+    await sleep(60);
+    if (path === "/old") throw cdnError(404);
+    return Readable.from([Buffer.from("not really an ogg file")]);
+  };
+  const asked = [];
+  sock.updateMediaMessage = async (message) => {
+    asked.push(message.key.id);
+    message.message.audioMessage.directPath = "/fresh";
+    message.message.audioMessage.url = "https://mmg.whatsapp.net/fresh";
+    return message;
+  };
+
+  // The queue's run (no re-request, as background work never wakes the phone), then a person's get_media.
+  const queue = svc.transcribeAudio(sidOf("VX1"));
+  await sleep(20);
+  const tool = svc.transcribeAudio(sidOf("VX1"), undefined, { reupload: true, signal: new AbortController().signal });
+  await assert.rejects(queue, (err) => err.code === "MEDIA_UNAVAILABLE");
+  const answer = await tool;
+  assert.equal(answer.text, "salut", "the expired copy did not end the person's call");
+  assert.deepEqual(asked, ["VX1"], "the phone was asked once, for the person's call");
+  assert.deepEqual(opened, ["/old", "/old", "/fresh"], "the shared run, then the call's own, which asked the phone and retried");
+  assert.equal(provider.state.calls, 1);
+
+  // A run that fails some other way is not retried: the caller gets that failure.
+  deliver(sock, [{ ...voiceNote("VX2", { seconds: 6 }), message: { audioMessage: { ...audio, directPath: "/broken" } } }]);
+  svc.openMediaStream = async () => {
+    opened.push("/broken");
+    await sleep(60);
+    throw cdnError(500);
+  };
+  opened.length = 0;
+  const second = svc.transcribeAudio(sidOf("VX2"));
+  await sleep(20);
+  const person = svc.transcribeAudio(sidOf("VX2"), undefined, { reupload: true, signal: new AbortController().signal });
+  await assert.rejects(second, (err) => err.code === "MEDIA_UNAVAILABLE");
+  await assert.rejects(person, (err) => err.code === "MEDIA_UNAVAILABLE");
+  assert.deepEqual(opened, ["/broken"], "one download, shared");
+  assert.deepEqual(asked, ["VX1"]);
   await svc.stop();
 });
 
