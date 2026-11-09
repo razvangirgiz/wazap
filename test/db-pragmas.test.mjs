@@ -1,8 +1,9 @@
 /**
- * Write-ahead log checkpoints off the commit path: commits stop checkpointing
- * below a ~40 MB backstop, and a passive checkpoint from a timer moves the log
- * into the database file once writes go quiet (or at least every 15 s under a
- * steady trickle, which a test cannot wait for).
+ * The pragmas of the server's own connection: write-ahead log checkpoints off
+ * the commit path — commits stop checkpointing below a ~40 MB backstop, and a
+ * passive checkpoint from a timer moves the log into the database file once
+ * writes go quiet (or at least every 15 s under a steady trickle, which a test
+ * cannot wait for) — and a bounded memory map for reads.
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -51,6 +52,23 @@ test("idleCheckpointMs 0 leaves checkpoints to SQLite, inside the commit, as bef
     assert.equal(pragma(db, "journal_size_limit"), -1);
   } finally {
     db.close();
+  }
+});
+
+test("the writable connection reads the file through a bounded memory map; a read-only one does not", () => {
+  const { db, path } = openTemp();
+  try {
+    assert.equal(pragma(db, "mmap_size"), 256 * 1024 * 1024);
+    db.messages.upsert(textMessage(PEER, "A", T0, "salut"));
+    assert.equal(db.messages.chatPage(PEER, { limit: 10 }).items.length, 1);
+  } finally {
+    db.close();
+  }
+  const ro = AccountDb.open(path, { readOnly: true });
+  try {
+    assert.equal(pragma(ro, "mmap_size"), 0);
+  } finally {
+    ro.close();
   }
 });
 

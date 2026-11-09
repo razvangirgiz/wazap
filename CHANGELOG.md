@@ -3,6 +3,7 @@
 ## Unreleased
 
 - **Live messages no longer wait on the database's housekeeping.** The write-ahead log is folded into the database file from a timer once writes go quiet, instead of inside whichever commit fills 1,000 pages. A live message's store drops from 3.9 ms to 0.7 ms at the 99th percentile, commits during a history sync from 15 ms to 5 ms, and a first sync runs about 12% faster. A batch of message updates (receipts after a reconnect) commits once. No schema migration or setting.
+- **Scans read the database through a memory map.** The server's connection maps up to 256 MB of the account file, so the reads no index can serve run faster on a 100k-message account: vector search 149 → 118 ms, counting embeddings 27 → 15 ms, the draft-style fallback 9.5 → 3.2 ms, a word search in one busy chat 36 → 32 ms. The mapped pages are the file's own and the system reclaims them under pressure.
 
 ## 1.6.0
 

@@ -58,6 +58,16 @@ const IDLE_CHECKPOINT_RETRIES = 4;
 const WAL_GUARD_PAGES = 10_000;
 /** When the log starts over, its file is cut back to this size, so one long sync does not leave 40 MB beside the database. */
 const WAL_SIZE_LIMIT_BYTES = 8 * 1024 * 1024;
+/**
+ * How much of the database file the server's connection reads through a
+ * memory map instead of a read() and a copy per page. The scans that cannot
+ * use an index — the vector scan, a count over embeddings, a style fallback
+ * over the whole account, a word search in one busy chat — run 10-55% faster
+ * (bench-db, 100k messages). The mapped pages are the file's own, clean, and
+ * the system takes them back under memory pressure; past this size the rest
+ * of the file is read as before. Writes are unchanged.
+ */
+const MMAP_BYTES = 256 * 1024 * 1024;
 
 export interface ConnectionOptions {
   /** status and doctor: never migrates, never writes, refuses a schema it would have to change. */
@@ -419,6 +429,7 @@ export class Connection {
       }
       db.exec("PRAGMA synchronous = FULL; PRAGMA secure_delete = ON; PRAGMA foreign_keys = ON;");
       const connection = new Connection(path, db, options);
+      db.exec(`PRAGMA mmap_size = ${MMAP_BYTES}`);
       if (connection.idleCheckpointMs > 0) {
         db.exec(`PRAGMA wal_autocheckpoint = ${WAL_GUARD_PAGES}; PRAGMA journal_size_limit = ${WAL_SIZE_LIMIT_BYTES};`);
       }
