@@ -200,6 +200,17 @@ function refuseOAuthBody(req: Request, res: Response, next: NextFunction): void 
   next();
 }
 
+/** A POST to /mcp from a read credential, or sent without a length: every tool call fits in it. */
+export const MCP_BODY_MAX_BYTES = 100 * 1024;
+/**
+ * A write credential's POST with a declared length: send_message's
+ * data_base64 at its 5 MB (about 6.7 MB as base64, line breaks allowed) and
+ * the rest of the call, and no more.
+ */
+export const MCP_WRITE_BODY_MAX_BYTES = 7 * 1024 * 1024;
+/** Bodies past MCP_BODY_MAX_BYTES being read and served at once, every credential together: four of the largest. */
+export const MCP_LARGE_BODIES_MAX_BYTES = 4 * MCP_WRITE_BODY_MAX_BYTES;
+
 const NO_ROOM_TO_REVIVE = (live: number): string => `HTTP MCP session not revived: every session it could replace is answering a request (${live} live)`;
 
 /** Every anonymous loopback reader shares this owner; such sessions are never revived. */
@@ -752,8 +763,29 @@ export async function startHttpEndpoint(hub: AccountSource, config: Config, endp
   const authed = (req: Request, res: Response, next: NextFunction): void => {
     requireAuth(req, res, next).catch(next);
   };
-  app.post("/mcp", authed, httpPostBudget((req) => (req as AuthedRequest).sessionOwner!, Date.now, config.httpPostBudget),
-    express.json({ limit: "100kb", inflate: false }), handleMcp);
+  // A read credential's call fits in 100 KiB; only a write credential may send a file inside one (send_message's
+  // data_base64), with its length declared up front, and only while the large bodies under way leave room.
+  const smallBody = express.json({ limit: MCP_BODY_MAX_BYTES, inflate: false });
+  const largeBody = express.json({ limit: MCP_WRITE_BODY_MAX_BYTES, inflate: false });
+  let largeInFlight = 0;
+  const mcpBody = (req: Request, res: Response, next: NextFunction): void => {
+    const declared = Number(req.headers["content-length"]);
+    if ((req as AuthedRequest).mcpWrite !== true || !Number.isFinite(declared) || declared <= MCP_BODY_MAX_BYTES || declared > MCP_WRITE_BODY_MAX_BYTES) {
+      smallBody(req, res, next);
+      return;
+    }
+    if (largeInFlight + declared > MCP_LARGE_BODIES_MAX_BYTES) {
+      res.setHeader("Retry-After", "2");
+      res.status(503).json({ jsonrpc: "2.0", error: { code: -32000, message: "Too many large requests at once; retry shortly." }, id: null });
+      return;
+    }
+    largeInFlight += declared;
+    res.once("close", () => {
+      largeInFlight -= declared;
+    });
+    largeBody(req, res, next);
+  };
+  app.post("/mcp", authed, httpPostBudget((req) => (req as AuthedRequest).sessionOwner!, Date.now, config.httpPostBudget), mcpBody, handleMcp);
   app.get("/mcp", authed, handleMcp);
   app.delete("/mcp", authed, handleMcp);
 

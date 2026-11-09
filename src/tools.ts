@@ -73,6 +73,8 @@ import type {
   SearchAnswer,
   SearchContext,
   Synced,
+  InlineMedia,
+  MediaSource,
   Preview,
   ReadWindow,
   UnconfirmedSend,
@@ -496,6 +498,11 @@ const tagFilter = z.string().min(1).max(40).optional().describe("Only chats with
 const fullText = z.boolean().optional().describe("Each message's text whole; a list cuts long ones otherwise");
 /** One instance for since and until, so a tool's schema names it once and points to it the second time. */
 const moment = z.string().min(4).optional().describe("ISO date or time");
+
+/** A file an agent carries in the call: at most 5 MB once decoded, which is what the HTTP body limit of a write session is sized for. */
+export const INLINE_MAX_BYTES = 5 * 1024 * 1024;
+/** Its base64, with room for line breaks every 76 characters and a data: prefix. */
+const INLINE_BASE64_MAX_CHARS = Math.ceil(INLINE_MAX_BYTES / 3) * 4 + 200_000;
 
 /** Previews are 5-15 KB each; a dozen keep one answer small and the first call under the client's timeout. */
 const MAX_PREVIEWS = 12;
@@ -1149,12 +1156,16 @@ const TOOLS: readonly ToolDef[] = [
     description: `Drafts text, media, polls, locations, forwards; sends nothing. Call it as soon as you have recipient and text: it returns draft_id and preview (recipient, number, exact text). Show that preview; confirm_send only on a yes to this text and recipient — a send in the same request is that yes.`,
     schema: {
       chat_id: chatId,
-      text: z.string().max(65536).describe('The message, or the caption, poll question or place name; "" for a forward, a voice note or audio'),
+      text: z.string().max(65536).describe('The message, or caption, poll question, place name; "" for a forward, voice note or audio'),
       reply_to: messageId.optional(),
       mention_ids: z.array(z.string().min(1)).max(50).optional().describe("Chat ids to @-mention; write @<number> in text for each"),
       file_path: z.string().min(1).optional().describe("Media: a path on wazap's machine"),
       url: z.string().url().optional().describe("Media: public http(s) URL"),
-      as: z.enum(["document", "voice", "gif"]).optional().describe("Media: a plain document, a voice note, a looping GIF"),
+      data_base64: z.string().max(INLINE_BASE64_MAX_CHARS).optional().describe("Media: the file, base64, ≤5 MB"),
+      // Their lengths are checked by inlineMedia: the catalogue's budget is spent on what an agent needs to read.
+      filename: z.string().optional().describe("With data_base64"),
+      mime: z.string().optional(),
+      as: z.enum(["document", "voice", "gif"]).optional().describe("Media: send as a document, voice note or GIF"),
       options: z.array(z.string().min(1).max(100)).min(2).max(12).optional().describe("Poll answers"),
       multi_select: z.boolean().optional().describe("Poll: several answers allowed"),
       latitude: z.number().min(-90).max(90).optional(),
@@ -1391,7 +1402,7 @@ const TOOLS: readonly ToolDef[] = [
     schema: {
       action: z.enum(["list", "cancel"]).default("list"),
       schedule_id: z.string().min(1).max(64).optional().describe("cancel: from the list or confirm_send"),
-      include_closed: z.boolean().default(true).describe("list: the week's sent, missed, failed and cancelled ones too"),
+      include_closed: z.boolean().default(true).describe("list: the week's closed ones too"),
       limit: z.number().int().min(1).max(100).default(50),
     },
     outputSchema: SCHEDULED_OUTPUT,
@@ -1422,11 +1433,11 @@ const TOOLS: readonly ToolDef[] = [
       chat_id: chatId.optional().describe("create: the chat it is about"),
       note: z.string().min(1).max(1000).optional().describe("create: what to remind the user of"),
       after_hours: z.number().min(0.25).max(8760).optional().describe("create: due this many hours from now"),
-      due_at: z.string().min(10).max(40).optional().describe('create: due then, "2026-10-14T09:00" in time_zone, or with an offset'),
+      due_at: z.string().min(10).max(40).optional().describe('create: "2026-10-14T09:00" in time_zone, or with an offset'),
       time_zone: z.string().min(1).max(64).optional().describe("IANA zone for due_at; the server's by default"),
       condition: z.enum(["always", "no_reply"]).default("always").describe("no_reply: skipped if someone wrote in the chat after it was set"),
       reminder_id: z.string().min(1).max(64).optional().describe("cancel: from create or list"),
-      include_closed: z.boolean().default(true).describe("list: the week's fired, skipped and cancelled ones too"),
+      include_closed: z.boolean().default(true).describe("list: the week's closed ones too"),
       limit: z.number().int().min(1).max(100).default(50),
     },
     outputSchema: REMINDER_OUTPUT,
@@ -2158,6 +2169,9 @@ interface SendArgs {
   mention_ids?: string[];
   file_path?: string;
   url?: string;
+  data_base64?: string;
+  filename?: string;
+  mime?: string;
   as?: "document" | "voice" | "gif";
   options?: string[];
   multi_select?: boolean;
@@ -2176,8 +2190,10 @@ function sendPayload(args: SendArgs): DraftPayload {
   const refuse = (message: string, fix: string): never => {
     throw new WazapError("INVALID_ID", message, fix);
   };
+  const sources = [args.file_path, args.url, args.data_base64].filter((source) => source !== undefined).length;
+  if (sources > 1) refuse("A draft takes its media from one place: file_path, url or data_base64.", "Pass only one of them");
   const kinds = [
-    args.file_path !== undefined || args.url !== undefined ? "media (file_path or url)" : null,
+    sources > 0 ? "media (file_path, url or data_base64)" : null,
     args.options !== undefined ? "a poll (options)" : null,
     args.latitude !== undefined || args.longitude !== undefined ? "a location (latitude, longitude)" : null,
     args.forward !== undefined ? "a forward (forward)" : null,
@@ -2187,17 +2203,19 @@ function sendPayload(args: SendArgs): DraftPayload {
     const given = names.filter(([key]) => args[key] !== undefined).map(([, what]) => what);
     if (given.length > 0) refuse(`${given.join(", ")} ${given.length === 1 ? "does" : "do"} not apply to this draft.`, "Leave them out, or draft the kind they belong to");
   };
-  const media = args.file_path !== undefined || args.url !== undefined;
+  const media = sources > 0;
   const poll = args.options !== undefined;
   const location = args.latitude !== undefined || args.longitude !== undefined;
   if (!media) stray([["as", "as"]]);
+  if (args.data_base64 === undefined) stray([["filename", "filename"], ["mime", "mime"]]);
   if (!poll) stray([["multi_select", "multi_select"]]);
   if (!location) stray([["address", "address"]]);
   if (media || poll || location || args.forward !== undefined) stray([["reply_to", "reply_to"], ["mention_ids", "mention_ids"]]);
   const chatId = args.chat_id;
   if (media) {
     if (args.text.length > 1024) throw new WazapError("TEXT_TOO_LONG", "A caption holds at most 1024 characters.", "Shorten the caption, or send the rest as a text");
-    const source = { file_path: args.file_path, url: args.url };
+    const source: MediaSource =
+      args.data_base64 === undefined ? { file_path: args.file_path, url: args.url } : { inline: inlineMedia(args.data_base64, args.filename, args.mime) };
     const as = { asDocument: args.as === "document", asVoice: args.as === "voice", asGif: args.as === "gif" };
     // A caption WhatsApp would not show is refused, not dropped: the user would approve words nobody receives.
     if (args.text !== "" && !captionTravels(mimeOfSource(source), as)) {
@@ -2231,6 +2249,38 @@ function sendPayload(args: SendArgs): DraftPayload {
   }
   if (args.text === "") refuse("The message is empty.", "Pass the words to send in text");
   return { kind: "text", chatId, text: args.text, replyTo: args.reply_to, mentionIds: args.mention_ids };
+}
+
+/**
+ * send_message's data_base64, decoded: plain or URL-safe base64, line breaks
+ * allowed, or a data: URL whose type stands in for mime. Anything that is not
+ * base64, an empty file and one over 5 MB are refused, never sent as garbage.
+ */
+function inlineMedia(data: string, filename: string | undefined, mime: string | undefined): InlineMedia {
+  if (filename === undefined || filename.trim() === "" || filename.length > 200) {
+    throw new WazapError("INVALID_ID", "data_base64 needs filename, at most 200 characters: the name the recipient sees.", 'Pass filename, e.g. "factura.pdf"');
+  }
+  if (mime !== undefined && (mime.length > 100 || !/^[\w.+-]+\/[\w.+-]+$/.test(mime.split(";")[0]!.trim()))) {
+    throw new WazapError("INVALID_ID", `mime "${mime.slice(0, 100)}" is not a media type.`, 'Pass a type like "application/pdf", or leave mime out: the file\'s bytes and name tell it');
+  }
+  let body = data;
+  let declared = mime;
+  const dataUrl = /^data:([^;,]*)(?:;[^,]*)?;base64,/i.exec(body);
+  if (dataUrl !== null) {
+    body = body.slice(dataUrl[0].length);
+    if (declared === undefined && dataUrl[1] !== "") declared = dataUrl[1];
+  }
+  body = body.replace(/\s+/g, "");
+  if (!/^[A-Za-z0-9+/_-]+={0,2}$/.test(body) || body.length % 4 === 1) {
+    throw new WazapError("INVALID_ID", "data_base64 is not base64.", "Pass the file's bytes encoded as base64, nothing else (a data: URL prefix is fine)");
+  }
+  const size = Math.floor((body.length * 3) / 4) - (body.endsWith("==") ? 2 : body.endsWith("=") ? 1 : 0);
+  if (size > INLINE_MAX_BYTES) {
+    throw new WazapError("FILE_TOO_LARGE", `The file is ${(size / 1_048_576).toFixed(1)} MB; data_base64 takes at most 5 MB.`, "Put it at a public URL and pass url, or send a smaller file");
+  }
+  const bytes = Buffer.from(body.replace(/-/g, "+").replace(/_/g, "/"), "base64");
+  if (bytes.length === 0) throw new WazapError("INVALID_ID", "data_base64 holds an empty file.", "Pass the file's bytes");
+  return { bytes, filename: filename.trim(), ...(declared === undefined ? {} : { mime: declared }) };
 }
 
 /**

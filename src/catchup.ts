@@ -97,7 +97,7 @@ export const CATCHUP_INPUT = {
     .optional()
     .describe("Only these sections; the mark then stays"),
   cursor: z.string().min(1).optional().describe("more.cursor"),
-  ids: z.boolean().optional().describe("Message ids on entries, to act on them"),
+  ids: z.boolean().optional().describe("Message ids, to act on entries"),
 };
 
 const windowShape = z.object({

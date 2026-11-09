@@ -5,6 +5,10 @@ import { toJsonSchemaCompat } from "@modelcontextprotocol/sdk/server/zod-json-sc
 import { ListToolsRequestSchema, type Tool } from "@modelcontextprotocol/sdk/types.js";
 import type { ToolDef } from "./tool-runtime.js";
 
+/** What a remote session's tools that name host files add to their description: what to use instead. */
+export const REMOTE_FILES_NOTE =
+  "\nThis remote session cannot use file_path or save_to. Use a public HTTP(S) url, data_base64 for a file up to 5 MB (send_message), a forward of an existing message, or get_media without save_to.";
+
 /**
  * What tools/list answers for these definitions: the zod schemas turned into
  * JSON Schema, legacy names left out. Pure, so one answer serves every session
@@ -14,7 +18,7 @@ export function buildToolCatalogue(defs: readonly ToolDef[], allowLocalFiles: bo
   return defs.filter((def) => !def.legacyRead).map((def) => ({
     name: def.name, title: def.title,
     description: def.description + (allowLocalFiles === false && (def.schema.file_path || def.schema.save_to)
-      ? "\nThis remote session cannot use file_path or save_to. Use public HTTP(S) URLs, forward existing messages, or get_media without save_to." : ""),
+      ? REMOTE_FILES_NOTE : ""),
     inputSchema: toJsonSchemaCompat(z.object(def.schema), { strictUnions: true, pipeStrategy: "input" }) as Tool["inputSchema"],
     ...(def.outputSchema === undefined ? {} : { outputSchema: toJsonSchemaCompat(
       def.outputSchema instanceof z.ZodType ? def.outputSchema : z.object(def.outputSchema),

@@ -21,7 +21,7 @@ code. The [README](../README.md#the-23-tools) has the one-line table.
 | `get_media` | read | A message's media as an agent can take it in: a voice note or audio as its transcript, a photo or sticker as a JPEG view (`detail`), a video as a contact sheet, a document as its text (`pages`) and a picture of its page; see [Media for remote agents](#media-for-remote-agents). `message_ids` (2 to 8) opens several messages in one call, each answered in order. A local session also saves the file (`save_to` picks the directory). Transcription runs on the local or the API provider; with `save_to` a recording comes as its file, with a transcript only if one was already made, and when no transcript can be made the file comes instead, with `transcript_unavailable` saying why. A copy [kept when the media arrived](data.md#kept-media) answers first, even with the link down, and `source` says which: `kept` or `whatsapp`. |
 | `wait_for_messages` | read | Block up to 55 s until a message arrives, then return it with a cursor for the next call. `addressed_to_me` wakes only for direct messages, @-mentions and replies. |
 | `remember` | local | Keep what the user says about a person, on this machine only: a note, tags, details (`relatie`, `nickname`, "role": "contabil") that `find_contact` matches, and `handled: true` to take an ask off `catch_up`'s waiting list until they write again. A list of `chat_id`s files the same tags and details on all of them at once, or on none. `#private` keeps their words out of what the assistant did not ask about them by name ([Keeping someone private](#keeping-someone-private)). Nothing changes on WhatsApp. |
-| `send_message` | write | Draft a message: text (a reply, @-mentions), media from a path or a URL, fetched and kept when drafted so the preview names the real file ([Media from a URL](#media-from-a-url)) (`as`: document, voice note or GIF), a poll (`options`), a location (`latitude`, `longitude`) or a forward (`forward`). Does not send. A text draft to someone you write to often carries `style_check`: where it does not read like you. `send_at` (with `time_zone`) drafts it for later; see [Scheduling a message](#scheduling-a-message). |
+| `send_message` | write | Draft a message: text (a reply, @-mentions), media from a path, a URL or the call itself (`data_base64` with `filename`, up to 5 MB), fetched and kept when drafted so the preview names the real file ([Media from a URL](#media-from-a-url)) (`as`: document, voice note or GIF), a poll (`options`), a location (`latitude`, `longitude`) or a forward (`forward`). Does not send. A text draft to someone you write to often carries `style_check`: where it does not read like you. `send_at` (with `time_zone`) drafts it for later; see [Scheduling a message](#scheduling-a-message). |
 | `confirm_send` | write | Send a draft after the user has seen the preview and said yes. A draft is sent at most once; see [Sending once](#sending-once). A draft with `send_at` is scheduled instead. |
 | `edit_message` | write | Edit your own message, within WhatsApp's 15-minute window. |
 | `react_to_message` | write | Add or remove an emoji reaction. |
@@ -163,6 +163,17 @@ fails the draft, before the user is asked anything; a caption on what turns out
 to be audio is refused then too. `confirm_send` sends exactly the kept bytes,
 checked against their hash (`FILE_NOT_FOUND` if the file changed or went, and
 nothing is sent), without fetching the URL again.
+
+**A file of the agent's own.** A cloud agent with a file and no public URL
+for it (a claude.ai attachment, a file a cloud sandbox made) passes it in the
+call: `data_base64` (plain or URL-safe base64, line breaks allowed, or a
+`data:<type>;base64,` URL) with `filename`, the name the recipient sees, and
+`mime` when it knows the type. Up to 5 MB once decoded. It is kept and
+previewed like a URL's file, its type told by its bytes, then its name, then
+`mime`, and sent byte for byte, `send_at` included. It is one source among
+`file_path`, `url` and `data_base64`: pass one. Over HTTP the request carrying
+it must come from a write credential and declare its length (every HTTP client
+does for a JSON body); see [Request budgets](self-host.md#request-budgets).
 
 A kept file goes once nothing names it: after the send, when the draft expires
 unconfirmed (15 minutes), when a scheduled message is cancelled, sent or

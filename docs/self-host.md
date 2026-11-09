@@ -80,7 +80,14 @@ tools unless a trusted harness enforces approval.
 ### Request budgets
 
 MCP POSTs authenticate before JSON parsing, accept at most 100 KiB and refuse
-compressed bodies. Each credential has 240 POSTs/minute across its sessions;
+compressed bodies. The one exception is a write credential's POST that
+declares its length, which may carry up to 7 MiB: enough for `send_message`'s
+`data_base64` at its 5 MB, and no more. Those large bodies are read and served
+at most 28 MiB at a time across every credential (four of the largest); past
+that a POST gets 503 with `Retry-After: 2`, and a read credential's, or a body
+sent without a length, keeps the 100 KiB limit (413). Measured on the
+development machine: one 5 MB `data_base64` draft raises the server's peak RSS
+by about 26 MB, four at once by about 85 MB. Each credential has 240 POSTs/minute across its sessions;
 429 responses include `Retry-After`. The session registry holds at most 64
 sessions overall and 32 per credential, evicting that credential's least
 recently used session first, and never one answering a request while another
@@ -157,7 +164,8 @@ file. A write token grants WhatsApp writes, not access to the host filesystem.
 
 Remote clients can use public HTTP(S) media URLs (fetched and kept when the
 message is drafted, so the preview names the real file and the send sends
-exactly that; see [Media from a URL](tools.md#media-from-a-url)), forward existing WhatsApp
+exactly that; see [Media from a URL](tools.md#media-from-a-url)), send a file of
+their own of up to 5 MB in the call (`data_base64`, write credentials only), forward existing WhatsApp
 messages, and see attachments through `get_media`: an image as a view, a video as
 a contact sheet, a document as its text (see [Media for remote agents](tools.md#media-for-remote-agents)).
 Nothing is written to the server's disk for a remote read, and no server path is
