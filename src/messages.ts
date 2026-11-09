@@ -404,8 +404,23 @@ interface MediaNode {
   fileLength?: ProtoLong;
   fileName?: string | null;
   jpegThumbnail?: Uint8Array | null;
+  pngThumbnail?: Uint8Array | null;
   fileSha256?: Uint8Array | null;
   viewOnce?: boolean | null;
+  seconds?: number | null;
+}
+
+/**
+ * The node that carries a message's media: the first of MEDIA_KEYS, or the
+ * sticker a Lottie (animated vector) sticker wraps one level down, which
+ * neither the table above nor Baileys' own download unwraps.
+ */
+function mediaNodeOf(inner: WAMessageContent): MediaNode | undefined {
+  for (const mediaKey of MEDIA_KEYS) {
+    const node = inner[mediaKey] as MediaNode | null | undefined;
+    if (node) return node;
+  }
+  return (inner.lottieStickerMessage?.message?.stickerMessage as MediaNode | null | undefined) ?? undefined;
 }
 
 /** Media whose WhatsApp envelope carries a JPEG preview of a few KB. */
@@ -946,17 +961,13 @@ function analyze(raw: WAMessage): Analysis {
   const node = key === undefined ? undefined : (content?.[key] as { contextInfo?: proto.IContextInfo | null } | null);
   const inner = content ? (viewOnceInner(content) ?? content) : undefined;
   let media: Analysis["media"];
-  if (inner) {
-    for (const mediaKey of MEDIA_KEYS) {
-      const m = inner[mediaKey] as MediaNode | null | undefined;
-      if (!m) continue;
-      media = {
-        mime: m.mimetype ?? "application/octet-stream",
-        size: protoNumber(m.fileLength),
-        filename: m.fileName ?? undefined,
-      };
-      break;
-    }
+  const m = inner ? mediaNodeOf(inner) : undefined;
+  if (m) {
+    media = {
+      mime: m.mimetype ?? "application/octet-stream",
+      size: protoNumber(m.fileLength),
+      filename: m.fileName ?? undefined,
+    };
   }
 
   const a: Analysis = {
@@ -1208,14 +1219,8 @@ export function mediaInfo(raw: WAMessage): { mime: string; size?: number; filena
  */
 export function mediaSha256(raw: WAMessage): Buffer | undefined {
   const inner = analyze(raw).inner;
-  if (!inner) return undefined;
-  for (const mediaKey of MEDIA_KEYS) {
-    const node = inner[mediaKey] as MediaNode | null | undefined;
-    if (!node) continue;
-    const hash = node.fileSha256;
-    return hash && hash.length === 32 ? Buffer.from(hash) : undefined;
-  }
-  return undefined;
+  const hash = inner ? mediaNodeOf(inner)?.fileSha256 : undefined;
+  return hash && hash.length === 32 ? Buffer.from(hash) : undefined;
 }
 
 /** Whether the media is view-once: wrapped as one, or flagged on its own node. */
@@ -1224,7 +1229,36 @@ export function mediaViewOnce(raw: WAMessage): boolean {
   if (a.type === "view_once" || (a.content !== undefined && viewOnceInner(a.content) !== undefined)) return true;
   const inner = a.inner;
   if (!inner) return false;
-  return MEDIA_KEYS.some((mediaKey) => (inner[mediaKey] as MediaNode | null | undefined)?.viewOnce === true);
+  return mediaNodeOf(inner)?.viewOnce === true;
+}
+
+/** How long a video, round video or recording runs, by its envelope; undefined when it does not say. */
+export function mediaSeconds(raw: WAMessage): number | undefined {
+  const inner = analyze(raw).inner;
+  const seconds = inner ? protoNumber(mediaNodeOf(inner)?.seconds) : undefined;
+  return seconds === undefined || seconds <= 0 ? undefined : seconds;
+}
+
+/** A Lottie sticker: an animation in vector form, which nothing here can draw. */
+export function isLottieSticker(raw: WAMessage): boolean {
+  return Boolean(analyze(raw).inner?.lottieStickerMessage?.message?.stickerMessage);
+}
+
+/** The PNG a sticker may ship as its thumbnail: all a Lottie sticker offers to look at. */
+export function stickerThumbnail(raw: WAMessage): Buffer | undefined {
+  const inner = analyze(raw).inner;
+  const bytes = inner ? (inner.stickerMessage ?? inner.lottieStickerMessage?.message?.stickerMessage)?.pngThumbnail : undefined;
+  return bytes && bytes.length > 0 ? Buffer.from(bytes) : undefined;
+}
+
+/**
+ * The message as Baileys' download reads it: a Lottie sticker's inner sticker
+ * brought up a level, since Baileys calls its wrapper "not a media message".
+ * Any other message is returned as it is.
+ */
+export function downloadableMessage(raw: WAMessage): WAMessage {
+  const inner = analyze(raw).inner?.lottieStickerMessage?.message;
+  return inner?.stickerMessage ? { ...raw, message: inner } : raw;
 }
 
 /**

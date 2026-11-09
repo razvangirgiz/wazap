@@ -723,10 +723,69 @@ export interface MediaResult {
   mime: string;
   size: number;
   filename: string;
-  /** Base64 of images small enough to inline in the tool result. */
+  /** Base64 of the JPEG view of an image (src/images.ts), to attach to the tool result. */
   inline_base64: string | null;
   /** "kept": the copy wazap kept when the media arrived; "whatsapp": downloaded from WhatsApp now. */
   source: "kept" | "whatsapp";
+}
+
+/** How much of an image get_media's view keeps: standard (1,024 px) or high (2,048 px, for small print). */
+export type MediaDetail = "standard" | "high";
+
+/** Pages of a document, 1-based and inclusive; `to` null runs until the text budget is spent. */
+export interface PageRange {
+  from: number;
+  to: number | null;
+}
+
+export interface MediaOpenOptions {
+  /** Write the original into this absolute directory; <data-dir>/accounts/<id>/media when omitted. */
+  saveTo?: string;
+  /** Write no file at all: a remote session can never open one. */
+  noFile?: boolean;
+  detail?: MediaDetail;
+  pages?: PageRange;
+}
+
+/** A JPEG made for the agent to look at. */
+export interface MediaPicture {
+  jpeg: Buffer;
+  width: number;
+  height: number;
+}
+
+/** What get_media shows of a message's media, beside the file itself. */
+export type MediaRendition =
+  /** An image (photo, sticker, image sent as a document), as a JPEG view. */
+  | (MediaPicture & { kind: "image"; detail: MediaDetail; original_width: number; original_height: number; frames?: number })
+  /** A video, GIF or round video: frames across its length, tiled left to right, top to bottom. */
+  | (MediaPicture & { kind: "sheet"; frames_at: number[]; duration_seconds?: number })
+  /** One frame or the thumbnail WhatsApp shipped, when nothing better could be made. */
+  | (MediaPicture & { kind: "frame"; duration_seconds?: number })
+  /** A document's text, and a picture of its first asked page when there is one. */
+  | {
+      kind: "document";
+      format: string;
+      text: string | null;
+      /** Pages (a PDF) or slides (a presentation) the document has, when it has them. */
+      pages_total?: number;
+      /** The pages whose text is returned. */
+      pages?: { from: number; to: number };
+      truncated: boolean;
+      page_image?: MediaPicture & { page: number };
+      note?: string;
+    }
+  /** Nothing to show: `note` says why. */
+  | { kind: "none"; note: string };
+
+/** A message's media opened for get_media: the original's facts, where it was written (local calls), and what to show. */
+export interface OpenedMedia {
+  mime: string;
+  size: number;
+  source: "kept" | "whatsapp";
+  path?: string;
+  filename?: string;
+  rendition: MediaRendition;
 }
 
 /** How a caller spends a transcription. */
@@ -980,6 +1039,10 @@ export interface WhatsAppApi {
   updateManyContactDetails?(contactIds: readonly string[], edit: ContactDetailsEdit): Promise<ContactSummary[]>;
   getGroupInfo(groupId: string): Promise<GroupInfo>;
   downloadMedia(messageId: string, saveTo?: string): Promise<MediaResult>;
+  /** The original once, written where `opts` says, and what an agent can see of it. */
+  openMedia(messageId: string, opts: MediaOpenOptions): Promise<OpenedMedia>;
+  /** The original's bytes for a download link: no file written, nothing derived. */
+  mediaOriginal(messageId: string): Promise<{ buffer: Buffer; mime: string; filename: string | null }>;
   transcribeAudio(messageId: string, language?: string, opts?: TranscribeOptions): Promise<TranscribeResult>;
   waitForMessages(opts: WaitOptions): Promise<WaitResult>;
   /** With `private`, a story of someone tagged #private comes without its words. */

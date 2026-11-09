@@ -35,9 +35,10 @@ function fixture(t) {
       return { applied: "ok" };
     },
     // A directory-write attempt need not write anything to prove it reached the service.
-    downloadMedia: async () => {
+    openMedia: async (_sid, opts) => {
       downloads++;
-      return { path: join(dir, "media", "test.txt"), mime: "text/plain", size: 4, filename: "test.txt" };
+      const file = opts.noFile ? {} : { path: join(dir, "media", "test.txt"), filename: "test.txt" };
+      return { ...file, mime: "text/plain", size: 4, source: "whatsapp", rendition: { kind: "none", note: "facts only" } };
     },
   };
   return { dir, file, hub: asToolSource(wa), reads: () => reads, downloads: () => downloads };

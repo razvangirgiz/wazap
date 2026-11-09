@@ -16,13 +16,11 @@ import { tinyThumbnail, videoFrame } from "../previews.js";
 import { loadSharp, previewImage } from "../images.js";
 import { mediaInfo, thumbnailOf } from "../messages.js";
 import { DIR_MODE, FILE_MODE } from "./util.js";
-import type { ConnectionStatus, MediaResult, Preview } from "../wa-types.js";
+import { renderMedia } from "../media-render.js";
+import type { ConnectionStatus, MediaOpenOptions, MediaResult, OpenedMedia, Preview } from "../wa-types.js";
 import type { AccountPaths } from "../config.js";
 import type { AccountStorage } from "./storage.js";
 import type { MessageViews } from "./views.js";
-
-/** An image this small also comes back inline, as base64. */
-const INLINE_IMAGE_MAX_BYTES = 1_000_000;
 
 /**
  * A photo bigger than this is not downloaded for a preview: the keep limit's
@@ -168,37 +166,84 @@ export class AccountMedia {
    * file go. Only without one is WhatsApp asked, and what it sends is kept
    * then when the settings want it.
    */
-  downloadMedia(messageId: string, saveTo?: string): Promise<MediaResult> {
+  private async original(messageId: string, raw: WAMessage): Promise<{ buffer: Buffer; source: OpenedMedia["source"] }> {
+    const kept = await this.host.keptMedia(messageId, raw);
+    if (kept !== null) return { buffer: kept, source: "kept" };
+    const sock = this.host.ensureConnected();
+    const buffer = await this.host.mediaBuffer(sock, messageId, raw);
+    this.views.messageOrThrow(messageId);
+    await this.host.offerKept(messageId, raw, buffer).catch((err: unknown) => logError("kept media", err));
+    return { buffer, source: "whatsapp" };
+  }
+
+  /** The original, written as a file of its own where a local call asked (<data-dir>/media by default). */
+  private async writeCopy(messageId: string, info: { mime: string; filename?: string }, buffer: Buffer, saveTo?: string): Promise<{ path: string; filename: string }> {
+    const dir = saveTo ?? this.paths.mediaDir;
+    if (!isAbsolute(dir)) {
+      throw new WazapError("FILE_NOT_FOUND", `"${dir}" is not an absolute directory path.`);
+    }
+    await mkdir(dir, { recursive: true, mode: DIR_MODE });
+    this.views.messageOrThrow(messageId);
+    const filename = mediaFilename(info);
+    const path = join(dir, filename);
+    await writeFile(path, buffer, { mode: FILE_MODE });
+    // An export already written belongs to the user; never delete arbitrary
+    // download paths. Do not return its bytes after expiry, however.
+    this.views.messageOrThrow(messageId);
+    return { path, filename };
+  }
+
+  /**
+   * The media once, from the kept copy or WhatsApp, and every derived thing
+   * from that one buffer: the file a local call saves, and the view, sheet or
+   * text the agent is shown. Nothing is downloaded a second time to make them.
+   * A remote call (`noFile`) writes nothing anywhere.
+   */
+  openMedia(messageId: string, opts: MediaOpenOptions): Promise<OpenedMedia> {
     return this.host.guarded(async () => {
       const raw = this.views.messageOrThrow(messageId);
       const info = mediaInfo(raw);
       if (!info) throw new WazapError("MEDIA_UNAVAILABLE", `Message ${messageId} carries no media.`);
-      let buffer = await this.host.keptMedia(messageId, raw);
-      const source: MediaResult["source"] = buffer === null ? "whatsapp" : "kept";
-      if (buffer === null) {
-        const sock = this.host.ensureConnected();
-        buffer = await this.host.mediaBuffer(sock, messageId, raw);
-        this.views.messageOrThrow(messageId);
-        await this.host.offerKept(messageId, raw, buffer).catch((err: unknown) => logError("kept media", err));
-      }
+      const { buffer, source } = await this.original(messageId, raw);
       this.views.messageOrThrow(messageId);
+      const written = opts.noFile === true ? null : await this.writeCopy(messageId, info, buffer, opts.saveTo);
+      const rendition = await renderMedia({
+        raw,
+        mime: info.mime,
+        ...(info.filename === undefined ? {} : { filename: info.filename }),
+        buffer,
+        detail: opts.detail ?? "standard",
+        ...(opts.pages === undefined ? {} : { pages: opts.pages }),
+      });
+      // Gone while it was being made: nothing of it is returned.
+      this.views.messageOrThrow(messageId);
+      return { mime: info.mime, size: buffer.length, source, ...(written ?? {}), rendition };
+    });
+  }
 
-      const dir = saveTo ?? this.paths.mediaDir;
-      if (!isAbsolute(dir)) {
-        throw new WazapError("FILE_NOT_FOUND", `"${dir}" is not an absolute directory path.`);
-      }
-      await mkdir(dir, { recursive: true, mode: DIR_MODE });
-      this.views.messageOrThrow(messageId);
-      const filename = mediaFilename(info);
-      const path = join(dir, filename);
-      await writeFile(path, buffer, { mode: FILE_MODE });
-      // An export already written belongs to the user; never delete arbitrary
-      // download paths. Do not return its bytes after expiry, however.
-      this.views.messageOrThrow(messageId);
+  /** get_media's file, as earlier callers read it: written where asked, with the image view inline. */
+  async downloadMedia(messageId: string, saveTo?: string): Promise<MediaResult> {
+    const opened = await this.openMedia(messageId, saveTo === undefined ? {} : { saveTo });
+    const picture = opened.rendition.kind === "image" ? opened.rendition.jpeg : null;
+    return {
+      path: opened.path!,
+      mime: opened.mime,
+      size: opened.size,
+      filename: opened.filename!,
+      inline_base64: picture === null ? null : picture.toString("base64"),
+      source: opened.source,
+    };
+  }
 
-      const inline =
-        info.mime.startsWith("image/") && buffer.length <= INLINE_IMAGE_MAX_BYTES ? buffer.toString("base64") : null;
-      return { path, mime: info.mime, size: buffer.length, filename, inline_base64: inline, source };
+  /** The original's bytes and what to call them, for a download link; nothing is written or derived. */
+  mediaOriginal(messageId: string): Promise<{ buffer: Buffer; mime: string; filename: string | null }> {
+    return this.host.guarded(async () => {
+      const raw = this.views.messageOrThrow(messageId);
+      const info = mediaInfo(raw);
+      if (!info) throw new WazapError("MEDIA_UNAVAILABLE", `Message ${messageId} carries no media.`);
+      const { buffer } = await this.original(messageId, raw);
+      this.views.messageOrThrow(messageId);
+      return { buffer, mime: info.mime, filename: info.filename ?? null };
     });
   }
 }

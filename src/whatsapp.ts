@@ -37,7 +37,7 @@ import { isNoiseJid, normalizePhone } from "./ids.js";
 import { log, logError } from "./logger.js";
 import { describe } from "./outgoing-media.js";
 import { momentsOf } from "./store.js";
-import { isoWithOffset, mediaInfo, messageIdFor, protoNumber } from "./messages.js";
+import { downloadableMessage, isoWithOffset, mediaInfo, messageIdFor, protoNumber } from "./messages.js";
 import { PAIRING_TIMEOUT_MS, WA_BROWSER, prettyCode, socketFactory, startPairing } from "./pairing.js";
 import { transcribeFile, transcribeReady } from "./transcribe/index.js";
 import { DraftStore, type DraftPayload, type DraftSchedule, type DraftView } from "./drafts.js";
@@ -82,7 +82,9 @@ import type {
   GroupInfo,
   JoinGroupResult,
   ListContactsQuery,
+  MediaOpenOptions,
   MediaResult,
+  OpenedMedia,
   MediaSource,
   MessageType,
   MessageView,
@@ -1144,6 +1146,14 @@ export class WhatsAppService implements WhatsAppApi {
     return this.media.downloadMedia(messageId, saveTo);
   }
 
+  openMedia(messageId: string, opts: MediaOpenOptions): Promise<OpenedMedia> {
+    return this.media.openMedia(messageId, opts);
+  }
+
+  mediaOriginal(messageId: string): Promise<{ buffer: Buffer; mime: string; filename: string | null }> {
+    return this.media.mediaOriginal(messageId);
+  }
+
   transcribeAudio(messageId: string, language?: string, opts: TranscribeOptions = {}): Promise<TranscribeResult> {
     return this.voice.transcribeAudio(messageId, language, opts);
   }
@@ -2006,7 +2016,7 @@ export class WhatsAppService implements WhatsAppApi {
       );
     }
     try {
-      const stream = await downloadMediaMessage(raw, "stream", {}, {
+      const stream = await downloadMediaMessage(downloadableMessage(raw), "stream", {}, {
         logger: silentLogger,
         reuploadRequest: sock.updateMediaMessage,
       });
