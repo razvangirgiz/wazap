@@ -1,7 +1,7 @@
 import { createHash, timingSafeEqual } from "node:crypto";
 import { HttpSessions } from "./http-sessions.js";
 import { httpPostBudget } from "./http-budget.js";
-import { httpError, httpRequestLog } from "./http-log.js";
+import { httpError, httpRequestLog, logLabel, noteSessionOutcome } from "./http-log.js";
 import { withCode } from "./error-code.js";
 import { createServer, type Server } from "node:http";
 import { createConnection } from "node:net";
@@ -144,6 +144,21 @@ function credentialKind(req: AuthedRequest): "oauth" | "local" | "anonymous" | "
   if (req.localFiles === true) return "local";
   if (req.sessionOwner === ANONYMOUS_OWNER) return "anonymous";
   return "token";
+}
+
+/**
+ * Who connects, once per session: the client's own name and version, the
+ * protocol it speaks, what kind of credential it holds and which public name
+ * (tunnel) it came through. Bounded labels only, never a token or an id: this
+ * is how the owner learns which cloud clients actually use the server.
+ */
+function logInitialize(req: AuthedRequest): void {
+  const params = (req.body as { params?: { protocolVersion?: unknown; clientInfo?: { name?: unknown; version?: unknown } } }).params;
+  const text = (value: unknown, limit: number): string => (typeof value === "string" ? logLabel(value, limit) : "");
+  const client = [text(params?.clientInfo?.name, 60), text(params?.clientInfo?.version, 24)].filter(Boolean).join(" ") || "unnamed";
+  log(
+    `MCP initialize: client="${client}" protocol=${text(params?.protocolVersion, 16) || "-"} credential=${credentialKind(req)} host=${text(req.headers.host, 80) || "-"}`
+  );
 }
 
 /** stdio, the daemon's loopback bridge and anonymous loopback reads: this machine's own clients, each named per call (client-name.ts). */
@@ -533,14 +548,18 @@ export async function startHttpEndpoint(hub: AccountSource, config: Config, endp
       const owner = (req as AuthedRequest).sessionOwner;
       if (owner === undefined) throw new Error("MCP request bypassed authentication");
       let transport = typeof sessionId === "string" ? sessions.get(sessionId, owner) : undefined;
+      if (transport) noteSessionOutcome(res, "reused");
       // Do not reveal whether a foreign session exists, or permit reinitializing it.
       if (!transport && typeof sessionId === "string" && sessions.has(sessionId)) {
+        noteSessionOutcome(res, "lost");
         res.status(404).json({ jsonrpc: "2.0", error: { code: -32001, message: "Session not found" }, id: null });
         return;
       }
 
       if (!transport && req.method === "POST" && isInitializeRequest(req.body)) {
+        logInitialize(req as AuthedRequest);
         transport = await openSession(req as AuthedRequest, owner);
+        noteSessionOutcome(res, "new");
       } else if (
         !transport &&
         typeof sessionId === "string" &&
@@ -553,6 +572,7 @@ export async function startHttpEndpoint(hub: AccountSource, config: Config, endp
           log(`HTTP MCP session revival failed${withCode(err)}`);
           return undefined;
         });
+        if (transport) noteSessionOutcome(res, "revived");
       }
 
       if (!transport) {
@@ -560,6 +580,7 @@ export async function startHttpEndpoint(hub: AccountSource, config: Config, endp
         // which the spec tells a client to answer with a fresh initialize. No id
         // at all means initialize never happened, and that stays a 400.
         if (typeof sessionId === "string" && sessionId !== "") {
+          noteSessionOutcome(res, "lost");
           res.status(404).json({ jsonrpc: "2.0", error: { code: -32001, message: "Session not found" }, id: null });
           return;
         }

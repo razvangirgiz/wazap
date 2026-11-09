@@ -139,6 +139,19 @@ Client labels are bounded and stripped of log/terminal control characters. Do
 not place secrets in client names or User-Agent labels, which remain diagnostic
 metadata.
 
+What the log does say, so the owner can tell which cloud clients connect and
+what crosses the tunnel: each `initialize` logs the client's own name and
+version, the protocol version, the kind of credential (`oauth`, `token`,
+`local` or `anonymous`, never which one) and the `Host` it came through; each
+request line ends with the body bytes sent, their encoding (`gzip` or
+`identity`) and what became of the session (`new`, `reused`, `revived`,
+`lost`). For example:
+
+```text
+MCP initialize: client="claude-ai 0.1.0" protocol=2025-06-18 credential=oauth host=wazap.example.com
+HTTP POST /mcp rpc=tools/list auth accept="json+sse" -> 200 (3ms) bytes=10953 enc=gzip session=reused client="node"
+```
+
 ## Self-host
 
 Run wazap on a server of your own when the agent is not on your laptop: another machine, a VPS, a client's infrastructure. The session stays on that server; nothing goes through a third party.
