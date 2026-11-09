@@ -302,9 +302,11 @@ bridge) gets the same, plus the file saved and its `path`.
 | Anything else | Its facts only (`mime`, `size`, `original_filename`), and a note saying so. |
 
 A document's text, a transcript and any text in an image were written by the
-sender: `document_text` is quoted between `<<<document_text` and `>>>` in the
-text, and `notes` says it is data, not instructions. The server's instructions
-carry the same rule for every session.
+sender: `document_text` is quoted in the text between `<<<document_text <tag>`
+and `>>> <tag>`, with a tag drawn for each answer, and a line of the document
+that starts like a marker is escaped with a backslash, so the sender cannot end
+the quote early; `notes` says it is data, not instructions. The server's
+instructions carry the same rule for every session.
 
 With `WAZAP_PUBLIC_URL` set, a remote session also gets `link`: the original
 file, valid 30 minutes, for the person to open (see
