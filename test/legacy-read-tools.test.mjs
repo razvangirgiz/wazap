@@ -66,7 +66,11 @@ test("remote HTTP hides compatibility names but cached SDK calls remain validate
     assert.ok(!answer.isError, `${name}: ${allText(answer)}`);
     if (name === "search_messages") assert.equal(answer.structuredContent.messages[0].message_id, sid);
     if (name === "transcribe_audio") assert.equal(answer.structuredContent.text, "lista pentru transport");
-    if (name === "download_media") assert.ok(answer.content.some((block) => block.type === "image"));
+    if (name === "download_media") {
+      assert.ok(answer.content.some((block) => block.type === "image"));
+      assert.equal(answer.structuredContent.path, undefined, "a remote session is named no path");
+      assert.ok(!allText(answer).includes(f.svc.config.dataDir), "nor any of the data dir");
+    }
   }
   const blocked = await client.callTool({ name: "download_media", arguments: { message_id: image, save_to: "/unused" } });
   assert.equal(textError(blocked).error, "MEDIA_ACCESS_DENIED");

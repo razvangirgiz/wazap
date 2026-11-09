@@ -81,9 +81,10 @@ The tools return `MEDIA_ACCESS_DENIED` before looking up a path or touching a
 file. A write token grants WhatsApp writes, not access to the host filesystem.
 
 Remote clients can use public HTTP(S) media URLs, forward existing WhatsApp
-messages, and download attachments into the account's default media directory.
-Small downloaded images still return inline. Other attachments are saved on the
-server; there is no arbitrary-file upload/download endpoint.
+messages, and see attachments through `get_media`: an image as a view, a video as
+a contact sheet, a document as its text (see [Media for remote agents](tools.md#media-for-remote-agents)).
+Nothing is written to the server's disk for a remote call, and no server path is
+returned. There is no arbitrary-file upload/download endpoint.
 
 Local stdio clients retain local file access. A local bridge gets it only through
 the private daemon credential stored in `daemon.json`, never through a public

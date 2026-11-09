@@ -8,6 +8,7 @@ import { resolveMessageId, resolveMessageIdAcross } from "./message-ref.js";
 import { privateRule } from "./catchup.js";
 import { compactRecent } from "./recent-compact.js";
 import { WazapError } from "./errors.js";
+import { mediaAnswer } from "./media-answer.js";
 import { MESSAGE_TYPES, type MessageView, type RecentConversation, type RecentMessageRefs, type SearchContext, type WhatsAppApi } from "./wa-types.js";
 import type { ToolArgs, ToolCtx, ToolDef, ToolResult } from "./tool-runtime.js";
 
@@ -218,9 +219,15 @@ export function legacyReadTools(current: readonly ToolDef[]): ToolDef[] {
     const found = args.account_id === undefined
       ? await resolveMessageIdAcross(ctx.hub, resolved, messageId)
       : { binding: resolved, sid: await resolveMessageId(ctx.wa, messageId) };
-    const { inline_base64, ...file } = await found.binding.wa.downloadMedia(found.sid, args.save_to as string | undefined);
-    const images: ToolResult["content"] = inline_base64 ? [{ type: "image", data: inline_base64, mimeType: file.mime }] : [];
-    return result({ ...file, message_id: messageId, account_id: found.binding.id }, images);
+    // The file as get_media opens it, never a transcript: a remote session gets what it can see, and no path.
+    const saveTo = args.save_to as string | undefined;
+    const opened = await found.binding.wa.openMedia(found.sid, { ...(ctx.localFiles === false ? { noFile: true } : {}), ...(saveTo === undefined ? {} : { saveTo }) });
+    const shown = mediaAnswer(opened);
+    const { rendition: _rendition, ...file } = opened;
+    return result(
+      { ...file, ...shown.structured, ...(shown.notes.length > 0 ? { notes: shown.notes } : {}), message_id: messageId, account_id: found.binding.id },
+      shown.blocks
+    );
   };
   return [search, download, transcribe, alias("list_accounts", "get_status"),
     {

@@ -1048,7 +1048,9 @@ const TOOLS: readonly ToolDef[] = [
     },
     outputSchema: MEDIA_OUTPUT,
     write: false,
-    handler: async ({ message_id, save_to, language, detail, pages, account_id }, { wa, hub, accountId }) => {
+    handler: async ({ message_id, save_to, language, detail, pages, account_id }, { wa, hub, accountId, localFiles }) => {
+      // A remote session cannot open a file on this machine: nothing is written for it, and no path is named.
+      const remote = localFiles === false;
       const pageRange = pages === undefined ? undefined : parsePages(pages);
       const resolved = { id: accountId, wa };
       const found =
@@ -1094,9 +1096,16 @@ const TOOLS: readonly ToolDef[] = [
         }
       }
 
-      if (!transcribed || save_to !== undefined) {
+      if (remote && !transcribed && (view?.type === "voice" || view?.type === "audio")) {
+        // Nothing of a recording but its words can reach a remote agent: no download, no file.
+        if (view.media !== undefined) Object.assign(structured, { mime: view.media.mime, ...(view.media.size === undefined ? {} : { size: view.media.size }) });
+        const said = "A recording: only its transcript can reach you; the audio itself cannot be played here.";
+        notes.push(said);
+        lines.push(`(${said})`);
+      } else if (!transcribed || save_to !== undefined) {
         // One download serves the file and everything shown of it: the view, the sheet, the text.
         const opened = await source.openMedia(found.sid, {
+          ...(remote ? { noFile: true } : {}),
           ...(save_to === undefined ? {} : { saveTo: save_to }),
           ...(detail === undefined ? {} : { detail }),
           ...(pageRange === undefined ? {} : { pages: pageRange }),

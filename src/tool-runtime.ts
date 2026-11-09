@@ -26,6 +26,12 @@ export type ToolArgs = Record<string, unknown>;
 export interface ToolCtx {
   /** Give remote connectors workflows that work with their cached read names. */
   legacyReads?: boolean;
+  /**
+   * Whether the session may touch this machine's files (RegisterOpts.allowLocalFiles):
+   * stdio and the daemon's own bridge. A remote session is shown media, never
+   * handed a path it cannot open, and nothing is written for it.
+   */
+  localFiles?: boolean;
   /** Internal only: the cached multi-account adapter finalizes all sources together after its awaits. */
   deferSearchFinalization?: boolean;
   wa: WhatsAppApi;
@@ -247,6 +253,7 @@ export function createToolRegistrar(defs: readonly ToolDef[]) {
             }
             const result = await def.handler(parsed, {
               legacyReads: opts.legacyReads === true,
+              localFiles: opts.allowLocalFiles !== false,
               wa: resolved.wa,
               hub,
               allowWrite: opts.allowWrite,

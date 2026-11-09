@@ -131,7 +131,7 @@ test("an HTTP read token cannot choose the download directory", async (t) => {
   assert.equal(f.downloads(), 0);
 });
 
-test("remote clients retain public URLs and default-directory downloads", async (t) => {
+test("remote clients retain public URLs, and get_media writes them no file and names no path", async (t) => {
   const f = await boot(t);
   const remote = await connect(t, f.base, "remote-write");
   const draft = await remote.callTool({
@@ -141,7 +141,9 @@ test("remote clients retain public URLs and default-directory downloads", async 
   assert.equal(draft.structuredContent.status, "draft");
   const reader = await connect(t, f.base, "remote-read");
   const result = await reader.callTool({ name: "get_media", arguments: { message_id: `false_${CHAT}_msg` } });
-  assert.equal(result.structuredContent.filename, "test.txt");
+  assert.equal(result.structuredContent.filename, undefined);
+  assert.equal(result.structuredContent.path, undefined);
+  assert.equal(result.structuredContent.mime, "text/plain");
   assert.equal(f.downloads(), 1);
   assert.equal(f.reads(), 0);
 });

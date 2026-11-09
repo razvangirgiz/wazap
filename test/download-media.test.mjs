@@ -21,9 +21,9 @@ const ME = "40700000001@s.whatsapp.net";
 const ANA = "40700000002@s.whatsapp.net";
 const GROUP = "120363000000000001@g.us";
 
-function setup() {
+function setup({ remote = false } = {}) {
   const { svc, sock } = connectedService(WhatsAppService, { prefix: "wazap-dlmedia-", id: ME, name: "Răzvan" });
-  const { call } = schemaCheckedTools(svc, { allowWrite: false });
+  const { call } = schemaCheckedTools(svc, { allowWrite: false, ...(remote ? { allowLocalFiles: false } : {}) });
   let seq = 0;
   const arrive = (chat, content, { fromMe = false, participant, at = Date.now() } = {}) => {
     const id = `M${++seq}`;
@@ -336,4 +336,44 @@ test("a Lottie sticker is no longer 'no media': its shipped thumbnail is shown",
 
   const { downloadableMessage } = await import("../dist/messages.js");
   assert.ok(downloadableMessage(downloaded).message.stickerMessage, "Baileys is handed the inner sticker, which it can download");
+});
+
+test("a remote session sees the media but gets no file: nothing written, no path, no data dir named", async () => {
+  const { svc, call, arrive } = setup({ remote: true });
+  const photo = await noisyPhoto(1600, 1200);
+  let downloads = 0;
+  svc.mediaBuffer = async () => {
+    downloads++;
+    return photo;
+  };
+  const sid = arrive(ANA, { imageMessage: { mimetype: "image/jpeg", fileLength: photo.length, caption: "bonul" } });
+  const result = await call("get_media", { message_id: sid });
+  const out = result.structuredContent;
+  assert.equal(out.path, undefined);
+  assert.equal(out.filename, undefined);
+  assert.equal(out.view.kind, "image");
+  assert.equal(out.size, photo.length);
+  assert.equal(downloads, 1, "downloaded once, for the view");
+  assert.ok(!JSON.stringify(result).includes(svc.config.dataDir), "no host path anywhere in the answer");
+  assert.match(result.content[0].text, /^image\/jpeg, \d+ KB\.\n\(image attached: 1024x768 view of the 1600x1200 original/);
+  assert.equal(existsSync(svc.paths.mediaDir), false, "no copy written into the media directory");
+});
+
+test("a remote session asking for a recording with no transcript downloads nothing", async () => {
+  const { svc, call, arrive } = setup({ remote: true });
+  let downloads = 0;
+  svc.mediaBuffer = async () => {
+    downloads++;
+    return Buffer.from("OggS");
+  };
+  svc.transcribeAudio = async () => {
+    throw new WazapError("TRANSCRIBE_UNAVAILABLE", "Transcription is off.");
+  };
+  const sid = arrive(ANA, { audioMessage: { mimetype: "audio/ogg; codecs=opus", fileLength: 4, seconds: 3, ptt: true } });
+  const out = (await call("get_media", { message_id: sid })).structuredContent;
+  assert.equal(out.transcript_unavailable.code, "TRANSCRIBE_UNAVAILABLE");
+  assert.equal(out.mime, "audio/ogg; codecs=opus");
+  assert.equal(out.path, undefined);
+  assert.match(out.notes.join(" "), /only its transcript can reach you/);
+  assert.equal(downloads, 0);
 });
