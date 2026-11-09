@@ -58,63 +58,85 @@ function isAuthorized(header: string | undefined, expected: string): boolean {
   return got.length === want.length && timingSafeEqual(got, want);
 }
 
+/** Who a session is for and what it hooks into, beyond the permissions that shape it. */
+interface SessionOpts {
+  client?: string;
+  draftIdentity?: string;
+  stopping?: AbortSignal;
+  calls?: CallTracker;
+  /** Already worked out by the caller (sessionShape), so it is not worked out twice. */
+  shape?: SessionShape;
+}
+
 /**
  * The one place a session is built, so the workflows reach stdio and HTTP alike:
  * a client that never installed the skill files still gets them here.
  */
-function buildMcpServer(
-  hub: AccountSource,
-  config: Config,
-  allowWrite: boolean,
-  allowLocalFiles: boolean,
-  client = LOCAL_CLIENT,
-  draftIdentity?: string,
-  stopping?: AbortSignal,
-  calls?: CallTracker
-): McpServer {
-  const skills = loadSkills();
-  const writes = allowWrite && !config.readOnly && anyAccountAllowsWrites(hub);
-  const server = new McpServer({ name: "wazap", version: WAZAP_VERSION }, { instructions: instructionsFor(skills, writes, namedAccounts(hub), !allowLocalFiles) });
+function buildMcpServer(hub: AccountSource, config: Config, allowWrite: boolean, allowLocalFiles: boolean, opts: SessionOpts = {}): McpServer {
+  const shape = opts.shape ?? sessionShape(hub, config, allowWrite, allowLocalFiles);
+  const server = new McpServer({ name: "wazap", version: WAZAP_VERSION }, { instructions: shape.instructions });
   registerTools(server, hub, {
-    allowWrite: writes,
+    allowWrite: shape.writes,
     // remember's edits are local state, not WhatsApp writes: they answer to
     // the credential alone, so a read token cannot change shared notes or a
     // #private tag — and a write credential on a read-only server still can.
     allowLocalEdits: allowWrite,
     allowLocalFiles,
-    legacyReads: !allowLocalFiles,
-    client,
-    ...(draftIdentity === undefined ? {} : { draftIdentity }),
-    ...(stopping === undefined ? {} : { stopping }),
-    ...(calls === undefined ? {} : { calls }),
+    legacyReads: shape.legacyReads,
+    client: opts.client ?? LOCAL_CLIENT,
+    ...(opts.draftIdentity === undefined ? {} : { draftIdentity: opts.draftIdentity }),
+    ...(opts.stopping === undefined ? {} : { stopping: opts.stopping }),
+    ...(opts.calls === undefined ? {} : { calls: opts.calls }),
     ...(config.maxInFlight === undefined ? {} : { maxInFlight: config.maxInFlight }),
     ...(config.maxInFlightTotal === undefined ? {} : { maxInFlightTotal: config.maxInFlightTotal }),
   });
-  registerSkillPrompts(server, skills, { legacyReads: !allowLocalFiles });
+  registerSkillPrompts(server, loadSkills(), { legacyReads: shape.legacyReads });
   return server;
 }
 
 /**
- * One instructions text per permission key and roster, shared by every
- * session that has it. The roster is part of the key, so an account added or
- * renamed while serving reaches the next session; a handful of keys at most.
+ * What a session is handed at initialize, which its client keeps for as long
+ * as it holds the session: the tools, workflows and instructions its
+ * permissions select, from this version of wazap.
  */
-const instructionCache = new Map<string, string>();
+interface SessionShape {
+  writes: boolean;
+  legacyReads: boolean;
+  instructions: string;
+  /**
+   * A digest of all of that: a session id is signed with it (session-id.ts),
+   * so a session is revived only by a process that would hand its client the
+   * same, and a client whose tools or instructions changed gets the 404 that
+   * makes it initialize again and read them.
+   */
+  fingerprint: string;
+}
 
-function instructionsFor(
-  skills: ReturnType<typeof loadSkills>,
-  allowWrite: boolean,
-  accounts: ReturnType<typeof namedAccounts>,
-  legacyReads: boolean
-): string {
-  const key = JSON.stringify([allowWrite, legacyReads, accounts]);
-  let text = instructionCache.get(key);
-  if (text === undefined) {
-    if (instructionCache.size >= 16) instructionCache.clear();
-    text = skillInstructions(skills, { allowWrite, accounts, legacyReads });
-    instructionCache.set(key, text);
+function sessionShape(hub: AccountSource, config: Config, allowWrite: boolean, allowLocalFiles: boolean): SessionShape {
+  const writes = allowWrite && !config.readOnly && anyAccountAllowsWrites(hub);
+  return shapeFor(writes, !allowLocalFiles, namedAccounts(hub));
+}
+
+/**
+ * One shape per permission key and roster, shared by every session that has
+ * it. The roster is part of the key, so an account added or renamed while
+ * serving reaches the next session; a handful of keys at most.
+ */
+const shapeCache = new Map<string, SessionShape>();
+
+function shapeFor(writes: boolean, legacyReads: boolean, accounts: ReturnType<typeof namedAccounts>): SessionShape {
+  const key = JSON.stringify([writes, legacyReads, accounts]);
+  let shape = shapeCache.get(key);
+  if (shape === undefined) {
+    if (shapeCache.size >= 16) shapeCache.clear();
+    const instructions = skillInstructions(loadSkills(), { allowWrite: writes, accounts, legacyReads });
+    // The tool catalogue and the workflows follow from the version and the
+    // two flags (allowLocalFiles is !legacyReads); the instructions say the rest.
+    const fingerprint = createHash("sha256").update(JSON.stringify([WAZAP_VERSION, writes, legacyReads, instructions])).digest("base64url");
+    shape = { writes, legacyReads, instructions, fingerprint };
+    shapeCache.set(key, shape);
   }
-  return text;
+  return shape;
 }
 
 /** The live accounts as the instructions name them; none when the roster cannot be read. */
@@ -537,15 +559,18 @@ export async function startHttpEndpoint(hub: AccountSource, config: Config, endp
   sweep.unref();
 
   const ids = sessionIds(paths(config.dataDir).sessionKeyFile);
+  /** What a session for this request's credential is handed: its tools, workflows and instructions. */
+  const shapeOf = (req: AuthedRequest): SessionShape => sessionShape(hub, config, req.mcpWrite === true, req.localFiles === true);
   /**
    * A new session for this credential: its transport, the McpServer behind it
    * with the tools the credential unlocks, and its place in the registry once
-   * the transport has its id (a fresh signed one, or the one being revived).
+   * the transport has its id (a fresh one signed with its owner and shape, or
+   * the one being revived).
    */
-  const openSession = async (req: AuthedRequest, owner: string, revivedId?: string): Promise<McpTransport> => {
+  const openSession = async (req: AuthedRequest, owner: string, shape: SessionShape, revivedId?: string): Promise<McpTransport> => {
     const { WebStandardStreamableHTTPServerTransport } = await loadTransportModule();
     const transport: McpTransport = new WebStandardStreamableHTTPServerTransport({
-      sessionIdGenerator: () => revivedId ?? ids.mint(owner),
+      sessionIdGenerator: () => revivedId ?? ids.mint(owner, shape.fingerprint),
       onsessioninitialized: (sid: string) => {
         sessions.add(sid, transport, owner);
       },
@@ -555,9 +580,27 @@ export async function startHttpEndpoint(hub: AccountSource, config: Config, endp
       if (sid) sessions.forget(sid, transport);
     };
     // The session's tools are fixed at init by the token it authenticated with.
-    const server = buildMcpServer(hub, config, req.mcpWrite === true, req.localFiles === true, req.client ?? LOCAL_CLIENT, req.draftIdentity, stopping.signal, calls);
+    const server = buildMcpServer(hub, config, req.mcpWrite === true, req.localFiles === true, {
+      client: req.client ?? LOCAL_CLIENT,
+      ...(req.draftIdentity === undefined ? {} : { draftIdentity: req.draftIdentity }),
+      stopping: stopping.signal,
+      calls,
+      shape,
+    });
     await server.connect(transport);
     return transport;
+  };
+
+  /**
+   * Whether a session this process does not hold may be brought back for
+   * this request, and with what. Only for the credential the id was minted
+   * for, while wazap would hand its client the same tools and instructions,
+   * and never once its client ended it.
+   */
+  const revivable = (req: AuthedRequest, owner: string, sid: string): SessionShape | undefined => {
+    if ((req.method !== "POST" && req.method !== "GET") || owner === ANONYMOUS_OWNER || sessions.ended(sid)) return undefined;
+    const shape = shapeOf(req);
+    return ids.verify(sid, owner, shape.fingerprint) ? shape : undefined;
   };
 
   /**
@@ -568,11 +611,11 @@ export async function startHttpEndpoint(hub: AccountSource, config: Config, endp
    * two calls racing to revive the same id share one revival.
    */
   const reviving = new Map<string, Promise<McpTransport>>();
-  const revive = (req: AuthedRequest, owner: string, sid: string): Promise<McpTransport> => {
+  const revive = (req: AuthedRequest, owner: string, sid: string, shape: SessionShape): Promise<McpTransport> => {
     let pending = reviving.get(sid);
     if (pending === undefined) {
       pending = (async () => {
-        const transport = await openSession(req, owner, sid);
+        const transport = await openSession(req, owner, shape, sid);
         try {
           await replayHandshake(transport, sid, revivedProtocolVersion(req.headers["mcp-protocol-version"]));
         } catch (err) {
@@ -607,22 +650,18 @@ export async function startHttpEndpoint(hub: AccountSource, config: Config, endp
 
       if (!transport && req.method === "POST" && isInitializeRequest(req.body)) {
         logInitialize(req as AuthedRequest);
-        transport = await openSession(req as AuthedRequest, owner);
+        transport = await openSession(req as AuthedRequest, owner, shapeOf(req as AuthedRequest));
         noteSessionOutcome(res, "new");
-      } else if (
-        !transport &&
-        typeof sessionId === "string" &&
-        (req.method === "POST" || req.method === "GET") &&
-        owner !== ANONYMOUS_OWNER &&
-        !sessions.ended(sessionId) &&
-        ids.verify(sessionId, owner)
-      ) {
-        transport = await revive(req as AuthedRequest, owner, sessionId).catch((err: unknown) => {
-          // A revival that fails leaves the client where it was before revivals: a 404 and a fresh initialize.
-          log(`HTTP MCP session revival failed${withCode(err)}`);
-          return undefined;
-        });
-        if (transport) noteSessionOutcome(res, "revived");
+      } else if (!transport && typeof sessionId === "string") {
+        const shape = revivable(req as AuthedRequest, owner, sessionId);
+        if (shape !== undefined) {
+          transport = await revive(req as AuthedRequest, owner, sessionId, shape).catch((err: unknown) => {
+            // A revival that fails leaves the client where it was before revivals: a 404 and a fresh initialize.
+            log(`HTTP MCP session revival failed${withCode(err)}`);
+            return undefined;
+          });
+          if (transport) noteSessionOutcome(res, "revived");
+        }
       }
 
       if (!transport) {
@@ -631,7 +670,9 @@ export async function startHttpEndpoint(hub: AccountSource, config: Config, endp
         // at all means initialize never happened, and that stays a 400.
         if (typeof sessionId === "string" && sessionId !== "") {
           // A client ending a session this process lost ends it all the same.
-          if (req.method === "DELETE" && owner !== ANONYMOUS_OWNER && ids.verify(sessionId, owner)) sessions.end(sessionId);
+          if (req.method === "DELETE" && owner !== ANONYMOUS_OWNER && ids.verify(sessionId, owner, shapeOf(req as AuthedRequest).fingerprint)) {
+            sessions.end(sessionId);
+          }
           noteSessionOutcome(res, "lost");
           res.status(404).json({ jsonrpc: "2.0", error: { code: -32001, message: "Session not found" }, id: null });
           return;

@@ -1,10 +1,13 @@
 /**
  * MCP session ids that carry their owner's mark: `<uuid>.<mac>`, where mac is
- * an HMAC over the uuid and the credential the session was opened with, keyed
- * by a secret this install keeps. A session this process no longer holds (a
- * restart, the idle sweep, eviction) can then be brought back for the client
- * holding its id, and only for the credential it was minted for: an id is
- * worthless to anyone else, and no one without the key can make one up.
+ * an HMAC over the uuid, the credential the session was opened with and what
+ * that session handed its client (its tools, workflows and instructions, as
+ * one digest), keyed by a secret this install keeps. A session this process
+ * no longer holds (a restart, the idle sweep, eviction) can then be brought
+ * back for the client holding its id, only for the credential it was minted
+ * for, and only while wazap would hand that client the same tools and
+ * instructions: an id is worthless to anyone else, and no one without the key
+ * can make one up.
  */
 import { createHmac, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import { chmodSync, readFileSync, renameSync, writeFileSync } from "node:fs";
@@ -18,21 +21,21 @@ const ID = /^([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.([A
 export class SessionIds {
   constructor(private readonly key: Buffer) {}
 
-  private mac(uuid: string, owner: string): string {
-    return createHmac("sha256", this.key).update(`${uuid}\n${owner}`).digest("base64url").slice(0, MAC_CHARS);
+  private mac(uuid: string, owner: string, shape: string): string {
+    return createHmac("sha256", this.key).update(`${uuid}\n${owner}\n${shape}`).digest("base64url").slice(0, MAC_CHARS);
   }
 
-  /** A new id for a session opened by `owner`. */
-  mint(owner: string): string {
+  /** A new id for a session opened by `owner` and handed `shape`. */
+  mint(owner: string, shape: string): string {
     const uuid = randomUUID();
-    return `${uuid}.${this.mac(uuid, owner)}`;
+    return `${uuid}.${this.mac(uuid, owner, shape)}`;
   }
 
-  /** Whether `id` is one this install minted for exactly this owner. */
-  verify(id: string, owner: string): boolean {
+  /** Whether `id` is one this install minted for exactly this owner and this shape. */
+  verify(id: string, owner: string, shape: string): boolean {
     const parts = ID.exec(id);
     if (parts === null) return false;
-    const want = Buffer.from(this.mac(parts[1]!, owner));
+    const want = Buffer.from(this.mac(parts[1]!, owner, shape));
     const got = Buffer.from(parts[2]!);
     return got.length === want.length && timingSafeEqual(got, want);
   }

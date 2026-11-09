@@ -2,7 +2,8 @@
  * A session wazap no longer holds — lost to a restart, the idle sweep or an
  * eviction — is served again for the credential it was minted for, under the
  * id the client holds, instead of answering 404. Nobody else can use the id,
- * an id wazap did not mint is still a 404, and so is one its client ended.
+ * an id wazap did not mint is still a 404, and so is one its client ended or
+ * one whose tools or instructions have changed since.
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -48,10 +49,10 @@ function dataDir(t) {
   return dir;
 }
 
-async function start(t, dir, { port = 0, openRead = false, ...bounds } = {}) {
+async function start(t, dir, { port = 0, openRead = false, readOnly = false, ...bounds } = {}) {
   const stop = new AbortController();
   t.after(() => stop.abort());
-  const bound = await startHttpEndpoint(stubAccountSource(wa), offlineConfig("wazap-revival-cfg-", { dataDir: dir, readOnly: false }), {
+  const bound = await startHttpEndpoint(stubAccountSource(wa), offlineConfig("wazap-revival-cfg-", { dataDir: dir, readOnly }), {
     host: "127.0.0.1",
     port,
     openRead,
@@ -107,6 +108,33 @@ test("after a restart, the session's own credential is served under the id it ho
   assert.doesNotMatch(read.text, /"name":"send_message"/, "a read credential's revived session still has no write tools");
 });
 
+test("a session is revived only while wazap would hand its client the same tools and instructions", async (t) => {
+  const dir = dataDir(t);
+  const before = await start(t, dir);
+  const writer = await before.call("writer", undefined, initialize);
+  const reader = await before.call("reader", undefined, initialize);
+  assert.match((await before.call("writer", writer.sid, toolsList)).text, /"name":"send_message"/);
+  before.stop();
+  // Writes switched off for the restart: the writer's session would come back
+  // without its write tools and with other instructions, which its client would
+  // never learn of. It gets the 404 that has it initialize again and read them.
+  const after = await start(t, dir, { readOnly: true });
+  assert.equal((await after.call("writer", writer.sid, toolsList)).status, 404);
+  const fresh = await after.call("writer", undefined, initialize);
+  assert.equal(fresh.status, 200);
+  assert.doesNotMatch((await after.call("writer", fresh.sid, toolsList)).text, /"name":"send_message"/);
+  // The reader was handed the same read tools and instructions either way.
+  assert.equal((await after.call("reader", reader.sid, toolsList)).status, 200);
+});
+
+test("an id verifies only for the owner and the shape it was minted with", () => {
+  const ids = new SessionIds(Buffer.alloc(32, 3));
+  const id = ids.mint("write:remote:abc", "shape-1");
+  assert.equal(ids.verify(id, "write:remote:abc", "shape-1"), true);
+  assert.equal(ids.verify(id, "write:remote:abc", "shape-2"), false, "other tools or instructions");
+  assert.equal(ids.verify(id, "read:remote:abc", "shape-1"), false, "another owner");
+});
+
 test("another credential presenting a lost session's id gets 404, and cannot spoil it for its owner", async (t) => {
   const dir = dataDir(t);
   const before = await start(t, dir);
@@ -157,7 +185,7 @@ test("ids wazap did not mint for this credential stay 404: random, altered, or s
   const session = await server.call("writer", undefined, initialize);
   const [uuid, mac] = session.sid.split(".");
   const flipped = `${uuid}.${mac[0] === "A" ? "B" : "A"}${mac.slice(1)}`;
-  const otherInstall = new SessionIds(Buffer.alloc(32, 7)).mint("anything");
+  const otherInstall = new SessionIds(Buffer.alloc(32, 7)).mint("anything", "any shape");
   for (const forged of [randomUUID(), `${randomUUID()}.${mac}`, flipped, otherInstall, `${session.sid}x`, "lost-in-restart-123"]) {
     assert.equal((await server.call("writer", forged)).status, 404, forged);
   }
@@ -259,7 +287,7 @@ test("an SDK client keeps calling tools across a server restart, without initial
 });
 
 test("the handshake replay works on this SDK: it fails loudly instead of serving a half-made session", async () => {
-  const sid = sessionIds(join(mkdtempSync(join(tmpdir(), "wazap-replay-")), "session.key")).mint("owner");
+  const sid = sessionIds(join(mkdtempSync(join(tmpdir(), "wazap-replay-")), "session.key")).mint("owner", "shape");
   const transport = new WebStandardStreamableHTTPServerTransport({ sessionIdGenerator: () => sid });
   const server = new McpServer({ name: "replay", version: "1" });
   server.registerTool("echo", { description: "echo" }, async () => ({ content: [{ type: "text", text: "still here" }] }));

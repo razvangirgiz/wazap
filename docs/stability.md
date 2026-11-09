@@ -75,9 +75,11 @@ Six tools are an exact contract for an integration: `send_message`,
   recovers; one with no session id that is not `initialize` answers 400. The
   exception is an id wazap itself minted for the same credential, lost to a
   restart, the idle sweep or an eviction: that session is served again under
-  the same id, so the client never sees the 404. A session its client ended
-  with DELETE is not revived: its id answers 404 from then on (wazap
-  remembers the last 1,024 ended ids until it restarts). With `WAZAP_READ_TOKEN` set as well
+  the same id, so the client never sees the 404, as long as wazap would hand
+  its client the same tools and instructions (the same version, the same
+  write permission, the same accounts). A session its client ended with
+  DELETE is not revived: its id answers 404 from then on (wazap remembers the
+  last 1,024 ended ids until it restarts). With `WAZAP_READ_TOKEN` set as well
   as `WAZAP_WRITE_TOKEN`, a token wazap does not hold answers 401; with the
   write token alone, a request without it is served as the anonymous reader,
   which only loopback allows. Each of these is a JSON-RPC error, and an

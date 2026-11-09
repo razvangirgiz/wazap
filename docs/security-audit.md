@@ -21,9 +21,12 @@ expired/revoked tokens receive 401. The session registry and lifecycle live in
 `src/http-sessions.ts`.
 
 Session ids are `<uuid>.<mark>`, the mark an HMAC-SHA256 (128 bits) over the
-uuid and that owner, keyed by `<data-dir>/session.key` (`src/session-id.ts`).
-A POST or GET carrying an id the process does not hold is revived only when the
-mark verifies for the presenting owner: another credential, an anonymous
+uuid, that owner and a digest of what the session handed its client (tools,
+workflows, instructions), keyed by `<data-dir>/session.key`
+(`src/session-id.ts`). A POST or GET carrying an id the process does not hold
+is revived only when the mark verifies for the presenting owner and for what
+wazap would hand it now, so a revival never serves a client tools or
+instructions it was not given: another credential, an anonymous
 reader, a random, altered or foreign-key id all still receive 404, and an id
 live under another owner stays a 404 as before. An id its owner ended with
 DELETE is remembered (the last 1,024, in memory) and never revived; another

@@ -38,14 +38,20 @@ or DELETE endpoint, even if it knows the session id; it receives
 revocation returns 401.
 
 A session outlives the process holding it. Its id is `<uuid>.<mark>`, the mark
-an HMAC over the uuid and the credential, keyed by `<data-dir>/session.key`
-(made on first use, `0600`). When a POST or GET arrives with an id this process
-does not hold — after a restart, after the idle sweep, after an eviction —
-and the mark matches the credential presenting it, wazap opens the session
-again under that id and serves the request: the client never sees a 404 or
-redoes its handshake. A revived session has the credential's tools and drafts;
-what it loses is what the client said in its first `initialize` (its name and
-capabilities, which wazap does not use). Any other credential still gets 404,
+an HMAC over the uuid, the credential and what the session handed its client
+at `initialize` (the tools, workflows and instructions, as one digest), keyed
+by `<data-dir>/session.key` (made on first use, `0600`). When a POST or GET
+arrives with an id this process does not hold — after a restart, after the
+idle sweep, after an eviction — and the mark matches the credential presenting
+it and what wazap would hand that client now, wazap opens the session again
+under that id and serves the request: the client never sees a 404 or redoes
+its handshake. A revived session has the credential's tools and drafts; what
+it loses is what the client said in its first `initialize` (its name and
+capabilities, which wazap does not use). When what the client was handed has
+changed — an update to another version, writes switched on or off, an account
+added or renamed — the session is not revived: the client gets the 404, and
+the fresh `initialize` it answers with gives it the new tools and
+instructions. Any other credential still gets 404,
 as does an id wazap did not mint; anonymous loopback sessions are never
 revived, and neither is a session its client ended with DELETE (the process
 remembers the last 1,024 ended ids; a restart forgets them). Revived sessions count against the caps below, and each revival is
