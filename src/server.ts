@@ -1,4 +1,4 @@
-import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
+import { createHash, timingSafeEqual } from "node:crypto";
 import { HttpSessions } from "./http-sessions.js";
 import { httpPostBudget } from "./http-budget.js";
 import { httpError, httpRequestLog } from "./http-log.js";
@@ -15,7 +15,8 @@ import { APPROVE_PATH, OAUTH_SCOPES, WazapOAuthProvider } from "./oauth.js";
 import { loadSkills, registerSkillPrompts, skillInstructions } from "./skills.js";
 import { anyAccountAllowsWrites, registerTools } from "./tools.js";
 import { log } from "./logger.js";
-import { serveMcp, type McpTransport } from "./mcp-http.js";
+import { replayHandshake, revivedProtocolVersion, serveMcp, type McpTransport } from "./mcp-http.js";
+import { sessionIds } from "./session-id.js";
 import type { ConnectionStatus } from "./wa-types.js";
 
 const UNHEALTHY_AFTER_MS = 2 * 60 * 1000;
@@ -123,6 +124,17 @@ let transportModule: Promise<typeof import("@modelcontextprotocol/sdk/server/web
 function loadTransportModule(): NonNullable<typeof transportModule> {
   transportModule ??= import("@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js");
   return transportModule;
+}
+
+/** Every anonymous loopback reader shares this owner; such sessions are never revived. */
+const ANONYMOUS_OWNER = "anonymous";
+
+/** What kind of credential a request carries, for the log: never which one. */
+function credentialKind(req: AuthedRequest): "oauth" | "local" | "anonymous" | "token" {
+  if (req.oauthClient !== undefined) return "oauth";
+  if (req.localFiles === true) return "local";
+  if (req.sessionOwner === ANONYMOUS_OWNER) return "anonymous";
+  return "token";
 }
 
 /** stdio, the daemon's loopback bridge and anonymous loopback reads: this machine's own clients, each named per call (client-name.ts). */
@@ -385,7 +397,7 @@ export async function startHttpEndpoint(hub: AccountSource, config: Config, endp
       }
       (req as AuthedRequest).mcpWrite = false;
       (req as AuthedRequest).client = LOCAL_CLIENT;
-      (req as AuthedRequest).sessionOwner = "anonymous";
+      (req as AuthedRequest).sessionOwner = ANONYMOUS_OWNER;
       next();
       return;
     }
@@ -419,10 +431,11 @@ export async function startHttpEndpoint(hub: AccountSource, config: Config, endp
    * with the tools the credential unlocks, and its place in the registry once
    * the transport has its id.
    */
-  const openSession = async (req: AuthedRequest, owner: string): Promise<McpTransport> => {
+  const ids = sessionIds(paths(config.dataDir).sessionKeyFile);
+  const openSession = async (req: AuthedRequest, owner: string, revivedId?: string): Promise<McpTransport> => {
     const { WebStandardStreamableHTTPServerTransport } = await loadTransportModule();
     const transport: McpTransport = new WebStandardStreamableHTTPServerTransport({
-      sessionIdGenerator: () => randomUUID(),
+      sessionIdGenerator: () => revivedId ?? ids.mint(owner),
       onsessioninitialized: (sid: string) => {
         sessions.add(sid, transport, owner);
       },
@@ -435,6 +448,37 @@ export async function startHttpEndpoint(hub: AccountSource, config: Config, endp
     const server = buildMcpServer(hub, config, req.mcpWrite === true, req.localFiles === true, req.client ?? LOCAL_CLIENT, req.draftIdentity);
     await server.connect(transport);
     return transport;
+  };
+
+  /**
+   * A session this process does not hold, brought back for the credential it
+   * was minted for: after a restart, the idle sweep or an eviction, the
+   * client's next call is served instead of costing it a 404 and a fresh
+   * handshake. The new session counts against the caps like any other, and
+   * two calls racing to revive the same id share one revival.
+   */
+  const reviving = new Map<string, Promise<McpTransport>>();
+  const revive = (req: AuthedRequest, owner: string, sid: string): Promise<McpTransport> => {
+    let pending = reviving.get(sid);
+    if (pending === undefined) {
+      pending = (async () => {
+        const transport = await openSession(req, owner, sid);
+        try {
+          await replayHandshake(transport, sid, revivedProtocolVersion(req.headers["mcp-protocol-version"]));
+        } catch (err) {
+          await transport.close().catch(() => {});
+          throw err;
+        }
+        log(`HTTP MCP session revived for a ${credentialKind(req)} credential (${sessions.size} live)`);
+        return transport;
+      })();
+      reviving.set(sid, pending);
+      void pending.then(
+        () => reviving.delete(sid),
+        () => reviving.delete(sid)
+      );
+    }
+    return pending;
   };
 
   const handleMcp = async (req: Request, res: Response): Promise<void> => {
@@ -451,10 +495,22 @@ export async function startHttpEndpoint(hub: AccountSource, config: Config, endp
 
       if (!transport && req.method === "POST" && isInitializeRequest(req.body)) {
         transport = await openSession(req as AuthedRequest, owner);
+      } else if (
+        !transport &&
+        typeof sessionId === "string" &&
+        (req.method === "POST" || req.method === "GET") &&
+        owner !== ANONYMOUS_OWNER &&
+        ids.verify(sessionId, owner)
+      ) {
+        transport = await revive(req as AuthedRequest, owner, sessionId).catch((err: unknown) => {
+          // A revival that fails leaves the client where it was before revivals: a 404 and a fresh initialize.
+          log(`HTTP MCP session revival failed${withCode(err)}`);
+          return undefined;
+        });
       }
 
       if (!transport) {
-        // An id we do not hold (expired, evicted, or lost to a restart) is a 404,
+        // An id we do not hold and did not mint for this credential is a 404,
         // which the spec tells a client to answer with a fresh initialize. No id
         // at all means initialize never happened, and that stays a 400.
         if (typeof sessionId === "string" && sessionId !== "") {

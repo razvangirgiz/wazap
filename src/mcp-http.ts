@@ -13,6 +13,7 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type { Writable } from "node:stream";
 import type { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
+import { LATEST_PROTOCOL_VERSION, SUPPORTED_PROTOCOL_VERSIONS } from "@modelcontextprotocol/sdk/types.js";
 import { acceptsGzip, COMPRESS_MIN_BYTES, gzipStream, gzipWhole, SYNC_FLUSH } from "./http-compress.js";
 
 export type McpTransport = WebStandardStreamableHTTPServerTransport;
@@ -213,4 +214,44 @@ function drained(stream: Writable): Promise<void> {
     stream.once("close", done);
     stream.once("error", done);
   });
+}
+
+/** What a revived session's handshake says the client speaks: the version it last sent, when supported. */
+export function revivedProtocolVersion(header: string | string[] | undefined): string {
+  const value = Array.isArray(header) ? header[0] : header;
+  return value !== undefined && SUPPORTED_PROTOCOL_VERSIONS.includes(value) ? value : LATEST_PROTOCOL_VERSION;
+}
+
+const HANDSHAKE_HEADERS = { "content-type": "application/json", accept: "application/json, text/event-stream" };
+
+/**
+ * Put a new transport, made with the session id the client holds, through
+ * the handshake that client already did once: initialize, then initialized,
+ * the way any client sends them. Only the transport's public handleRequest is
+ * used; if a future SDK answers it differently, this throws rather than
+ * serving a half-made session (test/session-revival.test.mjs).
+ */
+export async function replayHandshake(transport: McpTransport, sessionId: string, protocolVersion: string): Promise<void> {
+  const initialize = {
+    jsonrpc: "2.0",
+    id: "wazap-session-revival",
+    method: "initialize",
+    // The client's own name and capabilities went with the process that held the session.
+    params: { protocolVersion, capabilities: {}, clientInfo: { name: "", version: "" } },
+  };
+  const answer = await transport.handleRequest(new Request("http://localhost/mcp", { method: "POST", headers: HANDSHAKE_HEADERS }), {
+    parsedBody: initialize,
+  });
+  const text = await answer.text();
+  const data = text.split("\n").find((line) => line.startsWith("data:"));
+  const envelope = data === undefined ? undefined : (JSON.parse(data.slice(5)) as { result?: unknown });
+  if (answer.status !== 200 || transport.sessionId !== sessionId || envelope?.result === undefined) {
+    throw new Error(`session revival: initialize answered ${answer.status}`);
+  }
+  const initialized = await transport.handleRequest(
+    new Request("http://localhost/mcp", { method: "POST", headers: { ...HANDSHAKE_HEADERS, "mcp-session-id": sessionId } }),
+    { parsedBody: { jsonrpc: "2.0", method: "notifications/initialized" } }
+  );
+  await initialized.body?.cancel();
+  if (initialized.status !== 202) throw new Error(`session revival: initialized answered ${initialized.status}`);
 }

@@ -32,8 +32,20 @@ them (stored in memory as a SHA-256 fingerprint), including its read/write
 permissions. Another credential cannot use that session's POST, GET or DELETE
 endpoint, even if it knows the session id; it receives `404 Session not found`.
 Each request still validates the token, so expiry or revocation returns 401.
-After an OAuth access token rotates, initialize a new MCP session when the old
-session returns 404.
+
+A session outlives the process holding it. Its id is `<uuid>.<mark>`, the mark
+an HMAC over the uuid and the credential, keyed by `<data-dir>/session.key`
+(made on first use, `0600`). When a POST or GET arrives with an id this process
+does not hold — after a restart, after the idle sweep, after an eviction —
+and the mark matches the credential presenting it, wazap opens the session
+again under that id and serves the request: the client never sees a 404 or
+redoes its handshake. A revived session has the credential's tools and drafts;
+what it loses is what the client said in its first `initialize` (its name and
+capabilities, which wazap does not use). Any other credential still gets 404,
+as does an id wazap did not mint; anonymous loopback sessions are never
+revived. Revived sessions count against the caps below, and each revival is
+logged without the id. Deleting `session.key` and restarting makes every
+outstanding id unrevivable.
 
 Clients sharing a static token share an identity, and unauthenticated readers
 share an anonymous identity. Use distinct credentials/OAuth grants for isolation;
