@@ -58,39 +58,57 @@ async function boot(t, wa) {
   return { port, tool, post, sid: session.sid };
 }
 
+/** A promise and the function that resolves it: a stub says it has been reached. */
+function reachable() {
+  let fire;
+  const reached = new Promise((resolve) => {
+    fire = resolve;
+  });
+  return { reached, fire: () => fire() };
+}
+
 test("a drain lets the call under way answer, ends a wait at once, refuses new work, then closes", { timeout: 20_000 }, async (t) => {
   let downloadFinished = null;
+  const downloading = reachable();
+  const waiting = reachable();
   const { port, tool, post, sid } = await boot(t, {
     downloadMedia: async () => {
+      downloading.fire();
       await sleep(600);
       downloadFinished = Date.now();
       return { path: "/tmp/x.txt", mime: "text/plain", size: 4, filename: "x.txt", inline_base64: null, source: "kept" };
     },
-    waitForMessages: (opts) =>
-      new Promise((resolve) => {
+    waitForMessages: (opts) => {
+      waiting.fire();
+      return new Promise((resolve) => {
         const end = () => resolve({ messages: [], cursor: "boot:0", timed_out: true, cursor_reset: false });
         const timer = setTimeout(end, opts.timeoutMs);
         opts.signal?.addEventListener("abort", () => {
           clearTimeout(timer);
           end();
         });
-      }),
+      });
+    },
   });
-  const download = tool(2, "get_media", { message_id: `false_${CHAT}_M1` });
-  const wait = tool(3, "wait_for_messages", { timeout_seconds: 30 });
-  await sleep(100);
+  // Settled into values at once: a request that fails early is an assertion
+  // below, never an unhandled rejection.
+  const download = tool(2, "get_media", { message_id: `false_${CHAT}_M1` }).catch((err) => ({ error: err.code }));
+  const wait = tool(3, "wait_for_messages", { timeout_seconds: 30 }).catch((err) => ({ error: err.code }));
+  // Both handlers are running, so neither request is still in the accept
+  // backlog, where closing the listener would reset it.
+  await Promise.all([downloading.reached, waiting.reached]);
   const drainStarted = Date.now();
   const drained = drainHttpEndpoints();
   const refused = await post({ jsonrpc: "2.0", id: 4, method: "ping" }, sid).catch((err) => ({ status: err.code }));
   assert.ok([503, "ECONNREFUSED", "ECONNRESET", "EPIPE"].includes(refused.status), `a new request during the drain: ${refused.status}`);
 
   const waited = await wait;
-  assert.equal(waited.status, 200);
+  assert.equal(waited.status, 200, `the wait: ${waited.error ?? waited.status}`);
   assert.match(waited.text, /"timed_out":true/);
   assert.ok(waited.at - drainStarted < 500, "the wait answered at once, with what it had");
 
   const downloaded = await download;
-  assert.equal(downloaded.status, 200, "the call under way was answered, not cut off");
+  assert.equal(downloaded.status, 200, `the call under way was answered, not cut off: ${downloaded.error ?? downloaded.status}`);
   assert.match(downloaded.text, /x\.txt/);
   await drained;
   assert.ok(Date.now() >= downloadFinished, "the drain waited for it");
@@ -102,9 +120,15 @@ test("a drain lets the call under way answer, ends a wait at once, refuses new w
 });
 
 test("a call that outlasts the drain's bound is closed when the bound runs out", { timeout: 20_000 }, async (t) => {
-  const { tool } = await boot(t, { downloadMedia: () => new Promise(() => {}) });
+  const downloading = reachable();
+  const { tool } = await boot(t, {
+    downloadMedia: () => {
+      downloading.fire();
+      return new Promise(() => {});
+    },
+  });
   const stuck = tool(2, "get_media", { message_id: `false_${CHAT}_M1` }).catch((err) => ({ error: err.code }));
-  await sleep(100);
+  await downloading.reached;
   const started = Date.now();
   await drainHttpEndpoints(300);
   const elapsed = Date.now() - started;
