@@ -28,7 +28,7 @@ import { mediaCaptionOf } from "./media-details.js";
 import { kilobytes, mediaAnswer, parsePages, UNTRUSTED_TEXT_NOTE } from "./media-answer.js";
 import { captionTravels, mimeOfSource } from "./outgoing-media.js";
 import { getMessageView, getMessageViewAcross, resolveMessageId, resolveMessageIdAcross } from "./message-ref.js";
-import { clockLabel } from "./messages.js";
+import { clockLabel, isoWithOffset } from "./messages.js";
 import { assessSearch, parseMoment, planSearch } from "./search-query.js";
 import { checkSearchSource, finalizeSearch, searchOwner, SEARCH_CHANGED } from "./search-finalize.js";
 import { RateLimiter } from "./ratelimit.js";
@@ -57,6 +57,7 @@ import {
 } from "./sender-identity.js";
 import { MESSAGE_TYPES } from "./wa-types.js";
 import type {
+  ChatRead,
   ChatSummary,
   ContactSummary,
   HandledResult,
@@ -72,6 +73,7 @@ import type {
   SearchContext,
   Synced,
   Preview,
+  ReadWindow,
   UnconfirmedSend,
   WaitResult,
   WhatsAppApi,
@@ -119,6 +121,9 @@ const BROAD_MESSAGE_OUT = MESSAGE_OUT.extend({ private: z.literal(true).optional
 
 const READ_OUTPUT = {
   chat_id: z.string(),
+  since: z.string().optional().describe("The window asked for, as read"),
+  until: z.string().optional(),
+  more_in_window: z.literal(true).optional().describe("The window holds older messages than these: page on with before"),
   types: z.array(z.string()).optional(),
   hours: z.number().optional(),
   count: z.number(),
@@ -645,11 +650,13 @@ const TOOLS: readonly ToolDef[] = [
   tool({
     name: "read_messages",
     title: "Read messages from a WhatsApp chat",
-    description: `Read one chat, oldest to newest: the latest messages, or older ones with before (wazap asks the phone when the local history runs out). Long texts are cut unless full_text. chat_id "status" reads the stories people posted, newest first, from the last hours (at most a day); they show nowhere else.`,
+    description: `Read one chat, oldest to newest: the latest messages, older ones with before (wazap asks the phone when the local history runs out), or a window with since/until. Long texts are cut unless full_text. chat_id "status": the stories of the last hours (a day at most), shown nowhere else.`,
     schema: {
       chat_id: chatId.describe('Chat id from another tool, a phone number, or "status" for stories'),
       limit: z.number().int().min(1).max(200).default(20),
       before: messageId.optional().describe("The oldest message_id you have"),
+      since: moment,
+      until: moment,
       types: messageTypes,
       include_previews: includePreviews,
       hours: z.number().int().min(1).max(24).optional().describe('"status" only: how far back, 24 by default'),
@@ -657,11 +664,14 @@ const TOOLS: readonly ToolDef[] = [
     },
     outputSchema: READ_OUTPUT,
     write: false,
-    handler: async ({ chat_id, limit, before, types, include_previews, hours, full_text }, ctx) => {
+    handler: async ({ chat_id, limit, before, since, until, types, include_previews, hours, full_text }, ctx) => {
       const { wa } = ctx;
       if (isStatusChat(chat_id)) {
         if (before !== undefined) {
           throw new WazapError("INVALID_ID", "Stories are not paged: before does not apply to status.", "Pass hours (1-24) instead");
+        }
+        if (since !== undefined || until !== undefined) {
+          throw new WazapError("INVALID_ID", "Stories are read by hours: since and until do not apply to status.", "Pass hours (1-24) instead");
         }
         const window = hours ?? 24;
         const result = await wa.getStories(window, { private: await privateRule(ctx.hub, ctx.accountId) });
@@ -693,18 +703,23 @@ const TOOLS: readonly ToolDef[] = [
       if (hours !== undefined) {
         throw new WazapError("INVALID_ID", 'hours applies to chat_id "status" only.', "Page back through a chat with before instead");
       }
-      const result = await wa.readMessages(chat_id, limit, before, types);
+      const window = readWindow(since, until);
+      // Without a window the service is asked as it always was.
+      const result = await (window.sinceMs === undefined && window.untilMs === undefined ? wa.readMessages(chat_id, limit, before, types) : wa.readMessages(chat_id, limit, before, types, window));
       const previews = include_previews ? await wa.previews(newestFirst(result.data), MAX_PREVIEWS, ctx.signal) : [];
       const unconfirmed = result.unconfirmedSends ?? [];
       const noOlder = result.older?.received === 0 ? OLDER_NONE_NOTE : null;
+      const windowNote = windowNoteOf(result, since);
+      const span = [since === undefined ? null : `since ${since}`, until === undefined ? null : `until ${until}`].filter(Boolean).join(", ");
       return ok(
         renderMessages(
-          `Messages in ${chat_id}`,
+          `Messages in ${chat_id}${span === "" ? "" : ` (${span})`}`,
           result.data,
           previewLabels(previews),
           [
             ...unconfirmed.map((send) => `${unconfirmedNote(send)} Its words: ${JSON.stringify(truncate(send.text, 160))}.`),
             noOlder,
+            windowNote,
             previewNote(result.data, previews, include_previews),
           ]
             .filter(Boolean)
@@ -713,13 +728,16 @@ const TOOLS: readonly ToolDef[] = [
         ),
         synced(result, {
           chat_id,
+          ...(window.sinceMs === undefined ? {} : { since: isoWithOffset(window.sinceMs) }),
+          ...(window.untilMs === undefined ? {} : { until: isoWithOffset(window.untilMs) }),
+          ...(result.window?.more === true ? { more_in_window: true } : {}),
           types,
           count: result.data.length,
           preview_count: previews.length,
           messages: result.data,
           ...(unconfirmed.length === 0 ? {} : { unconfirmed_sends: unconfirmed }),
           ...(result.older === undefined ? {} : { older: { asked_phone: true, received: result.older.received } }),
-          ...notesField([...unconfirmed.map(unconfirmedNote), noOlder, previewGap(result.data, previews, include_previews)]),
+          ...notesField([...unconfirmed.map(unconfirmedNote), noOlder, windowNote, previewGap(result.data, previews, include_previews)]),
         }),
         previewBlocks(previews)
       );
@@ -1692,6 +1710,27 @@ function previewNote(messages: MessageView[], previews: Preview[], asked: boolea
 }
 
 /** A page past the local history that the phone, asked for it, sent nothing for. */
+/** read_messages' since and until, read the way search reads them: a bare date is its whole day. */
+function readWindow(since: string | undefined, until: string | undefined): ReadWindow {
+  const sinceMs = parseMoment(since, "since");
+  const untilMs = parseMoment(until, "until", true);
+  if (sinceMs !== undefined && untilMs !== undefined && sinceMs > untilMs) {
+    throw new WazapError("INVALID_ID", `since (${since}) is after until (${until}).`, "Pass the earlier moment as since and the later as until");
+  }
+  return { ...(sinceMs === undefined ? {} : { sinceMs }), ...(untilMs === undefined ? {} : { untilMs }) };
+}
+
+/** What a window read must say beside its messages: that more are in it, or that the stored history starts inside it. */
+function windowNoteOf(result: ChatRead, since: string | undefined): string | null {
+  const window = result.window;
+  if (window === undefined) return null;
+  if (window.more) return "The window holds older messages than these: read_messages again with before (the oldest message_id here) and the same since/until, or raise limit.";
+  if (window.startsInside !== true) return null;
+  return window.storedFrom === null
+    ? `Nothing in this chat is stored from ${since} on: older history may still be on the phone. Do not say there are no messages.`
+    : `The stored history of this chat starts at ${isoWithOffset(window.storedFrom)}, inside the window: read_messages with before (the oldest message_id here) and the same since asks the phone for what came before.`;
+}
+
 const OLDER_NONE_NOTE = "The phone was asked for older messages and sent none: older history may still exist there. Say so; do not say there are none.";
 
 /** A send handed to WhatsApp that has not echoed: unknown, which a read that does not show it yet cannot turn into failed. */

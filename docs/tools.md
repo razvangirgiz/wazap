@@ -11,7 +11,7 @@ code. The [README](../README.md#the-23-tools) has the one-line table.
 | `get_status` | read | Connection status, sync state, linked account, how fresh the history is, webhook delivery, versions, data dir, and `health`: what WhatsApp says about the account itself (a reachout timelock, a ban, a session taken over, its cap on first messages to new people), with until when, and `link`: an outage under way (`down_since`, `alerted`), the last one, sleeps the server woke from and sockets its watchdog replaced. Top-level fields are the default account; `accounts` lists every configured one and `default` names it. `include_picture: true` adds `picture_url`, the account's own profile photo (a WhatsApp link that expires; `null` when there is none or it cannot be read). Optional `account_id` on this and every other tool. |
 | `link_account` | read | Pair an account that already exists (`wazap account add`). Returns the code to type into the phone. Registered in read-only mode too. |
 | `list_chats` | read | Conversations newest-first; filter `all`/`unread`/`groups`/`individual`/`archived`; `tag` keeps the chats of people filed under it ([Working by tag](#working-by-tag)). `include_pictures: true` adds `picture_url` per chat (a link that expires; none for `#private`). |
-| `read_messages` | read | Messages in a chat; `before` pages further back, pulling older history from the phone; `types` narrows to one or more message types, e.g. `["call"]`; `include_previews` attaches a small image of each photo; `full_text: true` shows each message's text whole instead of cut at 500 characters (300 for a story). `chat_id: "status"` reads the stories of the last `hours`, which show nowhere else. |
+| `read_messages` | read | Messages in a chat; `before` pages further back, pulling older history from the phone; `since` and `until` read a time window (ISO dates or times, as `search` reads them: a bare `until` date is its whole day), saying `more_in_window` when it holds more than `limit` and when the chat's stored history starts inside it; `types` narrows to one or more message types, e.g. `["call"]`; `include_previews` attaches a small image of each photo; `full_text: true` shows each message's text whole instead of cut at 500 characters (300 for a story). `chat_id: "status"` reads the stories of the last `hours`, which show nowhere else. |
 | `catch_up` | read | What the user missed, in one call and within a token budget, across every linked account: who is waiting on a reply, mentions, replies and open polls, missed calls, people, groups condensed, stories. Pages with a cursor. `ids: true` names the messages it quotes and each person's and group's newest media by `message_id`, for `get_media`, a reply or a reaction. See [Catching up](#catching-up). |
 | `search` | read | Messages by meaning and by words at once, over everything the account keeps, so a paraphrase still hits (another language seldom does); `match: "words"` keeps only messages holding the words. `chat_id`, `since`, `until`, `from` and `tag` narrow it, and the answer says how much it searched. `full_text: true` shows each text whole instead of cut at 500 characters. Without `chat_id`, someone tagged `#private` is left out and counted in `private_omitted`. Without [semantic recall](recall.md#semantic-recall) it matches words and says so. |
 | `get_message` | read | One message in full, its text never cut, with its quoted message, each reaction with who left it, and who voted for each option of a poll or answered an event. On your own messages, `delivery` says whether it was sent, delivered, read or played, and in a group who read it and when. |
@@ -286,6 +286,17 @@ one frame, taken by ffmpeg a second in, when ffmpeg is installed. An SVG is
 never drawn for a preview (`get_media` draws it), and a photo that downloaded
 but made no preview is not downloaded again for an hour. The first
 call over a day of photos takes a few seconds; the next is instant.
+
+**A window.** `read_messages` with `since` and `until` reads one stretch of
+a chat in one call: "what did Ana send yesterday" is `since` and `until` set
+to yesterday's date, and "the photos and documents she sent" adds
+`types: ["image", "document"]`. The answer echoes the window it read. When
+the window holds more than `limit` messages, it gives the newest of them with
+`more_in_window: true`; `before` with the oldest `message_id` and the same
+window pages on inside it, and never asks the phone while the window's start is
+stored. When nothing in the chat is stored from before `since`, the answer says
+where the stored history starts, and `before` with the same window asks the
+phone for what came before, as a read past the history always does.
 
 `wait_for_messages` blocks until something arrives, up to 55 seconds, then
 returns it with a `cursor`. Calling it again with that cursor replays whatever

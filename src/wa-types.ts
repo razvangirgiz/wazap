@@ -936,6 +936,12 @@ export interface UnconfirmedSend {
 }
 
 /** One page of a chat, and what the read cannot vouch for. */
+/** A read's time window: messages sent at or after sinceMs and at or before untilMs (epoch ms). */
+export interface ReadWindow {
+  sinceMs?: number;
+  untilMs?: number;
+}
+
 export interface ChatRead extends Synced<MessageView[]> {
   /** On the newest page of the chat: sends whose outcome is unknown, oldest first. */
   unconfirmedSends?: UnconfirmedSend[];
@@ -944,6 +950,12 @@ export interface ChatRead extends Synced<MessageView[]> {
    * messages: how many came back for it. None is not the start of the chat.
    */
   older?: { askedPhone: true; received: number };
+  /**
+   * A window read (ReadWindow): whether the window holds messages older than
+   * the page (`more`), and when the chat's stored history starts inside the
+   * window, the time of its oldest stored message (`storedFrom`, epoch ms).
+   */
+  window?: { more: boolean; storedFrom: number | null; startsInside?: true };
 }
 
 /** A keyword search's messages, and where the storage scan limit stopped it when it did. */
@@ -1017,7 +1029,7 @@ export interface WhatsAppApi {
   link(phone: string): Promise<PairingInfo>;
   /** With `private`, a last message from someone tagged #private, or in their chat, comes without its words. */
   listChats(filter: ChatFilter, limit: number, opts?: { private?: PrivateRule; cursor?: string; tag?: string }): Promise<Synced<ChatSummary[]> & { nextCursor?: string | null }>;
-  readMessages(chatId: string, limit: number, before?: string, types?: MessageType[]): Promise<ChatRead>;
+  readMessages(chatId: string, limit: number, before?: string, types?: MessageType[], window?: ReadWindow): Promise<ChatRead>;
   getRecentMessages(
     hours: number,
     filter: Exclude<ChatFilter, "archived">,

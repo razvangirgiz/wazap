@@ -23,7 +23,7 @@ import {
   type CatchupTagJids,
   type CatchupWindow,
 } from "../catchup-scan.js";
-import { secondOfId, type AccountDb, type ActivityKey, type ActivityRow, type ChatKind, type MessageRefRow, type Page, type StoredMessage } from "../db/index.js";
+import { idLowerBound, idUpperBound, secondOfId, type AccountDb, type ActivityKey, type ActivityRow, type ChatKind, type MessageRefRow, type Page, type StoredMessage } from "../db/index.js";
 import { draftContextFor, styleCheckFor, type DraftContext, type StyleCheck } from "../draft-style.js";
 import { isGroupId, isNoiseJid, STATUS_JID } from "../ids.js";
 import { decodeChatBytes } from "../store.js";
@@ -36,6 +36,7 @@ import type { SearchCoverage } from "../coverage.js";
 import type {
   ChatFilter,
   ChatRead,
+  ReadWindow,
   ChatSummary,
   ConnectionStatus,
   MessageType,
@@ -168,30 +169,58 @@ export class AccountReads {
     });
   }
 
-  readMessages(chatId: string, limit: number, before?: string, types?: MessageType[]): Promise<ChatRead> {
+  readMessages(chatId: string, limit: number, before?: string, types?: MessageType[], window: ReadWindow = {}): Promise<ChatRead> {
     return this.host.guarded(async () => {
       const sock = this.host.ensureConnected();
       const jid = this.identity.resolveId(chatId);
       await this.host.waitForSync();
       await this.groups.learnParticipants(jid);
       await this.identity.learnLidPhones([jid]);
+      const windowed = window.sinceMs !== undefined || window.untilMs !== undefined;
 
       if (before === undefined) {
-        const read: ChatRead = this.host.synced(this.views.viewsOfStored(this.pageOf(jid, limit, undefined, types)));
+        const page = this.pageOf(jid, limit, undefined, types, window);
+        const read: ChatRead = { ...this.host.synced(this.views.viewsOfStored(page)), ...(windowed ? this.windowFacts(jid, page, limit, types, window) : {}) };
         // The newest page is where a send handed to WhatsApp would show: until its echo comes, say it may be on its way.
-        const unconfirmed = types === undefined ? this.unconfirmedSends(jid) : [];
+        const unconfirmed = types === undefined && window.untilMs === undefined ? this.unconfirmedSends(jid) : [];
         return unconfirmed.length === 0 ? read : { ...read, unconfirmedSends: unconfirmed };
       }
 
       const anchor = this.views.storedOrThrow(before);
       const inChat = this.storage.db.identity.chat(jid)?.jid === anchor.chatJid;
-      let older = inChat ? this.pageOf(jid, limit, anchor.id, types) : [];
-      if (older.length > 0) return this.host.synced(this.views.viewsOfStored(older));
+      let older = inChat ? this.pageOf(jid, limit, anchor.id, types, window) : [];
+      if (older.length > 0) return { ...this.host.synced(this.views.viewsOfStored(older)), ...(windowed ? this.windowFacts(jid, older, limit, types, window) : {}) };
+      // A window whose start is already stored ends here: anything older than it is outside, and the phone is not asked for it.
+      if (inChat && window.sinceMs !== undefined && this.storedBefore(jid, anchor.id)) {
+        return { ...this.host.synced([]), window: { more: false, storedFrom: null } };
+      }
       await this.host.fetchOlder(sock, anchor, limit);
-      older = inChat ? this.pageOf(jid, limit, anchor.id, types) : [];
+      older = inChat ? this.pageOf(jid, limit, anchor.id, types, window) : [];
       // The phone may hold more than it sent in time: an empty answer says it was asked, never that the chat starts here.
-      return { ...this.host.synced(this.views.viewsOfStored(older)), older: { askedPhone: true, received: older.length } };
+      return {
+        ...this.host.synced(this.views.viewsOfStored(older)),
+        older: { askedPhone: true, received: older.length },
+        ...(windowed ? this.windowFacts(jid, older, limit, types, window) : {}),
+      };
     });
+  }
+
+  /** Whether the chat stores any message older than the id `before`. */
+  private storedBefore(jid: string, before: number): boolean {
+    return this.storage.db.messages.chatPage(jid, { limit: 1, before }).items.length > 0;
+  }
+
+  /**
+   * What a window read says beside its page: whether the window holds older
+   * messages than the page showed, and, when the chat's stored history starts
+   * inside the window, where it starts (the phone may hold what came before).
+   */
+  private windowFacts(jid: string, page: readonly StoredMessage[], limit: number, types: MessageType[] | undefined, window: ReadWindow): Pick<ChatRead, "window"> {
+    const oldest = page[0];
+    const more = page.length >= limit && oldest !== undefined && this.pageOf(jid, 1, oldest.id, types, window).length > 0;
+    if (more || window.sinceMs === undefined || this.storedBefore(jid, idLowerBound(window.sinceMs))) return { window: { more, storedFrom: null } };
+    // Nothing stored before the window's start: the stored history begins inside it, and the phone may hold what came before.
+    return { window: { more, storedFrom: oldest?.ts ?? null, startsInside: true } };
   }
 
   /**
@@ -215,16 +244,23 @@ export class AccountReads {
    * A type filter pages on past what it leaves out, so `limit` counts
    * messages the caller asked for, up to a bounded walk.
    */
-  private pageOf(jid: string, limit: number, before: number | undefined, types?: MessageType[]): StoredMessage[] {
+  private pageOf(jid: string, limit: number, before: number | undefined, types?: MessageType[], window: ReadWindow = {}): StoredMessage[] {
     const db = this.storage.db;
     const wanted = types === undefined || types.length === 0 ? null : new Set<string>(types);
     const out: StoredMessage[] = [];
-    let cursor = before;
+    // A window's end bounds the ids from above (a second at a time) and its exact millisecond below; its start is the store's own `since`.
+    const top = window.untilMs === undefined ? undefined : idUpperBound(window.untilMs);
+    let cursor = before === undefined ? top : top === undefined ? before : Math.min(before, top);
     let walked = 0;
     for (;;) {
-      const page = db.messages.chatPage(jid, { limit: wanted === null ? limit : Math.max(limit, 200), ...(cursor === undefined ? {} : { before: cursor }) });
+      const page = db.messages.chatPage(jid, {
+        limit: wanted === null ? limit : Math.max(limit, 200),
+        ...(cursor === undefined ? {} : { before: cursor }),
+        ...(window.sinceMs === undefined ? {} : { since: window.sinceMs }),
+      });
       for (const message of page.items) {
         walked++;
+        if (window.untilMs !== undefined && message.ts > window.untilMs) continue;
         if (wanted !== null && !wanted.has(message.type)) continue;
         out.push(message);
         if (out.length >= limit) break;

@@ -73,6 +73,7 @@ import type {
   ChatActionResult,
   ChatFilter,
   ChatRead,
+  ReadWindow,
   ChatSummary,
   ConnectionStatus,
   ContactDetails,
@@ -1016,8 +1017,8 @@ export class WhatsAppService implements WhatsAppApi {
     return this.reads.listChats(filter, limit, opts);
   }
 
-  readMessages(chatId: string, limit: number, before?: string, types?: MessageType[]): Promise<ChatRead> {
-    return this.reads.readMessages(chatId, limit, before, types);
+  readMessages(chatId: string, limit: number, before?: string, types?: MessageType[], window?: ReadWindow): Promise<ChatRead> {
+    return this.reads.readMessages(chatId, limit, before, types, window);
   }
 
   getRecentMessages(
