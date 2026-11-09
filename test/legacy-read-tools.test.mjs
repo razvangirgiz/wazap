@@ -76,6 +76,27 @@ test("remote HTTP hides compatibility names but cached SDK calls remain validate
   assert.equal(textError(blocked).error, "MEDIA_ACCESS_DENIED");
 });
 
+test("download_media honours detail and pages, which its schema inherits from get_media", async (t) => {
+  const f = fixture(t);
+  const { default: sharp } = await import("sharp");
+  const big = await sharp({ create: { width: 3000, height: 2000, channels: 3, background: "#c0c0c0" } }).jpeg().toBuffer();
+  const image = f.arrive(DAN, { imageMessage: { mimetype: "image/jpeg", fileLength: big.length } });
+  f.svc.mediaBuffer = async () => big;
+  assert.equal((await f.call("download_media", { message_id: image })).structuredContent.view.width, 1024);
+  const high = (await f.call("download_media", { message_id: image, detail: "high" })).structuredContent;
+  assert.equal(high.view.width, 2048);
+  assert.equal(high.view.detail, "high");
+
+  const { pdfOf } = await import("./media-fixtures.mjs");
+  const pdf = pdfOf([["unu"], ["doi"], ["trei"]]);
+  const document = f.arrive(DAN, { documentMessage: { mimetype: "application/pdf", fileName: "a.pdf", fileLength: pdf.length } });
+  f.svc.mediaBuffer = async () => pdf;
+  const second = (await f.call("download_media", { message_id: document, pages: "2" })).structuredContent;
+  assert.equal(second.document.pages, "2-2");
+  assert.equal(second.document_text, "--- page 2 ---\ndoi");
+  assert.equal(textError(await f.call("download_media", { message_id: document, pages: "x" })).error, "INVALID_ID");
+});
+
 test("contact search returns ambiguous candidates; exact message search ignores accents and obeys author/date", async (t) => {
   const f = fixture(t);
   const id = f.arrive(ANA, "Ședință despre transport");

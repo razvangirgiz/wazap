@@ -24,7 +24,7 @@ import { FIND_CONTACT_OUTPUT, runFindContact } from "./find-contact.js";
 import { LIST_CONTACTS_INPUT, runListContacts } from "./list-contacts.js";
 import { freshnessNote, readFreshness } from "./freshness.js";
 import { mediaCaptionOf } from "./media-details.js";
-import { kilobytes, mediaAnswer } from "./media-answer.js";
+import { kilobytes, mediaAnswer, parsePages } from "./media-answer.js";
 import { captionTravels, mimeOfSource } from "./outgoing-media.js";
 import { getMessageView, getMessageViewAcross, resolveMessageId, resolveMessageIdAcross } from "./message-ref.js";
 import { clockLabel } from "./messages.js";
@@ -63,7 +63,6 @@ import type {
   JoinRequest,
   MessageView,
   OutgoingTarget,
-  PageRange,
   RecallAnswer,
   ReminderView,
   ScheduledView,
@@ -1514,17 +1513,6 @@ function renderChats(chats: ChatSummary[], filter: string, tag?: string): string
 function isStatusChat(chatId: string): boolean {
   const id = chatId.trim().toLowerCase();
   return id === "status" || id === "status@broadcast";
-}
-
-/** get_media's `pages`: "3", "2-5" or "4-" (to the end of the text budget), 1-based. */
-function parsePages(pages: string): PageRange {
-  const match = /^\s*(\d{1,5})\s*(?:(-)\s*(\d{1,5})?)?\s*$/.exec(pages);
-  const from = match ? Number(match[1]) : 0;
-  const to = match?.[3] !== undefined ? Number(match[3]) : match?.[2] !== undefined ? null : from;
-  if (!match || from < 1 || (to !== null && to < from)) {
-    throw new WazapError("INVALID_ID", `pages "${pages}" is not a page range.`, 'Pass one page ("3"), a range ("2-5") or an open range ("4-")');
-  }
-  return { from, to };
 }
 
 function newestFirst(messages: MessageView[]): string[] {

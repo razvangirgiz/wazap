@@ -8,8 +8,8 @@ import { resolveMessageId, resolveMessageIdAcross } from "./message-ref.js";
 import { privateRule } from "./catchup.js";
 import { compactRecent } from "./recent-compact.js";
 import { WazapError } from "./errors.js";
-import { mediaAnswer } from "./media-answer.js";
-import { MESSAGE_TYPES, type MessageView, type RecentConversation, type RecentMessageRefs, type SearchContext, type WhatsAppApi } from "./wa-types.js";
+import { mediaAnswer, parsePages } from "./media-answer.js";
+import { MESSAGE_TYPES, type MediaDetail, type MessageView, type RecentConversation, type RecentMessageRefs, type SearchContext, type WhatsAppApi } from "./wa-types.js";
 import type { ToolArgs, ToolCtx, ToolDef, ToolResult } from "./tool-runtime.js";
 
 const account = {
@@ -220,8 +220,16 @@ export function legacyReadTools(current: readonly ToolDef[]): ToolDef[] {
       ? await resolveMessageIdAcross(ctx.hub, resolved, messageId)
       : { binding: resolved, sid: await resolveMessageId(ctx.wa, messageId) };
     // The file as get_media opens it, never a transcript: a remote session gets what it can see, and no path.
+    // detail and pages are get_media's, which this alias's schema inherits: they are honoured, not dropped.
     const saveTo = args.save_to as string | undefined;
-    const opened = await found.binding.wa.openMedia(found.sid, { ...(ctx.localFiles === false ? { noFile: true } : {}), ...(saveTo === undefined ? {} : { saveTo }) });
+    const detail = args.detail as MediaDetail | undefined;
+    const pages = args.pages === undefined ? undefined : parsePages(args.pages as string);
+    const opened = await found.binding.wa.openMedia(found.sid, {
+      ...(ctx.localFiles === false ? { noFile: true } : {}),
+      ...(saveTo === undefined ? {} : { saveTo }),
+      ...(detail === undefined ? {} : { detail }),
+      ...(pages === undefined ? {} : { pages }),
+    });
     const shown = mediaAnswer(opened);
     const { rendition: _rendition, ...file } = opened;
     return result(
