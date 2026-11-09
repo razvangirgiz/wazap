@@ -80,7 +80,12 @@ and drops a session nobody has used for 24 hours; either way a session comes
 back on its owner's next call (see [Client isolation](#client-isolation)).
 Tool work is capped at eight concurrent operations per MCP session and 32
 across the process, including stdio/bridges. Slots remain held until work settles,
-not merely until a client disconnects. Retry once after pending work completes.
+not merely until a client disconnects. A call the client cancels
+(`notifications/cancelled`), or one whose session is closed, stops waiting:
+`wait_for_messages` answers at once, a media download stops at its next chunk,
+and a transcription another call started goes on without it. Its slot comes
+back as soon as it has stopped. A disconnect alone is not a cancel, as the MCP
+specification says. Retry once after pending work completes.
 
 Answers to a POST are gzip-compressed when the client's `Accept-Encoding`
 takes gzip (Node's `fetch`, and so every TypeScript MCP client, does; so does

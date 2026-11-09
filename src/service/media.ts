@@ -49,8 +49,8 @@ export interface MediaHost {
   guarded<T>(work: () => Promise<T>): Promise<T>;
   ensureConnected(): WASocket;
   hasMessage(id: string): boolean;
-  /** The bytes behind a message's media, from WhatsApp. */
-  mediaBuffer(sock: WASocket, messageId: string, raw: WAMessage): Promise<Buffer>;
+  /** The bytes behind a message's media, from WhatsApp; `signal` stops the download. */
+  mediaBuffer(sock: WASocket, messageId: string, raw: WAMessage, signal?: AbortSignal): Promise<Buffer>;
   /** The kept copy of a message's media, or null (src/service/keep.ts). */
   keptMedia(messageId: string, raw: WAMessage): Promise<Buffer | null>;
   /** WhatsApp's copy, just downloaded: kept too when the kept-media settings want it. */
@@ -153,7 +153,7 @@ export class AccountMedia {
    * file go. Only without one is WhatsApp asked, and what it sends is kept
    * then when the settings want it.
    */
-  downloadMedia(messageId: string, saveTo?: string): Promise<MediaResult> {
+  downloadMedia(messageId: string, saveTo?: string, signal?: AbortSignal): Promise<MediaResult> {
     return this.host.guarded(async () => {
       const raw = this.views.messageOrThrow(messageId);
       const info = mediaInfo(raw);
@@ -162,7 +162,7 @@ export class AccountMedia {
       const source: MediaResult["source"] = buffer === null ? "whatsapp" : "kept";
       if (buffer === null) {
         const sock = this.host.ensureConnected();
-        buffer = await this.host.mediaBuffer(sock, messageId, raw);
+        buffer = await this.host.mediaBuffer(sock, messageId, raw, signal);
         this.views.messageOrThrow(messageId);
         await this.host.offerKept(messageId, raw, buffer).catch((err: unknown) => logError("kept media", err));
       }

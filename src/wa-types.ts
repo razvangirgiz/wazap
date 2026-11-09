@@ -465,6 +465,8 @@ export interface WaitOptions {
   cursor?: string;
   /** Without a chat, a #private person's messages come without their words; a chat named reads whole. */
   private?: PrivateRule;
+  /** Ends the wait early, answering with what has arrived so far: the call was cancelled, or the server is shutting down. */
+  signal?: AbortSignal;
 }
 
 export interface WaitResult {
@@ -735,6 +737,8 @@ export interface TranscribeOptions {
   limit?: { take(): void };
   /** Only a transcript on hand; none on hand is TRANSCRIBE_UNAVAILABLE, and no provider runs. */
   cachedOnly?: boolean;
+  /** The caller stops waiting when it aborts: the download stops, a run another call started goes on without it. */
+  signal?: AbortSignal;
 }
 
 export interface TranscribeResult {
@@ -979,7 +983,8 @@ export interface WhatsAppApi {
   /** updateContactDetails on several people at once, all or none. */
   updateManyContactDetails?(contactIds: readonly string[], edit: ContactDetailsEdit): Promise<ContactSummary[]>;
   getGroupInfo(groupId: string): Promise<GroupInfo>;
-  downloadMedia(messageId: string, saveTo?: string): Promise<MediaResult>;
+  /** With `signal`, a cancelled call stops the download instead of waiting for it. */
+  downloadMedia(messageId: string, saveTo?: string, opts?: { signal?: AbortSignal }): Promise<MediaResult>;
   transcribeAudio(messageId: string, language?: string, opts?: TranscribeOptions): Promise<TranscribeResult>;
   waitForMessages(opts: WaitOptions): Promise<WaitResult>;
   /** With `private`, a story of someone tagged #private comes without its words. */

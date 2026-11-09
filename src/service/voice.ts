@@ -12,6 +12,7 @@ import { join } from "node:path";
 import type { WAMessage, WASocket } from "baileys";
 import type { AccountRecord } from "../accounts.js";
 import type { Config } from "../config.js";
+import { orCancelled } from "../cancel.js";
 import type { AccountDb, StoredMessage, UpsertResult } from "../db/index.js";
 import { asWazapError, WazapError } from "../errors.js";
 import { isStatusJid } from "../ids.js";
@@ -98,8 +99,8 @@ export interface VoiceHost {
   status(): ConnectionStatus;
   guarded<T>(work: () => Promise<T>): Promise<T>;
   ensureConnected(): WASocket;
-  /** The bytes behind a message's media, from WhatsApp. */
-  mediaBuffer(sock: WASocket, messageId: string, raw: WAMessage): Promise<Buffer>;
+  /** The bytes behind a message's media, from WhatsApp; `signal` stops the download. */
+  mediaBuffer(sock: WASocket, messageId: string, raw: WAMessage, signal?: AbortSignal): Promise<Buffer>;
   /** The kept copy of a message's media, or null (src/service/keep.ts): it needs no link. */
   keptMedia(messageId: string, raw: WAMessage): Promise<Buffer | null>;
   /** The provider run, and its readiness check: the service's, so a test can stub them. */
@@ -202,11 +203,12 @@ export class AccountVoice {
       // The transcript is only written once a provider has run and been paid, so the
       // auto queue and a tool call asking for the same message at the same
       // moment would otherwise upload it twice. They share the first run.
+      // A caller that cancels stops waiting on a run someone else started; the run goes on for them.
       const running = this.transcribing.get(message.sid);
-      if (running) return await running;
+      if (running) return await orCancelled(running, opts.signal);
       // Only a run spends the caller's budget: what is on hand, or cannot run, cost nothing.
       opts.limit?.take();
-      const work = this.runTranscribe(message.sid, raw, info, settings, language);
+      const work = this.runTranscribe(message.sid, raw, info, settings, language, opts.signal);
       this.transcribing.set(message.sid, work);
       try {
         return await work;
@@ -221,12 +223,15 @@ export class AccountVoice {
     raw: WAMessage,
     info: { mime: string; size?: number; filename?: string },
     settings: TranscribeSettings,
-    language?: string
+    language?: string,
+    signal?: AbortSignal
   ): Promise<TranscribeResult> {
     // Readiness is never ok while no provider is configured.
     const provider = settings.provider!;
     this.views.messageOrThrow(messageId);
-    const buffer = (await this.host.keptMedia(messageId, raw)) ?? (await this.host.mediaBuffer(this.host.ensureConnected(), messageId, raw));
+    // A cancelled caller stops the download; a provider already running is paid for and finishes, its transcript kept.
+    const buffer =
+      (await this.host.keptMedia(messageId, raw)) ?? (await this.host.mediaBuffer(this.host.ensureConnected(), messageId, raw, signal));
     this.views.messageOrThrow(messageId);
     // Its own temp dir, deleted straight after: nobody asked to keep this file,
     // and the media dir is where the files the user did ask for live.

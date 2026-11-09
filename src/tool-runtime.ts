@@ -54,6 +54,12 @@ export interface ToolCtx {
    * catch_up keeps its mark under.
    */
   client: string;
+  /**
+   * Aborts when the client cancels this call or its session closes. A wait
+   * honours it by stopping early (wait_for_messages, a download, a
+   * transcription another call started); nothing that writes does.
+   */
+  signal?: AbortSignal;
 }
 
 /** MCP tool annotations, stated per tool for its most far-reaching action. */
@@ -196,7 +202,7 @@ export function createToolRegistrar(defs: readonly ToolDef[]) {
           ...(def.outputSchema === undefined ? {} : { outputSchema: def.outputSchema }),
           annotations: def.hints,
         },
-        async (args: unknown, extra?: { _meta?: Record<string, unknown> }): Promise<ToolResult> => {
+        async (args: unknown, extra?: { _meta?: Record<string, unknown>; signal?: AbortSignal }): Promise<ToolResult> => {
           const call = sessionDrafts.startCall();
           const parsed = (args ?? {}) as ToolArgs;
           let resolved: { id: string; wa: WhatsAppApi } | undefined;
@@ -269,6 +275,7 @@ export function createToolRegistrar(defs: readonly ToolDef[]) {
               accountId: resolved.id,
               draftOwner,
               client: clientOf(extra),
+              ...(extra?.signal === undefined ? {} : { signal: extra.signal }),
             });
             const draftId = result.structuredContent?.status === "draft" ? result.structuredContent.draft_id : undefined;
             if (typeof draftId === "string") sessionDrafts.note(draftId, call);

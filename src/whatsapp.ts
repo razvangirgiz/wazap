@@ -32,6 +32,7 @@ import { BAILEYS_VERSION, WAZAP_VERSION, writesHints, type AccountPaths, type Co
 import { AccountDb, chatKindOf, StorageError, type StoredMessage } from "./db/index.js";
 import { type DraftContext, type StyleCheck } from "./draft-style.js";
 import { asWazapError, RELINK_FIX, RESET_FIX, WazapError } from "./errors.js";
+import { callCancelled, throwIfCancelled } from "./cancel.js";
 import { type AccountFind, type FindContactQuery } from "./find-contact.js";
 import { isNoiseJid, normalizePhone } from "./ids.js";
 import { log, logError } from "./logger.js";
@@ -380,7 +381,7 @@ export class WhatsAppService implements WhatsAppApi {
         status: () => this.status,
         guarded: (work) => this.guarded(work),
         ensureConnected: () => this.ensureConnected(),
-        mediaBuffer: (sock, messageId, raw) => this.mediaBuffer(sock, messageId, raw),
+        mediaBuffer: (sock, messageId, raw, signal) => this.mediaBuffer(sock, messageId, raw, undefined, signal),
         keptMedia: (messageId, raw) => this.keep.read(messageId, raw),
         transcriber: (...args) => this.transcriber(...args),
         transcribeReadiness: (...args) => this.transcribeReadiness(...args),
@@ -493,7 +494,7 @@ export class WhatsAppService implements WhatsAppApi {
         guarded: (work) => this.guarded(work),
         ensureConnected: () => this.ensureConnected(),
         hasMessage: (id) => this.hasMessage(id),
-        mediaBuffer: (sock, messageId, raw) => this.mediaBuffer(sock, messageId, raw),
+        mediaBuffer: (sock, messageId, raw, signal) => this.mediaBuffer(sock, messageId, raw, undefined, signal),
         keptMedia: (messageId, raw) => this.keep.read(messageId, raw),
         offerKept: (messageId, raw, buffer) => this.keep.offer(messageId, raw, buffer),
       },
@@ -1140,8 +1141,8 @@ export class WhatsAppService implements WhatsAppApi {
     return this.media.previews(messageIds, max);
   }
 
-  downloadMedia(messageId: string, saveTo?: string): Promise<MediaResult> {
-    return this.media.downloadMedia(messageId, saveTo);
+  downloadMedia(messageId: string, saveTo?: string, opts: { signal?: AbortSignal } = {}): Promise<MediaResult> {
+    return this.media.downloadMedia(messageId, saveTo, opts.signal);
   }
 
   transcribeAudio(messageId: string, language?: string, opts: TranscribeOptions = {}): Promise<TranscribeResult> {
@@ -1996,7 +1997,13 @@ export class WhatsAppService implements WhatsAppApi {
    * the declared length before the download starts, and the stream itself
    * while it lands — a sender can understate the first, not the second.
    */
-  private async mediaBuffer(sock: WASocket, messageId: string, raw: WAMessage, maxBytes = MEDIA_DOWNLOAD_MAX_BYTES): Promise<Buffer> {
+  private async mediaBuffer(
+    sock: WASocket,
+    messageId: string,
+    raw: WAMessage,
+    maxBytes = MEDIA_DOWNLOAD_MAX_BYTES,
+    signal?: AbortSignal
+  ): Promise<Buffer> {
     const cap = Math.min(maxBytes, MEDIA_DOWNLOAD_MAX_BYTES);
     const declared = mediaInfo(raw)?.size;
     if (declared !== undefined && declared > cap) {
@@ -2005,11 +2012,17 @@ export class WhatsAppService implements WhatsAppApi {
         `The media of ${messageId} is ${Math.ceil(declared / 1_000_000)} MB; downloads are capped at ${cap / 1_000_000} MB.`
       );
     }
+    throwIfCancelled(signal);
+    // A caller that cancels stops the download at the next chunk instead of holding its slot until the end.
+    let stop: (() => void) | undefined;
     try {
       const stream = await downloadMediaMessage(raw, "stream", {}, {
         logger: silentLogger,
         reuploadRequest: sock.updateMediaMessage,
       });
+      stop = () => stream.destroy(callCancelled());
+      if (signal?.aborted) stop();
+      else signal?.addEventListener("abort", stop, { once: true });
       const chunks: Buffer[] = [];
       let bytes = 0;
       for await (const chunk of stream) {
@@ -2035,6 +2048,8 @@ export class WhatsAppService implements WhatsAppApi {
       // Not enumerable, so no answer serializes it: the transcription queue reads its status to tell expired media from a timeout.
       Object.defineProperty(failure, "cause", { value: err, configurable: true, writable: true });
       throw failure;
+    } finally {
+      if (stop !== undefined) signal?.removeEventListener("abort", stop);
     }
   }
 
