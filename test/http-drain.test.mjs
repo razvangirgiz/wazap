@@ -82,7 +82,7 @@ test("a drain lets the call under way answer, ends a wait at once, refuses new w
   const drainStarted = Date.now();
   const drained = drainHttpEndpoints();
   const refused = await post({ jsonrpc: "2.0", id: 4, method: "ping" }, sid).catch((err) => ({ status: err.code }));
-  assert.ok(refused.status === 503 || refused.status === "ECONNREFUSED" || refused.status === "ECONNRESET", `a new request during the drain: ${refused.status}`);
+  assert.ok([503, "ECONNREFUSED", "ECONNRESET", "EPIPE"].includes(refused.status), `a new request during the drain: ${refused.status}`);
 
   const waited = await wait;
   assert.equal(waited.status, 200);

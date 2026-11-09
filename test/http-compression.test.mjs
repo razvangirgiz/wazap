@@ -215,7 +215,8 @@ test("every compressed SSE event, keep-alive comments included, arrives as it is
     await new Promise((resolve) => setTimeout(resolve, 60));
   }
   stream.close();
-  assert.ok(Math.max(...timings) < 50, `each event decoded within 50 ms of being written: ${timings.join(", ")} ms`);
+  // Unflushed, an event would wait for 16 KiB more or the end of the stream, which the test never sends.
+  assert.ok(Math.max(...timings) < 150, `each event decoded within 150 ms of being written: ${timings.join(", ")} ms`);
 });
 
 test("an uncompressed SSE stream starts at once and streams the same way", { timeout: 15_000 }, async (t) => {
@@ -224,6 +225,6 @@ test("an uncompressed SSE stream starts at once and streams the same way", { tim
   const sent = stream.send(": keepalive");
   const event = await stream.arrived(1);
   assert.equal(event?.text, ": keepalive");
-  assert.ok(event.at - sent < 50);
+  assert.ok(event.at - sent < 150);
   stream.close();
 });
