@@ -508,7 +508,9 @@ export class AccountIngest {
     const started = performance.now();
     let index = from;
     for (; index < messages.length; index++) {
-      if (index > from && index % 32 === 0 && performance.now() - started > budgetMs) break;
+      // Checked before every message: a clock read costs far less than a message's store, and a check
+      // every 32 let a chunk of slow ones (quotes, media) run to twice its budget.
+      if (index > from && budgetMs !== Infinity && performance.now() - started > budgetMs) break;
       const raw = messages[index]!;
       try {
         if (!raw.key?.remoteJid || (!raw.message && !isStubEvent(raw))) continue;

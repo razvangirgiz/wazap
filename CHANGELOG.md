@@ -11,6 +11,7 @@
 - **Counting the recall index is cheap.** The count of stored vectors that `get_status` and every search's recall status show (refreshed every 10 seconds) reads an index of their model (schema 8) instead of every 768-byte vector: 39-48 ms → 3 ms on 100k vectors, and the whole-account counts 8-9 ms → 0.8 ms. The upgrade builds the index once (about 0.2 s per 100k vectors), after the usual pre-migration copy.
 - **`get_recent_messages`' first page reads no words it does not show.** Its cursor over every chat active in the window is built from ids, keys and times alone; only the page shown reads whole messages: 8.2 → 3.0 ms with 1k messages in the window, 32 → 12 ms with 10k, 166-175 → 78-80 ms with 50k. Same pages.
 - **`find_contact` reads the address book once.** The folded names of everyone are kept until a contact, note, tag or pairing changes (or a minute passes) instead of read again per call: with 10,000 contacts a name lookup takes 6-13 ms instead of 15-24, a relationship (`mamei`) 1.2-1.6 ms instead of 9-16.
+- **A history sync keeps to its time budget.** Each transaction of a history batch checks its 20 ms budget before every message instead of every 32nd: the 99th-percentile transaction during a first sync is 20 ms instead of 24-26 ms.
 
 ## 1.6.0
 
