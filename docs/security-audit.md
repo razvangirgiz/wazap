@@ -25,7 +25,9 @@ uuid and that owner, keyed by `<data-dir>/session.key` (`src/session-id.ts`).
 A POST or GET carrying an id the process does not hold is revived only when the
 mark verifies for the presenting owner: another credential, an anonymous
 reader, a random, altered or foreign-key id all still receive 404, and an id
-live under another owner stays a 404 as before. Revivals count against the
+live under another owner stays a 404 as before. An id its owner ended with
+DELETE is remembered (the last 1,024, in memory) and never revived; another
+credential's DELETE ends nothing. Revivals count against the
 session caps and are logged without the id. Tests:
 `test/session-revival.test.mjs`.
 

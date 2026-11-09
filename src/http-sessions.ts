@@ -10,9 +10,14 @@ interface Session {
 /** How many sessions one credential may hold before its idlest goes. */
 export const MCP_SESSIONS_PER_OWNER = 32;
 
+/** How many ids of sessions their clients ended are remembered, newest kept. */
+export const MCP_ENDED_SESSIONS_KEPT = 1024;
+
 /** Session ids are routing hints, not credentials. Check ownership before touching TTL. */
 export class HttpSessions {
   private readonly sessions = new Map<string, Session>();
+  /** Ids whose client ended them with DELETE, oldest first. */
+  private readonly endedIds = new Set<string>();
 
   constructor(private readonly max: number) {}
 
@@ -60,6 +65,21 @@ export class HttpSessions {
   forget(id: string, transport?: McpTransport): void {
     if (transport !== undefined && this.sessions.get(id)?.transport !== transport) return;
     this.sessions.delete(id);
+  }
+
+  /**
+   * The client ended this session (DELETE), which the specification says is
+   * for good: its id answers 404 from now on and is never revived, while this
+   * process remembers it.
+   */
+  end(id: string): void {
+    this.endedIds.delete(id);
+    this.endedIds.add(id);
+    if (this.endedIds.size > MCP_ENDED_SESSIONS_KEPT) this.endedIds.delete(this.endedIds.values().next().value!);
+  }
+
+  ended(id: string): boolean {
+    return this.endedIds.has(id);
   }
 
   private drop(id: string): void {

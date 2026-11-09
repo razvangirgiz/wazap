@@ -47,7 +47,8 @@ redoes its handshake. A revived session has the credential's tools and drafts;
 what it loses is what the client said in its first `initialize` (its name and
 capabilities, which wazap does not use). Any other credential still gets 404,
 as does an id wazap did not mint; anonymous loopback sessions are never
-revived. Revived sessions count against the caps below, and each revival is
+revived, and neither is a session its client ended with DELETE (the process
+remembers the last 1,024 ended ids; a restart forgets them). Revived sessions count against the caps below, and each revival is
 logged without the id. Deleting `session.key` and restarting makes every
 outstanding id unrevivable.
 

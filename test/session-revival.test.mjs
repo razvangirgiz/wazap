@@ -2,7 +2,7 @@
  * A session wazap no longer holds — lost to a restart, the idle sweep or an
  * eviction — is served again for the credential it was minted for, under the
  * id the client holds, instead of answering 404. Nobody else can use the id,
- * and an id wazap did not mint is still a 404.
+ * an id wazap did not mint is still a 404, and so is one its client ended.
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -15,6 +15,7 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
+import { HttpSessions, MCP_ENDED_SESSIONS_KEPT } from "../dist/http-sessions.js";
 import { replayHandshake } from "../dist/mcp-http.js";
 import { startHttpEndpoint } from "../dist/server.js";
 import { SessionIds, sessionIds } from "../dist/session-id.js";
@@ -118,6 +119,36 @@ test("another credential presenting a lost session's id gets 404, and cannot spo
   assert.equal((await after.call("writer", session.sid)).status, 200);
   // Now live again under its owner, the id is foreign to everyone else as before.
   assert.equal((await after.call("reader", session.sid)).status, 404);
+});
+
+test("a session its client ended with DELETE stays ended for that credential too, whether this process held it or lost it", async (t) => {
+  const dir = dataDir(t);
+  const server = await start(t, dir);
+  const session = await server.call("writer", undefined, initialize);
+  assert.equal((await server.call("writer", session.sid, ping, "DELETE")).status, 200);
+  assert.equal((await server.call("writer", session.sid)).status, 404, "a POST after the DELETE");
+  assert.equal((await server.call("writer", session.sid, ping, "GET")).status, 404, "a GET after the DELETE");
+
+  // Ended after a restart lost it: the DELETE is a 404 (nothing here to end), and the id stays dead.
+  const lost = await server.call("writer", undefined, initialize);
+  server.stop();
+  const after = await start(t, dir);
+  assert.equal((await after.call("writer", lost.sid, ping, "DELETE")).status, 404);
+  assert.equal((await after.call("writer", lost.sid)).status, 404, "never revived");
+  // Another credential's DELETE ends nothing.
+  const kept = await after.call("writer", undefined, initialize);
+  after.stop();
+  const again = await start(t, dir);
+  assert.equal((await again.call("reader", kept.sid, ping, "DELETE")).status, 404);
+  assert.equal((await again.call("writer", kept.sid)).status, 200);
+});
+
+test("the ended ids kept are bounded, oldest forgotten first", () => {
+  const sessions = new HttpSessions(4);
+  for (let i = 0; i <= MCP_ENDED_SESSIONS_KEPT; i++) sessions.end(`id-${i}`);
+  assert.equal(sessions.ended("id-0"), false);
+  assert.equal(sessions.ended("id-1"), true);
+  assert.equal(sessions.ended(`id-${MCP_ENDED_SESSIONS_KEPT}`), true);
 });
 
 test("ids wazap did not mint for this credential stay 404: random, altered, or signed by another install", async (t) => {

@@ -593,6 +593,7 @@ export async function startHttpEndpoint(hub: AccountSource, config: Config, endp
         typeof sessionId === "string" &&
         (req.method === "POST" || req.method === "GET") &&
         owner !== ANONYMOUS_OWNER &&
+        !sessions.ended(sessionId) &&
         ids.verify(sessionId, owner)
       ) {
         transport = await revive(req as AuthedRequest, owner, sessionId).catch((err: unknown) => {
@@ -608,6 +609,8 @@ export async function startHttpEndpoint(hub: AccountSource, config: Config, endp
         // which the spec tells a client to answer with a fresh initialize. No id
         // at all means initialize never happened, and that stays a 400.
         if (typeof sessionId === "string" && sessionId !== "") {
+          // A client ending a session this process lost ends it all the same.
+          if (req.method === "DELETE" && owner !== ANONYMOUS_OWNER && ids.verify(sessionId, owner)) sessions.end(sessionId);
           noteSessionOutcome(res, "lost");
           res.status(404).json({ jsonrpc: "2.0", error: { code: -32001, message: "Session not found" }, id: null });
           return;
@@ -621,6 +624,8 @@ export async function startHttpEndpoint(hub: AccountSource, config: Config, endp
       }
 
       await serveMcp(transport, req, res, req.method === "POST" ? req.body : undefined);
+      // Ended by its client: the next call with this id is a 404, never a revival.
+      if (req.method === "DELETE" && typeof sessionId === "string" && res.statusCode === 200) sessions.end(sessionId);
     } catch (err) {
       log(`HTTP MCP handler failed${withCode(err)}`);
       if (!res.headersSent) {
