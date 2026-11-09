@@ -101,6 +101,9 @@ test("a window that reaches before the stored history says where it starts, and 
   const result = await call("read_messages", { chat_id: ANA, since: dayOf(-10) });
   assert.equal(result.structuredContent.count, 2);
   assert.ok(result.structuredContent.notes.some((note) => /stored history of this chat starts at .* inside the window: read_messages with before/.test(note)));
+  const before = await call("read_messages", { chat_id: ANA, since: dayOf(-10), until: dayOf(-5) });
+  assert.equal(before.structuredContent.count, 0);
+  assert.ok(before.structuredContent.notes.some((note) => /No message of this chat is stored in this window or before it .*do not say there are none/.test(note)));
   const older = await call("read_messages", { chat_id: ANA, since: dayOf(-10), before: first });
   assert.deepEqual(asked, ["M1"], "nothing older is stored, so the phone is asked");
   assert.deepEqual(older.structuredContent.older, { asked_phone: true, received: 0 });

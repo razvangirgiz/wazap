@@ -1649,7 +1649,7 @@ async function mediaBatch(asked: readonly string[], args: MediaArgs, ctx: ToolCt
     items.push(answer.structured);
     text += `${heading}\n${answer.lines.join("\n")}`;
     if (answer.blocks.length > 0) {
-      content.push({ type: "text", text }, ...answer.blocks);
+      content.push({ type: "text", text: text.replace(/^\n+/, "") }, ...answer.blocks);
       text = "";
     }
   });
@@ -1765,7 +1765,7 @@ function windowNoteOf(result: ChatRead, since: string | undefined): string | nul
   if (window.more) return "The window holds older messages than these: read_messages again with before (the oldest message_id here) and the same since/until, or raise limit.";
   if (window.startsInside !== true) return null;
   return window.storedFrom === null
-    ? `Nothing in this chat is stored from ${since} on: older history may still be on the phone. Do not say there are no messages.`
+    ? `No message of this chat is stored in this window or before it (since ${since}): its stored history starts later, and the phone may hold older messages. Say so; do not say there are none.`
     : `The stored history of this chat starts at ${isoWithOffset(window.storedFrom)}, inside the window: read_messages with before (the oldest message_id here) and the same since asks the phone for what came before.`;
 }
 
