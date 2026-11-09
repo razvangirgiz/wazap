@@ -359,6 +359,7 @@ export class Connection {
   private idleRetries = 0;
   private readonly timeoutMs: number;
   private closed = false;
+  private namesEpoch = 0;
 
   private constructor(
     readonly path: string,
@@ -541,6 +542,20 @@ export class Connection {
   }
 
   /**
+   * Moves whenever a write may have changed what names a jid: a contact's or a
+   * chat's name, a note or a tag, a lid paired with a number, a chat or
+   * contact folded into another — and on every rollback, which may undo one a
+   * reader saw. A cache of names is good for as long as this stays put.
+   */
+  get namesVersion(): number {
+    return this.namesEpoch;
+  }
+
+  namesChanged(): void {
+    this.namesEpoch++;
+  }
+
+  /**
    * A write transaction around a synchronous body. Nested calls join the
    * outer transaction, so helpers can require one without caring who opened it.
    */
@@ -555,6 +570,7 @@ export class Connection {
       return result;
     } catch (err) {
       if (this.db.isTransaction) this.db.exec("ROLLBACK");
+      this.namesEpoch++;
       throw err;
     }
   }

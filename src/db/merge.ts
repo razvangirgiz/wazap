@@ -91,6 +91,7 @@ export class Merger {
   /** The synchronous half: the pairing, the contact rows and the chat rows. Runs inside write(). */
   private pair(lid: string, phone: string): { contactId: number; chatId: number | null } {
     const now = this.c.now();
+    this.c.namesChanged();
     this.c.run(
       `INSERT INTO lid_phones(lid, phone_jid, learned_at) VALUES (?, ?, ?)
        ON CONFLICT(lid) DO UPDATE SET phone_jid = excluded.phone_jid, learned_at = excluded.learned_at`,
@@ -196,6 +197,7 @@ export class Merger {
       this.c.write(() => {
         this.moveContactRefs(contact.merged_into, contact.id, null);
         this.c.run("DELETE FROM contacts WHERE id = ?", contact.id);
+        this.c.namesChanged();
       });
     }
     for (;;) {
@@ -338,6 +340,7 @@ export class Merger {
       this.c.run("DELETE FROM retracted WHERE chat_id = ?", dropId);
       this.c.run("DELETE FROM chats WHERE id = ?", dropId);
       this.c.run(RECOMPUTE_LAST, keepId);
+      this.c.namesChanged();
     });
     // A clear of either spelling that landed while the fold ran may have raised the barrier since the first purge.
     report.mediaPaths.push(...(await this.messages.purgeCleared(keepId)).mediaPaths);

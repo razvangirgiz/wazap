@@ -194,6 +194,7 @@ export class Identity {
     if (found !== null) return found;
     const canonical = this.canonicalJid(jid);
     const column = isLidJid(canonical) ? "lid" : "phone_jid";
+    this.c.namesChanged();
     return this.c.write(
       () =>
         this.c.get<{ id: number }>(`INSERT INTO contacts(${column}, updated_at) VALUES (?, ?) RETURNING id`, canonical, this.c.now())!
@@ -230,6 +231,7 @@ export class Identity {
       }
       if (sets.length > 0) {
         this.c.run(`UPDATE contacts SET ${sets.join(", ")}, updated_at = ? WHERE id = ?`, ...values, this.c.now(), id);
+        this.c.namesChanged();
       }
       return this.contactById(id)!;
     });
@@ -271,6 +273,7 @@ export class Identity {
       const chatKind = kind ?? chatKindOf(normalized);
       const canonical = chatKind === "direct" ? this.canonicalJid(normalized) : normalized;
       const contactId = chatKind === "direct" ? this.ensureContact(canonical) : null;
+      this.c.namesChanged();
       const row = this.c.get<ChatRow>(
         "INSERT INTO chats(jid, kind, contact_id) VALUES (?, ?, ?) RETURNING *",
         canonical,
@@ -298,6 +301,7 @@ export class Identity {
       assign("unread", input.unread);
       assign("proto", input.proto);
       if (sets.length > 0) this.c.run(`UPDATE chats SET ${sets.join(", ")} WHERE id = ?`, ...values, chat.id);
+      if (input.name !== undefined) this.c.namesChanged();
       return this.chatById(chat.id)!;
     });
   }
@@ -379,6 +383,7 @@ export class Identity {
 
   /** Stores notes on a contact row; the merge path writes through here too. Call inside write(). */
   writeNotes(contactId: number, note: string | null, tags: string[], fields: Record<string, string>): ContactNotes | null {
+    this.c.namesChanged();
     if (note === null && tags.length === 0 && Object.keys(fields).length === 0) {
       this.c.run("DELETE FROM contact_notes WHERE contact_id = ?", contactId);
       return null;

@@ -218,6 +218,11 @@ export class AccountDb {
     return this.connection.isOpen;
   }
 
+  /** Moves whenever a write may have changed what a jid is named, noted or tagged as (see Connection.namesVersion). */
+  get namesVersion(): number {
+    return this.connection.namesVersion;
+  }
+
   settings(): ConnectionSettings {
     return this.connection.settings();
   }
