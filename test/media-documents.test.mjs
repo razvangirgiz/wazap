@@ -364,3 +364,22 @@ test("a number no date stands for stays a number in a date column, and the rest 
   const out = (await send(xlsx, XLSX, "clienti.xlsx")).structuredContent;
   assert.equal(out.document_text, "--- sheet Clienți ---\nAna\t2026-09-01\nIon\t40712345678\n\t1E+20\t-700000000\t9999-12-31\t2958466");
 });
+
+test("a CSV from Excel on Romanian Windows keeps its diacritics, and an HTML page is read in the charset it names", async (t) => {
+  const { send } = setup(t);
+  // Windows-1250: ă E3, ţ FE, ş BA, î EE, â E2.
+  const cp1250 = { "ă": 0xe3, "ţ": 0xfe, "ş": 0xba, "î": 0xee, "â": 0xe2 };
+  const encode = (text, table) => Buffer.from([...text].map((ch) => table[ch] ?? ch.charCodeAt(0)));
+  const csv = encode("Nume;Sumă;Descriere\nIon;120;Plată chirie ţară\nAna;80;Braşov, în avans, câţiva", cp1250);
+  const read = (await send(csv, "text/csv", "plati.csv")).structuredContent;
+  assert.equal(read.document_text, "Nume;Sumă;Descriere\nIon;120;Plată chirie ţară\nAna;80;Braşov, în avans, câţiva");
+
+  const western = encode("Café à côté, très bien", { "é": 0xe9, "à": 0xe0, "ô": 0xf4, "è": 0xe8 });
+  assert.equal((await send(western, "text/plain", "note.txt")).structuredContent.document_text, "Café à côté, très bien");
+
+  const declared = Buffer.concat([Buffer.from('<html><head><meta charset="windows-1250"></head><body><p>'), Buffer.from([0x9a, 0xe8]), Buffer.from("</p></body></html>")]);
+  assert.equal((await send(declared, "text/html", "pagina.html")).structuredContent.document_text, "šč");
+
+  const utf8 = (await send(Buffer.from("Știință și țară ✓"), "text/plain", "utf8.txt")).structuredContent;
+  assert.equal(utf8.document_text, "Știință și țară ✓");
+});

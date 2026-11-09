@@ -122,15 +122,56 @@ function tidyText(text: string): string {
 }
 
 /**
- * Bytes as text: UTF-16 by its byte-order mark, otherwise UTF-8, with any
- * invalid sequence replaced. Only the first `limit` bytes are decoded: no
- * budget needs more.
+ * Bytes as text: UTF-16 by its byte-order mark; the charset an HTML or XML
+ * file declares; UTF-8 when the bytes are valid UTF-8; otherwise a legacy
+ * Windows code page, Central European (1250, which Romanian Excel saves CSV
+ * in) or Western (1252), whichever the letters point to. Only the first
+ * `limit` bytes are decoded: no budget needs more.
  */
 export function decodeText(bytes: Uint8Array, limit: number): string {
   const head = bytes.subarray(0, Math.min(bytes.length, limit));
   if (head[0] === 0xff && head[1] === 0xfe) return new TextDecoder("utf-16le").decode(head.subarray(2));
   if (head[0] === 0xfe && head[1] === 0xff) return new TextDecoder("utf-16be").decode(head.subarray(2));
-  return new TextDecoder("utf-8").decode(head).replace(/^\ufeff/, "");
+  if (head[0] === 0xef && head[1] === 0xbb && head[2] === 0xbf) return new TextDecoder("utf-8").decode(head.subarray(3));
+  const declared = declaredCharset(head);
+  if (declared !== null && declared !== "utf-8") return new TextDecoder(declared).decode(head);
+  try {
+    // `stream`: a character the limit cut in two is not an error.
+    return new TextDecoder("utf-8", { fatal: true }).decode(head, { stream: head.length < bytes.length });
+  } catch {
+    return new TextDecoder(legacyCodePage(head)).decode(head);
+  }
+}
+
+/** The charset a file names for itself (`<meta charset>`, `http-equiv` content, `<?xml encoding?>`), when this runtime decodes it. */
+function declaredCharset(head: Uint8Array): string | null {
+  const start = Buffer.from(head.buffer, head.byteOffset, Math.min(head.length, 4096)).toString("latin1");
+  const named = /<meta[^>]*?charset\s*=\s*["']?\s*([\w.:-]+)/i.exec(start)?.[1] ?? /^\s*<\?xml[^>]*?encoding\s*=\s*["']([\w.:-]+)/i.exec(start)?.[1];
+  if (named === undefined) return null;
+  try {
+    return new TextDecoder(named).encoding;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Bytes that read as a letter in Windows-1250 (ă ş ţ Ş Ţ Ă ą Ą ł ś Ś ź Ź ť Ť ľ)
+ * where Windows-1252 has a symbol or a rare letter, and the reverse (à è ò ì
+ * ñ õ æ ø å À È Ñ ù ð ï). The two pages agree on most other letters
+ * (é á í ó ú ä ö ü ß â î ç), so these decide.
+ */
+const CP1250_SIGNS = new Set([0xe3, 0xc3, 0xba, 0xaa, 0xfe, 0xde, 0xb9, 0xa5, 0xb3, 0x9c, 0x8c, 0x9f, 0x8f, 0x9d, 0x8d, 0xbe]);
+const CP1252_SIGNS = new Set([0xe0, 0xe8, 0xf2, 0xec, 0xf1, 0xf5, 0xe6, 0xf8, 0xe5, 0xc0, 0xc8, 0xd1, 0xf9, 0xf0, 0xef]);
+
+function legacyCodePage(head: Uint8Array): "windows-1250" | "windows-1252" {
+  let central = 0;
+  let western = 0;
+  for (const byte of head) {
+    if (CP1250_SIGNS.has(byte)) central++;
+    else if (CP1252_SIGNS.has(byte)) western++;
+  }
+  return central > western ? "windows-1250" : "windows-1252";
 }
 
 const ENTITIES: Record<string, string> = { amp: "&", lt: "<", gt: ">", quot: '"', apos: "'", nbsp: " " };
