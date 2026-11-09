@@ -28,11 +28,15 @@ The 23, each with what it requires: `learn` (), `get_status` (),
 `list_contacts` (), `link_account` (`phone`), `search` (`query`), `get_group_info` (`group_id`),
 `confirm_send` (`draft_id`), `manage_group` (`action`),
 `read_messages` (`chat_id`), `remember` (`chat_id`), `get_message`
-(`message_id`), `get_media` (`message_id`, or `message_ids` instead), `send_message` (`chat_id`, `text`),
+(`message_id`), `get_media` (), `send_message` (`chat_id`, `text`),
 `edit_message` (`message_id`, `text`), `react_to_message` (`message_id`,
 `emoji`), `delete_message` (`message_id`, `for_everyone`), `manage_chat`
 (`chat_id`, `action`), `scheduled_messages` (), `reminder` ().
 An empty argument list means the tool requires nothing.
+
+`get_media` is the one exception the list cannot show: it takes exactly one of
+`message_id` and `message_ids`, which its schema cannot say, so neither is
+required there; a call with neither or both is refused with `INVALID_ID`.
 
 16 declare an output schema and answer in that shape, as an SDK client's
 own validator checks it; the seven without one are the six of the integration

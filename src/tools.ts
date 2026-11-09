@@ -1058,7 +1058,7 @@ const TOOLS: readonly ToolDef[] = [
         .min(1)
         .max(100)
         .optional()
-        .describe('What the user calls them ("Ana", "mamei", "fotbal"), or a number or id'),
+        .describe('What the user calls them ("Ana", "mamei"), a number or an id'),
       qualifier: z.string().max(100).optional().describe('Tells two apart: "contabilitate", a group, the last 4 digits'),
       kind: z.enum(["person", "group", "any"]).default("any"),
       tag: z.string().min(1).optional().describe("List everyone filed under this tag instead"),
@@ -1084,7 +1084,7 @@ const TOOLS: readonly ToolDef[] = [
   tool({
     name: "get_group_info",
     title: "Get WhatsApp group info",
-    description: `A group's name, description, owner and participants (up to 500), whether the account is admin, its settings, its community, and the invite link for an admin. Call it before manage_group.`,
+    description: `A group's name, description, owner and participants (up to 500), whether the account is admin, its settings (info_locked, member_add_mode, join_approval, disappearing_seconds), its community, and the invite link for an admin. Call it before manage_group.`,
     schema: { group_id: chatId.describe("<id>@g.us") },
     outputSchema: GROUP_INFO_OUTPUT,
     write: false,
@@ -1120,7 +1120,7 @@ const TOOLS: readonly ToolDef[] = [
     description: `What a message's media holds: a voice note or audio as its transcript (kept once made; an API provider bills it); a photo or sticker as an image; a video as a sheet of frames; a document as its text and first page. A local call also saves the file (save_to). MEDIA_UNAVAILABLE: gone.`,
     schema: {
       message_id: messageId.optional(),
-      message_ids: z.array(messageId).min(2).max(MAX_MEDIA_BATCH).optional().describe("Several at once, instead of message_id"),
+      message_ids: z.array(messageId).min(2).max(MAX_MEDIA_BATCH).optional().describe("Up to 8, instead of message_id"),
       save_to: z.string().min(1).optional().describe("Absolute directory; a recording then makes no transcript"),
       language: z.string().min(2).max(16).optional().describe('What is spoken, e.g. "ro"'),
       detail: z.enum(["standard", "high"]).optional().describe("high: small print"),
@@ -1431,8 +1431,8 @@ const TOOLS: readonly ToolDef[] = [
     schema: {
       action: z.enum(["create", "list", "cancel"]).default("list"),
       chat_id: chatId.optional().describe("create: the chat it is about"),
-      note: z.string().min(1).max(1000).optional().describe("create: what to remind the user of"),
-      after_hours: z.number().min(0.25).max(8760).optional().describe("create: due this many hours from now"),
+      note: z.string().min(1).max(1000).optional().describe("create: the reminder"),
+      after_hours: z.number().min(0.25).max(8760).optional().describe("create: due in this many hours"),
       due_at: z.string().min(10).max(40).optional().describe('create: "2026-10-14T09:00" in time_zone, or with an offset'),
       time_zone: z.string().min(1).max(64).optional().describe("IANA zone for due_at; the server's by default"),
       condition: z.enum(["always", "no_reply"]).default("always").describe("no_reply: skipped if someone wrote in the chat after it was set"),
