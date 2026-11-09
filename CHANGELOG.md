@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- **Live messages no longer wait on the database's housekeeping.** The write-ahead log is folded into the database file from a timer once writes go quiet, instead of inside whichever commit fills 1,000 pages. A live message's store drops from 3.9 ms to 0.7 ms at the 99th percentile, commits during a history sync from 15 ms to 5 ms, and a first sync runs about 12% faster. A batch of message updates (receipts after a reconnect) commits once. No schema migration or setting.
+
 ## 1.6.0
 
 - **Who someone is shows wherever they do.** The tags filed with `remember` ride beside the person in `list_chats`, a message's `sender` in `read_messages` and `search`, and `catch_up` (`waiting`, `direct`), next to the note: `Ana (+40 700 000 002) · #client · dosar deschis`.

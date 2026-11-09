@@ -43,7 +43,11 @@ process mid-write cannot leave you re-linking your phone.
 Each account keeps what it has seen in one SQLite file, `wazap.sqlite` (`0600`,
 in a `0700` folder), written with a full sync on every commit. Nothing of the
 history is held in memory: every read, search and restart goes to the file, and
-only small bounded caches stay in the process.
+only small bounded caches stay in the process. The write-ahead log beside it is
+folded into the file a second after writes go quiet (at least every 15 seconds
+under a steady stream), so no commit pauses to do it; only a log that reaches
+about 40 MB without a quiet second, as a first history sync can, is folded by
+the commit that gets there.
 
 - **Upgrade.** A data dir an earlier wazap wrote has `store.json`, `history/`,
   `retention.json`, `notes.json`, `recall/` and perhaps the beta

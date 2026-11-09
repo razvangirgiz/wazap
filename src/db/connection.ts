@@ -37,6 +37,27 @@ export const DEFAULT_CHUNK_SIZE = 200;
 const DEFAULT_CHUNK_BUDGET_MS = 15;
 const DEFAULT_CHECKPOINT_DELAY_MS = 2_000;
 const MAX_CHECKPOINT_RETRIES = 6;
+/**
+ * Writes quiet this long, the write-ahead log is checkpointed from a timer,
+ * off every commit's path. SQLite's own checkpoint runs inside whichever
+ * commit crosses its threshold — a live message, a tool's write — and stalls
+ * that commit 15-30 ms; a checkpoint after a quiet second copies only the few
+ * pages the last writes touched, each once however often it was rewritten.
+ */
+const DEFAULT_IDLE_CHECKPOINT_MS = 1_000;
+/** Under a steady trickle of writes the log is still checkpointed at least this often, so reads never wade through a long one. */
+const IDLE_CHECKPOINT_MAX_MS = 15_000;
+/** A checkpoint a reader kept from finishing is tried again this many times before the next write asks. */
+const IDLE_CHECKPOINT_RETRIES = 4;
+/**
+ * The backstop under the idle checkpoint: a log this many pages long (~40 MB)
+ * is checkpointed by the commit that reaches it, as SQLite does by itself at
+ * 1,000. Only a stretch of writes with no quiet second in it — a first
+ * history sync — gets there.
+ */
+const WAL_GUARD_PAGES = 10_000;
+/** When the log starts over, its file is cut back to this size, so one long sync does not leave 40 MB beside the database. */
+const WAL_SIZE_LIMIT_BYTES = 8 * 1024 * 1024;
 
 export interface ConnectionOptions {
   /** status and doctor: never migrates, never writes, refuses a schema it would have to change. */
@@ -68,6 +89,13 @@ export interface ConnectionOptions {
    * 0 turns the timer off; bulk deletes always try a checkpoint when they finish.
    */
   checkpointDelayMs?: number;
+  /**
+   * Writes quiet this long, a passive checkpoint moves the write-ahead log
+   * into the database file from a timer, and commits stop checkpointing below
+   * the ~40 MB backstop. 0 leaves checkpoints to SQLite, inside the commit
+   * that fills 1,000 pages. Writable opens only.
+   */
+  idleCheckpointMs?: number;
   /**
    * The copy taken beside an existing database before it is migrated. Unset
    * follows WAZAP_PRE_MIGRATION_BACKUP (on unless it says otherwise); false
@@ -313,6 +341,12 @@ export class Connection {
   private bulkTail: Promise<unknown> = Promise.resolve();
   private checkpointTimer: NodeJS.Timeout | null = null;
   private checkpointRetries = 0;
+  private readonly idleCheckpointMs: number;
+  private idleTimer: NodeJS.Timeout | null = null;
+  /** performance.now() of the last commit, and of the first one the log has held since its last idle checkpoint (null: none). */
+  private lastCommitAt = 0;
+  private dirtySince: number | null = null;
+  private idleRetries = 0;
   private readonly timeoutMs: number;
   private closed = false;
 
@@ -326,6 +360,7 @@ export class Connection {
     this.chunkSize = Math.max(1, Math.floor(options.chunkSize ?? DEFAULT_CHUNK_SIZE));
     this.chunkBudgetMs = Math.max(1, options.chunkBudgetMs ?? DEFAULT_CHUNK_BUDGET_MS);
     this.checkpointDelayMs = Math.max(0, options.checkpointDelayMs ?? DEFAULT_CHECKPOINT_DELAY_MS);
+    this.idleCheckpointMs = this.readOnly ? 0 : Math.max(0, options.idleCheckpointMs ?? DEFAULT_IDLE_CHECKPOINT_MS);
     this.timeoutMs = Math.max(0, Math.floor(options.timeoutMs ?? DEFAULT_TIMEOUT_MS));
   }
 
@@ -384,6 +419,9 @@ export class Connection {
       }
       db.exec("PRAGMA synchronous = FULL; PRAGMA secure_delete = ON; PRAGMA foreign_keys = ON;");
       const connection = new Connection(path, db, options);
+      if (connection.idleCheckpointMs > 0) {
+        db.exec(`PRAGMA wal_autocheckpoint = ${WAL_GUARD_PAGES}; PRAGMA journal_size_limit = ${WAL_SIZE_LIMIT_BYTES};`);
+      }
       connection.migrate();
       return connection;
     } catch (err) {
@@ -485,7 +523,10 @@ export class Connection {
   }
 
   run(sql: string, ...params: SQLInputValue[]): number {
-    return Number(this.stmt(sql).run(...params).changes);
+    const changes = Number(this.stmt(sql).run(...params).changes);
+    // A statement on its own commits on its own.
+    if (!this.db.isTransaction) this.committed();
+    return changes;
   }
 
   /**
@@ -499,10 +540,68 @@ export class Connection {
     try {
       const result = body();
       this.db.exec("COMMIT");
+      this.committed();
       return result;
     } catch (err) {
       if (this.db.isTransaction) this.db.exec("ROLLBACK");
       throw err;
+    }
+  }
+
+  /**
+   * A commit grew the log: the idle checkpoint is due a quiet second from now,
+   * and no later than IDLE_CHECKPOINT_MAX_MS after the first commit it covers.
+   * One timer serves a whole burst; it re-arms itself rather than being reset
+   * on every commit.
+   */
+  private committed(): void {
+    if (this.idleCheckpointMs === 0) return;
+    const now = performance.now();
+    this.lastCommitAt = now;
+    if (this.dirtySince === null) {
+      this.dirtySince = now;
+      this.idleRetries = 0;
+    }
+    if (this.idleTimer === null) this.armIdleCheckpoint(this.idleCheckpointMs);
+  }
+
+  private armIdleCheckpoint(delay: number): void {
+    this.idleTimer = setTimeout(() => this.idleCheckpoint(), Math.max(1, Math.ceil(delay)));
+    this.idleTimer.unref();
+  }
+
+  /**
+   * A passive checkpoint once writes went quiet: it copies what it can and
+   * never waits on a reader or a writer. One a reader kept from finishing
+   * tries again a few times; the next commit asks anew either way.
+   */
+  private idleCheckpoint(): void {
+    this.idleTimer = null;
+    if (this.closed || this.dirtySince === null) return;
+    const now = performance.now();
+    const quiet = now - this.lastCommitAt;
+    const pending = now - this.dirtySince;
+    if (quiet < this.idleCheckpointMs && pending < IDLE_CHECKPOINT_MAX_MS) {
+      this.armIdleCheckpoint(Math.min(this.idleCheckpointMs - quiet, IDLE_CHECKPOINT_MAX_MS - pending));
+      return;
+    }
+    if (this.db.isTransaction) {
+      this.armIdleCheckpoint(this.idleCheckpointMs);
+      return;
+    }
+    this.dirtySince = null;
+    let done: boolean;
+    try {
+      const row = this.db.prepare("PRAGMA wal_checkpoint(PASSIVE)").get() as CheckpointResult | undefined;
+      done = row === undefined || (row.busy === 0 && row.checkpointed >= row.log);
+    } catch {
+      // The next commit asks again.
+      done = true;
+    }
+    if (!done && this.idleRetries < IDLE_CHECKPOINT_RETRIES) {
+      this.idleRetries++;
+      this.dirtySince = performance.now() - IDLE_CHECKPOINT_MAX_MS;
+      this.armIdleCheckpoint(this.idleCheckpointMs * 2 ** this.idleRetries);
     }
   }
 
@@ -557,6 +656,8 @@ export class Connection {
       this.scheduleCheckpoint(true);
     } else {
       this.checkpointRetries = 0;
+      // The log is empty: the idle checkpoint has nothing left to do.
+      this.dirtySince = null;
     }
     return result;
   }
@@ -616,6 +717,10 @@ export class Connection {
     if (this.checkpointTimer !== null) {
       clearTimeout(this.checkpointTimer);
       this.checkpointTimer = null;
+    }
+    if (this.idleTimer !== null) {
+      clearTimeout(this.idleTimer);
+      this.idleTimer = null;
     }
     this.statements.clear();
     if (this.db.isOpen) this.db.close();
