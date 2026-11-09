@@ -138,7 +138,7 @@ async function documentRendition(input: RenderInput, format: DocumentFormat): Pr
   const page = drawn === null ? null : await pagePicture(drawn, input.detail, hasText && input.detail === "standard" ? PAGE_BESIDE_TEXT_BYTES : undefined);
   const page_image = page === null ? {} : { page_image: { ...page, page: pages.from } };
   if (read instanceof Error) {
-    return { kind: "document", format, text: null, truncated: false, ...page_image, note: `Its text could not be read: ${read.message}.` };
+    return { kind: "document", format, text: null, truncated: false, unreadable: true, ...page_image, note: `Its text could not be read: ${read.message}.` };
   }
   const note = read.scanned
     ? page === null
@@ -150,6 +150,7 @@ async function documentRendition(input: RenderInput, format: DocumentFormat): Pr
     format,
     text: read.text === "" ? null : read.text,
     truncated: read.truncated,
+    ...(read.unreadable === true ? { unreadable: true } : {}),
     ...(read.pages_total === undefined ? {} : { pages_total: read.pages_total }),
     ...(read.unit === undefined || read.pages_total === undefined ? {} : { unit: read.unit }),
     ...(read.pages === undefined || read.text === "" ? {} : { pages: read.pages }),

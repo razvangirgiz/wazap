@@ -30,6 +30,8 @@ export interface TextResult {
   unit?: PageUnit;
   /** A PDF whose asked pages carry no text at all: a scan. */
   scanned?: boolean;
+  /** The file could not be read (`note` says why): no text is not an empty file. */
+  unreadable?: boolean;
   note?: string;
 }
 
@@ -47,7 +49,7 @@ export async function extractText(job: TextJob): Promise<TextResult> {
       try {
         return await officeText(job);
       } catch (err) {
-        if (err instanceof ZipError) return { text: "", truncated: false, note: `This ${job.format} could not be read: ${err.message}.` };
+        if (err instanceof ZipError) return { text: "", truncated: false, unreadable: true, note: `This ${job.format} could not be read: ${err.message}.` };
         throw err;
       }
     case "html":

@@ -782,6 +782,8 @@ export type MediaRendition =
       /** What `pages` counts here. */
       unit?: "page" | "slide" | "part";
       truncated: boolean;
+      /** The read failed (`note` says why), as opposed to a document with no text in it. */
+      unreadable?: boolean;
       page_image?: MediaPicture & { page: number };
       note?: string;
     }

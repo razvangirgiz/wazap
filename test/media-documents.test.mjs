@@ -11,7 +11,7 @@ import { rmSync } from "node:fs";
 import sharp from "sharp";
 
 import { WhatsAppService } from "../dist/whatsapp.js";
-import { documentFormat, documentText } from "../dist/documents.js";
+import { DOCUMENT_MEMORY, documentFormat, documentText } from "../dist/documents.js";
 import { ZipReader, ZIP_LIMITS } from "../dist/zip.js";
 import { which } from "../dist/transcribe/local.js";
 import { connectedService, schemaCheckedTools, textError } from "./helpers.mjs";
@@ -308,4 +308,41 @@ test("a document is sorted by mime, then name, then its first bytes", () => {
 
 test("a document over the reading limit is refused before a thread is started", async () => {
   await assert.rejects(documentText("pdf", Buffer.alloc(50_000_001), { from: 1, to: null }), /over 50 MB/);
+});
+
+test("what wazap says of a read is in the text block too: a refusal, a failed read, a page past the end, a file cut short", async (t) => {
+  const { send } = setup(t);
+  const text = (result) => result.content[0].text;
+
+  const bomb = await send(pdfWithFont(await deflatedZeros(100), "/Filter /FlateDecode"), "application/pdf", "bomb.pdf");
+  assert.match(text(bomb), /\(Its text could not be read: a stream in it unpacks to more than 64 MB \(a compression bomb\)\.\)/);
+  assert.doesNotMatch(text(bomb), /no text in this/, "an unread file is not called empty");
+
+  const zipBomb = await send(zipOf({ "word/document.xml": Buffer.alloc(8_000_000, 0x41) }), DOCX, "bomb.docx");
+  assert.match(text(zipBomb), /could not be read: .*ratio/);
+  assert.doesNotMatch(text(zipBomb), /no text in this/);
+
+  const past = await send(pdfOf([["unu"], ["doi"]]), "application/pdf", "a.pdf", { pages: "9" });
+  assert.match(text(past), /\(no text in this pdf\)\n\(It has 2 pages; page 9 is past its end\.\)/);
+
+  // 9 MB of HTML: read up to 8 MB, and the answer says so before the quote, in wazap's voice.
+  const html = Buffer.from(`<html><body>${"<p>Rând de text într-o pagină foarte lungă.</p>\n".repeat(190_000)}</body></html>`);
+  assert.ok(html.length > 9_000_000);
+  const long = await send(html, "text/html", "pagina.html");
+  const lines = text(long).split("\n");
+  const said = lines.findIndex((line) => /Only its first 8 MB is read here/.test(line));
+  const quote = lines.findIndex((line) => line.startsWith("<<<document_text"));
+  assert.ok(said > 0 && said < quote, `${said} before ${quote}`);
+});
+
+test("a read the memory watch stops is not drawn either", async (t) => {
+  const saved = DOCUMENT_MEMORY.readGrowthBytes;
+  DOCUMENT_MEMORY.readGrowthBytes = 64_000_000;
+  t.after(() => (DOCUMENT_MEMORY.readGrowthBytes = saved));
+  const { send } = setup(t);
+  // A font labelled as an image passes the stream check; pdf.js loads it whole and the watch stops the read.
+  const result = await send(pdfWithFont(await deflatedZeros(300), "/Subtype /Image /Filter /FlateDecode"), "application/pdf", "ascuns.pdf");
+  assert.equal(result.structuredContent.view, undefined, "the renderer never started on it");
+  assert.equal(result.content.filter((block) => block.type === "image").length, 0);
+  assert.match(result.content[0].text, /needs more memory than a document read is given/);
 });
