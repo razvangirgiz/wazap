@@ -10,6 +10,8 @@ import assert from "node:assert/strict";
 import { rmSync } from "node:fs";
 import { Readable } from "node:stream";
 
+import { assertMediaContent } from "baileys";
+
 import { WhatsAppService } from "../dist/whatsapp.js";
 import { RateLimiter } from "../dist/ratelimit.js";
 import { connectedService, schemaCheckedTools, textError } from "./helpers.mjs";
@@ -68,6 +70,45 @@ test("a 410 asks the phone to upload the file again, retries once, and stores th
   await call("get_media", { message_id: sid });
   assert.deepEqual(opened, ["/fresh"], "the next call goes straight to it");
   assert.equal(asked.length, 1);
+});
+
+test("an expired round video (ptv) is asked of the phone as the video it is", async (t) => {
+  const { svc, sock, call } = setup(t);
+  sock.ev.emit("messages.upsert", {
+    type: "notify",
+    messages: [
+      {
+        key: { remoteJid: ANA, fromMe: false, id: "PTV" },
+        message: { ptvMessage: { mimetype: "video/mp4", seconds: 4, fileLength: 9, url: "https://mmg.whatsapp.net/old", directPath: "/old", mediaKey: Buffer.alloc(32, 8) } },
+        messageTimestamp: Math.floor(Date.now() / 1000) - 90 * 86400,
+      },
+    ],
+  });
+  const sid = `false_${ANA}_PTV`;
+  const opened = [];
+  svc.openMediaStream = async (message) => {
+    const path = message.message.ptvMessage.directPath;
+    opened.push(path);
+    if (path === "/old") throw cdnError(410);
+    return Readable.from([Buffer.from("not-a-video")]);
+  };
+  // Baileys' own check: a ptvMessage is "not a media message" to it.
+  assert.throws(() => assertMediaContent({ ptvMessage: {} }), /not a media message/);
+  const asked = [];
+  sock.updateMediaMessage = async (message) => {
+    const node = assertMediaContent(message.message);
+    asked.push(message.key.id);
+    node.directPath = "/fresh";
+    node.url = "https://mmg.whatsapp.net/fresh";
+    return message;
+  };
+  const out = await call("get_media", { message_id: sid });
+  assert.ok(!out.isError, JSON.stringify(out.content));
+  assert.deepEqual(asked, ["PTV"]);
+  assert.deepEqual(opened, ["/old", "/fresh"]);
+  const stored = svc.views.rawOf(svc.db.messages.get(sid)).message;
+  assert.equal(stored.ptvMessage.directPath, "/fresh", "stored as the round video it was");
+  assert.equal(stored.videoMessage, undefined);
 });
 
 test("a phone that does not answer in time is MEDIA_UNAVAILABLE saying it must be online", async (t) => {

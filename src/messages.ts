@@ -1262,6 +1262,18 @@ export function downloadableMessage(raw: WAMessage): WAMessage {
 }
 
 /**
+ * The message as Baileys' re-upload request (updateMediaMessage) reads it,
+ * which knows only documents, images, videos, audio and stickers: a round
+ * video (ptv) shown as the video it is, a Lottie sticker as for a download.
+ * The media node is the same object, so the fresh url and directPath Baileys
+ * writes into it land on `raw` too.
+ */
+export function reuploadableMessage(raw: WAMessage): WAMessage {
+  const ptv = analyze(raw).inner?.ptvMessage;
+  return ptv ? { ...raw, message: { videoMessage: ptv } } : downloadableMessage(raw);
+}
+
+/**
  * The preview WhatsApp ships inside a photo, video or document message: a JPEG
  * of a few KB, there before any download. Enough to tell a receipt from a baby.
  */

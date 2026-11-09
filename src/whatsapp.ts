@@ -38,7 +38,7 @@ import { isNoiseJid, normalizePhone } from "./ids.js";
 import { log, logError } from "./logger.js";
 import { describe } from "./outgoing-media.js";
 import { momentsOf } from "./store.js";
-import { downloadableMessage, isoWithOffset, mediaInfo, messageIdFor, protoNumber } from "./messages.js";
+import { downloadableMessage, isoWithOffset, mediaInfo, messageIdFor, protoNumber, reuploadableMessage } from "./messages.js";
 import { PAIRING_TIMEOUT_MS, WA_BROWSER, prettyCode, socketFactory, startPairing } from "./pairing.js";
 import { transcribeFile, transcribeReady } from "./transcribe/index.js";
 import { DraftStore, type DraftPayload, type DraftSchedule, type DraftView } from "./drafts.js";
@@ -2090,8 +2090,8 @@ export class WhatsAppService implements WhatsAppApi {
    */
   private async reuploadMedia(sock: WASocket, messageId: string, raw: WAMessage): Promise<WAMessage> {
     this.reuploads.take();
-    // Baileys refreshes the media node in place; for a Lottie sticker that node sits inside `raw` too.
-    const target = downloadableMessage(raw);
+    // Baileys refreshes the media node in place; for a Lottie sticker or a round video that node sits inside `raw` too.
+    const target = reuploadableMessage(raw);
     let timer: NodeJS.Timeout | undefined;
     const late = new Promise<"late">((resolve) => {
       timer = setTimeout(() => resolve("late"), this.reuploadTimeoutMs);
