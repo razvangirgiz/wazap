@@ -261,9 +261,11 @@ small JPEG of each photo as an image block, newest first, up to 12 per call,
 and labels each message line with the preview it belongs to, so a catch-up can
 say "a photo of a receipt" without a download. WhatsApp used to ship such a
 preview inside every image message and in 2026 almost never does, so when
-none is there wazap downloads the photo once, shrinks it to 320 px on this
-machine with pure JavaScript, and keeps the result as a file under
-`previews/` in the data directory, so a restart does not redo it. A video gets
+none is there wazap downloads the photo (or reads the [kept copy](data.md#kept-media),
+even with the link down) once, shrinks it to 320 px on this machine with sharp,
+off the event loop and for any image format, and keeps the result as a file under
+`previews/` in the data directory, so a restart does not redo it. Where sharp's
+prebuilt binary does not load, a JPEG is shrunk in pure JavaScript instead. A video gets
 one frame, taken by ffmpeg a second in, when ffmpeg is installed. The first
 call over a day of photos takes a few seconds; the next is instant.
 

@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- **Previews no longer stall the server.** Photo previews are made with sharp, on libvips' own threads, instead of pure JavaScript on the event loop that every session, the WhatsApp link and the webhooks share. A 12 MP photo's preview takes about 90 ms instead of 1.4 s, and the event loop stays free (longest stall 3 ms, was 1.6 s); peak memory for it drops from about 950 MB to under 100 MB. PNG, WebP and GIF photos get previews too, a photo is turned the way its EXIF says, an image claiming more than 100 MP is refused before it is decoded, and a kept copy is previewed even with the link down. sharp, already installed with Baileys, is now a direct dependency; where its prebuilt binary does not load, JPEG previews fall back to the old path.
+
 ## 1.6.0
 
 - **Who someone is shows wherever they do.** The tags filed with `remember` ride beside the person in `list_chats`, a message's `sender` in `read_messages` and `search`, and `catch_up` (`waiting`, `direct`), next to the note: `Ana (+40 700 000 002) · #client · dosar deschis`.

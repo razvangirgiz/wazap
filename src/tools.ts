@@ -1486,7 +1486,7 @@ function previewNote(messages: MessageView[], previews: Preview[], asked: boolea
       ? `${previews.length} preview${previews.length === 1 ? "" : "s"} attached, numbered in the order of the image blocks`
       : null,
     missing > 0
-      ? `${missing} photo${missing === 1 ? "" : "s"} without a preview (over the ${MAX_PREVIEWS} per call, expired, not JPEG, or out of time; call again for more)`
+      ? `${missing} photo${missing === 1 ? "" : "s"} without a preview (over the ${MAX_PREVIEWS} per call, expired, unreadable, or out of time; call again for more)`
       : null,
   ].filter((part): part is string => part !== null);
   return parts.length > 0 ? `${parts.join("; ")}.` : null;
@@ -1505,7 +1505,7 @@ function previewGap(messages: MessageView[], previews: Preview[], asked: boolean
   if (!asked) return null;
   const missing = messages.filter((m) => m.type === "image").length - previews.length;
   if (missing <= 0) return null;
-  return `${missing} photo${missing === 1 ? "" : "s"} without a preview (over ${MAX_PREVIEWS} per call, expired, not JPEG, or out of time): call again for more.`;
+  return `${missing} photo${missing === 1 ? "" : "s"} without a preview (over ${MAX_PREVIEWS} per call, expired, unreadable, or out of time): call again for more.`;
 }
 
 /** What the user filed about a person, after their name: " · #tag #tag · note", or "". */

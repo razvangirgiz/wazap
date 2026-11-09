@@ -2,8 +2,10 @@
  * A small JPEG of a photo, made here. WhatsApp used to ship a preview inside
  * every image message; in 2026 almost none carries one (1 in 500 in a real
  * account), so the preview an agent needs to tell a receipt from a baby has
- * to be computed from the photo itself. jpeg-js is pure JavaScript: no
- * native build, no sharp, and the photo never leaves the machine.
+ * to be computed from the photo itself, and the photo never leaves the
+ * machine. sharp makes it (src/images.ts); makePreview here is the fallback
+ * for an install where sharp does not load: jpeg-js is pure JavaScript and
+ * needs no native build, but it decodes on the event loop.
  */
 import { execFile } from "node:child_process";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
