@@ -7,6 +7,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFile, spawnSync } from "node:child_process";
+import { randomBytes } from "node:crypto";
 import { rmSync } from "node:fs";
 import { createServer, request } from "node:http";
 import { createGunzip, gunzipSync } from "node:zlib";
@@ -227,4 +228,33 @@ test("an uncompressed SSE stream starts at once and streams the same way", { tim
   assert.equal(event?.text, ": keepalive");
   assert.ok(event.at - sent < 150);
   stream.close();
+});
+
+test("a compressed answer settles when its client stops reading and then leaves", { timeout: 15_000 }, async (t) => {
+  // One event the size of get_media's largest inline image, base64: far more
+  // than the encoder and the socket buffer between them, so the encoder waits
+  // for room the paused client never makes.
+  const event = `event: message\ndata: {"x":"${randomBytes(1_000_000).toString("base64")}"}\n\n`;
+  let settled;
+  const server = createServer((req, res) => {
+    const body = new ReadableStream({
+      start: (controller) => setTimeout(() => controller.enqueue(new TextEncoder().encode(event)), COMPRESS_HOLD_MS + 10),
+    });
+    settled = writeResponse(new Response(body, { headers: { "content-type": "text/event-stream" } }), res, true).then(() => Date.now());
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  t.after(() => server.close());
+  const answer = await new Promise((resolve, reject) => {
+    const req = request({ host: "127.0.0.1", port: server.address().port, headers: { "accept-encoding": "gzip" } }, resolve);
+    req.on("error", reject);
+    req.end();
+  });
+  assert.equal(answer.headers["content-encoding"], "gzip");
+  answer.pause();
+  await new Promise((resolve) => setTimeout(resolve, 300));
+  const left = Date.now();
+  answer.destroy();
+  const at = await Promise.race([settled, new Promise((resolve) => setTimeout(() => resolve(null), 3_000))]);
+  assert.notEqual(at, null, "writeResponse never settled after the client left");
+  assert.ok(at - left < 1_000, `settled ${at - left} ms after the client left`);
 });

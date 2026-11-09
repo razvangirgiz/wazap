@@ -158,11 +158,18 @@ async function streamCompressed(reader: Reader, res: ServerResponse, gone: () =>
   res.flushHeaders();
   const gzip = gzipStream();
   gzip.on("error", () => res.destroy());
+  // A client that stopped reading and then left would otherwise strand the
+  // encoder, and the answer inside it, for good: the pipe only unpipes from a
+  // closed response, and the encoder never drains. After a finished answer
+  // this destroys an encoder that has nothing left to give.
+  res.once("close", () => gzip.destroy());
   gzip.pipe(res);
+  const over = (): boolean => gone() || gzip.destroyed;
   // Each event leaves compressed at once: a sync flush after every chunk the
   // transport writes, keep-alive comments included.
   const send = async (chunk: Buffer): Promise<void> => {
     if (!gzip.write(chunk)) await drained(gzip);
+    if (gzip.destroyed) return;
     await new Promise<void>((resolve) => {
       gzip.once("close", resolve);
       gzip.flush(SYNC_FLUSH, () => {
@@ -172,16 +179,16 @@ async function streamCompressed(reader: Reader, res: ServerResponse, gone: () =>
     });
   };
   for (const chunk of held) {
-    if (gone()) break;
+    if (over()) break;
     await send(chunk);
   }
-  while (!gone()) {
+  while (!over()) {
     const next = await read;
-    if (next.done || gone()) break;
+    if (next.done || over()) break;
     await send(Buffer.from(next.value));
     read = reader.read();
   }
-  if (gone()) gzip.destroy();
+  if (over()) gzip.destroy();
   else gzip.end();
 }
 
