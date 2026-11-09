@@ -122,25 +122,16 @@ async function videoRendition(input: RenderInput): Promise<MediaRendition> {
 /**
  * A document's text from the first asked page until the budget, and for a
  * PDF a picture of that page: the layout, a signature, or for a scan with no
- * text layer, the only way to read it. The page is drawn beside the text
- * read, but only once the PDF's streams passed their check, and the drawing
- * is stopped when the read finds the file hostile.
+ * text layer, the only way to read it. The page is drawn after the text is
+ * read, and not at all when the read found the file hostile: the read loads
+ * that page's fonts and content too, so one PDF never has two parsers
+ * holding memory at once.
  */
 async function documentRendition(input: RenderInput, format: DocumentFormat): Promise<MediaRendition> {
   const pages = input.pages ?? { from: 1, to: null };
-  let passed: (ok: boolean) => void = () => {};
-  const checked = new Promise<boolean>((resolve) => (passed = resolve));
-  const stop = new AbortController();
-  const drawing =
-    format === "pdf"
-      ? checked.then((ok) => (ok ? pdfPageImage(input.buffer, pages.from, VIEW_DETAILS[input.detail].edge, stop.signal) : null))
-      : Promise.resolve(null);
-  const read = await documentText(format, input.buffer, pages, TEXT_BUDGET, { onChecked: () => passed(true) }).catch((err: unknown) =>
-    err instanceof Error ? err : new Error("unreadable")
-  );
-  passed(false);
-  if (read instanceof DocumentReadError && read.hostile) stop.abort();
-  const drawn = await drawing;
+  const read = await documentText(format, input.buffer, pages, TEXT_BUDGET).catch((err: unknown) => (err instanceof Error ? err : new Error("unreadable")));
+  const hostile = read instanceof DocumentReadError && read.hostile;
+  const drawn = format === "pdf" && !hostile ? await pdfPageImage(input.buffer, pages.from, VIEW_DETAILS[input.detail].edge) : null;
   // Beside its text, the page is a look at the layout, made smaller so the whole answer still fits a hosted
   // client's tool result (text twice, once per block, plus the picture); a scan's page is all there is, at full budget.
   const hasText = !(read instanceof Error) && read.text !== "";

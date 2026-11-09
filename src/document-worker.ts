@@ -3,9 +3,9 @@
  * Office file's XML never holds the event loop, and a hostile file that
  * exhausts memory or loops ends this thread (by its resource limits, the
  * memory watch or the timeout in src/documents.ts), not the server. A PDF's
- * streams are measured first (src/pdf-guard.ts): a compression bomb is
- * refused before pdf.js sees it, and only a file that passed is drawn by
- * poppler. Its console is not the server's stderr guard: anything pdf.js
+ * streams are measured first (src/pdf-guard.ts): a plain compression bomb
+ * is refused before pdf.js sees it, and a file refused here is not drawn by
+ * poppler either. Its console is not the server's stderr guard: anything pdf.js
  * prints is silenced here, and the thread's own stdout is drained by the
  * parent, so nothing reaches the MCP channel.
  */
@@ -25,8 +25,6 @@ const refused = job.format === "pdf" ? pdfBombReason(job.bytes) : null;
 if (refused !== null) {
   parentPort?.postMessage({ ok: false, message: refused, hostile: true });
 } else {
-  // The file passed its check: the parent may start drawing a page while the text is read.
-  parentPort?.postMessage({ checked: true });
   extractText(job).then(
     (result) => parentPort?.postMessage({ ok: true, result }),
     (err: unknown) => parentPort?.postMessage({ ok: false, message: err instanceof Error ? err.message.split("\n")[0] : "unreadable" })

@@ -7,10 +7,10 @@
  *
  * Memory is bounded three ways, since the worker's heap limit does not count
  * the ArrayBuffers pdf.js unpacks streams into: the worker measures a PDF's
- * streams before reading it (src/pdf-guard.ts), the process's resident memory
- * is watched while a worker runs, and the renderer is one child at a time
- * under a memory limit of its own (src/native-run.ts), started only once the
- * file passed its check.
+ * streams before reading it (src/pdf-guard.ts, a first line that a crafted
+ * file can get past), the process's resident memory is watched while a
+ * worker runs, and the renderer is one child at a time under a memory limit
+ * of its own (src/native-run.ts). The two watches are the real bound.
  */
 import { mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -109,17 +109,10 @@ export function documentFormat(mime: string, filename: string | undefined, bytes
 /**
  * The document's text from page `from` (1-based) to `to`, or until the budget
  * is spent, read in a worker thread with a heap cap, a watch on the process's
- * memory and a timeout. `onChecked` is called once a PDF's streams passed
- * their check, before its text is read. Rejects with a DocumentReadError and
- * a short reason when the file cannot be read.
+ * memory and a timeout. Rejects with a DocumentReadError and a short reason
+ * when the file cannot be read.
  */
-export function documentText(
-  format: DocumentFormat,
-  bytes: Buffer,
-  pages: { from: number; to: number | null },
-  budget = TEXT_BUDGET,
-  opts: { onChecked?: () => void } = {}
-): Promise<TextResult> {
+export function documentText(format: DocumentFormat, bytes: Buffer, pages: { from: number; to: number | null }, budget = TEXT_BUDGET): Promise<TextResult> {
   if (bytes.length > DOCUMENT_TEXT_MAX_BYTES) {
     return Promise.reject(new DocumentReadError(`it is over ${DOCUMENT_TEXT_MAX_BYTES / 1_000_000} MB, more than is read here`));
   }
@@ -154,11 +147,7 @@ export function documentText(
           if (process.memoryUsage.rss() - base > DOCUMENT_MEMORY.readGrowthBytes) fail("it needs more memory than a document read is given", true);
         }, WATCH_MS);
         watch.unref();
-        worker.on("message", (message: { checked?: boolean; ok?: boolean; result?: TextResult; message?: string; hostile?: boolean }) => {
-          if (message.checked === true) {
-            if (!settled) opts.onChecked?.();
-            return;
-          }
+        worker.on("message", (message: { ok?: boolean; result?: TextResult; message?: string; hostile?: boolean }) => {
           if (message.ok === true) finish(() => resolve(message.result!));
           else fail(message.message ?? "unreadable", message.hostile === true);
         });
