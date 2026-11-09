@@ -47,7 +47,9 @@ only small bounded caches stay in the process. The write-ahead log beside it is
 folded into the file a second after writes go quiet (at least every 15 seconds
 under a steady stream), so no commit pauses to do it; only a log that reaches
 about 40 MB without a quiet second, as a first history sync can, is folded by
-the commit that gets there. The server reads the file through a memory map of
+the commit that gets there. While a clear, an expiry sweep or a fold runs,
+commits fold every 4 MB as SQLite does by default, so none of its steps
+pauses for a large one. The server reads the file through a memory map of
 up to 256 MB, which the system can take back under memory pressure.
 
 - **Upgrade.** A data dir an earlier wazap wrote has `store.json`, `history/`,

@@ -45,6 +45,33 @@ test("writes gone quiet are checkpointed into the database file by a timer, not 
   }
 });
 
+test("a chunked operation keeps SQLite's own 1,000 pages while it runs, so no chunk's commit copies 10,000", async () => {
+  const { db } = openTemp();
+  try {
+    const seen = [];
+    let steps = 0;
+    const both = Promise.all([
+      db.connection.chunked(() => {
+        seen.push(pragma(db, "wal_autocheckpoint"));
+        return ++steps < 3;
+      }),
+      db.connection.chunked(() => {
+        seen.push(pragma(db, "wal_autocheckpoint"));
+        return false;
+      }),
+    ]);
+    await both;
+    assert.deepEqual([...new Set(seen)], [1000], "every chunk, the overlapping one too");
+    assert.equal(pragma(db, "wal_autocheckpoint"), 10_000, "back to the backstop once the last one ends");
+    await assert.rejects(db.connection.chunked(() => {
+      throw new Error("a chunk that fails");
+    }));
+    assert.equal(pragma(db, "wal_autocheckpoint"), 10_000, "and after one that failed");
+  } finally {
+    db.close();
+  }
+});
+
 test("idleCheckpointMs 0 leaves checkpoints to SQLite, inside the commit, as before", () => {
   const { db } = openTemp({ idleCheckpointMs: 0 });
   try {

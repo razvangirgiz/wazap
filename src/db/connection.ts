@@ -56,6 +56,13 @@ const IDLE_CHECKPOINT_RETRIES = 4;
  * history sync — gets there.
  */
 const WAL_GUARD_PAGES = 10_000;
+/**
+ * SQLite's own threshold, kept while a chunked operation runs: a clear, an
+ * expiry sweep or a fold rewrites (and, secure_delete on, zeroes) pages all
+ * over the file, so one checkpoint of 10,000 of them would stall a chunk's
+ * commit for 100-200 ms where 1,000 at a time cost 15-45 ms each.
+ */
+const BULK_AUTOCHECKPOINT_PAGES = 1_000;
 /** When the log starts over, its file is cut back to this size, so one long sync does not leave 40 MB beside the database. */
 const WAL_SIZE_LIMIT_BYTES = 8 * 1024 * 1024;
 /**
@@ -371,6 +378,8 @@ export class Connection {
   private lastCommitAt = 0;
   private dirtySince: number | null = null;
   private idleRetries = 0;
+  /** Chunked operations running now; while there are any, commits checkpoint at SQLite's own 1,000 pages. */
+  private chunkedRunning = 0;
   private readonly timeoutMs: number;
   private closed = false;
   private namesEpoch = 0;
@@ -652,10 +661,24 @@ export class Connection {
    * so live messages keep flowing while a chat of 50,000 rows is cleared.
    */
   async chunked(step: () => boolean): Promise<void> {
-    for (;;) {
-      if (!this.write(step)) return;
-      await new Promise<void>((resolve) => setImmediate(resolve));
+    this.autocheckpointFor(+1);
+    try {
+      for (;;) {
+        if (!this.write(step)) return;
+        await new Promise<void>((resolve) => setImmediate(resolve));
+      }
+    } finally {
+      this.autocheckpointFor(-1);
     }
+  }
+
+  /** Commits checkpoint at 1,000 pages while a chunked operation runs, at the ~40 MB backstop otherwise (see BULK_AUTOCHECKPOINT_PAGES). */
+  private autocheckpointFor(delta: 1 | -1): void {
+    if (this.idleCheckpointMs === 0) return;
+    const before = this.chunkedRunning;
+    this.chunkedRunning = Math.max(0, before + delta);
+    if (this.closed || (before > 0) === (this.chunkedRunning > 0)) return;
+    this.db.exec(`PRAGMA wal_autocheckpoint = ${this.chunkedRunning > 0 ? BULK_AUTOCHECKPOINT_PAGES : WAL_GUARD_PAGES}`);
   }
 
   /** Large operations run one at a time; two chunked loops over one chat would race each other's cursors. */
