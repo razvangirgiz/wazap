@@ -618,12 +618,14 @@ anonymous initialization with a foreign Origin or attacker-controlled Host.
   100 KiB and compressed bodies are refused. The OAuth routes, which parse
   before any credential is checked with the SDK's default-inflate parsers, now
   refuse a compressed body (415) and a declared length over 64 KiB (413) before
-  reading it (body-parser GHSA-27r3-jxmh-p828); `test/oauth.test.mjs`. Each exact credential gets 240 POSTs
+  reading it (body-parser GHSA-27r3-jxmh-p828); `test/oauth.test.mjs`. Each owner (a static token's
+  fingerprint, or an OAuth grant: every token of one client id with the same
+  scopes counts as one) gets 240 POSTs
   per minute across session resets (fixed since the 1.0 settings cut; it was `WAZAP_HTTP_BUDGET`); 429 includes `Retry-After`. The endpoint's
   credential-window map is capped at 1,024 entries, pruning expired entries and
   refusing new ones with 503 rather than growing indefinitely.
 - Session state is capped at 64 overall (this note once said 128, which the
-  code never allowed), and at 32 per exact credential. Excess sessions first evict that credential's oldest session, so
+  code never allowed), and at 32 per owner. Excess sessions first evict that credential's oldest session, so
   one unchanged token cannot consume the entire registry.
 - Actual tool handlers have eight in-flight slots per MCP session and 32
   process-wide (fixed since the 1.0 settings cut; they were `WAZAP_MAX_INFLIGHT` and `WAZAP_MAX_INFLIGHT_TOTAL`). Capacity is returned when work settles, even if the caller
