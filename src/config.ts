@@ -134,6 +134,8 @@ export interface AccountPaths {
   previewsDir: string;
   /** Media kept as it arrived (src/service/keep.ts), each file recorded against its message. */
   keptDir: string;
+  /** Media a draft fetched from a URL or was given in the call, until it is sent (src/pinned-media.ts). */
+  outgoingDir: string;
   notesFile: string;
   storeFile: string;
   qrFile: string;
@@ -164,6 +166,7 @@ export function accountPaths(dataDir: string, accountId: string): AccountPaths {
     historyDir: join(root, "history"),
     previewsDir: join(root, "previews"),
     keptDir: join(root, "kept"),
+    outgoingDir: join(root, "outgoing"),
     notesFile: join(root, "notes.json"),
     storeFile: join(root, "store.json"),
     qrFile: join(root, "qr.png"),

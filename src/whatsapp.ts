@@ -38,6 +38,8 @@ import { type AccountFind, type FindContactQuery } from "./find-contact.js";
 import { isGroupId, isNoiseJid, normalizePhone } from "./ids.js";
 import { log, logError } from "./logger.js";
 import { describe } from "./outgoing-media.js";
+import { PinnedStore } from "./pinned-media.js";
+import type { MediaNetwork } from "./safe-media.js";
 import { momentsOf } from "./store.js";
 import { downloadableMessage, isoWithOffset, mediaInfo, messageIdFor, protoNumber, reuploadableMessage } from "./messages.js";
 import { PAIRING_TIMEOUT_MS, WA_BROWSER, prettyCode, socketFactory, startPairing } from "./pairing.js";
@@ -244,6 +246,10 @@ export class WhatsAppService implements WhatsAppApi {
   private readonly waits: MessageWaits;
   /** Drafts, their one confirm, and every send (src/service/send.ts). */
   private readonly sends: AccountSends;
+  /** Media drafts fetched or were given, until each is sent (src/pinned-media.ts). */
+  private readonly pinnedMedia: PinnedStore;
+  /** The network a draft's URL is fetched over: a test seam only, which nothing an MCP call reaches sets. */
+  mediaNetwork: Partial<MediaNetwork> = {};
   /** What WhatsApp hands the account, filed in its database (src/service/ingest.ts). */
   private readonly ingest: AccountIngest;
   /** The address book, search, notes and details, the full resync (src/service/contacts.ts). */
@@ -360,6 +366,7 @@ export class WhatsAppService implements WhatsAppApi {
     this.writes = new RateLimiter(this.effectiveRateLimit);
     this.readMarks = new RateLimiter(this.effectiveRateLimit * READ_MARK_MULTIPLIER, Date.now, "Read mark");
     this.paths = paths;
+    this.pinnedMedia = new PinnedStore(paths.outgoingDir);
     this.sends = new AccountSends(
       {
         db: () => this.storage.db,
@@ -381,6 +388,8 @@ export class WhatsAppService implements WhatsAppApi {
           if (this.heardFrom(jid) || (await hasPrivacyToken(sock, jid))) return;
           throw this.health.refusal("new_chat");
         },
+        pinned: () => this.pinnedMedia,
+        mediaNetwork: () => this.mediaNetwork,
       },
       this.identity,
       this.views,
@@ -576,6 +585,7 @@ export class WhatsAppService implements WhatsAppApi {
         displayName: (jid) => this.identity.displayName(jid),
         webhook: () => this.webhook,
         outbox: () => this.outbox,
+        settled: () => void this.sends.collectPinned(),
       },
       account
     );

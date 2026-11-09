@@ -20,6 +20,8 @@ accounts moves into `accounts/default/` the first time a wazap command runs.
                     reminders (plus -wal and -shm beside it)
     previews/       one small JPEG per photo or video already previewed
     kept/           media kept as it arrived, so get_media outlives WhatsApp's copy
+    outgoing/       media a draft fetched from a URL or was given in the call, kept
+                    under its SHA-256 until it is sent, expires or is cancelled
     qr.png          last QR, when login showed one
     legacy/         an earlier wazap's store.json, history/, retention.json,
                     notes.json and recall/, once imported; deleted a week later

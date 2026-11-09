@@ -155,11 +155,14 @@ loopback: a reverse proxy or tunnel also reaches the server from localhost.
 The tools return `MEDIA_ACCESS_DENIED` before looking up a path or touching a
 file. A write token grants WhatsApp writes, not access to the host filesystem.
 
-Remote clients can use public HTTP(S) media URLs, forward existing WhatsApp
+Remote clients can use public HTTP(S) media URLs (fetched and kept when the
+message is drafted, so the preview names the real file and the send sends
+exactly that; see [Media from a URL](tools.md#media-from-a-url)), forward existing WhatsApp
 messages, and see attachments through `get_media`: an image as a view, a video as
 a contact sheet, a document as its text (see [Media for remote agents](tools.md#media-for-remote-agents)).
-Nothing is written to the server's disk for a remote call, and no server path is
-returned. There is no arbitrary-file upload/download endpoint.
+Nothing is written to the server's disk for a remote read, and no server path is
+returned; a draft's media waits in `accounts/<id>/outgoing/` until it is sent,
+expires or is cancelled. There is no arbitrary-file upload/download endpoint.
 
 With `WAZAP_PUBLIC_URL` set, a remote `get_media` also returns `link`: the
 original file at `<public URL>/media/<token>`, valid for 30 minutes. The token

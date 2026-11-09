@@ -21,7 +21,7 @@ code. The [README](../README.md#the-23-tools) has the one-line table.
 | `get_media` | read | A message's media as an agent can take it in: a voice note or audio as its transcript, a photo or sticker as a JPEG view (`detail`), a video as a contact sheet, a document as its text (`pages`) and a picture of its page; see [Media for remote agents](#media-for-remote-agents). `message_ids` (2 to 8) opens several messages in one call, each answered in order. A local session also saves the file (`save_to` picks the directory). Transcription runs on the local or the API provider; with `save_to` a recording comes as its file, with a transcript only if one was already made, and when no transcript can be made the file comes instead, with `transcript_unavailable` saying why. A copy [kept when the media arrived](data.md#kept-media) answers first, even with the link down, and `source` says which: `kept` or `whatsapp`. |
 | `wait_for_messages` | read | Block up to 55 s until a message arrives, then return it with a cursor for the next call. `addressed_to_me` wakes only for direct messages, @-mentions and replies. |
 | `remember` | local | Keep what the user says about a person, on this machine only: a note, tags, details (`relatie`, `nickname`, "role": "contabil") that `find_contact` matches, and `handled: true` to take an ask off `catch_up`'s waiting list until they write again. A list of `chat_id`s files the same tags and details on all of them at once, or on none. `#private` keeps their words out of what the assistant did not ask about them by name ([Keeping someone private](#keeping-someone-private)). Nothing changes on WhatsApp. |
-| `send_message` | write | Draft a message: text (a reply, @-mentions), media from a path or URL (`as`: document, voice note or GIF), a poll (`options`), a location (`latitude`, `longitude`) or a forward (`forward`). Does not send. A text draft to someone you write to often carries `style_check`: where it does not read like you. `send_at` (with `time_zone`) drafts it for later; see [Scheduling a message](#scheduling-a-message). |
+| `send_message` | write | Draft a message: text (a reply, @-mentions), media from a path or a URL, fetched and kept when drafted so the preview names the real file ([Media from a URL](#media-from-a-url)) (`as`: document, voice note or GIF), a poll (`options`), a location (`latitude`, `longitude`) or a forward (`forward`). Does not send. A text draft to someone you write to often carries `style_check`: where it does not read like you. `send_at` (with `time_zone`) drafts it for later; see [Scheduling a message](#scheduling-a-message). |
 | `confirm_send` | write | Send a draft after the user has seen the preview and said yes. A draft is sent at most once; see [Sending once](#sending-once). A draft with `send_at` is scheduled instead. |
 | `edit_message` | write | Edit your own message, within WhatsApp's 15-minute window. |
 | `react_to_message` | write | Add or remove an emoji reaction. |
@@ -91,11 +91,12 @@ The preview carries a `Scheduled:` line with the day, the time, the zone and
 its UTC offset, and the draft carries `send_at` (ISO, with that offset) and
 `time_zone`, so the user says yes to the exact time.
 
-What leaves is what was approved. Media for later must be a `file_path`: a
-`url` is refused, since what it serves then may not be what it served at the
-yes. The file is pinned by its SHA-256 when drafted, and a file changed by
-the time it goes is refused (`FILE_NOT_FOUND`) and the message closes as
-failed. A reply (`reply_to`) or a forward goes only while the message it names
+What leaves is what was approved. Media from a `url` is fetched when it is
+drafted and kept until it goes ([Media from a URL](#media-from-a-url)), so a
+draft for later takes one like any other: at its time the kept bytes go, and
+the URL is not asked again. A `file_path` is pinned by its SHA-256 when
+drafted, and a file changed by the time it goes is refused (`FILE_NOT_FOUND`)
+and the message closes as failed. A reply (`reply_to`) or a forward goes only while the message it names
 is still stored; on an account with `WAZAP_PERSIST_HISTORY=0`, which forgets
 messages at every restart, a reply or forward for later is refused when
 drafted.
@@ -145,6 +146,30 @@ account with `WAZAP_PERSIST_HISTORY=0`; once sent the record keeps no words,
 and a closed record goes a week later. A different number linking to the
 account sets its database aside, scheduled messages included: they never go
 from another number.
+
+### Media from a URL
+
+`send_message` with `url` fetches the file when it drafts, through the same
+guard as before (every DNS answer and redirect must be a public address, the
+connection is pinned to the checked address, at most 100 MB, 30 seconds), and
+keeps it in `accounts/<id>/outgoing/` under its SHA-256 (`0600` in a `0700`
+folder). The preview names the file as it is: its name (the server's
+`Content-Disposition`, else the URL's last segment, with the extension its type
+has when the name has none), its type told by its bytes (a PDF a server labels
+`application/octet-stream` is a PDF), and its size, as
+`[document] factura.pdf (application/pdf, 120 KB)`, and the draft carries
+`media: { filename, mime, size }`. A URL that fails, answers 404 or is too large
+fails the draft, before the user is asked anything; a caption on what turns out
+to be audio is refused then too. `confirm_send` sends exactly the kept bytes,
+checked against their hash (`FILE_NOT_FOUND` if the file changed or went, and
+nothing is sent), without fetching the URL again.
+
+A kept file goes once nothing names it: after the send, when the draft expires
+unconfirmed (15 minutes), when a scheduled message is cancelled, sent or
+closed, and at the next start for anything a crash left. Two drafts of the
+same bytes share one file. An account's kept files together hold at most 1 GB,
+and none is written that would leave the disk less free than the smaller of
+1 GB and 5%: past either, the draft is refused with `FILE_TOO_LARGE`.
 
 ### Reminders
 
@@ -620,7 +645,7 @@ trace, so an agent can decide whether to retry, ask the user, or stop.
 | `CHAT_ACTION_OUTCOME_UNKNOWN` | A chat action was attempted; its outcome is unknown. The same confirmation never executes again; inspect state before a new explicit request. |
 | `SEND_OUTCOME_UNKNOWN` | The message reached the socket and then the send failed, so WhatsApp may have it. The draft is never sent again; check the chat before drafting anew. |
 | `SEND_BLOCKED` | The account's send rules refuse this recipient. `wazap config send` changes them; the agent must not route around. |
-| `INVALID_TIME` | `send_at` or `due_at` is unreadable, in the past, under a minute or over 365 days ahead, in a zone that does not exist, or at a time the clocks skip; a scheduled draft's time passed before its yes; or a draft for later names a URL, or replies to or forwards a message on an account that keeps no history. |
+| `INVALID_TIME` | `send_at` or `due_at` is unreadable, in the past, under a minute or over 365 days ahead, in a zone that does not exist, or at a time the clocks skip; a scheduled draft's time passed before its yes; or a draft for later replies to or forwards a message on an account that keeps no history. |
 | `SCHEDULE_NOT_FOUND` | No scheduled message or reminder with that id on this account. |
 | `SCHEDULE_FULL` | The account already holds 100 scheduled messages or 200 reminders waiting. |
 | `AMBIGUOUS_ACCOUNT` | More than one account could handle this, or a write named a chat no account knows. Pass `account_id`. |

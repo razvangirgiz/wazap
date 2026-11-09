@@ -917,6 +917,15 @@ export interface GroupActionResult {
 export interface MediaSource {
   file_path?: string;
   url?: string;
+  /** A file the call carried itself (send_message's data_base64), decoded. */
+  inline?: InlineMedia;
+}
+
+/** A file a remote agent sent in the call: its bytes, the name it gave, and the type when it said one. */
+export interface InlineMedia {
+  bytes: Buffer;
+  filename: string;
+  mime?: string;
 }
 
 /** Read results carry the sync state, so an agent knows the data may be partial. */
