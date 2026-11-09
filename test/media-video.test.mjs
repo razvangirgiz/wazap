@@ -60,10 +60,15 @@ test("a video comes back as one contact sheet of six frames, with when each was 
   if (ffmpeg === null) return t.skip("ffmpeg not installed");
   const { svc, call, arrive } = setup(t);
   const mp4 = await clip(6);
-  svc.mediaBuffer = async () => mp4;
+  let downloads = 0;
+  svc.mediaBuffer = async () => {
+    downloads++;
+    return mp4;
+  };
   const sid = arrive({ videoMessage: { mimetype: "video/mp4", fileLength: mp4.length, seconds: 6, caption: "uite" } });
   const result = await call("get_media", { message_id: sid });
   const out = result.structuredContent;
+  assert.equal(downloads, 1, "the file and the sheet come from one download");
   assert.equal(out.view.kind, "contact_sheet");
   assert.deepEqual(out.frames_at, [0.5, 1.5, 2.5, 3.5, 4.5, 5.5]);
   assert.equal(out.duration_seconds, 6);

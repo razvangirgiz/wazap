@@ -16,6 +16,7 @@
 
 import { join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
+import type { Readable } from "node:stream";
 import { downloadMediaMessage, type BinaryNode, type WAMessage, type WASocket } from "baileys";
 import type { ILogger } from "baileys/lib/Utils/logger.js";
 import { accountPolicy, type AccountRecord } from "./accounts.js";
@@ -52,6 +53,7 @@ import { AccountIngest, type MessageRef } from "./service/ingest.js";
 import { AccountKeep } from "./service/keep.js";
 import { LINK_FILE, LinkMonitor, type ProbeResult } from "./service/link.js";
 import { AccountMedia } from "./service/media.js";
+import { downloadToMemory } from "./service/media-download.js";
 import { AccountRecall } from "./service/recall.js";
 import { AccountReads } from "./service/reads.js";
 import { AccountSchedule } from "./service/schedule.js";
@@ -2004,37 +2006,26 @@ export class WhatsAppService implements WhatsAppApi {
    * The bytes behind a message's media — saving them and transcribing them
    * share this. Media arrives whole in memory, so the size is checked twice:
    * the declared length before the download starts, and the stream itself
-   * while it lands — a sender can understate the first, not the second.
+   * while it lands — a sender can understate the first, not the second. Every
+   * download runs inside the process's budget, with an idle and an overall
+   * clock (src/service/media-download.ts).
    */
-  private async mediaBuffer(sock: WASocket, messageId: string, raw: WAMessage, maxBytes = MEDIA_DOWNLOAD_MAX_BYTES): Promise<Buffer> {
+  private async mediaBuffer(_sock: WASocket, messageId: string, raw: WAMessage, maxBytes = MEDIA_DOWNLOAD_MAX_BYTES): Promise<Buffer> {
     const cap = Math.min(maxBytes, MEDIA_DOWNLOAD_MAX_BYTES);
     const declared = mediaInfo(raw)?.size;
-    if (declared !== undefined && declared > cap) {
-      throw new WazapError(
-        "FILE_TOO_LARGE",
-        `The media of ${messageId} is ${Math.ceil(declared / 1_000_000)} MB; downloads are capped at ${cap / 1_000_000} MB.`
-      );
-    }
     try {
-      const stream = await downloadMediaMessage(downloadableMessage(raw), "stream", {}, {
-        logger: silentLogger,
-        reuploadRequest: sock.updateMediaMessage,
-      });
-      const chunks: Buffer[] = [];
-      let bytes = 0;
-      for await (const chunk of stream) {
-        this.views.messageOrThrow(messageId);
-        bytes += (chunk as Buffer).length;
-        if (bytes > cap) {
-          stream.destroy();
-          throw new WazapError(
-            "FILE_TOO_LARGE",
-            `The media of ${messageId} exceeds the ${cap / 1_000_000} MB download cap.`
-          );
-        }
-        chunks.push(chunk as Buffer);
-      }
-      return Buffer.concat(chunks);
+      return await downloadToMemory(
+        messageId,
+        {
+          // No reupload context: Baileys' own branch never fires on a CDN error (it reads error.status, the
+          // error carries output.statusCode) and would wait for the phone without a timeout if it did.
+          open: () => downloadMediaMessage(downloadableMessage(raw), "stream", {}) as Promise<Readable>,
+          stillThere: () => {
+            this.views.messageOrThrow(messageId);
+          },
+        },
+        { cap, ...(declared === undefined ? {} : { declared }) }
+      );
     } catch (err) {
       if (err instanceof WazapError) throw err;
       const failure = new WazapError(
