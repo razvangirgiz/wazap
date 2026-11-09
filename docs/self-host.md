@@ -86,6 +86,17 @@ a contact sheet, a document as its text (see [Media for remote agents](tools.md#
 Nothing is written to the server's disk for a remote call, and no server path is
 returned. There is no arbitrary-file upload/download endpoint.
 
+With `WAZAP_PUBLIC_URL` set, a remote `get_media` also returns `link`: the
+original file at `<public URL>/media/<token>`, valid for 30 minutes. The token
+is the only credential the route takes (it is signed with a secret kept in
+`media-links.key` in the data dir), so treat a link like the file. It is mainly
+for the person, who can tap it in the chat: claude.ai, ChatGPT and the API's MCP
+connector do not fetch URLs that came from a tool result, and Claude Code on the
+web reaches the tunnel only if its network access allows the host. Cursor's
+cloud agents and local CLIs can download it. A deleted or expired message, an
+expired link and a forged one all answer 404; the file always comes as a
+download, never rendered by the browser.
+
 Local stdio clients retain local file access. A local bridge gets it only through
 the private daemon credential stored in `daemon.json`, never through a public
 read/write token or OAuth grant. Keep that credential private; it is a local

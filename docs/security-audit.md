@@ -93,9 +93,10 @@ WhatsApp operations to demonstrate access without transmitting anything.
 
 HTTP sessions now reject `file_path` and `save_to` before account lookup or any
 filesystem call. This applies to static tokens and OAuth, even when the peer is
-loopback. Public URLs, forwarding, and default-directory downloads remain
-available. Remote tools advertise this restriction. No public setting or tool
-argument overrides it.
+loopback. Public URLs and forwarding remain available, and `get_media` writes
+nothing to disk for a remote session and names no server path (section 22).
+Remote tools advertise this restriction. No public setting or tool argument
+overrides it.
 
 Local stdio retains intentional file access. The generated private daemon token
 is explicitly marked with a local-files capability so stdio bridges keep working;
@@ -807,6 +808,63 @@ files no record names: the next start removes them, so a number linking back
 finds its history without them. SHA-256 checks run on the event loop, on files
 of at most `WAZAP_MEDIA_KEEP_MAX_MB`.
 Tests: `test/kept-media.test.mjs`.
+
+## 22. Remote media: views, documents and signed links
+
+`get_media` shows a remote agent what media holds instead of naming a file on
+the server, which makes every received photo, PDF and Office file input that
+wazap parses, and the parsed text input to the agent.
+
+- **Parsers, bounded.** Images go through sharp (libvips): an input claiming
+  more than 100 MP is refused before decoding, only the first frame of an
+  animation is read, and the work runs on libvips' threads, not the event loop.
+  PDFs are read by pdf.js (unpdf, no native code, no font loading) and Office
+  and OpenDocument files by wazap's own ZIP reader, both in a worker thread with
+  a 384 MB heap cap and a 20-second limit, at most two at a time; a file over
+  50 MB is not read. The ZIP reader refuses more than 10,000 entries, an entry
+  that inflates past 20 MB (60 MB in all) or past 200:1, and one whose inflated
+  size differs from what it states (`maxOutputLength`, so a lie stops at one
+  byte over). pdftoppm, Quick Look, sips and ffmpeg run as child processes on a
+  private temporary copy with a timeout, ffmpeg with the input whitelists of
+  section 8. The worker's console is silenced and its stdout drained, so nothing
+  it prints reaches the MCP channel. Tests: `test/media-documents.test.mjs`
+  (zip bombs, a lying size), `test/images.test.mjs` (a 20,000 x 20,000 PNG header).
+- **The text is the sender's.** Document text, transcripts and text in images
+  can carry instructions aimed at an agent with other tools. They come back in
+  their own field (`document_text`), quoted between markers in the text, never
+  in `notes`; a note and the server's instructions, which every session gets,
+  say it is data, not instructions.
+- **No copies for remote sessions.** A remote `get_media` used to write a new,
+  unrecorded copy of the file into `accounts/<id>/media/` on every call;
+  nothing swept them, and they outlived deleted and expired messages. A remote
+  call now writes nothing and returns no path.
+- **Downloads, bounded.** At most three downloads at once and 300 MB declared in
+  flight across the process; a download quiet for 30 s or running past 3
+  minutes is stopped; the 100 MB in-memory cap is checked before and during the
+  download. Expired media is asked of the phone again only when a person asked
+  for it, at most ten times a minute per account, with a 20-second limit.
+- **Signed links.** With `WAZAP_PUBLIC_URL` set, a remote `get_media` also
+  returns a link to the original, valid 30 minutes, served at
+  `GET /media/<token>` without a bearer token: the token is the capability. It
+  is HMAC-SHA256 under a 32-byte secret made once per install
+  (`media-links.key`, `0600`, never logged), over the account, the message's row
+  and a 72-bit tag of its id (the id itself, which spells a phone number, is not
+  in the URL), and the expiry; it is compared in constant time, and the message
+  is looked up again at each fetch, so a forged, expired or tampered link, an
+  account not on this server and a message deleted, expired or cleared since
+  are all the same 404. The file goes out as `Content-Disposition: attachment`
+  with `X-Content-Type-Options: nosniff`, `Content-Security-Policy: default-src
+  'none'; sandbox`, `Cache-Control: private, no-store` and
+  `Referrer-Policy: no-referrer`, so a sender's HTML is never rendered on the
+  origin of the OAuth consent page. The route has its own rate limit (120
+  requests per 15 minutes per address), and the request log names it `/media`,
+  never the token. Tests: `test/media-links.test.mjs`.
+
+Not covered: a link is a bearer capability until it expires; anyone it is
+pasted to can download the file for those 30 minutes. A link is not bound to
+the session that minted it, and there is no per-link fetch count. libvips,
+pdf.js, poppler and ffmpeg are large parsers of untrusted input; the limits
+above bound memory and time, not every codec bug.
 
 ## Pre-release review
 

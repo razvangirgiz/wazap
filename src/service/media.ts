@@ -16,6 +16,7 @@ import { tinyThumbnail, videoFrame } from "../previews.js";
 import { loadSharp, previewImage } from "../images.js";
 import { mediaInfo, thumbnailOf } from "../messages.js";
 import { DIR_MODE, FILE_MODE } from "./util.js";
+import { sidTag } from "../media-links.js";
 import { renderMedia } from "../media-render.js";
 import type { ConnectionStatus, MediaOpenOptions, MediaResult, OpenedMedia, Preview } from "../wa-types.js";
 import type { AccountPaths } from "../config.js";
@@ -234,6 +235,19 @@ export class AccountMedia {
       inline_base64: picture === null ? null : picture.toString("base64"),
       source: opened.source,
     };
+  }
+
+  /** What a download link names a message by: its row and a tag of its id, never the id, which spells a phone number. */
+  linkRef(messageId: string): { row: number; tag: string } | null {
+    const message = this.storage.readyDb()?.messages.get(messageId) ?? null;
+    return message === null ? null : { row: message.id, tag: sidTag(message.sid) };
+  }
+
+  /** The live message behind a link's row, when its id still has the link's tag: a row reused by another message is not it. */
+  linkTarget(row: number, tag: string): string | null {
+    const [message] = this.storage.readyDb()?.messages.byIds([row]) ?? [];
+    if (message === undefined || sidTag(message.sid) !== tag || !this.host.hasMessage(message.sid)) return null;
+    return message.sid;
   }
 
   /** The original's bytes and what to call them, for a download link; nothing is written or derived. */

@@ -306,6 +306,18 @@ sender: `document_text` is quoted between `<<<document_text` and `>>>` in the
 text, and `notes` says it is data, not instructions. The server's instructions
 carry the same rule for every session.
 
+With `WAZAP_PUBLIC_URL` set, a remote session also gets `link`: the original
+file, valid 30 minutes, for the person to open (see
+[self-hosting](self-host.md#host-files-and-remote-media)); hosted chat clients do
+not fetch it themselves, so the view and the text above stay the main answer.
+
+Expired media (WhatsApp's servers keep a file for a limited time) is asked of
+the phone again when someone asks for it: the phone has 20 seconds to upload it
+anew, and the fresh address is stored so the next call goes straight to it. A
+phone that is offline gives `MEDIA_UNAVAILABLE` with a fix to retry once it is
+online. Downloads are held in memory, at most three at once and 300 MB in
+flight; one that stalls for 30 seconds or runs past three minutes is stopped.
+
 Documents are read in a worker thread with a memory cap and a 20-second limit,
 two at a time; Office files go through a small ZIP reader that refuses an
 archive with too many entries, an entry that inflates past 20 MB (60 MB in all)

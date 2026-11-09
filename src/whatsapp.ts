@@ -1164,6 +1164,14 @@ export class WhatsAppService implements WhatsAppApi {
     return this.media.mediaOriginal(messageId);
   }
 
+  mediaLinkRef(messageId: string): { row: number; tag: string } | null {
+    return this.media.linkRef(messageId);
+  }
+
+  mediaLinkTarget(row: number, tag: string): string | null {
+    return this.media.linkTarget(row, tag);
+  }
+
   transcribeAudio(messageId: string, language?: string, opts: TranscribeOptions = {}): Promise<TranscribeResult> {
     return this.voice.transcribeAudio(messageId, language, opts);
   }

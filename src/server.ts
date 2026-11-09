@@ -16,6 +16,7 @@ import { APPROVE_PATH, OAUTH_SCOPES, WazapOAuthProvider } from "./oauth.js";
 import { loadSkills, registerSkillPrompts, skillInstructions } from "./skills.js";
 import { anyAccountAllowsWrites, registerTools } from "./tools.js";
 import { log } from "./logger.js";
+import { MEDIA_LINK_ROUTE, mediaLinksFor, serveMediaLink } from "./media-links.js";
 import type { ConnectionStatus } from "./wa-types.js";
 
 const UNHEALTHY_AFTER_MS = 2 * 60 * 1000;
@@ -48,6 +49,8 @@ function buildMcpServer(
   const skills = loadSkills();
   const writes = allowWrite && !config.readOnly && anyAccountAllowsWrites(hub);
   const server = new McpServer({ name: "wazap", version: WAZAP_VERSION }, { instructions: skillInstructions(skills, { allowWrite: writes, accounts: namedAccounts(hub), legacyReads: !allowLocalFiles }) });
+  // A link to an original is for a remote session on a server the internet reaches; a local one has the file.
+  const links = allowLocalFiles ? null : mediaLinksFor(config);
   registerTools(server, hub, {
     allowWrite: writes,
     // remember's edits are local state, not WhatsApp writes: they answer to
@@ -56,6 +59,7 @@ function buildMcpServer(
     allowLocalEdits: allowWrite,
     allowLocalFiles,
     legacyReads: !allowLocalFiles,
+    ...(links === null ? {} : { mediaLinks: links }),
     client,
     ...(draftIdentity === undefined ? {} : { draftIdentity }),
     ...(config.maxInFlight === undefined ? {} : { maxInFlight: config.maxInFlight }),
@@ -455,6 +459,21 @@ export async function startHttpEndpoint(hub: AccountSource, config: Config, endp
       })
       .catch(next);
   });
+
+  // Signed links to originals (src/media-links.ts): only on a server with a public URL. The link is the
+  // capability, so no bearer token is asked; the route has a limiter of its own.
+  const links = mediaLinksFor(config);
+  if (links !== null) {
+    const { rateLimit } = await import("express-rate-limit");
+    app.set("trust proxy", config.trustedProxies ?? ["loopback"]);
+    app.get(
+      MEDIA_LINK_ROUTE,
+      rateLimit({ windowMs: 15 * 60 * 1000, limit: 120, standardHeaders: true, legacyHeaders: false }),
+      (req: Request, res: Response, next: NextFunction) => {
+        serveMediaLink(hub, links, String(req.params.token ?? ""), res).catch(next);
+      }
+    );
+  }
 
   app.use(httpError);
   const server = createServer({ headersTimeout: 10_000, requestTimeout: 30_000, maxHeaderSize: 16 * 1024 }, app);

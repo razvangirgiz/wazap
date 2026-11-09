@@ -1045,6 +1045,10 @@ export interface WhatsAppApi {
   openMedia(messageId: string, opts: MediaOpenOptions): Promise<OpenedMedia>;
   /** The original's bytes for a download link: no file written, nothing derived. */
   mediaOriginal(messageId: string): Promise<{ buffer: Buffer; mime: string; filename: string | null }>;
+  /** What a download link names a message by (src/media-links.ts): its row and a tag of its id; null when it is not stored. */
+  mediaLinkRef?(messageId: string): { row: number; tag: string } | null;
+  /** The live message a link names, by row and tag; null when it is gone or is not that message. */
+  mediaLinkTarget?(row: number, tag: string): string | null;
   transcribeAudio(messageId: string, language?: string, opts?: TranscribeOptions): Promise<TranscribeResult>;
   waitForMessages(opts: WaitOptions): Promise<WaitResult>;
   /** With `private`, a story of someone tagged #private comes without its words. */

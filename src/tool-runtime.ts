@@ -10,6 +10,7 @@ import { RateLimiter } from "./ratelimit.js";
 import { requireDraftOwner } from "./send-guard.js";
 import { requireChatAction, staleChatAction } from "./chat-action-drafts.js";
 import { publishToolCatalogue } from "./tool-catalogue.js";
+import type { MediaLinks } from "./media-links.js";
 import type { WhatsAppApi } from "./wa-types.js";
 
 export type ContentBlock = { type: "text"; text: string } | { type: "image"; data: string; mimeType: string };
@@ -32,6 +33,8 @@ export interface ToolCtx {
    * handed a path it cannot open, and nothing is written for it.
    */
   localFiles?: boolean;
+  /** Signed links to originals: a remote session on a server with a public URL (src/media-links.ts). */
+  mediaLinks?: MediaLinks;
   /** Internal only: the cached multi-account adapter finalizes all sources together after its awaits. */
   deferSearchFinalization?: boolean;
   wa: WhatsAppApi;
@@ -98,6 +101,8 @@ export interface RegisterOpts {
   allowLocalEdits?: boolean;
   /** Trusted local stdio defaults to true; every HTTP session explicitly sets its capability. */
   allowLocalFiles?: boolean;
+  /** Where get_media mints links to originals; only a remote session on a server with a public URL has it. */
+  mediaLinks?: MediaLinks;
   /** Tool calls this session may have running at once. */
   maxInFlight?: number;
   /** Tool calls every session together may have running at once. */
@@ -254,6 +259,7 @@ export function createToolRegistrar(defs: readonly ToolDef[]) {
             const result = await def.handler(parsed, {
               legacyReads: opts.legacyReads === true,
               localFiles: opts.allowLocalFiles !== false,
+              ...(opts.allowLocalFiles === false && opts.mediaLinks !== undefined ? { mediaLinks: opts.mediaLinks } : {}),
               wa: resolved.wa,
               hub,
               allowWrite: opts.allowWrite,

@@ -7,6 +7,8 @@ accounts moves into `accounts/default/` the first time a wazap command runs.
 ```
 ~/.wazap/
   accounts.json     which accounts exist, and which is default
+  media-links.key   the secret that signs get_media's download links (0600), made
+                    the first time a server with WAZAP_PUBLIC_URL starts
   accounts.json.required  empty marker: missing policy must not reset permissions
   accounts/<id>/
     auth/           WhatsApp credentials — treat this like a password
