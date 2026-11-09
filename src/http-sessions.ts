@@ -1,8 +1,8 @@
-import type { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
+import type { McpTransport } from "./mcp-http.js";
 import { logError } from "./logger.js";
 
 interface Session {
-  transport: StreamableHTTPServerTransport;
+  transport: McpTransport;
   owner: string;
   lastSeen: number;
 }
@@ -17,14 +17,19 @@ export class HttpSessions {
     return this.sessions.has(id);
   }
 
-  get(id: string, owner: string): StreamableHTTPServerTransport | undefined {
+  get(id: string, owner: string): McpTransport | undefined {
     const session = this.sessions.get(id);
     if (!session || session.owner !== owner) return undefined;
     session.lastSeen = Date.now();
     return session.transport;
   }
 
-  add(id: string, transport: StreamableHTTPServerTransport, owner: string): void {
+  /** How many sessions are live; what the per-credential and overall caps bound. */
+  get size(): number {
+    return this.sessions.size;
+  }
+
+  add(id: string, transport: McpTransport, owner: string): void {
     this.sessions.set(id, { transport, owner, lastSeen: Date.now() });
     const owned = [...this.sessions].filter(([, session]) => session.owner === owner);
     if (owned.length > Math.min(32, this.max)) {
@@ -45,7 +50,12 @@ export class HttpSessions {
     }
   }
 
-  forget(id: string): void {
+  /**
+   * A transport that closed leaves the registry, unless a revival has since
+   * put a new one under the same id: an old transport's close must not drop it.
+   */
+  forget(id: string, transport?: McpTransport): void {
+    if (transport !== undefined && this.sessions.get(id)?.transport !== transport) return;
     this.sessions.delete(id);
   }
 

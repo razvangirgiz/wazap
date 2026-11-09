@@ -4,6 +4,7 @@
 
 - **Tunnels stop dropping calls on idle sockets.** An idle keep-alive connection now stays open for 120 seconds instead of Node's 5, longer than cloudflared keeps one in its pool, so a tool call the tunnel sends on a pooled socket no longer races wazap closing it and comes back as a 502.
 - **Cheaper sessions.** The tool catalogue, the workflows and the instructions are built once per permission and shared by every session that has them, instead of being rebuilt (5 skill files read, every schema converted) on each initialize: a warm initialize over loopback drops from 1.8 ms to 0.65 ms (p50), and a live session holds 194 KiB of heap instead of 342 KiB.
+- **Answers are compressed.** `/mcp` answers go gzip-compressed to any client that accepts it, which every TypeScript MCP client does, with a flush after every SSE event so nothing streamed is held back: the tool catalogue crosses the tunnel as 10,953 bytes instead of 55,623, `learn` as 3,564 instead of 8,140, and a 700 KiB photo inline as 724 KB instead of 956 KB. Answers under 1 KiB, the notification stream and clients that do not ask stay uncompressed. Cloudflare does not compress these SSE answers and Tailscale Funnel compresses nothing, so this is the only place it can happen.
 
 ## 1.6.0
 

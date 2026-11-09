@@ -64,6 +64,13 @@ Tool work is capped at eight concurrent operations per MCP session and 32
 across the process, including stdio/bridges. Slots remain held until work settles,
 not merely until a client disconnects. Retry once after pending work completes.
 
+Answers to a POST are gzip-compressed when the client's `Accept-Encoding`
+takes gzip (Node's `fetch`, and so every TypeScript MCP client, does; so does
+`curl --compressed`), with a flush after every SSE event so a streamed answer
+is not held back. A body under 1 KiB goes as it is, and nothing is compressed
+for a client that did not ask. The tool catalogue crosses the wire as 11 KB
+instead of 56 KB. The GET notification stream is never compressed.
+
 The HTTP listener caps connections at 256, header receipt at ten seconds and
 request-body receipt at thirty seconds; this does not time out legitimate SSE
 streams or long-running tools. An idle keep-alive connection stays open for

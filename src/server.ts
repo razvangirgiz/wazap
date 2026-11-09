@@ -7,7 +7,6 @@ import { createServer, type Server } from "node:http";
 import { createConnection } from "node:net";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
-import type { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { isInitializeRequest } from "@modelcontextprotocol/sdk/types.js";
 import type { Request, Response, NextFunction } from "express";
 import type { AccountBinding, AccountSource } from "./account-hub.js";
@@ -16,6 +15,7 @@ import { APPROVE_PATH, OAUTH_SCOPES, WazapOAuthProvider } from "./oauth.js";
 import { loadSkills, registerSkillPrompts, skillInstructions } from "./skills.js";
 import { anyAccountAllowsWrites, registerTools } from "./tools.js";
 import { log } from "./logger.js";
+import { serveMcp, type McpTransport } from "./mcp-http.js";
 import type { ConnectionStatus } from "./wa-types.js";
 
 const UNHEALTHY_AFTER_MS = 2 * 60 * 1000;
@@ -112,6 +112,17 @@ function namedAccounts(hub: AccountSource): Array<{ id: string; name: string; de
   } catch {
     return [];
   }
+}
+
+/**
+ * The SDK's session transport, loaded on the first initialize rather than on
+ * the bind path daemon.json waits on, and warmed just after the bind
+ * (startHttpEndpoint) so that first initialize does not pay for it either.
+ */
+let transportModule: Promise<typeof import("@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js")> | undefined;
+function loadTransportModule(): NonNullable<typeof transportModule> {
+  transportModule ??= import("@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js");
+  return transportModule;
 }
 
 /** stdio, the daemon's loopback bridge and anonymous loopback reads: this machine's own clients, each named per call (client-name.ts). */
@@ -403,6 +414,29 @@ export async function startHttpEndpoint(hub: AccountSource, config: Config, endp
   }, endpoint.sessionSweepMs ?? MCP_SESSION_SWEEP_MS);
   sweep.unref();
 
+  /**
+   * A new session for this credential: its transport, the McpServer behind it
+   * with the tools the credential unlocks, and its place in the registry once
+   * the transport has its id.
+   */
+  const openSession = async (req: AuthedRequest, owner: string): Promise<McpTransport> => {
+    const { WebStandardStreamableHTTPServerTransport } = await loadTransportModule();
+    const transport: McpTransport = new WebStandardStreamableHTTPServerTransport({
+      sessionIdGenerator: () => randomUUID(),
+      onsessioninitialized: (sid: string) => {
+        sessions.add(sid, transport, owner);
+      },
+    });
+    transport.onclose = () => {
+      const sid = transport.sessionId;
+      if (sid) sessions.forget(sid, transport);
+    };
+    // The session's tools are fixed at init by the token it authenticated with.
+    const server = buildMcpServer(hub, config, req.mcpWrite === true, req.localFiles === true, req.client ?? LOCAL_CLIENT, req.draftIdentity);
+    await server.connect(transport);
+    return transport;
+  };
+
   const handleMcp = async (req: Request, res: Response): Promise<void> => {
     try {
       const sessionId = req.headers["mcp-session-id"];
@@ -416,30 +450,7 @@ export async function startHttpEndpoint(hub: AccountSource, config: Config, endp
       }
 
       if (!transport && req.method === "POST" && isInitializeRequest(req.body)) {
-        // Session state is only needed when a client actually posts initialize;
-        // loading it here keeps it off the bind path that daemon.json waits on.
-        const { StreamableHTTPServerTransport } = await import("@modelcontextprotocol/sdk/server/streamableHttp.js");
-        const newTransport: StreamableHTTPServerTransport = new StreamableHTTPServerTransport({
-          sessionIdGenerator: () => randomUUID(),
-          onsessioninitialized: (sid: string) => {
-            sessions.add(sid, newTransport, owner);
-          },
-        });
-        newTransport.onclose = () => {
-          const sid = newTransport.sessionId;
-          if (sid) sessions.forget(sid);
-        };
-        // The session's tools are fixed at init by the token it authenticated with.
-        const server = buildMcpServer(
-          hub,
-          config,
-          (req as AuthedRequest).mcpWrite === true,
-          (req as AuthedRequest).localFiles === true,
-          (req as AuthedRequest).client ?? LOCAL_CLIENT,
-          (req as AuthedRequest).draftIdentity
-        );
-        await server.connect(newTransport);
-        transport = newTransport;
+        transport = await openSession(req as AuthedRequest, owner);
       }
 
       if (!transport) {
@@ -458,7 +469,7 @@ export async function startHttpEndpoint(hub: AccountSource, config: Config, endp
         return;
       }
 
-      await transport.handleRequest(req, res, req.body);
+      await serveMcp(transport, req, res, req.method === "POST" ? req.body : undefined);
     } catch (err) {
       log(`HTTP MCP handler failed${withCode(err)}`);
       if (!res.headersSent) {
