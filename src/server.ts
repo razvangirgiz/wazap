@@ -151,11 +151,18 @@ type AuthedRequest = Request & {
   localFiles?: boolean;
 };
 
-/** Bind to the exact authenticated credential, never retain the raw token in session state.
- * Rotated OAuth tokens initialize a new MCP session. Shared tokens share an identity.
+/**
+ * Who a session belongs to: never the raw token, which session state does not
+ * keep. A static token is its SHA-256 fingerprint. An OAuth credential is its
+ * grant — the client and the scopes it was granted — not the access token of
+ * the day, so the daily rotation keeps the agent's sessions and its POST
+ * budget; a narrower refresh is a different owner. Every request still
+ * verifies its token, so revocation and expiry answer 401 all the same.
  */
-function sessionOwner(auth: string, write: boolean, localFiles: boolean): string {
-  return `${write ? "write" : "read"}:${localFiles ? "local" : "remote"}:${createHash("sha256").update(auth.slice("Bearer ".length).trim()).digest("hex")}`;
+function sessionOwner(auth: string, access: { write: boolean; localFiles: boolean; oauthClient?: string; scopes?: readonly string[] }): string {
+  const prefix = `${access.write ? "write" : "read"}:${access.localFiles ? "local" : "remote"}`;
+  if (access.oauthClient !== undefined) return `${prefix}:oauth:${access.oauthClient}:${[...(access.scopes ?? [])].sort().join(" ")}`;
+  return `${prefix}:${createHash("sha256").update(auth.slice("Bearer ".length).trim()).digest("hex")}`;
 }
 
 /**
@@ -352,7 +359,7 @@ export async function startHttpEndpoint(hub: AccountSource, config: Config, endp
   // the scope the person picked on the consent page.
   const bearerAccess = async (
     auth: string | undefined
-  ): Promise<{ write: boolean; localFiles: boolean; oauthClient?: string; client: string } | null> => {
+  ): Promise<{ write: boolean; localFiles: boolean; oauthClient?: string; scopes?: string[]; client: string } | null> => {
     const credential = endpoint.credentials.find((entry) => isAuthorized(auth, entry.token));
     if (credential) {
       const client = credential.label ?? `token:${credential.write ? "write" : "read"}`;
@@ -361,7 +368,13 @@ export async function startHttpEndpoint(hub: AccountSource, config: Config, endp
     if (oauth && auth?.startsWith("Bearer ")) {
       try {
         const info = await oauth.verifyAccessToken(auth.slice("Bearer ".length).trim());
-        return { write: info.scopes.includes("write"), localFiles: false, oauthClient: info.clientId, client: `oauth:${info.clientId}` };
+        return {
+          write: info.scopes.includes("write"),
+          localFiles: false,
+          oauthClient: info.clientId,
+          scopes: info.scopes,
+          client: `oauth:${info.clientId}`,
+        };
       } catch {
         // An unknown or expired token opens nothing.
       }
@@ -376,7 +389,7 @@ export async function startHttpEndpoint(hub: AccountSource, config: Config, endp
       (req as AuthedRequest).oauthClient = access.oauthClient;
       (req as AuthedRequest).client = access.client;
       (req as AuthedRequest).localFiles = access.localFiles;
-      const owner = sessionOwner(req.headers.authorization!, access.write, access.localFiles);
+      const owner = sessionOwner(req.headers.authorization!, access);
       (req as AuthedRequest).sessionOwner = owner;
       const identity = draftIdentity(owner, access);
       if (identity !== undefined) (req as AuthedRequest).draftIdentity = identity;

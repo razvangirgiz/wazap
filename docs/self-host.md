@@ -27,11 +27,15 @@ wazap refuses to bind a non-loopback address without a read token.
 
 ### Client isolation
 
-HTTP MCP sessions are bound to the exact bearer credential that initialized
-them (stored in memory as a SHA-256 fingerprint), including its read/write
-permissions. Another credential cannot use that session's POST, GET or DELETE
-endpoint, even if it knows the session id; it receives `404 Session not found`.
-Each request still validates the token, so expiry or revocation returns 401.
+HTTP MCP sessions are bound to the credential that initialized them,
+including its read/write permissions: a static token by its SHA-256
+fingerprint, an OAuth agent by its grant (its client id and granted scopes)
+rather than the access token of the day, so the daily rotation keeps its
+sessions, and its POST budget, as they were. A refresh that narrows the scopes
+is a different owner. Another credential cannot use that session's POST, GET
+or DELETE endpoint, even if it knows the session id; it receives
+`404 Session not found`. Each request still validates the token, so expiry or
+revocation returns 401.
 
 A session outlives the process holding it. Its id is `<uuid>.<mark>`, the mark
 an HMAC over the uuid and the credential, keyed by `<data-dir>/session.key`
