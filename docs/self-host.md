@@ -170,7 +170,8 @@ connector do not fetch URLs that came from a tool result, and Claude Code on the
 web reaches the tunnel only if its network access allows the host. Cursor's
 cloud agents and local CLIs can download it. A deleted or expired message, an
 expired link and a forged one all answer 404; the file always comes as a
-download, never rendered by the browser.
+download, never rendered by the browser. A `HEAD` on a link answers with the
+file's type and name without fetching it.
 
 Local stdio clients retain local file access. A local bridge gets it only through
 the private daemon credential stored in `daemon.json`, never through a public

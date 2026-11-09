@@ -1074,6 +1074,8 @@ export interface WhatsAppApi {
   openMedia(messageId: string, opts: MediaOpenOptions): Promise<OpenedMedia>;
   /** The original's bytes for a download link: no file written, nothing derived; `signal` stops the download when the link's fetch goes away. */
   mediaOriginal(messageId: string, opts?: { signal?: AbortSignal }): Promise<{ buffer: Buffer; mime: string; filename: string | null }>;
+  /** The original's mime and filename from the message alone, nothing downloaded (a HEAD on a link); null when it carries no media. */
+  mediaOriginalInfo?(messageId: string): { mime: string; filename: string | null } | null;
   /** What a download link names a message by (src/media-links.ts): its row and a tag of its id; null when it is not stored. */
   mediaLinkRef?(messageId: string): { row: number; tag: string } | null;
   /** The live message a link names, by row and tag; null when it is gone or is not that message. */

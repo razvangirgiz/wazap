@@ -1170,6 +1170,10 @@ export class WhatsAppService implements WhatsAppApi {
     return this.media.mediaOriginal(messageId, opts.signal);
   }
 
+  mediaOriginalInfo(messageId: string): { mime: string; filename: string | null } | null {
+    return this.media.originalInfo(messageId);
+  }
+
   mediaLinkRef(messageId: string): { row: number; tag: string } | null {
     return this.media.linkRef(messageId);
   }

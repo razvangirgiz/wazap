@@ -198,10 +198,10 @@ test("the token never reaches the HTTP log", async (t) => {
   assert.ok(!logged.includes(token.slice(0, 20)), "no part of the token is logged");
 });
 
-/** GET a link with node:http, so what goes over the wire (its encoding, its bytes) is read as sent. */
-function rawGet(url, { headers = {}, sent } = {}) {
+/** GET (or HEAD) a link with node:http, so what goes over the wire (its encoding, its bytes) is read as sent. */
+function rawGet(url, { headers = {}, sent, method = "GET" } = {}) {
   return new Promise((resolve, reject) => {
-    const req = request(url, { headers }, (res) => {
+    const req = request(url, { method, headers }, (res) => {
       const chunks = [];
       res.on("data", (chunk) => chunks.push(chunk));
       res.on("end", () => resolve({ status: res.statusCode, headers: res.headers, body: Buffer.concat(chunks), at: Date.now() }));
@@ -271,4 +271,55 @@ test("a fetch that goes away stops the download behind its link", async (t) => {
   await gone;
   for (let i = 0; i < 50 && signal.aborted !== true; i++) await new Promise((resolve) => setTimeout(resolve, 10));
   assert.equal(signal.aborted, true, "the download's signal aborted when the fetch left");
+});
+
+test("a HEAD on a link answers from the message alone: nothing is downloaded and the phone is not asked", async (t) => {
+  const { svc, sock, sid, pdf, remote, local } = await setup(t);
+  const { link } = (await remote.call("get_media", { message_id: sid })).structuredContent;
+  let originals = 0;
+  const original = svc.mediaOriginal.bind(svc);
+  svc.mediaOriginal = (...args) => {
+    originals++;
+    return original(...args);
+  };
+  let downloads = 0;
+  svc.keep.read = async () => null;
+  svc.mediaBuffer = async () => {
+    downloads++;
+    return pdf;
+  };
+  let asked = 0;
+  sock.updateMediaMessage = async () => {
+    asked++;
+    throw new Error("not for a HEAD");
+  };
+
+  const head = await rawGet(local(link.url), { method: "HEAD" });
+  assert.equal(head.status, 200);
+  assert.equal(originals, 0, "the file is not fetched for an answer without a body");
+  assert.equal(downloads, 0);
+  assert.equal(asked, 0);
+  assert.equal(head.body.length, 0);
+  assert.equal(head.headers["content-type"], "application/pdf");
+  assert.match(head.headers["content-disposition"], /^attachment; filename="factur_ _mai_.pdf"; filename\*=UTF-8''/);
+  assert.equal(head.headers["content-length"], undefined, "no length is promised before the file is fetched");
+  assert.equal(head.headers["cache-control"], "private, no-store");
+  assert.equal(head.headers["x-content-type-options"], "nosniff");
+  assert.match(head.headers["content-security-policy"], /sandbox/);
+  assert.equal(head.headers["content-encoding"], undefined);
+
+  assert.equal((await rawGet(local(`${link.url.slice(0, -3)}xyz`), { method: "HEAD" })).status, 404, "a tampered link");
+  const get = await rawGet(local(link.url));
+  assert.equal(get.status, 200, "the GET after it fetches the file");
+  assert.deepEqual(get.body, pdf);
+  assert.equal(originals, 1);
+
+  sock.ev.emit("messages.upsert", {
+    type: "notify",
+    messages: [{ key: { remoteJid: ANA, fromMe: false, id: "R2" }, message: { protocolMessage: { type: 0, key: { remoteJid: ANA, fromMe: false, id: "F1" } } }, messageTimestamp: Math.floor(Date.now() / 1000) }],
+  });
+  const gone = await rawGet(local(link.url), { method: "HEAD" });
+  assert.equal(gone.status, 404, "a message deleted since");
+  assert.equal(gone.headers["cache-control"], "private, no-store");
+  assert.equal(originals, 1);
 });

@@ -21,6 +21,7 @@ import type { Response } from "express";
 import type { AccountSource } from "./account-hub.js";
 import { asWazapError } from "./errors.js";
 import { log } from "./logger.js";
+import type { WhatsAppApi } from "./wa-types.js";
 
 /** How long a link opens the file. */
 export const MEDIA_LINK_TTL_MS = 30 * 60 * 1000;
@@ -176,16 +177,43 @@ function refuse(res: Response, status: number, error: string): void {
   res.status(status).set(GUARD_HEADERS).json({ error });
 }
 
+/** What a HEAD finds out about a link's file: its type and name, read off the message; null when it has no media now. */
+function aboutOriginal(wa: WhatsAppApi, sid: string): { mime: string; filename: string | null } | null {
+  try {
+    return wa.mediaOriginalInfo?.(sid) ?? null;
+  } catch {
+    return null;
+  }
+}
+
 /**
- * GET /media/:token. 404 alike for a forged, expired or tampered link, an
- * account no longer here, and a message deleted, expired or cleared since.
+ * GET (and HEAD) /media/:token. 404 alike for a forged, expired or tampered
+ * link, an account no longer here, and a message deleted, expired or cleared
+ * since. A HEAD (a link checker, `curl -I`, a download manager's first look)
+ * is answered from the message alone, with the GET's headers but no length:
+ * fetching the file for an answer without a body would spend a download slot,
+ * the memory for the whole file and, for expired media, one of the account's
+ * requests to the phone.
  */
-export async function serveMediaLink(hub: AccountSource, links: MediaLinks, token: string, res: Response): Promise<void> {
+export async function serveMediaLink(hub: AccountSource, links: MediaLinks, token: string, res: Response, opts: { head?: boolean } = {}): Promise<void> {
   const claim = links.verify(token);
   const binding = claim === null ? undefined : hub.bindings().find((entry) => entry.id === claim.account);
   const sid = claim === null || binding === undefined ? null : (binding.wa.mediaLinkTarget?.(claim.row, claim.tag) ?? null);
   if (binding === undefined || sid === null) {
     refuse(res, 404, "Not found");
+    return;
+  }
+  if (opts.head === true) {
+    const about = aboutOriginal(binding.wa, sid);
+    if (about === null) {
+      refuse(res, 404, "Not found");
+      return;
+    }
+    const type = contentType(about.mime);
+    res
+      .status(200)
+      .set({ ...GUARD_HEADERS, "Content-Type": type, "Content-Disposition": attachmentDisposition(about.filename, type) })
+      .end();
     return;
   }
   // A fetch that goes away before its file is ready stops the download (its slot, its wait for the phone).

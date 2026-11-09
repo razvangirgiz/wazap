@@ -919,7 +919,11 @@ wazap parses, and the parsed text input to the agent.
   origin of the OAuth consent page. The route has its own rate limit (120
   requests per 15 minutes per address), and the request log names it
   `/media/<redacted>`, never the token. Its answer is never gzipped: compression
-  is the `/mcp` adapter's alone. Tests: `test/media-links.test.mjs`.
+  is the `/mcp` adapter's alone. A `HEAD` on a link is checked the same way and
+  answered from the stored message (type, name, the same headers, no length):
+  it never downloads the file nor asks the phone for it, so a link checker
+  cannot spend a download slot or one of the account's re-requests. Tests:
+  `test/media-links.test.mjs`.
 
 Not covered: a link is a bearer capability until it expires; anyone it is
 pasted to can download the file for those 30 minutes. A link is not bound to

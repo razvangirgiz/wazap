@@ -413,7 +413,7 @@ export async function startHttpEndpoint(hub: AccountSource, config: Config, endp
   const stopping = new AbortController();
   let draining = false;
   // What a drain waits for: answers still being written (a POST to /mcp, a
-  // download link's file), and tool calls still running whether or not
+  // download link's file or its HEAD), and tool calls still running whether or not
   // anyone reads their answer, so a send whose client left is not cut off by
   // the accounts stopping under it. A call its client cancelled has no answer
   // to write (serveMcp ends its stream).
@@ -439,7 +439,7 @@ export async function startHttpEndpoint(hub: AccountSource, config: Config, endp
       res.status(503).json({ jsonrpc: "2.0", error: { code: -32000, message: "Server is restarting; retry shortly." }, id: null });
       return;
     }
-    if ((req.method === "POST" && req.path === "/mcp") || (req.method === "GET" && isMediaLinkPath(req.path))) {
+    if ((req.method === "POST" && req.path === "/mcp") || ((req.method === "GET" || req.method === "HEAD") && isMediaLinkPath(req.path))) {
       answersInFlight++;
       res.once("close", () => {
         answersInFlight--;
@@ -770,7 +770,8 @@ export async function startHttpEndpoint(hub: AccountSource, config: Config, endp
 
   // Signed links to originals (src/media-links.ts): only on a server with a public URL. The link is the
   // capability, so no bearer token is asked; the route has a limiter of its own. Its answer is the file as
-  // it is, with the headers serveMediaLink sets: compression is serveMcp's, for /mcp alone.
+  // it is, with the headers serveMediaLink sets: compression is serveMcp's, for /mcp alone. Express answers
+  // HEAD through this route too; serveMediaLink answers that one without fetching the file.
   const links = mediaLinksFor(config);
   if (links !== null) {
     const { rateLimit } = await import("express-rate-limit");
@@ -779,7 +780,7 @@ export async function startHttpEndpoint(hub: AccountSource, config: Config, endp
       MEDIA_LINK_ROUTE,
       rateLimit({ windowMs: 15 * 60 * 1000, limit: 120, standardHeaders: true, legacyHeaders: false }),
       (req: Request, res: Response, next: NextFunction) => {
-        serveMediaLink(hub, links, String(req.params.token ?? ""), res).catch(next);
+        serveMediaLink(hub, links, String(req.params.token ?? ""), res, { head: req.method === "HEAD" }).catch(next);
       }
     );
   }

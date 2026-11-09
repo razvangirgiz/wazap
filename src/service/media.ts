@@ -297,6 +297,12 @@ export class AccountMedia {
     return message.sid;
   }
 
+  /** What a link's file is and is called, from the message alone (a HEAD on the link): nothing is downloaded. Null when it carries no media. */
+  originalInfo(messageId: string): { mime: string; filename: string | null } | null {
+    const info = mediaInfo(this.views.messageOrThrow(messageId));
+    return info === undefined ? null : { mime: info.mime, filename: info.filename ?? null };
+  }
+
   /** The original's bytes and what to call them, for a download link; nothing is written or derived. `signal`: the fetch went away. */
   mediaOriginal(messageId: string, signal?: AbortSignal): Promise<{ buffer: Buffer; mime: string; filename: string | null }> {
     return this.host.guarded(async () => {
