@@ -53,8 +53,16 @@ can take longer than SQLite's own every-4 MB folds did. The log's file can stay
 that large on disk until the next write after the fold cuts it back to 8 MB.
 While a clear, an expiry sweep or a fold runs, commits fold every 4 MB as
 SQLite does by default, so none of its steps pauses for a large one. The server
-reads the file through a memory map of up to 256 MB, which the system can take
-back under memory pressure.
+reads the file through a memory map of up to 256 MB. The mapped pages count in
+its resident memory (80-100 MB more after a 60k-message sync) until the system
+takes them back under memory pressure. A database file cut short under the
+running server, which only something breaking the one-process rule could do,
+then ends the process (SIGBUS, nothing logged) at the next read of a lost page,
+where without the map that read fails with a storage error. A data disk
+unplugged or force-unmounted under the server ends it either way, as it did in
+1.6.0: SQLite maps the log's index (`wazap.sqlite-shm`) in any case. The
+service manager starts it again, and every committed write is in the file or
+its log.
 
 - **Upgrade.** A data dir an earlier wazap wrote has `store.json`, `history/`,
   `retention.json`, `notes.json`, `recall/` and perhaps the beta

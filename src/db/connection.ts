@@ -78,11 +78,13 @@ const WAL_SIZE_LIMIT_BYTES = 8 * 1024 * 1024;
 /**
  * How much of the database file the server's connection reads through a
  * memory map instead of a read() and a copy per page. The scans that cannot
- * use an index — the vector scan, a count over embeddings, a style fallback
- * over the whole account, a word search in one busy chat — run 10-55% faster
- * (bench-db, 100k messages). The mapped pages are the file's own, clean, and
- * the system takes them back under memory pressure; past this size the rest
- * of the file is read as before. Writes are unchanged.
+ * use an index (the vector scan, catch_up's scan, find_contact's fold) run
+ * 0-25% faster (bench-db, 100k messages), more on a busy machine. The mapped
+ * pages are the file's own, clean, and count in the process's resident size
+ * (up to this much more) until the system takes them back under memory
+ * pressure; past this size the rest of the file is read as before. Writes are
+ * unchanged. A file cut short under the server ends the process (SIGBUS) at
+ * the next read of a lost page; see docs/data.md.
  */
 const MMAP_BYTES = 256 * 1024 * 1024;
 

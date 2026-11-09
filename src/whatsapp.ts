@@ -639,7 +639,7 @@ export class WhatsAppService implements WhatsAppApi {
       // A group may have changed while no socket was there to hear it: each one's next send reads it again.
       this.groups.rereadBeforeSend();
       const sock = socketFactory.open({
-        // Signal keys from memory, written through to the files.
+        // Sessions, sender keys, identity keys, pre-keys and lid mappings from memory, written through to the files.
         auth: cachedAuthState(state, silentLogger),
         logger: silentLogger,
         browser: WA_BROWSER,
