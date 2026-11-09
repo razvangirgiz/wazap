@@ -166,3 +166,32 @@ export function zipOf(files, { lie = {}, store = false } = {}) {
   end.writeUInt32LE(offset, 16);
   return Buffer.concat([...locals, directory, end]);
 }
+
+/**
+ * LZW codes (PDF's, early change 1) that pdf.js unpacks to about 7 MB per
+ * cycle: after one byte, every code is past the table, and pdf.js repeats
+ * its last sequence one byte longer for each, until the table is full; a
+ * clear code starts the next cycle. About 5.5 KB per cycle.
+ */
+export function lzwGrowing(cycles) {
+  const codes = [];
+  for (let cycle = 0; cycle < cycles; cycle++) {
+    // The first code of a cycle opens the sequence; it adds no table entry.
+    codes.push([cycle === 0 ? 65 : 511, 9]);
+    let width = 9;
+    for (let next = 258; next <= 4095; ) {
+      codes.push([(1 << width) - 1, width]);
+      next++;
+      if (((next + 1) & next) === 0) width = Math.min(Math.log2(next + 1) + 1, 12);
+    }
+    codes.push([256, 12]);
+  }
+  codes.push([257, 9]);
+  const bits = [];
+  for (const [code, size] of codes) for (let bit = size - 1; bit >= 0; bit--) bits.push((code >> bit) & 1);
+  const out = Buffer.alloc(Math.ceil(bits.length / 8));
+  bits.forEach((bit, i) => {
+    if (bit) out[i >> 3] |= 0x80 >> (i & 7);
+  });
+  return out;
+}

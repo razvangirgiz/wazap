@@ -2,8 +2,9 @@
  * A PDF's streams are measured before anything reads it: a stream that
  * unpacks past its cap (Flate, twice Flate, LZW, Brotli, run-length, behind
  * ASCII85 or an indirect filter) refuses the file; images are left to the
- * readers, which never unpack them whole. What the check misses is stopped by
- * the memory watch around the worker and the renderer.
+ * readers, which never unpack them whole. A dictionary the check cannot read
+ * fails closed. What the check misses is stopped by the memory watch around
+ * the worker and the renderer.
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -12,7 +13,7 @@ import { brotliCompressSync, deflateSync } from "node:zlib";
 import { lzwDecode, pdfBombReason } from "../dist/pdf-guard.js";
 import { DocumentReadError, DOCUMENT_MEMORY, documentText, pdfPageImage } from "../dist/documents.js";
 import { which } from "../dist/transcribe/local.js";
-import { deflatedZeros, lzwZeros, pdfOf, pdfWithFont } from "./media-fixtures.mjs";
+import { deflatedZeros, lzwGrowing, lzwZeros, pdfOf, pdfWithFont } from "./media-fixtures.mjs";
 
 const MB = 1_000_000;
 const ZEROS_100MB = await deflatedZeros(100);
@@ -130,3 +131,55 @@ function ascii85(bytes) {
   }
   return `${out}~>`;
 }
+
+/** `pdf` with the font object's dictionary end rewritten: the bytes are latin1, so the binary data round-trips. */
+function rewritten(pdf, from, to) {
+  const text = pdf.toString("latin1");
+  assert.ok(text.includes(from), from);
+  return Buffer.from(text.replace(from, to), "latin1");
+}
+
+test("a dictionary written to hide a bomb fails closed: comments, long dictionaries, strings, escaped names", () => {
+  const plain = pdfWithFont(ZEROS_100MB, "/Filter /FlateDecode");
+  const end = "/Length3 0 >>\nstream\n";
+  const variants = {
+    "a comment after the dictionary": rewritten(plain, end, "/Length3 0 >> % c\nstream\n"),
+    "a comment on a line of its own": rewritten(plain, end, "/Length3 0 >>\n% c >> <<\nstream\n"),
+    "a dictionary over 64 KB": rewritten(plain, end, `/Length3 0 /Pad (${"a".repeat(70_000)}) >>\nstream\n`),
+    "a string holding >>": rewritten(plain, end, "/Length3 0 /X (>> <<) >>\nstream\n"),
+    "a string holding an image's dictionary": rewritten(plain, end, "/Length3 0 /X (<< /Subtype /Image >>) >>\nstream\n"),
+    "an escaped filter name": rewritten(plain, "/Filter /FlateDecode", "/Filter /Fl#61teDecode"),
+    "spaces before the end of the keyword's line": rewritten(plain, end, `/Length3 0 >>\nstream${" ".repeat(300)}\n`),
+    "an unreadable dictionary": rewritten(plain, end, "/Length3 0 ) >>\nstream\n"),
+  };
+  for (const [name, pdf] of Object.entries(variants)) assert.match(pdfBombReason(pdf), /compression bomb/, name);
+  // An image's own dictionary, read cleanly, still leaves the image to the readers, comments and all.
+  const image = pdfWithFont(ZEROS_100MB, "/Subtype /Image /Width 10 /Height 10 /Filter /FlateDecode");
+  assert.equal(pdfBombReason(rewritten(image, end, "/Length3 0 % note\n>> % c\nstream\n")), null);
+});
+
+test("LZW codes past the table grow each sequence by a byte in pdf.js, and are measured the same", () => {
+  const cycle = lzwDecode(lzwGrowing(1), 1, 100 * MB);
+  // 1 + 2 + ... + 3,839 bytes: the sequence grows with each of the 3,838 codes past the table.
+  assert.equal(cycle.length, (3839 * 3840) / 2);
+  const bomb = lzwGrowing(10);
+  assert.ok(bomb.length < 60_000, `${bomb.length} bytes`);
+  assert.match(pdfBombReason(pdfWithFont(bomb, "/Filter /LZWDecode")), /compression bomb/);
+  // Behind an unreadable dictionary it is guessed at, and the ratio gives it away.
+  assert.match(pdfBombReason(rewritten(pdfWithFont(bomb, "/Filter /LZWDecode"), "/Length3 0 >>\nstream\n", "/Length3 0 >> % c\nstream\n")), /compression bomb/);
+});
+
+test("streams built to overlap are refused in one pass, not measured again and again", () => {
+  for (const mb of [0.5, 2]) {
+    const unit = "<<>>stream\n";
+    const pdf = Buffer.from(`%PDF-1.4\n${unit.repeat(Math.floor((mb * MB) / unit.length))}`, "latin1");
+    const started = performance.now();
+    assert.match(pdfBombReason(pdf), /overlap one another/, `${mb} MB`);
+    assert.ok(performance.now() - started < 5_000, `${mb} MB took ${Math.round(performance.now() - started)} ms`);
+  }
+  // A large honest file: 20,000 pages, each its own Flate stream, measured once each.
+  const pages = Array.from({ length: 20_000 }, (_, p) => [`Page ${p + 1}`]);
+  const started = performance.now();
+  assert.equal(pdfBombReason(pdfOf(pages, { compress: true })), null);
+  assert.ok(performance.now() - started < 3_000, `${Math.round(performance.now() - started)} ms`);
+});

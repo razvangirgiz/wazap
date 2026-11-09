@@ -8,11 +8,16 @@
  * one stream past the cap, or all of them past the total, refuses the file
  * before anything else reads it.
  *
- * Images are left out: the text read never decodes one, and poppler draws a
- * page's images a line at a time. The dictionary is read on a best-effort
- * basis, so a stream is tried as Flate whatever its dictionary says; what a
- * crafted dictionary still hides from this check is caught by the memory
- * watch around the reader (src/documents.ts, src/native-run.ts).
+ * A stream's dictionary is read forward from its object's "N G obj", as the
+ * readers parse it: strings, comments, nested dictionaries and escaped names
+ * included. When it cannot be read that way (a dictionary that does not end
+ * right before the `stream` keyword, or one built to confuse a reader), the
+ * check fails closed: the data is measured as every filter that can expand
+ * it. Images are left out when their dictionary reads cleanly: the text read
+ * never decodes one, and poppler draws a page's images a line at a time. A
+ * stream a crafted file labels as an image, and anything else this check
+ * misses, is bounded by the memory watches around the reader and the
+ * renderer (src/documents.ts, src/native-run.ts): those are the real bound.
  */
 import { brotliDecompressSync, constants, inflateSync } from "node:zlib";
 
@@ -21,160 +26,405 @@ const MB = 1_000_000;
 /** What the streams of one PDF may unpack to. */
 export const PDF_STREAM_LIMITS = { perStream: 64 * MB, total: 256 * MB };
 
-/** How far back from `stream` its dictionary is looked for. */
-const DICT_WINDOW = 64 * 1024;
+/** `stream` keywords examined at most; a file with more is refused rather than measured for long. */
+const STREAMS_MAX = 100_000;
 
 class TooBig extends Error {}
+
+/** Measuring cost more than any PDF's streams can: the same bytes read again and again by streams that overlap. */
+class TooCostly extends Error {}
+
+/**
+ * The bytes all streams' bodies may span, as a multiple of the file: each
+ * stream's data is its own in a PDF, so an honest file's bodies add up to
+ * about its size. Bodies built to overlap would make the check quadratic.
+ */
+const WORK_PER_BYTE = 4;
+const WORK_FLOOR = 16 * MB;
+
+/** What the measuring has read so far, against its allowance. */
+class Work {
+  private read = 0;
+
+  constructor(private readonly max: number) {}
+
+  add(bytes: number): void {
+    this.read += bytes;
+    if (this.read > this.max) throw new TooCostly();
+  }
+}
+
+/** What a stream's dictionary says that matters here; null when it could not be read. */
+interface StreamDict {
+  /** The filter names in order; null when they are not stated directly (an indirect reference). */
+  filters: string[] | null;
+  /** An image or an embedded file: never unpacked whole by the readers. */
+  skip: boolean;
+  /** A direct /Length. */
+  length: number | null;
+  earlyChange: number;
+}
 
 /**
  * Why `pdf` is refused before it is read: a stream that unpacks past
  * `limits.perStream`, or streams past `limits.total` in all. Null for a file
- * whose streams fit.
+ * whose streams fit. One pass over the file: every search moves forward.
  */
 export function pdfBombReason(pdf: Uint8Array, limits = PDF_STREAM_LIMITS): string | null {
   const buf = Buffer.from(pdf.buffer, pdf.byteOffset, pdf.byteLength);
+  const keywords = { stream: new Cursor(buf, "stream"), endstream: new Cursor(buf, "endstream"), lf: new Cursor(buf, "\n"), cr: new Cursor(buf, "\r") };
+  const objects = new Objects(buf);
+  const work = new Work(Math.max(WORK_FLOOR, buf.length * WORK_PER_BYTE));
   let total = 0;
-  let at = 0;
-  for (;;) {
-    const found = buf.indexOf("stream", at, "latin1");
+  let streams = 0;
+  for (let at = 0; ; ) {
+    const found = keywords.stream.next(at);
     if (found < 0) return null;
     at = found + 6;
-    if (found >= 3 && buf.toString("latin1", found - 3, found) === "end") continue;
-    const dict = dictBefore(buf, found);
-    // Only a dictionary opens a stream; a "stream" anywhere else is a word in some data.
-    if (dict === null) continue;
-    if (/\/Subtype\s*\/Image\b|\/Type\s*\/EmbeddedFile\b/.test(dict)) continue;
-    const start = lineAfter(buf, found + 6);
-    if (start === null) continue;
+    // A keyword stands alone: "endstream", "streams" or "xstream" are other words.
+    if (!isKeywordAt(buf, found, 6)) continue;
+    if (++streams > STREAMS_MAX) return `it has more than ${STREAMS_MAX.toLocaleString("en-US")} streams, more than is checked here`;
+    // The data starts after the keyword's line, however long, as both readers skip to it.
+    const lf = keywords.lf.next(at);
+    const cr = keywords.cr.next(at);
+    const eol = lf < 0 ? cr : cr < 0 ? lf : Math.min(lf, cr);
+    if (eol < 0) return null;
+    const start = buf[eol] === 0x0d && buf[eol + 1] === 0x0a ? eol + 2 : eol + 1;
+    const dict = objects.dictBefore(found);
+    if (dict?.skip === true) continue;
     const room = Math.min(limits.perStream, limits.total - total);
-    let used: number;
+    // The readers decode a stream's body only: up to its /Length when "endstream" follows there, else to the next "endstream".
+    const body = buf.subarray(start, bodyEnd(buf, start, dict?.length ?? null, keywords.endstream));
     try {
-      used = unpackedSize(buf.subarray(start), bodyEnd(buf, start, dict) - start, filtersOf(dict), /\/EarlyChange\s+0\b/.test(dict) ? 0 : 1, room);
+      work.add(body.length);
+      total += dict === null ? unknownSize(body, room) : unpackedSize(body, dict.filters, dict.earlyChange, room);
     } catch (err) {
+      if (err instanceof TooCostly) return "its streams overlap one another as no PDF's do, so it is not read here";
       if (!(err instanceof TooBig)) throw err;
       return room < limits.perStream
         ? `its streams unpack to more than ${limits.total / MB} MB in all (a compression bomb)`
         : `a stream in it unpacks to more than ${limits.perStream / MB} MB (a compression bomb)`;
     }
-    total += used;
   }
 }
 
-/** The dictionary just before a `stream` keyword: `<< ... >>`, balanced backwards; null when there is none. */
-function dictBefore(buf: Buffer, keyword: number): string | null {
-  let end = keyword - 1;
-  while (end >= 0 && isWhite(buf[end]!)) end--;
-  if (end < 1 || buf[end] !== 0x3e || buf[end - 1] !== 0x3e) return null;
-  const floor = Math.max(0, keyword - DICT_WINDOW);
-  let depth = 0;
-  for (let i = end; i > floor; i--) {
-    if (buf[i] === 0x3e && buf[i - 1] === 0x3e) {
-      depth++;
-      i--;
-    } else if (buf[i] === 0x3c && buf[i - 1] === 0x3c) {
-      depth--;
-      i--;
-      if (depth === 0) return buf.toString("latin1", i, end + 1);
-    }
+/** The next place a byte string occurs at or after a point, for searches that only move forward: each costs one pass over the file in all. */
+class Cursor {
+  private found = -2;
+
+  constructor(
+    private readonly buf: Buffer,
+    private readonly needle: string
+  ) {}
+
+  next(from: number): number {
+    if (this.found === -1) return -1;
+    if (this.found < from) this.found = this.buf.indexOf(this.needle, from, "latin1");
+    return this.found;
   }
-  return null;
 }
 
-function isWhite(byte: number): boolean {
+function isWhite(byte: number | undefined): boolean {
   return byte === 0x20 || byte === 0x0a || byte === 0x0d || byte === 0x09 || byte === 0x0c || byte === 0x00;
 }
 
-/** Where a stream's data starts: after the end of the keyword's line, as pdf.js skips to it. */
-function lineAfter(buf: Buffer, from: number): number | null {
-  const limit = Math.min(buf.length, from + 256);
-  for (let i = from; i < limit; i++) {
-    if (buf[i] === 0x0a) return i + 1;
-    if (buf[i] === 0x0d) return buf[i + 1] === 0x0a ? i + 2 : i + 1;
-  }
-  return null;
+/** ( ) < > [ ] { } / % */
+function isDelimiter(byte: number | undefined): boolean {
+  return byte === 0x28 || byte === 0x29 || byte === 0x3c || byte === 0x3e || byte === 0x5b || byte === 0x5d || byte === 0x7b || byte === 0x7d || byte === 0x2f || byte === 0x25;
 }
 
-/** Where a stream's data ends: at its direct /Length when "endstream" follows there, else at the next "endstream". */
-function bodyEnd(buf: Buffer, start: number, dict: string): number {
-  const stated = /\/Length\s+(\d+)\b(?!\s+\d+\s+R)/.exec(dict);
-  if (stated) {
-    const end = start + Number(stated[1]);
-    let after = end;
-    while (after < buf.length && isWhite(buf[after]!)) after++;
-    if (end <= buf.length && buf.toString("latin1", after, after + 9) === "endstream") return end;
-  }
-  const marker = buf.indexOf("endstream", start, "latin1");
-  return marker < 0 ? buf.length : marker;
+function isRegular(byte: number | undefined): boolean {
+  return byte !== undefined && !isWhite(byte) && !isDelimiter(byte);
 }
 
-/** The names under /Filter, in order; [] for none; null when they cannot be read (an indirect reference). */
-function filtersOf(dict: string): string[] | null {
-  const match = /\/Filter\s*(\[[^\]]*\]|\/[^\s/[\]<>()%]+|\d+\s+\d+\s+R)/.exec(dict);
-  if (!match) return [];
-  if (/\d+\s+\d+\s+R/.test(match[1]!)) return null;
-  return [...match[1]!.matchAll(/\/([^\s/[\]<>()%]+)/g)].map((name) => name[1]!);
+/** Whether the `size` bytes at `at` are a token of their own: not inside a longer word. */
+function isKeywordAt(buf: Buffer, at: number, size: number): boolean {
+  return (at === 0 || !isRegular(buf[at - 1])) && !isRegular(buf[at + size]);
 }
 
 /**
- * What a stream's data unpacks to through `filters`, every stage counted
- * (pdf.js keeps each stage's output whole), within `room` bytes. Flate and
- * Brotli data is given the rest of the file: each ends itself, so a stray
- * "endstream" inside it cannot hide the rest. The other formats read the
- * stream's body (`bodyLength` bytes), since data past it would count as
- * theirs. Throws TooBig past `room`.
+ * The objects of a file, met in order: the last "N G obj" before a `stream`
+ * keyword opens the dictionary that keyword belongs to, read forward from
+ * there once.
  */
-function unpackedSize(rest: Buffer, bodyLength: number, filters: string[] | null, earlyChange: number, room: number): number {
+class Objects {
+  private readonly cursor: Cursor;
+  private scanned = 0;
+  private last = -1;
+  private parsedFor = -1;
+  private parsed: { end: number; dict: StreamDict } | null = null;
+
+  constructor(private readonly buf: Buffer) {
+    this.cursor = new Cursor(buf, "obj");
+  }
+
+  /** The dictionary that ends right before the `stream` keyword at `keyword`, or null. */
+  dictBefore(keyword: number): StreamDict | null {
+    for (;;) {
+      const next = this.cursor.next(this.scanned);
+      if (next < 0 || next >= keyword) break;
+      this.scanned = next + 3;
+      if (isKeywordAt(this.buf, next, 3) && isObjectHeader(this.buf, next)) this.last = next + 3;
+    }
+    if (this.last < 0) return null;
+    if (this.parsedFor !== this.last) {
+      this.parsedFor = this.last;
+      this.parsed = readStreamDict(this.buf, this.last, keyword);
+    }
+    return this.parsed !== null && this.parsed.end === keyword ? this.parsed.dict : null;
+  }
+}
+
+/** Whether "obj" at `at` follows an object number and generation: "12 0 obj". */
+function isObjectHeader(buf: Buffer, at: number): boolean {
+  let i = at - 1;
+  const digits = (): boolean => {
+    const end = i;
+    while (i >= 0 && buf[i]! >= 0x30 && buf[i]! <= 0x39) i--;
+    return i < end;
+  };
+  const space = (): boolean => {
+    const end = i;
+    while (i >= 0 && isWhite(buf[i])) i--;
+    return i < end;
+  };
+  return space() && digits() && space() && digits() && (i < 0 || !isRegular(buf[i]));
+}
+
+/** Nesting a dictionary may have before it is taken for hostile. */
+const DEPTH_MAX = 32;
+
+/**
+ * The dictionary after `from` (an "obj" keyword's end), read forward with
+ * strict PDF syntax, and where the whitespace and comments after it end;
+ * null when no dictionary can be read there before `limit`.
+ */
+function readStreamDict(buf: Buffer, from: number, limit: number): { end: number; dict: StreamDict } | null {
+  const open = skipSpace(buf, from, limit);
+  if (buf[open] !== 0x3c || buf[open + 1] !== 0x3c) return null;
+  const entries = new Map<string, [number, number]>();
+  const close = skipDict(buf, open, limit, 0, entries);
+  if (close < 0) return null;
+  const value = (key: string): string | undefined => {
+    const span = entries.get(key);
+    return span === undefined ? undefined : buf.toString("latin1", span[0], span[1]);
+  };
+  const filter = value("Filter") ?? value("F");
+  let filters: string[] | null = [];
+  if (filter !== undefined) filters = /^\s*(\/|\[)/.test(filter) && !/\bR\b/.test(filter) ? [...filter.matchAll(/\/([^\s/[\]<>()%{}]*)/g)].map((m) => decodeName(m[1]!)) : null;
+  const name = (key: string): string | null => {
+    const raw = value(key);
+    return raw !== undefined && raw.startsWith("/") ? decodeName(raw.slice(1)) : null;
+  };
+  const length = value("Length");
+  return {
+    end: skipSpace(buf, close, limit),
+    dict: {
+      filters,
+      skip: name("Subtype") === "Image" || name("Type") === "EmbeddedFile",
+      length: length !== undefined && /^\d+$/.test(length) ? Number(length) : null,
+      earlyChange: /\/EarlyChange\s+0\b/.test(value("DecodeParms") ?? value("DP") ?? "") ? 0 : 1,
+    },
+  };
+}
+
+/** A name with its #xx escapes decoded, as the readers decode it: /Fl#61teDecode is /FlateDecode. */
+function decodeName(raw: string): string {
+  return raw.replace(/#([0-9a-fA-F]{2})/g, (_whole, hex: string) => String.fromCharCode(parseInt(hex, 16)));
+}
+
+/** Past whitespace and comments. */
+function skipSpace(buf: Buffer, at: number, limit: number): number {
+  let i = at;
+  while (i < limit) {
+    const byte = buf[i];
+    if (isWhite(byte)) i++;
+    else if (byte === 0x25) {
+      while (i < limit && buf[i] !== 0x0a && buf[i] !== 0x0d) i++;
+    } else break;
+  }
+  return i;
+}
+
+/** The end of the dictionary opening at `at`, its top-level values' spans in `entries` (the last of a key wins, as in the readers); -1 when it is not one. */
+function skipDict(buf: Buffer, at: number, limit: number, depth: number, entries: Map<string, [number, number]> | null): number {
+  let i = at + 2;
+  for (;;) {
+    i = skipSpace(buf, i, limit);
+    if (i + 1 >= limit) return -1;
+    if (buf[i] === 0x3e && buf[i + 1] === 0x3e) return i + 2;
+    if (buf[i] !== 0x2f) return -1;
+    let k = i + 1;
+    while (k < limit && isRegular(buf[k])) k++;
+    const key = decodeName(buf.toString("latin1", i + 1, k));
+    const start = skipSpace(buf, k, limit);
+    const end = skipObject(buf, start, limit, depth + 1);
+    if (end < 0) return -1;
+    entries?.set(key, [start, end]);
+    i = end;
+  }
+}
+
+/** The end of the object at `at` (a reference "5 0 R" counts as one); -1 when none can be read there before `limit`. */
+function skipObject(buf: Buffer, at: number, limit: number, depth: number): number {
+  if (at >= limit || depth > DEPTH_MAX) return -1;
+  const byte = buf[at];
+  if (byte === 0x3c && buf[at + 1] === 0x3c) return skipDict(buf, at, limit, depth, null);
+  if (byte === 0x3c) {
+    for (let i = at + 1; i < limit; i++) {
+      if (buf[i] === 0x3e) return i + 1;
+      if (!isWhite(buf[i]) && !/[0-9a-fA-F]/.test(String.fromCharCode(buf[i]!))) return -1;
+    }
+    return -1;
+  }
+  if (byte === 0x28) {
+    let nesting = 0;
+    for (let i = at; i < limit; i++) {
+      if (buf[i] === 0x5c) i++;
+      else if (buf[i] === 0x28) nesting++;
+      else if (buf[i] === 0x29 && --nesting === 0) return i + 1;
+    }
+    return -1;
+  }
+  if (byte === 0x5b) {
+    let i = at + 1;
+    for (;;) {
+      i = skipSpace(buf, i, limit);
+      if (i >= limit) return -1;
+      if (buf[i] === 0x5d) return i + 1;
+      i = skipObject(buf, i, limit, depth + 1);
+      if (i < 0) return -1;
+    }
+  }
+  if (byte === 0x2f) {
+    let i = at + 1;
+    while (i < limit && isRegular(buf[i])) i++;
+    return i;
+  }
+  const word = (from: number): [string, number] => {
+    let i = from;
+    while (i < limit && isRegular(buf[i])) i++;
+    return [buf.toString("latin1", from, i), i];
+  };
+  const [first, end] = word(at);
+  if (first === "true" || first === "false" || first === "null") return end;
+  if (!/^[+-]?(\d+\.?\d*|\.\d+)$/.test(first)) return -1;
+  // An integer may open a reference: "5 0 R".
+  if (/^\d+$/.test(first)) {
+    const [generation, afterGeneration] = word(skipSpace(buf, end, limit));
+    if (/^\d+$/.test(generation)) {
+      const [r, afterR] = word(skipSpace(buf, afterGeneration, limit));
+      if (r === "R") return afterR;
+    }
+  }
+  return end;
+}
+
+/** Where a stream's data ends: at its direct /Length when "endstream" follows there, else at the next "endstream". */
+function bodyEnd(buf: Buffer, start: number, length: number | null, endstream: Cursor): number {
+  if (length !== null) {
+    const end = start + length;
+    let after = end;
+    while (after < buf.length && isWhite(buf[after])) after++;
+    if (end <= buf.length && buf.toString("latin1", after, after + 9) === "endstream") return end;
+  }
+  const marker = endstream.next(start);
+  return marker < 0 ? buf.length : marker;
+}
+
+/**
+ * What a stream's body unpacks to through `filters`, every stage counted
+ * (pdf.js keeps each stage's output whole), within `room` bytes. Throws
+ * TooBig past `room`.
+ */
+function unpackedSize(body: Uint8Array, filters: string[] | null, earlyChange: number, room: number): number {
   // Whatever the dictionary says (or seems to), data that inflates is measured as Flate.
   const chain = filters === null || filters.length === 0 ? ["FlateDecode"] : filters;
-  const selfEnding = (filter: string): boolean => ["FlateDecode", "Fl", "BrotliDecode"].includes(filter);
-  let input: Uint8Array = selfEnding(chain[0]!) ? rest : rest.subarray(0, Math.max(0, bodyLength));
+  let input = body;
   let used = 0;
   for (const filter of chain) {
-    const left = room - used;
-    let output: Uint8Array | null;
-    switch (filter) {
-      case "FlateDecode":
-      case "Fl":
-        output = guarded(() => inflateSync(input, { maxOutputLength: left + 1, finishFlush: constants.Z_SYNC_FLUSH }));
-        break;
-      case "BrotliDecode":
-        output = guarded(() => brotliDecompressSync(input, { maxOutputLength: left + 1, finishFlush: constants.BROTLI_OPERATION_FLUSH }));
-        break;
-      case "LZWDecode":
-      case "LZW":
-        output = lzwDecode(input, earlyChange, left);
-        break;
-      case "RunLengthDecode":
-      case "RL":
-        output = runLengthDecode(input, left);
-        break;
-      case "ASCII85Decode":
-      case "A85":
-        output = ascii85Decode(input, left);
-        break;
-      case "ASCIIHexDecode":
-      case "AHx":
-        output = asciiHexDecode(input, left);
-        break;
-      default:
-        // An image codec, encryption or a name pdf.js does not know: nothing here unpacks further.
-        output = null;
-    }
+    const output = decodeOne(filter, input, earlyChange, room - used);
     if (output === null) break;
-    if (output.length > left) throw new TooBig();
     used += output.length;
     input = output;
   }
   return used;
 }
 
+/** An LZW or run-length guess counts as a bomb only when it unpacks this many times its input: random data unpacks a few times. */
+const GUESS_RATIO = 50;
+
+/**
+ * A stream whose dictionary could not be read, measured as each filter that
+ * can expand data on its own. Flate and Brotli have formats of their own and
+ * count toward the total; any bytes decode as LZW or run-length, so those
+ * guesses never count, and refuse the file only past the room at a ratio no
+ * honest data reaches.
+ */
+function unknownSize(body: Uint8Array, room: number): number {
+  let used = 0;
+  for (const filter of ["FlateDecode", "BrotliDecode"]) used = Math.max(used, decodeOne(filter, body, 1, room)!.length);
+  for (const filter of ["LZWDecode", "RunLengthDecode"]) {
+    try {
+      decodeOne(filter, body, 1, room);
+    } catch (err) {
+      if (!(err instanceof TooBig) || body.length * GUESS_RATIO >= room) continue;
+      throw err;
+    }
+  }
+  return used;
+}
+
+/** One filter's output within `left` bytes (TooBig past it); null for a filter nothing here unpacks. */
+function decodeOne(filter: string, input: Uint8Array, earlyChange: number, left: number): Uint8Array | null {
+  let output: Uint8Array;
+  switch (filter) {
+    case "FlateDecode":
+    case "Fl":
+      // The readers refuse Flate data without a zlib header: so does this, before any zlib handle is made.
+      output = zlibHeader(input) ? guarded(() => inflateSync(input, { maxOutputLength: left + 1, finishFlush: constants.Z_SYNC_FLUSH })) : new Uint8Array(0);
+      break;
+    case "BrotliDecode":
+      output = guarded(() => brotliDecompressSync(input, { maxOutputLength: left + 1, finishFlush: constants.BROTLI_OPERATION_FLUSH }));
+      break;
+    case "LZWDecode":
+    case "LZW":
+      output = lzwDecode(input, earlyChange, left);
+      break;
+    case "RunLengthDecode":
+    case "RL":
+      output = runLengthDecode(input, left);
+      break;
+    case "ASCII85Decode":
+    case "A85":
+      output = ascii85Decode(input, left);
+      break;
+    case "ASCIIHexDecode":
+    case "AHx":
+      output = asciiHexDecode(input, left);
+      break;
+    default:
+      // An image codec, encryption or a name the readers do not know: nothing here unpacks further.
+      return null;
+  }
+  if (output.length > left) throw new TooBig();
+  return output;
+}
+
+/** A zlib header as pdf.js and poppler require it: deflate, a valid check, no preset dictionary. */
+function zlibHeader(input: Uint8Array): boolean {
+  const cmf = input[0];
+  const flg = input[1];
+  return cmf !== undefined && flg !== undefined && (cmf & 0x0f) === 8 && ((cmf << 8) | flg) % 31 === 0 && (flg & 0x20) === 0;
+}
+
 /** A zlib or Brotli decode: past its cap is TooBig; data that is not of that format unpacks to nothing here. */
-function guarded(decode: () => Buffer): Buffer | null {
+function guarded(decode: () => Buffer): Uint8Array {
   try {
     return decode();
   } catch (err) {
     if ((err as { code?: string }).code === "ERR_BUFFER_TOO_LARGE" || err instanceof RangeError) throw new TooBig();
-    return null;
+    return new Uint8Array(0);
   }
 }
 
@@ -203,26 +453,27 @@ class Output {
   }
 }
 
-/** LZW as PDF writes it (9 to 12-bit codes, 256 clears, 257 ends), as pdf.js reads it, within `cap`. */
+/**
+ * LZW as PDF writes it (9 to 12-bit codes, 256 clears, 257 ends), the way
+ * pdf.js reads it, within `cap`: a code past the table repeats the last
+ * sequence with its first byte added, so a run of such codes grows each
+ * output by one, which pdf.js unpacks too.
+ */
 export function lzwDecode(input: Uint8Array, earlyChange: number, cap: number): Uint8Array {
-  const prefix = new Int32Array(4096);
-  const suffix = new Uint8Array(4096);
-  const length = new Uint16Array(4096);
-  for (let i = 0; i < 256; i++) {
-    prefix[i] = -1;
-    suffix[i] = i;
-    length[i] = 1;
-  }
+  const size = 4096;
+  const values = new Uint8Array(size);
+  const lengths = new Uint16Array(size).fill(1, 0, 256);
+  const previous = new Uint16Array(size);
+  const current = new Uint8Array(size);
+  for (let i = 0; i < 256; i++) values[i] = i;
   const out = new Output(cap, input.length * 4 + 1024);
-  let next = 258;
+  let currentLength = 0;
+  let nextCode = 258;
   let codeLength = 9;
-  let previous = -1;
+  let prevCode = 0;
   let bits = 0;
   let bitCount = 0;
   let pos = 0;
-  const write = (code: number, at: number): void => {
-    for (let c = code, i = at + length[code]! - 1; c >= 0; c = prefix[c]!, i--) out.bytes[i] = suffix[c]!;
-  };
   for (;;) {
     while (bitCount < codeLength) {
       if (pos >= input.length) return out.done();
@@ -231,39 +482,46 @@ export function lzwDecode(input: Uint8Array, earlyChange: number, cap: number): 
     }
     const code = (bits >>> (bitCount - codeLength)) & ((1 << codeLength) - 1);
     bitCount -= codeLength;
-    if (code === 256) {
-      next = 258;
+    const hasPrevious = currentLength > 0;
+    if (code < 256) {
+      current[0] = code;
+      currentLength = 1;
+    } else if (code >= 258) {
+      if (code < nextCode) {
+        currentLength = lengths[code]!;
+        for (let j = currentLength - 1, q = code; j >= 0; j--) {
+          if (j < size) current[j] = values[q]!;
+          q = previous[q]!;
+        }
+      } else {
+        if (currentLength < size) current[currentLength] = current[0]!;
+        currentLength++;
+      }
+    } else if (code === 256) {
       codeLength = 9;
-      previous = -1;
+      nextCode = 258;
+      currentLength = 0;
       continue;
-    }
-    if (code === 257) return out.done();
-    const at = out.length;
-    let first: number;
-    if (code < 256 || (code >= 258 && code < next)) {
-      out.reserve(length[code]!);
-      write(code, at);
-      out.length = at + length[code]!;
-      first = out.bytes[at]!;
-    } else if (code === next && previous >= 0) {
-      const size = length[previous]! + 1;
-      out.reserve(size);
-      write(previous, at);
-      first = out.bytes[at]!;
-      out.bytes[at + size - 1] = first;
-      out.length = at + size;
     } else {
       return out.done();
     }
-    if (previous >= 0 && next < 4096) {
-      prefix[next] = previous;
-      suffix[next] = first;
-      length[next] = length[previous]! + 1;
-      next++;
+    if (hasPrevious) {
+      if (nextCode < size) {
+        previous[nextCode] = prevCode;
+        lengths[nextCode] = lengths[prevCode]! + 1;
+        values[nextCode] = current[0]!;
+      }
+      nextCode++;
+      const reach = nextCode + earlyChange;
+      if ((reach & (reach - 1)) === 0) codeLength = Math.min(Math.floor(Math.log2(reach)) + 1, 12);
     }
-    previous = code;
-    const reach = next + earlyChange;
-    codeLength = reach >= 2048 ? 12 : reach >= 1024 ? 11 : reach >= 512 ? 10 : 9;
+    prevCode = code;
+    out.reserve(currentLength);
+    // Past the table's 4,096 bytes pdf.js writes zeros, as a typed array reads past its end.
+    const shown = Math.min(currentLength, size);
+    out.bytes.set(current.subarray(0, shown), out.length);
+    out.bytes.fill(0, out.length + shown, out.length + currentLength);
+    out.length += currentLength;
   }
 }
 
