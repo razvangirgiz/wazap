@@ -23,7 +23,7 @@ import {
   type CatchupTagJids,
   type CatchupWindow,
 } from "../catchup-scan.js";
-import { secondOfId, type ActivityKey, type ActivityRow, type ChatKind, type StoredMessage } from "../db/index.js";
+import { secondOfId, type AccountDb, type ActivityKey, type ActivityRow, type ChatKind, type MessageRefRow, type Page, type StoredMessage } from "../db/index.js";
 import { draftContextFor, styleCheckFor, type DraftContext, type StyleCheck } from "../draft-style.js";
 import { isGroupId, isNoiseJid, STATUS_JID } from "../ids.js";
 import { decodeChatBytes } from "../store.js";
@@ -277,7 +277,7 @@ export class AccountReads {
     return this.host.guarded(async () => {
       this.host.ensureConnected();
       await this.host.waitForSync();
-      const chosen = await this.recentStored(options.hours, options.filter, options.types);
+      const chosen = await this.recentRows(options.hours, options.filter, options.types, (db, jid, page) => db.messages.chatRefs(jid, page));
       const refs: RecentMessageRefs[] = [];
       for (const { jid, stored } of chosen) {
         const visible = stored.filter((message) => options.includeSystem || message.type !== "system");
@@ -333,7 +333,21 @@ export class AccountReads {
     });
   }
 
-  private async recentStored(hours: number, filter: Exclude<ChatFilter, "archived">, types?: MessageType[]): Promise<Array<{ jid: string; stored: StoredMessage[] }>> {
+  private recentStored(hours: number, filter: Exclude<ChatFilter, "archived">, types?: MessageType[]): Promise<Array<{ jid: string; stored: StoredMessage[] }>> {
+    return this.recentRows(hours, filter, types, (db, jid, page) => db.messages.chatPage(jid, page));
+  }
+
+  /**
+   * Each chat active in the window, with its newest messages there (at most
+   * RECENT_PER_CHAT_MAX), as `read` takes them: whole rows to render, or
+   * only what a cursor keeps (chatRefs), which reads no words.
+   */
+  private async recentRows<T extends MessageRefRow>(
+    hours: number,
+    filter: Exclude<ChatFilter, "archived">,
+    types: MessageType[] | undefined,
+    read: (db: AccountDb, jid: string, page: { limit: number; since: number; before?: number }) => Page<T>
+  ): Promise<Array<{ jid: string; stored: T[] }>> {
     const cutoff = Date.now() - hours * 3_600_000;
     const active = this.storage.db.identity.listChats().filter((chat) => chat.lastTs !== null && chat.lastTs >= cutoff);
     await this.identity.learnLidPhones(active.map((chat) => chat.jid));
@@ -346,14 +360,14 @@ export class AccountReads {
 
     const db = this.storage.db;
     const wanted = types === undefined || types.length === 0 ? null : new Set<string>(types);
-    const chosen: Array<{ jid: string; stored: StoredMessage[] }> = [];
+    const chosen: Array<{ jid: string; stored: T[] }> = [];
     for (const chat of active) {
       if (chat.kind === "status" || isNoiseJid(chat.jid) || !this.views.matchesChatFilter(chat, filter)) continue;
       // Each chat's newest messages in the window, at most as many as main's per-chat ring held.
-      const newestFirst: StoredMessage[] = [];
+      const newestFirst: T[] = [];
       for (let before: number | undefined; newestFirst.length < RECENT_PER_CHAT_MAX; ) {
         const limit = Math.min(500, RECENT_PER_CHAT_MAX - newestFirst.length);
-        const page = db.messages.chatPage(chat.jid, { limit, since: cutoff, ...(before === undefined ? {} : { before }) });
+        const page = read(db, chat.jid, { limit, since: cutoff, ...(before === undefined ? {} : { before }) });
         newestFirst.push(...page.items);
         if (page.nextBefore === null) break;
         before = page.nextBefore;
