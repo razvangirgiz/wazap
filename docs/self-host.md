@@ -94,8 +94,10 @@ specification says. Retry once after pending work completes.
 Answers to a POST are gzip-compressed when the client's `Accept-Encoding`
 takes gzip (Node's `fetch`, and so every TypeScript MCP client, does; so does
 `curl --compressed`), with a flush after every SSE event so a streamed answer
-is not held back. A body under 1 KiB goes as it is, and nothing is compressed
-for a client that did not ask. The tool catalogue crosses the wire as 11 KB
+is not held back. An answer under 1 KiB that is complete within 20 ms goes as
+it is; one still being written after 20 ms (a `wait_for_messages`, a slow
+tool) is streamed compressed whatever its size, which costs it about 20 bytes
+of framing. Nothing is compressed for a client that did not ask. The tool catalogue crosses the wire as 11 KB
 instead of 56 KB. The GET notification stream is never compressed.
 
 A restart (`SIGTERM` or `SIGINT`: `wazap update`, `wazap service restart`, a
