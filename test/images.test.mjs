@@ -118,3 +118,26 @@ test("read_messages previews a PNG photo too, and a kept copy answers with the l
   assert.deepEqual(offline.map((p) => p.message_id), [`false_${ANA}_P2`, `false_${ANA}_P1`], "the kept copy is previewed without WhatsApp");
   assert.equal(downloads, 1, "nothing was downloaded with the link down");
 });
+
+test("an SVG is drawn into a view; a HEIC photo goes through sips on macOS", async (t) => {
+  const { imageView } = await import("../dist/images.js");
+  const svg = Buffer.from('<svg xmlns="http://www.w3.org/2000/svg" width="400" height="200"><rect width="400" height="200" fill="#c00"/></svg>');
+  const drawn = await imageView(svg, "standard", "image/svg+xml");
+  assert.deepEqual([drawn.width, drawn.height, drawn.format], [400, 200, "svg"]);
+  assert.equal((await sharp(drawn.data).metadata()).format, "jpeg");
+
+  const { readdirSync } = await import("node:fs");
+  const dir = "/System/Library/Desktop Pictures";
+  let heic = null;
+  try {
+    heic = readdirSync(dir).find((name) => name.toLowerCase().endsWith(".heic")) ?? null;
+  } catch {
+    // Not macOS, or no wallpapers.
+  }
+  if (process.platform !== "darwin" || heic === null) return t.skip("no HEIC to read here");
+  const { readFileSync } = await import("node:fs");
+  const view = await imageView(readFileSync(`${dir}/${heic}`), "standard", "image/heic");
+  assert.ok(view !== null, "sips turned it into something libvips reads");
+  assert.ok(Math.max(view.width, view.height) <= 1024);
+  assert.ok(view.data.length <= 110_000);
+});

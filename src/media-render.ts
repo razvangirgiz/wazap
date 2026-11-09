@@ -120,10 +120,14 @@ async function videoRendition(input: RenderInput): Promise<MediaRendition> {
  */
 async function documentRendition(input: RenderInput, format: DocumentFormat): Promise<MediaRendition> {
   const pages = input.pages ?? { from: 1, to: null };
-  const [read, page] = await Promise.all([
+  const [read, drawn] = await Promise.all([
     documentText(format, input.buffer, pages).catch((err: unknown) => (err instanceof Error ? err : new Error("unreadable"))),
-    format === "pdf" ? pdfPicture(input.buffer, pages.from, input.detail) : Promise.resolve(null),
+    format === "pdf" ? pdfPageImage(input.buffer, pages.from, VIEW_DETAILS[input.detail].edge) : Promise.resolve(null),
   ]);
+  // Beside its text, the page is a look at the layout, made smaller so the whole answer still fits a hosted
+  // client's tool result (text twice, once per block, plus the picture); a scan's page is all there is, at full budget.
+  const hasText = !(read instanceof Error) && read.text !== "";
+  const page = drawn === null ? null : await pagePicture(drawn, input.detail, hasText && input.detail === "standard" ? PAGE_BESIDE_TEXT_BYTES : undefined);
   const page_image = page === null ? {} : { page_image: { ...page, page: pages.from } };
   if (read instanceof Error) {
     return { kind: "document", format, text: null, truncated: false, ...page_image, note: `Its text could not be read: ${read.message}.` };
@@ -145,11 +149,12 @@ async function documentRendition(input: RenderInput, format: DocumentFormat): Pr
   };
 }
 
-/** A PDF page drawn by poppler or Quick Look, then sized like any image view. */
-async function pdfPicture(pdf: Buffer, page: number, detail: MediaDetail): Promise<MediaPicture | null> {
-  const drawn = await pdfPageImage(pdf, page, VIEW_DETAILS[detail].edge);
-  if (drawn === null) return null;
-  const view = await imageView(drawn, detail, "image/jpeg");
+/** A page picture's byte budget when the document's text comes with it: with the text twice, the answer stays under ~150,000 characters. */
+const PAGE_BESIDE_TEXT_BYTES = 60_000;
+
+/** A PDF page drawn by poppler or Quick Look, sized like any image view, within `budget` when given. */
+async function pagePicture(drawn: Buffer, detail: MediaDetail, budget?: number): Promise<MediaPicture | null> {
+  const view = await imageView(drawn, detail, "image/jpeg", budget);
   return view === null ? null : { jpeg: view.data, width: view.width, height: view.height };
 }
 

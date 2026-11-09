@@ -95,7 +95,13 @@ test("a PDF's first asked page comes as a picture when a renderer is installed",
   const meta = await sharp(picture).metadata();
   assert.equal(meta.format, "jpeg");
   assert.ok(Math.max(meta.width, meta.height) <= 1024 && Math.max(meta.width, meta.height) > 500, `${meta.width}x${meta.height}`);
-  assert.ok(picture.length <= 110_000);
+  assert.ok(picture.length <= 60_000, "beside its text, the page is a smaller picture");
+
+  // A page of text at the budget, the picture beside it: the whole answer still fits a hosted client's ~150,000 characters.
+  const line = "Lorem ipsum dolor sit amet, consectetur adipiscing elit, sed do eiusmod tempor incididunt ut labore.";
+  const full = await send(pdfOf(Array.from({ length: 6 }, (_, p) => Array.from({ length: 40 }, (_, i) => `${p}.${i} ${line}`))), "application/pdf", "lung.pdf");
+  const characters = full.content.reduce((sum, block) => sum + (block.text ?? block.data).length, 0) + JSON.stringify(full.structuredContent).length;
+  assert.ok(characters < 150_000, `${characters} characters`);
 });
 
 test("a scanned PDF has no text layer: the answer says the page picture is what to read", async (t) => {

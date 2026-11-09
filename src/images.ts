@@ -128,35 +128,34 @@ export async function previewImage(input: Buffer, mime: string): Promise<Jpeg | 
 /**
  * A JPEG view of an image at `detail`: the first frame of an animation,
  * turned upright, flattened onto white, never enlarged, and within the
- * detail's byte budget. A HEIC photo libvips cannot decode goes through
+ * detail's byte budget (or `budget`, when the answer carries text beside it). A HEIC photo libvips cannot decode goes through
  * macOS's sips first. Null without sharp, or for an input nothing here reads.
  */
-export async function imageView(input: Buffer, detail: ViewDetail, mime = ""): Promise<ImageView | null> {
+export async function imageView(input: Buffer, detail: ViewDetail, mime = "", budget?: number): Promise<ImageView | null> {
   const sharp = await loadSharp();
   if (sharp === null) return null;
-  let source = input;
-  let meta = await sharp(source, INPUT).metadata().catch(() => null);
-  if (meta === null && /^image\/hei[cf]/i.test(mime)) {
-    const converted = await heicToJpeg(input);
-    if (converted !== null) {
-      source = converted;
-      meta = await sharp(source, INPUT).metadata().catch(() => null);
-    }
-  }
-  if (meta === null || !meta.width || !meta.height) return null;
   const { edge, maxBytes } = VIEW_DETAILS[detail];
-  try {
-    const fitted = await fitJpeg(sharp, sharp(source, INPUT).rotate(), edge, maxBytes);
-    return {
-      ...fitted,
-      original_width: meta.autoOrient?.width ?? meta.width,
-      original_height: meta.autoOrient?.height ?? meta.height,
-      format: meta.format ?? "unknown",
-      ...(meta.pages !== undefined && meta.pages > 1 ? { frames: meta.pages } : {}),
-    };
-  } catch {
-    return null;
-  }
+  const view = async (source: Buffer): Promise<ImageView | null> => {
+    try {
+      const meta = await sharp(source, INPUT).metadata();
+      if (!meta.width || !meta.height) return null;
+      const fitted = await fitJpeg(sharp, sharp(source, INPUT).rotate(), edge, budget ?? maxBytes);
+      return {
+        ...fitted,
+        original_width: meta.autoOrient?.width ?? meta.width,
+        original_height: meta.autoOrient?.height ?? meta.height,
+        format: meta.format ?? "unknown",
+        ...(meta.pages !== undefined && meta.pages > 1 ? { frames: meta.pages } : {}),
+      };
+    } catch {
+      return null;
+    }
+  };
+  const made = await view(input);
+  if (made !== null || !/^image\/hei[cf]/i.test(mime)) return made;
+  // libvips reads a HEIC's header but cannot decode its HEVC pixels: sips can, on macOS.
+  const converted = await heicToJpeg(input);
+  return converted === null ? null : view(converted);
 }
 
 /**
