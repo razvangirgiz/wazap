@@ -515,12 +515,12 @@ export async function startHttpEndpoint(hub: AccountSource, config: Config, endp
   }, endpoint.sessionSweepMs ?? MCP_SESSION_SWEEP_MS);
   sweep.unref();
 
+  const ids = sessionIds(paths(config.dataDir).sessionKeyFile);
   /**
    * A new session for this credential: its transport, the McpServer behind it
    * with the tools the credential unlocks, and its place in the registry once
-   * the transport has its id.
+   * the transport has its id (a fresh signed one, or the one being revived).
    */
-  const ids = sessionIds(paths(config.dataDir).sessionKeyFile);
   const openSession = async (req: AuthedRequest, owner: string, revivedId?: string): Promise<McpTransport> => {
     const { WebStandardStreamableHTTPServerTransport } = await loadTransportModule();
     const transport: McpTransport = new WebStandardStreamableHTTPServerTransport({
