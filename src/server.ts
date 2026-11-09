@@ -135,6 +135,29 @@ function loadTransportModule(): NonNullable<typeof transportModule> {
   return transportModule;
 }
 
+/** The OAuth routes that take a body before any credential is checked. */
+const OAUTH_BODY_ROUTES = ["/authorize", "/token", "/register", "/revoke", APPROVE_PATH];
+/** A registration with many redirect URIs is a few KiB; nothing an OAuth route takes comes near this. */
+export const OAUTH_BODY_MAX_BYTES = 64 * 1024;
+
+/**
+ * 415 for a compressed body, 413 for a declared length past the cap. A body
+ * sent chunked, with no length, still meets the parsers' own 100 KiB limit.
+ */
+function refuseOAuthBody(req: Request, res: Response, next: NextFunction): void {
+  const encoding = req.headers["content-encoding"];
+  if (encoding !== undefined && encoding.trim().toLowerCase() !== "identity") {
+    res.status(415).json({ error: "invalid_request", error_description: "Compressed request bodies are not accepted" });
+    return;
+  }
+  const length = Number(req.headers["content-length"] ?? 0);
+  if (!Number.isFinite(length) || length > OAUTH_BODY_MAX_BYTES) {
+    res.status(413).json({ error: "invalid_request", error_description: "Request body too large" });
+    return;
+  }
+  next();
+}
+
 /** Every anonymous loopback reader shares this owner; such sessions are never revived. */
 const ANONYMOUS_OWNER = "anonymous";
 
@@ -379,6 +402,11 @@ export async function startHttpEndpoint(hub: AccountSource, config: Config, endp
     // A private/LAN address is not automatically a proxy. Trust only configured
     // peers and use Express's same right-to-left XFF resolution for every limiter.
     app.set("trust proxy", config.trustedProxies ?? ["loopback"]);
+    // These routes parse bodies before anyone has authenticated, with the
+    // SDK's own default-inflate parsers: refuse what they would inflate
+    // (body-parser GHSA-27r3-jxmh-p828) and anything far past what an OAuth
+    // request needs, before a byte of it is read.
+    app.use(OAUTH_BODY_ROUTES, refuseOAuthBody);
     app.use(
       mcpAuthRouter({
         provider: oauth,
@@ -395,7 +423,7 @@ export async function startHttpEndpoint(hub: AccountSource, config: Config, endp
     app.post(
       APPROVE_PATH,
       rateLimit({ windowMs: 15 * 60 * 1000, limit: 30, standardHeaders: true, legacyHeaders: false }),
-      express.urlencoded({ extended: false }),
+      express.urlencoded({ extended: false, inflate: false, limit: OAUTH_BODY_MAX_BYTES }),
       oauth.approve
     );
     log(`OAuth on: agents sign in at ${oauth.issuerUrl.href}`);

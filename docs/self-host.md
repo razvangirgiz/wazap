@@ -268,6 +268,11 @@ What to know before exposing it:
   everyone for one minute.
 - With OAuth on, `/mcp` never answers an unauthenticated request, whether or
   not a read token is set.
+- The OAuth routes (`/authorize`, `/token`, `/register`, `/revoke` and the
+  consent page) read a body before anyone has signed in, so they refuse a
+  compressed one (415) and one declared larger than 64 KiB (413) before
+  reading a byte of it; a body sent without a length still meets the parsers'
+  100 KiB limit.
 - Grants live in `<data-dir>/oauth.json` as hashes. Delete the file to sign
   every agent out at once, running server included; `wazap status` lists who
   holds one. Disconnecting an agent on its side revokes its refresh token and

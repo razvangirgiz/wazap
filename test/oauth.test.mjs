@@ -9,11 +9,12 @@ import { createHash, randomBytes } from "node:crypto";
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
+import { gzipSync } from "node:zlib";
 import { join } from "node:path";
 import { extractWWWAuthenticateParams } from "@modelcontextprotocol/sdk/client/auth.js";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
-import { startHttpEndpoint } from "../dist/server.js";
+import { OAUTH_BODY_MAX_BYTES, startHttpEndpoint } from "../dist/server.js";
 import { WazapOAuthProvider, oauthProblem } from "../dist/oauth.js";
 import { draftStub, offlineConfig, stubAccountSource, waitFor } from "./helpers.mjs";
 
@@ -1159,4 +1160,31 @@ test("a draft answers to its OAuth client across sessions and token rotations, n
       .structuredContent.error,
     "DRAFT_NOT_FOUND"
   );
+});
+
+test("the OAuth routes refuse compressed and oversized bodies before parsing them, and before any sign-in", async (t) => {
+  const ctx = await boot(t);
+  const { request: started } = await begin(ctx);
+  const packed = gzipSync(form({ grant_type: "authorization_code", code: "x" }));
+  for (const [path, type, body] of [
+    ["/token", "application/x-www-form-urlencoded", packed],
+    ["/revoke", "application/x-www-form-urlencoded", packed],
+    ["/register", "application/json", gzipSync(JSON.stringify({ redirect_uris: ["https://agent.example/cb"] }))],
+    ["/oauth/approve", "application/x-www-form-urlencoded", gzipSync(form({ request: started, password: PASSWORD, access: "read" }))],
+    ["/authorize", "application/x-www-form-urlencoded", packed],
+  ]) {
+    const res = await fetch(`${ctx.base}${path}`, { method: "POST", headers: { "content-type": type, "content-encoding": "gzip" }, body, redirect: "manual" });
+    assert.equal(res.status, 415, path);
+    await res.text();
+  }
+  const huge = await fetch(`${ctx.base}/register`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ redirect_uris: ["https://agent.example/cb"], client_name: "x".repeat(OAUTH_BODY_MAX_BYTES) }),
+  });
+  assert.equal(huge.status, 413);
+  await huge.text();
+  // An honest flow is untouched: the same consent request still signs in.
+  const { res } = await approve(ctx, started, { password: PASSWORD, access: "read" });
+  assert.equal(res.status, 302);
 });
