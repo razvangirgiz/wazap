@@ -16,6 +16,7 @@ import {
 } from "baileys";
 import { WazapError } from "../errors.js";
 import { isGroupId } from "../ids.js";
+import { logError } from "../logger.js";
 import { isoWithOffset, protoNumber } from "../messages.js";
 import { describe, loadProfilePicture } from "../outgoing-media.js";
 import type {
@@ -343,8 +344,12 @@ export class AccountGroups {
    * metadata round trip. Anything else is read again first: a group not
    * cached, one whose members changed (group-participants.update drops it),
    * one whose disappearing-messages setting changed, and every group after a
-   * reconnect. Undefined when it cannot be read: Baileys then asks WhatsApp
-   * itself, as it did before, and reports what it says.
+   * reconnect. A read WhatsApp fails rejects with WhatsApp's own error, which
+   * relayMessage does not catch: the send fails after that one query, as it
+   * did when Baileys asked itself, and send.ts tells a timeout or a dropped
+   * link from a refusal as before. Undefined when there is no socket to ask
+   * on, or the group is one reads already gave up on: Baileys then asks
+   * WhatsApp itself, as it did before, and reports what it says.
    */
   forSend(jid: string): Promise<GroupMetadata | undefined> {
     const key = this.identity.canonical(jid);
@@ -358,13 +363,30 @@ export class AccountGroups {
     if (this.unreadableGroups.has(key)) return Promise.resolve(undefined);
     const pending = this.sendReads.get(key);
     if (pending !== undefined) return pending;
-    const reading: Promise<GroupMetadata | undefined> = this.groupMeta(key, true)
-      .catch(() => undefined)
-      .finally(() => {
-        if (this.sendReads.get(key) === reading) this.sendReads.delete(key);
-      });
+    let sock: WASocket;
+    try {
+      sock = this.host.ensureConnected();
+    } catch {
+      return Promise.resolve(undefined);
+    }
+    const reading: Promise<GroupMetadata | undefined> = this.readForSend(sock, key).finally(() => {
+      if (this.sendReads.get(key) === reading) this.sendReads.delete(key);
+    });
     this.sendReads.set(key, reading);
     return reading;
+  }
+
+  private async readForSend(sock: WASocket, jid: string): Promise<GroupMetadata> {
+    const asked = this.ask();
+    const meta = await sock.groupMetadata(jid);
+    try {
+      this.cacheGroup(jid, meta, asked);
+    } catch (err) {
+      // The members are cached before their names are learned; a store that
+      // refuses the names does not fail the send they were read for.
+      logError("learn a group's members before a send", err);
+    }
+    return meta;
   }
 
   /**

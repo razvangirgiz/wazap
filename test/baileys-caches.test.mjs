@@ -215,10 +215,15 @@ test("the service socket gets the cached key store, and group sends address memb
   await opened.cachedGroupMetadata(GROUP);
   assert.deepEqual(fetched, [GROUP, GROUP, GROUP], "read again once after the reconnect");
 
+  const forbidden = Object.assign(new Error("forbidden"), { output: { statusCode: 403 } });
   sock.groupMetadata = async () => {
-    throw Object.assign(new Error("forbidden"), { output: { statusCode: 403 } });
+    throw forbidden;
   };
-  assert.equal(await opened.cachedGroupMetadata("120363000000000078@g.us"), undefined, "a group that cannot be read is left to Baileys");
+  await assert.rejects(
+    opened.cachedGroupMetadata("120363000000000078@g.us"),
+    (err) => err === forbidden,
+    "a group that cannot be read fails the send with WhatsApp's own answer, as Baileys' own query did"
+  );
 });
 
 function groupsWith(fetch) {
@@ -257,13 +262,20 @@ test("a send trusts a group's members for five minutes after they were read, the
   assert.equal(fetches, 4, "and so is every group after a reconnect");
 });
 
-test("sends waiting on the same group share one read; a read that fails leaves the send to Baileys", async () => {
+/** relayMessage's group addressing (Baileys rc14, messages-send.js): the cache first, its own query when that has no members. */
+async function relayGroupData(groups, sock, jid) {
+  const cached = await groups.forSend(jid);
+  return cached && Array.isArray(cached.participants) ? cached : sock.groupMetadata(jid);
+}
+
+test("sends waiting on the same group share one read; a read that fails fails them with WhatsApp's own error", async () => {
   let fetches = 0;
   let fail = false;
+  const timedOut = Object.assign(new Error("Timed Out"), { output: { statusCode: 408 } });
   const { groups, clock } = groupsWith(async (jid) => {
     fetches++;
     await new Promise((resolve) => setTimeout(resolve, 5));
-    if (fail) throw new Error("timed out");
+    if (fail) throw timedOut;
     return { id: jid, subject: "Grup", participants: [{ id: ME, admin: null }] };
   });
   const [a, b, c] = await Promise.all([groups.forSend(GROUP), groups.forSend(GROUP), groups.forSend(GROUP)]);
@@ -271,9 +283,57 @@ test("sends waiting on the same group share one read; a read that fails leaves t
   assert.ok(a === b && b === c);
   clock.now += SEND_METADATA_MS;
   fail = true;
-  assert.equal(await groups.forSend(GROUP), undefined, "an entry past its time is not served when it cannot be read again");
+  const waiting = [groups.forSend(GROUP), groups.forSend(GROUP)];
+  for (const send of waiting) {
+    await assert.rejects(send, (err) => err === timedOut, "an entry past its time is not served when it cannot be read again");
+  }
+  assert.equal(fetches, 2, "the sends waiting on the failed read shared it");
   assert.equal(await groups.forSend("40700000002@s.whatsapp.net"), undefined, "not a group: nothing to address");
   assert.equal(fetches, 2);
+});
+
+test("a group send whose metadata read fails waits for one query, not two", async () => {
+  let fetches = 0;
+  const sock = {
+    groupMetadata: async () => {
+      fetches++;
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      throw Object.assign(new Error("Timed Out"), { output: { statusCode: 408 } });
+    },
+  };
+  const host = { guarded: (work) => work(), ensureConnected: () => sock, beginWrite: () => sock, learnGroup: () => {} };
+  const groups = new AccountGroups(host, { canonical: (jid) => jid }, {});
+  await assert.rejects(relayGroupData(groups, sock, GROUP), /Timed Out/);
+  assert.equal(fetches, 1, "Baileys does not ask again after the cache's read failed");
+
+  // No socket to ask on: nothing was asked, so Baileys asks, once.
+  host.ensureConnected = () => {
+    throw new Error("not connected");
+  };
+  await assert.rejects(relayGroupData(groups, sock, GROUP), /Timed Out/);
+  assert.equal(fetches, 2);
+});
+
+test("a group read whose names the store refuses still addresses the send", async () => {
+  let fetches = 0;
+  const sock = {
+    groupMetadata: async (jid) => {
+      fetches++;
+      return { id: jid, subject: "Grup", participants: [{ id: ME, admin: null }] };
+    },
+  };
+  const host = {
+    guarded: (work) => work(),
+    ensureConnected: () => sock,
+    beginWrite: () => sock,
+    learnGroup: () => {
+      throw new Error("disk full");
+    },
+  };
+  const groups = new AccountGroups(host, { canonical: (jid) => jid }, {});
+  assert.equal((await relayGroupData(groups, sock, GROUP)).subject, "Grup");
+  assert.equal((await relayGroupData(groups, sock, GROUP)).subject, "Grup");
+  assert.equal(fetches, 1, "read once, then served from the cache");
 });
 
 test("a read already in flight when a group changes does not count for the sends after it", async () => {
