@@ -69,6 +69,20 @@ const WAL_SIZE_LIMIT_BYTES = 8 * 1024 * 1024;
  */
 const MMAP_BYTES = 256 * 1024 * 1024;
 
+/**
+ * A row count written into a statement's text (`LIMIT ${sqlLimit(n)}`) rather
+ * than bound. node:sqlite's SQLite (3.47+) lets the planner read a bound LIMIT
+ * and marks the statement to be prepared again whenever that parameter is
+ * bound, which is every run: 20-30 µs a run for a statement of a few joins,
+ * against 2 µs for the same text with the number in it. For the reads that run
+ * once per chat (catch_up); the values are a handful of constants, so the
+ * statement cache gains a few entries, not one per call.
+ */
+export function sqlLimit(n: number): string {
+  if (!Number.isSafeInteger(n) || n < 0) throw new RangeError(`Not a row count: ${n}`);
+  return String(n);
+}
+
 export interface ConnectionOptions {
   /** status and doctor: never migrates, never writes, refuses a schema it would have to change. */
   readOnly?: boolean;
