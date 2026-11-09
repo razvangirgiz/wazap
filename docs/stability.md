@@ -203,7 +203,7 @@ whenever that event is enabled.
 ## 5. Data on disk
 
 - The account database carries its schema version in `PRAGMA user_version`; it
-  is 6 in this release.
+  is 8 in this release.
 - Migrations run forward only, in order, and every released version has a chain
   test, so a new migration cannot ship without one. A released migration is
   never edited — a new shape is a new migration at the end — and the chain test

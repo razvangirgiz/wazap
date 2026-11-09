@@ -23,11 +23,11 @@ import {
   type CatchupTagJids,
   type CatchupWindow,
 } from "../catchup-scan.js";
-import { secondOfId, type ChatKind, type StoredMessage } from "../db/index.js";
+import { secondOfId, type AccountDb, type ActivityKey, type ActivityRow, type ChatKind, type MessageRefRow, type Page, type StoredMessage } from "../db/index.js";
 import { draftContextFor, styleCheckFor, type DraftContext, type StyleCheck } from "../draft-style.js";
 import { isGroupId, isNoiseJid, STATUS_JID } from "../ids.js";
-import { decodeChat } from "../store.js";
-import { formatAge, isoWithOffset, mentionedJids, protoNumber, quotedSenderJid, viewText } from "../messages.js";
+import { decodeChatBytes } from "../store.js";
+import { formatAge, isoWithOffset, mentionedJids, quotedSenderJid, viewText } from "../messages.js";
 import { normalizeTag, withoutPrivateQuote, withoutWords } from "../private-contacts.js";
 import { frozenReceiptText } from "../drafts.js";
 import { STORY_TTL_MS } from "./ingest.js";
@@ -118,7 +118,7 @@ export class AccountReads {
       await this.host.waitForSync();
       // The lookup can teach a pairing, and a pairing folds a lid chat into its
       // number's: it comes first, and the fold is let land before the list is read.
-      const lidChats = this.storage.db.identity.listChats().filter((chat) => chat.jid.endsWith("@lid") && this.views.listed(chat));
+      const lidChats = this.storage.db.identity.lidChats().filter((chat) => this.views.listed(chat));
       await this.identity.learnLidPhones(lidChats.map((chat) => chat.jid));
       await this.host.foldsSettled();
       const db = this.storage.db;
@@ -126,34 +126,44 @@ export class AccountReads {
       const tagged = tag === undefined ? null : new Set(db.identity.chatIdsTagged(tag));
       // A cursor holds on to the list it came from: the filter, and the tag when there is one.
       const listing = tag === undefined ? filter : `${filter}#${tag}`;
-      const entries = db.identity
-        .listChats()
-        .filter((chat) => this.views.listed(chat) && this.views.matchesChatFilter(chat, filter) && (tagged === null || tagged.has(chat.id)))
-        .map((chat) => ({ chat, proto: chat.proto === null ? null : decodeChat(Buffer.from(chat.proto).toString("base64")) }));
-      const activity = (entry: (typeof entries)[number]): number => {
-        const described = protoNumber(entry.proto?.conversationTimestamp);
-        if (described !== undefined && described !== null) return described;
-        return entry.chat.lastTs === null ? 0 : Math.floor(entry.chat.lastTs / 1000);
-      };
-      const key = (entry: (typeof entries)[number]): number[] => [activity(entry), entry.chat.lastMessageId ?? 0, entry.chat.id];
-      const compare = (a: number[], b: number[]): number => b[0]! - a[0]! || b[1]! - a[1]! || b[2]! - a[2]!;
-      let after: number[] | null = null;
+      let after: ActivityKey | null = null;
       if (opts.cursor !== undefined) {
         try {
           if (!/^[A-Za-z0-9_-]{1,512}$/.test(opts.cursor)) throw new Error();
           const parsed: unknown = JSON.parse(Buffer.from(opts.cursor, "base64url").toString("utf8"));
           if (!Array.isArray(parsed) || parsed.length !== 4 || parsed[0] !== listing || !parsed.slice(1).every(n => typeof n === "number" && Number.isFinite(n) && n >= 0)) throw new Error();
-          after = parsed.slice(1) as number[];
+          after = parsed.slice(1) as unknown as ActivityKey;
         } catch {
           throw new WazapError("INVALID_ID", "Invalid list_chats cursor, or its filter or tag changed.", "Start listing again without a cursor");
         }
       }
-      const ordered = entries.sort((a, b) => compare(key(a), key(b))).filter(entry => after === null || compare(key(entry), after) > 0);
-      const selected = ordered.slice(0, limit);
+      // Newest first off chats_activity (what WhatsApp's description says the
+      // chat's time is, else its newest message's), a batch at a time, until
+      // the page and one more chat are found: only the page is decoded.
+      const selected: ActivityRow[] = [];
+      let more = false;
+      const batch = Math.min(500, limit + 1 + 32);
+      for (let from = after; ; ) {
+        const rows = db.identity.chatsByActivity({
+          after: from,
+          limit: batch,
+          ...(filter === "archived" ? { archived: true } : { archived: false }),
+          ...(filter === "unread" ? { unread: true } : {}),
+        });
+        for (const row of rows) {
+          if (!this.views.listed(row.chat) || !this.views.matchesChatFilter(row.chat, filter) || (tagged !== null && !tagged.has(row.chat.id))) continue;
+          if (selected.length === limit) {
+            more = true;
+            break;
+          }
+          selected.push(row);
+        }
+        if (more || rows.length < batch) break;
+        from = rows.at(-1)!.key;
+      }
       const people = this.identity.privateScope(opts.private);
-      const chats = selected.map(entry => this.views.chatSummary(entry.chat, entry.proto, people));
-      const nextCursor = ordered.length > limit && selected.length > 0
-        ? Buffer.from(JSON.stringify([listing, ...key(selected.at(-1)!)])).toString("base64url") : null;
+      const chats = selected.map(({ chat }) => this.views.chatSummary(chat, chat.proto === null ? null : decodeChatBytes(chat.proto), people));
+      const nextCursor = more && selected.length > 0 ? Buffer.from(JSON.stringify([listing, ...selected.at(-1)!.key])).toString("base64url") : null;
       return { ...this.host.synced(chats), nextCursor };
     });
   }
@@ -267,7 +277,7 @@ export class AccountReads {
     return this.host.guarded(async () => {
       this.host.ensureConnected();
       await this.host.waitForSync();
-      const chosen = await this.recentStored(options.hours, options.filter, options.types);
+      const chosen = await this.recentRows(options.hours, options.filter, options.types, (db, jid, page) => db.messages.chatRefs(jid, page));
       const refs: RecentMessageRefs[] = [];
       for (const { jid, stored } of chosen) {
         const visible = stored.filter((message) => options.includeSystem || message.type !== "system");
@@ -323,7 +333,21 @@ export class AccountReads {
     });
   }
 
-  private async recentStored(hours: number, filter: Exclude<ChatFilter, "archived">, types?: MessageType[]): Promise<Array<{ jid: string; stored: StoredMessage[] }>> {
+  private recentStored(hours: number, filter: Exclude<ChatFilter, "archived">, types?: MessageType[]): Promise<Array<{ jid: string; stored: StoredMessage[] }>> {
+    return this.recentRows(hours, filter, types, (db, jid, page) => db.messages.chatPage(jid, page));
+  }
+
+  /**
+   * Each chat active in the window, with its newest messages there (at most
+   * RECENT_PER_CHAT_MAX), as `read` takes them: whole rows to render, or
+   * only what a cursor keeps (chatRefs), which reads no words.
+   */
+  private async recentRows<T extends MessageRefRow>(
+    hours: number,
+    filter: Exclude<ChatFilter, "archived">,
+    types: MessageType[] | undefined,
+    read: (db: AccountDb, jid: string, page: { limit: number; since: number; before?: number }) => Page<T>
+  ): Promise<Array<{ jid: string; stored: T[] }>> {
     const cutoff = Date.now() - hours * 3_600_000;
     const active = this.storage.db.identity.listChats().filter((chat) => chat.lastTs !== null && chat.lastTs >= cutoff);
     await this.identity.learnLidPhones(active.map((chat) => chat.jid));
@@ -336,14 +360,14 @@ export class AccountReads {
 
     const db = this.storage.db;
     const wanted = types === undefined || types.length === 0 ? null : new Set<string>(types);
-    const chosen: Array<{ jid: string; stored: StoredMessage[] }> = [];
+    const chosen: Array<{ jid: string; stored: T[] }> = [];
     for (const chat of active) {
       if (chat.kind === "status" || isNoiseJid(chat.jid) || !this.views.matchesChatFilter(chat, filter)) continue;
       // Each chat's newest messages in the window, at most as many as main's per-chat ring held.
-      const newestFirst: StoredMessage[] = [];
+      const newestFirst: T[] = [];
       for (let before: number | undefined; newestFirst.length < RECENT_PER_CHAT_MAX; ) {
         const limit = Math.min(500, RECENT_PER_CHAT_MAX - newestFirst.length);
-        const page = db.messages.chatPage(chat.jid, { limit, since: cutoff, ...(before === undefined ? {} : { before }) });
+        const page = read(db, chat.jid, { limit, since: cutoff, ...(before === undefined ? {} : { before }) });
         newestFirst.push(...page.items);
         if (page.nextBefore === null) break;
         before = page.nextBefore;

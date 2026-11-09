@@ -19,7 +19,7 @@ import { setTimeout as sleep } from "node:timers/promises";
 import { downloadMediaMessage, type BinaryNode, type WAMessage, type WASocket } from "baileys";
 import type { ILogger } from "baileys/lib/Utils/logger.js";
 import { accountPolicy, type AccountRecord } from "./accounts.js";
-import { clearAuth, CredentialsReadError, readLinkedAccount, useAtomicAuthState, type LinkedAccount } from "./auth-state.js";
+import { cachedAuthState, clearAuth, CredentialsReadError, readLinkedAccount, useAtomicAuthState, type LinkedAccount } from "./auth-state.js";
 import {
   type CatchupQuote,
   type CatchupScan,
@@ -33,7 +33,7 @@ import { AccountDb, chatKindOf, StorageError, type StoredMessage } from "./db/in
 import { type DraftContext, type StyleCheck } from "./draft-style.js";
 import { asWazapError, RELINK_FIX, RESET_FIX, WazapError } from "./errors.js";
 import { type AccountFind, type FindContactQuery } from "./find-contact.js";
-import { isNoiseJid, normalizePhone } from "./ids.js";
+import { isGroupId, isNoiseJid, normalizePhone } from "./ids.js";
 import { log, logError } from "./logger.js";
 import { describe } from "./outgoing-media.js";
 import { momentsOf } from "./store.js";
@@ -636,8 +636,11 @@ export class WhatsAppService implements WhatsAppApi {
       this.setStatus("connecting");
       const generation = ++this.generation;
       this.socketOpenedAt = Date.now();
+      // A group may have changed while no socket was there to hear it: each one's next send reads it again.
+      this.groups.rereadBeforeSend();
       const sock = socketFactory.open({
-        auth: state,
+        // Sessions, sender keys, identity keys, pre-keys and lid mappings from memory, written through to the files.
+        auth: cachedAuthState(state, silentLogger),
         logger: silentLogger,
         browser: WA_BROWSER,
         syncFullHistory: this.config.syncFullHistory,
@@ -645,6 +648,8 @@ export class WhatsAppService implements WhatsAppApi {
         generateHighQualityLinkPreview: false,
         // Retries and poll decryption ask for a message the account already has.
         getMessage: async (key) => this.views.storedProto(key),
+        // A send to a group addresses its members from the group cache while it is fresh, not a metadata query per send.
+        cachedGroupMetadata: (jid) => this.groups.forSend(jid),
       });
       this.sockClient = sock;
       this.wireEvents(sock, generation);
@@ -1591,6 +1596,13 @@ export class WhatsAppService implements WhatsAppApi {
     });
 
     sock.ev.on("chats.update", (updates) => {
+      // A group's disappearing-messages setting changes as a chat update, not a group one; sends must stamp the new one.
+      for (const update of updates) {
+        if (update.id && ("ephemeralExpiration" in update || "ephemeralSettingTimestamp" in update)) {
+          const jid = this.identity.canonical(update.id);
+          if (isGroupId(jid)) this.groups.rereadBeforeSend(jid);
+        }
+      }
       this.handling(
         "chats",
         () =>
@@ -1671,10 +1683,7 @@ export class WhatsAppService implements WhatsAppApi {
       }
       const readSelf = updates.flatMap(({ key, update }) => (this.ingest.isReadSelfUpdate(key, update) ? [key] : []));
       this.ingest.noteReadSelf(readSelf.length);
-      this.ingest.markLater("messages update", () => {
-        for (const { key, update } of updates) this.ingest.applyUpdate(key, update);
-        if (readSelf.length > 0) this.ingest.applyReadSelf(readSelf);
-      });
+      this.ingest.markLater("messages update", () => this.ingest.applyUpdates(updates, readSelf));
     });
 
     // In a group, each member's receipt arrives on its own; the status is theirs combined.

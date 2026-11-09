@@ -43,7 +43,26 @@ process mid-write cannot leave you re-linking your phone.
 Each account keeps what it has seen in one SQLite file, `wazap.sqlite` (`0600`,
 in a `0700` folder), written with a full sync on every commit. Nothing of the
 history is held in memory: every read, search and restart goes to the file, and
-only small bounded caches stay in the process.
+only small bounded caches stay in the process. The write-ahead log beside it is
+folded into the file a second after writes go quiet (at least every 15 seconds
+under a steady stream), so no commit pauses to do it; only a log that reaches
+about 40 MB without a quiet second, as a first history sync can, is folded by
+the commit that gets there. A stretch like that still pauses for its folds:
+outside a commit or inside one, they run on the server's one thread, and each
+can take longer than SQLite's own every-4 MB folds did. The log's file can stay
+that large on disk until the next write after the fold cuts it back to 8 MB.
+While a clear, an expiry sweep or a fold runs, commits fold every 4 MB as
+SQLite does by default, so none of its steps pauses for a large one. The server
+reads the file through a memory map of up to 256 MB. The mapped pages count in
+its resident memory (80-100 MB more after a 60k-message sync) until the system
+takes them back under memory pressure. A database file cut short under the
+running server, which only something breaking the one-process rule could do,
+then ends the process (SIGBUS, nothing logged) at the next read of a lost page,
+where without the map that read fails with a storage error. A data disk
+unplugged or force-unmounted under the server ends it either way, as it did in
+1.6.0: SQLite maps the log's index (`wazap.sqlite-shm`) in any case. The
+service manager starts it again, and every committed write is in the file or
+its log.
 
 - **Upgrade.** A data dir an earlier wazap wrote has `store.json`, `history/`,
   `retention.json`, `notes.json`, `recall/` and perhaps the beta
@@ -78,6 +97,12 @@ only small bounded caches stay in the process.
   database, so they survive a restart and follow the number: a different
   number linking sets them aside with the rest. A sent one keeps no words; a
   closed one, and a fired, skipped or cancelled reminder, goes a week later.
+- **The chat list is an index** (schema 7): each chat keeps the time
+  WhatsApp's description of it states beside the description, so
+  `list_chats` reads one page off an index instead of every chat. A file from
+  an earlier release has those times read out of its stored descriptions once,
+  at the first start after the upgrade. Schema 8 indexes the stored vectors'
+  model, so counting them for `get_status` no longer reads every vector.
 - **A schema upgrade copies the file first.** When a start finds a database an
   older wazap wrote, it writes `wazap.<old version>.pre-migration.sqlite` beside
   it — the file as it was, whole — and only then migrates. If the copy cannot be
