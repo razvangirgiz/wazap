@@ -14,16 +14,20 @@ export type DocumentFormat = "pdf" | "docx" | "xlsx" | "pptx" | "odt" | "ods" | 
 export interface TextJob {
   format: DocumentFormat;
   bytes: Uint8Array;
-  /** 1-based, inclusive; `to` null runs until the budget is spent. Pages are a PDF's, or a presentation's slides. */
+  /** 1-based, inclusive; `to` null runs until the budget is spent. Pages are a PDF's, a presentation's slides, or parts of any other document. */
   pages: { from: number; to: number | null };
   budget: number;
 }
+
+/** What `pages` counts in a document: a PDF's pages, a presentation's slides, or parts of about one budget of a document with no pages of its own. */
+export type PageUnit = "page" | "slide" | "part";
 
 export interface TextResult {
   text: string;
   truncated: boolean;
   pages_total?: number;
   pages?: { from: number; to: number };
+  unit?: PageUnit;
   /** A PDF whose asked pages carry no text at all: a scan. */
   scanned?: boolean;
   note?: string;
@@ -48,21 +52,62 @@ export async function extractText(job: TextJob): Promise<TextResult> {
       }
     case "html":
       // The whole page up to the window, stripped before it is cut: a long <head> of styles or scripts must not use up the budget.
-      return clip(htmlText(decodeText(job.bytes, FLOW_MAX_BYTES)), job.budget);
+      return flowed(htmlText(decodeText(job.bytes, FLOW_MAX_BYTES)), job, job.bytes.length > FLOW_MAX_BYTES);
     case "text":
-      return clip(decodeText(job.bytes, job.budget * 4), job.budget);
+      return flowed(decodeText(job.bytes, FLOW_MAX_BYTES), job, job.bytes.length > FLOW_MAX_BYTES);
   }
 }
 
-/** How much of a text or HTML file is decoded: far more than one answer, so the words after a long head are reached. */
+/** How much of a text or HTML file is decoded: its parts can all be read, up to this. */
 const FLOW_MAX_BYTES = 8_000_000;
+/** Characters of a document with no pages of its own kept for its parts: about 170 answers. */
+const FLOW_MAX_CHARS = 2_000_000;
+/** What a part leaves of the budget for its "--- part N ---" marker. */
+const PART_MARKER_ROOM = 40;
 
-/** `text` within `budget` characters, cut at a line where one is near. */
-function clip(text: string, budget: number): TextResult {
-  const tidy = tidyText(text);
-  if (tidy.length <= budget) return { text: tidy, truncated: false };
-  const cut = tidy.lastIndexOf("\n", budget);
-  return { text: tidy.slice(0, cut > budget * 0.8 ? cut : budget), truncated: true };
+/**
+ * A document with no pages of its own (Word, a spreadsheet, text, HTML) in
+ * parts of about one budget each, cut at a line where one is near: `pages`
+ * picks a part as it picks a PDF's page, so a long contract or export can be
+ * read to its end, one answer at a time. A text within one budget comes back
+ * whole, as it is.
+ */
+async function flowed(text: string, job: TextJob, cutShort = false): Promise<TextResult> {
+  let tidy = tidyText(text);
+  const notes: string[] = [];
+  if (cutShort) notes.push(`Only its first ${FLOW_MAX_BYTES / 1_000_000} MB is read here.`);
+  if (tidy.length > FLOW_MAX_CHARS) {
+    tidy = tidy.slice(0, FLOW_MAX_CHARS);
+    notes.push(`Only its first ${FLOW_MAX_CHARS.toLocaleString("en-US")} characters are read here.`);
+  }
+  const said = (note?: string): { note?: string } => {
+    const all = [...(note === undefined ? [] : [note]), ...notes];
+    return all.length === 0 ? {} : { note: all.join(" ") };
+  };
+  if (tidy === "" || (tidy.length <= job.budget && job.pages.from === 1)) return { text: tidy, truncated: false, ...said() };
+  const parts = partsOf(tidy, job.budget - PART_MARKER_ROOM);
+  const { chars: _chars, note, ...result } = await pagedTextAsync(parts.map((part) => () => part), job, "part");
+  return { ...result, ...said(note) };
+}
+
+/** `text` in pieces of at most `size` characters, each cut at a line where one is near, never inside a character. */
+function partsOf(text: string, size: number): string[] {
+  const parts: string[] = [];
+  let at = 0;
+  while (at < text.length) {
+    if (text.length - at <= size) {
+      parts.push(text.slice(at));
+      break;
+    }
+    const line = text.lastIndexOf("\n", at + size);
+    let end = line > at + size * 0.8 ? line : at + size;
+    const code = text.charCodeAt(end - 1);
+    if (code >= 0xd800 && code <= 0xdbff) end--;
+    parts.push(text.slice(at, end));
+    at = end;
+    while (text[at] === "\n") at++;
+  }
+  return parts;
 }
 
 /** Blank runs collapsed, trailing spaces dropped. */
@@ -186,10 +231,10 @@ async function officeText(job: TextJob): Promise<TextResult> {
     case "docx": {
       const xml = zip.text("word/document.xml");
       if (xml === null) return { text: "", truncated: false, note: "This docx has no document part." };
-      return clip(xmlText(xml, { line: ["w:p"], drop: ["w:instrText", "w:delText"] }), job.budget);
+      return flowed(xmlText(xml, { line: ["w:p"], drop: ["w:instrText", "w:delText"] }), job);
     }
     case "xlsx":
-      return clip(workbookText(zip), job.budget);
+      return flowed(workbookText(zip), job);
     case "pptx": {
       const slides = numbered(zip, /^ppt\/slides\/slide(\d+)\.xml$/);
       return pagedText(slides.map((name) => () => xmlText(zip.text(name) ?? "", { line: ["a:p"] })), job, "slide");
@@ -202,12 +247,12 @@ async function officeText(job: TextJob): Promise<TextResult> {
     case "ods": {
       const xml = zip.text("content.xml");
       if (xml === null) return { text: "", truncated: false, note: "This ods has no content part." };
-      return clip(spreadsheetText(xml), job.budget);
+      return flowed(spreadsheetText(xml), job);
     }
     default: {
       const xml = zip.text("content.xml");
       if (xml === null) return { text: "", truncated: false, note: `This ${job.format} has no content part.` };
-      return clip(xmlText(xml, { line: ["text:p", "text:h", "table:table-row"], tab: ["table:table-cell"] }), job.budget);
+      return flowed(xmlText(xml, { line: ["text:p", "text:h", "table:table-row"], tab: ["table:table-cell"] }), job);
     }
   }
 }
@@ -386,10 +431,10 @@ function spreadsheetText(xml: string): string {
  * until `to` or the budget: a page that does not fit is cut only when it is
  * the first, so an answer never ends mid-page otherwise.
  */
-async function pagedTextAsync(pages: Array<() => Promise<string> | string>, job: TextJob, unit: string): Promise<TextResult & { chars: number[] }> {
+async function pagedTextAsync(pages: Array<() => Promise<string> | string>, job: TextJob, unit: PageUnit): Promise<TextResult & { chars: number[] }> {
   const total = pages.length;
   if (job.pages.from > total) {
-    return { text: "", truncated: false, pages_total: total, chars: [], note: `It has ${total} ${unit}${total === 1 ? "" : "s"}; ${unit} ${job.pages.from} is past its end.` };
+    return { text: "", truncated: false, pages_total: total, unit, chars: [], note: `It has ${total} ${unit}${total === 1 ? "" : "s"}; ${unit} ${job.pages.from} is past its end.` };
   }
   const last = Math.min(total, job.pages.to ?? total);
   const parts: string[] = [];
@@ -414,10 +459,10 @@ async function pagedTextAsync(pages: Array<() => Promise<string> | string>, job:
     reached = page;
   }
   if (job.pages.to === null && reached < total) truncated = true;
-  return { text: parts.join("\n\n"), truncated, pages_total: total, pages: { from: job.pages.from, to: reached }, chars };
+  return { text: parts.join("\n\n"), truncated, pages_total: total, pages: { from: job.pages.from, to: reached }, unit, chars };
 }
 
-async function pagedText(pages: Array<() => string>, job: TextJob, unit: string): Promise<TextResult> {
+async function pagedText(pages: Array<() => string>, job: TextJob, unit: PageUnit): Promise<TextResult> {
   const { chars: _chars, ...result } = await pagedTextAsync(pages, job, unit);
   return result;
 }

@@ -154,6 +154,7 @@ async function documentRendition(input: RenderInput, format: DocumentFormat): Pr
     text: read.text === "" ? null : read.text,
     truncated: read.truncated,
     ...(read.pages_total === undefined ? {} : { pages_total: read.pages_total }),
+    ...(read.unit === undefined || read.pages_total === undefined ? {} : { unit: read.unit }),
     ...(read.pages === undefined || read.text === "" ? {} : { pages: read.pages }),
     ...page_image,
     ...(note === undefined ? {} : { note }),

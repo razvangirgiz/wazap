@@ -767,10 +767,12 @@ export type MediaRendition =
       kind: "document";
       format: string;
       text: string | null;
-      /** Pages (a PDF) or slides (a presentation) the document has, when it has them. */
+      /** Pages (a PDF), slides (a presentation) or parts (any other document longer than one answer) it has. */
       pages_total?: number;
-      /** The pages whose text is returned. */
+      /** The pages, slides or parts whose text is returned. */
       pages?: { from: number; to: number };
+      /** What `pages` counts here. */
+      unit?: "page" | "slide" | "part";
       truncated: boolean;
       page_image?: MediaPicture & { page: number };
       note?: string;
