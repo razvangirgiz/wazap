@@ -149,11 +149,15 @@ function contentType(mime: string): string {
 /** Content-Disposition for a download: an ASCII name every client reads, and the sender's own as UTF-8. */
 export function attachmentDisposition(filename: string | null, mime: string): string {
   const fallbackExt = /^[a-z]+\/([a-z0-9]+)/i.exec(mime)?.[1] ?? "bin";
+  // By code points, never UTF-16 units: a cut through an emoji would leave half of it, which encodeURIComponent refuses.
   const own = [...(filename ?? "")]
-    .filter((ch) => ch.charCodeAt(0) >= 0x20 && ch !== "\u007f" && ch !== "/" && ch !== "\\")
+    .filter((ch) => {
+      const code = ch.codePointAt(0)!;
+      return code >= 0x20 && code !== 0x7f && !(code >= 0xd800 && code <= 0xdfff) && ch !== "/" && ch !== "\\";
+    })
+    .slice(0, 200)
     .join("")
-    .trim()
-    .slice(0, 200);
+    .trim();
   const name = own === "" ? `whatsapp-media.${fallbackExt}` : own;
   const ascii = name.replace(/[^A-Za-z0-9._ -]/g, "_").slice(0, 100) || `whatsapp-media.${fallbackExt}`;
   const encoded = encodeURIComponent(name).replace(/['()*]/g, (ch) => `%${ch.charCodeAt(0).toString(16).toUpperCase()}`);

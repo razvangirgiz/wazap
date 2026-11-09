@@ -117,6 +117,10 @@ test("a short or empty key left by a crash is replaced, and the HTTP endpoint st
 test("the download is named for any client, and nothing in the name escapes its header", () => {
   assert.equal(attachmentDisposition('factură "mai"/../x.pdf', "application/pdf"), `attachment; filename="factur_ _mai_..x.pdf"; filename*=UTF-8''factur%C4%83%20%22mai%22..x.pdf`);
   assert.equal(attachmentDisposition(null, "image/jpeg"), `attachment; filename="whatsapp-media.jpeg"; filename*=UTF-8''whatsapp-media.jpeg`);
+  // A long name with an emoji where the cut falls, and a lone surrogate: still a header, never a URIError.
+  const long = attachmentDisposition(`${"a".repeat(199)}\u{1F600}.pdf`, "application/pdf");
+  assert.match(long, /filename\*=UTF-8''a{199}%F0%9F%98%80$/);
+  assert.match(attachmentDisposition("x\ud800y.pdf", "application/pdf"), /filename\*=UTF-8''xy\.pdf$/);
   assert.doesNotMatch(attachmentDisposition("a\r\nSet-Cookie: x", "text/plain"), /[\r\n]/);
 });
 
