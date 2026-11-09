@@ -1079,7 +1079,7 @@ const TOOLS: readonly ToolDef[] = [
         // and the bucket is spent only when a provider runs.
         const saving = save_to !== undefined;
         try {
-          const result = await source.transcribeAudio(found.sid, language, saving ? { cachedOnly: true } : { limit: TRANSCRIBE_BUCKET });
+          const result = await source.transcribeAudio(found.sid, language, saving ? { cachedOnly: true } : { limit: TRANSCRIBE_BUCKET, reupload: true });
           structured.transcript = result;
           transcribed = true;
           const clock = result.duration_seconds === undefined ? "" : ` ${clockLabel(result.duration_seconds)}`;

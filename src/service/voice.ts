@@ -98,8 +98,8 @@ export interface VoiceHost {
   status(): ConnectionStatus;
   guarded<T>(work: () => Promise<T>): Promise<T>;
   ensureConnected(): WASocket;
-  /** The bytes behind a message's media, from WhatsApp. */
-  mediaBuffer(sock: WASocket, messageId: string, raw: WAMessage): Promise<Buffer>;
+  /** The bytes behind a message's media, from WhatsApp; `reupload` asks the phone again for expired media. */
+  mediaBuffer(sock: WASocket, messageId: string, raw: WAMessage, opts?: { reupload?: boolean }): Promise<Buffer>;
   /** The kept copy of a message's media, or null (src/service/keep.ts): it needs no link. */
   keptMedia(messageId: string, raw: WAMessage): Promise<Buffer | null>;
   /** The provider run, and its readiness check: the service's, so a test can stub them. */
@@ -206,7 +206,7 @@ export class AccountVoice {
       if (running) return await running;
       // Only a run spends the caller's budget: what is on hand, or cannot run, cost nothing.
       opts.limit?.take();
-      const work = this.runTranscribe(message.sid, raw, info, settings, language);
+      const work = this.runTranscribe(message.sid, raw, info, settings, language, opts.reupload === true);
       this.transcribing.set(message.sid, work);
       try {
         return await work;
@@ -221,12 +221,14 @@ export class AccountVoice {
     raw: WAMessage,
     info: { mime: string; size?: number; filename?: string },
     settings: TranscribeSettings,
-    language?: string
+    language?: string,
+    reupload = false
   ): Promise<TranscribeResult> {
     // Readiness is never ok while no provider is configured.
     const provider = settings.provider!;
     this.views.messageOrThrow(messageId);
-    const buffer = (await this.host.keptMedia(messageId, raw)) ?? (await this.host.mediaBuffer(this.host.ensureConnected(), messageId, raw));
+    const buffer =
+      (await this.host.keptMedia(messageId, raw)) ?? (await this.host.mediaBuffer(this.host.ensureConnected(), messageId, raw, { reupload }));
     this.views.messageOrThrow(messageId);
     // Its own temp dir, deleted straight after: nobody asked to keep this file,
     // and the media dir is where the files the user did ask for live.

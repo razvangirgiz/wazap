@@ -794,6 +794,8 @@ export interface TranscribeOptions {
   limit?: { take(): void };
   /** Only a transcript on hand; none on hand is TRANSCRIBE_UNAVAILABLE, and no provider runs. */
   cachedOnly?: boolean;
+  /** A person asked: a recording WhatsApp's CDN let go is asked of the phone again. */
+  reupload?: boolean;
 }
 
 export interface TranscribeResult {

@@ -54,8 +54,8 @@ export interface MediaHost {
   guarded<T>(work: () => Promise<T>): Promise<T>;
   ensureConnected(): WASocket;
   hasMessage(id: string): boolean;
-  /** The bytes behind a message's media, from WhatsApp. */
-  mediaBuffer(sock: WASocket, messageId: string, raw: WAMessage): Promise<Buffer>;
+  /** The bytes behind a message's media, from WhatsApp; `reupload` asks the phone again for expired media. */
+  mediaBuffer(sock: WASocket, messageId: string, raw: WAMessage, opts?: { reupload?: boolean }): Promise<Buffer>;
   /** The kept copy of a message's media, or null (src/service/keep.ts). */
   keptMedia(messageId: string, raw: WAMessage): Promise<Buffer | null>;
   /** WhatsApp's copy, just downloaded: kept too when the kept-media settings want it. */
@@ -170,7 +170,8 @@ export class AccountMedia {
     const kept = await this.host.keptMedia(messageId, raw);
     if (kept !== null) return { buffer: kept, source: "kept" };
     const sock = this.host.ensureConnected();
-    const buffer = await this.host.mediaBuffer(sock, messageId, raw);
+    // Someone asked for this media: expired media is worth a request to the phone.
+    const buffer = await this.host.mediaBuffer(sock, messageId, raw, { reupload: true });
     this.views.messageOrThrow(messageId);
     await this.host.offerKept(messageId, raw, buffer).catch((err: unknown) => logError("kept media", err));
     return { buffer, source: "whatsapp" };

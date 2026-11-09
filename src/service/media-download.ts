@@ -7,6 +7,7 @@
  */
 import type { Readable } from "node:stream";
 import { WazapError } from "../errors.js";
+import { statusCodeOf } from "./util.js";
 import { downloadBudget as processBudget, UNKNOWN_SIZE_RESERVE, type DownloadBudget } from "../media-budget.js";
 
 export interface DownloadSource {
@@ -14,6 +15,12 @@ export interface DownloadSource {
   open(): Promise<Readable>;
   /** Throws when the message is gone (deleted, expired, cleared): checked per chunk. */
   stillThere(): void;
+}
+
+/** WhatsApp's CDN no longer has the file (404, 410): the phone may upload it again. */
+export function cdnExpired(err: unknown): boolean {
+  const status = statusCodeOf(err) ?? (err as { status?: unknown } | undefined)?.status;
+  return status === 404 || status === 410;
 }
 
 /** Why a download was stopped by its own clock. */
