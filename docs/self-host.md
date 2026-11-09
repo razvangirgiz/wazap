@@ -101,9 +101,14 @@ A restart (`SIGTERM` or `SIGINT`: `wazap update`, `wazap service restart`, a
 supervisor stopping the service) drains HTTP first: new requests get 503 with
 `Retry-After`, a `wait_for_messages` under way answers at once with what it
 has, and every other call under way gets its answer for up to ten seconds
-before the listener closes and the accounts stop. The next process warms its
-catalogue and transport right after it binds, so the first `initialize` after
-a restart costs about 10 ms instead of 65.
+before the listener closes and the accounts stop. The units `wazap service
+install` writes allow 15 seconds for that (launchd's `ExitTimeOut`, systemd's
+`TimeoutStopSec`), as does the compose file. launchd kills a job whose plist
+sets no `ExitTimeOut` about five seconds after `SIGTERM`, so under a unit
+written by an older wazap the drain lasts one second, and the log says so at
+startup: run `wazap service install` once to rewrite the unit. The next
+process warms its catalogue and transport right after it binds, so the first
+`initialize` after a restart costs about 10 ms instead of 65.
 
 The HTTP listener caps connections at 256, header receipt at ten seconds and
 request-body receipt at thirty seconds; this does not time out legitimate SSE

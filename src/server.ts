@@ -747,6 +747,19 @@ const live = new Set<(ms: number) => Promise<void>>();
 /** How long a shutdown lets requests under way finish before it closes them. */
 export const HTTP_DRAIN_MS = 10_000;
 
+/** What a shutdown gives the accounts to stop once the HTTP drain is over. */
+export const ACCOUNTS_STOP_MS = 3_000;
+
+/**
+ * The drain that fits what the supervisor allows a stop (`stopMs`, null when
+ * unknown or none), leaving the accounts their time and a second spare: a
+ * process killed mid-drain never stops its accounts at all.
+ */
+export function drainWithin(stopMs: number | null): number {
+  if (stopMs === null) return HTTP_DRAIN_MS;
+  return Math.max(0, Math.min(HTTP_DRAIN_MS, stopMs - ACCOUNTS_STOP_MS - 1_000));
+}
+
 /**
  * Shutdown's first step: every endpoint stops taking requests, answers the
  * ones under way (a wait at once, with what it has; other work for up to

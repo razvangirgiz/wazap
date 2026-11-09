@@ -123,8 +123,26 @@ function launchctlPrint(ref: UnitRef): string | null {
 
 const LAUNCHD_FIX = "check `launchctl print gui/$(id -u)` and the log in ~/Library/Logs/wazap";
 
-/** bootout can return before launchd lets go of the label, and a bootstrap then fails. */
-function waitUntilUnloaded(ref: UnitRef, timeoutMs = 10_000): void {
+/**
+ * How long every unit wazap writes lets its process stop before the
+ * supervisor kills it: systemd's TimeoutStopSec, launchd's ExitTimeOut, and
+ * the compose file's stop_grace_period. The server's shutdown (an HTTP drain
+ * of up to ten seconds, then three for the accounts) fits inside it.
+ */
+export const SERVICE_STOP_S = 15;
+
+/**
+ * What launchd allows a job whose plist sets no ExitTimeOut, measured on
+ * macOS 26 with `launchctl bootout`: SIGKILL about five seconds after SIGTERM,
+ * not the twenty its man page once gave. Units before ExitTimeOut are these.
+ */
+const LAUNCHD_DEFAULT_STOP_S = 5;
+
+/**
+ * bootout returns at once and the job goes on stopping, for up to its
+ * ExitTimeOut; a bootstrap before launchd lets go of the label fails.
+ */
+function waitUntilUnloaded(ref: UnitRef, timeoutMs = (SERVICE_STOP_S + 5) * 1000): void {
   const deadline = Date.now() + timeoutMs;
   while (launchctlPrint(ref) !== null && Date.now() < deadline) {
     Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 200);
@@ -136,6 +154,7 @@ function waitUntilUnloaded(ref: UnitRef, timeoutMs = 10_000): void {
  * when its reconnects run out is how it asks for a fresh process. ThrottleInterval spaces those
  * restarts. ProcessType Standard, not Background: launchd throttles a Background job's CPU and I/O
  * and coalesces its timers, and the server's keepalive, watchdog and HTTP answers run on those.
+ * ExitTimeOut, because launchd's own allowance is too short for the shutdown's drain.
  */
 const launchd: Supervisor = {
   name: "launchd",
@@ -165,6 +184,8 @@ ${plistEnv(unit.env)}
 \t<string>Standard</string>
 \t<key>ThrottleInterval</key>
 \t<integer>10</integer>
+\t<key>ExitTimeOut</key>
+\t<integer>${SERVICE_STOP_S}</integer>
 \t<key>StandardOutPath</key>
 \t<string>${escapeXml(join(unit.logDir, `${unit.label}.out.log`))}</string>
 \t<key>StandardErrorPath</key>
@@ -242,7 +263,7 @@ ExecStart=${unit.argv.map(systemdQuote).join(" ")}
 Restart=always
 RestartSec=5
 KillSignal=SIGTERM
-TimeoutStopSec=15
+TimeoutStopSec=${SERVICE_STOP_S}
 NoNewPrivileges=true
 PrivateTmp=true
 
@@ -388,6 +409,31 @@ export function readService(dataDir: string): ServiceRecord | null {
   const parsedTunnel = readTunnel(tunnel);
   if (parsedTunnel) record.tunnel = parsedTunnel;
   return record;
+}
+
+/**
+ * How long the installed service's supervisor lets this data dir's server
+ * stop, read from its unit, or null when nothing is installed, the unit is
+ * unreadable or it does not say (systemd's default is 90 s). A launchd unit
+ * written before ExitTimeOut gets launchd's own five seconds.
+ */
+export function serviceStopMs(dataDir: string): number | null {
+  const record = readService(dataDir);
+  if (record === null) return null;
+  let text: string;
+  try {
+    text = readFileSync(record.unitFile, "utf8");
+  } catch {
+    return null;
+  }
+  if (record.supervisor === "launchd") {
+    const found = /<key>ExitTimeOut<\/key>\s*<integer>(\d+)<\/integer>/.exec(text);
+    return (found === null ? LAUNCHD_DEFAULT_STOP_S : Number(found[1])) * 1000;
+  }
+  const found = /^TimeoutStopSec=(\d+)s?\s*$/m.exec(text);
+  const seconds = found === null ? 0 : Number(found[1]);
+  // 0 is systemd's "never kill".
+  return seconds > 0 ? seconds * 1000 : null;
 }
 
 export function writeService(dataDir: string, record: ServiceRecord): void {
