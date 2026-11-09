@@ -53,7 +53,11 @@ const IDLE_CHECKPOINT_RETRIES = 4;
  * The backstop under the idle checkpoint: a log this many pages long (~40 MB)
  * is checkpointed by the commit that reaches it, as SQLite does by itself at
  * 1,000. Only a stretch of writes with no quiet second in it — a first
- * history sync — gets there.
+ * history sync — gets there. Measured against 2,000 and 4,000 on the service's
+ * own history ingest: a lower backstop checkpoints inside more of its commits
+ * (commit p99 7 ms here, 14-16 ms there; live notify p99 6 ms at 2,000). A
+ * raw, gap-free commit loop pauses somewhat longer at the worst with this one
+ * (max 177-242 ms against 113-153 ms at 1.6.0's 1,000), as each fold copies more.
  */
 const WAL_GUARD_PAGES = 10_000;
 /**
@@ -63,7 +67,13 @@ const WAL_GUARD_PAGES = 10_000;
  * commit for 100-200 ms where 1,000 at a time cost 15-45 ms each.
  */
 const BULK_AUTOCHECKPOINT_PAGES = 1_000;
-/** When the log starts over, its file is cut back to this size, so one long sync does not leave 40 MB beside the database. */
+/**
+ * When the log starts over, at the first write after a complete checkpoint,
+ * its file is cut back to this size, so one long sync does not leave 40 MB
+ * beside the database for longer than its next quiet write. Not cut to zero
+ * after every idle checkpoint: a live message would then grow the file again,
+ * and overwriting a log costs a sync less than extending one.
+ */
 const WAL_SIZE_LIMIT_BYTES = 8 * 1024 * 1024;
 /**
  * How much of the database file the server's connection reads through a

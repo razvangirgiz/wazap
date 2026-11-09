@@ -47,10 +47,14 @@ only small bounded caches stay in the process. The write-ahead log beside it is
 folded into the file a second after writes go quiet (at least every 15 seconds
 under a steady stream), so no commit pauses to do it; only a log that reaches
 about 40 MB without a quiet second, as a first history sync can, is folded by
-the commit that gets there. While a clear, an expiry sweep or a fold runs,
-commits fold every 4 MB as SQLite does by default, so none of its steps
-pauses for a large one. The server reads the file through a memory map of
-up to 256 MB, which the system can take back under memory pressure.
+the commit that gets there. A stretch like that still pauses for its folds:
+outside a commit or inside one, they run on the server's one thread, and each
+can take longer than SQLite's own every-4 MB folds did. The log's file can stay
+that large on disk until the next write after the fold cuts it back to 8 MB.
+While a clear, an expiry sweep or a fold runs, commits fold every 4 MB as
+SQLite does by default, so none of its steps pauses for a large one. The server
+reads the file through a memory map of up to 256 MB, which the system can take
+back under memory pressure.
 
 - **Upgrade.** A data dir an earlier wazap wrote has `store.json`, `history/`,
   `retention.json`, `notes.json`, `recall/` and perhaps the beta
