@@ -212,6 +212,21 @@ export class AccountIngest {
   }
 
   /**
+   * A messages.update batch in one commit, as receipts have: a reconnect
+   * delivers dozens at once. Each entry, and the read marks after them, is a
+   * part of its own: one the database refuses is logged and undone alone, and
+   * costs no other entry its revoke, edit or status.
+   */
+  applyUpdates(updates: readonly { key: WAMessageKey; update: Partial<WAMessage> }[], readSelf: readonly WAMessageKey[]): void {
+    const db = this.storage.db;
+    const failed = (err: unknown): void => logError("message update", err);
+    db.transaction(() => {
+      for (const { key, update } of updates) db.attempt(() => this.applyUpdate(key, update), failed);
+      if (readSelf.length > 0) db.attempt(() => this.applyReadSelf(readSelf), failed);
+    });
+  }
+
+  /**
    * One messages.update entry: a revoke takes its target back; otherwise an
    * edit replaces the words, a receipt raises the status of the account's own
    * message, a disappearing timer can only bring the deadline closer, and a
@@ -248,7 +263,8 @@ export class AccountIngest {
       // the message was sent; any other update's is the message's own. The
       // row keeps its place in time; what the message shows follows the update.
       const next: WAMessage = { ...raw, ...(edited ? { message: edited } : {}), ...(redated === undefined ? {} : { messageTimestamp: redated }) };
-      const editedAt = edited ? (protoNumber(update.messageTimestamp) ?? 0) * 1000 || Date.now() : stored.editedAt;
+      // The sender states an edit's time: one days ahead, or past what the database can file, is now.
+      const editedAt = edited ? this.plausibleTs((protoNumber(update.messageTimestamp) ?? 0) * 1000) : stored.editedAt;
       this.writeVersion(next, stored, editedAt);
       if (edited) this.host.embedFeed()?.kick();
     }

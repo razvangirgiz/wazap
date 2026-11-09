@@ -599,6 +599,39 @@ export class Connection {
   }
 
   /**
+   * One part of a write that may fail on its own. Inside a transaction it runs
+   * under a savepoint: an error undoes what this part wrote, goes to `failed`,
+   * and the transaction goes on with the parts before and after it. Outside one
+   * it is a write transaction of its own. An error that took the whole
+   * transaction with it (SQLite rolls one back on a full disk or an I/O error)
+   * is thrown, never swallowed: the parts before it are gone too.
+   */
+  attempt(body: () => void, failed: (err: unknown) => void): void {
+    this.assertWritable();
+    if (!this.db.isTransaction) {
+      try {
+        this.write(body);
+      } catch (err) {
+        failed(err);
+      }
+      return;
+    }
+    // Savepoints nest by name: ROLLBACK TO and RELEASE take the newest one called this.
+    this.db.exec("SAVEPOINT wazap_part");
+    try {
+      body();
+    } catch (err) {
+      this.namesEpoch++;
+      if (!this.db.isTransaction) throw err;
+      this.db.exec("ROLLBACK TO wazap_part");
+      this.db.exec("RELEASE wazap_part");
+      failed(err);
+      return;
+    }
+    this.db.exec("RELEASE wazap_part");
+  }
+
+  /**
    * A commit grew the log: the idle checkpoint is due a quiet second from now,
    * and no later than IDLE_CHECKPOINT_MAX_MS after the first commit it covers.
    * One timer serves a whole burst; it re-arms itself rather than being reset

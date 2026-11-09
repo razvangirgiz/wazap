@@ -273,6 +273,15 @@ export class AccountDb {
   }
 
   /**
+   * One part of a transaction that may fail alone: an error undoes only what
+   * this part wrote and goes to `failed`, and the transaction keeps the rest.
+   * Outside a transaction the part is one of its own.
+   */
+  attempt(body: () => void, failed: (err: unknown) => void): void {
+    this.connection.attempt(body, failed);
+  }
+
+  /**
    * Merges the full-text index's segments a hundred pages at a time, with the
    * event loop running between steps, then refreshes the planner statistics.
    * A merged index makes every later delete several times cheaper, and it

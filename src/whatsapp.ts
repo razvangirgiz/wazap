@@ -1674,16 +1674,7 @@ export class WhatsAppService implements WhatsAppApi {
       }
       const readSelf = updates.flatMap(({ key, update }) => (this.ingest.isReadSelfUpdate(key, update) ? [key] : []));
       this.ingest.noteReadSelf(readSelf.length);
-      this.ingest.markLater("messages update", () => {
-        const apply = (): void => {
-          for (const { key, update } of updates) this.ingest.applyUpdate(key, update);
-          if (readSelf.length > 0) this.ingest.applyReadSelf(readSelf);
-        };
-        // One commit for the batch, as receipts have: a reconnect delivers dozens at once.
-        const db = this.storage.readyDb();
-        if (db === null) apply();
-        else db.transaction(apply);
-      });
+      this.ingest.markLater("messages update", () => this.ingest.applyUpdates(updates, readSelf));
     });
 
     // In a group, each member's receipt arrives on its own; the status is theirs combined.
