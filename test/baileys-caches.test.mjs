@@ -6,11 +6,13 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { BoundedKeyCache, cachedAuthState, useAtomicAuthState } from "../dist/auth-state.js";
+import { addTransactionCapability } from "baileys";
+
+import { BoundedKeyCache, CACHED_KEY_TYPES, cachedAuthState, useAtomicAuthState } from "../dist/auth-state.js";
 import { socketFactory } from "../dist/pairing.js";
 import { AccountGroups, SEND_METADATA_MS } from "../dist/service/groups.js";
 import { WhatsAppService } from "../dist/whatsapp.js";
@@ -72,6 +74,89 @@ test("a write that fails leaves nothing in the cache the files do not hold", asy
   const read = (await cached.keys.get("pre-key", ["1"]))["1"];
   assert.deepEqual(Buffer.from(read.public), Buffer.from("aa"), "after the failure the key is read from its file again");
   assert.ok(existsSync(join(dir, "pre-key-1.json")));
+});
+
+const quiet = { trace() {}, debug() {}, info() {}, warn() {}, error() {}, child: () => quiet };
+
+/**
+ * relayMessage's sender-key-memory steps (Baileys rc14, messages-send.js), through
+ * Baileys' own transaction layer: send 1 marks a device that joined as given the
+ * sender key in the map it read, then fails before its transaction commits.
+ * Returns who send 2 gives the sender key to.
+ */
+async function senderKeyRecipientsAfterFailedSend(wrap) {
+  const OLD = "40700000002:0@s.whatsapp.net";
+  const NEW = "40700000009:3@s.whatsapp.net";
+  const { dir, state } = await authDir();
+  const keys = addTransactionCapability(wrap(state).keys, quiet, { maxCommitRetries: 1, delayBetweenTriesMs: 1 });
+  await keys.set({ "sender-key-memory": { [GROUP]: { [OLD]: true } } });
+  await assert.rejects(
+    keys.transaction(async () => {
+      const map = (await keys.get("sender-key-memory", [GROUP]))[GROUP] ?? {};
+      map[NEW] = true;
+      throw new Error("prekey fetch timed out");
+    }, "me"),
+    /prekey fetch timed out/
+  );
+  let needs;
+  await keys.transaction(async () => {
+    const map = (await keys.get("sender-key-memory", [GROUP]))[GROUP] ?? {};
+    needs = [OLD, NEW].filter((device) => !map[device]);
+    for (const device of needs) map[device] = true;
+    await keys.set({ "sender-key-memory": { [GROUP]: map } });
+  }, "me");
+  return { needs, dir, NEW };
+}
+
+test("a group send that failed leaves no device marked as given the sender key: the map is the file's, not the cache's", async () => {
+  const files = await senderKeyRecipientsAfterFailedSend((state) => state);
+  const cached = await senderKeyRecipientsAfterFailedSend((state) => cachedAuthState(state));
+  assert.deepEqual(files.needs, [files.NEW], "the plain files: send 2 gives the new device the key");
+  assert.deepEqual(cached.needs, files.needs, "the cached store answers the same");
+  const stored = JSON.parse(readFileSync(join(cached.dir, `sender-key-memory-${GROUP}.json`), "utf8"));
+  assert.equal(stored[cached.NEW], true, "and send 2's commit is on disk");
+});
+
+test("only the key types Baileys never edits in place are cached; the others are read from their files every time", async () => {
+  assert.deepEqual([...CACHED_KEY_TYPES].sort(), ["identity-key", "lid-mapping", "pre-key", "sender-key", "session"]);
+  const { dir, state } = await authDir();
+  const cached = cachedAuthState(state);
+  // One commit carrying both kinds, as a transaction's does.
+  await cached.keys.set({
+    session: { "40700000002.0": { record: "one" } },
+    "device-list": { 40700000002: ["0", "3"] },
+    "sender-key-memory": { [GROUP]: { "40700000002:0@s.whatsapp.net": true } },
+  });
+  for (const name of ["session-40700000002.0.json", "device-list-40700000002.json", `sender-key-memory-${GROUP}.json`]) {
+    assert.ok(existsSync(join(dir, name)), `${name} was written`);
+  }
+  const devices = (await cached.keys.get("device-list", ["40700000002"]))["40700000002"];
+  devices.push("7");
+  assert.deepEqual((await cached.keys.get("device-list", ["40700000002"]))["40700000002"], ["0", "3"], "an edit to what was read stays with its reader");
+  rmSync(join(dir, "session-40700000002.0.json"));
+  rmSync(join(dir, `sender-key-memory-${GROUP}.json`));
+  assert.deepEqual((await cached.keys.get("session", ["40700000002.0"]))["40700000002.0"], { record: "one" }, "a session is served from memory");
+  assert.equal((await cached.keys.get("sender-key-memory", [GROUP]))[GROUP], null, "sender-key-memory is read from its file");
+});
+
+test("a commit with a part the files refuse is reported once every part has settled", async () => {
+  const { dir, state } = await authDir();
+  const cached = cachedAuthState(state);
+  const circular = {};
+  circular.self = circular;
+  await assert.rejects(
+    cached.keys.set({ session: { "40700000002.0": { record: "one" } }, "sender-key-memory": { [GROUP]: circular } }),
+    TypeError
+  );
+  assert.ok(existsSync(join(dir, "session-40700000002.0.json")), "the other part was written before the error came back");
+  await assert.rejects(cached.keys.set({ session: { "40700000002.0": circular }, "device-list": { 1: ["0"] } }), TypeError);
+  assert.ok(existsSync(join(dir, "device-list-1.json")));
+  rmSync(join(dir, "session-40700000002.0.json"));
+  assert.equal(
+    (await cached.keys.get("session", ["40700000002.0"]))["40700000002.0"],
+    undefined,
+    "the refused session left nothing in the cache"
+  );
 });
 
 test("the service socket gets the cached key store, and group sends address members from the group cache", async (t) => {
