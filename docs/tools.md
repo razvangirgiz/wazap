@@ -11,9 +11,9 @@ code. The [README](../README.md#the-23-tools) has the one-line table.
 | `get_status` | read | Connection status, sync state, linked account, how fresh the history is, webhook delivery, versions, data dir, and `health`: what WhatsApp says about the account itself (a reachout timelock, a ban, a session taken over, its cap on first messages to new people), with until when, and `link`: an outage under way (`down_since`, `alerted`), the last one, sleeps the server woke from and sockets its watchdog replaced. Top-level fields are the default account; `accounts` lists every configured one and `default` names it. `include_picture: true` adds `picture_url`, the account's own profile photo (a WhatsApp link that expires; `null` when there is none or it cannot be read). Optional `account_id` on this and every other tool. |
 | `link_account` | read | Pair an account that already exists (`wazap account add`). Returns the code to type into the phone. Registered in read-only mode too. |
 | `list_chats` | read | Conversations newest-first; filter `all`/`unread`/`groups`/`individual`/`archived`; `tag` keeps the chats of people filed under it ([Working by tag](#working-by-tag)). `include_pictures: true` adds `picture_url` per chat (a link that expires; none for `#private`). |
-| `read_messages` | read | Messages in a chat; `before` pages further back, pulling older history from the phone; `since` and `until` read a time window (ISO dates or times, as `search` reads them: a bare `until` date is its whole day), saying `more_in_window` when it holds more than `limit` and when the chat's stored history starts inside it; `types` narrows to one or more message types, e.g. `["call"]`; `include_previews` attaches a small image of each photo; `full_text: true` shows each message's text whole instead of cut at 500 characters (300 for a story). `chat_id: "status"` reads the stories of the last `hours`, which show nowhere else. |
+| `read_messages` | read | Messages in a chat; `before` pages further back, pulling older history from the phone; `since` and `until` read a time window (ISO dates or times, as `search` reads them: a bare `until` date is its whole day), saying `more_in_window` when it holds more than `limit` and when the chat's stored history starts inside it; `types` narrows to one or more message types, e.g. `["call"]`; `include_previews` attaches a small image of each photo; `full_text: true` shows each message's text whole instead of cut at 500 characters (300 for a story). `chat_id: "status"` reads the stories of the last `hours`, which show nowhere else. `chat_id` may be a name, number or relationship that `find_contact` resolves to one chat ([Reading by name](#reading-by-name)). |
 | `catch_up` | read | What the user missed, in one call and within a token budget, across every linked account: who is waiting on a reply, mentions, replies and open polls, missed calls, people, groups condensed, stories. Pages with a cursor. `ids: true` names the messages it quotes and each person's and group's newest media by `message_id`, for `get_media`, a reply or a reaction. See [Catching up](#catching-up). |
-| `search` | read | Messages by meaning and by words at once, over everything the account keeps, so a paraphrase still hits (another language seldom does); `match: "words"` keeps only messages holding the words. `chat_id`, `since`, `until`, `from` and `tag` narrow it, and the answer says how much it searched. `full_text: true` shows each text whole instead of cut at 500 characters. Without `chat_id`, someone tagged `#private` is left out and counted in `private_omitted`. Without [semantic recall](recall.md#semantic-recall) it matches words and says so. |
+| `search` | read | Messages by meaning and by words at once, over everything the account keeps, so a paraphrase still hits (another language seldom does); `match: "words"` keeps only messages holding the words. `chat_id` (an id, a number, or a name that resolves to one chat), `since`, `until`, `from` and `tag` narrow it, and the answer says how much it searched. `full_text: true` shows each text whole instead of cut at 500 characters. Without `chat_id`, someone tagged `#private` is left out and counted in `private_omitted`. Without [semantic recall](recall.md#semantic-recall) it matches words and says so. |
 | `get_message` | read | One message in full, its text never cut, with its quoted message, each reaction with who left it, and who voted for each option of a poll or answered an event. On your own messages, `delivery` says whether it was sent, delivered, read or played, and in a group who read it and when. |
 | `find_contact` | read | Who a name, nickname, relationship ("mama"), group name, number or id means. Resolved: the `chat_id`, number, note, tags and details, plus the recent exchange and how you write there in a session that can send. Otherwise the candidates that tell people apart, to ask you. `tag` lists everyone filed under a tag, newest conversation first. See [Finding people](#finding-people). |
 | `list_contacts` | read | The phone's address book on one account, a page at a time (up to 500, `next` as `cursor`): each person's saved name, number in E.164, `chat_id`, `contact_id`, and when the last direct message was and which way it went. `order: "recent"` (default) puts whoever you talked to last first; `address_book` keeps the phone's order. No message words. See [The address book](#the-address-book). |
@@ -429,6 +429,24 @@ each with their `chat_id`, newest conversation first: up to `limit` (50), shared
 between the accounts, with `omitted` counting on each account whoever the limit
 left out.
 
+### Reading by name
+
+`read_messages` and `search` take `chat_id` as the user says it: "mama",
+"Ana Vasile", "Bloc 12", a nickname or a filed detail, resolved by the same
+rules as `find_contact`, across every linked account unless `account_id`
+names one. Only one chat on one account is read: the answer's `chat_id` is
+that chat, `account_id` its account, and `resolved` says whom
+(`{ from, name, kind }`), so "what did mama say yesterday" is one call. A
+name that fits several chats, or none, reads nothing: it is refused with
+`CHAT_NOT_FOUND`, and the error carries `candidates` (up to five, each with
+`chat_id`, `name`, `kind` and, over several accounts, `account_id`) for the
+agent to ask the user which one. Unlike `find_contact`'s ambiguous answer, the
+candidates carry their chat ids, since a read sends nothing; the agent still
+asks before reading one. A name tagged `#private` reads as their `chat_id`
+does: naming them asks for their words. An id, a phone number and `"status"`
+are read as they always were. `send_message` never resolves a name: a
+recipient comes from `find_contact` and a preview the user approves.
+
 ### Working by tag
 
 What `remember` files shows wherever the person does: `list_chats`, the sender
@@ -588,7 +606,7 @@ trace, so an agent can decide whether to retry, ask the user, or stop.
 | `INVALID_PHONE` | Number is not in international format. |
 | `INVALID_ID` | Not a WhatsApp chat, contact or group id. |
 | `NOT_ON_WHATSAPP` | WhatsApp answered that the number has no account. A lookup it did not answer is `NOT_CONNECTED`. |
-| `CHAT_NOT_FOUND` / `MESSAGE_NOT_FOUND` / `CONTACT_NOT_FOUND` / `GROUP_NOT_FOUND` | Unknown id. |
+| `CHAT_NOT_FOUND` / `MESSAGE_NOT_FOUND` / `CONTACT_NOT_FOUND` / `GROUP_NOT_FOUND` | Unknown id; for a chat given by name, a name that fits several chats or none, with their `candidates`. |
 | `NOT_A_PARTICIPANT` / `NOT_ADMIN` / `GROUP_ANNOUNCEMENT_ONLY` | Group permissions. |
 | `MEDIA_UNAVAILABLE` | WhatsApp expired the file and the phone could not upload it again (offline: retry once it is online; gone: the sender resends), or it was never synced here. |
 | `FILE_NOT_FOUND` / `FILE_TOO_LARGE` / `URL_FETCH_FAILED` / `INVALID_IMAGE` | Outbound media problems; `FILE_TOO_LARGE` also for a received file over the 100 MB `get_media` holds in memory. |

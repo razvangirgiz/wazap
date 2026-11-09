@@ -14,7 +14,9 @@ Find the supporting message or file, with its sender, date and source. Read-only
   from that catalogue is not callable.
 - Use the natural question plus relevant context the user already supplied.
   Narrow to a chat or author when the user identifies that conversation or
-  sender; resolve an unknown recipient with the available contact tool first.
+  sender: `search`'s and `read_messages`' `chat_id` take the name as the user
+  said it ("Ana Vasile", "mama", "Bloc 12") when it names one chat, and a
+  `CHAT_NOT_FOUND` with `candidates` means ask the user which, never pick.
   A person mentioned as the subject of an event is not necessarily its sender.
   Never invent a date or choose between ambiguous contacts to force a match.
 - Start with about five hits. Search uses meaning and words; codes, URLs and

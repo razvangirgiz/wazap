@@ -148,6 +148,7 @@ const MAX_IN_FLIGHT_TOTAL = 32;
 export function toolError(err: WazapError): ToolResult {
   const payload: Record<string, unknown> = { error: err.code, message: err.message };
   if (err.fix) payload.fix = err.fix;
+  if (err.details !== undefined) Object.assign(payload, err.details);
   return { content: [{ type: "text", text: JSON.stringify(payload) }], structuredContent: payload, isError: true };
 }
 

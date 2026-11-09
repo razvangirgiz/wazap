@@ -22,6 +22,7 @@ import { describeTarget, looksUnnamed, renderDraft, type DraftPayload, type Draf
 import { ERROR_GUIDE, WazapError, asWazapError } from "./errors.js";
 import { callCancelled, throwIfCancelled } from "./cancel.js";
 import { FIND_CONTACT_OUTPUT, runFindContact } from "./find-contact.js";
+import { chatByName, type NamedChat } from "./chat-name.js";
 import { LIST_CONTACTS_INPUT, runListContacts } from "./list-contacts.js";
 import { freshnessNote, readFreshness } from "./freshness.js";
 import { mediaCaptionOf } from "./media-details.js";
@@ -119,8 +120,15 @@ const LIST_CHATS_OUTPUT = {
 /** A message in a broad read, which may be someone's kept #private (src/private-contacts.ts). */
 const BROAD_MESSAGE_OUT = MESSAGE_OUT.extend({ private: z.literal(true).optional().describe("Tagged #private: no words") }).passthrough();
 
+/** chat_id given as a name: who it named, as read_messages and search say it. */
+const RESOLVED_OUT = z
+  .object({ from: z.string(), name: z.string(), kind: z.enum(["person", "group"]) })
+  .optional()
+  .describe("chat_id was a name: the chat it resolved to");
+
 const READ_OUTPUT = {
   chat_id: z.string(),
+  resolved: RESOLVED_OUT,
   since: z.string().optional().describe("The window asked for, as read"),
   until: z.string().optional(),
   more_in_window: z.literal(true).optional().describe("The window holds older messages than these: page on with before"),
@@ -180,6 +188,7 @@ const DELETE_OUTPUT = { message_id: z.string(), for_everyone: z.boolean(), accou
 
 const SEARCH_OUTPUT = {
   query: z.string(),
+  resolved: RESOLVED_OUT,
   next_before: z.string().nullable().optional(),
   mode: z.enum(["hybrid", "words", "keyword_fallback"]).describe("keyword_fallback: meaning search could not run, see recall_unavailable"),
   from_resolved: z.string().optional(),
@@ -652,7 +661,7 @@ const TOOLS: readonly ToolDef[] = [
     title: "Read messages from a WhatsApp chat",
     description: `Read one chat, oldest to newest: the latest messages, older ones with before (wazap asks the phone when the local history runs out), or a window with since/until. Long texts are cut unless full_text. chat_id "status": the stories of the last hours (a day at most), shown nowhere else.`,
     schema: {
-      chat_id: chatId.describe('Chat id from another tool, a phone number, or "status" for stories'),
+      chat_id: chatId.describe('Chat id, number or name (one chat only); "status": stories'),
       limit: z.number().int().min(1).max(200).default(20),
       before: messageId.optional().describe("The oldest message_id you have"),
       since: moment,
@@ -661,10 +670,17 @@ const TOOLS: readonly ToolDef[] = [
       include_previews: includePreviews,
       hours: z.number().int().min(1).max(24).optional().describe('"status" only: how far back, 24 by default'),
       full_text: fullText,
+      // Named again so the handler sees it typed: an explicit account keeps a name's lookup on it.
+      account_id: ACCOUNT_ID.optional(),
     },
     outputSchema: READ_OUTPUT,
     write: false,
-    handler: async ({ chat_id, limit, before, since, until, types, include_previews, hours, full_text }, ctx) => {
+    handler: async (args, outer) => {
+      // A name ("Ana", "mama", "Bloc 12") is read as the one chat find_contact resolves it to, on its account.
+      const named = await chatByName(args.chat_id, args.account_id, outer);
+      const ctx = named === undefined ? outer : { ...outer, wa: named.binding.wa, accountId: named.binding.id };
+      const chat_id = named?.chatId ?? args.chat_id;
+      const { limit, before, since, until, types, include_previews, hours, full_text } = args;
       const { wa } = ctx;
       if (isStatusChat(chat_id)) {
         if (before !== undefined) {
@@ -713,7 +729,7 @@ const TOOLS: readonly ToolDef[] = [
       const span = [since === undefined ? null : `since ${since}`, until === undefined ? null : `until ${until}`].filter(Boolean).join(", ");
       return ok(
         renderMessages(
-          `Messages in ${chat_id}${span === "" ? "" : ` (${span})`}`,
+          `Messages in ${named === undefined ? chat_id : `${named.name} (${chat_id}), whom "${named.asked}" names`}${span === "" ? "" : ` (${span})`}`,
           result.data,
           previewLabels(previews),
           [
@@ -728,6 +744,7 @@ const TOOLS: readonly ToolDef[] = [
         ),
         synced(result, {
           chat_id,
+          ...resolvedField(named, ctx.accountId),
           ...(window.sinceMs === undefined ? {} : { since: isoWithOffset(window.sinceMs) }),
           ...(window.untilMs === undefined ? {} : { until: isoWithOffset(window.untilMs) }),
           ...(result.window?.more === true ? { more_in_window: true } : {}),
@@ -849,17 +866,22 @@ const TOOLS: readonly ToolDef[] = [
       before: messageId.optional().describe("Older lexical matches; auto uses words with a cursor"),
       match: z.enum(["auto", "hybrid", "words"]).default("auto").describe('auto: questions by meaning, codes/quotes by words'),
       include_context: z.boolean().default(true).describe("Nearby sources for the best five hits"),
-      chat_id: chatId.optional(),
+      chat_id: chatId.optional().describe("Chat id, number or name (one chat only)"),
       limit: z.number().int().min(1).max(50).default(20),
       since: moment,
       until: moment,
       from: z.string().min(1).optional().describe('"me", a number, an id, or a name only one person has'),
       tag: tagFilter,
       full_text: fullText,
+      account_id: ACCOUNT_ID.optional(),
     },
     outputSchema: SEARCH_OUTPUT,
     write: false,
-    handler: async ({ query, match, chat_id, limit, since, until, from, tag, full_text, before, include_context }, ctx) => {
+    handler: async (args, outer) => {
+      const named = args.chat_id === undefined ? undefined : await chatByName(args.chat_id, args.account_id, outer);
+      const ctx = named === undefined ? outer : { ...outer, wa: named.binding.wa, accountId: named.binding.id };
+      const chat_id = named?.chatId ?? args.chat_id;
+      const { query, match, limit, since, until, from, tag, full_text, before, include_context } = args;
       const { wa } = ctx;
       const owner = searchOwner(wa);
       const plan = planSearch(query, match, before);
@@ -871,7 +893,7 @@ const TOOLS: readonly ToolDef[] = [
         ...(tag === undefined ? {} : { tag }),
         ...(chat_id === undefined ? { private: await privateRule(ctx.hub, ctx.accountId) } : {}) };
       const scope = [
-        chat_id ? `in ${chat_id}` : null,
+        chat_id ? `in ${named === undefined ? chat_id : `${named.name} (${chat_id}), whom "${named.asked}" names`}` : null,
         tag ? `with people tagged ${tag}` : null,
         from ? `from ${from}` : null,
         since ? `since ${since}` : null,
@@ -880,7 +902,7 @@ const TOOLS: readonly ToolDef[] = [
         .filter(Boolean)
         .join(", ");
       const title = `Search results for "${query}"${scope ? ` (${scope})` : ""}`;
-      const echo = { query, ...(resolvedFrom === undefined ? {} : { from_resolved: resolvedFrom }) };
+      const echo = { query, ...(resolvedFrom === undefined ? {} : { from_resolved: resolvedFrom }), ...resolvedField(named, ctx.accountId) };
 
       let unavailable: WazapError | null = null;
       if (plan.match !== "words") {
@@ -1710,6 +1732,11 @@ function previewNote(messages: MessageView[], previews: Preview[], asked: boolea
 }
 
 /** A page past the local history that the phone, asked for it, sent nothing for. */
+/** `resolved` and the account it read, when chat_id was a name; nothing otherwise. */
+function resolvedField(named: NamedChat | undefined, accountId: string): Record<string, unknown> {
+  return named === undefined ? {} : { resolved: { from: named.asked, name: named.name, kind: named.kind }, account_id: accountId };
+}
+
 /** read_messages' since and until, read the way search reads them: a bare date is its whole day. */
 function readWindow(since: string | undefined, until: string | undefined): ReadWindow {
   const sinceMs = parseMoment(since, "since");

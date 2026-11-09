@@ -56,12 +56,15 @@ export type ErrorCode =
 export class WazapError extends Error {
   readonly code: ErrorCode;
   readonly fix?: string;
+  /** Fields an agent acts on beside the message, carried into the error's payload (a refused name's candidates). */
+  readonly details?: Readonly<Record<string, unknown>>;
 
-  constructor(code: ErrorCode, message: string, fix?: string) {
+  constructor(code: ErrorCode, message: string, fix?: string, details?: Record<string, unknown>) {
     super(message);
     this.name = "WazapError";
     this.code = code;
     this.fix = fix;
+    if (details !== undefined) this.details = details;
   }
 }
 
