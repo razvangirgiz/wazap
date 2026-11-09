@@ -458,7 +458,7 @@ const messageId = z.string().min(5);
 const messageTypes = z
   .array(z.enum([...MESSAGE_TYPES]))
   .optional()
-  .describe('Only these types; limit counts them, so ["call"] gives that many calls');
+  .describe("Only these types; limit counts them");
 
 const includePreviews = z
   .boolean()
@@ -468,6 +468,8 @@ const includePreviews = z
 /** A tag as remember files it, "#" and case ignored. */
 const tagFilter = z.string().min(1).max(40).optional().describe("Only chats with people filed under this tag");
 const fullText = z.boolean().optional().describe("Each message's text whole; a list cuts long ones otherwise");
+/** One instance for since and until, so a tool's schema names it once and points to it the second time. */
+const moment = z.string().min(4).optional().describe("ISO date or time");
 
 /** Previews are 5-15 KB each; a dozen keep one answer small and the first call under the client's timeout. */
 const MAX_PREVIEWS = 12;
@@ -602,7 +604,7 @@ const TOOLS: readonly ToolDef[] = [
       tag: tagFilter,
       limit: z.number().int().min(1).max(100).default(20),
       include_pictures: z.boolean().default(false).describe("Add picture_url, each chat's profile photo (links expire)"),
-      cursor: z.string().max(512).optional().describe("Opaque next_cursor from the preceding page; keep the same filter"),
+      cursor: z.string().max(512).optional().describe("next_cursor of the previous page; same filter"),
     },
     outputSchema: LIST_CHATS_OUTPUT,
     write: false,
@@ -810,8 +812,8 @@ const TOOLS: readonly ToolDef[] = [
       include_context: z.boolean().default(true).describe("Nearby sources for the best five hits"),
       chat_id: chatId.optional(),
       limit: z.number().int().min(1).max(50).default(20),
-      since: z.string().min(4).optional().describe("ISO date or time"),
-      until: z.string().min(4).optional().describe("ISO date or time"),
+      since: moment,
+      until: moment,
       from: z.string().min(1).optional().describe('"me", a number, an id, or a name only one person has'),
       tag: tagFilter,
       full_text: fullText,
@@ -953,7 +955,7 @@ const TOOLS: readonly ToolDef[] = [
   tool({
     name: "get_message",
     title: "Get one WhatsApp message in full",
-    description: `One message in full, its words never cut: the message it quotes, each reaction with who left it, poll votes and event answers by person, its media, and on the user's own messages who it reached and who read it. Without account_id the id is looked for on every account.`,
+    description: `One message in full, its words never cut: the message it quotes, each reaction with who left it, poll votes and event answers by person, its media, and on the user's own messages who it reached and who read it.`,
     // account_id is named again here so the handler sees it typed: an explicit
     // id keeps the lookup on that one account instead of walking the bindings.
     schema: { message_id: messageId, account_id: ACCOUNT_ID.optional() },
@@ -993,7 +995,7 @@ const TOOLS: readonly ToolDef[] = [
       kind: z.enum(["person", "group", "any"]).default("any"),
       tag: z.string().min(1).optional().describe("List everyone filed under this tag instead"),
       limit: z.number().int().min(1).max(50).optional().describe("Ambiguous: at most 5 per account; a tag list: up to 50"),
-      include_context: z.boolean().default(true).describe("Recent messages and the user's style, when resolved in a write session"),
+      include_context: z.boolean().default(true).describe("Recent messages and the user's style (write sessions)"),
     },
     outputSchema: FIND_CONTACT_OUTPUT,
     write: false,
@@ -1014,7 +1016,7 @@ const TOOLS: readonly ToolDef[] = [
   tool({
     name: "get_group_info",
     title: "Get WhatsApp group info",
-    description: `A group's name, description, owner and participants (up to 500), whether the account is admin, its settings (info_locked, member_add_mode, join_approval, disappearing_seconds), its community, and the invite link for an admin. Call it before manage_group.`,
+    description: `A group's name, description, owner and participants (up to 500), whether the account is admin, its settings, its community, and the invite link for an admin. Call it before manage_group.`,
     schema: { group_id: chatId.describe("<id>@g.us") },
     outputSchema: GROUP_INFO_OUTPUT,
     write: false,
@@ -1050,7 +1052,7 @@ const TOOLS: readonly ToolDef[] = [
     description: `What a message's media holds: a voice note or audio as its transcript (kept once made; an API provider bills it); a photo or sticker as an image; a video as a sheet of frames; a document as its text and first page. A local call also saves the file (save_to). MEDIA_UNAVAILABLE: gone.`,
     schema: {
       message_id: messageId,
-      save_to: z.string().min(1).optional().describe("Absolute directory; default <data-dir>/media. A recording: its file, and no new transcript"),
+      save_to: z.string().min(1).optional().describe("Absolute directory; a recording then makes no transcript"),
       language: z.string().min(2).max(16).optional().describe('What is spoken, e.g. "ro"'),
       detail: z.enum(["standard", "high"]).optional().describe("high: small print"),
       pages: z.string().max(16).optional().describe('e.g. "2-4"'),
@@ -1165,7 +1167,7 @@ const TOOLS: readonly ToolDef[] = [
       text: z.string().max(65536).describe('The message, or the caption, poll question or place name; "" for a forward, a voice note or audio'),
       reply_to: messageId.optional(),
       mention_ids: z.array(z.string().min(1)).max(50).optional().describe("Chat ids to @-mention; write @<number> in text for each"),
-      file_path: z.string().min(1).optional().describe("Media: absolute path on the machine running wazap"),
+      file_path: z.string().min(1).optional().describe("Media: a path on wazap's machine"),
       url: z.string().url().optional().describe("Media: public http(s) URL"),
       as: z.enum(["document", "voice", "gif"]).optional().describe("Media: a plain document, a voice note, a looping GIF"),
       options: z.array(z.string().min(1).max(100)).min(2).max(12).optional().describe("Poll answers"),
@@ -1179,8 +1181,8 @@ const TOOLS: readonly ToolDef[] = [
         .min(10)
         .max(40)
         .optional()
-        .describe('Send later: "2026-10-12T09:00" in time_zone, or with an offset; 1 minute to 365 days ahead'),
-      time_zone: z.string().min(1).max(64).optional().describe('IANA zone for send_at, e.g. "Europe/Bucharest"; the server\'s by default'),
+        .describe('Send later: "2026-10-12T09:00" in time_zone, or with an offset'),
+      time_zone: z.string().min(1).max(64).optional().describe("IANA zone for send_at; the server's by default"),
     },
     write: true,
     handler: async (args, ctx) => {
