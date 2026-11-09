@@ -628,8 +628,11 @@ anonymous initialization with a foreign Origin or attacker-controlled Host.
   credential-window map is capped at 1,024 entries, pruning expired entries and
   refusing new ones with 503 rather than growing indefinitely.
 - Session state is capped at 64 overall (this note once said 128, which the
-  code never allowed), and at 32 per owner. Excess sessions first evict that credential's oldest session, so
-  one unchanged token cannot consume the entire registry.
+  code never allowed), and at 32 per owner. Excess sessions first evict that credential's least recently used
+  session, so one unchanged token cannot consume the entire registry; a session answering a request is
+  evicted only when every candidate is. A revival never evicts one (it is refused with 404 instead), and a
+  GET revives only into a free place, so a GET reconnect cannot set off an eviction loop
+  (`test/session-eviction.test.mjs`).
 - Actual tool handlers have eight in-flight slots per MCP session and 32
   process-wide (fixed since the 1.0 settings cut; they were `WAZAP_MAX_INFLIGHT` and `WAZAP_MAX_INFLIGHT_TOTAL`). Capacity is returned when work settles, even if the caller
   disconnects earlier. HTTP, stdio and private bridges share the tool budget.

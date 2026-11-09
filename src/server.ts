@@ -183,6 +183,8 @@ function refuseOAuthBody(req: Request, res: Response, next: NextFunction): void 
   next();
 }
 
+const NO_ROOM_TO_REVIVE = (live: number): string => `HTTP MCP session not revived: every session it could replace is answering a request (${live} live)`;
+
 /** Every anonymous loopback reader shares this owner; such sessions are never revived. */
 const ANONYMOUS_OWNER = "anonymous";
 
@@ -572,7 +574,7 @@ export async function startHttpEndpoint(hub: AccountSource, config: Config, endp
     const transport: McpTransport = new WebStandardStreamableHTTPServerTransport({
       sessionIdGenerator: () => revivedId ?? ids.mint(owner, shape.fingerprint),
       onsessioninitialized: (sid: string) => {
-        sessions.add(sid, transport, owner);
+        sessions.add(sid, transport, owner, revivedId !== undefined);
       },
     });
     transport.onclose = () => {
@@ -596,11 +598,20 @@ export async function startHttpEndpoint(hub: AccountSource, config: Config, endp
    * this request, and with what. Only for the credential the id was minted
    * for, while wazap would hand its client the same tools and instructions,
    * and never once its client ended it.
+   *
+   * A POST may make room by closing an idle session, never one answering a
+   * request. A GET (an SDK client reconnecting its notification stream) only
+   * takes a free place: one that made room would close another client's
+   * stream, whose own reconnect would make room in turn, round and round, and
+   * every call under way on those sessions would be cut off.
    */
   const revivable = (req: AuthedRequest, owner: string, sid: string): SessionShape | undefined => {
     if ((req.method !== "POST" && req.method !== "GET") || owner === ANONYMOUS_OWNER || sessions.ended(sid)) return undefined;
     const shape = shapeOf(req);
-    return ids.verify(sid, owner, shape.fingerprint) ? shape : undefined;
+    if (!ids.verify(sid, owner, shape.fingerprint)) return undefined;
+    if (req.method === "GET" ? sessions.hasRoom(owner) : sessions.canAdmit(owner)) return shape;
+    if (req.method === "POST") log(NO_ROOM_TO_REVIVE(sessions.size));
+    return undefined;
   };
 
   /**
@@ -610,8 +621,8 @@ export async function startHttpEndpoint(hub: AccountSource, config: Config, endp
    * handshake. The new session counts against the caps like any other, and
    * two calls racing to revive the same id share one revival.
    */
-  const reviving = new Map<string, Promise<McpTransport>>();
-  const revive = (req: AuthedRequest, owner: string, sid: string, shape: SessionShape): Promise<McpTransport> => {
+  const reviving = new Map<string, Promise<McpTransport | undefined>>();
+  const revive = (req: AuthedRequest, owner: string, sid: string, shape: SessionShape): Promise<McpTransport | undefined> => {
     let pending = reviving.get(sid);
     if (pending === undefined) {
       pending = (async () => {
@@ -621,6 +632,12 @@ export async function startHttpEndpoint(hub: AccountSource, config: Config, endp
         } catch (err) {
           await transport.close().catch(() => {});
           throw err;
+        }
+        // Refused a place: every session it could replace took a request meanwhile.
+        if (!sessions.holds(sid, transport)) {
+          log(NO_ROOM_TO_REVIVE(sessions.size));
+          await transport.close().catch(() => {});
+          return undefined;
         }
         log(`HTTP MCP session revived for a ${credentialKind(req)} credential (${sessions.size} live)`);
         return transport;
@@ -685,6 +702,8 @@ export async function startHttpEndpoint(hub: AccountSource, config: Config, endp
         return;
       }
 
+      // A session answering a POST is not the one to close for room.
+      if (req.method === "POST" && typeof sessionId === "string") res.once("close", sessions.hold(sessionId, transport));
       await serveMcp(transport, req, res, req.method === "POST" ? req.body : undefined);
       // Ended by its client: the next call with this id is a 404, never a revival.
       if (req.method === "DELETE" && typeof sessionId === "string" && res.statusCode === 200) sessions.end(sessionId);
