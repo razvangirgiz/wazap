@@ -198,7 +198,10 @@ The service recovers by itself: a dropped link is retried with backoff, a
 watchdog replaces a socket that went dead across a sleep or stopped answering,
 and when reconnecting keeps failing wazap exits so launchd or systemd starts it
 fresh. The linked session is never deleted for any of that; only WhatsApp
-unlinking the device needs a new link. Set `WAZAP_WEBHOOK_EVENTS` to include
+unlinking the device needs a new link. An agent's MCP session outlives those
+restarts and its daily token rotation too: its next call is simply served,
+and answers travel gzip-compressed to every client that accepts it
+([HTTP mode](docs/self-host.md#http-mode)). Set `WAZAP_WEBHOOK_EVENTS` to include
 `alert` to be told when the link has been down for 5 minutes, when it is back,
 and when it needs linking again ([Link alerts](docs/api-and-webhooks.md#link-alerts));
 `get_status` shows the same under `link`.

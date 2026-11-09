@@ -6,6 +6,7 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { execFile, spawnSync } from "node:child_process";
 import { rmSync } from "node:fs";
 import { createServer, request } from "node:http";
 import { createGunzip, gunzipSync } from "node:zlib";
@@ -103,6 +104,30 @@ test("tools/list is gzip on the wire for a client that asks, the same text decod
   assert.equal(decoded(packed), decoded(plain));
   assert.ok(packed.wire.length * 3 < plain.wire.length, `tools/list ${plain.wire.length} B -> ${packed.wire.length} B`);
   assert.match(decoded(packed), /"name":"send_message"/);
+});
+
+const curl = spawnSync("curl", ["--version"], { encoding: "utf8" });
+test("curl --compressed gets gzip on the wire and the same answer decoded", { skip: curl.status !== 0 && "no curl here", timeout: 15_000 }, async (t) => {
+  const port = await boot(t);
+  const sid = (await raw(port, { body: initialize })).headers["mcp-session-id"];
+  const run = (extra) =>
+    new Promise((resolve, reject) => {
+      execFile(
+        "curl",
+        ["-s", "-D", "-", "-X", "POST", `http://127.0.0.1:${port}/mcp`, "-H", "content-type: application/json", "-H", "accept: application/json, text/event-stream",
+          "-H", "authorization: Bearer w", "-H", `mcp-session-id: ${sid}`, "--data", JSON.stringify({ jsonrpc: "2.0", id: 7, method: "tools/list" }), "-w", "\nwire=%{size_download}", ...extra],
+        { encoding: "utf8", maxBuffer: 1 << 22 },
+        (err, stdout) => (err ? reject(err) : resolve(stdout))
+      );
+    });
+  const packed = await run(["--compressed"]);
+  const plain = await run([]);
+  assert.match(packed, /content-encoding: gzip/i);
+  assert.doesNotMatch(plain, /content-encoding/i);
+  const body = (text) => text.slice(text.indexOf("event: message"), text.lastIndexOf("\nwire="));
+  assert.equal(body(packed), body(plain));
+  const wire = (text) => Number(/wire=(\d+)/.exec(text)[1]);
+  assert.ok(wire(packed) * 3 < wire(plain), `curl saw ${wire(packed)} B compressed against ${wire(plain)} B`);
 });
 
 test("a body under the threshold goes as it is, whatever the client accepts", async (t) => {
