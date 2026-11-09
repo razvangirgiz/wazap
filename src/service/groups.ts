@@ -5,6 +5,7 @@
  * guards through GroupsHost.
  */
 
+import { performance } from "node:perf_hooks";
 import {
   normalizeMessageContent,
   type GroupMetadata,
@@ -41,16 +42,29 @@ export interface GroupsHost {
   learnGroup(meta: GroupMetadata): void;
 }
 
+/**
+ * How long a send addresses a group's members as they were last read whole
+ * from WhatsApp, as Baileys' own example caches them: a change no event
+ * reported (one made while the socket was down, a disappearing-messages
+ * setting, an addressing mode) reaches the sends within this.
+ */
+export const SEND_METADATA_MS = 5 * 60_000;
+
 export class AccountGroups {
   /** Group metadata by jid, as last read or updated. */
   readonly groupCache = new Map<string, GroupMetadata>();
   /** Groups whose metadata WhatsApp refused, so we stop asking on every read. */
   readonly unreadableGroups = new Set<string>();
+  /** When each cached group was last read whole from WhatsApp (the clock below): what a send trusts, for SEND_METADATA_MS. */
+  private readonly readWholeAt = new Map<string, number>();
+  /** A send's read of a group in flight, shared by the sends to it that wait. */
+  private readonly sendReads = new Map<string, Promise<GroupMetadata | undefined>>();
 
   constructor(
     private readonly host: GroupsHost,
     private readonly identity: AccountIdentity,
-    private readonly views: MessageViews
+    private readonly views: MessageViews,
+    private readonly now: () => number = () => performance.now()
   ) {}
 
   getGroupInfo(groupId: string): Promise<GroupInfo> {
@@ -309,22 +323,51 @@ export class AccountGroups {
 
   /**
    * What Baileys addresses a group message with (its cachedGroupMetadata): the
-   * metadata this cache holds, so a send to a group costs no metadata round
-   * trip to WhatsApp. A group not cached yet is read once and kept; an entry
-   * goes when its participants change (group-participants.update) or wazap
-   * changes the group. Undefined when it cannot be read: Baileys then asks
-   * WhatsApp itself, as it did before, and reports what it says.
+   * metadata this cache holds when it was read whole from WhatsApp less than
+   * SEND_METADATA_MS ago on this socket, so most sends to a group cost no
+   * metadata round trip. Anything else is read again first: a group not
+   * cached, one whose members changed (group-participants.update drops it),
+   * one whose disappearing-messages setting changed, and every group after a
+   * reconnect. Undefined when it cannot be read: Baileys then asks WhatsApp
+   * itself, as it did before, and reports what it says.
    */
-  async forSend(jid: string): Promise<GroupMetadata | undefined> {
+  forSend(jid: string): Promise<GroupMetadata | undefined> {
     const key = this.identity.canonical(jid);
+    if (!isGroupId(key)) return Promise.resolve(undefined);
     const cached = this.groupCache.get(key);
-    if (cached !== undefined) return cached;
-    if (!isGroupId(key) || this.unreadableGroups.has(key)) return undefined;
-    return this.groupMeta(key).catch(() => undefined);
+    const readAt = this.readWholeAt.get(key);
+    if (cached !== undefined && readAt !== undefined && this.now() - readAt < SEND_METADATA_MS) return Promise.resolve(cached);
+    if (this.unreadableGroups.has(key)) return Promise.resolve(undefined);
+    const pending = this.sendReads.get(key);
+    if (pending !== undefined) return pending;
+    const read: Promise<GroupMetadata | undefined> = this.groupMeta(key, true)
+      .catch(() => undefined)
+      .finally(() => {
+        if (this.sendReads.get(key) === read) this.sendReads.delete(key);
+      });
+    this.sendReads.set(key, read);
+    return read;
   }
 
+  /**
+   * The next send to `jid` (to every group, without one) reads its metadata
+   * again first: a setting changed that no group event carries, or the socket
+   * is new and may have missed changes while it was down. Reads keep the cache.
+   */
+  rereadBeforeSend(jid?: string): void {
+    if (jid === undefined) {
+      this.readWholeAt.clear();
+      this.sendReads.clear();
+      return;
+    }
+    this.readWholeAt.delete(jid);
+    this.sendReads.delete(jid);
+  }
+
+  /** Metadata read whole from WhatsApp just now: a group query, or a group the account was just added to. */
   cacheGroup(jid: string, meta: GroupMetadata): void {
     this.groupCache.set(jid, meta);
+    this.readWholeAt.set(jid, this.now());
     this.host.learnGroup(meta);
   }
 

@@ -12,6 +12,7 @@ import { join } from "node:path";
 
 import { BoundedKeyCache, cachedAuthState, useAtomicAuthState } from "../dist/auth-state.js";
 import { socketFactory } from "../dist/pairing.js";
+import { AccountGroups, SEND_METADATA_MS } from "../dist/service/groups.js";
 import { WhatsAppService } from "../dist/whatsapp.js";
 import { fakeSocket, offlineConfig, openService, waitFor } from "./helpers.mjs";
 
@@ -112,8 +113,80 @@ test("the service socket gets the cached key store, and group sends address memb
   assert.equal((await opened.cachedGroupMetadata(GROUP)).subject, "Fetched");
   assert.deepEqual(fetched, [GROUP], "once, then kept");
 
+  // Another admin turns disappearing messages on: Baileys reports it as a chat update, and the next send must carry it.
+  sock.ev.emit("chats.update", [{ id: GROUP, ephemeralExpiration: 86_400, ephemeralSettingTimestamp: 1 }]);
+  sock.ev.emit("chats.update", [{ id: "40700000002@s.whatsapp.net", ephemeralExpiration: 86_400 }]);
+  assert.equal((await opened.cachedGroupMetadata(GROUP)).subject, "Fetched");
+  assert.deepEqual(fetched, [GROUP, GROUP], "the setting changed: read again before the send");
+  await opened.cachedGroupMetadata(GROUP);
+  assert.equal(fetched.length, 2, "then kept");
+
+  // A new socket may have missed changes while none was connected: every group is read again once.
+  const reopened = opened;
+  await svc.start();
+  await waitFor(() => opened !== reopened, 5000, "the second socket");
+  svc.status = "connected";
+  await opened.cachedGroupMetadata(GROUP);
+  await opened.cachedGroupMetadata(GROUP);
+  assert.deepEqual(fetched, [GROUP, GROUP, GROUP], "read again once after the reconnect");
+
   sock.groupMetadata = async () => {
     throw Object.assign(new Error("forbidden"), { output: { statusCode: 403 } });
   };
   assert.equal(await opened.cachedGroupMetadata("120363000000000078@g.us"), undefined, "a group that cannot be read is left to Baileys");
+});
+
+function groupsWith(fetch) {
+  const clock = { now: 1_000_000 };
+  const sock = { groupMetadata: fetch };
+  const host = { guarded: (work) => work(), ensureConnected: () => sock, beginWrite: () => sock, learnGroup: () => {} };
+  const identity = { canonical: (jid) => jid };
+  return { groups: new AccountGroups(host, identity, {}, () => clock.now), clock };
+}
+
+test("a send trusts a group's members for five minutes after they were read, then reads them again", async () => {
+  let members = ["40700000001@s.whatsapp.net", "40700000002@s.whatsapp.net"];
+  let fetches = 0;
+  const { groups, clock } = groupsWith(async (jid) => {
+    fetches++;
+    return { id: jid, subject: "Grup", participants: members.map((id) => ({ id, admin: null })) };
+  });
+  const ids = async () => (await groups.forSend(GROUP)).participants.map((p) => p.id);
+  assert.equal((await ids()).length, 2);
+  assert.equal(fetches, 1);
+  // Someone joins and no event says so (the socket was down): the cache cannot know.
+  members = [...members, "40700000005@s.whatsapp.net"];
+  clock.now += SEND_METADATA_MS - 1;
+  assert.equal((await ids()).length, 2, "within its time the entry is served as read");
+  assert.equal(fetches, 1);
+  clock.now += 1;
+  assert.equal((await ids()).length, 3, "past it, the send reads the group again and addresses the newcomer");
+  assert.equal(fetches, 2);
+  assert.equal(groups.groupCache.get(GROUP).participants.length, 3, "the read refreshes the cache the reads use");
+
+  groups.rereadBeforeSend(GROUP);
+  await ids();
+  assert.equal(fetches, 3, "a group marked for a re-read is read again");
+  groups.rereadBeforeSend();
+  await ids();
+  assert.equal(fetches, 4, "and so is every group after a reconnect");
+});
+
+test("sends waiting on the same group share one read; a read that fails leaves the send to Baileys", async () => {
+  let fetches = 0;
+  let fail = false;
+  const { groups, clock } = groupsWith(async (jid) => {
+    fetches++;
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    if (fail) throw new Error("timed out");
+    return { id: jid, subject: "Grup", participants: [{ id: ME, admin: null }] };
+  });
+  const [a, b, c] = await Promise.all([groups.forSend(GROUP), groups.forSend(GROUP), groups.forSend(GROUP)]);
+  assert.equal(fetches, 1, "one query for three sends");
+  assert.ok(a === b && b === c);
+  clock.now += SEND_METADATA_MS;
+  fail = true;
+  assert.equal(await groups.forSend(GROUP), undefined, "an entry past its time is not served when it cannot be read again");
+  assert.equal(await groups.forSend("40700000002@s.whatsapp.net"), undefined, "not a group: nothing to address");
+  assert.equal(fetches, 2);
 });

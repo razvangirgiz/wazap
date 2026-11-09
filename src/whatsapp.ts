@@ -33,7 +33,7 @@ import { AccountDb, chatKindOf, StorageError, type StoredMessage } from "./db/in
 import { type DraftContext, type StyleCheck } from "./draft-style.js";
 import { asWazapError, RELINK_FIX, RESET_FIX, WazapError } from "./errors.js";
 import { type AccountFind, type FindContactQuery } from "./find-contact.js";
-import { isNoiseJid, normalizePhone } from "./ids.js";
+import { isGroupId, isNoiseJid, normalizePhone } from "./ids.js";
 import { log, logError } from "./logger.js";
 import { describe } from "./outgoing-media.js";
 import { momentsOf } from "./store.js";
@@ -636,6 +636,8 @@ export class WhatsAppService implements WhatsAppApi {
       this.setStatus("connecting");
       const generation = ++this.generation;
       this.socketOpenedAt = Date.now();
+      // A group may have changed while no socket was there to hear it: each one's next send reads it again.
+      this.groups.rereadBeforeSend();
       const sock = socketFactory.open({
         // Signal keys from memory, written through to the files.
         auth: cachedAuthState(state, silentLogger),
@@ -646,7 +648,7 @@ export class WhatsAppService implements WhatsAppApi {
         generateHighQualityLinkPreview: false,
         // Retries and poll decryption ask for a message the account already has.
         getMessage: async (key) => this.views.storedProto(key),
-        // A send to a group addresses its members from the group cache, not a fresh metadata query.
+        // A send to a group addresses its members from the group cache while it is fresh, not a metadata query per send.
         cachedGroupMetadata: (jid) => this.groups.forSend(jid),
       });
       this.sockClient = sock;
@@ -1594,6 +1596,13 @@ export class WhatsAppService implements WhatsAppApi {
     });
 
     sock.ev.on("chats.update", (updates) => {
+      // A group's disappearing-messages setting changes as a chat update, not a group one; sends must stamp the new one.
+      for (const update of updates) {
+        if (update.id && ("ephemeralExpiration" in update || "ephemeralSettingTimestamp" in update)) {
+          const jid = this.identity.canonical(update.id);
+          if (isGroupId(jid)) this.groups.rereadBeforeSend(jid);
+        }
+      }
       this.handling(
         "chats",
         () =>
