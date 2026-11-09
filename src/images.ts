@@ -25,7 +25,7 @@ import { which } from "./transcribe/local.js";
 
 const run = promisify(execFile);
 
-type SharpFactory = (input?: Buffer, options?: SharpOptions) => Sharp;
+type SharpFactory = (input?: Buffer | SharpOptions, options?: SharpOptions) => Sharp;
 
 /**
  * A decompression bomb is a small file that decodes to gigabytes. libvips
@@ -234,7 +234,7 @@ export async function contactSheet(frames: Buffer[], detail: ViewDetail = "stand
       : [{ input: tile, left: SHEET_GAP + (index % columns) * (tileWidth + SHEET_GAP), top: SHEET_GAP + Math.floor(index / columns) * (tileHeight + SHEET_GAP) }]
   );
   if (composite.length === 0) return null;
-  const canvas = sharp(undefined, { create: { width, height, channels: 3, background: "#202020" } }).composite(composite).png();
+  const canvas = sharp({ create: { width, height, channels: 3, background: "#202020" } }).composite(composite).png();
   // Composite first, then fit: the sheet is already inside `edge`, so only the budget can shrink it.
   const flat = await canvas.toBuffer();
   return fitJpeg(sharp, sharp(flat), edge, maxBytes);

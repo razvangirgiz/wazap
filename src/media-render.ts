@@ -7,9 +7,9 @@
  * database, the socket or the data dir.
  */
 import type { WAMessage } from "baileys";
-import { imageView, loadSharp, previewImage } from "./images.js";
-import { isLottieSticker, stickerThumbnail, thumbnailOf } from "./messages.js";
-import { makePreview } from "./previews.js";
+import { contactSheet, imageView, loadSharp, previewImage } from "./images.js";
+import { isLottieSticker, mediaSeconds, stickerThumbnail, thumbnailOf } from "./messages.js";
+import { jpegSize, makePreview, videoFrame, videoFrames } from "./previews.js";
 import type { MediaDetail, MediaPicture, MediaRendition, PageRange } from "./wa-types.js";
 
 export interface RenderInput {
@@ -28,6 +28,7 @@ export async function renderMedia(input: RenderInput): Promise<MediaRendition> {
   if (isLottieSticker(input.raw)) return lottieRendition(input.raw);
   const mime = sniffedMime(input.mime, input.buffer);
   if (mime.startsWith("image/")) return imageRendition({ ...input, mime });
+  if (mime.startsWith("video/")) return videoRendition(input);
   if (mime.startsWith("audio/")) {
     return { kind: "none", note: "A recording: only its transcript can reach you; there is nothing to look at." };
   }
@@ -75,6 +76,37 @@ async function imageRendition(input: RenderInput): Promise<MediaRendition> {
   const shipped = await shippedPicture(input.raw);
   if (shipped !== null) return { kind: "frame", ...shipped };
   return { kind: "none", note: `This ${input.mime} image could not be read here, so it cannot be shown.` };
+}
+
+/**
+ * A video, GIF or round video as a contact sheet: frames spread across its
+ * length, tiled into one JPEG, with the second of each. Without ffmpeg (or
+ * sharp to tile them) it falls back to one frame, then to the thumbnail
+ * WhatsApp shipped. The sound is not heard here.
+ */
+async function videoRendition(input: RenderInput): Promise<MediaRendition> {
+  const seconds = mediaSeconds(input.raw);
+  const duration = seconds === undefined ? {} : { duration_seconds: seconds };
+  const taken = await videoFrames(input.buffer, seconds).catch(() => null);
+  if (taken !== null) {
+    const sheet = await contactSheet(taken.frames, input.detail);
+    if (sheet !== null) {
+      return {
+        kind: "sheet",
+        jpeg: sheet.data,
+        width: sheet.width,
+        height: sheet.height,
+        frames_at: taken.at,
+        ...(taken.duration_seconds === undefined ? {} : { duration_seconds: taken.duration_seconds }),
+      };
+    }
+  }
+  const frame = await videoFrame(input.buffer, 1024).catch(() => null);
+  const size = frame === null ? null : jpegSize(frame);
+  if (frame !== null && size !== null) return { kind: "frame", jpeg: frame, ...size, ...duration };
+  const shipped = await shippedPicture(input.raw);
+  if (shipped !== null) return { kind: "frame", ...shipped, ...duration };
+  return { kind: "none", note: "No frame of this video could be taken here (ffmpeg is not installed), and it shipped no thumbnail." };
 }
 
 /** A Lottie sticker is an animation in vector form: its thumbnail, when it shipped one, is all there is to see. */

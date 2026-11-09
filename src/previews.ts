@@ -133,3 +133,101 @@ export async function videoFrame(video: Buffer, maxEdge = PREVIEW_MAX_EDGE): Pro
     await rm(dir, { recursive: true, force: true });
   }
 }
+
+/** How many frames a contact sheet shows: enough to follow a clip, few enough to read at 1,024 px. */
+export const SHEET_FRAMES = 6;
+/** Each frame's longest edge as ffmpeg extracts it, before it is tiled. */
+const SHEET_FRAME_EDGE = 512;
+
+export interface VideoFrames {
+  /** JPEGs, in the order of `at`. */
+  frames: Buffer[];
+  /** The second each frame was taken at. */
+  at: number[];
+  /** How long the clip runs: as WhatsApp stated it, or as ffmpeg read it. */
+  duration_seconds?: number;
+}
+
+/** "Duration: 00:01:02.50" in ffmpeg's report on its input, as seconds. */
+export function parseDuration(report: string): number | undefined {
+  const match = /Duration:\s*(\d+):(\d{2}):(\d{2}(?:\.\d+)?)/.exec(report);
+  if (!match) return undefined;
+  const seconds = Number(match[1]) * 3600 + Number(match[2]) * 60 + Number(match[3]);
+  return Number.isFinite(seconds) && seconds > 0 ? seconds : undefined;
+}
+
+/** When `count` frames are taken across `duration` seconds: the middle of each equal slice, to a tenth of a second. */
+export function frameTimes(duration: number, count = SHEET_FRAMES): number[] {
+  const n = duration < 1 ? 1 : count;
+  return Array.from({ length: n }, (_, i) => Math.round(((duration * (i + 0.5)) / n) * 10) / 10);
+}
+
+/**
+ * Frames spread evenly across a clip, for a contact sheet: one ffmpeg run that
+ * seeks to each time (a fast seek, so only the frames around each point are
+ * decoded), every input under the same protocol and format whitelists as any
+ * other ffmpeg call here. The length comes from the envelope, or from
+ * ffmpeg's own report on the file. Null without ffmpeg, or when the clip
+ * yields no frame.
+ */
+export async function videoFrames(video: Buffer, seconds?: number): Promise<VideoFrames | null> {
+  const ffmpeg = which("ffmpeg");
+  if (ffmpeg === null) return null;
+  const dir = await mkdtemp(join(tmpdir(), "wazap-sheet-"));
+  try {
+    const input = join(dir, "in.bin");
+    await writeFile(input, video, { mode: 0o600 });
+    const duration = seconds ?? (await probeDuration(ffmpeg, input));
+    if (duration === undefined) return null;
+    const at = frameTimes(duration);
+    const outputs = at.map((_, i) => join(dir, `f${i}.jpg`));
+    const scale = `scale='min(${SHEET_FRAME_EDGE},iw)':'min(${SHEET_FRAME_EDGE},ih)':force_original_aspect_ratio=decrease`;
+    const args = ["-nostdin", "-loglevel", "error", "-y"];
+    for (const time of at) args.push("-ss", String(time), ...LOCAL_MEDIA_INPUT_ARGS, "-i", input);
+    at.forEach((_, i) => args.push("-map", `${i}:v:0`, "-frames:v", "1", "-an", "-sn", "-dn", "-vf", scale, "-q:v", "3", outputs[i]!));
+    try {
+      await run(ffmpeg, args, { timeout: FRAME_TIMEOUT_MS, windowsHide: true });
+    } catch {
+      // A seek past a short clip's last frame fails the run: what it did write is used below.
+    }
+    const frames: Buffer[] = [];
+    const taken: number[] = [];
+    for (const [i, output] of outputs.entries()) {
+      const frame = await readFile(output).catch(() => null);
+      if (frame !== null && frame.length > 0) {
+        frames.push(frame);
+        taken.push(at[i]!);
+      }
+    }
+    if (frames.length === 0) return null;
+    return { frames, at: taken, ...(duration > 0 ? { duration_seconds: Math.round(duration * 10) / 10 } : {}) };
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+}
+
+/** The clip's length from ffmpeg's report on its input; it exits with an error for want of an output, which is expected. */
+async function probeDuration(ffmpeg: string, input: string): Promise<number | undefined> {
+  try {
+    const { stderr } = await run(ffmpeg, ["-nostdin", "-hide_banner", ...LOCAL_MEDIA_INPUT_ARGS, "-i", input], { timeout: FRAME_TIMEOUT_MS, windowsHide: true });
+    return parseDuration(stderr);
+  } catch (err) {
+    return parseDuration(String((err as { stderr?: unknown }).stderr ?? ""));
+  }
+}
+
+/** A JPEG's width and height from its frame header, without decoding it; null when there is none. */
+export function jpegSize(jpeg: Buffer): { width: number; height: number } | null {
+  let at = 2;
+  while (at + 9 < jpeg.length) {
+    if (jpeg[at] !== 0xff) return null;
+    const marker = jpeg[at + 1]!;
+    const length = jpeg.readUInt16BE(at + 2);
+    // SOF0-SOF15, except DHT (C4), JPG (C8) and DAC (CC).
+    if (marker >= 0xc0 && marker <= 0xcf && marker !== 0xc4 && marker !== 0xc8 && marker !== 0xcc) {
+      return { height: jpeg.readUInt16BE(at + 5), width: jpeg.readUInt16BE(at + 7) };
+    }
+    at += 2 + length;
+  }
+  return null;
+}
