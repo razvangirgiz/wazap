@@ -5,10 +5,13 @@ import { toJsonSchemaCompat } from "@modelcontextprotocol/sdk/server/zod-json-sc
 import { ListToolsRequestSchema, type Tool } from "@modelcontextprotocol/sdk/types.js";
 import type { ToolDef } from "./tool-runtime.js";
 
-export function publishToolCatalogue(server: McpServer, defs: readonly ToolDef[], allowLocalFiles: boolean): void {
-  // Small test doubles only collect handlers; a real MCP server always has this public API.
-  if (server.server === undefined) return;
-  const tools: Tool[] = defs.filter((def) => !def.legacyRead).map((def) => ({
+/**
+ * What tools/list answers for these definitions: the zod schemas turned into
+ * JSON Schema, legacy names left out. Pure, so one answer serves every session
+ * with the same tools (tool-runtime.ts keeps it per permission key).
+ */
+export function buildToolCatalogue(defs: readonly ToolDef[], allowLocalFiles: boolean): readonly Tool[] {
+  return defs.filter((def) => !def.legacyRead).map((def) => ({
     name: def.name, title: def.title,
     description: def.description + (allowLocalFiles === false && (def.schema.file_path || def.schema.save_to)
       ? "\nThis remote session cannot use file_path or save_to. Use public HTTP(S) URLs, forward existing messages, or get_media without save_to." : ""),
@@ -18,7 +21,13 @@ export function publishToolCatalogue(server: McpServer, defs: readonly ToolDef[]
       { strictUnions: true, pipeStrategy: "output" }) as Tool["outputSchema"] }),
     annotations: def.hints,
   }));
+}
+
+export function publishToolCatalogue(server: McpServer, tools: readonly Tool[]): void {
+  // Small test doubles only collect handlers; a real MCP server always has this public API.
+  if (server.server === undefined) return;
   // Replace only tools/list after registration. tools/call stays SDK-owned: parsing,
   // output validation, permissions and limits also apply to unlisted legacy names.
-  server.server.setRequestHandler(ListToolsRequestSchema, () => ({ tools }));
+  // The array is shared between sessions and only ever serialized, never changed.
+  server.server.setRequestHandler(ListToolsRequestSchema, () => ({ tools: tools as Tool[] }));
 }

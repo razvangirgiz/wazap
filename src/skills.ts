@@ -79,8 +79,21 @@ function parseSkill(text: string): Skill | null {
   return { name, description, body: text.slice(close + 5).trim() };
 }
 
+/**
+ * The packaged workflows as this process first read them. Every MCP session
+ * asks for them, and they ship with the code that is running: a `wazap
+ * update` that replaces them on disk comes with a restart.
+ */
+let packagedCache: readonly Skill[] | undefined;
+
 /** Every packaged workflow, by name. Empty rather than fatal: the server serves tools either way. */
-export function loadSkills(dir: string = packagedSkills()): Skill[] {
+export function loadSkills(dir?: string): Skill[] {
+  if (dir !== undefined) return readSkills(dir);
+  packagedCache ??= readSkills(packagedSkills());
+  return [...packagedCache];
+}
+
+function readSkills(dir: string): Skill[] {
   try {
     return readdirSync(dir, { withFileTypes: true })
       .filter((entry) => entry.isDirectory())

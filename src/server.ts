@@ -63,7 +63,7 @@ function buildMcpServer(
 ): McpServer {
   const skills = loadSkills();
   const writes = allowWrite && !config.readOnly && anyAccountAllowsWrites(hub);
-  const server = new McpServer({ name: "wazap", version: WAZAP_VERSION }, { instructions: skillInstructions(skills, { allowWrite: writes, accounts: namedAccounts(hub), legacyReads: !allowLocalFiles }) });
+  const server = new McpServer({ name: "wazap", version: WAZAP_VERSION }, { instructions: instructionsFor(skills, writes, namedAccounts(hub), !allowLocalFiles) });
   registerTools(server, hub, {
     allowWrite: writes,
     // remember's edits are local state, not WhatsApp writes: they answer to
@@ -79,6 +79,29 @@ function buildMcpServer(
   });
   registerSkillPrompts(server, skills, { legacyReads: !allowLocalFiles });
   return server;
+}
+
+/**
+ * One instructions text per permission key and roster, shared by every
+ * session that has it. The roster is part of the key, so an account added or
+ * renamed while serving reaches the next session; a handful of keys at most.
+ */
+const instructionCache = new Map<string, string>();
+
+function instructionsFor(
+  skills: ReturnType<typeof loadSkills>,
+  allowWrite: boolean,
+  accounts: ReturnType<typeof namedAccounts>,
+  legacyReads: boolean
+): string {
+  const key = JSON.stringify([allowWrite, legacyReads, accounts]);
+  let text = instructionCache.get(key);
+  if (text === undefined) {
+    if (instructionCache.size >= 16) instructionCache.clear();
+    text = skillInstructions(skills, { allowWrite, accounts, legacyReads });
+    instructionCache.set(key, text);
+  }
+  return text;
 }
 
 /** The live accounts as the instructions name them; none when the roster cannot be read. */
