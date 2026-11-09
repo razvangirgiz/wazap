@@ -120,6 +120,14 @@ export interface RegisterOpts {
   draftIdentity?: string;
   /** See ToolCtx.stopping: the HTTP endpoint's shutdown. */
   stopping?: AbortSignal;
+  /** Told when each call starts running and when it settles: what the HTTP endpoint's shutdown waits on. */
+  calls?: CallTracker;
+}
+
+/** Tool calls under way somewhere, counted as they start and settle. */
+export interface CallTracker {
+  begin(): void;
+  end(): void;
 }
 
 /** Agents fan out: Claude Code routinely sends several tool calls at once, and wait_for_messages holds one for up to 55 s. */
@@ -222,6 +230,7 @@ export function createToolRegistrar(defs: readonly ToolDef[]) {
             }
             inFlight++;
             sessionInFlight++;
+            opts.calls?.begin();
             admitted = true;
             // Reject before any lookup/stat/read/write, including directory overrides on read tools.
             if (opts.allowLocalFiles === false && (parsed.file_path !== undefined || parsed.save_to !== undefined)) {
@@ -297,7 +306,7 @@ export function createToolRegistrar(defs: readonly ToolDef[]) {
             const result = toolError(asWazapError(err));
             return id === undefined ? result : attachAccountId(result, id);
           } finally {
-            if (admitted) { inFlight--; sessionInFlight--; }
+            if (admitted) { inFlight--; sessionInFlight--; opts.calls?.end(); }
           }
         }
       );

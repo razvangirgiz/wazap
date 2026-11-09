@@ -8,6 +8,9 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { rmSync } from "node:fs";
 import { request } from "node:http";
+import { gunzipSync } from "node:zlib";
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { drainHttpEndpoints, HTTP_DRAIN_MS, startHttpEndpoint } from "../dist/server.js";
 import { asToolSource, offlineConfig } from "./helpers.mjs";
 
@@ -28,7 +31,8 @@ async function boot(t, wa) {
     credentials: [{ token: "w", write: true }],
     signal: stop.signal,
   });
-  const post = (body, sid) =>
+  /** A POST and its answer; `headers` adds to the request's, `sent` gets the request itself. */
+  const post = (body, sid, { headers = {}, sent } = {}) =>
     new Promise((resolve, reject) => {
       const req = request(
         {
@@ -41,21 +45,42 @@ async function boot(t, wa) {
             accept: "application/json, text/event-stream",
             authorization: "Bearer w",
             ...(sid ? { "mcp-session-id": sid } : {}),
+            ...headers,
           },
         },
         (res) => {
-          let text = "";
-          res.on("data", (chunk) => (text += chunk));
-          res.on("end", () => resolve({ status: res.statusCode, sid: res.headers["mcp-session-id"], text, at: Date.now() }));
+          const chunks = [];
+          res.on("data", (chunk) => chunks.push(chunk));
+          res.on("end", () => {
+            const raw = Buffer.concat(chunks);
+            const text = (res.headers["content-encoding"] === "gzip" && raw.length > 0 ? gunzipSync(raw, { finishFlush: 2 }) : raw).toString();
+            resolve({ status: res.statusCode, sid: res.headers["mcp-session-id"], encoding: res.headers["content-encoding"], text, at: Date.now() });
+          });
           res.on("error", reject);
         }
       );
       req.on("error", reject);
+      sent?.(req);
       req.end(JSON.stringify(body));
     });
   const session = await post({ jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "drain", version: "1" } } });
-  const tool = (id, name, args) => post({ jsonrpc: "2.0", id, method: "tools/call", params: { name, arguments: args } }, session.sid);
+  const tool = (id, name, args, options) => post({ jsonrpc: "2.0", id, method: "tools/call", params: { name, arguments: args } }, session.sid, options);
   return { port, tool, post, sid: session.sid };
+}
+
+/** A wait_for_messages stub that honours the call's signal and the shutdown's. */
+function waitStub(reached) {
+  return (opts) => {
+    reached?.fire();
+    return new Promise((resolve) => {
+      const end = () => resolve({ messages: [], cursor: "boot:0", timed_out: true, cursor_reset: false });
+      const timer = setTimeout(end, opts.timeoutMs);
+      opts.signal?.addEventListener("abort", () => {
+        clearTimeout(timer);
+        end();
+      });
+    });
+  };
 }
 
 /** A promise and the function that resolves it: a stub says it has been reached. */
@@ -135,6 +160,97 @@ test("a call that outlasts the drain's bound is closed when the bound runs out",
   assert.ok(elapsed >= 280 && elapsed < 2_000, `closed after ${elapsed} ms`);
   const outcome = await stuck;
   assert.ok(outcome.error !== undefined || outcome.status !== undefined);
+});
+
+test("a call its client cancelled holds neither its answer's stream nor the drain", { timeout: 20_000 }, async (t) => {
+  // The SDK never answers a cancelled request; its POST stream used to stay
+  // open, keep-alives and all, until the client left, and every restart then
+  // waited out the drain's whole bound for it.
+  const waiting = reachable();
+  const { port } = await boot(t, { waitForMessages: waitStub(waiting) });
+  const client = new Client({ name: "esc", version: "1" });
+  await client.connect(new StreamableHTTPClientTransport(new URL(`http://127.0.0.1:${port}/mcp`), { requestInit: { headers: { authorization: "Bearer w" } } }));
+  t.after(() => client.close());
+  const esc = new AbortController();
+  const call = client.callTool({ name: "wait_for_messages", arguments: { timeout_seconds: 50 } }, undefined, { signal: esc.signal });
+  await waiting.reached;
+  esc.abort("the user pressed Esc");
+  await assert.rejects(call, /pressed Esc/);
+  await sleep(100);
+  const started = Date.now();
+  await drainHttpEndpoints();
+  assert.ok(Date.now() - started < 1_000, `the drain took ${Date.now() - started} ms`);
+});
+
+test("a cancelled call's answer stream ends, compressed or not", { timeout: 20_000 }, async (t) => {
+  const { tool, post, sid } = await boot(t, { waitForMessages: waitStub() });
+  for (const [id, headers] of [[2, {}], [3, { "accept-encoding": "gzip" }]]) {
+    const answer = tool(id, "wait_for_messages", { timeout_seconds: 50 }, { headers });
+    await sleep(150);
+    const cancelled = Date.now();
+    assert.equal((await post({ jsonrpc: "2.0", method: "notifications/cancelled", params: { requestId: id, reason: "test" } }, sid)).status, 202);
+    const ended = await answer;
+    assert.equal(ended.status, 200);
+    assert.ok(ended.at - cancelled < 1_000, `ended ${ended.at - cancelled} ms after the cancel`);
+    assert.doesNotMatch(ended.text, /"result"/, "a cancelled request is never answered");
+    if (headers["accept-encoding"]) assert.equal(ended.encoding, "gzip");
+  }
+});
+
+test("a cancel inside a batch leaves the batch's stream to the other answers", { timeout: 20_000 }, async (t) => {
+  const waiting = reachable();
+  const { port, post, sid } = await boot(t, { waitForMessages: waitStub(waiting) });
+  const batch = await fetch(`http://127.0.0.1:${port}/mcp`, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      accept: "application/json, text/event-stream",
+      authorization: "Bearer w",
+      "mcp-session-id": sid,
+      "mcp-protocol-version": "2025-03-26",
+    },
+    body: JSON.stringify([
+      { jsonrpc: "2.0", id: 20, method: "tools/call", params: { name: "wait_for_messages", arguments: { timeout_seconds: 1 } } },
+      { jsonrpc: "2.0", id: 21, method: "tools/call", params: { name: "wait_for_messages", arguments: { timeout_seconds: 50 } } },
+    ]),
+  });
+  await waiting.reached;
+  await post({ jsonrpc: "2.0", method: "notifications/cancelled", params: { requestId: 21, reason: "test" } }, sid);
+  // Request 20 still owes its answer on the stream it shares with 21.
+  const reader = batch.body.getReader();
+  const decoder = new TextDecoder();
+  let text = "";
+  const deadline = Date.now() + 5_000;
+  while (!text.includes('"id":20') && Date.now() < deadline) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    text += decoder.decode(value, { stream: true });
+  }
+  await reader.cancel();
+  assert.match(text, /"timed_out":true[\s\S]*"id":20/, "the other request in the batch was answered");
+});
+
+test("a call whose client left still holds the drain until it settles", { timeout: 20_000 }, async (t) => {
+  let sendFinished = null;
+  const downloading = reachable();
+  const { tool } = await boot(t, {
+    downloadMedia: async () => {
+      downloading.fire();
+      await sleep(600);
+      sendFinished = Date.now();
+      return { path: "/tmp/x.txt", mime: "text/plain", size: 4, filename: "x.txt", inline_base64: null, source: "kept" };
+    },
+  });
+  let req;
+  const left = tool(2, "get_media", { message_id: `false_${CHAT}_M1` }, { sent: (sent) => (req = sent) }).catch((err) => ({ error: err.code }));
+  await downloading.reached;
+  req.destroy();
+  await left;
+  await sleep(50);
+  const started = Date.now();
+  await drainHttpEndpoints();
+  assert.ok(sendFinished !== null && Date.now() >= sendFinished, "the drain waited for the call its client left");
+  assert.ok(Date.now() - started < HTTP_DRAIN_MS);
 });
 
 test("a drain with nothing under way closes at once", async (t) => {

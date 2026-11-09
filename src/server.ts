@@ -13,6 +13,7 @@ import type { AccountBinding, AccountSource } from "./account-hub.js";
 import { WAZAP_VERSION, paths, writesHints, type Config } from "./config.js";
 import { APPROVE_PATH, OAUTH_SCOPES, WazapOAuthProvider } from "./oauth.js";
 import { loadSkills, registerSkillPrompts, skillInstructions } from "./skills.js";
+import type { CallTracker } from "./tool-runtime.js";
 import { anyAccountAllowsWrites, registerTools } from "./tools.js";
 import { log } from "./logger.js";
 import { replayHandshake, revivedProtocolVersion, serveMcp, type McpTransport } from "./mcp-http.js";
@@ -68,7 +69,8 @@ function buildMcpServer(
   allowLocalFiles: boolean,
   client = LOCAL_CLIENT,
   draftIdentity?: string,
-  stopping?: AbortSignal
+  stopping?: AbortSignal,
+  calls?: CallTracker
 ): McpServer {
   const skills = loadSkills();
   const writes = allowWrite && !config.readOnly && anyAccountAllowsWrites(hub);
@@ -84,6 +86,7 @@ function buildMcpServer(
     client,
     ...(draftIdentity === undefined ? {} : { draftIdentity }),
     ...(stopping === undefined ? {} : { stopping }),
+    ...(calls === undefined ? {} : { calls }),
     ...(config.maxInFlight === undefined ? {} : { maxInFlight: config.maxInFlight }),
     ...(config.maxInFlightTotal === undefined ? {} : { maxInFlightTotal: config.maxInFlightTotal }),
   });
@@ -358,12 +361,30 @@ export async function startHttpEndpoint(hub: AccountSource, config: Config, endp
   app.use(httpRequestLog);
 
   // Shutting down: what is under way finishes (drainHttpEndpoints), nothing
-  // new starts. A client told 503 retries, and its session is revived by the
-  // next process.
+  // new starts. The listener closes at once, so a new connection is refused;
+  // a request on a connection already open gets 503 with Retry-After. Either
+  // way the client's session is revived by the next process.
   const stopping = new AbortController();
   let draining = false;
+  // What a drain waits for: POST answers still being written, and tool calls
+  // still running whether or not anyone reads their answer, so a send whose
+  // client left is not cut off by the accounts stopping under it. A call its
+  // client cancelled has no answer to write (serveMcp ends its stream).
   let postsInFlight = 0;
-  let postsSettled: (() => void) | undefined;
+  let callsInFlight = 0;
+  let quiet: (() => void) | undefined;
+  const settledOne = (): void => {
+    if (postsInFlight === 0 && callsInFlight === 0) quiet?.();
+  };
+  const calls: CallTracker = {
+    begin: () => {
+      callsInFlight++;
+    },
+    end: () => {
+      callsInFlight--;
+      settledOne();
+    },
+  };
   app.use((req: Request, res: Response, next: NextFunction) => {
     if (draining) {
       res.setHeader("Connection", "close");
@@ -375,7 +396,7 @@ export async function startHttpEndpoint(hub: AccountSource, config: Config, endp
       postsInFlight++;
       res.once("close", () => {
         postsInFlight--;
-        if (postsInFlight === 0) postsSettled?.();
+        settledOne();
       });
     }
     next();
@@ -534,7 +555,7 @@ export async function startHttpEndpoint(hub: AccountSource, config: Config, endp
       if (sid) sessions.forget(sid, transport);
     };
     // The session's tools are fixed at init by the token it authenticated with.
-    const server = buildMcpServer(hub, config, req.mcpWrite === true, req.localFiles === true, req.client ?? LOCAL_CLIENT, req.draftIdentity, stopping.signal);
+    const server = buildMcpServer(hub, config, req.mcpWrite === true, req.localFiles === true, req.client ?? LOCAL_CLIENT, req.draftIdentity, stopping.signal, calls);
     await server.connect(transport);
     return transport;
   };
@@ -693,14 +714,16 @@ export async function startHttpEndpoint(hub: AccountSource, config: Config, endp
     draining = true;
     server.close();
     stopping.abort();
-    if (postsInFlight > 0) {
+    if (postsInFlight > 0 || callsInFlight > 0) {
       let timer: ReturnType<typeof setTimeout> | undefined;
       await new Promise<void>((resolve) => {
-        postsSettled = resolve;
+        quiet = resolve;
         timer = setTimeout(resolve, ms);
       });
       clearTimeout(timer);
-      if (postsInFlight > 0) log(`HTTP shutdown: ${postsInFlight} request(s) still running after ${Math.round(ms / 1000)} s; closing them`);
+      if (postsInFlight > 0 || callsInFlight > 0) {
+        log(`HTTP shutdown: ${callsInFlight} call(s) and ${postsInFlight} answer(s) still under way after ${Math.round(ms / 1000)} s; closing them`);
+      }
     }
     onAbort();
   };

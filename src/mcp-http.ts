@@ -56,12 +56,61 @@ export async function serveMcp(
   res: ServerResponse,
   parsedBody?: unknown
 ): Promise<void> {
-  const response = await transport.handleRequest(webRequest(req), parsedBody === undefined ? {} : { parsedBody });
-  // Only POST answers carry results worth compressing. The GET stream holds
-  // notifications and keep-alives for as long as the session lives, and an
-  // encoder held open that long would cost memory for nothing.
-  const post = req.method === "POST";
-  await writeResponse(response, res, post && acceptsGzip(req.headers["accept-encoding"]), post);
+  const messages = Array.isArray(parsedBody) ? (parsedBody as unknown[]) : [parsedBody];
+  const requests = messages.flatMap((message) => (isRequest(message) ? [message.id] : []));
+  // Requests that share one stream with others: ending it for one of them
+  // would lose the others' answers.
+  const shared = requests.length > 1 ? sharedIds(transport) : undefined;
+  if (shared !== undefined) for (const id of requests) shared.add(id);
+  try {
+    const response = await transport.handleRequest(webRequest(req), parsedBody === undefined ? {} : { parsedBody });
+    // The transport has passed each cancel on, so the handler it names has
+    // its signal aborted: the SDK will never send that request's answer.
+    for (const message of messages) endCancelled(transport, message);
+    // Only POST answers carry results worth compressing. The GET stream holds
+    // notifications and keep-alives for as long as the session lives, and an
+    // encoder held open that long would cost memory for nothing.
+    const post = req.method === "POST";
+    await writeResponse(response, res, post && acceptsGzip(req.headers["accept-encoding"]), post);
+  } finally {
+    if (shared !== undefined) for (const id of requests) shared.delete(id);
+  }
+}
+
+type RequestId = string | number;
+
+function isRequest(message: unknown): message is { id: RequestId; method: string } {
+  const { id, method } = (message ?? {}) as { id?: unknown; method?: unknown };
+  return typeof method === "string" && (typeof id === "string" || typeof id === "number");
+}
+
+/** Per session, the ids of requests whose POST carried others too, while it is answered. */
+const batched = new WeakMap<McpTransport, Set<RequestId>>();
+
+function sharedIds(transport: McpTransport): Set<RequestId> {
+  let ids = batched.get(transport);
+  if (ids === undefined) {
+    ids = new Set();
+    batched.set(transport, ids);
+  }
+  return ids;
+}
+
+/**
+ * A request its client cancelled (notifications/cancelled) is never answered:
+ * the SDK drops the result of an aborted handler. Its POST stream would stay
+ * open all the same, with a keep-alive every 15 s and, compressed, its
+ * encoder, until the client goes away, and a shutdown would wait on it as on
+ * a call under way. The client no longer reads it, so it ends here, through
+ * the transport's public closeSSEStream. A batch's stream is left alone: the
+ * other requests in it still owe their answers.
+ */
+function endCancelled(transport: McpTransport, message: unknown): void {
+  const { method, params } = (message ?? {}) as { method?: unknown; params?: { requestId?: unknown } };
+  if (method !== "notifications/cancelled") return;
+  const id = params?.requestId;
+  if ((typeof id !== "string" && typeof id !== "number") || batched.get(transport)?.has(id)) return;
+  transport.closeSSEStream(id);
 }
 
 /**
