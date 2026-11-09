@@ -13,6 +13,7 @@
 - **The log says who connects.** Each `initialize` logs the client's name and version, its protocol version, the kind of credential (`oauth`, `token`, `local`, `anonymous`) and the public host it came through; each request line adds the bytes sent, `enc=gzip|identity` and `session=new|reused|revived|lost`. Labels are bounded and never carry a token or a session id.
 - **The sign-in routes refuse compressed bodies.** `/authorize`, `/token`, `/register`, `/revoke` and the consent page parse bodies before anyone has authenticated; they now answer a compressed body with 415 and one declared larger than 64 KiB with 413 before reading it, which keeps the body-parser advisory GHSA-27r3-jxmh-p828 out of reach of strangers on a public host.
 - **Dependency advisories.** The lockfile takes the compatible fixes `npm audit fix` offers for production dependencies: body-parser 1.20.9 and the MCP SDK's 2.4.0 (GHSA-27r3-jxmh-p828), hono 4.13.17, @hono/node-server 2.1.6, qs 6.16.2, fast-uri 3.1.9, ip-address 10.7.6 and music-metadata 11.16.1. zod and jimp still need a major version and are left for their own change.
+- **The Cloudflare tunnel no longer updates itself.** The unit `wazap expose cloudflare` writes runs `cloudflared tunnel --no-autoupdate run …`, so a self-update cannot restart the tunnel in the middle of calls; the supervisor keeps it running and the package manager updates it. Run `wazap expose cloudflare` again to rewrite an existing unit.
 
 ## 1.6.0
 

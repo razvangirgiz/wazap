@@ -210,10 +210,10 @@ wazap keeps binding loopback either way; only the tunnel reaches it.
 cloudflared tunnel login
 cloudflared tunnel create wazap
 cloudflared tunnel route dns wazap wazap.example.com
-cloudflared tunnel run --url http://127.0.0.1:8766 wazap
+cloudflared tunnel --no-autoupdate run --url http://127.0.0.1:8766 wazap
 ```
 
-Set `WAZAP_PUBLIC_URL=https://wazap.example.com` for OAuth and keep `cloudflared` running the way you keep wazap running (a systemd unit, a launchd agent). Tailscale Funnel or ngrok work the same way: whatever ends at `https://your-host` with `/mcp` behind it.
+Set `WAZAP_PUBLIC_URL=https://wazap.example.com` for OAuth and keep `cloudflared` running the way you keep wazap running (a systemd unit, a launchd agent). `--no-autoupdate` leaves updates to your package manager: a self-update restarts the tunnel whenever it lands, cutting off every call it carries. Tailscale Funnel or ngrok work the same way: whatever ends at `https://your-host` with `/mcp` behind it.
 
 </details>
 
