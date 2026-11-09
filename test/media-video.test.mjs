@@ -14,7 +14,7 @@ import { promisify } from "node:util";
 import sharp from "sharp";
 
 import { WhatsAppService } from "../dist/whatsapp.js";
-import { frameTimes, parseDuration } from "../dist/previews.js";
+import { frameTimes, jpegSize, parseDuration, videoFrame } from "../dist/previews.js";
 import { which } from "../dist/transcribe/local.js";
 import { connectedService, schemaCheckedTools } from "./helpers.mjs";
 
@@ -108,4 +108,23 @@ test("without ffmpeg a video falls back to the thumbnail WhatsApp shipped", asyn
   const out = (await call("get_media", { message_id: sid })).structuredContent;
   assert.deepEqual(out.view, { kind: "frame", width: 200, height: 112 });
   assert.equal(out.duration_seconds, 9);
+});
+
+test("a clip shorter than its envelope says still gets a whole sheet, timed by the file", async (t) => {
+  if (ffmpeg === null) return t.skip("ffmpeg not installed");
+  const { svc, call, arrive } = setup(t);
+  const mp4 = await clip(3, "360x640");
+  svc.mediaBuffer = async () => mp4;
+  // The sender's envelope says a minute: every seek would pass the end of a 3 s clip.
+  const sid = arrive({ videoMessage: { mimetype: "video/mp4", fileLength: mp4.length, seconds: 60 } });
+  const out = (await call("get_media", { message_id: sid })).structuredContent;
+  assert.equal(out.view.kind, "contact_sheet");
+  assert.equal(out.duration_seconds, 3, "probed by ffmpeg");
+  assert.deepEqual(out.frames_at, [0.3, 0.8, 1.3, 1.8, 2.3, 2.8]);
+});
+
+test("one frame of a vertical clip fits inside the edge by its height, not only its width", async (t) => {
+  if (ffmpeg === null) return t.skip("ffmpeg not installed");
+  const frame = await videoFrame(await clip(2, "360x640"), 320);
+  assert.deepEqual(jpegSize(frame), { width: 180, height: 320 });
 });

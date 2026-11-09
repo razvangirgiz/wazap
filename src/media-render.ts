@@ -106,9 +106,14 @@ async function videoRendition(input: RenderInput): Promise<MediaRendition> {
       };
     }
   }
-  const frame = await videoFrame(input.buffer, 1024).catch(() => null);
-  const size = frame === null ? null : jpegSize(frame);
-  if (frame !== null && size !== null) return { kind: "frame", jpeg: frame, ...size, ...duration };
+  const frame = await videoFrame(input.buffer, VIEW_DETAILS[input.detail].edge).catch(() => null);
+  if (frame !== null) {
+    // Sized like any view, within its byte budget; as ffmpeg made it (inside the edge) only without sharp.
+    const view = await imageView(frame, input.detail, "image/jpeg");
+    if (view !== null) return { kind: "frame", jpeg: view.data, width: view.width, height: view.height, ...duration };
+    const size = jpegSize(frame);
+    if (size !== null) return { kind: "frame", jpeg: frame, ...size, ...duration };
+  }
   const shipped = await shippedPicture(input.raw);
   if (shipped !== null) return { kind: "frame", ...shipped, ...duration };
   return { kind: "none", note: "No frame of this video could be taken here (ffmpeg is not installed), and it shipped no thumbnail." };

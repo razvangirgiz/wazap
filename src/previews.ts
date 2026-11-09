@@ -87,10 +87,10 @@ export function makePreview(
 }
 
 /**
- * One frame of a video as a small JPEG, made by ffmpeg when it is installed;
- * null when it is not, or when the clip yields no frame. The frame is taken
- * a second in, where a clip has usually settled, and at the start for one
- * shorter than that.
+ * One frame of a video as a small JPEG, its longer side at most `maxEdge`,
+ * made by ffmpeg when it is installed; null when it is not, or when the clip
+ * yields no frame. The frame is taken a second in, where a clip has usually
+ * settled, and at the start for one shorter than that.
  */
 export async function videoFrame(video: Buffer, maxEdge = PREVIEW_MAX_EDGE): Promise<Buffer | null> {
   const ffmpeg = which("ffmpeg");
@@ -118,7 +118,8 @@ async function grabFrame(ffmpeg: string, video: Buffer, maxEdge: number): Promis
         "-frames:v",
         "1",
         "-vf",
-        `scale='min(${maxEdge},iw)':-2`,
+        // Inside a square of maxEdge, whichever side is longer: a vertical clip is as tall as a wide one is wide.
+        `scale='min(${maxEdge},iw)':'min(${maxEdge},ih)':force_original_aspect_ratio=decrease`,
         "-q:v",
         "6",
         output,
@@ -186,31 +187,46 @@ async function sheetFrames(ffmpeg: string, video: Buffer, seconds: number | unde
     await writeFile(input, video, { mode: 0o600 });
     const duration = seconds ?? (await probeDuration(ffmpeg, input));
     if (duration === undefined) return null;
-    const at = frameTimes(duration);
-    const outputs = at.map((_, i) => join(dir, `f${i}.jpg`));
-    const scale = `scale='min(${SHEET_FRAME_EDGE},iw)':'min(${SHEET_FRAME_EDGE},ih)':force_original_aspect_ratio=decrease`;
-    const args = ["-nostdin", "-loglevel", "error", "-y"];
-    for (const time of at) args.push("-ss", String(time), ...LOCAL_MEDIA_INPUT_ARGS, "-i", input);
-    at.forEach((_, i) => args.push("-map", `${i}:v:0`, "-frames:v", "1", "-an", "-sn", "-dn", "-vf", scale, "-q:v", "3", outputs[i]!));
-    try {
-      await runNative(ffmpeg, args, FRAME_LIMITS);
-    } catch {
-      // A seek past a short clip's last frame fails the run: what it did write is used below.
-    }
-    const frames: Buffer[] = [];
-    const taken: number[] = [];
-    for (const [i, output] of outputs.entries()) {
-      const frame = await readFile(output).catch(() => null);
-      if (frame !== null && frame.length > 0) {
-        frames.push(frame);
-        taken.push(at[i]!);
+    const taken = await framesAt(ffmpeg, input, dir, duration);
+    if (seconds !== undefined && taken.frames.length < frameTimes(duration).length) {
+      // The envelope's length is the sender's word: a clip shorter than it says leaves the later seeks past its end.
+      const probed = await probeDuration(ffmpeg, input);
+      if (probed !== undefined && probed < duration * 0.9) {
+        const again = await framesAt(ffmpeg, input, dir, probed);
+        if (again.frames.length > taken.frames.length) return { ...again, duration_seconds: Math.round(probed * 10) / 10 };
       }
     }
-    if (frames.length === 0) return null;
-    return { frames, at: taken, ...(duration > 0 ? { duration_seconds: Math.round(duration * 10) / 10 } : {}) };
+    if (taken.frames.length === 0) return null;
+    return { ...taken, ...(duration > 0 ? { duration_seconds: Math.round(duration * 10) / 10 } : {}) };
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
+}
+
+/** The frames at `frameTimes(duration)` in one ffmpeg run, and the seconds of those it could take. */
+async function framesAt(ffmpeg: string, input: string, dir: string, duration: number): Promise<{ frames: Buffer[]; at: number[] }> {
+  const at = frameTimes(duration);
+  const outputs = at.map((_, i) => join(dir, `f${i}.jpg`));
+  await Promise.all(outputs.map((output) => rm(output, { force: true })));
+  const scale = `scale='min(${SHEET_FRAME_EDGE},iw)':'min(${SHEET_FRAME_EDGE},ih)':force_original_aspect_ratio=decrease`;
+  const args = ["-nostdin", "-loglevel", "error", "-y"];
+  for (const time of at) args.push("-ss", String(time), ...LOCAL_MEDIA_INPUT_ARGS, "-i", input);
+  at.forEach((_, i) => args.push("-map", `${i}:v:0`, "-frames:v", "1", "-an", "-sn", "-dn", "-vf", scale, "-q:v", "3", outputs[i]!));
+  try {
+    await runNative(ffmpeg, args, FRAME_LIMITS);
+  } catch {
+    // A seek past a short clip's last frame fails the run: what it did write is used below.
+  }
+  const frames: Buffer[] = [];
+  const taken: number[] = [];
+  for (const [i, output] of outputs.entries()) {
+    const frame = await readFile(output).catch(() => null);
+    if (frame !== null && frame.length > 0) {
+      frames.push(frame);
+      taken.push(at[i]!);
+    }
+  }
+  return { frames, at: taken };
 }
 
 /** The clip's length from ffmpeg's report on its input; it exits with an error for want of an output, which is expected. */
