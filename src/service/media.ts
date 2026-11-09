@@ -14,7 +14,7 @@ import { logError } from "../logger.js";
 import { mediaFilename } from "../outgoing-media.js";
 import { tinyThumbnail, videoFrame } from "../previews.js";
 import { loadSharp, previewImage } from "../images.js";
-import { mediaInfo, thumbnailOf } from "../messages.js";
+import { isLottieSticker, mediaInfo, thumbnailOf } from "../messages.js";
 import { DIR_MODE, FILE_MODE } from "./util.js";
 import { sidTag } from "../media-links.js";
 import { renderMedia } from "../media-render.js";
@@ -206,6 +206,13 @@ export class AccountMedia {
       const raw = this.views.messageOrThrow(messageId);
       const info = mediaInfo(raw);
       if (!info) throw new WazapError("MEDIA_UNAVAILABLE", `Message ${messageId} carries no media.`);
+      if (opts.noFile === true && isLottieSticker(raw)) {
+        // All there is to see of a Lottie sticker is the thumbnail it shipped, already on hand: a session that keeps no
+        // file needs no download, and an expired one no request to the phone.
+        const rendition = await renderMedia({ raw, mime: info.mime, buffer: Buffer.alloc(0), detail: opts.detail ?? "standard" });
+        this.views.messageOrThrow(messageId);
+        return { mime: info.mime, ...(info.size === undefined ? {} : { size: info.size }), rendition };
+      }
       const { buffer, source } = await this.original(messageId, raw);
       this.views.messageOrThrow(messageId);
       const written = opts.noFile === true ? null : await this.writeCopy(messageId, info, buffer, opts.saveTo);
@@ -230,10 +237,10 @@ export class AccountMedia {
     return {
       path: opened.path!,
       mime: opened.mime,
-      size: opened.size,
+      size: opened.size ?? 0,
       filename: opened.filename!,
       inline_base64: picture === null ? null : picture.toString("base64"),
-      source: opened.source,
+      source: opened.source ?? "whatsapp",
     };
   }
 

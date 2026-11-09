@@ -338,6 +338,27 @@ test("a Lottie sticker is no longer 'no media': its shipped thumbnail is shown",
   assert.ok(downloadableMessage(downloaded).message.stickerMessage, "Baileys is handed the inner sticker, which it can download");
 });
 
+test("a remote session is shown a Lottie sticker's thumbnail with no download, even once WhatsApp let the file go", async () => {
+  const { svc, call, arrive } = setup({ remote: true });
+  const thumb = await sharp({ create: { width: 96, height: 96, channels: 4, background: { r: 200, g: 0, b: 0, alpha: 1 } } }).png().toBuffer();
+  let downloads = 0;
+  svc.mediaBuffer = async () => {
+    downloads++;
+    throw Object.assign(new Error("expired"), { code: "MEDIA_UNAVAILABLE" });
+  };
+  const sid = arrive(ANA, {
+    lottieStickerMessage: { message: { stickerMessage: { mimetype: "application/was", fileLength: 4321, isLottie: true, pngThumbnail: thumb } } },
+  });
+  const result = await call("get_media", { message_id: sid });
+  assert.ok(!result.isError, JSON.stringify(result.content));
+  const out = result.structuredContent;
+  assert.equal(downloads, 0, "nothing downloaded, and the phone never asked");
+  assert.deepEqual(out.view, { kind: "frame", width: 96, height: 96 });
+  assert.equal(out.size, 4321, "the size its message states");
+  assert.equal(out.source, undefined);
+  assert.match(result.content[0].text, /^application\/was, 4 KB, not downloaded: its thumbnail is all there is to see\./);
+});
+
 test("a remote session sees the media but gets no file: nothing written, no path, no data dir named", async () => {
   const { svc, call, arrive } = setup({ remote: true });
   const photo = await noisyPhoto(1600, 1200);

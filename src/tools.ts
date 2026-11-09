@@ -1118,12 +1118,15 @@ const TOOLS: readonly ToolDef[] = [
           ...(pageRange === undefined ? {} : { pages: pageRange }),
         });
         const shown = mediaAnswer(opened);
-        Object.assign(structured, { mime: opened.mime, size: opened.size, source: opened.source }, shown.structured);
+        Object.assign(structured, { mime: opened.mime }, opened.size === undefined ? {} : { size: opened.size }, opened.source === undefined ? {} : { source: opened.source }, shown.structured);
+        const size = opened.size === undefined ? "" : `, ${kilobytes(opened.size)}`;
         if (opened.path !== undefined) {
           Object.assign(structured, { path: opened.path, filename: opened.filename });
-          lines.push(`Saved ${opened.mime} (${kilobytes(opened.size)}) to:\n${opened.path}`);
+          lines.push(`Saved ${opened.mime} (${kilobytes(opened.size ?? 0)}) to:\n${opened.path}`);
+        } else if (opened.source === undefined) {
+          lines.push(`${opened.mime}${size}, not downloaded: its thumbnail is all there is to see.`);
         } else {
-          lines.push(`${opened.mime}, ${kilobytes(opened.size)}${opened.source === "kept" ? ", from the copy kept on arrival" : ""}.`);
+          lines.push(`${opened.mime}${size}${opened.source === "kept" ? ", from the copy kept on arrival" : ""}.`);
         }
         lines.push(...shown.lines);
         extra.push(...shown.blocks);

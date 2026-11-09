@@ -783,8 +783,10 @@ export type MediaRendition =
 /** A message's media opened for get_media: the original's facts, where it was written (local calls), and what to show. */
 export interface OpenedMedia {
   mime: string;
-  size: number;
-  source: "kept" | "whatsapp";
+  /** The original's bytes; when it was not downloaded (`source` absent), what its message states, if anything. */
+  size?: number;
+  /** Where the bytes came from; absent when nothing needed downloading (a Lottie sticker's thumbnail in a remote session). */
+  source?: "kept" | "whatsapp";
   path?: string;
   filename?: string;
   rendition: MediaRendition;
