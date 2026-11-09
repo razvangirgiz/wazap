@@ -786,7 +786,7 @@ export class Messages {
     const chat = this.c.write(() => {
       const raised = this.raiseBarrier(chatJid, through);
       for (const chatId of this.identity.chatIdsOf(raised)) {
-        this.c.run("UPDATE chats SET archived = 0, pinned = NULL, unread = 0, proto = NULL WHERE id = ?", chatId);
+        this.c.run("UPDATE chats SET archived = 0, pinned = NULL, unread = 0, proto = NULL, described_ts = NULL WHERE id = ?", chatId);
         this.c.run("DELETE FROM handled WHERE chat_id = ?", chatId);
       }
       return raised;

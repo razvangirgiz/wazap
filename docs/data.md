@@ -83,6 +83,11 @@ up to 256 MB, which the system can take back under memory pressure.
   database, so they survive a restart and follow the number: a different
   number linking sets them aside with the rest. A sent one keeps no words; a
   closed one, and a fired, skipped or cancelled reminder, goes a week later.
+- **The chat list is an index** (schema 7): each chat keeps the time
+  WhatsApp's description of it states beside the description, so
+  `list_chats` reads one page off an index instead of every chat. A file from
+  an earlier release has those times read out of its stored descriptions once,
+  at the first start after the upgrade.
 - **A schema upgrade copies the file first.** When a start finds a database an
   older wazap wrote, it writes `wazap.<old version>.pre-migration.sqlite` beside
   it — the file as it was, whole — and only then migrates. If the copy cannot be

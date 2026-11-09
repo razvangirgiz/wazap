@@ -307,7 +307,8 @@ export class Merger {
       const drop = this.c.get<ChatRow>("SELECT * FROM chats WHERE id = ?", dropId)!;
       this.c.run(
         `UPDATE chats SET name = coalesce(name, ?), pinned = coalesce(pinned, ?), muted_until = coalesce(muted_until, ?),
-           unread = unread + ?, proto = coalesce(proto, ?), archived = CASE WHEN ? = 0 THEN 0 ELSE archived END,
+           unread = unread + ?, described_ts = CASE WHEN proto IS NULL THEN ? ELSE described_ts END, proto = coalesce(proto, ?),
+           archived = CASE WHEN ? = 0 THEN 0 ELSE archived END,
            cleared_through_ts = CASE WHEN ? IS NULL THEN cleared_through_ts
              ELSE max(coalesce(cleared_through_ts, 0), ?) END
          WHERE id = ?`,
@@ -315,6 +316,7 @@ export class Merger {
         drop.pinned,
         drop.muted_until,
         drop.unread,
+        drop.described_ts,
         drop.proto,
         drop.archived,
         drop.cleared_through_ts,
