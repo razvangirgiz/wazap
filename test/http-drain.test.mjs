@@ -1,8 +1,10 @@
 /**
- * Shutting down (SIGTERM, SIGINT, `wazap update`) drains HTTP first: nothing
- * new is taken, a wait answers at once with what it has, other calls under
- * way get their answers for up to ten seconds, and only then does the
- * listener close. A restart no longer cuts a tool call off mid-answer.
+ * Shutting down (SIGTERM, SIGINT, `wazap update`) drains HTTP first: the
+ * listener closes and nothing new is taken, a wait answers at once with what
+ * it has, other calls under way (one whose client left included) get up to
+ * ten seconds, and only then are the connections closed. A call its client
+ * cancelled holds nothing up. A restart no longer cuts a tool call off
+ * mid-answer.
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
