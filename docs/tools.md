@@ -12,7 +12,7 @@ code. The [README](../README.md#the-23-tools) has the one-line table.
 | `link_account` | read | Pair an account that already exists (`wazap account add`). Returns the code to type into the phone. Registered in read-only mode too. |
 | `list_chats` | read | Conversations newest-first; filter `all`/`unread`/`groups`/`individual`/`archived`; `tag` keeps the chats of people filed under it ([Working by tag](#working-by-tag)). `include_pictures: true` adds `picture_url` per chat (a link that expires; none for `#private`). |
 | `read_messages` | read | Messages in a chat; `before` pages further back, pulling older history from the phone; `types` narrows to one or more message types, e.g. `["call"]`; `include_previews` attaches a small image of each photo; `full_text: true` shows each message's text whole instead of cut at 500 characters (300 for a story). `chat_id: "status"` reads the stories of the last `hours`, which show nowhere else. |
-| `catch_up` | read | What the user missed, in one call and within a token budget, across every linked account: who is waiting on a reply, mentions, replies and open polls, missed calls, people, groups condensed, stories. Pages with a cursor. See [Catching up](#catching-up). |
+| `catch_up` | read | What the user missed, in one call and within a token budget, across every linked account: who is waiting on a reply, mentions, replies and open polls, missed calls, people, groups condensed, stories. Pages with a cursor. `ids: true` names the messages it quotes and each person's and group's newest media by `message_id`, for `get_media`, a reply or a reaction. See [Catching up](#catching-up). |
 | `search` | read | Messages by meaning and by words at once, over everything the account keeps, so a paraphrase still hits (another language seldom does); `match: "words"` keeps only messages holding the words. `chat_id`, `since`, `until`, `from` and `tag` narrow it, and the answer says how much it searched. `full_text: true` shows each text whole instead of cut at 500 characters. Without `chat_id`, someone tagged `#private` is left out and counted in `private_omitted`. Without [semantic recall](recall.md#semantic-recall) it matches words and says so. |
 | `get_message` | read | One message in full, its text never cut, with its quoted message, each reaction with who left it, and who voted for each option of a poll or answered an event. On your own messages, `delivery` says whether it was sent, delivered, read or played, and in a group who read it and when. |
 | `find_contact` | read | Who a name, nickname, relationship ("mama"), group name, number or id means. Resolved: the `chat_id`, number, note, tags and details, plus the recent exchange and how you write there in a session that can send. Otherwise the candidates that tell people apart, to ask you. `tag` lists everyone filed under a tag, newest conversation first. See [Finding people](#finding-people). |
@@ -207,6 +207,22 @@ lists. Signals — an amount, a date, a time, an address,
 a link, a question — are marked on the entries shown, and an ask carrying a sum
 or a date moves up. A chat's messages count as missed only after the user's
 own last message there and after what their phone already read.
+
+**Ids.** `ids: true` adds what an agent acts on next, so it needs no
+`read_messages` first: every entry that quotes a message carries its
+`message_id` (`id`; for someone waiting, the ask's, and `then_id` for what
+followed when it is quoted too; an ask nobody transcribed is named as well),
+a mention, reply, poll or event carries its own, and a person or group whose
+messages include photos, videos, documents, stickers or audio files carries
+the newest three as `media_ids`, newest first, ready for one batched
+`get_media`. The text line ends with `· id <message_id>` and
+`· media <id> <id>`. Nothing #private is ever named: their entries carry no
+id, and a group's `media_ids` leave out what they sent. It is off by default
+because ids are long: on the evaluation's two-account fixture they add 889
+characters to a 14-day digest of 14 entries (2,642 → 3,531) and 712 to a 24-hour
+one, 7 to 9% of the default 2,500-token budget, which a busy digest would pay
+in entries and quotes that no longer fit. A digest asked with `ids` keeps them
+on every page of its cursor.
 
 **The mark.** Each client keeps its own mark per account: the OAuth client,
 the token (`WAZAP_READ_TOKEN` and `WAZAP_WRITE_TOKEN` are two clients), or

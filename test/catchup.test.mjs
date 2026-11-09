@@ -1263,6 +1263,8 @@ test("every shape catch_up answers passes a client's validation of its output sc
   arrive(NEIGHBOURS, { extendedTextMessage: { text: "mulțumim, am primit cei 300 lei", contextInfo: { stanzaId: paid.split("_").pop(), participant: ME, quotedMessage: { conversation: "am plătit întreținerea" } } } }, { participant: DAN, at: Date.now() - 2 * HOUR });
   arrive(NEIGHBOURS, mention("@Răzvan am lăsat cheia la administrator, treci după 18:00"), { participant: ELA, at: Date.now() - 2 * HOUR + 1000 });
   for (let i = 0; i < 3; i++) arrive(MUTED, `vecinii discută ${i}`, { participant: DAN, at: Date.now() - 2 * HOUR + i * 1000 });
+  // A group that only chats: its hot quote is its own, with the message's id when ids are asked for.
+  arrive("120363000000000006@g.us", "Mâine la 9 vine tehnicianul pentru centrala de la subsol", { participant: DAN, at: Date.now() - 2 * HOUR });
   arrive(LEFT, "cine mai vine?", { participant: DAN, at: Date.now() - HOUR });
   arrive(CHANNEL, "Știrile zilei", { at: Date.now() - HOUR });
   arrive("40712345678@broadcast", "ofertă", { at: Date.now() - HOUR });
@@ -1293,6 +1295,7 @@ test("every shape catch_up answers passes a client's validation of its output sc
   let page = check(await client.callTool({ name: "catch_up", arguments: { budget_tokens: 500 } }));
   while (page.structuredContent.more) page = check(await client.callTool({ name: "catch_up", arguments: { cursor: page.structuredContent.more.cursor, budget_tokens: 500 } }));
   check(await client.callTool({ name: "catch_up", arguments: { hours: 24, budget_tokens: 8000 } }));
+  check(await client.callTool({ name: "catch_up", arguments: { hours: 24, budget_tokens: 8000, ids: true } }));
   check(await client.callTool({ name: "catch_up", arguments: { hours: 1, budget_tokens: 8000 } }));
   work.svc.status = "disconnected";
   work.svc.statusSince = Date.now() - HOUR;
@@ -1410,4 +1413,74 @@ test("HTTP sessions catch up under the credential's name, never the token", asyn
   const broken = await client.callTool({ name: "catch_up", arguments: {} });
   assert.equal(broken.isError, true);
   assert.equal(JSON.parse(broken.content[0].text).error, "WHATSAPP_ERROR");
+});
+
+test("ids: every entry names the message it quotes and its newest media by message_id, ready for get_media; without ids none does", async () => {
+  const { svc, arrive, mention } = account();
+  const { call } = toolsOf(svc);
+  const ask = arrive(ANA, "Îmi trimiți factura până mâine?", { at: Date.now() - 3 * HOUR });
+  const after = arrive(ANA, "Am lăsat și dosarul la birou ieri seară.", { at: Date.now() - 2 * HOUR });
+  const photo = arrive(DAN, { imageMessage: { mimetype: "image/jpeg", caption: "contorul" } }, { at: Date.now() - 2 * HOUR });
+  const pdf = arrive(DAN, { documentMessage: { mimetype: "application/pdf", fileName: "extras.pdf" } }, { at: Date.now() - 90 * 60_000 });
+  const newest = arrive(DAN, "Ți-am trimis poza și extrasul de cont de luna trecută.", { at: Date.now() - HOUR });
+  const mentioned = arrive(GROUP, mention("@40700000001 vii la ședința de mâine?"), { participant: ELA, at: Date.now() - HOUR });
+  const groupPhoto = arrive(GROUP, { imageMessage: { mimetype: "image/jpeg" } }, { participant: DAN, at: Date.now() - 30 * 60_000 });
+  arrive(GROUP, { audioMessage: { mimetype: "audio/ogg; codecs=opus", ptt: true, seconds: 4 } }, { participant: DAN, at: Date.now() - 25 * 60_000 });
+  arrive(GROUP, "Acesta e un mesaj destul de lung ca să fie citat din grup", { participant: DAN, at: Date.now() - 20 * 60_000 });
+
+  const plain = await call("catch_up", { hours: 12 });
+  assert.doesNotMatch(JSON.stringify(plain.structuredContent), /"(id|then_id|media_ids)"/);
+  assert.doesNotMatch(text(plain), / · (id|media) (true|false)_/);
+
+  const result = await call("catch_up", { hours: 12, ids: true });
+  (await listedSchema()).assertValid(result.structuredContent);
+  const waiting = result.structuredContent.waiting.find((entry) => entry.chat === ANA);
+  assert.equal(waiting.id, ask);
+  assert.equal(waiting.then_id, after);
+  // A mention that asks the user is an open ask in the group: either way the entry names the message.
+  const asked = [...result.structuredContent.addressed, ...result.structuredContent.waiting].find((entry) => entry.chat === GROUP);
+  assert.equal(asked.id, mentioned);
+  const people = result.structuredContent.direct.find((entry) => entry.chat === DAN);
+  assert.equal(people.id, newest);
+  assert.deepEqual(people.media_ids, [pdf, photo], "newest first");
+  const group = result.structuredContent.groups.find((entry) => entry.chat === GROUP);
+  assert.deepEqual(group.media_ids, [groupPhoto], "a voice note is a transcript (the footer names those), not a media id");
+  assert.match(text(result), new RegExp(`${ANA.replace(/[.]/g, "\\.")} · id ${ask} · then id ${after}`));
+  assert.match(text(result), new RegExp(` · media ${groupPhoto}`));
+  // Each id opens the message it names.
+  const opened = await svc.getMessage(waiting.id);
+  assert.equal(opened.text, "Îmi trimiți factura până mâine?");
+});
+
+test("ids never name what someone #private sent: no id on their entries, no media of theirs in a group", async () => {
+  const { svc, arrive } = account();
+  const { call } = toolsOf(svc);
+  arrive(ANA, "Îmi trimiți factura?", { at: Date.now() - 2 * HOUR });
+  arrive(ANA, { imageMessage: { mimetype: "image/jpeg" } }, { at: Date.now() - HOUR });
+  arrive(GROUP, { imageMessage: { mimetype: "image/jpeg" } }, { participant: ANA, at: Date.now() - HOUR });
+  const open = arrive(GROUP, { imageMessage: { mimetype: "image/jpeg" } }, { participant: DAN, at: Date.now() - 50 * 60_000 });
+  arrive(GROUP, "Un mesaj de grup destul de lung ca să fie citat", { participant: DAN, at: Date.now() - 40 * 60_000 });
+  await call("remember", { chat_id: ANA, add_tags: ["private"] });
+  const result = await call("catch_up", { hours: 12, ids: true });
+  const theirs = [...result.structuredContent.waiting, ...result.structuredContent.direct].filter((entry) => entry.chat === ANA);
+  assert.ok(theirs.length > 0);
+  for (const entry of theirs) {
+    assert.equal(entry.private, true);
+    assert.equal(entry.id, undefined);
+    assert.equal(entry.media_ids, undefined);
+  }
+  assert.deepEqual(result.structuredContent.groups.find((entry) => entry.chat === GROUP).media_ids, [open]);
+  assert.doesNotMatch(text(result), new RegExp(`false_${ANA.replace(/[.]/g, "\\.")}_`));
+});
+
+test("ids stay on every page of a digest that pages", async () => {
+  const { svc, arrive } = account();
+  const { call } = toolsOf(svc);
+  for (let i = 0; i < 40; i++) arrive(`4070000${String(1000 + i)}@s.whatsapp.net`, `Mesajul numărul ${i}, fără întrebare`, { at: Date.now() - HOUR + i * 1000 });
+  const first = await call("catch_up", { hours: 12, ids: true, budget_tokens: 500 });
+  assert.ok(first.structuredContent.more, "the digest pages");
+  const next = await call("catch_up", { cursor: first.structuredContent.more.cursor, budget_tokens: 500 });
+  const quoted = next.structuredContent.direct.filter((entry) => entry.q !== undefined);
+  assert.ok(quoted.length > 0);
+  assert.ok(quoted.every((entry) => /^false_\d+@s\.whatsapp\.net_M\d+$/.test(entry.id)), JSON.stringify(quoted));
 });

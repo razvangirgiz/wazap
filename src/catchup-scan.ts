@@ -27,7 +27,7 @@
  */
 import { readsAsAsk } from "./asks.js";
 import type { AccountDb, ChatRecord, DigestMedia, DigestSpan, InboundAggregate, TailMessage, WindowMessage } from "./db/index.js";
-import { idLowerBound, secondOfId } from "./db/index.js";
+import { idLowerBound, OPENED_MEDIA, secondOfId } from "./db/index.js";
 import { PRIVATE_TAG, privatePeople } from "./private-contacts.js";
 import { signalsOf, type Signal } from "./signals.js";
 
@@ -53,6 +53,8 @@ export const WINDOW_FLOOR_MS = WAITING_HORIZON_MS;
 const ASK_SCAN = 30;
 /** Voice notes the footer names by id. */
 const VOICE_IDS_MAX = 10;
+/** Media a direct or group entry names by id when ids are asked for, newest first: a get_media batch holds eight. */
+export const MEDIA_IDS_MAX = 3;
 /** Group metadata fetched to name senders: this many groups, within this long. */
 export const GROUP_META_MAX = 12;
 export const GROUP_META_MS = 1_000;
@@ -92,6 +94,8 @@ export interface CatchupScanRequest {
   tags?: CatchupTagJids;
   /** The instant the digest started, shared by every account it covers; the host's clock when omitted. */
   at?: number;
+  /** Name the newest media of each person and group by message id (catch_up's `ids`). */
+  mediaIds?: boolean;
 }
 
 /** What the service knows that the database does not: names, the account itself, the network-bound lookups. */
@@ -190,6 +194,8 @@ export interface DirectEntry {
   /** Tagged #private: counted, never quoted. */
   private: boolean;
   quoteId: number | null;
+  /** With mediaIds: the newest media get_media opens, by message id; never a #private person's. */
+  mediaIds?: string[];
 }
 
 export interface GroupEntry {
@@ -203,6 +209,8 @@ export interface GroupEntry {
   newestTs: number;
   addressed: boolean;
   hotId: number | null;
+  /** With mediaIds: the newest media get_media opens, by message id; none from someone #private. */
+  mediaIds?: string[];
 }
 
 export interface MutedGroups {
@@ -445,6 +453,11 @@ function voiceLength(text: string): string | undefined {
 
 function sidOf(chatJid: string, keyId: string, fromMe = false): string {
   return `${fromMe}_${chatJid}_${keyId}`;
+}
+
+/** Whether a chat's window holds media get_media opens as a view or text. */
+function opensMedia(aggregate: InboundAggregate): boolean {
+  return OPENED_MEDIA.some((type) => (aggregate.media[type] ?? 0) > 0);
 }
 
 /** A bare placeholder ("[image]", "[sticker]") says nothing worth quoting. */
@@ -809,6 +822,9 @@ export async function scanCatchup(db: AccountDb, host: CatchupHost, request: Cat
       muted: muted(chat),
       private: privateChat(chat),
       quoteId: privateChat(chat) ? null : (newest?.id ?? null),
+      ...(request.mediaIds === true && !privateChat(chat) && opensMedia(aggregate)
+        ? { mediaIds: digest.mediaTail(family, windowSpan(floor), now, MEDIA_IDS_MAX).map((media) => sidOf(chat.jid, media.keyId)) }
+        : {}),
     });
     if (chat.contactId !== null) contactIds.add(chat.contactId);
     peopleToName.add(chat.jid);
@@ -868,6 +884,17 @@ export async function scanCatchup(db: AccountDb, host: CatchupHost, request: Cat
         .inboundTail(group.family, windowSpan(group.floor), now, 10, 400)
         .find((message) => quotable(message) && message.text.length >= 20 && !privateSender(message.senderId))?.id ??
       null;
+  }
+
+  // The newest media of each group, from nobody #private, when ids were asked for.
+  if (request.mediaIds === true) {
+    const hidden = new Set([...(excludeSenders ?? []), ...tags.privateSenders]);
+    for (const group of quotedGroups) {
+      if (!OPENED_MEDIA.some((type) => (group.media[type] ?? 0) > 0)) continue;
+      group.mediaIds = digest
+        .mediaTail(group.family, { ...windowSpan(group.floor), excludeSenders: hidden }, now, MEDIA_IDS_MAX)
+        .map((media) => sidOf(group.chat, media.keyId));
+    }
   }
 
   // -------------------------------------------------------------- missed calls

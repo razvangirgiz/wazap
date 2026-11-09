@@ -93,7 +93,7 @@ export { messageStyle, styleOf, type MessageStyle, type StyleStats } from "./sty
 export { FLAGS_BACKFILL_META, FLAGS_BACKFILL_WINDOW_MS } from "./messages.js";
 export { MESSAGE_FLAGS } from "./types.js";
 export type { CatchupAdvance, CatchupMark, CatchupMarks } from "./catchup.js";
-export { DIGEST_MEDIA } from "./digest.js";
+export { DIGEST_MEDIA, OPENED_MEDIA } from "./digest.js";
 export type { Digest, DigestContact, DigestMedia, DigestSpan, InboundAggregate, TailMessage, WindowMessage } from "./digest.js";
 export { ADDRESS_BOOK_MAX_PAGE, FIND_SCORES, LOOKUP_MIN_DIGITS } from "./contacts.js";
 export type { AddressBookEntry, AddressBookInput, AddressBookKey, AddressBookOrder, AddressBookPage, ContactCandidate, Contacts, FindInput, FindKind, FindResult, FindVerdict, LeftGroup, LookupInput, MatchClass, MatchSource, QualifierHit, QualifierSource } from "./contacts.js";

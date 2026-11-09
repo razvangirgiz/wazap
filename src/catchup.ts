@@ -97,6 +97,7 @@ export const CATCHUP_INPUT = {
     .optional()
     .describe("Only these sections; the mark then stays"),
   cursor: z.string().min(1).optional().describe("more.cursor"),
+  ids: z.boolean().optional().describe("Message ids on entries, to act on them"),
 };
 
 const windowShape = z.object({
@@ -113,6 +114,8 @@ const q = z.string().optional().describe("Quote: the message's own words, cut to
 const sig = z.string().optional().describe("Signals in the quote, comma-separated: amount, date, time, address, link, question");
 const media = z.record(z.number()).optional().describe("Media by kind: image, video, voice, audio, document, sticker, location, contact");
 const privateFlag = z.literal(true).optional().describe("Someone the user tagged #private: counted, never quoted");
+const messageIdOut = z.string().optional().describe("ids: the message_id of what the entry quotes or names");
+const mediaIdsOut = z.array(z.string()).optional().describe("ids: the newest photos, videos, documents, stickers and audio, by message_id, for get_media");
 
 const waitingEntry = z.object({
   acct,
@@ -139,6 +142,8 @@ const waitingEntry = z.object({
     .describe("An answered call after the ask: it may have been dealt with by phone"),
   q,
   then: z.string().optional().describe("What they sent after the ask, quoted with it"),
+  id: messageIdOut,
+  then_id: z.string().optional().describe("ids: the message_id of then"),
 });
 
 const addressedEntry = z.object({
@@ -153,6 +158,7 @@ const addressedEntry = z.object({
   private: privateFlag,
   q,
   sig,
+  id: messageIdOut,
 });
 
 const callsEntry = z.object({
@@ -184,6 +190,8 @@ const directEntry = z.object({
   q,
   sig,
   more_in_chat: z.number().optional().describe("New messages besides the one quoted"),
+  id: messageIdOut,
+  media_ids: mediaIdsOut,
 });
 
 const groupEntry = z.object({
@@ -199,6 +207,8 @@ const groupEntry = z.object({
   addressed: z.literal(true).optional().describe("Someone mentioned, replied to or asked the user here"),
   hot: z.string().optional().describe("Quote: the most reacted message, or the newest worth quoting"),
   sig,
+  id: messageIdOut,
+  media_ids: mediaIdsOut,
 });
 
 const mutedGroupsEntry = z.object({
@@ -269,6 +279,7 @@ export interface CatchupArgs {
   include?: CatchupSection[];
   cursor?: string;
   account_id?: string;
+  ids?: boolean;
 }
 
 /** What catch_up needs from the tool runtime. */
@@ -394,7 +405,7 @@ function windowPhrase(window: CatchupWindow, now: number): string {
 // ---------------------------------------------------------------- entries as items
 
 /** A quote as placed: the message's words cut to their level, and for someone waiting, what they sent after the ask. */
-type Quoted = { text: string; signals: Signal[]; then?: string } | null;
+type Quoted = { text: string; signals: Signal[]; then?: string; id?: string; thenId?: string } | null;
 
 interface Item {
   section: CatchupSection;
@@ -489,7 +500,17 @@ function flatScan(scan: CatchupScan): CatchupScan {
   };
 }
 
-function itemsOf(view: AccountView, multi: boolean, now: number): Item[] {
+/** With ids: the message an entry names, after its chat in the line. */
+function idSuffix(id: string | undefined, label = "id"): string {
+  return id === undefined ? "" : ` · ${label} ${id}`;
+}
+
+/** With ids: an entry's newest media, after everything else on its line. */
+function mediaSuffix(ids: readonly string[] | undefined): string {
+  return ids === undefined || ids.length === 0 ? "" : ` · media ${ids.join(" ")}`;
+}
+
+function itemsOf(view: AccountView, multi: boolean, now: number, ids = false): Item[] {
   const scan = flatScan(view.scan!);
   const account = view.id;
   const tag = multi ? { acct: account } : {};
@@ -527,7 +548,8 @@ function itemsOf(view: AccountView, multi: boolean, now: number): Item[] {
               ]
             : []),
         ];
-        return `${parts.join(" · ")}${quoteSuffix(quote, false)} · ${entry.chat}`;
+        const askId = ids && !entry.private ? entry.ask.sid : undefined;
+        return `${parts.join(" · ")}${quoteSuffix(quote, false)} · ${entry.chat}${idSuffix(askId)}${idSuffix(ids ? quote?.thenId : undefined, "then id")}`;
       },
       data: (quote) => ({
         ...tag,
@@ -558,6 +580,8 @@ function itemsOf(view: AccountView, multi: boolean, now: number): Item[] {
           : {}),
         ...(quote && quote.text !== "" ? { q: quote.text } : {}),
         ...(quote?.then === undefined ? {} : { then: quote.then }),
+        ...(ids && !entry.private ? { id: entry.ask.sid } : {}),
+        ...(ids && quote?.thenId !== undefined ? { then_id: quote.thenId } : {}),
       }),
     });
   });
@@ -574,7 +598,7 @@ function itemsOf(view: AccountView, multi: boolean, now: number): Item[] {
       line: (quote) =>
         `- ${entry.name} · ${entry.from} ${verb} · ${clock(entry.ts, now)}${entry.more > 0 ? ` (+${entry.more} more)` : ""}${
           entry.title ? `: ${JSON.stringify(cut(entry.title, TITLE_CHARS))}` : ""
-        }${entry.private ? " · private" : ""}${quoteSuffix(quote, true)} · ${entry.chat}`,
+        }${entry.private ? " · private" : ""}${quoteSuffix(quote, true)} · ${entry.chat}${idSuffix(ids && !entry.private ? entry.sid : undefined)}`,
       data: (quote) => ({
         ...tag,
         chat: entry.chat,
@@ -586,6 +610,7 @@ function itemsOf(view: AccountView, multi: boolean, now: number): Item[] {
         ...(entry.title ? { title: cut(entry.title, TITLE_CHARS) } : {}),
         ...(entry.private ? { private: true } : {}),
         ...(quote ? { q: quote.text, ...sigOf(quote) } : {}),
+        ...(ids && !entry.private ? { id: entry.sid } : {}),
       }),
     });
   });
@@ -626,7 +651,7 @@ function itemsOf(view: AccountView, multi: boolean, now: number): Item[] {
       line: (quote) => {
         const who = `${entry.name}${tagsLabel(entry.tags)}${entry.note ? ` (${entry.note})` : ""}${entry.business ? " [business]" : entry.unknown ? " [not saved]" : ""}${entry.muted ? " [muted]" : ""}`;
         const more = quote !== null && entry.count > 1 ? ` (+${entry.count - 1} more)` : "";
-        return `- ${who} · ${entry.count} new · ${clock(entry.newestTs, now)}${media ? ` · ${media}` : ""}${entry.private ? " · private" : ""}${quoteSuffix(quote, true)}${more} · ${entry.chat}`;
+        return `- ${who} · ${entry.count} new · ${clock(entry.newestTs, now)}${media ? ` · ${media}` : ""}${entry.private ? " · private" : ""}${quoteSuffix(quote, true)}${more} · ${entry.chat}${idSuffix(ids ? quote?.id : undefined)}${mediaSuffix(ids ? entry.mediaIds : undefined)}`;
       },
       data: (quote) => ({
         ...tag,
@@ -645,6 +670,8 @@ function itemsOf(view: AccountView, multi: boolean, now: number): Item[] {
         ...(quote
           ? { q: quote.text, ...sigOf(quote), ...(entry.count > 1 ? { more_in_chat: entry.count - 1 } : {}) }
           : {}),
+        ...(ids && quote?.id !== undefined ? { id: quote.id } : {}),
+        ...(ids && entry.mediaIds !== undefined && entry.mediaIds.length > 0 ? { media_ids: entry.mediaIds } : {}),
       }),
     });
   });
@@ -660,7 +687,7 @@ function itemsOf(view: AccountView, multi: boolean, now: number): Item[] {
       line: (quote) =>
         `- ${entry.name} · ${entry.count} new from ${entry.senders}${entry.top.length > 0 ? ` (${entry.top.join(", ")})` : ""}${media ? ` · ${media}` : ""}${
           entry.addressed ? " · addresses you" : ""
-        }${quoteSuffix(quote, true)} · ${entry.chat}`,
+        }${quoteSuffix(quote, true)} · ${entry.chat}${idSuffix(ids ? quote?.id : undefined)}${mediaSuffix(ids ? entry.mediaIds : undefined)}`,
       data: (quote) => ({
         ...tag,
         chat: entry.chat,
@@ -673,6 +700,8 @@ function itemsOf(view: AccountView, multi: boolean, now: number): Item[] {
         ...(entry.polls > 0 ? { polls: entry.polls } : {}),
         ...(entry.addressed ? { addressed: true } : {}),
         ...(quote ? { hot: quote.text, ...sigOf(quote) } : {}),
+        ...(ids && quote?.id !== undefined ? { id: quote.id } : {}),
+        ...(ids && entry.mediaIds !== undefined && entry.mediaIds.length > 0 ? { media_ids: entry.mediaIds } : {}),
       }),
     });
   });
@@ -717,6 +746,8 @@ type Mark = { moved: boolean; why?: string; next_since?: string };
 interface Snapshot {
   client: string;
   include: CatchupSection[];
+  /** Asked with ids: every page names messages by id, as the first did. */
+  ids: boolean;
   now: number;
   multi: boolean;
   views: AccountView[];
@@ -895,6 +926,7 @@ export async function runCatchUp(args: CatchupArgs, ctx: CatchupContext): Promis
   const targets = targetsOf(args, ctx);
   const multi = targets.length > 1;
   const now = asked;
+  const ids = args.ids === true;
 
   // A person tagged on any live account is tagged on every one read, with account_id or without.
   const everyone = ctx.hub.bindings();
@@ -906,7 +938,7 @@ export async function runCatchUp(args: CatchupArgs, ctx: CatchupContext): Promis
       const view: AccountView = { id: target.id, name, source: target.wa, scan: null, error: null };
       try {
         if (typeof target.wa.catchUpScan !== "function") throw missingSupport(target.id);
-        view.scan = await target.wa.catchUpScan({ client: ctx.client, include, at: now, window: spec, ...(tags === undefined ? {} : { tags }) });
+        view.scan = await target.wa.catchUpScan({ client: ctx.client, include, at: now, window: spec, ...(tags === undefined ? {} : { tags }), ...(ids ? { mediaIds: true } : {}) });
       } catch (err) {
         view.error = asWazapError(err);
       }
@@ -917,9 +949,9 @@ export async function runCatchUp(args: CatchupArgs, ctx: CatchupContext): Promis
   if (answered.length === 0) throw views[0]!.error ?? missingSupport(targets[0]!.id);
 
   // Every entry in section order; within a section, account by account.
-  const byAccount = answered.map((view) => itemsOf(view, multi, now));
+  const byAccount = answered.map((view) => itemsOf(view, multi, now, ids));
   const items: Item[] = CATCHUP_SECTIONS.flatMap((section) => byAccount.flatMap((each) => each.filter((item) => item.section === section)));
-  const snapshot: Snapshot = { client: ctx.client, include, now, multi, views, answered, items, cursors: new Set(), marks: null, usedAt: asked };
+  const snapshot: Snapshot = { client: ctx.client, include, ids, now, multi, views, answered, items, cursors: new Set(), marks: null, usedAt: asked };
   return givePage(snapshot, 0, budget * 4, ctx, asked);
 }
 
@@ -988,21 +1020,35 @@ async function givePage(snapshot: Snapshot, start: number, budgetChars: number, 
     }
   }
   const texts = await readQuotes(candidates, answered);
-  type Placed = { item: Item; full: string; then: string | null; signals: Signal[]; level: number };
+  type Placed = { item: Item; full: string; then: string | null; signals: Signal[]; level: number; id?: string; thenId?: string };
   const placed: Placed[] = [];
   for (const item of candidates) {
     const full = item.quoteId === null ? "" : (texts.get(`${item.account}|${item.quoteId}`)?.text ?? "");
     const then = item.thenId === null ? "" : (texts.get(`${item.account}|${item.thenId}`)?.text ?? "");
     if (full === "" && then === "") continue;
+    const id = item.quoteId === null || full === "" ? undefined : texts.get(`${item.account}|${item.quoteId}`)?.sid;
+    const thenId = item.thenId === null || then === "" ? undefined : texts.get(`${item.account}|${item.thenId}`)?.sid;
     placed.push({
       item,
       full,
       then: then === "" ? null : then,
       signals: item.section === "waiting" ? [] : [...signalsOf(full)],
       level: QUOTE_CAPS[item.section]!,
+      ...(id === undefined ? {} : { id }),
+      ...(thenId === undefined ? {} : { thenId }),
     });
   }
-  const quoteAt = (entry: Placed, level: number): Quoted => (level === 0 ? null : { ...composeQuote(entry.full, entry.then, level), signals: entry.signals });
+  const quoteAt = (entry: Placed, level: number): Quoted => {
+    if (level === 0) return null;
+    const composed = composeQuote(entry.full, entry.then, level);
+    // An id rides with the words it names: the quote's message, and what followed only while it is quoted too.
+    return {
+      ...composed,
+      signals: entry.signals,
+      ...(entry.id === undefined || composed.text === "" ? {} : { id: entry.id }),
+      ...(entry.thenId === undefined || composed.then === undefined ? {} : { thenId: entry.thenId }),
+    };
+  };
   const extra = (entry: Placed, level: number): number => entry.item.line(quoteAt(entry, level)).length - skeletonChars.get(entry.item)! + 1;
   let spent = placed.reduce((n, entry) => n + extra(entry, entry.level), 0);
   // 3. Too long: the lowest-priority quotes shrink to 80 characters, then go.

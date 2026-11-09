@@ -82,6 +82,8 @@ function batchOf(chats: readonly ChatFloor[], span: Omit<DigestSpan, "afterId">)
 /** Media kinds a digest counts by type. */
 export const DIGEST_MEDIA = ["image", "video", "voice", "audio", "document", "sticker", "location", "contact"] as const;
 export type DigestMedia = (typeof DIGEST_MEDIA)[number];
+/** The kinds catch_up names by id for get_media: what it opens as a view or as text. */
+export const OPENED_MEDIA: readonly DigestMedia[] = ["image", "video", "document", "sticker", "audio"];
 
 /** The columns of an InboundAggregate over `m`, as inbound() and inboundMany() select them. */
 const INBOUND_AGGREGATE = `sum(m.type <> 'call') AS count, count(DISTINCT CASE WHEN m.type <> 'call' THEN m.sender_id END) AS senders,
@@ -473,6 +475,26 @@ export class Digest {
         now
       )
       .map((row) => ({ id: row.id, keyId: row.key_id }));
+  }
+
+  /**
+   * The newest media someone sent in the span that get_media opens as a view
+   * or text (photos, videos, documents, stickers, audio files; a voice note
+   * is a transcript, and the footer names those), newest first.
+   */
+  mediaTail(family: readonly number[], span: DigestSpan, now: number, limit: number): Array<{ id: number; keyId: string; type: string }> {
+    const inSpan = spanOf(span);
+    const inChat = familyCondition(family);
+    return this.c
+      .all<{ id: number; key_id: string; type: string }>(
+        `SELECT m.id, m.key_id, m.type FROM messages m CROSS JOIN chats c ON c.id = m.chat_id
+         WHERE ${inChat.sql} AND ${inSpan.sql} AND ${INBOUND} AND m.type IN (${OPENED_MEDIA.map((type) => `'${type}'`).join(", ")})
+         ORDER BY m.id DESC LIMIT ${sqlLimit(limit)}`,
+        ...inChat.params,
+        ...inSpan.params,
+        now
+      )
+      .map((row) => ({ id: row.id, keyId: row.key_id, type: row.type }));
   }
 
   /** Every handled mark, by the chat it was filed under. */
