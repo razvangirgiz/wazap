@@ -304,6 +304,36 @@ test("an animated GIF and a WebP sticker are shown by their first frame", async 
   assert.deepEqual([sticker.meta.format, sticker.meta.width], ["jpeg", 512]);
 });
 
+test("a long screenshot is cut into strips side by side, drawn larger than fitting it whole", async () => {
+  // A scrolling chat screenshot: lines of text down a 1170x6000 page.
+  const lines = Array.from({ length: 124 }, (_, i) => `<text x="20" y="${40 + i * 48}" font-size="34" font-family="Helvetica">Rândul ${i}: ajung la 7 cu actele</text>`);
+  const tall = await sharp(Buffer.from(`<svg xmlns="http://www.w3.org/2000/svg" width="1170" height="6000"><rect width="100%" height="100%" fill="white"/>${lines.join("")}</svg>`)).png().toBuffer();
+  const { out, block, meta, result } = await viewOf(tall, "image/png", {}, "imageMessage");
+  assert.equal(out.view.strips, 2);
+  assert.equal(out.view.strip_layout, "columns");
+  assert.deepEqual([out.view.original_width, out.view.original_height], [1170, 6000]);
+  assert.ok(meta.width > meta.height * 0.6, `${meta.width}x${meta.height}: two strips side by side, not a sliver`);
+  assert.ok(Math.max(meta.width, meta.height) <= 1024);
+  // Each strip's width against the original's: larger than the 1024/6000 a whole fit would give.
+  const stripScale = (meta.width / 2) / 1170;
+  assert.ok(stripScale > (1024 / 6000) * 1.3, `scale ${stripScale.toFixed(3)}`);
+  assert.ok(Buffer.from(block.data, "base64").length <= 110_000);
+  assert.match(result.content[0].text, /cut into 2 strips placed side by side: read the left one top to bottom, then the next/);
+
+  const wide = await sharp({ create: { width: 6000, height: 1000, channels: 3, background: "#e0e0e0" } }).png().toBuffer();
+  const panorama = await viewOf(wide, "image/png", {}, "imageMessage");
+  assert.equal(panorama.out.view.strip_layout, "rows");
+  assert.ok(panorama.out.view.strips >= 2);
+
+  const sliver = await sharp({ create: { width: 200, height: 60_000, channels: 3, background: "#ffffff" } }).png().toBuffer();
+  const thin = await viewOf(sliver, "image/png", {}, "documentMessage");
+  assert.ok(thin.out.view.strips <= 6, "a few strips at most");
+  assert.ok(Math.max(thin.meta.width, thin.meta.height) <= 1024);
+
+  const phone = await viewOf(await sharp({ create: { width: 1170, height: 2532, channels: 3, background: "#ffffff" } }).png().toBuffer(), "image/png", {}, "imageMessage");
+  assert.equal(phone.out.view.strips, undefined, "a single phone screen is not cut");
+});
+
 test("an image libvips cannot read says so instead of attaching it", async () => {
   const { out, block, result } = await viewOf(Buffer.from("not an image at all"), "image/heic", {}, "documentMessage");
   assert.equal(block, undefined);

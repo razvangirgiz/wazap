@@ -50,8 +50,8 @@ export type ViewDetail = keyof typeof VIEW_DETAILS;
 
 /** The qualities a view tries, best first, before it shrinks. */
 const QUALITIES = [82, 72, 62, 52, 42];
-/** Each shrink when the lowest quality is still over the budget. */
-const SHRINK = 0.8;
+/** The least each shrink takes off when the lowest quality is still over the budget. */
+const SHRINK = 0.9;
 
 export interface Jpeg {
   data: Buffer;
@@ -67,6 +67,8 @@ export interface ImageView extends Jpeg {
   format: string;
   /** Frames of an animation; only the first is shown. */
   frames?: number;
+  /** A long image cut into strips laid side by side (columns, for a tall one) or one under another (rows, for a wide one). */
+  strips?: { count: number; layout: "columns" | "rows" };
 }
 
 let engine: Promise<SharpFactory | null> | undefined;
@@ -136,13 +138,20 @@ export async function imageView(input: Buffer, detail: ViewDetail, mime = "", bu
     try {
       const meta = await sharp(source, INPUT).metadata();
       if (!meta.width || !meta.height) return null;
-      const fitted = await fitJpeg(sharp, sharp(source, INPUT).rotate(), edge, budget ?? maxBytes);
+      const width = meta.autoOrient?.width ?? meta.width;
+      const height = meta.autoOrient?.height ?? meta.height;
+      const strips = stripLayout(width, height, edge);
+      const fitted =
+        strips === null
+          ? await fitJpeg(sharp, sharp(source, INPUT).rotate(), edge, budget ?? maxBytes)
+          : await stripSheet(sharp, source, width, height, strips, edge, budget ?? maxBytes);
       return {
         ...fitted,
-        original_width: meta.autoOrient?.width ?? meta.width,
-        original_height: meta.autoOrient?.height ?? meta.height,
+        original_width: width,
+        original_height: height,
         format: meta.format ?? "unknown",
         ...(meta.pages !== undefined && meta.pages > 1 ? { frames: meta.pages } : {}),
+        ...(strips === null ? {} : { strips: { count: strips.count, layout: strips.layout } }),
       };
     } catch {
       return null;
@@ -169,14 +178,95 @@ async function fitJpeg(sharp: SharpFactory, pipeline: Sharp, edge: number, maxBy
     .toBuffer({ resolveWithObject: true });
   for (let shrinks = 0; ; shrinks++) {
     const raw = { width: info.width, height: info.height, channels: info.channels };
+    let smallest = Infinity;
     for (const quality of QUALITIES) {
       const out = await sharp(data, { raw }).jpeg({ quality }).toBuffer();
       // Six shrinks leave a quarter of the edge: what is left is returned rather than nothing.
       if (out.length <= maxBytes || shrinks >= 6) return { data: out, width: info.width, height: info.height };
+      smallest = out.length;
     }
-    const width = Math.max(1, Math.floor(info.width * SHRINK));
+    // A JPEG's size follows its pixel count: shrink about as far as the budget asks, and at least by SHRINK's step.
+    const factor = Math.max(0.5, Math.min(SHRINK, Math.sqrt(maxBytes / smallest) * 0.95));
+    const width = Math.max(1, Math.floor(info.width * factor));
     ({ data, info } = await sharp(data, { raw }).resize(width).raw().toBuffer({ resolveWithObject: true }));
   }
+}
+
+/** How much each strip of a long image repeats of the next, so a line cut at one edge is whole in the other strip. */
+const STRIP_OVERLAP = 0.04;
+/** Strips at most: past this a long image's strips are slivers anyway. */
+const STRIPS_MAX = 6;
+/** How much larger strips must draw an image than fitting it whole, to be worth cutting it. */
+const STRIPS_GAIN = 1.3;
+/** Gap between strips, in a grey that tells them apart on any content. */
+const STRIP_GAP = 6;
+
+interface StripLayout {
+  count: number;
+  layout: "columns" | "rows";
+  /** The image's scale once it is cut. */
+  scale: number;
+}
+
+/**
+ * Whether a long image (a scrolling screenshot, a receipt, a panorama) reads
+ * better cut into strips than fitted whole inside `edge`: a 1170x6000 chat
+ * screenshot fitted whole is 200 px wide, its text a few pixels tall; cut in
+ * two columns it is drawn at twice that. Null when cutting gains too little.
+ */
+export function stripLayout(width: number, height: number, edge: number): StripLayout | null {
+  const long = Math.max(width, height);
+  const short = Math.min(width, height);
+  const whole = Math.min(1, edge / long);
+  if (whole >= 1) return null;
+  let best = { count: 1, scale: whole };
+  for (let count = 2; count <= STRIPS_MAX; count++) {
+    // `count` strips across the short side, each a `count`th of the long side plus its share of the overlaps.
+    const scale = Math.min(1, edge / (count * short + (count - 1) * STRIP_GAP), (edge * count) / (long * (1 + STRIP_OVERLAP * (count - 1))));
+    if (scale > best.scale) best = { count, scale };
+  }
+  if (best.count === 1 || best.scale < whole * STRIPS_GAIN) return null;
+  return { count: best.count, layout: height > width ? "columns" : "rows", scale: best.scale };
+}
+
+/**
+ * A long image cut into `strips`: scaled once, cut along its length into
+ * pieces that overlap a little, the pieces laid side by side (or one under
+ * another), and the sheet fitted like any view.
+ */
+async function stripSheet(sharp: SharpFactory, source: Buffer, width: number, height: number, strips: StripLayout, edge: number, maxBytes: number): Promise<Jpeg> {
+  const scaledWidth = Math.max(1, Math.round(width * strips.scale));
+  const scaledHeight = Math.max(1, Math.round(height * strips.scale));
+  const { data, info } = await sharp(source, INPUT)
+    .rotate()
+    .resize(scaledWidth, scaledHeight, { fit: "fill" })
+    .flatten({ background: "#ffffff" })
+    .removeAlpha()
+    .raw()
+    .toBuffer({ resolveWithObject: true });
+  const raw = { width: info.width, height: info.height, channels: info.channels };
+  const columns = strips.layout === "columns";
+  const length = columns ? info.height : info.width;
+  const across = columns ? info.width : info.height;
+  // Each strip repeats `overlap` of the next one's start: a line cut at one strip's end is whole at the next one's top.
+  const overlap = Math.round(length * STRIP_OVERLAP);
+  const piece = Math.min(length, Math.ceil((length + (strips.count - 1) * overlap) / strips.count));
+  const composite = await Promise.all(
+    Array.from({ length: strips.count }, async (_, i) => {
+      const start = Math.max(0, Math.min(length - piece, i * (piece - overlap)));
+      const region = columns ? { left: 0, top: start, width: across, height: piece } : { left: start, top: 0, width: piece, height: across };
+      const input = await sharp(data, { raw }).extract(region).png({ compressionLevel: 0 }).toBuffer();
+      const offset = i * (across + STRIP_GAP);
+      return { input, left: columns ? offset : 0, top: columns ? 0 : offset };
+    })
+  );
+  const sheetWidth = columns ? strips.count * across + (strips.count - 1) * STRIP_GAP : piece;
+  const sheetHeight = columns ? piece : strips.count * across + (strips.count - 1) * STRIP_GAP;
+  const sheet = await sharp({ create: { width: sheetWidth, height: sheetHeight, channels: 3, background: "#909090" } })
+    .composite(composite)
+    .png({ compressionLevel: 0 })
+    .toBuffer();
+  return fitJpeg(sharp, sharp(sheet), edge, maxBytes);
 }
 
 /** A contact sheet's layout: how many columns, and each tile's size, inside a square of `edge`. */

@@ -226,6 +226,8 @@ const MEDIA_OUTPUT = {
       original_width: z.number().optional(),
       original_height: z.number().optional(),
       frames: z.number().optional(),
+      strips: z.number().optional().describe("A long image cut into this many strips"),
+      strip_layout: z.enum(["columns", "rows"]).optional(),
       page: z.number().optional(),
     })
     .optional()

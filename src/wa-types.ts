@@ -757,7 +757,15 @@ export interface MediaPicture {
 /** What get_media shows of a message's media, beside the file itself. */
 export type MediaRendition =
   /** An image (photo, sticker, image sent as a document), as a JPEG view. */
-  | (MediaPicture & { kind: "image"; detail: MediaDetail; original_width: number; original_height: number; frames?: number })
+  | (MediaPicture & {
+      kind: "image";
+      detail: MediaDetail;
+      original_width: number;
+      original_height: number;
+      frames?: number;
+      /** A long image shown cut into strips, side by side (columns) or one under another (rows). */
+      strips?: { count: number; layout: "columns" | "rows" };
+    })
   /** A video, GIF or round video: frames across its length, tiled left to right, top to bottom. */
   | (MediaPicture & { kind: "sheet"; frames_at: number[]; duration_seconds?: number })
   /** One frame or the thumbnail WhatsApp shipped, when nothing better could be made. */

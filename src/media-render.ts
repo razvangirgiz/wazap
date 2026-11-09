@@ -67,6 +67,7 @@ async function imageRendition(input: RenderInput): Promise<MediaRendition> {
       original_width: view.original_width,
       original_height: view.original_height,
       ...(view.frames === undefined ? {} : { frames: view.frames }),
+      ...(view.strips === undefined ? {} : { strips: view.strips }),
     };
   }
   if ((await loadSharp()) === null && /^image\/jpe?g\b/.test(input.mime) && input.buffer.length <= JS_VIEW_MAX_BYTES) {

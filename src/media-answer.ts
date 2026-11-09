@@ -55,7 +55,17 @@ function renditionInto(rendition: MediaRendition, out: MediaAnswer): void {
         original_width: rendition.original_width,
         original_height: rendition.original_height,
         ...(rendition.frames === undefined ? {} : { frames: rendition.frames }),
+        ...(rendition.strips === undefined ? {} : { strips: rendition.strips.count, strip_layout: rendition.strips.layout }),
       };
+      if (rendition.strips !== undefined) {
+        const { count, layout } = rendition.strips;
+        out.lines.push(
+          `(image attached: the ${rendition.original_width}x${rendition.original_height} original is long, so it is cut into ${count} strips` +
+            (layout === "columns" ? " placed side by side: read the left one top to bottom, then the next" : " placed one under another: read the top one left to right, then the next") +
+            `; each repeats a little of the next. ${rendition.width}x${rendition.height}${rendition.detail === "standard" ? '; detail: "high" for small print' : ""})`
+        );
+        return;
+      }
       const shrunk = rendition.width < rendition.original_width;
       out.lines.push(
         `(image attached: ${rendition.width}x${rendition.height}${shrunk ? ` view of the ${rendition.original_width}x${rendition.original_height} original` : ""}` +
