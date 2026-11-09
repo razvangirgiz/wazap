@@ -862,7 +862,9 @@ wazap parses, and the parsed text input to the agent.
   returns a link to the original, valid 30 minutes, served at
   `GET /media/<token>` without a bearer token: the token is the capability. It
   is HMAC-SHA256 under a 32-byte secret made once per install
-  (`media-links.key`, `0600`, never logged), over the account, the message's row
+  (`media-links.key`, `0600`, never logged; written whole to a temporary file and
+  renamed into place, a short one replaced, and when it cannot be kept the
+  server runs without links rather than not starting), over the account, the message's row
   and a 72-bit tag of its id (the id itself, which spells a phone number, is not
   in the URL), and the expiry; it is compared in constant time, and the message
   is looked up again at each fetch, so a forged, expired or tampered link, an
