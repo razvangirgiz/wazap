@@ -87,7 +87,8 @@ up to 256 MB, which the system can take back under memory pressure.
   WhatsApp's description of it states beside the description, so
   `list_chats` reads one page off an index instead of every chat. A file from
   an earlier release has those times read out of its stored descriptions once,
-  at the first start after the upgrade.
+  at the first start after the upgrade. Schema 8 indexes the stored vectors'
+  model, so counting them for `get_status` no longer reads every vector.
 - **A schema upgrade copies the file first.** When a start finds a database an
   older wazap wrote, it writes `wazap.<old version>.pre-migration.sqlite` beside
   it — the file as it was, whole — and only then migrates. If the copy cannot be

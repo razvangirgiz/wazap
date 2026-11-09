@@ -944,6 +944,17 @@ INSERT INTO meta(key, value) SELECT 'chat_activity_backfill', 'pending' WHERE EX
 `;
 // ---- end v7 ----------------------------------------------------------------
 
+// ---- v8: counting embeddings off an index ---------------------------------
+/**
+ * - embeddings_model: the model of every stored vector, so the count recall
+ *   status shows (and the whole-account count) reads a small index instead of
+ *   walking every vector's row: 768 bytes each, 75 MB at 100k messages.
+ */
+const V8 = `
+CREATE INDEX embeddings_model ON embeddings(model);
+`;
+// ---- end v8 ----------------------------------------------------------------
+
 /** Every migration, in order. The schema version a build knows is the last one's. */
 export const MIGRATIONS: readonly Migration[] = [
   { version: 1, sql: V1 },
@@ -953,6 +964,7 @@ export const MIGRATIONS: readonly Migration[] = [
   { version: 5, sql: V5 },
   { version: 6, sql: V6 },
   { version: 7, sql: V7 },
+  { version: 8, sql: V8 },
 ];
 
 export const SCHEMA_VERSION = MIGRATIONS[MIGRATIONS.length - 1]!.version;
