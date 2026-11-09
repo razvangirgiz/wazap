@@ -818,17 +818,32 @@ wazap parses, and the parsed text input to the agent.
 - **Parsers, bounded.** Images go through sharp (libvips): an input claiming
   more than 100 MP is refused before decoding, only the first frame of an
   animation is read, and the work runs on libvips' threads, not the event loop.
-  PDFs are read by pdf.js (unpdf, no native code, no font loading) and Office
-  and OpenDocument files by wazap's own ZIP reader, both in a worker thread with
-  a 384 MB heap cap and a 20-second limit, at most two at a time; a file over
-  50 MB is not read. The ZIP reader refuses more than 10,000 entries, an entry
-  that inflates past 20 MB (60 MB in all) or past 200:1, and one whose inflated
-  size differs from what it states (`maxOutputLength`, so a lie stops at one
-  byte over). pdftoppm, Quick Look, sips and ffmpeg run as child processes on a
-  private temporary copy with a timeout, ffmpeg with the input whitelists of
-  section 8. The worker's console is silenced and its stdout drained, so nothing
-  it prints reaches the MCP channel. Tests: `test/media-documents.test.mjs`
-  (zip bombs, a lying size), `test/images.test.mjs` (a 20,000 x 20,000 PNG header).
+  PDFs are read by pdf.js (unpdf, no native code; it does parse embedded font
+  programs, but registers no font with the system) and Office and OpenDocument
+  files by wazap's own ZIP reader, both in a worker thread with a 384 MB heap
+  cap and a 20-second limit, at most two at a time; a file over 50 MB is not
+  read. The heap cap does not count the ArrayBuffers pdf.js unpacks a stream
+  into, and a 4 MB PDF whose font inflates to 4 GB once drove the process to
+  3 GB. So, before pdf.js sees a PDF, the worker unpacks every stream that is
+  not an image through its filters (Flate, LZW, Brotli, run-length, ASCII85,
+  hex, chained) with a cap of 64 MB per stream and 256 MB in all, keeping
+  nothing, and refuses the file past either; and while a worker runs, the
+  process's resident memory is read every 100 ms and the worker stopped past
+  512 MB of growth, which catches what a crafted dictionary hides from that
+  check. The ZIP reader refuses more than 10,000 entries, an entry that
+  inflates past 20 MB (60 MB in all) or past 200:1, and one whose inflated size
+  differs from what it states (`maxOutputLength`, so a lie stops at one byte
+  over). pdftoppm, Quick Look, sips and ffmpeg run as child processes on a
+  private temporary copy with a timeout and a memory limit read from the
+  system while they run (512 MB for a page render, 1 GB for ffmpeg and sips),
+  one page render and two of the others at a time, ffmpeg with the input
+  whitelists of section 8; a PDF page is drawn only once the file passed its
+  stream check, and the drawing is stopped when the read finds the file
+  hostile. The worker's console is silenced and its stdout drained, so nothing
+  it prints reaches the MCP channel. Tests: `test/pdf-guard.test.mjs` (bombs in
+  each filter, the memory watches), `test/media-documents.test.mjs` (zip
+  bombs, a lying size, a PDF bomb through `get_media`), `test/images.test.mjs`
+  (a 20,000 x 20,000 PNG header).
 - **The text is the sender's.** Document text, transcripts and text in images
   can carry instructions aimed at an agent with other tools. They come back in
   their own field (`document_text`), quoted between markers in the text, never
@@ -864,7 +879,12 @@ Not covered: a link is a bearer capability until it expires; anyone it is
 pasted to can download the file for those 30 minutes. A link is not bound to
 the session that minted it, and there is no per-link fetch count. libvips,
 pdf.js, poppler and ffmpeg are large parsers of untrusted input; the limits
-above bound memory and time, not every codec bug.
+above bound memory and time, not every codec bug. Memory is bounded by
+watching it, so a parser can overshoot its limit by what it allocates between
+two readings (100 ms for the worker, 200 ms for a child), and the process's
+memory, once grown, is returned to the system only gradually. Quick Look may
+draw a page in a system service rather than in `qlmanage` itself, outside the
+child's memory limit; it is only used when poppler is not installed.
 
 ## Pre-release review
 

@@ -7,17 +7,16 @@
  * for an install where sharp does not load: jpeg-js is pure JavaScript and
  * needs no native build, but it decodes on the event loop.
  */
-import { execFile } from "node:child_process";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { promisify } from "node:util";
 import jpeg from "jpeg-js";
 import { which } from "./transcribe/local.js";
 import { LOCAL_MEDIA_INPUT_ARGS } from "./media-process.js";
+import { HELPER_RSS_BYTES, helperSlots, runNative } from "./native-run.js";
 
-const run = promisify(execFile);
-const FRAME_TIMEOUT_MS = 30_000;
+/** Each ffmpeg run on a sender's video: a time limit, a memory limit, and at most two at once (src/native-run.ts). */
+const FRAME_LIMITS = { timeoutMs: 30_000, maxRssBytes: HELPER_RSS_BYTES };
 
 /** Longest edge of a preview. 320 px reads a receipt's total and a face. */
 export const PREVIEW_MAX_EDGE = 320;
@@ -96,6 +95,10 @@ export function makePreview(
 export async function videoFrame(video: Buffer, maxEdge = PREVIEW_MAX_EDGE): Promise<Buffer | null> {
   const ffmpeg = which("ffmpeg");
   if (ffmpeg === null) return null;
+  return helperSlots.run(() => grabFrame(ffmpeg, video, maxEdge));
+}
+
+async function grabFrame(ffmpeg: string, video: Buffer, maxEdge: number): Promise<Buffer | null> {
   const dir = await mkdtemp(join(tmpdir(), "wazap-frame-"));
   try {
     const input = join(dir, "in.bin");
@@ -121,7 +124,7 @@ export async function videoFrame(video: Buffer, maxEdge = PREVIEW_MAX_EDGE): Pro
         output,
       ];
       try {
-        await run(ffmpeg, args, { timeout: FRAME_TIMEOUT_MS, windowsHide: true });
+        await runNative(ffmpeg, args, FRAME_LIMITS);
         const frame = await readFile(output);
         if (frame.length > 0) return frame;
       } catch {
@@ -173,6 +176,10 @@ export function frameTimes(duration: number, count = SHEET_FRAMES): number[] {
 export async function videoFrames(video: Buffer, seconds?: number): Promise<VideoFrames | null> {
   const ffmpeg = which("ffmpeg");
   if (ffmpeg === null) return null;
+  return helperSlots.run(() => sheetFrames(ffmpeg, video, seconds));
+}
+
+async function sheetFrames(ffmpeg: string, video: Buffer, seconds: number | undefined): Promise<VideoFrames | null> {
   const dir = await mkdtemp(join(tmpdir(), "wazap-sheet-"));
   try {
     const input = join(dir, "in.bin");
@@ -186,7 +193,7 @@ export async function videoFrames(video: Buffer, seconds?: number): Promise<Vide
     for (const time of at) args.push("-ss", String(time), ...LOCAL_MEDIA_INPUT_ARGS, "-i", input);
     at.forEach((_, i) => args.push("-map", `${i}:v:0`, "-frames:v", "1", "-an", "-sn", "-dn", "-vf", scale, "-q:v", "3", outputs[i]!));
     try {
-      await run(ffmpeg, args, { timeout: FRAME_TIMEOUT_MS, windowsHide: true });
+      await runNative(ffmpeg, args, FRAME_LIMITS);
     } catch {
       // A seek past a short clip's last frame fails the run: what it did write is used below.
     }
@@ -209,7 +216,7 @@ export async function videoFrames(video: Buffer, seconds?: number): Promise<Vide
 /** The clip's length from ffmpeg's report on its input; it exits with an error for want of an output, which is expected. */
 async function probeDuration(ffmpeg: string, input: string): Promise<number | undefined> {
   try {
-    const { stderr } = await run(ffmpeg, ["-nostdin", "-hide_banner", ...LOCAL_MEDIA_INPUT_ARGS, "-i", input], { timeout: FRAME_TIMEOUT_MS, windowsHide: true });
+    const { stderr } = await runNative(ffmpeg, ["-nostdin", "-hide_banner", ...LOCAL_MEDIA_INPUT_ARGS, "-i", input], FRAME_LIMITS);
     return parseDuration(stderr);
   } catch (err) {
     return parseDuration(String((err as { stderr?: unknown }).stderr ?? ""));

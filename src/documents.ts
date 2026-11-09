@@ -4,17 +4,21 @@
  * PDF page when this machine has a renderer: poppler's pdftoppm, or on macOS
  * Quick Look (qlmanage) for the first page. A PDF that is a scan has no text
  * layer, and the page picture is then what there is to read.
+ *
+ * Memory is bounded three ways, since the worker's heap limit does not count
+ * the ArrayBuffers pdf.js unpacks streams into: the worker measures a PDF's
+ * streams before reading it (src/pdf-guard.ts), the process's resident memory
+ * is watched while a worker runs, and the renderer is one child at a time
+ * under a memory limit of its own (src/native-run.ts), started only once the
+ * file passed its check.
  */
-import { execFile } from "node:child_process";
 import { mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { extname, join } from "node:path";
-import { promisify } from "node:util";
 import { Worker } from "node:worker_threads";
 import type { DocumentFormat, TextResult } from "./document-text.js";
+import { runNative, Slots } from "./native-run.js";
 import { which } from "./transcribe/local.js";
-
-const run = promisify(execFile);
 
 /** Characters of a document's text one answer carries by default: about 3,000 tokens. */
 export const TEXT_BUDGET = 12_000;
@@ -22,11 +26,32 @@ export const TEXT_BUDGET = 12_000;
 export const DOCUMENT_TEXT_MAX_BYTES = 50_000_000;
 /** How long a document read may take before its thread is stopped. */
 const TEXT_TIMEOUT_MS = 20_000;
-/** What one document read may use. A file that needs more is reported unreadable. */
+/** What one document read may use on its heap. A file that needs more is reported unreadable. */
 const WORKER_LIMITS = { maxOldGenerationSizeMb: 384, maxYoungGenerationSizeMb: 48, stackSizeMb: 4 };
 /** Document reads running at once, process-wide; the rest wait their turn. */
-const MAX_WORKERS = 2;
+const readSlots = new Slots(2);
+/** Page pictures drawn at once, process-wide: one renderer child at a time. */
+const renderSlots = new Slots(1);
 const RENDER_TIMEOUT_MS = 20_000;
+
+/**
+ * What a document read and a page render may grow memory by: the process's
+ * resident memory while a worker reads (heap, and the ArrayBuffers the heap
+ * limit misses), and the renderer child's own. Tests lower them.
+ */
+export const DOCUMENT_MEMORY = { readGrowthBytes: 512_000_000, renderBytes: 512_000_000 };
+/** How often the process's memory is read while a worker runs. */
+const WATCH_MS = 100;
+
+/** A document read that failed. `hostile`: the file was refused, or outgrew its memory: nothing else should parse it. */
+export class DocumentReadError extends Error {
+  constructor(
+    message: string,
+    readonly hostile = false
+  ) {
+    super(message);
+  }
+}
 
 const MIME_FORMATS: Record<string, DocumentFormat> = {
   "application/pdf": "pdf",
@@ -81,36 +106,29 @@ export function documentFormat(mime: string, filename: string | undefined, bytes
   return null;
 }
 
-let running = 0;
-const waiting: Array<() => void> = [];
-
-/** One of MAX_WORKERS slots; a slot given up passes straight to the next in line, so the count never overshoots. */
-async function slot<T>(work: () => Promise<T>): Promise<T> {
-  if (running >= MAX_WORKERS) await new Promise<void>((resolve) => waiting.push(resolve));
-  else running++;
-  try {
-    return await work();
-  } finally {
-    const next = waiting.shift();
-    if (next === undefined) running--;
-    else next();
-  }
-}
-
 /**
  * The document's text from page `from` (1-based) to `to`, or until the budget
- * is spent, read in a worker thread with a memory cap and a timeout. Throws
- * with a short reason when the file cannot be read.
+ * is spent, read in a worker thread with a heap cap, a watch on the process's
+ * memory and a timeout. `onChecked` is called once a PDF's streams passed
+ * their check, before its text is read. Rejects with a DocumentReadError and
+ * a short reason when the file cannot be read.
  */
-export function documentText(format: DocumentFormat, bytes: Buffer, pages: { from: number; to: number | null }, budget = TEXT_BUDGET): Promise<TextResult> {
+export function documentText(
+  format: DocumentFormat,
+  bytes: Buffer,
+  pages: { from: number; to: number | null },
+  budget = TEXT_BUDGET,
+  opts: { onChecked?: () => void } = {}
+): Promise<TextResult> {
   if (bytes.length > DOCUMENT_TEXT_MAX_BYTES) {
-    return Promise.reject(new Error(`it is over ${DOCUMENT_TEXT_MAX_BYTES / 1_000_000} MB, more than is read here`));
+    return Promise.reject(new DocumentReadError(`it is over ${DOCUMENT_TEXT_MAX_BYTES / 1_000_000} MB, more than is read here`));
   }
-  return slot(
+  return readSlots.run(
     () =>
       new Promise<TextResult>((resolve, reject) => {
         // A copy of its own, handed over: the download's buffer may share memory with others.
         const copy = new Uint8Array(bytes);
+        const base = process.memoryUsage.rss();
         const worker = new Worker(new URL("./document-worker.js", import.meta.url), {
           workerData: { format, bytes: copy, pages, budget },
           transferList: [copy.buffer],
@@ -125,17 +143,29 @@ export function documentText(format: DocumentFormat, bytes: Buffer, pages: { fro
           if (settled) return;
           settled = true;
           clearTimeout(timer);
+          clearInterval(watch);
           outcome();
           void worker.terminate();
         };
-        const timer = setTimeout(() => finish(() => reject(new Error(`reading it took over ${TEXT_TIMEOUT_MS / 1000} s`))), TEXT_TIMEOUT_MS);
-        worker.once("message", (message: { ok: boolean; result?: TextResult; message?: string }) =>
-          finish(() => (message.ok ? resolve(message.result!) : reject(new Error(message.message ?? "unreadable"))))
-        );
+        const fail = (message: string, hostile = false): void => finish(() => reject(new DocumentReadError(message, hostile)));
+        const timer = setTimeout(() => fail(`reading it took over ${TEXT_TIMEOUT_MS / 1000} s`), TEXT_TIMEOUT_MS);
+        // The heap limit misses the ArrayBuffers a PDF's streams unpack into: the process's resident memory does not.
+        const watch = setInterval(() => {
+          if (process.memoryUsage.rss() - base > DOCUMENT_MEMORY.readGrowthBytes) fail("it needs more memory than a document read is given", true);
+        }, WATCH_MS);
+        watch.unref();
+        worker.on("message", (message: { checked?: boolean; ok?: boolean; result?: TextResult; message?: string; hostile?: boolean }) => {
+          if (message.checked === true) {
+            if (!settled) opts.onChecked?.();
+            return;
+          }
+          if (message.ok === true) finish(() => resolve(message.result!));
+          else fail(message.message ?? "unreadable", message.hostile === true);
+        });
         worker.once("error", (err: Error & { code?: string }) =>
-          finish(() => reject(new Error(err.code === "ERR_WORKER_OUT_OF_MEMORY" ? "it needs more memory than a document read is given" : "the reader failed")))
+          err.code === "ERR_WORKER_OUT_OF_MEMORY" ? fail("it needs more memory than a document read is given", true) : fail("the reader failed")
         );
-        worker.once("exit", () => finish(() => reject(new Error("the reader stopped"))));
+        worker.once("exit", () => fail("the reader stopped"));
       })
   );
 }
@@ -143,32 +173,35 @@ export function documentText(format: DocumentFormat, bytes: Buffer, pages: { fro
 /**
  * Page `page` of a PDF as an image whose long edge is about `edge` px:
  * pdftoppm when poppler is installed (any page), else on macOS Quick Look,
- * which draws the first page only. Null when neither can, or the render fails.
+ * which draws the first page only. One renderer runs at a time, under a time
+ * and a memory limit; `signal` stops it. Null when neither can draw it, or
+ * the render fails or is stopped.
  */
-export async function pdfPageImage(pdf: Buffer, page: number, edge: number): Promise<Buffer | null> {
+export async function pdfPageImage(pdf: Buffer, page: number, edge: number, signal?: AbortSignal): Promise<Buffer | null> {
   const pdftoppm = which("pdftoppm");
   const qlmanage = process.platform === "darwin" && page === 1 ? which("qlmanage") : null;
   if (pdftoppm === null && qlmanage === null) return null;
-  const dir = await mkdtemp(join(tmpdir(), "wazap-page-"));
-  try {
-    const input = join(dir, "in.pdf");
-    await writeFile(input, pdf, { mode: 0o600 });
-    if (pdftoppm !== null) {
-      const prefix = join(dir, "page");
-      // JPEG, not PNG: poppler's PNG encoder takes about a second for a 1,024 px page, its JPEG 50 ms.
-      await run(pdftoppm, ["-q", "-f", String(page), "-l", String(page), "-singlefile", "-jpeg", "-jpegopt", "quality=90", "-scale-to", String(edge), input, prefix], {
-        timeout: RENDER_TIMEOUT_MS,
-        windowsHide: true,
-      });
-      return await readFile(`${prefix}.jpg`);
+  return renderSlots.run(async () => {
+    if (signal?.aborted) return null;
+    const limits = { timeoutMs: RENDER_TIMEOUT_MS, maxRssBytes: DOCUMENT_MEMORY.renderBytes, ...(signal ? { signal } : {}) };
+    const dir = await mkdtemp(join(tmpdir(), "wazap-page-"));
+    try {
+      const input = join(dir, "in.pdf");
+      await writeFile(input, pdf, { mode: 0o600 });
+      if (pdftoppm !== null) {
+        const prefix = join(dir, "page");
+        // JPEG, not PNG: poppler's PNG encoder takes about a second for a 1,024 px page, its JPEG 50 ms.
+        await runNative(pdftoppm, ["-q", "-f", String(page), "-l", String(page), "-singlefile", "-jpeg", "-jpegopt", "quality=90", "-scale-to", String(edge), input, prefix], limits);
+        return await readFile(`${prefix}.jpg`);
+      }
+      // Quick Look writes <name>.png into the output directory, and prints what it did on stdout (captured here).
+      await runNative(qlmanage!, ["-t", "-s", String(edge), "-o", dir, input], limits);
+      const made = (await readdir(dir)).find((name) => name.endsWith(".png"));
+      return made === undefined ? null : await readFile(join(dir, made));
+    } catch {
+      return null;
+    } finally {
+      await rm(dir, { recursive: true, force: true });
     }
-    // Quick Look writes <name>.png into the output directory, and prints what it did on stdout (captured here).
-    await run(qlmanage!, ["-t", "-s", String(edge), "-o", dir, input], { timeout: RENDER_TIMEOUT_MS, windowsHide: true });
-    const made = (await readdir(dir)).find((name) => name.endsWith(".png"));
-    return made === undefined ? null : await readFile(join(dir, made));
-  } catch {
-    return null;
-  } finally {
-    await rm(dir, { recursive: true, force: true });
-  }
+  });
 }

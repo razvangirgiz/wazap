@@ -8,7 +8,7 @@
  */
 import type { WAMessage } from "baileys";
 import type { DocumentFormat } from "./document-text.js";
-import { documentFormat, documentText, pdfPageImage } from "./documents.js";
+import { DocumentReadError, documentFormat, documentText, pdfPageImage, TEXT_BUDGET } from "./documents.js";
 import { contactSheet, imageView, loadSharp, previewImage, VIEW_DETAILS } from "./images.js";
 import { isLottieSticker, mediaSeconds, stickerThumbnail, thumbnailOf } from "./messages.js";
 import { jpegSize, makePreview, videoFrame, videoFrames } from "./previews.js";
@@ -116,14 +116,25 @@ async function videoRendition(input: RenderInput): Promise<MediaRendition> {
 /**
  * A document's text from the first asked page until the budget, and for a
  * PDF a picture of that page: the layout, a signature, or for a scan with no
- * text layer, the only way to read it. The two are made side by side.
+ * text layer, the only way to read it. The page is drawn beside the text
+ * read, but only once the PDF's streams passed their check, and the drawing
+ * is stopped when the read finds the file hostile.
  */
 async function documentRendition(input: RenderInput, format: DocumentFormat): Promise<MediaRendition> {
   const pages = input.pages ?? { from: 1, to: null };
-  const [read, drawn] = await Promise.all([
-    documentText(format, input.buffer, pages).catch((err: unknown) => (err instanceof Error ? err : new Error("unreadable"))),
-    format === "pdf" ? pdfPageImage(input.buffer, pages.from, VIEW_DETAILS[input.detail].edge) : Promise.resolve(null),
-  ]);
+  let passed: (ok: boolean) => void = () => {};
+  const checked = new Promise<boolean>((resolve) => (passed = resolve));
+  const stop = new AbortController();
+  const drawing =
+    format === "pdf"
+      ? checked.then((ok) => (ok ? pdfPageImage(input.buffer, pages.from, VIEW_DETAILS[input.detail].edge, stop.signal) : null))
+      : Promise.resolve(null);
+  const read = await documentText(format, input.buffer, pages, TEXT_BUDGET, { onChecked: () => passed(true) }).catch((err: unknown) =>
+    err instanceof Error ? err : new Error("unreadable")
+  );
+  passed(false);
+  if (read instanceof DocumentReadError && read.hostile) stop.abort();
+  const drawn = await drawing;
   // Beside its text, the page is a look at the layout, made smaller so the whole answer still fits a hosted
   // client's tool result (text twice, once per block, plus the picture); a scan's page is all there is, at full budget.
   const hasText = !(read instanceof Error) && read.text !== "";

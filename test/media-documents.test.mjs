@@ -15,7 +15,7 @@ import { documentFormat, documentText } from "../dist/documents.js";
 import { ZipReader, ZIP_LIMITS } from "../dist/zip.js";
 import { which } from "../dist/transcribe/local.js";
 import { connectedService, schemaCheckedTools, textError } from "./helpers.mjs";
-import { pdfOf, zipOf } from "./media-fixtures.mjs";
+import { deflatedZeros, pdfOf, pdfWithFont, zipOf } from "./media-fixtures.mjs";
 
 const ANA = "40700000002@s.whatsapp.net";
 
@@ -102,6 +102,18 @@ test("a PDF's first asked page comes as a picture when a renderer is installed",
   const full = await send(pdfOf(Array.from({ length: 6 }, (_, p) => Array.from({ length: 40 }, (_, i) => `${p}.${i} ${line}`))), "application/pdf", "lung.pdf");
   const characters = full.content.reduce((sum, block) => sum + (block.text ?? block.data).length, 0) + JSON.stringify(full.structuredContent).length;
   assert.ok(characters < 150_000, `${characters} characters`);
+});
+
+test("a PDF compression bomb comes back as refused, with no page drawn and no memory spent", async (t) => {
+  const { send } = setup(t);
+  const before = process.memoryUsage.rss();
+  const result = await send(pdfWithFont(await deflatedZeros(200), "/Filter /FlateDecode"), "application/pdf", "bomb.pdf");
+  const out = result.structuredContent;
+  assert.equal(out.document_text, undefined);
+  assert.equal(out.view, undefined, "a refused file is not handed to the renderer either");
+  assert.equal(result.content.filter((block) => block.type === "image").length, 0);
+  assert.match(out.notes.join(" "), /could not be read: a stream in it unpacks to more than 64 MB \(a compression bomb\)/);
+  assert.ok(process.memoryUsage.rss() - before < 200_000_000, "nothing unpacked it whole");
 });
 
 test("a scanned PDF has no text layer: the answer says the page picture is what to read", async (t) => {

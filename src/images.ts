@@ -13,17 +13,14 @@
  * any background) and sized to a byte budget, so its base64 fits the tool
  * results of hosted clients (claude.ai keeps about 150,000 characters).
  */
-import { execFile } from "node:child_process";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { promisify } from "node:util";
 import type { Sharp, SharpOptions } from "sharp";
 import { log } from "./logger.js";
 import { makePreview, PREVIEW_MAX_EDGE } from "./previews.js";
+import { HELPER_RSS_BYTES, helperSlots, runNative } from "./native-run.js";
 import { which } from "./transcribe/local.js";
-
-const run = promisify(execFile);
 
 type SharpFactory = (input?: Buffer | SharpOptions, options?: SharpOptions) => Sharp;
 
@@ -250,16 +247,18 @@ async function heicToJpeg(input: Buffer): Promise<Buffer | null> {
   if (process.platform !== "darwin") return null;
   const sips = which("sips");
   if (sips === null) return null;
-  const dir = await mkdtemp(join(tmpdir(), "wazap-heic-"));
-  try {
-    const source = join(dir, "in.heic");
-    const output = join(dir, "out.jpg");
-    await writeFile(source, input, { mode: 0o600 });
-    await run(sips, ["-s", "format", "jpeg", source, "--out", output], { timeout: SIPS_TIMEOUT_MS, windowsHide: true });
-    return await readFile(output);
-  } catch {
-    return null;
-  } finally {
-    await rm(dir, { recursive: true, force: true });
-  }
+  return helperSlots.run(async () => {
+    const dir = await mkdtemp(join(tmpdir(), "wazap-heic-"));
+    try {
+      const source = join(dir, "in.heic");
+      const output = join(dir, "out.jpg");
+      await writeFile(source, input, { mode: 0o600 });
+      await runNative(sips, ["-s", "format", "jpeg", source, "--out", output], { timeoutMs: SIPS_TIMEOUT_MS, maxRssBytes: HELPER_RSS_BYTES });
+      return await readFile(output);
+    } catch {
+      return null;
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
 }
