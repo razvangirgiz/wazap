@@ -202,7 +202,10 @@ export function legacyReadTools(current: readonly ToolDef[]): ToolDef[] {
       account_id: accounts.length === 1 ? accounts[0]!.account_id : null,
       sync: accounts.some((entry) => entry.sync !== "done") ? "partial" : "done" });
   };
+  // The old names open one message, as they always did: message_id is theirs to give, and get_media's batch is not.
+  const oneMessage = ({ message_ids: _several, ...schema }: z.ZodRawShape): z.ZodRawShape => ({ ...schema, message_id: z.string().min(5) });
   const transcribe = alias("transcribe_audio", "get_media");
+  transcribe.schema = oneMessage(transcribe.schema);
   delete transcribe.outputSchema;
   transcribe.handler = async (args, ctx) => {
     const answer = await canonical("get_media").handler(args, ctx);
@@ -212,6 +215,7 @@ export function legacyReadTools(current: readonly ToolDef[]): ToolDef[] {
     return { ...answer, structuredContent: { ...transcript, message_id: args.message_id, account_id: answer.structuredContent?.account_id } };
   };
   const download = alias("download_media", "get_media");
+  download.schema = oneMessage(download.schema);
   delete download.outputSchema;
   download.handler = async (args, ctx) => {
     const messageId = args.message_id as string;

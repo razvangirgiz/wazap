@@ -42,7 +42,7 @@ The user calling someone back already closes their ask, so it is not in `waiting
 
 ### Voice notes
 
-A voice note with a transcript is text: `catch_up` quotes the transcript, and you triage it on what was said. One the footer lists under `voice_untranscribed` was never transcribed, so you do not know what is in it and must not infer it from who sent it. `get_media(message_id)` reads one on demand. If it comes back with
+A voice note with a transcript is text: `catch_up` quotes the transcript, and you triage it on what was said. One the footer lists under `voice_untranscribed` was never transcribed, so you do not know what is in it and must not infer it from who sent it. `get_media(message_id)` reads one on demand, and `get_media(message_ids: [...])` up to eight in one call. If it comes back with
 `transcript_unavailable` instead of a `transcript`, gather every such note into one closing line:
 
 *3 voice notes not transcribed (Ana 0:42, Dan 1:15, Bloc 12 0:08). Turn it on with `wazap config transcribe`.*

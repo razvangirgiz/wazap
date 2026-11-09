@@ -28,7 +28,7 @@ The 23, each with what it requires: `learn` (), `get_status` (),
 `list_contacts` (), `link_account` (`phone`), `search` (`query`), `get_group_info` (`group_id`),
 `confirm_send` (`draft_id`), `manage_group` (`action`),
 `read_messages` (`chat_id`), `remember` (`chat_id`), `get_message`
-(`message_id`), `get_media` (`message_id`), `send_message` (`chat_id`, `text`),
+(`message_id`), `get_media` (`message_id`, or `message_ids` instead), `send_message` (`chat_id`, `text`),
 `edit_message` (`message_id`, `text`), `react_to_message` (`message_id`,
 `emoji`), `delete_message` (`message_id`, `for_everyone`), `manage_chat`
 (`chat_id`, `action`), `scheduled_messages` (), `reminder` ().
