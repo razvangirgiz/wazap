@@ -12,7 +12,7 @@ import { join } from "node:path";
 import type { WAMessage, WASocket } from "baileys";
 import type { AccountRecord } from "../accounts.js";
 import type { Config } from "../config.js";
-import { orCancelled } from "../cancel.js";
+import { SharedRun, throwIfCancelled } from "../cancel.js";
 import type { AccountDb, StoredMessage, UpsertResult } from "../db/index.js";
 import { asWazapError, WazapError } from "../errors.js";
 import { isStatusJid } from "../ids.js";
@@ -135,7 +135,7 @@ export class AccountVoice {
   /** Cancels this account's uploads and whisper.cpp runs: it is being removed. */
   private readonly transcribeAbort = new AbortController();
   /** Transcriptions under way, so one recording is never uploaded twice at once. */
-  private readonly transcribing = new Map<string, Promise<TranscribeResult>>();
+  private readonly transcribing = new Map<string, SharedRun<TranscribeResult>>();
 
   constructor(
     private readonly host: VoiceHost,
@@ -202,19 +202,23 @@ export class AccountVoice {
 
       // The transcript is only written once a provider has run and been paid, so the
       // auto queue and a tool call asking for the same message at the same
-      // moment would otherwise upload it twice. They share the first run.
-      // A caller that cancels stops waiting on a run someone else started; the run goes on for them.
+      // moment would otherwise upload it twice. They share the first run, and
+      // each stops waiting on its own cancel. The download stops only when every
+      // caller has cancelled; a provider, once started, runs to its end and its
+      // transcript is kept for the next ask.
+      throwIfCancelled(opts.signal);
       const running = this.transcribing.get(message.sid);
-      if (running) return await orCancelled(running, opts.signal);
+      if (running !== undefined && !running.abandoned) return await running.join(opts.signal);
       // Only a run spends the caller's budget: what is on hand, or cannot run, cost nothing.
       opts.limit?.take();
-      const work = this.runTranscribe(message.sid, raw, info, settings, language, opts.signal);
-      this.transcribing.set(message.sid, work);
-      try {
-        return await work;
-      } finally {
-        this.transcribing.delete(message.sid);
-      }
+      const sid = message.sid;
+      const run = new SharedRun<TranscribeResult>((signal, commit) => this.runTranscribe(sid, raw, info, settings, language, signal, commit));
+      this.transcribing.set(sid, run);
+      const forget = (): void => {
+        if (this.transcribing.get(sid) === run) this.transcribing.delete(sid);
+      };
+      void run.work.then(forget, forget);
+      return await run.join(opts.signal);
     });
   }
 
@@ -224,12 +228,13 @@ export class AccountVoice {
     info: { mime: string; size?: number; filename?: string },
     settings: TranscribeSettings,
     language?: string,
-    signal?: AbortSignal
+    signal?: AbortSignal,
+    commit: () => void = () => {}
   ): Promise<TranscribeResult> {
     // Readiness is never ok while no provider is configured.
     const provider = settings.provider!;
     this.views.messageOrThrow(messageId);
-    // A cancelled caller stops the download; a provider already running is paid for and finishes, its transcript kept.
+    // The download stops once every caller has cancelled; nothing has been paid for yet.
     const buffer =
       (await this.host.keptMedia(messageId, raw)) ?? (await this.host.mediaBuffer(this.host.ensureConnected(), messageId, raw, signal));
     this.views.messageOrThrow(messageId);
@@ -241,6 +246,8 @@ export class AccountVoice {
       const file = join(dir, mediaFilename(info));
       await writeFile(file, buffer, { mode: FILE_MODE });
       this.views.messageOrThrow(messageId);
+      // From here the provider runs, is paid for, and finishes whoever still waits.
+      commit();
       transcript = await this.host.transcriber(settings, file, {
         ...(language === undefined ? {} : { language }),
         signal: this.transcribeAbort.signal,

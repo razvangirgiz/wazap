@@ -737,7 +737,11 @@ export interface TranscribeOptions {
   limit?: { take(): void };
   /** Only a transcript on hand; none on hand is TRANSCRIBE_UNAVAILABLE, and no provider runs. */
   cachedOnly?: boolean;
-  /** The caller stops waiting when it aborts: the download stops, a run another call started goes on without it. */
+  /**
+   * The caller stops waiting when it aborts. A run several callers share goes
+   * on for the rest; its download stops once every one has aborted, and a
+   * provider already running finishes, its transcript kept.
+   */
   signal?: AbortSignal;
 }
 

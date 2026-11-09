@@ -1,7 +1,7 @@
 /**
  * A tool call the client cancels, or whose session closes, stops waiting:
  * wait_for_messages answers at once, a media download stops at its next
- * chunk, and a transcription another call started goes on without this one.
+ * chunk, and a run several callers share goes on until every one has left.
  * The in-flight slot is given back when the handler settles, never before.
  */
 import { test } from "node:test";
@@ -11,7 +11,7 @@ import { setImmediate as turn } from "node:timers/promises";
 import { z } from "zod";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
-import { orCancelled } from "../dist/cancel.js";
+import { orCancelled, SharedRun } from "../dist/cancel.js";
 import { startHttpEndpoint } from "../dist/server.js";
 import { createToolRegistrar } from "../dist/tool-runtime.js";
 import { registerTools } from "../dist/tools.js";
@@ -120,6 +120,66 @@ test("a caller that cancels stops waiting on a run another call started, which g
   await assert.rejects(mine, /cancelled/);
   finish("transcript");
   assert.equal(await theirs, "transcript");
+});
+
+/** A shared run whose work the test finishes, and whose stop it can see. */
+function sharedRun() {
+  let finish;
+  let commit;
+  let signal;
+  const run = new SharedRun((runSignal, runCommit) => {
+    signal = runSignal;
+    commit = runCommit;
+    return new Promise((resolve, reject) => {
+      finish = resolve;
+      runSignal.addEventListener("abort", () => reject(runSignal.reason), { once: true });
+    });
+  });
+  return { run, finish: (value) => finish(value), commit: () => commit(), signal: () => signal };
+}
+
+test("a shared run stops only when every caller has left, never while one without a signal waits", async () => {
+  const lone = sharedRun();
+  const cancel = new AbortController();
+  const mine = lone.run.join(cancel.signal);
+  cancel.abort();
+  await assert.rejects(mine, /cancelled/);
+  assert.equal(lone.signal().aborted, true);
+  assert.equal(lone.run.abandoned, true);
+  await assert.rejects(lone.run.work, /cancelled/);
+
+  const pinned = sharedRun();
+  const leaving = new AbortController();
+  const theirs = pinned.run.join(undefined);
+  void pinned.run.join(leaving.signal).catch(() => {});
+  leaving.abort();
+  assert.equal(pinned.signal().aborted, false, "the queue's caller has no signal and keeps the run");
+  pinned.finish("transcript");
+  assert.equal(await theirs, "transcript");
+
+  const already = sharedRun();
+  await assert.rejects(already.run.join(AbortSignal.abort()), /cancelled/);
+  assert.equal(already.run.abandoned, true, "a caller that arrives cancelled leaves at once");
+});
+
+test("past its commit a shared run goes on when every caller leaves, and a commit after they left throws", async () => {
+  const committed = sharedRun();
+  const cancel = new AbortController();
+  const mine = committed.run.join(cancel.signal);
+  committed.commit();
+  cancel.abort();
+  await assert.rejects(mine, /cancelled/);
+  assert.equal(committed.signal().aborted, false);
+  assert.equal(committed.run.abandoned, false, "a new caller joins it rather than paying twice");
+  committed.finish("transcript");
+  assert.equal(await committed.run.join(undefined), "transcript");
+
+  const late = sharedRun();
+  const gone = new AbortController();
+  void late.run.join(gone.signal).catch(() => {});
+  gone.abort();
+  assert.throws(() => late.commit(), /cancelled/);
+  await assert.rejects(late.run.work, /cancelled/);
 });
 
 const wa = { getStatus: () => ({ status: "connected", status_since: new Date().toISOString() }) };

@@ -83,8 +83,11 @@ across the process, including stdio/bridges. Slots remain held until work settle
 not merely until a client disconnects. A call the client cancels
 (`notifications/cancelled`), or one whose session is closed, stops waiting:
 `wait_for_messages` answers at once, a media download stops at its next chunk,
-and a transcription another call started goes on without it. Its slot comes
-back as soon as it has stopped. A disconnect alone is not a cancel, as the MCP
+and a transcription stops being waited on. A transcription several callers
+share (two sessions, or a call and the auto queue) goes on for the others; its
+download stops only when every one of them has cancelled, and a provider
+already running finishes and keeps its transcript. Its slot comes back as soon
+as it has stopped. A disconnect alone is not a cancel, as the MCP
 specification says. Retry once after pending work completes.
 
 Answers to a POST are gzip-compressed when the client's `Accept-Encoding`

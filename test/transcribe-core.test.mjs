@@ -175,6 +175,107 @@ test("two callers wanting the same recording share one upload", async () => {
   await svc.stop();
 });
 
+/** A download that takes `ms` and stops when its signal aborts, the way WhatsApp's stops at its next chunk. */
+function slowDownload(svc, ms) {
+  const seen = { signals: [], stopped: 0 };
+  svc.mediaBuffer = (_sock, _id, _raw, _maxBytes, signal) => {
+    seen.signals.push(signal);
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => resolve(Buffer.from("not really an ogg file")), ms);
+      signal?.addEventListener(
+        "abort",
+        () => {
+          clearTimeout(timer);
+          seen.stopped++;
+          reject(signal.reason);
+        },
+        { once: true }
+      );
+    });
+  };
+  return seen;
+}
+
+const cancelled = (err) => err.code === "TIMEOUT" && /cancelled/.test(err.message);
+
+test("a caller that cancels a run others share leaves it going: the download goes on and they all get the transcript", async () => {
+  const { svc, sock } = serviceWith(MANUAL);
+  const provider = mockProvider({ delayMs: 5 });
+  svc.transcriber = provider.transcribe;
+  const download = slowDownload(svc, 150);
+  deliver(sock, [voiceNote("VC1", { seconds: 6 })]);
+
+  const cancel = new AbortController();
+  const starter = svc.transcribeAudio(sidOf("VC1"), undefined, { signal: cancel.signal });
+  await sleep(20);
+  // Another session's get_media, still waiting, and the auto queue, which never cancels.
+  const other = new AbortController();
+  const tool = svc.transcribeAudio(sidOf("VC1"), undefined, { signal: other.signal });
+  const queue = svc.transcribeAudio(sidOf("VC1"));
+  await sleep(20);
+  const at = Date.now();
+  cancel.abort();
+  await assert.rejects(starter, cancelled);
+  assert.ok(Date.now() - at < 100, "the caller that cancelled stops waiting at once");
+  assert.equal((await tool).text, "salut");
+  assert.equal((await queue).text, "salut");
+  assert.equal(download.stopped, 0, "the shared download was not stopped");
+  assert.equal(provider.state.calls, 1);
+  await svc.stop();
+});
+
+test("once every caller of a run has cancelled, its download stops, nothing is paid for, and the next ask starts afresh", async () => {
+  const { svc, sock } = serviceWith(MANUAL);
+  const provider = mockProvider({ delayMs: 5 });
+  svc.transcriber = provider.transcribe;
+  const download = slowDownload(svc, 300);
+  deliver(sock, [voiceNote("VC2", { seconds: 6 })]);
+
+  const first = new AbortController();
+  const second = new AbortController();
+  const a = svc.transcribeAudio(sidOf("VC2"), undefined, { signal: first.signal });
+  await sleep(20);
+  const b = svc.transcribeAudio(sidOf("VC2"), undefined, { signal: second.signal });
+  await sleep(20);
+  first.abort();
+  await assert.rejects(a, cancelled);
+  assert.equal(download.stopped, 0, "one caller is still waiting");
+  second.abort();
+  await assert.rejects(b, cancelled);
+  await sleep(10);
+  assert.equal(download.stopped, 1, "the last caller gone stops the download");
+  assert.equal(provider.state.calls, 0);
+
+  const again = await svc.transcribeAudio(sidOf("VC2"));
+  assert.equal(again.text, "salut");
+  assert.equal(download.signals.length, 2, "a fresh run, not the abandoned one");
+  assert.equal(provider.state.calls, 1);
+  await svc.stop();
+});
+
+test("a caller that cancels while the provider runs stops waiting at once, and the transcript is kept", async () => {
+  const { svc, sock } = serviceWith(MANUAL);
+  const provider = mockProvider({ delayMs: 400 });
+  svc.transcriber = provider.transcribe;
+  slowDownload(svc, 1);
+  deliver(sock, [voiceNote("VC3", { seconds: 6 })]);
+
+  const cancel = new AbortController();
+  const started = Date.now();
+  const call = svc.transcribeAudio(sidOf("VC3"), undefined, { signal: cancel.signal });
+  while (provider.state.running === 0 && Date.now() - started < 2_000) await sleep(5);
+  assert.equal(provider.state.running, 1);
+  cancel.abort();
+  await assert.rejects(call, cancelled);
+  assert.ok(Date.now() - started < 300, `settled ${Date.now() - started} ms in, before the provider's 400 ms`);
+  // Asked again while the provider still runs: it joins that run, never a second upload.
+  const later = await svc.transcribeAudio(sidOf("VC3"));
+  assert.equal(later.text, "salut");
+  assert.equal(provider.state.calls, 1);
+  assert.equal((await svc.transcribeAudio(sidOf("VC3"))).cached, true);
+  await svc.stop();
+});
+
 test("a transcript survives a restart, and the newest one for a message is the one kept", async () => {
   const { svc, sock } = serviceWith(MANUAL, { persistHistory: true });
   const provider = stub(svc, mockProvider());
