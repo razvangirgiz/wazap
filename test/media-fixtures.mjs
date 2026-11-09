@@ -1,0 +1,76 @@
+/**
+ * Media files written in code for the media tests, so no binary sits in the
+ * repository: a PDF with chosen text per page, and a ZIP (the container of
+ * Office and OpenDocument files) that can lie about its sizes.
+ */
+import { crc32, deflateRawSync } from "node:zlib";
+
+/** A valid PDF with one page per entry of `pages`, each page's lines drawn as text (none: a page with no text layer). */
+export function pdfOf(pages) {
+  const escape = (text) => text.replace(/[\\()]/g, (ch) => `\\${ch}`);
+  const objects = ["<< /Type /Catalog /Pages 2 0 R >>", null, "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>"];
+  const kids = [];
+  for (const lines of pages) {
+    const stream = lines.length === 0
+      ? "0 0 1 rg 72 600 200 100 re f"
+      : ["BT", "/F1 12 Tf", "72 760 Td", ...lines.flatMap((line, i) => (i === 0 ? [`(${escape(line)}) Tj`] : ["0 -16 Td", `(${escape(line)}) Tj`])), "ET"].join("\n");
+    objects.push(`<< /Length ${Buffer.byteLength(stream, "latin1")} >>\nstream\n${stream}\nendstream`);
+    const contents = objects.length;
+    objects.push(`<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents ${contents} 0 R /Resources << /Font << /F1 3 0 R >> >> >>`);
+    kids.push(`${objects.length} 0 R`);
+  }
+  objects[1] = `<< /Type /Pages /Kids [${kids.join(" ")}] /Count ${pages.length} >>`;
+  let body = "%PDF-1.4\n";
+  const offsets = [];
+  objects.forEach((object, index) => {
+    offsets.push(Buffer.byteLength(body, "latin1"));
+    body += `${index + 1} 0 obj\n${object}\nendobj\n`;
+  });
+  const xref = Buffer.byteLength(body, "latin1");
+  body += `xref\n0 ${objects.length + 1}\n0000000000 65535 f \n`;
+  for (const offset of offsets) body += `${String(offset).padStart(10, "0")} 00000 n \n`;
+  body += `trailer\n<< /Size ${objects.length + 1} /Root 1 0 R >>\nstartxref\n${xref}\n%%EOF\n`;
+  return Buffer.from(body, "latin1");
+}
+
+/** A ZIP of `files` ({ name: string | Buffer }), deflated; `lie` overrides an entry's stated size. */
+export function zipOf(files, { lie = {}, store = false } = {}) {
+  const locals = [];
+  const centrals = [];
+  let offset = 0;
+  for (const [name, content] of Object.entries(files)) {
+    const data = Buffer.isBuffer(content) ? content : Buffer.from(content, "utf8");
+    const packed = store ? data : deflateRawSync(data);
+    const nameBytes = Buffer.from(name, "utf8");
+    const size = lie[name] ?? data.length;
+    const local = Buffer.alloc(30);
+    local.writeUInt32LE(0x04034b50, 0);
+    local.writeUInt16LE(20, 4);
+    local.writeUInt16LE(store ? 0 : 8, 8);
+    local.writeUInt32LE(crc32(data), 14);
+    local.writeUInt32LE(packed.length, 18);
+    local.writeUInt32LE(size, 22);
+    local.writeUInt16LE(nameBytes.length, 26);
+    const central = Buffer.alloc(46);
+    central.writeUInt32LE(0x02014b50, 0);
+    central.writeUInt16LE(20, 4);
+    central.writeUInt16LE(20, 6);
+    central.writeUInt16LE(store ? 0 : 8, 10);
+    central.writeUInt32LE(crc32(data), 16);
+    central.writeUInt32LE(packed.length, 20);
+    central.writeUInt32LE(size, 24);
+    central.writeUInt16LE(nameBytes.length, 28);
+    central.writeUInt32LE(offset, 42);
+    locals.push(local, nameBytes, packed);
+    centrals.push(central, nameBytes);
+    offset += 30 + nameBytes.length + packed.length;
+  }
+  const directory = Buffer.concat(centrals);
+  const end = Buffer.alloc(22);
+  end.writeUInt32LE(0x06054b50, 0);
+  end.writeUInt16LE(Object.keys(files).length, 8);
+  end.writeUInt16LE(Object.keys(files).length, 10);
+  end.writeUInt32LE(directory.length, 12);
+  end.writeUInt32LE(offset, 16);
+  return Buffer.concat([...locals, directory, end]);
+}

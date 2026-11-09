@@ -7,7 +7,9 @@
  * database, the socket or the data dir.
  */
 import type { WAMessage } from "baileys";
-import { contactSheet, imageView, loadSharp, previewImage } from "./images.js";
+import type { DocumentFormat } from "./document-text.js";
+import { documentFormat, documentText, pdfPageImage } from "./documents.js";
+import { contactSheet, imageView, loadSharp, previewImage, VIEW_DETAILS } from "./images.js";
 import { isLottieSticker, mediaSeconds, stickerThumbnail, thumbnailOf } from "./messages.js";
 import { jpegSize, makePreview, videoFrame, videoFrames } from "./previews.js";
 import type { MediaDetail, MediaPicture, MediaRendition, PageRange } from "./wa-types.js";
@@ -32,6 +34,8 @@ export async function renderMedia(input: RenderInput): Promise<MediaRendition> {
   if (mime.startsWith("audio/")) {
     return { kind: "none", note: "A recording: only its transcript can reach you; there is nothing to look at." };
   }
+  const format = documentFormat(mime, input.filename, input.buffer);
+  if (format !== null) return documentRendition(input, format);
   return { kind: "none", note: `No view or text is made of ${mime}: only its facts.` };
 }
 
@@ -107,6 +111,46 @@ async function videoRendition(input: RenderInput): Promise<MediaRendition> {
   const shipped = await shippedPicture(input.raw);
   if (shipped !== null) return { kind: "frame", ...shipped, ...duration };
   return { kind: "none", note: "No frame of this video could be taken here (ffmpeg is not installed), and it shipped no thumbnail." };
+}
+
+/**
+ * A document's text from the first asked page until the budget, and for a
+ * PDF a picture of that page: the layout, a signature, or for a scan with no
+ * text layer, the only way to read it. The two are made side by side.
+ */
+async function documentRendition(input: RenderInput, format: DocumentFormat): Promise<MediaRendition> {
+  const pages = input.pages ?? { from: 1, to: null };
+  const [read, page] = await Promise.all([
+    documentText(format, input.buffer, pages).catch((err: unknown) => (err instanceof Error ? err : new Error("unreadable"))),
+    format === "pdf" ? pdfPicture(input.buffer, pages.from, input.detail) : Promise.resolve(null),
+  ]);
+  const page_image = page === null ? {} : { page_image: { ...page, page: pages.from } };
+  if (read instanceof Error) {
+    return { kind: "document", format, text: null, truncated: false, ...page_image, note: `Its text could not be read: ${read.message}.` };
+  }
+  const note = read.scanned
+    ? page === null
+      ? "A scanned PDF with no text layer, and nothing here renders its pages (install poppler for pdftoppm)."
+      : `A scanned PDF with no text layer: page ${pages.from} is attached as an image to read; pages picks another.`
+    : read.note;
+  return {
+    kind: "document",
+    format,
+    text: read.text === "" ? null : read.text,
+    truncated: read.truncated,
+    ...(read.pages_total === undefined ? {} : { pages_total: read.pages_total }),
+    ...(read.pages === undefined || read.text === "" ? {} : { pages: read.pages }),
+    ...page_image,
+    ...(note === undefined ? {} : { note }),
+  };
+}
+
+/** A PDF page drawn by poppler or Quick Look, then sized like any image view. */
+async function pdfPicture(pdf: Buffer, page: number, detail: MediaDetail): Promise<MediaPicture | null> {
+  const drawn = await pdfPageImage(pdf, page, VIEW_DETAILS[detail].edge);
+  if (drawn === null) return null;
+  const view = await imageView(drawn, detail, "image/jpeg");
+  return view === null ? null : { jpeg: view.data, width: view.width, height: view.height };
 }
 
 /** A Lottie sticker is an animation in vector form: its thumbnail, when it shipped one, is all there is to see. */

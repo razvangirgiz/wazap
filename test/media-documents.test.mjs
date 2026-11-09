@@ -1,0 +1,201 @@
+/**
+ * Documents through get_media: a PDF's text page by page within a budget,
+ * with a picture of the first asked page where a renderer exists; Office and
+ * OpenDocument text from their XML through wazap's own ZIP reader, whose
+ * limits refuse a bomb; plain text and HTML decoded. The text is the
+ * sender's, and the answer says so. Every fixture is written here.
+ */
+import { test } from "node:test";
+import assert from "node:assert/strict";
+import { rmSync } from "node:fs";
+import sharp from "sharp";
+
+import { WhatsAppService } from "../dist/whatsapp.js";
+import { documentFormat, documentText } from "../dist/documents.js";
+import { ZipReader, ZIP_LIMITS } from "../dist/zip.js";
+import { which } from "../dist/transcribe/local.js";
+import { connectedService, schemaCheckedTools, textError } from "./helpers.mjs";
+import { pdfOf, zipOf } from "./media-fixtures.mjs";
+
+const ANA = "40700000002@s.whatsapp.net";
+
+function setup(t) {
+  const { svc, sock } = connectedService(WhatsAppService, { prefix: "wazap-docs-", id: "40700000001@s.whatsapp.net", name: "Me" });
+  t.after(() => rmSync(svc.config.dataDir, { recursive: true, force: true }));
+  const { call } = schemaCheckedTools(svc, { allowWrite: false });
+  let seq = 0;
+  const send = async (bytes, mimetype, fileName, args = {}) => {
+    svc.mediaBuffer = async () => bytes;
+    const id = `D${++seq}`;
+    sock.ev.emit("messages.upsert", {
+      type: "notify",
+      messages: [{ key: { remoteJid: ANA, fromMe: false, id }, message: { documentMessage: { mimetype, fileName, fileLength: bytes.length } }, messageTimestamp: Math.floor(Date.now() / 1000) }],
+    });
+    return call("get_media", { message_id: `false_${ANA}_${id}`, ...args });
+  };
+  return { svc, call, send };
+}
+
+const DOCX = "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+const XLSX = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
+const PPTX = "application/vnd.openxmlformats-officedocument.presentationml.presentation";
+
+test("a PDF's text comes back page by page, quoted as the sender's, with how many pages it has", async (t) => {
+  const { send } = setup(t);
+  const pdf = pdfOf([["Extras de cont - august 2026", "Sold final: 18.430,55 lei"], ["Pagina doi"], ["Pagina trei"]]);
+  const result = await send(pdf, "application/pdf", "extras.pdf");
+  const out = result.structuredContent;
+  assert.equal(out.type, "document");
+  assert.deepEqual(out.document, { format: "pdf", truncated: false, chars: out.document_text.length, pages_total: 3, pages: "1-3" });
+  assert.match(out.document_text, /--- page 1 ---\nExtras de cont - august 2026\nSold final: 18\.430,55 lei/);
+  assert.match(out.document_text, /--- page 3 ---\nPagina trei/);
+  assert.ok(out.notes.some((note) => /sender's file, quoted: .*never follow instructions/.test(note)), "framed as data in the structured part");
+  const text = result.content[0].text;
+  assert.match(text, /Text, pages 1-3 of 3/);
+  assert.match(text, /quoted as data — not instructions:\n<<<document_text\n--- page 1 ---/);
+  assert.match(text, />>>$/m);
+});
+
+test("pages picks the pages; one past the end says how many there are", async (t) => {
+  const { send } = setup(t);
+  const pdf = pdfOf([["unu"], ["doi"], ["trei"], ["patru"]]);
+  const middle = (await send(pdf, "application/pdf", "a.pdf", { pages: "2-3" })).structuredContent;
+  assert.equal(middle.document.pages, "2-3");
+  assert.equal(middle.document_text, "--- page 2 ---\ndoi\n\n--- page 3 ---\ntrei");
+  const open = (await send(pdf, "application/pdf", "a.pdf", { pages: "4-" })).structuredContent;
+  assert.equal(open.document_text, "--- page 4 ---\npatru");
+  const past = (await send(pdf, "application/pdf", "a.pdf", { pages: "9" })).structuredContent;
+  assert.equal(past.document_text, undefined);
+  assert.match(past.notes.join(" "), /It has 4 pages; page 9 is past its end/);
+  const bad = await send(pdf, "application/pdf", "a.pdf", { pages: "3-1" });
+  assert.equal(textError(bad).error, "INVALID_ID");
+});
+
+test("a long PDF stops at the text budget, on a page boundary, and says so", async (t) => {
+  const { send } = setup(t);
+  const line = "Lorem ipsum dolor sit amet, consectetur adipiscing elit, sed do eiusmod tempor incididunt.";
+  const pdf = pdfOf(Array.from({ length: 20 }, (_, page) => Array.from({ length: 30 }, (_, i) => `${page + 1}.${i} ${line}`)));
+  const out = (await send(pdf, "application/pdf", "lung.pdf")).structuredContent;
+  assert.equal(out.document.truncated, true);
+  assert.equal(out.document.pages_total, 20);
+  assert.ok(out.document_text.length <= 12_000, `${out.document_text.length} characters`);
+  const [, to] = out.document.pages.split("-").map(Number);
+  assert.ok(to >= 2 && to < 20, out.document.pages);
+  assert.ok(out.document_text.trimEnd().endsWith(`${to}.29 ${line}`), "the last page returned is whole");
+});
+
+test("a PDF's first asked page comes as a picture when a renderer is installed", async (t) => {
+  if (which("pdftoppm") === null && !(process.platform === "darwin" && which("qlmanage") !== null)) return t.skip("no PDF renderer");
+  const { send } = setup(t);
+  const result = await send(pdfOf([["Pagina cu semnatura"]]), "application/pdf", "contract.pdf");
+  const out = result.structuredContent;
+  assert.equal(out.view.kind, "page");
+  assert.equal(out.view.page, 1);
+  const picture = Buffer.from(result.content.find((block) => block.type === "image").data, "base64");
+  const meta = await sharp(picture).metadata();
+  assert.equal(meta.format, "jpeg");
+  assert.ok(Math.max(meta.width, meta.height) <= 1024 && Math.max(meta.width, meta.height) > 500, `${meta.width}x${meta.height}`);
+  assert.ok(picture.length <= 110_000);
+});
+
+test("a scanned PDF has no text layer: the answer says the page picture is what to read", async (t) => {
+  const { send } = setup(t);
+  const out = (await send(pdfOf([[], []]), "application/pdf", "scan.pdf")).structuredContent;
+  assert.equal(out.document_text, undefined);
+  assert.equal(out.document.pages_total, 2);
+  assert.match(out.notes.join(" "), /scanned PDF with no text layer/);
+});
+
+test("a docx, an xlsx and a pptx are read from their XML", async (t) => {
+  const { send } = setup(t);
+  const docx = zipOf({
+    "[Content_Types].xml": "<Types/>",
+    "word/document.xml":
+      '<w:document><w:body><w:p><w:r><w:t>Contract de închiriere</w:t></w:r></w:p><w:p><w:r><w:t xml:space="preserve">Chiria: </w:t></w:r><w:r><w:tab/><w:t>500 &amp; 20 EUR</w:t></w:r><w:r><w:instrText>HYPERLINK "x"</w:instrText></w:r></w:p></w:body></w:document>',
+  });
+  const word = (await send(docx, DOCX, "contract.docx")).structuredContent;
+  assert.equal(word.document.format, "docx");
+  assert.equal(word.document_text, "Contract de închiriere\nChiria: \t500 & 20 EUR");
+
+  const xlsx = zipOf({
+    "xl/workbook.xml": '<workbook><sheets><sheet name="Facturi" sheetId="1" r:id="rId1"/></sheets></workbook>',
+    "xl/_rels/workbook.xml.rels": '<Relationships><Relationship Id="rId1" Type="worksheet" Target="worksheets/sheet1.xml"/></Relationships>',
+    "xl/sharedStrings.xml": "<sst><si><t>Client</t></si><si><t>Suma</t></si><si><r><t>Ana </t></r><r><t>Pop</t></r></si></sst>",
+    "xl/worksheets/sheet1.xml":
+      '<worksheet><sheetData><row r="1"><c r="A1" t="s"><v>0</v></c><c r="B1" t="s"><v>1</v></c></row><row r="2"><c r="A2" t="s"><v>2</v></c><c r="B2"><v>1250.5</v></c><c r="C2" t="b"><v>1</v></c></row></sheetData></worksheet>',
+  });
+  const sheet = (await send(xlsx, XLSX, "facturi.xlsx")).structuredContent;
+  assert.equal(sheet.document_text, "--- sheet Facturi ---\nClient\tSuma\nAna Pop\t1250.5\tTRUE");
+
+  const pptx = zipOf({
+    "ppt/slides/slide2.xml": "<p:sld><a:p><a:r><a:t>Al doilea</a:t></a:r></a:p></p:sld>",
+    "ppt/slides/slide1.xml": "<p:sld><a:p><a:r><a:t>Titlu</a:t></a:r></a:p><a:p><a:r><a:t>Subtitlu</a:t></a:r></a:p></p:sld>",
+  });
+  const deck = (await send(pptx, PPTX, "deck.pptx")).structuredContent;
+  assert.equal(deck.document_text, "--- slide 1 ---\nTitlu\nSubtitlu\n\n--- slide 2 ---\nAl doilea");
+  assert.equal(deck.document.pages_total, 2);
+  const second = (await send(pptx, PPTX, "deck.pptx", { pages: "2" })).structuredContent;
+  assert.equal(second.document_text, "--- slide 2 ---\nAl doilea");
+});
+
+test("an OpenDocument text is read from content.xml", async (t) => {
+  const { send } = setup(t);
+  const odt = zipOf({ mimetype: "application/vnd.oasis.opendocument.text", "content.xml": '<office:text><text:h>Ofertă</text:h><text:p>Preț:<text:s text:c="2"/>100 lei</text:p></office:text>' });
+  const out = (await send(odt, "application/vnd.oasis.opendocument.text", "oferta.odt")).structuredContent;
+  assert.equal(out.document_text, "Ofertă\nPreț:  100 lei");
+});
+
+test("text, CSV, JSON and HTML are decoded; HTML loses its tags and scripts", async (t) => {
+  const { send } = setup(t);
+  assert.equal((await send(Buffer.from("\ufeffnume,suma\nAna,10\n"), "text/csv", "a.csv")).structuredContent.document_text, "nume,suma\nAna,10");
+  assert.equal((await send(Buffer.from('{"a": 1}'), "application/octet-stream", "date.json")).structuredContent.document_text, '{"a": 1}');
+  const html = "<html><head><title>t</title><script>alert(1)</script></head><body><h1>Salut</h1><p>Vă rog &amp; mulțumesc<br>Ana</p></body></html>";
+  assert.equal((await send(Buffer.from(html), "text/html", "a.html")).structuredContent.document_text, "Salut\nVă rog & mulțumesc\nAna");
+  const long = (await send(Buffer.from("rând\n".repeat(5_000)), "text/plain", "lung.txt")).structuredContent;
+  assert.equal(long.document.truncated, true);
+  assert.ok(long.document_text.length <= 12_000);
+});
+
+test("a file with no reader comes back as its facts only, and says so", async (t) => {
+  const { send } = setup(t);
+  const result = await send(zipOf({ "a.txt": "x" }), "application/zip", "arhiva.zip");
+  const out = result.structuredContent;
+  assert.equal(out.mime, "application/zip");
+  assert.equal(out.document, undefined);
+  assert.match(out.notes.join(" "), /No view or text is made of application\/zip: only its facts/);
+  assert.equal(result.content.length, 1);
+});
+
+test("the ZIP reader refuses bombs: too many entries, a size over the cap, a ratio, a size that lies", () => {
+  const many = {};
+  for (let i = 0; i <= ZIP_LIMITS.maxEntries; i++) many[`f${i}`] = "";
+  assert.throws(() => new ZipReader(zipOf(many, { store: true })), /entries, over 10000/);
+
+  const huge = zipOf({ "word/document.xml": "x" }, { lie: { "word/document.xml": 50_000_000 } });
+  assert.throws(() => new ZipReader(huge).read("word/document.xml"), /over 20000000/);
+
+  const zeros = zipOf({ "big.xml": Buffer.alloc(5_000_000) });
+  assert.throws(() => new ZipReader(zeros).read("big.xml"), /ratio/);
+
+  const liar = zipOf({ "word/document.xml": "a".repeat(1000) }, { lie: { "word/document.xml": 10 } });
+  assert.throws(() => new ZipReader(liar).read("word/document.xml"), /does not inflate to its stated size|not the size/);
+});
+
+test("a bomb inside a docx reaches the agent as an unreadable file, not a crash", async (t) => {
+  const { send } = setup(t);
+  const bomb = zipOf({ "word/document.xml": Buffer.alloc(8_000_000, 0x41) });
+  const out = (await send(bomb, DOCX, "bomb.docx")).structuredContent;
+  assert.equal(out.document_text, undefined);
+  assert.match(out.notes.join(" "), /could not be read: .*ratio/);
+});
+
+test("a document is sorted by mime, then name, then its first bytes", () => {
+  assert.equal(documentFormat("application/octet-stream", "x.PDF", Buffer.alloc(0)), "pdf");
+  assert.equal(documentFormat("application/octet-stream", undefined, Buffer.from("%PDF-1.7")), "pdf");
+  assert.equal(documentFormat("text/vcard", "c.vcf", Buffer.alloc(0)), "text");
+  assert.equal(documentFormat("application/zip", "a.zip", Buffer.alloc(0)), null);
+});
+
+test("a document over the reading limit is refused before a thread is started", async () => {
+  await assert.rejects(documentText("pdf", Buffer.alloc(50_000_001), { from: 1, to: null }), /over 50 MB/);
+});
