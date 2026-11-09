@@ -190,3 +190,22 @@ test("sends waiting on the same group share one read; a read that fails leaves t
   assert.equal(await groups.forSend("40700000002@s.whatsapp.net"), undefined, "not a group: nothing to address");
   assert.equal(fetches, 2);
 });
+
+test("a read already in flight when a group changes does not count for the sends after it", async () => {
+  let fetches = 0;
+  let release;
+  const { groups, clock } = groupsWith(async (jid) => {
+    const n = ++fetches;
+    if (n === 1) await new Promise((resolve) => (release = resolve));
+    return { id: jid, subject: `Read ${n}`, participants: [{ id: ME, admin: null }] };
+  });
+  const first = groups.forSend(GROUP);
+  clock.now += 1;
+  // The disappearing setting changes while the first read is on its way back.
+  groups.rereadBeforeSend(GROUP);
+  release();
+  assert.equal((await first).subject, "Read 1", "the send that asked gets what it asked for");
+  assert.equal((await groups.forSend(GROUP)).subject, "Read 2", "the next send reads the group again");
+  assert.equal((await groups.forSend(GROUP)).subject, "Read 2");
+  assert.equal(fetches, 2);
+});
