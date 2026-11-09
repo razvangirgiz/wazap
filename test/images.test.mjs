@@ -4,13 +4,14 @@
  * load, and the refusals an untrusted image meets before it is decoded.
  * Fixtures are generated here, with sharp itself.
  */
+import { readFile } from "node:fs/promises";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { crc32, deflateSync } from "node:zlib";
 
 import sharp from "sharp";
 
-import { previewImage, setImageEngine } from "../dist/images.js";
+import { imageView, previewImage, setImageEngine, SVG_LIMITS, withinHeaderCap } from "../dist/images.js";
 
 /** A solid image of `format`, `width` x `height`, optionally transparent. */
 async function solid(format, width, height, { alpha = false, color = { r: 200, g: 40, b: 40 } } = {}) {
@@ -140,4 +141,100 @@ test("an SVG is drawn into a view; a HEIC photo goes through sips on macOS", asy
   assert.ok(view !== null, "sips turned it into something libvips reads");
   assert.ok(Math.max(view.width, view.height) <= 1024);
   assert.ok(view.data.length <= 110_000);
+});
+
+/** A WebP or GIF header claiming `width` x `height`, and nothing after it worth decoding. */
+function claimedHeader(format, width, height) {
+  if (format === "gif") {
+    const gif = Buffer.alloc(13);
+    gif.write("GIF89a", 0, "latin1");
+    gif.writeUInt16LE(width, 6);
+    gif.writeUInt16LE(height, 8);
+    return gif;
+  }
+  const webp = Buffer.alloc(30);
+  webp.write("RIFF", 0, "latin1");
+  webp.writeUInt32LE(22, 4);
+  webp.write("WEBPVP8X", 8, "latin1");
+  webp.writeUInt32LE(10, 16);
+  webp.writeUIntLE(width - 1, 24, 3);
+  webp.writeUIntLE(height - 1, 27, 3);
+  return webp;
+}
+
+test("a WebP or GIF too big to decode whole is refused from its own header, before libvips reads it", async () => {
+  assert.equal(withinHeaderCap(claimedHeader("webp", 10_000, 9_990)), false);
+  assert.equal(withinHeaderCap(claimedHeader("gif", 10_000, 9_990)), false);
+  assert.equal(withinHeaderCap(claimedHeader("webp", 6_000, 4_000)), true, "a 24 MP photo is drawn");
+  assert.equal(withinHeaderCap(claimedPng(10_000, 9_990)), true, "a PNG streams, and keeps the 100 MP cap");
+  assert.equal(withinHeaderCap(claimedPng(20_000, 20_000)), false);
+  assert.equal(withinHeaderCap(Buffer.from("not an image")), true, "anything else is left to sharp's header read");
+
+  // A 10000x9990 WebP of one colour is a few dozen bytes; drawing it cost 480 MB, and libvips decodes a WebP even to measure it.
+  const bomb = await sharp({ create: { width: 10_000, height: 9_990, channels: 3, background: "#c00" } }).webp({ quality: 10, effort: 0 }).toBuffer();
+  assert.ok(bomb.length < 400_000, `${bomb.length} bytes`);
+  const before = process.memoryUsage.rss();
+  const views = await Promise.all([1, 2, 3, 4].map(() => imageView(bomb, "standard", "image/webp")));
+  assert.deepEqual(views, [null, null, null, null]);
+  assert.equal(await previewImage(bomb, "image/webp"), null);
+  assert.ok(process.memoryUsage.rss() - before < 150_000_000, `${Math.round((process.memoryUsage.rss() - before) / 1e6)} MB`);
+});
+
+test("an SVG is drawn in a process of its own: one that draws too long is stopped, and never holds the thread pool", async (t) => {
+  const saved = { ...SVG_LIMITS };
+  SVG_LIMITS.timeoutMs = 1_500;
+  t.after(() => Object.assign(SVG_LIMITS, saved));
+  // Ten full-canvas rects under an order-20 convolution: librsvg draws each filter in one go, 34 s for a view in-process.
+  const filter = `<filter id="f"><feConvolveMatrix order="20" kernelMatrix="${Array(400).fill(1).join(" ")}"/></filter>`;
+  const rects = Array.from({ length: 10 }, (_, i) => `<rect width="2000" height="2000" fill="#${String(i).repeat(6)}" filter="url(#f)"/>`).join("");
+  const svg = Buffer.from(`<svg xmlns="http://www.w3.org/2000/svg" width="2000" height="2000"><defs>${filter}</defs>${rects}</svg>`);
+  assert.ok(svg.length < 2_000);
+  let slowest = 0;
+  let stop = false;
+  const probe = (async () => {
+    while (!stop) {
+      const started = performance.now();
+      await readFile(import.meta.filename);
+      slowest = Math.max(slowest, performance.now() - started);
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+  })();
+  const started = Date.now();
+  const views = await Promise.all([1, 2, 3, 4].map(() => imageView(svg, "standard", "image/svg+xml")));
+  stop = true;
+  await probe;
+  assert.deepEqual(views, [null, null, null, null]);
+  assert.ok(Date.now() - started < 15_000, `${Date.now() - started} ms`);
+  assert.ok(slowest < 1_000, `a file read waited ${Math.round(slowest)} ms`);
+  // A read never draws one: previews leave SVG to get_media.
+  assert.equal(await previewImage(svg, "image/svg+xml"), null);
+  assert.equal(await previewImage(Buffer.from('<svg xmlns="http://www.w3.org/2000/svg" width="40" height="40"/>'), "image/png"), null, "by its bytes, whatever its mime");
+});
+
+test("a read does not download an SVG for a preview, nor again a photo that made none", async (t) => {
+  const { WhatsAppService } = await import("../dist/whatsapp.js");
+  const { connectedService, schemaCheckedTools } = await import("./helpers.mjs");
+  const { rmSync } = await import("node:fs");
+  const { svc, sock } = connectedService(WhatsAppService, { prefix: "wazap-no-preview-", id: "40700000001@s.whatsapp.net", name: "Me" });
+  t.after(() => rmSync(svc.config.dataDir, { recursive: true, force: true }));
+  const { call } = schemaCheckedTools(svc, { allowWrite: false });
+  const ANA = "40700000002@s.whatsapp.net";
+  const downloads = [];
+  svc.mediaBuffer = async (_sock, sid) => {
+    downloads.push(sid);
+    return Buffer.from("no format anything here reads");
+  };
+  const now = Math.floor(Date.now() / 1000);
+  sock.ev.emit("messages.upsert", {
+    type: "notify",
+    messages: [
+      { key: { remoteJid: ANA, fromMe: false, id: "S1" }, message: { documentMessage: { mimetype: "image/svg+xml", fileName: "logo.svg", fileLength: 900 } }, messageTimestamp: now },
+      { key: { remoteJid: ANA, fromMe: false, id: "H1" }, message: { documentMessage: { mimetype: "image/heic", fileName: "IMG_1.HEIC", fileLength: 900 } }, messageTimestamp: now + 1 },
+    ],
+  });
+  for (let i = 0; i < 3; i++) {
+    const read = await call("read_messages", { chat_id: ANA, include_previews: true });
+    assert.equal(read.structuredContent.preview_count ?? 0, 0);
+  }
+  assert.deepEqual(downloads, [`false_${ANA}_H1`], "the SVG never, the unreadable HEIC once in three reads");
 });

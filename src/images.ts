@@ -12,14 +12,23 @@
  * Every view is a JPEG flattened onto white (a transparent sticker reads on
  * any background) and sized to a byte budget, so its base64 fits the tool
  * results of hosted clients (claude.ai keeps about 150,000 characters).
+ *
+ * What a sender's image may cost is bounded: two sharp jobs at once
+ * process-wide (each holds one of libuv's four threads, which fs, dns and
+ * zlib share), a timeout on each, a pixel cap read from the header before
+ * anything is decoded, lower for formats libvips decodes whole, and an SVG
+ * drawn in a process of its own (src/svg-raster.ts) that is killed when it
+ * runs long, since librsvg draws a filter in one go that no timeout here
+ * can stop. Previews never draw an SVG.
  */
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { Sharp, SharpOptions } from "sharp";
+import { fileURLToPath } from "node:url";
+import type { Metadata, Sharp, SharpOptions } from "sharp";
 import { log } from "./logger.js";
 import { makePreview, PREVIEW_MAX_EDGE } from "./previews.js";
-import { HELPER_RSS_BYTES, helperSlots, runNative } from "./native-run.js";
+import { HELPER_RSS_BYTES, helperSlots, runNative, Slots } from "./native-run.js";
 import { which } from "./transcribe/local.js";
 
 type SharpFactory = (input?: Buffer | SharpOptions, options?: SharpOptions) => Sharp;
@@ -31,11 +40,24 @@ type SharpFactory = (input?: Buffer | SharpOptions, options?: SharpOptions) => S
  * 16k x 16k sharp allows by default.
  */
 export const INPUT_PIXELS_MAX = 100_000_000;
+/**
+ * The cap for the formats libvips decodes whole before it shrinks (WebP,
+ * GIF, HEIF, TIFF): a 36-byte WebP of 100 MP took 480 MB to draw, and a
+ * WebP is decoded even to be measured. 25 MP is a 6,000 x 4,000 photo. A
+ * JPEG shrinks while it decodes and a PNG streams a line at a time, so they
+ * keep the higher cap.
+ */
+export const WHOLE_DECODE_PIXELS_MAX = 25_000_000;
 
 /** What sharp is told about every untrusted input: the pixel cap, one pass, the first frame only, and no refusal over a warning. */
 const INPUT: SharpOptions = { limitInputPixels: INPUT_PIXELS_MAX, sequentialRead: true, animated: false, failOn: "none" };
 
 const PREVIEW_QUALITY = 60;
+
+/** sharp jobs at once, process-wide: the rest wait their turn, so two threads of libuv's pool stay free. */
+const imageSlots = new Slots(2);
+/** How long one sharp pipeline may run: libvips stops it at its next tile. */
+const SHARP_TIMEOUT = { seconds: 20 };
 
 /**
  * The views get_media sends. standard: the long edge at 1,024 px (about 1,000
@@ -96,24 +118,20 @@ export function setImageEngine(sharp: SharpFactory | null | undefined): void {
 }
 
 /**
- * The 320 px JPEG a read attaches: made by sharp from any image libvips reads,
- * or, without sharp, by jpeg-js from a JPEG (on the event loop, the cost the
- * fallback pays). Null for an input neither can read.
+ * The 320 px JPEG a read attaches: made by sharp from any raster image
+ * libvips reads (a HEIC through sips on macOS), or, without sharp, by jpeg-js
+ * from a JPEG (on the event loop, the cost the fallback pays). Null for an
+ * input neither can read, and for an SVG: a read would pay for drawing it
+ * unasked; get_media draws one.
  */
 export async function previewImage(input: Buffer, mime: string): Promise<Jpeg | null> {
   const sharp = await loadSharp();
   if (sharp !== null) {
-    try {
-      const { data, info } = await sharp(input, INPUT)
-        .rotate()
-        .resize(PREVIEW_MAX_EDGE, PREVIEW_MAX_EDGE, { fit: "inside", withoutEnlargement: true })
-        .flatten({ background: "#ffffff" })
-        .jpeg({ quality: PREVIEW_QUALITY })
-        .toBuffer({ resolveWithObject: true });
-      return { data, width: info.width, height: info.height };
-    } catch {
-      return null;
-    }
+    if (looksLikeSvg(input)) return null;
+    const made = await preview(sharp, input);
+    if (made !== null || !/^image\/hei[cf]/i.test(mime)) return made;
+    const converted = await heicToJpeg(input);
+    return converted === null ? null : preview(sharp, converted);
   }
   if (!/^image\/jpe?g\b/i.test(mime)) return null;
   try {
@@ -124,39 +142,120 @@ export async function previewImage(input: Buffer, mime: string): Promise<Jpeg | 
   }
 }
 
+function preview(sharp: SharpFactory, input: Buffer): Promise<Jpeg | null> {
+  return imageSlots
+    .run(async () => {
+      if (!withinHeaderCap(input) || !drawable(await sharp(input, INPUT).metadata())) return null;
+      const { data, info } = await sharp(input, INPUT)
+        .rotate()
+        .resize(PREVIEW_MAX_EDGE, PREVIEW_MAX_EDGE, { fit: "inside", withoutEnlargement: true })
+        .flatten({ background: "#ffffff" })
+        .jpeg({ quality: PREVIEW_QUALITY })
+        .timeout(SHARP_TIMEOUT)
+        .toBuffer({ resolveWithObject: true });
+      return { data, width: info.width, height: info.height };
+    })
+    .catch(() => null);
+}
+
+/**
+ * Whether sharp may draw an input, by its header: a raster (an SVG that got
+ * past looksLikeSvg is not drawn here) within its format's pixel cap.
+ */
+function drawable(meta: Metadata): boolean {
+  if (!meta.width || !meta.height || meta.format === "svg") return false;
+  return meta.width * meta.height <= pixelCap(meta.format);
+}
+
+function pixelCap(format: string | undefined): number {
+  return format === "jpeg" || format === "png" ? INPUT_PIXELS_MAX : WHOLE_DECODE_PIXELS_MAX;
+}
+
+/**
+ * Whether a PNG, GIF or WebP is within its pixel cap, by the size its own
+ * header states, read here before libvips sees the file: libvips decodes a
+ * WebP whole even to report its size (a 36-byte WebP of 100 MP took 400 MB
+ * to be measured). True for any other format, which sharp's header read
+ * measures.
+ */
+export function withinHeaderCap(input: Buffer): boolean {
+  const ascii = (from: number, to: number): string => input.toString("latin1", from, to);
+  let format: string | null = null;
+  let width = 0;
+  let height = 0;
+  if (input.length >= 24 && input.readUInt32BE(0) === 0x89504e47 && ascii(12, 16) === "IHDR") {
+    format = "png";
+    width = input.readUInt32BE(16);
+    height = input.readUInt32BE(20);
+  } else if (input.length >= 10 && (ascii(0, 6) === "GIF87a" || ascii(0, 6) === "GIF89a")) {
+    format = "gif";
+    width = input.readUInt16LE(6);
+    height = input.readUInt16LE(8);
+  } else if (input.length >= 30 && ascii(0, 4) === "RIFF" && ascii(8, 12) === "WEBP") {
+    format = "webp";
+    const chunk = ascii(12, 16);
+    if (chunk === "VP8 ") {
+      width = input.readUInt16LE(26) & 0x3fff;
+      height = input.readUInt16LE(28) & 0x3fff;
+    } else if (chunk === "VP8L") {
+      const bits = input.readUInt32LE(21);
+      width = (bits & 0x3fff) + 1;
+      height = ((bits >>> 14) & 0x3fff) + 1;
+    } else if (chunk === "VP8X") {
+      width = input.readUIntLE(24, 3) + 1;
+      height = input.readUIntLE(27, 3) + 1;
+    } else return false;
+  }
+  return format === null || width * height <= pixelCap(format);
+}
+
+/** An SVG (or gzip, which only an SVG can be here) by its first bytes: an XML-like start, or "<svg" near it. No raster format starts with "<". */
+export function looksLikeSvg(input: Buffer): boolean {
+  if (input[0] === 0x1f && input[1] === 0x8b) return true;
+  const head = input.subarray(0, 4096).toString("latin1").replace(/^\ufeff|^\xef\xbb\xbf/, "").trimStart();
+  return head.startsWith("<") || head.toLowerCase().includes("<svg");
+}
+
 /**
  * A JPEG view of an image at `detail`: the first frame of an animation,
  * turned upright, flattened onto white, never enlarged, and within the
- * detail's byte budget (or `budget`, when the answer carries text beside it). A HEIC photo libvips cannot decode goes through
- * macOS's sips first. Null without sharp, or for an input nothing here reads.
+ * detail's byte budget (or `budget`, when the answer carries text beside
+ * it). A HEIC photo libvips cannot decode goes through macOS's sips first,
+ * an SVG through its own process. Null without sharp, or for an input
+ * nothing here reads or that is over its caps.
  */
 export async function imageView(input: Buffer, detail: ViewDetail, mime = "", budget?: number): Promise<ImageView | null> {
   const sharp = await loadSharp();
   if (sharp === null) return null;
   const { edge, maxBytes } = VIEW_DETAILS[detail];
-  const view = async (source: Buffer): Promise<ImageView | null> => {
-    try {
-      const meta = await sharp(source, INPUT).metadata();
-      if (!meta.width || !meta.height) return null;
-      const width = meta.autoOrient?.width ?? meta.width;
-      const height = meta.autoOrient?.height ?? meta.height;
-      const strips = stripLayout(width, height, edge);
-      const fitted =
-        strips === null
-          ? await fitJpeg(sharp, sharp(source, INPUT).rotate(), edge, budget ?? maxBytes)
-          : await stripSheet(sharp, source, width, height, strips, edge, budget ?? maxBytes);
-      return {
-        ...fitted,
-        original_width: width,
-        original_height: height,
-        format: meta.format ?? "unknown",
-        ...(meta.pages !== undefined && meta.pages > 1 ? { frames: meta.pages } : {}),
-        ...(strips === null ? {} : { strips: { count: strips.count, layout: strips.layout } }),
-      };
-    } catch {
-      return null;
-    }
-  };
+  /** `drawnFrom`: the SVG `source` was drawn from, whose size and format the view reports. */
+  const view = (source: Buffer, drawnFrom?: { width: number; height: number }): Promise<ImageView | null> =>
+    imageSlots
+      .run(async () => {
+        if (!withinHeaderCap(source)) return null;
+        const meta = await sharp(source, INPUT).metadata();
+        if (!drawable(meta)) return null;
+        const width = meta.autoOrient?.width ?? meta.width!;
+        const height = meta.autoOrient?.height ?? meta.height!;
+        const strips = stripLayout(width, height, edge);
+        const fitted =
+          strips === null
+            ? await fitJpeg(sharp, sharp(source, INPUT).rotate(), edge, budget ?? maxBytes)
+            : await stripSheet(sharp, source, width, height, strips, edge, budget ?? maxBytes);
+        return {
+          ...fitted,
+          original_width: drawnFrom?.width ?? width,
+          original_height: drawnFrom?.height ?? height,
+          format: drawnFrom === undefined ? (meta.format ?? "unknown") : "svg",
+          ...(meta.pages !== undefined && meta.pages > 1 ? { frames: meta.pages } : {}),
+          ...(strips === null ? {} : { strips: { count: strips.count, layout: strips.layout } }),
+        };
+      })
+      .catch(() => null);
+  if (looksLikeSvg(input)) {
+    const drawn = await svgToPng(input);
+    return drawn === null ? null : view(drawn.png, drawn);
+  }
   const made = await view(input);
   if (made !== null || !/^image\/hei[cf]/i.test(mime)) return made;
   // libvips reads a HEIC's header but cannot decode its HEVC pixels: sips can, on macOS.
@@ -175,12 +274,13 @@ async function fitJpeg(sharp: SharpFactory, pipeline: Sharp, edge: number, maxBy
     .flatten({ background: "#ffffff" })
     .removeAlpha()
     .raw()
+    .timeout(SHARP_TIMEOUT)
     .toBuffer({ resolveWithObject: true });
   for (let shrinks = 0; ; shrinks++) {
     const raw = { width: info.width, height: info.height, channels: info.channels };
     let smallest = Infinity;
     for (const quality of QUALITIES) {
-      const out = await sharp(data, { raw }).jpeg({ quality }).toBuffer();
+      const out = await sharp(data, { raw }).jpeg({ quality }).timeout(SHARP_TIMEOUT).toBuffer();
       // Six shrinks leave a quarter of the edge: what is left is returned rather than nothing.
       if (out.length <= maxBytes || shrinks >= 6) return { data: out, width: info.width, height: info.height };
       smallest = out.length;
@@ -188,7 +288,7 @@ async function fitJpeg(sharp: SharpFactory, pipeline: Sharp, edge: number, maxBy
     // A JPEG's size follows its pixel count: shrink about as far as the budget asks, and at least by SHRINK's step.
     const factor = Math.max(0.5, Math.min(SHRINK, Math.sqrt(maxBytes / smallest) * 0.95));
     const width = Math.max(1, Math.floor(info.width * factor));
-    ({ data, info } = await sharp(data, { raw }).resize(width).raw().toBuffer({ resolveWithObject: true }));
+    ({ data, info } = await sharp(data, { raw }).resize(width).raw().timeout(SHARP_TIMEOUT).toBuffer({ resolveWithObject: true }));
   }
 }
 
@@ -243,6 +343,7 @@ async function stripSheet(sharp: SharpFactory, source: Buffer, width: number, he
     .flatten({ background: "#ffffff" })
     .removeAlpha()
     .raw()
+    .timeout(SHARP_TIMEOUT)
     .toBuffer({ resolveWithObject: true });
   const raw = { width: info.width, height: info.height, channels: info.channels };
   const columns = strips.layout === "columns";
@@ -255,7 +356,7 @@ async function stripSheet(sharp: SharpFactory, source: Buffer, width: number, he
     Array.from({ length: strips.count }, async (_, i) => {
       const start = Math.max(0, Math.min(length - piece, i * (piece - overlap)));
       const region = columns ? { left: 0, top: start, width: across, height: piece } : { left: start, top: 0, width: piece, height: across };
-      const input = await sharp(data, { raw }).extract(region).png({ compressionLevel: 0 }).toBuffer();
+      const input = await sharp(data, { raw }).extract(region).png({ compressionLevel: 0 }).timeout(SHARP_TIMEOUT).toBuffer();
       const offset = i * (across + STRIP_GAP);
       return { input, left: columns ? offset : 0, top: columns ? 0 : offset };
     })
@@ -265,6 +366,7 @@ async function stripSheet(sharp: SharpFactory, source: Buffer, width: number, he
   const sheet = await sharp({ create: { width: sheetWidth, height: sheetHeight, channels: 3, background: "#909090" } })
     .composite(composite)
     .png({ compressionLevel: 0 })
+    .timeout(SHARP_TIMEOUT)
     .toBuffer();
   return fitJpeg(sharp, sharp(sheet), edge, maxBytes);
 }
@@ -298,16 +400,22 @@ const SHEET_GAP = 4;
 export async function contactSheet(frames: Buffer[], detail: ViewDetail = "standard"): Promise<Jpeg | null> {
   const sharp = await loadSharp();
   if (sharp === null || frames.length === 0) return null;
+  return imageSlots.run(() => tileFrames(sharp, frames, detail)).catch(() => null);
+}
+
+async function tileFrames(sharp: SharpFactory, frames: Buffer[], detail: ViewDetail): Promise<Jpeg | null> {
+  if (!frames.every(withinHeaderCap)) return null;
   const first = await sharp(frames[0], INPUT).metadata().catch(() => null);
-  if (first === null || !first.width || !first.height) return null;
+  if (first === null || !drawable(first)) return null;
   const { edge, maxBytes } = VIEW_DETAILS[detail];
-  const { columns, rows, tileWidth, tileHeight } = sheetLayout(frames.length, first.width, first.height, edge - SHEET_GAP * 2);
+  const { columns, rows, tileWidth, tileHeight } = sheetLayout(frames.length, first.width!, first.height!, edge - SHEET_GAP * 2);
   const tiles = await Promise.all(
     frames.map((frame) =>
       sharp(frame, INPUT)
         .resize(tileWidth, tileHeight, { fit: "contain", background: "#202020" })
         .flatten({ background: "#202020" })
         .jpeg({ quality: 90 })
+        .timeout(SHARP_TIMEOUT)
         .toBuffer()
         .catch(() => null)
     )
@@ -320,9 +428,8 @@ export async function contactSheet(frames: Buffer[], detail: ViewDetail = "stand
       : [{ input: tile, left: SHEET_GAP + (index % columns) * (tileWidth + SHEET_GAP), top: SHEET_GAP + Math.floor(index / columns) * (tileHeight + SHEET_GAP) }]
   );
   if (composite.length === 0) return null;
-  const canvas = sharp({ create: { width, height, channels: 3, background: "#202020" } }).composite(composite).png();
   // Composite first, then fit: the sheet is already inside `edge`, so only the budget can shrink it.
-  const flat = await canvas.toBuffer();
+  const flat = await sharp({ create: { width, height, channels: 3, background: "#202020" } }).composite(composite).png().timeout(SHARP_TIMEOUT).toBuffer();
   return fitJpeg(sharp, sharp(flat), edge, maxBytes);
 }
 
@@ -345,6 +452,38 @@ async function heicToJpeg(input: Buffer): Promise<Buffer | null> {
       await writeFile(source, input, { mode: 0o600 });
       await runNative(sips, ["-s", "format", "jpeg", source, "--out", output], { timeoutMs: SIPS_TIMEOUT_MS, maxRssBytes: HELPER_RSS_BYTES });
       return await readFile(output);
+    } catch {
+      return null;
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+}
+
+/**
+ * What drawing one SVG may take, in a process of its own: librsvg draws a
+ * filter over the whole canvas in one go, and a 1.6 KB SVG of ten such
+ * filters ran 34 s. Tests lower them.
+ */
+export const SVG_LIMITS = { timeoutMs: 10_000, maxRssBytes: 512_000_000 };
+
+/**
+ * An SVG drawn to a PNG by src/svg-raster.ts in a child node process, under
+ * the helpers' slots and SVG_LIMITS, with the size it declares. Null when it
+ * is not an SVG, does not draw, or runs past its limits.
+ */
+async function svgToPng(input: Buffer): Promise<{ png: Buffer; width: number; height: number } | null> {
+  return helperSlots.run(async () => {
+    const dir = await mkdtemp(join(tmpdir(), "wazap-svg-"));
+    try {
+      const source = join(dir, "in.svg");
+      const output = join(dir, "out.png");
+      await writeFile(source, input, { mode: 0o600 });
+      const script = fileURLToPath(new URL("./svg-raster.js", import.meta.url));
+      const { stdout } = await runNative(process.execPath, [script, source, output], SVG_LIMITS);
+      const size = JSON.parse(stdout) as { width?: unknown; height?: unknown };
+      if (typeof size.width !== "number" || typeof size.height !== "number") return null;
+      return { png: await readFile(output), width: size.width, height: size.height };
     } catch {
       return null;
     } finally {

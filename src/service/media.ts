@@ -18,6 +18,7 @@ import { isLottieSticker, mediaInfo, thumbnailOf } from "../messages.js";
 import { DIR_MODE, FILE_MODE } from "./util.js";
 import { sidTag } from "../media-links.js";
 import { renderMedia } from "../media-render.js";
+import { which } from "../transcribe/local.js";
 import type { ConnectionStatus, MediaOpenOptions, MediaResult, OpenedMedia, Preview } from "../wa-types.js";
 import type { AccountPaths } from "../config.js";
 import type { AccountStorage } from "./storage.js";
@@ -37,6 +38,14 @@ const PREVIEW_VIDEO_MAX_BYTES = 25_000_000;
 
 /** How long one call may spend downloading and shrinking photos before it returns with what it has. */
 const PREVIEW_BUDGET_MS = 20_000;
+
+/**
+ * How long a message whose media downloaded but made no preview (a HEIC
+ * without sips, a format nothing here reads) is not downloaded again for one,
+ * and how many such messages are remembered.
+ */
+const NO_PREVIEW_MS = 60 * 60_000;
+const NO_PREVIEW_MAX = 1_000;
 
 /** A file that is not there, as opposed to one that could not be read. */
 function isMissing(err: unknown): boolean {
@@ -64,6 +73,9 @@ export interface MediaHost {
 }
 
 export class AccountMedia {
+  /** Messages whose downloaded media made no preview, and when: each read would otherwise download them again. */
+  private readonly noPreview = new Map<string, number>();
+
   constructor(
     private readonly host: MediaHost,
     private readonly views: MessageViews,
@@ -77,7 +89,8 @@ export class AccountMedia {
    * from the original (the kept copy first, even with the link down), once,
    * within a time budget so the call returns with what it has. A photo that
    * has expired, is too big, or that nothing here reads (without sharp: not a
-   * JPEG) simply has no preview.
+   * JPEG) simply has no preview; one that downloaded and made none is not
+   * downloaded again for an hour.
    */
   previews(messageIds: string[], max: number): Promise<Preview[]> {
     return this.host.guarded(async () => {
@@ -102,12 +115,13 @@ export class AccountMedia {
         }
         let chosen = shipped;
         const info = mediaInfo(raw);
+        // An SVG is drawn only when someone opens it (get_media): a read would pay for it unasked.
         const photo =
           info !== undefined &&
-          (sharp ? /^image\//i.test(info.mime) : /^image\/jpe?g\b/i.test(info.mime)) &&
+          (sharp ? /^image\//i.test(info.mime) && !/^image\/svg/i.test(info.mime) : /^image\/jpe?g\b/i.test(info.mime)) &&
           (info.size ?? 0) <= (sharp ? PREVIEW_SOURCE_MAX_BYTES : PREVIEW_SOURCE_MAX_BYTES_JS);
-        const video = info !== undefined && /^video\//i.test(info.mime) && (info.size ?? 0) <= PREVIEW_VIDEO_MAX_BYTES;
-        if ((photo || video) && Date.now() - started <= PREVIEW_BUDGET_MS) {
+        const video = info !== undefined && /^video\//i.test(info.mime) && (info.size ?? 0) <= PREVIEW_VIDEO_MAX_BYTES && which("ffmpeg") !== null;
+        if ((photo || video) && !this.knownUnpreviewable(sid) && Date.now() - started <= PREVIEW_BUDGET_MS) {
           try {
             // A kept copy answers with the link down; only without one is WhatsApp asked, and only while connected.
             const sock = this.host.sock();
@@ -115,6 +129,7 @@ export class AccountMedia {
               (await this.host.keptMedia(sid, raw)) ??
               (sock && this.host.status() === "connected" ? await this.host.mediaBuffer(sock, sid, raw) : null);
             const made = buffer === null ? null : photo ? ((await previewImage(buffer, info.mime))?.data ?? null) : await videoFrame(buffer);
+            if (buffer !== null && made === null) this.rememberUnpreviewable(sid);
             if (made && this.host.hasMessage(sid)) {
               await this.writePreview(sid, made);
               chosen = { mime: "image/jpeg", base64: made.toString("base64") };
@@ -127,6 +142,21 @@ export class AccountMedia {
       }
       return out.filter((preview) => this.host.hasMessage(preview.message_id));
     });
+  }
+
+  private knownUnpreviewable(sid: string): boolean {
+    const at = this.noPreview.get(sid);
+    if (at === undefined) return false;
+    if (Date.now() - at < NO_PREVIEW_MS) return true;
+    this.noPreview.delete(sid);
+    return false;
+  }
+
+  private rememberUnpreviewable(sid: string): void {
+    this.noPreview.delete(sid);
+    this.noPreview.set(sid, Date.now());
+    // A Map keeps insertion order: the oldest goes first.
+    if (this.noPreview.size > NO_PREVIEW_MAX) this.noPreview.delete(this.noPreview.keys().next().value!);
   }
 
   /** Previews live as files, one JPEG per message, recorded against it in the database so a delete takes the file too. */
