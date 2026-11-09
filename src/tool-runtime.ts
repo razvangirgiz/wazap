@@ -11,6 +11,7 @@ import { RateLimiter } from "./ratelimit.js";
 import { requireDraftOwner } from "./send-guard.js";
 import { requireChatAction, staleChatAction } from "./chat-action-drafts.js";
 import { buildToolCatalogue, publishToolCatalogue } from "./tool-catalogue.js";
+import type { MediaLinks } from "./media-links.js";
 import type { WhatsAppApi } from "./wa-types.js";
 
 export type ContentBlock = { type: "text"; text: string } | { type: "image"; data: string; mimeType: string };
@@ -27,6 +28,14 @@ export type ToolArgs = Record<string, unknown>;
 export interface ToolCtx {
   /** Give remote connectors workflows that work with their cached read names. */
   legacyReads?: boolean;
+  /**
+   * Whether the session may touch this machine's files (RegisterOpts.allowLocalFiles):
+   * stdio and the daemon's own bridge. A remote session is shown media, never
+   * handed a path it cannot open, and nothing is written for it.
+   */
+  localFiles?: boolean;
+  /** Signed links to originals: a remote session on a server with a public URL (src/media-links.ts). */
+  mediaLinks?: MediaLinks;
   /** Internal only: the cached multi-account adapter finalizes all sources together after its awaits. */
   deferSearchFinalization?: boolean;
   wa: WhatsAppApi;
@@ -105,6 +114,8 @@ export interface RegisterOpts {
   allowLocalEdits?: boolean;
   /** Trusted local stdio defaults to true; every HTTP session explicitly sets its capability. */
   allowLocalFiles?: boolean;
+  /** Where get_media mints links to originals; only a remote session on a server with a public URL has it. */
+  mediaLinks?: MediaLinks;
   /** Tool calls this session may have running at once. */
   maxInFlight?: number;
   /** Tool calls every session together may have running at once. */
@@ -171,7 +182,7 @@ export function createToolRegistrar(defs: readonly ToolDef[]) {
   // it: converting every zod schema to JSON Schema is most of what an
   // initialize costs, and the answer is the same for every such session.
   const catalogues = new Map<string, readonly Tool[]>();
-  const catalogueFor = (registered: readonly ToolDef[], opts: RegisterOpts): readonly Tool[] => {
+  const catalogueFor = (registered: readonly ToolDef[], opts: Pick<RegisterOpts, "allowWrite" | "legacyReads" | "allowLocalFiles">): readonly Tool[] => {
     // Which definitions register depends on allowWrite and legacyReads alone; allowLocalFiles changes descriptions.
     const key = `${opts.allowWrite}:${opts.legacyReads === true}:${opts.allowLocalFiles !== false}`;
     let tools = catalogues.get(key);
@@ -181,7 +192,16 @@ export function createToolRegistrar(defs: readonly ToolDef[]) {
     }
     return tools;
   };
-  return function registerTools(server: McpServer, hub: AccountSource, opts: RegisterOpts): void {
+  /** The definitions a session with these permissions registers. */
+  const selected = (opts: Pick<RegisterOpts, "allowWrite" | "legacyReads">): ToolDef[] =>
+    defs.filter((def) => (opts.allowWrite || !def.write) && (opts.legacyReads === true || !def.legacyRead));
+  /**
+   * What tools/list hands a session with these permissions: the very array
+   * registerTools publishes, so a fingerprint of it (server.ts's session
+   * shape) changes whenever any tool's description or schema does.
+   */
+  const catalogue = (opts: Pick<RegisterOpts, "allowWrite" | "legacyReads" | "allowLocalFiles">): readonly Tool[] => catalogueFor(selected(opts), opts);
+  function registerTools(server: McpServer, hub: AccountSource, opts: RegisterOpts): void {
     // A session's drafts answer to its draft identity: a remote credential's
     // stable one where the server names it, so an async confirm over a fresh
     // HTTP connection still owns the draft, and otherwise an opaque id minted
@@ -199,11 +219,8 @@ export function createToolRegistrar(defs: readonly ToolDef[]) {
       const session = (server as { server?: { getClientVersion?(): { name?: string } | undefined } }).server;
       return localClient(extra?._meta?.[CLIENT_META_KEY] ?? session?.getClientVersion?.()?.name);
     };
-    const registered: ToolDef[] = [];
-    for (const def of defs) {
-      if (def.write && !opts.allowWrite) continue;
-      if (def.legacyRead && !opts.legacyReads) continue;
-      registered.push(def);
+    const registered = selected(opts);
+    for (const def of registered) {
       const own = buckets.get(def.name);
       server.registerTool(
         def.name,
@@ -285,6 +302,8 @@ export function createToolRegistrar(defs: readonly ToolDef[]) {
             }
             const result = await def.handler(parsed, {
               legacyReads: opts.legacyReads === true,
+              localFiles: opts.allowLocalFiles !== false,
+              ...(opts.allowLocalFiles === false && opts.mediaLinks !== undefined ? { mediaLinks: opts.mediaLinks } : {}),
               wa: resolved.wa,
               hub,
               allowWrite: opts.allowWrite,
@@ -313,5 +332,6 @@ export function createToolRegistrar(defs: readonly ToolDef[]) {
     }
     // Small test doubles only collect handlers and have no catalogue to publish.
     if ((server as { server?: unknown }).server !== undefined) publishToolCatalogue(server, catalogueFor(registered, opts));
-  };
+  }
+  return Object.assign(registerTools, { catalogue });
 }

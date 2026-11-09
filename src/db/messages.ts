@@ -549,6 +549,19 @@ export class Messages {
     });
   }
 
+  /**
+   * A live message's protobuf, stored again with fresh media fields: the url
+   * and directPath WhatsApp handed out when the phone uploaded expired media
+   * again. Not an edit (no version, no new words); a tombstone stays one.
+   */
+  refreshRaw(sid: string, raw: Uint8Array): boolean {
+    return this.c.write(() => {
+      const key = this.visibleKey(sid);
+      if (key === null) return false;
+      return this.c.run("UPDATE messages SET raw = ? WHERE id = ? AND deleted_at IS NULL AND raw IS NOT NULL", raw, key.id) > 0;
+    });
+  }
+
   /** Delivery status only rises, in statusRank's order. */
   setStatus(sid: string, status: number): boolean {
     return this.c.write(() => {

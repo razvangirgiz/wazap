@@ -18,6 +18,7 @@ import { anyAccountAllowsWrites, registerTools } from "./tools.js";
 import { log } from "./logger.js";
 import { replayHandshake, revivedProtocolVersion, serveMcp, type McpTransport } from "./mcp-http.js";
 import { sessionIds } from "./session-id.js";
+import { MEDIA_LINK_ROUTE, mediaLinksFor, serveMediaLink } from "./media-links.js";
 import type { ConnectionStatus } from "./wa-types.js";
 
 const UNHEALTHY_AFTER_MS = 2 * 60 * 1000;
@@ -81,6 +82,8 @@ interface SessionOpts {
 function buildMcpServer(hub: AccountSource, config: Config, allowWrite: boolean, allowLocalFiles: boolean, opts: SessionOpts = {}): McpServer {
   const shape = opts.shape ?? sessionShape(hub, config, allowWrite, allowLocalFiles);
   const server = new McpServer({ name: "wazap", version: WAZAP_VERSION }, { instructions: shape.instructions });
+  // A link to an original is for a remote session on a server the internet reaches; a local one has the file.
+  const links = allowLocalFiles ? null : mediaLinksFor(config);
   registerTools(server, hub, {
     allowWrite: shape.writes,
     // remember's edits are local state, not WhatsApp writes: they answer to
@@ -89,6 +92,7 @@ function buildMcpServer(hub: AccountSource, config: Config, allowWrite: boolean,
     allowLocalEdits: allowWrite,
     allowLocalFiles,
     legacyReads: shape.legacyReads,
+    ...(links === null ? {} : { mediaLinks: links }),
     client: opts.client ?? LOCAL_CLIENT,
     ...(opts.draftIdentity === undefined ? {} : { draftIdentity: opts.draftIdentity }),
     ...(opts.stopping === undefined ? {} : { stopping: opts.stopping }),
@@ -135,10 +139,17 @@ function shapeFor(writes: boolean, legacyReads: boolean, accounts: ReturnType<ty
   let shape = shapeCache.get(key);
   if (shape === undefined) {
     if (shapeCache.size >= 16) shapeCache.clear();
-    const instructions = skillInstructions(loadSkills(), { allowWrite: writes, accounts, legacyReads });
-    // The tool catalogue and the workflows follow from the version and the
-    // two flags (allowLocalFiles is !legacyReads); the instructions say the rest.
-    const fingerprint = createHash("sha256").update(JSON.stringify([WAZAP_VERSION, writes, legacyReads, instructions])).digest("base64url");
+    const skills = loadSkills();
+    const instructions = skillInstructions(skills, { allowWrite: writes, accounts, legacyReads });
+    // Everything the client keeps, itself and not only what decides it: the
+    // instructions, the workflows' text and the tools/list this session
+    // publishes (allowLocalFiles is !legacyReads), so a tool whose schema or
+    // description changed (get_media's detail and pages) or a workflow
+    // rewritten within one version still gets the 404 and a fresh initialize.
+    const catalogue = registerTools.catalogue({ allowWrite: writes, legacyReads, allowLocalFiles: !legacyReads });
+    const fingerprint = createHash("sha256")
+      .update(JSON.stringify([WAZAP_VERSION, writes, legacyReads, instructions, skills, catalogue]))
+      .digest("base64url");
     shape = { writes, legacyReads, instructions, fingerprint };
     shapeCache.set(key, shape);
   }
@@ -215,6 +226,11 @@ function logInitialize(req: AuthedRequest): void {
   log(
     `MCP initialize: client="${client}" protocol=${text(params?.protocolVersion, 16) || "-"} credential=${credentialKind(req)} host=${text(req.headers.host, 80) || "-"}`
   );
+}
+
+/** A download link's path (MEDIA_LINK_ROUTE), as Express matches it: case-insensitively. */
+function isMediaLinkPath(path: string): boolean {
+  return /^\/media\/[^/]+\/?$/i.test(path);
 }
 
 /** stdio, the daemon's loopback bridge and anonymous loopback reads: this machine's own clients, each named per call (client-name.ts). */
@@ -396,15 +412,16 @@ export async function startHttpEndpoint(hub: AccountSource, config: Config, endp
   // way the client's session is revived by the next process.
   const stopping = new AbortController();
   let draining = false;
-  // What a drain waits for: POST answers still being written, and tool calls
-  // still running whether or not anyone reads their answer, so a send whose
-  // client left is not cut off by the accounts stopping under it. A call its
-  // client cancelled has no answer to write (serveMcp ends its stream).
-  let postsInFlight = 0;
+  // What a drain waits for: answers still being written (a POST to /mcp, a
+  // download link's file), and tool calls still running whether or not
+  // anyone reads their answer, so a send whose client left is not cut off by
+  // the accounts stopping under it. A call its client cancelled has no answer
+  // to write (serveMcp ends its stream).
+  let answersInFlight = 0;
   let callsInFlight = 0;
   let quiet: (() => void) | undefined;
   const settledOne = (): void => {
-    if (postsInFlight === 0 && callsInFlight === 0) quiet?.();
+    if (answersInFlight === 0 && callsInFlight === 0) quiet?.();
   };
   const calls: CallTracker = {
     begin: () => {
@@ -422,10 +439,10 @@ export async function startHttpEndpoint(hub: AccountSource, config: Config, endp
       res.status(503).json({ jsonrpc: "2.0", error: { code: -32000, message: "Server is restarting; retry shortly." }, id: null });
       return;
     }
-    if (req.method === "POST" && req.path === "/mcp") {
-      postsInFlight++;
+    if ((req.method === "POST" && req.path === "/mcp") || (req.method === "GET" && isMediaLinkPath(req.path))) {
+      answersInFlight++;
       res.once("close", () => {
-        postsInFlight--;
+        answersInFlight--;
         settledOne();
       });
     }
@@ -751,6 +768,22 @@ export async function startHttpEndpoint(hub: AccountSource, config: Config, endp
       .catch(next);
   });
 
+  // Signed links to originals (src/media-links.ts): only on a server with a public URL. The link is the
+  // capability, so no bearer token is asked; the route has a limiter of its own. Its answer is the file as
+  // it is, with the headers serveMediaLink sets: compression is serveMcp's, for /mcp alone.
+  const links = mediaLinksFor(config);
+  if (links !== null) {
+    const { rateLimit } = await import("express-rate-limit");
+    app.set("trust proxy", config.trustedProxies ?? ["loopback"]);
+    app.get(
+      MEDIA_LINK_ROUTE,
+      rateLimit({ windowMs: 15 * 60 * 1000, limit: 120, standardHeaders: true, legacyHeaders: false }),
+      (req: Request, res: Response, next: NextFunction) => {
+        serveMediaLink(hub, links, String(req.params.token ?? ""), res).catch(next);
+      }
+    );
+  }
+
   app.use(httpError);
   const server = createServer(
     {
@@ -775,23 +808,24 @@ export async function startHttpEndpoint(hub: AccountSource, config: Config, endp
     server.close();
   };
   /**
-   * Stop taking requests, let the POSTs under way answer for up to `ms` —
-   * a wait among them answers now with what it has — then close everything.
+   * Stop taking requests, let the POSTs and link downloads under way answer
+   * for up to `ms` — a wait among them answers now with what it has — then
+   * close everything.
    */
   const drain = async (ms: number): Promise<void> => {
     if (closed) return;
     draining = true;
     server.close();
     stopping.abort();
-    if (postsInFlight > 0 || callsInFlight > 0) {
+    if (answersInFlight > 0 || callsInFlight > 0) {
       let timer: ReturnType<typeof setTimeout> | undefined;
       await new Promise<void>((resolve) => {
         quiet = resolve;
         timer = setTimeout(resolve, ms);
       });
       clearTimeout(timer);
-      if (postsInFlight > 0 || callsInFlight > 0) {
-        log(`HTTP shutdown: ${callsInFlight} call(s) and ${postsInFlight} answer(s) still under way after ${Math.round(ms / 1000)} s; closing them`);
+      if (answersInFlight > 0 || callsInFlight > 0) {
+        log(`HTTP shutdown: ${callsInFlight} call(s) and ${answersInFlight} answer(s) still under way after ${Math.round(ms / 1000)} s; closing them`);
       }
     }
     onAbort();

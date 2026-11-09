@@ -7,10 +7,13 @@ accounts moves into `accounts/default/` the first time a wazap command runs.
 ```
 ~/.wazap/
   accounts.json     which accounts exist, and which is default
+  media-links.key   the secret that signs get_media's download links (0600), made
+                    the first time a server with WAZAP_PUBLIC_URL starts
   accounts.json.required  empty marker: missing policy must not reset permissions
   accounts/<id>/
     auth/           WhatsApp credentials — treat this like a password
-    media/          files saved by get_media
+    media/          files get_media saved for a local session (stdio, the daemon's
+                    bridge); a remote session never writes here
     wazap.sqlite    the account database: chats, contacts, messages, reactions,
                     receipts, transcripts, notes, recall vectors, deletion
                     barriers, the webhook outbox, scheduled messages and

@@ -1,17 +1,24 @@
 /**
  * A tool call the client cancels, or whose session closes, stops waiting:
  * wait_for_messages answers at once, a media download stops at its next
- * chunk, and a run several callers share goes on until every one has left.
+ * chunk (or its wait for a slot, or for the phone to upload expired media),
+ * a document read ends its worker, a native helper's queue lets it go, and a
+ * run several callers share goes on until every one has left.
  * The in-flight slot is given back when the handler settles, never before.
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { rmSync } from "node:fs";
+import { PassThrough, Readable } from "node:stream";
 import { setImmediate as turn } from "node:timers/promises";
 import { z } from "zod";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { orCancelled, SharedRun } from "../dist/cancel.js";
+import { documentText } from "../dist/documents.js";
+import { DownloadBudget } from "../dist/media-budget.js";
+import { Slots } from "../dist/native-run.js";
+import { downloadToMemory } from "../dist/service/media-download.js";
 import { startHttpEndpoint } from "../dist/server.js";
 import { createToolRegistrar } from "../dist/tool-runtime.js";
 import { registerTools } from "../dist/tools.js";
@@ -288,4 +295,137 @@ test("over HTTP, a cancelled call and a closed session both end the wait behind 
   assert.ok(waits[1].endedAt !== null && waits[1].endedAt - closedAt < 1_000, "closing the session ended its wait");
   await closing.client.close();
   await held;
+});
+
+const cancelledCall = (err) => err.code === "TIMEOUT" && /cancelled/.test(err.message);
+
+test("a download cancelled while it waits for a slot leaves the line, and the next in line takes its turn", async () => {
+  const budget = new DownloadBudget({ concurrent: 1, bytes: 1_000, waitMs: 5_000, idleMs: 1_000, totalMs: 5_000 });
+  const held = await budget.acquire(10);
+  const cancel = new AbortController();
+  const mine = budget.acquire(10, cancel.signal);
+  const next = budget.acquire(10);
+  const at = Date.now();
+  cancel.abort();
+  await assert.rejects(mine, cancelledCall);
+  assert.ok(Date.now() - at < 100, "at once, not after waitMs");
+  assert.equal(budget.usage.waiting, 1);
+  held();
+  (await next)();
+  assert.deepEqual(budget.usage, { running: 0, reserved: 0, waiting: 0 });
+  await assert.rejects(budget.acquire(10, cancel.signal), cancelledCall, "an already cancelled call never queues");
+});
+
+test("a download into memory stops at its next chunk on a cancel, with the cancellation and its slot back", async () => {
+  const budget = new DownloadBudget({ concurrent: 1, bytes: 1_000_000, waitMs: 1_000, idleMs: 2_000, totalMs: 5_000 });
+  const stream = new PassThrough();
+  const pump = setInterval(() => stream.write(Buffer.alloc(1024)), 10);
+  const cancel = new AbortController();
+  const download = downloadToMemory("M1", { open: async () => stream, stillThere: () => {} }, { cap: 10_000_000, budget, signal: cancel.signal });
+  await sleep(50);
+  cancel.abort();
+  await assert.rejects(download, cancelledCall);
+  clearInterval(pump);
+  assert.equal(stream.destroyed, true);
+  assert.deepEqual(budget.usage, { running: 0, reserved: 0, waiting: 0 });
+});
+
+test("get_media cancelled while the phone is asked for expired media stops waiting at once and stores nothing", async (t) => {
+  const { svc, sock } = connectedService(WhatsAppService, { prefix: "wazap-cancel-reupload-", id: ME, name: "Me" });
+  t.after(() => rmSync(svc.config.dataDir, { recursive: true, force: true }));
+  sock.ev.emit("messages.upsert", {
+    type: "notify",
+    messages: [
+      {
+        key: { remoteJid: ANA, fromMe: false, id: "OLD" },
+        message: { documentMessage: { mimetype: "text/plain", fileName: "nota.txt", fileLength: 9, url: "https://mmg.whatsapp.net/old", directPath: "/old", mediaKey: Buffer.alloc(32, 7) } },
+        messageTimestamp: Math.floor(Date.now() / 1000) - 90 * 86400,
+      },
+    ],
+  });
+  const sid = `false_${ANA}_OLD`;
+  svc.openMediaStream = async () => {
+    throw Object.assign(new Error("Failed to fetch stream"), { isBoom: true, output: { statusCode: 410 } });
+  };
+  let asked = 0;
+  sock.updateMediaMessage = () => {
+    asked++;
+    return new Promise(() => {});
+  };
+  const cancel = new AbortController();
+  const opened = svc.openMedia(sid, { noFile: true, signal: cancel.signal });
+  while (asked === 0) await sleep(5);
+  const at = Date.now();
+  cancel.abort();
+  await assert.rejects(opened, cancelledCall);
+  assert.ok(Date.now() - at < 200, "not the 20 s the phone is given");
+  assert.equal(svc.views.rawOf(svc.db.messages.get(sid)).message.documentMessage.directPath, "/old");
+  await svc.stop();
+});
+
+test("a cancelled document read ends its worker, and a cancelled wait for a native slot leaves the line", async () => {
+  const cancel = new AbortController();
+  const read = documentText("text", Buffer.from("de citit\n".repeat(200_000)), { from: 1, to: null }, 12_000, cancel.signal);
+  cancel.abort();
+  await assert.rejects(read, cancelledCall);
+  // The slots it held are free again: a read after it is not held up.
+  const after = await documentText("text", Buffer.from("salut"), { from: 1, to: null });
+  assert.match(after.text, /salut/);
+
+  const slots = new Slots(1);
+  let release;
+  const holding = slots.run(() => new Promise((resolve) => (release = resolve)));
+  const leaving = new AbortController();
+  let ran = false;
+  const waiting = slots.run(async () => {
+    ran = true;
+  }, leaving.signal);
+  const next = slots.run(async () => "next");
+  leaving.abort();
+  await assert.rejects(waiting, cancelledCall);
+  release();
+  await holding;
+  assert.equal(await next, "next");
+  assert.equal(ran, false, "the cancelled run never started");
+});
+
+test("a remote get_media cancelled mid-download answers with the cancellation at once, and the CDN is read no more", async (t) => {
+  const { svc, sock } = connectedService(WhatsAppService, { prefix: "wazap-cancel-get-", id: ME, name: "Me" });
+  t.after(() => rmSync(svc.config.dataDir, { recursive: true, force: true }));
+  const tools = new Map();
+  registerTools({ registerTool: (name, meta, handler) => tools.set(name, { meta, handler }) }, asToolSource(svc), { allowWrite: false, allowLocalFiles: false });
+  let pulls = 0;
+  svc.openMediaStream = async () =>
+    new Readable({
+      read() {
+        setTimeout(() => {
+          pulls++;
+          this.push(Buffer.alloc(64 * 1024));
+        }, 20);
+      },
+    });
+  sock.ev.emit("messages.upsert", {
+    type: "notify",
+    messages: [
+      {
+        key: { remoteJid: ANA, fromMe: false, id: "VID2" },
+        message: { videoMessage: { url: "https://mmg.whatsapp.net/v/x.enc", directPath: "/v/x.enc", mediaKey: Buffer.alloc(32, 1), mimetype: "video/mp4", fileLength: 50_000_000 } },
+        messageTimestamp: Math.floor(Date.now() / 1000),
+      },
+    ],
+  });
+  const cancel = new AbortController();
+  const { meta, handler } = tools.get("get_media");
+  const answer = handler(z.object(meta.inputSchema).parse({ message_id: `false_${ANA}_VID2` }), { signal: cancel.signal });
+  while (pulls < 2) await sleep(5);
+  const at = Date.now();
+  cancel.abort();
+  const result = await answer;
+  assert.equal(result.isError, true);
+  assert.match(result.content[0].text, /"error":"TIMEOUT"[\s\S]*cancelled/);
+  assert.ok(Date.now() - at < 500);
+  const atCancel = pulls;
+  await sleep(200);
+  assert.ok(pulls - atCancel <= 2, `${pulls - atCancel} more chunks read after the cancel`);
+  await svc.stop();
 });

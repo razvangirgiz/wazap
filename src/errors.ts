@@ -88,7 +88,7 @@ export const ERROR_GUIDE: Record<ErrorCode, string> = {
   NOT_A_PARTICIPANT: "The account is not in that group. Do not retry.",
   NOT_ADMIN: "The account is not an admin of that group. Do not retry.",
   GROUP_ANNOUNCEMENT_ONLY: "Only admins may post in that group. Do not retry.",
-  MEDIA_UNAVAILABLE: "WhatsApp no longer has that media; the sender must resend it. Do not retry.",
+  MEDIA_UNAVAILABLE: "WhatsApp and the phone no longer have that media: do what fix says (the phone online, or a resend).",
   MEDIA_ACCESS_DENIED:
     "This session cannot use host files: pass a public URL, forward a message, or get_media without save_to. Do not route around it.",
   FILE_NOT_FOUND: "No such file on the machine running wazap: check the path with the user.",

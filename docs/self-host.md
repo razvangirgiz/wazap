@@ -96,8 +96,11 @@ across the process, including stdio/bridges. Slots remain held until work settle
 not merely until a client disconnects. A call the client cancels
 (`notifications/cancelled`), or one whose session is closed, stops waiting,
 and the stream its answer would have taken ends at once:
-`wait_for_messages` answers at once, a media download stops at its next chunk,
-and a transcription stops being waited on. A transcription several callers
+`wait_for_messages` answers at once, a media download stops at its next chunk
+(or leaves the line for a download slot, or stops waiting for the phone to
+upload expired media), a document read ends its worker, a frame grab, page
+render or SVG drawing is killed or leaves its queue, and a transcription stops
+being waited on. A transcription several callers
 share (two sessions, or a call and the auto queue) goes on for the others; its
 download stops only when every one of them has cancelled, and a provider
 already running finishes and keeps its transcript. Its slot comes back as soon
@@ -111,15 +114,17 @@ is not held back. An answer under 1 KiB that is complete within 20 ms goes as
 it is; one still being written after 20 ms (a `wait_for_messages`, a slow
 tool) is streamed compressed whatever its size, which costs it about 20 bytes
 of framing. Nothing is compressed for a client that did not ask. The tool catalogue crosses the wire as 11 KB
-instead of 56 KB. The GET notification stream is never compressed.
+instead of 56 KB. The GET notification stream is never compressed, and neither is a download
+link's file (`/media/<token>`), which goes out as it is with its own headers.
 
 A restart (`SIGTERM` or `SIGINT`: `wazap update`, `wazap service restart`, a
 supervisor stopping the service) drains HTTP first. The listener closes at
 once, so a new connection is refused (through a tunnel, a 502); a request on
 a connection that was already open gets 503 with `Retry-After`. A
 `wait_for_messages` under way answers at once with what it has, and every
-other call under way, one whose client has left included, gets up to ten
-seconds to finish before the accounts stop. A call its client cancelled holds
+other call under way, one whose client has left included, and every download
+link's file still being fetched, gets up to ten seconds to finish before the
+accounts stop. A call its client cancelled holds
 nothing up: its answer stream has already ended. The client's session is
 revived by the next process. The units `wazap service
 install` writes allow 15 seconds for that (launchd's `ExitTimeOut`, systemd's
@@ -151,9 +156,21 @@ The tools return `MEDIA_ACCESS_DENIED` before looking up a path or touching a
 file. A write token grants WhatsApp writes, not access to the host filesystem.
 
 Remote clients can use public HTTP(S) media URLs, forward existing WhatsApp
-messages, and download attachments into the account's default media directory.
-Small downloaded images still return inline. Other attachments are saved on the
-server; there is no arbitrary-file upload/download endpoint.
+messages, and see attachments through `get_media`: an image as a view, a video as
+a contact sheet, a document as its text (see [Media for remote agents](tools.md#media-for-remote-agents)).
+Nothing is written to the server's disk for a remote call, and no server path is
+returned. There is no arbitrary-file upload/download endpoint.
+
+With `WAZAP_PUBLIC_URL` set, a remote `get_media` also returns `link`: the
+original file at `<public URL>/media/<token>`, valid for 30 minutes. The token
+is the only credential the route takes (it is signed with a secret kept in
+`media-links.key` in the data dir), so treat a link like the file. It is mainly
+for the person, who can tap it in the chat: claude.ai, ChatGPT and the API's MCP
+connector do not fetch URLs that came from a tool result, and Claude Code on the
+web reaches the tunnel only if its network access allows the host. Cursor's
+cloud agents and local CLIs can download it. A deleted or expired message, an
+expired link and a forged one all answer 404; the file always comes as a
+download, never rendered by the browser.
 
 Local stdio clients retain local file access. A local bridge gets it only through
 the private daemon credential stored in `daemon.json`, never through a public

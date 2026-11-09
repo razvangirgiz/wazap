@@ -178,7 +178,8 @@ test("two callers wanting the same recording share one upload", async () => {
 /** A download that takes `ms` and stops when its signal aborts, the way WhatsApp's stops at its next chunk. */
 function slowDownload(svc, ms) {
   const seen = { signals: [], stopped: 0 };
-  svc.mediaBuffer = (_sock, _id, _raw, _maxBytes, signal) => {
+  svc.mediaBuffer = (_sock, _id, _raw, _maxBytes, opts = {}) => {
+    const { signal } = opts;
     seen.signals.push(signal);
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => resolve(Buffer.from("not really an ogg file")), ms);

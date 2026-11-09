@@ -66,10 +66,35 @@ test("remote HTTP hides compatibility names but cached SDK calls remain validate
     assert.ok(!answer.isError, `${name}: ${allText(answer)}`);
     if (name === "search_messages") assert.equal(answer.structuredContent.messages[0].message_id, sid);
     if (name === "transcribe_audio") assert.equal(answer.structuredContent.text, "lista pentru transport");
-    if (name === "download_media") assert.ok(answer.content.some((block) => block.type === "image"));
+    if (name === "download_media") {
+      assert.ok(answer.content.some((block) => block.type === "image"));
+      assert.equal(answer.structuredContent.path, undefined, "a remote session is named no path");
+      assert.ok(!allText(answer).includes(f.svc.config.dataDir), "nor any of the data dir");
+    }
   }
   const blocked = await client.callTool({ name: "download_media", arguments: { message_id: image, save_to: "/unused" } });
   assert.equal(textError(blocked).error, "MEDIA_ACCESS_DENIED");
+});
+
+test("download_media honours detail and pages, which its schema inherits from get_media", async (t) => {
+  const f = fixture(t);
+  const { default: sharp } = await import("sharp");
+  const big = await sharp({ create: { width: 3000, height: 2000, channels: 3, background: "#c0c0c0" } }).jpeg().toBuffer();
+  const image = f.arrive(DAN, { imageMessage: { mimetype: "image/jpeg", fileLength: big.length } });
+  f.svc.mediaBuffer = async () => big;
+  assert.equal((await f.call("download_media", { message_id: image })).structuredContent.view.width, 1024);
+  const high = (await f.call("download_media", { message_id: image, detail: "high" })).structuredContent;
+  assert.equal(high.view.width, 2048);
+  assert.equal(high.view.detail, "high");
+
+  const { pdfOf } = await import("./media-fixtures.mjs");
+  const pdf = pdfOf([["unu"], ["doi"], ["trei"]]);
+  const document = f.arrive(DAN, { documentMessage: { mimetype: "application/pdf", fileName: "a.pdf", fileLength: pdf.length } });
+  f.svc.mediaBuffer = async () => pdf;
+  const second = (await f.call("download_media", { message_id: document, pages: "2" })).structuredContent;
+  assert.equal(second.document.pages, "2-2");
+  assert.equal(second.document_text, "--- page 2 ---\ndoi");
+  assert.equal(textError(await f.call("download_media", { message_id: document, pages: "x" })).error, "INVALID_ID");
 });
 
 test("contact search returns ambiguous candidates; exact message search ignores accents and obeys author/date", async (t) => {

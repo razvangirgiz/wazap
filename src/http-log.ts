@@ -74,7 +74,8 @@ export function httpRequestLog(req: Request, res: Response, next: NextFunction):
   const start = Date.now();
   const bytes = countBytes(res);
   const path = req.originalUrl.split(/[?#]/)[0] ?? "";
-  const route = ROUTES.has(path) ? path : "/other";
+  // A media link's path is its token, a capability: only the route is logged, whatever the case Express matched it in.
+  const route = ROUTES.has(path) ? path : /^\/media\//i.test(path) ? "/media/<redacted>" : "/other";
   const method = METHODS.has(req.method) ? req.method : "OTHER";
   const prefix = (): string => {
     const value: unknown =

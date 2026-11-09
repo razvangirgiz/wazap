@@ -70,6 +70,9 @@ async function boot(t, wa) {
   return { port, tool, post, sid: session.sid };
 }
 
+/** What get_media's openMedia gives a remote session for a file it shows nothing of: no path, its facts. */
+const OPENED = { mime: "text/plain", size: 4, source: "kept", rendition: { kind: "none", note: "No view or text is made of x.txt: only its facts." } };
+
 /** A wait_for_messages stub that honours the call's signal and the shutdown's. */
 function waitStub(reached) {
   return (opts) => {
@@ -99,11 +102,11 @@ test("a drain lets the call under way answer, ends a wait at once, refuses new w
   const downloading = reachable();
   const waiting = reachable();
   const { port, tool, post, sid } = await boot(t, {
-    downloadMedia: async () => {
+    openMedia: async () => {
       downloading.fire();
       await sleep(600);
       downloadFinished = Date.now();
-      return { path: "/tmp/x.txt", mime: "text/plain", size: 4, filename: "x.txt", inline_base64: null, source: "kept" };
+      return OPENED;
     },
     waitForMessages: (opts) => {
       waiting.fire();
@@ -149,7 +152,7 @@ test("a drain lets the call under way answer, ends a wait at once, refuses new w
 test("a call that outlasts the drain's bound is closed when the bound runs out", { timeout: 20_000 }, async (t) => {
   const downloading = reachable();
   const { tool } = await boot(t, {
-    downloadMedia: () => {
+    openMedia: () => {
       downloading.fire();
       return new Promise(() => {});
     },
@@ -236,11 +239,11 @@ test("a call whose client left still holds the drain until it settles", { timeou
   let sendFinished = null;
   const downloading = reachable();
   const { tool } = await boot(t, {
-    downloadMedia: async () => {
+    openMedia: async () => {
       downloading.fire();
       await sleep(600);
       sendFinished = Date.now();
-      return { path: "/tmp/x.txt", mime: "text/plain", size: 4, filename: "x.txt", inline_base64: null, source: "kept" };
+      return OPENED;
     },
   });
   let req;

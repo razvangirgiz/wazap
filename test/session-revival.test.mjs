@@ -20,6 +20,7 @@ import { HttpSessions, MCP_ENDED_SESSIONS_KEPT } from "../dist/http-sessions.js"
 import { replayHandshake } from "../dist/mcp-http.js";
 import { startHttpEndpoint } from "../dist/server.js";
 import { SessionIds, sessionIds } from "../dist/session-id.js";
+import { registerTools } from "../dist/tools.js";
 import { offlineConfig, stubAccountSource } from "./helpers.mjs";
 
 const wa = { getStatus: () => ({ status: "connected", status_since: new Date().toISOString() }) };
@@ -49,10 +50,10 @@ function dataDir(t) {
   return dir;
 }
 
-async function start(t, dir, { port = 0, openRead = false, readOnly = false, ...bounds } = {}) {
+async function start(t, dir, { port = 0, openRead = false, readOnly = false, source = wa, ...bounds } = {}) {
   const stop = new AbortController();
   t.after(() => stop.abort());
-  const bound = await startHttpEndpoint(stubAccountSource(wa), offlineConfig("wazap-revival-cfg-", { dataDir: dir, readOnly }), {
+  const bound = await startHttpEndpoint(stubAccountSource(source), offlineConfig("wazap-revival-cfg-", { dataDir: dir, readOnly }), {
     host: "127.0.0.1",
     port,
     openRead,
@@ -80,6 +81,44 @@ async function start(t, dir, { port = 0, openRead = false, readOnly = false, ...
   };
   return { port: bound, stop: () => stop.abort(), call };
 }
+
+test("a tool whose schema or description changed within one version gets the 404, never the stale catalogue", async (t) => {
+  // A single account's name is not in the instructions, but it is in the
+  // session-shape cache's key: each start below works its shape out afresh, as
+  // a new process would, with the same version and the same instructions.
+  const named = (name) => ({ getStatus: () => ({ status: "connected", status_since: new Date().toISOString(), account_name: name }) });
+  const dir = dataDir(t);
+  const before = await start(t, dir, { source: named("catalogue-before") });
+  const writer = await before.call("writer", undefined, initialize);
+  const reader = await before.call("reader", undefined, initialize);
+  before.stop();
+
+  // The same catalogue: revived.
+  const same = await start(t, dir, { source: named("catalogue-same") });
+  assert.equal((await same.call("reader", reader.sid, toolsList)).status, 200);
+  same.stop();
+
+  // get_media described otherwise (as when it gained detail and pages): the client's catalogue is stale.
+  const real = registerTools.catalogue;
+  registerTools.catalogue = (opts) => real(opts).map((tool) => (tool.name === "get_media" ? { ...tool, description: `${tool.description} Changed.` } : tool));
+  t.after(() => {
+    registerTools.catalogue = real;
+  });
+  const after = await start(t, dir, { source: named("catalogue-after") });
+  assert.equal((await after.call("writer", writer.sid, toolsList)).status, 404);
+  assert.equal((await after.call("reader", reader.sid, toolsList)).status, 404);
+  assert.equal((await after.call("reader", undefined, initialize)).status, 200, "a fresh initialize is served");
+});
+
+test("the catalogue a session id is signed with is the one tools/list answers, get_media's detail and pages included", async (t) => {
+  const server = await start(t, dataDir(t));
+  const session = await server.call("reader", undefined, initialize);
+  const listed = await server.call("reader", session.sid, toolsList);
+  const tools = JSON.parse(/^data: (.*)$/m.exec(listed.text)?.[1] ?? listed.text).result.tools;
+  assert.deepEqual(tools, JSON.parse(JSON.stringify(registerTools.catalogue({ allowWrite: false, legacyReads: true, allowLocalFiles: false }))));
+  const getMedia = tools.find((tool) => tool.name === "get_media");
+  assert.ok(getMedia.inputSchema.properties.detail && getMedia.inputSchema.properties.pages);
+});
 
 test("session ids carry their owner's mark, and the key that signs them is the owner's alone to read", async (t) => {
   const dir = dataDir(t);

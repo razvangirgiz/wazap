@@ -725,10 +725,89 @@ export interface MediaResult {
   mime: string;
   size: number;
   filename: string;
-  /** Base64 of images small enough to inline in the tool result. */
+  /** Base64 of the JPEG view of an image (src/images.ts), to attach to the tool result. */
   inline_base64: string | null;
   /** "kept": the copy wazap kept when the media arrived; "whatsapp": downloaded from WhatsApp now. */
   source: "kept" | "whatsapp";
+}
+
+/** How much of an image get_media's view keeps: standard (1,024 px) or high (2,048 px, for small print). */
+export type MediaDetail = "standard" | "high";
+
+/** Pages of a document, 1-based and inclusive; `to` null runs until the text budget is spent. */
+export interface PageRange {
+  from: number;
+  to: number | null;
+}
+
+export interface MediaOpenOptions {
+  /** Write the original into this absolute directory; <data-dir>/accounts/<id>/media when omitted. */
+  saveTo?: string;
+  /** Write no file at all: a remote session can never open one. */
+  noFile?: boolean;
+  detail?: MediaDetail;
+  pages?: PageRange;
+  /**
+   * The call was cancelled, or its session closed: the wait for a download
+   * slot, the download, a request to the phone and the work that draws or
+   * reads the file stop, and the call fails with the cancellation.
+   */
+  signal?: AbortSignal;
+}
+
+/** A JPEG made for the agent to look at. */
+export interface MediaPicture {
+  jpeg: Buffer;
+  width: number;
+  height: number;
+}
+
+/** What get_media shows of a message's media, beside the file itself. */
+export type MediaRendition =
+  /** An image (photo, sticker, image sent as a document), as a JPEG view. */
+  | (MediaPicture & {
+      kind: "image";
+      detail: MediaDetail;
+      original_width: number;
+      original_height: number;
+      frames?: number;
+      /** A long image shown cut into strips, side by side (columns) or one under another (rows). */
+      strips?: { count: number; layout: "columns" | "rows" };
+    })
+  /** A video, GIF or round video: frames across its length, tiled left to right, top to bottom. */
+  | (MediaPicture & { kind: "sheet"; frames_at: number[]; duration_seconds?: number })
+  /** One frame or the thumbnail WhatsApp shipped, when nothing better could be made. */
+  | (MediaPicture & { kind: "frame"; duration_seconds?: number })
+  /** A document's text, and a picture of its first asked page when there is one. */
+  | {
+      kind: "document";
+      format: string;
+      text: string | null;
+      /** Pages (a PDF), slides (a presentation) or parts (any other document longer than one answer) it has. */
+      pages_total?: number;
+      /** The pages, slides or parts whose text is returned. */
+      pages?: { from: number; to: number };
+      /** What `pages` counts here. */
+      unit?: "page" | "slide" | "part";
+      truncated: boolean;
+      /** The read failed (`note` says why), as opposed to a document with no text in it. */
+      unreadable?: boolean;
+      page_image?: MediaPicture & { page: number };
+      note?: string;
+    }
+  /** Nothing to show: `note` says why. */
+  | { kind: "none"; note: string };
+
+/** A message's media opened for get_media: the original's facts, where it was written (local calls), and what to show. */
+export interface OpenedMedia {
+  mime: string;
+  /** The original's bytes; when it was not downloaded (`source` absent), what its message states, if anything. */
+  size?: number;
+  /** Where the bytes came from; absent when nothing needed downloading (a Lottie sticker's thumbnail in a remote session). */
+  source?: "kept" | "whatsapp";
+  path?: string;
+  filename?: string;
+  rendition: MediaRendition;
 }
 
 /** How a caller spends a transcription. */
@@ -743,6 +822,8 @@ export interface TranscribeOptions {
    * provider already running finishes, its transcript kept.
    */
   signal?: AbortSignal;
+  /** A person asked: a recording WhatsApp's CDN let go is asked of the phone again. */
+  reupload?: boolean;
 }
 
 export interface TranscribeResult {
@@ -989,6 +1070,14 @@ export interface WhatsAppApi {
   getGroupInfo(groupId: string): Promise<GroupInfo>;
   /** With `signal`, a cancelled call stops the download instead of waiting for it. */
   downloadMedia(messageId: string, saveTo?: string, opts?: { signal?: AbortSignal }): Promise<MediaResult>;
+  /** The original once, written where `opts` says, and what an agent can see of it; `opts.signal` stops the work when the call is cancelled. */
+  openMedia(messageId: string, opts: MediaOpenOptions): Promise<OpenedMedia>;
+  /** The original's bytes for a download link: no file written, nothing derived; `signal` stops the download when the link's fetch goes away. */
+  mediaOriginal(messageId: string, opts?: { signal?: AbortSignal }): Promise<{ buffer: Buffer; mime: string; filename: string | null }>;
+  /** What a download link names a message by (src/media-links.ts): its row and a tag of its id; null when it is not stored. */
+  mediaLinkRef?(messageId: string): { row: number; tag: string } | null;
+  /** The live message a link names, by row and tag; null when it is gone or is not that message. */
+  mediaLinkTarget?(row: number, tag: string): string | null;
   transcribeAudio(messageId: string, language?: string, opts?: TranscribeOptions): Promise<TranscribeResult>;
   waitForMessages(opts: WaitOptions): Promise<WaitResult>;
   /** With `private`, a story of someone tagged #private comes without its words. */

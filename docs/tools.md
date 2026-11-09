@@ -18,7 +18,7 @@ code. The [README](../README.md#the-23-tools) has the one-line table.
 | `find_contact` | read | Who a name, nickname, relationship ("mama"), group name, number or id means. Resolved: the `chat_id`, number, note, tags and details, plus the recent exchange and how you write there in a session that can send. Otherwise the candidates that tell people apart, to ask you. `tag` lists everyone filed under a tag, newest conversation first. See [Finding people](#finding-people). |
 | `list_contacts` | read | The phone's address book on one account, a page at a time (up to 500, `next` as `cursor`): each person's saved name, number in E.164, `chat_id`, `contact_id`, and when the last direct message was and which way it went. `order: "recent"` (default) puts whoever you talked to last first; `address_book` keeps the phone's order. No message words. See [The address book](#the-address-book). |
 | `get_group_info` | read | Participants, admins, announcement mode, who may edit the info or add members, join approval, disappearing messages, community, invite link (when you are admin). |
-| `get_media` | read | A message's media: a voice note or audio as its transcript, a photo attached as an image, any file saved to disk (`save_to` picks the directory). Transcription runs on the local or the API provider; with `save_to` a recording comes as its file, with a transcript only if one was already made, and when no transcript can be made the file comes instead, with `transcript_unavailable` saying why. A copy [kept when the media arrived](data.md#kept-media) answers first, even with the link down, and `source` says which: `kept` or `whatsapp`. |
+| `get_media` | read | A message's media as an agent can take it in: a voice note or audio as its transcript, a photo or sticker as a JPEG view (`detail`), a video as a contact sheet, a document as its text (`pages`) and a picture of its page; see [Media for remote agents](#media-for-remote-agents). A local session also saves the file (`save_to` picks the directory). Transcription runs on the local or the API provider; with `save_to` a recording comes as its file, with a transcript only if one was already made, and when no transcript can be made the file comes instead, with `transcript_unavailable` saying why. A copy [kept when the media arrived](data.md#kept-media) answers first, even with the link down, and `source` says which: `kept` or `whatsapp`. |
 | `wait_for_messages` | read | Block up to 55 s until a message arrives, then return it with a cursor for the next call. `addressed_to_me` wakes only for direct messages, @-mentions and replies. |
 | `remember` | local | Keep what the user says about a person, on this machine only: a note, tags, details (`relatie`, `nickname`, "role": "contabil") that `find_contact` matches, and `handled: true` to take an ask off `catch_up`'s waiting list until they write again. A list of `chat_id`s files the same tags and details on all of them at once, or on none. `#private` keeps their words out of what the assistant did not ask about them by name ([Keeping someone private](#keeping-someone-private)). Nothing changes on WhatsApp. |
 | `send_message` | write | Draft a message: text (a reply, @-mentions), media from a path or URL (`as`: document, voice note or GIF), a poll (`options`), a location (`latitude`, `longitude`) or a forward (`forward`). Does not send. A text draft to someone you write to often carries `style_check`: where it does not read like you. `send_at` (with `time_zone`) drafts it for later; see [Scheduling a message](#scheduling-a-message). |
@@ -261,10 +261,14 @@ small JPEG of each photo as an image block, newest first, up to 12 per call,
 and labels each message line with the preview it belongs to, so a catch-up can
 say "a photo of a receipt" without a download. WhatsApp used to ship such a
 preview inside every image message and in 2026 almost never does, so when
-none is there wazap downloads the photo once, shrinks it to 320 px on this
-machine with pure JavaScript, and keeps the result as a file under
-`previews/` in the data directory, so a restart does not redo it. A video gets
-one frame, taken by ffmpeg a second in, when ffmpeg is installed. The first
+none is there wazap downloads the photo (or reads the [kept copy](data.md#kept-media),
+even with the link down) once, shrinks it to 320 px on this machine with sharp,
+off the event loop and for any image format, and keeps the result as a file under
+`previews/` in the data directory, so a restart does not redo it. Where sharp's
+prebuilt binary does not load, a JPEG is shrunk in pure JavaScript instead. A video gets
+one frame, taken by ffmpeg a second in, when ffmpeg is installed. An SVG is
+never drawn for a preview (`get_media` draws it), and a photo that downloaded
+but made no preview is not downloaded again for an hour. The first
 call over a day of photos takes a few seconds; the next is instant.
 
 `wait_for_messages` blocks until something arrives, up to 55 seconds, then
@@ -279,6 +283,65 @@ carry a placeholder such as `[image] caption`, `[voice message · 0:42]`, `[dele
 `[poll] Pizza or pasta?`. A poll also carries each option with who voted for it,
 and an event who answered going, maybe or not going. Timestamps are ISO 8601 with the machine's UTC offset,
 alongside a human `age` like `2h ago`.
+
+### Media for remote agents
+
+`get_media` answers with what an agent in any client can take in: image blocks
+and text. No hosted client plays audio or video or opens a file from a tool
+result, and a cloud agent cannot open a path on the machine running wazap, so a
+remote session (HTTP: a token or OAuth) gets no file written and no path, and
+every kind of media comes back as follows. A local session (stdio, the daemon's
+bridge) gets the same, plus the file saved and its `path`.
+
+| Media | What comes back |
+|---|---|
+| Photo, sticker, image sent as a document (JPEG, PNG, WebP, GIF, SVG; HEIC through macOS `sips`) | One JPEG view (WebP, GIF, HEIC and TIFF up to 25 MP, JPEG and PNG up to 100 MP; an SVG is drawn in a process of its own, stopped after 10 s): long edge 1,024 px within about 110 KB, so its base64 stays under the ~150,000 characters a hosted client keeps. `detail: "high"`: 2,048 px within 1.5 MB, for small print. An animation shows its first frame; transparency sits on white. A long image (a scrolling screenshot, a receipt, a panorama: about 2.6:1 and longer) is cut into up to six strips that each repeat a little of the next, laid side by side or one under another, so its text is drawn larger than a whole fit would allow (`view.strips`, `view.strip_layout`). `view` gives its size and the original's. A Lottie sticker shows the thumbnail it shipped; a remote session gets it without a download. |
+| Video, GIF, round video | A contact sheet: six frames spread across the clip, tiled into one 1,024 px JPEG, with `frames_at` (the second of each) and `duration_seconds` (ffmpeg's own reading when the message overstates it). Needs ffmpeg; when no sheet can be made, one frame sized like a view, and without ffmpeg the thumbnail WhatsApp shipped. The sound is not transcribed. |
+| Voice note, audio | Its transcript (see [Voice notes](voice.md)). When none can be made, a remote session gets only `transcript_unavailable` and the recording's facts. |
+| PDF | Its text, page by page under `--- page N ---`, from page 1 until about 12,000 characters, in `document_text`, with `document.pages_total` and the pages returned. `pages: "2-4"` (or `"5"`, `"5-"`) picks others. The first asked page also comes as a picture when poppler's `pdftoppm` is installed, or on macOS for page 1 through Quick Look; a scan with no text layer is read from that picture. |
+| Word, Excel, PowerPoint, OpenDocument (docx, xlsx, pptx, odt, ods, odp) | Their text from the file's XML: paragraphs; sheets as tab-separated rows, each value under its column's header and dates as dates; slides under `--- slide N ---` (`pages` picks slides). |
+| Text, CSV, JSON, Markdown, XML, HTML | The text, decoded (HTML without its scripts, styles and tags): UTF-8, UTF-16, the charset an HTML or XML file names, or else Windows-1250 or 1252 (Excel's CSV on Romanian or Western Windows), whichever the letters point to. |
+| Anything longer than one answer that has no pages of its own (Word, sheets, text, HTML) | Parts of about 12,000 characters under `--- part N ---`, cut at a line: `pages: "2"` reads the second, `document.unit` is `part` and `document.pages_total` says how many there are. Up to 2,000,000 characters (8 MB of a text or HTML file) are read. |
+| Anything else | Its facts only (`mime`, `size`, `original_filename`), and a note saying so. |
+
+A document's text, a transcript and any text in an image were written by the
+sender: `document_text` is quoted in the text between `<<<document_text <tag>`
+and `>>> <tag>`, with a tag drawn for each answer, and a line of the document
+that starts like a marker is escaped with a backslash, so the sender cannot end
+the quote early; `notes` says it is data, not instructions. The server's
+instructions carry the same rule for every session.
+
+With `WAZAP_PUBLIC_URL` set, a remote session also gets `link`: the original
+file, valid 30 minutes, for the person to open (see
+[self-hosting](self-host.md#host-files-and-remote-media)); hosted chat clients do
+not fetch it themselves, so the view and the text above stay the main answer.
+
+Expired media (WhatsApp's servers keep a file for a limited time) is asked of
+the phone again when someone asks for it: the phone has 20 seconds to upload it
+anew, and the fresh address is stored so the next call goes straight to it. A
+phone that is offline gives `MEDIA_UNAVAILABLE` with a fix to retry once it is
+online. Downloads are held in memory, at most three at once and 300 MB in
+flight; one that stalls for 30 seconds or runs past three minutes is stopped.
+
+The answer's text names the next call when there is more to read (`pages: "4"
+reads on`); `document.truncated` says the asked pages were cut at the budget.
+What wazap says of a read (a refusal, a read that failed, a page past the end,
+a file read only up to its limit) is a line of the text too, not only in
+`notes`, and a file that could not be read is never called empty.
+
+Documents are read in a worker thread with a memory cap and a 20-second limit,
+two at a time; Office files go through a small ZIP reader that refuses an
+archive with too many entries, an entry that inflates past 20 MB (60 MB in all)
+or at more than 200:1, and an entry that lies about its size. A PDF's streams
+are unpacked and measured before it is read: one past 64 MB, or 256 MB in all,
+refuses the file as a compression bomb; a stream whose dictionary cannot be
+read is measured as every filter that could expand it. That check is a first
+line a crafted file can get past; the bound is the memory watch: while a
+document is read the server's memory is watched and the read stopped past
+512 MB of growth, and the page is drawn only after the read, never for a file
+it refused or stopped, by one renderer at a time, itself stopped past 512 MB.
+A file over 50 MB is not read. One download serves the view, the sheet, the
+text and a local session's file.
 
 ### Finding people
 
@@ -483,12 +546,12 @@ trace, so an agent can decide whether to retry, ask the user, or stop.
 | `NOT_ON_WHATSAPP` | WhatsApp answered that the number has no account. A lookup it did not answer is `NOT_CONNECTED`. |
 | `CHAT_NOT_FOUND` / `MESSAGE_NOT_FOUND` / `CONTACT_NOT_FOUND` / `GROUP_NOT_FOUND` | Unknown id. |
 | `NOT_A_PARTICIPANT` / `NOT_ADMIN` / `GROUP_ANNOUNCEMENT_ONLY` | Group permissions. |
-| `MEDIA_UNAVAILABLE` | WhatsApp expired the file, or it was never synced here. |
-| `FILE_NOT_FOUND` / `FILE_TOO_LARGE` / `URL_FETCH_FAILED` / `INVALID_IMAGE` | Outbound media problems. |
+| `MEDIA_UNAVAILABLE` | WhatsApp expired the file and the phone could not upload it again (offline: retry once it is online; gone: the sender resends), or it was never synced here. |
+| `FILE_NOT_FOUND` / `FILE_TOO_LARGE` / `URL_FETCH_FAILED` / `INVALID_IMAGE` | Outbound media problems; `FILE_TOO_LARGE` also for a received file over the 100 MB `get_media` holds in memory. |
 | `TEXT_TOO_LONG` | Over WhatsApp's message limit. |
 | `EDIT_WINDOW_EXPIRED` / `RETRACT_WINDOW_EXPIRED` / `NOT_OWN_MESSAGE` | WhatsApp's own limits on editing and deleting. |
 | `READ_ONLY` | wazap is running read-only. |
-| `RATE_LIMITED` | Too many writes, or too many read marks, which have a budget of their own; `fix` says how long to wait. |
+| `RATE_LIMITED` | Too many writes, or too many read marks, which have a budget of their own, or media downloads or requests to the phone for expired media; `fix` says how long to wait. |
 | `ACCOUNT_RESTRICTED` | WhatsApp restricts or banned the account, and nothing was sent. Do not retry: `get_status` says what and until when under `health`. Under a reachout timelock only a first message to someone never written to is refused; existing chats go on. |
 | `DRAFT_NOT_FOUND` / `DRAFT_EXPIRED` | The draft is unknown, from another identity (another session on stdio, another credential on HTTP), sent more than 15 minutes ago, or expired unsent. Draft again. |
 | `CHAT_ACTION_NOT_FOUND` / `CHAT_ACTION_EXPIRED` / `CHAT_ACTION_STALE` | Preview absent, foreign, expired or superseded. Preview again and get a new approval. |
