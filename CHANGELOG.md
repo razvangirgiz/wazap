@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- **Tunnels stop dropping calls on idle sockets.** An idle keep-alive connection now stays open for 120 seconds instead of Node's 5, longer than cloudflared keeps one in its pool, so a tool call the tunnel sends on a pooled socket no longer races wazap closing it and comes back as a 502.
+
 ## 1.6.0
 
 - **Who someone is shows wherever they do.** The tags filed with `remember` ride beside the person in `list_chats`, a message's `sender` in `read_messages` and `search`, and `catch_up` (`waiting`, `direct`), next to the note: `Ana (+40 700 000 002) · #client · dosar deschis`.

@@ -66,7 +66,9 @@ not merely until a client disconnects. Retry once after pending work completes.
 
 The HTTP listener caps connections at 256, header receipt at ten seconds and
 request-body receipt at thirty seconds; this does not time out legitimate SSE
-streams or long-running tools. Anonymous loopback requests must have a loopback
+streams or long-running tools. An idle keep-alive connection stays open for
+120 seconds, longer than a tunnel keeps one in its pool (cloudflared: 90), so
+the tunnel never sends a request on a socket wazap is closing. Anonymous loopback requests must have a loopback
 Host name (on any port, so a mapped container port works) and, when supplied, a
 matching Origin; browser rebinding/cross-origin
 requests are refused. Always configure credentials for a proxy/tunnel. These

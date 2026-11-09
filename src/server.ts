@@ -25,6 +25,22 @@ const MCP_SESSION_TTL_MS = 60 * 60 * 1000;
 const MCP_SESSION_MAX = 64;
 const MCP_SESSION_SWEEP_MS = 5 * 60 * 1000;
 
+/**
+ * How long an idle keep-alive socket stays open. A tunnel (cloudflared keeps
+ * pooled origin connections for 90 s, tailscaled's proxy similarly) must
+ * always be the side that gives up an idle socket: if Node closed it first, a
+ * POST the tunnel sends on it at that moment would come back as a 502, and a
+ * proxy does not replay a POST. On Node 22 headersTimeout counts from a
+ * request's first byte, not from the socket's last activity, so an idle
+ * keep-alive socket outliving it is not cut, while headers that trickle in
+ * still are.
+ */
+export const HTTP_KEEP_ALIVE_MS = 120_000;
+/** Whole headers within this, or 408; slowloris protection. */
+export const HTTP_HEADERS_TIMEOUT_MS = 10_000;
+/** A whole request body within this; never cuts a response, however long it streams. */
+export const HTTP_REQUEST_TIMEOUT_MS = 30_000;
+
 function isAuthorized(header: string | undefined, expected: string): boolean {
   const prefix = "Bearer ";
   if (!header || !header.startsWith(prefix)) return false;
@@ -457,7 +473,15 @@ export async function startHttpEndpoint(hub: AccountSource, config: Config, endp
   });
 
   app.use(httpError);
-  const server = createServer({ headersTimeout: 10_000, requestTimeout: 30_000, maxHeaderSize: 16 * 1024 }, app);
+  const server = createServer(
+    {
+      headersTimeout: HTTP_HEADERS_TIMEOUT_MS,
+      requestTimeout: HTTP_REQUEST_TIMEOUT_MS,
+      keepAliveTimeout: HTTP_KEEP_ALIVE_MS,
+      maxHeaderSize: 16 * 1024,
+    },
+    app
+  );
   server.maxConnections = 256;
   const onAbort = (): void => {
     clearInterval(sweep);
