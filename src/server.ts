@@ -233,6 +233,11 @@ function isMediaLinkPath(path: string): boolean {
   return /^\/media\/[^/]+\/?$/i.test(path);
 }
 
+/** /mcp as Express routes it: in any case, with or without a trailing slash, so /mcp/ and /MCP are served as /mcp is. */
+function isMcpPath(path: string): boolean {
+  return /^\/mcp\/?$/i.test(path);
+}
+
 /** stdio, the daemon's loopback bridge and anonymous loopback reads: this machine's own clients, each named per call (client-name.ts). */
 const LOCAL_CLIENT = "local";
 
@@ -439,7 +444,7 @@ export async function startHttpEndpoint(hub: AccountSource, config: Config, endp
       res.status(503).json({ jsonrpc: "2.0", error: { code: -32000, message: "Server is restarting; retry shortly." }, id: null });
       return;
     }
-    if ((req.method === "POST" && req.path === "/mcp") || ((req.method === "GET" || req.method === "HEAD") && isMediaLinkPath(req.path))) {
+    if ((req.method === "POST" && isMcpPath(req.path)) || ((req.method === "GET" || req.method === "HEAD") && isMediaLinkPath(req.path))) {
       answersInFlight++;
       res.once("close", () => {
         answersInFlight--;

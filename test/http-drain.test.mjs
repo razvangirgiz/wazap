@@ -33,14 +33,14 @@ async function boot(t, wa) {
     credentials: [{ token: "w", write: true }],
     signal: stop.signal,
   });
-  /** A POST and its answer; `headers` adds to the request's, `sent` gets the request itself. */
-  const post = (body, sid, { headers = {}, sent } = {}) =>
+  /** A POST and its answer; `headers` adds to the request's, `sent` gets the request itself, `path` replaces /mcp. */
+  const post = (body, sid, { headers = {}, sent, path = "/mcp" } = {}) =>
     new Promise((resolve, reject) => {
       const req = request(
         {
           host: "127.0.0.1",
           port,
-          path: "/mcp",
+          path,
           method: "POST",
           headers: {
             "content-type": "application/json",
@@ -147,6 +147,32 @@ test("a drain lets the call under way answer, ends a wait at once, refuses new w
     fetch(`http://127.0.0.1:${port}/healthz`, { signal: AbortSignal.timeout(2_000) }),
     "the listener is closed afterwards"
   );
+});
+
+test("a call POSTed to /mcp/ or /MCP, which Express serves as /mcp, holds the drain until its answer is written", { timeout: 20_000 }, async (t) => {
+  // A connector set up with a trailing slash, or in another case, is served
+  // in full; its answer used to be cut off by a restart, the call itself
+  // done (a send sent) and its receipt lost.
+  for (const [id, path, headers] of [
+    [2, "/mcp/", {}],
+    [3, "/MCP", { "accept-encoding": "gzip" }],
+  ]) {
+    const downloading = reachable();
+    const { tool } = await boot(t, {
+      openMedia: async () => {
+        downloading.fire();
+        await sleep(300);
+        return OPENED;
+      },
+    });
+    const answer = tool(id, "get_media", { message_id: `false_${CHAT}_M1` }, { path, headers }).catch((err) => ({ error: err.code }));
+    await downloading.reached;
+    const drained = drainHttpEndpoints(5_000);
+    const answered = await answer;
+    await drained;
+    assert.equal(answered.status, 200, `${path}: ${answered.error ?? answered.status}`);
+    assert.match(answered.text, /x\.txt/, `${path}: the answer arrived whole`);
+  }
 });
 
 test("a call that outlasts the drain's bound is closed when the bound runs out", { timeout: 20_000 }, async (t) => {
