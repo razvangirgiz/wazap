@@ -529,11 +529,11 @@ trace, so an agent can decide whether to retry, ask the user, or stop.
 | `CHAT_NOT_FOUND` / `MESSAGE_NOT_FOUND` / `CONTACT_NOT_FOUND` / `GROUP_NOT_FOUND` | Unknown id. |
 | `NOT_A_PARTICIPANT` / `NOT_ADMIN` / `GROUP_ANNOUNCEMENT_ONLY` | Group permissions. |
 | `MEDIA_UNAVAILABLE` | WhatsApp expired the file and the phone could not upload it again (offline: retry once it is online; gone: the sender resends), or it was never synced here. |
-| `FILE_NOT_FOUND` / `FILE_TOO_LARGE` / `URL_FETCH_FAILED` / `INVALID_IMAGE` | Outbound media problems. |
+| `FILE_NOT_FOUND` / `FILE_TOO_LARGE` / `URL_FETCH_FAILED` / `INVALID_IMAGE` | Outbound media problems; `FILE_TOO_LARGE` also for a received file over the 100 MB `get_media` holds in memory. |
 | `TEXT_TOO_LONG` | Over WhatsApp's message limit. |
 | `EDIT_WINDOW_EXPIRED` / `RETRACT_WINDOW_EXPIRED` / `NOT_OWN_MESSAGE` | WhatsApp's own limits on editing and deleting. |
 | `READ_ONLY` | wazap is running read-only. |
-| `RATE_LIMITED` | Too many writes, or too many read marks, which have a budget of their own; `fix` says how long to wait. |
+| `RATE_LIMITED` | Too many writes, or too many read marks, which have a budget of their own, or media downloads or requests to the phone for expired media; `fix` says how long to wait. |
 | `ACCOUNT_RESTRICTED` | WhatsApp restricts or banned the account, and nothing was sent. Do not retry: `get_status` says what and until when under `health`. Under a reachout timelock only a first message to someone never written to is refused; existing chats go on. |
 | `DRAFT_NOT_FOUND` / `DRAFT_EXPIRED` | The draft is unknown, from another identity (another session on stdio, another credential on HTTP), sent more than 15 minutes ago, or expired unsent. Draft again. |
 | `CHAT_ACTION_NOT_FOUND` / `CHAT_ACTION_EXPIRED` / `CHAT_ACTION_STALE` | Preview absent, foreign, expired or superseded. Preview again and get a new approval. |
