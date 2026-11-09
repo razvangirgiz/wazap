@@ -49,6 +49,12 @@ export const HTTP_KEEP_ALIVE_MS = 120_000;
 export const HTTP_HEADERS_TIMEOUT_MS = 10_000;
 /** A whole request body within this; never cuts a response, however long it streams. */
 export const HTTP_REQUEST_TIMEOUT_MS = 30_000;
+/**
+ * How often Node looks for requests past those two bounds. Its default, 30 s,
+ * let headers trickle in for up to 40 s; it walks only requests still being
+ * received, so a second costs next to nothing.
+ */
+export const HTTP_TIMEOUT_CHECK_MS = 1_000;
 
 function isAuthorized(header: string | undefined, expected: string): boolean {
   const prefix = "Bearer ";
@@ -750,6 +756,7 @@ export async function startHttpEndpoint(hub: AccountSource, config: Config, endp
     {
       headersTimeout: HTTP_HEADERS_TIMEOUT_MS,
       requestTimeout: HTTP_REQUEST_TIMEOUT_MS,
+      connectionsCheckingInterval: HTTP_TIMEOUT_CHECK_MS,
       keepAliveTimeout: HTTP_KEEP_ALIVE_MS,
       maxHeaderSize: 16 * 1024,
     },
