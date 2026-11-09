@@ -307,6 +307,22 @@ export class AccountGroups {
     return meta;
   }
 
+  /**
+   * What Baileys addresses a group message with (its cachedGroupMetadata): the
+   * metadata this cache holds, so a send to a group costs no metadata round
+   * trip to WhatsApp. A group not cached yet is read once and kept; an entry
+   * goes when its participants change (group-participants.update) or wazap
+   * changes the group. Undefined when it cannot be read: Baileys then asks
+   * WhatsApp itself, as it did before, and reports what it says.
+   */
+  async forSend(jid: string): Promise<GroupMetadata | undefined> {
+    const key = this.identity.canonical(jid);
+    const cached = this.groupCache.get(key);
+    if (cached !== undefined) return cached;
+    if (!isGroupId(key) || this.unreadableGroups.has(key)) return undefined;
+    return this.groupMeta(key).catch(() => undefined);
+  }
+
   cacheGroup(jid: string, meta: GroupMetadata): void {
     this.groupCache.set(jid, meta);
     this.host.learnGroup(meta);

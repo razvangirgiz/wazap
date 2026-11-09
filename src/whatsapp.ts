@@ -19,7 +19,7 @@ import { setTimeout as sleep } from "node:timers/promises";
 import { downloadMediaMessage, type BinaryNode, type WAMessage, type WASocket } from "baileys";
 import type { ILogger } from "baileys/lib/Utils/logger.js";
 import { accountPolicy, type AccountRecord } from "./accounts.js";
-import { clearAuth, CredentialsReadError, readLinkedAccount, useAtomicAuthState, type LinkedAccount } from "./auth-state.js";
+import { cachedAuthState, clearAuth, CredentialsReadError, readLinkedAccount, useAtomicAuthState, type LinkedAccount } from "./auth-state.js";
 import {
   type CatchupQuote,
   type CatchupScan,
@@ -637,7 +637,8 @@ export class WhatsAppService implements WhatsAppApi {
       const generation = ++this.generation;
       this.socketOpenedAt = Date.now();
       const sock = socketFactory.open({
-        auth: state,
+        // Signal keys from memory, written through to the files.
+        auth: cachedAuthState(state, silentLogger),
         logger: silentLogger,
         browser: WA_BROWSER,
         syncFullHistory: this.config.syncFullHistory,
@@ -645,6 +646,8 @@ export class WhatsAppService implements WhatsAppApi {
         generateHighQualityLinkPreview: false,
         // Retries and poll decryption ask for a message the account already has.
         getMessage: async (key) => this.views.storedProto(key),
+        // A send to a group addresses its members from the group cache, not a fresh metadata query.
+        cachedGroupMetadata: (jid) => this.groups.forSend(jid),
       });
       this.sockClient = sock;
       this.wireEvents(sock, generation);
