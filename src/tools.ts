@@ -1776,12 +1776,17 @@ function readWindow(since: string | undefined, until: string | undefined): ReadW
 }
 
 /**
- * What a window read must say beside its messages: that more are in it, or
- * that it reaches back past the stored history, with the id that asks the
- * phone for what came before: an empty window is then not proof of nothing.
+ * What a read must say beside its messages: that the walk past what `types`
+ * leave out stopped at its bound, with the id to go on from; for a window,
+ * that more are in it, or that it reaches back past the stored history, with
+ * the id that asks the phone for what came before: an empty window is then
+ * not proof of nothing.
  */
 function windowNoteOf(result: ChatRead, span: string, untilMs: number | undefined): string | null {
   const window = result.window;
+  if (result.scanStoppedAt !== undefined) {
+    return `This read looked through as many messages as one read may for these types and stopped before ${window === undefined ? "the chat's" : "the window's"} start: older messages may match. read_messages again with before "${result.scanStoppedAt}" and everything else the same goes on from there; do not say there are no more.`;
+  }
   if (window === undefined) return null;
   if (window.more) return "The window holds older messages than these: read_messages again with before (the oldest message_id here) and the same since/until, or raise limit.";
   if (window.startsInside !== true) return null;

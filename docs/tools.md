@@ -349,6 +349,13 @@ history. An empty window then says the phone may hold its messages, never that
 there are none. A `since` before 1970 reads from 1970; one past the year 2242
 is refused.
 
+With `types`, one read looks through at most 10,000 messages for the ones it
+keeps. When it stops there with fewer than `limit` and older messages still
+stored, the answer says so (`more_in_window` too, in a window) and names the
+oldest message it looked at: `before` with that id and everything else the same
+goes on from there, without asking the phone. A short page is then never the
+whole of a window, nor the start of the chat.
+
 `wait_for_messages` blocks until something arrives, up to 55 seconds, then
 returns it with a `cursor`. Calling it again with that cursor replays whatever
 landed in between, so an agent can sit in a loop and miss nothing. With

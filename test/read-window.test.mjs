@@ -197,3 +197,55 @@ test("a window and types together: what Ana sent as photos and documents yesterd
   const result = await call("read_messages", { chat_id: ANA, since: dayOf(-1), until: dayOf(-1), types: ["image", "document"] });
   assert.deepEqual(result.structuredContent.messages.map((m) => m.message_id), [photo, pdf]);
 });
+
+test("types past the bound of one read's walk: the answer says it stopped and where to go on, never a complete-looking none", async (t) => {
+  const { call, arrive, sock } = setup(t);
+  const asked = [];
+  sock.fetchMessageHistory = async (count, key) => {
+    asked.push(key.id);
+    setImmediate(() => sock.ev.emit("messaging-history.set", { chats: [], contacts: [], messages: [], isLatest: false }));
+    return "history";
+  };
+  const start = Date.now() - 20 * DAY;
+  arrive("înainte de fereastră", start - DAY);
+  const first = arrive("", start + 1_000, { imageMessage: { mimetype: "image/jpeg", caption: "contorul" } });
+  // More texts after it than one read walks past a type filter (10,000).
+  for (let batch = 0; batch < 21; batch++) {
+    const messages = Array.from({ length: 500 }, (_, i) => ({
+      key: { remoteJid: ANA, fromMe: false, id: `T${batch}-${i}` },
+      message: { conversation: `text ${batch}-${i}` },
+      messageTimestamp: Math.floor((start + 60_000 + (batch * 500 + i) * 1_000) / 1_000),
+    }));
+    sock.ev.emit("messages.upsert", { type: "append", messages });
+  }
+  const last = arrive("", Date.now() - 60_000, { imageMessage: { mimetype: "image/jpeg", caption: "de azi" } });
+  const since = new Date(start).toISOString();
+
+  // The newest photo fills the page; the probe for one more stops at the bound: more_in_window, not a finished window.
+  const page = await call("read_messages", { chat_id: ANA, since, types: ["image"], limit: 1 });
+  assert.deepEqual(page.structuredContent.messages.map((m) => m.message_id), [last]);
+  assert.equal(page.structuredContent.more_in_window, true);
+
+  // Paging on from it walks to the bound and finds no photo: an empty page that says so, with the id to go on from.
+  const stopped = await call("read_messages", { chat_id: ANA, since, types: ["image"], before: last });
+  assert.equal(stopped.structuredContent.count, 0);
+  assert.equal(stopped.structuredContent.more_in_window, true);
+  assert.equal(stopped.structuredContent.older, undefined, "older messages are stored: the phone is not asked");
+  const note = stopped.structuredContent.notes.find((n) => /stopped before the window's start/.test(n));
+  assert.ok(note, JSON.stringify(stopped.structuredContent.notes));
+  const from = /before "([^"]+)"/.exec(note)[1];
+  assert.match(stopped.content[0].text, /no messages found\. .*stopped before the window's start: older messages may match/);
+  const rest = await call("read_messages", { chat_id: ANA, since, types: ["image"], before: from });
+  assert.deepEqual(rest.structuredContent.messages.map((m) => m.message_id), [first]);
+  assert.equal(rest.structuredContent.more_in_window, undefined);
+  assert.equal(rest.structuredContent.notes, undefined);
+
+  // The same walk from the newest, a window or none: told, and never the phone asked while older messages are stored.
+  const window = await call("read_messages", { chat_id: ANA, since, types: ["image"], before: last, limit: 5 });
+  assert.equal(window.structuredContent.more_in_window, true);
+  const whole = await call("read_messages", { chat_id: ANA, types: ["image"], before: last });
+  assert.equal(whole.structuredContent.count, 0);
+  assert.equal(whole.structuredContent.more_in_window, undefined);
+  assert.ok(whole.structuredContent.notes.some((n) => n.includes(`stopped before the chat's start: older messages may match. read_messages again with before "${from}"`)));
+  assert.deepEqual(asked, []);
+});

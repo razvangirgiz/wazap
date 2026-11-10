@@ -967,6 +967,13 @@ export interface ChatRead extends Synced<MessageView[]> {
    * nothing of the chat is stored).
    */
   window?: { more: boolean; storedFrom: number | null; storedFromId?: string; startsInside?: true };
+  /**
+   * Set when `types` left the page short and the walk past what they leave
+   * out stopped at its bound with older messages still stored: the id of the
+   * oldest message it looked at, which `before` goes on from. Older messages
+   * may still match; the page is not all there is.
+   */
+  scanStoppedAt?: string;
 }
 
 /** A keyword search's messages, and where the storage scan limit stopped it when it did. */

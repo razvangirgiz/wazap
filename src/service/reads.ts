@@ -80,6 +80,11 @@ const UNANSWERED_SCAN = 30;
 /** Messages read_messages walks past a type filter before it answers with what it found. */
 const TYPE_FILTER_SCAN = 10_000;
 
+/** Where read_messages' bounded walk stopped, when it did: the id `before` goes on from. */
+function scanStop(stoppedAt: StoredMessage | undefined): Pick<ChatRead, "scanStoppedAt"> {
+  return stoppedAt === undefined ? {} : { scanStoppedAt: stoppedAt.sid };
+}
+
 /** Post-filters (private sources, literal prefixes, stories) must not turn small searches into full-history scans. */
 const SEARCH_FILTER_SCAN = 2_000;
 const SEARCH_FILTER_BATCH = 64;
@@ -179,8 +184,12 @@ export class AccountReads {
       const windowed = window.sinceMs !== undefined || window.untilMs !== undefined;
 
       if (before === undefined) {
-        const page = this.pageOf(jid, limit, undefined, types, window);
-        const read: ChatRead = { ...this.host.synced(this.views.viewsOfStored(page)), ...(windowed ? this.windowFacts(jid, page, limit, types, window) : {}) };
+        const { page, stoppedAt } = this.walk(jid, limit, undefined, types, window);
+        const read: ChatRead = {
+          ...this.host.synced(this.views.viewsOfStored(page)),
+          ...scanStop(stoppedAt),
+          ...(windowed ? this.windowFacts(jid, page, limit, types, window, stoppedAt) : {}),
+        };
         // The newest page is where a send handed to WhatsApp would show: until its echo comes, say it may be on its way.
         const unconfirmed = types === undefined && window.untilMs === undefined ? this.unconfirmedSends(jid) : [];
         return unconfirmed.length === 0 ? read : { ...read, unconfirmedSends: unconfirmed };
@@ -188,8 +197,15 @@ export class AccountReads {
 
       const anchor = this.views.storedOrThrow(before);
       const inChat = this.storage.db.identity.chat(jid)?.jid === anchor.chatJid;
-      let older = inChat ? this.pageOf(jid, limit, anchor.id, types, window) : [];
-      if (older.length > 0) return { ...this.host.synced(this.views.viewsOfStored(older)), ...(windowed ? this.windowFacts(jid, older, limit, types, window) : {}) };
+      const stored = inChat ? this.walk(jid, limit, anchor.id, types, window) : { page: [] };
+      // A walk the scan bound stopped has not reached what is stored before it: the phone is not asked, the page says where to go on.
+      if (stored.page.length > 0 || stored.stoppedAt !== undefined) {
+        return {
+          ...this.host.synced(this.views.viewsOfStored(stored.page)),
+          ...scanStop(stored.stoppedAt),
+          ...(windowed ? this.windowFacts(jid, stored.page, limit, types, window, stored.stoppedAt) : {}),
+        };
+      }
       let asked = anchor;
       if (inChat && windowed) {
         // A window whose start is already stored ends here: anything older than it is outside, and the phone is not asked for it.
@@ -203,12 +219,13 @@ export class AccountReads {
         if (oldest !== null) asked = oldest;
       }
       await this.host.fetchOlder(sock, asked, limit);
-      older = inChat ? this.pageOf(jid, limit, anchor.id, types, window) : [];
+      const fetched = inChat ? this.walk(jid, limit, anchor.id, types, window) : { page: [] };
       // The phone may hold more than it sent in time: an empty answer says it was asked, never that the chat starts here.
       return {
-        ...this.host.synced(this.views.viewsOfStored(older)),
-        older: { askedPhone: true, received: older.length },
-        ...(windowed ? this.windowFacts(jid, older, limit, types, window, asked.id) : {}),
+        ...this.host.synced(this.views.viewsOfStored(fetched.page)),
+        older: { askedPhone: true, received: fetched.page.length },
+        ...scanStop(fetched.stoppedAt),
+        ...(windowed ? this.windowFacts(jid, fetched.page, limit, types, window, fetched.stoppedAt, asked.id) : {}),
       };
     });
   }
@@ -225,10 +242,24 @@ export class AccountReads {
    * `since`), where that history starts and the id it starts with, whatever
    * `types` kept: the phone may hold what came before. The id is left out
    * when the phone was just asked from it (`askedFrom`) and sent nothing older.
+   * A walk the scan bound stopped (`stoppedAt`) has more of the window to
+   * read, and so has a full page whose probe for one more was stopped by it.
    */
-  private windowFacts(jid: string, page: readonly StoredMessage[], limit: number, types: MessageType[] | undefined, window: ReadWindow, askedFrom?: number): Pick<ChatRead, "window"> {
+  private windowFacts(
+    jid: string,
+    page: readonly StoredMessage[],
+    limit: number,
+    types: MessageType[] | undefined,
+    window: ReadWindow,
+    stoppedAt: StoredMessage | undefined,
+    askedFrom?: number
+  ): Pick<ChatRead, "window"> {
     const oldest = page[0];
-    const more = page.length >= limit && oldest !== undefined && this.pageOf(jid, 1, oldest.id, types, window).length > 0;
+    const probe = () => {
+      const next = this.walk(jid, 1, oldest!.id, types, window);
+      return next.page.length > 0 || next.stoppedAt !== undefined;
+    };
+    const more = stoppedAt !== undefined || (page.length >= limit && oldest !== undefined && probe());
     if (more || (window.sinceMs !== undefined && this.storedBefore(jid, idLowerBound(window.sinceMs)))) return { window: { more, storedFrom: null } };
     const first = this.storage.db.messages.coverage(jid).oldest;
     const from = first === null || first.id === askedFrom ? {} : { storedFromId: first.sid };
@@ -254,9 +285,11 @@ export class AccountReads {
   /**
    * The newest `limit` messages of a chat older than `before`, oldest first.
    * A type filter pages on past what it leaves out, so `limit` counts
-   * messages the caller asked for, up to a bounded walk.
+   * messages the caller asked for, up to a bounded walk; a walk that bound
+   * stops short of `limit` with older messages still stored names the oldest
+   * message it looked at (`stoppedAt`), which `before` goes on from.
    */
-  private pageOf(jid: string, limit: number, before: number | undefined, types?: MessageType[], window: ReadWindow = {}): StoredMessage[] {
+  private walk(jid: string, limit: number, before: number | undefined, types?: MessageType[], window: ReadWindow = {}): { page: StoredMessage[]; stoppedAt?: StoredMessage } {
     const db = this.storage.db;
     const wanted = types === undefined || types.length === 0 ? null : new Set<string>(types);
     const out: StoredMessage[] = [];
@@ -277,10 +310,11 @@ export class AccountReads {
         out.push(message);
         if (out.length >= limit) break;
       }
-      if (out.length >= limit || page.nextBefore === null || walked >= TYPE_FILTER_SCAN) break;
+      if (out.length >= limit || page.nextBefore === null) break;
+      if (walked >= TYPE_FILTER_SCAN) return { page: out.reverse(), stoppedAt: page.items.at(-1)! };
       cursor = page.nextBefore;
     }
-    return out.reverse();
+    return { page: out.reverse() };
   }
 
   getRecentMessages(
