@@ -168,10 +168,11 @@ nothing is sent), without fetching the URL again.
 
 Whatever its source, a photo, video or recording goes as WhatsApp shows its
 own only in a type WhatsApp's viewer and players take (JPEG, PNG, WebP or GIF;
-MP4, MOV or 3GP; MP3, M4A, AAC, AMR or Ogg). Any other, HEIC, WebM, MKV, AVI
-and WAV among them, goes as a document with its caption: sent as a photo or a
-video, WhatsApp would label it JPEG or MP4 and the recipient's phone would not
-open it.
+MP4, MOV or 3GP; MP3, M4A, AAC, AMR or Ogg). Any other, HEIC, AVIF, WebM, MKV,
+AVI and WAV among them, goes as a document with its caption: sent as a photo or
+a video, WhatsApp would label it JPEG or MP4 and the recipient's phone would not
+open it. An MP4-family file whose brand says nothing of what it is takes its
+declared type or its name's, never a video's by default.
 
 **A file of the agent's own.** A cloud agent with a file and no public URL
 for it (a claude.ai attachment, a file a cloud sandbox made) passes it in the
@@ -179,8 +180,9 @@ call: `data_base64` (plain or URL-safe base64, line breaks allowed, or a
 `data:<type>;base64,` URL) with `filename`, the name the recipient sees, and
 `mime` when it knows the type. Up to 5 MB once decoded; a larger file is
 refused with `FILE_TOO_LARGE` and the fix to pass it as a `url`. It is kept and
-previewed like a URL's file, its type told by its bytes, then its name, then
-`mime`, and sent byte for byte, `send_at` included. It is one source among
+previewed like a URL's file, its type told by its bytes, else by `mime`, else
+by its name (a ZIP is the Office or OpenDocument file its name, or else `mime`,
+says), and sent byte for byte, `send_at` included. It is one source among
 `file_path`, `url` and `data_base64`: pass one. Over HTTP the request carrying
 it must come from a write credential and declare its length (every HTTP client
 does for a JSON body); see [Request budgets](self-host.md#request-budgets).

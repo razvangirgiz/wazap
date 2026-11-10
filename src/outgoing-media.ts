@@ -107,15 +107,16 @@ export function safeFilename(name: string, mime: string): string {
 /**
  * What a file is, by its first bytes when they say it, else by the type it was
  * declared with (a server's Content-Type, an agent's mime), else by its name.
- * A ZIP is an Office or OpenDocument file when its name says so.
+ * A ZIP is an Office or OpenDocument file when its name says so, or, for a
+ * name without a type, when its declared type is one built on ZIP.
  */
 export function sniffMime(buffer: Buffer, declared: string | null, filename: string): string {
   const byName = guessMime(filename);
   const magic = magicMime(buffer);
-  if (magic === "application/zip" && byName !== "application/octet-stream") return byName;
-  if (magic !== null) return magic;
   const given = declared?.split(";")[0]?.trim().toLowerCase() ?? "";
   const stated = /^[a-z]+\/[a-z0-9.+-]+$/.test(given) && given !== "application/octet-stream" ? given : null;
+  if (magic === "application/zip") return byName !== "application/octet-stream" ? byName : stated !== null && zipBased(stated) ? stated : magic;
+  if (magic !== null) return magic;
   // An MP3 without its ID3 tag starts with a frame header, which is only a few bits a text or binary file can start
   // with too: it names the file only when neither its declared type nor its name says it is something else.
   if (mpegFrame(buffer) && [stated, byName].every((named) => named === null || named === "application/octet-stream" || named.startsWith("audio/"))) {
@@ -139,6 +140,67 @@ function mpegFrame(b: Buffer): boolean {
   return version !== 0x01 && (layer === 0x01 || layer === 0x02) && bitrate !== 0x00 && bitrate !== 0x0f && sampleRate !== 0x03;
 }
 
+/** Types whose files are ZIP archives: Office's, OpenDocument's, macro-enabled Office, and any `+zip`. */
+function zipBased(type: string): boolean {
+  return (
+    /^application\/(vnd\.openxmlformats-officedocument\.|vnd\.oasis\.opendocument\.|vnd\.ms-[a-z]+\.[a-z.]*macroenabled\.12$)/.test(type) ||
+    type.endsWith("+zip") ||
+    ["application/zip", "application/java-archive", "application/vnd.android.package-archive", "application/vnd.google-earth.kmz"].includes(type)
+  );
+}
+
+/** HEIF brands of a still image or a sequence of them (a HEIC photo, a burst), as an ISO media file names them. */
+const HEIF_BRANDS = new Set(["heic", "heix", "heim", "heis", "hevc", "hevx", "hevm", "hevs", "mif1", "msf1", "mif2"]);
+
+/** ISO media brands that say what the file is; a brand not here says nothing of it. */
+const ISO_BRANDS: Record<string, string> = {
+  "qt  ": "video/quicktime",
+  "M4A ": "audio/mp4",
+  "M4B ": "audio/mp4",
+  "M4P ": "audio/mp4",
+  "F4A ": "audio/mp4",
+  "F4B ": "audio/mp4",
+  "crx ": "image/x-canon-cr3",
+  isom: "video/mp4",
+  iso2: "video/mp4",
+  iso3: "video/mp4",
+  iso4: "video/mp4",
+  iso5: "video/mp4",
+  iso6: "video/mp4",
+  mp41: "video/mp4",
+  mp42: "video/mp4",
+  mp71: "video/mp4",
+  avc1: "video/mp4",
+  dash: "video/mp4",
+  mmp4: "video/mp4",
+  "M4V ": "video/mp4",
+  M4VH: "video/mp4",
+  M4VP: "video/mp4",
+  MSNV: "video/mp4",
+  XAVC: "video/mp4",
+  "f4v ": "video/mp4",
+};
+
+/**
+ * An ISO media file (MP4 and its family: MOV, M4A, HEIC, AVIF, 3GP) by its
+ * brands, the major one and then those it is compatible with: an AVIF or HEIF
+ * image by any of them, else the first that says what it is. None that does
+ * is null: the declared type or the name says it, or it goes as a document.
+ */
+function isoMediaMime(b: Buffer): string | null {
+  const boxEnd = Math.min(b.length, Math.max(16, b.readUInt32BE(0)), 4096);
+  const brands = [b.subarray(8, 12).toString("latin1")];
+  for (let at = 16; at + 4 <= boxEnd; at += 4) brands.push(b.subarray(at, at + 4).toString("latin1"));
+  if (brands.some((brand) => brand === "avif" || brand === "avis")) return "image/avif";
+  if (brands.some((brand) => HEIF_BRANDS.has(brand))) return "image/heic";
+  for (const brand of brands) {
+    if (ISO_BRANDS[brand] !== undefined) return ISO_BRANDS[brand]!;
+    if (brand.startsWith("3gp")) return "video/3gpp";
+    if (brand.startsWith("3g2")) return "video/3gpp2";
+  }
+  return null;
+}
+
 function magicMime(b: Buffer): string | null {
   const ascii = (from: number, to: number): string => b.subarray(from, to).toString("latin1");
   if (b.length >= 3 && b[0] === 0xff && b[1] === 0xd8 && b[2] === 0xff) return "image/jpeg";
@@ -154,13 +216,7 @@ function magicMime(b: Buffer): string | null {
   if (ascii(0, 4) === "OggS") return "audio/ogg";
   if (ascii(0, 3) === "ID3") return "audio/mpeg";
   if (b.length >= 4 && b[0] === 0x1a && b[1] === 0x45 && b[2] === 0xdf && b[3] === 0xa3) return "video/webm";
-  if (ascii(4, 8) === "ftyp") {
-    const brand = ascii(8, 12);
-    if (brand === "qt  ") return "video/quicktime";
-    if (brand === "M4A " || brand === "M4B ") return "audio/mp4";
-    if (["heic", "heix", "mif1", "msf1", "hevc"].includes(brand)) return "image/heic";
-    return "video/mp4";
-  }
+  if (b.length >= 12 && ascii(4, 8) === "ftyp") return isoMediaMime(b);
   if (b.length >= 4 && b[0] === 0x50 && b[1] === 0x4b && b[2] === 0x03 && b[3] === 0x04) return "application/zip";
   return null;
 }
@@ -276,6 +332,7 @@ const MIME_BY_EXTENSION: Record<string, string> = {
   webm: "video/webm",
   wav: "audio/wav",
   heic: "image/heic",
+  avif: "image/avif",
   json: "application/json",
   md: "text/markdown",
   html: "text/html",

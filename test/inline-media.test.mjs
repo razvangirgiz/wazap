@@ -106,7 +106,8 @@ test("a type WhatsApp's own viewer or player does not take goes as a document, w
   const webm = Buffer.from([0x1a, 0x45, 0xdf, 0xa3, ...Buffer.alloc(200)]);
   const wav = Buffer.concat([Buffer.from("RIFF"), Buffer.alloc(4), Buffer.from("WAVEfmt "), Buffer.alloc(200)]);
   const heic = Buffer.concat([Buffer.from([0, 0, 0, 0x18]), Buffer.from("ftypheic"), Buffer.alloc(200)]);
-  for (const [bytes, filename, mime] of [[webm, "clip.webm", "video/webm"], [wav, "nota.wav", "audio/wav"], [heic, "IMG_1.heic", "image/heic"]]) {
+  const avif = Buffer.concat([Buffer.from([0, 0, 0, 0x1c]), Buffer.from("ftypavif\0\0\0\0avifmif1miaf"), Buffer.alloc(200)]);
+  for (const [bytes, filename, mime] of [[webm, "clip.webm", "video/webm"], [wav, "nota.wav", "audio/wav"], [heic, "IMG_1.heic", "image/heic"], [avif, "poza.avif", "image/avif"]]) {
     const draft = await call("send_message", { chat_id: PEER, text: "uite", data_base64: bytes.toString("base64"), filename });
     assert.equal(draft.structuredContent.status, "draft", draft.content[0].text);
     assert.match(draft.structuredContent.preview, new RegExp(`\\[document\\] ${filename.replace(".", "\\.")} \\(${mime.replace("/", "\\/")}, 1 KB\\)\n"uite"`));
@@ -116,6 +117,14 @@ test("a type WhatsApp's own viewer or player does not take goes as a document, w
     assert.ok(document, `${filename} left as ${Object.keys(sent.at(-1).message)}`);
     assert.deepEqual([document.mimetype, document.fileName, document.caption], [mime, filename, "uite"]);
   }
+
+  // An Office file whose name has no extension keeps the type the agent declared, and gets the extension it has.
+  const DOCX = "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+  const docx = Buffer.concat([Buffer.from([0x50, 0x4b, 0x03, 0x04]), Buffer.alloc(200)]);
+  const draft = await call("send_message", { chat_id: PEER, text: "", data_base64: docx.toString("base64"), filename: "Raport trimestrial", mime: DOCX });
+  assert.deepEqual(draft.structuredContent.media, { filename: "Raport trimestrial.docx", mime: DOCX, size: docx.length });
+  await call("confirm_send", { draft_id: draft.structuredContent.draft_id });
+  assert.deepEqual([sent.at(-1).message.documentMessage.mimetype, sent.at(-1).message.documentMessage.fileName], [DOCX, "Raport trimestrial.docx"]);
 });
 
 test("a file of the call's own may go later: it is kept with the scheduled message and sent at its time", async (t) => {

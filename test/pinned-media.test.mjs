@@ -312,3 +312,47 @@ test("a UTF-16 text file stays text, a bare MP3 frame names audio only when noth
     assert.equal(sniffMime(Buffer.from(header), null, "x"), "application/octet-stream", header.join(","));
   }
 });
+
+test("an ISO media file is what its brands say, and a ZIP without a typed name is what its declared type says", () => {
+  /** An ftyp box: its major brand, then the brands it is compatible with. */
+  const ftyp = (major, ...compatible) => {
+    const box = Buffer.concat([Buffer.alloc(4), Buffer.from(`ftyp${major}`, "latin1"), Buffer.alloc(4), ...compatible.map((brand) => Buffer.from(brand, "latin1"))]);
+    box.writeUInt32BE(box.length, 0);
+    return Buffer.concat([box, Buffer.alloc(64)]);
+  };
+  for (const [bytes, mime] of [
+    [ftyp("avif", "mif1", "miaf"), "image/avif"],
+    [ftyp("avis", "msf1"), "image/avif"],
+    [ftyp("mif1", "mif1", "avif", "miaf"), "image/avif"],
+    [ftyp("heic", "mif1", "heic"), "image/heic"],
+    [ftyp("heim", "mif1"), "image/heic"],
+    [ftyp("heis", "msf1"), "image/heic"],
+    [ftyp("hevx", "mif1"), "image/heic"],
+    [ftyp("crx ", "isom"), "image/x-canon-cr3"],
+    [ftyp("qt  ", "qt  "), "video/quicktime"],
+    [ftyp("M4A ", "M4A ", "mp42", "isom"), "audio/mp4"],
+    [ftyp("isom", "iso2", "avc1", "mp41"), "video/mp4"],
+    [ftyp("mp42", "mp41"), "video/mp4"],
+    [ftyp("3gp4", "isom"), "video/3gpp"],
+    [ftyp("XYZW", "mp42"), "video/mp4"],
+  ]) {
+    assert.equal(sniffMime(bytes, null, "x"), mime, bytes.subarray(8, 12).toString("latin1"));
+  }
+  // A brand that says nothing of the file: its declared type, else its name, else a document's octet-stream; never a video.
+  assert.equal(sniffMime(ftyp("XYZW"), "image/jxl", "x"), "image/jxl");
+  assert.equal(sniffMime(ftyp("XYZW"), null, "poza.heic"), "image/heic");
+  assert.equal(sniffMime(ftyp("XYZW"), null, "x"), "application/octet-stream");
+  assert.equal(sniffMime(ftyp("avif"), "video/mp4", "x.mp4"), "image/avif", "the bytes outvote what it was declared");
+
+  const zip = Buffer.from("PK\x03\x04rest");
+  const DOCX = "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+  assert.equal(sniffMime(zip, DOCX, "Raport trimestrial"), DOCX);
+  assert.equal(sniffMime(zip, `${DOCX}; charset=binary`, "Raport"), DOCX);
+  assert.equal(sniffMime(zip, "application/vnd.oasis.opendocument.text", "x"), "application/vnd.oasis.opendocument.text");
+  assert.equal(sniffMime(zip, "application/epub+zip", "carte"), "application/epub+zip");
+  assert.equal(sniffMime(zip, "application/vnd.ms-excel.sheet.macroEnabled.12", "x"), "application/vnd.ms-excel.sheet.macroenabled.12");
+  assert.equal(sniffMime(zip, "text/plain", "x"), "application/zip", "a type that is no ZIP does not outvote the bytes");
+  assert.equal(sniffMime(zip, null, "arhiva"), "application/zip");
+  assert.equal(sniffMime(zip, "application/pdf", "raport.xlsx"), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "a typed name still wins");
+  assert.equal(safeFilename("Raport trimestrial", DOCX), "Raport trimestrial.docx");
+});
