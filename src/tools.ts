@@ -3,6 +3,7 @@ import { contactLabel, formatPhone } from "./contact-display.js";
 import { legacyReadTools } from "./legacy-read-tools.js";
 import { LEGACY_READ_INSTRUCTIONS } from "./legacy-read-guide.js";
 import { previewChatAction, confirmChatAction } from "./chat-action-drafts.js";
+import { MAX_PREVIEWS } from "./previews.js";
 import type { AccountSource } from "./account-hub.js";
 import { renderGetStatus } from "./account-resolve.js";
 import { draftContextEnabled } from "./accounts.js";
@@ -140,6 +141,7 @@ const READ_OUTPUT = {
   count: z.number(),
   omitted: z.number().optional().describe("Older stories left out by limit"),
   preview_count: z.number(),
+  previews: z.array(z.string()).optional().describe("The message_id of each attached image, in their order"),
   messages: z.array(BROAD_MESSAGE_OUT),
   unconfirmed_sends: z
     .array(z.object({ draft_id: z.string(), text: z.string(), handed_at: z.string(), state: z.literal("unknown") }))
@@ -489,7 +491,7 @@ const messageTypes = z
 const includePreviews = z
   .boolean()
   .default(false)
-  .describe("Attach a small image of each photo, up to 12");
+  .describe(`Attach a small image of each photo, up to ${MAX_PREVIEWS}`);
 
 /** A tag as remember files it, "#" and case ignored. */
 const tagFilter = z.string().min(1).max(40).optional().describe("Only chats with people filed under this tag");
@@ -505,8 +507,6 @@ const moment = z.string().min(4).optional().describe("ISO date or time");
  */
 export const INLINE_MAX_BYTES = 5 * 1024 * 1024;
 
-/** Previews are 5-15 KB each; a dozen keep one answer small and the first call under the client's timeout. */
-const MAX_PREVIEWS = 12;
 
 /**
  * Messages one get_media call opens: at most one image each, so at most eight
@@ -745,6 +745,7 @@ const TOOLS: readonly ToolDef[] = [
             count: stories.length,
             ...(omitted > 0 ? { omitted } : {}),
             preview_count: previews.length,
+            ...previewIds(previews),
             messages: stories,
             ...notes,
           }),
@@ -783,6 +784,7 @@ const TOOLS: readonly ToolDef[] = [
           types,
           count: result.data.length,
           preview_count: previews.length,
+          ...previewIds(previews),
           messages: result.data,
           ...(unconfirmed.length === 0 ? {} : { unconfirmed_sends: unconfirmed }),
           ...(result.older === undefined ? {} : { older: { asked_phone: true, received: result.older.received } }),
@@ -1795,6 +1797,11 @@ function previewBlocks(previews: Preview[]): ContentBlock[] {
   return previews.map((p) => ({ type: "image", data: p.base64, mimeType: p.mime }));
 }
 
+
+/** `previews`, the attached images' message_ids in order, when there are any. */
+function previewIds(previews: Preview[]): { previews?: string[] } {
+  return previews.length === 0 ? {} : { previews: previews.map((p) => p.message_id) };
+}
 
 /** The line that says what was attached: each preview by its label, in the order of the image blocks. */
 function previewNote(previews: Preview[]): string | null {

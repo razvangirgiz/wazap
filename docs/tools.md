@@ -356,9 +356,13 @@ reads, by number or lid, with `account_id` or without.
 ### Seeing, waiting, following up
 
 `include_previews: true` on `read_messages` attaches a
-small JPEG of each photo as an image block, newest first, up to 12 per call,
-and labels each message line with the preview it belongs to, so a catch-up can
-say "a photo of a receipt" without a download. WhatsApp used to ship such a
+small JPEG of each photo as an image block, newest first, up to 6 per call
+(two reads stay well under the twenty images a hosted client takes in one
+message); the text says which message each image is (`preview 1 is
+<message_id>`, and `[preview 1]` on that message's line), and `previews` lists
+their message_ids in order for a client that reads the structured part, so a
+catch-up can say "a photo of a receipt" without a download. A photo past the
+six is counted in a note, and the next call brings it. WhatsApp used to ship such a
 preview inside every image message and in 2026 almost never does, so when
 none is there wazap downloads the photo (or reads the [kept copy](data.md#kept-media),
 even with the link down) once, shrinks it to 320 px on this machine with sharp,

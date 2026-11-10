@@ -9,6 +9,7 @@ import { resolveMessageId, resolveMessageIdAcross } from "./message-ref.js";
 import { privateRule } from "./catchup.js";
 import { compactRecent } from "./recent-compact.js";
 import { WazapError } from "./errors.js";
+import { MAX_PREVIEWS } from "./previews.js";
 import { mediaAnswer, parsePages } from "./media-answer.js";
 import { MESSAGE_TYPES, type MediaDetail, type MessageView, type RecentConversation, type RecentMessageRefs, type SearchContext, type WhatsAppApi } from "./wa-types.js";
 import type { ToolArgs, ToolCtx, ToolDef, ToolResult } from "./tool-runtime.js";
@@ -108,11 +109,15 @@ async function recent(args: ToolArgs, ctx: ToolCtx): Promise<ToolResult> {
     pages.set(next, { ...page, refs: rest });
   }
   const images: ToolResult["content"] = [];
+  const previewed: string[] = [];
   if (args.include_previews === true) {
     for (const id of page.accounts) {
       const wa = resolveToolAccount(ctx.hub, { account_id: id }, { name: "get_status", write: false }).wa;
       const ids = conversations.filter((row) => row.account_id === id).flatMap((row) => row.messages.filter((m) => !m.private).map((m) => m.message_id));
-      for (const preview of await wa.previews(ids, Math.max(0, 12 - images.length), ctx.signal)) images.push({ type: "image", data: preview.base64, mimeType: preview.mime });
+      for (const preview of await wa.previews(ids, Math.max(0, MAX_PREVIEWS - images.length), ctx.signal)) {
+        images.push({ type: "image", data: preview.base64, mimeType: preview.mime });
+        previewed.push(preview.message_id);
+      }
     }
   }
   // Re-link or roster replacement may happen while a read or preview awaits.
@@ -124,6 +129,7 @@ async function recent(args: ToolArgs, ctx: ToolCtx): Promise<ToolResult> {
     ...(page.compact ? { compact: true, shown_message_count: rendered.reduce((n, row) => n + ("shown_message_count" in row ? row.shown_message_count as number : 0), 0),
       line_count: rendered.reduce((n, row) => n + row.messages.length, 0) } : {}),
     next_cursor: next, partial: next !== null || page.sync !== "done", sync: page.sync,
+    ...(previewed.length === 0 ? {} : { previews: previewed }),
     account_id: page.accounts.length === 1 ? page.accounts[0] : null,
     notes: ["Available synced history only; an unanswered request may have been handled outside WhatsApp."] };
   const answer = result(payload, images);

@@ -208,6 +208,25 @@ test("include_previews attaches the preview WhatsApp shipped with a photo and la
   assert.match(read.content[0].text, /\[preview 1\] · false_/);
 });
 
+test("a read attaches at most six previews, names each one's message, and counts the photos left without", async () => {
+  const { call, arrive } = setup();
+  const jpeg = new Uint8Array([0xff, 0xd8, 0xff, 0xe0, 1, 2, 3, 4]);
+  const photos = Array.from({ length: 8 }, (_, i) => arrive(ANA, { imageMessage: { mimetype: "image/jpeg", jpegThumbnail: jpeg, caption: `poza ${i + 1}` } }, { at: Date.now() - (8 - i) * 60_000 }));
+  const read = await call("read_messages", { chat_id: ANA, include_previews: true });
+  assert.equal(read.structuredContent.preview_count, 6);
+  assert.equal(read.content.filter((block) => block.type === "image").length, 6);
+  // Newest first, each named by its message_id in the text and in `previews`.
+  const ids = photos.map((id) => `false_${ANA}_${id}`).reverse().slice(0, 6);
+  assert.deepEqual(read.structuredContent.previews, ids);
+  const text = read.content[0].text;
+  ids.forEach((id, i) => {
+    assert.ok(text.includes(`preview ${i + 1} is ${id}`), `preview ${i + 1}`);
+    assert.match(text, new RegExp(`\\[preview ${i + 1}\\] · ${id}`));
+  });
+  assert.match(text, /2 photos without a preview \(over 6 per call/);
+  assert.ok(read.structuredContent.notes.some((note) => text.includes(note)), "the note, word for word");
+});
+
 test("a photo that shipped no preview is downloaded once, shrunk here, and remembered", async () => {
   const { svc, call, arrive } = setup();
   const { encode } = await import("jpeg-js");

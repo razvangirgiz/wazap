@@ -20,6 +20,15 @@ const FRAME_LIMITS = { timeoutMs: 30_000, maxRssBytes: HELPER_RSS_BYTES };
 
 /** Longest edge of a preview. 320 px reads a receipt's total and a face. */
 export const PREVIEW_MAX_EDGE = 320;
+
+/**
+ * Previews one read attaches at most (read_messages, its stories, the cached
+ * get_recent_messages): six of about 76 image tokens each. Twelve let two
+ * reads pass the twenty images a hosted client takes in one message, and a
+ * long session carries every one it was shown; a read with more photos says
+ * how many went without, and the next call brings them.
+ */
+export const MAX_PREVIEWS = 6;
 const PREVIEW_QUALITY = 60;
 
 export interface PreviewImage {
