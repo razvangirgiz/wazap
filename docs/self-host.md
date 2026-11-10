@@ -81,11 +81,14 @@ tools unless a trusted harness enforces approval.
 
 MCP POSTs authenticate before JSON parsing, accept at most 100 KiB and refuse
 compressed bodies. The one exception is a write credential's POST that
-declares its length, which may carry up to 7 MiB: enough for `send_message`'s
-`data_base64` at its 5 MB, and no more. Those large bodies are read and served
-at most 28 MiB at a time across every credential (four of the largest); past
-that a POST gets 503 with `Retry-After: 2`, and a read credential's, or a body
-sent without a length, keeps the 100 KiB limit (413). Measured on the
+declares its length, which may carry up to 8 MiB: enough for `send_message`'s
+`data_base64` at its 5 MB, line-wrapped with CRLF too, and no more. Those large
+bodies are read and served at most 32 MiB at a time across every credential
+(four of the largest); past that a POST gets 503 with `Retry-After: 2`, and a
+read credential's, or a body sent without a length, keeps the 100 KiB limit.
+A body past its limit gets 413 with a JSON-RPC error that names the limit, and
+for a write credential the 5 MB of `data_base64` and the fix of passing a
+larger file as a `url`: an MCP client shows the agent those words. Measured on the
 development machine: one 5 MB `data_base64` draft raises the server's peak RSS
 by about 26 MB, four at once by about 85 MB. Each credential has 240 POSTs/minute across its sessions;
 429 responses include `Retry-After`. The session registry holds at most 64

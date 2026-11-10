@@ -204,10 +204,11 @@ function refuseOAuthBody(req: Request, res: Response, next: NextFunction): void 
 export const MCP_BODY_MAX_BYTES = 100 * 1024;
 /**
  * A write credential's POST with a declared length: send_message's
- * data_base64 at its 5 MB (about 6.7 MB as base64, line breaks allowed) and
+ * data_base64 at its 5 MB (about 6.7 MB as base64; 7.1 MB as JSON when wrapped
+ * with CRLF every 76 characters, each line break four bytes of escapes) and
  * the rest of the call, and no more.
  */
-export const MCP_WRITE_BODY_MAX_BYTES = 7 * 1024 * 1024;
+export const MCP_WRITE_BODY_MAX_BYTES = 8 * 1024 * 1024;
 /** Bodies past MCP_BODY_MAX_BYTES being read and served at once, every credential together: four of the largest. */
 export const MCP_LARGE_BODIES_MAX_BYTES = 4 * MCP_WRITE_BODY_MAX_BYTES;
 
@@ -767,11 +768,30 @@ export async function startHttpEndpoint(hub: AccountSource, config: Config, endp
   // data_base64), with its length declared up front, and only while the large bodies under way leave room.
   const smallBody = express.json({ limit: MCP_BODY_MAX_BYTES, inflate: false });
   const largeBody = express.json({ limit: MCP_WRITE_BODY_MAX_BYTES, inflate: false });
+  // A body past its limit is answered as JSON-RPC, so an MCP client shows the agent the limit and what to do instead
+  // (the SDK puts the answer's text in the error it throws), not an anonymous 413.
+  const tooLarge = (req: Request, res: Response): void => {
+    const write = (req as AuthedRequest).mcpWrite === true;
+    const message = write
+      ? `Request too large: a call to wazap carries at most ${MCP_WRITE_BODY_MAX_BYTES / 1_048_576} MB, its length declared, which holds send_message's data_base64 at its 5 MB. Put a larger file at a public URL and pass url instead.`
+      : `Request too large: a call from a read-only connection carries at most ${MCP_BODY_MAX_BYTES / 1024} KB.`;
+    res.status(413).json({ jsonrpc: "2.0", error: { code: -32600, message }, id: null });
+  };
+  const parsed =
+    (req: Request, res: Response, next: NextFunction) =>
+    (err?: unknown): void => {
+      if (typeof err === "object" && err !== null && "status" in err && err.status === 413 && !res.headersSent) tooLarge(req, res);
+      else next(err);
+    };
   let largeInFlight = 0;
   const mcpBody = (req: Request, res: Response, next: NextFunction): void => {
     const declared = Number(req.headers["content-length"]);
-    if ((req as AuthedRequest).mcpWrite !== true || !Number.isFinite(declared) || declared <= MCP_BODY_MAX_BYTES || declared > MCP_WRITE_BODY_MAX_BYTES) {
-      smallBody(req, res, next);
+    if ((req as AuthedRequest).mcpWrite === true && Number.isFinite(declared) && declared > MCP_WRITE_BODY_MAX_BYTES) {
+      tooLarge(req, res);
+      return;
+    }
+    if ((req as AuthedRequest).mcpWrite !== true || !Number.isFinite(declared) || declared <= MCP_BODY_MAX_BYTES) {
+      smallBody(req, res, parsed(req, res, next));
       return;
     }
     if (largeInFlight + declared > MCP_LARGE_BODIES_MAX_BYTES) {
@@ -783,7 +803,7 @@ export async function startHttpEndpoint(hub: AccountSource, config: Config, endp
     res.once("close", () => {
       largeInFlight -= declared;
     });
-    largeBody(req, res, next);
+    largeBody(req, res, parsed(req, res, next));
   };
   app.post("/mcp", authed, httpPostBudget((req) => (req as AuthedRequest).sessionOwner!, Date.now, config.httpPostBudget), mcpBody, handleMcp);
   app.get("/mcp", authed, handleMcp);

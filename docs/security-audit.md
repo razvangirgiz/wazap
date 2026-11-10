@@ -620,8 +620,8 @@ anonymous initialization with a foreign Origin or attacker-controlled Host.
 
 - MCP POST authentication precedes JSON parsing. Bodies are explicitly capped at
   100 KiB and compressed bodies are refused; only a write credential's POST that
-  declares its length may carry up to 7 MiB (send_message's `data_base64`), with
-  at most 28 MiB of such bodies in flight across the process (503 past it);
+  declares its length may carry up to 8 MiB (send_message's `data_base64`), with
+  at most 32 MiB of such bodies in flight across the process (503 past it);
   `test/inline-media.test.mjs`. The OAuth routes, which parse
   before any credential is checked with the SDK's default-inflate parsers, now
   refuse a compressed body (415) and a declared length over 64 KiB (413) before

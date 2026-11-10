@@ -85,6 +85,8 @@ test("data_base64 is refused when it is not base64, empty, over 5 MB, unnamed, o
     [{ data_base64: "not base64 at all!", filename: "a.txt" }, "INVALID_ID", /not base64/],
     [{ data_base64: "====", filename: "a.txt" }, "INVALID_ID", /not base64/],
     [{ data_base64: Buffer.alloc(5 * 1024 * 1024 + 1).toString("base64"), filename: "big.bin" }, "FILE_TOO_LARGE", /at most 5 MB/],
+    // Past the 5 MB by more than the slack a schema length would leave: still the answer with its fix, not a schema error.
+    [{ data_base64: Buffer.alloc(Math.round(5.6 * 1024 * 1024)).toString("base64"), filename: "big.bin" }, "FILE_TOO_LARGE", /5\.6 MB; data_base64 takes at most 5 MB/],
     [{ data_base64: b64 }, "INVALID_ID", /needs filename/],
     [{ data_base64: b64, filename: "a.txt", mime: "not a type" }, "INVALID_ID", /is not a media type/],
     [{ data_base64: b64, filename: "a.txt", url: "https://example.com/a" }, "INVALID_ID", /one place/],
@@ -163,7 +165,7 @@ function post(base, token, { body, length = body.length, chunked = false, held =
   });
 }
 
-test("over HTTP only a write credential's declared body may pass 100 KiB, up to 7 MiB, while four of the largest at most are in flight", async (t) => {
+test("over HTTP only a write credential's declared body may pass 100 KiB, up to 8 MiB, while four of the largest at most are in flight", async (t) => {
   const { svc } = setup(t);
   const stop = new AbortController();
   t.after(() => stop.abort());
@@ -182,10 +184,17 @@ test("over HTTP only a write credential's declared body may pass 100 KiB, up to 
   assert.ok(big.length > MCP_BODY_MAX_BYTES && big.length < MCP_WRITE_BODY_MAX_BYTES);
 
   assert.equal((await post(base, "synthetic-writer", { body: big })).status, 200, "a write credential's declared body passes");
-  assert.equal((await post(base, "synthetic-reader", { body: big })).status, 413, "a read credential keeps 100 KiB");
-  assert.equal((await post(base, "synthetic-writer", { body: big, chunked: true })).status, 413, "no declared length: 100 KiB");
+  // Past a limit, the answer is JSON-RPC: the MCP client shows its words to the agent, the limit and what to do instead.
+  const tooLarge = (answer) => (answer.status === 413 ? JSON.parse(answer.text).error.message : `status ${answer.status}`);
+  assert.match(tooLarge(await post(base, "synthetic-reader", { body: big })), /read-only connection carries at most 100 KB/, "a read credential keeps 100 KiB");
+  assert.match(tooLarge(await post(base, "synthetic-writer", { body: big, chunked: true })), /its length declared/, "no declared length: 100 KiB");
   const huge = Buffer.alloc(MCP_WRITE_BODY_MAX_BYTES + 1, 0x20);
-  assert.equal((await post(base, "synthetic-writer", { body: huge })).status, 413);
+  assert.match(tooLarge(await post(base, "synthetic-writer", { body: huge })), /at most 8 MB.*data_base64 at its 5 MB\. Put a larger file at a public URL and pass url/);
+
+  // send_message's data_base64 at its 5 MB, wrapped as MIME wraps it (CRLF every 76 characters), fits a write credential's body.
+  const wrapped = Buffer.alloc(5 * 1024 * 1024, 0xab).toString("base64").replace(/(.{76})/g, "$1\r\n");
+  const call = { jsonrpc: "2.0", id: 9, method: "tools/call", params: { name: "send_message", arguments: { chat_id: PEER, text: "x".repeat(4096), data_base64: wrapped, filename: "raport.pdf" } } };
+  assert.ok(Buffer.byteLength(JSON.stringify(call)) < MCP_WRITE_BODY_MAX_BYTES);
 
   // Four of the largest bodies on their way hold the pool; a fifth waits for room.
   const held = await Promise.all(Array.from({ length: 4 }, () => post(base, "synthetic-writer", { body: big, length: MCP_WRITE_BODY_MAX_BYTES, held: true })));

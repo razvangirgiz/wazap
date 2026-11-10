@@ -500,10 +500,13 @@ const fullText = z.boolean().optional().describe("Each message's text whole; a l
 /** One instance for since and until, so a tool's schema names it once and points to it the second time. */
 const moment = z.string().min(4).optional().describe("ISO date or time");
 
-/** A file an agent carries in the call: at most 5 MB once decoded, which is what the HTTP body limit of a write session is sized for. */
+/**
+ * A file an agent carries in the call: at most 5 MB once decoded, which is
+ * what the HTTP body limit of a write session is sized for. The schema puts no
+ * length on its base64, so every body that arrives is measured by inlineMedia
+ * and a file too large is answered with FILE_TOO_LARGE and its fix.
+ */
 export const INLINE_MAX_BYTES = 5 * 1024 * 1024;
-/** Its base64, with room for line breaks every 76 characters and a data: prefix. */
-const INLINE_BASE64_MAX_CHARS = Math.ceil(INLINE_MAX_BYTES / 3) * 4 + 200_000;
 
 /** Previews are 5-15 KB each; a dozen keep one answer small and the first call under the client's timeout. */
 const MAX_PREVIEWS = 12;
@@ -1164,7 +1167,7 @@ const TOOLS: readonly ToolDef[] = [
       mention_ids: z.array(z.string().min(1)).max(50).optional().describe("Chat ids to @-mention; write @<number> in text for each"),
       file_path: z.string().min(1).optional().describe("Media: a path on wazap's machine"),
       url: z.string().url().optional().describe("Media: public http(s) URL"),
-      data_base64: z.string().max(INLINE_BASE64_MAX_CHARS).optional().describe("Media: the file, base64, ≤5 MB"),
+      data_base64: z.string().optional().describe("Media: the file, base64, ≤5 MB"),
       // Their lengths are checked by inlineMedia: the catalogue's budget is spent on what an agent needs to read.
       filename: z.string().optional().describe("With data_base64"),
       mime: z.string().optional(),
