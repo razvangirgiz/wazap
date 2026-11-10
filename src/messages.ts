@@ -3,7 +3,7 @@
  * knows (display names, lid→pn) arrives through MessageViewContext.
  */
 
-import { getContentType, proto, type WAMessage, type WAMessageContent, type WAMessageKey } from "baileys";
+import { extractMessageContent, getContentType, proto, type WAMessage, type WAMessageContent, type WAMessageKey } from "baileys";
 import type { Receipt } from "./store.js";
 import type { TranscriptRecord } from "./transcribe/index.js";
 import type {
@@ -1259,6 +1259,50 @@ export function stickerThumbnail(raw: WAMessage): Buffer | undefined {
 export function downloadableMessage(raw: WAMessage): WAMessage {
   const inner = analyze(raw).inner?.lottieStickerMessage?.message;
   return inner?.stickerMessage ? { ...raw, message: inner } : raw;
+}
+
+/** A media `url` Baileys may fetch: https on WhatsApp's CDN (`*.whatsapp.net`), its own port, no credentials. */
+export function cdnUrl(url: unknown): string | undefined {
+  if (typeof url !== "string" || url === "") return undefined;
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return undefined;
+  }
+  if (parsed.protocol !== "https:" || parsed.port !== "" || parsed.username !== "" || parsed.password !== "") return undefined;
+  return parsed.hostname === "whatsapp.net" || parsed.hostname.endsWith(".whatsapp.net") ? url : undefined;
+}
+
+/** A media `directPath` that stays a path when Baileys puts a host in front of it: one leading "/", nothing that could start another host. */
+export function cdnPath(path: unknown): string | undefined {
+  if (typeof path !== "string" || !path.startsWith("/") || path.includes("//")) return undefined;
+  for (const char of path) if (char <= " " || char === "\u007f" || char === "@" || char === "\\") return undefined;
+  return path;
+}
+
+/**
+ * The message as wazap hands it to Baileys' download: its media node (the one
+ * Baileys picks, by Baileys' own functions) brought up a level, with a `url`
+ * off WhatsApp's CDN and a path that is not a path set to null. The sender
+ * writes the media node, inside the encrypted message, and Baileys fetches
+ * `url` as it is when there is no directPath and `https://<url's host><directPath>`
+ * otherwise: left alone, a stranger's message makes this machine GET any
+ * host, port and path it names, on arrival when media is kept. With only
+ * directPath left, Baileys fetches from mmg.whatsapp.net, or fails. Keys are
+ * set only where the node had them, since Baileys tells a sticker's thumbnail
+ * link apart by whether `url` is there at all.
+ */
+export function cdnOnlyMessage(raw: WAMessage): WAMessage {
+  const content = extractMessageContent(raw.message);
+  const type = content ? getContentType(content) : undefined;
+  const node = type === undefined ? undefined : (content?.[type] as unknown);
+  if (type === undefined || node === null || typeof node !== "object") return raw;
+  const safe: Record<string, unknown> = { ...(node as Record<string, unknown>) };
+  if ("url" in node) safe.url = cdnUrl((node as { url?: unknown }).url) ?? null;
+  if ("directPath" in node) safe.directPath = cdnPath((node as { directPath?: unknown }).directPath) ?? null;
+  if ("thumbnailDirectPath" in node) safe.thumbnailDirectPath = cdnPath((node as { thumbnailDirectPath?: unknown }).thumbnailDirectPath) ?? null;
+  return { ...raw, message: { [type]: safe } as WAMessageContent };
 }
 
 /**

@@ -899,6 +899,21 @@ wazap parses, and the parsed text input to the agent.
   unrecorded copy of the file into `accounts/<id>/media/` on every call;
   nothing swept them, and they outlived deleted and expired messages. A remote
   call now writes nothing and returns no path.
+- **Downloads from WhatsApp's CDN only.** The media node of a message (`url`,
+  `directPath`) is the sender's to write, inside the encrypted message, and
+  Baileys fetches `url` as it is when there is no `directPath`, and
+  `https://<url's host><directPath>` otherwise. A stranger's photo naming
+  `http://192.168.1.1/cgi?action=x` was fetched on arrival (kept media) and
+  again by `get_media`, previews and download links: a blind GET to any host,
+  port and path, and the server's real address told to the sender's host,
+  which the tunnel otherwise hides. Before Baileys sees the message, a `url`
+  is kept only over https on `*.whatsapp.net` at its own port without
+  credentials, and a `directPath` (or a sticker's `thumbnailDirectPath`) only
+  as a path: one leading `/`, no `//`, `@`, `\`, space or control character.
+  Anything else is set to null, so Baileys builds the URL on
+  `mmg.whatsapp.net` or fails before opening a socket (`MEDIA_UNAVAILABLE`).
+  Tests: `test/media-cdn.test.mjs` (a listener on loopback is never reached,
+  on arrival or by `get_media`).
 - **Downloads, bounded.** At most three downloads at once and 300 MB declared in
   flight across the process; a download quiet for 30 s or running past 3
   minutes is stopped; the 100 MB in-memory cap is checked before and during the

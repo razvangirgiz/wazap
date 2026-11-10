@@ -41,7 +41,7 @@ import { describe } from "./outgoing-media.js";
 import { PinnedStore } from "./pinned-media.js";
 import type { MediaNetwork } from "./safe-media.js";
 import { momentsOf } from "./store.js";
-import { downloadableMessage, isoWithOffset, mediaInfo, messageIdFor, protoNumber, reuploadableMessage } from "./messages.js";
+import { cdnOnlyMessage, downloadableMessage, isoWithOffset, mediaInfo, messageIdFor, protoNumber, reuploadableMessage } from "./messages.js";
 import { PAIRING_TIMEOUT_MS, WA_BROWSER, prettyCode, socketFactory, startPairing } from "./pairing.js";
 import { transcribeFile, transcribeReady } from "./transcribe/index.js";
 import { DraftStore, type DraftPayload, type DraftSchedule, type DraftView } from "./drafts.js";
@@ -2103,13 +2103,14 @@ export class WhatsAppService implements WhatsAppApi {
   }
 
   /**
-   * The decrypted media as a stream, from WhatsApp's CDN. A test replaces it.
+   * The decrypted media as a stream, from WhatsApp's CDN and nowhere else
+   * (cdnOnlyMessage: the sender writes the url). A test replaces it.
    * No reupload context goes to Baileys: its own branch reads `error.status`
    * where the CDN's error carries `output.statusCode`, so it never fires, and
    * would wait for the phone without a timeout if it did (mediaBuffer asks).
    */
   private openMediaStream(message: WAMessage): Promise<Readable> {
-    return downloadMediaMessage(downloadableMessage(message), "stream", {}) as Promise<Readable>;
+    return downloadMediaMessage(cdnOnlyMessage(downloadableMessage(message)), "stream", {}) as Promise<Readable>;
   }
 
   /**
