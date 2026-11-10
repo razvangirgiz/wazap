@@ -79,42 +79,59 @@ export class PinnedStore {
     this.pinning.set(sha256, (this.pinning.get(sha256) ?? 0) + 1);
     try {
       await this.removing.get(sha256);
-      const path = join(this.dir, sha256);
-      const known = await stat(path).then(
-        (found) => found.size === buffer.length,
-        () => false
-      );
-      if (!known) {
-        await mkdir(this.dir, { recursive: true, mode: 0o700 });
-        const held = await this.totalBytes();
-        if (held + buffer.length > this.maxTotal) {
-          throw new WazapError(
-            "FILE_TOO_LARGE",
-            `Drafts and scheduled messages of this account already hold ${megabytes(held)} of media waiting to go; with this file (${megabytes(buffer.length)}) that would pass the ${megabytes(this.maxTotal)} they may hold.`,
-            "Send or cancel waiting drafts and scheduled messages with media, or wait for unconfirmed drafts to expire (15 minutes)"
-          );
-        }
-        if (!(await this.roomFor(buffer.length))) {
-          throw new WazapError("FILE_TOO_LARGE", "The disk of the machine running wazap is nearly full, so the file is not kept for the draft.", "Free some space there, then draft again");
-        }
-        // A name of its own for each write, so two drafts of the same bytes at once each write and rename their own
-        // copy (the second rename replaces the first with the same bytes); the time last, for the sweep of a crash's.
-        const part = join(this.dir, `${sha256}.${randomUUID()}.${this.now()}.part`);
-        try {
-          await writeFile(part, buffer, { mode: 0o600 });
-          await rename(part, path);
-        } catch (err) {
-          await rm(part, { force: true }).catch(() => undefined);
-          throw err;
-        }
-      }
+      await oneWriteAtATime(() => this.write(sha256, buffer));
       return { sha256, mime, size: buffer.length, filename };
     } catch (err) {
       this.release(sha256);
       if (err instanceof WazapError) throw err;
       // The disk's own words name the server's paths: they go to the log, and the caller hears what happened.
       logError("pinned media", err);
-      throw new WazapError("SERVICE_ERROR", "The file could not be kept for the draft on the machine running wazap; nothing was drafted.", "Try the draft again; if it fails again, the server's log says why");
+      throw new WazapError(
+        "SERVICE_ERROR",
+        "The file could not be kept for the draft on the machine running wazap; nothing was drafted.",
+        "Try the draft again; if it fails again, the server's log says why"
+      );
+    }
+  }
+
+  /**
+   * Writes the bytes under their hash unless they are there already, after
+   * checking the account's cap and the disk's reserve. Run one at a time, so
+   * each check sees every file written before it.
+   */
+  private async write(sha256: string, buffer: Buffer): Promise<void> {
+    const path = join(this.dir, sha256);
+    const known = await stat(path).then(
+      (found) => found.size === buffer.length,
+      () => false
+    );
+    if (!known) {
+      await mkdir(this.dir, { recursive: true, mode: 0o700 });
+      const held = await this.totalBytes();
+      if (held + buffer.length > this.maxTotal) {
+        throw new WazapError(
+          "FILE_TOO_LARGE",
+          `Drafts and scheduled messages of this account already hold ${megabytes(held)} of media waiting to go; with this file (${megabytes(buffer.length)}) that would pass the ${megabytes(this.maxTotal)} they may hold.`,
+          "Send or cancel waiting drafts and scheduled messages with media, or wait for unconfirmed drafts to expire (15 minutes)"
+        );
+      }
+      if (!(await this.roomFor(buffer.length))) {
+        throw new WazapError(
+          "FILE_TOO_LARGE",
+          "The disk of the machine running wazap is nearly full, so the file is not kept for the draft.",
+          "Free some space there, then draft again"
+        );
+      }
+      // A name of its own for each write, so two drafts of the same bytes at once each write and rename their own
+      // copy (the second rename replaces the first with the same bytes); the time last, for the sweep of a crash's.
+      const part = join(this.dir, `${sha256}.${randomUUID()}.${this.now()}.part`);
+      try {
+        await writeFile(part, buffer, { mode: 0o600 });
+        await rename(part, path);
+      } catch (err) {
+        await rm(part, { force: true }).catch(() => undefined);
+        throw err;
+      }
     }
   }
 
@@ -182,7 +199,10 @@ export class PinnedStore {
         // (it may have been stored after that read) all stay. The check and the start of the removal are one step.
         if (keep.has(name) || this.pinning.has(name) || this.released.has(name)) continue;
         const removal = rm(join(this.dir, name), { force: true });
-        this.removing.set(name, removal.catch(() => undefined));
+        this.removing.set(
+          name,
+          removal.catch(() => undefined)
+        );
         try {
           await removal;
         } finally {
@@ -223,6 +243,20 @@ export class PinnedStore {
       return true;
     }
   }
+}
+
+/**
+ * The pins' writes, every account's, one after another: each checks the cap
+ * and the disk's reserve against what is on disk, which a write still under
+ * way would not have shown, so drafts at once could each pass a check that
+ * all of them together fail. A write is short next to the fetch before it.
+ */
+let writes: Promise<unknown> = Promise.resolve();
+
+function oneWriteAtATime<T>(task: () => Promise<T>): Promise<T> {
+  const run = writes.then(task, task);
+  writes = run.catch(() => undefined);
+  return run;
 }
 
 async function diskSpace(dir: string): Promise<{ free: number; total: number }> {

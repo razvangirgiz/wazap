@@ -215,6 +215,30 @@ test("the pinned files of an account are bounded: past the cap a new draft is re
   await assert.rejects(full.pin(Buffer.alloc(100), "text/plain", "x.txt"), { code: "FILE_TOO_LARGE", message: /nearly full/ });
 });
 
+test("drafts at once never pass the account's cap or the disk's reserve together", async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "wazap-pinned-race-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const MB = 1024 * 1024;
+  const onDisk = () => (existsSync(dir) ? readdirSync(dir).reduce((sum, name) => sum + statSync(join(dir, name)).size, 0) : 0);
+  const files = (count, seed) => Array.from({ length: count }, (_, i) => Buffer.alloc(4 * MB, seed + i));
+
+  // Eight 4 MB drafts at once against a 10 MB cap: two fit, the rest are refused, as one after another would be.
+  const capped = new PinnedStore(dir, { maxTotalBytes: 10 * MB });
+  const pins = await Promise.allSettled(files(8, 1).map((bytes, i) => capped.pin(bytes, "application/pdf", `f${i}.pdf`)));
+  assert.equal(pins.filter((pin) => pin.status === "fulfilled").length, 2);
+  assert.ok(pins.filter((pin) => pin.status === "rejected").every((pin) => pin.reason.code === "FILE_TOO_LARGE" && /already hold/.test(pin.reason.message)));
+  assert.equal(onDisk(), 8 * MB);
+  for (const pin of pins) if (pin.status === "fulfilled") capped.release(pin.value.sha256);
+  await capped.sweep(() => new Set());
+
+  // A disk with 30 MB free and a 10 MB reserve (5% of 200 MB): five fit, and the reserve stays free.
+  const disk = new PinnedStore(dir, { diskSpace: async () => ({ free: 30 * MB - onDisk(), total: 200 * MB }) });
+  const writes = await Promise.allSettled(files(8, 20).map((bytes, i) => disk.pin(bytes, "application/pdf", `g${i}.pdf`)));
+  assert.equal(writes.filter((pin) => pin.status === "fulfilled").length, 5);
+  assert.ok(writes.filter((pin) => pin.status === "rejected").every((pin) => /nearly full/.test(pin.reason.message)));
+  assert.ok(30 * MB - onDisk() >= 10 * MB);
+});
+
 test("two drafts of the same bytes at once each keep the file, and the disk's own words never reach the caller", async (t) => {
   const dir = mkdtempSync(join(tmpdir(), "wazap-pinned-same-"));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
