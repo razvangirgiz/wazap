@@ -505,7 +505,11 @@ export class AccountSends {
       }
       const raw = this.views.messageOrThrow(messageId);
       if (!raw.key.fromMe) {
-        throw new WazapError("NOT_OWN_MESSAGE", `Message ${messageId} was not sent by the linked account.`);
+        throw new WazapError(
+          "NOT_OWN_MESSAGE",
+          `Message ${messageId} was not sent by the linked account.`,
+          "Only the account's own messages can be edited, admin or not: send a new message instead. Do not retry"
+        );
       }
       const age = Date.now() - messageTimestampMs(raw);
       if (age > EDIT_WINDOW_MS) {

@@ -98,6 +98,8 @@ test("the guide's lines hold for every session and every tool that throws the co
     // A remote session is never shown file_path: no line sends an agent to it.
     assert.doesNotMatch(line, /file_path/, code);
   }
+  // Two tools throw NOT_OWN_MESSAGE, and only a delete has an admin's or a local way out.
+  assert.match(ERROR_GUIDE.NOT_OWN_MESSAGE, /^Only the account's own messages can be edited; deleting also takes/);
   // Two causes: host files in a remote session, and a media URL that is not public.
   assert.match(ERROR_GUIDE.MEDIA_ACCESS_DENIED, /may not use host files, or the media URL is not public/);
 });

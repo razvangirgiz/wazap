@@ -368,6 +368,26 @@ test("someone else's message in a one-to-one chat is still NOT_OWN_MESSAGE, befo
   await svc.stop();
 });
 
+test("editing someone else's message, as a group admin too, says only the account's own can be edited, not delete's way out", async () => {
+  const { svc, sock } = writableService();
+  inGroup(sock, true);
+  const sent = recordSends(sock);
+  const messageId = arrive(sock, GROUP, { participant: ANA, ageSeconds: 60 });
+  const { call } = schemaCheckedTools(svc, { allowWrite: true });
+  const refusal = textError(await call("edit_message", { message_id: messageId, text: "corectat" }));
+  assert.equal(refusal.error, "NOT_OWN_MESSAGE");
+  assert.match(refusal.fix, /Only the account's own messages can be edited/);
+  assert.match(refusal.fix, /send a new message instead/);
+  // delete_message's ways (an admin's delete, for_everyone: false) do not apply to an edit.
+  assert.doesNotMatch(refusal.fix, /for_everyone|where it is admin/);
+  assert.deepEqual(sent, []);
+  // delete_message's refusal still says what holds for a delete.
+  const delete1to1 = textError(await call("delete_message", { message_id: arrive(sock, ANA), for_everyone: true }));
+  assert.equal(delete1to1.error, "NOT_OWN_MESSAGE");
+  assert.match(delete1to1.fix, /for_everyone: false/);
+  await svc.stop();
+});
+
 test("the account's own messages keep the 2-day window, in a group too, and go with their own key", async () => {
   const { svc, sock } = writableService();
   inGroup(sock, true);

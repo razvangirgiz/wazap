@@ -109,7 +109,7 @@ export const ERROR_GUIDE: Record<ErrorCode, string> = {
   EDIT_WINDOW_EXPIRED: "Edits are allowed for 15 minutes: send a correction instead.",
   RETRACT_WINDOW_EXPIRED: "Deleting for everyone is allowed for 2 days. Do not retry.",
   NOT_OWN_MESSAGE:
-    "Only the account's own message, anyone's in a group where it is admin, or any with for_everyone: false. Do not retry.",
+    "Only the account's own messages can be edited; deleting also takes anyone's in a group where it is admin, or any with for_everyone: false. Do not retry.",
   READ_ONLY: "Writes are off: the user runs `wazap config writes on` and restarts the server.",
   RATE_LIMITED: "Too fast: wait the seconds in fix, then retry once.",
   TRANSCRIBE_UNAVAILABLE: "Transcription is off or unfinished: tell the user (`wazap config transcribe local` turns it on). Do not retry.",
