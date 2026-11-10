@@ -34,7 +34,7 @@ export interface LoadedMedia {
 export async function assertMediaSource(source: MediaSource, maxBytes = MAX_MEDIA_BYTES): Promise<void> {
   const given = [Boolean(source.file_path), Boolean(source.url), source.inline !== undefined].filter(Boolean).length;
   if (given !== 1) {
-    throw new WazapError("FILE_NOT_FOUND", "Provide exactly one of file_path, url or data_base64.");
+    throw new WazapError("FILE_NOT_FOUND", "Provide exactly one of file_path, url or data_base64.", "Give the file exactly one way, of those the tool lists");
   }
   if (source.inline !== undefined) {
     assertMediaSize(source.inline.bytes.length, maxBytes);
@@ -228,7 +228,7 @@ export async function loadProfilePicture(source: MediaSource, io: Partial<MediaN
     throw new WazapError(
       "INVALID_IMAGE",
       `A profile picture must be a JPEG, PNG or WebP, not ${media.mimetype}.`,
-      "Pass a .jpg, .png or .webp via file_path or url"
+      "Pass a JPEG, PNG or WebP image instead"
     );
   }
   return media;

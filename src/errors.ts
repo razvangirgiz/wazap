@@ -74,7 +74,10 @@ export const RESET_FIX = "Run `npx wazap-mcp logout` then `npx wazap-mcp login`"
 /**
  * What an agent should do about each code. Rendered by the `learn` tool, so each is one short line,
  * and the fix of a refusal thrown without one (tool-runtime.ts's toolError). Only a code thrown with a
- * fix every time may point at it (RATE_LIMITED's seconds, INVALID_TIME's).
+ * fix every time may point at it (RATE_LIMITED's seconds, INVALID_TIME's). A line holds for every
+ * tool and every session the code reaches: no `file_path` (a remote session is never shown it), and
+ * one tool's argument only with that tool's name. Advice that fits one tool or one kind of session
+ * goes in that throw's own fix.
  */
 export const ERROR_GUIDE: Record<ErrorCode, string> = {
   NOT_LINKED: "Nothing is linked: link_account, or the user runs `npx wazap-mcp login`.",
@@ -97,11 +100,11 @@ export const ERROR_GUIDE: Record<ErrorCode, string> = {
   GROUP_ANNOUNCEMENT_ONLY: "Only admins may post in that group. Do not retry.",
   MEDIA_UNAVAILABLE: "No media: the message has none, or WhatsApp and the phone no longer have it; the phone online or a resend brings it back.",
   MEDIA_ACCESS_DENIED:
-    "This session cannot use host files: pass a public URL, forward a message, or get_media without save_to. Do not route around it.",
+    "This session may not use host files, or the media URL is not public: pass a public URL or send_message's data_base64, forward a message, or get_media without save_to. Do not route around it.",
   FILE_NOT_FOUND: "No such file on the machine running wazap: check the path with the user.",
   FILE_TOO_LARGE: "Too large: media up to 100 MB, a group photo up to 10 MB.",
   INVALID_IMAGE: "Not a JPEG, PNG or WebP photo.",
-  URL_FETCH_FAILED: "The URL could not be fetched: check it, or pass file_path.",
+  URL_FETCH_FAILED: "The URL could not be fetched: check it with the user, or pass the file another way the tool lists (send_message's data_base64, up to 5 MB).",
   TEXT_TOO_LONG: "Over WhatsApp's limit: shorten it, or split it into several messages.",
   EDIT_WINDOW_EXPIRED: "Edits are allowed for 15 minutes: send a correction instead.",
   RETRACT_WINDOW_EXPIRED: "Deleting for everyone is allowed for 2 days. Do not retry.",

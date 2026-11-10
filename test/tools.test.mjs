@@ -93,6 +93,15 @@ test("an error thrown without a fix carries what the guide says to do about its 
   assert.equal(toolError(new WazapError("WHATSAPP_ERROR", "boom", "Ask the group's admin")).structuredContent.fix, "Ask the group's admin");
 });
 
+test("the guide's lines hold for every session and every tool that throws the code without a fix", () => {
+  for (const [code, line] of Object.entries(ERROR_GUIDE)) {
+    // A remote session is never shown file_path: no line sends an agent to it.
+    assert.doesNotMatch(line, /file_path/, code);
+  }
+  // Two causes: host files in a remote session, and a media URL that is not public.
+  assert.match(ERROR_GUIDE.MEDIA_ACCESS_DENIED, /may not use host files, or the media URL is not public/);
+});
+
 test("a handler that throws a raw error is reported as WHATSAPP_ERROR, never as a crash", async () => {
   const server = fakeServer();
   const wa = {

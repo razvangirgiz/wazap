@@ -701,7 +701,9 @@ A `connection` event still goes out: it carries no message content.
 Every failure is a structured `{ error, message, fix }` rather than a stack
 trace, so an agent can decide whether to retry, ask the user, or stop. A
 failure thrown without a fix of its own carries the line `learn`'s `errors`
-topic gives its code.
+topic gives its code, which holds in any session and for any tool: advice
+that fits only one (`file_path`, which a remote session is not shown) is in
+that failure's own fix.
 
 | Code | Meaning |
 | --- | --- |

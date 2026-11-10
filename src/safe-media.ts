@@ -7,8 +7,15 @@ import { withCode } from "./error-code.js";
 
 const MEDIA_MAX = 100 * 1024 * 1024;
 
+/**
+ * The URL guard's fix. It holds in every session: a local one lists file_path
+ * among the tool's other ways, a remote one does not, and neither is told it
+ * cannot use host files, which is MEDIA_ACCESS_DENIED's other cause.
+ */
+const URL_DENIED_FIX = "Pass a public http(s) URL without credentials, or the file another way the tool lists (send_message's data_base64, up to 5 MB)";
+
 function denied(message: string): never {
-  throw new WazapError("MEDIA_ACCESS_DENIED", message);
+  throw new WazapError("MEDIA_ACCESS_DENIED", message, URL_DENIED_FIX);
 }
 
 export function publicAddress(address: string): boolean {
