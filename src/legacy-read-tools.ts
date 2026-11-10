@@ -4,6 +4,7 @@ import { z } from "zod";
 import { assessSearch, parseMoment } from "./search-query.js";
 import { checkSearchSource, finalizeSearch, searchOwner, SEARCH_CHANGED } from "./search-finalize.js";
 import { resolveToolAccount } from "./account-resolve.js";
+import { chatByName } from "./chat-name.js";
 import { resolveMessageId, resolveMessageIdAcross } from "./message-ref.js";
 import { privateRule } from "./catchup.js";
 import { compactRecent } from "./recent-compact.js";
@@ -146,10 +147,21 @@ export function legacyReadTools(current: readonly ToolDef[]): ToolDef[] {
     const accounts = [];
     let messages: Array<MessageView & { account_id: string; account_rank: number }> = [];
     let contexts: Array<SearchContext & { account_id: string }> = [];
-    const bindings = selected(args, ctx);
+    let bindings = selected(args, ctx);
+    // A chat named as the user says it is one chat on one account, resolved once (src/chat-name.ts): that account
+    // alone is searched, by the chat's id, and its hits are judged there. account_ids or all_accounts only bound it.
+    const named = typeof args.chat_id === "string" ? await chatByName(args.chat_id, args.account_id as string | undefined, ctx) : undefined;
+    if (named !== undefined) {
+      if (args.account_ids !== undefined && !bindings.some((b) => b.id === named.binding.id)) {
+        throw new WazapError("CHAT_NOT_FOUND", `"${named.asked}" is a chat on account "${named.binding.id}", which account_ids does not name. Nothing was searched.`, "Pass that account in account_ids, or leave account_ids out");
+      }
+      bindings = [named.binding];
+    }
+    const chatId = named?.chatId ?? (args.chat_id as string | undefined);
+    const asked = named === undefined ? args : { ...args, chat_id: chatId };
     const owners = bindings.map((b) => searchOwner(b.wa));
     if (args.before !== undefined && bindings.length > 1) throw new WazapError("INVALID_ID", "A search cursor belongs to one account.", "Pass account_id with before");
-    const results = await Promise.all(bindings.map((binding) => canonical("search").handler(args, { ...ctx, wa: binding.wa, accountId: binding.id, deferSearchFinalization: true })));
+    const results = await Promise.all(bindings.map((binding) => canonical("search").handler(asked, { ...ctx, wa: binding.wa, accountId: binding.id, deferSearchFinalization: true })));
     for (const [i, found] of results.entries()) {
       const binding = bindings[i]!;
       if (found.isError) return found;
@@ -172,7 +184,7 @@ export function legacyReadTools(current: readonly ToolDef[]): ToolDef[] {
     for (const [i, binding] of bindings.entries()) {
       checkSearchSource(ctx.hub, binding.id, binding.wa, owners[i]!);
       const final = finalizeSearch(binding.wa, messages.filter((m) => m.account_id === binding.id), contexts.filter((c) => c.account_id === binding.id),
-        args.chat_id as string | undefined, { includeContext: args.include_context !== false, private: rules[i], from: accounts[i]!.from_resolved,
+        chatId, { includeContext: args.include_context !== false, private: rules[i], from: accounts[i]!.from_resolved,
           sinceMs: parseMoment(args.since as string | undefined, "since"), untilMs: parseMoment(args.until as string | undefined, "until", true) }, args.query as string);
       finalMessages.push(...final.messages);
       finalContexts.push(...(final.contexts ?? []).map((c) => ({ ...c, account_id: binding.id })));
@@ -190,6 +202,7 @@ export function legacyReadTools(current: readonly ToolDef[]): ToolDef[] {
     const top = new Set(shown.slice(0, 5).map((m) => `${m.account_id}:${m.message_id}`));
     const assessment = assessSearch(args.query as string, shown.map((m) => ({ ...m, chat_id: `${m.account_id}:${m.chat_id}` })), mode === "words");
     return result({ query: args.query, mode, count: shown.length, messages: shown, accounts, assessment,
+      ...(named === undefined ? {} : { chat_id: chatId, resolved: { from: named.asked, name: named.name, kind: named.kind } }),
       ...(args.include_context === false ? {} : { contexts: contexts.filter((c) => top.has(`${c.account_id}:${c.anchor_id}`)) }),
       next_before: mode !== "hybrid" && accounts.length === 1 && shown.length === args.limit ? shown.at(-1)!.message_id : null,
       partial: changed || accounts.some((entry) => entry.scan_capped === true) || (accounts.length > 1 && messages.length >= (args.limit as number)),

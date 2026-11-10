@@ -115,6 +115,28 @@ test("search takes a chat by name the same way; ids and numbers are read as they
   assert.equal(byNumber.structuredContent.count, 2);
 });
 
+test("the old search_messages takes a name as search does: the one chat, on the account it is on, searched once", async () => {
+  // Ana Marin is on the business account, not the session's own: her chat is searched there, its hits judged there.
+  const canonical = await s.call("search", { query: "oferta", chat_id: "Ana Marin", match: "words" });
+  const ids = canonical.structuredContent.messages.map((m) => m.message_id);
+  assert.equal(canonical.structuredContent.account_id, "work");
+  assert.ok(ids.length > 0);
+  for (const args of [{}, { all_accounts: true }, { account_ids: ["personal", "work"] }]) {
+    const legacy = await s.call("search_messages", { query: "oferta", chat_id: "Ana Marin", match: "words", ...args });
+    const out = legacy.structuredContent;
+    assert.notEqual(legacy.isError, true, legacy.content[0].text);
+    assert.deepEqual(out.messages.map((m) => [m.account_id, m.message_id]), ids.map((id) => ["work", id]), JSON.stringify(args));
+    assert.deepEqual(out.accounts.map((a) => a.account_id), ["work"], "searched once, on her account");
+    assert.equal(out.changed_during_read, undefined);
+    assert.equal(out.chat_id, refs.contacts.ana_marin.jid);
+    assert.deepEqual(out.resolved, { from: "Ana Marin", name: "Ana Marin", kind: "person" });
+  }
+  const elsewhere = refusal(await s.call("search_messages", { query: "oferta", chat_id: "Ana Marin", match: "words", account_ids: ["personal"] }));
+  assert.equal(elsewhere.error, "CHAT_NOT_FOUND");
+  assert.match(elsewhere.message, /account "work", which account_ids does not name/);
+  assert.equal(refusal(await s.call("search_messages", { query: "x", chat_id: "Ana", all_accounts: true })).error, "CHAT_NOT_FOUND");
+});
+
 test("send_message never resolves a name: a recipient is an id or a number, found with find_contact first", async () => {
   const sent = await s.call("send_message", { chat_id: "mama", text: "Ajung la 7" });
   assert.equal(sent.isError, true);
