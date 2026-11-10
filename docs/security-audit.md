@@ -891,7 +891,9 @@ wazap parses, and the parsed text input to the agent.
   at one byte over). pdftoppm, Quick Look, sips and ffmpeg run as child
   processes on a private temporary copy with a timeout and a memory limit read
   from the system while they run (512 MB for a page render, 1 GB for ffmpeg
-  and sips), one page render and two of the others at a time, ffmpeg with the
+  and sips; `VmRSS` in kB on Linux, since statm counts pages of 16 or 64 KiB
+  on some arm64 kernels; `ps` on macOS; `tasklist` on Windows), one page
+  render and two of the others at a time, ffmpeg with the
   input whitelists of section 8; a PDF page is drawn only after its text was
   read, and never when the read refused the file or outgrew its memory, so one
   PDF has one parser holding memory at a time. The worker's console is
@@ -900,7 +902,9 @@ wazap parses, and the parsed text input to the agent.
   written to hide one, pdf.js's LZW, overlapping streams, the memory watches),
   `test/media-documents.test.mjs` (zip bombs, a lying size, a PDF bomb through
   `get_media`, a read the watch stops is not drawn), `test/images.test.mjs` (a
-  20,000 x 20,000 PNG header, WebP and GIF headers, a slow SVG).
+  20,000 x 20,000 PNG header, WebP and GIF headers, a slow SVG),
+  `test/native-run.test.mjs` (each platform's reading, a child killed past
+  its limit).
 - **The text is the sender's.** Document text, transcripts and text in images
   can carry instructions aimed at an agent with other tools. They come back in
   their own field (`document_text`), quoted between markers in the text, never

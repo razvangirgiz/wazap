@@ -72,13 +72,35 @@ export class NativeMemoryError extends Error {
   }
 }
 
-/** A process's resident memory in bytes: /proc on Linux, ps elsewhere; null when it cannot be read (the process is gone). */
-export async function residentBytes(pid: number): Promise<number | null> {
+/**
+ * The `VmRSS:` line of /proc/<pid>/status in bytes. The kernel states it in kB
+ * whatever its page size; statm counts pages, which are 16 or 64 KiB on some
+ * arm64 kernels, not the 4 KiB a fixed multiplier would assume.
+ */
+export function vmRssBytes(status: string): number | null {
+  const found = /^VmRSS:\s*(\d+)\s*kB/m.exec(status);
+  return found === null ? null : Number(found[1]) * 1024;
+}
+
+/**
+ * The memory column of `tasklist /FO CSV /NH` in bytes: the working set, as
+ * "12,345 K" grouped in the system's locale. null when no process matched
+ * (tasklist then prints an INFO line, not a row).
+ */
+export function tasklistBytes(csv: string): number | null {
+  const row = csv.split(/\r?\n/).find((line) => line.startsWith('"'));
+  const cells = row?.match(/"[^"]*"/g);
+  const digits = cells?.at(-1)?.replace(/\D/g, "") ?? "";
+  return digits === "" ? null : Number(digits) * 1024;
+}
+
+/** A process's resident memory in bytes: /proc on Linux, tasklist on Windows, ps elsewhere; null when it cannot be read (the process is gone). */
+export async function residentBytes(pid: number, platform: NodeJS.Platform = process.platform): Promise<number | null> {
   try {
-    if (process.platform === "linux") {
-      const statm = await readFile(`/proc/${pid}/statm`, "utf8");
-      const pages = Number(statm.split(" ")[1]);
-      return Number.isFinite(pages) ? pages * 4096 : null;
+    if (platform === "linux") return vmRssBytes(await readFile(`/proc/${pid}/status`, "utf8"));
+    if (platform === "win32") {
+      const { stdout } = await exec("tasklist", ["/FI", `PID eq ${pid}`, "/FO", "CSV", "/NH"], { timeout: 2_000, windowsHide: true });
+      return tasklistBytes(stdout);
     }
     const { stdout } = await exec("/bin/ps", ["-o", "rss=", "-p", String(pid)], { timeout: 2_000, windowsHide: true });
     const kib = Number(stdout.trim());
