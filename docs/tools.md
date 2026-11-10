@@ -720,7 +720,7 @@ that failure's own fix.
 | `NOT_A_PARTICIPANT` / `NOT_ADMIN` / `GROUP_ANNOUNCEMENT_ONLY` | Group permissions. |
 | `MEDIA_UNAVAILABLE` | WhatsApp expired the file and the phone could not upload it again (offline: retry once it is online; gone: the sender resends), or it was never synced here. |
 | `FILE_NOT_FOUND` / `FILE_TOO_LARGE` / `URL_FETCH_FAILED` / `INVALID_IMAGE` | Outbound media problems; `FILE_TOO_LARGE` also for a received file over the 100 MB `get_media` holds in memory. |
-| `TEXT_TOO_LONG` | Over WhatsApp's message limit. |
+| `TEXT_TOO_LONG` | Over WhatsApp's message limit, a group name's 100 characters, or what `remember` keeps for a contact (30 tags, 30 details). |
 | `EDIT_WINDOW_EXPIRED` / `RETRACT_WINDOW_EXPIRED` / `NOT_OWN_MESSAGE` | WhatsApp's own limits on editing and deleting: only the account's own messages can be edited; a group admin may also delete anyone's for everyone. |
 | `READ_ONLY` | wazap is running read-only. |
 | `RATE_LIMITED` | Too many writes, or too many read marks, which have a budget of their own, or media downloads or requests to the phone for expired media; `fix` says how long to wait. |

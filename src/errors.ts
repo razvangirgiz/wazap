@@ -105,7 +105,7 @@ export const ERROR_GUIDE: Record<ErrorCode, string> = {
   FILE_TOO_LARGE: "Too large: media up to 100 MB, a group photo up to 10 MB.",
   INVALID_IMAGE: "Not a JPEG, PNG or WebP photo.",
   URL_FETCH_FAILED: "The URL could not be fetched: check it with the user, or pass the file another way the tool lists (send_message's data_base64, up to 5 MB).",
-  TEXT_TOO_LONG: "Over WhatsApp's limit: shorten it, or split it into several messages.",
+  TEXT_TOO_LONG: "Over a limit the message names: shorten it, or split a long message into several.",
   EDIT_WINDOW_EXPIRED: "Edits are allowed for 15 minutes: send a correction instead.",
   RETRACT_WINDOW_EXPIRED: "Deleting for everyone is allowed for 2 days. Do not retry.",
   NOT_OWN_MESSAGE:

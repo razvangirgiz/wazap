@@ -102,6 +102,8 @@ test("the guide's lines hold for every session and every tool that throws the co
   assert.match(ERROR_GUIDE.NOT_OWN_MESSAGE, /^Only the account's own messages can be edited; deleting also takes/);
   // Two causes: host files in a remote session, and a media URL that is not public.
   assert.match(ERROR_GUIDE.MEDIA_ACCESS_DENIED, /may not use host files, or the media URL is not public/);
+  // A contact's tags and details are refused under it too.
+  assert.doesNotMatch(ERROR_GUIDE.TEXT_TOO_LONG, /WhatsApp's limit/);
 });
 
 test("a handler that throws a raw error is reported as WHATSAPP_ERROR, never as a crash", async () => {
