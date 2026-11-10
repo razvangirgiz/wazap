@@ -14,7 +14,7 @@ breaking.
 | CLI | command and flag names, exit code 0 vs non-zero, `status --json`, `--version --json`, `account add --json` | new commands, flags and JSON keys | the human text on stderr |
 | Webhook | event names, signature scheme, the payload fields below | new events (opt-in), new payload fields | delivery latency, retry timing |
 | Storage | forward-only migrations, released migrations frozen, the pre-migration copy | new schema versions | the SQLite schema as a format for other tools |
-| Settings | the 33 `WAZAP_*` in `.env.example` and `docs/settings.md` | new settings | anything not listed there |
+| Settings | the 34 `WAZAP_*` in `.env.example` and `docs/settings.md` | new settings | anything not listed there |
 
 ## 1. The MCP surface
 
@@ -45,6 +45,20 @@ contract and `learn` (`test/output-schema.test.mjs`). A refusal is an error resu
 output schema (and `candidates` when a read named its chat by a name that fits
 several chats or none); `error` is one of the 53 codes, and `learn` documents every one
 of them. Guarded by: `test/tools.test.mjs`.
+
+**Which sessions get structured content.** The structured contract above —
+output schemas, structured answers, every answer field this file names —
+holds for a session whose answer format is `full`: any client on a static
+token or over stdio that does not name itself as an assistant, which is what a
+program built on wazap is, and every session under `WAZAP_ANSWER_FORMAT=full`.
+A session whose client is an assistant (Claude Code, claude.ai, Codex, Cursor,
+ChatGPT, Gemini CLI, by the name it gives at `initialize`) or that signed in
+over OAuth gets the `text` format instead: the same tools, arguments and error
+codes, a tool list with no `outputSchema`, and each answer as its text and
+image blocks alone, which carry every id and cursor a later call takes. Its
+refusals are the same `{ error, message, fix }` with `account_id`, as text.
+`WAZAP_ANSWER_FORMAT=full` restores structured content for every session, and
+`text` gives the text format to every one (`test/answer-format.test.mjs`).
 
 **What "stable" means here.** A new optional argument, a new value in an enum
 such as `manage_chat`'s or `manage_group`'s `action`, and a new field in an
@@ -247,9 +261,9 @@ code or the tests supports a third-party reader.
 
 ## 6. Settings
 
-Stable: the 33 `WAZAP_*` listed in `.env.example` and in the settings table of
+Stable: the 34 `WAZAP_*` listed in `.env.example` and in the settings table of
 `docs/settings.md` — `WAZAP_DATA_DIR`, `WAZAP_READ_ONLY`, `WAZAP_PERSIST_HISTORY`,
-`WAZAP_HOST`, `WAZAP_PORT`, `WAZAP_READ_TOKEN`, `WAZAP_WRITE_TOKEN`,
+`WAZAP_HOST`, `WAZAP_PORT`, `WAZAP_READ_TOKEN`, `WAZAP_WRITE_TOKEN`, `WAZAP_ANSWER_FORMAT`,
 `WAZAP_PUBLIC_URL`, `WAZAP_OAUTH_PASSWORD`, `WAZAP_TRUST_PROXY`,
 `WAZAP_TRANSCRIBE`, `WAZAP_TRANSCRIBE_API_KEY`, `WAZAP_TRANSCRIBE_AUTH`, `WAZAP_TRANSCRIBE_ALLOW_API`,
 `WAZAP_TRANSCRIBE_AUTO`, `WAZAP_RECALL`,

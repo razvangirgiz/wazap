@@ -11,6 +11,7 @@ import { isInitializeRequest, LATEST_PROTOCOL_VERSION } from "@modelcontextproto
 import type { Request, Response, NextFunction } from "express";
 import type { AccountBinding, AccountSource } from "./account-hub.js";
 import { WAZAP_VERSION, paths, writesHints, type Config } from "./config.js";
+import { answerFormatFor, possibleFormats, type AnswerFormat, type CredentialKind } from "./client-name.js";
 import { APPROVE_PATH, OAUTH_SCOPES, WazapOAuthProvider } from "./oauth.js";
 import { loadSkills, registerSkillPrompts, skillInstructions } from "./skills.js";
 import type { CallTracker } from "./tool-runtime.js";
@@ -18,6 +19,7 @@ import { anyAccountAllowsWrites, registerTools } from "./tools.js";
 import { log } from "./logger.js";
 import { replayHandshake, revivedProtocolVersion, serveMcp, type McpTransport } from "./mcp-http.js";
 import { sessionIds } from "./session-id.js";
+import { serveOnHello } from "./hello.js";
 import { MEDIA_LINK_ROUTE, mediaLinksFor, serveMediaLink } from "./media-links.js";
 import type { ConnectionStatus } from "./wa-types.js";
 
@@ -73,6 +75,8 @@ interface SessionOpts {
   calls?: CallTracker;
   /** Already worked out by the caller (sessionShape), so it is not worked out twice. */
   shape?: SessionShape;
+  /** The answer format, when no shape is given (stdio): `full` when absent. */
+  format?: AnswerFormat;
 }
 
 /**
@@ -80,7 +84,7 @@ interface SessionOpts {
  * a client that never installed the skill files still gets them here.
  */
 function buildMcpServer(hub: AccountSource, config: Config, allowWrite: boolean, allowLocalFiles: boolean, opts: SessionOpts = {}): McpServer {
-  const shape = opts.shape ?? sessionShape(hub, config, allowWrite, allowLocalFiles);
+  const shape = opts.shape ?? sessionShape(hub, config, allowWrite, allowLocalFiles, opts.format ?? "full");
   const server = new McpServer({ name: "wazap", version: WAZAP_VERSION }, { instructions: shape.instructions });
   // A link to an original is for a remote session on a server the internet reaches; a local one has the file.
   const links = allowLocalFiles ? null : mediaLinksFor(config);
@@ -92,6 +96,7 @@ function buildMcpServer(hub: AccountSource, config: Config, allowWrite: boolean,
     allowLocalEdits: allowWrite,
     allowLocalFiles,
     legacyReads: shape.legacyReads,
+    format: shape.format,
     ...(links === null ? {} : { mediaLinks: links }),
     client: opts.client ?? LOCAL_CLIENT,
     ...(opts.draftIdentity === undefined ? {} : { draftIdentity: opts.draftIdentity }),
@@ -112,6 +117,8 @@ function buildMcpServer(hub: AccountSource, config: Config, allowWrite: boolean,
 interface SessionShape {
   writes: boolean;
   legacyReads: boolean;
+  /** Text alone, or text and structured content (client-name.ts): part of the fingerprint, so a revival restores it. */
+  format: AnswerFormat;
   instructions: string;
   /**
    * A digest of all of that: a session id is signed with it (session-id.ts),
@@ -122,9 +129,9 @@ interface SessionShape {
   fingerprint: string;
 }
 
-function sessionShape(hub: AccountSource, config: Config, allowWrite: boolean, allowLocalFiles: boolean): SessionShape {
+function sessionShape(hub: AccountSource, config: Config, allowWrite: boolean, allowLocalFiles: boolean, format: AnswerFormat): SessionShape {
   const writes = allowWrite && !config.readOnly && anyAccountAllowsWrites(hub);
-  return shapeFor(writes, !allowLocalFiles, namedAccounts(hub));
+  return shapeFor(writes, !allowLocalFiles, namedAccounts(hub), format);
 }
 
 /**
@@ -134,11 +141,11 @@ function sessionShape(hub: AccountSource, config: Config, allowWrite: boolean, a
  */
 const shapeCache = new Map<string, SessionShape>();
 
-function shapeFor(writes: boolean, legacyReads: boolean, accounts: ReturnType<typeof namedAccounts>): SessionShape {
-  const key = JSON.stringify([writes, legacyReads, accounts]);
+function shapeFor(writes: boolean, legacyReads: boolean, accounts: ReturnType<typeof namedAccounts>, format: AnswerFormat): SessionShape {
+  const key = JSON.stringify([writes, legacyReads, accounts, format]);
   let shape = shapeCache.get(key);
   if (shape === undefined) {
-    if (shapeCache.size >= 16) shapeCache.clear();
+    if (shapeCache.size >= 32) shapeCache.clear();
     const skills = loadSkills();
     const instructions = skillInstructions(skills, { allowWrite: writes, accounts, legacyReads });
     // Everything the client keeps, itself and not only what decides it: the
@@ -146,11 +153,13 @@ function shapeFor(writes: boolean, legacyReads: boolean, accounts: ReturnType<ty
     // publishes (allowLocalFiles is !legacyReads), so a tool whose schema or
     // description changed (get_media's detail and pages) or a workflow
     // rewritten within one version still gets the 404 and a fresh initialize.
-    const catalogue = registerTools.catalogue({ allowWrite: writes, legacyReads, allowLocalFiles: !legacyReads });
+    // The answer format too: a revival, which never sees the client's name,
+    // finds the format the id was minted with by which fingerprint it carries.
+    const catalogue = registerTools.catalogue({ allowWrite: writes, legacyReads, allowLocalFiles: !legacyReads, format });
     const fingerprint = createHash("sha256")
-      .update(JSON.stringify([WAZAP_VERSION, writes, legacyReads, instructions, skills, catalogue]))
+      .update(JSON.stringify([WAZAP_VERSION, writes, legacyReads, format, instructions, skills, catalogue]))
       .digest("base64url");
-    shape = { writes, legacyReads, instructions, fingerprint };
+    shape = { writes, legacyReads, format, instructions, fingerprint };
     shapeCache.set(key, shape);
   }
   return shape;
@@ -218,7 +227,7 @@ const NO_ROOM_TO_REVIVE = (live: number): string => `HTTP MCP session not revive
 const ANONYMOUS_OWNER = "anonymous";
 
 /** What kind of credential a request carries, for the log: never which one. */
-function credentialKind(req: AuthedRequest): "oauth" | "local" | "anonymous" | "token" {
+function credentialKind(req: AuthedRequest): CredentialKind {
   if (req.oauthClient !== undefined) return "oauth";
   if (req.localFiles === true) return "local";
   if (req.sessionOwner === ANONYMOUS_OWNER) return "anonymous";
@@ -231,12 +240,12 @@ function credentialKind(req: AuthedRequest): "oauth" | "local" | "anonymous" | "
  * (tunnel) it came through. Bounded labels only, never a token or an id: this
  * is how the owner learns which cloud clients actually use the server.
  */
-function logInitialize(req: AuthedRequest): void {
+function logInitialize(req: AuthedRequest, format: AnswerFormat): void {
   const params = (req.body as { params?: { protocolVersion?: unknown; clientInfo?: { name?: unknown; version?: unknown } } }).params;
   const text = (value: unknown, limit: number): string => (typeof value === "string" ? logLabel(value, limit) : "");
   const client = [text(params?.clientInfo?.name, 60), text(params?.clientInfo?.version, 24)].filter(Boolean).join(" ") || "unnamed";
   log(
-    `MCP initialize: client="${client}" protocol=${text(params?.protocolVersion, 16) || "-"} credential=${credentialKind(req)} host=${text(req.headers.host, 80) || "-"}`
+    `MCP initialize: client="${client}" protocol=${text(params?.protocolVersion, 16) || "-"} credential=${credentialKind(req)} host=${text(req.headers.host, 80) || "-"} answers=${format}`
   );
 }
 
@@ -291,10 +300,15 @@ function draftIdentity(owner: string, access: { localFiles: boolean; oauthClient
   return access.oauthClient === undefined ? owner : `oauth:${access.oauthClient}`;
 }
 
+/**
+ * The local client's session. Its server is built once the client's
+ * initialize has said who it is, so an assistant gets its answers as text
+ * (client-name.ts) like any other session; until then nothing is answered.
+ */
 export async function runStdio(hub: AccountSource, config: Config): Promise<void> {
-  const server = buildMcpServer(hub, config, true, true);
-  const transport = new StdioServerTransport();
-  await server.connect(transport);
+  await serveOnHello(new StdioServerTransport(), (client) =>
+    buildMcpServer(hub, config, true, true, { format: answerFormatFor(config.answerFormat, client?.name, "local") })
+  );
   log("MCP server ready on stdio.");
 }
 
@@ -601,8 +615,22 @@ export async function startHttpEndpoint(hub: AccountSource, config: Config, endp
   sweep.unref();
 
   const ids = sessionIds(paths(config.dataDir).sessionKeyFile);
-  /** What a session for this request's credential is handed: its tools, workflows and instructions. */
-  const shapeOf = (req: AuthedRequest): SessionShape => sessionShape(hub, config, req.mcpWrite === true, req.localFiles === true);
+  /** What a session for this request's credential is handed, in this answer format: its tools, workflows and instructions. */
+  const shapeOf = (req: AuthedRequest, format: AnswerFormat): SessionShape => sessionShape(hub, config, req.mcpWrite === true, req.localFiles === true, format);
+  /** An initialize's answer format: from the client it names and the credential it holds. */
+  const formatOf = (req: AuthedRequest): AnswerFormat => {
+    const client = (req.body as { params?: { clientInfo?: { name?: unknown } } } | undefined)?.params?.clientInfo?.name;
+    return answerFormatFor(config.answerFormat, client, credentialKind(req));
+  };
+  /**
+   * The shape a session id was minted with, if it was minted for this owner:
+   * a later request does not say which client it is, so each format the
+   * setting allows is tried against the id's signature, never assumed.
+   */
+  const mintedShape = (req: AuthedRequest, owner: string, sid: string): SessionShape | undefined =>
+    possibleFormats(config.answerFormat)
+      .map((format) => shapeOf(req, format))
+      .find((shape) => ids.verify(sid, owner, shape.fingerprint));
   /**
    * A new session for this credential: its transport, the McpServer behind it
    * with the tools the credential unlocks, and its place in the registry once
@@ -647,8 +675,8 @@ export async function startHttpEndpoint(hub: AccountSource, config: Config, endp
    */
   const revivable = (req: AuthedRequest, owner: string, sid: string): SessionShape | undefined => {
     if ((req.method !== "POST" && req.method !== "GET") || owner === ANONYMOUS_OWNER || sessions.ended(sid)) return undefined;
-    const shape = shapeOf(req);
-    if (!ids.verify(sid, owner, shape.fingerprint)) return undefined;
+    const shape = mintedShape(req, owner, sid);
+    if (shape === undefined) return undefined;
     if (req.method === "GET" ? sessions.hasRoom(owner) : sessions.canAdmit(owner)) return shape;
     if (req.method === "POST") log(NO_ROOM_TO_REVIVE(sessions.size));
     return undefined;
@@ -708,8 +736,9 @@ export async function startHttpEndpoint(hub: AccountSource, config: Config, endp
       }
 
       if (!transport && req.method === "POST" && isInitializeRequest(req.body)) {
-        logInitialize(req as AuthedRequest);
-        transport = await openSession(req as AuthedRequest, owner, shapeOf(req as AuthedRequest));
+        const shape = shapeOf(req as AuthedRequest, formatOf(req as AuthedRequest));
+        logInitialize(req as AuthedRequest, shape.format);
+        transport = await openSession(req as AuthedRequest, owner, shape);
         noteSessionOutcome(res, "new");
       } else if (!transport && typeof sessionId === "string") {
         const shape = revivable(req as AuthedRequest, owner, sessionId);
@@ -729,7 +758,7 @@ export async function startHttpEndpoint(hub: AccountSource, config: Config, endp
         // at all means initialize never happened, and that stays a 400.
         if (typeof sessionId === "string" && sessionId !== "") {
           // A client ending a session this process lost ends it all the same.
-          if (req.method === "DELETE" && owner !== ANONYMOUS_OWNER && ids.verify(sessionId, owner, shapeOf(req as AuthedRequest).fingerprint)) {
+          if (req.method === "DELETE" && owner !== ANONYMOUS_OWNER && mintedShape(req as AuthedRequest, owner, sessionId) !== undefined) {
             sessions.end(sessionId);
           }
           noteSessionOutcome(res, "lost");
@@ -919,12 +948,15 @@ export async function startHttpEndpoint(hub: AccountSource, config: Config, endp
     if (oauth || openRead) kinds.add("false:false");
     if (oauth) kinds.add("true:false");
     for (const kind of kinds) {
-      if (closed) return;
-      const [write, localFiles] = kind.split(":");
-      const transport = new WebStandardStreamableHTTPServerTransport({ sessionIdGenerator: () => "warm-up" });
-      await buildMcpServer(hub, config, write === "true", localFiles === "true").connect(transport);
-      await replayHandshake(transport, "warm-up", LATEST_PROTOCOL_VERSION);
-      await transport.close();
+      // Each answer format the setting allows: an assistant's session and a program's list different catalogues.
+      for (const format of possibleFormats(config.answerFormat)) {
+        if (closed) return;
+        const [write, localFiles] = kind.split(":");
+        const transport = new WebStandardStreamableHTTPServerTransport({ sessionIdGenerator: () => "warm-up" });
+        await buildMcpServer(hub, config, write === "true", localFiles === "true", { format }).connect(transport);
+        await replayHandshake(transport, "warm-up", LATEST_PROTOCOL_VERSION);
+        await transport.close();
+      }
     }
   };
   return port;

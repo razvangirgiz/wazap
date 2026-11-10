@@ -3,6 +3,7 @@ import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { toJsonSchemaCompat } from "@modelcontextprotocol/sdk/server/zod-json-schema-compat.js";
 import { ListToolsRequestSchema, type Tool } from "@modelcontextprotocol/sdk/types.js";
+import type { AnswerFormat } from "./client-name.js";
 import type { ToolDef } from "./tool-runtime.js";
 
 /**
@@ -36,16 +37,18 @@ function advertised(schema: JsonSchema, allowLocalFiles: boolean): JsonSchema {
 
 /**
  * What tools/list answers for these definitions: the zod schemas turned into
- * JSON Schema, legacy names left out. Pure, so one answer serves every session
+ * JSON Schema, legacy names left out. A session whose answers are text alone
+ * (client-name.ts's AnswerFormat) is listed no outputSchema: it gets no
+ * structured content to hold to one. Pure, so one answer serves every session
  * with the same tools (tool-runtime.ts keeps it per permission key).
  */
-export function buildToolCatalogue(defs: readonly ToolDef[], allowLocalFiles: boolean): readonly Tool[] {
+export function buildToolCatalogue(defs: readonly ToolDef[], allowLocalFiles: boolean, format: AnswerFormat = "full"): readonly Tool[] {
   return defs.filter((def) => !def.legacyRead).map((def) => ({
     name: def.name,
     title: def.title,
     description: def.description,
     inputSchema: advertised(toJsonSchemaCompat(z.object(def.schema), { strictUnions: true, pipeStrategy: "input" }) as JsonSchema, allowLocalFiles) as Tool["inputSchema"],
-    ...(def.outputSchema === undefined
+    ...(def.outputSchema === undefined || format === "text"
       ? {}
       : {
           outputSchema: advertised(

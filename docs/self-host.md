@@ -204,13 +204,15 @@ metadata.
 What the log does say, so the owner can tell which cloud clients connect and
 what crosses the tunnel: each `initialize` logs the client's own name and
 version, the protocol version, the kind of credential (`oauth`, `token`,
-`local` or `anonymous`, never which one) and the `Host` it came through; each
+`local` or `anonymous`, never which one), the `Host` it came through and the
+answer format the session got (`answers=text` for an assistant, `full`
+otherwise; see `WAZAP_ANSWER_FORMAT` in [settings](settings.md)); each
 request line ends with the body bytes sent, their encoding (`gzip` or
 `identity`) and what became of the session (`new`, `reused`, `revived`,
 `lost`). For example:
 
 ```text
-MCP initialize: client="claude-ai 0.1.0" protocol=2025-06-18 credential=oauth host=wazap.example.com
+MCP initialize: client="claude-ai 0.1.0" protocol=2025-06-18 credential=oauth host=wazap.example.com answers=text
 HTTP POST /mcp rpc=tools/list auth accept="json+sse" -> 200 (3ms) bytes=10953 enc=gzip session=reused client="node"
 ```
 

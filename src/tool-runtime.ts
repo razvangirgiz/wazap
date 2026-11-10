@@ -4,7 +4,7 @@ import type { Tool } from "@modelcontextprotocol/sdk/types.js";
 import type { z } from "zod";
 import type { AccountSource } from "./account-hub.js";
 import { attachAccountId, resolveToolAccount, stringArg } from "./account-resolve.js";
-import { CLIENT_META_KEY, isAssistantClient, LOCAL_CLIENT, localClient } from "./client-name.js";
+import { CLIENT_META_KEY, isAssistantClient, LOCAL_CLIENT, localClient, type AnswerFormat } from "./client-name.js";
 import { draftStale, SessionDrafts } from "./drafts.js";
 import { asWazapError, WazapError } from "./errors.js";
 import { RateLimiter } from "./ratelimit.js";
@@ -28,6 +28,12 @@ export type ToolArgs = Record<string, unknown>;
 export interface ToolCtx {
   /** Give remote connectors workflows that work with their cached read names. */
   legacyReads?: boolean;
+  /**
+   * What the session's client receives of each answer (client-name.ts): the
+   * text alone, or the text and the structured content. What a budget
+   * (catch_up's) is spent on. `full` when absent.
+   */
+  format?: AnswerFormat;
   /**
    * Whether the session may touch this machine's files (RegisterOpts.allowLocalFiles):
    * stdio and the daemon's own bridge. A remote session is shown media, never
@@ -105,6 +111,12 @@ export interface ToolDef {
 export interface RegisterOpts {
   /** Remote connectors may retain the pre-1.0 read catalogue until refreshed. */
   legacyReads?: boolean;
+  /**
+   * The session's answer format, decided at its initialize (client-name.ts).
+   * `text`: no tool is registered or listed with an outputSchema and no answer
+   * carries structured content, only its text and image blocks. `full` when absent.
+   */
+  format?: AnswerFormat;
   allowWrite: boolean;
   /**
    * The credential's right to change local state (see ToolCtx.allowLocalEdits).
@@ -139,6 +151,24 @@ export interface RegisterOpts {
 export interface CallTracker {
   begin(): void;
   end(): void;
+}
+
+/**
+ * Where a text-format answer keeps the structured content it does not send:
+ * a symbol, so it never reaches the wire (JSON drops it) but an in-process
+ * observer of the registered handler — the evaluation's trace — still reads
+ * what the call answered.
+ */
+export const STRUCTURED_COPY: unique symbol = Symbol.for("wazap/structured-copy");
+
+/**
+ * An answer as a text-format session receives it: its text and image blocks,
+ * no structured content. Every renderer puts what an agent needs to act in
+ * its text (tools.ts), so nothing a follow-up call takes is lost.
+ */
+export function textOnly(result: ToolResult): ToolResult {
+  const { structuredContent, ...rest } = result;
+  return structuredContent === undefined ? rest : { ...rest, [STRUCTURED_COPY]: structuredContent };
 }
 
 /** Agents fan out: Claude Code routinely sends several tool calls at once, and wait_for_messages holds one for up to 55 s. */
@@ -183,12 +213,14 @@ export function createToolRegistrar(defs: readonly ToolDef[]) {
   // it: converting every zod schema to JSON Schema is most of what an
   // initialize costs, and the answer is the same for every such session.
   const catalogues = new Map<string, readonly Tool[]>();
-  const catalogueFor = (registered: readonly ToolDef[], opts: Pick<RegisterOpts, "allowWrite" | "legacyReads" | "allowLocalFiles">): readonly Tool[] => {
-    // Which definitions register depends on allowWrite and legacyReads alone; allowLocalFiles hides the host-file arguments.
-    const key = `${opts.allowWrite}:${opts.legacyReads === true}:${opts.allowLocalFiles !== false}`;
+  const catalogueFor = (registered: readonly ToolDef[], opts: Pick<RegisterOpts, "allowWrite" | "legacyReads" | "allowLocalFiles" | "format">): readonly Tool[] => {
+    // Which definitions register depends on allowWrite and legacyReads alone; allowLocalFiles hides the
+    // host-file arguments, and a text-format session is listed no outputSchema.
+    const format = opts.format ?? "full";
+    const key = `${opts.allowWrite}:${opts.legacyReads === true}:${opts.allowLocalFiles !== false}:${format}`;
     let tools = catalogues.get(key);
     if (tools === undefined) {
-      tools = buildToolCatalogue(registered, opts.allowLocalFiles !== false);
+      tools = buildToolCatalogue(registered, opts.allowLocalFiles !== false, format);
       catalogues.set(key, tools);
     }
     return tools;
@@ -201,7 +233,7 @@ export function createToolRegistrar(defs: readonly ToolDef[]) {
    * registerTools publishes, so a fingerprint of it (server.ts's session
    * shape) changes whenever any tool's description or schema does.
    */
-  const catalogue = (opts: Pick<RegisterOpts, "allowWrite" | "legacyReads" | "allowLocalFiles">): readonly Tool[] => catalogueFor(selected(opts), opts);
+  const catalogue = (opts: Pick<RegisterOpts, "allowWrite" | "legacyReads" | "allowLocalFiles" | "format">): readonly Tool[] => catalogueFor(selected(opts), opts);
   function registerTools(server: McpServer, hub: AccountSource, opts: RegisterOpts): void {
     // A session's drafts answer to its draft identity: a remote credential's
     // stable one where the server names it, so an async confirm over a fresh
@@ -221,6 +253,7 @@ export function createToolRegistrar(defs: readonly ToolDef[]) {
       return localClient(extra?._meta?.[CLIENT_META_KEY] ?? session?.getClientVersion?.()?.name);
     };
     const registered = selected(opts);
+    const text = opts.format === "text";
     for (const def of registered) {
       const own = buckets.get(def.name);
       server.registerTool(
@@ -229,7 +262,8 @@ export function createToolRegistrar(defs: readonly ToolDef[]) {
           title: def.title,
           description: def.description,
           inputSchema: def.schema,
-          ...(def.outputSchema === undefined ? {} : { outputSchema: def.outputSchema }),
+          // The SDK refuses an answer without structured content from a tool that declares a shape.
+          ...(def.outputSchema === undefined || text ? {} : { outputSchema: def.outputSchema }),
           annotations: def.hints,
         },
         async (args: unknown, extra?: { _meta?: Record<string, unknown>; signal?: AbortSignal }): Promise<ToolResult> => {
@@ -299,6 +333,7 @@ export function createToolRegistrar(defs: readonly ToolDef[]) {
             }
             const result = await def.handler(parsed, {
               legacyReads: opts.legacyReads === true,
+              format: opts.format ?? "full",
               localFiles: opts.allowLocalFiles !== false,
               ...(opts.allowLocalFiles === false && opts.mediaLinks !== undefined ? { mediaLinks: opts.mediaLinks } : {}),
               wa: resolved.wa,
@@ -315,10 +350,11 @@ export function createToolRegistrar(defs: readonly ToolDef[]) {
             if (typeof draftId === "string") sessionDrafts.note(draftId, call);
             const confirmationId = result.structuredContent?.status === "preview" ? result.structuredContent.confirmation_id : undefined;
             if (def.name === "manage_chat" && typeof confirmationId === "string") sessionDrafts.note(confirmationId, call);
-            return attachAccountId(result, resolved.id);
+            const answer = attachAccountId(result, resolved.id);
+            return text ? textOnly(answer) : answer;
           } catch (err) {
             const id = resolved?.id ?? stringArg(parsed, "account_id");
-            if (def.outputSchema !== undefined) return schemaSafeError(asWazapError(err), id);
+            if (def.outputSchema !== undefined || text) return schemaSafeError(asWazapError(err), id);
             const result = toolError(asWazapError(err));
             return id === undefined ? result : attachAccountId(result, id);
           } finally {
