@@ -435,22 +435,20 @@ export function formatDraftPreview(to: OutgoingTarget, payload: DraftPayload, sc
   return `${formatToLine(to)}${when}\n${formatBody(payload)}`;
 }
 
-export function renderDraft(view: DraftView): string {
-  const lines = [`Draft ${view.draft_id}. Not sent.`, "", view.preview];
-  if (view.unnamed_recipient === true) {
-    lines.push(
-      "",
-      "Note: the recipient is not a saved contact — the name shown is their public WhatsApp name, or only their number."
-    );
-  }
+
+/**
+ * A draft as text: its id, when it expires, the preview to show, the style
+ * check, then the answer's notes and its next step, the same strings the
+ * structured answer carries (tools.ts drafted), so a client that reads only
+ * the text is told the same approval rule.
+ */
+export function renderDraft(view: DraftView, notes: readonly string[], next: string): string {
+  // The preview names a person by number, which is a chat_id too; a group or a LID by its id here.
+  const numbered = view.to.number !== undefined || /^\d+@s\.whatsapp\.net$/.test(view.to.chat_id);
+  const lines = [`Draft ${view.draft_id}${numbered ? "" : ` to ${view.to.chat_id}`}. Not sent. Expires at ${view.expires_at.slice(11, 16)}.`, "", view.preview];
   const style = styleCheckLines(view.style_check);
   if (style.length > 0) lines.push("", ...style);
-  lines.push(
-    "",
-    view.send_at === undefined
-      ? "Show this to the user. After they say yes, call confirm_send with this draft_id."
-      : "Show this to the user, the time included. After they say yes, call confirm_send with this draft_id: it schedules the message, and nothing is sent before that time."
-  );
+  lines.push("", ...notes, next);
   return lines.join("\n");
 }
 

@@ -533,7 +533,7 @@ test("get_media spends a bucket of its own only on a provider run, ten a minute,
   const getMedia = (id, tools = server) => tools.tools.get("get_media").handler({ message_id: sidOf(id) });
 
   const first = await getMedia("V1");
-  assert.equal(first.content[0].text, 'Transcribed 0:06 (ro, openai): "salut"');
+  assert.equal(first.content[0].text, `voice ${sidOf("V1")} · from +40 700 000 002\nTranscribed 0:06 (ro, openai): "salut"`);
   // A transcript on hand is no run: asked again and again, it costs nothing.
   for (let call = 0; call < 15; call++) assert.equal((await getMedia("V1")).structuredContent.transcript.cached, true);
   for (let n = 2; n <= 10; n++) assert.equal((await getMedia(`V${n}`)).structuredContent.transcript.cached, false, `V${n}`);

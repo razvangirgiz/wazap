@@ -155,7 +155,9 @@ test("a window with only until reaches back to the chat's start: before the stor
   const note = empty.structuredContent.notes.find((n) => /No message of this chat is stored in this window \(until /.test(n));
   assert.ok(note, JSON.stringify(empty.structuredContent.notes));
   assert.match(note, /starts after it, .* do not say there are none\. read_messages again with before "false_40700000002@s\.whatsapp\.net_M1"/);
-  assert.match(empty.content[0].text, /no messages found\. No message of this chat is stored/);
+  // The note is in the text word for word, on the line after the title.
+  assert.match(empty.content[0].text, /no messages found\.\nNo message of this chat is stored/);
+  assert.ok(empty.content[0].text.includes(note));
   const whole = await call("read_messages", { chat_id: ANA, until: dayOf(0) });
   assert.equal(whole.structuredContent.count, 1);
   assert.ok(whole.structuredContent.notes.some((n) => /stored history of this chat starts at .*, inside the window: read_messages again with before/.test(n)));
@@ -234,7 +236,8 @@ test("types past the bound of one read's walk: the answer says it stopped and wh
   const note = stopped.structuredContent.notes.find((n) => /stopped before the window's start/.test(n));
   assert.ok(note, JSON.stringify(stopped.structuredContent.notes));
   const from = /before "([^"]+)"/.exec(note)[1];
-  assert.match(stopped.content[0].text, /no messages found\. .*stopped before the window's start: older messages may match/);
+  assert.match(stopped.content[0].text, /no messages found\.\n.*stopped before the window's start: older messages may match/);
+  assert.ok(stopped.content[0].text.includes(note));
   const rest = await call("read_messages", { chat_id: ANA, since, types: ["image"], before: from });
   assert.deepEqual(rest.structuredContent.messages.map((m) => m.message_id), [first]);
   assert.equal(rest.structuredContent.more_in_window, undefined);

@@ -58,7 +58,8 @@ codes, a tool list with no `outputSchema`, and each answer as its text and
 image blocks alone, which carry every id and cursor a later call takes. Its
 refusals are the same `{ error, message, fix }` with `account_id`, as text.
 `WAZAP_ANSWER_FORMAT=full` restores structured content for every session, and
-`text` gives the text format to every one (`test/answer-format.test.mjs`).
+`text` gives the text format to every one (`test/answer-format.test.mjs`,
+`test/answer-text.test.mjs`).
 
 **What "stable" means here.** A new optional argument, a new value in an enum
 such as `manage_chat`'s or `manage_group`'s `action`, and a new field in an
@@ -309,7 +310,10 @@ code or the process backs a wider one yet.
 
 - **Exact error text.** The `error` code is stable; `message` and `fix` are
   written to be read and may be rewritten at any time. Nor is field order in any
-  answer, or the rendered text blocks tools return beside structured content.
+  answer, or the wording and layout of the rendered text blocks. What the text
+  promises is only that it carries every id, cursor, note and next step its
+  structured answer does (`test/answer-text.test.mjs`), so a `text` session
+  loses nothing a later call takes; a program reads the structured content.
 - **Skill content.** The five skills under `skills/` are prompts, rewritten
   whenever they read better.
 - **What an AI model does with any of this.** The cases under `eval/` measure

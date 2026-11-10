@@ -721,7 +721,7 @@ test("the manage_chat schema takes every new action, message_id and pin_hours, a
   const pinPreview = await call({ chat_id: ANA, action: "pin_message", message_id: messageId, pin_hours: 24 });
   assert.equal(calls.length, 0, "preview performs no mutation");
   const pinned = await call({ chat_id: ANA, action: "pin_message", confirmation_id: pinPreview.structuredContent.confirmation_id });
-  assert.equal(pinned.content[0].text, "pin_message for 24h");
+  assert.equal(pinned.content[0].text, `pin_message for 24h (${messageId})`);
   assert.equal(pinned.structuredContent.message_id, messageId);
   assert.equal(calls.at(-1)[2].time, 86_400);
   for (const action of ["unpin_message", "star_message", "unstar_message"]) {

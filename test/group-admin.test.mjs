@@ -275,7 +275,7 @@ test("get_group_info reports the settings and the community from the metadata; t
   const text = (await server.tools.get("get_group_info").handler({ group_id: GROUP })).content[0].text;
   assert.match(text, /\*\*who can add members\*\*: all/);
   assert.match(text, /\*\*disappearing messages\*\*: 7d/);
-  assert.match(text, new RegExp(`\\*\\*in community\\*\\*: \`${PARENT}\``));
+  assert.match(text, new RegExp(`\\*\\*in community\\*\\*: ${PARENT}\n`));
   await svc.stop();
 });
 

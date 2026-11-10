@@ -446,7 +446,9 @@ test("OAuth write grants never authorize host file access, and consent labels ca
       name: "send_message",
       arguments: { chat_id: "40722123456@s.whatsapp.net", text: "", file_path: "/synthetic/private.png" },
     });
-    assert.equal(result.structuredContent.error, "MEDIA_ACCESS_DENIED");
+    // A hosted agent's session answers in text alone (answer-format): the refusal is its text.
+    assert.equal(result.structuredContent, undefined);
+    assert.equal(JSON.parse(result.content[0].text).error, "MEDIA_ACCESS_DENIED");
     assert.ok(lines.some((line) => line.includes("oauth: registered client")));
     assert.ok(
       lines.every((line) => !["\n", "\r", "\u001b"].some((control) => line.includes(control))),
@@ -1130,10 +1132,13 @@ test("a draft answers to its OAuth client across sessions and token rotations, n
     );
     return client;
   };
+  // A signed-in agent's answers are text alone (answer-format): the ids are read off the text, as its model would.
+  const draftId = (result) => /^Draft (d_[0-9a-f]+)/.exec(result.content[0].text)?.[1];
   const first = await mcp(owner.tokens.access_token);
   const draft = await first.callTool({ name: "send_message", arguments: { chat_id: CHAT, text: "hello" } });
-  assert.equal(draft.structuredContent.status, "draft");
-  const args = { draft_id: draft.structuredContent.draft_id };
+  assert.equal(draft.structuredContent, undefined);
+  const args = { draft_id: draftId(draft) };
+  assert.ok(args.draft_id, draft.content[0].text);
 
   // The same grant's rotated access token is the same identity.
   const { res, body: rotated } = await ctx.fetchJson("/token", {
@@ -1149,17 +1154,14 @@ test("a draft answers to its OAuth client across sessions and token rotations, n
   assert.notEqual(rotated.access_token, owner.tokens.access_token);
   await first.close();
   const fresh = await mcp(rotated.access_token);
-  assert.equal((await fresh.callTool({ name: "confirm_send", arguments: args })).structuredContent.message_id, "sent");
-  assert.equal((await fresh.callTool({ name: "confirm_send", arguments: args })).structuredContent.already_sent, true);
+  assert.match((await fresh.callTool({ name: "confirm_send", arguments: args })).content[0].text, /^Sent to .*\(message_id: sent\)/);
+  assert.match((await fresh.callTool({ name: "confirm_send", arguments: args })).content[0].text, /^Already sent to .*nothing was sent again/);
 
   // Another client's grant is a different identity.
   const next = await fresh.callTool({ name: "send_message", arguments: { chat_id: CHAT, text: "again" } });
   const otherSession = await mcp(other.tokens.access_token);
-  assert.equal(
-    (await otherSession.callTool({ name: "confirm_send", arguments: { draft_id: next.structuredContent.draft_id } }))
-      .structuredContent.error,
-    "DRAFT_NOT_FOUND"
-  );
+  const refused = await otherSession.callTool({ name: "confirm_send", arguments: { draft_id: draftId(next) } });
+  assert.equal(JSON.parse(refused.content[0].text).error, "DRAFT_NOT_FOUND");
 });
 
 test("the OAuth routes refuse compressed and oversized bodies before parsing them, and before any sign-in", async (t) => {

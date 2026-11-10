@@ -936,7 +936,8 @@ test("an explicit window keeps every open ask in waiting and marks the ones aske
   const older = quiet.structuredContent.waiting;
   assert.deepEqual(older.map((entry) => entry.chat).sort(), [ANA, DAN].sort(), "an open ask stays, whatever the window");
   assert.ok(older.every((entry) => entry.before_window === true && entry.new === undefined), JSON.stringify(older));
-  assert.match(text(quiet), /Nothing arrived in this window; still waiting from before it:/);
+  // The text says it in the very words of the note.
+  assert.match(text(quiet), /\nNothing arrived in this window: every waiting entry was asked before it and is still open\.\n## Waiting on you/);
   assert.match(text(quiet), /from before this window/);
   assert.match((quiet.structuredContent.notes ?? []).join(" "), /Nothing arrived in this window: every waiting entry was asked before it and is still open\./);
 
@@ -965,7 +966,7 @@ test("a disconnected account is reported as such, not as nothing new, and its ma
   assert.equal(first.mark.why, "not_connected");
   assert.match(first.status_since, /^\d{4}-/);
   assert.equal(second.mark.moved, true);
-  assert.match(text(result), /- Personal \(personal\): .* · disconnected since \S+: what arrived after that is not here yet/);
+  assert.match(text(result), /\npersonal is disconnected since \S+: what arrived after that is not here yet\.\n/);
   assert.match((result.structuredContent.notes ?? []).join(" "), /personal is disconnected since \S+: what arrived after that is not here yet/, "said in the structured content too");
   assert.equal(personal.svc.db.catchup.get("local"), null);
 });
@@ -1041,7 +1042,7 @@ test("a digest longer than the budget pages with a cursor that sees the same win
   let page = await call("catch_up", { budget_tokens: 500 });
   const pages = [page];
   assert.ok(page.structuredContent.more, "it does not fit in 500 tokens");
-  assert.match(text(page), /More: \d+ entries left \(.*\)\. Call catch_up with cursor: "/);
+  assert.match(text(page), /More entries are left: call catch_up with more\.cursor for them\. \d+ entries left \(.*\); more\.cursor: "/);
   assert.match((page.structuredContent.notes ?? []).join(" "), /call catch_up with more\.cursor/, "said in the structured content too");
   assert.equal(page.structuredContent.accounts[0].mark.why, "more_pages");
   assert.equal(page.structuredContent.footer, null);

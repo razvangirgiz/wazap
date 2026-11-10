@@ -18,7 +18,7 @@ import {
 export { toolError, type ToolCtx, type RegisterOpts } from "./tool-runtime.js";
 import { CATCHUP_INPUT, CATCHUP_OUTPUT, privateRule, runCatchUp } from "./catchup.js";
 import { coverageNote, indexCoverageNote, searchCoverage } from "./coverage.js";
-import { describeTarget, looksUnnamed, renderDraft, type DraftPayload, type DraftView } from "./drafts.js";
+import { looksUnnamed, renderDraft, type DraftPayload, type DraftView } from "./drafts.js";
 import { ERROR_GUIDE, WazapError, asWazapError } from "./errors.js";
 import { callCancelled, throwIfCancelled } from "./cancel.js";
 import { FIND_CONTACT_OUTPUT, runFindContact } from "./find-contact.js";
@@ -457,10 +457,7 @@ function scanCapFields(result: SearchAnswer): Record<string, unknown> {
     : { scan_capped: true, searched_back_to: result.scanCapped.searchedBackTo };
 }
 
-function scanCapNote(result: SearchAnswer): string | null {
-  if (result.scanCapped === undefined) return null;
-  return `The search stopped at its scan limit; messages before ${result.scanCapped.searchedBackTo.slice(0, 10)} were not searched — narrow it with chat_id, since/until or a longer query.`;
-}
+
 
 function scanCapNotice(result: SearchAnswer): string | null {
   if (result.scanCapped === undefined) return null;
@@ -614,7 +611,8 @@ const TOOLS: readonly ToolDef[] = [
         (contact) => contact.profile_pic_url,
         () => null
       );
-      return { ...payload, structuredContent: { ...payload.structuredContent, picture_url: picture } };
+      const shown = payload.content.map((block, i) => (i === 0 && block.type === "text" ? { ...block, text: `${block.text}\n- **picture**: ${picture ?? "none"}` } : block));
+      return { ...payload, content: shown, structuredContent: { ...payload.structuredContent, picture_url: picture } };
     },
   }),
 
@@ -663,7 +661,7 @@ const TOOLS: readonly ToolDef[] = [
         const pictures = await ctx.wa.profilePictures(open).catch(() => ({}) as Record<string, string | null>);
         chats = chats.map((chat) => ({ ...chat, picture_url: pictures[chat.chat_id] ?? null }));
       }
-      return ok(renderChats(result.data, filter, tag), synced(result, { filter, ...(tag === undefined ? {} : { tag }), count: chats.length, chats, next_cursor: result.nextCursor ?? null }));
+      return ok(renderChats(chats, filter, tag, result.nextCursor ?? null), synced(result, { filter, ...(tag === undefined ? {} : { tag }), count: chats.length, chats, next_cursor: result.nextCursor ?? null }));
     },
   }),
 
@@ -708,12 +706,9 @@ const TOOLS: readonly ToolDef[] = [
         const open = stories.filter((m) => m.private !== true);
         const previews = include_previews ? await wa.previews(newestFirst(open), MAX_PREVIEWS, ctx.signal) : [];
         const omitted = matching.length - stories.length;
-        const note = [previewNote(open, previews, include_previews), omitted > 0 ? `${omitted} older stories left out; raise limit for them.` : null]
-          .filter(Boolean)
-          .join(" ");
         const notes = notesField([previewGap(open, previews, include_previews), omitted > 0 ? `${omitted} older stories left out: raise limit for them.` : null]);
         return ok(
-          renderStories(stories, window, previewLabels(previews), note || null, full_text === true ? null : 300),
+          renderStories(stories, window, previewLabels(previews), [previewNote(previews), ...(notes.notes ?? [])], full_text === true ? null : 300),
           synced(result, {
             chat_id: "status",
             hours: window,
@@ -738,21 +733,18 @@ const TOOLS: readonly ToolDef[] = [
       const noOlder = result.older?.received === 0 ? OLDER_NONE_NOTE : null;
       const span = [since === undefined ? null : `since ${since}`, until === undefined ? null : `until ${until}`].filter(Boolean).join(", ");
       const windowNote = windowNoteOf(result, span, window.untilMs);
+      const notes = [...unconfirmed.map(unconfirmedNote), noOlder, windowNote, previewGap(result.data, previews, include_previews)];
       return ok(
-        renderMessages(
-          `Messages in ${named === undefined ? chat_id : `${named.name} (${chat_id}), whom "${named.asked}" names`}${span === "" ? "" : ` (${span})`}`,
-          result.data,
-          previewLabels(previews),
-          [
-            ...unconfirmed.map((send) => `${unconfirmedNote(send)} Its words: ${JSON.stringify(truncate(send.text, 160))}.`),
-            noOlder,
-            windowNote,
-            previewNote(result.data, previews, include_previews),
-          ]
-            .filter(Boolean)
-            .join(" ") || null,
-          listTextCap(full_text)
-        ),
+        [
+          renderMessages(
+            `Messages in ${named === undefined ? chat_id : `${named.name} (${chat_id}), whom "${named.asked}" names`}${span === "" ? "" : ` (${span})`}`,
+            result.data,
+            previewLabels(previews),
+            [previewNote(previews), ...notes],
+            listTextCap(full_text)
+          ),
+          ...unconfirmed.map((send) => `Unconfirmed send ${send.draft_id}, handed over at ${send.handed_at.slice(11, 16)}: ${JSON.stringify(truncate(send.text, 160))}`),
+        ].join("\n"),
         synced(result, {
           chat_id,
           ...resolvedField(named, ctx.accountId),
@@ -765,7 +757,7 @@ const TOOLS: readonly ToolDef[] = [
           messages: result.data,
           ...(unconfirmed.length === 0 ? {} : { unconfirmed_sends: unconfirmed }),
           ...(result.older === undefined ? {} : { older: { asked_phone: true, received: result.older.received } }),
-          ...notesField([...unconfirmed.map(unconfirmedNote), noOlder, windowNote, previewGap(result.data, previews, include_previews)]),
+          ...notesField(notes),
         }),
         previewBlocks(previews)
       );
@@ -812,7 +804,7 @@ const TOOLS: readonly ToolDef[] = [
           ? await wa.updateManyContactDetails(chat_id, edit)
           : await chat_id.reduce<Promise<ContactSummary[]>>(async (done, id) => [...(await done), await wa.updateContactDetails(id, edit)], Promise.resolve([]));
         const people = cards.map(({ contact_id, ...card }) => ({ chat_id: contact_id, ...card }));
-        return ok(`Filed ${cards.length} ${cards.length === 1 ? "person" : "people"}:\n${cards.map((card) => `- ${contactLabel(card.name, card.contact_id, card.number)}${filedLabel(card)}`).join("\n")}`, { people });
+        return ok(`Filed ${cards.length} ${cards.length === 1 ? "person" : "people"}:\n${cards.map((card) => `- ${personRef(card.name, card.contact_id, card.number)}${filedLabel(card)}`).join("\n")}`, { people });
       }
       const lines: string[] = [];
       let card: ContactSummary | undefined;
@@ -822,7 +814,8 @@ const TOOLS: readonly ToolDef[] = [
       }
       if (note !== undefined) {
         card = await wa.setContactNote(chat_id, note);
-        lines.push(card.note ? `Noted for ${card.name}: ${card.note}` : `Removed the note on ${card.name}.`);
+        const who = personRef(card.name, card.contact_id, card.number);
+        lines.push(card.note ? `Noted for ${who}: ${card.note}` : `Removed the note on ${who}.`);
       }
       if (details && card !== undefined) lines.push(renderContactCard(card));
       let marked: HandledResult | undefined;
@@ -830,8 +823,8 @@ const TOOLS: readonly ToolDef[] = [
         marked = await wa.markHandled(chat_id);
         lines.push(
           marked.ask_id
-            ? `${marked.name} is off the waiting list until they write again. Handled: "${truncate(marked.ask_text ?? "", 120)}"`
-            : `${marked.name} had nothing open; nothing to mark.`
+            ? `${personRef(marked.name, marked.chat_id)} is off the waiting list until they write again. Handled: "${truncate(marked.ask_text ?? "", 120)}"`
+            : `${personRef(marked.name, marked.chat_id)} had nothing open; nothing to mark.`
         );
       }
       const structured: Record<string, unknown> = card === undefined
@@ -940,18 +933,22 @@ const TOOLS: readonly ToolDef[] = [
           const capped = result.data.lexicalCapped === true;
           const answer: IdentifiedRecallAnswer = { ...result.data, hits, contexts: final.contexts, index: result.data.index, lexicalCapped: capped };
           const assessment = assessSearch(query, hits.map((hit) => hit.message));
-          // While the index is still catching up renderRecall says so itself; the coverage line only repeats it.
-          const note = [
+          const notes = [
+            weakMatches(hits) ? WEAK_NOTE : null,
+            result.data.index.state === "indexing" ? indexingNote(result.data.index) : null,
             capped ? LEXICAL_CAP_NOTE : null,
             privateNote(result.data.privateOmitted),
-            result.data.index.state === "indexing" ? null : indexCoverageNote(result.data.index),
             freshnessNote(fresh),
             final.changed ? SEARCH_CHANGED : null,
-          ]
-            .filter(Boolean)
-            .join(" ");
+          ];
+          const shownIds = new Set(hits.map((hit) => hit.message.message_id));
+          const introduced = new Set<string>();
+          // How much the meaning index covers: the structured answer's `index`, a line of its own here.
+          const coverage = result.data.index.state === "indexing" ? null : indexCoverageNote(result.data.index);
           return ok(
-            `${renderRecall(title, answer, listTextCap(full_text))}${renderSearchContexts(final.contexts)}\n${assessment.note}${note ? `\n${note}` : ""}`,
+            [renderRecall(title, answer, listTextCap(full_text), notes, introduced) + renderSearchContexts(final.contexts, shownIds, introduced), assessment.note, coverage]
+              .filter(Boolean)
+              .join("\n"),
             synced(result, {
               ...echo,
               mode: "hybrid",
@@ -964,14 +961,7 @@ const TOOLS: readonly ToolDef[] = [
               ...privateFields(result.data.privateOmitted),
               index: result.data.index,
               freshness: fresh,
-              ...notesField([
-                weakMatches(hits) ? WEAK_NOTE : null,
-                result.data.index.state === "indexing" ? "The meaning index is still catching up: more matches may appear." : null,
-                capped ? LEXICAL_CAP_NOTE : null,
-                privateNote(result.data.privateOmitted),
-                freshnessNote(fresh),
-                final.changed ? SEARCH_CHANGED : null,
-              ]),
+              ...notesField(notes),
             })
           );
         }
@@ -987,19 +977,30 @@ const TOOLS: readonly ToolDef[] = [
       const messages = final.messages;
       const assessment = assessSearch(query, messages, plan.match === "words");
       const cov = searchCoverage(wa, chat_id, { sinceMs, untilMs, ...(tag === undefined ? {} : { tag }) });
-      const fallback =
-        unavailable === null
-          ? null
-          : `Meaning search is unavailable (${unavailable.message}); these results match the words only.${unavailable.fix ? ` ${unavailable.fix}` : ""}`;
-      const note = [fallback, scanCapNote(found), privateNote(found.privateOmitted), coverageNote(cov, chat_id !== undefined || tag !== undefined), freshnessNote(fresh), final.changed ? SEARCH_CHANGED : null]
-        .filter(Boolean)
-        .join(" ");
+      const notes = [
+        unavailable === null ? null : UNAVAILABLE_NOTE,
+        scanCapNotice(found),
+        privateNote(found.privateOmitted),
+        freshnessNote(fresh),
+        final.changed ? SEARCH_CHANGED : null,
+      ];
+      const nextBefore = messages.length === limit ? messages.at(-1)!.message_id : null;
+      const introduced = new Set<string>();
+      const why = unavailable === null ? null : `recall_unavailable: ${unavailable.code}: ${unavailable.message}${unavailable.fix ? ` ${unavailable.fix}` : ""}`;
       return ok(
-        `${renderMessages(title, messages, new Map(), note, listTextCap(full_text))}${renderSearchContexts(final.contexts)}\n${assessment.note}`,
+        [
+          renderMessages(title, messages, new Map(), [...notes, why], listTextCap(full_text), 160, introduced) + renderSearchContexts(final.contexts, new Set(messages.map((m) => m.message_id)), introduced),
+          assessment.note,
+          // How much of the history the words covered: the structured answer's `coverage`, a line of its own here.
+          coverageNote(cov, chat_id !== undefined || tag !== undefined),
+          nextBefore === null ? null : `More: search again with before "${nextBefore}" for older matches.`,
+        ]
+          .filter(Boolean)
+          .join("\n"),
         synced(found, {
           ...echo,
           mode: unavailable === null ? "words" : "keyword_fallback",
-          next_before: messages.length === limit ? messages.at(-1)!.message_id : null,
+          next_before: nextBefore,
           ...(unavailable === null
             ? {}
             : { recall_unavailable: { code: unavailable.code, message: unavailable.message, ...(unavailable.fix ? { fix: unavailable.fix } : {}) } }),
@@ -1012,13 +1013,7 @@ const TOOLS: readonly ToolDef[] = [
           ...privateFields(found.privateOmitted),
           coverage: cov,
           freshness: fresh,
-          ...notesField([
-            unavailable === null ? null : "Meaning search is unavailable, so these match the words only: recall_unavailable says why.",
-            scanCapNotice(found),
-            privateNote(found.privateOmitted),
-            freshnessNote(fresh),
-            final.changed ? SEARCH_CHANGED : null,
-          ]),
+          ...notesField(notes),
         })
       );
     },
@@ -1042,7 +1037,14 @@ const TOOLS: readonly ToolDef[] = [
       const [identified] = await withSenderIdentity(binding.wa, [message]);
       const view = identified ?? message;
       // The one message in full: neither its words nor the words it quotes are cut.
-      const text = [renderMessages("Message", [view], new Map(), null, null, null), reactionLine(view), voteLines(view), deliveryLines(view)]
+      const media = view.media === undefined ? null : `  media: ${[view.media.mime, view.media.filename, view.media.size === undefined ? null : kilobytes(view.media.size)].filter(Boolean).join(", ")} (get_media opens it)`;
+      const text = [
+        renderMessages(`Message in ${view.chat_id}`, [view], new Map(), null, null, null),
+        media,
+        reactionLine(view),
+        voteLines(view),
+        deliveryLines(view),
+      ]
         .filter(Boolean)
         .join("\n");
       return ok(text, {
@@ -1096,20 +1098,20 @@ const TOOLS: readonly ToolDef[] = [
       const info = await wa.getGroupInfo(group_id);
       const text = [
         `# ${info.name} (${info.participant_count} participants)`,
-        `- **chat_id**: \`${info.chat_id}\``,
+        `- **chat_id**: ${info.chat_id}`,
         info.description ? `- **description**: ${info.description}` : null,
         info.owner ? `- **owner**: ${info.owner}` : null,
         info.created_at ? `- **created**: ${info.created_at}` : null,
         `- **admins only can post**: ${info.announcement_only} · **you are admin**: ${info.i_am_admin}`,
         `- **admins only can edit info**: ${info.info_locked} · **who can add members**: ${info.member_add_mode} · **join approval**: ${info.join_approval} · **disappearing messages**: ${disappearingLabel(info.disappearing_seconds)}`,
         info.community?.is_community ? "- **community**: this group is a community" : null,
-        info.community?.parent_group_id ? `- **in community**: \`${info.community.parent_group_id}\`` : null,
+        info.community?.parent_group_id ? `- **in community**: ${info.community.parent_group_id}` : null,
         info.invite_link ? `- **invite link**: ${info.invite_link}` : null,
         "",
         "## Participants",
         ...info.participants.map(
           (p) =>
-            `- ${contactLabel(p.name, p.contact_id)}${p.is_admin ? " (admin)" : ""}${looksUnnamed({ chat_id: p.contact_id, name: p.name }) ? " [unnamed]" : ""}\n  contact_id: ${p.contact_id}`
+            `- ${personRef(p.name, p.contact_id)}${p.is_admin ? " (admin)" : ""}${looksUnnamed({ chat_id: p.contact_id, name: p.name }) ? " [unnamed]" : ""}`
         ),
       ]
         .filter((line): line is string => line !== null)
@@ -1322,11 +1324,15 @@ const TOOLS: readonly ToolDef[] = [
     handler: async (args, ctx) => {
       if (args.confirmation_id === undefined && args.action !== "mark_read") {
         const preview = await previewChatAction(args, ctx);
-        return ok(`Not applied.\n${preview.preview}\n\n${preview.next}`, preview);
+        const until = shortStamp(isoWithOffset(Date.parse(String(preview.expires_at))));
+        const call = `manage_chat with chat_id "${String(preview.chat_id)}", action "${String(preview.action)}" and confirmation_id "${String(preview.confirmation_id)}", valid until ${until}`;
+        return ok(`Not applied.\n${String(preview.preview)}\nAfter a yes: ${call}.\n\n${String(preview.next)}`, preview);
       }
       const result = args.confirmation_id !== undefined ? await confirmChatAction(args, ctx) :
         await ctx.wa.manageChat(args.chat_id as string, "mark_read");
-      return ok(result.applied, result as unknown as Record<string, unknown>);
+      // What it was applied to: the message (its id names the chat too), or the chat.
+      const applied = result as unknown as { applied: string; chat_id: string; message_id?: string };
+      return ok(`${applied.applied} (${applied.message_id ?? applied.chat_id})`, result as unknown as Record<string, unknown>);
     },
   }),
 
@@ -1393,10 +1399,14 @@ const TOOLS: readonly ToolDef[] = [
       }
       const result = await wa.manageGroup(group_id, action, participant_ids, value, { file_path, url });
       const text = [
-        result.applied,
+        `${result.applied} (${group_id})`,
+        result.invite_link ? `invite link: ${result.invite_link}` : null,
+        result.profile_pic_url ? `photo: ${result.profile_pic_url}` : null,
         ...renderParticipants(result.participants ?? []),
         ...renderJoinRequests(result.join_requests ?? []),
-      ].join("\n");
+      ]
+        .filter((line): line is string => line !== null)
+        .join("\n");
       return ok(text, result as unknown as Record<string, unknown>);
     },
   }),
@@ -1463,7 +1473,8 @@ const TOOLS: readonly ToolDef[] = [
       if (args.action === "cancel") {
         if (args.reminder_id === undefined) throw new WazapError("INVALID_ID", "cancel needs reminder_id.", "List them first and pass the reminder_id of the one to cancel");
         const { cancelled, reminder } = await wa.cancelReminder(args.reminder_id);
-        const text = cancelled ? `Cancelled reminder ${reminder.reminder_id}.` : `Reminder ${reminder.reminder_id} is ${reminder.state}; nothing to cancel.`;
+        const about = personRef(reminder.chat_name, reminder.chat_id);
+        const text = cancelled ? `Cancelled reminder ${reminder.reminder_id} about ${about}.` : `Reminder ${reminder.reminder_id} about ${about} is ${reminder.state}; nothing to cancel.`;
         return ok(text, { action: args.action, count: 1, cancelled, reminders: [reminder] });
       }
       if (args.chat_id === undefined || args.note === undefined) {
@@ -1483,7 +1494,7 @@ const TOOLS: readonly ToolDef[] = [
       const reminder = await wa.addReminder({ chatId: args.chat_id, note: args.note, condition: args.condition, dueAt: when.at, timeZone: when.zone });
       const delivery = reminderDelivery(wa);
       const text = [
-        `Reminder ${reminder.reminder_id} set for ${describeInstant(when.at, when.zone).label} about ${reminder.chat_name}${reminder.condition === "no_reply" ? ", unless someone writes there first" : ""}:`,
+        `Reminder ${reminder.reminder_id} set for ${describeInstant(when.at, when.zone).label} about ${reminder.chat_name} (${reminder.chat_id})${reminder.condition === "no_reply" ? ", unless someone writes there first" : ""}:`,
         `> ${reminder.note}`,
         when.ambiguous ? "That wall-clock time happens twice that day (the clocks go back); the first one was taken." : null,
         delivery,
@@ -1517,7 +1528,7 @@ interface MediaOne {
   blocks: ContentBlock[];
 }
 
-async function mediaOf(message_id: string, { save_to, language, detail, pageRange, account_id }: MediaArgs, ctx: ToolCtx): Promise<MediaOne> {
+async function mediaOf(message_id: string, { save_to, language, detail, pageRange, account_id }: MediaArgs, ctx: ToolCtx, inBatch = false): Promise<MediaOne> {
   const { wa, hub, accountId, localFiles, mediaLinks, signal } = ctx;
   // A remote session cannot open a file on this machine: nothing is written for it, and no path is named.
   const remote = localFiles === false;
@@ -1538,7 +1549,19 @@ async function mediaOf(message_id: string, { save_to, language, detail, pageRang
     original_filename: view?.media?.filename ?? null,
     sender: identified?.sender ?? null,
   };
-  const lines: string[] = [];
+  // What the message is, as the structured fields above say it: its kind, who sent it, its name and caption.
+  const from = identified?.sender;
+  const lines: string[] = [
+    [
+      `${view?.type ?? "Media"}${inBatch ? "" : ` ${message_id}`}`,
+      from === undefined ? null : `from ${view?.from_me ? "me" : personRef(from.name, from.id, from.phone)}`,
+      view?.media?.filename ? `"${view.media.filename}"` : null,
+    ]
+      .filter(Boolean)
+      .join(" · "),
+  ];
+  const caption = structured.caption;
+  if (typeof caption === "string" && caption !== "") lines.push(`Caption: ${caption}`);
   const extra: ContentBlock[] = [];
   const notes: string[] = [];
 
@@ -1610,6 +1633,12 @@ async function mediaOf(message_id: string, { save_to, language, detail, pageRang
     lines.push(`The original file, to open (valid 30 minutes): ${link.url}`);
   }
   Object.assign(structured, notesField(notes));
+  // Every note in the text too, once: most are already one of its lines, and the line that opens a
+  // document's quote frames it as data in its own words.
+  for (const note of notes) {
+    if (note === UNTRUSTED_TEXT_NOTE && structured.document_text !== undefined) continue;
+    if (!lines.some((line) => line.includes(note))) lines.push(note);
+  }
   return { lines, structured, blocks: extra };
 }
 
@@ -1631,7 +1660,7 @@ async function mediaBatch(asked: readonly string[], args: MediaArgs, ctx: ToolCt
       const index = next++;
       throwIfCancelled(ctx.signal);
       try {
-        answers[index] = await mediaOf(ids[index]!, args, ctx);
+        answers[index] = await mediaOf(ids[index]!, args, ctx, true);
       } catch (err) {
         if (ctx.signal?.aborted === true) throw callCancelled();
         answers[index] = asWazapError(err);
@@ -1687,10 +1716,17 @@ export const registerTools = createToolRegistrar([
   ...legacyReadTools(TOOLS).map((definition) => ({ ...definition, legacyRead: true })),
 ]);
 
-function renderChats(chats: ChatSummary[], filter: string, tag?: string): string {
+
+/**
+ * One line per chat: who, what the user filed about them, its flags, its
+ * chat_id, and its last message with the minute it came; the next page's
+ * cursor at the end.
+ */
+function renderChats(chats: Array<ChatSummary & { picture_url?: string | null }>, filter: string, tag: string | undefined, nextCursor: string | null): string {
   const scope = tag === undefined ? filter : `${filter}, tagged ${tag}`;
   if (chats.length === 0) return `No chats found (filter: ${scope}).`;
-  const lines = [`# WhatsApp chats — ${scope} (${chats.length})`, ""];
+  const lines = [`# WhatsApp chats — ${scope} (${chats.length})`];
+  const today = localDay(Date.now());
   for (const c of chats) {
     const flags = [
       c.type === "group" ? "group" : null,
@@ -1701,15 +1737,13 @@ function renderChats(chats: ChatSummary[], filter: string, tag?: string): string
       c.left ? "left" : null,
     ].filter(Boolean);
     const name = c.type === "group" ? c.name : contactLabel(c.name, c.chat_id, c.phone);
-    lines.push(`## ${name}${flags.length ? ` [${flags.join(", ")}]` : ""}${filedLabel(c)}`);
-    lines.push(`- **chat_id**: \`${c.chat_id}\``);
-    if (c.last_message) {
-      lines.push(
-        `- **last**: ${c.last_message.from_me ? "me: " : ""}${truncate(c.last_message.text, 160)} (${c.last_message.timestamp})`
-      );
-    }
-    lines.push("");
+    const last = c.last_message
+      ? ` · last ${shortStamp(c.last_message.timestamp, today)}: ${c.last_message.from_me ? "me: " : ""}${c.last_message.private ? "(private)" : truncate(c.last_message.text, 160)}`
+      : "";
+    const picture = c.picture_url ? ` · picture ${c.picture_url}` : "";
+    lines.push(`- ${name}${filedLabel(c)}${flags.length ? ` [${flags.join(", ")}]` : ""} · ${c.chat_id}${last}${picture}`);
   }
+  if (nextCursor !== null) lines.push(`More: list_chats with cursor "${nextCursor}" and the same filter.`);
   return lines.join("\n");
 }
 
@@ -1732,20 +1766,11 @@ function previewBlocks(previews: Preview[]): ContentBlock[] {
   return previews.map((p) => ({ type: "image", data: p.base64, mimeType: p.mime }));
 }
 
-/** The line under the title that says what was attached and what could not be. */
-function previewNote(messages: MessageView[], previews: Preview[], asked: boolean): string | null {
-  if (!asked) return null;
-  const photos = messages.filter((m) => m.type === "image").length;
-  const missing = photos - previews.length;
-  const parts = [
-    previews.length > 0
-      ? `${previews.length} preview${previews.length === 1 ? "" : "s"} attached, numbered in the order of the image blocks`
-      : null,
-    missing > 0
-      ? `${missing} photo${missing === 1 ? "" : "s"} without a preview (over the ${MAX_PREVIEWS} per call, expired, unreadable, or out of time; call again for more)`
-      : null,
-  ].filter((part): part is string => part !== null);
-  return parts.length > 0 ? `${parts.join("; ")}.` : null;
+
+/** The line that says what was attached: each preview by its label, in the order of the image blocks. */
+function previewNote(previews: Preview[]): string | null {
+  if (previews.length === 0) return null;
+  return `${previews.length} preview${previews.length === 1 ? "" : "s"} attached, in the order of the image blocks: ${previews.map((p, i) => `preview ${i + 1} is ${p.message_id}`).join("; ")}.`;
 }
 
 /** A page past the local history that the phone, asked for it, sent nothing for. */
@@ -1815,19 +1840,39 @@ function previewGap(messages: MessageView[], previews: Preview[], asked: boolean
   return `${missing} photo${missing === 1 ? "" : "s"} without a preview (over ${MAX_PREVIEWS} per call, expired, unreadable, or out of time): call again for more.`;
 }
 
+/**
+ * A person as text names them for both the user and a later call: their name
+ * and formatted number, which every tool takes as a chat_id, or, with no
+ * number to show (a LID, a group), their id.
+ */
+function personRef(name: string, id: string, phone?: string | null): string {
+  const label = contactLabel(name, id, phone);
+  const numbered = (phone !== undefined && phone !== null && phone !== "") || /^\d+@s\.whatsapp\.net$/.test(id);
+  return numbered && !id.endsWith("@g.us") ? label : `${name} (${id})`;
+}
+
 /** What the user filed about a person, after their name: " · #tag #tag · note", or "". */
 function filedLabel(person: { note?: string; tags?: string[] }): string {
   const tags = person.tags?.length ? ` · ${person.tags.map((tag) => `#${tag}`).join(" ")}` : "";
   return `${tags}${person.note ? ` · ${person.note}` : ""}`;
 }
 
-/** The sender's name, with what the user filed about them the first time they appear in this rendering. */
-function senderLabel(m: AnyMessage, introduced: Set<string>): string {
+
+/**
+ * The sender as a line names them: "me", or their name with, the first time
+ * they appear in this rendering, their number or id (when they are not the
+ * chat itself: a group's members) and what the user filed about them.
+ */
+function senderLabel(
+  m: { from_me: boolean; chat_id: string; sender: { id: string; name: string; phone?: string | null; note?: string; tags?: string[] } },
+  introduced: Set<string>
+): string {
   if (m.from_me) return "me";
-  const filed = filedLabel(m.sender);
-  if (filed === "" || introduced.has(m.sender.id)) return m.sender.name;
+  if (introduced.has(m.sender.id)) return m.sender.name;
   introduced.add(m.sender.id);
-  return `${m.sender.name}${filed}`;
+  // In a one-to-one chat the sender is the chat the title names; in a group, who they are.
+  const who = m.sender.id !== m.chat_id && m.sender.id !== "" ? personRef(m.sender.name, m.sender.id, m.sender.phone) : m.sender.name;
+  return `${who}${filedLabel(m.sender)}`;
 }
 
 const JOIN_NEXT = 'Show this to the user; after their yes, call manage_group again with action "join", the same invite or message_id and confirm: true.';
@@ -1835,7 +1880,7 @@ const JOIN_NEXT = 'Show this to the user; after their yes, call manage_group aga
 /** A manage_group join answer: the preview and the step after it, or where the join landed. */
 function renderJoin(r: JoinGroupResult): string {
   const name = r.name ? `"${r.name}"` : "the group";
-  if (r.status === "joined") return `Joined ${name}${r.group_id ? `: \`${r.group_id}\`` : ""}.`;
+  if (r.status === "joined") return `Joined ${name}${r.group_id ? `: ${r.group_id}` : ""}.`;
   if (r.status === "pending_approval") {
     return `Asked to join ${name}. An admin of the group must approve the request before the account is in.`;
   }
@@ -1846,9 +1891,9 @@ function renderJoin(r: JoinGroupResult): string {
   return [
     `Group invite: ${name}${facts.length ? ` (${facts.join(", ")})` : ""}. Not joined.`,
     r.description ? `Description: ${r.description}` : null,
-    r.group_id ? `group_id: \`${r.group_id}\`` : null,
+    r.group_id ? `group_id: ${r.group_id}` : null,
     "",
-    'Show this to the user. After they say yes, call manage_group again with action "join", the same invite or message_id and confirm: true.',
+    JOIN_NEXT,
   ]
     .filter((line) => line !== null)
     .join("\n");
@@ -1927,37 +1972,88 @@ function listTextCap(fullText: boolean | undefined): number | null {
   return fullText === true ? null : LIST_TEXT_CHARS;
 }
 
+
+/**
+ * Messages as text, everything a reply or a later call needs and nothing
+ * twice: a heading per day ("2026-11-10 Tue · today") and the minute on each
+ * line, in the server's zone the timestamps carry; each sender's id, note and
+ * tags the first time they appear; the message_id on every line, the chat
+ * only where it changes (a search's hits come from several); a reply's quote
+ * with its own id when that message is not in the list; a voice note's
+ * transcript. `notes` are the answer's notes, word for word.
+ */
 function renderMessages(
   title: string,
   messages: ReadonlyArray<AnyMessage>,
   labels: Map<string, string> = new Map(),
-  note: string | null = null,
+  notes: string | ReadonlyArray<string | null> | null = null,
   textCap: number | null = LIST_TEXT_CHARS,
-  quoteCap: number | null = 160
+  quoteCap: number | null = 160,
+  introduced: Set<string> = new Set()
 ): string {
-  if (messages.length === 0) return `${title}: no messages found.${note ? ` ${note}` : ""}`;
-  const lines = [`# ${title} (${messages.length})`, ""];
-  if (note) lines.splice(1, 0, note);
-  const introduced = new Set<string>();
+  const noteText = noteLines(notes);
+  if (messages.length === 0) return [`${title}: no messages found.`, ...noteText].join("\n");
+  const lines = [`# ${title} (${messages.length})`, ...noteText];
+  const shown = new Set(messages.map((m) => m.message_id));
+  const chats = new Set(messages.map((m) => m.chat_id));
+  const today = localDay(Date.now());
+  let day = "";
+  let chat = "";
   for (const m of messages) {
+    if (m.timestamp.slice(0, 10) !== day) {
+      day = m.timestamp.slice(0, 10);
+      lines.push(`## ${dayHeading(day, today)}`);
+    }
     const tags = [
       labels.get(m.message_id) ?? null,
-      m.type !== "text" ? m.type : null,
+      typeTag(m),
       m.forwarded ? "forwarded" : null,
       m.edited ? "edited" : null,
-      m.quoted ? "reply" : null,
       m.reactions?.length ? reactionTag(m.reactions) : null,
       m.mentions?.length ? `mentions ${m.mentions.map((person) => person.name).join(", ")}` : null,
       voteTag(m),
       deliveryTag(m),
+      m.private ? "private" : null,
     ].filter(Boolean);
-    lines.push(
-      `- **${senderLabel(m, introduced)}** · ${m.age}${tags.length ? ` [${tags.join(", ")}]` : ""} · id: \`${m.message_id}\``
-    );
-    if (m.quoted) lines.push(`  > ${truncate(m.quoted.text, quoteCap)}`);
+    const where = chats.size > 1 && m.chat_id !== chat ? ` · in ${m.chat_id}` : "";
+    chat = m.chat_id;
+    lines.push(`- ${m.timestamp.slice(11, 16)} ${senderLabel(m, introduced)}${tags.length ? ` [${tags.join(", ")}]` : ""}${where} · ${m.message_id}`);
+    if (m.quoted) lines.push(`  > ${truncate(m.quoted.text, quoteCap)}${shown.has(m.quoted.message_id) ? "" : ` (${m.quoted.message_id})`}`);
     lines.push(`  ${truncate(m.text, textCap)}`);
+    if (m.transcript !== undefined && m.transcript !== "") lines.push(`  transcript: ${truncate(m.transcript, textCap)}`);
   }
   return lines.join("\n");
+}
+
+/** A note, or notes, as the lines a text answer carries them on: the very strings of `notes`. */
+function noteLines(notes: string | ReadonlyArray<string | null> | null | undefined): string[] {
+  if (notes === null || notes === undefined) return [];
+  return (typeof notes === "string" ? [notes] : notes).filter((note): note is string => note !== null && note !== "");
+}
+
+/** The calendar day of an instant in the server's zone, as a timestamp's first ten characters give it. */
+function localDay(ms: number): string {
+  return isoWithOffset(ms).slice(0, 10);
+}
+
+const WEEKDAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+
+/** "2026-11-10 Tue · today": a day heading, from the date alone, so a clock change cannot shift it. */
+function dayHeading(day: string, today: string): string {
+  const noon = Date.parse(`${day}T12:00:00Z`);
+  const yesterday = new Date(Date.parse(`${today}T12:00:00Z`) - 86_400_000).toISOString().slice(0, 10);
+  const relative = day === today ? " · today" : day === yesterday ? " · yesterday" : "";
+  return `${day} ${WEEKDAYS[new Date(noon).getUTCDay()]}${relative}`;
+}
+
+/** A message's kind, unless its text already opens with it ("[image] apus", "[voice message · 0:14]"). */
+function typeTag(m: { type: string; text: string }): string | null {
+  return m.type === "text" || m.text.startsWith("[") ? null : m.type;
+}
+
+/** "14:05" today, "2026-11-08 18:46" another day: an instant as a line shows it. */
+function shortStamp(iso: string, today: string = localDay(Date.now())): string {
+  return iso.slice(0, 10) === today ? iso.slice(11, 16) : `${iso.slice(0, 10)} ${iso.slice(11, 16)}`;
 }
 
 /**
@@ -1973,111 +2069,128 @@ function weakMatches(hits: ReadonlyArray<{ matched?: string; similarity?: number
 
 const WEAK_NOTE = "Weak matches only: the query may have no real answer; treat these as guesses, not facts.";
 
-function renderSearchContexts(contexts: readonly SearchContext[] | undefined): string {
-  if (contexts === undefined || contexts.length === 0) return "";
-  return "\n\n# Nearby context (bounded; chronological, not additional search hits)\n" + contexts.map((context) =>
-    `For ${context.anchor_id}:\n` + context.messages.map((message) =>
-      `- ${message.timestamp} ${message.sender.name} [${message.message_id}]: ${message.text_offset ? "… " : ""}${message.text}${message.text_truncated ? "… [truncated; get_message reads the source]" : ""}`
-    ).join("\n")
-  ).join("\n\n");
+/** Meaning search off, failing or still starting, so search answered by the words: recall_unavailable (and its line in the text) says why. */
+const UNAVAILABLE_NOTE = "Meaning search is unavailable, so these match the words only: recall_unavailable says why.";
+
+/** The meaning index is behind the history: how far, for the note. */
+function indexingNote(index: { indexed: number; pending: number }): string {
+  return `The meaning index is still catching up (${index.indexed} indexed, ${index.pending} pending): more matches may appear.`;
 }
 
+
 /**
- * Ranked hits with the date always on the line and the score that ordered
- * them. "index only" warns that wazap holds the message only as text, so
- * get_media has nothing to open.
+ * The nearby messages of the best hits, oldest first, without the hits
+ * themselves: they are on the list above, ids and all.
+ */
+function renderSearchContexts(contexts: readonly SearchContext[] | undefined, hits: ReadonlySet<string> = new Set(), introduced: Set<string> = new Set()): string {
+  if (contexts === undefined || contexts.length === 0) return "";
+  const today = localDay(Date.now());
+  const blocks = contexts
+    .map((context) => {
+      const around = context.messages.filter((message) => !hits.has(message.message_id));
+      if (around.length === 0) return null;
+      return `Around ${context.anchor_id}:\n` + around.map((message) =>
+        `- ${shortStamp(message.timestamp, today)} ${senderLabel(message, introduced)}: ${message.text_offset ? "… " : ""}${message.text}${message.text_truncated ? "… [cut; get_message reads it whole]" : ""} · ${message.message_id}`
+      ).join("\n");
+    })
+    .filter((block): block is string => block !== null);
+  return blocks.length === 0 ? "" : "\n\n# Nearby context (bounded; chronological, not additional search hits)\n" + blocks.join("\n");
+}
+
+
+/**
+ * Ranked hits with the day and minute always on the line and the score that
+ * ordered them; the chat where it changes. "index only" warns that wazap holds
+ * the message only as text, so get_media has nothing to open.
  */
 function renderRecall(
   title: string,
   answer: RecallAnswer | IdentifiedRecallAnswer,
-  textCap: number | null = LIST_TEXT_CHARS
+  textCap: number | null = LIST_TEXT_CHARS,
+  notes: ReadonlyArray<string | null> = [],
+  introduced: Set<string> = new Set()
 ): string {
-  const { hits, index } = answer;
-  const catchingUp =
-    index.state === "indexing"
-      ? `The index is still catching up: ${index.indexed} indexed, ${index.pending} pending — more matches may appear.`
-      : null;
-  if (hits.length === 0) {
-    return `${title}: no messages found.${catchingUp ? ` ${catchingUp}` : ""}`;
-  }
-  const lines = [`# ${title} (${hits.length})`, ""];
-  if (weakMatches(hits)) {
-    const best = Math.max(0, ...hits.map((h) => h.similarity ?? 0));
-    lines.push(
-      `Weak matches only (best similarity ${best.toFixed(2)}): the query may have no real answer — treat these as guesses.`,
-      ""
-    );
-  }
-  if (catchingUp) lines.push(catchingUp, "");
-  const introduced = new Set<string>();
+  const { hits } = answer;
+  if (hits.length === 0) return [`${title}: no messages found.`, ...noteLines(notes)].join("\n");
+  const lines = [`# ${title} (${hits.length})`, ...noteLines(notes)];
+  const shown = new Set(hits.map((hit) => hit.message.message_id));
+  let chat = "";
   for (const hit of hits) {
     const m = hit.message;
     const tags = [
       `score ${hit.score.toFixed(3)}`,
       hit.matched === "both" ? "words + meaning" : hit.matched,
       hit.from_index ? "index only" : null,
-      m.type !== "text" ? m.type : null,
-      m.quoted ? "reply" : null,
+      typeTag(m),
       m.edited ? "edited" : null,
+      m.private ? "private" : null,
     ].filter(Boolean);
-    lines.push(
-      `- [${m.timestamp}] **${senderLabel(m, introduced)}** · \`${m.chat_id}\` [${tags.join(", ")}] · id: \`${m.message_id}\``
-    );
-    if (m.quoted) lines.push(`  > ${truncate(m.quoted.text, 160)}`);
+    const where = m.chat_id !== chat ? ` · in ${m.chat_id}` : "";
+    chat = m.chat_id;
+    lines.push(`- ${m.timestamp.slice(0, 10)} ${m.timestamp.slice(11, 16)} ${senderLabel(m, introduced)} [${tags.join(", ")}]${where} · ${m.message_id}`);
+    if (m.quoted) lines.push(`  > ${truncate(m.quoted.text, 160)}${shown.has(m.quoted.message_id) ? "" : ` (${m.quoted.message_id})`}`);
     lines.push(`  ${truncate(m.text, textCap)}`);
+    if (m.transcript !== undefined && m.transcript !== "") lines.push(`  transcript: ${truncate(m.transcript, textCap)}`);
   }
   return lines.join("\n");
 }
+
 
 function renderStories(
   stories: MessageView[],
   hours: number,
   labels: Map<string, string>,
-  note: string | null,
+  notes: ReadonlyArray<string | null>,
   textCap: number | null = 300
 ): string {
-  if (stories.length === 0) return `No stories in the last ${hours}h.`;
-  const lines = [`# Stories · last ${hours}h (${stories.length})`, ""];
-  if (note) lines.splice(1, 0, note);
+  if (stories.length === 0) return [`No stories in the last ${hours}h.`, ...noteLines(notes)].join("\n");
+  const lines = [`# Stories · last ${hours}h (${stories.length})`, ...noteLines(notes)];
+  const today = localDay(Date.now());
   let author = "";
   for (const m of stories) {
     if (m.sender.id !== author) {
       author = m.sender.id;
-      lines.push(`## ${contactLabel(m.sender.name, m.sender.id, m.sender.phone)}`);
+      lines.push(`## ${personRef(m.sender.name, m.sender.id, m.sender.phone)}${filedLabel(m.sender)}`);
     }
     const label = labels.get(m.message_id);
-    lines.push(`- ${m.age} · ${truncate(m.text, textCap)}${label ? ` (${label})` : ""} · id: \`${m.message_id}\``);
+    const kind = typeTag(m);
+    lines.push(`- ${shortStamp(m.timestamp, today)}${kind === null ? "" : ` [${kind}]`} ${truncate(m.text, textCap)}${label ? ` (${label})` : ""} · ${m.message_id}`);
   }
   return lines.join("\n");
 }
 
+
 function renderWait(result: WaitResult): string {
   const tail = [
-    `cursor: \`${result.cursor}\``,
+    `cursor: ${result.cursor} (pass it to the next wait_for_messages)`,
     result.cursor_reset ? "The cursor was from another run; this wait started from now." : null,
   ]
     .filter(Boolean)
     .join("\n");
   if (result.messages.length === 0) return `Nothing arrived before the timeout.\n${tail}`;
-  const lines = [`# ${result.messages.length} new message${result.messages.length === 1 ? "" : "s"}`, ""];
+  const lines = [`# ${result.messages.length} new message${result.messages.length === 1 ? "" : "s"}`];
+  const today = localDay(Date.now());
   let chat = "";
   const introduced = new Set<string>();
   for (const m of result.messages) {
     if (m.chat_id !== chat) {
       chat = m.chat_id;
-      lines.push(`## \`${chat}\``);
+      lines.push(`## ${chat}`);
     }
-    lines.push(`- [${m.timestamp}] ${senderLabel(m, introduced)}: ${truncate(m.text, 500)} · id: \`${m.message_id}\``);
+    const kind = typeTag(m);
+    lines.push(`- ${shortStamp(m.timestamp, today)} ${senderLabel(m, introduced)}${kind === null ? "" : ` [${kind}]`}: ${truncate(m.text, 500)} · ${m.message_id}`);
+    if (m.transcript !== undefined && m.transcript !== "") lines.push(`  transcript: ${truncate(m.transcript, 500)}`);
   }
   lines.push("", tail);
   return lines.join("\n");
 }
 
+
 /** The card a contact mutation answers with: who it is plus the local filing. */
 function renderContactCard(c: ContactSummary): string {
   const lines = [
     `# ${c.name}`,
-    `- **contact_id**: \`${c.contact_id}\``,
+    `- **chat_id**: ${c.contact_id}`,
     c.number ? `- **number**: ${formatPhone(c.number)}` : null,
     c.note ? `- **note**: ${c.note}` : null,
     c.tags?.length ? `- **tags**: ${c.tags.map((t) => `#${t}`).join(" ")}` : null,
@@ -2091,12 +2204,13 @@ function renderParticipants(participants: Array<{ id: string; status: string; re
   return participants.map((p) => `- ${p.id}: ${p.status}${p.reason ? ` (${p.reason})` : ""}`);
 }
 
+
 function renderJoinRequests(requests: JoinRequest[]): string[] {
   return requests.map((r) => {
     const details = [r.requested_at ? `asked ${r.requested_at}` : null, r.method ? `via ${r.method}` : null]
       .filter((part): part is string => part !== null)
       .join(", ");
-    return `- ${contactLabel(r.name, r.id)}${details ? ` (${details})` : ""}\n  id: ${r.id}`;
+    return `- ${personRef(r.name, r.id)}${details ? ` (${details})` : ""}`;
   });
 }
 
@@ -2142,20 +2256,19 @@ const DRAFT_NEXT_LANGUAGE =
 const DRAFT_NEXT_SCHEDULED =
   "Show this preview to the user exactly, the Scheduled time included. Call confirm_send with draft_id only when their words approve this text, this recipient and this time: it schedules the message, which goes at that time. A yes about something else is not approval: show the preview again and ask.";
 
+
 function drafted(view: DraftView, ambiguous = false): ToolResult {
   const warnings = view.style_check?.warnings ?? [];
-  return ok(renderDraft(view), {
-    ...view,
-    next: warnings.includes("language_mismatch") ? DRAFT_NEXT_LANGUAGE : view.send_at === undefined ? DRAFT_NEXT : DRAFT_NEXT_SCHEDULED,
-    ...notesField([
-      ambiguous ? "That wall-clock time happens twice that day (the clocks go back): the first was taken; say so and show send_at." : null,
-      view.unnamed_recipient === true ? "The recipient is not a saved contact: say the name shown is only their public WhatsApp name or their number." : null,
-      warnings.some((warning) => warning !== "length_outlier")
-        ? "Unless the user dictated these words, draft again to match style_check.warnings, then show that preview."
-        : null,
-      warnings.includes("length_outlier") ? "length_outlier: shorten only if nothing the user asked for is lost." : null,
-    ]),
-  });
+  const next = warnings.includes("language_mismatch") ? DRAFT_NEXT_LANGUAGE : view.send_at === undefined ? DRAFT_NEXT : DRAFT_NEXT_SCHEDULED;
+  const notes = notesField([
+    ambiguous ? "That wall-clock time happens twice that day (the clocks go back): the first was taken; say so and show send_at." : null,
+    view.unnamed_recipient === true ? "The recipient is not a saved contact: say the name shown is only their public WhatsApp name or their number." : null,
+    warnings.some((warning) => warning !== "length_outlier")
+      ? "Unless the user dictated these words, draft again to match style_check.warnings, then show that preview."
+      : null,
+    warnings.includes("length_outlier") ? "length_outlier: shorten only if nothing the user asked for is lost." : null,
+  ]);
+  return ok(renderDraft(view, notes.notes ?? [], next), { ...view, next, ...notes });
 }
 
 /**
@@ -2353,22 +2466,22 @@ async function checkStyle(view: DraftView, text: string, { wa, hub, accountId }:
 }
 
 function scheduledText(view: ScheduledView): string {
-  const when = `${view.send_at} (${view.time_zone})`;
+  const when = `${view.send_at} (${view.time_zone}), to ${targetRef(view.to)}`;
   if (view.already_scheduled === true) return `Already scheduled as ${view.schedule_id} for ${when}; nothing new was scheduled. It is ${view.state}.`;
   return `Scheduled ${view.schedule_id} for ${when}. Nothing was sent yet; it goes then, if the send checks still pass. scheduled_messages lists or cancels it.\n${view.preview}`;
 }
 
 function renderScheduled(rows: ScheduledView[]): string {
   if (rows.length === 0) return "No scheduled messages.";
-  const lines = [`# Scheduled messages (${rows.length})`, ""];
+  const lines = [`# Scheduled messages (${rows.length})`];
   for (const row of rows) {
     const facts = [
       row.state,
       `send_at ${row.send_at} (${row.time_zone})`,
-      row.message_id ? `sent as \`${row.message_id}\`` : null,
+      row.message_id ? `sent as ${row.message_id}` : null,
       row.error_code ? `${row.error_code}: ${row.error ?? ""}` : null,
     ].filter(Boolean);
-    lines.push(`- \`${row.schedule_id}\` → ${describeTarget(row.to)} [${facts.join(" · ")}]`);
+    lines.push(`- ${row.schedule_id} → ${targetRef(row.to)} [${facts.join(" · ")}]`);
     if (row.preview !== "") lines.push(`  ${truncate(row.preview.replaceAll("\n", " · "), 300)}`);
   }
   return lines.join("\n");
@@ -2376,10 +2489,10 @@ function renderScheduled(rows: ScheduledView[]): string {
 
 function renderReminders(rows: ReminderView[]): string {
   if (rows.length === 0) return "No reminders.";
-  const lines = [`# Reminders (${rows.length})`, ""];
+  const lines = [`# Reminders (${rows.length})`];
   for (const row of rows) {
     const facts = [row.state, `due ${row.due_at} (${row.time_zone})`, row.condition === "no_reply" ? "unless they reply" : null, row.outcome ?? null].filter(Boolean);
-    lines.push(`- \`${row.reminder_id}\` · ${row.chat_name} \`${row.chat_id}\` [${facts.join(" · ")}]`);
+    lines.push(`- ${row.reminder_id} · ${row.chat_name} · ${row.chat_id} [${facts.join(" · ")}]`);
     lines.push(`  ${truncate(row.note, 300)}`);
   }
   return lines.join("\n");
@@ -2395,8 +2508,13 @@ function reminderDelivery(wa: WhatsAppApi): string | null {
     : `No webhook is set up, so this reminder will only show in reminder list when due: tell the user it needs \`wazap config webhook on\` and ${add}.`;
 }
 
+/** A recipient as a sent or scheduled line names them: personRef's rule, so a group shows its id. */
+function targetRef(to: OutgoingTarget): string {
+  return personRef(to.name, to.chat_id, to.number);
+}
+
 function sentText(sent: SentMessage, to?: OutgoingTarget): string {
-  const who = to === undefined ? sent.chat_id : describeTarget(to);
+  const who = to === undefined ? sent.chat_id : targetRef(to);
   if (sent.already_sent === true) {
     return `Already sent to ${who} at ${sent.timestamp} (message_id: ${sent.message_id}); nothing was sent again:\n> ${sent.text}`;
   }

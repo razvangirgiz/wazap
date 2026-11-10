@@ -214,7 +214,7 @@ test("a draft in the wrong language is written again before any preview is shown
   assert.doesNotMatch(next, /Show this preview to the user exactly/, "the step is the redraft, not this preview");
   assert.equal(wrongLanguage.structuredContent.status, "draft", "the warning blocks nothing");
   assert.deepEqual(wrongLanguage.structuredContent.style_check.warnings, ["language_mismatch"]);
-  assert.match(wrongLanguage.content[0].text, /confirm_send/, "and the rendered draft is what it was");
+  assert.ok(wrongLanguage.content[0].text.endsWith(next), "and the text gives the very same step, not a confirm");
 
   for (const warnings of [[], ["diacritics_mismatch", "address_mismatch"], ["length_outlier"]]) {
     const other = await draft(warnings);
@@ -601,7 +601,7 @@ test("list_chats previews retain complete UTF-16 pairs at the truncation boundar
       const result = await server.tools.get("list_chats").handler({ filter: "all", limit: 20 });
       assert.equal(result.isError, undefined);
       assert.equal(result.content[0].text.isWellFormed(), true);
-      assert.ok(result.content[0].text.includes(`- **last**: ${preview} (`));
+      assert.ok(result.content[0].text.endsWith(` · last 2026-10-09 10:00: ${preview}`), result.content[0].text);
       // Structured source text remains complete; only the human preview is bounded.
       assert.equal(result.structuredContent.chats[0].last_message.text, text);
     });

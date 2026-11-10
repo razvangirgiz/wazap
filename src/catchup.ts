@@ -70,6 +70,11 @@ export const MAX_SNAPSHOTS = 16;
 
 const HOUR = 3_600_000;
 
+/** Said when every entry is an ask from before an explicit window. */
+const QUIET_NOTE = "Nothing arrived in this window: every waiting entry was asked before it and is still open.";
+/** Said on a page that is not the last; the text's line goes on with the cursor itself. */
+const MORE_NOTE = "More entries are left: call catch_up with more.cursor for them.";
+
 // ---------------------------------------------------------------- input and output
 
 export const CATCHUP_INPUT = {
@@ -963,7 +968,17 @@ async function givePage(snapshot: Snapshot, start: number, budgetChars: number, 
 
   // Every section read, and all there is are asks from before the window: nothing arrived in it.
   const quiet = complete && all.length > 0 && all.every((item) => item.beforeWindow === true);
-  const header = [...headerLines(views, multi, now, start > 0), ...(quiet ? ["Nothing arrived in this window; still waiting from before it:"] : [])];
+  // What the assistant must act on or tell the user, the same strings in the text (under the title) and in `notes`.
+  const statusNotes = answered.flatMap((view) => {
+    const connection = view.scan!.connection;
+    return [
+      connection.status === "connected"
+        ? null
+        : `${view.id} is ${connection.status}${connection.since === null ? "" : ` since ${clock(Date.parse(connection.since), now)}`}: what arrived after that is not here yet.`,
+      connection.sync === "done" ? null : `${view.id}: history sync is still running; some messages may not be here yet.`,
+    ].filter((note): note is string => note !== null);
+  });
+  const header = [...headerLines(views, multi, now, start > 0), ...statusNotes, ...(quiet ? [QUIET_NOTE] : [])];
   const footer = footerLines(answered, multi);
   const linesChars = (lines: readonly string[]): number => lines.reduce((n, line) => n + line.length + 1, 0);
   const headerChars = linesChars(header);
@@ -1097,7 +1112,7 @@ async function givePage(snapshot: Snapshot, start: number, budgetChars: number, 
     const counts = Object.entries(remaining)
       .map(([section, n]) => `${section} ${n}`)
       .join(", ");
-    lines.push("", `More: ${plural(remainingItems.length, "entry", "entries")} left (${counts}; ~${approx} tokens). Call catch_up with cursor: "${more.cursor}"`);
+    lines.push("", `${MORE_NOTE} ${plural(remainingItems.length, "entry", "entries")} left (${counts}; ~${approx} tokens); more.cursor: "${more.cursor}"`);
   } else {
     if (footer.length > 0) lines.push("", ...footer);
     for (const view of answered) {
@@ -1136,20 +1151,8 @@ async function givePage(snapshot: Snapshot, start: number, budgetChars: number, 
     account_id: multi ? null : answered[0]!.id,
   };
   for (const item of page) (structured[STRUCTURED_KEYS[item.section]] as unknown[]).push(item.data(quotes.get(item) ?? null));
-  // What the text says the assistant must act on, for a client that hands the model only the structured content.
-  const notes = [
-    ...answered.flatMap((view) => {
-      const connection = view.scan!.connection;
-      return [
-        connection.status === "connected"
-          ? null
-          : `${view.id} is ${connection.status}${connection.since === null ? "" : ` since ${clock(Date.parse(connection.since), now)}`}: what arrived after that is not here yet.`,
-        connection.sync === "done" ? null : `${view.id}: history sync is still running; some messages may not be here yet.`,
-      ];
-    }),
-    quiet ? "Nothing arrived in this window: every waiting entry was asked before it and is still open." : null,
-    more === null ? null : "More entries are left: call catch_up with more.cursor for them.",
-  ].filter((note): note is string => note !== null);
+  // What the text says the assistant must act on, word for word.
+  const notes = [...statusNotes, quiet ? QUIET_NOTE : null, more === null ? null : MORE_NOTE].filter((note): note is string => note !== null);
   if (notes.length > 0) structured.notes = notes;
   return { content: [{ type: "text", text }], structuredContent: structured };
 }
@@ -1175,22 +1178,16 @@ function headingOf(item: Item, page: readonly Item[], views: readonly AccountVie
 
 function headerLines(views: readonly AccountView[], multi: boolean, now: number, continued: boolean): string[] {
   const title = continued ? "# WhatsApp catch-up, continued" : "# WhatsApp catch-up";
-  const stale = (view: AccountView): string => {
-    const connection = view.scan?.connection;
-    if (connection === undefined || connection.status === "connected") return "";
-    const since = connection.since === null ? "" : ` since ${clock(Date.parse(connection.since), now)}`;
-    return ` · ${connection.status}${since}: what arrived after that is not here yet`;
-  };
   if (!multi) {
     const view = views[0]!;
-    return [`${title} · ${windowPhrase(view.scan!.window, now)}${stale(view)}`];
+    return [`${title} · ${windowPhrase(view.scan!.window, now)}`];
   }
   return [
     `${title} · ${views.length} accounts`,
     ...views.map((view) =>
       view.scan === null
         ? `- ${view.name} (${view.id}): unavailable — ${view.error!.code}: ${flat(view.error!.message)}`
-        : `- ${view.name} (${view.id}): ${windowPhrase(view.scan.window, now)}${stale(view)}`
+        : `- ${view.name} (${view.id}): ${windowPhrase(view.scan.window, now)}`
     ),
   ];
 }
@@ -1226,7 +1223,6 @@ function footerLines(views: readonly AccountView[], multi: boolean): string[] {
     }
     const skipped = skippedParts(scan);
     if (skipped.length > 0) lines.push(`${label}Left out: ${skipped.join(" · ")}.`);
-    if (scan.connection.sync !== "done") lines.push(`${label}History sync is still running; some messages may not be here yet.`);
     if (scan.connection.mentionsIndexing) lines.push(`${label}Mentions in older messages are still being indexed.`);
   }
   return lines;

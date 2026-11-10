@@ -386,7 +386,7 @@ test("a remote session is shown a Lottie sticker's thumbnail with no download, e
   assert.deepEqual(out.view, { kind: "frame", width: 96, height: 96 });
   assert.equal(out.size, 4321, "the size its message states");
   assert.equal(out.source, undefined);
-  assert.match(result.content[0].text, /^application\/was, 4 KB, not downloaded: its thumbnail is all there is to see\./);
+  assert.match(result.content[0].text, /^sticker false_\S+ · from \+40 700 000 002\napplication\/was, 4 KB, not downloaded: its thumbnail is all there is to see\./);
 });
 
 test("a remote session sees the media but gets no file: nothing written, no path, no data dir named", async () => {
@@ -406,7 +406,8 @@ test("a remote session sees the media but gets no file: nothing written, no path
   assert.equal(out.size, photo.length);
   assert.equal(downloads, 1, "downloaded once, for the view");
   assert.ok(!JSON.stringify(result).includes(svc.config.dataDir), "no host path anywhere in the answer");
-  assert.match(result.content[0].text, /^image\/jpeg, \d+ KB\.\n\(image attached: 1024x768 view of the 1600x1200 original/);
+  // What the message is and who sent it, its caption, then what is shown of it.
+  assert.match(result.content[0].text, /^image false_\S+ · from \+40 700 000 002\nCaption: bonul\nimage\/jpeg, \d+ KB\.\n\(image attached: 1024x768 view of the 1600x1200 original/);
   assert.equal(existsSync(svc.paths.mediaDir), false, "no copy written into the media directory");
 });
 

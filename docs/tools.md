@@ -31,6 +31,41 @@ code. The [README](../README.md#the-23-tools) has the one-line table.
 | `scheduled_messages` | write | The account's scheduled messages: `list` (waiting ones soonest first, then the week's sent, missed, failed and cancelled ones) or `cancel` one by `schedule_id` before it goes. Not registered in a session without writes. See [Scheduling a message](#scheduling-a-message). |
 | `reminder` | local | A reminder about a chat, kept on this machine and posted to the user's webhook when due: `create` (`chat_id`, `note`, `after_hours` or `due_at`, `condition` `always` or `no_reply`), `list`, `cancel`. Nothing is sent on WhatsApp. See [Reminders](#reminders). |
 
+### What an answer carries
+
+Each session gets one rendering of every answer, fixed at its `initialize`
+(`WAZAP_ANSWER_FORMAT`, [settings](settings.md)). A client that names itself
+as an assistant (Claude Code, claude.ai and Claude Desktop, Codex, Cursor,
+ChatGPT, Gemini CLI) and any agent signed in over OAuth gets the **text**
+format: each answer is its text block and its images, nothing else, and the
+tool list has no `outputSchema`. Any other client, which is what a program on
+a static token is, gets the **full** format: the same text block and the
+structured content each tool's output schema declares.
+
+The text is complete for an agent, and compact:
+
+- every id a later call takes is on its line: `message_id`, `chat_id`,
+  `draft_id`, `confirmation_id`, `schedule_id`, `reminder_id`, a group's id,
+  each cursor (`list_chats`, `search`'s `before`, `catch_up`'s `more.cursor`,
+  `wait_for_messages`, `list_contacts`); a person is named by name and
+  formatted number, which every tool takes as a `chat_id`, and by their id
+  where there is no number (a LID);
+- messages come under a heading per day (`## 2026-11-10 Tue · today`) with
+  the minute on each line, in the server's time zone; each sender's number,
+  note and tags the first time they appear; the chat only where it changes;
+  a reply's quote with its id when that message is not on the list; a voice
+  note's transcript;
+- the answer's notes and its next step are the very sentences of the
+  structured `notes` and `next` (a draft's approval rule, `find_contact`'s
+  "call send_message now"), so no client is told something else;
+- nothing twice: one line per chat in `list_chats`, a member per line in
+  `get_group_info`, and search's nearby context leaves out the hits already
+  listed.
+
+`test/answer-text.test.mjs` checks every tool on the evaluation's fixture
+world: each id, cursor, note and next step in the structured answer is also
+in the text.
+
 ### Confirming a chat change
 
 `manage_chat(chat_id, action, ...)` returns `status: "preview"`, the resolved

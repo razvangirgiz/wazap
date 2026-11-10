@@ -108,7 +108,7 @@ test("wait_for_messages returns the message that lands while it waits, and nothi
     [["Ana", "ești liber mâine la 10?"]]
   );
   assert.match(result.content[0].text, /1 new message/);
-  assert.match(result.content[0].text, /cursor: `/);
+  assert.match(result.content[0].text, /cursor: \S+ \(pass it to the next wait_for_messages\)/);
 });
 
 test("a burst that follows the first message comes back in the same answer", async () => {
@@ -204,7 +204,8 @@ test("include_previews attaches the preview WhatsApp shipped with a photo and la
     mimeType: "image/jpeg",
   });
   assert.match(read.content[0].text, /1 preview attached/);
-  assert.match(read.content[0].text, /\[preview 1, image\]/);
+  // The line says which message the preview is of; "[image]" opens its text, so no tag repeats it.
+  assert.match(read.content[0].text, /\[preview 1\] · false_/);
 });
 
 test("a photo that shipped no preview is downloaded once, shrunk here, and remembered", async () => {
@@ -425,7 +426,7 @@ test("in a group, read_messages counts the reactions and get_message says who le
   react("❤️", ME);
 
   const read = await call("read_messages", { chat_id: GROUP });
-  assert.match(read.content[0].text, /\[image, ❤️×2 😍\]/);
+  assert.match(read.content[0].text, /\[❤️×2 😍\]/);
 
   const id = `false_${GROUP}_${photo}`;
   let one = await call("get_message", { message_id: id });
