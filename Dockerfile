@@ -11,7 +11,8 @@ COPY --from=build /app/node_modules ./node_modules
 COPY --from=build /app/dist ./dist
 COPY package.json LICENSE README.md AGENT.md ./
 COPY skills ./skills
-RUN mkdir -p /data && chown node:node /data
+# poppler draws a PDF's pages (a scan's only content) and ffmpeg takes a video's frames, for get_media.
+RUN apk add --no-cache poppler-utils ffmpeg && mkdir -p /data && chown node:node /data
 USER node
 VOLUME ["/data"]
 EXPOSE 8766
