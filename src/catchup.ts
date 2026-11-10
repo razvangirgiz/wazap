@@ -997,10 +997,12 @@ async function givePage(snapshot: Snapshot, start: number, budgetChars: number, 
   const json = ctx.format !== "text";
   const cost = (item: Item, quote: Quoted): number => (json ? JSON.stringify(item.data(quote)).length : item.line(quote).length) + 1;
   const linesChars = (lines: readonly string[]): number => lines.reduce((n, line) => n + line.length + 1, 0);
+  // The accounts as the answer gives them (window, status_since, sync, error and all), each with the longest mark there is.
+  const longestMark: Mark = { moved: false, why: "moved_by_another_call", next_since: isoWithOffset(now) };
   const headerChars = json
     ? JSON.stringify({
         window: unionWindow(answered),
-        accounts: views.map((view) => ({ account_id: view.id, name: view.name, status: "connected", mark: { moved: false, why: "explicit_window" } })),
+        accounts: accountEntries(views, multi, () => longestMark),
         waiting: [], addressed: [], missed_calls: [], direct: [], groups: [], stories: [],
         footer: null, more: null, approx_tokens: 10_000, notes: [...statusNotes, ...(quiet ? [QUIET_NOTE] : [])], account_id: answered[0]!.id,
       }).length
@@ -1153,19 +1155,7 @@ async function givePage(snapshot: Snapshot, start: number, budgetChars: number, 
 
   const structured: Record<string, unknown> = {
     window: unionWindow(answered),
-    accounts: views.map((view) =>
-      view.scan === null
-        ? { account_id: view.id, name: view.name, status: "error", error: { code: view.error!.code, message: view.error!.message } }
-        : {
-            account_id: view.id,
-            name: view.name,
-            status: view.scan.connection.status,
-            ...(view.scan.connection.status !== "connected" && view.scan.connection.since !== null ? { status_since: view.scan.connection.since } : {}),
-            ...(view.scan.connection.sync === "done" ? {} : { sync: view.scan.connection.sync }),
-            ...(multi ? { window: windowOf(view.scan.window) } : {}),
-            mark: marks.get(view.id),
-          }
-    ),
+    accounts: accountEntries(views, multi, (view) => marks.get(view.id)),
     waiting: [],
     addressed: [],
     missed_calls: [],
@@ -1184,6 +1174,23 @@ async function givePage(snapshot: Snapshot, start: number, budgetChars: number, 
   // What this answer costs, counted on what the session receives.
   if (ctx.format !== "text") structured.approx_tokens = Math.ceil(JSON.stringify(structured).length / CHARS_PER_TOKEN);
   return { content: [{ type: "text", text }], structuredContent: structured };
+}
+
+/** The structured answer's `accounts`: each account's state, its own window when there are several, and its mark. */
+function accountEntries(views: readonly AccountView[], multi: boolean, markOf: (view: AccountView) => Mark | undefined): Array<Record<string, unknown>> {
+  return views.map((view) =>
+    view.scan === null
+      ? { account_id: view.id, name: view.name, status: "error", error: { code: view.error!.code, message: view.error!.message } }
+      : {
+          account_id: view.id,
+          name: view.name,
+          status: view.scan.connection.status,
+          ...(view.scan.connection.status !== "connected" && view.scan.connection.since !== null ? { status_since: view.scan.connection.since } : {}),
+          ...(view.scan.connection.sync === "done" ? {} : { sync: view.scan.connection.sync }),
+          ...(multi ? { window: windowOf(view.scan.window) } : {}),
+          mark: markOf(view),
+        }
+  );
 }
 
 async function readQuotes(candidates: readonly Item[], views: readonly AccountView[]): Promise<Map<string, CatchupQuote>> {

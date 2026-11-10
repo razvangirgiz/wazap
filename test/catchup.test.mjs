@@ -1141,7 +1141,7 @@ test("with several accounts, an account failing after the first page skips none 
     throw new Error("database closed");
   };
   while (page.structuredContent.more) {
-    page = await call("catch_up", { cursor: page.structuredContent.more.cursor, budget_tokens: 600 });
+    page = await call("catch_up", { cursor: page.structuredContent.more.cursor, budget_tokens: 1200 });
     pages.push(page);
     assert.ok(pages.length < 20, "pages end");
   }
@@ -1341,6 +1341,35 @@ test("budget_tokens is spent on what the session receives, at 2.2 characters a t
     assert.ok(json <= budget * CHARS_PER_TOKEN * 1.05, `full session, budget ${budget}: ${json} characters of JSON`);
     assert.ok(full.structuredContent.approx_tokens <= budget * 1.05, `${full.structuredContent.approx_tokens} tokens`);
     assert.ok(text.length > full.content[0].text.length, "the same budget holds more entries as text than as JSON");
+  }
+});
+
+test("with several accounts, a full session's pages stay within budget_tokens: each account's window, state and mark are counted", async () => {
+  const { CHARS_PER_TOKEN } = await import("../dist/catchup.js");
+  const { personal, work } = twoAccounts();
+  const shop = account({ id: "40700000098@s.whatsapp.net", name: "Magazin", account: { id: "shop", name: "Magazinul de pe colț", enabled: true, owner: null } });
+  const hub = hubOf({ id: "personal", name: "Personal", svc: personal.svc }, { id: "work", name: "Business", svc: work.svc }, { id: "shop", name: "Magazinul de pe colț", svc: shop.svc });
+  for (const [n, side] of [personal, work, shop].entries()) {
+    for (let i = 0; i < 10; i++) {
+      side.arrive(`4071${n}00${String(1000 + i)}@s.whatsapp.net`, `Mesajul ${i}: ${"poți să-mi trimiți oferta pentru luna viitoare, te rog. ".repeat(2)}`, { at: Date.now() - 3 * HOUR + i * 1000 });
+    }
+  }
+  // An account that is down adds its status_since to its entry.
+  work.svc.status = "disconnected";
+  work.svc.statusSince = Date.now() - 5 * HOUR;
+  const { call } = toolsOf(hub);
+  // Three accounts' frame alone is about 1,200 characters: from 700 tokens up, a page holds it and entries.
+  for (const budget of [700, 850, 1000, 1500, 2500]) {
+    const result = await call("catch_up", { hours: 24, budget_tokens: budget });
+    const structured = result.structuredContent;
+    assert.equal(structured.accounts.length, 3);
+    assert.ok(structured.accounts.every((entry) => entry.window !== undefined), "each account names its own window");
+    assert.ok(structured.accounts.some((entry) => entry.status_since !== undefined));
+    const json = JSON.stringify(structured).length;
+    assert.ok(json <= budget * CHARS_PER_TOKEN, `budget ${budget}: ${json} characters of JSON, over ${budget * CHARS_PER_TOKEN}`);
+    assert.ok(structured.approx_tokens <= budget, `budget ${budget}: approx_tokens ${structured.approx_tokens}`);
+    if (budget <= 1000) assert.ok(structured.more !== null, `budget ${budget} pages`);
+    assert.ok(["waiting", "direct"].some((key) => structured[key].length > 0), `budget ${budget}: entries beside the frame`);
   }
 });
 
