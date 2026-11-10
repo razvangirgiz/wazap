@@ -961,10 +961,12 @@ export interface ChatRead extends Synced<MessageView[]> {
   older?: { askedPhone: true; received: number };
   /**
    * A window read (ReadWindow): whether the window holds messages older than
-   * the page (`more`), and when the chat's stored history starts inside the
-   * window, the time of its oldest stored message (`storedFrom`, epoch ms).
+   * the page (`more`), and when the window reaches back past the chat's stored
+   * history (`startsInside`), the time and id of its oldest stored message of
+   * any type (`storedFrom`, epoch ms, and `storedFromId`; null and absent when
+   * nothing of the chat is stored).
    */
-  window?: { more: boolean; storedFrom: number | null; startsInside?: true };
+  window?: { more: boolean; storedFrom: number | null; storedFromId?: string; startsInside?: true };
 }
 
 /** A keyword search's messages, and where the storage scan limit stopped it when it did. */

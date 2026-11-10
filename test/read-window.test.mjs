@@ -100,13 +100,78 @@ test("a window that reaches before the stored history says where it starts, and 
   arrive("al doilea", Date.now() - DAY + 60_000);
   const result = await call("read_messages", { chat_id: ANA, since: dayOf(-10) });
   assert.equal(result.structuredContent.count, 2);
-  assert.ok(result.structuredContent.notes.some((note) => /stored history of this chat starts at .* inside the window: read_messages with before/.test(note)));
+  assert.ok(result.structuredContent.notes.some((note) => /stored history of this chat starts at .* inside the window: read_messages again with before "false_.*_M1"/.test(note)));
   const before = await call("read_messages", { chat_id: ANA, since: dayOf(-10), until: dayOf(-5) });
   assert.equal(before.structuredContent.count, 0);
-  assert.ok(before.structuredContent.notes.some((note) => /No message of this chat is stored in this window or before it .*do not say there are none/.test(note)));
+  assert.ok(before.structuredContent.notes.some((note) => /No message of this chat is stored in this window .*starts after it.*do not say there are none\. read_messages again with before "false_.*_M1"/.test(note)));
   const older = await call("read_messages", { chat_id: ANA, since: dayOf(-10), before: first });
   assert.deepEqual(asked, ["M1"], "nothing older is stored, so the phone is asked");
   assert.deepEqual(older.structuredContent.older, { asked_phone: true, received: 0 });
+  assert.equal(older.structuredContent.notes.some((note) => /read_messages again with before/.test(note)), false, "the phone was just asked from there: no hint to ask it again");
+});
+
+test("before inside a window asks the phone from the chat's oldest stored message, whatever id it names", async (t) => {
+  const { call, arrive, sock } = setup(t);
+  const asked = [];
+  sock.fetchMessageHistory = async (count, key) => {
+    asked.push(key.id);
+    setImmediate(() => sock.ev.emit("messaging-history.set", { chats: [], contacts: [], messages: [], isLatest: false }));
+    return "history";
+  };
+  const firstAt = Date.now() - DAY;
+  arrive("primul mesaj stocat", firstAt);
+  const photo = arrive("", firstAt + 60_000, { imageMessage: { mimetype: "image/jpeg", caption: "bonul" } });
+  const today = arrive("de azi", Date.now() - 60_000);
+
+  // With types, the oldest photo is not where the stored history starts: the note names the message that is.
+  const photos = await call("read_messages", { chat_id: ANA, since: dayOf(-10), types: ["image"] });
+  assert.deepEqual(photos.structuredContent.messages.map((m) => m.message_id), [photo]);
+  const note = photos.structuredContent.notes.find((n) => /starts at \S+, inside the window/.test(n));
+  assert.ok(note?.includes(`before "false_${ANA}_M1"`), JSON.stringify(photos.structuredContent.notes));
+  assert.equal(Date.parse(/starts at (\S+), inside/.exec(note)[1]), Math.floor(firstAt / 1000) * 1000, "the first stored message's time, not the photo's");
+  const fromPhoto = await call("read_messages", { chat_id: ANA, since: dayOf(-10), types: ["image"], before: photo });
+  assert.deepEqual(asked, ["M1"], "the photo's id, followed as the window note says, asks the phone");
+  assert.deepEqual(fromPhoto.structuredContent.older, { asked_phone: true, received: 0 });
+
+  // An id newer than the window (this morning's), the only one an agent may hold: the phone is still asked, from the stored start.
+  const window = { since: dayOf(-10), until: dayOf(-5) };
+  const fromToday = await call("read_messages", { chat_id: ANA, ...window, before: today });
+  assert.deepEqual(asked, ["M1", "M1"]);
+  assert.equal(fromToday.structuredContent.count, 0);
+  assert.ok(fromToday.structuredContent.notes.some((note) => /The phone was asked for older messages and sent none/.test(note)));
+
+  // A window whose start is stored still ends where it does: nothing outside it is asked for.
+  const inside = await call("read_messages", { chat_id: ANA, since: new Date(Date.now() - DAY + 30_000).toISOString(), types: ["image"], before: photo });
+  assert.equal(inside.structuredContent.count, 0);
+  assert.equal(inside.structuredContent.older, undefined);
+  assert.deepEqual(asked, ["M1", "M1"]);
+});
+
+test("a window with only until reaches back to the chat's start: before the stored history it says so, and how to ask the phone", async (t) => {
+  const { call, arrive } = setup(t);
+  arrive("primul mesaj stocat", Date.now() - DAY);
+  const empty = await call("read_messages", { chat_id: ANA, until: dayOf(-10) });
+  assert.equal(empty.structuredContent.count, 0);
+  const note = empty.structuredContent.notes.find((n) => /No message of this chat is stored in this window \(until /.test(n));
+  assert.ok(note, JSON.stringify(empty.structuredContent.notes));
+  assert.match(note, /starts after it, .* do not say there are none\. read_messages again with before "false_40700000002@s\.whatsapp\.net_M1"/);
+  assert.match(empty.content[0].text, /no messages found\. No message of this chat is stored/);
+  const whole = await call("read_messages", { chat_id: ANA, until: dayOf(0) });
+  assert.equal(whole.structuredContent.count, 1);
+  assert.ok(whole.structuredContent.notes.some((n) => /stored history of this chat starts at .*, inside the window: read_messages again with before/.test(n)));
+});
+
+test("since before 1970 reads from 1970, and one past what can be stored is refused as a bad argument", async (t) => {
+  const { call, arrive } = setup(t);
+  arrive("salut", Date.now() - DAY);
+  for (const since of ["1969-12-31", "1970-01-01", "1970-01-01T00:00:00Z"]) {
+    const read = await call("read_messages", { chat_id: ANA, since });
+    assert.equal(read.isError, undefined, read.content[0].text);
+    assert.equal(read.structuredContent.count, 1, since);
+  }
+  const refused = textError(await call("read_messages", { chat_id: ANA, since: "2300-01-01" }));
+  assert.equal(refused.error, "INVALID_ID");
+  assert.match(refused.message, /past 2242/);
 });
 
 test("a window is refused where it cannot apply, and read the way search reads it", async (t) => {

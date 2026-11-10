@@ -190,17 +190,25 @@ export class AccountReads {
       const inChat = this.storage.db.identity.chat(jid)?.jid === anchor.chatJid;
       let older = inChat ? this.pageOf(jid, limit, anchor.id, types, window) : [];
       if (older.length > 0) return { ...this.host.synced(this.views.viewsOfStored(older)), ...(windowed ? this.windowFacts(jid, older, limit, types, window) : {}) };
-      // A window whose start is already stored ends here: anything older than it is outside, and the phone is not asked for it.
-      if (inChat && window.sinceMs !== undefined && this.storedBefore(jid, anchor.id)) {
-        return { ...this.host.synced([]), window: { more: false, storedFrom: null } };
+      let asked = anchor;
+      if (inChat && windowed) {
+        // A window whose start is already stored ends here: anything older than it is outside, and the phone is not asked for it.
+        if (window.sinceMs !== undefined && this.storedBefore(jid, idLowerBound(window.sinceMs))) {
+          return { ...this.host.synced([]), window: { more: false, storedFrom: null } };
+        }
+        // What else the window holds is older than the chat's stored history, whichever id `before` named
+        // (one newer than the window, or the oldest of a type): the phone is asked for what precedes that history.
+        const first = this.storage.db.messages.coverage(jid).oldest;
+        const oldest = first === null || first.id >= anchor.id ? null : this.storage.db.messages.get(first.sid);
+        if (oldest !== null) asked = oldest;
       }
-      await this.host.fetchOlder(sock, anchor, limit);
+      await this.host.fetchOlder(sock, asked, limit);
       older = inChat ? this.pageOf(jid, limit, anchor.id, types, window) : [];
       // The phone may hold more than it sent in time: an empty answer says it was asked, never that the chat starts here.
       return {
         ...this.host.synced(this.views.viewsOfStored(older)),
         older: { askedPhone: true, received: older.length },
-        ...(windowed ? this.windowFacts(jid, older, limit, types, window) : {}),
+        ...(windowed ? this.windowFacts(jid, older, limit, types, window, asked.id) : {}),
       };
     });
   }
@@ -212,15 +220,19 @@ export class AccountReads {
 
   /**
    * What a window read says beside its page: whether the window holds older
-   * messages than the page showed, and, when the chat's stored history starts
-   * inside the window, where it starts (the phone may hold what came before).
+   * messages than the page showed, and, when the window reaches back past the
+   * chat's stored history (nothing is stored before `since`, or there is no
+   * `since`), where that history starts and the id it starts with, whatever
+   * `types` kept: the phone may hold what came before. The id is left out
+   * when the phone was just asked from it (`askedFrom`) and sent nothing older.
    */
-  private windowFacts(jid: string, page: readonly StoredMessage[], limit: number, types: MessageType[] | undefined, window: ReadWindow): Pick<ChatRead, "window"> {
+  private windowFacts(jid: string, page: readonly StoredMessage[], limit: number, types: MessageType[] | undefined, window: ReadWindow, askedFrom?: number): Pick<ChatRead, "window"> {
     const oldest = page[0];
     const more = page.length >= limit && oldest !== undefined && this.pageOf(jid, 1, oldest.id, types, window).length > 0;
-    if (more || window.sinceMs === undefined || this.storedBefore(jid, idLowerBound(window.sinceMs))) return { window: { more, storedFrom: null } };
-    // Nothing stored before the window's start: the stored history begins inside it, and the phone may hold what came before.
-    return { window: { more, storedFrom: oldest?.ts ?? null, startsInside: true } };
+    if (more || (window.sinceMs !== undefined && this.storedBefore(jid, idLowerBound(window.sinceMs)))) return { window: { more, storedFrom: null } };
+    const first = this.storage.db.messages.coverage(jid).oldest;
+    const from = first === null || first.id === askedFrom ? {} : { storedFromId: first.sid };
+    return { window: { more, storedFrom: first?.ts ?? null, ...from, startsInside: true } };
   }
 
   /**

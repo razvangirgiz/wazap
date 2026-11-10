@@ -30,6 +30,7 @@ import { kilobytes, mediaAnswer, parsePages, UNTRUSTED_TEXT_NOTE } from "./media
 import { captionTravels, mimeOfSource } from "./outgoing-media.js";
 import { getMessageView, getMessageViewAcross, resolveMessageId, resolveMessageIdAcross } from "./message-ref.js";
 import { clockLabel, isoWithOffset } from "./messages.js";
+import { MAX_ID_SECOND } from "./db/ids.js";
 import { assessSearch, parseMoment, planSearch } from "./search-query.js";
 import { checkSearchSource, finalizeSearch, searchOwner, SEARCH_CHANGED } from "./search-finalize.js";
 import { RateLimiter } from "./ratelimit.js";
@@ -732,8 +733,8 @@ const TOOLS: readonly ToolDef[] = [
       const previews = include_previews ? await wa.previews(newestFirst(result.data), MAX_PREVIEWS, ctx.signal) : [];
       const unconfirmed = result.unconfirmedSends ?? [];
       const noOlder = result.older?.received === 0 ? OLDER_NONE_NOTE : null;
-      const windowNote = windowNoteOf(result, since);
       const span = [since === undefined ? null : `since ${since}`, until === undefined ? null : `until ${until}`].filter(Boolean).join(", ");
+      const windowNote = windowNoteOf(result, span, window.untilMs);
       return ok(
         renderMessages(
           `Messages in ${named === undefined ? chat_id : `${named.name} (${chat_id}), whom "${named.asked}" names`}${span === "" ? "" : ` (${span})`}`,
@@ -1748,25 +1749,45 @@ function resolvedField(named: NamedChat | undefined, accountId: string): Record<
   return named === undefined ? {} : { resolved: { from: named.asked, name: named.name, kind: named.kind }, account_id: accountId };
 }
 
-/** read_messages' since and until, read the way search reads them: a bare date is its whole day. */
+/** The latest moment a message can be stored at: its id's second must stay a safe integer (the year 2242). */
+const LATEST_STORED_MS = MAX_ID_SECOND * 1000;
+
+/**
+ * read_messages' since and until, read the way search reads them: a bare date
+ * is its whole day. A since before 1970 is 1970's first millisecond, since no
+ * message is older; one past what the store can file is refused.
+ */
 function readWindow(since: string | undefined, until: string | undefined): ReadWindow {
-  const sinceMs = parseMoment(since, "since");
+  const asked = parseMoment(since, "since");
   const untilMs = parseMoment(until, "until", true);
-  if (sinceMs !== undefined && untilMs !== undefined && sinceMs > untilMs) {
+  if (asked !== undefined && untilMs !== undefined && asked > untilMs) {
     throw new WazapError("INVALID_ID", `since (${since}) is after until (${until}).`, "Pass the earlier moment as since and the later as until");
   }
+  if (asked !== undefined && asked > LATEST_STORED_MS) {
+    throw new WazapError("INVALID_ID", `since (${since}) is past ${new Date(LATEST_STORED_MS).getUTCFullYear()}, later than any message.`, 'Pass a moment like "2026-09-01", or leave since out');
+  }
+  const sinceMs = asked === undefined ? undefined : Math.max(1, asked);
   return { ...(sinceMs === undefined ? {} : { sinceMs }), ...(untilMs === undefined ? {} : { untilMs }) };
 }
 
-/** What a window read must say beside its messages: that more are in it, or that the stored history starts inside it. */
-function windowNoteOf(result: ChatRead, since: string | undefined): string | null {
+/**
+ * What a window read must say beside its messages: that more are in it, or
+ * that it reaches back past the stored history, with the id that asks the
+ * phone for what came before: an empty window is then not proof of nothing.
+ */
+function windowNoteOf(result: ChatRead, span: string, untilMs: number | undefined): string | null {
   const window = result.window;
   if (window === undefined) return null;
   if (window.more) return "The window holds older messages than these: read_messages again with before (the oldest message_id here) and the same since/until, or raise limit.";
   if (window.startsInside !== true) return null;
-  return window.storedFrom === null
-    ? `No message of this chat is stored in this window or before it (since ${since}): its stored history starts later, and the phone may hold older messages. Say so; do not say there are none.`
-    : `The stored history of this chat starts at ${isoWithOffset(window.storedFrom)}, inside the window: read_messages with before (the oldest message_id here) and the same since asks the phone for what came before.`;
+  if (window.storedFrom === null) {
+    return `No message of this chat is stored (${span}), and the phone may hold its history. Say so; do not say there are none.`;
+  }
+  const at = isoWithOffset(window.storedFrom);
+  const ask = window.storedFromId === undefined ? "" : ` read_messages again with before "${window.storedFromId}" and everything else the same asks the phone for what came before.`;
+  if (result.data.length > 0) return `The stored history of this chat starts at ${at}, inside the window${ask === "" ? "." : `:${ask}`}`;
+  const later = untilMs !== undefined && window.storedFrom > untilMs;
+  return `No message${later ? " of this chat" : " that matches"} is stored in this window (${span}): the chat's stored history starts ${later ? "after it" : "inside it"}, at ${at}, and the phone may hold older messages. Say so; do not say there are none.${ask}`;
 }
 
 const OLDER_NONE_NOTE = "The phone was asked for older messages and sent none: older history may still exist there. Say so; do not say there are none.";

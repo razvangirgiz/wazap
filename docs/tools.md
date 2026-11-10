@@ -330,9 +330,14 @@ to yesterday's date, and "the photos and documents she sent" adds
 the window holds more than `limit` messages, it gives the newest of them with
 `more_in_window: true`; `before` with the oldest `message_id` and the same
 window pages on inside it, and never asks the phone while the window's start is
-stored. When nothing in the chat is stored from before `since`, the answer says
-where the stored history starts, and `before` with the same window asks the
-phone for what came before, as a read past the history always does.
+stored. When the window reaches back past the chat's stored history (nothing is
+stored from before `since`, or there is no `since`: a window with only `until`
+reaches back to the chat's start), the answer says where that history starts,
+whatever `types` kept, and names its oldest message: `before` with that id, or
+any other, and the same window asks the phone for what came before the stored
+history. An empty window then says the phone may hold its messages, never that
+there are none. A `since` before 1970 reads from 1970; one past the year 2242
+is refused.
 
 `wait_for_messages` blocks until something arrives, up to 55 seconds, then
 returns it with a `cursor`. Calling it again with that cursor replays whatever
