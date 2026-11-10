@@ -476,7 +476,12 @@ function formatBody(payload: DraftPayload): string {
 
 function mediaBody(payload: Extract<DraftPayload, { kind: "media" }>): string {
   const pinned = payload.pinned;
-  const name = pinned === undefined ? mediaLabel(payload) : `${pinned.filename} (${pinned.mime}, ${sizeLabel(pinned.size)})`;
+  // A URL's file was fetched when drafted, before any yes: the preview says from where.
+  const fetched = pinned === undefined ? undefined : hostOf(payload.source.url);
+  const name =
+    pinned === undefined
+      ? mediaLabel(payload)
+      : `${pinned.filename} (${pinned.mime}, ${sizeLabel(pinned.size)})${fetched === undefined ? "" : `, already fetched from ${fetched}`}`;
   const tag = payload.asVoice ? "voice" : payload.asDocument ? "document" : payload.asGif ? "gif" : pinned === undefined ? "media" : nativeKind(pinned.mime);
   const line = `[${tag}] ${name}`;
   // Only a caption that will travel: a voice note or an audio file goes without one.
@@ -484,6 +489,15 @@ function mediaBody(payload: Extract<DraftPayload, { kind: "media" }>): string {
   return shown ? `${line}\n"${payload.caption}"` : line;
 }
 
+
+function hostOf(url: string | undefined): string | undefined {
+  if (url === undefined) return undefined;
+  try {
+    return new URL(url).host || undefined;
+  } catch {
+    return undefined;
+  }
+}
 
 function sizeLabel(bytes: number): string {
   return bytes < 1024 * 1024 ? `${Math.max(1, Math.round(bytes / 1024))} KB` : `${(bytes / 1_048_576).toFixed(1)} MB`;

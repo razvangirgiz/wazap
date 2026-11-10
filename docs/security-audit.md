@@ -127,6 +127,17 @@ restricted to a short alphanumeric download extension; previously backslashes
 could enter generated filenames (path separators on Windows). Tests reproduce
 that filename issue, not a live Windows exploit.
 
+`send_message` with `url` fetches the file when the message is drafted, not at
+`confirm_send`, so the preview names the real file and the send sends those
+bytes. That fetch comes before the user's yes: an agent a message talked into
+drafting one makes the server reach a public host the sender chose, which
+learns the server's address (the tunnel otherwise hides it), and keeps up to
+the media cap under `accounts/<id>/outgoing/` until the draft lapses (an
+account's kept files hold at most 1 GB, an identity at most 20 drafts). The
+address guard still refuses private and loopback addresses. The preview says
+so (`…, already fetched from example.com`), so the user sees where the file
+came from before saying yes. Tests: `test/pinned-media.test.mjs`.
+
 ## 5. Cross-account write preflight — hardened
 
 A write-enabled account makes write tools visible for the session. The final

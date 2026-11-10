@@ -89,7 +89,8 @@ test("a URL is fetched when drafted: the preview names the real file, and the ye
   const view = draft.structuredContent;
   assert.equal(view.status, "draft", draft.content[0].text);
   assert.deepEqual(view.media, { filename: "factură 12.pdf", mime: "application/pdf", size: pdf.length });
-  assert.match(view.preview, /\[document\] factură 12\.pdf \(application\/pdf, \d+ KB\)\n"Factura"/);
+  // The user's yes comes after the fetch: the preview says the URL was already reached, and where.
+  assert.match(view.preview, /\[document\] factură 12\.pdf \(application\/pdf, \d+ KB\), already fetched from example\.com\n"Factura"/);
   assert.deepEqual(server.fetched, ["/download"]);
   assert.deepEqual(files(), [sha(pdf)]);
   assert.equal(statSync(join(outgoing, sha(pdf))).mode & 0o777, 0o600);
