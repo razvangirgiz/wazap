@@ -37,6 +37,7 @@ import {
   runService,
   serverUnit,
   servicePath,
+  reinstallCommand,
   serviceScript,
   serviceStopMs,
   writeService,
@@ -50,8 +51,9 @@ function dataDir() {
 /** A high port nothing is listening on, so the port check cannot find a holder. */
 let nextPort = 41_000;
 
+/** A run's config with its port named (--port), as a test picks a free one; `sources.port: "default"` is one with none. */
 function config(dir, overrides = {}) {
-  return { dataDir: dir, httpPort: nextPort++, dryRun: false, args: [], ...overrides };
+  return { dataDir: dir, httpPort: nextPort++, dryRun: false, args: [], sources: { port: "flag" }, ...overrides };
 }
 
 function fakeSupervisor(dir, pid = 4242) {
@@ -144,6 +146,45 @@ test("a second install rewrites the same files and restarts instead of starting"
   assert.deepEqual(readService(dir), record, "the record must not drift on a re-run");
   assert.equal(readFileSync(record.unitFile, "utf8"), unit);
   assert.deepEqual(second.calls, ["restart com.wazap.server"]);
+});
+
+/**
+ * A tunnel forwards to the port the service listens on. A reinstall run with
+ * no port named (no --port, no WAZAP_PORT) keeps the one its record has,
+ * instead of moving the service to 8766 under the tunnel.
+ */
+test("a reinstall keeps the service's port unless one is named now", async () => {
+  const dir = dataDir();
+  const first = fakeSupervisor(dir);
+  await captured(() => installService(config(dir), first, 0));
+  const { port } = readService(dir);
+
+  for (const source of ["default", undefined]) {
+    const output = await captured(() =>
+      installService(config(dir, { httpPort: 8766, sources: source === undefined ? {} : { port: source }, dryRun: true }), fakeSupervisor(dir), 0)
+    );
+    assert.match(output, new RegExp(`--port ${source === "default" ? port : 8766}\\b`), `source ${source}`);
+  }
+  await captured(() => installService(config(dir, { httpPort: 8766, sources: { port: "default" } }), fakeSupervisor(dir), 0));
+  assert.equal(readService(dir).port, port, "no port named: the record's stays");
+  for (const source of ["flag", "env", ".env"]) {
+    const named = nextPort++;
+    await captured(() => installService(config(dir, { httpPort: named, sources: { port: source } }), fakeSupervisor(dir), 0));
+    assert.equal(readService(dir).port, named, `a port named by ${source} is the new one`);
+  }
+});
+
+test("the command that reinstalls is this process's own node and script, quoted for a shell", () => {
+  assert.equal(
+    reinstallCommand("/Users/ana/.wazap", "/opt/node-22/bin/node", "/usr/lib/node_modules/wazap-mcp/dist/index.js"),
+    "/opt/node-22/bin/node /usr/lib/node_modules/wazap-mcp/dist/index.js service install --data-dir /Users/ana/.wazap"
+  );
+  assert.equal(
+    reinstallCommand("/Users/ana/My Data/it's", "/opt/node/bin/node", "/x/index.js"),
+    "/opt/node/bin/node /x/index.js service install --data-dir '/Users/ana/My Data/it'\\''s'"
+  );
+  assert.ok(reinstallCommand("/d").includes(" service install --data-dir /d"));
+  assert.ok(reinstallCommand("/d").startsWith(process.execPath) || reinstallCommand("/d").startsWith(`'${process.execPath}`), "this process's node by default");
 });
 
 test("serviceScript of a global install is the real file behind that bin, not this process", () => {
@@ -352,7 +393,10 @@ test("a server under a launchd unit from before ExitTimeOut says so, and still s
     20_000,
     "wazap serve --http to answer"
   );
-  assert.match(stderr.join(""), /the service unit allows 5 s to stop, so calls under way get 1 s at a restart; run `wazap service install` once to give them 10/);
+  assert.match(
+    stderr.join(""),
+    /the service unit allows 5 s to stop, so calls under way get 1 s at a restart; run `\S+node\S* \S+index\.js service install --data-dir \S+` once \(this service's own node and script; the port stays\) to give them 10/
+  );
   const exited = once(child, "exit");
   const at = Date.now();
   child.kill("SIGTERM");

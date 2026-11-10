@@ -499,6 +499,20 @@ async function waitForHealth(port: number, waitMs: number): Promise<Health | nul
 
 const NPX_FIX = "run `npm i -g wazap-mcp`, then `wazap service install` again";
 
+/** One word of a command line as a POSIX shell reads it back. */
+function shellWord(word: string): string {
+  return /^[\w@%+=:,./-]+$/.test(word) ? word : `'${word.replaceAll("'", "'\\''")}'`;
+}
+
+/**
+ * `service install` as the running process would run it: its own node and
+ * script, its data dir. Run from a server the unit started, that is the unit's
+ * own build, where a bare `wazap` on the shell's PATH may be another one.
+ */
+export function reinstallCommand(dataDir: string, node: string = process.execPath, script: string = process.argv[1] ?? ""): string {
+  return [node, script, "service", "install", "--data-dir", dataDir].map(shellWord).join(" ");
+}
+
 /** The absolute script a supervisor can launch for years. The npx cache is not one. */
 export function serviceScript(install: Install = whereInstalled()): string {
   if (install.kind === "npx") {
@@ -596,7 +610,8 @@ export async function installService(
     supervisor: supervisor.name,
     label,
     unitFile: supervisor.unitFile(label),
-    port: config.httpPort,
+    // A reinstall keeps the port a tunnel already forwards to, unless one is named now (--port, WAZAP_PORT).
+    port: existing !== null && config.sources.port === "default" ? existing.port : config.httpPort,
     logDir: supervisor.logDir(),
     installedVersion: WAZAP_VERSION,
   };

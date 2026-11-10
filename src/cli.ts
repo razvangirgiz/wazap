@@ -32,7 +32,7 @@ import {
 } from "./recall/index.js";
 import { PAIRING_TIMEOUT_MS, linkSession, prettyCode, settledAccount, startPairing } from "./pairing.js";
 import { ACCOUNTS_STOP_MS, drainHttpEndpoints, drainWithin, HTTP_DRAIN_MS, runHttp, runStdio, startLoopbackEndpoint } from "./server.js";
-import { SUPERVISORS, fetchHealth, serviceHolding, serviceStopMs, tunnelsTo, type Supervisor } from "./service.js";
+import { SUPERVISORS, fetchHealth, reinstallCommand, serviceHolding, serviceStopMs, tunnelsTo, type Supervisor } from "./service.js";
 import { applyWrites } from "./settings.js";
 import { storageReport, type StorageReport } from "./storage-status.js";
 import {
@@ -679,7 +679,7 @@ export async function runServe(config: Config): Promise<void> {
   const drainMs = drainWithin(stopMs);
   if (stopMs !== null && drainMs < HTTP_DRAIN_MS) {
     log(
-      `the service unit allows ${stopMs / 1000} s to stop, so calls under way get ${drainMs / 1000} s at a restart; run \`wazap service install\` once to give them ${HTTP_DRAIN_MS / 1000}`
+      `the service unit allows ${stopMs / 1000} s to stop, so calls under way get ${drainMs / 1000} s at a restart; run \`${reinstallCommand(config.dataDir)}\` once (this service's own node and script; the port stays) to give them ${HTTP_DRAIN_MS / 1000}`
     );
   }
   let stopping = false;

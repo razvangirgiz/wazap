@@ -71,7 +71,7 @@ export interface Config {
   httpPostBudget?: number;
   /** WAZAP_ANSWER_FORMAT: how tool answers are shaped per session (client-name.ts); `auto` when absent. */
   answerFormat?: AnswerFormatSetting;
-  sources: Record<"dataDir" | "readOnly" | "transport" | "transcribe" | "webhook" | "recall", Source>;
+  sources: Record<"dataDir" | "readOnly" | "transport" | "transcribe" | "webhook" | "recall" | "port", Source>;
   command: Command;
   /** The command was named on the command line rather than defaulted to serve. */
   explicitCommand: boolean;
@@ -472,6 +472,7 @@ export function parseCli(argv: string[] = process.argv.slice(2)): CliInvocation 
         transcribe: sourceOf("WAZAP_TRANSCRIBE", false),
         webhook: sourceOf("WAZAP_WEBHOOK", false),
         recall: sourceOf("WAZAP_RECALL", false),
+        port: sourceOf("WAZAP_PORT", values.port !== undefined),
       },
       command,
       explicitCommand: first !== undefined,

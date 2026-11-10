@@ -21,7 +21,7 @@ function dataDir() {
 let nextPort = 42_000;
 
 function config(dir, overrides = {}) {
-  return { dataDir: dir, httpPort: nextPort++, dryRun: false, args: [], oauthPassword: null, ...overrides };
+  return { dataDir: dir, httpPort: nextPort++, dryRun: false, args: [], oauthPassword: null, sources: { port: "flag" }, ...overrides };
 }
 
 function fakeSupervisor(dir) {

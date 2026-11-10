@@ -141,7 +141,10 @@ install` writes allow 15 seconds for that (launchd's `ExitTimeOut`, systemd's
 `TimeoutStopSec`), as does the compose file. launchd kills a job whose plist
 sets no `ExitTimeOut` about five seconds after `SIGTERM`, so under a unit
 written by an older wazap the drain lasts one second, and the log says so at
-startup: run `wazap service install` once to rewrite the unit. The next
+startup, with the command that rewrites the unit: `service install` run by the
+service's own node and script, since a `wazap` on the shell's PATH may be
+another install. A reinstall keeps the service's port unless `--port` or
+`WAZAP_PORT` names another. The next
 process warms its catalogue and transport right after it binds, so the first
 `initialize` after a restart costs about half what it did: 22–39 ms instead
 of 40–72 measured side by side on a loaded laptop over loopback, and 8–10 ms
