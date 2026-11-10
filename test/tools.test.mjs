@@ -83,9 +83,14 @@ test("a WazapError becomes an MCP error result carrying code, message and fix", 
   assert.deepEqual(JSON.parse(result.content[0].text), result.structuredContent);
 });
 
-test("an error without a fix omits the field instead of emitting null", () => {
+test("an error thrown without a fix carries what the guide says to do about its code", () => {
   const result = toolError(new WazapError("WHATSAPP_ERROR", "boom"));
-  assert.deepEqual(result.structuredContent, { error: "WHATSAPP_ERROR", message: "boom" });
+  assert.deepEqual(result.structuredContent, { error: "WHATSAPP_ERROR", message: "boom", fix: ERROR_GUIDE.WHATSAPP_ERROR });
+  for (const code of Object.keys(ERROR_GUIDE)) {
+    assert.equal(toolError(new WazapError(code, "x")).structuredContent.fix, ERROR_GUIDE[code], code);
+  }
+  // Its own fix, when it has one, stands.
+  assert.equal(toolError(new WazapError("WHATSAPP_ERROR", "boom", "Ask the group's admin")).structuredContent.fix, "Ask the group's admin");
 });
 
 test("a handler that throws a raw error is reported as WHATSAPP_ERROR, never as a crash", async () => {
@@ -100,6 +105,7 @@ test("a handler that throws a raw error is reported as WHATSAPP_ERROR, never as 
   assert.equal(result.isError, true);
   assert.equal(result.structuredContent.error, "WHATSAPP_ERROR");
   assert.equal(result.structuredContent.message, "something internal broke");
+  assert.equal(result.structuredContent.fix, ERROR_GUIDE.WHATSAPP_ERROR, "an unexpected exception still says what to do");
 });
 
 function draftApi(confirm) {

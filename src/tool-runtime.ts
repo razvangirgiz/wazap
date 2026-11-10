@@ -6,7 +6,7 @@ import type { AccountSource } from "./account-hub.js";
 import { attachAccountId, resolveToolAccount, stringArg } from "./account-resolve.js";
 import { CLIENT_META_KEY, isAssistantClient, LOCAL_CLIENT, localClient, type AnswerFormat } from "./client-name.js";
 import { draftStale, SessionDrafts } from "./drafts.js";
-import { asWazapError, WazapError } from "./errors.js";
+import { asWazapError, ERROR_GUIDE, WazapError } from "./errors.js";
 import { RateLimiter } from "./ratelimit.js";
 import { requireDraftOwner } from "./send-guard.js";
 import { requireChatAction, staleChatAction } from "./chat-action-drafts.js";
@@ -175,9 +175,13 @@ export function textOnly(result: ToolResult): ToolResult {
 const MAX_IN_FLIGHT = 8;
 const MAX_IN_FLIGHT_TOTAL = 32;
 
+/**
+ * A refusal as `{ error, message, fix }`: the error's own fix, or else what
+ * the guide says to do about its code (ERROR_GUIDE), so every refusal says
+ * what to do, an unexpected exception (WHATSAPP_ERROR) included.
+ */
 export function toolError(err: WazapError): ToolResult {
-  const payload: Record<string, unknown> = { error: err.code, message: err.message };
-  if (err.fix) payload.fix = err.fix;
+  const payload: Record<string, unknown> = { error: err.code, message: err.message, fix: err.fix || ERROR_GUIDE[err.code] };
   if (err.details !== undefined) Object.assign(payload, err.details);
   return { content: [{ type: "text", text: JSON.stringify(payload) }], structuredContent: payload, isError: true };
 }
