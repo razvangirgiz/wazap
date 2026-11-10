@@ -71,7 +71,9 @@ test("live writes land between chunks of a clear, and the barrier already holds 
   const { db } = openTemp({ chunkSize: 50 });
   fill(db, PEER, 1000);
   const clearing = db.messages.clearChat(PEER, T0 + 999_000);
-  await new Promise((resolve) => setImmediate(resolve));
+  // The clear first folds the log the fill left, in a turn of its own; then its chunks start.
+  const rows = () => db["connection"].get("SELECT count(*) AS n FROM messages").n;
+  for (let turns = 0; rows() === 1000 && turns < 5; turns++) await new Promise((resolve) => setImmediate(resolve));
   const older = db.messages.upsert(textMessage(PEER, "LATE-OLD", T0 + 10, "vechi"));
   const newer = db.messages.upsert(textMessage(PEER, "LIVE", T0 + 2_000_000, "nou"));
   const midway = db["connection"].get("SELECT count(*) AS n FROM messages").n;

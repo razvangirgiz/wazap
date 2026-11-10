@@ -684,15 +684,7 @@ export class Connection {
       this.armIdleCheckpoint(this.idleCheckpointMs);
       return;
     }
-    this.dirtySince = null;
-    let done: boolean;
-    try {
-      const row = this.db.prepare("PRAGMA wal_checkpoint(PASSIVE)").get() as CheckpointResult | undefined;
-      done = row === undefined || (row.busy === 0 && row.checkpointed >= row.log);
-    } catch {
-      // The next commit asks again.
-      done = true;
-    }
+    const done = this.passiveCheckpoint();
     if (!done && this.idleRetries < IDLE_CHECKPOINT_RETRIES) {
       this.idleRetries++;
       this.dirtySince = performance.now() - IDLE_CHECKPOINT_MAX_MS;
@@ -701,11 +693,31 @@ export class Connection {
   }
 
   /**
+   * PRAGMA wal_checkpoint(PASSIVE), which the idle checkpoint is: whether it
+   * copied the whole log. A failure counts as done; the next commit asks again.
+   */
+  private passiveCheckpoint(): boolean {
+    this.dirtySince = null;
+    try {
+      const row = this.db.prepare("PRAGMA wal_checkpoint(PASSIVE)").get() as CheckpointResult | undefined;
+      return row === undefined || (row.busy === 0 && row.checkpointed >= row.log);
+    } catch {
+      return true;
+    }
+  }
+
+  /**
    * A large operation as many small transactions: `step` does at most one
    * chunk and says whether more is left. Between chunks the event loop runs,
    * so live messages keep flowing while a chat of 50,000 rows is cleared.
+   *
+   * What the log already holds (up to the ~40 MB backstop after a burst) is
+   * folded first, in a turn of its own: once the threshold drops to 1,000
+   * pages, the first chunk's commit would fold all of it inside that commit,
+   * a longer pause than either step alone.
    */
   async chunked(step: () => boolean): Promise<void> {
+    if (this.chunkedRunning === 0 && this.foldBacklog()) await new Promise<void>((resolve) => setImmediate(resolve));
     this.autocheckpointFor(+1);
     try {
       for (;;) {
@@ -715,6 +727,13 @@ export class Connection {
     } finally {
       this.autocheckpointFor(-1);
     }
+  }
+
+  /** The idle checkpoint, now, when one is pending and no transaction is open; whether it ran. One a reader cut short is asked again by the next commit. */
+  private foldBacklog(): boolean {
+    if (this.idleCheckpointMs === 0 || this.closed || this.dirtySince === null || this.db.isTransaction) return false;
+    if (!this.passiveCheckpoint()) this.dirtySince = performance.now();
+    return true;
   }
 
   /** Commits checkpoint at 1,000 pages while a chunked operation runs, at the ~40 MB backstop otherwise (see BULK_AUTOCHECKPOINT_PAGES). */

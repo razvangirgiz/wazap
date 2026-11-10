@@ -72,6 +72,42 @@ test("a chunked operation keeps SQLite's own 1,000 pages while it runs, so no ch
   }
 });
 
+/**
+ * Under the lowered threshold, the first chunk's commit would fold whatever
+ * the log held when the operation began (up to the ~40 MB backstop after a
+ * burst) inside that commit. The backlog is folded first, in a turn of its
+ * own, so no step pauses for both.
+ */
+test("a chunked operation folds what the log already holds before its first chunk, in a turn of its own", async () => {
+  const { db, path } = openTemp({ idleCheckpointMs: 60_000 });
+  try {
+    db.checkpoint();
+    db.messages.upsert(textMessage(PEER, "A", T0, "salut"));
+    db.messages.upsert(textMessage(PEER, "B", T0 + 1000, "ce faci"));
+    assert.equal(inFile(path), 0, "the commits left their pages in the log, the idle checkpoint a minute away");
+    const seen = [];
+    let turned = false;
+    setImmediate(() => (turned = true));
+    await db.connection.chunked(() => {
+      seen.push({ inFile: inFile(path), turned });
+      return seen.length < 2;
+    });
+    assert.deepEqual(seen[0], { inFile: 2, turned: true }, "folded, and the event loop ran, before the first chunk");
+    // Nothing left to fold: the next one starts at once.
+    db.checkpoint();
+    let later;
+    turned = false;
+    setImmediate(() => (turned = true));
+    await db.connection.chunked(() => {
+      later ??= turned;
+      return false;
+    });
+    assert.equal(later, false);
+  } finally {
+    db.close();
+  }
+});
+
 test("idleCheckpointMs 0 leaves checkpoints to SQLite, inside the commit, as before", () => {
   const { db } = openTemp({ idleCheckpointMs: 0 });
   try {

@@ -51,14 +51,20 @@ in a `0700` folder), written with a full sync on every commit. Nothing of the
 history is held in memory: every read, search and restart goes to the file, and
 only small bounded caches stay in the process. The write-ahead log beside it is
 folded into the file a second after writes go quiet (at least every 15 seconds
-under a steady stream), so no commit pauses to do it; only a log that reaches
+under a steady stream), so no commit pauses to do it. The price is a longer log
+for each commit to extend: a single message's commit takes 0.2-0.3 ms more at
+the median (17-30%), while its 99th percentile falls from about 11 ms to 4
+(one message per commit on a 60k-message account). Only a log that reaches
 about 40 MB without a quiet second, as a first history sync can, is folded by
 the commit that gets there. A stretch like that still pauses for its folds:
 outside a commit or inside one, they run on the server's one thread, and each
 can take longer than SQLite's own every-4 MB folds did. The log's file can stay
 that large on disk until the next write after the fold cuts it back to 8 MB.
-While a clear, an expiry sweep or a fold runs, commits fold every 4 MB as
-SQLite does by default, so none of its steps pauses for a large one. The server
+A clear, an expiry sweep or a fold first folds whatever the log already holds
+(up to those 40 MB), as a step of its own, and then its commits fold every 4 MB
+as SQLite does by default. That first fold can pause the server longer than the
+operation's other steps: about 35 ms for 33 MB, where 1.6.0's commits would
+have folded the same log before the operation began. The server
 reads the file through a memory map of up to 256 MB. The mapped pages count in
 its resident memory (80-100 MB more after a 60k-message sync) until the system
 takes them back under memory pressure. A database file cut short under the
