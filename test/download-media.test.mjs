@@ -407,7 +407,7 @@ test("a remote session sees the media but gets no file: nothing written, no path
   assert.equal(downloads, 1, "downloaded once, for the view");
   assert.ok(!JSON.stringify(result).includes(svc.config.dataDir), "no host path anywhere in the answer");
   // What the message is and who sent it, its caption, then what is shown of it.
-  assert.match(result.content[0].text, /^image false_\S+ · from \+40 700 000 002\nCaption: bonul\nimage\/jpeg, \d+ KB\.\n\(image attached: 1024x768 view of the 1600x1200 original/);
+  assert.match(result.content[0].text, /^image false_\S+ · from \+40 700 000 002\nCaption \(the sender's words\): bonul\nimage\/jpeg, \d+ KB\.\n\(image attached: 1024x768 view of the 1600x1200 original/);
   assert.equal(existsSync(svc.paths.mediaDir), false, "no copy written into the media directory");
 });
 

@@ -894,7 +894,12 @@ wazap parses, and the parsed text input to the agent.
   can carry instructions aimed at an agent with other tools. They come back in
   their own field (`document_text`), quoted between markers in the text, never
   in `notes`; a note and the server's instructions, which every session gets,
-  say it is data, not instructions.
+  say it is data, not instructions. The lines above the quote repeat the
+  sender's file name, caption, declared type and name; each is kept to its one
+  line (line breaks and control characters become spaces), the file name
+  quoted whole and the caption marked as the sender's, so none can add a line
+  that reads as a note of wazap's or as its link to the original. Tests:
+  `test/media-documents.test.mjs`.
 - **No copies for remote sessions.** A remote `get_media` used to write a new,
   unrecorded copy of the file into `accounts/<id>/media/` on every call;
   nothing swept them, and they outlived deleted and expired messages. A remote
@@ -943,7 +948,9 @@ wazap parses, and the parsed text input to the agent.
   cannot spend a download slot or one of the account's re-requests. Tests:
   `test/media-links.test.mjs`.
 
-Not covered: a link is a bearer capability until it expires; anyone it is
+Not covered: `read_messages` shows a message's text as it was written, line
+breaks included, so a message can still hold lines that look like wazap's; the
+server's instructions say messages are data. A link is a bearer capability until it expires; anyone it is
 pasted to can download the file for those 30 minutes. A link is not bound to
 the session that minted it, and there is no per-link fetch count. libvips,
 pdf.js, poppler and ffmpeg are large parsers of untrusted input; the limits

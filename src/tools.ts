@@ -1582,18 +1582,20 @@ async function mediaOf(message_id: string, { save_to, language, detail, pageRang
     sender: identified?.sender ?? null,
   };
   // What the message is, as the structured fields above say it: its kind, who sent it, its name and caption.
+  // The name, the file's name and the caption are the sender's: each stays on its own line, marked as theirs,
+  // so none can write a line of wazap's own (a note, a link) above the real ones.
   const from = identified?.sender;
   const lines: string[] = [
     [
       `${view?.type ?? "Media"}${inBatch ? "" : ` ${message_id}`}`,
-      from === undefined ? null : `from ${view?.from_me ? "me" : personRef(from.name, from.id, from.phone)}`,
-      view?.media?.filename ? `"${view.media.filename}"` : null,
+      from === undefined ? null : `from ${view?.from_me ? "me" : personRef(oneLine(from.name), from.id, from.phone)}`,
+      view?.media?.filename ? JSON.stringify(oneLine(view.media.filename)) : null,
     ]
       .filter(Boolean)
       .join(" · "),
   ];
   const caption = structured.caption;
-  if (typeof caption === "string" && caption !== "") lines.push(`Caption: ${caption}`);
+  if (typeof caption === "string" && caption !== "") lines.push(`Caption (the sender's words): ${oneLine(caption)}`);
   const extra: ContentBlock[] = [];
   const notes: string[] = [];
 
@@ -1612,7 +1614,7 @@ async function mediaOf(message_id: string, { save_to, language, detail, pageRang
       transcribed = true;
       const clock = result.duration_seconds === undefined ? "" : ` ${clockLabel(result.duration_seconds)}`;
       const facts = [result.language, result.provider, result.cached ? "cached" : null].filter(Boolean).join(", ");
-      lines.push(`Transcribed${clock} (${facts}): "${result.text}"`);
+      lines.push(`Transcribed${clock} (${facts}): "${oneLine(result.text)}"`);
     } catch (err) {
       throwIfCancelled(signal);
       // No transcript (off, failing, timed out, over its rate, refused read-only): the file stands in for it.
@@ -1644,13 +1646,15 @@ async function mediaOf(message_id: string, { save_to, language, detail, pageRang
     const shown = mediaAnswer(opened);
     Object.assign(structured, { mime: opened.mime }, opened.size === undefined ? {} : { size: opened.size }, opened.source === undefined ? {} : { source: opened.source }, shown.structured);
     const size = opened.size === undefined ? "" : `, ${kilobytes(opened.size)}`;
+    // The type is the one the sender's message declares.
+    const mime = oneLine(opened.mime);
     if (opened.path !== undefined) {
       Object.assign(structured, { path: opened.path, filename: opened.filename });
-      lines.push(`Saved ${opened.mime} (${kilobytes(opened.size ?? 0)}) to:\n${opened.path}`);
+      lines.push(`Saved ${mime} (${kilobytes(opened.size ?? 0)}) to:\n${opened.path}`);
     } else if (opened.source === undefined) {
-      lines.push(`${opened.mime}${size}, not downloaded: its thumbnail is all there is to see.`);
+      lines.push(`${mime}${size}, not downloaded: its thumbnail is all there is to see.`);
     } else {
-      lines.push(`${opened.mime}${size}${opened.source === "kept" ? ", from the copy kept on arrival" : ""}.`);
+      lines.push(`${mime}${size}${opened.source === "kept" ? ", from the copy kept on arrival" : ""}.`);
     }
     lines.push(...shown.lines);
     extra.push(...shown.blocks);
@@ -1672,6 +1676,11 @@ async function mediaOf(message_id: string, { save_to, language, detail, pageRang
     if (!lines.some((line) => line.includes(note))) lines.push(note);
   }
   return { lines, structured, blocks: extra };
+}
+
+/** Text someone else wrote, on one line: line breaks and control characters become a space. */
+function oneLine(text: string): string {
+  return text.replace(/[\p{Cc}\p{Zl}\p{Zp}]+/gu, " ");
 }
 
 /** Said in a batch's notes: which image is whose, for a client that hands the model the structured part and the images. */
