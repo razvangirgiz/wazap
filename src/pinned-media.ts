@@ -13,7 +13,7 @@
  * PINNED_MAX_TOTAL_BYTES, and never a file that would leave the disk less free
  * than the smaller of 1 GB and 5% (the rule kept media follows).
  */
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { mkdir, readdir, readFile, rename, rm, stat, statfs, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { WazapError } from "./errors.js";
@@ -49,6 +49,14 @@ export interface PinnedStoreOptions {
 export class PinnedStore {
   /** Hashes being pinned for a draft not yet stored: a sweep meanwhile keeps them. */
   private readonly pinning = new Map<string, number>();
+  /**
+   * Hashes released since the running sweep read what the database names: the
+   * draft they were pinned for may be stored after that read, so the sweep
+   * keeps them, and the next sweep judges them.
+   */
+  private readonly released = new Set<string>();
+  /** Files a sweep is removing now: a pin of the same bytes waits for the removal, then writes them again. */
+  private readonly removing = new Map<string, Promise<void>>();
   private sweeping: Promise<void> | null = null;
   private sweepAgain = false;
   private readonly maxTotal: number;
@@ -70,6 +78,7 @@ export class PinnedStore {
     const sha256 = createHash("sha256").update(buffer).digest("hex");
     this.pinning.set(sha256, (this.pinning.get(sha256) ?? 0) + 1);
     try {
+      await this.removing.get(sha256);
       const path = join(this.dir, sha256);
       const known = await stat(path).then(
         (found) => found.size === buffer.length,
@@ -88,14 +97,24 @@ export class PinnedStore {
         if (!(await this.roomFor(buffer.length))) {
           throw new WazapError("FILE_TOO_LARGE", "The disk of the machine running wazap is nearly full, so the file is not kept for the draft.", "Free some space there, then draft again");
         }
-        const part = join(this.dir, `${sha256}.${process.pid}.${this.now()}.part`);
-        await writeFile(part, buffer, { mode: 0o600 });
-        await rename(part, path);
+        // A name of its own for each write, so two drafts of the same bytes at once each write and rename their own
+        // copy (the second rename replaces the first with the same bytes); the time last, for the sweep of a crash's.
+        const part = join(this.dir, `${sha256}.${randomUUID()}.${this.now()}.part`);
+        try {
+          await writeFile(part, buffer, { mode: 0o600 });
+          await rename(part, path);
+        } catch (err) {
+          await rm(part, { force: true }).catch(() => undefined);
+          throw err;
+        }
       }
       return { sha256, mime, size: buffer.length, filename };
     } catch (err) {
       this.release(sha256);
-      throw err;
+      if (err instanceof WazapError) throw err;
+      // The disk's own words name the server's paths: they go to the log, and the caller hears what happened.
+      logError("pinned media", err);
+      throw new WazapError("SERVICE_ERROR", "The file could not be kept for the draft on the machine running wazap; nothing was drafted.", "Try the draft again; if it fails again, the server's log says why");
     }
   }
 
@@ -104,6 +123,7 @@ export class PinnedStore {
     const held = (this.pinning.get(sha256) ?? 0) - 1;
     if (held > 0) this.pinning.set(sha256, held);
     else this.pinning.delete(sha256);
+    if (this.sweeping !== null) this.released.add(sha256);
   }
 
   /** The pinned bytes, checked against their hash: a file changed or gone is refused, never sent in its place. */
@@ -146,6 +166,7 @@ export class PinnedStore {
   }
 
   private async sweepOnce(referenced: () => ReadonlySet<string> | null): Promise<void> {
+    this.released.clear();
     let names: string[];
     try {
       names = await readdir(this.dir);
@@ -157,8 +178,16 @@ export class PinnedStore {
     if (keep === null) return;
     for (const name of names) {
       if (SHA.test(name)) {
-        if (keep.has(name) || this.pinning.has(name)) continue;
-        await rm(join(this.dir, name), { force: true });
+        // What the database named when it was read, what a draft is pinning now, and what a draft released since
+        // (it may have been stored after that read) all stay. The check and the start of the removal are one step.
+        if (keep.has(name) || this.pinning.has(name) || this.released.has(name)) continue;
+        const removal = rm(join(this.dir, name), { force: true });
+        this.removing.set(name, removal.catch(() => undefined));
+        try {
+          await removal;
+        } finally {
+          this.removing.delete(name);
+        }
       } else if (name.endsWith(".part")) {
         const at = Number(name.split(".").at(-2));
         if (Number.isFinite(at) && this.now() - at > PART_STALE_MS) await rm(join(this.dir, name), { force: true });

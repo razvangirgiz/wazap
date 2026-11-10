@@ -214,3 +214,77 @@ test("the pinned files of an account are bounded: past the cap a new draft is re
   const full = new PinnedStore(dir, { diskSpace: async () => ({ free: 10, total: 1_000_000 }) });
   await assert.rejects(full.pin(Buffer.alloc(100), "text/plain", "x.txt"), { code: "FILE_TOO_LARGE", message: /nearly full/ });
 });
+
+test("two drafts of the same bytes at once each keep the file, and the disk's own words never reach the caller", async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "wazap-pinned-same-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  // One millisecond for both, as two parallel calls in lockstep read the clock.
+  const store = new PinnedStore(dir, { now: () => 1_700_000_000_000 });
+  const bytes = Buffer.alloc(256 * 1024, 7);
+  for (let run = 0; run < 5; run++) {
+    const both = await Promise.all([store.pin(bytes, "application/pdf", "a.pdf"), store.pin(bytes, "application/pdf", "a.pdf")]);
+    assert.deepEqual(both.map((pinned) => pinned.sha256), [sha(bytes), sha(bytes)]);
+    assert.deepEqual(readdirSync(dir), [sha(bytes)], "one file, and no half-written copy left");
+    for (const pinned of both) store.release(pinned.sha256);
+    await store.sweep(() => new Set());
+  }
+
+  // A folder that cannot be made: the caller is told what happened, never the server's path.
+  const blocked = join(dir, "not-a-folder");
+  writeFileSync(blocked, "x");
+  const refused = await new PinnedStore(join(blocked, "outgoing")).pin(bytes, "application/pdf", "a.pdf").catch((err) => err);
+  assert.equal(refused.code, "SERVICE_ERROR");
+  assert.match(refused.message, /could not be kept for the draft/);
+  assert.equal(refused.message.includes(dir), false, refused.message);
+});
+
+test("a sweep keeps a file whose draft was stored while it ran, and a pin of bytes being removed writes them again", async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "wazap-pinned-sweep-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const store = new PinnedStore(dir);
+  for (let i = 0; i < 20; i++) store.release((await store.pin(Buffer.from(`lapsed ${i}`), "text/plain", "x.txt")).sha256);
+  const drafted = await store.pin(Buffer.from("a new draft"), "text/plain", "c.txt");
+  const db = new Set();
+  // The database is read before the draft is in it; the draft is stored, and let go, while the sweep removes the others.
+  await store.sweep(() => {
+    queueMicrotask(() => {
+      db.add(drafted.sha256);
+      store.release(drafted.sha256);
+    });
+    return new Set(db);
+  });
+  assert.deepEqual(readdirSync(dir), [drafted.sha256]);
+  await store.sweep(() => new Set(db));
+  assert.deepEqual(readdirSync(dir), [drafted.sha256], "the next sweep judges it by the database, which names it");
+
+  db.clear();
+  let again;
+  await store.sweep(() => {
+    // The same bytes drafted again just as the sweep starts removing their file.
+    queueMicrotask(() => {
+      again = store.pin(Buffer.from("a new draft"), "text/plain", "c.txt");
+    });
+    return new Set(db);
+  });
+  const pinned = await again;
+  assert.deepEqual(readdirSync(dir), [drafted.sha256], "written again after the removal, not lost to it");
+  assert.equal((await store.read(pinned)).toString(), "a new draft");
+  store.release(pinned.sha256);
+});
+
+test("a UTF-16 text file stays text, a bare MP3 frame names audio only when nothing says otherwise", () => {
+  const utf16 = Buffer.concat([Buffer.from([0xff, 0xfe]), Buffer.from("nume,suma\r\nAna,120\r\n", "utf16le")]);
+  assert.equal(sniffMime(utf16, "text/csv", "raport.csv"), "text/csv");
+  assert.equal(sniffMime(utf16, null, "raport.txt"), "text/plain");
+  assert.equal(sniffMime(Buffer.from([0xff, 0xff, 0x41, 0x00]), null, "x"), "application/octet-stream");
+  const mp3 = Buffer.from([0xff, 0xfb, 0x90, 0x64, ...Buffer.alloc(100)]);
+  assert.equal(sniffMime(mp3, null, "voce"), "audio/mpeg");
+  assert.equal(sniffMime(mp3, "application/octet-stream", "voce.bin"), "audio/mpeg");
+  assert.equal(sniffMime(mp3, "audio/mp3", "voce.mp3"), "audio/mpeg");
+  assert.equal(sniffMime(mp3, "text/csv", "date.csv"), "text/csv", "a frame header's few bits do not outvote a stated type");
+  assert.equal(sniffMime(Buffer.concat([Buffer.from("ID3"), mp3]), "text/plain", "x.txt"), "audio/mpeg", "an ID3 tag does");
+  // Not a frame: a free or invalid bitrate, a sample rate that does not exist, Layer I.
+  for (const header of [[0xff, 0xfb, 0x00, 0x64], [0xff, 0xfb, 0xf0, 0x64], [0xff, 0xfb, 0x9c, 0x64], [0xff, 0xff, 0x90, 0x64]]) {
+    assert.equal(sniffMime(Buffer.from(header), null, "x"), "application/octet-stream", header.join(","));
+  }
+});
