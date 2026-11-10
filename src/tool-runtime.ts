@@ -10,7 +10,7 @@ import { asWazapError, WazapError } from "./errors.js";
 import { RateLimiter } from "./ratelimit.js";
 import { requireDraftOwner } from "./send-guard.js";
 import { requireChatAction, staleChatAction } from "./chat-action-drafts.js";
-import { buildToolCatalogue, publishToolCatalogue, REMOTE_FILES_NOTE } from "./tool-catalogue.js";
+import { buildToolCatalogue, publishToolCatalogue } from "./tool-catalogue.js";
 import type { MediaLinks } from "./media-links.js";
 import type { WhatsAppApi } from "./wa-types.js";
 
@@ -184,7 +184,7 @@ export function createToolRegistrar(defs: readonly ToolDef[]) {
   // initialize costs, and the answer is the same for every such session.
   const catalogues = new Map<string, readonly Tool[]>();
   const catalogueFor = (registered: readonly ToolDef[], opts: Pick<RegisterOpts, "allowWrite" | "legacyReads" | "allowLocalFiles">): readonly Tool[] => {
-    // Which definitions register depends on allowWrite and legacyReads alone; allowLocalFiles changes descriptions.
+    // Which definitions register depends on allowWrite and legacyReads alone; allowLocalFiles hides the host-file arguments.
     const key = `${opts.allowWrite}:${opts.legacyReads === true}:${opts.allowLocalFiles !== false}`;
     let tools = catalogues.get(key);
     if (tools === undefined) {
@@ -227,11 +227,7 @@ export function createToolRegistrar(defs: readonly ToolDef[]) {
         def.name,
         {
           title: def.title,
-          description:
-            def.description +
-            (opts.allowLocalFiles === false && (def.schema.file_path || def.schema.save_to)
-              ? REMOTE_FILES_NOTE
-              : ""),
+          description: def.description,
           inputSchema: def.schema,
           ...(def.outputSchema === undefined ? {} : { outputSchema: def.outputSchema }),
           annotations: def.hints,

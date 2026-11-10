@@ -57,8 +57,10 @@ test("a cached catalogue is the same answer as a fresh build, per permission key
   const [write, read, local] = await Promise.all(KEYS.map((opts) => listed(register, opts)));
   assert.deepEqual(write.map((tool) => tool.name), ["read_one", "send_one"]);
   assert.deepEqual(read.map((tool) => tool.name), ["read_one"]);
-  assert.match(write[1].description, /remote session cannot use file_path/);
-  assert.doesNotMatch(local[1].description, /remote session/);
+  // A remote session is not shown the host file it would be refused; a local one is.
+  assert.deepEqual(Object.keys(write[1].inputSchema.properties), ["text"]);
+  assert.deepEqual(Object.keys(local[1].inputSchema.properties), ["text", "file_path"]);
+  assert.equal(write[1].description, "Sends.");
 });
 
 test("the real catalogue: repeated sessions list the same tools, and read sessions never see write tools", async () => {
