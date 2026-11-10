@@ -608,7 +608,8 @@ const CATCH_UP: ToolDef = tool({
   schema: CATCHUP_INPUT,
   outputSchema: CATCHUP_OUTPUT,
   write: false,
-  handler: async (args, { hub, wa, accountId, client }) => runCatchUp(args, { hub, wa, accountId, client }),
+  // The budget is spent on what this session receives: its text, or its structured content.
+  handler: async (args, { hub, wa, accountId, client, format }) => runCatchUp(args, { hub, wa, accountId, client, ...(format === undefined ? {} : { format }) }),
 });
 // ---- end catch_up -------------------------------------------------------------
 

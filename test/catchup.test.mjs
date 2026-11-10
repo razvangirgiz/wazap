@@ -995,6 +995,7 @@ function busyAccount({ people = 14, at = Date.now() - 5 * HOUR } = {}) {
 }
 
 test("the budget: the skeleton first, then quotes by priority, the lowest shrinking to 80 characters and then going", async () => {
+  const TIGHT = 2_400;
   const { svc } = busyAccount({ people: 14 });
   const { call } = toolsOf(svc);
   const roomy = await call("catch_up", { hours: 24, budget_tokens: 8000 });
@@ -1004,9 +1005,10 @@ test("the budget: the skeleton first, then quotes by priority, the lowest shrink
   assert.ok(roomy.structuredContent.direct.every((entry) => entry.q.length === 160));
   assert.ok(roomy.structuredContent.groups.every((entry) => entry.hot === undefined || entry.hot.length === 120));
 
-  const tight = await call("catch_up", { hours: 24, budget_tokens: 1000 });
+  // A full session spends the budget on its structured JSON, at 2.2 characters a token.
+  const tight = await call("catch_up", { hours: 24, budget_tokens: TIGHT });
   assert.equal(tight.structuredContent.more, null, "the skeleton fits");
-  assert.ok(tight.structuredContent.approx_tokens <= 1000, `${tight.structuredContent.approx_tokens} tokens`);
+  assert.ok(tight.structuredContent.approx_tokens <= TIGHT, `${tight.structuredContent.approx_tokens} tokens`);
   // Every entry that quotes with room to spare, in priority order, and the length its quote kept.
   const quoted = (result) =>
     [
@@ -1323,6 +1325,25 @@ test("every shape catch_up answers passes a client's validation of its output sc
   }
 });
 
+test("budget_tokens is spent on what the session receives, at 2.2 characters a token: the text, or the structured JSON", async () => {
+  const { CHARS_PER_TOKEN } = await import("../dist/catchup.js");
+  assert.equal(CHARS_PER_TOKEN, 2.2);
+  const { svc } = busyAccount({ people: 30 });
+  for (const budget of [1500, 2500]) {
+    // A text session gets the text alone; a full one the text and the JSON, and the JSON is what is counted.
+    const asText = await toolsOf(svc, { format: "text" }).call("catch_up", { hours: 24, budget_tokens: budget });
+    assert.equal(asText.structuredContent, undefined);
+    const text = asText.content[0].text;
+    assert.ok(text.length <= budget * CHARS_PER_TOKEN, `text session, budget ${budget}: ${text.length} characters`);
+    assert.ok(text.length >= budget * CHARS_PER_TOKEN * 0.7, `text session, budget ${budget}: only ${text.length} characters, the budget is spent`);
+    const full = await toolsOf(svc).call("catch_up", { hours: 24, budget_tokens: budget });
+    const json = JSON.stringify(full.structuredContent).length;
+    assert.ok(json <= budget * CHARS_PER_TOKEN * 1.05, `full session, budget ${budget}: ${json} characters of JSON`);
+    assert.ok(full.structuredContent.approx_tokens <= budget * 1.05, `${full.structuredContent.approx_tokens} tokens`);
+    assert.ok(text.length > full.content[0].text.length, "the same budget holds more entries as text than as JSON");
+  }
+});
+
 test("the structured answer carries the same entries as the text, in at most 1.3 times its size", async () => {
   const { svc, arrive, mention, callLog, sock } = busyAccount({ people: 6 });
   const { call } = toolsOf(svc);
@@ -1330,7 +1351,8 @@ test("the structured answer carries the same entries as the text, in at most 1.3
   arrive(MUTED, mention("@Răzvan cheia?"), { participant: ELA, at: Date.now() - HOUR });
   callLog(DAN, CALL.MISSED, { at: Date.now() - 2 * HOUR });
   arrive(STATUS, { extendedTextMessage: { text: "la mare" } }, { participant: ANA, at: Date.now() - HOUR });
-  for (const budget of [800, 2500, 8000]) {
+  // A budget too small for more than the frame (window, accounts, marks) is no test of the entries' size.
+  for (const budget of [1500, 2500, 8000]) {
     const result = await call("catch_up", { hours: 24, budget_tokens: budget });
     const size = JSON.stringify(result.structuredContent).length;
     assert.ok(size <= 1.3 * text(result).length, `budget ${budget}: ${size} structured vs ${text(result).length} text`);
@@ -1480,7 +1502,7 @@ test("ids stay on every page of a digest that pages", async () => {
   for (let i = 0; i < 40; i++) arrive(`4070000${String(1000 + i)}@s.whatsapp.net`, `Mesajul numărul ${i}, fără întrebare`, { at: Date.now() - HOUR + i * 1000 });
   const first = await call("catch_up", { hours: 12, ids: true, budget_tokens: 500 });
   assert.ok(first.structuredContent.more, "the digest pages");
-  const next = await call("catch_up", { cursor: first.structuredContent.more.cursor, budget_tokens: 500 });
+  const next = await call("catch_up", { cursor: first.structuredContent.more.cursor, budget_tokens: 2000 });
   const quoted = next.structuredContent.direct.filter((entry) => entry.q !== undefined);
   assert.ok(quoted.length > 0);
   assert.ok(quoted.every((entry) => /^false_\d+@s\.whatsapp\.net_M\d+$/.test(entry.id)), JSON.stringify(quoted));

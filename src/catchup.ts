@@ -6,7 +6,10 @@
  * renders one line per entry, as text and as structured content built from
  * the same entries.
  *
- * The budget, in the order it is spent (tokens are rendered characters / 4):
+ * The budget, in the order it is spent, on what the session receives: the
+ * text in a text session, the structured JSON (the longer copy, which a client
+ * like Claude Code hands its model in place of the text) in a full one; a
+ * token is CHARS_PER_TOKEN of its characters:
  * 1. the skeleton — every entry's line without a quote, in section order —
  *    until the page is full; what does not fit goes to `more`, with a cursor;
  * 2. quotes, by priority: the ask of someone waiting (240 characters), a
@@ -49,9 +52,17 @@ import {
 import { asWazapError, WazapError } from "./errors.js";
 import { isoWithOffset } from "./messages.js";
 import { signalsOf, type Signal } from "./signals.js";
+import type { AnswerFormat } from "./client-name.js";
 import type { ToolResult } from "./tool-runtime.js";
 import type { PrivateRule, WhatsAppApi } from "./wa-types.js";
 
+/**
+ * Characters of an answer per Claude token, as measured on the fixture world:
+ * 1.8-2.1 for Romanian text full of ids and times, 2.4 for prose. 2.2 lets
+ * budget_tokens mean about that many real tokens, where the 4 it replaces
+ * delivered about twice as many.
+ */
+export const CHARS_PER_TOKEN = 2.2;
 export const DEFAULT_BUDGET_TOKENS = 2_500;
 export const MIN_BUDGET_TOKENS = 500;
 export const MAX_BUDGET_TOKENS = 8_000;
@@ -295,6 +306,8 @@ export interface CatchupContext {
   wa: WhatsAppApi;
   /** Who is catching up: an OAuth client id, a token's label, or `local`. */
   client: string;
+  /** What the session receives (tool-runtime.ts): the budget is spent on the text, or on the structured JSON. `full` when absent. */
+  format?: AnswerFormat;
   /** The clock a first page starts at and cursors expire by; Date.now when omitted (the bench fixes it). */
   now?: () => number;
 }
@@ -923,7 +936,7 @@ export async function runCatchUp(args: CatchupArgs, ctx: CatchupContext): Promis
         "Pass more.cursor without account_id"
       );
     }
-    return givePage(snapshot, start, budget * 4, ctx, asked);
+    return givePage(snapshot, start, budget * CHARS_PER_TOKEN, ctx, asked);
   }
   const include: CatchupSection[] =
     args.include === undefined ? [...CATCHUP_SECTIONS] : CATCHUP_SECTIONS.filter((section) => args.include!.includes(section));
@@ -957,7 +970,7 @@ export async function runCatchUp(args: CatchupArgs, ctx: CatchupContext): Promis
   const byAccount = answered.map((view) => itemsOf(view, multi, now, ids));
   const items: Item[] = CATCHUP_SECTIONS.flatMap((section) => byAccount.flatMap((each) => each.filter((item) => item.section === section)));
   const snapshot: Snapshot = { client: ctx.client, include, ids, now, multi, views, answered, items, cursors: new Set(), marks: null, usedAt: asked };
-  return givePage(snapshot, 0, budget * 4, ctx, asked);
+  return givePage(snapshot, 0, budget * CHARS_PER_TOKEN, ctx, asked);
 }
 
 /** One page of a digest from entry `start`: the whole rest when it fits, otherwise as much as fits and a cursor to the next. */
@@ -980,14 +993,27 @@ async function givePage(snapshot: Snapshot, start: number, budgetChars: number, 
   });
   const header = [...headerLines(views, multi, now, start > 0), ...statusNotes, ...(quiet ? [QUIET_NOTE] : [])];
   const footer = footerLines(answered, multi);
+  // What the budget is spent on: the structured JSON in a full session, the text in a text one.
+  const json = ctx.format !== "text";
+  const cost = (item: Item, quote: Quoted): number => (json ? JSON.stringify(item.data(quote)).length : item.line(quote).length) + 1;
   const linesChars = (lines: readonly string[]): number => lines.reduce((n, line) => n + line.length + 1, 0);
-  const headerChars = linesChars(header);
-  const footerChars = footer.length === 0 ? 0 : linesChars(footer) + 1;
-  const skeletonChars = new Map(all.map((item) => [item, item.line(null).length + 1]));
+  const headerChars = json
+    ? JSON.stringify({
+        window: unionWindow(answered),
+        accounts: views.map((view) => ({ account_id: view.id, name: view.name, status: "connected", mark: { moved: false, why: "explicit_window" } })),
+        waiting: [], addressed: [], missed_calls: [], direct: [], groups: [], stories: [],
+        footer: null, more: null, approx_tokens: 10_000, notes: [...statusNotes, ...(quiet ? [QUIET_NOTE] : [])], account_id: answered[0]!.id,
+      }).length
+    : linesChars(header);
+  const footerChars = json ? JSON.stringify(footerData(answered, multi)).length : footer.length === 0 ? 0 : linesChars(footer) + 1;
+  const skeletonChars = new Map(all.map((item) => [item, cost(item, null)]));
   const longestName = Math.max(...answered.map((view) => view.name.length));
-  const headingChars = (item: Item): number => `## ${SECTION_TITLES[item.section]}${multi ? ` · ${"x".repeat(longestName)}` : ""} (99)`.length + 1;
+  // The structured answer has no headings: its sections are keys, already in headerChars.
+  const headingChars = (item: Item): number => (json ? 0 : `## ${SECTION_TITLES[item.section]}${multi ? ` · ${"x".repeat(longestName)}` : ""} (99)`.length + 1);
   const headingKey = (item: Item): string => (multi ? `${item.section}|${item.account}` : item.section);
-  const moreChars = 140 + CURSOR_CHARS;
+  const moreChars = json
+    ? JSON.stringify({ cursor: "x".repeat(CURSOR_CHARS), remaining: { waiting: 99, addressed: 99, missed_calls: 99, direct: 99, groups: 99, stories: 99 }, approx_tokens: 10_000 }).length + MORE_NOTE.length + 4
+    : 140 + MORE_NOTE.length + CURSOR_CHARS;
 
   // 1. The skeleton: all of it with the footer, or as much as fits before a `more` line (at least one entry).
   const skeletonOf = (items: readonly Item[]): number => {
@@ -1064,7 +1090,7 @@ async function givePage(snapshot: Snapshot, start: number, budgetChars: number, 
       ...(entry.thenId === undefined || composed.then === undefined ? {} : { thenId: entry.thenId }),
     };
   };
-  const extra = (entry: Placed, level: number): number => entry.item.line(quoteAt(entry, level)).length - skeletonChars.get(entry.item)! + 1;
+  const extra = (entry: Placed, level: number): number => cost(entry.item, quoteAt(entry, level)) - skeletonChars.get(entry.item)!;
   let spent = placed.reduce((n, entry) => n + extra(entry, entry.level), 0);
   // 3. Too long: the lowest-priority quotes shrink to 80 characters, then go.
   for (let i = placed.length - 1; i >= 0 && spent > spare; i--) {
@@ -1107,7 +1133,8 @@ async function givePage(snapshot: Snapshot, start: number, budgetChars: number, 
     const remaining: Record<string, number> = {};
     for (const item of remainingItems) remaining[STRUCTURED_KEYS[item.section]] = (remaining[STRUCTURED_KEYS[item.section]] ?? 0) + 1;
     const quotesLeft = remainingItems.filter((item) => item.quoteId !== null || item.thenId !== null).length;
-    const approx = Math.ceil((skeletonOf(remainingItems) + footerChars) / 4) + quotesLeft * 30;
+    // About 120 characters for each quote the rest would read back.
+    const approx = Math.ceil((skeletonOf(remainingItems) + footerChars + quotesLeft * 120) / CHARS_PER_TOKEN);
     more = { cursor: cursorFor(snapshot, start + page.length), remaining, approx_tokens: approx };
     const counts = Object.entries(remaining)
       .map(([section, n]) => `${section} ${n}`)
@@ -1147,13 +1174,15 @@ async function givePage(snapshot: Snapshot, start: number, budgetChars: number, 
     stories: [],
     footer: final ? footerData(answered, multi) : null,
     more,
-    approx_tokens: Math.ceil(text.length / 4),
+    approx_tokens: Math.ceil(text.length / CHARS_PER_TOKEN),
     account_id: multi ? null : answered[0]!.id,
   };
   for (const item of page) (structured[STRUCTURED_KEYS[item.section]] as unknown[]).push(item.data(quotes.get(item) ?? null));
   // What the text says the assistant must act on, word for word.
   const notes = [...statusNotes, quiet ? QUIET_NOTE : null, more === null ? null : MORE_NOTE].filter((note): note is string => note !== null);
   if (notes.length > 0) structured.notes = notes;
+  // What this answer costs, counted on what the session receives.
+  if (ctx.format !== "text") structured.approx_tokens = Math.ceil(JSON.stringify(structured).length / CHARS_PER_TOKEN);
   return { content: [{ type: "text", text }], structuredContent: structured };
 }
 

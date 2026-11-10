@@ -260,7 +260,12 @@ a read token is refused. An account holds at most 200 waiting.
 `catch_up` answers "what did I miss?" in one call. It reads the account
 database only — no network, except the cached member list of at most a dozen
 groups, fetched within a second — and fits its answer into `budget_tokens`
-(2,500 by default, 500 to 8,000), one line per entry, in this order:
+(2,500 by default, 500 to 8,000), one line per entry. The budget is spent on
+what the session receives: the text in an assistant's session, the structured
+JSON (the longer copy) in a program's, at 2.2 characters a token, the ratio
+measured on Claude for these answers, so 2,500 is about 2,500 real tokens; it
+used to count 4 characters a token and so delivered about twice the tokens
+asked. `approx_tokens` is counted the same way. The order:
 
 1. **Waiting on you**: people whose last word asks for something — a question
    mark, a request word, or a voice note nobody has heard, never "ok, thanks"
