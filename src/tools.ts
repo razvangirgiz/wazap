@@ -517,11 +517,11 @@ const MAX_MEDIA_BATCH = 8;
 /** Items of a batch opened at once: the downloads behind them share the process's three slots anyway. */
 const MEDIA_BATCH_PARALLEL = 3;
 
-const GUIDE = `# wazap: WhatsApp for your AI agent
+/** learn's topics: one part of the guide each; `all` is every part, and no topic lists them. */
+const LEARN_TOPICS = ["ids", "workflows", "errors", "all"] as const;
+type LearnTopic = (typeof LEARN_TOPICS)[number];
 
-Use get_status on errors.
-
-## Ids and accounts
+const GUIDE_IDS = `## Ids and accounts
 - chat_id: \`<digits>@s.whatsapp.net\` for a person, \`<id>@g.us\` for a group, or
   a phone number in international format. Pass ids back exactly as given.
 - message_id: the full id from read_messages, search or catch_up.
@@ -529,8 +529,14 @@ Use get_status on errors.
   account picks it; catch_up/find_contact cover all; other reads use the default.
   A write to a chat no account knows fails AMBIGUOUS_ACCOUNT; pass account_id.
 
+## Message shape
+Media may carry transcript. An unsaved sender name is unverified.
+mentions: [{id, name}]. get_message
+includes reactions, votes and receipts. Calls: kind/direction/outcome/duration_seconds;
+system: action/actor/targets/value. timestamp is ISO 8601.
+`;
 
-## Workflows
+const GUIDE_WORKFLOWS = `## Workflows
 - Catch up: catch_up() gives who waits on a reply, mentions, calls, people,
   groups, stories, every account at once; more.cursor brings the rest.
   An ask the user handled elsewhere: remember(chat_id, handled: true).
@@ -557,18 +563,41 @@ Use get_status on errors.
   where the account is admin.
   manage_group join previews until confirm: true. get_group_info first for admin
   actions, including settings, list_join_requests and set_picture.
+`;
 
-
-## Message shape
-Media may carry transcript. An unsaved sender name is unverified.
-mentions: [{id, name}]. get_message
-includes reactions, votes and receipts. Calls: kind/direction/outcome/duration_seconds;
-system: action/actor/targets/value. timestamp is ISO 8601.
-
-## Errors
-A failure is { error, message, fix }. Per code:
+const GUIDE_ERRORS = `## Errors
+A failure is { error, message, fix }: its fix says what to do. get_status tells how the account is on NOT_CONNECTED, NOT_LINKED or SYNC_IN_PROGRESS. Per code:
 ${(Object.keys(ERROR_GUIDE) as Array<keyof typeof ERROR_GUIDE>).map((code) => `- ${code}: ${ERROR_GUIDE[code]}`).join("\n")}
 `;
+
+/**
+ * What learn answers with no topic: the parts there are, in a few lines. The
+ * rules that matter on every call are in the server's instructions and in
+ * each answer's notes and next step, so nothing has to be read first.
+ */
+const GUIDE_INDEX = `# wazap guide
+Call learn with a topic for one part:
+- ids: chat_id, message_id and account_id, several accounts, the message shape.
+- workflows: catching up, one chat, search, people, #private, sending, chat and group changes.
+- errors: what to do about each of the ${Object.keys(ERROR_GUIDE).length} error codes (every error also carries its fix).
+- all: the three together.`;
+
+/** The guide for a topic; remote sessions' cached read names ride with the workflows. */
+function guide(topic: LearnTopic | undefined, legacyReads: boolean): string {
+  const legacy = legacyReads ? `\n\n${LEGACY_READ_INSTRUCTIONS}` : "";
+  switch (topic) {
+    case undefined:
+      return GUIDE_INDEX;
+    case "ids":
+      return GUIDE_IDS;
+    case "workflows":
+      return GUIDE_WORKFLOWS + legacy;
+    case "errors":
+      return GUIDE_ERRORS;
+    case "all":
+      return `# wazap: WhatsApp for your AI agent\n\n${GUIDE_IDS}\n${GUIDE_WORKFLOWS}\n${GUIDE_ERRORS}${legacy}`;
+  }
+}
 
 // ---- catch_up (F2-2) --------------------------------------------------------
 // The digest itself is src/catchup.ts; each account's side is catchup-scan.ts.
@@ -587,11 +616,11 @@ const TOOLS: readonly ToolDef[] = [
   tool({
     name: "learn",
     title: "Learn how to use the WhatsApp tools",
-    description: `The guide to these tools: ids, account_id with several accounts, the workflows, the message shape and what to do about each error code. Read it once, before the other tools; it never touches WhatsApp.`,
-    schema: {},
+    description: `The guide, one topic at a time: ids (formats, several accounts, the message shape), workflows, errors (what to do about each code), or all. Call it when unsure about ids, several accounts or an error code; with no topic it lists the topics. Never touches WhatsApp.`,
+    schema: { topic: z.enum(LEARN_TOPICS).optional().describe("No topic: the list of topics") },
     write: false,
     // Prose, once: the guide is not repeated as structured content.
-    handler: async (_args, ctx) => ({ content: [{ type: "text", text: GUIDE + (ctx.legacyReads ? `\n\n${LEGACY_READ_INSTRUCTIONS}` : "") }] }),
+    handler: async ({ topic }, ctx) => ({ content: [{ type: "text", text: guide(topic, ctx.legacyReads === true) }] }),
   }),
 
   tool({
@@ -1290,7 +1319,7 @@ const TOOLS: readonly ToolDef[] = [
   tool({
     name: "manage_chat",
     title: "Manage a WhatsApp chat",
-    description: `Preview archive, pin, mute, pin_message, star_message, clear, delete, block and undo. After approval repeat chat_id/action with confirmation_id, without options. Expires in 15m; one attempt. mark_read runs directly.`,
+    description: `Preview archive, pin, mute, pin_message, star_message, clear, delete, block and undo. After approval repeat chat_id/action with confirmation_id, without options. Expires in 15m; one attempt. mark_read runs directly, only when the user asks.`,
     schema: {
       chat_id: chatId,
       action: z

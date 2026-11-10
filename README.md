@@ -102,11 +102,11 @@ Several WhatsApp accounts can live in one wazap (`wazap account add <id>`, then
 ## The 23 tools
 
 What every argument means, and every error code, is in
-[docs/tools.md](docs/tools.md). The assistant gets all of it by calling `learn`.
+[docs/tools.md](docs/tools.md). The assistant gets it from `learn`, one topic at a time (`ids`, `workflows`, `errors`), when it needs it.
 
 | Tool | Kind | What it does |
 | --- | --- | --- |
-| `learn` | read | The guide to every tool, id format, workflow and error code. Call it first. |
+| `learn` | read | The guide by topic: id formats and several accounts, the workflows, every error code with its fix. Called when unsure, not first. |
 | `get_status` | read | Connection, sync, linked accounts, how fresh the history is, webhook delivery, versions. |
 | `link_account` | read | Link an account from the assistant; returns the 8-character code to type into the phone. |
 | `list_chats` | read | Conversations newest-first: `all`, `unread`, `groups`, `individual` or `archived`. |

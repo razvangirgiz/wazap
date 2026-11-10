@@ -9,9 +9,9 @@ Find the supporting message or file, with its sender, date and source. Read-only
 
 ## Search and verify
 
-- Read `learn` and use names in the client's catalogue. Remote clients may
-  expose cached equivalents; follow the mappings in `learn`. A name missing
-  from that catalogue is not callable.
+- Use names in the client's catalogue. Remote clients may expose cached
+  equivalents; follow the mappings in the server's instructions (or `learn`'s
+  workflows). A name missing from that catalogue is not callable.
 - Use the natural question plus relevant context the user already supplied.
   Narrow to a chat or author when the user identifies that conversation or
   sender: `search`'s and `read_messages`' `chat_id` take the name as the user

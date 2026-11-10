@@ -7,7 +7,7 @@ code. The [README](../README.md#the-23-tools) has the one-line table.
 
 | Tool | Kind | What it does |
 | --- | --- | --- |
-| `learn` | read | The guide to every tool, id format and error code, as text. Call it first. |
+| `learn` | read | The guide, as text, one `topic` at a time: `ids` (formats, several accounts, the message shape), `workflows`, `errors` (what to do about every code), or `all`; with no topic, the list of topics. An agent calls it when unsure, not before every conversation: what matters on every call is in the server's instructions and in each answer's notes and next step. |
 | `get_status` | read | Connection status, sync state, linked account, how fresh the history is, webhook delivery, versions, data dir, and `health`: what WhatsApp says about the account itself (a reachout timelock, a ban, a session taken over, its cap on first messages to new people), with until when, and `link`: an outage under way (`down_since`, `alerted`), the last one, sleeps the server woke from and sockets its watchdog replaced. Top-level fields are the default account; `accounts` lists every configured one and `default` names it. `include_picture: true` adds `picture_url`, the account's own profile photo (a WhatsApp link that expires; `null` when there is none or it cannot be read). Optional `account_id` on this and every other tool. |
 | `link_account` | read | Pair an account that already exists (`wazap account add`). Returns the code to type into the phone. Registered in read-only mode too. |
 | `list_chats` | read | Conversations newest-first; filter `all`/`unread`/`groups`/`individual`/`archived`; `tag` keeps the chats of people filed under it ([Working by tag](#working-by-tag)). `include_pictures: true` adds `picture_url` per chat (a link that expires; none for `#private`). |
@@ -734,7 +734,7 @@ The SDK still validates the arguments of unlisted compatibility calls, which kee
 the same read permissions and rate limits. Refresh the client's catalogue to use
 the current names; a client that has not refreshed can keep calling its cached reads.
 
-Remote `learn`, prompts and session instructions prefer the current workflows and
+Remote `learn` (its `workflows` topic), prompts and session instructions prefer the current workflows and
 include a short fallback mapping for clients that still only expose the old names.
 
 Compatibility reads use the same account, privacy and filesystem restrictions.

@@ -44,7 +44,7 @@ contract and `learn` (`test/output-schema.test.mjs`). A refusal is an error resu
 `{ error, message, fix }`, with `account_id` added when the tool declares an
 output schema (and `candidates` when a read named its chat by a name that fits
 several chats or none); `error` is one of the 53 codes, and `learn` documents every one
-of them. Guarded by: `test/tools.test.mjs`.
+of them (its `errors` topic). Guarded by: `test/tools.test.mjs`.
 
 **Which sessions get structured content.** The structured contract above —
 output schemas, structured answers, every answer field this file names —

@@ -420,15 +420,40 @@ test("get_status on a remote write session tells the agent nothing about bearer 
   assert.equal(result.structuredContent.hint, undefined);
 });
 
-test("learn documents every error code an agent can receive, within 2,000 tokens and as text only", async () => {
+test("learn documents every error code an agent can receive under its errors topic, as text only", async () => {
   const server = fakeServer();
   registerTools(server, asToolSource({}), { allowWrite: true });
-  const guide = (await server.tools.get("learn").handler({})).content[0].text;
-  for (const code of Object.keys(ERROR_GUIDE)) {
-    assert.ok(guide.includes(code), `learn must tell the agent what to do about ${code}`);
+  const learn = (args) => server.tools.get("learn").handler(args);
+  for (const topic of ["errors", "all"]) {
+    const guide = (await learn({ topic })).content[0].text;
+    for (const code of Object.keys(ERROR_GUIDE)) {
+      assert.ok(guide.includes(code), `learn ${topic} must tell the agent what to do about ${code}`);
+    }
   }
-  assert.ok(Buffer.byteLength(guide) / 4 <= 2000, `${Math.round(Buffer.byteLength(guide) / 4)} tokens`);
-  assert.equal((await server.tools.get("learn").handler({})).structuredContent, undefined, "the guide is not repeated as structured content");
+  // About 2,250 Claude tokens at the 2.45 bytes a token measured for this prose.
+  assert.ok(Buffer.byteLength((await learn({ topic: "errors" })).content[0].text) <= 5_500);
+  assert.equal((await learn({})).structuredContent, undefined, "the guide is not repeated as structured content");
+});
+
+test("learn with no topic is a short index of the topics; each topic is a part of the whole", async () => {
+  const server = fakeServer();
+  registerTools(server, asToolSource({}), { allowWrite: true });
+  const learn = async (args) => (await server.tools.get("learn").handler(args)).content[0].text;
+  const index = await learn({});
+  assert.ok(Buffer.byteLength(index) <= 500, `${Buffer.byteLength(index)} bytes`);
+  for (const topic of ["ids", "workflows", "errors", "all"]) assert.match(index, new RegExp(`- ${topic}: `));
+  assert.match(index, new RegExp(`each of the ${Object.keys(ERROR_GUIDE).length} error codes`));
+  const all = await learn({ topic: "all" });
+  for (const topic of ["ids", "workflows", "errors"]) assert.ok(all.includes((await learn({ topic })).trim()), topic);
+  // What the guide alone used to say, and every call needs, is in the instructions now.
+  const { loadSkills, skillInstructions } = await import("../dist/skills.js");
+  const instructions = skillInstructions(loadSkills(), { allowWrite: true });
+  assert.match(instructions, /Call `learn` when unsure about ids, several accounts or an error code/);
+  assert.doesNotMatch(instructions, /learn` first/);
+  assert.match(instructions, /#private shows with no words unless a call names them/);
+  assert.match(instructions, /mark_read sends a read receipt: only when the user asks/);
+  assert.match(instructions, /passed back exactly as given/);
+  assert.match(server.tools.get("manage_chat").meta.description, /mark_read runs directly, only when the user asks/);
 });
 
 test("send_message drafts one kind at a time and refuses what does not belong to it", async () => {
@@ -504,7 +529,7 @@ test("remember and learn state the #private rule the reads keep: no words unless
   // Every read that does not name the person leaves their words out (src/private-contacts.ts); one that names them shows them.
   assert.match(described, /#private keeps their words out of what you did not ask about them by name/);
   assert.doesNotMatch(described, /out of answers|out of catch_up and find_contact's draft context/);
-  const guide = (await server.tools.get("learn").handler({})).content[0].text;
+  const guide = (await server.tools.get("learn").handler({ topic: "workflows" })).content[0].text;
   assert.match(guide, /#private: a person's words come only when a call names them: their chat_id,\s+a message_id of theirs, search's from; a group's chat_id reads whole\. Elsewhere\s+their entries say private, with no words, and search counts private_omitted\./);
 });
 

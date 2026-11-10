@@ -594,16 +594,16 @@ test("compact reads keep missed calls, bracketed words and quotes, without mergi
 
 test("remote learn and instructions prefer the current catalogue and explain callable cached fallbacks", async (t) => {
   const f = fixture(t);
-  const guide = (await f.call("learn", {})).content[0].text;
+  const guide = (await f.call("learn", { topic: "workflows" })).content[0].text;
   for (const name of LEGACY) assert.ok(guide.includes(name), name);
-  assert.ok(Buffer.byteLength(guide) / 4 <= 2000, "remote learn stays within 2000 tokens");
+  assert.ok(Buffer.byteLength(guide) <= 3_000, "remote learn's workflows stay short");
   assert.match(guide, /catch_up/);
   assert.match(guide, /Compatibility names remain callable but are not advertised/);
   assert.match(guide, /words and meaning with contexts/i);
   assert.match(guide, /check corrections, clarify ambiguity/i);
   assert.match(guide, /get_unanswered/);
   const local = schemaCheckedTools(f.svc, { allowWrite: false });
-  assert.match((await local.call("learn", {})).content[0].text, /catch_up/);
+  assert.match((await local.call("learn", { topic: "workflows" })).content[0].text, /catch_up/);
   const stop = new AbortController();
   t.after(() => stop.abort());
   const port = await startHttpEndpoint(asToolSource(f.svc), f.svc.config, {
