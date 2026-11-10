@@ -565,7 +565,12 @@ test("compact cursors keep their mode; an all-media page reports omissions inste
   assert.equal(first.structuredContent.shown_message_count, 0);
   assert.deepEqual(first.structuredContent.conversations[0].omitted, { voice: 1 });
   assert.doesNotMatch(first.content[0].text, /No recent messages/);
+  // The transcript is all an assistant's session gets: the chat's id, the next page and the notes are in it.
+  assert.ok(first.content[0].text.startsWith(`Angela A (${ANA}):\n`), first.content[0].text);
+  assert.ok(first.content[0].text.includes(`call get_recent_messages with cursor: "${first.structuredContent.next_cursor}"`), first.content[0].text);
+  assert.ok(first.content[0].text.endsWith(`\n${first.structuredContent.notes.join("\n")}`), first.content[0].text);
   const next = await f.call("get_recent_messages", { cursor: first.structuredContent.next_cursor, limit: 10 });
+  assert.doesNotMatch(next.content[0].text, /with cursor:/, "the last page names no next one");
   assert.equal(next.structuredContent.compact, true);
   assert.equal(next.structuredContent.shown_message_count, 1);
   assert.deepEqual(next.structuredContent.conversations[0].omitted, { image: 1 });

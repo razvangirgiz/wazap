@@ -760,7 +760,10 @@ Each conversation reports `omitted` counts by type. `message_count` remains the
 original page budget, `shown_message_count` counts retained source messages, and
 `line_count` counts grouped entries. Cursors preserve compact mode. An empty
 visible page can still have omitted media and more pages; use a full read for
-their contents.
+their contents. The compact text is a transcript: each chat by name and
+`chat_id` (and account, when the read covers several), who wrote what, then the
+next page's `cursor`, the previews by message_id and the notes. It names no
+message's id; the full presentation does.
 
 Photo previews upgrade tiny shipped thumbnails from the original when available,
 cache the larger preview, and retain the thumbnail if the original has expired.

@@ -176,6 +176,10 @@ async function calls() {
   await call("refusal", "read_messages", { chat_id: "Nimeni Altcineva" });
   // The names cached connectors still call: their text is their JSON.
   await call("legacy get_recent_messages", "get_recent_messages", { hours: 48 });
+  // Its compact form is a transcript: each chat by name and id, then the next page's cursor, previews and notes.
+  const compact = await call("legacy get_recent_messages compact", "get_recent_messages", { hours: 48, compact: true, include_previews: true });
+  assert.ok(compact.structuredContent.next_cursor, "the compact read pages on the fixture world");
+  await call("legacy get_recent_messages compact page 2", "get_recent_messages", { cursor: compact.structuredContent.next_cursor });
   await call("legacy search_contacts", "search_contacts", { query: "Ana" });
   return out;
 }
@@ -192,6 +196,8 @@ test("every id, cursor, note and next step a structured answer carries is in its
     for (const [path, value] of followUps(structured, me)) {
       // read_messages of "status" names the stories by the very word the caller passed.
       if (path === "$.chat_id" && value === "status") continue;
+      // The cached get_recent_messages' compact transcript says who wrote what, not each message's id or sender's.
+      if (label.includes("compact") && /^\$\.conversations\[\d+\]\.messages\[/.test(path)) continue;
       checked++;
       if (!shows(text, value)) missing.push(`${label}: ${path} = ${JSON.stringify(value).slice(0, 160)}`);
     }

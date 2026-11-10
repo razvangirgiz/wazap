@@ -9,7 +9,7 @@ import { resolveMessageId, resolveMessageIdAcross } from "./message-ref.js";
 import { privateRule } from "./catchup.js";
 import { compactRecent } from "./recent-compact.js";
 import { WazapError } from "./errors.js";
-import { MAX_PREVIEWS } from "./previews.js";
+import { MAX_PREVIEWS, previewsLine } from "./previews.js";
 import { mediaAnswer, parsePages } from "./media-answer.js";
 import { MESSAGE_TYPES, type MediaDetail, type MessageView, type RecentConversation, type RecentMessageRefs, type SearchContext, type WhatsAppApi } from "./wa-types.js";
 import type { ToolArgs, ToolCtx, ToolDef, ToolResult } from "./tool-runtime.js";
@@ -133,11 +133,23 @@ async function recent(args: ToolArgs, ctx: ToolCtx): Promise<ToolResult> {
     account_id: page.accounts.length === 1 ? page.accounts[0] : null,
     notes: ["Available synced history only; an unanswered request may have been handled outside WhatsApp."] };
   const answer = result(payload, images);
-  if (page.compact) answer.content[0] = { type: "text", text: rendered.map((row) => {
-    const omitted = "omitted" in row ? Object.entries(row.omitted as Record<string, number>).map(([type, count]) => `${count} ${type}`) : [];
-    return `${row.chat_name}:\n${[...row.messages.map((m) => `${m.from_me ? "me" : m.sender.name}: ${m.text}`),
-      ...(omitted.length ? [`[omitted: ${omitted.join(", ")}]`] : [])].join("\n")}`;
-  }).join("\n\n") || "No recent messages in the available history." };
+  if (page.compact) {
+    // A transcript: who said what under each chat and its id. An assistant's session gets this text alone
+    // (answer-format), so the next page's cursor, the previews and the notes ride under it; message ids do not.
+    const several = page.accounts.length > 1;
+    const body = rendered.map((row) => {
+      const omitted = "omitted" in row ? Object.entries(row.omitted as Record<string, number>).map(([type, count]) => `${count} ${type}`) : [];
+      return `${row.chat_name} (${row.chat_id}${several ? `, account ${row.account_id}` : ""}):\n${[...row.messages.map((m) => `${m.from_me ? "me" : m.sender.name}: ${m.text}`),
+        ...(omitted.length ? [`[omitted: ${omitted.join(", ")}]`] : [])].join("\n")}`;
+    }).join("\n\n") || "No recent messages in the available history.";
+    const tail = [
+      next === null ? null : `More conversations are left: call get_recent_messages with cursor: "${next}".`,
+      next === null && page.sync !== "done" ? `History sync is ${page.sync}: some messages may not be here yet.` : null,
+      previewsLine(previewed),
+      ...payload.notes,
+    ].filter((line): line is string => line !== null);
+    answer.content[0] = { type: "text", text: `${body}\n\n${tail.join("\n")}` };
+  }
   return answer;
 }
 

@@ -314,6 +314,9 @@ code or the process backs a wider one yet.
   promises is only that it carries every id, cursor, note and next step its
   structured answer does (`test/answer-text.test.mjs`), so a `text` session
   loses nothing a later call takes; a program reads the structured content.
+  The one transcript is the compact presentation of a cached connector's old
+  recent-messages read: its text names each chat's id, the next page's cursor
+  and the notes, not each message's id (the full presentation gives them).
 - **Skill content.** The five skills under `skills/` are prompts, rewritten
   whenever they read better.
 - **What an AI model does with any of this.** The cases under `eval/` measure

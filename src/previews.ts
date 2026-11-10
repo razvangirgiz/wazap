@@ -29,6 +29,13 @@ export const PREVIEW_MAX_EDGE = 320;
  * how many went without, and the next call brings them.
  */
 export const MAX_PREVIEWS = 6;
+
+/** The line that says what was attached: each preview by its message_id, in the order of the image blocks. */
+export function previewsLine(messageIds: readonly string[]): string | null {
+  if (messageIds.length === 0) return null;
+  const n = messageIds.length;
+  return `${n} preview${n === 1 ? "" : "s"} attached, in the order of the image blocks: ${messageIds.map((id, i) => `preview ${i + 1} is ${id}`).join("; ")}.`;
+}
 const PREVIEW_QUALITY = 60;
 
 export interface PreviewImage {

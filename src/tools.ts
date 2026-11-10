@@ -3,7 +3,7 @@ import { contactLabel, formatPhone } from "./contact-display.js";
 import { legacyReadTools } from "./legacy-read-tools.js";
 import { LEGACY_READ_INSTRUCTIONS } from "./legacy-read-guide.js";
 import { previewChatAction, confirmChatAction } from "./chat-action-drafts.js";
-import { MAX_PREVIEWS } from "./previews.js";
+import { MAX_PREVIEWS, previewsLine } from "./previews.js";
 import type { AccountSource } from "./account-hub.js";
 import { renderGetStatus } from "./account-resolve.js";
 import { draftContextEnabled } from "./accounts.js";
@@ -1806,8 +1806,7 @@ function previewIds(previews: Preview[]): { previews?: string[] } {
 
 /** The line that says what was attached: each preview by its label, in the order of the image blocks. */
 function previewNote(previews: Preview[]): string | null {
-  if (previews.length === 0) return null;
-  return `${previews.length} preview${previews.length === 1 ? "" : "s"} attached, in the order of the image blocks: ${previews.map((p, i) => `preview ${i + 1} is ${p.message_id}`).join("; ")}.`;
+  return previewsLine(previews.map((p) => p.message_id));
 }
 
 /** A page past the local history that the phone, asked for it, sent nothing for. */
