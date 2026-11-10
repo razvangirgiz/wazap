@@ -1,10 +1,11 @@
 /**
  * One rendering per assistant session. A client that puts answers in front of
- * a model (Claude Code, claude.ai, Codex, Cursor, ChatGPT, Gemini CLI, any
- * agent signed in over OAuth) gets each answer as its text and image blocks
- * alone, and a catalogue with no outputSchema; a program on a static token,
- * or a client wazap does not know, keeps the text and the structured content
- * docs/stability.md promises. WAZAP_ANSWER_FORMAT holds every session to one.
+ * a model (Claude Code, claude.ai, Codex, Cursor, ChatGPT, Gemini CLI, by the
+ * name it gives) gets each answer as its text and image blocks alone, and a
+ * catalogue with no outputSchema, whatever its credential; a program, or a
+ * client wazap does not know, keeps the text and the structured content
+ * docs/stability.md promises, on a static token or over OAuth.
+ * WAZAP_ANSWER_FORMAT holds every session to one.
  * Decided at initialize, kept by a revival, reached over stdio and the bridge.
  */
 import { test } from "node:test";
@@ -19,19 +20,18 @@ import { readDaemon } from "../dist/daemon.js";
 import { startHttpEndpoint } from "../dist/server.js";
 import { mcpClient, offlineConfig, spawnWazap, stubAccountSource, waitFor } from "./helpers.mjs";
 
-test("assistants' clients and OAuth sessions get text; programs and unknown clients keep full; the setting overrides both", () => {
+test("assistants' clients get text; programs and unknown clients keep full, over OAuth too; the setting overrides both", () => {
   for (const name of ["claude-code", "claude-ai", "Claude Desktop", "claude.ai", "codex-mcp-client", "codex", "cursor-vscode", "Cursor", "openai-mcp", "ChatGPT", "gemini-cli-mcp-client"]) {
     assert.equal(isAssistantName(name), true, name);
-    assert.equal(answerFormatFor("auto", name, "token"), "text", `${name} on a static token`);
-    assert.equal(answerFormatFor(undefined, name, "local"), "text", `${name} over stdio`);
+    assert.equal(answerFormatFor("auto", name), "text", name);
+    assert.equal(answerFormatFor(undefined, name), "text", `${name}, the setting unset`);
   }
-  for (const name of ["acme-crm", "mcp-inspector", "wazap-bridge", "claudette", "node", "", undefined, 7]) {
+  for (const name of ["acme-crm", "mcp-inspector", "n8n-mcp-client", "wazap-bridge", "claudette", "node", "", undefined, 7]) {
     assert.equal(isAssistantName(name), false, String(name));
-    assert.equal(answerFormatFor("auto", name, "token"), "full", `${String(name)} on a static token`);
+    assert.equal(answerFormatFor("auto", name), "full", String(name));
   }
-  assert.equal(answerFormatFor("auto", "acme-crm", "oauth"), "text", "whoever signs in is a hosted assistant");
-  assert.equal(answerFormatFor("full", "claude-code", "oauth"), "full");
-  assert.equal(answerFormatFor("text", "acme-crm", "token"), "text");
+  assert.equal(answerFormatFor("full", "claude-code"), "full");
+  assert.equal(answerFormatFor("text", "acme-crm"), "text");
   assert.deepEqual(possibleFormats("auto"), ["text", "full"]);
   assert.deepEqual(possibleFormats("full"), ["full"]);
   assert.deepEqual(possibleFormats("text"), ["text"]);

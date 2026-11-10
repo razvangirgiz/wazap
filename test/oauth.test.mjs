@@ -446,9 +446,10 @@ test("OAuth write grants never authorize host file access, and consent labels ca
       name: "send_message",
       arguments: { chat_id: "40722123456@s.whatsapp.net", text: "", file_path: "/synthetic/private.png" },
     });
-    // A hosted agent's session answers in text alone (answer-format): the refusal is its text.
-    assert.equal(result.structuredContent, undefined);
-    assert.equal(JSON.parse(result.content[0].text).error, "MEDIA_ACCESS_DENIED");
+    // A program signed in over OAuth keeps the structured contract (answer-format): only an assistant's name gets text.
+    assert.equal(result.structuredContent.error, "MEDIA_ACCESS_DENIED");
+    assert.ok((await client.listTools()).tools.some((tool) => tool.outputSchema !== undefined), "its tool list keeps the output schemas");
+    assert.ok(lines.some((line) => /MCP initialize: client="oauth-files 1" .*credential=oauth .*answers=full$/.test(line)), lines.join("\n"));
     assert.ok(lines.some((line) => line.includes("oauth: registered client")));
     assert.ok(
       lines.every((line) => !["\n", "\r", "\u001b"].some((control) => line.includes(control))),
@@ -1123,7 +1124,8 @@ test("a draft answers to its OAuth client across sessions and token rotations, n
   const owner = await signIn(ctx, { access: "write", clientName: "Owner" });
   const other = await signIn(ctx, { access: "write", clientName: "Other" });
   const mcp = async (token) => {
-    const client = new Client({ name: "oauth-draft", version: "1" });
+    // A hosted assistant names itself (claude.ai's connector): its session answers in text alone.
+    const client = new Client({ name: "claude-ai", version: "1" });
     t.after(() => client.close());
     await client.connect(
       new StreamableHTTPClientTransport(new URL(`${ctx.base}/mcp`), {
@@ -1132,7 +1134,7 @@ test("a draft answers to its OAuth client across sessions and token rotations, n
     );
     return client;
   };
-  // A signed-in agent's answers are text alone (answer-format): the ids are read off the text, as its model would.
+  // The assistant's answers are text alone (answer-format): the ids are read off the text, as its model would.
   const draftId = (result) => /^Draft (d_[0-9a-f]+)/.exec(result.content[0].text)?.[1];
   const first = await mcp(owner.tokens.access_token);
   const draft = await first.callTool({ name: "send_message", arguments: { chat_id: CHAT, text: "hello" } });

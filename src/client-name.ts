@@ -64,15 +64,16 @@ export function isAssistantName(name: unknown): boolean {
 
 /**
  * The format a session gets, decided once at its initialize: the setting when
- * it names one; otherwise `text` for an agent that signed in (OAuth: a hosted
- * assistant by construction) and for a client that names itself as an
- * assistant, whatever its credential, and `full` for everything else — a
- * static token's own program, an unknown client — which keeps the
- * structured contract.
+ * it names one; otherwise `text` for a client that names itself as an
+ * assistant, whatever its credential (a static token, OAuth or stdio), and
+ * `full` for everything else, which keeps the structured contract. The
+ * credential does not decide it: a program can sign in over OAuth as well
+ * as an assistant can (n8n, MCP Inspector, a builder's own code), and the
+ * format a client wazap does not recognise gets is the one it had before
+ * there was a choice.
  */
-export function answerFormatFor(setting: AnswerFormatSetting | undefined, clientName: unknown, credential: CredentialKind): AnswerFormat {
+export function answerFormatFor(setting: AnswerFormatSetting | undefined, clientName: unknown): AnswerFormat {
   if (setting === "text" || setting === "full") return setting;
-  if (credential === "oauth") return "text";
   return isAssistantName(clientName) ? "text" : "full";
 }
 

@@ -49,12 +49,12 @@ what `learn` says about its code. Guarded by: `test/tools.test.mjs`.
 
 **Which sessions get structured content.** The structured contract above —
 output schemas, structured answers, every answer field this file names —
-holds for a session whose answer format is `full`: any client on a static
-token or over stdio that does not name itself as an assistant, which is what a
-program built on wazap is, and every session under `WAZAP_ANSWER_FORMAT=full`.
-A session whose client is an assistant (Claude Code, claude.ai, Codex, Cursor,
-ChatGPT, Gemini CLI, by the name it gives at `initialize`) or that signed in
-over OAuth gets the `text` format instead: the same tools, arguments and error
+holds for a session whose answer format is `full`: any client that does not
+name itself as an assistant, on a static token, over OAuth or over stdio, which
+is what a program built on wazap is, and every session under
+`WAZAP_ANSWER_FORMAT=full`. A session whose client is an assistant (Claude
+Code, claude.ai, Codex, Cursor, ChatGPT, Gemini CLI, by the name it gives at
+`initialize`), whatever its credential, gets the `text` format instead: the same tools, arguments and error
 codes, a tool list with no `outputSchema`, and each answer as its text and
 image blocks alone, which carry every id and cursor a later call takes. Its
 refusals are the same `{ error, message, fix }` with `account_id`, as text.

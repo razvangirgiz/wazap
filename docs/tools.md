@@ -36,10 +36,10 @@ code. The [README](../README.md#the-23-tools) has the one-line table.
 Each session gets one rendering of every answer, fixed at its `initialize`
 (`WAZAP_ANSWER_FORMAT`, [settings](settings.md)). A client that names itself
 as an assistant (Claude Code, claude.ai and Claude Desktop, Codex, Cursor,
-ChatGPT, Gemini CLI) and any agent signed in over OAuth gets the **text**
-format: each answer is its text block and its images, nothing else, and the
-tool list has no `outputSchema`. Any other client, which is what a program on
-a static token is, gets the **full** format: the same text block and the
+ChatGPT, Gemini CLI) gets the **text** format, whatever its credential: each
+answer is its text block and its images, nothing else, and the tool list has
+no `outputSchema`. Any other client, which is what a program is on a static
+token or over OAuth, gets the **full** format: the same text block and the
 structured content each tool's output schema declares.
 
 The text is complete for an agent, and compact:

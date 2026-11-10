@@ -307,7 +307,7 @@ function draftIdentity(owner: string, access: { localFiles: boolean; oauthClient
  */
 export async function runStdio(hub: AccountSource, config: Config): Promise<void> {
   await serveOnHello(new StdioServerTransport(), (client) =>
-    buildMcpServer(hub, config, true, true, { format: answerFormatFor(config.answerFormat, client?.name, "local") })
+    buildMcpServer(hub, config, true, true, { format: answerFormatFor(config.answerFormat, client?.name) })
   );
   log("MCP server ready on stdio.");
 }
@@ -617,10 +617,10 @@ export async function startHttpEndpoint(hub: AccountSource, config: Config, endp
   const ids = sessionIds(paths(config.dataDir).sessionKeyFile);
   /** What a session for this request's credential is handed, in this answer format: its tools, workflows and instructions. */
   const shapeOf = (req: AuthedRequest, format: AnswerFormat): SessionShape => sessionShape(hub, config, req.mcpWrite === true, req.localFiles === true, format);
-  /** An initialize's answer format: from the client it names and the credential it holds. */
+  /** An initialize's answer format: from the client it names, whatever credential it holds. */
   const formatOf = (req: AuthedRequest): AnswerFormat => {
     const client = (req.body as { params?: { clientInfo?: { name?: unknown } } } | undefined)?.params?.clientInfo?.name;
-    return answerFormatFor(config.answerFormat, client, credentialKind(req));
+    return answerFormatFor(config.answerFormat, client);
   };
   /**
    * The shape a session id was minted with, if it was minted for this owner:
