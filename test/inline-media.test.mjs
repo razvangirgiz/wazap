@@ -98,6 +98,24 @@ test("data_base64 is refused when it is not base64, empty, over 5 MB, unnamed, o
   assert.deepEqual(files(), []);
 });
 
+test("a type WhatsApp's own viewer or player does not take goes as a document, with its caption", async (t) => {
+  const { svc, sent } = setup(t);
+  const { call } = schemaCheckedTools(svc);
+  const webm = Buffer.from([0x1a, 0x45, 0xdf, 0xa3, ...Buffer.alloc(200)]);
+  const wav = Buffer.concat([Buffer.from("RIFF"), Buffer.alloc(4), Buffer.from("WAVEfmt "), Buffer.alloc(200)]);
+  const heic = Buffer.concat([Buffer.from([0, 0, 0, 0x18]), Buffer.from("ftypheic"), Buffer.alloc(200)]);
+  for (const [bytes, filename, mime] of [[webm, "clip.webm", "video/webm"], [wav, "nota.wav", "audio/wav"], [heic, "IMG_1.heic", "image/heic"]]) {
+    const draft = await call("send_message", { chat_id: PEER, text: "uite", data_base64: bytes.toString("base64"), filename });
+    assert.equal(draft.structuredContent.status, "draft", draft.content[0].text);
+    assert.match(draft.structuredContent.preview, new RegExp(`\\[document\\] ${filename.replace(".", "\\.")} \\(${mime.replace("/", "\\/")}, 1 KB\\)\n"uite"`));
+    const confirmed = await call("confirm_send", { draft_id: draft.structuredContent.draft_id });
+    assert.equal(confirmed.isError, undefined, confirmed.content[0].text);
+    const document = sent.at(-1).message.documentMessage;
+    assert.ok(document, `${filename} left as ${Object.keys(sent.at(-1).message)}`);
+    assert.deepEqual([document.mimetype, document.fileName, document.caption], [mime, filename, "uite"]);
+  }
+});
+
 test("a file of the call's own may go later: it is kept with the scheduled message and sent at its time", async (t) => {
   const { svc, sent, files } = setup(t);
   const clock = { now: Date.now() };

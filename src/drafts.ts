@@ -4,7 +4,7 @@ import type { SendRecord, Sends } from "./db/index.js";
 import { styleCheckLines, type StyleCheck } from "./draft-style.js";
 import { WazapError } from "./errors.js";
 import { isoWithOffset } from "./messages.js";
-import { captionTravels, mimeOfSource } from "./outgoing-media.js";
+import { captionTravels, mimeOfSource, nativeKind } from "./outgoing-media.js";
 import type { PinnedMedia } from "./pinned-media.js";
 import { describeInstant } from "./schedule-time.js";
 import type { MediaSource, OutgoingTarget, SentMessage } from "./wa-types.js";
@@ -479,20 +479,13 @@ function formatBody(payload: DraftPayload): string {
 function mediaBody(payload: Extract<DraftPayload, { kind: "media" }>): string {
   const pinned = payload.pinned;
   const name = pinned === undefined ? mediaLabel(payload) : `${pinned.filename} (${pinned.mime}, ${sizeLabel(pinned.size)})`;
-  const tag = payload.asVoice ? "voice" : payload.asDocument ? "document" : payload.asGif ? "gif" : pinned === undefined ? "media" : kindOfMime(pinned.mime);
+  const tag = payload.asVoice ? "voice" : payload.asDocument ? "document" : payload.asGif ? "gif" : pinned === undefined ? "media" : nativeKind(pinned.mime);
   const line = `[${tag}] ${name}`;
   // Only a caption that will travel: a voice note or an audio file goes without one.
   const shown = payload.caption && captionTravels(pinned?.mime ?? mimeOfSource(payload.source), payload);
   return shown ? `${line}\n"${payload.caption}"` : line;
 }
 
-/** What WhatsApp shows a file of this type as, sent without `as`. */
-function kindOfMime(mime: string): string {
-  if (mime.startsWith("image/")) return "image";
-  if (mime.startsWith("video/")) return "video";
-  if (mime.startsWith("audio/")) return "audio";
-  return "document";
-}
 
 function sizeLabel(bytes: number): string {
   return bytes < 1024 * 1024 ? `${Math.max(1, Math.round(bytes / 1024))} KB` : `${(bytes / 1_048_576).toFixed(1)} MB`;

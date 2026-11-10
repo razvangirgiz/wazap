@@ -156,7 +156,9 @@ keeps it in `accounts/<id>/outgoing/` under its SHA-256 (`0600` in a `0700`
 folder). The preview names the file as it is: its name (the server's
 `Content-Disposition`, else the URL's last segment, with the extension its type
 has when the name has none), its type told by its bytes (a PDF a server labels
-`application/octet-stream` is a PDF), and its size, as
+`application/octet-stream` is a PDF; an MP3 with no ID3 tag, whose first bytes
+are only a frame header, is audio only when its declared type and its name do
+not say otherwise), and its size, as
 `[document] factura.pdf (application/pdf, 120 KB)`, and the draft carries
 `media: { filename, mime, size }`. A URL that fails, answers 404 or is too large
 fails the draft, before the user is asked anything; a caption on what turns out
@@ -164,11 +166,19 @@ to be audio is refused then too. `confirm_send` sends exactly the kept bytes,
 checked against their hash (`FILE_NOT_FOUND` if the file changed or went, and
 nothing is sent), without fetching the URL again.
 
+Whatever its source, a photo, video or recording goes as WhatsApp shows its
+own only in a type WhatsApp's viewer and players take (JPEG, PNG, WebP or GIF;
+MP4, MOV or 3GP; MP3, M4A, AAC, AMR or Ogg). Any other, HEIC, WebM, MKV, AVI
+and WAV among them, goes as a document with its caption: sent as a photo or a
+video, WhatsApp would label it JPEG or MP4 and the recipient's phone would not
+open it.
+
 **A file of the agent's own.** A cloud agent with a file and no public URL
 for it (a claude.ai attachment, a file a cloud sandbox made) passes it in the
 call: `data_base64` (plain or URL-safe base64, line breaks allowed, or a
 `data:<type>;base64,` URL) with `filename`, the name the recipient sees, and
-`mime` when it knows the type. Up to 5 MB once decoded. It is kept and
+`mime` when it knows the type. Up to 5 MB once decoded; a larger file is
+refused with `FILE_TOO_LARGE` and the fix to pass it as a `url`. It is kept and
 previewed like a URL's file, its type told by its bytes, then its name, then
 `mime`, and sent byte for byte, `send_at` included. It is one source among
 `file_path`, `url` and `data_base64`: pass one. Over HTTP the request carrying

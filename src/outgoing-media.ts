@@ -114,9 +114,29 @@ export function sniffMime(buffer: Buffer, declared: string | null, filename: str
   const magic = magicMime(buffer);
   if (magic === "application/zip" && byName !== "application/octet-stream") return byName;
   if (magic !== null) return magic;
-  const stated = declared?.split(";")[0]?.trim().toLowerCase() ?? "";
-  if (/^[a-z]+\/[a-z0-9.+-]+$/.test(stated) && stated !== "application/octet-stream") return stated;
-  return byName;
+  const given = declared?.split(";")[0]?.trim().toLowerCase() ?? "";
+  const stated = /^[a-z]+\/[a-z0-9.+-]+$/.test(given) && given !== "application/octet-stream" ? given : null;
+  // An MP3 without its ID3 tag starts with a frame header, which is only a few bits a text or binary file can start
+  // with too: it names the file only when neither its declared type nor its name says it is something else.
+  if (mpegFrame(buffer) && [stated, byName].every((named) => named === null || named === "application/octet-stream" || named.startsWith("audio/"))) {
+    return "audio/mpeg";
+  }
+  return stated ?? byName;
+}
+
+/**
+ * Whether `b` starts with a valid MPEG audio frame header: the sync bits, a
+ * version and a layer that exist (Layer II or III, which is what MP3 and MP2
+ * files are; Layer I's bits are those of a UTF-16 byte-order mark, FF FE), a
+ * bitrate that is neither free nor invalid, and a sample rate that exists.
+ */
+function mpegFrame(b: Buffer): boolean {
+  if (b.length < 4 || b[0] !== 0xff || (b[1]! & 0xe0) !== 0xe0) return false;
+  const version = (b[1]! >> 3) & 0x03;
+  const layer = (b[1]! >> 1) & 0x03;
+  const bitrate = b[2]! >> 4;
+  const sampleRate = (b[2]! >> 2) & 0x03;
+  return version !== 0x01 && (layer === 0x01 || layer === 0x02) && bitrate !== 0x00 && bitrate !== 0x0f && sampleRate !== 0x03;
 }
 
 function magicMime(b: Buffer): string | null {
@@ -132,7 +152,7 @@ function magicMime(b: Buffer): string | null {
   }
   if (ascii(0, 5) === "%PDF-") return "application/pdf";
   if (ascii(0, 4) === "OggS") return "audio/ogg";
-  if (ascii(0, 3) === "ID3" || (b.length >= 2 && b[0] === 0xff && (b[1]! & 0xe0) === 0xe0 && (b[1]! & 0x06) !== 0)) return "audio/mpeg";
+  if (ascii(0, 3) === "ID3") return "audio/mpeg";
   if (b.length >= 4 && b[0] === 0x1a && b[1] === 0x45 && b[2] === 0xdf && b[3] === 0xa3) return "video/webm";
   if (ascii(4, 8) === "ftyp") {
     const brand = ascii(8, 12);
@@ -188,7 +208,26 @@ export async function asGifMedia(media: LoadedMedia, asGif: boolean): Promise<Lo
 /** Whether WhatsApp shows a caption on media sent this way: never on a voice note, nor on a plain audio file. */
 export function captionTravels(mime: string, opts: { asDocument: boolean; asVoice: boolean; asGif: boolean }): boolean {
   if (opts.asVoice) return false;
-  return opts.asGif || opts.asDocument || !mime.startsWith("audio/");
+  return opts.asGif || opts.asDocument || nativeKind(mime) !== "audio";
+}
+
+/**
+ * The types WhatsApp's own viewer and players take. Baileys labels every
+ * image it sends image/jpeg and every video video/mp4, so a HEIC photo, a
+ * WebM, MKV or AVI video or a WAV recording sent as one would not open on the
+ * recipient's phone: those, and any other type, go as a document.
+ */
+const NATIVE_IMAGES = new Set(["image/jpeg", "image/png", "image/gif", "image/webp"]);
+const NATIVE_VIDEOS = new Set(["video/mp4", "video/quicktime", "video/3gpp"]);
+const NATIVE_AUDIO = new Set(["audio/mpeg", "audio/mp3", "audio/mp4", "audio/x-m4a", "audio/aac", "audio/amr", "audio/ogg", "audio/opus"]);
+
+/** What a file of this type is sent as, without `as`. */
+export function nativeKind(mime: string): "image" | "video" | "audio" | "document" {
+  const type = mime.split(";")[0]!.trim().toLowerCase();
+  if (NATIVE_IMAGES.has(type)) return "image";
+  if (NATIVE_VIDEOS.has(type)) return "video";
+  if (NATIVE_AUDIO.has(type)) return "audio";
+  return "document";
 }
 
 /** The MIME a draft's file or URL names by its extension, before anything is read; a URL without one names none. */
@@ -211,9 +250,10 @@ export function mediaContent(
   if (opts.asVoice) return { audio: buffer, mimetype: "audio/ogg; codecs=opus", ptt: true };
   if (opts.asGif) return { video: buffer, gifPlayback: true, caption: opts.caption };
   if (opts.asDocument) return { document: buffer, mimetype, fileName: filename, caption: opts.caption };
-  if (mimetype.startsWith("image/")) return { image: buffer, caption: opts.caption };
-  if (mimetype.startsWith("video/")) return { video: buffer, caption: opts.caption };
-  if (mimetype.startsWith("audio/")) return { audio: buffer, mimetype };
+  const kind = nativeKind(mimetype);
+  if (kind === "image") return { image: buffer, caption: opts.caption };
+  if (kind === "video") return { video: buffer, caption: opts.caption };
+  if (kind === "audio") return { audio: buffer, mimetype };
   return { document: buffer, mimetype, fileName: filename, caption: opts.caption };
 }
 
