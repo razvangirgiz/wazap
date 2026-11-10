@@ -1121,7 +1121,7 @@ const TOOLS: readonly ToolDef[] = [
     description: `What a message's media holds: a voice note or audio as its transcript (kept once made; an API provider bills it); a photo or sticker as an image; a video as a sheet of frames; a document as its text and first page. A local call also saves the file (save_to). MEDIA_UNAVAILABLE: gone.`,
     schema: {
       message_id: messageId.optional(),
-      message_ids: z.array(messageId).min(2).max(MAX_MEDIA_BATCH).optional().describe("Up to 8, instead of message_id"),
+      message_ids: z.array(messageId).min(1).max(MAX_MEDIA_BATCH).optional().describe("Up to 8, instead of message_id"),
       save_to: z.string().min(1).optional().describe("Absolute directory; a recording then makes no transcript"),
       language: z.string().min(2).max(16).optional().describe('What is spoken, e.g. "ro"'),
       detail: z.enum(["standard", "high"]).optional().describe("high: small print"),
@@ -1141,10 +1141,12 @@ const TOOLS: readonly ToolDef[] = [
         return ok(one.lines.join("\n"), one.structured, one.blocks);
       }
       // A batch is many answers in one: every image at the standard view, one document's pages only by itself.
-      if (detail === "high") {
+      // A list of one id (catch_up's media_ids often is) is still answered in items, and may take detail and pages.
+      const several = new Set(message_ids).size > 1;
+      if (several && detail === "high") {
         throw new WazapError("INVALID_ID", 'detail: "high" reads one message at a time.', 'Call get_media with message_id and detail: "high" for the one with small print');
       }
-      if (pages !== undefined) {
+      if (several && pages !== undefined) {
         throw new WazapError("INVALID_ID", "pages picks the pages of one document.", "Call get_media with message_id and pages for that document");
       }
       return mediaBatch(message_ids!, args, ctx);
@@ -1639,7 +1641,7 @@ async function mediaBatch(asked: readonly string[], args: MediaArgs, ctx: ToolCt
   const content: ContentBlock[] = [];
   const items: Array<Record<string, unknown>> = [];
   const repeated = asked.length - ids.length;
-  let text = `Media of ${ids.length} messages, in the order asked${repeated > 0 ? ` (${repeated} repeated id${repeated === 1 ? "" : "s"} answered once)` : ""}.`;
+  let text = `Media of ${ids.length} message${ids.length === 1 ? "" : "s"}, in the order asked${repeated > 0 ? ` (${repeated} repeated id${repeated === 1 ? "" : "s"} answered once)` : ""}.`;
   answers.forEach((answer, index) => {
     const heading = `\n\n## ${index + 1} of ${ids.length} · ${ids[index]}`;
     if (answer instanceof WazapError) {

@@ -18,7 +18,7 @@ code. The [README](../README.md#the-23-tools) has the one-line table.
 | `find_contact` | read | Who a name, nickname, relationship ("mama"), group name, number or id means. Resolved: the `chat_id`, number, note, tags and details, plus the recent exchange and how you write there in a session that can send. Otherwise the candidates that tell people apart, to ask you. `tag` lists everyone filed under a tag, newest conversation first. See [Finding people](#finding-people). |
 | `list_contacts` | read | The phone's address book on one account, a page at a time (up to 500, `next` as `cursor`): each person's saved name, number in E.164, `chat_id`, `contact_id`, and when the last direct message was and which way it went. `order: "recent"` (default) puts whoever you talked to last first; `address_book` keeps the phone's order. No message words. See [The address book](#the-address-book). |
 | `get_group_info` | read | Participants, admins, announcement mode, who may edit the info or add members, join approval, disappearing messages, community, invite link (when you are admin). |
-| `get_media` | read | A message's media as an agent can take it in: a voice note or audio as its transcript, a photo or sticker as a JPEG view (`detail`), a video as a contact sheet, a document as its text (`pages`) and a picture of its page; see [Media for remote agents](#media-for-remote-agents). `message_ids` (2 to 8) opens several messages in one call, each answered in order. A local session also saves the file (`save_to` picks the directory). Transcription runs on the local or the API provider; with `save_to` a recording comes as its file, with a transcript only if one was already made, and when no transcript can be made the file comes instead, with `transcript_unavailable` saying why. A copy [kept when the media arrived](data.md#kept-media) answers first, even with the link down, and `source` says which: `kept` or `whatsapp`. |
+| `get_media` | read | A message's media as an agent can take it in: a voice note or audio as its transcript, a photo or sticker as a JPEG view (`detail`), a video as a contact sheet, a document as its text (`pages`) and a picture of its page; see [Media for remote agents](#media-for-remote-agents). `message_ids` (up to 8) opens several messages in one call, each answered in order. A local session also saves the file (`save_to` picks the directory). Transcription runs on the local or the API provider; with `save_to` a recording comes as its file, with a transcript only if one was already made, and when no transcript can be made the file comes instead, with `transcript_unavailable` saying why. A copy [kept when the media arrived](data.md#kept-media) answers first, even with the link down, and `source` says which: `kept` or `whatsapp`. |
 | `wait_for_messages` | read | Block up to 55 s until a message arrives, then return it with a cursor for the next call. `addressed_to_me` wakes only for direct messages, @-mentions and replies. |
 | `remember` | local | Keep what the user says about a person, on this machine only: a note, tags, details (`relatie`, `nickname`, "role": "contabil") that `find_contact` matches, and `handled: true` to take an ask off `catch_up`'s waiting list until they write again. A list of `chat_id`s files the same tags and details on all of them at once, or on none. `#private` keeps their words out of what the assistant did not ask about them by name ([Keeping someone private](#keeping-someone-private)). Nothing changes on WhatsApp. |
 | `send_message` | write | Draft a message: text (a reply, @-mentions), media from a path, a URL or the call itself (`data_base64` with `filename`, up to 5 MB), fetched and kept when drafted so the preview names the real file ([Media from a URL](#media-from-a-url)) (`as`: document, voice note or GIF), a poll (`options`), a location (`latitude`, `longitude`) or a forward (`forward`). Does not send. A text draft to someone you write to often carries `style_check`: where it does not read like you. `send_at` (with `time_zone`) drafts it for later; see [Scheduling a message](#scheduling-a-message). |
@@ -391,7 +391,7 @@ phone that is offline gives `MEDIA_UNAVAILABLE` with a fix to retry once it is
 online. Downloads are held in memory, at most three at once and 300 MB in
 flight; one that stalls for 30 seconds or runs past three minutes is stopped.
 
-**Several at once.** `message_ids` (2 to 8, instead of `message_id`) opens
+**Several at once.** `message_ids` (up to 8, instead of `message_id`) opens
 several messages in one call, a few at a time: "show me the photos Ana sent"
 is one call after the read that found them. Each message is answered in the
 order asked, under its own `## n of N · <message_id>` heading with its image
@@ -402,7 +402,9 @@ cannot be read — gone, not media, a download that failed — carries
 `error: { code, message, fix }` in its item and its section, and the others
 still answer. Every view is the standard one, so a batch holds at most eight
 image blocks of about 110 KB each: `detail: "high"` and `pages` take one
-message at a time and are refused with `message_ids`. Every item has its own
+message at a time and are refused with `message_ids` naming more than one (a
+list of one, as `catch_up`'s `media_ids` often is, is answered in `items` and
+takes them). Every item has its own
 download, under the same budget as a call of its own; a repeated id is
 answered once; a cancelled call stops them all. Whether a hosted client counts
 the images toward its ~150,000-character result is not documented: a batch of

@@ -113,8 +113,22 @@ test("a repeated id is answered once, and a batch never asks for small print or 
     assert.equal(refused.error, "INVALID_ID");
     assert.match(refused.message, pattern);
   }
-  await assert.rejects(call("get_media", { message_ids: [id] }), /at least 2|too_small/i, "one id goes as message_id");
+  await assert.rejects(call("get_media", { message_ids: [] }), /at least 1|too_small/i);
   await assert.rejects(call("get_media", { message_ids: Array.from({ length: 9 }, (_, i) => `${id}${i}`) }), /at most 8|too_big/i);
+});
+
+test("a list of one id, as catch_up's media_ids often is, is answered in items and may ask for small print", async (t) => {
+  const { call, arrive } = setup(t);
+  const red = await photo(1600, 1200, "#cc0000");
+  const id = arrive(ANA, "P1", { imageMessage: { mimetype: "image/jpeg", fileLength: red.length, caption: "bonul" } }, red);
+  const one = await call("get_media", { message_ids: [id] });
+  assert.equal(one.isError, undefined, one.content[0].text);
+  assert.deepEqual(one.structuredContent.items.map((item) => [item.message_id, item.type, item.caption]), [[id, "image", "bonul"]]);
+  assert.match(one.content[0].text, /^Media of 1 message, in the order asked\./);
+  assert.equal(one.content.filter((block) => block.type === "image").length, 1);
+  const sharp_ = await call("get_media", { message_ids: [id, id], detail: "high" });
+  assert.equal(sharp_.isError, undefined, "the same id twice is one message");
+  assert.equal(sharp_.structuredContent.items[0].view.detail, "high");
 });
 
 test("a cancelled batch stops opening the rest and answers nothing", async (t) => {
