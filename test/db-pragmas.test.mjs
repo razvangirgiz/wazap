@@ -7,6 +7,7 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { stat } from "node:fs";
 import { pathToFileURL } from "node:url";
 
 import { AccountDb } from "../dist/db/index.js";
@@ -103,6 +104,41 @@ test("a chunked operation folds what the log already holds before its first chun
       return false;
     });
     assert.equal(later, false);
+  } finally {
+    db.close();
+  }
+});
+
+/**
+ * A clear or a delete starts from a socket's callback (the chat's change
+ * answered on the WebSocket), in the loop's I/O phase. One setImmediate from
+ * there fires in the check phase right after it, with no I/O between the fold
+ * and the first chunk: a frame or a request waited for both. The loop comes
+ * round, timers and I/O, before the first chunk wherever the caller started.
+ */
+test("the turn after the fold lets the loop come round even when the operation starts from an I/O callback", async () => {
+  const { db, path } = openTemp({ idleCheckpointMs: 60_000 });
+  try {
+    db.checkpoint();
+    db.messages.upsert(textMessage(PEER, "A", T0, "salut"));
+    const seen = [];
+    await new Promise((resolve, reject) => {
+      // A file stat's callback runs in the I/O phase, as a socket's does.
+      stat(path, () => {
+        let timer = false;
+        setTimeout(() => (timer = true), 0);
+        // The timer is due before the fold begins.
+        const until = performance.now() + 3;
+        while (performance.now() < until);
+        db.connection
+          .chunked(() => {
+            seen.push({ inFile: inFile(path), timer });
+            return false;
+          })
+          .then(resolve, reject);
+      });
+    });
+    assert.deepEqual(seen, [{ inFile: 1, timer: true }], "folded, and the loop came round, before the first chunk");
   } finally {
     db.close();
   }

@@ -249,6 +249,8 @@ test("finding 2: a clear hides everything under its barrier at once, stays hidde
     assert.deepEqual(store.vectors.backlog({ model: "m", limit: 5 }).items, []);
   };
   hidden(db);
+  // The fold of what the fill left takes two turns, then one chunk commits.
+  await turn();
   await turn();
   await turn();
   db.close();
@@ -271,6 +273,8 @@ test("finding 2: the file of a row purged before a stop stays queued for unlink 
   db.messages.setMedia(sid(false, PEER, "K0"), "download", "/data/photo-K0.jpg");
   const clearing = db.messages.clearChat(PEER, T0 + 99_000);
   clearing.catch(() => {});
+  // The fold of what the fill left takes two turns, then K0's chunk commits.
+  await turn();
   await turn();
   await turn();
   db.close();

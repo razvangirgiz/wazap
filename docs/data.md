@@ -61,7 +61,8 @@ outside a commit or inside one, they run on the server's one thread, and each
 can take longer than SQLite's own every-4 MB folds did. The log's file can stay
 that large on disk until the next write after the fold cuts it back to 8 MB.
 A clear, an expiry sweep or a fold first folds whatever the log already holds
-(up to those 40 MB), as a step of its own, and then its commits fold every 4 MB
+(up to those 40 MB), as a step of its own with the event loop's I/O after it,
+and then its commits fold every 4 MB
 as SQLite does by default. That first fold can pause the server longer than the
 operation's other steps: about 35 ms for 33 MB, where 1.6.0's commits would
 have folded the same log before the operation began. The server

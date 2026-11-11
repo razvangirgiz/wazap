@@ -714,10 +714,12 @@ export class Connection {
    * What the log already holds (up to the ~40 MB backstop after a burst) is
    * folded first, in a turn of its own: once the threshold drops to 1,000
    * pages, the first chunk's commit would fold all of it inside that commit,
-   * a longer pause than either step alone.
+   * a longer pause than either step alone. Two setImmediates follow it: a
+   * caller in a socket's callback (most are) is in the loop's I/O phase, from
+   * which one fires in the check phase right after, with no I/O between.
    */
   async chunked(step: () => boolean): Promise<void> {
-    if (this.chunkedRunning === 0 && this.foldBacklog()) await new Promise<void>((resolve) => setImmediate(resolve));
+    if (this.chunkedRunning === 0 && this.foldBacklog()) await new Promise<void>((resolve) => setImmediate(() => setImmediate(resolve)));
     this.autocheckpointFor(+1);
     try {
       for (;;) {
