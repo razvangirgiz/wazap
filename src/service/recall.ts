@@ -127,12 +127,11 @@ export class AccountRecall {
       const from = this.identity.senderFilter(opts.from);
       const vector = await this.queryVector(query);
       const db = this.host.db();
-      const people = scope === undefined ? this.identity.privateScope(opts.private) : null;
-      const author = people !== null && from !== undefined && people.names(from) ? from : undefined;
+      let people = scope === undefined ? this.identity.privateScope(opts.private) : null;
+      let author = people !== null && from !== undefined && people.names(from) ? from : undefined;
       // Wide enough that the variety rules below have something to promote, and as wide again when #private hits may take slots.
       const window = Math.max(limit + 5, RECALL_RERANK_WINDOW);
-      // TODO(F1-b3): the hybrid scan runs on the main thread, ~160-190 ms at 100,000 vectors; it moves to a worker.
-      const result = db.vectors.hybrid({
+      const result = await db.vectors.hybridAsync({
         query,
         model: settings.model,
         vector: vector ?? null,
@@ -149,7 +148,10 @@ export class AccountRecall {
       const ranked = result.hits.filter(
         (hit) => hit.message.chatJid !== STATUS_JID && (hit.lexicalRank !== null || (hit.similarity ?? 0) >= settings.meaningOnlyMinSimilarity)
       );
-      const hidden = new Set(people === null || author !== undefined ? [] : ranked.filter((hit) => people.message(hit.message)));
+      // Read again after the scan: with the cache on it is awaited, and a #private tag added meanwhile must still hide.
+      people = scope === undefined ? this.identity.privateScope(opts.private) : null;
+      author = people !== null && from !== undefined && people.names(from) ? from : undefined;
+      const hidden = new Set(people === null || author !== undefined ? [] : ranked.filter((hit) => people!.message(hit.message)));
       // The window the variety rules walk stays as wide as without anyone #private, so the rest rank as they would.
       const shown = ranked.filter((hit) => !hidden.has(hit)).slice(0, window);
       const contexts = new Map<number, StoredMessage[]>();
@@ -312,7 +314,8 @@ export class AccountRecall {
       if (this.host.storageState() === "preparing") return { state: "indexing", indexed, pending };
       return { state: "degraded", indexed, pending, detail: "the account database is not open" };
     }
-    return { state: this.embedFeed.busy ? "indexing" : "ready", indexed, pending };
+    const cache = db.vectors.cacheStatus();
+    return { state: this.embedFeed.busy ? "indexing" : "ready", indexed, pending, ...(cache === undefined ? {} : { cache }) };
   }
 
   /** Stored vectors of the model, counted at most every few seconds: the count walks the table. */

@@ -449,6 +449,7 @@ export class AccountDb {
   }
 
   close(): void {
+    this.vectors.close();
     this.connection.close();
   }
 }

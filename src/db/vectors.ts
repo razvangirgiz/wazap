@@ -8,11 +8,12 @@
  * similarity floor applies to that cosine, weighed by the match's age when a
  * search asks for recency.
  *
- * The scan is exact brute force over the rows the filters leave, on the
- * calling thread. It needs only a read connection, so it can move to a
- * worker with a read-only open of the same file unchanged.
+ * The synchronous API and filtered scans read SQLite. The service uses the
+ * asynchronous API for an exact worker scan over a shared int8 cache.
  */
 import { createHash } from "node:crypto";
+import { log } from "../logger.js";
+import { VectorCache, cacheLimitBytes, type VectorCacheStatus } from "./vector-cache.js";
 import type { Connection } from "./connection.js";
 import { StorageError } from "./errors.js";
 import { secondOf, secondOfId } from "./ids.js";
@@ -125,6 +126,19 @@ function recencyWeight(id: number, now: number, halfLifeMs: number | undefined):
   return RECENCY_MIN_WEIGHT + (1 - RECENCY_MIN_WEIGHT) * Math.pow(0.5, Math.max(0, now - secondOfId(id) * 1000) / halfLifeMs);
 }
 
+/** The ranking tail shared by the SQLite scan and the workers: drops expired hits, weighs similarity by age, orders by it. */
+function weighByAge(
+  hits: Array<{ id: number; score: number }>,
+  expired: Set<number> | null,
+  now: number,
+  halfLifeMs: number | undefined
+): Array<{ id: number; similarity: number; score: number }> {
+  const ranked = hits
+    .filter((hit) => expired === null || !expired.has(hit.id))
+    .map((hit) => ({ id: hit.id, similarity: hit.score, score: hit.score * recencyWeight(hit.id, now, halfLifeMs) }));
+  return halfLifeMs === undefined ? ranked : ranked.sort((a, b) => b.score - a.score || b.id - a.id);
+}
+
 /** Cosine similarity of a unit query against a stored int8 vector. */
 export function int8Similarity(unit: Float64Array, vec: Int8Array): number {
   let dot = 0;
@@ -169,7 +183,7 @@ export function hybridTokens(query: string): string[] {
 }
 
 /** A fixed-size min-heap on score: the K best of a stream without sorting the stream. */
-class TopK {
+export class TopK {
   private readonly scores: number[] = [];
   private readonly ids: number[] = [];
   constructor(private readonly k: number) {}
@@ -293,6 +307,76 @@ export class Vectors {
     private readonly search: Search
   ) {}
 
+  private cache: VectorCache | null = null;
+  private readonly cacheOptIn = cacheLimitBytes() > 0;
+  private cacheEnabled = this.cacheOptIn;
+
+  /** Loads in small batches; searches use SQLite until the cache is ready. */
+  async warmCache(model: string, dimensions?: number): Promise<void> {
+    if (this.c.readOnly || !this.cacheEnabled) return;
+    try {
+      this.cache ??= new VectorCache(this.c);
+    } catch (error) {
+      // The cache is advisory: one that cannot be set up stays off, and searches use SQLite.
+      this.cacheEnabled = false;
+      log(`recall cache: ${error instanceof Error ? error.message : "setup failed"}; using SQLite`);
+      return;
+    }
+    await this.cache.warm(model, dimensions);
+  }
+
+  /** Undefined unless WAZAP_RECALL_CACHE_MAX_MB opts in, so a default install reports nothing new. */
+  cacheStatus(): VectorCacheStatus | undefined {
+    if (!this.cacheOptIn) return undefined;
+    return (
+      this.cache?.status() ?? {
+        state: this.cacheEnabled ? ("cold" as const) : ("disabled" as const),
+        sharedBytes: 0,
+        recoveries: 0,
+        capFallbacks: 0,
+      }
+    );
+  }
+
+  close(): void {
+    this.cache?.close();
+  }
+
+  async hybridAsync(input: HybridSearchInput): Promise<HybridResult> {
+    this.c.assertOpen();
+    if (input.vector != null && !this.c.readOnly && !this.cache?.ready(input.model, input.vector.length)) {
+      void this.warmCache(input.model, input.vector.length).catch(() => {});
+    }
+    const cache = this.cache;
+    if (cache === null || !cache.ready(input.model, input.vector?.length)) return this.hybrid(input);
+    // The workers scan every embedding: any filter at all, even one added later, stays on SQLite.
+    const filter = this.search.resolveFilter(input);
+    const none = this.search.resolveFilter({})!;
+    if (
+      filter === null ||
+      filter.where !== none.where ||
+      filter.lower !== none.lower ||
+      filter.upper !== none.upper ||
+      filter.params.length !== none.params.length ||
+      filter.narrowsRows ||
+      this.c.db.isTransaction ||
+      this.messages.purgePending()
+    ) {
+      return this.hybrid(input);
+    }
+    const ranked = await cache.rank(
+      input.model,
+      unitVector(input.vector!),
+      input.semanticCandidates ?? DEFAULT_CANDIDATES,
+      input.minSimilarity
+    );
+    this.c.assertOpen();
+    // A clear barrier can be installed while workers scan, before its purge runs.
+    if (ranked === null || this.messages.purgePending()) return this.hybrid(input);
+    const now = this.c.now();
+    return this.hybridWithRanked(input, weighByAge(ranked, this.expiredIds(now), now, input.recencyHalfLifeMs));
+  }
+
   /**
    * Stores a message's embedding. A float vector is normalized and quantized;
    * an Int8Array is taken as already quantized (the recall import path).
@@ -337,6 +421,8 @@ export class Vectors {
   }
 
   count(model?: string): number {
+    const cached = model === undefined ? undefined : this.cache?.indexedCount(model);
+    if (cached !== undefined) return cached;
     const row =
       model === undefined
         ? this.c.get<{ n: number }>("SELECT count(*) AS n FROM embeddings")
@@ -383,6 +469,7 @@ export class Vectors {
    * stored; `refilling` says one is still owed, and refill() pays it in steps.
    */
   feed(model: string): { refilling: boolean } {
+    if (this.cache === null && !this.c.readOnly) void this.warmCache(model).catch(() => {});
     return this.c.write(() => {
       const current = this.meta(FEED_MODEL_META);
       if (current !== model) {
@@ -554,12 +641,7 @@ export class Vectors {
       if (!joined && (secondOfId(id) === edgeLow || secondOfId(id) === edgeHigh) && !this.inTimeRange(id, filter)) continue;
       top.push(similarity, id);
     }
-    const expired = joined ? null : this.expiredIds(now);
-    const ranked = top
-      .sorted()
-      .filter((hit) => expired === null || !expired.has(hit.id))
-      .map((hit) => ({ id: hit.id, similarity: hit.score, score: hit.score * recencyWeight(hit.id, now, halfLifeMs) }));
-    return halfLifeMs === undefined ? ranked : ranked.sort((a, b) => b.score - a.score || b.id - a.id);
+    return weighByAge(top.sorted(), joined ? null : this.expiredIds(now), now, halfLifeMs);
   }
 
   /**
@@ -616,6 +698,10 @@ export class Vectors {
    * whole query.
    */
   hybrid(input: HybridSearchInput): HybridResult {
+    return this.hybridWithRanked(input);
+  }
+
+  private hybridWithRanked(input: HybridSearchInput, ranked?: Array<{ id: number; similarity: number; score: number }>): HybridResult {
     const limit = Math.max(1, Math.floor(input.limit));
     const filter = this.search.resolveFilter(input);
     const semantic = input.vector !== undefined && input.vector !== null;
@@ -627,7 +713,7 @@ export class Vectors {
     const semanticRanked =
       unit === null
         ? []
-        : this.rank(filter, input.model, unit, input.semanticCandidates ?? DEFAULT_CANDIDATES, input.minSimilarity, input.recencyHalfLifeMs);
+        : ranked ?? this.rank(filter, input.model, unit, input.semanticCandidates ?? DEFAULT_CANDIDATES, input.minSimilarity, input.recencyHalfLifeMs);
 
     const fused = new Map<number, { score: number; lexicalRank: number | null; semanticRank: number | null; similarity: number | null }>();
     lexical.ids.forEach((id, index) => {

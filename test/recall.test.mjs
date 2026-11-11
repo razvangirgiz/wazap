@@ -28,6 +28,7 @@ const PROMPTS = EMBED_MODELS[MODEL].prompts;
 
 const RECALL_ENV = [
   "WAZAP_RECALL",
+  "WAZAP_RECALL_CACHE_MAX_MB",
   "WAZAP_EMBED_MODEL",
   "WAZAP_EMBED_BIN",
   "WAZAP_EMBED_URL",
@@ -654,7 +655,7 @@ test("someone tagged #private who does not match leaves the default search's ran
     }
     // The ranking itself is not under test: the busy chat's hundred first, then the quiet one's fifty, as many as asked for.
     const rows = sids.map((sid) => svc.db.messages.get(sid));
-    svc.db.vectors.hybrid = (input) => ({
+    svc.db.vectors.hybridAsync = async (input) => ({
       hits: rows.slice(0, input.limit).map((message, i) => ({ message, score: 1 - i / 1000, lexicalRank: i + 1, semanticRank: null, similarity: null })),
       semantic: true,
       lexicalCapped: false,
@@ -1172,4 +1173,36 @@ test("the next page of a search, or the same question again, reuses the query's 
     await svc.stop();
     stub.server.close();
   }
+});
+
+test("recall cache is opt-in: unset keeps the SQLite path with no cache or workers", async () => {
+  const stub = await stubEmbedServer();
+  const { svc, sock } = await serviceWith({ WAZAP_RECALL: "local", WAZAP_EMBED_URL: stub.url });
+  try {
+    deliver(sock, [text("OFF1", "factura avion"), text("OFF2", "doctor factura")]);
+    await svc.recallIdle();
+    await svc.db.vectors.warmCache(MODEL, DIMS);
+    const result = await svc.recall("factura", undefined, 5);
+    assert.equal("cache" in result.data.index, false, "a default install reports no cache");
+    assert.equal(svc.db.vectors.cache, null);
+    assert.ok(result.data.hits.length > 0);
+  } finally { await svc.stop(); stub.server.close(); }
+});
+
+test("A-S6 real service uses the cache and advisory failure preserves SQLite recall", async () => {
+  const stub = await stubEmbedServer();
+  const { svc, sock } = await serviceWith({ WAZAP_RECALL: "local", WAZAP_EMBED_URL: stub.url, WAZAP_RECALL_CACHE_MAX_MB: "64" });
+  try {
+    deliver(sock, [text("CACHE1", "factura avion"), text("CACHE2", "doctor factura")]);
+    await svc.recallIdle();
+    await svc.db.vectors.warmCache(MODEL, DIMS);
+    const cached = await svc.recall("factura", undefined, 5);
+    assert.equal(cached.data.index.cache.state, "ready");
+    assert.ok(svc.db.vectors.cache.workers.length > 0);
+    await svc.db.vectors.cache.workers[0].terminate();
+    const fallback = await svc.recall("factura", undefined, 5);
+    assert.notEqual(fallback.data.index.state, "degraded");
+    assert.equal(fallback.data.index.cache.state, "recovering");
+    assert.deepEqual(fallback.data.hits.map(hit => hit.message.message_id), cached.data.hits.map(hit => hit.message.message_id));
+  } finally { await svc.stop(); stub.server.close(); }
 });
