@@ -11,7 +11,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
 import { createServer } from "node:net";
-import { proto } from "baileys";
+import { downloadMediaMessage, proto } from "baileys";
 
 import { cdnOnlyMessage, cdnPath, cdnUrl } from "../dist/messages.js";
 import { mediaKeepSettings } from "../dist/media-keep.js";
@@ -92,6 +92,32 @@ test("the node Baileys downloads loses a url and paths off the CDN, wrappers and
   assert.deepEqual(cdnOnlyMessage(text).message, { conversation: "salut" });
   const empty = { key: wrapped.key, message: null };
   assert.equal(cdnOnlyMessage(empty), empty);
+});
+
+test("media six wrappers deep is not handed to Baileys, which would unwrap five more and fetch its url", async (t) => {
+  const fetched = [];
+  const original = globalThis.fetch;
+  globalThis.fetch = async (url) => {
+    fetched.push(String(url));
+    throw new Error("no network in this test");
+  };
+  t.after(() => {
+    globalThis.fetch = original;
+  });
+  const mediaKey = randomBytes(32);
+  let deep = { imageMessage: { mimetype: "image/jpeg", url: "http://127.0.0.1:9/internal/admin?action=reboot", mediaKey, fileLength: 64 } };
+  for (let i = 0; i < 6; i++) deep = { ephemeralMessage: { message: deep } };
+  for (const wrapper of ["editedMessage", "groupStatusMessageV2"]) {
+    // A decoy photo at the top, the one wazap reports; Baileys opens the wrapper first, and stops at its fifth.
+    const message = proto.Message.decode(
+      proto.Message.encode({ imageMessage: { mimetype: "image/jpeg", url: CDN, directPath: PATH, mediaKey }, [wrapper]: { message: deep } }).finish()
+    );
+    const raw = { key: { remoteJid: STRANGER, fromMe: false, id: `D-${wrapper}` }, message };
+    const safe = cdnOnlyMessage(raw);
+    assert.deepEqual(safe.message, { ephemeralMessage: null }, wrapper);
+    await assert.rejects(downloadMediaMessage(safe, "stream", {}), /not a media message/, wrapper);
+  }
+  assert.deepEqual(fetched, [], "nothing was fetched");
 });
 
 test("a stranger's photo whose url names a host on this network is fetched neither on arrival nor by get_media", async (t) => {

@@ -1291,13 +1291,17 @@ export function cdnPath(path: unknown): string | undefined {
  * host, port and path it names, on arrival when media is kept. With only
  * directPath left, Baileys fetches from mmg.whatsapp.net, or fails. Keys are
  * set only where the node had them, since Baileys tells a sticker's thumbnail
- * link apart by whether `url` is there at all.
+ * link apart by whether `url` is there at all. Baileys unwraps at most five
+ * wrappers, and unwraps again when it downloads: a node that is not one of
+ * MEDIA_KEYS (a sixth wrapper, say) is handed over as null, so Baileys finds
+ * no media in it rather than five more wrappers to open.
  */
 export function cdnOnlyMessage(raw: WAMessage): WAMessage {
   const content = extractMessageContent(raw.message);
   const type = content ? getContentType(content) : undefined;
   const node = type === undefined ? undefined : (content?.[type] as unknown);
   if (type === undefined || node === null || typeof node !== "object") return raw;
+  if (!MEDIA_KEYS.includes(type)) return { ...raw, message: { [type]: null } as WAMessageContent };
   const safe: Record<string, unknown> = { ...(node as Record<string, unknown>) };
   if ("url" in node) safe.url = cdnUrl((node as { url?: unknown }).url) ?? null;
   if ("directPath" in node) safe.directPath = cdnPath((node as { directPath?: unknown }).directPath) ?? null;

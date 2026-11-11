@@ -932,8 +932,12 @@ wazap parses, and the parsed text input to the agent.
   as a path: one leading `/`, no `//`, `@`, `\`, space or control character.
   Anything else is set to null, so Baileys builds the URL on
   `mmg.whatsapp.net` or fails before opening a socket (`MEDIA_UNAVAILABLE`).
+  Baileys opens at most five wrappers (ephemeral, view-once, edited...) and
+  opens them again when it downloads, so a node that is not a photo, video,
+  audio, document or sticker after five (media six wrappers deep) is handed
+  over as null: nothing in it is cleaned, so nothing in it is fetched.
   Tests: `test/media-cdn.test.mjs` (a listener on loopback is never reached,
-  on arrival or by `get_media`).
+  on arrival or by `get_media`; media six wrappers deep is never fetched).
 - **Downloads, bounded.** At most three downloads at once and 300 MB declared in
   flight across the process; a download quiet for 30 s or running past 3
   minutes is stopped; the 100 MB in-memory cap is checked before and during the
