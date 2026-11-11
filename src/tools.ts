@@ -27,7 +27,7 @@ import { chatByName, type NamedChat } from "./chat-name.js";
 import { LIST_CONTACTS_INPUT, runListContacts } from "./list-contacts.js";
 import { freshnessNote, readFreshness } from "./freshness.js";
 import { mediaCaptionOf } from "./media-details.js";
-import { kilobytes, mediaAnswer, parsePages, UNTRUSTED_TEXT_NOTE } from "./media-answer.js";
+import { kilobytes, mediaAnswer, oneLine, parsePages, UNTRUSTED_TEXT_NOTE } from "./media-answer.js";
 import { captionTravels, mimeOfSource } from "./outgoing-media.js";
 import { getMessageView, getMessageViewAcross, resolveMessageId, resolveMessageIdAcross } from "./message-ref.js";
 import { clockLabel, isoWithOffset } from "./messages.js";
@@ -1676,11 +1676,6 @@ async function mediaOf(message_id: string, { save_to, language, detail, pageRang
     if (!lines.some((line) => line.includes(note))) lines.push(note);
   }
   return { lines, structured, blocks: extra };
-}
-
-/** Text someone else wrote, on one line: line breaks and control characters become a space. */
-function oneLine(text: string): string {
-  return text.replace(/[\p{Cc}\p{Zl}\p{Zp}]+/gu, " ");
 }
 
 /** Said in a batch's notes: which image is whose, for a client that hands the model the structured part and the images. */

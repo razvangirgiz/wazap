@@ -47,7 +47,12 @@ async function rendered(input: RenderInput): Promise<MediaRendition> {
   }
   const format = documentFormat(mime, input.filename, input.buffer);
   if (format !== null) return documentRendition(input, format);
-  return { kind: "none", note: `No view or text is made of ${mime}: only its facts.` };
+  return { kind: "none", note: `No view or text is made of ${mimeToken(mime) ?? "this type"}: only its facts.` };
+}
+
+/** A declared type as wazap's own note may name it: a MIME type's shape, nothing else the sender wrote. */
+function mimeToken(mime: string): string | undefined {
+  return /^[\w.+-]+\/[\w.+-]+$/.test(mime) ? mime : undefined;
 }
 
 /** A mime the sender left generic, told by the file's first bytes when they say an image. */
@@ -91,7 +96,8 @@ async function imageRendition(input: RenderInput): Promise<MediaRendition> {
   }
   const shipped = await shippedPicture(input.raw);
   if (shipped !== null) return { kind: "frame", ...shipped };
-  return { kind: "none", note: `This ${input.mime} image could not be read here, so it cannot be shown.` };
+  const token = mimeToken(input.mime);
+  return { kind: "none", note: `This ${token === undefined ? "" : `${token} `}image could not be read here, so it cannot be shown.` };
 }
 
 /**

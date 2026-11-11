@@ -913,8 +913,11 @@ wazap parses, and the parsed text input to the agent.
   sender's file name, caption, declared type and name; each is kept to its one
   line (line breaks and control characters become spaces), the file name
   quoted whole and the caption marked as the sender's, so none can add a line
-  that reads as a note of wazap's or as its link to the original. Tests:
-  `test/media-documents.test.mjs`.
+  that reads as a note of wazap's or as its link to the original. wazap's own
+  notes about a file (a type it makes nothing of, an image it cannot decode,
+  an archive entry it refused) are kept to one line too, in the text and in
+  `notes`, and name the declared type only when it reads `type/subtype`.
+  Tests: `test/media-documents.test.mjs`.
 - **No copies for remote sessions.** A remote `get_media` used to write a new,
   unrecorded copy of the file into `accounts/<id>/media/` on every call;
   nothing swept them, and they outlived deleted and expired messages. A remote

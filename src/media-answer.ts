@@ -28,6 +28,11 @@ export interface MediaAnswer {
   notes: string[];
 }
 
+/** Text someone else wrote, on one line: line breaks and control characters become a space. */
+export function oneLine(text: string): string {
+  return text.replace(/[\p{Cc}\p{Zl}\p{Zp}]+/gu, " ");
+}
+
 function kb(bytes: number): string {
   return `${Math.max(1, Math.round(bytes / 1024))} KB`;
 }
@@ -44,6 +49,8 @@ export function mediaAnswer(opened: OpenedMedia): MediaAnswer {
 }
 
 function renditionInto(rendition: MediaRendition, out: MediaAnswer): void {
+  // A note can name what the sender wrote (a declared type, an archive's entry): it stays on its own line.
+  if ((rendition.kind === "document" || rendition.kind === "none") && rendition.note !== undefined) rendition = { ...rendition, note: oneLine(rendition.note) };
   switch (rendition.kind) {
     case "image": {
       out.blocks.push(picture(rendition.jpeg));
