@@ -259,7 +259,8 @@ curl -s http://127.0.0.1:8766/healthz
 
 The image carries poppler and ffmpeg, so `get_media` shows a PDF's pages (a
 scan has nothing else to read) and a video as a sheet of frames, as on a Mac
-with them installed.
+with them installed, and the Liberation fonts, which stand in for the standard
+PDF fonts (Helvetica, Times, Courier) a file names without embedding them.
 
 The container publishes `8766` on loopback only; add the same TLS proxy in front. Upgrading is `docker compose pull && docker compose up -d`; the volume keeps the session. To stay on one line, change `latest` in the compose file to `1.3`. To build from source instead, run `docker build -t ghcr.io/razvangirgiz/wazap:latest .` in a clone.
 

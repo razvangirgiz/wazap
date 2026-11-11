@@ -28,3 +28,15 @@ test("the image installs its system packages before it copies the app", () => {
   assert.ok(apk < copy, `apk add (instruction ${apk}) comes before the first COPY (instruction ${copy})`);
   assert.ok(!runtime.slice(copy).some((line) => /\bapk\b/.test(line)), "no package is installed after the app is copied");
 });
+
+/**
+ * A PDF may name one of the standard fonts (Helvetica, Times, Courier) without
+ * embedding it, as FPDF and ReportLab invoices do. With no font installed,
+ * poppler draws that text as nothing and still exits 0: the page picture beside
+ * the text layer is blank. Liberation has those fonts' metrics.
+ */
+test("the image installs fonts for the PDF text poppler draws", () => {
+  const apk = runtime.find((line) => /^RUN apk add\b/.test(line)) ?? "";
+  assert.match(apk, /\bpoppler-utils\b/);
+  assert.match(apk, /\bfont-liberation\b/, apk);
+});
