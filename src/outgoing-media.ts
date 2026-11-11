@@ -29,6 +29,8 @@ export interface LoadedMedia {
   buffer: Buffer;
   mimetype: string;
   filename: string;
+  /** A URL's file: the URL its bytes came from, after any redirect. */
+  url?: string;
 }
 
 export async function assertMediaSource(source: MediaSource, maxBytes = MAX_MEDIA_BYTES): Promise<void> {
@@ -73,7 +75,7 @@ export async function loadMedia(
   const result = await publicMedia(source.url!, { maxBytes, ...io });
   const named = result.filename ?? urlFilename(result.url);
   const mimetype = sniffMime(result.buffer, result.mime, named);
-  return { buffer: result.buffer, mimetype, filename: safeFilename(named, mimetype) };
+  return { buffer: result.buffer, mimetype, filename: safeFilename(named, mimetype), url: result.url };
 }
 
 /** The last segment of a URL's path, decoded: what a browser would save it as. */

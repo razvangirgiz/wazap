@@ -136,7 +136,9 @@ the media cap under `accounts/<id>/outgoing/` until the draft lapses (an
 account's kept files hold at most 1 GB, an identity at most 20 drafts). The
 address guard still refuses private and loopback addresses. The preview says
 so (`…, already fetched from example.com`), so the user sees where the file
-came from before saying yes. Tests: `test/pinned-media.test.mjs`.
+came from before saying yes; after a redirect it names the host the bytes came
+from and the one asked (`…, already fetched from cdn.example (via
+example.com)`). Tests: `test/pinned-media.test.mjs`.
 
 ## 5. Cross-account write preflight — hardened
 

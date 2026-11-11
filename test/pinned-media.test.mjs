@@ -79,6 +79,22 @@ function setup(t, routes, { config = {} } = {}) {
 
 const sha = (buffer) => createHash("sha256").update(buffer).digest("hex");
 
+test("after a redirect the preview names the host the file came from, and the one asked", async (t) => {
+  const pdf = pdfOf([["Factura 12"]]);
+  const routes = {
+    "/url": { status: 302, body: Buffer.alloc(0), headers: { location: "https://attacker.example/payload.pdf?sig=SECRET" } },
+    "/payload.pdf": { body: pdf, type: "application/pdf" },
+  };
+  const { svc, server } = setup(t, routes);
+  const { call } = schemaCheckedTools(svc);
+  const draft = await call("send_message", { chat_id: PEER, text: "Factura", url: "https://www.google.com/url?q=x&token=abc123" });
+  const view = draft.structuredContent;
+  assert.equal(view.status, "draft", draft.content[0].text);
+  assert.deepEqual(server.fetched, ["/url", "/payload.pdf"]);
+  assert.match(view.preview, /\[document\] payload\.pdf \(application\/pdf, \d+ KB\), already fetched from attacker\.example \(via www\.google\.com\)\n/);
+  assert.ok(!/SECRET|abc123/.test(view.preview), "no query string in the preview");
+});
+
 test("a URL is fetched when drafted: the preview names the real file, and the yes sends exactly those bytes", async (t) => {
   const pdf = pdfOf([["Factura 12"]]);
   const routes = { "/download": { body: pdf, type: "application/octet-stream", headers: { "content-disposition": `attachment; filename*=UTF-8''factur%C4%83%2012.pdf` } } };

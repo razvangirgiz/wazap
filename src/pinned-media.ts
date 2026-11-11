@@ -25,6 +25,8 @@ export interface PinnedMedia {
   mime: string;
   size: number;
   filename: string;
+  /** A URL's file: the host its bytes came from, after any redirect (a draft from before this field has none). */
+  fetchedFrom?: string;
 }
 
 /** Every pinned file of one account together; a draft that would pass it is refused. */

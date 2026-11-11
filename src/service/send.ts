@@ -156,7 +156,9 @@ export class AccountSends {
         "Send the words as their own send_message, or pass as: \"document\" to send the file as a document with its caption"
       );
     }
-    return this.host.pinned().pin(loaded.buffer, loaded.mimetype, loaded.filename);
+    const pinned = await this.host.pinned().pin(loaded.buffer, loaded.mimetype, loaded.filename);
+    const from = loaded.url === undefined ? "" : URL.parse(loaded.url)?.host ?? "";
+    return from === "" ? pinned : { ...pinned, fetchedFrom: from };
   }
 
   private async store(payload: DraftPayload, jid: string, owner: string | undefined, schedule: DraftSchedule | undefined): Promise<DraftView> {

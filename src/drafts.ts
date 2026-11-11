@@ -476,12 +476,11 @@ function formatBody(payload: DraftPayload): string {
 
 function mediaBody(payload: Extract<DraftPayload, { kind: "media" }>): string {
   const pinned = payload.pinned;
-  // A URL's file was fetched when drafted, before any yes: the preview says from where.
-  const fetched = pinned === undefined ? undefined : hostOf(payload.source.url);
-  const name =
-    pinned === undefined
-      ? mediaLabel(payload)
-      : `${pinned.filename} (${pinned.mime}, ${sizeLabel(pinned.size)})${fetched === undefined ? "" : `, already fetched from ${fetched}`}`;
+  // A URL's file was fetched when drafted, before any yes: the preview says from where, the host a redirect led to first.
+  const asked = pinned === undefined ? undefined : hostOf(payload.source.url);
+  const came = pinned?.fetchedFrom ?? asked;
+  const fetched = came === undefined ? "" : `, already fetched from ${came}${asked !== undefined && asked !== came ? ` (via ${asked})` : ""}`;
+  const name = pinned === undefined ? mediaLabel(payload) : `${pinned.filename} (${pinned.mime}, ${sizeLabel(pinned.size)})${fetched}`;
   const tag = payload.asVoice ? "voice" : payload.asDocument ? "document" : payload.asGif ? "gif" : pinned === undefined ? "media" : nativeKind(pinned.mime);
   const line = `[${tag}] ${name}`;
   // Only a caption that will travel: a voice note or an audio file goes without one.
