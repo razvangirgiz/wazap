@@ -5,14 +5,16 @@ COPY src ./src
 RUN npm ci && npm run build && npm prune --omit=dev
 
 FROM node:22-alpine
+# poppler draws a PDF's pages (a scan's only content) and ffmpeg takes a video's frames, for get_media.
+# Before any COPY, so a release that changes only the app reuses this layer instead of shipping it again.
+RUN apk add --no-cache poppler-utils ffmpeg
 WORKDIR /app
 ENV NODE_ENV=production WAZAP_DATA_DIR=/data WAZAP_HOST=0.0.0.0 WAZAP_PORT=8766
 COPY --from=build /app/node_modules ./node_modules
 COPY --from=build /app/dist ./dist
 COPY package.json LICENSE README.md AGENT.md ./
 COPY skills ./skills
-# poppler draws a PDF's pages (a scan's only content) and ffmpeg takes a video's frames, for get_media.
-RUN apk add --no-cache poppler-utils ffmpeg && mkdir -p /data && chown node:node /data
+RUN mkdir -p /data && chown node:node /data
 USER node
 VOLUME ["/data"]
 EXPOSE 8766
