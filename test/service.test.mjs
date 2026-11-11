@@ -26,7 +26,7 @@ import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 
 import { AccountRegistry } from "../dist/accounts.js";
-import { paths, WAZAP_VERSION } from "../dist/config.js";
+import { parseCli, paths, WAZAP_VERSION } from "../dist/config.js";
 import { yieldSession } from "../dist/cli.js";
 import { ACCOUNTS_STOP_MS, drainWithin, HTTP_DRAIN_MS } from "../dist/server.js";
 import {
@@ -185,6 +185,40 @@ test("the command that reinstalls is this process's own node and script, quoted 
   );
   assert.ok(reinstallCommand("/d").includes(" service install --data-dir /d"));
   assert.ok(reinstallCommand("/d").startsWith(process.execPath) || reinstallCommand("/d").startsWith(`'${process.execPath}`), "this process's node by default");
+});
+
+/**
+ * The unit's own --port overrides a WAZAP_PORT in .env while the service runs,
+ * so one left there (empty, or a stale 8766) goes unnoticed until the
+ * reinstall the startup log asks for reads it. The command names the port.
+ */
+test("the command the log prints keeps the service's port, whatever WAZAP_PORT .env holds", async () => {
+  const dir = dataDir();
+  await captured(() => installService(config(dir), fakeSupervisor(dir), 0));
+  const { port } = readService(dir);
+  const command = reinstallCommand(dir, "/opt/node/bin/node", "/x/index.js");
+  assert.ok(command.endsWith(` service install --data-dir ${dir} --port ${port}`), command);
+
+  const previous = process.env.WAZAP_PORT;
+  try {
+    for (const line of ["WAZAP_PORT=", "WAZAP_PORT=8766"]) {
+      delete process.env.WAZAP_PORT;
+      writeFileSync(paths(dir).envFile, `${line}\n`);
+      const { config: parsed } = parseCli(command.split(" ").slice(2));
+      const output = await captured(() => installService({ ...parsed, dryRun: true }, fakeSupervisor(dir), 0));
+      assert.match(output, new RegExp(`--port ${port}\\b`), line);
+    }
+    // An empty WAZAP_PORT names no port, so a bare reinstall keeps the service's too.
+    delete process.env.WAZAP_PORT;
+    writeFileSync(paths(dir).envFile, "WAZAP_PORT=\n");
+    const { config: bare } = parseCli(["service", "install", "--data-dir", dir]);
+    assert.equal(bare.sources.port, "default");
+    const output = await captured(() => installService({ ...bare, dryRun: true }, fakeSupervisor(dir), 0));
+    assert.match(output, new RegExp(`--port ${port}\\b`), "an empty WAZAP_PORT");
+  } finally {
+    if (previous === undefined) delete process.env.WAZAP_PORT;
+    else process.env.WAZAP_PORT = previous;
+  }
 });
 
 test("serviceScript of a global install is the real file behind that bin, not this process", () => {
@@ -395,7 +429,9 @@ test("a server under a launchd unit from before ExitTimeOut says so, and still s
   );
   assert.match(
     stderr.join(""),
-    /the service unit allows 5 s to stop, so calls under way get 1 s at a restart; run `\S+node\S* \S+index\.js service install --data-dir \S+` once \(this service's own node and script; the port stays\) to give them 10/
+    new RegExp(
+      `the service unit allows 5 s to stop, so calls under way get 1 s at a restart; run \`\\S+node\\S* \\S+index\\.js service install --data-dir \\S+ --port ${port}\` once \\(this service's own node and script; the port stays\\) to give them 10`
+    )
   );
   const exited = once(child, "exit");
   const at = Date.now();

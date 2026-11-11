@@ -472,7 +472,8 @@ export function parseCli(argv: string[] = process.argv.slice(2)): CliInvocation 
         transcribe: sourceOf("WAZAP_TRANSCRIBE", false),
         webhook: sourceOf("WAZAP_WEBHOOK", false),
         recall: sourceOf("WAZAP_RECALL", false),
-        port: sourceOf("WAZAP_PORT", values.port !== undefined),
+        // An empty or non-numeric WAZAP_PORT names no port: the server takes 8766, and a reinstall keeps the service's own.
+        port: values.port === undefined && Number.isNaN(asInt(process.env.WAZAP_PORT, Number.NaN)) ? "default" : sourceOf("WAZAP_PORT", values.port !== undefined),
       },
       command,
       explicitCommand: first !== undefined,

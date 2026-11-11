@@ -143,8 +143,10 @@ sets no `ExitTimeOut` about five seconds after `SIGTERM`, so under a unit
 written by an older wazap the drain lasts one second, and the log says so at
 startup, with the command that rewrites the unit: `service install` run by the
 service's own node and script, since a `wazap` on the shell's PATH may be
-another install. A reinstall keeps the service's port unless `--port` or
-`WAZAP_PORT` names another. The next
+another install, and with the service's `--port`, since a `WAZAP_PORT` left
+in `.env` (which the unit's own `--port` overrides while it runs) would move
+it. A reinstall keeps the service's port unless `--port` or `WAZAP_PORT`
+names another; an empty `WAZAP_PORT` names none. The next
 process warms its catalogue and transport right after it binds, so the first
 `initialize` after a restart costs about half what it did: 22–39 ms instead
 of 40–72 measured side by side on a loaded laptop over loopback, and 8–10 ms

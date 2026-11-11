@@ -506,11 +506,16 @@ function shellWord(word: string): string {
 
 /**
  * `service install` as the running process would run it: its own node and
- * script, its data dir. Run from a server the unit started, that is the unit's
- * own build, where a bare `wazap` on the shell's PATH may be another one.
+ * script, its data dir, and the service's port when one is installed. Run
+ * from a server the unit started, that is the unit's own build, where a bare
+ * `wazap` on the shell's PATH may be another one. The port is named because a
+ * WAZAP_PORT in the shell or `.env`, which the unit's own `--port` overrides
+ * while it runs, would otherwise move the service off its tunnel's port.
  */
 export function reinstallCommand(dataDir: string, node: string = process.execPath, script: string = process.argv[1] ?? ""): string {
-  return [node, script, "service", "install", "--data-dir", dataDir].map(shellWord).join(" ");
+  const port = readService(dataDir)?.port;
+  const words = [node, script, "service", "install", "--data-dir", dataDir, ...(port === undefined ? [] : ["--port", String(port)])];
+  return words.map(shellWord).join(" ");
 }
 
 /** The absolute script a supervisor can launch for years. The npx cache is not one. */
