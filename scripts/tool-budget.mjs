@@ -101,7 +101,7 @@ function table(report) {
     `metric 1 (name + description + inputSchema + annotations): ${report.list_bytes} bytes ≈ ${report.list_tokens} tokens (budget ${MAX_LIST_TOKENS}; ${report.list_tokens_at_4} at the old 4 bytes a token)`,
     `metric 2 (outputSchema): ${report.output_bytes} bytes ≈ ${report.output_tokens} tokens (guide ${MAX_OUTPUT_SCHEMA_TOKENS})`,
     `titles, not counted: ${report.title_bytes} bytes ≈ ${tokens(report.title_bytes)} tokens`,
-    `tools/list as sent: ${report.wire_bytes} bytes`
+    `tools/list's result, as JSON: ${report.wire_bytes} bytes (the SSE answer that carries it adds its envelope)`
   );
   return lines.join("\n");
 }
