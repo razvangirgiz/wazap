@@ -103,3 +103,13 @@ settings, and do not remove one while a test sets it.
   ext4 refuses the sparse petabyte file macOS takes (EFBIG): stub the limit.
 - Setup, login and the QR branch on `isTTY`, and the suite has no terminal:
   run a change there in a real one before calling it done.
+
+## Lucrul cu Hermes (sesiunile Claude Code ale lui Răzvan)
+
+Când Răzvan lucrează aici direct cu Claude Code, Hermes (pe Mac mini) verifică munca după el. Ca să ajungă la Hermes:
+
+- Lucrezi pe o ramură nouă din `origin/main` adus la zi. Nu faci commit, push sau merge direct pe `main`.
+- La final deschizi PR cu `gh pr create ... --label claude-code` (eticheta există deja în repo).
+- Descrierea PR-ului se termină cu secțiunea `## Ce să testezi`: 2–6 pași simpli, numerotați, pe care îi poate face de pe telefon cineva care nu programează: ce deschide, ce face, ce trebuie să vadă. Fără termeni tehnici.
+- Nu faci merge și nu faci deploy. Hermes face review (Claude + Codex) și QA, repară pe aceeași ramură ce e mic, pune testele în Panoul Hermes, iar Răzvan aprobă merge-ul din panou sau din Telegram.
+- Restul regulilor din acest fișier (poarta, migrațiile, capcanele) rămân valabile. Pentru sesiunile Claude Code, secțiunea asta înlocuiește doar pașii de merge și de lansare de mai sus: pe aceia îi face Hermes, cu OK-ul lui Răzvan.
