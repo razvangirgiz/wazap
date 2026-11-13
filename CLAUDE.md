@@ -106,10 +106,13 @@ settings, and do not remove one while a test sets it.
 
 ## Lucrul cu Hermes (sesiunile Claude Code ale lui Răzvan)
 
-Când Răzvan lucrează aici direct cu Claude Code, Hermes (pe Mac mini) verifică munca după el. Ca să ajungă la Hermes:
+Codul îl scrie doar Răzvan, cu Claude Code (decis 12.11.2026). Hermes (pe Mac mini) nu scrie cod, nu împinge commit-uri și nu face merge: face review, QA și pune în Panoul Hermes testele care rămân pentru Răzvan.
 
-- Lucrezi pe o ramură nouă din `origin/main` adus la zi. Nu faci commit, push sau merge direct pe `main`.
+- Lucrezi pe o ramură nouă din `origin/main` adus la zi. Nu faci commit sau push direct pe `main`.
 - La final deschizi PR cu `gh pr create ... --label claude-code` (eticheta există deja în repo).
 - Descrierea PR-ului se termină cu secțiunea `## Ce să testezi`: 2–6 pași simpli, numerotați, pe care îi poate face de pe telefon cineva care nu programează: ce deschide, ce face, ce trebuie să vadă. Fără termeni tehnici.
-- Nu faci merge și nu faci deploy. Hermes face review (Claude + Codex) și QA, repară pe aceeași ramură ce e mic, pune testele în Panoul Hermes, iar Răzvan aprobă merge-ul din panou sau din Telegram.
-- Restul regulilor din acest fișier (poarta, migrațiile, capcanele) rămân valabile. Pentru sesiunile Claude Code, secțiunea asta înlocuiește doar pașii de merge și de lansare de mai sus: pe aceia îi face Hermes, cu OK-ul lui Răzvan.
+- Hermes face review (Claude + Codex, doar citire) și QA pe o copie locală, apoi lasă pe PR UN comentariu „Review Hermes”, în română: problemele grupate P1/P2/P3, cu `fișier:linie`, și la final un bloc „Pentru Claude Code: …” gata de lipit. Hermes nu modifică ramura.
+- Când începi lucrul pe o ramură care are PR deschis, citește comentariile (`gh pr view <n> --comments`). Dacă există un „Review Hermes” nerezolvat: repari P1 și P2 (P3 dacă e ieftin), rulezi poarta, împingi pe aceeași ramură (fără force-push) și răspunzi pe PR într-un comentariu scurt: ce ai reparat și ce nu (cu motivul). Hermes reverifică doar ce s-a schimbat de la review-ul anterior.
+- Merge-ul îl faci tu, când îl cere Răzvan, doar după ce testele lui din Panoul Hermes pentru PR-ul ăsta sunt toate „Merge” și nu mai e niciun P1 deschis din „Review Hermes”. Folosești metoda de merge a repo-ului (vezi istoricul de pe `main`).
+- Lansarea (deploy) e separată de merge: după procesul de release din acest fișier, cu OK-ul explicit al lui Răzvan pe versiune.
+- Restul regulilor din acest fișier (poarta, migrațiile, merge, lansare, capcanele) rămân valabile.
