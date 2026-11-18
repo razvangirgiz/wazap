@@ -34,6 +34,7 @@ import { AccountDb, chatKindOf, StorageError, type StoredMessage } from "./db/in
 import { type DraftContext, type StyleCheck } from "./draft-style.js";
 import { asWazapError, RELINK_FIX, RESET_FIX, WazapError } from "./errors.js";
 import { installedDrift } from "./version-watch.js";
+import { markFailure } from "./transcribe/failure.js";
 import { orCancelled, throwIfCancelled } from "./cancel.js";
 import { type AccountFind, type FindContactQuery } from "./find-contact.js";
 import { isGroupId, isNoiseJid, normalizePhone } from "./ids.js";
@@ -408,7 +409,7 @@ export class WhatsAppService implements WhatsAppApi {
         keptMedia: (messageId, raw) => this.keep.read(messageId, raw),
         transcriber: (...args) => this.transcriber(...args),
         transcribeReadiness: (...args) => this.transcribeReadiness(...args),
-        transcribeAudio: (messageId) => this.transcribeAudio(messageId),
+        transcribeAudio: (messageId, opts) => this.transcribeAudio(messageId, undefined, opts),
         embedFeed: () => this.recallIndex.embedFeed,
         webhookTranscriptSettled: (sid) => this.webhooks.webhookTranscriptSettled(sid),
       },
@@ -2173,18 +2174,23 @@ export class WhatsAppService implements WhatsAppApi {
     try {
       const answered = await orCancelled(Promise.race([sock.updateMediaMessage(target), late]), signal);
       if (answered === "late") {
-        throw new WazapError(
+        // The phone is offline: worth another try later, unlike a file it no longer has.
+        throw markFailure(new WazapError(
           "MEDIA_UNAVAILABLE",
           `WhatsApp's copy of the media of ${messageId} has expired, and the phone did not answer the request to upload it again within ${this.reuploadTimeoutMs / 1000} s.`,
           "The phone must be online with WhatsApp; retry once it is"
-        );
+        ), "transient", "the phone did not answer the re-upload request");
       }
     } catch (err) {
       if (err instanceof WazapError) throw err;
-      throw new WazapError(
-        "MEDIA_UNAVAILABLE",
-        `WhatsApp's copy of the media of ${messageId} has expired, and the phone could not upload it again (${describe(err)}).`,
-        "Ask the sender to resend it"
+      throw markFailure(
+        new WazapError(
+          "MEDIA_UNAVAILABLE",
+          `WhatsApp's copy of the media of ${messageId} has expired, and the phone could not upload it again (${describe(err)}).`,
+          "Ask the sender to resend it"
+        ),
+        "permanent",
+        "media gone from WhatsApp and the phone"
       );
     } finally {
       clearTimeout(timer);
