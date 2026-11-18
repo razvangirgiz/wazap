@@ -91,6 +91,8 @@ export interface StatusInfo {
   /** Contacts carrying a name from the phone's address book. Zero means it never arrived. */
   contacts_named: number;
   wazap_version: string;
+  /** Present when the install on disk holds another version than this process runs: it needs a restart. */
+  installed_version?: string;
   baileys_version: string;
   data_dir: string;
   read_only: boolean;

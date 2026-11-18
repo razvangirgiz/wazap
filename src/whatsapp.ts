@@ -33,6 +33,7 @@ import { BAILEYS_VERSION, WAZAP_VERSION, writesHints, type AccountPaths, type Co
 import { AccountDb, chatKindOf, StorageError, type StoredMessage } from "./db/index.js";
 import { type DraftContext, type StyleCheck } from "./draft-style.js";
 import { asWazapError, RELINK_FIX, RESET_FIX, WazapError } from "./errors.js";
+import { installedDrift } from "./version-watch.js";
 import { orCancelled, throwIfCancelled } from "./cancel.js";
 import { type AccountFind, type FindContactQuery } from "./find-contact.js";
 import { isGroupId, isNoiseJid, normalizePhone } from "./ids.js";
@@ -968,6 +969,7 @@ export class WhatsAppService implements WhatsAppApi {
 
   getStatus(): StatusInfo {
     const inboundAt = this.latestInboundAt();
+    const drift = installedDrift();
     const info: StatusInfo = {
       status: this.status,
       status_since: isoWithOffset(this.statusSince),
@@ -980,6 +982,7 @@ export class WhatsAppService implements WhatsAppApi {
       last_message_received_at: inboundAt === null ? null : isoWithOffset(inboundAt),
       reconnect_attempts: this.reconnectAttempts,
       wazap_version: WAZAP_VERSION,
+      ...(drift === null ? {} : { installed_version: drift }),
       baileys_version: BAILEYS_VERSION,
       contacts_named: this.namedContacts(),
       data_dir: this.config.dataDir,
@@ -1007,6 +1010,11 @@ export class WhatsAppService implements WhatsAppApi {
     if (restricted !== null) hints.push(restricted);
     const outage = this.linkWatch.hint();
     if (outage !== null) hints.push(outage);
+    if (drift !== null) {
+      hints.push(
+        `wazap ${drift} is installed, but this server still runs ${WAZAP_VERSION}. The background service restarts itself onto it within two minutes; otherwise run \`wazap service restart\` (or restart the client that started wazap).`
+      );
+    }
     if (this.status === "logged_out") {
       hints.push("WhatsApp unlinked this device: call link_account (the number is optional: the last one is reused). It clears the dead session, keeps the history and the settings, and returns a pairing code for the user.");
     }

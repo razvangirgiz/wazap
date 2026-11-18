@@ -34,6 +34,7 @@ import { PAIRING_TIMEOUT_MS, linkSession, prettyCode, settledAccount, startPairi
 import { ACCOUNTS_STOP_MS, drainHttpEndpoints, drainWithin, HTTP_DRAIN_MS, runHttp, runStdio, startLoopbackEndpoint } from "./server.js";
 import { SUPERVISORS, fetchHealth, readService, reinstallCommand, serviceHolding, serviceStopMs, tunnelsTo, type Supervisor } from "./service.js";
 import { applyWrites } from "./settings.js";
+import { watchInstalledVersion } from "./version-watch.js";
 import { storageReport, type StorageReport } from "./storage-status.js";
 import {
   MODELS,
@@ -731,6 +732,13 @@ export async function runServe(config: Config): Promise<void> {
 
   if (config.transport === "http") {
     const port = await runHttp(hub, config, token === null ? undefined : { token, write: true, localFiles: true, label: "local" });
+    // The supervisor's server (the unit names its port) follows an upgrade of its own install:
+    // it stops cleanly and the supervisor starts the new code. A server run by hand only says so.
+    if (readService(config.dataDir)?.port === port) {
+      watchInstalledVersion({
+        onUpgrade: (installed) => shutdown(`an upgrade on disk (${WAZAP_VERSION} → ${installed}); the supervisor restarts it`),
+      });
+    }
     // Off-loopback binds get no sidecar: a bridge on this machine could not reach them.
     if (token !== null && SHAREABLE_HOSTS.includes(config.httpHost)) {
       writeDaemon(p.daemonFile, { pid: process.pid, port, token, version: WAZAP_VERSION });
