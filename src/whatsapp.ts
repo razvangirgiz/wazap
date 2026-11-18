@@ -789,10 +789,19 @@ export class WhatsAppService implements WhatsAppApi {
    * pairing runs at a time: a second call while one is in flight hands back the
    * same code rather than opening a second socket on the same session.
    */
-  link(phone: string): Promise<PairingInfo> {
+  link(phone?: string): Promise<PairingInfo> {
     return this.guarded(async () => {
       if (this.linking) return this.linking;
-      const number = normalizePhone(phone);
+      const given = phone?.trim() ?? "";
+      const known = given === "" ? this.knownNumber() : null;
+      if (given === "" && known === null) {
+        throw new WazapError(
+          "INVALID_PHONE",
+          "No number was given, and none is known for this account.",
+          "Ask the user for their WhatsApp number with its country code, e.g. +40712345678"
+        );
+      }
+      const number = normalizePhone(given === "" ? `+${known}` : given);
       this.requireUnlinked();
       // Pairing clears the credentials: not while they would come back on their own.
       if (this.health.blocksLink()) throw this.health.refusal("link");
@@ -803,11 +812,23 @@ export class WhatsAppService implements WhatsAppApi {
         clearTimeout(this.reconnectTimer);
         this.reconnectTimer = null;
       }
-      // The service claimed the database for these credentials at start; only they go.
-      if (this.status !== "not_linked") clearAuth(this.paths.authDir);
+      // Only the credentials go, never the account database (the history): a dead session's, or
+      // the half-made ones a failed pairing left. Those already name the number, so Baileys
+      // would log in with them instead of pairing, and WhatsApp refuses that with 401.
+      clearAuth(this.paths.authDir);
       this.linking = this.pair(number);
       return this.linking;
     });
+  }
+
+  /** The number this account was linked to, from the live record or the credentials left on disk. */
+  private knownNumber(): string | null {
+    if (this.account?.number) return this.account.number;
+    try {
+      return readLinkedAccount(this.paths.authDir)?.number ?? null;
+    } catch {
+      return null;
+    }
   }
 
   private requireUnlinked(): void {
@@ -874,6 +895,13 @@ export class WhatsAppService implements WhatsAppApi {
     this.pairingRun = null;
     // Cancelled by stop: nothing failed, so nothing to report.
     if (this.stopped) return;
+    // What the pairing wrote was never registered: left there, it would make the next start, or
+    // the next link_account, log in with it and be refused (401) instead of pairing afresh.
+    try {
+      clearAuth(this.paths.authDir);
+    } catch (err) {
+      logError("link", err);
+    }
     this.setStatus("not_linked");
     this.lastError = describe(err);
     logError("link", err);
@@ -980,7 +1008,7 @@ export class WhatsAppService implements WhatsAppApi {
     const outage = this.linkWatch.hint();
     if (outage !== null) hints.push(outage);
     if (this.status === "logged_out") {
-      hints.push("WhatsApp unlinked this device: link it again with link_account, or run `npx wazap-mcp logout` then `npx wazap-mcp login`.");
+      hints.push("WhatsApp unlinked this device: call link_account (the number is optional: the last one is reused). It clears the dead session, keeps the history and the settings, and returns a pairing code for the user.");
     }
     const scheduled = this.schedule.statusHint();
     if (scheduled !== null) hints.push(scheduled);

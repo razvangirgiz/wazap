@@ -336,20 +336,23 @@ test("link_account hands back the code and the steps that go with it", async () 
   assert.match(result.structuredContent.next, /get_status/);
 });
 
-test("link_account on a linked account reports ALREADY_LINKED instead of pairing again", async () => {
+test("link_account on a connected account answers that nothing is to do, and never pairs again", async () => {
   const server = fakeServer();
+  let asked = 0;
   const wa = {
-    getStatus: () => ({ status: "connected" }),
+    getStatus: () => ({ status: "connected", account: { id: "40700000001@s.whatsapp.net", name: "Ana", number: "40700000001" } }),
     link: async () => {
+      asked += 1;
       throw new WazapError("ALREADY_LINKED", "The account is connected.", "Call get_status");
     },
   };
   registerTools(server, asToolSource(wa), { allowWrite: true });
 
-  const result = await server.tools.get("link_account").handler({ phone: "+15550100" });
-  assert.equal(result.isError, true);
-  assert.equal(result.structuredContent.error, "ALREADY_LINKED");
-  assert.equal(wa.getStatus().status, "connected", "the tool must not have touched the session");
+  const result = await server.tools.get("link_account").handler({});
+  assert.equal(result.isError, undefined);
+  assert.equal(result.structuredContent.already_linked, true);
+  assert.match(result.content[0].text, /Already linked as Ana/);
+  assert.equal(asked, 0, "the tool must not have touched the session");
 });
 
 test("get_status says write tools are missing and how to enable them", async () => {

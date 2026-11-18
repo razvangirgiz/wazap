@@ -649,11 +649,16 @@ const TOOLS: readonly ToolDef[] = [
   tool({
     name: "link_account",
     title: "Link a WhatsApp account",
-    description: `Pair wazap with the user's WhatsApp when get_status says not_linked, logged_out, session_corrupt or auth_failure. Show the user the code it returns: WhatsApp → Settings → Linked devices → Link a device → Link with phone number instead. Then poll get_status every 10 s until connected.`,
-    schema: { phone: z.string().describe("e.g. +15550100") },
+    description: `Pair wazap with the user's WhatsApp when get_status says not_linked, logged_out, session_corrupt or auth_failure: it clears the dead credentials (never the history or the settings) and returns a pairing code. Show the user the code: WhatsApp → Settings → Linked devices → Link a device → Link with phone number instead. Then poll get_status every 10 s until connected. Safe to call again: same code while linking, nothing while connected.`,
+    schema: { phone: z.string().optional().describe("International format, with the country code; omit to relink the number this account had") },
     write: false,
     rate: 2,
     handler: async ({ phone }, { wa }) => {
+      const now = wa.getStatus?.();
+      if (now?.status === "connected") {
+        const who = now.account === null ? "" : ` as ${now.account.name || now.account.number}`;
+        return ok(`# Already linked${who}\nNothing to do: the account is connected.`, { status: "connected", already_linked: true });
+      }
       const pairing = await wa.link(phone);
       const next =
         "Show the user the code and the steps, then call get_status every 10 seconds until it says connected.";

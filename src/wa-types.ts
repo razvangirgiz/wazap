@@ -1060,7 +1060,8 @@ export interface WhatsAppApi {
   /** What search ran across by words; optional, so a stand-in need not count. */
   searchCoverage?(chatId: string | undefined, opts?: { sinceMs?: number; untilMs?: number; tag?: string }): SearchCoverage | null;
   hasDraft(id: string): boolean;
-  link(phone: string): Promise<PairingInfo>;
+  /** `phone` absent: the number this account was last linked to, when one is known. */
+  link(phone?: string): Promise<PairingInfo>;
   /** With `private`, a last message from someone tagged #private, or in their chat, comes without its words. */
   listChats(filter: ChatFilter, limit: number, opts?: { private?: PrivateRule; cursor?: string; tag?: string }): Promise<Synced<ChatSummary[]> & { nextCursor?: string | null }>;
   readMessages(chatId: string, limit: number, before?: string, types?: MessageType[], window?: ReadWindow): Promise<ChatRead>;

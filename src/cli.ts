@@ -793,7 +793,7 @@ export async function runLogin(config: Config): Promise<void> {
   }
   const loginCode = linked ? config.loginCode : await chooseLoginCode(config);
   const resolved = { ...config, loginCode };
-  const askWrites = resolved.writesAnswer === null && !resolved.assumeYes && process.stdin.isTTY === true;
+  const askWrites = writesQuestion(resolved);
   const w = maybeWizard(linked ? 1 : loginWizardSteps(loginCode, askWrites));
   try {
     if (!w) say(banner());
@@ -902,7 +902,7 @@ export async function linkAndSync(
     process.off("SIGTERM", onTerminate);
   }
 
-  const askWrites = config.writesAnswer === null && !config.assumeYes && process.stdin.isTTY === true;
+  const askWrites = writesQuestion(config);
   if (w) {
     if (askWrites) {
       await w.next("Sending messages", [
@@ -1172,6 +1172,16 @@ function printLogout(outcome: LogoutOutcome): void {
 }
 
 /**
+ * Whether login ends by asking about writes: only a person at a terminal who
+ * typed nothing that answers it. A number passed with --phone is a scripted
+ * relink (an agent driving a pty, often), which keeps the setting as it is
+ * rather than blocking on a question nobody will answer.
+ */
+export function writesQuestion(config: Pick<Config, "writesAnswer" | "assumeYes" | "loginPhone">): boolean {
+  return config.writesAnswer === null && !config.assumeYes && config.loginPhone === undefined && process.stdin.isTTY === true;
+}
+
+/**
  * Writes stay off unless the user says otherwise, so a fresh link cannot message
  * anyone. A non-interactive login leaves the setting alone rather than guessing.
  */
@@ -1180,7 +1190,7 @@ export async function offerWrites(config: Config, w: Wizard | null = null): Prom
     applyWrites(config, config.writesAnswer);
     return;
   }
-  if (config.assumeYes || !process.stdin.isTTY) return;
+  if (!writesQuestion(config)) return;
   const question = "Allow the agent to send messages, react and manage chats? [y/N] ";
   const answer = w ? await w.prompt(question) : await ask(`${brand("?")} ${question}`);
   applyWrites(config, /^y(es)?$/i.test(answer.trim()));
