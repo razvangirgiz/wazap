@@ -32,7 +32,7 @@ import {
 } from "./recall/index.js";
 import { PAIRING_TIMEOUT_MS, linkSession, prettyCode, settledAccount, startPairing } from "./pairing.js";
 import { ACCOUNTS_STOP_MS, drainHttpEndpoints, drainWithin, HTTP_DRAIN_MS, runHttp, runStdio, startLoopbackEndpoint } from "./server.js";
-import { SUPERVISORS, fetchHealth, reinstallCommand, serviceHolding, serviceStopMs, tunnelsTo, type Supervisor } from "./service.js";
+import { SUPERVISORS, fetchHealth, readService, reinstallCommand, serviceHolding, serviceStopMs, tunnelsTo, type Supervisor } from "./service.js";
 import { applyWrites } from "./settings.js";
 import { storageReport, type StorageReport } from "./storage-status.js";
 import {
@@ -619,6 +619,13 @@ export async function runServe(config: Config): Promise<void> {
     if (role.kind === "bridge") {
       // Bridging onto a running daemon is the rare role; the MCP client stack
       // it needs stays out of the common path until then.
+      // Beside an installed service, the holder comes back after a restart or an update: wait for it and
+      // carry on (src/proxy.ts) rather than exit, which most agent harnesses never restart.
+      if (readService(config.dataDir) !== null) {
+        const { runProxy } = await import("./proxy.js");
+        await runProxy({ daemonFile: p.daemonFile });
+        return;
+      }
       const { runBridge } = await import("./bridge.js");
       await runBridge(role.daemon, p.daemonFile);
       return;
