@@ -9,7 +9,10 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "no
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
+import { StreamableHTTPError } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
+
 import { readDaemon } from "../dist/daemon.js";
+import { sessionLost } from "../dist/proxy.js";
 import { mcpClient, spawnWazap, waitFor } from "./helpers.mjs";
 
 function scene() {
@@ -130,4 +133,10 @@ test("a plain stdio start beside an installed service reconnects like the proxy 
   } finally {
     await s.close();
   }
+});
+
+test("only a 404 from the holder counts as a forgotten session, the one answer that is safe to send again", () => {
+  assert.equal(sessionLost(new StreamableHTTPError(404, "Session not found")), true);
+  assert.equal(sessionLost(new StreamableHTTPError(500, "boom")), false);
+  assert.equal(sessionLost(new Error("socket hang up")), false);
 });

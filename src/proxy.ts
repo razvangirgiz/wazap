@@ -16,7 +16,7 @@
  */
 
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
-import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
+import { StreamableHTTPClientTransport, StreamableHTTPError } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import {
@@ -123,6 +123,14 @@ export class UpstreamLink {
     if (up !== null && !this.stillCurrent(up)) this.drop(up, `the session holder (pid ${up.daemon.pid}) went away`);
   }
 
+  /**
+   * The holder no longer knows our session (it expired after a day idle, or was the idlest past the
+   * cap): a request it answered 404 never reached a tool, so it is safe to send again on a new one.
+   */
+  forget(up: Upstream): void {
+    this.drop(up, `the session holder (pid ${up.daemon.pid}) forgot this session`);
+  }
+
   private drop(up: Upstream, reason: string): void {
     if (this.current !== up) return;
     this.current = null;
@@ -187,6 +195,32 @@ export class UpstreamLink {
   }
 }
 
+/** The holder answered that it does not know the session: nothing was run. */
+export function sessionLost(err: unknown): boolean {
+  return err instanceof StreamableHTTPError && err.code === 404;
+}
+
+const failedOn = new WeakMap<object, Upstream>();
+
+/** One request on the live holder, sent again once on a new session when the holder had forgotten ours. */
+async function forward<T>(link: UpstreamLink, waitMs: number, send: (up: Upstream) => Promise<T>): Promise<{ up: Upstream; result: T } | null> {
+  for (let attempt = 0; ; attempt++) {
+    const up = await link.get(waitMs);
+    if (up === null) return null;
+    try {
+      return { up, result: await send(up) };
+    } catch (err) {
+      if (attempt === 0 && sessionLost(err)) {
+        link.forget(up);
+        continue;
+      }
+      // Kept beside the error, never on it: the upstream holds the loopback token.
+      if (typeof err === "object" && err !== null) failedOn.set(err, up);
+      throw err;
+    }
+  }
+}
+
 /** Serve stdio from whatever server holds the session in this data dir, across its restarts. */
 export async function runProxy(opts: ProxyOptions): Promise<void> {
   const waitMs = opts.waitMs ?? PROXY_WAIT_MS;
@@ -209,33 +243,32 @@ export async function runProxy(opts: ProxyOptions): Promise<void> {
     };
 
     server.setRequestHandler(ListToolsRequestSchema, async (req) => {
-      const up = await link.get(waitMs);
-      if (up === null) return { tools: [] };
-      return up.client.request({ method: "tools/list", params: req.params }, ListToolsResultSchema);
+      const done = await forward(link, waitMs, (up) => up.client.request({ method: "tools/list", params: req.params }, ListToolsResultSchema));
+      return done?.result ?? { tools: [] };
     });
     server.setRequestHandler(CallToolRequestSchema, async (req) => {
-      const up = await link.get(waitMs);
-      if (up === null) return NO_HOLDER();
       try {
-        return await up.client.request(
-          { method: "tools/call", params: bridgedCall(req.params, server.getClientVersion()?.name) },
-          CallToolResultSchema
+        const done = await forward(link, waitMs, (up) =>
+          up.client.request({ method: "tools/call", params: bridgedCall(req.params, server.getClientVersion()?.name) }, CallToolResultSchema)
         );
+        return done?.result ?? NO_HOLDER();
       } catch (err) {
         // The holder went mid-call: never replayed, since the call may have run.
-        if (link.daemon?.pid !== up.daemon.pid || !alive(up.daemon.pid)) return DROPPED();
+        const up = typeof err === "object" && err !== null ? failedOn.get(err) : undefined;
+        if (up !== undefined && (link.daemon?.pid !== up.daemon.pid || !alive(up.daemon.pid))) return DROPPED();
         throw err;
       }
     });
     server.setRequestHandler(ListPromptsRequestSchema, async (req) => {
-      const up = await link.get(waitMs);
-      if (up === null || !up.client.getServerCapabilities()?.prompts) return { prompts: [] };
-      return up.client.request({ method: "prompts/list", params: req.params }, ListPromptsResultSchema);
+      const done = await forward(link, waitMs, async (up) =>
+        up.client.getServerCapabilities()?.prompts ? up.client.request({ method: "prompts/list", params: req.params }, ListPromptsResultSchema) : { prompts: [] }
+      );
+      return done?.result ?? { prompts: [] };
     });
     server.setRequestHandler(GetPromptRequestSchema, async (req) => {
-      const up = await link.get(waitMs);
-      if (up === null) throw new Error("The wazap server is not running; retry in a few seconds.");
-      return up.client.request({ method: "prompts/get", params: req.params }, GetPromptResultSchema);
+      const done = await forward(link, waitMs, (up) => up.client.request({ method: "prompts/get", params: req.params }, GetPromptResultSchema));
+      if (done === null) throw new Error("The wazap server is not running; retry in a few seconds.");
+      return done.result;
     });
     return server;
   });
