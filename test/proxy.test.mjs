@@ -140,3 +140,21 @@ test("only a 404 from the holder counts as a forgotten session, the one answer t
   assert.equal(sessionLost(new StreamableHTTPError(500, "boom")), false);
   assert.equal(sessionLost(new Error("socket hang up")), false);
 });
+
+test("a proxy started before any holder tells its client to list the tools once one comes up", async () => {
+  const s = scene();
+  try {
+    const p = s.start(["proxy"], { WAZAP_PROXY_WAIT_MS: "300" });
+    let out = "";
+    p.child.stdout.on("data", (chunk) => (out += chunk.toString()));
+    const mcp = await session(p.child);
+    assert.deepEqual((await mcp.request("tools/list", {})).result.tools, [], "no holder yet: no tools, and no hang");
+    const a = await holder(s);
+    await waitFor(() => out.includes("notifications/tools/list_changed"), 15_000, "the proxy to announce the tools");
+    assert.ok((await mcp.request("tools/list", {})).result.tools.some((tool) => tool.name === "get_status"));
+    assert.notEqual(readFileSync(s.lockFile, "utf8").trim(), String(p.child.pid));
+    assert.equal(readDaemon(s.daemonFile).pid, a.child.pid);
+  } finally {
+    await s.close();
+  }
+});

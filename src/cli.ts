@@ -736,7 +736,14 @@ export async function runServe(config: Config): Promise<void> {
     // it stops cleanly and the supervisor starts the new code. A server run by hand only says so.
     if (readService(config.dataDir)?.port === port) {
       watchInstalledVersion({
-        onUpgrade: (installed) => shutdown(`an upgrade on disk (${WAZAP_VERSION} → ${installed}); the supervisor restarts it`),
+        onUpgrade: (installed) => {
+          // Only the supervisor's own process: one started by hand on the same port would not come back.
+          if (serviceHolding(config.dataDir, process.pid) === null) {
+            log(`wazap ${installed} is installed, this server runs ${WAZAP_VERSION}: restart it to pick it up`);
+            return;
+          }
+          shutdown(`an upgrade on disk (${WAZAP_VERSION} → ${installed}); the supervisor restarts it`);
+        },
       });
     }
     // Off-loopback binds get no sidecar: a bridge on this machine could not reach them.

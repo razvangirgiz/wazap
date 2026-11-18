@@ -71,8 +71,20 @@ test("a phone that does not answer the re-upload is tried later; one that cannot
   assert.equal(late.code, "MEDIA_UNAVAILABLE");
   assert.equal(classifyFailure(late).kind, "transient");
 
-  const refusing = { updateMediaMessage: async () => { throw new Error("media not found on the phone"); } };
+  const refusing = {
+    updateMediaMessage: async () => {
+      throw Object.assign(new Error("Failed to re-upload media (NOT_FOUND)"), { output: { statusCode: 404 } });
+    },
+  };
   const gone = await svc.reuploadMedia(refusing, sid, raw).catch((err) => err);
   assert.equal(gone.code, "MEDIA_UNAVAILABLE");
   assert.deepEqual(classifyFailure(gone), { kind: "permanent", reason: "media gone from WhatsApp and the phone" });
+
+  const dropped = {
+    updateMediaMessage: async () => {
+      throw Object.assign(new Error("Connection Closed"), { output: { statusCode: 428 } });
+    },
+  };
+  const closed = await svc.reuploadMedia(dropped, sid, raw).catch((err) => err);
+  assert.equal(classifyFailure(closed).kind, "transient", "a connection that closed under the request is tried again");
 });

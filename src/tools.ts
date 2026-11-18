@@ -748,10 +748,11 @@ const TOOLS: readonly ToolDef[] = [
     outputSchema: READ_OUTPUT,
     write: false,
     handler: async (given, outer) => {
-      const args = { ...given, ...(await readAliases(given, outer.wa)) };
       // A name ("Ana", "mama", "Bloc 12") is read as the one chat find_contact resolves it to, on its account.
-      const named = await chatByName(args.chat_id, args.account_id, outer);
+      const named = await chatByName(given.chat_id, given.account_id, outer);
       const ctx = named === undefined ? outer : { ...outer, wa: named.binding.wa, accountId: named.binding.id };
+      // after's message is looked up on the account the chat is read from.
+      const args = { ...given, ...(await readAliases(given, ctx.wa)) };
       const chat_id = named?.chatId ?? args.chat_id;
       const { limit, before, since, until, types, include_previews, hours, full_text } = args;
       const { wa } = ctx;

@@ -209,3 +209,18 @@ test("link_account without a number, and none known, asks for one instead of gue
     return true;
   });
 });
+
+test("a pairing WhatsApp accepted but whose reconnect failed keeps its credentials and connects with them", async () => {
+  const { svc, starts } = await unlinkedService();
+  const { sock, stop } = await linking(svc);
+  const creds = join(svc.paths.authDir, "creds.json");
+  mkdirSync(svc.paths.authDir, { recursive: true });
+  writeFileSync(creds, JSON.stringify({ me: { id: "40712345678:3@s.whatsapp.net", name: "Ana" }, account: { details: "c2lnbmVk" }, registered: true }));
+  try {
+    sock.ev.emit("connection.update", { connection: "close", lastDisconnect: { error: { output: { statusCode: 408 } } } });
+    await waitFor(() => starts.length === 1, 5_000, "the service to connect with the new credentials");
+    assert.equal(existsSync(creds), true, "credentials of a pairing that went through are never thrown away");
+  } finally {
+    stop();
+  }
+});

@@ -95,9 +95,8 @@ export class UpstreamLink {
   private connecting: Promise<Upstream | null> | null = null;
   private heartbeat: ReturnType<typeof setInterval> | null = null;
   private closed = false;
-  /** Holders seen, so the client hears of the tools again after a change of holder. */
-  private generation = 0;
-  onReconnect: (() => void) | null = null;
+  /** Set once the client's server exists: every connection after that tells the client to list the tools again. */
+  onConnect: (() => void) | null = null;
 
   constructor(
     private readonly daemonFile: string,
@@ -121,6 +120,12 @@ export class UpstreamLink {
   private check(): void {
     const up = this.current;
     if (up !== null && !this.stillCurrent(up)) this.drop(up, `the session holder (pid ${up.daemon.pid}) went away`);
+    // Waiting for a holder is not left to the next request: the client hears of the tools as soon as one is up.
+    if (this.current === null && this.connecting === null && !this.closed) {
+      this.connecting = this.tryConnect().finally(() => {
+        this.connecting = null;
+      });
+    }
   }
 
   /**
@@ -180,9 +185,8 @@ export class UpstreamLink {
       if (!this.stillCurrent(up)) this.drop(up, `lost the session holder (pid ${daemon.pid})`);
     };
     this.current = up;
-    this.generation += 1;
     log(`sharing the WhatsApp session held by pid ${daemon.pid} (wazap ${daemon.version})`);
-    if (this.generation > 1) this.onReconnect?.();
+    this.onConnect?.();
     return up;
   }
 
@@ -237,8 +241,9 @@ export async function runProxy(opts: ProxyOptions): Promise<void> {
       capabilities: { tools: { ...(caps.tools ?? {}), listChanged: true }, prompts: { ...(caps.prompts ?? {}) } },
       ...(first?.client.getInstructions() === undefined ? {} : { instructions: first.client.getInstructions() }),
     });
-    link.onReconnect = () => {
-      // A new holder may be a new version with other tools: the client asks for the list again.
+    link.onConnect = () => {
+      // A new holder may be a new version with other tools, or the first one after a start with none:
+      // the client asks for the list again.
       void server.sendToolListChanged().catch(() => {});
     };
 
