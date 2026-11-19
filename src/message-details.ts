@@ -23,6 +23,13 @@ function nativeButton(name: string, json: string | null | undefined): MessageBut
   return { ...label, kind: "unknown", name, ...(json == null ? {} : { parameters_json: json }) };
 }
 
+function nativeButtons(message: WAMessageContent["interactiveMessage"], buttons: MessageButton[]): void {
+  for (const button of message?.nativeFlowMessage?.buttons ?? []) {
+    buttons.push(nativeButton(button.name ?? "", button.buttonParamsJson));
+  }
+  for (const card of message?.carouselMessage?.cards ?? []) nativeButtons(card, buttons);
+}
+
 /** Full-message payload details; nothing here follows or executes sender-provided actions. */
 export function detailsOf(content: WAMessageContent | undefined): Details {
   if (!content) return {};
@@ -53,9 +60,7 @@ export function detailsOf(content: WAMessageContent | undefined): Details {
   const hydrated = template?.hydratedFourRowTemplate ?? template?.hydratedTemplate;
   const interactive = content.interactiveMessage ?? template?.interactiveMessageTemplate;
   const buttons: MessageButton[] = [];
-  for (const button of interactive?.nativeFlowMessage?.buttons ?? []) {
-    buttons.push(nativeButton(button.name ?? "", button.buttonParamsJson));
-  }
+  nativeButtons(interactive, buttons);
   for (const button of hydrated?.hydratedButtons ?? []) {
     if (button.urlButton) buttons.push({ kind: "url", label: button.urlButton.displayText ?? undefined, url: button.urlButton.url ?? "" });
     else if (button.callButton) buttons.push({ kind: "call", label: button.callButton.displayText ?? undefined, phone_number: button.callButton.phoneNumber ?? "" });

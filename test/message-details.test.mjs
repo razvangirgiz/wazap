@@ -60,6 +60,22 @@ test("button actions are typed sender data while compact text keeps labels only"
   assert.equal(fullMessageDetails(raw({ interactiveMessage: {} })).buttons, undefined);
 });
 
+test("carousel cards keep native-flow actions in card order including unknown payloads", () => {
+  const message = raw({ interactiveMessage: { carouselMessage: { cards: [
+    { nativeFlowMessage: { buttons: [flow("cta_url", { display_text: "Track", url: "https://example.com/order" })] } },
+    {},
+    { nativeFlowMessage: { buttons: [flow("cta_copy", { copy_code: "CODE" }), { name: "future", buttonParamsJson: "{" }] } },
+  ] } } });
+  assert.deepEqual(fullMessageDetails(message).buttons, [
+    { kind: "url", label: "Track", url: "https://example.com/order" },
+    { kind: "copy", code: "CODE" },
+    { kind: "unknown", name: "future", parameters_json: "{" },
+  ]);
+  assert.equal(fullMessageDetails(raw({ interactiveMessage: { carouselMessage: { cards: [] } } })).buttons, undefined);
+  assert.deepEqual(fullMessageDetails(raw({ templateMessage: { interactiveMessageTemplate: message.message.interactiveMessage } })).buttons,
+    fullMessageDetails(message).buttons);
+});
+
 test("hydrated templates and legacy buttons retain their destinations and reply ids", () => {
   const message = raw({ templateMessage: { hydratedTemplate: { hydratedContentText: "Hello", hydratedButtons: [
     { urlButton: { displayText: "Site", url: "https://example.com" } },
