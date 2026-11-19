@@ -115,6 +115,8 @@ test("contact search returns ambiguous candidates; exact message search ignores 
 });
 
 test("recent pages are bounded, repeatable, isolated by client and recheck deletion/private tags", async (t) => {
+  const now = Date.now();
+  t.mock.method(Date, "now", () => now);
   const f = fixture(t);
   f.arrive(ANA, "PRIVATE-ONE?");
   f.arrive(ANA, "PRIVATE-TWO?");
