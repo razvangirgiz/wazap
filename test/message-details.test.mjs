@@ -99,3 +99,37 @@ test("get_message exposes details in structured and text answers, never in compa
   const missing = await call("get_message", { message_id: `false_${PEER}_MISSING` });
   assert.equal(missing.isError, true);
 });
+
+test("sender relearning keeps search and list payloads compact but preserves full message details", async (t) => {
+  const { svc, sock } = connectedService(WhatsAppService, { prefix: "wazap-details-lid-", id: ME, name: "Owner" });
+  t.after(() => svc.stop());
+  const { call } = schemaCheckedTools(svc, { allowWrite: false });
+  const group = "120363000000000001@g.us";
+  const lid = "999888777666555@lid";
+  svc.sockClient.groupMetadata = async (id) => ({ id, subject: "Team", participants: [{ id: lid }] });
+  let reloads = 0;
+  const getMessage = svc.getMessage.bind(svc);
+  svc.getMessage = (...args) => { reloads++; return getMessage(...args); };
+  const contents = [
+    { locationMessage: { degreesLatitude: 46.771234567, degreesLongitude: 23.601234567, name: "needle" } },
+    { contactMessage: { displayName: "needle", vcard: "BEGIN:VCARD\nTEL:+15550123\nEND:VCARD" } },
+    { interactiveMessage: { body: { text: "needle" }, nativeFlowMessage: { buttons: [flow("cta_url", { display_text: "Open", url: "https://example.com" })] } } },
+  ];
+  sock.ev.emit("messages.upsert", { type: "notify", messages: contents.map((message, i) => ({
+    key: { remoteJid: group, participant: lid, fromMe: false, id: `L${i}` }, messageTimestamp: Math.floor(Date.now() / 1000) - 10 + i, message,
+  })) });
+  for (const [name, args] of [["search", { query: "needle", chat_id: group }], ["read_messages", { chat_id: group }]]) {
+    reloads = 0;
+    const answer = await call(name, args);
+    assert.equal(answer.isError, undefined);
+    assert.equal(answer.structuredContent.messages.length, 3);
+    if (name === "search") assert.ok(reloads >= 3, "unresolved LID senders reload through getMessage");
+    for (const message of answer.structuredContent.messages) {
+      for (const key of ["location", "contacts", "buttons"]) assert.equal(Object.hasOwn(message, key), false);
+    }
+  }
+  for (const [i, key] of ["location", "contacts", "buttons"].entries()) {
+    const answer = await call("get_message", { message_id: `false_${group}_L${i}` });
+    assert.ok(answer.structuredContent[key], "full payloads survive sender relearning");
+  }
+});
