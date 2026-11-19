@@ -114,9 +114,9 @@ test("the trigram path reports its cap too, when filters reject most candidates"
   const { db } = openTemp();
   db.messages.upsert(textMessage(OTHER, "WANTED", T0, "raport lunar"));
   for (let i = 1; i <= 600; i++) db.messages.upsert(textMessage(PEER, `R${i}`, T0 + i * 1000, `raport ${i}`));
-  const capped = db.search.text({ query: "raport", chat: OTHER, limit: 5, scanCap: 300 });
+  const capped = db.search.text({ query: "raport", from: OTHER, limit: 5, scanCap: 300 });
   assert.deepEqual([capped.items.length, capped.scanCapped, capped.hasMore], [0, true, true]);
-  const found = db.search.text({ query: "raport", chat: OTHER, limit: 5, before: capped.nextBefore });
+  const found = db.search.text({ query: "raport", from: OTHER, limit: 5, before: capped.nextBefore });
   assert.deepEqual(found.items.map((m) => m.keyId), ["WANTED"]);
   db.close();
 });
@@ -128,6 +128,37 @@ test("quotes and operators in a query are literal", () => {
   assert.deepEqual(db.search.text({ query: '"da" OR', limit: 5 }).items.map((m) => m.keyId), ["Q"]);
   assert.deepEqual(db.search.text({ query: "NEAR(", limit: 5 }).items, []);
   db.close();
+});
+
+test("a small chat searches only its own rows, with bounded resumable scans", async () => {
+  const { db, clock } = openTemp();
+  try {
+    db.messages.upsert(textMessage(OTHER, "WANTED", T0, "Ședință OR raport"));
+    db.messages.upsert(textMessage(OTHER, "VOICE", T0 + 1000, "[voice]", { transcript: "ședință nouă", fromMe: true }));
+    db.messages.upsert(textMessage(OTHER, "GONE", T0 + 2000, "ședință", { expiresAt: clock.now + 1 }));
+    db.messages.upsert(textMessage(OTHER, "UNRELATED", T0 + 3000, "altceva"));
+    for (let i = 1; i <= 600; i++) db.messages.upsert(textMessage(PEER, `R${i}`, T0 + (i + 4) * 1000, "ședință"));
+    clock.now++;
+    const search = (extra = {}) => db.search.text({ query: "SEDINTA", chat: OTHER, limit: 1, ...extra });
+    const capped = search({ scanCap: 1 });
+    assert.deepEqual([capped.items.length, capped.scanCapped, capped.hasMore], [0, true, true]);
+    const first = search({ before: capped.nextBefore });
+    assert.deepEqual(first.items.map((m) => m.keyId), ["VOICE"]);
+    const last = search({ before: first.nextBefore });
+    assert.deepEqual(last.items.map((m) => m.keyId), ["WANTED"]);
+    assert.equal(last.hasMore, false);
+    assert.deepEqual(search({ from: "me" }).items.map((m) => m.keyId), ["VOICE"]);
+    assert.deepEqual(search({ since: T0, until: T0 }).items.map((m) => m.keyId), ["WANTED"]);
+    assert.deepEqual(search({ query: "OR raport" }).items.map((m) => m.keyId), ["WANTED"]);
+    assert.deepEqual(search({ query: '" OR ' }).items, []);
+    assert.equal(search({ query: "absent" }).hasMore, false);
+    await db.learnLidPhone("456789012345@lid", OTHER);
+    assert.deepEqual(search({ chat: "456789012345@lid" }).items.map((m) => m.keyId), ["VOICE"]);
+    db.messages.delete(sid(true, OTHER, "VOICE"));
+    assert.deepEqual(search().items.map((m) => m.keyId), ["WANTED"]);
+  } finally {
+    db.close();
+  }
 });
 
 test("finding 12a: an empty or whitespace-only query names nothing and returns nothing", () => {

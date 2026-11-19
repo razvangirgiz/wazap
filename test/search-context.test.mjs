@@ -74,6 +74,35 @@ test("cached connector searches a paraphrase by meaning and reports the actual m
   assert.equal(answer.contexts[0].account_id, "default");
 });
 
+test("final search refresh batches mark queries and keeps the final privacy snapshot synchronous", async (t) => {
+  const f = await setup(t, false);
+  const ids = Array.from({ length: 20 }, (_, i) => f.arrive(PEER, `invoice ${i}`));
+  const sources = ids.map((id) => f.svc.views.viewOfStored(f.svc.db.messages.get(id)));
+  const connection = f.svc.db.connection;
+  const original = connection.all.bind(connection);
+  let markQueries = 0;
+  connection.all = (sql, ...args) => {
+    if (/FROM (reactions|votes|receipts)\b/.test(sql)) markQueries++;
+    return original(sql, ...args);
+  };
+  t.after(() => { connection.all = original; });
+  const fresh = f.svc.refreshSearch(sources, PEER, {}, "invoice");
+  assert.equal(typeof fresh.then, "undefined");
+  assert.equal(fresh.rows.length, 20);
+  assert.equal(markQueries, 3);
+  markQueries = 0;
+  assert.deepEqual(f.svc.refreshSearch([], PEER, {}, "invoice"), { rows: [], dropped: 0 });
+  assert.equal(markQueries, 0);
+  f.svc.db.messages.delete(ids[0]);
+  const edited = f.svc.db.messages.get(ids[1]);
+  f.svc.db.messages.upsert({ ...textMessage(PEER, edited.keyId, edited.ts, "changed"), editedAt: Date.now() });
+  const changed = f.svc.refreshSearch(sources, PEER, {}, "invoice");
+  assert.equal(changed.rows.length, 18);
+  assert.equal(changed.dropped, 2);
+  connection.all = () => { throw new Error("storage unavailable"); };
+  assert.throws(() => f.svc.refreshSearch(sources, PEER, {}, "invoice"), /storage unavailable/);
+});
+
 test("one search includes the answer in a later message and the subsequent correction, with exact chronological sources", async (t) => {
   const f = await setup(t);
   const question = f.arrive(PEER, "Unde descărcăm transportul de câini pentru Alba?");
