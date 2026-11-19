@@ -8,6 +8,15 @@
  */
 import { FOLD_RUNS } from "./fold-table.js";
 
+const REMOVED_DIACRITICS = new Set([
+  0x0300, 0x0301, 0x0302, 0x0303, 0x0304, 0x0306, 0x0307, 0x0308, 0x0309, 0x030a, 0x030b, 0x030c,
+  0x030f, 0x0311, 0x031b, 0x0323, 0x0324, 0x0325, 0x0326, 0x0327, 0x0328, 0x032d, 0x032e, 0x0330, 0x0331,
+]);
+
+function removedDiacritic(cp: number): boolean {
+  return cp >= 0x0300 && cp <= 0x0331 && REMOVED_DIACRITICS.has(cp);
+}
+
 const BMP = new Uint16Array(0x10000);
 const ASTRAL = new Map<number, number>();
 for (let cp = 0; cp < BMP.length; cp++) BMP[cp] = cp;
@@ -47,6 +56,7 @@ export function foldText(text: string): string {
   let out = "";
   for (const ch of text) {
     const cp = ch.codePointAt(0)!;
+    if (removedDiacritic(cp)) continue;
     const folded = foldCodePoint(cp);
     out += folded === cp ? ch : String.fromCodePoint(folded);
   }
@@ -85,6 +95,7 @@ export function foldedMatcher(foldedNeedle: string): (text: string) => boolean {
           i++;
         }
       }
+      if (removedDiacritic(cp)) continue;
       const folded = foldCodePoint(cp);
       window[pos] = folded;
       pos = pos + 1 === m ? 0 : pos + 1;

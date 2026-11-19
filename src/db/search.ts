@@ -61,10 +61,12 @@ export class Search {
       if (chat === null) return null;
       const chatIds = this.identity.chatIdsOf(chat);
       const inChat = chatCondition(chatIds);
-      chatSize = this.c.get<{ n: number }>(
-        "SELECT coalesce(sum(visible), 0) AS n FROM chats WHERE id IN (SELECT value FROM json_each(?))",
-        JSON.stringify(chatIds)
-      )!.n;
+      if (filter.from === undefined) {
+        chatSize = this.c.get<{ n: number }>(
+          "SELECT coalesce(sum(visible), 0) AS n FROM chats WHERE id IN (SELECT value FROM json_each(?))",
+          JSON.stringify(chatIds)
+        )!.n;
+      }
       conditions.push(inChat.sql);
       params.push(...inChat.params);
       narrowsRows = true;
@@ -269,7 +271,9 @@ export class Search {
 
   /** The short-query path: recent messages newest first, matched in JavaScript, at most `cap` of them. */
   scanIds(query: string, filter: ResolvedFilter, upper: number, want: number, cap: number): { ids: number[]; cappedAt: number | null } {
-    const matches = foldedMatcher(foldText(query));
+    const folded = foldText(query);
+    if (folded.length === 0) return { ids: [], cappedAt: null };
+    const matches = foldedMatcher(folded);
     const ids: number[] = [];
     let examined = 0;
     const rows = this.c
