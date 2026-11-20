@@ -3,6 +3,37 @@ import type { MessageButton, MessageView, SharedContact } from "./wa-types.js";
 
 type Details = Pick<MessageView, "location" | "contacts" | "buttons">;
 
+function base64Bytes(value: string): number | undefined {
+  const compact = value.replace(/[ \t]/g, "");
+  if (!/^[A-Za-z0-9+/_-]+={0,2}$/.test(compact)) return undefined;
+  const digits = compact.replace(/=+$/, "").length;
+  return digits % 4 === 1 ? undefined : Math.floor(digits * 6 / 8);
+}
+
+export function vcardForText(vcard: string): string {
+  return vcard.replace(/^[^\r\n]+(?:(?:\r\n|\r|\n)[ \t][^\r\n]*)*/gm, (line) => {
+    const unfolded = line.replace(/(?:\r\n|\r|\n)[ \t]/g, "");
+    const property = /^((?:[\w-]+\.)?([\w-]+)((?:;(?:[^":]|"[^"]*")*)?)):(.*)$/.exec(unfolded);
+    if (property === null) return line;
+    const [, header = "", name = "", params = "", value = ""] = property;
+    const image = name.toUpperCase() === "PHOTO";
+    const base64 = params.match(/;(?:[^";]|"[^"]*")*/g)?.some((param) => /^;ENCODING=(?:b|base64|"b"|"base64")$/i.test(param));
+    const data = /^data:([^,]*),(.*)$/i.exec(value);
+    if (!image && !base64 && data === null) return line;
+    let bytes: number | undefined;
+    if (data === null) {
+      bytes = base64Bytes(value);
+    } else {
+      const metadata = data[1]!;
+      const payload = data[2]!;
+      bytes = /;base64$/i.test(metadata)
+        ? base64Bytes(payload.replace(/%([\da-f]{2})/gi, (_, hex: string) => String.fromCharCode(parseInt(hex, 16))))
+        : Buffer.byteLength(payload) - (payload.match(/%[\da-f]{2}/gi)?.length ?? 0) * 2;
+    }
+    return `${header}:[${image ? "image" : "binary data"} omitted${bytes === undefined ? "" : `, ${bytes} bytes`}]`;
+  });
+}
+
 function number(value: number | null | undefined): number | undefined {
   return typeof value === "number" && Number.isFinite(value) ? value : undefined;
 }
