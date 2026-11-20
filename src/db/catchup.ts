@@ -94,7 +94,8 @@ export class CatchupMarks {
    *
    * `from` is where that summary's window really started, kept for `repeat`
    * in place of the mark it replaces: a summary that read by time (a first
-   * run, or a mark too old to read from) passes `{ seq: null, at }`, so the
+   * run) passes `{ seq: null, at }`; an expired mark passes `{ seq: 0, at }`
+   * to retain handled cutoffs, so the
    * repeat gives what it gave rather than everything since the old mark.
    */
   advance(

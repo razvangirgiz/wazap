@@ -362,7 +362,7 @@ export function resolveWindow(db: AccountDb, client: string, spec: CatchupWindow
       const floorAt = now - WINDOW_FLOOR_MS;
       const sinceAt = Math.max(floorAt, repeat.afterAt ?? repeat.throughAt - FIRST_RUN_MS);
       return {
-        sinceId: idBefore(repeat.afterSeq === null ? sinceAt : Math.max(floorAt, repeat.throughAt - WINDOW_FLOOR_MS)),
+        sinceId: idBefore(repeat.afterSeq === null || repeat.afterSeq === 0 ? sinceAt : Math.max(floorAt, repeat.throughAt - WINDOW_FLOOR_MS)),
         untilId,
         afterSeq: repeat.afterSeq ?? -1,
         untilSeq: repeat.throughSeq,
