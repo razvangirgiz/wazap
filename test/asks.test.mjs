@@ -14,7 +14,7 @@ test("automated delivery and verification notices are not personal asks", () => 
     "Your verification code is 123456. Did you request this?",
     "Codul de autentificare este 123456. Nu l-ai cerut?",
   ]) assert.equal(wordsAsk(words), false, words);
-  for (const words of ["Poți ridica un colet pentru mine?", "Can you send me the tracking number?", "Can we meet at 1234 Main Street?", ""]) {
+  for (const words of ["Poți ridica un colet pentru mine?", "Can you send me the tracking number?", "Can we meet at 1234 Main Street?", "Can you pin the 2026 holiday schedule?", ""]) {
     assert.equal(wordsAsk(words), words !== "", words);
   }
 });

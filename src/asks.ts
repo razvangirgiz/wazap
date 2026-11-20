@@ -41,7 +41,7 @@ function asksByWords(text: string): boolean {
 
 function automatedNotification(text: string): boolean {
   const words = text.normalize("NFD").replace(/\p{M}/gu, "").toLowerCase();
-  const code = /\b(?:pin|otp|awb|tracking|verification code|security code|cod(?:ul)?(?: de)? (?:verificare|autentificare|securitate))\b/.test(words);
+  const code = /\b(?:pin|otp|awb|tracking(?: number)?|verification code|security code|cod(?:ul)?(?: de)? (?:verificare|autentificare|securitate))\b[\s:#-]{0,4}(?:(?:is|este|e)\s+)?(?:\d{4,}|[a-z]*\d[a-z\d]{7,})\b/.test(words);
   const delivery = /\b(?:colet(?:ul)?|livrare|curier|parcel|delivery|shipment)\b/.test(words);
   const identifier = /\b\d{4,}\b|\b[A-Z]*\d[A-Z\d]{7,}\b/i.test(text);
   return identifier && (code || (delivery && /https?:\/\//i.test(text)));
