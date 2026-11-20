@@ -16,7 +16,7 @@
  * - "hours" and an ISO "since" are explicit windows by time and never move the mark.
  * Nothing sent more than 14 days ago is in any window.
  *
- * Inside it, each chat starts later still: after the user's own last word
+ * Except on the first run (which includes recent activity), each chat starts later still: after the user's own last word
  * there and after the newest message the phone reported read (what "missed"
  * means). Nothing reads a message above the window's tops, the id and the
  * stored_seq fixed when the digest started, so the digest is what the account
@@ -25,7 +25,7 @@
  * `waiting` is not bound by the window: an ask stays until the user answers,
  * marks it handled, or it is 14 days old, as the service's getUnanswered has it.
  */
-import { readsAsAsk } from "./asks.js";
+import { closesAsk, readsAsAsk } from "./asks.js";
 import type { AccountDb, ChatRecord, DigestMedia, DigestSpan, InboundAggregate, TailMessage, WindowMessage } from "./db/index.js";
 import { idLowerBound, OPENED_MEDIA, secondOfId } from "./db/index.js";
 import { PRIVATE_TAG, privatePeople } from "./private-contacts.js";
@@ -321,6 +321,7 @@ export function openAsk(db: AccountDb, chat: ChatRecord, reads: AskReads): OpenA
   const tail = db.digest.inboundTail(reads.family, reads.span(after), reads.now, ASK_SCAN);
   if (tail.length === 0) return null;
   const group = chat.kind === "group";
+  if (!group && closesAsk(tail[0]!.transcript ?? tail[0]!.text)) return null;
   const ask = tail.find((message) => (!group || (message.flags & 1) !== 0 || message.quotedFromMe) && readsAsAsk(message));
   if (ask === undefined) return null;
   const mark = reads.handled.get(chat.id);
@@ -467,11 +468,6 @@ function quotable(message: TailMessage): boolean {
   return text !== "" && !/^\[[^\]]*\]$/.test(text);
 }
 
-/** Signals that move an ask up: a sum, or a day or an hour to keep. */
-function urgent(signals: readonly Signal[]): boolean {
-  return signals.includes("amount") || signals.includes("date") || signals.includes("time");
-}
-
 const byJid = (a: { chat: string }, b: { chat: string }): number => (a.chat < b.chat ? -1 : a.chat > b.chat ? 1 : 0);
 
 function emptySkips(): CatchupScan["skipped"] {
@@ -578,7 +574,9 @@ export async function scanCatchup(db: AccountDb, host: CatchupHost, request: Cat
    * (`low`), the user's own last word, the phone's read mark.
    */
   const floorOf = (chat: ChatRecord, low: number): number =>
-    Math.max(sinceId, low - 1, ownThrough(chat) ?? 0, chat.readThroughId === null ? 0 : Math.min(chat.readThroughId, untilId));
+    window.basis === "first_run"
+      ? Math.max(sinceId, low - 1)
+      : Math.max(sinceId, low - 1, ownThrough(chat) ?? 0, chat.readThroughId === null ? 0 : Math.min(chat.readThroughId, untilId));
   const skipped = emptySkips();
   const excludedChats = new Set<number>();
   const noteExcluded = (chat: ChatRecord, messages: number): void => {
@@ -988,9 +986,7 @@ export async function scanCatchup(db: AccountDb, host: CatchupHost, request: Cat
     }))
     .sort(
       (a, b) =>
-        Number(a.group) - Number(b.group) ||
-        Number(urgent(b.signals)) - Number(urgent(a.signals)) ||
-        a.ask.ts - b.ask.ts ||
+        b.ask.ts - a.ask.ts ||
         byJid(a, b)
     );
 
@@ -1033,9 +1029,9 @@ export async function scanCatchup(db: AccountDb, host: CatchupHost, request: Cat
         ...(entry.group === undefined ? {} : { group: host.nameOf(entry.group) }),
       };
     })
+    .filter((entry) => !entry.calledBack && !entry.wroteAfter)
     .sort(
       (a, b) =>
-        Number(a.calledBack || a.wroteAfter) - Number(b.calledBack || b.wroteAfter) ||
         b.count - a.count ||
         b.lastTs - a.lastTs ||
         byJid(a, b)

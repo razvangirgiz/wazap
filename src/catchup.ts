@@ -185,8 +185,6 @@ const callsEntry = z.object({
   video: z.literal(true).optional(),
   last: z.string().describe("When the last one rang"),
   group: z.string().optional().describe("The group the call rang in"),
-  called_back: z.literal(true).optional(),
-  wrote_after: z.literal(true).optional(),
 });
 
 const directEntry = z.object({
@@ -652,8 +650,6 @@ function itemsOf(view: AccountView, multi: boolean, now: number, ids = false): I
         ...(entry.video ? { video: true } : {}),
         last: clock(entry.lastTs, now),
         ...(entry.group ? { group: entry.group } : {}),
-        ...(entry.calledBack ? { called_back: true } : {}),
-        ...(entry.wroteAfter ? { wrote_after: true } : {}),
       }),
     });
   });

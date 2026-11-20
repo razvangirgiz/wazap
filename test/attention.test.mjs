@@ -337,7 +337,7 @@ test("the recent-messages read fetches the metadata of the groups that spoke, so
   assert.equal(fetches, 1, "and asks once");
 });
 
-test("catch_up's waiting lists the people whose ask is still open, people first, and nobody else", async () => {
+test("catch_up's waiting lists open asks freshest first and nobody else", async () => {
   const { call, arrive } = setup();
   const hour = 3_600_000;
   arrive(ANA, "poți să-mi trimiți contractul?", { at: Date.now() - 50 * hour });
@@ -364,9 +364,9 @@ test("catch_up's waiting lists the people whose ask is still open, people first,
   assert.deepEqual(
     all.structuredContent.waiting.map((entry) => [entry.name, entry.group === true, entry.q, entry.n ?? 1]),
     [
-      ["Ana", false, "poți să-mi trimiți contractul?", 1],
-      ["40700000005", false, "?", 2],
       ["120363000000000001@g.us", true, "@Răzvan tu?", 2],
+      ["40700000005", false, "?", 2],
+      ["Ana", false, "poți să-mi trimiți contractul?", 1],
     ],
     "thanks, an answered ask, a link's query string and a 20-day-old ask wait on nobody"
   );

@@ -30,8 +30,23 @@ const QUESTION = new RegExp(
 
 /** A question mark, a request word or a sentence opened by a question word, once links are taken out: a link's query string is not a question. */
 export function wordsAsk(text: string): boolean {
+  if (automatedNotification(text)) return false;
   const words = text.replace(/https?:\/\/\S+/g, "");
   return words.includes("?") || REQUEST.test(words) || QUESTION.test(words);
+}
+
+function automatedNotification(text: string): boolean {
+  const words = text.normalize("NFD").replace(/\p{M}/gu, "").toLowerCase();
+  const code = /\b(?:pin|otp|awb|tracking|verification code|security code|cod(?:ul)?(?: de)? (?:verificare|autentificare|securitate))\b/.test(words);
+  const delivery = /\b(?:colet(?:ul)?|livrare|curier|parcel|delivery|shipment)\b/.test(words);
+  const identifier = /\b\d{4,}\b|\b[A-Z]*\d[A-Z\d]{7,}\b/i.test(text);
+  return identifier && (code || (delivery && /https?:\/\//i.test(text)));
+}
+
+export function closesAsk(text: string): boolean {
+  if (text.includes("?") || REQUEST.test(text)) return false;
+  const words = text.normalize("NFD").replace(/\p{M}/gu, "").toLowerCase();
+  return /\b(?:cand (?:o sa |voi )?am ocazia|te contactez|te anunt|revin eu|nu mai (?:e nevoie|trebuie)|i(?:['’]ll| will) (?:contact you|get back to you|let you know)|no longer needed|never mind|all sorted)\b/.test(words);
 }
 
 /**

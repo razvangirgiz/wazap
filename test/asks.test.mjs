@@ -5,7 +5,28 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
-import { readsAsAsk, wordsAsk } from "../dist/asks.js";
+import { closesAsk, readsAsAsk, wordsAsk } from "../dist/asks.js";
+
+test("automated delivery and verification notices are not personal asks", () => {
+  for (const words of [
+    "Coletul cu AWB 123456789 ajunge azi. PIN 4321. https://curier.ro/track Ți-ai schimbat planurile?",
+    "Your delivery tracking 123456789 is ready. Change plans? https://courier.test",
+    "Your verification code is 123456. Did you request this?",
+    "Codul de autentificare este 123456. Nu l-ai cerut?",
+  ]) assert.equal(wordsAsk(words), false, words);
+  for (const words of ["Poți ridica un colet pentru mine?", "Can you send me the tracking number?", "Can we meet at 1234 Main Street?", ""]) {
+    assert.equal(wordsAsk(words), words !== "", words);
+  }
+});
+
+test("closing and deferral statements close asks without swallowing a new request", () => {
+  for (const words of ["Cand o sa am ocazia, te contactez sa probam.", "I'll get back to you when I can.", "Nu mai e nevoie, mulțumesc."]) {
+    assert.equal(closesAsk(words), true, words);
+  }
+  for (const words of ["", "Mulțumesc", "I'll get back to you. Can you send me the file?", "te anunț, dar trimite factura"]) {
+    assert.equal(closesAsk(words), false, words);
+  }
+});
 
 test("a question word asks when it opens a sentence, after at most a connective, and not inside a statement", () => {
   for (const words of ["când ajungi", "Cand vii", "Ok, când vii", "am ajuns. unde esti", "Cât costă", "and where are you", "when do you land"]) {

@@ -297,17 +297,18 @@ asked. `approx_tokens` is counted the same way. The order:
 1. **Waiting on you**: people whose last word asks for something — a question
    mark, a request word, a sentence that opens with a question word ("când
    ajungi", not "not sure when I get it"), or a voice note nobody has heard,
-   never "ok, thanks" or a link — with the ask quoted (a voice note by its
+   never "ok, thanks", automated delivery/code notifications or a link — with the ask quoted (a voice note by its
    transcript) and what they said after it. In a group only when the user was @-mentioned or replied
    to. An ask stays until the user answers, `remember` marks it `handled` or it
-   is two weeks old; `new` marks one that
+   is two weeks old. A later closing or deferral statement removes it too.
+   Freshest asks come first, by the ask's time; `new` marks one that
    arrived since the last catch-up, and an answered call after the ask says
    it may have been dealt with by phone.
 2. **Mentions, replies and polls**: group messages that @-mention the user or
    reply to them, and polls and events they have not answered, muted and
    archived groups included.
-3. **Missed calls**, one line per person, saying whether the user called back
-   or wrote since.
+3. **Missed calls**, one line per person, excluding calls the user called back
+   or wrote after.
 4. **People** who wrote: saved contacts first, then by how much they wrote;
    business accounts, numbers nobody saved and muted chats last. One quote
    each, with the media counted by kind.
@@ -320,9 +321,10 @@ A footer names the voice notes nobody transcribed (for `get_media`) —
 only counting those of someone tagged `#private` — and counts what was left
 out: chats tagged `#no-catchup`, groups the user left, channels and broadcast
 lists. Signals — an amount, a date, a time, an address,
-a link, a question — are marked on the entries shown, and an ask carrying a sum
-or a date moves up. A chat's messages count as missed only after the user's
-own last message there and after what their phone already read.
+a link, a question — are marked on the entries shown. A chat's messages count
+as missed only after the user's own last message there and after what their
+phone already read. On the first catch-up, People and groups instead include
+the last 24 hours of inbound activity, even if already read or answered.
 
 **Ids.** `ids: true` adds what an agent acts on next, so it needs no
 `read_messages` first: every entry that quotes a message carries its
