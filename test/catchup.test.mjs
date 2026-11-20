@@ -273,6 +273,19 @@ test("local sessions keep a mark per MCP client: its name, or the one a bridge p
   for (const client of [claude, cursor, bridge, oauth]) await client.close();
 });
 
+test("previous preserves late-arriving messages after an empty first catch-up", async (t) => {
+  const { svc, arrive } = account();
+  t.after(() => svc.stop());
+  const { call } = toolsOf(svc);
+  await call("catch_up");
+  assert.equal(svc.db.catchup.get("local").throughSeq, 0);
+  arrive(ANA, "filed late", { at: Date.now() - 2 * HOUR });
+  const result = await call("catch_up");
+  assert.deepEqual(chatsOf(result, "direct"), [ANA]);
+  const replay = await call("catch_up", { since: "previous" });
+  assert.deepEqual(replay.structuredContent.direct, result.structuredContent.direct);
+});
+
 test('since: "previous" repeats the last complete catch-up, hours and an ISO since never move the mark', async () => {
   const { svc, arrive } = account();
   const { call } = toolsOf(svc);
@@ -367,7 +380,7 @@ test('since: "previous" after a catch-up that found the mark expired repeats the
   const previous = await call("catch_up", { since: "previous" });
   assert.deepEqual([previous.structuredContent.window.basis, previous.structuredContent.window.hours], ["previous", 24]);
   assert.deepEqual(chatsOf(previous, "direct"), [ELA], "the ten-day-old message was not in it, and is not now");
-  assert.deepEqual(svc.db.catchup.repeat("local").afterSeq, 0, "an expired window preserves handled cutoffs on replay");
+  assert.deepEqual(svc.db.catchup.repeat("local").afterSeq, -1, "an expired window preserves handled cutoffs on replay");
 });
 
 test("two catch-ups of one client racing each other move the mark once: the one that finishes second does not", async () => {

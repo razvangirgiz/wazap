@@ -745,7 +745,7 @@ export class AccountReads {
         at: window.at,
         expectedThroughSeq: window.expected,
         // What the window read from: the mark, or a time when it read by time (a first run, a mark too old).
-        from: { seq: window.afterSeq < 0 ? (window.basis === "first_run" ? null : 0) : window.afterSeq, at: window.sinceAt },
+        from: { seq: window.afterSeq < 0 ? (window.basis === "first_run" ? null : -1) : window.afterSeq, at: window.sinceAt },
       }).advanced,
     }));
   }

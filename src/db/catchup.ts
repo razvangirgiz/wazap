@@ -94,7 +94,7 @@ export class CatchupMarks {
    *
    * `from` is where that summary's window really started, kept for `repeat`
    * in place of the mark it replaces: a summary that read by time (a first
-   * run) passes `{ seq: null, at }`; an expired mark passes `{ seq: 0, at }`
+   * run) passes `{ seq: null, at }`; an expired mark passes `{ seq: -1, at }`
    * to retain handled cutoffs, so the
    * repeat gives what it gave rather than everything since the old mark.
    */
@@ -109,7 +109,7 @@ export class CatchupMarks {
     if (expected !== undefined && expected !== null) checkCount(expected, "expectedThroughSeq");
     const from = options.from;
     if (from !== undefined) {
-      if (from.seq !== null) checkCount(from.seq, "from.seq");
+      if (from.seq !== null && from.seq !== -1) checkCount(from.seq, "from.seq");
       checkCount(from.at, "from.at");
     }
     // The window a repeat gives: `from` when given, the mark being replaced otherwise.
