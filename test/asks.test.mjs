@@ -22,10 +22,10 @@ test("automated delivery and verification notices are not personal asks", () => 
 });
 
 test("closing and deferral statements close asks without swallowing a new request", () => {
-  for (const words of ["Cand o sa am ocazia, te contactez sa probam.", "I'll get back to you when I can.", "Nu mai e nevoie, mulțumesc."]) {
+  for (const words of ["Cand o sa am ocazia, te contactez sa probam.", "Ok, când o să am ocazia, te contactez", "Bine, când o să am ocazia, te contactez", "Sigur, când o să am ocazia, te contactez", "I'll get back to you when I can.", "Nu mai e nevoie, mulțumesc."]) {
     assert.equal(closesAsk(words), true, words);
   }
-  for (const words of ["", "Mulțumesc", "I'll get back to you. Can you send me the file?", "I'll get back to you. When do you arrive", "te anunț, dar trimite factura"]) {
+  for (const words of ["", "Mulțumesc", "I'll get back to you. Can you send me the file?", "I'll get back to you. When do you arrive", "Ok, când o să am ocazia, te contactez. Când ajungi", "te anunț, dar trimite factura"]) {
     assert.equal(closesAsk(words), false, words);
   }
 });

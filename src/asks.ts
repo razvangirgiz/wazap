@@ -51,7 +51,7 @@ function automatedNotification(text: string): boolean {
 
 export function closesAsk(text: string): boolean {
   const words = text.normalize("NFD").replace(/\p{M}/gu, "").toLowerCase();
-  const withoutDeferral = words.replace(/^\s*cand (?:o sa |voi )?am ocazia\s*,?\s*/, "");
+  const withoutDeferral = words.replace(/\bcand (?:o sa |voi )?am ocazia\s*,?\s*/g, "");
   if (asksByWords(withoutDeferral)) return false;
   return /\b(?:cand (?:o sa |voi )?am ocazia|te contactez|te anunt|revin eu|nu mai (?:e nevoie|trebuie)|i(?:['’]ll| will) (?:contact you|get back to you|let you know)|no longer needed|never mind|all sorted)\b/.test(words);
 }
