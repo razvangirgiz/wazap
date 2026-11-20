@@ -9,7 +9,7 @@
 
 import { WazapError } from "../errors.js";
 import type { WAMessage, WASocket } from "baileys";
-import { wordsAsk } from "../asks.js";
+import { closesAsk, wordsAsk } from "../asks.js";
 import {
   GROUP_META_MAX,
   GROUP_META_MS,
@@ -707,6 +707,7 @@ export class AccountReads {
     }
     if (theirs.length === 0) return null;
     const group = isGroupId(jid);
+    if (!group && closesAsk(this.views.viewTextOf(theirs[theirs.length - 1]!))) return null;
     const ask = [...theirs].reverse().find((message) => {
       const raw = this.views.rawOf(message);
       if (group && (raw === null || !this.addressesMe(raw))) return false;
@@ -744,7 +745,7 @@ export class AccountReads {
         at: window.at,
         expectedThroughSeq: window.expected,
         // What the window read from: the mark, or a time when it read by time (a first run, a mark too old).
-        from: { seq: window.afterSeq < 0 ? null : window.afterSeq, at: window.sinceAt },
+        from: { seq: window.afterSeq < 0 ? (window.basis === "first_run" ? null : -1) : window.afterSeq, at: window.sinceAt },
       }).advanced,
     }));
   }

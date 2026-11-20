@@ -30,8 +30,30 @@ const QUESTION = new RegExp(
 
 /** A question mark, a request word or a sentence opened by a question word, once links are taken out: a link's query string is not a question. */
 export function wordsAsk(text: string): boolean {
+  if (automatedNotification(text)) return false;
+  return asksByWords(text);
+}
+
+function asksByWords(text: string): boolean {
   const words = text.replace(/https?:\/\/\S+/g, "");
   return words.includes("?") || REQUEST.test(words) || QUESTION.test(words);
+}
+
+function automatedNotification(text: string): boolean {
+  const words = text.normalize("NFD").replace(/\p{M}/gu, "").toLowerCase();
+  const keyword = String.raw`(?:pin|otp|awb|tracking(?: number)?|verification code|security code|cod(?:ul)?(?: tau)?(?: de)? (?:verificare|autentificare|securitate))`;
+  const identifierPattern = String.raw`(?:\d{4,}|[a-z]*\d[a-z\d]{7,})`;
+  const code = new RegExp(String.raw`\b(?:${keyword}\b[\s:#-]{0,4}(?:(?:is|este|e)\s+)?${identifierPattern}|${identifierPattern}\b[\s:#-]{0,4}(?:(?:is|este|e)\s+)?(?:your\s+)?${keyword})\b`).test(words);
+  const delivery = /\b(?:colet(?:ul)?|livrare|curier|parcel|delivery|shipment)\b/.test(words);
+  const identifier = /\b\d{4,}\b|\b[A-Z]*\d[A-Z\d]{7,}\b/i.test(text);
+  return identifier && (code || (delivery && /https?:\/\//i.test(text)));
+}
+
+export function closesAsk(text: string): boolean {
+  const words = text.normalize("NFD").replace(/\p{M}/gu, "").toLowerCase();
+  const withoutDeferral = words.replace(/\bcand (?:o sa |voi )?am ocazia\s*,?\s*/g, "");
+  if (asksByWords(withoutDeferral)) return false;
+  return /\b(?:cand (?:o sa |voi )?am ocazia|te contactez|te anunt|revin eu|nu mai (?:e nevoie|trebuie)|i(?:['’]ll| will) (?:contact you|get back to you|let you know)|no longer needed|never mind|all sorted)\b/.test(words);
 }
 
 /**

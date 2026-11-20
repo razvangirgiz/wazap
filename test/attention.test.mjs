@@ -337,7 +337,18 @@ test("the recent-messages read fetches the metadata of the groups that spoke, so
   assert.equal(fetches, 1, "and asks once");
 });
 
-test("catch_up's waiting lists the people whose ask is still open, people first, and nobody else", async () => {
+test("getUnanswered and catch_up agree when the newest inbound message closes an ask", async (t) => {
+  const { svc, call, arrive } = setup();
+  t.after(() => svc.stop());
+  const hour = 3_600_000;
+  arrive(ANA, "Can you send the file?", { at: Date.now() - 3 * hour });
+  arrive(ANA, "I'll get back to you", { at: Date.now() - 2 * hour });
+  arrive(DAN, "I'll get back to you. When do you arrive", { at: Date.now() - hour });
+  assert.deepEqual((await svc.getUnanswered(0, 24, 10)).data.map((entry) => entry.chat_id), [DAN]);
+  assert.deepEqual((await call("catch_up")).structuredContent.waiting.map((entry) => entry.chat), [DAN]);
+});
+
+test("catch_up's waiting lists open asks freshest first and nobody else", async () => {
   const { call, arrive } = setup();
   const hour = 3_600_000;
   arrive(ANA, "poți să-mi trimiți contractul?", { at: Date.now() - 50 * hour });
@@ -364,9 +375,9 @@ test("catch_up's waiting lists the people whose ask is still open, people first,
   assert.deepEqual(
     all.structuredContent.waiting.map((entry) => [entry.name, entry.group === true, entry.q, entry.n ?? 1]),
     [
-      ["Ana", false, "poți să-mi trimiți contractul?", 1],
-      ["40700000005", false, "?", 2],
       ["120363000000000001@g.us", true, "@Răzvan tu?", 2],
+      ["40700000005", false, "?", 2],
+      ["Ana", false, "poți să-mi trimiți contractul?", 1],
     ],
     "thanks, an answered ask, a link's query string and a 20-day-old ask wait on nobody"
   );

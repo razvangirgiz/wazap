@@ -93,6 +93,41 @@ function errorOf(result) {
 }
 const chatsOf = (result, section) => result.structuredContent[section].map((entry) => entry.chat);
 
+test("automated notices and closed asks leave waiting but remain in People", async (t) => {
+  const { svc, arrive } = account();
+  t.after(() => svc.stop());
+  const { call } = toolsOf(svc);
+  arrive(ANA, "Coletul AWB 123456789 PIN 4321 https://curier.ro Ai schimbat planurile?", { at: Date.now() - HOUR });
+  arrive(DAN, "Vii sa probam?", { at: Date.now() - 3 * HOUR });
+  arrive(DAN, "Cand o sa am ocazia, te contactez sa probam.", { at: Date.now() - HOUR });
+  arrive(ELA, "Vii azi?", { at: Date.now() - HOUR });
+  const result = await call("catch_up");
+  assert.deepEqual(chatsOf(result, "waiting"), [ELA]);
+  assert.deepEqual(new Set(chatsOf(result, "direct")), new Set([ANA, DAN]));
+});
+
+test("first catch-up includes the last 24 hours of People and groups even if read or answered", async (t) => {
+  const { svc, arrive, phoneRead } = account();
+  t.after(() => svc.stop());
+  const { call } = toolsOf(svc);
+  arrive(ANA, "recent activity", { at: Date.now() - 2 * HOUR });
+  arrive(ANA, "answered", { fromMe: true, at: Date.now() - HOUR });
+  const read = arrive(GROUP, "recent group activity", { participant: DAN, at: Date.now() - 2 * HOUR });
+  phoneRead(GROUP, read);
+  arrive(ELA, "old activity", { at: Date.now() - 25 * HOUR });
+  const result = await call("catch_up");
+  assert.equal(result.structuredContent.window.basis, "first_run");
+  assert.deepEqual(chatsOf(result, "direct"), [ANA]);
+  assert.deepEqual(chatsOf(result, "groups"), [GROUP]);
+  const replay = await call("catch_up", { since: "previous" });
+  assert.equal(replay.structuredContent.window.basis, "previous");
+  assert.deepEqual(replay.structuredContent.direct, result.structuredContent.direct);
+  assert.deepEqual(replay.structuredContent.groups, result.structuredContent.groups);
+  const next = await call("catch_up");
+  assert.deepEqual(chatsOf(next, "direct"), []);
+  assert.deepEqual(chatsOf(next, "groups"), []);
+});
+
 test("catch-up keeps the address marker when a later word contains a combining mark", async (t) => {
   const { svc, arrive } = account();
   t.after(() => svc.stop());
@@ -238,6 +273,19 @@ test("local sessions keep a mark per MCP client: its name, or the one a bridge p
   for (const client of [claude, cursor, bridge, oauth]) await client.close();
 });
 
+test("previous preserves late-arriving messages after an empty first catch-up", async (t) => {
+  const { svc, arrive } = account();
+  t.after(() => svc.stop());
+  const { call } = toolsOf(svc);
+  await call("catch_up");
+  assert.equal(svc.db.catchup.get("local").throughSeq, 0);
+  arrive(ANA, "filed late", { at: Date.now() - 2 * HOUR });
+  const result = await call("catch_up");
+  assert.deepEqual(chatsOf(result, "direct"), [ANA]);
+  const replay = await call("catch_up", { since: "previous" });
+  assert.deepEqual(replay.structuredContent.direct, result.structuredContent.direct);
+});
+
 test('since: "previous" repeats the last complete catch-up, hours and an ISO since never move the mark', async () => {
   const { svc, arrive } = account();
   const { call } = toolsOf(svc);
@@ -313,12 +361,16 @@ test("since is an ISO date or time from the last 14 days, and no window, previou
 });
 
 test('since: "previous" after a catch-up that found the mark expired repeats the 24 h it gave, not everything since the old mark', async () => {
-  const { svc, arrive } = account();
+  const { svc, arrive, phoneRead } = account();
   const { call } = toolsOf(svc);
   arrive(DAN, "mesaj vechi", { at: Date.now() - 60 * 24 * HOUR });
   svc.db.catchup.advance("local", svc.db.digest.storedTop(), { at: Date.now() - 60 * 24 * HOUR });
   arrive(ANA, "ceva de acum zece zile", { at: Date.now() - 10 * 24 * HOUR });
   arrive(ELA, "azi", { at: Date.now() - HOUR });
+  const read = arrive(BOT, "already read", { at: Date.now() - 2 * HOUR });
+  phoneRead(BOT, read);
+  arrive(ANA, "already answered", { at: Date.now() - 2 * HOUR });
+  arrive(ANA, "done", { fromMe: true, at: Date.now() - HOUR });
 
   const expired = await call("catch_up");
   assert.equal(expired.structuredContent.window.basis, "mark_expired");
@@ -328,7 +380,7 @@ test('since: "previous" after a catch-up that found the mark expired repeats the
   const previous = await call("catch_up", { since: "previous" });
   assert.deepEqual([previous.structuredContent.window.basis, previous.structuredContent.window.hours], ["previous", 24]);
   assert.deepEqual(chatsOf(previous, "direct"), [ELA], "the ten-day-old message was not in it, and is not now");
-  assert.deepEqual(svc.db.catchup.repeat("local").afterSeq, null, "the window it covered was by time");
+  assert.deepEqual(svc.db.catchup.repeat("local").afterSeq, -1, "an expired window preserves handled cutoffs on replay");
 });
 
 test("two catch-ups of one client racing each other move the mark once: the one that finishes second does not", async () => {
@@ -418,7 +470,7 @@ test("a chat's window starts after the user's own reply and after what the phone
   assert.equal(direct[ELA], undefined, "a chat read to the end on the phone is not missed");
 });
 
-test("waiting: people before groups, amounts and dates rise, a voice note is quoted by its transcript, an unheard one is named in the footer", async () => {
+test("waiting: freshest asks first, a voice note is quoted by its transcript, an unheard one is named in the footer", async () => {
   const { svc, arrive, mention } = account();
   const { call } = toolsOf(svc);
   arrive(GROUP, mention("@Răzvan vii mâine?"), { participant: DAN, at: Date.now() - 30 * HOUR });
@@ -435,17 +487,17 @@ test("waiting: people before groups, amounts and dates rise, a voice note is quo
   const waiting = result.structuredContent.waiting;
   assert.deepEqual(
     waiting.map((entry) => entry.chat),
-    [ELA, DAN, ANA, BOT, GROUP],
-    "people first; a sum or a day before the rest; then the oldest wait"
+    [DAN, BOT, ELA, ANA, GROUP],
+    "ask time, newest first, regardless of signals or chat kind"
   );
-  assert.equal(waiting[0].q, "Vii duminică la cina de la 7? Vine și tanti Lia");
-  assert.equal(waiting[0].voice, "0:42");
-  assert.equal(waiting[0].transcribed, true);
-  assert.equal(waiting[1].sig, "amount,date,question");
-  assert.equal(waiting[1].q, "îmi dai înapoi 200 lei până vineri?");
-  assert.equal(waiting[1].then, "și nu uita de cina de duminică, vine și tanti Lia.", "what followed the ask rides with it");
+  assert.equal(waiting[2].q, "Vii duminică la cina de la 7? Vine și tanti Lia");
+  assert.equal(waiting[2].voice, "0:42");
+  assert.equal(waiting[2].transcribed, true);
+  assert.equal(waiting[0].sig, "amount,date,question");
+  assert.equal(waiting[0].q, "îmi dai înapoi 200 lei până vineri?");
+  assert.equal(waiting[0].then, "și nu uita de cina de duminică, vine și tanti Lia.", "what followed the ask rides with it");
   assert.match(text(result), /— "îmi dai înapoi 200 lei până vineri\?" · then "și nu uita de cina de duminică, vine și tanti Lia\." ·/);
-  assert.equal(waiting[3].q, undefined, "an unheard voice note has nothing to quote");
+  assert.equal(waiting[1].q, undefined, "an unheard voice note has nothing to quote");
   assert.equal(waiting[4].from, "Dan");
   assert.deepEqual(result.structuredContent.footer.voice_untranscribed, [unheard]);
   assert.match(text(result), /Voice notes not transcribed \(1\)/);
@@ -463,8 +515,8 @@ test("waiting holds an ask across catch-ups until it is answered, handled or two
   assert.equal(first.structuredContent.waiting[0].new, undefined);
   arrive(ELA, "când ajungi?", { at: Date.now() - 1000 });
   const second = await call("catch_up");
-  assert.deepEqual(chatsOf(second, "waiting"), [ANA, ELA]);
-  assert.equal(second.structuredContent.waiting[1].new, true);
+  assert.deepEqual(chatsOf(second, "waiting"), [ELA, ANA]);
+  assert.equal(second.structuredContent.waiting[0].new, true);
 
   await call("remember", { chat_id: ANA, handled: true });
   arrive(ELA, "la 6", { fromMe: true, at: Date.now() });
@@ -504,8 +556,6 @@ test("an answered call after an ask says it may have been dealt with; missed cal
     result.structuredContent.missed_calls.map((entry) => [entry.name, entry.n, entry.called_back ?? false, entry.wrote_after ?? false]),
     [
       ["Dan", 2, false, false],
-      ["Ela", 1, true, false],
-      ["Hermi", 1, false, true],
     ]
   );
   assert.deepEqual(chatsOf(result, "direct"), [], "a call is not a message among people");
@@ -910,8 +960,8 @@ test("with several accounts, #private and #no-catchup filed on one account hold 
   assert.deepEqual(
     result.structuredContent.waiting.map((entry) => [entry.acct, entry.name, entry.private]),
     [
-      ["work", "Ana", true],
       ["work", "Echipa", true],
+      ["work", "Ana", true],
     ]
   );
   assert.deepEqual(result.structuredContent.footer.accounts.find((entry) => entry.acct === "work").skipped, { no_catchup: { chats: 1, messages: 1 } });
@@ -939,8 +989,8 @@ test("a catch-up of one account by account_id reads #private and #no-catchup fil
   assert.deepEqual(
     result.structuredContent.waiting.map((entry) => [entry.name, entry.private]),
     [
-      ["Ana", true],
       ["Echipa", true],
+      ["Ana", true],
     ]
   );
   assert.deepEqual(result.structuredContent.footer.skipped, { no_catchup: { chats: 1, messages: 1 } });
