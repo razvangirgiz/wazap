@@ -337,7 +337,7 @@ export interface SharedContact {
 }
 
 /** Sender-provided data, never permission to open a URL, call or execute an action. */
-export type MessageButton = { label?: string } & (
+export type MessageButton = { label?: string; card?: { index: number; title?: string; subtitle?: string; body?: string } } & (
   | { kind: "url"; url: string }
   | { kind: "call"; phone_number: string }
   | { kind: "copy"; code: string }

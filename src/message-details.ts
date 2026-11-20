@@ -23,11 +23,18 @@ function nativeButton(name: string, json: string | null | undefined): MessageBut
   return { ...label, kind: "unknown", name, ...(json == null ? {} : { parameters_json: json }) };
 }
 
-function nativeButtons(message: WAMessageContent["interactiveMessage"], buttons: MessageButton[]): void {
+function nativeButtons(message: WAMessageContent["interactiveMessage"], buttons: MessageButton[], card?: MessageButton["card"]): void {
   for (const button of message?.nativeFlowMessage?.buttons ?? []) {
-    buttons.push(nativeButton(button.name ?? "", button.buttonParamsJson));
+    buttons.push({ ...nativeButton(button.name ?? "", button.buttonParamsJson), ...(card === undefined ? {} : { card }) });
   }
-  for (const card of message?.carouselMessage?.cards ?? []) nativeButtons(card, buttons);
+  for (const [index, item] of (message?.carouselMessage?.cards ?? []).entries()) {
+    nativeButtons(item, buttons, {
+      index,
+      ...(item.header?.title == null ? {} : { title: item.header.title }),
+      ...(item.header?.subtitle == null ? {} : { subtitle: item.header.subtitle }),
+      ...(item.body?.text == null ? {} : { body: item.body.text }),
+    });
+  }
 }
 
 /** Full-message payload details; nothing here follows or executes sender-provided actions. */

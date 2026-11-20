@@ -67,13 +67,28 @@ test("carousel cards keep native-flow actions in card order including unknown pa
     { nativeFlowMessage: { buttons: [flow("cta_copy", { copy_code: "CODE" }), { name: "future", buttonParamsJson: "{" }] } },
   ] } } });
   assert.deepEqual(fullMessageDetails(message).buttons, [
-    { kind: "url", label: "Track", url: "https://example.com/order" },
-    { kind: "copy", code: "CODE" },
-    { kind: "unknown", name: "future", parameters_json: "{" },
+    { kind: "url", label: "Track", url: "https://example.com/order", card: { index: 0 } },
+    { kind: "copy", code: "CODE", card: { index: 2 } },
+    { kind: "unknown", name: "future", parameters_json: "{", card: { index: 2 } },
   ]);
   assert.equal(fullMessageDetails(raw({ interactiveMessage: { carouselMessage: { cards: [] } } })).buttons, undefined);
   assert.deepEqual(fullMessageDetails(raw({ templateMessage: { interactiveMessageTemplate: message.message.interactiveMessage } })).buttons,
     fullMessageDetails(message).buttons);
+});
+
+test("carousel actions distinguish identical labels by card index and sender-provided text", () => {
+  const button = flow("cta_url", { display_text: "Shop now", url: "https://example.com/shop" });
+  const message = raw({ interactiveMessage: { carouselMessage: { cards: [
+    { header: { title: "Product A", subtitle: "Size S" }, body: { text: "First offer" }, nativeFlowMessage: { buttons: [button] } },
+    { header: { title: "Product B" }, nativeFlowMessage: { buttons: [button] } },
+  ] } } });
+  const buttons = fullMessageDetails(message).buttons;
+  assert.deepEqual(buttons.map(({ label }) => label), ["Shop now", "Shop now"]);
+  assert.deepEqual(buttons.map(({ card }) => card), [
+    { index: 0, title: "Product A", subtitle: "Size S", body: "First offer" },
+    { index: 1, title: "Product B" },
+  ]);
+  assert.equal(Object.hasOwn(fullMessageDetails(raw({ interactiveMessage: { nativeFlowMessage: { buttons: [button] } } })).buttons[0], "card"), false);
 });
 
 test("hydrated templates and legacy buttons retain their destinations and reply ids", () => {
