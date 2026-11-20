@@ -257,6 +257,20 @@ test("vague questions with several chats ask for clarification without pretendin
   assert.equal(assessSearch("cod ZXQ-123", []).state, "no_matches");
 });
 
+test("quoted combining-mark queries agree between small-chat scans and global FTS", async (t) => {
+  const f = await setup(t, false);
+  for (const text of ["câine", "ca\u0302ine", "ca\u0302inele", "cain\u0302", "cain\u0302ele", "ca\u0302", "ca\u0302l"]) f.arrive(PEER, text);
+  for (const literal of ["câine", "ca\u0302ine", "cain\u0302", "ca\u0302"]) {
+    const query = JSON.stringify(literal);
+    const indexed = await f.call("search", { query });
+    const scoped = await f.call("search", { query, chat_id: PEER });
+    assert.equal(indexed.isError, undefined);
+    assert.equal(scoped.isError, undefined);
+    assert.deepEqual(scoped.structuredContent.messages.map((m) => m.message_id), indexed.structuredContent.messages.map((m) => m.message_id), query);
+    if (literal === "ca\u0302") assert.equal(scoped.structuredContent.messages.length, 0, "two folded characters cannot form an FTS trigram");
+  }
+});
+
 test("conversation windows cannot revive a live LID twin of a retracted canonical message during a fold", async () => {
   const { db } = openTemp({ chunkSize: 1 });
   try {

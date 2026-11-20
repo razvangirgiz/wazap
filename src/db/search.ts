@@ -234,7 +234,8 @@ export class Search {
     cap: number,
     matchExpression = ftsPhrase(match)
   ): { ids: number[]; cappedAt: number | null } {
-    if (filter.chatSize !== undefined && filter.chatSize <= SCOPED_SCAN_MAX && matchExpression === ftsPhrase(match)) {
+    if (filter.chatSize !== undefined && filter.chatSize <= SCOPED_SCAN_MAX && matchExpression === ftsPhrase(match)
+      && [...foldSearchText(match)].length >= MIN_TRIGRAM_CHARS) {
       return this.scanIds(match, filter, upper, want, cap);
     }
     const ids: number[] = [];

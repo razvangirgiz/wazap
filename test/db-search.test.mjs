@@ -210,6 +210,10 @@ test("scoped scans agree with FTS for decomposed and precomposed diacritics in b
     }
     assert.equal(foldText("\u0302"), "\u0302");
     assert.deepEqual(db.search.text({ query: "\u0302", chat: PEER, limit: 10 }).items, []);
+    for (const query of ["ca\u0302", "c\u0302\u0302"]) {
+      assert.deepEqual(db.search.text({ query, limit: 10 }).items, []);
+      assert.deepEqual(db.search.text({ query, chat: PEER, limit: 10 }).items, [], "a folded query too short for a trigram keeps FTS semantics");
+    }
   } finally {
     db.close();
   }
