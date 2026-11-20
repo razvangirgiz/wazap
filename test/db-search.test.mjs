@@ -208,7 +208,7 @@ test("scoped scans agree with FTS for decomposed and precomposed diacritics in b
       assert.deepEqual(scoped, indexed, query);
       for (const text of ["câine", "ca\u0302ine"]) assert.equal(foldedIncludes(text, foldText(query)), true);
     }
-    assert.equal(foldText("\u0302"), "");
+    assert.equal(foldText("\u0302"), "\u0302");
     assert.deepEqual(db.search.text({ query: "\u0302", chat: PEER, limit: 10 }).items, []);
   } finally {
     db.close();
@@ -217,7 +217,7 @@ test("scoped scans agree with FTS for decomposed and precomposed diacritics in b
 
 test("scan folding removes exactly the combining marks removed by the trigram tokenizer", async () => {
   const { DatabaseSync } = await import("node:sqlite");
-  const { foldText, foldedIncludes } = await import("../dist/db/fold.js");
+  const { foldSearchText, foldedIncludes } = await import("../dist/db/fold.js");
   const db = new DatabaseSync(":memory:");
   try {
     db.exec("CREATE VIRTUAL TABLE t USING fts5(text, tokenize = 'trigram remove_diacritics 1')");
@@ -226,7 +226,7 @@ test("scan folding removes exactly the combining marks removed by the trigram to
     const removed = new Set(db.prepare("SELECT rowid FROM t WHERE t MATCH ?").all('"abc"').map((r) => r.rowid));
     for (let cp = 0x0300; cp < 0x0370; cp++) {
       const text = `a${String.fromCodePoint(cp)}bc`;
-      assert.equal(foldText(text) === "abc", removed.has(cp), `U+${cp.toString(16)}`);
+      assert.equal(foldSearchText(text) === "abc", removed.has(cp), `U+${cp.toString(16)}`);
       assert.equal(foldedIncludes(text, "abc"), removed.has(cp), `U+${cp.toString(16)}`);
     }
   } finally {

@@ -43,7 +43,7 @@ export function foldCodePoint(cp: number): number {
   return cp < 0x10000 ? BMP[cp]! : (ASTRAL.get(cp) ?? cp);
 }
 
-export function foldText(text: string): string {
+function fold(text: string, stripMarks: boolean): string {
   let plain = true;
   for (let i = 0; i < text.length; i++) {
     const unit = text.charCodeAt(i);
@@ -56,11 +56,20 @@ export function foldText(text: string): string {
   let out = "";
   for (const ch of text) {
     const cp = ch.codePointAt(0)!;
-    if (removedDiacritic(cp)) continue;
+    if (stripMarks && removedDiacritic(cp)) continue;
     const folded = foldCodePoint(cp);
     out += folded === cp ? ch : String.fromCodePoint(folded);
   }
   return out;
+}
+
+export function foldText(text: string): string {
+  return fold(text, false);
+}
+
+/** Search-token folding also discards SQLite's removable combining marks. */
+export function foldSearchText(text: string): string {
+  return fold(text, true);
 }
 
 /**
@@ -69,7 +78,7 @@ export function foldText(text: string): string {
  * matched against the needle's. What the short-query scan runs on every row.
  */
 export function foldedMatcher(foldedNeedle: string): (text: string) => boolean {
-  const needle = Array.from(foldedNeedle, (ch) => ch.codePointAt(0)!);
+  const needle = Array.from(foldedNeedle, (ch) => ch.codePointAt(0)!).filter((cp) => !removedDiacritic(cp));
   const m = needle.length;
   if (m === 0) return () => true;
   const last = needle[m - 1]!;
