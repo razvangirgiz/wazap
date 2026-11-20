@@ -31,6 +31,10 @@ const QUESTION = new RegExp(
 /** A question mark, a request word or a sentence opened by a question word, once links are taken out: a link's query string is not a question. */
 export function wordsAsk(text: string): boolean {
   if (automatedNotification(text)) return false;
+  return asksByWords(text);
+}
+
+function asksByWords(text: string): boolean {
   const words = text.replace(/https?:\/\/\S+/g, "");
   return words.includes("?") || REQUEST.test(words) || QUESTION.test(words);
 }
@@ -44,8 +48,9 @@ function automatedNotification(text: string): boolean {
 }
 
 export function closesAsk(text: string): boolean {
-  if (text.includes("?") || REQUEST.test(text)) return false;
   const words = text.normalize("NFD").replace(/\p{M}/gu, "").toLowerCase();
+  const withoutDeferral = words.replace(/^\s*cand (?:o sa |voi )?am ocazia\s*,?\s*/, "");
+  if (asksByWords(withoutDeferral)) return false;
   return /\b(?:cand (?:o sa |voi )?am ocazia|te contactez|te anunt|revin eu|nu mai (?:e nevoie|trebuie)|i(?:['’]ll| will) (?:contact you|get back to you|let you know)|no longer needed|never mind|all sorted)\b/.test(words);
 }
 

@@ -23,7 +23,7 @@ test("closing and deferral statements close asks without swallowing a new reques
   for (const words of ["Cand o sa am ocazia, te contactez sa probam.", "I'll get back to you when I can.", "Nu mai e nevoie, mulțumesc."]) {
     assert.equal(closesAsk(words), true, words);
   }
-  for (const words of ["", "Mulțumesc", "I'll get back to you. Can you send me the file?", "te anunț, dar trimite factura"]) {
+  for (const words of ["", "Mulțumesc", "I'll get back to you. Can you send me the file?", "I'll get back to you. When do you arrive", "te anunț, dar trimite factura"]) {
     assert.equal(closesAsk(words), false, words);
   }
 });
