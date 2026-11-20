@@ -78,6 +78,8 @@ export interface CatchupWindow {
   expected: number | null;
   /** The instant the digest started; expiry, mutes and ages are judged against it. */
   at: number;
+  /** Repeating a window originally opened without a stored-sequence mark. */
+  repeatByTime?: boolean;
 }
 
 export type CatchupWindowSpec =
@@ -367,6 +369,7 @@ export function resolveWindow(db: AccountDb, client: string, spec: CatchupWindow
         sinceAt,
         untilAt: Math.max(sinceAt, repeat.throughAt),
         basis: "previous",
+        repeatByTime: repeat.afterSeq === null,
         advance: false,
         expected: null,
         at: now,
@@ -574,7 +577,7 @@ export async function scanCatchup(db: AccountDb, host: CatchupHost, request: Cat
    * (`low`), the user's own last word, the phone's read mark.
    */
   const floorOf = (chat: ChatRecord, low: number): number =>
-    window.basis === "first_run"
+    window.basis === "first_run" || window.repeatByTime === true
       ? Math.max(sinceId, low - 1)
       : Math.max(sinceId, low - 1, ownThrough(chat) ?? 0, chat.readThroughId === null ? 0 : Math.min(chat.readThroughId, untilId));
   const skipped = emptySkips();

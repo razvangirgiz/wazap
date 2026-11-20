@@ -119,6 +119,10 @@ test("first catch-up includes the last 24 hours of People and groups even if rea
   assert.equal(result.structuredContent.window.basis, "first_run");
   assert.deepEqual(chatsOf(result, "direct"), [ANA]);
   assert.deepEqual(chatsOf(result, "groups"), [GROUP]);
+  const replay = await call("catch_up", { since: "previous" });
+  assert.equal(replay.structuredContent.window.basis, "previous");
+  assert.deepEqual(replay.structuredContent.direct, result.structuredContent.direct);
+  assert.deepEqual(replay.structuredContent.groups, result.structuredContent.groups);
   const next = await call("catch_up");
   assert.deepEqual(chatsOf(next, "direct"), []);
   assert.deepEqual(chatsOf(next, "groups"), []);
