@@ -168,7 +168,9 @@ export class AccountReads {
         from = rows.at(-1)!.key;
       }
       const people = this.identity.privateScope(opts.private);
-      const chats = selected.map(({ chat }) => this.views.chatSummary(chat, chat.proto === null ? null : decodeChatBytes(chat.proto), people));
+      const lastIds = selected.flatMap(({ chat }) => chat.lastMessageId === null ? [] : [chat.lastMessageId]);
+      const lastMessages = new Map(db.messages.byIds(lastIds).map((message) => [message.id, message]));
+      const chats = selected.map(({ chat }) => this.views.chatSummary(chat, chat.proto === null ? null : decodeChatBytes(chat.proto), people, lastMessages));
       const nextCursor = more && selected.length > 0 ? Buffer.from(JSON.stringify([listing, ...selected.at(-1)!.key])).toString("base64url") : null;
       return { ...this.host.synced(chats), nextCursor };
     });

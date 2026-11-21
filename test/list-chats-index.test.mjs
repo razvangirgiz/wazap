@@ -112,6 +112,33 @@ test("every filter and page size lists the same chats in the same order as the l
   assert.deepEqual(await pagesOf(svc, "all", 1, "client"), listedBefore(svc, "all", tagged), "a tag scopes the same list");
 });
 
+test("page hydration batches last messages without changing hidden-message fallbacks or private summaries", async (t) => {
+  const { svc, sock } = connectedService(WhatsAppService, { prefix: "wazap-list-hydration-", id: ME, name: "Owner", config: { persistHistory: true } });
+  t.after(() => svc.stop());
+  await seed(sock, svc);
+  let selected = svc.db.identity.chatsByActivity({ archived: false, limit: 100 });
+  const withMessages = selected.filter(({ chat }) => chat.lastMessageId !== null);
+  assert.ok(withMessages.length > 2);
+  svc.db.connection.run("UPDATE messages SET expires_at = ? WHERE id = ?", Date.now() - 1, withMessages[0].chat.lastMessageId);
+  svc.db.connection.run("UPDATE messages SET deleted_at = ?, text = NULL, transcript = NULL, transcript_info = NULL, raw = NULL WHERE id = ?", Date.now(), withMessages[1].chat.lastMessageId);
+  selected = svc.db.identity.chatsByActivity({ archived: false, limit: 100 });
+  const original = svc.db.messages.byIds.bind(svc.db.messages);
+  const ids = selected.flatMap(({ chat }) => chat.lastMessageId === null ? [] : [chat.lastMessageId]);
+  const hydrated = new Map(original(ids).map((message) => [message.id, message]));
+  for (const people of [null, { chat: () => true, sender: () => true }, { chat: () => false, sender: () => true }]) {
+    for (const { chat } of selected) {
+      const described = chat.proto === null ? null : decodeChat(Buffer.from(chat.proto).toString("base64"));
+      assert.deepEqual(svc.views.chatSummary(chat, described, people, hydrated), svc.views.chatSummary(chat, described, people));
+    }
+  }
+  const expected = selected.map(({ chat }) => svc.views.chatSummary(chat, chat.proto === null ? null : decodeChat(Buffer.from(chat.proto).toString("base64")), svc.identity.privateScope()));
+  const calls = [];
+  svc.db.messages.byIds = (ids, options) => { calls.push([...ids]); return original(ids, options); };
+  assert.deepEqual((await svc.listChats("all", 100)).data, expected);
+  assert.deepEqual(calls, [ids]);
+  assert.deepEqual((await svc.listChats("all", 20, { tag: "absent" })).data, []);
+});
+
 test("a cursor from the list built in memory carries on where it left off", async (t) => {
   const { svc, sock } = connectedService(WhatsAppService, { prefix: "wazap-list-index-", id: ME, name: "Owner", config: { persistHistory: true } });
   t.after(() => svc.stop());

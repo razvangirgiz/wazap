@@ -227,6 +227,13 @@ async function mainPhase() {
   time("recent 7d (50)", 50, () => db.messages.recent({ since: NOW - 7 * DAY, limit: 50 }));
   time("list chats (50)", 50, () => db.messages.listChats({ limit: 50 }));
   time("chat list page by activity (21)", 50, () => db.identity.chatsByActivity({ after: null, archived: false, limit: 21 }));
+  const hydrationChats = db.identity.chatsByActivity({ after: null, archived: false, limit: 50 }).map(({ chat }) => chat);
+  time("chat last messages (50, per-chat)", 200, () => hydrationChats.map((chat) => chat.lastMessageId === null ? null : (db.messages.byIds([chat.lastMessageId])[0] ?? db.messages.lastVisible(chat.id))));
+  time("chat last messages (50, batched)", 200, () => {
+    const ids = hydrationChats.flatMap((chat) => chat.lastMessageId === null ? [] : [chat.lastMessageId]);
+    const messages = new Map(db.messages.byIds(ids).map((message) => [message.id, message]));
+    return hydrationChats.map((chat) => chat.lastMessageId === null ? null : (messages.get(chat.lastMessageId) ?? db.messages.lastVisible(chat.id)));
+  });
   time("waiting 14d", 50, () => db.messages.waiting({ since: NOW - 14 * DAY, until: NOW, limit: 100 }));
   time("coverage (account)", 50, () => db.messages.coverage());
   time("counts", 10, () => db.counts(), 1);
