@@ -98,20 +98,21 @@ export function laterRows(
   window: readonly StoredMessage[],
   opts: SearchOptions,
   people: PrivatePeople | null,
-  author?: string
+  author?: string,
+  candidates?: readonly StoredMessage[],
+  stemsFor: (message: StoredMessage) => Set<string> = subjectStems
 ): StoredMessage[] {
-  const subject = subjectStems(anchor);
+  const subject = stemsFor(anchor);
   if (subject.size < 2) return [];
   const authorIds = author === undefined ? [] : db.identity.contactIdsOf(author);
   const shown = new Set(window.map((row) => row.id));
-  return db.messages
-    .later(anchor.sid, {
+  return (candidates ?? db.messages.later(anchor.sid, {
       limit: LATER_SCAN,
       ...(opts.sinceMs === undefined ? {} : { since: opts.sinceMs }),
       ...(opts.untilMs === undefined ? {} : { until: opts.untilMs }),
-    })
+    }))
     .filter((row) => !shown.has(row.id) && allowedContext(row, people, authorIds))
-    .filter((row) => [...subjectStems(row)].filter((stem) => subject.has(stem)).length >= 2)
+    .filter((row) => [...stemsFor(row)].filter((stem) => subject.has(stem)).length >= 2)
     .slice(0, LATER_SHOWN)
     .reverse();
 }
@@ -125,7 +126,47 @@ export function laterOf(
   people: PrivatePeople | null,
   author?: string
 ): Map<number, StoredMessage[]> {
-  return new Map(hits.slice(0, CONTEXT_SHOWN).map((hit) => [hit.id, laterRows(db, hit, rows.get(hit.id) ?? [hit], opts, people, author)]));
+  const stems = new Map<number, { text: string | null; transcript: string | null; words: Set<string> }>();
+  const stemsFor = (message: StoredMessage): Set<string> => {
+    let cached = stems.get(message.id);
+    if (cached === undefined || cached.text !== message.text || cached.transcript !== message.transcript) {
+      cached = { text: message.text, transcript: message.transcript, words: subjectStems(message) };
+      stems.set(message.id, cached);
+    }
+    return cached.words;
+  };
+  const shown = hits.slice(0, CONTEXT_SHOWN);
+  const groups = new Map<string, StoredMessage[]>();
+  const candidates = new Map<number, readonly StoredMessage[]>();
+  for (const hit of shown) {
+    if (stemsFor(hit).size < 2) continue;
+    const group = groups.get(hit.chatJid) ?? [];
+    group.push(hit);
+    groups.set(hit.chatJid, group);
+  }
+  for (const hits of groups.values()) {
+    if (hits.length < 2) continue;
+    const group = hits.flatMap((hit) => {
+      const anchor = db.messages.get(hit.sid);
+      if (anchor === null) { candidates.set(hit.id, []); return []; }
+      return [{ hit, anchor }];
+    });
+    if (group.length < 2) continue;
+    group.sort((a, b) => a.anchor.id - b.anchor.id);
+    const first = group[0]!.anchor;
+    if (group.some(({ anchor }) => anchor.chatJid !== first.chatJid)) continue;
+    const shared = db.messages.later(first.sid, {
+      limit: LATER_SCAN,
+      ...(opts.sinceMs === undefined ? {} : { since: opts.sinceMs }),
+      ...(opts.untilMs === undefined ? {} : { until: opts.untilMs }),
+    });
+    for (const { hit, anchor } of group) {
+      if (anchor.ts < first.ts) continue;
+      const suffix = shared.filter((row) => row.id > anchor.id && row.ts >= anchor.ts);
+      if (shared.length < LATER_SCAN || suffix.length === LATER_SCAN) candidates.set(hit.id, suffix);
+    }
+  }
+  return new Map(shown.map((hit) => [hit.id, laterRows(db, hit, rows.get(hit.id) ?? [hit], opts, people, author, candidates.get(hit.id), stemsFor)]));
 }
 
 /**

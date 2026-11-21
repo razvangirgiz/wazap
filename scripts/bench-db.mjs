@@ -30,6 +30,7 @@ const { findInAccount } = await import(new URL("../dist/find-contact.js", import
 const { draftContextFor, styleCheckFor } = await import(new URL("../dist/draft-style.js", import.meta.url).href);
 const { quotesOf, scanCatchup } = await import(new URL("../dist/catchup-scan.js", import.meta.url).href);
 const { runCatchUp } = await import(new URL("../dist/catchup.js", import.meta.url).href);
+const { contextRows, laterOf, laterRows } = await import(new URL("../dist/service/search-context.js", import.meta.url).href);
 
 const { values: args } = parseArgs({
   options: {
@@ -234,6 +235,10 @@ async function mainPhase() {
     const messages = new Map(db.messages.byIds(ids).map((message) => [message.id, message]));
     return hydrationChats.map((chat) => chat.lastMessageId === null ? null : (messages.get(chat.lastMessageId) ?? db.messages.lastVisible(chat.id)));
   });
+  const contextHits = db.messages.chatPage(busy[0], { limit: 40 }).items.slice(-5);
+  const contextWindows = new Map(contextHits.map((message) => [message.id, contextRows(db, message, {}, null)]));
+  time("search later context (5, per-hit)", 50, () => contextHits.map((message) => laterRows(db, message, contextWindows.get(message.id), {}, null)));
+  time("search later context (5, shared)", 50, () => laterOf(db, contextHits, contextWindows, {}, null));
   time("waiting 14d", 50, () => db.messages.waiting({ since: NOW - 14 * DAY, until: NOW, limit: 100 }));
   time("coverage (account)", 50, () => db.messages.coverage());
   time("counts", 10, () => db.counts(), 1);
