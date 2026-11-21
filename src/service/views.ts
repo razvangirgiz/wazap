@@ -315,9 +315,9 @@ export class MessageViews {
     }
   }
 
-  chatSummary(chat: ChatRecord, described: BaileysChat | null, people: PrivatePeople | null = null): ChatSummary {
+  chatSummary(chat: ChatRecord, described: BaileysChat | null, people: PrivatePeople | null = null, lastMessages?: ReadonlyMap<number, StoredMessage>): ChatSummary {
     const jid = chat.jid;
-    const last = chat.lastMessageId === null ? null : (this.host.db().messages.byIds([chat.lastMessageId])[0] ?? this.host.db().messages.lastVisible(chat.id));
+    const last = chat.lastMessageId === null ? null : ((lastMessages === undefined ? this.host.db().messages.byIds([chat.lastMessageId])[0] : lastMessages.get(chat.lastMessageId)) ?? this.host.db().messages.lastVisible(chat.id));
     // Their chat, or what they wrote last in a group: when and who, not what.
     const hidden = last !== null && people !== null && (people.chat(chat) || people.sender(last.senderId));
     const muteEnd = chat.mutedUntil ?? 0;

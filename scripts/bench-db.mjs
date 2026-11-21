@@ -30,6 +30,7 @@ const { findInAccount } = await import(new URL("../dist/find-contact.js", import
 const { draftContextFor, styleCheckFor } = await import(new URL("../dist/draft-style.js", import.meta.url).href);
 const { quotesOf, scanCatchup } = await import(new URL("../dist/catchup-scan.js", import.meta.url).href);
 const { runCatchUp } = await import(new URL("../dist/catchup.js", import.meta.url).href);
+const { contextRows, laterOf, laterRows } = await import(new URL("../dist/service/search-context.js", import.meta.url).href);
 
 const { values: args } = parseArgs({
   options: {
@@ -227,6 +228,17 @@ async function mainPhase() {
   time("recent 7d (50)", 50, () => db.messages.recent({ since: NOW - 7 * DAY, limit: 50 }));
   time("list chats (50)", 50, () => db.messages.listChats({ limit: 50 }));
   time("chat list page by activity (21)", 50, () => db.identity.chatsByActivity({ after: null, archived: false, limit: 21 }));
+  const hydrationChats = db.identity.chatsByActivity({ after: null, archived: false, limit: 50 }).map(({ chat }) => chat);
+  time("chat last messages (50, per-chat)", 200, () => hydrationChats.map((chat) => chat.lastMessageId === null ? null : (db.messages.byIds([chat.lastMessageId])[0] ?? db.messages.lastVisible(chat.id))));
+  time("chat last messages (50, batched)", 200, () => {
+    const ids = hydrationChats.flatMap((chat) => chat.lastMessageId === null ? [] : [chat.lastMessageId]);
+    const messages = new Map(db.messages.byIds(ids).map((message) => [message.id, message]));
+    return hydrationChats.map((chat) => chat.lastMessageId === null ? null : (messages.get(chat.lastMessageId) ?? db.messages.lastVisible(chat.id)));
+  });
+  const contextHits = db.messages.chatPage(busy[0], { limit: 40 }).items.slice(-5);
+  const contextWindows = new Map(contextHits.map((message) => [message.id, contextRows(db, message, {}, null)]));
+  time("search later context (5, per-hit)", 50, () => contextHits.map((message) => laterRows(db, message, contextWindows.get(message.id), {}, null)));
+  time("search later context (5, shared)", 50, () => laterOf(db, contextHits, contextWindows, {}, null));
   time("waiting 14d", 50, () => db.messages.waiting({ since: NOW - 14 * DAY, until: NOW, limit: 100 }));
   time("coverage (account)", 50, () => db.messages.coverage());
   time("counts", 10, () => db.counts(), 1);
@@ -314,6 +326,11 @@ function catchUpPhase(db, path) {
   );
   const idFloor = (ms) => Math.floor(ms / 1000) * 1048576;
   const top = idFloor(NOW + 1000);
+  const tails = db.digest.chatsActiveSince(NOW - 14 * DAY).filter((chat) => !chat.archived && chat.lastFromMe !== true).map((chat) => ({
+    chatId: chat.id, family: [chat.id], span: { afterId: Math.max(idFloor(NOW - 14 * DAY), chat.lastOwnId ?? 0), untilId: top, afterSeq: -1, untilSeq: db.digest.storedTop() },
+  }));
+  time("catch_up: waiting tails per chat", 50, () => tails.map(({ family, span }) => db.digest.inboundTail(family, span, NOW, 30)));
+  time("catch_up: waiting tails batched", 50, () => db.digest.inboundTails(tails, NOW, 30));
   for (const [label, hours] of [["24h", 24], ["7d", 168]]) {
     const since = NOW - hours * 3_600_000;
     const lower = idFloor(since);

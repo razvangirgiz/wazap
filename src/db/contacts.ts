@@ -251,6 +251,7 @@ interface GroupRow {
   last_from_me: number | null;
   /** Whether the account left it, worked out the first time a match needs it. */
   left?: boolean;
+  words?: string[];
 }
 
 
@@ -556,7 +557,8 @@ export class Contacts {
    * namesVersion has not moved (no contact, note, tag or pairing written
    * since), the owner is the same, and it is not older than PEOPLE_TTL_MS.
    */
-  private snapshot: { version: number; owner: string | null; at: number; people: Person[] } | null = null;
+  private snapshot: { version: number; owner: string | null; at: number; people: Person[]; tokens: Map<string, Set<Person>> } | null = null;
+  private groupWords = new Map<number, { name: string; words: string[] }>();
 
   constructor(
     private readonly c: Connection,
@@ -809,7 +811,16 @@ export class Contacts {
       out.push(person);
     }
     this.folded = next;
-    this.snapshot = { version, owner, at, people: out };
+    const tokens = new Map<string, Set<Person>>();
+    for (const person of out) {
+      const words = [...person.names, ...person.roles, ...person.fields].flatMap((source) => source.words);
+      for (const word of new Set(words)) {
+        const matches = tokens.get(word) ?? new Set<Person>();
+        matches.add(person);
+        tokens.set(word, matches);
+      }
+    }
+    this.snapshot = { version, owner, at, people: out, tokens };
     return out;
   }
 
@@ -819,7 +830,19 @@ export class Contacts {
     const inflected = relation !== null && !RELATIONSHIPS[relation]!.includes(query[0]!.word);
     const roleQuery: QueryWord[] = query.map((q) => ({ word: roleBase(q.word), forms: [], related: NO_WORDS }));
     const roleInflected = roleQuery.some((q, index) => q.word !== query[index]!.word);
-    for (const person of people) {
+    let candidates = people;
+    if (relation === null && query.length > 0 && this.snapshot?.people === people) {
+      const first = query[0]!;
+      const matches = new Set<Person>();
+      for (const [token, owners] of this.snapshot.tokens) {
+        const matched = near
+          ? nearWords([first], [token])
+          : token.includes(first.word) || first.forms.includes(token) || first.related.has(token) || token === roleBase(first.word);
+        if (matched) for (const person of owners) matches.add(person);
+      }
+      candidates = people.filter((person) => matches.has(person));
+    }
+    for (const person of candidates) {
       let best: ContactCandidate["match"] | null = null;
       const consider = (match: Match | null, source: MatchSource, value: string): void => {
         if (match === null) return;
@@ -895,10 +918,19 @@ export class Contacts {
 
   /** Every group chat with a name that is not folding into another; stillIn tells the ones the account left. */
   private groupRows(): GroupRow[] {
-    return this.c.all<GroupRow>(
+    const rows = this.c.all<GroupRow>(
       `SELECT id, jid, name, proto, last_ts, last_from_me FROM chats
        WHERE kind = 'group' AND merged_into IS NULL AND name IS NOT NULL`
     );
+    const next = new Map<number, { name: string; words: string[] }>();
+    for (const row of rows) {
+      const cached = this.groupWords.get(row.id);
+      const folded = cached?.name === row.name ? cached : { name: row.name, words: nameWords(row.name) };
+      row.words = folded.words;
+      next.set(row.id, folded);
+    }
+    this.groupWords = next;
+    return rows;
   }
 
   /** Whether the account is still in a group: its protobuf is read only for a group a match needs. */
@@ -920,7 +952,7 @@ export class Contacts {
   private matchGroups(groups: readonly GroupRow[], query: readonly QueryWord[], near: boolean): Scored[] {
     const out: Scored[] = [];
     for (const row of groups) {
-      const words = nameWords(row.name);
+      const words = row.words ?? nameWords(row.name);
       const match: Match | null = near ? (nearWords(query, words) ? { class: "fuzzy", inflected: false, resolvable: false } : null) : matchWords(query, words);
       if (match === null || !this.stillIn(row)) continue;
       const score = matchScore(match, "group_name");

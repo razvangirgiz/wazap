@@ -296,6 +296,7 @@ export interface AskReads {
   ownThrough: number | null;
   /** Every handled mark, by the chat it was filed under (Digest.handled). */
   handled: ReadonlyMap<number, { askId: number | null; at: number }>;
+  tail?: TailMessage[];
 }
 
 /** The user's own last word in the chat at or below `untilId`: off the chat's row when that is low enough, walked back otherwise. */
@@ -320,7 +321,7 @@ export function openAsk(db: AccountDb, chat: ChatRecord, reads: AskReads): OpenA
   // The user had the last word, and nothing came after it before the read started.
   if (chat.lastFromMe === true && chat.lastMessageId !== null && chat.lastMessageId <= reads.untilId) return null;
   const after = Math.max(idBefore(reads.now - WAITING_HORIZON_MS), reads.ownThrough ?? 0);
-  const tail = db.digest.inboundTail(reads.family, reads.span(after), reads.now, ASK_SCAN);
+  const tail = reads.tail ?? db.digest.inboundTail(reads.family, reads.span(after), reads.now, ASK_SCAN);
   if (tail.length === 0) return null;
   const group = chat.kind === "group";
   if (!group && closesAsk(tail[0]!.transcript ?? tail[0]!.text)) return null;
@@ -638,11 +639,18 @@ export async function scanCatchup(db: AccountDb, host: CatchupHost, request: Cat
   const waitingChats = new Set<number>();
   if (include.has("waiting")) {
     const handled = digest.handled();
-    for (const chat of activeSince(horizonTs)) {
-      if (host.isNoise(chat.jid) || chat.jid === own) continue;
+    const eligible = activeSince(horizonTs).filter((chat) => !host.isNoise(chat.jid) && chat.jid !== own &&
+      (chat.kind === "direct" || chat.kind === "group") && !chat.archived &&
+      !(chat.lastFromMe === true && chat.lastMessageId !== null && chat.lastMessageId <= untilId));
+    const tails = digest.inboundTails(eligible.map((chat) => {
+      const span = openSpan(Math.max(horizonId, ownThrough(chat) ?? 0));
+      return { chatId: chat.id, family: familyOf(chat), span: isExcluded(chat) ? counting(span) : span };
+    }), now, ASK_SCAN);
+    for (const chat of eligible) {
       const family = familyOf(chat);
       // A chat tagged #no-catchup is read counting its person, so its own reads keep what they sent.
       const open = openAsk(db, chat, {
+        tail: tails.get(chat.id) ?? [],
         now,
         untilId,
         family,
