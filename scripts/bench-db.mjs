@@ -321,6 +321,11 @@ function catchUpPhase(db, path) {
   );
   const idFloor = (ms) => Math.floor(ms / 1000) * 1048576;
   const top = idFloor(NOW + 1000);
+  const tails = db.digest.chatsActiveSince(NOW - 14 * DAY).filter((chat) => !chat.archived && chat.lastFromMe !== true).map((chat) => ({
+    chatId: chat.id, family: [chat.id], span: { afterId: Math.max(idFloor(NOW - 14 * DAY), chat.lastOwnId ?? 0), untilId: top, afterSeq: -1, untilSeq: db.digest.storedTop() },
+  }));
+  time("catch_up: waiting tails per chat", 50, () => tails.map(({ family, span }) => db.digest.inboundTail(family, span, NOW, 30)));
+  time("catch_up: waiting tails batched", 50, () => db.digest.inboundTails(tails, NOW, 30));
   for (const [label, hours] of [["24h", 24], ["7d", 168]]) {
     const since = NOW - hours * 3_600_000;
     const lower = idFloor(since);

@@ -93,6 +93,23 @@ test("a batch of chats reads what each chat's own read reads", () => {
   assert.ok(db.digest.mostReactedMany(floorSets[0], spans[0], now).filter((id) => id !== null).length >= 2);
 });
 
+test("batched inbound tails equal individual reads for families, bounds and exclusions", () => {
+  const { db } = seeded();
+  const ids = [GROUP, GROUP2, PEER, PEER2].map((jid) => db.identity.chat(jid).id);
+  const now = T0 + 3_600_000;
+  db.messages.delete(sid(false, GROUP, "K4"), { at: now });
+  db.messages.upsert(textMessage(GROUP, "EXPIRED", T0 + 80_000, "expired", { expiresAt: now - 1 }));
+  for (const span of [spanOf(db), spanOf(db, { afterSeq: 20 }), spanOf(db, { excludeSenders: new Set([db.identity.contactIdOf(people[0])]) })]) {
+    const requests = ids.map((chatId, i) => ({ chatId, family: i === 0 ? ids.slice(0, 2) : [chatId], span: { ...span, afterId: i % 2 === 0 ? 0 : (T0 + 30_000) / 1000 * 1048576 } }));
+    for (const limit of [0, 1, 30]) {
+      const batch = db.digest.inboundTails(requests, now, limit);
+      for (const request of requests) assert.deepEqual(batch.get(request.chatId) ?? [], db.digest.inboundTail(request.family, request.span, now, limit));
+    }
+  }
+  assert.deepEqual(db.digest.inboundTails([], now, 30), new Map());
+  assert.throws(() => db.digest.inboundTails([{ chatId: ids[0], family: ids, span: spanOf(db) }], now, -1), RangeError);
+});
+
 test("withdrawn reactions do not qualify a digest highlight", () => {
   const { db } = seeded();
   const chatId = db.identity.chat(GROUP).id;

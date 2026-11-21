@@ -421,6 +421,41 @@ export class Digest {
       }));
   }
 
+  inboundTails(inputs: readonly { chatId: number; family: readonly number[]; span: DigestSpan }[], now: number, limit: number): Map<number, TailMessage[]> {
+    const result = new Map<number, TailMessage[]>();
+    if (inputs.length === 0) return result;
+    const requests = inputs.map(({ chatId, family, span }) => ({ chatId, family, ...span, excludeSenders: [...(span.excludeSenders ?? [])] }));
+    const rows = this.c.all<{
+      chat_id: number; id: number; stored_seq: number; key_id: string; ts: number; type: string; flags: number;
+      quoted_from_me: number | null; sender_id: number | null; text: string | null; transcript: string | null;
+    }>(
+      `SELECT j.value ->> '$.chatId' AS chat_id, m.id, coalesce(m.stored_seq, 0) AS stored_seq,
+         m.key_id, m.ts, m.type, m.flags, m.quoted_from_me, m.sender_id,
+         substr(m.text, 1, 2000) AS text, substr(m.transcript, 1, 2000) AS transcript
+       FROM json_each(?) j CROSS JOIN json_each((
+         SELECT json_group_array(id) FROM (
+           SELECT m.id FROM messages m CROSS JOIN chats c ON c.id = m.chat_id
+           WHERE m.chat_id IN (SELECT value FROM json_each(j.value -> '$.family'))
+             AND m.id > j.value ->> '$.afterId' AND m.id <= j.value ->> '$.untilId'
+             AND coalesce(m.stored_seq, 0) > j.value ->> '$.afterSeq'
+             AND coalesce(m.stored_seq, 0) <= j.value ->> '$.untilSeq'
+             AND (m.sender_id IS NULL OR m.sender_id NOT IN (SELECT value FROM json_each(j.value -> '$.excludeSenders')))
+             AND ${INBOUND} AND m.type <> 'call'
+           ORDER BY m.id DESC LIMIT ${sqlLimit(limit)}
+         )
+       )) ids CROSS JOIN messages m ON m.id = ids.value
+       ORDER BY chat_id, m.id DESC`,
+      JSON.stringify(requests), now
+    );
+    for (const row of rows) {
+      const tail = result.get(row.chat_id) ?? [];
+      tail.push({ id: row.id, storedSeq: row.stored_seq, keyId: row.key_id, ts: row.ts, type: row.type,
+        flags: row.flags, quotedFromMe: row.quoted_from_me === 1, senderId: row.sender_id, text: row.text ?? "", transcript: row.transcript });
+      result.set(row.chat_id, tail);
+    }
+    return result;
+  }
+
   /** Who wrote most in the chat in the span, at most `limit`, the most recent first among equals. */
   topSenders(family: readonly number[], span: DigestSpan, now: number, limit = 3): Array<{ senderId: number; count: number }> {
     const inSpan = spanOf(span);
