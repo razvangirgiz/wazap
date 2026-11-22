@@ -23,9 +23,11 @@
  * held at that instant; its later pages are served from it (src/catchup.ts).
  *
  * `waiting` is not bound by the window: an ask stays until the user answers,
- * marks it handled, or it is 14 days old, as the service's getUnanswered has it.
+ * marks it handled, or it reaches waiting_days (7 by default).
  */
+import { proto, type WAMessage } from "baileys";
 import { closesAsk, readsAsAsk } from "./asks.js";
+import { isForwarded } from "./messages.js";
 import type { AccountDb, ChatRecord, DigestMedia, DigestSpan, InboundAggregate, TailMessage, WindowMessage } from "./db/index.js";
 import { idLowerBound, OPENED_MEDIA, secondOfId } from "./db/index.js";
 import { PRIVATE_TAG, privatePeople } from "./private-contacts.js";
@@ -98,6 +100,7 @@ export interface CatchupScanRequest {
   at?: number;
   /** Name the newest media of each person and group by message id (catch_up's `ids`). */
   mediaIds?: boolean;
+  waitingDays?: number;
 }
 
 /** What the service knows that the database does not: names, the account itself, the network-bound lookups. */
@@ -297,6 +300,8 @@ export interface AskReads {
   /** Every handled mark, by the chat it was filed under (Digest.handled). */
   handled: ReadonlyMap<number, { askId: number | null; at: number }>;
   tail?: TailMessage[];
+  waitingDays?: number;
+  ownJid?: string;
 }
 
 /** The user's own last word in the chat at or below `untilId`: off the chat's row when that is low enough, walked back otherwise. */
@@ -320,13 +325,30 @@ export function openAsk(db: AccountDb, chat: ChatRecord, reads: AskReads): OpenA
   if (chat.archived) return null;
   // The user had the last word, and nothing came after it before the read started.
   if (chat.lastFromMe === true && chat.lastMessageId !== null && chat.lastMessageId <= reads.untilId) return null;
-  const after = Math.max(idBefore(reads.now - WAITING_HORIZON_MS), reads.ownThrough ?? 0);
+  const after = Math.max(idBefore(reads.now - (reads.waitingDays === undefined ? WAITING_HORIZON_MS : reads.waitingDays * DAY)), reads.ownThrough ?? 0);
   const tail = reads.tail ?? db.digest.inboundTail(reads.family, reads.span(after), reads.now, ASK_SCAN);
   if (tail.length === 0) return null;
   const group = chat.kind === "group";
   if (!group && closesAsk(tail[0]!.transcript ?? tail[0]!.text)) return null;
-  const ask = tail.find((message) => (!group || (message.flags & 1) !== 0 || message.quotedFromMe) && readsAsAsk(message));
+  const candidates = tail.filter((message) => message.id > after && (!group || (message.flags & 1) !== 0 || message.quotedFromMe) && readsAsAsk(message));
+  const forwarded = new Set(db.messages.byIds(candidates.map((message) => message.id)).filter((message) => {
+    if (message.raw === null) return false;
+    try {
+      return isForwarded(proto.WebMessageInfo.toObject(proto.WebMessageInfo.decode(message.raw), { longs: Number }) as unknown as WAMessage);
+    } catch {
+      return false;
+    }
+  }).map((message) => message.id));
+  const ask = candidates.find((message) => !forwarded.has(message.id));
   if (ask === undefined) return null;
+  const owner = reads.ownJid ?? db.getMeta("owner");
+  const ownerId = owner ? db.identity.contactIdOf(owner) : null;
+  if (ownerId !== null && [...db.messages.marksOf(tail.filter((message) => message.id >= ask.id).map((message) => message.id)).reactions.values()]
+    .some((reactions) => reactions.some((reaction) => reaction.contactId === ownerId))) return null;
+  if (group) {
+    const later = tail.filter((message) => message.id > ask.id && message.senderId !== ask.senderId);
+    if (later.length >= 3 || later.some((message) => new Date(message.ts).toDateString() !== new Date(ask.ts).toDateString())) return null;
+  }
   const mark = reads.handled.get(chat.id);
   if (mark !== undefined && (mark.askId !== null ? ask.id <= mark.askId : ask.ts <= mark.at)) return null;
   return { ask, tail, after };
@@ -657,6 +679,8 @@ export async function scanCatchup(db: AccountDb, host: CatchupHost, request: Cat
         span: (afterId) => (isExcluded(chat) ? counting(openSpan(afterId)) : openSpan(afterId)),
         ownThrough: ownThrough(chat),
         handled,
+        waitingDays: request.waitingDays ?? 7,
+        ownJid: own,
       });
       if (open === null) continue;
       const { ask, tail, after } = open;

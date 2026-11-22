@@ -1417,6 +1417,11 @@ export function phoneOf(jid: string): string | undefined {
   return domain === "s.whatsapp.net" && /^\d+$/.test(user) ? user : undefined;
 }
 
+export function isForwarded(raw: WAMessage): boolean {
+  const context = analyze(raw).context;
+  return Boolean(context?.isForwarded) || (protoNumber(context?.forwardingScore) ?? 0) > 0;
+}
+
 export function buildMessageView(raw: WAMessage, ctx: MessageViewContext): MessageView {
   const a = analyze(raw);
   const timestamp = messageTimestampMs(raw);

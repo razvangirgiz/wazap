@@ -300,7 +300,13 @@ asked. `approx_tokens` is counted the same way. The order:
    never "ok, thanks", automated delivery/code notifications or a link — with the ask quoted (a voice note by its
    transcript) and what they said after it. In a group only when the user was @-mentioned or replied
    to. An ask stays until the user answers, `remember` marks it `handled` or it
-   is two weeks old. A later closing or deferral statement removes it too.
+   reaches `waiting_days` (default **7**, an integer from **1–14**), regardless
+   of the catch-up window. An owner's reaction to the ask or a later message
+   in the incoming burst acknowledges it too; withdrawn or other people's reactions do not.
+   Forwarded questions are not asks of the owner. A later closing or deferral
+   statement removes it too (for example “talk soon”, “until next time”,
+   “pa”, “o zi bună”). A group ask drops out once three later messages from
+   other participants follow it, or one follows on a later calendar day.
    Freshest asks come first, by the ask's time; `new` marks one that
    arrived since the last catch-up, and an answered call after the ask says
    it may have been dealt with by phone.

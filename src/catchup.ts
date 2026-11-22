@@ -114,6 +114,7 @@ export const CATCHUP_INPUT = {
     .describe("Only these sections; the mark then stays"),
   cursor: z.string().min(1).optional().describe("more.cursor"),
   ids: z.boolean().optional().describe("Message ids, to act on entries"),
+  waiting_days: z.number().int().min(1).max(14).default(7).describe("Waiting age limit in days"),
 };
 
 const windowShape = z.object({
@@ -289,6 +290,7 @@ export const CATCHUP_OUTPUT = {
 export interface CatchupArgs {
   since?: string;
   hours?: number;
+  waiting_days?: number;
   budget_tokens?: number;
   include?: CatchupSection[];
   cursor?: string;
@@ -952,7 +954,7 @@ export async function runCatchUp(args: CatchupArgs, ctx: CatchupContext): Promis
       const view: AccountView = { id: target.id, name, source: target.wa, scan: null, error: null };
       try {
         if (typeof target.wa.catchUpScan !== "function") throw missingSupport(target.id);
-        view.scan = await target.wa.catchUpScan({ client: ctx.client, include, at: now, window: spec, ...(tags === undefined ? {} : { tags }), ...(ids ? { mediaIds: true } : {}) });
+        view.scan = await target.wa.catchUpScan({ client: ctx.client, include, at: now, window: spec, waitingDays: args.waiting_days ?? 7, ...(tags === undefined ? {} : { tags }), ...(ids ? { mediaIds: true } : {}) });
       } catch (err) {
         view.error = asWazapError(err);
       }

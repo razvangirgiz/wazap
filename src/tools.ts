@@ -636,7 +636,7 @@ function guide(topic: LearnTopic | undefined, legacyReads: boolean): string {
 const CATCH_UP: ToolDef = tool({
   name: "catch_up",
   title: "Catch up on what the user missed",
-  description: `What the user missed, all accounts, within budget_tokens: waiting (every open ask of 14 days, whatever the window), mentions, calls, people, groups, stories. account_id narrows it to one account; get_status names them. The mark moves first; a lost answer is since: "previous". more.cursor: the rest.`,
+  description: `Missed, all accounts. Waiting: open asks within waiting_days (default 7), whatever the window. account_id narrows it to one account; get_status names them. A lost answer: since: "previous". Rest: more.cursor.`,
   schema: CATCHUP_INPUT,
   outputSchema: CATCHUP_OUTPUT,
   write: false,
