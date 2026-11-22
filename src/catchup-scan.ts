@@ -642,7 +642,7 @@ export async function scanCatchup(db: AccountDb, host: CatchupHost, request: Cat
   };
 
   // -------------------------------------------------------------- calls, 14 days
-  const horizonTs = now - (request.waitingDays ?? 7) * DAY;
+  const horizonTs = now - WAITING_HORIZON_MS;
   const horizonId = idBefore(horizonTs);
   const needCalls = include.has("waiting") || include.has("calls");
   const calls = needCalls ? digest.calls(openSpan(Math.min(horizonId, sinceId)), now) : [];
