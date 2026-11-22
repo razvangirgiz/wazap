@@ -106,6 +106,77 @@ test("automated notices and closed asks leave waiting but remain in People", asy
   assert.deepEqual(new Set(chatsOf(result, "direct")), new Set([ANA, DAN]));
 });
 
+test("waiting ignores owner-acknowledged bursts but not withdrawn or other people's reactions", async (t) => {
+  const { svc, arrive } = account();
+  t.after(() => svc.stop());
+  const { call } = toolsOf(svc);
+  arrive(ANA, "Can you send it?", { at: Date.now() - HOUR });
+  const photo = arrive(ANA, { imageMessage: { caption: "Our photos" } }, { at: Date.now() - 2000 });
+  arrive(ANA, "one more photo", { at: Date.now() - 1000 });
+  const react = (text, fromMe = true) => arrive(ANA, { reactionMessage: {
+    key: { remoteJid: ANA, fromMe: false, id: photo.split("_").pop() }, text,
+    senderTimestampMs: Date.now(),
+  } }, { fromMe });
+  react("❤️", false);
+  assert.deepEqual(chatsOf(await call("catch_up"), "waiting"), [ANA]);
+  react("❤️");
+  assert.deepEqual(chatsOf(await call("catch_up"), "waiting"), []);
+  react("");
+  assert.deepEqual(chatsOf(await call("catch_up"), "waiting"), [ANA]);
+});
+
+test("waiting drops EN/RO sign-offs but retains a question in the closing line", async (t) => {
+  const { svc, arrive } = account();
+  t.after(() => svc.stop());
+  const { call } = toolsOf(svc);
+  for (const closing of ["Until next time ....", "talk soon", "pa", "O zi bună!"]) {
+    arrive(ANA, "Can you send it?", { at: Date.now() - 2000 });
+    arrive(ANA, closing, { at: Date.now() - 1000 });
+    assert.deepEqual(chatsOf(await call("catch_up"), "waiting"), [], closing);
+  }
+  arrive(ANA, "Talk soon. Can you send it first?", { at: Date.now() });
+  assert.deepEqual(chatsOf(await call("catch_up"), "waiting"), [ANA]);
+});
+
+test("waiting ignores forwarded-only questions, not a personal follow-up ask", async (t) => {
+  const { svc, arrive } = account();
+  t.after(() => svc.stop());
+  const { call } = toolsOf(svc);
+  arrive(ANA, { extendedTextMessage: { text: "Can you send money?", contextInfo: { isForwarded: true } } }, { at: Date.now() - 2000 });
+  arrive(ANA, "Interesting", { at: Date.now() - 1000 });
+  assert.deepEqual(chatsOf(await call("catch_up"), "waiting"), []);
+  arrive(ANA, "What do you think?", { at: Date.now() });
+  assert.deepEqual(chatsOf(await call("catch_up"), "waiting"), [ANA]);
+});
+
+test("waiting_days defaults to seven days, can narrow or extend, and validates bounds", async (t) => {
+  const { svc, arrive } = account();
+  t.after(() => svc.stop());
+  const { call } = toolsOf(svc);
+  arrive(ANA, "Can you send it?", { at: Date.now() - 8 * 24 * HOUR });
+  arrive(DAN, "Can you call?", { at: Date.now() - 2 * 24 * HOUR });
+  arrive(ELA, "Where are you?", { at: Date.now() - HOUR });
+  assert.deepEqual(chatsOf(await call("catch_up"), "waiting"), [ELA, DAN]);
+  assert.deepEqual(chatsOf(await call("catch_up", { waiting_days: 10 }), "waiting"), [ELA, DAN, ANA]);
+  assert.deepEqual(chatsOf(await call("catch_up", { waiting_days: 1 }), "waiting"), [ELA]);
+  for (const waiting_days of [0, 15, 1.5]) assert.throws(() => call("catch_up", { waiting_days }));
+});
+
+test("waiting drops group asks after conversation moves on, but not a single recent reply", async (t) => {
+  const { svc, arrive, mention } = account();
+  t.after(() => svc.stop());
+  const { call } = toolsOf(svc);
+  arrive(GROUP, mention("Can you confirm?"), { participant: ANA, at: Date.now() - 2 * HOUR });
+  arrive(GROUP, "Some news", { participant: DAN, at: Date.now() - HOUR });
+  assert.deepEqual(chatsOf(await call("catch_up"), "waiting"), [GROUP]);
+  arrive(GROUP, "More news", { participant: DAN, at: Date.now() - 2000 });
+  arrive(GROUP, "Agreed", { participant: ELA, at: Date.now() - 1000 });
+  assert.deepEqual(chatsOf(await call("catch_up"), "waiting"), []);
+  arrive(MUTED, mention("Can you confirm?"), { participant: ANA, at: Date.now() - 24 * HOUR });
+  arrive(MUTED, "Today's news", { participant: DAN, at: Date.now() - HOUR });
+  assert.deepEqual(chatsOf(await call("catch_up"), "waiting"), []);
+});
+
 test("first catch-up includes the last 24 hours of People and groups even if read or answered", async (t) => {
   const { svc, arrive, phoneRead } = account();
   t.after(() => svc.stop());
@@ -999,7 +1070,7 @@ test("a catch-up of one account by account_id reads #private and #no-catchup fil
 test("an explicit window keeps every open ask in waiting and marks the ones asked before it, and a window nothing arrived in says so", async () => {
   const { svc, arrive } = account();
   const { tools, call } = toolsOf(svc);
-  assert.match(tools.get("catch_up").meta.description, /every open ask of 14 days, whatever the window/);
+  assert.match(tools.get("catch_up").meta.description, /open asks within waiting_days \(default 7\), whatever the window/);
   arrive(ANA, "îmi trimiți extrasul până mâine?", { at: Date.now() - 6 * HOUR });
   arrive(DAN, "vii diseară la ședință?", { at: Date.now() - 20 * HOUR });
 
@@ -1332,6 +1403,7 @@ test("every shape catch_up answers passes a client's validation of its output sc
   arrive(GROUP, { pollCreationMessageV3: { name: "Pizza sau paste?", options: [{ optionName: "Pizza" }, { optionName: "Paste" }], selectableOptionsCount: 1 } }, { participant: ELA, at: Date.now() - 3 * HOUR + 3000 });
   arrive(GROUP, { pollCreationMessageV3: { name: "Ce zi?", options: [{ optionName: "Luni" }, { optionName: "Marți" }], selectableOptionsCount: 1 } }, { participant: ANA, at: Date.now() - 3 * HOUR + 4000 });
   arrive(GROUP, { imageMessage: { mimetype: "image/jpeg", caption: "uite schița pentru ședința de mâine de la 10" } }, { participant: ELA, at: Date.now() - 2 * HOUR });
+  arrive(GROUP, mention("Poți confirma schița?"), { participant: STRANGER, at: Date.now() - 2 * HOUR + 1000 });
   const NEIGHBOURS = "120363000000000005@g.us";
   const paid = arrive(NEIGHBOURS, "am plătit întreținerea", { fromMe: true, at: Date.now() - 7 * HOUR });
   arrive(NEIGHBOURS, { extendedTextMessage: { text: "mulțumim, am primit cei 300 lei", contextInfo: { stanzaId: paid.split("_").pop(), participant: ME, quotedMessage: { conversation: "am plătit întreținerea" } } } }, { participant: DAN, at: Date.now() - 2 * HOUR });
