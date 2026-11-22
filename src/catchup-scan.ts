@@ -330,10 +330,6 @@ export function openAsk(db: AccountDb, chat: ChatRecord, reads: AskReads): OpenA
   if (tail.length === 0) return null;
   const group = chat.kind === "group";
   if (!group && closesAsk(tail[0]!.transcript ?? tail[0]!.text)) return null;
-  const owner = reads.ownJid ?? db.getMeta("owner");
-  const ownerId = owner ? db.identity.contactIdOf(owner) : null;
-  if (ownerId !== null && [...db.messages.marksOf(tail.map((message) => message.id)).reactions.values()]
-    .some((reactions) => reactions.some((reaction) => reaction.contactId === ownerId))) return null;
   const candidates = tail.filter((message) => message.id > after && (!group || (message.flags & 1) !== 0 || message.quotedFromMe) && readsAsAsk(message));
   const forwarded = new Set(db.messages.byIds(candidates.map((message) => message.id)).filter((message) => {
     if (message.raw === null) return false;
@@ -345,6 +341,10 @@ export function openAsk(db: AccountDb, chat: ChatRecord, reads: AskReads): OpenA
   }).map((message) => message.id));
   const ask = candidates.find((message) => !forwarded.has(message.id));
   if (ask === undefined) return null;
+  const owner = reads.ownJid ?? db.getMeta("owner");
+  const ownerId = owner ? db.identity.contactIdOf(owner) : null;
+  if (ownerId !== null && [...db.messages.marksOf(tail.filter((message) => message.id >= ask.id).map((message) => message.id)).reactions.values()]
+    .some((reactions) => reactions.some((reaction) => reaction.contactId === ownerId))) return null;
   if (group) {
     const later = tail.filter((message) => message.id > ask.id && message.senderId !== ask.senderId);
     if (later.length >= 3 || later.some((message) => new Date(message.ts).toDateString() !== new Date(ask.ts).toDateString())) return null;

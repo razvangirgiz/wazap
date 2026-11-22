@@ -125,6 +125,19 @@ test("waiting ignores owner-acknowledged bursts but not withdrawn or other peopl
   assert.deepEqual(chatsOf(await call("catch_up"), "waiting"), [ANA]);
 });
 
+test("an owner reaction to an earlier incoming message does not acknowledge a newer ask", async (t) => {
+  const { svc, arrive } = account();
+  t.after(() => svc.stop());
+  const { call } = toolsOf(svc);
+  const earlier = arrive(ANA, "Our photos", { at: Date.now() - HOUR });
+  arrive(ANA, { reactionMessage: {
+    key: { remoteJid: ANA, fromMe: false, id: earlier.split("_").pop() }, text: "❤️",
+    senderTimestampMs: Date.now() - 2000,
+  } }, { fromMe: true, at: Date.now() - 2000 });
+  arrive(ANA, "Can you send the originals?", { at: Date.now() - 1000 });
+  assert.deepEqual(chatsOf(await call("catch_up"), "waiting"), [ANA]);
+});
+
 test("waiting drops EN/RO sign-offs but retains a question in the closing line", async (t) => {
   const { svc, arrive } = account();
   t.after(() => svc.stop());
