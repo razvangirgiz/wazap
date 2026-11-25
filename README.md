@@ -346,7 +346,7 @@ node test/smoke-stdio.mjs      # drives the built binary over MCP stdio
 npm run dev -- status          # run from source with tsx
 ```
 
-The tests need no WhatsApp account. [CLAUDE.md](CLAUDE.md) is the contributor's
+The tests need no WhatsApp account. [CONTRIBUTING.md](CONTRIBUTING.md) is the contributor's
 map: layout, the rules that must never break, and the release procedure.
 Issues and pull requests are welcome at
 [github.com/razvangirgiz/wazap](https://github.com/razvangirgiz/wazap).

@@ -276,7 +276,7 @@ Stable: the 35 `WAZAP_*` listed in `.env.example` and in the settings table of
 `WAZAP_MEDIA_KEEP_MAX_MB`, `WAZAP_MEDIA_KEEP_QUOTA_MB`, `WAZAP_MEDIA_KEEP_DAYS`,
 `WAZAP_RETENTION`, `WAZAP_PRE_MIGRATION_BACKUP`.
 Any other `WAZAP_*` a running wazap reads is a development knob, documented in
-`CLAUDE.md` and nowhere else; it may change or go at any time.
+`CONTRIBUTING.md` and nowhere else; it may change or go at any time.
 
 A setting that stops being read is not silently ignored: it moves into
 `RETIRED_SETTINGS` and whoever still sets it gets one warning naming the
