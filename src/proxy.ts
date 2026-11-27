@@ -230,8 +230,10 @@ export async function runProxy(opts: ProxyOptions): Promise<void> {
   const waitMs = opts.waitMs ?? PROXY_WAIT_MS;
   let hello: Implementation | undefined;
   const link = new UpstreamLink(opts.daemonFile, () => hello ?? { name: "wazap-proxy", version: WAZAP_VERSION });
-  link.start();
 
+  // Wait for the client's own initialize before opening the upstream session, so
+  // the holder shapes answers for that client (text alone for an assistant,
+  // client-name.ts) instead of "wazap-proxy" when initialize takes over a second.
   await serveOnHello(new StdioServerTransport(), async (client) => {
     hello = client;
     const first = await link.get(opts.helloWaitMs ?? HELLO_WAIT_MS);
@@ -246,6 +248,7 @@ export async function runProxy(opts: ProxyOptions): Promise<void> {
       // the client asks for the list again.
       void server.sendToolListChanged().catch(() => {});
     };
+    link.start();
 
     server.setRequestHandler(ListToolsRequestSchema, async (req) => {
       const done = await forward(link, waitMs, (up) => up.client.request({ method: "tools/list", params: req.params }, ListToolsResultSchema));

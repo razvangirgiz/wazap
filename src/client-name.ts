@@ -52,10 +52,25 @@ export type CredentialKind = "oauth" | "token" | "local" | "anonymous";
  * The names assistants' MCP clients give in initialize's clientInfo, as the
  * owner's log shows them: Claude Code (`claude-code`), claude.ai and Claude
  * Desktop (`claude-ai`, `Claude …`), Codex (`codex-mcp-client`, `codex…`),
- * Cursor (`cursor-vscode`, `cursor…`), ChatGPT (`openai-mcp`, `ChatGPT…`) and
- * the Gemini CLI (`gemini-cli…`). Matched case-insensitively.
+ * Cursor (`cursor-vscode`, `cursor…`), ChatGPT (`openai-mcp`, `ChatGPT…`),
+ * Gemini CLI (`gemini-cli…`), Hermes (`hermes-agent…`), OpenClaw (`openclaw…`),
+ * Antigravity (`antigravity…`), Windsurf (`windsurf…`), OpenCode (`opencode…`)
+ * and Cline (`cline…`). Matched case-insensitively.
  */
-const ASSISTANT_NAMES: readonly RegExp[] = [/^claude(?:$|[-_. ])/i, /^codex/i, /^cursor/i, /^openai(?:$|[-_. ])/i, /chatgpt/i, /^gemini-cli/i];
+const ASSISTANT_NAMES: readonly RegExp[] = [
+  /^claude(?:$|[-_. ])/i,
+  /^codex/i,
+  /^cursor/i,
+  /^openai(?:$|[-_. ])/i,
+  /chatgpt/i,
+  /^gemini-cli/i,
+  /^hermes-agent(?:$|[-_. ])/i,
+  /^openclaw(?:$|[-_. ])/i,
+  /^antigravity(?:$|[-_. ])/i,
+  /^windsurf(?:$|[-_. ])/i,
+  /^opencode(?:$|[-_. ])/i,
+  /^cline(?:$|[-_. ])/i,
+];
 
 /** Whether an initialize's clientInfo.name is an assistant's client. */
 export function isAssistantName(name: unknown): boolean {

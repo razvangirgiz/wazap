@@ -21,12 +21,31 @@ import { startHttpEndpoint } from "../dist/server.js";
 import { mcpClient, offlineConfig, spawnWazap, stubAccountSource, waitFor } from "./helpers.mjs";
 
 test("assistants' clients get text; programs and unknown clients keep full, over OAuth too; the setting overrides both", () => {
-  for (const name of ["claude-code", "claude-ai", "Claude Desktop", "claude.ai", "codex-mcp-client", "codex", "cursor-vscode", "Cursor", "openai-mcp", "ChatGPT", "gemini-cli-mcp-client"]) {
+  for (const name of [
+    "claude-code",
+    "claude-ai",
+    "Claude Desktop",
+    "claude.ai",
+    "codex-mcp-client",
+    "codex",
+    "cursor-vscode",
+    "Cursor",
+    "openai-mcp",
+    "ChatGPT",
+    "gemini-cli-mcp-client",
+    "hermes-agent",
+    "openclaw-bundle-mcp",
+    "OpenClaw",
+    "antigravity",
+    "windsurf",
+    "opencode",
+    "cline",
+  ]) {
     assert.equal(isAssistantName(name), true, name);
     assert.equal(answerFormatFor("auto", name), "text", name);
     assert.equal(answerFormatFor(undefined, name), "text", `${name}, the setting unset`);
   }
-  for (const name of ["acme-crm", "mcp-inspector", "n8n-mcp-client", "wazap-bridge", "claudette", "node", "", undefined, 7]) {
+  for (const name of ["acme-crm", "mcp-inspector", "n8n-mcp-client", "wazap-bridge", "wazap-proxy", "hermes-probe", "hermi-brief", "rmcp", "claudette", "node", "", undefined, 7]) {
     assert.equal(isAssistantName(name), false, String(name));
     assert.equal(answerFormatFor("auto", name), "full", String(name));
   }

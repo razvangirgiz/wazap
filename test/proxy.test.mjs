@@ -158,3 +158,32 @@ test("a proxy started before any holder tells its client to list the tools once 
     await s.close();
   }
 });
+
+test("a proxy that sits idle before initialize still negotiates text format for an assistant client", async () => {
+  const s = scene();
+  try {
+    await holder(s);
+    const p = s.start(["proxy"]);
+    // Longer than the 1 s heartbeat: before the fix, the heartbeat connected upstream as "wazap-proxy" (full).
+    await new Promise((resolve) => setTimeout(resolve, 1_300));
+    const { request, notify } = mcpClient(p.child);
+    const init = await request("initialize", {
+      protocolVersion: "2025-06-18",
+      capabilities: {},
+      clientInfo: { name: "hermes-agent", version: "0.23.2" },
+    });
+    assert.equal(init.error, undefined, JSON.stringify(init.error));
+    notify("notifications/initialized");
+    const tools = await request("tools/list", {});
+    assert.deepEqual(
+      tools.result.tools.filter((tool) => tool.outputSchema !== undefined),
+      [],
+      "the holder shaped the session for hermes-agent (text), not wazap-proxy (full)"
+    );
+    const status = await request("tools/call", { name: "get_status", arguments: {} });
+    assert.equal(status.result.structuredContent, undefined);
+    assert.match(status.result.content[0].text, /not_linked/);
+  } finally {
+    await s.close();
+  }
+});
