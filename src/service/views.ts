@@ -215,6 +215,8 @@ export class MessageViews {
       view.type = "unknown";
       view.text = message.text ?? view.text;
     }
+    if (message.ocrText !== null && message.ocrText !== "") view.ocr_text = message.ocrText;
+    if (message.docText !== null && message.docText !== "") view.doc_text = message.docText;
     return this.withSenderContact(view, message, lookups);
   }
 
@@ -278,6 +280,8 @@ export class MessageViews {
       timestamp: isoWithOffset(message.ts),
       age: formatAge(message.ts),
       has_media: false,
+      ...(message.ocrText !== null && message.ocrText !== "" ? { ocr_text: message.ocrText } : {}),
+      ...(message.docText !== null && message.docText !== "" ? { doc_text: message.docText } : {}),
       forwarded: false,
       edited: message.editedAt !== null,
     }, message);

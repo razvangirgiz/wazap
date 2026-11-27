@@ -251,8 +251,8 @@ export class EmbedFeed {
           const vector = vectors[i];
           if (vector === undefined) return;
           const { message } = entry;
-          // Refused when the message was deleted, expired, edited or transcribed meanwhile.
-          db.vectors.put(message.sid, this.options.model, vector, contentHash(message.text, message.transcript));
+          // Refused when the message was deleted, expired, edited, transcribed, OCR'd or document-indexed meanwhile.
+          db.vectors.put(message.sid, this.options.model, vector, contentHash(message.text, message.transcript, message.ocrText, message.docText));
         });
       });
       this.successes++;

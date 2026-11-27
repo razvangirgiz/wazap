@@ -183,35 +183,64 @@ export class AccountReads {
       await this.host.waitForSync();
       await this.groups.learnParticipants(jid);
       await this.identity.learnLidPhones([jid]);
-      const windowed = window.sinceMs !== undefined || window.untilMs !== undefined;
+      const windowed = window.sinceMs !== undefined || window.untilMs !== undefined || window.afterId !== undefined || window.oldestFirst === true;
+      let afterAnchorId: number | undefined;
+      let effectiveWindow = window;
+      if (window.afterId !== undefined) {
+        const afterMsg = this.views.storedOrThrow(window.afterId);
+        if (this.storage.db.identity.chat(jid)?.jid === afterMsg.chatJid) afterAnchorId = afterMsg.id;
+        else effectiveWindow = { ...window, sinceMs: Math.max(window.sinceMs ?? 0, afterMsg.ts + 1000) };
+      }
 
-      if (before === undefined) {
-        const { page, stoppedAt } = this.walk(jid, limit, undefined, types, window);
+      if (window.oldestFirst === true) {
+        let beforeId: number | undefined;
+        let inChat = true;
+        if (before !== undefined) {
+          const anchor = this.views.storedOrThrow(before);
+          inChat = this.storage.db.identity.chat(jid)?.jid === anchor.chatJid;
+          beforeId = anchor.id;
+        }
+        const { page, stoppedAt } = inChat ? this.walkForward(jid, limit, afterAnchorId, beforeId, types, effectiveWindow) : { page: [] };
+        const facts = this.windowFactsForward(jid, page, limit, beforeId, afterAnchorId, types, effectiveWindow, stoppedAt);
         const read: ChatRead = {
           ...this.host.synced(this.views.viewsOfStored(page)),
           ...scanStop(stoppedAt),
-          ...(windowed ? this.windowFacts(jid, page, limit, types, window, stoppedAt) : {}),
+          ...facts,
+        };
+        const unconfirmed =
+          before === undefined && types === undefined && effectiveWindow.untilMs === undefined && !facts.window?.more
+            ? this.unconfirmedSends(jid)
+            : [];
+        return unconfirmed.length === 0 ? read : { ...read, unconfirmedSends: unconfirmed };
+      }
+
+      if (before === undefined) {
+        const { page, stoppedAt } = this.walk(jid, limit, undefined, types, effectiveWindow, afterAnchorId);
+        const read: ChatRead = {
+          ...this.host.synced(this.views.viewsOfStored(page)),
+          ...scanStop(stoppedAt),
+          ...(windowed ? this.windowFacts(jid, page, limit, types, effectiveWindow, stoppedAt, undefined, afterAnchorId) : {}),
         };
         // The newest page is where a send handed to WhatsApp would show: until its echo comes, say it may be on its way.
-        const unconfirmed = types === undefined && window.untilMs === undefined ? this.unconfirmedSends(jid) : [];
+        const unconfirmed = types === undefined && effectiveWindow.untilMs === undefined ? this.unconfirmedSends(jid) : [];
         return unconfirmed.length === 0 ? read : { ...read, unconfirmedSends: unconfirmed };
       }
 
       const anchor = this.views.storedOrThrow(before);
       const inChat = this.storage.db.identity.chat(jid)?.jid === anchor.chatJid;
-      const stored = inChat ? this.walk(jid, limit, anchor.id, types, window) : { page: [] };
+      const stored = inChat ? this.walk(jid, limit, anchor.id, types, effectiveWindow, afterAnchorId) : { page: [] };
       // A walk the scan bound stopped has not reached what is stored before it: the phone is not asked, the page says where to go on.
       if (stored.page.length > 0 || stored.stoppedAt !== undefined) {
         return {
           ...this.host.synced(this.views.viewsOfStored(stored.page)),
           ...scanStop(stored.stoppedAt),
-          ...(windowed ? this.windowFacts(jid, stored.page, limit, types, window, stored.stoppedAt) : {}),
+          ...(windowed ? this.windowFacts(jid, stored.page, limit, types, effectiveWindow, stored.stoppedAt, undefined, afterAnchorId) : {}),
         };
       }
       let asked = anchor;
       if (inChat && windowed) {
         // A window whose start is already stored ends here: anything older than it is outside, and the phone is not asked for it.
-        if (window.sinceMs !== undefined && this.storedBefore(jid, idLowerBound(window.sinceMs))) {
+        if (afterAnchorId !== undefined || (effectiveWindow.sinceMs !== undefined && this.storedBefore(jid, idLowerBound(effectiveWindow.sinceMs)))) {
           return { ...this.host.synced([]), window: { more: false, storedFrom: null } };
         }
         // What else the window holds is older than the chat's stored history, whichever id `before` named
@@ -221,13 +250,13 @@ export class AccountReads {
         if (oldest !== null) asked = oldest;
       }
       await this.host.fetchOlder(sock, asked, limit);
-      const fetched = inChat ? this.walk(jid, limit, anchor.id, types, window) : { page: [] };
+      const fetched = inChat ? this.walk(jid, limit, anchor.id, types, effectiveWindow, afterAnchorId) : { page: [] };
       // The phone may hold more than it sent in time: an empty answer says it was asked, never that the chat starts here.
       return {
         ...this.host.synced(this.views.viewsOfStored(fetched.page)),
         older: { askedPhone: true, received: fetched.page.length },
         ...scanStop(fetched.stoppedAt),
-        ...(windowed ? this.windowFacts(jid, fetched.page, limit, types, window, fetched.stoppedAt, asked.id) : {}),
+        ...(windowed ? this.windowFacts(jid, fetched.page, limit, types, effectiveWindow, fetched.stoppedAt, asked.id, afterAnchorId) : {}),
       };
     });
   }
@@ -254,18 +283,49 @@ export class AccountReads {
     types: MessageType[] | undefined,
     window: ReadWindow,
     stoppedAt: StoredMessage | undefined,
-    askedFrom?: number
+    askedFrom?: number,
+    afterId?: number
   ): Pick<ChatRead, "window"> {
     const oldest = page[0];
     const probe = () => {
-      const next = this.walk(jid, 1, oldest!.id, types, window);
+      const next = this.walk(jid, 1, oldest!.id, types, window, afterId);
       return next.page.length > 0 || next.stoppedAt !== undefined;
     };
     const more = stoppedAt !== undefined || (page.length >= limit && oldest !== undefined && probe());
-    if (more || (window.sinceMs !== undefined && this.storedBefore(jid, idLowerBound(window.sinceMs)))) return { window: { more, storedFrom: null } };
+    if (more || afterId !== undefined || (window.sinceMs !== undefined && this.storedBefore(jid, idLowerBound(window.sinceMs)))) {
+      return { window: { more, storedFrom: null } };
+    }
     const first = this.storage.db.messages.coverage(jid).oldest;
     const from = first === null || first.id === askedFrom ? {} : { storedFromId: first.sid };
     return { window: { more, storedFrom: first?.ts ?? null, ...from, startsInside: true } };
+  }
+
+  /** Window facts for forward (`oldest_first`) reading: whether newer messages remain in the window, and whether history starts after `since`. */
+  private windowFactsForward(
+    jid: string,
+    page: readonly StoredMessage[],
+    limit: number,
+    beforeId: number | undefined,
+    afterId: number | undefined,
+    types: MessageType[] | undefined,
+    window: ReadWindow,
+    stoppedAt: StoredMessage | undefined
+  ): Pick<ChatRead, "window"> {
+    const newest = page.at(-1);
+    const probe = () => {
+      const next = this.walkForward(jid, 1, newest!.id, beforeId, types, window);
+      return next.page.length > 0 || next.stoppedAt !== undefined;
+    };
+    const more = stoppedAt !== undefined || (page.length >= limit && newest !== undefined && probe());
+    const nextAfter = more && stoppedAt === undefined && newest !== undefined ? { nextAfter: newest.sid } : {};
+    const startsInside =
+      afterId === undefined &&
+      window.sinceMs !== undefined &&
+      !this.storedBefore(jid, idLowerBound(window.sinceMs));
+    if (!startsInside) return { window: { more, storedFrom: null, ...nextAfter, forward: true } };
+    const first = this.storage.db.messages.coverage(jid).oldest;
+    const from = first === null ? {} : { storedFromId: first.sid };
+    return { window: { more, storedFrom: first?.ts ?? null, ...from, startsInside: true, ...nextAfter, forward: true } };
   }
 
   /**
@@ -291,7 +351,14 @@ export class AccountReads {
    * stops short of `limit` with older messages still stored names the oldest
    * message it looked at (`stoppedAt`), which `before` goes on from.
    */
-  private walk(jid: string, limit: number, before: number | undefined, types?: MessageType[], window: ReadWindow = {}): { page: StoredMessage[]; stoppedAt?: StoredMessage } {
+  private walk(
+    jid: string,
+    limit: number,
+    before: number | undefined,
+    types?: MessageType[],
+    window: ReadWindow = {},
+    afterId?: number
+  ): { page: StoredMessage[]; stoppedAt?: StoredMessage } {
     const db = this.storage.db;
     const wanted = types === undefined || types.length === 0 ? null : new Set<string>(types);
     const out: StoredMessage[] = [];
@@ -305,18 +372,58 @@ export class AccountReads {
         ...(cursor === undefined ? {} : { before: cursor }),
         ...(window.sinceMs === undefined ? {} : { since: window.sinceMs }),
       });
+      let hitFloor = false;
       for (const message of page.items) {
+        if (afterId !== undefined && message.id <= afterId) {
+          hitFloor = true;
+          break;
+        }
         walked++;
         if (window.untilMs !== undefined && message.ts > window.untilMs) continue;
         if (wanted !== null && !wanted.has(message.type)) continue;
         out.push(message);
         if (out.length >= limit) break;
       }
-      if (out.length >= limit || page.nextBefore === null) break;
+      if (out.length >= limit || hitFloor || page.nextBefore === null) break;
       if (walked >= TYPE_FILTER_SCAN) return { page: out.reverse(), stoppedAt: page.items.at(-1)! };
       cursor = page.nextBefore;
     }
     return { page: out.reverse() };
+  }
+
+  /** The oldest `limit` messages of a chat after `afterId` / `sinceMs` and before `beforeId` / `untilMs`, oldest first. */
+  private walkForward(
+    jid: string,
+    limit: number,
+    afterId: number | undefined,
+    beforeId: number | undefined,
+    types?: MessageType[],
+    window: ReadWindow = {}
+  ): { page: StoredMessage[]; stoppedAt?: StoredMessage } {
+    const db = this.storage.db;
+    const wanted = types === undefined || types.length === 0 ? null : new Set<string>(types);
+    const out: StoredMessage[] = [];
+    let cursor = afterId;
+    let walked = 0;
+    for (;;) {
+      const page = db.messages.chatPageForward(jid, {
+        limit: wanted === null ? limit : Math.max(limit, 200),
+        ...(cursor === undefined ? {} : { after: cursor }),
+        ...(beforeId === undefined ? {} : { before: beforeId }),
+        ...(window.sinceMs === undefined ? {} : { since: window.sinceMs }),
+        ...(window.untilMs === undefined ? {} : { until: window.untilMs }),
+      });
+      for (const message of page.items) {
+        walked++;
+        if (wanted !== null && !wanted.has(message.type)) continue;
+        out.push(message);
+        if (out.length >= limit) break;
+      }
+      if (out.length >= limit || page.nextAfter === null) break;
+      if (walked >= TYPE_FILTER_SCAN) return { page: out, stoppedAt: page.items.at(-1)! };
+      cursor = page.nextAfter;
+    }
+    return { page: out };
   }
 
   getRecentMessages(
@@ -474,34 +581,45 @@ export class AccountReads {
       limit = pageLimit(limit);
       const db = this.storage.db;
       const scope = chatId === undefined ? undefined : this.identity.resolveId(chatId);
+      const scopes = opts.chatIds !== undefined && opts.chatIds.length > 0 ? opts.chatIds.map((id) => this.identity.resolveId(id)) : undefined;
+      const scoped = scope !== undefined || scopes !== undefined;
       const from = this.identity.senderFilter(opts.from);
       const filter = {
-        ...(scope === undefined ? {} : { chat: scope }),
+        ...(scopes !== undefined ? { chats: scopes } : scope === undefined ? {} : { chat: scope }),
         ...(from === undefined ? {} : { from }),
         ...(opts.tag === undefined ? {} : { tag: normalizeTag(opts.tag) }),
         ...(opts.sinceMs === undefined ? {} : { since: opts.sinceMs }),
         ...(opts.untilMs === undefined ? {} : { until: opts.untilMs }),
       };
-      const people = scope === undefined ? this.identity.privateScope(opts.private) : null;
+      const people = !scoped ? this.identity.privateScope(opts.private) : null;
       // from naming one of them asks for what they wrote; a quote of anyone else kept #private still loses its words.
       const author = people !== null && from !== undefined && people.names(from) ? from : undefined;
+      const noCatchup = !scoped && from === undefined && opts.tag === undefined ? this.identity.noCatchupScope(opts.noCatchup, query) : null;
       const found: StoredMessage[] = [];
       let privateOmitted = 0;
+      let noCatchupOmitted = 0;
+      const noCatchupChatIds = new Set<number>();
       let capped: number | null = null;
       let examined = 0;
       const start = opts.before === undefined ? undefined : db.messages.get(opts.before)?.id;
       if (opts.before !== undefined && start === undefined) throw new WazapError("MESSAGE_NOT_FOUND", "The search cursor message is no longer available.");
       for (let before: number | undefined = start; found.length < limit; ) {
-        const batch = opts.literal !== undefined || (people !== null && author === undefined) ? Math.max(limit, SEARCH_FILTER_BATCH) : limit;
+        const batch = opts.literal !== undefined || (people !== null && author === undefined) || noCatchup !== null ? Math.max(limit, SEARCH_FILTER_BATCH) : limit;
         const page = db.search.text({ query, limit: Math.min(batch, SEARCH_FILTER_SCAN - examined), ...filter, ...(before === undefined ? {} : { before }) });
         for (const message of page.items) {
           examined++;
-          if (opts.literal !== undefined && !literalMatches(`${message.text ?? ""}\n${message.transcript ?? ""}`, opts.literal)) continue;
+          if (opts.literal !== undefined && !literalMatches(`${message.text ?? ""}\n${message.transcript ?? ""}\n${message.ocrText ?? ""}\n${message.docText ?? ""}`, opts.literal)) continue;
           // The status feed is not a chat: a story never answers a search.
           if (message.chatJid === STATUS_JID) continue;
           // Nor does someone kept #private, unless the call names them: counted, never an entry without its words.
           if (author === undefined && people?.message(message)) {
             privateOmitted++;
+            continue;
+          }
+          // Direct chats tagged #no-catchup (bots, assistants) stay out of broad searches unless named.
+          if (noCatchup?.message(message)) {
+            noCatchupOmitted++;
+            noCatchupChatIds.add(message.chatId);
             continue;
           }
           found.push(message);
@@ -525,6 +643,11 @@ export class AccountReads {
       }
       if (capped !== null) answer.scanCapped = { searchedBackTo: isoWithOffset(secondOfId(capped) * 1000) };
       if (privateOmitted > 0) answer.privateOmitted = privateOmitted;
+      if (noCatchupOmitted > 0) {
+        answer.noCatchupOmitted = noCatchupOmitted;
+        const names = noCatchup?.namesFor(noCatchupChatIds) ?? [];
+        if (names.length > 0) answer.noCatchupNames = names;
+      }
       return answer;
     });
   }
@@ -533,9 +656,11 @@ export class AccountReads {
   refreshSearch(messages: readonly SearchSource[], chatId: string | undefined, opts: SearchOptions, query: string): SearchRefresh {
     this.host.ensureConnected();
     const db = this.storage.db;
-    const people = chatId === undefined ? this.identity.privateScope(opts.private) : null;
+    const scoped = chatId !== undefined || (opts.chatIds !== undefined && opts.chatIds.length > 0);
+    const people = !scoped ? this.identity.privateScope(opts.private) : null;
     const from = this.identity.senderFilter(opts.from);
     const author = people !== null && from !== undefined && people.names(from) ? from : undefined;
+    const noCatchup = !scoped && from === undefined && opts.tag === undefined ? this.identity.noCatchupScope(opts.noCatchup, query) : null;
     const stored: StoredMessage[] = [];
     const rows: SearchRefresh["rows"] = [];
     const sources = new Map<number, SearchSource>();
@@ -543,6 +668,7 @@ export class AccountReads {
       const message = db.messages.get(source.message_id);
       if (message === null || message.chatJid === STATUS_JID
         || (author === undefined && people?.message(message))
+        || noCatchup?.message(message)
         || message.ts < (opts.sinceMs ?? 0) || message.ts > (opts.untilMs ?? Number.MAX_SAFE_INTEGER)) continue;
       stored.push(message);
       sources.set(message.id, source);
@@ -554,7 +680,7 @@ export class AccountReads {
       const fresh = this.views.viewOfStored(message, lookups);
       // An edit has invalidated the rank: leave it for a fresh search rather
       // than attaching yesterday's semantic score to today's words.
-      if (fresh.text !== source.text || fresh.transcript !== source.transcript) continue;
+      if (fresh.text !== source.text || fresh.transcript !== source.transcript || fresh.ocr_text !== source.ocr_text || fresh.doc_text !== source.doc_text) continue;
       unchanged.push(message);
       rows.push({ source_id: source.message_id, message: people === null ? fresh : withoutPrivateQuote(fresh, people, author) });
     }
@@ -571,14 +697,15 @@ export class AccountReads {
    * of the chat) inside the time filters, the status feed left out. Null when
    * the database cannot say; a coverage miss never takes a search down.
    */
-  searchCoverage(chatId: string | undefined, opts: { sinceMs?: number; untilMs?: number; tag?: string } = {}): SearchCoverage | null {
+  searchCoverage(chatId: string | undefined, opts: { sinceMs?: number; untilMs?: number; tag?: string; chatIds?: readonly string[] } = {}): SearchCoverage | null {
     try {
       const db = this.storage.readyDb();
       if (db === null) return null;
       const scope = chatId === undefined ? undefined : this.identity.resolveId(chatId);
+      const scopes = opts.chatIds !== undefined && opts.chatIds.length > 0 ? opts.chatIds.map((id) => this.identity.resolveId(id)) : undefined;
       const cov = db.search.coverage({
         excludeKinds: ["status"],
-        ...(scope === undefined ? {} : { chat: scope }),
+        ...(scopes !== undefined ? { chats: scopes } : scope === undefined ? {} : { chat: scope }),
         ...(opts.tag === undefined ? {} : { tag: normalizeTag(opts.tag) }),
         ...(opts.sinceMs === undefined ? {} : { since: opts.sinceMs }),
         ...(opts.untilMs === undefined ? {} : { until: opts.untilMs }),

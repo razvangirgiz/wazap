@@ -40,7 +40,11 @@ function nearDuplicate(a: Set<string>, b: Set<string>): boolean {
   return shared / (a.size + b.size - shared) >= NEAR_DUP_JACCARD;
 }
 
-export function diversify<T>(ranked: readonly T[], of: (hit: T) => { chat: string; text: string }): T[] {
+export function diversify<T>(
+  ranked: readonly T[],
+  of: (hit: T) => { chat: string; text: string },
+  chatCap: (chat: string) => number = () => CHAT_SLOT_CAP
+): T[] {
   const picked: T[] = [];
   const overflow: T[] = [];
   const duplicates: T[] = [];
@@ -61,7 +65,7 @@ export function diversify<T>(ranked: readonly T[], of: (hit: T) => { chat: strin
       continue;
     }
     const held = perChat.get(chat) ?? 0;
-    if (held >= CHAT_SLOT_CAP) {
+    if (held >= chatCap(chat)) {
       overflow.push(hit);
       continue;
     }

@@ -367,6 +367,10 @@ export interface MessageView {
   call?: CallInfo;
   /** What a voice note or audio message says, once it has been transcribed. */
   transcript?: string;
+  /** Text read from an image by local OCR when WAZAP_OCR=local is enabled. */
+  ocr_text?: string;
+  /** Text extracted from a kept/opened document when WAZAP_INDEX_DOCUMENTS=local is enabled. */
+  doc_text?: string;
   forwarded: boolean;
   /** One per person who reacted; `name` resolves `sender` the way a message's sender is. */
   reactions?: Array<{ emoji: string; sender: string; name: string }>;
@@ -564,8 +568,12 @@ export interface SearchOptions {
   from?: string;
   /** Only the direct chats of the people filed under this tag. */
   tag?: string;
+  /** Multiple chat ids to search together (e.g. a contact with two numbers). */
+  chatIds?: readonly string[];
   /** Without a chat, the #private rule (src/private-contacts.ts): their messages are left out and counted, unless `from` names them. */
   private?: PrivateRule;
+  /** Without chat_id/from/tag, direct chats tagged #no-catchup (bots, assistants) are left out unless the query names them. */
+  noCatchup?: PrivateRule;
 }
 
 /**
@@ -600,6 +608,10 @@ export interface RecallAnswer {
   lexicalCapped: boolean;
   /** Matches from people kept #private that ranked among these, left out; absent when none were. */
   privateOmitted?: number;
+  /** Matches from direct chats tagged #no-catchup that were left out; absent when none were. */
+  noCatchupOmitted?: number;
+  /** Display names of the omitted #no-catchup chats (capped), so agents know who was skipped. */
+  noCatchupNames?: string[];
   contexts?: SearchContext[];
 }
 
@@ -623,7 +635,7 @@ export interface SearchRefresh {
   contexts?: SearchContext[];
   dropped: number;
 }
-export type SearchSource = Pick<MessageView, "message_id" | "text" | "transcript">;
+export type SearchSource = Pick<MessageView, "message_id" | "text" | "transcript" | "ocr_text" | "doc_text">;
 
 export interface HandledResult {
   chat_id: string;
@@ -794,6 +806,8 @@ export interface MediaOpenOptions {
   /** Write no file at all: a remote session can never open one. */
   noFile?: boolean;
   detail?: MediaDetail;
+  /** Cap each rendered image view in bytes (e.g. a shared budget across a high-detail batch). */
+  maxImageBytes?: number;
   pages?: PageRange;
   /**
    * The call was cancelled, or its session closed: the wait for a download
@@ -997,6 +1011,10 @@ export interface UnconfirmedSend {
 export interface ReadWindow {
   sinceMs?: number;
   untilMs?: number;
+  /** Exclusive lower message_id bound (from `after: <message_id>`), so same-second messages are never skipped. */
+  afterId?: string;
+  /** Start at since/after (or the oldest stored message) and read forward instead of taking the newest tail. */
+  oldestFirst?: boolean;
 }
 
 export interface ChatRead extends Synced<MessageView[]> {
@@ -1008,18 +1026,19 @@ export interface ChatRead extends Synced<MessageView[]> {
    */
   older?: { askedPhone: true; received: number };
   /**
-   * A window read (ReadWindow): whether the window holds messages older than
-   * the page (`more`), and when the window reaches back past the chat's stored
-   * history (`startsInside`), the time and id of its oldest stored message of
-   * any type (`storedFrom`, epoch ms, and `storedFromId`; null and absent when
-   * nothing of the chat is stored).
+   * A window read (ReadWindow): whether the window holds more messages than
+   * the page showed (`more`: older by default, newer with `oldestFirst`, with
+   * `nextAfter` to page forward), and when the window reaches back past the
+   * chat's stored history (`startsInside`), the time and id of its oldest stored
+   * message of any type (`storedFrom`, epoch ms, and `storedFromId`; null and
+   * absent when nothing of the chat is stored).
    */
-  window?: { more: boolean; storedFrom: number | null; storedFromId?: string; startsInside?: true };
+  window?: { more: boolean; storedFrom: number | null; storedFromId?: string; startsInside?: true; nextAfter?: string; forward?: true };
   /**
    * Set when `types` left the page short and the walk past what they leave
-   * out stopped at its bound with older messages still stored: the id of the
-   * oldest message it looked at, which `before` goes on from. Older messages
-   * may still match; the page is not all there is.
+   * out stopped at its bound with more messages still stored: the id of the
+   * last message it looked at, which `before` (or `after` with `oldest_first`)
+   * goes on from. More messages may still match; the page is not all there is.
    */
   scanStoppedAt?: string;
 }
@@ -1031,6 +1050,10 @@ export interface SearchAnswer extends Synced<MessageView[]> {
   scanCapped?: { searchedBackTo: string };
   /** Matches from people kept #private, left out before the limit; absent when none were. */
   privateOmitted?: number;
+  /** Matches from direct chats tagged #no-catchup, left out before the limit; absent when none were. */
+  noCatchupOmitted?: number;
+  /** Display names of the omitted #no-catchup chats (capped), so agents know who was skipped. */
+  noCatchupNames?: string[];
 }
 
 /** list_contacts on one account (src/list-contacts.ts). */
@@ -1092,7 +1115,7 @@ export interface WhatsAppApi {
   chatNames?(chatIds: readonly string[]): Record<string, string>;
   hasMessage(id: string): boolean;
   /** What search ran across by words; optional, so a stand-in need not count. */
-  searchCoverage?(chatId: string | undefined, opts?: { sinceMs?: number; untilMs?: number; tag?: string }): SearchCoverage | null;
+  searchCoverage?(chatId: string | undefined, opts?: { sinceMs?: number; untilMs?: number; tag?: string; chatIds?: readonly string[] }): SearchCoverage | null;
   hasDraft(id: string): boolean;
   /** `phone` absent: the number this account was last linked to, when one is known. */
   link(phone?: string): Promise<PairingInfo>;

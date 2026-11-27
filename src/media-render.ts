@@ -21,6 +21,8 @@ export interface RenderInput {
   filename?: string;
   buffer: Buffer;
   detail: MediaDetail;
+  /** Optional per-image byte budget (e.g. shared across a high-detail batch). */
+  maxImageBytes?: number;
   pages?: PageRange;
   /** The call was cancelled: the waits for a slot and the ffmpeg, pdftoppm, SVG and document-reader runs stop, and so does this. */
   signal?: AbortSignal;
@@ -72,7 +74,7 @@ function sniffedMime(mime: string, buffer: Buffer): string {
  * shipped, if any.
  */
 async function imageRendition(input: RenderInput): Promise<MediaRendition> {
-  const view = await imageView(input.buffer, input.detail, input.mime, undefined, input.signal);
+  const view = await imageView(input.buffer, input.detail, input.mime, input.maxImageBytes, input.signal);
   if (view !== null) {
     return {
       kind: "image",

@@ -97,7 +97,7 @@ export { DIGEST_MEDIA, OPENED_MEDIA } from "./digest.js";
 export type { Digest, DigestContact, DigestMedia, DigestSpan, InboundAggregate, TailMessage, WindowMessage } from "./digest.js";
 export { ADDRESS_BOOK_MAX_PAGE, FIND_SCORES, LOOKUP_MIN_DIGITS } from "./contacts.js";
 export type { AddressBookEntry, AddressBookInput, AddressBookKey, AddressBookOrder, AddressBookPage, ContactCandidate, Contacts, FindInput, FindKind, FindResult, FindVerdict, LeftGroup, LookupInput, MatchClass, MatchSource, QualifierHit, QualifierSource } from "./contacts.js";
-export { DIMINUTIVES, INFLECTIONS, RELATIONSHIPS, diminutivesOf, inflectionForms, nameWords, relationOf, relationNameMatch } from "./names.js";
+export { DIMINUTIVES, INFLECTIONS, RELATIONSHIPS, diminutivesOf, inflectionForms, isKnownBase, isRealName, nameWords, relationOf, relationNameMatch } from "./names.js";
 export type { NewDraft, SendRecord, SendState, Sends } from "./sends.js";
 export { SENT_KEYS_RETENTION_MS } from "./sends.js";
 export { SCHEDULE_KEEP_CLOSED_MS } from "./schedule.js";

@@ -6,13 +6,13 @@
  */
 
 import type { Config } from "../config.js";
-import type { AccountDb, StoredMessage } from "../db/index.js";
+import { RRF_K, type AccountDb, type HybridHit, type StoredMessage } from "../db/index.js";
 import { asWazapError, WazapError } from "../errors.js";
 import { STATUS_JID } from "../ids.js";
 import { log, logError } from "../logger.js";
 import { searchableText } from "../messages.js";
 import { normalizeTag, withoutPrivateQuote } from "../private-contacts.js";
-import { diversify } from "../recall/variety.js";
+import { CHAT_SLOT_CAP, diversify } from "../recall/variety.js";
 import {
   EMBED_MODELS,
   EmbedEngine,
@@ -28,10 +28,12 @@ import type { RecallAnswer, RecallHit, SearchOptions, Synced } from "../wa-types
 import type { AccountIdentity } from "./identity.js";
 import { pageLimit } from "./util.js";
 import type { MessageViews } from "./views.js";
-import { CONTEXT_CANDIDATES, contextRows, laterOf, namedEvidence, rankWithContext, renderContexts } from "./search-context.js";
+import { CONTEXT_CANDIDATES, contextRows, extractPersonBoost, laterOf, namedEvidence, rankWithContext, renderContexts } from "./search-context.js";
 
 /** Hybrid hits recall ranks for variety before it cuts the list to the limit. */
 const RECALL_RERANK_WINDOW = 100;
+/** Person-scoped semantic boost hits merged per broad query naming a known contact. */
+const PERSON_BOOST_LIMIT = 15;
 
 /** A match found by meaning loses half its way down to 70% each month: recency orders close matches, never buries a clearly closer old one. */
 const RECALL_RECENCY_HALF_LIFE_MS = 30 * 86_400_000;
@@ -124,46 +126,119 @@ export class AccountRecall {
       const settings = this.readyRecall();
       limit = pageLimit(limit);
       const scope = chatId === undefined ? undefined : this.identity.resolveId(chatId);
+      const scopes = opts.chatIds !== undefined && opts.chatIds.length > 0 ? opts.chatIds.map((id) => this.identity.resolveId(id)) : undefined;
+      const scoped = scope !== undefined || scopes !== undefined;
       const from = this.identity.senderFilter(opts.from);
       const vector = await this.queryVector(query);
       const db = this.host.db();
-      let people = scope === undefined ? this.identity.privateScope(opts.private) : null;
+      let people = !scoped ? this.identity.privateScope(opts.private) : null;
       let author = people !== null && from !== undefined && people.names(from) ? from : undefined;
-      // Wide enough that the variety rules below have something to promote, and as wide again when #private hits may take slots.
+      const broad = !scoped && from === undefined && opts.tag === undefined;
+      let noCatchup = broad ? this.identity.noCatchupScope(opts.noCatchup, query) : null;
+      // Wide enough that the variety rules below have something to promote, and as wide again when #private or #no-catchup hits may take slots.
       const window = Math.max(limit + 5, RECALL_RERANK_WINDOW);
+      const widen = (people !== null && author === undefined) || noCatchup !== null;
       const result = await db.vectors.hybridAsync({
         query,
         model: settings.model,
         vector: vector ?? null,
-        limit: people === null || author !== undefined ? window : 2 * window,
+        limit: widen ? 2 * window : window,
+        ...(widen ? { semanticCandidates: 2 * window } : {}),
         minSimilarity: settings.minSimilarity,
         recencyHalfLifeMs: RECALL_RECENCY_HALF_LIFE_MS,
-        ...(scope === undefined ? {} : { chat: scope }),
+        ...(noCatchup === null ? {} : { excludeChatIds: [...noCatchup.chatIds] }),
+        ...(scopes !== undefined ? { chats: scopes } : scope === undefined ? {} : { chat: scope }),
         ...(from === undefined ? {} : { from }),
         ...(opts.tag === undefined ? {} : { tag: normalizeTag(opts.tag) }),
         ...(opts.sinceMs === undefined ? {} : { since: opts.sinceMs }),
         ...(opts.untilMs === undefined ? {} : { until: opts.untilMs }),
       });
       // A hit with no query word in it answers on its meaning alone, held to the model's higher bar for that.
-      const ranked = result.hits.filter(
+      const ranked: HybridHit[] = result.hits.filter(
         (hit) => hit.message.chatJid !== STATUS_JID && (hit.lexicalRank !== null || (hit.similarity ?? 0) >= settings.meaningOnlyMinSimilarity)
       );
-      // Read again after the scan: with the cache on it is awaited, and a #private tag added meanwhile must still hide.
-      people = scope === undefined ? this.identity.privateScope(opts.private) : null;
+      // When a broad query names a person who has direct chats here, messages inside their chat rarely repeat their name:
+      // score their chats against the name-stripped query too and fuse those hits in.
+      const personBoost = broad && vector !== undefined ? extractPersonBoost(db, this.identity, query, noCatchup) : null;
+      if (personBoost !== null) {
+        const strippedVector = await this.queryVector(personBoost.strippedQuery).catch(() => undefined);
+        if (strippedVector !== undefined) {
+          const perChat = personBoost.chats.flatMap((chatJid) =>
+            db.vectors.vectorSearch({
+              model: settings.model,
+              vector: strippedVector,
+              chat: chatJid,
+              limit: PERSON_BOOST_LIMIT,
+              minSimilarity: settings.minSimilarity,
+              recencyHalfLifeMs: RECALL_RECENCY_HALF_LIFE_MS,
+              ...(opts.sinceMs === undefined ? {} : { since: opts.sinceMs }),
+              ...(opts.untilMs === undefined ? {} : { until: opts.untilMs }),
+            })
+          );
+          perChat.sort((a, b) => b.score - a.score || b.message.id - a.message.id);
+          const byId = new Map(ranked.map((hit) => [hit.message.id, hit]));
+          perChat.slice(0, PERSON_BOOST_LIMIT).forEach((hit, index) => {
+            if (hit.message.chatJid === STATUS_JID) return;
+            const contribution = 1 / (RRF_K + index + 1);
+            const existing = byId.get(hit.message.id);
+            if (existing !== undefined) {
+              existing.score += contribution;
+              if (existing.similarity === null || hit.similarity > existing.similarity) existing.similarity = hit.similarity;
+              if (existing.semanticRank === null) existing.semanticRank = index + 1;
+            } else {
+              const added: HybridHit = {
+                message: hit.message,
+                score: contribution,
+                lexicalRank: null,
+                semanticRank: index + 1,
+                similarity: hit.similarity,
+              };
+              ranked.push(added);
+              byId.set(hit.message.id, added);
+            }
+          });
+          ranked.sort((a, b) => b.score - a.score || b.message.id - a.message.id);
+        }
+      }
+      // Read again after the scan: with the cache on it is awaited, and a #private or #no-catchup tag added meanwhile must still hide.
+      people = !scoped ? this.identity.privateScope(opts.private) : null;
       author = people !== null && from !== undefined && people.names(from) ? from : undefined;
+      noCatchup = broad ? this.identity.noCatchupScope(opts.noCatchup, query) : null;
       const hidden = new Set(people === null || author !== undefined ? [] : ranked.filter((hit) => people!.message(hit.message)));
-      // The window the variety rules walk stays as wide as without anyone #private, so the rest rank as they would.
-      const shown = ranked.filter((hit) => !hidden.has(hit)).slice(0, window);
+      const hiddenNoCatchup = new Set(noCatchup === null ? [] : ranked.filter((hit) => !hidden.has(hit) && noCatchup!.message(hit.message)));
+      // The window the variety rules walk stays as wide as without anyone #private or #no-catchup, so the rest rank as they would.
+      const shown = ranked.filter((hit) => !hidden.has(hit) && !hiddenNoCatchup.has(hit)).slice(0, window);
       const contexts = new Map<number, StoredMessage[]>();
       const candidates = opts.includeContext ? shown.slice(0, Math.max(limit, CONTEXT_CANDIDATES)) : shown;
       if (opts.includeContext) {
         for (const hit of candidates) contexts.set(hit.message.id, contextRows(db, hit.message, opts, people, author));
       }
-      const rankedContexts = opts.includeContext ? rankWithContext(namedEvidence(candidates, query, contexts, this.identity), query, contexts) : candidates;
-      const kept = diversify(rankedContexts, (hit) => ({ chat: hit.message.chatJid, text: `${hit.message.text ?? ""} ${hit.message.transcript ?? ""}` })).slice(0, limit);
+      const rankedContexts = opts.includeContext
+        ? rankWithContext(namedEvidence(candidates, query, contexts, this.identity, personBoost?.names), query, contexts, this.identity)
+        : candidates;
+      const boostChats = personBoost === null ? null : new Set(personBoost.chats);
+      const boostCap = Math.max(CHAT_SLOT_CAP, Math.ceil(limit / 2));
+      const kept = diversify(
+        rankedContexts,
+        (hit) => ({
+          chat: hit.message.chatJid,
+          text: `${hit.message.text ?? ""} ${hit.message.transcript ?? ""} ${hit.message.ocrText ?? ""} ${hit.message.docText ?? ""}`,
+        }),
+        boostChats === null ? undefined : (chat) => (boostChats.has(chat) ? boostCap : CHAT_SLOT_CAP)
+      ).slice(0, limit);
       // The #private hits that would have been among these: ranked at or above the lowest one kept, or all of them when fewer came.
       const floor = kept.length < limit ? -Infinity : Math.min(...kept.map((hit) => hit.score));
       const privateOmitted = [...hidden].filter((hit) => hit.score >= floor).length;
+      const noCatchupOmitted = Math.max(
+        [...hiddenNoCatchup].filter((hit) => hit.score >= floor).length,
+        result.excludedLexical ?? 0
+      );
+      const omittedChatIds = new Set<number>(result.excludedLexicalChatIds ?? []);
+      for (const hit of hiddenNoCatchup) if (hit.score >= floor) omittedChatIds.add(hit.message.chatId);
+      const noCatchupNames =
+        noCatchupOmitted > 0 && noCatchup !== null
+          ? noCatchup.namesFor(omittedChatIds, people === null ? undefined : (jid) => people!.names(jid))
+          : [];
       const views = this.views.viewsOfStored(kept.map((hit) => hit.message)).map((view) => (people === null ? view : withoutPrivateQuote(view, people, author)));
       const hits = kept.map((hit, i) => ({
         score: hit.score,
@@ -173,8 +248,17 @@ export class AccountRecall {
         message: views[i]!,
         from_index: hit.message.raw === null,
       })) satisfies RecallAnswer["hits"];
-      return this.host.synced({ hits, index: this.recallStatus(), lexicalCapped: result.lexicalCapped, ...(privateOmitted > 0 ? { privateOmitted } : {}),
-        ...(opts.includeContext && !opts.deferContext ? { contexts: renderContexts(kept.map((hit) => hit.message), contexts, this.views, people, author, query, laterOf(db, kept.map((hit) => hit.message), contexts, opts, people, author)) } : {}) });
+      return this.host.synced({
+        hits,
+        index: this.recallStatus(),
+        lexicalCapped: result.lexicalCapped,
+        ...(privateOmitted > 0 ? { privateOmitted } : {}),
+        ...(noCatchupOmitted > 0 ? { noCatchupOmitted } : {}),
+        ...(noCatchupNames.length > 0 ? { noCatchupNames } : {}),
+        ...(opts.includeContext && !opts.deferContext
+          ? { contexts: renderContexts(kept.map((hit) => hit.message), contexts, this.views, people, author, query, laterOf(db, kept.map((hit) => hit.message), contexts, opts, people, author)) }
+          : {}),
+      });
     });
   }
 
@@ -201,7 +285,7 @@ export class AccountRecall {
     return this.recallEnv;
   }
 
-  /** What the index embeds for a message: the words a person chose, capped to the model's window. */
+  /** What the index embeds for a message: the words a person chose (plus OCR text on images), capped to the model's window. */
   private recallWords(message: StoredMessage): string | null {
     const maxChars = this.recallEnv instanceof WazapError ? RECALL_TEXT_CAP : EMBED_MODELS[this.recallEnv.model].maxChars;
     const raw = this.views.rawOf(message);
@@ -210,6 +294,14 @@ export class AccountRecall {
       words = message.transcript === null ? message.text : `${message.text ?? ""} "${message.transcript}"`;
     } else {
       words = searchableText(raw, message.transcript === null ? undefined : this.host.transcriptRecordOf(message));
+    }
+    const ocr = message.ocrText?.trim() ?? "";
+    if (ocr !== "") {
+      words = words === null || words.trim() === "" ? ocr : `${words}\n${ocr}`;
+    }
+    const doc = message.docText?.trim() ?? "";
+    if (doc !== "") {
+      words = words === null || words.trim() === "" ? doc : `${words}\n${doc}`;
     }
     return words === null || words.trim() === "" ? null : words.slice(0, maxChars);
   }

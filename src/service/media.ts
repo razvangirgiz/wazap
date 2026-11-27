@@ -79,6 +79,8 @@ export interface MediaHost {
   keptMedia(messageId: string, raw: WAMessage): Promise<Buffer | null>;
   /** WhatsApp's copy, just downloaded: kept too when the kept-media settings want it. */
   offerKept(messageId: string, raw: WAMessage, buffer: Buffer): Promise<void>;
+  /** Called once an original is opened on demand (e.g. to kick opt-in OCR on images or text indexing on documents). */
+  onOpened?(messageId: string, buffer: Buffer, mime: string, filename?: string): void;
 }
 
 export class AccountMedia {
@@ -277,11 +279,13 @@ export class AccountMedia {
         ...(info.filename === undefined ? {} : { filename: info.filename }),
         buffer,
         detail: opts.detail ?? "standard",
+        ...(opts.maxImageBytes === undefined ? {} : { maxImageBytes: opts.maxImageBytes }),
         ...(opts.pages === undefined ? {} : { pages: opts.pages }),
         ...(opts.signal === undefined ? {} : { signal: opts.signal }),
       });
       // Gone while it was being made: nothing of it is returned.
       this.views.messageOrThrow(messageId);
+      this.host.onOpened?.(messageId, buffer, info.mime, info.filename);
       return { mime: info.mime, size: buffer.length, source, ...(written ?? {}), rendition };
     });
   }

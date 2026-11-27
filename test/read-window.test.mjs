@@ -275,15 +275,62 @@ test("mezzenger's names work too: after (a message or a time) opens the window, 
   const today = new Date(`${dayOf(0)}T12:00:00`).getTime();
   arrive("unu", today - 3 * 3_600_000);
   const anchor = arrive("doi", today - 2 * 3_600_000);
+  arrive("doi-bis", today - 2 * 3_600_000);
   arrive("trei", today - 3_600_000);
   const afterMessage = await call("read_messages", { chat_id: ANA, after: anchor });
-  assert.deepEqual(afterMessage.structuredContent.messages.map((m) => m.text), ["trei"], "only what came after that message");
+  assert.deepEqual(afterMessage.structuredContent.messages.map((m) => m.text), ["doi-bis", "trei"], "only what came after that message, including same-second arrivals");
   const afterTime = await call("read_messages", { chat_id: ANA, after: `${dayOf(0)}T09:30` });
-  assert.deepEqual(afterTime.structuredContent.messages.map((m) => m.text), ["doi", "trei"]);
+  assert.deepEqual(afterTime.structuredContent.messages.map((m) => m.text), ["doi", "doi-bis", "trei"]);
   const paged = await call("read_messages", { chat_id: ANA, cursor: anchor });
   assert.deepEqual(paged.structuredContent.messages.map((m) => m.text), ["unu"], "cursor is before");
   const both = await call("read_messages", { chat_id: ANA, after: anchor, since: dayOf(0) });
   assert.equal(textError(both).error, "INVALID_ID");
+});
+
+test("oldest_first starts at since/after and pages forward with after and next_after", async (t) => {
+  const { call, arrive } = setup(t);
+  const start = Date.now() - 2 * DAY;
+  arrive("înainte", start - DAY);
+  const ids = [];
+  for (let i = 0; i < 5; i++) ids.push(arrive(`msg ${i}`, start + i * 60_000));
+  const since = new Date(start - 1000).toISOString();
+
+  // Default returns the newest tail, with a hint pointing to oldest_first.
+  const tail = await call("read_messages", { chat_id: ANA, since, limit: 2 });
+  assert.deepEqual(tail.structuredContent.messages.map((m) => m.text), ["msg 3", "msg 4"]);
+  assert.ok(tail.structuredContent.notes.some((note) => /oldest_first: true/.test(note)));
+
+  // oldest_first starts right at since and pages forward with after + oldest_first.
+  const first = await call("read_messages", { chat_id: ANA, since, limit: 2, oldest_first: true });
+  assert.deepEqual(first.structuredContent.messages.map((m) => m.text), ["msg 0", "msg 1"]);
+  assert.equal(first.structuredContent.more_in_window, true);
+  assert.equal(first.structuredContent.next_after, ids[1]);
+  assert.ok(first.content[0].text.includes(`after "${ids[1]}"`), "next_after is in the text note");
+
+  const second = await call("read_messages", { chat_id: ANA, after: first.structuredContent.next_after, limit: 2, oldest_first: true });
+  assert.deepEqual(second.structuredContent.messages.map((m) => m.text), ["msg 2", "msg 3"]);
+  assert.equal(second.structuredContent.more_in_window, true);
+  assert.equal(second.structuredContent.next_after, ids[3]);
+
+  const last = await call("read_messages", { chat_id: ANA, after: second.structuredContent.next_after, limit: 2, oldest_first: true });
+  assert.deepEqual(last.structuredContent.messages.map((m) => m.text), ["msg 4"]);
+  assert.equal(last.structuredContent.more_in_window, undefined);
+  assert.equal(last.structuredContent.next_after, undefined);
+
+  // Bounded by until too.
+  const bounded = await call("read_messages", {
+    chat_id: ANA,
+    since,
+    until: new Date(start + 90_000).toISOString(),
+    limit: 10,
+    oldest_first: true,
+  });
+  assert.deepEqual(bounded.structuredContent.messages.map((m) => m.text), ["msg 0", "msg 1"]);
+  assert.equal(bounded.structuredContent.more_in_window, undefined);
+
+  // Refused on stories.
+  const stories = textError(await call("read_messages", { chat_id: "status", oldest_first: true }));
+  assert.equal(stories.error, "INVALID_ID");
 });
 
 test("search takes cursor and sender_id the way mezzenger names them", async (t) => {

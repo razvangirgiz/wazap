@@ -32,10 +32,12 @@
  * Tags are stored normalized (lowercase, without "#"), so the tag a user files
  * as "#private" or "Private" is `private`. Groups carry no tags.
  */
-import { chatKindOf, type AccountDb } from "./db/index.js";
+import { chatKindOf, inflectionForms, isRealName, nameWords, type AccountDb } from "./db/index.js";
 import type { MessageView } from "./wa-types.js";
 
 export const PRIVATE_TAG = "private";
+/** The tag that keeps a chat out of catch_up and broad search (a bot, an agent). */
+export const NO_CATCHUP_TAG = "no-catchup";
 
 /** A tag is a lowercase token: "#Client  Ro" files as "client-ro". */
 export function normalizeTag(raw: string): string {
@@ -150,4 +152,87 @@ export function withoutWords(view: MessageView): MessageView {
 export function withoutPrivateQuote(view: MessageView, people: PrivatePeople, named?: string): MessageView {
   if (view.quoted === undefined || view.quoted.sender === named || !people.jids.has(view.quoted.sender)) return view;
   return { ...view, quoted: { ...view.quoted, text: PRIVATE_TEXT } };
+}
+
+/** Direct chats tagged #no-catchup (bots, assistants) that a broad search skips unless the query names them. */
+export interface NoCatchupChats {
+  readonly none: boolean;
+  /** Chat row ids (including folding chats) of the #no-catchup direct chats to skip. */
+  readonly chatIds: ReadonlySet<number>;
+  /** Real display name of each skipped chat row id, for informative omitted-match notices. */
+  readonly chatNames: ReadonlyMap<number, string>;
+  /** Whether a stored message sits in one of those chats. */
+  message(message: { chatId: number; chatJid: string }): boolean;
+  /** Deduplicated display names for omitted chat row ids, capped to keep notices short. */
+  namesFor(chatIds: Iterable<number>, excludeJid?: (jid: string) => boolean, limit?: number): string[];
+}
+
+/**
+ * Direct chats filed under `#no-catchup` on this account or on another account
+ * of the call (`others`), leaving out any whose real contact/chat name appears
+ * in `query` (so asking about a bot by name still searches it).
+ */
+export function noCatchupChats(db: AccountDb, others: readonly string[] = [], query?: string): NoCatchupChats {
+  const { contactIds, jids } = db.digest.tagged(NO_CATCHUP_TAG, others);
+  if (contactIds.size === 0 && jids.size === 0) {
+    return { none: true, chatIds: new Set(), chatNames: new Map(), message: () => false, namesFor: () => [] };
+  }
+  const queryForms =
+    query === undefined
+      ? null
+      : new Set(
+          nameWords(query)
+            .filter((word) => [...word].length >= 3)
+            .flatMap(inflectionForms)
+        );
+  const chatIds = new Set<number>();
+  const chatNames = new Map<number, string>();
+  const chatJids = new Map<number, string>();
+  const excludedJids = new Set<string>();
+  const seenChats = new Set<number>();
+  for (const jid of jids) {
+    if (chatKindOf(jid) !== "direct") continue;
+    const chat = db.identity.chat(jid);
+    if (chat === null || chat.kind !== "direct" || seenChats.has(chat.id)) continue;
+    seenChats.add(chat.id);
+    const contact = chat.contactId === null ? null : db.identity.contactById(chat.contactId);
+    const labels = [chat.name, contact?.name, contact?.notify, contact?.pushName, contact?.verifiedName].filter(
+      (value): value is string => isRealName(value)
+    );
+    if (queryForms !== null && queryForms.size > 0) {
+      const words = labels.flatMap(nameWords).filter((word) => [...word].length >= 3);
+      if (words.some((word) => queryForms.has(word))) continue;
+    }
+    const display = labels[0];
+    for (const id of db.identity.chatIdsOf(chat)) {
+      chatIds.add(id);
+      chatJids.set(id, chat.jid);
+      if (display !== undefined) chatNames.set(id, display);
+    }
+    excludedJids.add(chat.jid);
+    excludedJids.add(jid);
+  }
+  const none = chatIds.size === 0 && excludedJids.size === 0;
+  return {
+    none,
+    chatIds,
+    chatNames,
+    message(message) {
+      return !none && (chatIds.has(message.chatId) || excludedJids.has(message.chatJid));
+    },
+    namesFor(ids, excludeJid, limit = 3) {
+      const seen = new Set<string>();
+      const out: string[] = [];
+      for (const id of ids) {
+        const jid = chatJids.get(id);
+        if (jid !== undefined && excludeJid?.(jid) === true) continue;
+        const name = chatNames.get(id);
+        if (name === undefined || seen.has(name)) continue;
+        seen.add(name);
+        out.push(name);
+        if (out.length >= limit) break;
+      }
+      return out;
+    },
+  };
 }

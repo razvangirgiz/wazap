@@ -163,6 +163,10 @@ export interface StoredMessage {
   text: string | null;
   transcript: string | null;
   transcriptInfo: TranscriptInfo | null;
+  /** Text read from an image by local OCR (v9): null = not scanned, "" = none found, non-empty = indexed. */
+  ocrText: string | null;
+  /** Text extracted from a kept/opened document (v10): null = not indexed, "" = none/unsupported, non-empty = indexed. */
+  docText: string | null;
   raw: Uint8Array | null;
   quotedSid: string | null;
   status: number | null;
@@ -289,6 +293,8 @@ export interface Counts {
 export interface MessageFilter {
   /** A chat jid in any known spelling. */
   chat?: string;
+  /** Multiple chat jids in any known spelling (e.g. a contact with two numbers). */
+  chats?: readonly string[];
   /** "me", or a sender jid in any known spelling. */
   from?: string;
   /** Inclusive, epoch ms. */

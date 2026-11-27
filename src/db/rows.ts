@@ -53,6 +53,8 @@ export interface MessageRow {
   text: string | null;
   transcript: string | null;
   transcript_info: string | null;
+  ocr_text: string | null;
+  doc_text: string | null;
   raw: Uint8Array | null;
   quoted_sid: string | null;
   status: number | null;
@@ -72,7 +74,7 @@ export const MESSAGE_COLUMNS = `m.id, coalesce(ck.id, c.id) AS chat_id, coalesce
   (CASE WHEN m.from_me = 1 THEN 'true' ELSE 'false' END) || '_' || coalesce(ck.jid, c.jid) || '_' || m.key_id AS sid,
   m.key_id, m.from_me, coalesce(sk.id, s.id) AS sender_id,
   coalesce(s.phone_jid, s.lid, sk.phone_jid, sk.lid) AS sender_jid, m.ts, m.type, m.quoted_sid, m.status, m.edited_at,
-  m.expires_at, m.deleted_at, m.text, m.transcript, m.transcript_info, m.raw, m.flags`;
+  m.expires_at, m.deleted_at, m.text, m.transcript, m.transcript_info, m.ocr_text, m.doc_text, m.raw, m.flags`;
 
 /** Messages drive the join, so a range or index scan over them is never reordered behind chats. */
 export const MESSAGE_FROM = `messages m CROSS JOIN chats c ON c.id = m.chat_id LEFT JOIN chats ck ON ck.id = c.merged_into
@@ -181,6 +183,8 @@ export function messageFromRow(row: MessageRow): StoredMessage {
     text: row.text,
     transcript: row.transcript,
     transcriptInfo: transcriptInfoOf(row.transcript_info),
+    ocrText: row.ocr_text,
+    docText: row.doc_text,
     raw: row.raw,
     quotedSid: row.quoted_sid,
     status: row.status,

@@ -81,6 +81,8 @@ export interface StorageHost {
   embedFeed(): EmbedFeed | null;
   /** Kept media settles what a crash left and applies its limits, once the database is ready. */
   bootKeep(): Promise<void>;
+  /** Opt-in local image OCR starts scanning kept images, once kept media has settled. */
+  bootOcr?(): void;
 }
 
 export class AccountStorage {
@@ -299,6 +301,7 @@ export class AccountStorage {
     }
     await this.reconcilePreviews(db).catch((err: unknown) => logError("preview reconcile", err));
     await this.host.bootKeep().catch((err: unknown) => logError("kept media", err));
+    this.host.bootOcr?.();
     await this.scheduleFileCleanup().catch(() => {});
     this.retireLegacy();
     if (this.legacyTimer === null && !this.host.stopped()) {

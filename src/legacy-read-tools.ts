@@ -6,7 +6,7 @@ import { checkSearchSource, finalizeSearch, searchOwner, SEARCH_CHANGED } from "
 import { resolveToolAccount } from "./account-resolve.js";
 import { chatByName } from "./chat-name.js";
 import { resolveMessageId, resolveMessageIdAcross } from "./message-ref.js";
-import { privateRule } from "./catchup.js";
+import { privateRule, searchRules } from "./catchup.js";
 import { compactRecent } from "./recent-compact.js";
 import { WazapError } from "./errors.js";
 import { MAX_PREVIEWS, previewsLine } from "./previews.js";
@@ -189,20 +189,23 @@ export function legacyReadTools(current: readonly ToolDef[]): ToolDef[] {
         changed_during_read: payload.changed_during_read,
         from_resolved: payload.from_resolved as string | undefined,
         coverage: payload.coverage, freshness: payload.freshness, sync: payload.sync, notes: payload.notes as string[] | undefined,
-        private_omitted: payload.private_omitted as number | undefined, scan_capped: payload.scan_capped, next_before: payload.next_before });
+        private_omitted: payload.private_omitted as number | undefined,
+        no_catchup_omitted: payload.no_catchup_omitted as number | undefined,
+        scan_capped: payload.scan_capped, next_before: payload.next_before });
       messages.push(...hits.map((message, rank) => ({ ...message, account_id: binding.id, account_rank: rank + 1 })));
       contexts.push(...((payload.contexts ?? []) as SearchContext[]).map((context) => ({ ...context, account_id: binding.id })));
     }
     // One account may change while another one's identity/model work awaits.
     // Refresh all rules, then re-read every source synchronously before merge.
-    const rules = await Promise.all(bindings.map((b) => args.chat_id === undefined ? privateRule(ctx.hub, b.id) : undefined));
+    const rules = await Promise.all(bindings.map((b) => args.chat_id === undefined ? searchRules(ctx.hub, b.id) : undefined));
     const finalMessages: typeof messages = [];
     const finalContexts: typeof contexts = [];
     let changed = accounts.some((entry) => entry.changed_during_read === true);
     for (const [i, binding] of bindings.entries()) {
       checkSearchSource(ctx.hub, binding.id, binding.wa, owners[i]!);
+      const broad = chatId === undefined && accounts[i]!.from_resolved === undefined && args.tag === undefined;
       const final = finalizeSearch(binding.wa, messages.filter((m) => m.account_id === binding.id), contexts.filter((c) => c.account_id === binding.id),
-        chatId, { includeContext: args.include_context !== false, private: rules[i], from: accounts[i]!.from_resolved,
+        chatId, { includeContext: args.include_context !== false, private: rules[i]?.private, ...(broad && rules[i] !== undefined ? { noCatchup: rules[i]!.noCatchup } : {}), from: accounts[i]!.from_resolved,
           sinceMs: parseMoment(args.since as string | undefined, "since"), untilMs: parseMoment(args.until as string | undefined, "until", true) }, args.query as string);
       finalMessages.push(...final.messages);
       finalContexts.push(...(final.contexts ?? []).map((c) => ({ ...c, account_id: binding.id })));

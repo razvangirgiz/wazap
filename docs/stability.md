@@ -14,7 +14,7 @@ breaking.
 | CLI | command and flag names, exit code 0 vs non-zero, `status --json`, `--version --json`, `account add --json` | new commands, flags and JSON keys | the human text on stderr |
 | Webhook | event names, signature scheme, the payload fields below | new events (opt-in), new payload fields | delivery latency, retry timing |
 | Storage | forward-only migrations, released migrations frozen, the pre-migration copy | new schema versions | the SQLite schema as a format for other tools |
-| Settings | the 35 `WAZAP_*` in `.env.example` and `docs/settings.md` | new settings | anything not listed there |
+| Settings | the 37 `WAZAP_*` in `.env.example` and `docs/settings.md` | new settings | anything not listed there |
 
 ## 1. The MCP surface
 
@@ -53,7 +53,8 @@ holds for a session whose answer format is `full`: any client that does not
 name itself as an assistant, on a static token, over OAuth or over stdio, which
 is what a program built on wazap is, and every session under
 `WAZAP_ANSWER_FORMAT=full`. A session whose client is an assistant (Claude
-Code, claude.ai, Codex, Cursor, ChatGPT, Gemini CLI, by the name it gives at
+Code, claude.ai, Codex, Cursor, ChatGPT, Gemini CLI, Hermes, OpenClaw,
+Antigravity, Windsurf, OpenCode or Cline, by the name it gives at
 `initialize`), whatever its credential, gets the `text` format instead: the same tools, arguments and error
 codes, a tool list with no `outputSchema`, and each answer as its text and
 image blocks alone, which carry every id and cursor a later call takes. Its
@@ -231,7 +232,7 @@ whenever that event is enabled.
 ## 5. Data on disk
 
 - The account database carries its schema version in `PRAGMA user_version`; it
-  is 8 in this release.
+  is 10 in this release.
 - Migrations run forward only, in order, and every released version has a chain
   test, so a new migration cannot ship without one. A released migration is
   never edited — a new shape is a new migration at the end — and the chain test
@@ -263,12 +264,12 @@ code or the tests supports a third-party reader.
 
 ## 6. Settings
 
-Stable: the 35 `WAZAP_*` listed in `.env.example` and in the settings table of
+Stable: the 37 `WAZAP_*` listed in `.env.example` and in the settings table of
 `docs/settings.md` — `WAZAP_DATA_DIR`, `WAZAP_READ_ONLY`, `WAZAP_PERSIST_HISTORY`,
 `WAZAP_HOST`, `WAZAP_PORT`, `WAZAP_READ_TOKEN`, `WAZAP_WRITE_TOKEN`, `WAZAP_ANSWER_FORMAT`,
 `WAZAP_PUBLIC_URL`, `WAZAP_OAUTH_PASSWORD`, `WAZAP_TRUST_PROXY`,
 `WAZAP_TRANSCRIBE`, `WAZAP_TRANSCRIBE_API_KEY`, `WAZAP_TRANSCRIBE_AUTH`, `WAZAP_TRANSCRIBE_ALLOW_API`,
-`WAZAP_TRANSCRIBE_AUTO`, `WAZAP_RECALL`, `WAZAP_RECALL_CACHE_MAX_MB`,
+`WAZAP_TRANSCRIBE_AUTO`, `WAZAP_RECALL`, `WAZAP_RECALL_CACHE_MAX_MB`, `WAZAP_OCR`, `WAZAP_INDEX_DOCUMENTS`,
 `WAZAP_WEBHOOK`, `WAZAP_WEBHOOK_URL`, `WAZAP_WEBHOOK_SECRET`,
 `WAZAP_WEBHOOK_EVENTS`, `WAZAP_WEBHOOK_AUTH`, `WAZAP_WEBHOOK_CHATS`,
 `WAZAP_WEBHOOK_TAG`, `WAZAP_WEBHOOK_COALESCE`, `WAZAP_WEBHOOK_RETRY_401`,

@@ -11,7 +11,7 @@ import { WazapError } from "../errors.js";
 import { LidRegistry, lidKey } from "../identity.js";
 import { isGroupId, isNoiseJid } from "../ids.js";
 import { logError } from "../logger.js";
-import { privatePeople, type PrivatePeople } from "../private-contacts.js";
+import { noCatchupChats, privatePeople, type NoCatchupChats, type PrivatePeople } from "../private-contacts.js";
 import type { PrivateRule, StatusInfo } from "../wa-types.js";
 
 /**
@@ -97,6 +97,16 @@ export class AccountIdentity {
     if (rule === undefined) return null;
     const people = privatePeople(this.host.db(), rule.others);
     return people.none ? null : people;
+  }
+
+  /**
+   * Direct chats tagged #no-catchup (bots, assistants) that a broad search
+   * skips unless the query itself names them; null when none apply.
+   */
+  noCatchupScope(rule: PrivateRule | undefined, query?: string): NoCatchupChats | null {
+    if (rule === undefined) return null;
+    const chats = noCatchupChats(this.host.db(), rule.others, query);
+    return chats.none ? null : chats;
   }
 
   senderFilter(from: string | undefined): string | undefined {

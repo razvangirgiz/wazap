@@ -17,7 +17,7 @@ import {
   type ToolResult,
 } from "./tool-runtime.js";
 export { toolError, type ToolCtx, type RegisterOpts } from "./tool-runtime.js";
-import { CATCHUP_INPUT, CATCHUP_OUTPUT, privateRule, runCatchUp } from "./catchup.js";
+import { CATCHUP_INPUT, CATCHUP_OUTPUT, privateRule, runCatchUp, searchRules } from "./catchup.js";
 import { coverageNote, indexCoverageNote, searchCoverage } from "./coverage.js";
 import { looksUnnamed, renderDraft, type DraftPayload, type DraftView } from "./drafts.js";
 import { ERROR_GUIDE, WazapError, asWazapError } from "./errors.js";
@@ -136,7 +136,8 @@ const READ_OUTPUT = {
   resolved: RESOLVED_OUT,
   since: z.string().optional().describe("The window asked for, as read"),
   until: z.string().optional(),
-  more_in_window: z.literal(true).optional().describe("The window holds older messages than these: page on with before"),
+  more_in_window: z.literal(true).optional().describe("More remain in window: page with before, or after with oldest_first"),
+  next_after: z.string().optional().describe("oldest_first: pass as after for newer messages"),
   types: z.array(z.string()).optional(),
   hours: z.number().optional(),
   count: z.number(),
@@ -213,6 +214,7 @@ const SEARCH_OUTPUT = {
   ),
   scan_capped: z.boolean().optional().describe("Older matches may be missing: narrow the search"),
   private_omitted: z.number().optional().describe("Matches from people tagged #private, left out: chat_id or from shows them"),
+  no_catchup_omitted: z.number().optional().describe("Matches from #no-catchup chats left out: pass chat_id"),
   searched_back_to: z.string().optional().describe("Older messages were not searched: narrow the search"),
   coverage: OPEN_OBJECT.nullable().optional().describe("null: it could not be counted"),
   index: OPEN_OBJECT.optional(),
@@ -425,11 +427,10 @@ const HINTS: Record<string, ToolHints> = {
  * (a message_id or a time) opens the window the way since does, just past that
  * message. The wazap names win nothing: naming both is refused, never guessed.
  */
-async function readAliases(
-  args: { before?: string; cursor?: string; since?: string; after?: string },
-  wa: Pick<WhatsAppApi, "getMessage">
-): Promise<{ before?: string; since?: string }> {
-  const out: { before?: string; since?: string } = {};
+function readAliases(
+  args: { before?: string; cursor?: string; since?: string; after?: string }
+): { before?: string; since?: string; afterId?: string } {
+  const out: { before?: string; since?: string; afterId?: string } = {};
   if (args.cursor !== undefined) {
     if (args.before !== undefined && args.before !== args.cursor) {
       throw new WazapError("INVALID_ID", "before and cursor name the same thing and differ.", "Pass only before");
@@ -439,13 +440,7 @@ async function readAliases(
   if (args.after !== undefined) {
     if (args.since !== undefined) throw new WazapError("INVALID_ID", "after and since both say where the window starts.", "Pass only since");
     if (/^\d{4}-\d{2}-\d{2}/.test(args.after.trim())) out.since = args.after.trim();
-    else {
-      const anchor = await wa.getMessage(args.after);
-      const ms = Date.parse(anchor.timestamp);
-      if (!Number.isFinite(ms)) throw new WazapError("INVALID_ID", `after: ${args.after} has no time to start from.`, "Pass since with a time instead");
-      // From the next second: WhatsApp's times are whole seconds, so one sent the same second is left out too.
-      out.since = isoWithOffset(ms + 1000);
-    }
+    else out.afterId = args.after;
   }
   return out;
 }
@@ -511,7 +506,26 @@ function privateNote(omitted: number | undefined): string | null {
   return `${omitted} ${omitted === 1 ? "match" : "matches"} from people tagged #private left out: name the chat (chat_id) or the person (from) to search them.`;
 }
 
-const chatId = z.string().min(1).describe("Chat id, or a phone number");
+/** `no_catchup_omitted`, only when a broad search left #no-catchup chats out. */
+function noCatchupFields(omitted: number | undefined): Record<string, unknown> {
+  return omitted === undefined ? {} : { no_catchup_omitted: omitted };
+}
+
+function noCatchupNote(omitted: number | undefined, names?: readonly string[]): string | null {
+  if (omitted === undefined) return null;
+  const who = names !== undefined && names.length > 0 ? ` (${names.join(", ")})` : "";
+  return `${omitted} ${omitted === 1 ? "match" : "matches"} from chats tagged #no-catchup${who} left out: pass chat_id to search them.`;
+}
+
+/** Formats OCR/document text: compact single-line snippet in list views, full text in get_message / full_text. */
+function compactExtraText(text: string, cap: number | null, listCap = 220): string {
+  if (cap === null) return text;
+  const single = text.replace(/\s*\r?\n\s*/g, " · ").replace(/[ \t]{2,}/g, " ").trim();
+  return truncate(single, Math.min(cap, listCap));
+}
+
+const rawChatId = z.string().min(1);
+const chatId = rawChatId.describe("Chat id, or a phone number");
 
 const messageId = z.string().min(5);
 
@@ -730,7 +744,7 @@ const TOOLS: readonly ToolDef[] = [
   tool({
     name: "read_messages",
     title: "Read messages from a WhatsApp chat",
-    description: `Read one chat, oldest to newest: the latest messages, older ones with before (asks the phone past local history), or a window with since (or after)/until. Long texts are cut unless full_text. chat_id "status": the stories of the last hours (a day at most), shown nowhere else.`,
+    description: `Read one chat, oldest to newest: latest messages, older with before (asks phone past local history), or a window with since (or after)/until (oldest_first starts from since/after). Long texts cut unless full_text. chat_id "status": stories.`,
     schema: {
       chat_id: chatId.describe('Chat id, number or name (one chat only); "status": stories'),
       limit: z.number().int().min(1).max(200).default(20),
@@ -739,6 +753,7 @@ const TOOLS: readonly ToolDef[] = [
       since: moment,
       after: z.string().min(4).optional().describe("A time or message_id"),
       until: moment,
+      oldest_first: z.boolean().optional().describe("Start from since/after and read forward"),
       types: messageTypes,
       include_previews: includePreviews,
       hours: z.number().int().min(1).max(24).optional().describe('The last N hours; "status": 24 by default'),
@@ -752,17 +767,16 @@ const TOOLS: readonly ToolDef[] = [
       // A name ("Ana", "mama", "Bloc 12") is read as the one chat find_contact resolves it to, on its account.
       const named = await chatByName(given.chat_id, given.account_id, outer);
       const ctx = named === undefined ? outer : { ...outer, wa: named.binding.wa, accountId: named.binding.id };
-      // after's message is looked up on the account the chat is read from.
-      const args = { ...given, ...(await readAliases(given, ctx.wa)) };
+      const args = { ...given, ...readAliases(given) };
       const chat_id = named?.chatId ?? args.chat_id;
-      const { limit, before, since, until, types, include_previews, hours, full_text } = args;
+      const { limit, before, since, afterId, until, oldest_first, types, include_previews, hours, full_text } = args;
       const { wa } = ctx;
       if (isStatusChat(chat_id)) {
         if (before !== undefined) {
           throw new WazapError("INVALID_ID", "Stories are not paged: before does not apply to status.", "Pass hours (1-24) instead");
         }
-        if (since !== undefined || until !== undefined) {
-          throw new WazapError("INVALID_ID", "Stories are read by hours: since and until do not apply to status.", "Pass hours (1-24) instead");
+        if (since !== undefined || afterId !== undefined || until !== undefined || oldest_first === true) {
+          throw new WazapError("INVALID_ID", "Stories are read by hours: since, after, until and oldest_first do not apply to status.", "Pass hours (1-24) instead");
         }
         const window = hours ?? 24;
         const result = await wa.getStories(window, { private: await privateRule(ctx.hub, ctx.accountId) });
@@ -789,18 +803,31 @@ const TOOLS: readonly ToolDef[] = [
           previewBlocks(previews)
         );
       }
-      if (hours !== undefined && since !== undefined) {
+      if (hours !== undefined && (since !== undefined || afterId !== undefined)) {
         throw new WazapError("INVALID_ID", "hours and since both say where the window starts.", "Pass one of them");
       }
       // The last N hours are a window that starts N hours ago: read, noted and echoed as one that since opened.
       const from = hours === undefined ? since : isoWithOffset(Date.now() - hours * 3_600_000);
-      const window = readWindow(from, until);
+      const window: ReadWindow = {
+        ...readWindow(from, until),
+        ...(afterId === undefined ? {} : { afterId }),
+        ...(oldest_first === true ? { oldestFirst: true } : {}),
+      };
+      const hasWindow = window.sinceMs !== undefined || window.untilMs !== undefined || window.afterId !== undefined || window.oldestFirst === true;
       // Without a window the service is asked as it always was.
-      const result = await (window.sinceMs === undefined && window.untilMs === undefined ? wa.readMessages(chat_id, limit, before, types) : wa.readMessages(chat_id, limit, before, types, window));
+      const result = await (hasWindow ? wa.readMessages(chat_id, limit, before, types, window) : wa.readMessages(chat_id, limit, before, types));
       const previews = include_previews ? await wa.previews(newestFirst(result.data), MAX_PREVIEWS, ctx.signal) : [];
       const unconfirmed = result.unconfirmedSends ?? [];
       const noOlder = result.older?.received === 0 ? OLDER_NONE_NOTE : null;
-      const span = [hours === undefined ? null : `last ${hours}h`, since === undefined ? null : `since ${since}`, until === undefined ? null : `until ${until}`].filter(Boolean).join(", ");
+      const span = [
+        hours === undefined ? null : `last ${hours}h`,
+        since === undefined ? null : `since ${since}`,
+        afterId === undefined ? null : `after ${afterId}`,
+        until === undefined ? null : `until ${until}`,
+        oldest_first === true ? "oldest first" : null,
+      ]
+        .filter(Boolean)
+        .join(", ");
       const windowNote = windowNoteOf(result, span, window.untilMs);
       const notes = [...unconfirmed.map(unconfirmedNote), noOlder, windowNote, previewGap(result.data, previews, include_previews)];
       return ok(
@@ -820,6 +847,7 @@ const TOOLS: readonly ToolDef[] = [
           ...(window.sinceMs === undefined ? {} : { since: isoWithOffset(window.sinceMs) }),
           ...(window.untilMs === undefined ? {} : { until: isoWithOffset(window.untilMs) }),
           ...(result.window?.more === true ? { more_in_window: true } : {}),
+          ...(result.window?.nextAfter === undefined ? {} : { next_after: result.window.nextAfter }),
           types,
           count: result.data.length,
           preview_count: previews.length,
@@ -838,9 +866,9 @@ const TOOLS: readonly ToolDef[] = [
   tool({
     name: "remember",
     title: "Remember something about a person",
-    description: `Keep what the user says about someone, locally, never on WhatsApp: a note, tags, details find_contact matches ({"relatie": "mama"}), or handled: true for an ask dealt with elsewhere. #private keeps their words out of what you did not ask about them by name; #no-catchup keeps them out of catch_up.`,
+    description: `Keep locally (never WhatsApp): note, tags, details find_contact matches ({"relatie":"mama"}), or handled: true. #private keeps their words out of what you did not ask about them by name; #no-catchup skips catch_up & broad search.`,
     schema: {
-      chat_id: z.union([chatId, z.array(chatId).min(1).max(50)]).describe("Several: tags and fields only"),
+      chat_id: z.union([rawChatId, z.array(rawChatId).min(1).max(50)]).describe("Chat id/phone, or list (tags/fields only)"),
       note: z.string().max(200).optional().describe('"" removes it'),
       add_tags: z.array(z.string().min(1).max(40)).max(30).optional().describe('e.g. ["client"]'),
       remove_tags: z.array(z.string().min(1).max(40)).optional(),
@@ -942,7 +970,7 @@ const TOOLS: readonly ToolDef[] = [
       cursor: messageId.optional(),
       match: z.enum(["auto", "hybrid", "words"]).default("auto").describe('auto: questions by meaning, codes/quotes by words'),
       include_context: z.boolean().default(true).describe("Nearby sources for the best five hits"),
-      chat_id: chatId.optional().describe("Chat id, number or name (one chat only)"),
+      chat_id: z.union([rawChatId, z.array(rawChatId).min(1).max(10)]).optional().describe("Chat id, number, name, or up to 10"),
       limit: z.number().int().min(1).max(50).default(20),
       since: moment,
       until: moment,
@@ -959,9 +987,42 @@ const TOOLS: readonly ToolDef[] = [
         throw new WazapError("INVALID_ID", "An argument and its mezzenger name (before/cursor, from/sender_id) differ.", "Pass only before and from");
       }
       const args = { ...given, before: given.before ?? cursor, from: given.from ?? sender_id };
-      const named = args.chat_id === undefined ? undefined : await chatByName(args.chat_id, args.account_id, outer);
-      const ctx = named === undefined ? outer : { ...outer, wa: named.binding.wa, accountId: named.binding.id };
-      const chat_id = named?.chatId ?? args.chat_id;
+      let named: NamedChat | undefined;
+      let ctx = outer;
+      let chat_id: string | undefined;
+      let chatIds: string[] | undefined;
+      if (Array.isArray(args.chat_id)) {
+        const raw = [...new Set(args.chat_id.map((id) => id.trim()).filter(Boolean))];
+        if (raw.length === 1) {
+          named = await chatByName(raw[0]!, args.account_id, outer);
+          if (named !== undefined) ctx = { ...outer, wa: named.binding.wa, accountId: named.binding.id };
+          chat_id = named?.chatId ?? raw[0]!;
+        } else if (raw.length > 1) {
+          const resolved: string[] = [];
+          let resolvedAccount: { id: string; wa: WhatsAppApi } | undefined;
+          for (const entry of raw) {
+            const hit = await chatByName(entry, resolvedAccount?.id ?? args.account_id, outer);
+            if (hit !== undefined) {
+              if (resolvedAccount !== undefined && resolvedAccount.id !== hit.binding.id) {
+                throw new WazapError("INVALID_ID", "Chats in one search must belong to the same account.", "Pass chats from one account, or search each account separately with account_id");
+              }
+              resolvedAccount = { id: hit.binding.id, wa: hit.binding.wa };
+              resolved.push(hit.chatId);
+            } else {
+              resolved.push(entry);
+            }
+          }
+          if (resolvedAccount !== undefined) ctx = { ...outer, wa: resolvedAccount.wa, accountId: resolvedAccount.id };
+          const unique = [...new Set(resolved)];
+          if (unique.length === 1) chat_id = unique[0]!;
+          else chatIds = unique;
+        }
+      } else if (args.chat_id !== undefined) {
+        named = await chatByName(args.chat_id, args.account_id, outer);
+        if (named !== undefined) ctx = { ...outer, wa: named.binding.wa, accountId: named.binding.id };
+        chat_id = named?.chatId ?? args.chat_id;
+      }
+      const scoped = chat_id !== undefined || chatIds !== undefined;
       const { query, match, limit, since, until, from, tag, full_text, before, include_context } = args;
       const { wa } = ctx;
       const owner = searchOwner(wa);
@@ -970,11 +1031,28 @@ const TOOLS: readonly ToolDef[] = [
       const sinceMs = parseMoment(since, "since");
       const untilMs = parseMoment(until, "until", true);
       // Without a chat, someone tagged #private is left out unless from names them (src/private-contacts.ts).
-      const filters = { sinceMs, untilMs, from: resolvedFrom, before, includeContext: include_context, deferContext: typeof wa.refreshSearch === "function", literal: plan.literal,
+      // Broad searches (no chat_id, from or tag) also leave out direct chats tagged #no-catchup unless the query names them.
+      const broad = !scoped && resolvedFrom === undefined && tag === undefined;
+      const rules = !scoped ? await searchRules(ctx.hub, ctx.accountId) : undefined;
+      const filters = {
+        sinceMs,
+        untilMs,
+        from: resolvedFrom,
+        before,
+        includeContext: include_context,
+        deferContext: typeof wa.refreshSearch === "function",
+        literal: plan.literal,
+        ...(chatIds === undefined ? {} : { chatIds }),
         ...(tag === undefined ? {} : { tag }),
-        ...(chat_id === undefined ? { private: await privateRule(ctx.hub, ctx.accountId) } : {}) };
+        ...(rules === undefined ? {} : { private: rules.private }),
+        ...(broad && rules !== undefined ? { noCatchup: rules.noCatchup } : {}),
+      };
       const scope = [
-        chat_id ? `in ${named === undefined ? chat_id : `${named.name} (${chat_id}), whom "${named.asked}" names`}` : null,
+        chatIds !== undefined
+          ? `in ${chatIds.length} chats`
+          : chat_id
+            ? `in ${named === undefined ? chat_id : `${named.name} (${chat_id}), whom "${named.asked}" names`}`
+            : null,
         tag ? `with people tagged ${tag}` : null,
         from ? `from ${from}` : null,
         since ? `since ${since}` : null,
@@ -1001,11 +1079,22 @@ const TOOLS: readonly ToolDef[] = [
             result.data.hits.map((hit) => hit.message)
           );
           const fresh = await readFreshness(wa, chat_id);
-          const finalRule = !ctx.deferSearchFinalization && chat_id === undefined ? await privateRule(ctx.hub, ctx.accountId) : filters.private;
+          const finalRules = !ctx.deferSearchFinalization && !scoped ? await searchRules(ctx.hub, ctx.accountId) : undefined;
           checkSearchSource(ctx.hub, ctx.accountId, wa, owner);
           const rankedMessages = result.data.hits.map(({ message: _message, ...rank }, i) => ({ ...identified[i]!, ...rank }));
           const final = ctx.deferSearchFinalization ? { messages: rankedMessages, contexts: result.data.contexts, changed: false }
-            : finalizeSearch(wa, rankedMessages, result.data.contexts, chat_id, { ...filters, private: finalRule }, plan.query);
+            : finalizeSearch(
+                wa,
+                rankedMessages,
+                result.data.contexts,
+                chat_id,
+                {
+                  ...filters,
+                  ...(finalRules === undefined ? {} : { private: finalRules.private }),
+                  ...(broad && finalRules !== undefined ? { noCatchup: finalRules.noCatchup } : {}),
+                },
+                plan.query
+              );
           const hits = withChatNames(wa, final.messages).map(({ score, rank_score, similarity, matched, from_index, ...message }) => ({ score, rank_score, similarity, matched, from_index, message }));
           const capped = result.data.lexicalCapped === true;
           const answer: IdentifiedRecallAnswer = { ...result.data, hits, contexts: final.contexts, index: result.data.index, lexicalCapped: capped };
@@ -1015,6 +1104,7 @@ const TOOLS: readonly ToolDef[] = [
             result.data.index.state === "indexing" ? indexingNote(result.data.index) : null,
             capped ? LEXICAL_CAP_NOTE : null,
             privateNote(result.data.privateOmitted),
+            noCatchupNote(result.data.noCatchupOmitted, result.data.noCatchupNames),
             freshnessNote(fresh),
             final.changed ? SEARCH_CHANGED : null,
           ];
@@ -1036,6 +1126,7 @@ const TOOLS: readonly ToolDef[] = [
               messages: hits.map(({ message, ...rank }) => ({ ...message, ...rank })),
               scan_capped: capped,
               ...privateFields(result.data.privateOmitted),
+              ...noCatchupFields(result.data.noCatchupOmitted),
               index: result.data.index,
               freshness: fresh,
               ...notesField(notes),
@@ -1047,17 +1138,34 @@ const TOOLS: readonly ToolDef[] = [
       const found = await wa.searchMessages(plan.query, chat_id, limit, filters);
       const identified = await withSenderIdentity(wa, found.data);
       const fresh = await readFreshness(wa, chat_id);
-      const finalRule = !ctx.deferSearchFinalization && chat_id === undefined ? await privateRule(ctx.hub, ctx.accountId) : filters.private;
+      const finalRules = !ctx.deferSearchFinalization && !scoped ? await searchRules(ctx.hub, ctx.accountId) : undefined;
       checkSearchSource(ctx.hub, ctx.accountId, wa, owner);
       const final = ctx.deferSearchFinalization ? { messages: identified, contexts: found.contexts, changed: false }
-        : finalizeSearch(wa, identified, found.contexts, chat_id, { ...filters, private: finalRule }, plan.query);
+        : finalizeSearch(
+            wa,
+            identified,
+            found.contexts,
+            chat_id,
+            {
+              ...filters,
+              ...(finalRules === undefined ? {} : { private: finalRules.private }),
+              ...(broad && finalRules !== undefined ? { noCatchup: finalRules.noCatchup } : {}),
+            },
+            plan.query
+          );
       const messages = withChatNames(wa, final.messages);
       const assessment = assessSearch(query, messages, plan.match === "words");
-      const cov = searchCoverage(wa, chat_id, { sinceMs, untilMs, ...(tag === undefined ? {} : { tag }) });
+      const cov = searchCoverage(wa, chat_id, {
+        sinceMs,
+        untilMs,
+        ...(tag === undefined ? {} : { tag }),
+        ...(chatIds === undefined ? {} : { chatIds }),
+      });
       const notes = [
         unavailable === null ? null : UNAVAILABLE_NOTE,
         scanCapNotice(found),
         privateNote(found.privateOmitted),
+        noCatchupNote(found.noCatchupOmitted, found.noCatchupNames),
         freshnessNote(fresh),
         final.changed ? SEARCH_CHANGED : null,
       ];
@@ -1069,7 +1177,7 @@ const TOOLS: readonly ToolDef[] = [
           renderMessages(title, messages, new Map(), [...notes, why], listTextCap(full_text), 160, introduced) + renderSearchContexts(final.contexts, new Set(messages.map((m) => m.message_id)), introduced),
           assessment.note,
           // How much of the history the words covered: the structured answer's `coverage`, a line of its own here.
-          coverageNote(cov, chat_id !== undefined || tag !== undefined),
+          coverageNote(cov, chat_id !== undefined || (chatIds !== undefined && chatIds.length === 1) || tag !== undefined),
           nextBefore === null ? null : `More: search again with before "${nextBefore}" for older matches.`,
         ]
           .filter(Boolean)
@@ -1088,6 +1196,7 @@ const TOOLS: readonly ToolDef[] = [
           messages,
           ...scanCapFields(found),
           ...privateFields(found.privateOmitted),
+          ...noCatchupFields(found.noCatchupOmitted),
           coverage: cov,
           freshness: fresh,
           ...notesField(notes),
@@ -1216,7 +1325,7 @@ const TOOLS: readonly ToolDef[] = [
       message_ids: z.array(messageId).min(1).max(MAX_MEDIA_BATCH).optional().describe("Up to 8, instead of message_id"),
       save_to: z.string().min(1).optional().describe("Absolute directory; a recording then makes no transcript"),
       language: z.string().min(2).max(16).optional().describe('What is spoken, e.g. "ro"'),
-      detail: z.enum(["standard", "high"]).optional().describe("high: small print"),
+      detail: z.enum(["standard", "high"]).optional().describe("high: small print (≤4 in batch)"),
       pages: z.string().max(16).optional().describe('e.g. "2-4"'),
       // The handler branches on whether it was given, like get_message.
       account_id: ACCOUNT_ID.optional(),
@@ -1232,16 +1341,22 @@ const TOOLS: readonly ToolDef[] = [
         const one = await mediaOf(message_id, args, ctx);
         return ok(one.lines.join("\n"), one.structured, one.blocks);
       }
-      // A batch is many answers in one: every image at the standard view, one document's pages only by itself.
-      // A list of one id (catch_up's media_ids often is) is still answered in items, and may take detail and pages.
-      const several = new Set(message_ids).size > 1;
-      if (several && detail === "high") {
-        throw new WazapError("INVALID_ID", 'detail: "high" reads one message at a time.', 'Call get_media with message_id and detail: "high" for the one with small print');
+      // A batch of up to 4 images may ask for detail: "high" under one shared high-detail byte budget;
+      // larger batches stay at standard views, and one document's pages still apply to one message at a time.
+      const unique = new Set(message_ids);
+      const several = unique.size > 1;
+      if (detail === "high" && unique.size > MAX_HIGH_DETAIL_BATCH) {
+        throw new WazapError(
+          "INVALID_ID",
+          `detail: "high" reads at most ${MAX_HIGH_DETAIL_BATCH} messages at a time.`,
+          `Pass at most ${MAX_HIGH_DETAIL_BATCH} message_ids with detail: "high", or leave detail out for standard views`
+        );
       }
       if (several && pages !== undefined) {
         throw new WazapError("INVALID_ID", "pages picks the pages of one document.", "Call get_media with message_id and pages for that document");
       }
-      return mediaBatch(message_ids!, args, ctx);
+      const maxImageBytes = several && detail === "high" ? Math.floor(HIGH_BATCH_TOTAL_BYTES / unique.size) : undefined;
+      return mediaBatch(message_ids!, { ...args, ...(maxImageBytes === undefined ? {} : { maxImageBytes }) }, ctx);
     },
   }),
 
@@ -1600,10 +1715,15 @@ function waitSignal(ctx: ToolCtx): { signal?: AbortSignal } {
   return { signal: signals.length === 1 ? signals[0]! : AbortSignal.any(signals) };
 }
 
+/** High-detail images allowed in one message_ids call, sharing one single-image high byte budget (1.5 MB). */
+const MAX_HIGH_DETAIL_BATCH = 4;
+const HIGH_BATCH_TOTAL_BYTES = 1_500_000;
+
 interface MediaArgs {
   save_to?: string;
   language?: string;
   detail?: "standard" | "high";
+  maxImageBytes?: number;
   pageRange?: ReturnType<typeof parsePages>;
   account_id?: string;
 }
@@ -1615,7 +1735,7 @@ interface MediaOne {
   blocks: ContentBlock[];
 }
 
-async function mediaOf(message_id: string, { save_to, language, detail, pageRange, account_id }: MediaArgs, ctx: ToolCtx, inBatch = false): Promise<MediaOne> {
+async function mediaOf(message_id: string, { save_to, language, detail, maxImageBytes, pageRange, account_id }: MediaArgs, ctx: ToolCtx, inBatch = false): Promise<MediaOne> {
   const { wa, hub, accountId, localFiles, mediaLinks, signal } = ctx;
   // A remote session cannot open a file on this machine: nothing is written for it, and no path is named.
   const remote = localFiles === false;
@@ -1694,6 +1814,7 @@ async function mediaOf(message_id: string, { save_to, language, detail, pageRang
       ...(remote ? { noFile: true } : {}),
       ...(save_to === undefined ? {} : { saveTo: save_to }),
       ...(detail === undefined ? {} : { detail }),
+      ...(maxImageBytes === undefined ? {} : { maxImageBytes }),
       ...(pageRange === undefined ? {} : { pages: pageRange }),
       // A cancelled call stops its slot wait, download, phone request and the run drawing or reading the file.
       ...(signal === undefined ? {} : { signal }),
@@ -1905,10 +2026,19 @@ function readWindow(since: string | undefined, until: string | undefined): ReadW
 function windowNoteOf(result: ChatRead, span: string, untilMs: number | undefined): string | null {
   const window = result.window;
   if (result.scanStoppedAt !== undefined) {
+    if (window?.forward === true) {
+      return `This read looked through as many messages as one read may for these types and stopped before the window's end: newer messages may match. read_messages again with after "${result.scanStoppedAt}" and oldest_first: true to go on from there; do not say there are no more.`;
+    }
     return `This read looked through as many messages as one read may for these types and stopped before ${window === undefined ? "the chat's" : "the window's"} start: older messages may match. read_messages again with before "${result.scanStoppedAt}" and everything else the same goes on from there; do not say there are no more.`;
   }
   if (window === undefined) return null;
-  if (window.more) return "The window holds older messages than these: read_messages again with before (the oldest message_id here) and the same since/until, or raise limit.";
+  if (window.forward === true && window.more) {
+    const next = window.nextAfter === undefined ? "after (the newest message_id here)" : `after "${window.nextAfter}"`;
+    return `The window holds newer messages than these: read_messages again with ${next} and oldest_first: true, or raise limit.`;
+  }
+  if (window.more) {
+    return "The window holds older messages than these: read_messages again with before (the oldest message_id here) and the same since/until, raise limit, or pass oldest_first: true to start at since.";
+  }
   if (window.startsInside !== true) return null;
   if (window.storedFrom === null) {
     return `No message of this chat is stored (${span}), and the phone may hold its history. Say so; do not say there are none.`;
@@ -2147,6 +2277,8 @@ function renderMessages(
     if (m.quoted) lines.push(`  > ${truncate(m.quoted.text, quoteCap)}${shown.has(m.quoted.message_id) ? "" : ` (${m.quoted.message_id})`}`);
     lines.push(`  ${text}`);
     if (m.transcript !== undefined && m.transcript !== "") lines.push(`  transcript: ${truncate(m.transcript, textCap)}`);
+    if (m.ocr_text !== undefined && m.ocr_text !== "") lines.push(`  ocr: ${compactExtraText(m.ocr_text, textCap, 220)}`);
+    if (m.doc_text !== undefined && m.doc_text !== "") lines.push(`  doc: ${compactExtraText(m.doc_text, textCap, 220)}`);
   }
   return lines.join("\n");
 }
@@ -2261,6 +2393,8 @@ function renderRecall(
     if (m.quoted) lines.push(`  > ${truncate(m.quoted.text, 160)}${shown.has(m.quoted.message_id) ? "" : ` (${m.quoted.message_id})`}`);
     lines.push(`  ${truncate(namedMentions(m.text, m.mentions), textCap)}`);
     if (m.transcript !== undefined && m.transcript !== "") lines.push(`  transcript: ${truncate(m.transcript, textCap)}`);
+    if (m.ocr_text !== undefined && m.ocr_text !== "") lines.push(`  ocr: ${compactExtraText(m.ocr_text, textCap, 220)}`);
+    if (m.doc_text !== undefined && m.doc_text !== "") lines.push(`  doc: ${compactExtraText(m.doc_text, textCap, 220)}`);
   }
   return lines.join("\n");
 }
@@ -2310,6 +2444,8 @@ function renderWait(result: WaitResult): string {
     const kind = typeTag(m);
     lines.push(`- ${shortStamp(m.timestamp, today)} ${senderLabel(m, introduced)}${kind === null ? "" : ` [${kind}]`}: ${truncate(namedMentions(m.text, m.mentions), 500)} · ${m.message_id}`);
     if (m.transcript !== undefined && m.transcript !== "") lines.push(`  transcript: ${truncate(m.transcript, 500)}`);
+    if (m.ocr_text !== undefined && m.ocr_text !== "") lines.push(`  ocr: ${compactExtraText(m.ocr_text, 500, 220)}`);
+    if (m.doc_text !== undefined && m.doc_text !== "") lines.push(`  doc: ${compactExtraText(m.doc_text, 500, 220)}`);
   }
   lines.push("", tail);
   return lines.join("\n");

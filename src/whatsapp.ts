@@ -45,6 +45,7 @@ import { PinnedStore } from "./pinned-media.js";
 import type { MediaNetwork } from "./safe-media.js";
 import { momentsOf } from "./store.js";
 import { cdnOnlyMessage, downloadableMessage, isoWithOffset, mediaInfo, messageIdFor, protoNumber, reuploadableMessage } from "./messages.js";
+import { ocrFile, type OcrRunner } from "./ocr.js";
 import { PAIRING_TIMEOUT_MS, WA_BROWSER, prettyCode, socketFactory, startPairing } from "./pairing.js";
 import { transcribeFile, transcribeReady } from "./transcribe/index.js";
 import { DraftStore, type DraftPayload, type DraftSchedule, type DraftView } from "./drafts.js";
@@ -60,6 +61,8 @@ import { AccountKeep } from "./service/keep.js";
 import { LINK_FILE, LinkMonitor, type ProbeResult } from "./service/link.js";
 import { AccountMedia } from "./service/media.js";
 import { cdnExpired, downloadToMemory } from "./service/media-download.js";
+import { AccountDocIndex, extractDocumentForIndex, type DocExtractor } from "./service/doc-index.js";
+import { AccountOcr } from "./service/ocr.js";
 import { AccountRecall } from "./service/recall.js";
 import { AccountReads } from "./service/reads.js";
 import { AccountSchedule } from "./service/schedule.js";
@@ -263,6 +266,10 @@ export class WhatsAppService implements WhatsAppApi {
   private readonly media: AccountMedia;
   /** Media downloaded as it arrives and kept, within limits (src/service/keep.ts). */
   private readonly keep: AccountKeep;
+  /** Opt-in local image OCR for kept and opened images (src/service/ocr.ts). */
+  private readonly ocr: AccountOcr;
+  /** Opt-in local document text indexing for kept and opened documents (src/service/doc-index.ts). */
+  private readonly docIndex: AccountDocIndex;
   /** manage_chat and delete_message, and the forgetting each asks for (src/service/chats.ts). */
   private readonly chats: AccountChats;
   /** What the account posts to the webhook, and its status (src/service/webhooks.ts). */
@@ -276,6 +283,9 @@ export class WhatsAppService implements WhatsAppApi {
   /** The seams the tests replace; production always runs the real providers. */
   private transcriber = transcribeFile;
   private transcribeReadiness = transcribeReady;
+  private readonly defaultOcrRunner: OcrRunner = (imagePath, signal) => ocrFile(imagePath, signal, this.config.dataDir);
+  private ocrRunner: OcrRunner = this.defaultOcrRunner;
+  private docExtractor: DocExtractor = extractDocumentForIndex;
   private readonly drafts = new DraftStore();
   private readonly writes: RateLimiter;
   /** `mark_read`'s own bucket, READ_MARK_MULTIPLIER times the writes', off when the writes' is. */
@@ -329,6 +339,10 @@ export class WhatsAppService implements WhatsAppApi {
         scheduleFlagsBackfill: (db) => this.ingest.scheduleFlagsBackfill(db),
         embedFeed: () => this.recallIndex.embedFeed,
         bootKeep: () => this.keep.boot(),
+        bootOcr: () => {
+          this.ocr.boot();
+          this.docIndex.boot();
+        },
       },
       this.identity,
       config,
@@ -522,6 +536,10 @@ export class WhatsAppService implements WhatsAppApi {
         mediaBuffer: (sock, messageId, raw, opts) => this.mediaBuffer(sock, messageId, raw, undefined, opts),
         keptMedia: (messageId, raw) => this.keep.read(messageId, raw),
         offerKept: (messageId, raw, buffer) => this.keep.offer(messageId, raw, buffer),
+        onOpened: (messageId, buffer, mime, filename) => {
+          this.ocr.noteOpened(messageId, buffer, mime);
+          this.docIndex.noteOpened(messageId, buffer, mime, filename);
+        },
       },
       this.views,
       this.storage,
@@ -535,6 +553,10 @@ export class WhatsAppService implements WhatsAppApi {
         hasMessage: (id) => this.hasMessage(id),
         mediaBuffer: (sock, messageId, raw, maxBytes) => this.mediaBuffer(sock, messageId, raw, maxBytes),
         scheduleFileCleanup: () => this.storage.scheduleFileCleanup(),
+        onKept: (sid, path, type) => {
+          if (type === "image") this.ocr.noteKept(sid, path);
+          else if (type === "document") this.docIndex.noteKept(sid, path);
+        },
       },
       this.identity,
       this.views,
@@ -543,6 +565,28 @@ export class WhatsAppService implements WhatsAppApi {
       config.mediaKeep,
       // Only the server keeps, and only an account that keeps its history: a file outliving its message is not kept.
       config.command === "serve" && config.persistHistory
+    );
+    this.ocr = new AccountOcr(
+      {
+        readyDb: () => this.storage.readyDb(),
+        stopped: () => this.stopped,
+        embedFeed: () => this.recallIndex.embedFeed,
+        runner: () => this.ocrRunner,
+        customRunner: () => this.ocrRunner !== this.defaultOcrRunner,
+      },
+      config,
+      paths
+    );
+    this.docIndex = new AccountDocIndex(
+      {
+        readyDb: () => this.storage.readyDb(),
+        stopped: () => this.stopped,
+        embedFeed: () => this.recallIndex.embedFeed,
+        extractor: () => this.docExtractor,
+      },
+      this.views,
+      config,
+      paths
     );
     this.chats = new AccountChats(
       {
@@ -716,6 +760,8 @@ export class WhatsAppService implements WhatsAppApi {
     // then gives its claim back, so the note waits for the next start rather than being uploaded twice.
     await this.voice.transcribeWorker.finish(this.voice.transcribeSource, STOP_TRANSCRIBE_WAIT_MS);
     this.voice.transcribeWorker.unregister(this.voice.transcribeSource);
+    await this.ocr.stop();
+    await this.docIndex.stop();
     await this.recallIndex.stopRecall();
     await this.keep.stop();
     const db = this.storage.accountDb;
@@ -1104,7 +1150,7 @@ export class WhatsAppService implements WhatsAppApi {
     return this.reads.searchMessages(query, chatId, limit, opts);
   }
 
-  searchCoverage(chatId: string | undefined, opts: { sinceMs?: number; untilMs?: number; tag?: string } = {}): SearchCoverage | null {
+  searchCoverage(chatId: string | undefined, opts: { sinceMs?: number; untilMs?: number; tag?: string; chatIds?: readonly string[] } = {}): SearchCoverage | null {
     return this.reads.searchCoverage(chatId, opts);
   }
 
@@ -1155,6 +1201,16 @@ export class WhatsAppService implements WhatsAppApi {
     opts: SearchOptions = {}
   ): Promise<Synced<RecallAnswer>> {
     return this.recallIndex.recall(query, chatId, limit, opts);
+  }
+
+  /** Resolves when background image OCR finishes its active pass (test helper). */
+  ocrIdle(): Promise<void> {
+    return this.ocr.idle();
+  }
+
+  /** Resolves when background document indexing finishes its active pass (test helper). */
+  docIndexIdle(): Promise<void> {
+    return this.docIndex.idle();
   }
 
   refreshSearch(...args: Parameters<AccountReads["refreshSearch"]>): ReturnType<AccountReads["refreshSearch"]> {

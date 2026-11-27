@@ -93,18 +93,29 @@ test("one message that cannot be read says why in its item; the others still ans
   assert.match(result.content[0].text, /## 1 of 3 · false_40700000002@s\.whatsapp\.net_NOPE\nNot read: MESSAGE_NOT_FOUND: /);
 });
 
-test("a repeated id is answered once, and a batch never asks for small print or one document's pages", async (t) => {
+test("a repeated id is answered once, detail high works up to 4 messages, and pages still takes one document", async (t) => {
   const { call, arrive, downloads } = setup(t);
-  const red = await photo(400, 300, "#cc0000");
-  const id = arrive(ANA, "P1", { imageMessage: { mimetype: "image/jpeg", fileLength: red.length } }, red);
-  const other = arrive(ANA, "P2", { imageMessage: { mimetype: "image/jpeg", fileLength: red.length } }, red);
+  const red = await photo(1600, 1200, "#cc0000");
+  const ids = ["P1", "P2", "P3", "P4", "P5"].map((key) =>
+    arrive(ANA, key, { imageMessage: { mimetype: "image/jpeg", fileLength: red.length } }, red)
+  );
+  const [id, other] = ids;
   const twice = await call("get_media", { message_ids: [id, other, id] });
   assert.equal(twice.structuredContent.items.length, 2);
   assert.match(twice.content[0].text, /1 repeated id answered once/);
   assert.deepEqual(downloads.sort(), ["P1", "P2"]);
 
+  const highBatch = await call("get_media", { message_ids: ids.slice(0, 4), detail: "high" });
+  assert.equal(highBatch.isError, undefined, highBatch.content[0].text);
+  assert.equal(highBatch.structuredContent.items.length, 4);
+  assert.ok(highBatch.structuredContent.items.every((item) => item.view.detail === "high" && item.view.width === 1600));
+  const totalBytes = highBatch.content
+    .filter((block) => block.type === "image")
+    .reduce((sum, block) => sum + Buffer.from(block.data, "base64").length, 0);
+  assert.ok(totalBytes <= 1_500_000, `high-detail batch stays within shared 1.5 MB budget (${totalBytes})`);
+
   for (const [args, pattern] of [
-    [{ message_ids: [id, other], detail: "high" }, /one message at a time/],
+    [{ message_ids: ids, detail: "high" }, /at most 4 messages/],
     [{ message_ids: [id, other], pages: "2" }, /one document/],
     [{ message_id: id, message_ids: [id, other] }, /not both/],
     [{}, /message_id for one message, or message_ids/],

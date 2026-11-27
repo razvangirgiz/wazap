@@ -236,6 +236,31 @@ export class Identity {
     return this.c.all<ChatRow>("SELECT * FROM chats WHERE merged_into IS NULL ORDER BY id").map(chatFromRow);
   }
 
+  /** Direct chats that hold at least one message, with all stored name spellings of their person, in one query. */
+  directChatNames(): Array<{ id: number; jid: string; names: string[] }> {
+    return this.c
+      .all<{
+        id: number;
+        jid: string;
+        chat_name: string | null;
+        name: string | null;
+        notify: string | null;
+        push_name: string | null;
+        verified_name: string | null;
+      }>(
+        `SELECT c.id, c.jid, c.name AS chat_name, k.name, k.notify, k.push_name, k.verified_name
+         FROM chats c LEFT JOIN contacts k ON k.id = c.contact_id
+         WHERE c.merged_into IS NULL AND c.kind = 'direct' AND c.last_message_id IS NOT NULL`
+      )
+      .map((row) => ({
+        id: row.id,
+        jid: row.jid,
+        names: [row.chat_name, row.name, row.notify, row.push_name, row.verified_name].filter(
+          (value): value is string => value !== null && value !== ""
+        ),
+      }));
+  }
+
   contactById(id: number): ContactRecord | null {
     const row = this.c.get<ContactRow>("SELECT * FROM contacts WHERE id = ?", id);
     return row === undefined ? null : contactFromRow(row);

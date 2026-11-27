@@ -72,6 +72,10 @@ export interface Config {
   httpPostBudget?: number;
   /** WAZAP_ANSWER_FORMAT: how tool answers are shaped per session (client-name.ts); `auto` when absent. */
   answerFormat?: AnswerFormatSetting;
+  /** WAZAP_OCR: opt-in local image OCR indexing (`off` by default, `local` uses Apple Vision on macOS or tesseract). */
+  ocr?: OcrMode;
+  /** WAZAP_INDEX_DOCUMENTS: opt-in local text indexing of kept and opened documents (`off` by default, `local` extracts PDF/Office/text). */
+  indexDocuments?: IndexDocumentsMode;
   sources: Record<"dataDir" | "readOnly" | "transport" | "transcribe" | "webhook" | "recall" | "port", Source>;
   command: Command;
   /** The command was named on the command line rather than defaulted to serve. */
@@ -272,6 +276,40 @@ export function readOnlySetting(value: string | undefined): boolean {
  * `full` or `text` gives every session that one. Anything else is refused at
  * start, like WAZAP_READ_ONLY, rather than read as one of them.
  */
+export type OcrMode = "off" | "local";
+export type IndexDocumentsMode = "off" | "local";
+
+/**
+ * WAZAP_OCR: opt-in local OCR for kept and opened images (`off` by default;
+ * `local` uses Apple Vision on macOS or tesseract). Anything else is refused at start.
+ */
+export function ocrSetting(value: string | undefined): OcrMode {
+  const normalized = (value ?? "").trim().toLowerCase();
+  if (normalized === "" || normalized === "off" || normalized === "0" || normalized === "false") return "off";
+  if (normalized === "local") return "local";
+  throw new WazapError(
+    "INVALID_ID",
+    "WAZAP_OCR must be off or local.",
+    "Set WAZAP_OCR=local to index text inside kept images locally, or leave it unset"
+  );
+}
+
+/**
+ * WAZAP_INDEX_DOCUMENTS: opt-in local text extraction for kept and opened
+ * documents (`off` by default; `local` extracts PDF, Office and text files in
+ * a worker thread). Anything else is refused at start.
+ */
+export function indexDocumentsSetting(value: string | undefined): IndexDocumentsMode {
+  const normalized = (value ?? "").trim().toLowerCase();
+  if (normalized === "" || normalized === "off" || normalized === "0" || normalized === "false") return "off";
+  if (normalized === "local") return "local";
+  throw new WazapError(
+    "INVALID_ID",
+    "WAZAP_INDEX_DOCUMENTS must be off or local.",
+    "Set WAZAP_INDEX_DOCUMENTS=local to index text inside kept documents locally, or leave it unset"
+  );
+}
+
 export function answerFormatSetting(value: string | undefined): AnswerFormatSetting {
   const normalized = (value ?? "").trim().toLowerCase();
   if (normalized === "" || normalized === "auto") return "auto";
@@ -474,6 +512,8 @@ export function parseCli(argv: string[] = process.argv.slice(2)): CliInvocation 
       maxInFlightTotal: 32,
       httpPostBudget: 240,
       answerFormat: answerFormatSetting(process.env.WAZAP_ANSWER_FORMAT),
+      ocr: ocrSetting(process.env.WAZAP_OCR),
+      indexDocuments: indexDocumentsSetting(process.env.WAZAP_INDEX_DOCUMENTS),
       sources: {
         // Resolved before dotenv runs, so the data dir's own .env cannot name it.
         dataDir: values["data-dir"] !== undefined ? "flag" : shell.has("WAZAP_DATA_DIR") ? "env" : "default",

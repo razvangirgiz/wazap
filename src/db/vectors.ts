@@ -19,7 +19,8 @@ import { StorageError } from "./errors.js";
 import { secondOf, secondOfId } from "./ids.js";
 import type { Identity } from "./identity.js";
 import type { Messages } from "./messages.js";
-import { DEFAULT_SCAN_CAP, DEFAULT_TRIGRAM_CAP, foldText, ftsPhrase, type ResolvedFilter, type Search } from "./search.js";
+import { diminutivesOf, inflectionForms, isKnownBase, isRealName, nameWords } from "./names.js";
+import { DEFAULT_SCAN_CAP, DEFAULT_TRIGRAM_CAP, foldText, ftsPhrase, type ExcludeChats, type ResolvedFilter, type Search } from "./search.js";
 import type { SQLInputValue } from "./sqlite.js";
 import type { MessageFilter, Page, StoredMessage } from "./types.js";
 
@@ -111,13 +112,22 @@ export function quantizeVector(vector: ArrayLike<number>): Int8Array {
 }
 
 /**
- * The words an embedding is made from, as a short digest: text and transcript,
- * with null kept distinct from empty. The backlog hands it out with each item
+ * The words an embedding is made from, as a short digest: text, transcript,
+ * and non-empty OCR text, with null kept distinct from empty for text and
+ * transcript. An empty or absent OCR string leaves the digest unchanged so
+ * existing embeddings remain valid. The backlog hands it out with each item
  * and put() stores a vector only while the message still says exactly that.
  */
-export function contentHash(text: string | null, transcript: string | null): string {
+export function contentHash(
+  text: string | null,
+  transcript: string | null,
+  ocrText?: string | null,
+  docText?: string | null
+): string {
   const part = (value: string | null): string => (value === null ? "\u0000" : `\u0001${value}`);
-  return createHash("sha256").update(`${part(text)}\u0002${part(transcript)}`).digest("hex").slice(0, 32);
+  const ocr = ocrText === undefined || ocrText === null || ocrText === "" ? "" : `\u0003${ocrText}`;
+  const doc = docText === undefined || docText === null || docText === "" ? "" : `\u0004${docText}`;
+  return createHash("sha256").update(`${part(text)}\u0002${part(transcript)}${ocr}${doc}`).digest("hex").slice(0, 32);
 }
 
 /** What recency leaves of message `id`'s similarity: 1 without a half-life or when fresh, halving the way down to RECENCY_MIN_WEIGHT each half-life. */
@@ -244,7 +254,9 @@ export interface BacklogItem {
   ts: number;
   text: string | null;
   transcript: string | null;
-  /** Pass to put() with the vector made from this text and transcript. */
+  ocrText: string | null;
+  docText: string | null;
+  /** Pass to put() with the vector made from this text, transcript, OCR text and document text. */
   contentHash: string;
 }
 
@@ -279,6 +291,8 @@ export interface HybridSearchInput extends MessageFilter {
   scanCap?: number;
   /** Weigh the semantic side's similarity by age, for the floor and the order: similarity × recencyWeight. Its candidates are still the most similar. */
   recencyHalfLifeMs?: number;
+  /** Chat row ids skipped on the lexical side (e.g. #no-catchup bots) without bypassing the vector cache. */
+  excludeChatIds?: readonly number[];
 }
 
 export interface HybridHit {
@@ -297,6 +311,26 @@ export interface HybridResult {
   hits: HybridHit[];
   semantic: boolean;
   lexicalCapped: boolean;
+  /** Matching message ids skipped on the lexical side due to `excludeChatIds`. */
+  excludedLexical?: number;
+  /** Chat row ids of lexical matches skipped due to `excludeChatIds`. */
+  excludedLexicalChatIds?: number[];
+}
+
+/**
+ * Lookup forms for a folded hybrid search token: the token itself plus safe
+ * Romanian base forms ("angelei" → "angela", "inspectorului" → "inspector",
+ * "contractul" → "contract"). Avoids cutting English `-le` words ("handle" →
+ * "hand", "single" → "sing") by applying `-le` only to Romanian `-ele`/`-ile`.
+ */
+function searchWordForms(token: string): string[] {
+  const out = [token];
+  for (const form of inflectionForms(token).slice(1)) {
+    if (token.endsWith("le") && form === token.slice(0, -2) && !token.endsWith("ele") && !token.endsWith("ile")) continue;
+    if ([...form].length < 4 && !isKnownBase(form)) continue;
+    if (!out.includes(form)) out.push(form);
+  }
+  return out;
 }
 
 export class Vectors {
@@ -391,12 +425,17 @@ export class Vectors {
     return this.c.write(() => {
       const key = this.messages.visibleKey(sid);
       if (key === null) return false;
-      const words = this.c.get<{ text: string | null; transcript: string | null }>(
-        "SELECT text, transcript FROM messages WHERE id = ?",
+      const words = this.c.get<{ text: string | null; transcript: string | null; ocr_text: string | null; doc_text: string | null }>(
+        "SELECT text, transcript, ocr_text, doc_text FROM messages WHERE id = ?",
         key.id
       )!;
-      if (words.text === null && words.transcript === null) return false;
-      if (contentHash(words.text, words.transcript) !== hash) return false;
+      if (
+        words.text === null &&
+        words.transcript === null &&
+        (words.ocr_text === null || words.ocr_text === "") &&
+        (words.doc_text === null || words.doc_text === "")
+      ) return false;
+      if (contentHash(words.text, words.transcript, words.ocr_text, words.doc_text) !== hash) return false;
       this.c.run(
         `INSERT INTO embeddings(message_id, model, content_hash, vec) VALUES (?, ?, ?, ?)
          ON CONFLICT(message_id) DO UPDATE SET model = excluded.model, content_hash = excluded.content_hash, vec = excluded.vec`,
@@ -440,11 +479,12 @@ export class Vectors {
     const rows = this.c
       .stmt(
         `SELECT m.id, (CASE WHEN m.from_me = 1 THEN 'true' ELSE 'false' END) || '_' || coalesce(ck.jid, c.jid) || '_' || m.key_id AS sid,
-           m.type, m.ts, m.text, m.transcript,
+           m.type, m.ts, m.text, m.transcript, m.ocr_text AS ocrText, m.doc_text AS docText,
            EXISTS (SELECT 1 FROM embeddings e WHERE e.message_id = m.id AND e.model = ?) AS embedded
          FROM messages m CROSS JOIN chats c ON c.id = m.chat_id LEFT JOIN chats ck ON ck.id = c.merged_into
          WHERE m.id < ? AND m.deleted_at IS NULL AND (m.expires_at IS NULL OR m.expires_at > ?)
-           AND m.ts > coalesce(c.cleared_through_ts, 0) AND (m.text IS NOT NULL OR m.transcript IS NOT NULL)
+           AND m.ts > coalesce(c.cleared_through_ts, 0)
+           AND (m.text IS NOT NULL OR m.transcript IS NOT NULL OR (m.ocr_text IS NOT NULL AND m.ocr_text <> '') OR (m.doc_text IS NOT NULL AND m.doc_text <> ''))
          ORDER BY m.id DESC`
       )
       .iterate(options.model, options.before ?? NO_UPPER_BOUND, this.c.now()) as Iterable<Omit<BacklogItem, "contentHash"> & { embedded: number }>;
@@ -455,7 +495,7 @@ export class Vectors {
       if (row.embedded === 0) {
         if (items.length === limit) return { items, hasMore: true, nextBefore: items[items.length - 1]!.id };
         const { embedded: _embedded, ...item } = row;
-        items.push({ ...item, contentHash: contentHash(item.text, item.transcript) });
+        items.push({ ...item, contentHash: contentHash(item.text, item.transcript, item.ocrText, item.docText) });
       }
       if (examined >= cap) return { items, hasMore: true, nextBefore: row.id };
     }
@@ -512,7 +552,8 @@ export class Vectors {
       this.c.run(
         `INSERT OR IGNORE INTO embed_queue(message_id)
            SELECT m.id FROM messages m
-           WHERE m.id < ? AND m.id >= ? AND m.deleted_at IS NULL AND (m.text IS NOT NULL OR m.transcript IS NOT NULL)
+           WHERE m.id < ? AND m.id >= ? AND m.deleted_at IS NULL
+             AND (m.text IS NOT NULL OR m.transcript IS NOT NULL OR (m.ocr_text IS NOT NULL AND m.ocr_text <> '') OR (m.doc_text IS NOT NULL AND m.doc_text <> ''))
              AND NOT EXISTS (SELECT 1 FROM embeddings e WHERE e.message_id = m.id AND e.model = ?)`,
         before,
         lower,
@@ -543,7 +584,7 @@ export class Vectors {
       >(
         `SELECT q.message_id AS id,
            (CASE WHEN m.from_me = 1 THEN 'true' ELSE 'false' END) || '_' || coalesce(ck.jid, c.jid) || '_' || m.key_id AS sid,
-           m.type, m.ts, m.text, m.transcript,
+           m.type, m.ts, m.text, m.transcript, m.ocr_text AS ocrText, m.doc_text AS docText,
            (m.deleted_at IS NULL AND (m.expires_at IS NULL OR m.expires_at > ?) AND m.ts > coalesce(c.cleared_through_ts, 0)) AS live,
            (SELECT e.content_hash FROM embeddings e WHERE e.message_id = m.id AND e.model = ?) AS embeddedHash
          FROM embed_queue q LEFT JOIN messages m ON m.id = q.message_id
@@ -557,8 +598,13 @@ export class Vectors {
       const items: BacklogItem[] = [];
       const done: number[] = [];
       for (const row of rows) {
-        const hash = row.sid === null ? null : contentHash(row.text, row.transcript);
-        if (row.sid === null || row.live !== 1 || (row.text === null && row.transcript === null) || row.embeddedHash === hash) {
+        const hash = row.sid === null ? null : contentHash(row.text, row.transcript, row.ocrText, row.docText);
+        const hasWords =
+          row.text !== null ||
+          row.transcript !== null ||
+          (row.ocrText !== null && row.ocrText !== "") ||
+          (row.docText !== null && row.docText !== "");
+        if (row.sid === null || row.live !== 1 || !hasWords || row.embeddedHash === hash) {
           done.push(row.id);
           continue;
         }
@@ -566,7 +612,7 @@ export class Vectors {
           this.dequeueIds(done);
           return { items, hasMore: true, nextBefore: items[items.length - 1]!.id };
         }
-        items.push({ id: row.id, sid: row.sid, type: row.type, ts: row.ts, text: row.text, transcript: row.transcript, contentHash: hash! });
+        items.push({ id: row.id, sid: row.sid, type: row.type, ts: row.ts, text: row.text, transcript: row.transcript, ocrText: row.ocrText, docText: row.docText, contentHash: hash! });
       }
       this.dequeueIds(done);
       const hasMore = rows.length === cap;
@@ -708,7 +754,7 @@ export class Vectors {
     if (filter === null) return { hits: [], semantic, lexicalCapped: false };
 
     const unit = semantic ? unitVector(input.vector!) : null;
-    const lexical = this.lexicalCandidates(input.query, filter, input.lexicalCandidates ?? DEFAULT_CANDIDATES, input.scanCap);
+    const lexical = this.lexicalCandidates(input.query, filter, input.lexicalCandidates ?? DEFAULT_CANDIDATES, input.scanCap, input.excludeChatIds);
     // Only a meaning at the floor ranks: a word hit whose meaning falls under it fuses as a word hit alone.
     const semanticRanked =
       unit === null
@@ -755,7 +801,13 @@ export class Vectors {
       const message = messages.get(id);
       return message === undefined ? [] : [{ message, ...entry }];
     });
-    return { hits, semantic, lexicalCapped: lexical.capped };
+    return {
+      hits,
+      semantic,
+      lexicalCapped: lexical.capped,
+      ...(lexical.excluded > 0 ? { excludedLexical: lexical.excluded } : {}),
+      ...(lexical.excludedChatIds.length > 0 ? { excludedLexicalChatIds: lexical.excludedChatIds } : {}),
+    };
   }
 
   /**
@@ -764,29 +816,41 @@ export class Vectors {
    * messages sharing only a common word; the messages carrying every index word
    * are one more source, so an old message made only of common words is found
    * too; digits and acronyms under three characters go through the bounded
-   * short-query scan. Candidates are scored by the words they carry, each
-   * weighted by its rarity among the matches seen, plus a bonus when the whole
-   * query appears verbatim; ties go to the newest. `capped` says some source had
-   * more matches than were examined. `weak` lists the returned candidates the
-   * words alone do not vouch for, unless they hold the query verbatim: those
-   * carrying fewer than LEXICAL_MIN_MATCHES distinct content words of a query
-   * of LEXICAL_PAIR_FROM content words or more, and every one of a query whose
-   * words are all QUERY_STOPWORDS. `loose` lists those carrying only some of
-   * a shorter query's content words, which keep their place only with part of
-   * a meaning (LOOSE_FLOOR_SHARE). A function word still counts toward the
-   * score, never toward those matches.
+   * short-query scan. Inflected Romanian forms (e.g. "Angelei" → "Angela")
+   * widen lookup and matching, and chat/sender display names can supply a
+   * person token once a content word already matched the message's own words.
+   * Candidates are scored by the words they carry, each weighted by its rarity
+   * among the matches seen, plus a bonus when the whole query appears verbatim;
+   * ties go to the newest. `capped` says some source had more matches than were
+   * examined. `weak` lists the returned candidates the words alone do not vouch
+   * for, unless they hold the query verbatim: those carrying fewer than
+   * LEXICAL_MIN_MATCHES distinct content words of a query of LEXICAL_PAIR_FROM
+   * content words or more, and every one of a query whose words are all
+   * QUERY_STOPWORDS. `loose` lists those carrying only some of a shorter
+   * query's content words, which keep their place only with part of a meaning
+   * (LOOSE_FLOOR_SHARE). A function word still counts toward the score, never
+   * toward those matches.
    */
   private lexicalCandidates(
     query: string,
     filter: ResolvedFilter,
     want: number,
-    scanCap: number | undefined
-  ): { ids: number[]; weak: number[]; loose: number[]; capped: boolean } {
+    scanCap: number | undefined,
+    excludeChatIds: readonly number[] | undefined
+  ): { ids: number[]; weak: number[]; loose: number[]; capped: boolean; excluded: number; excludedChatIds: number[] } {
     const { trigram, short } = hybridWords(query);
     const tokens = [...trigram, ...short];
-    if (tokens.length === 0) return { ids: [], weak: [], loose: [], capped: false };
+    if (tokens.length === 0) return { ids: [], weak: [], loose: [], capped: false, excluded: 0, excludedChatIds: [] };
     const perWordCap = Math.max(1, Math.floor((scanCap ?? DEFAULT_TRIGRAM_CAP) / (trigram.length + 1)));
     const perShortCap = Math.max(1, Math.floor(Math.min(scanCap ?? DEFAULT_SCAN_CAP, DEFAULT_SCAN_CAP) / Math.max(1, short.length)));
+    const tokenForms = new Map<string, string[]>();
+    for (const token of tokens) tokenForms.set(token, searchWordForms(token));
+    const excludedIds = new Set<number>();
+    const excludedChatIds = new Set<number>();
+    const exclude: ExcludeChats | undefined =
+      excludeChatIds !== undefined && excludeChatIds.length > 0
+        ? { chatIds: new Set(excludeChatIds), excludedIds, excludedChatIds }
+        : undefined;
     const candidates = new Set<number>();
     const weights = new Map<string, number>();
     let capped = false;
@@ -796,16 +860,28 @@ export class Vectors {
       return found.ids.length;
     };
     for (const token of trigram) {
-      weights.set(token, 1 / Math.log2(2 + take(this.search.trigramIds(token, filter, filter.upper, want + 1, perWordCap))));
+      const forms = tokenForms.get(token)!.filter((form) => [...form].length >= 3);
+      const expr = forms.length <= 1 ? ftsPhrase(token) : forms.map(ftsPhrase).join(" OR ");
+      const count = take(this.search.trigramIds(token, filter, filter.upper, want + 1, perWordCap, expr, exclude));
+      // A token that overflowed `want` is high-frequency (often thousands of rows); weight it below genuinely rare topic terms.
+      weights.set(token, 1 / Math.log2(2 + (count > want ? want * 20 : count)));
     }
     for (const token of short) {
-      weights.set(token, 1 / Math.log2(2 + take(this.search.scanIds(token, filter, filter.upper, want + 1, perShortCap))));
+      const count = take(this.search.scanIds(token, filter, filter.upper, want + 1, perShortCap, exclude));
+      weights.set(token, 1 / Math.log2(2 + (count > want ? want * 20 : count)));
     }
     if (trigram.length > 1) {
-      const everyWord = trigram.map(ftsPhrase).join(" AND ");
-      take(this.search.trigramIds(query, filter, filter.upper, want + 1, perWordCap, everyWord));
+      const everyWord = trigram
+        .map((token) => {
+          const forms = tokenForms.get(token)!.filter((form) => [...form].length >= 3);
+          return forms.length <= 1 ? ftsPhrase(token) : `(${forms.map(ftsPhrase).join(" OR ")})`;
+        })
+        .join(" AND ");
+      take(this.search.trigramIds(query, filter, filter.upper, want + 1, perWordCap, everyWord, exclude));
     }
-    if (candidates.size === 0) return { ids: [], weak: [], loose: [], capped };
+    if (candidates.size === 0) {
+      return { ids: [], weak: [], loose: [], capped, excluded: excludedIds.size, excludedChatIds: [...excludedChatIds] };
+    }
     const phrase = foldText(query).replace(/\s+/g, " ").trim();
     const scores = new Map<number, number>();
     const content = tokens.filter((token) => !QUERY_STOPWORDS.has(token)).length;
@@ -813,26 +889,89 @@ export class Vectors {
     const required = content === 0 ? 1 : content >= LEXICAL_PAIR_FROM ? LEXICAL_MIN_MATCHES : 0;
     const weak = new Set<number>();
     const loose = new Set<number>();
-    for (const row of this.c.all<{ id: number; text: string | null; transcript: string | null }>(
-      "SELECT id, text, transcript FROM messages WHERE id IN (SELECT value FROM json_each(?))",
+    for (const row of this.c.all<{
+      id: number;
+      text: string | null;
+      transcript: string | null;
+      ocr_text: string | null;
+      doc_text: string | null;
+      chat_name: string | null;
+      c_name: string | null;
+      c_notify: string | null;
+      c_push: string | null;
+      c_verified: string | null;
+      s_name: string | null;
+      s_notify: string | null;
+      s_push: string | null;
+      s_verified: string | null;
+    }>(
+      `SELECT m.id, m.text, m.transcript, m.ocr_text, m.doc_text,
+         coalesce(ck.name, c.name) AS chat_name,
+         cc.name AS c_name, cc.notify AS c_notify, cc.push_name AS c_push, cc.verified_name AS c_verified,
+         coalesce(sck.name, sc.name) AS s_name, coalesce(sck.notify, sc.notify) AS s_notify,
+         coalesce(sck.push_name, sc.push_name) AS s_push, coalesce(sck.verified_name, sc.verified_name) AS s_verified
+       FROM messages m
+       JOIN chats c ON c.id = m.chat_id
+       LEFT JOIN chats ck ON ck.id = c.merged_into
+       LEFT JOIN contacts cc ON cc.id = coalesce(ck.contact_id, c.contact_id)
+       LEFT JOIN contacts sc ON sc.id = m.sender_id
+       LEFT JOIN contacts sck ON sck.id = sc.merged_into
+       WHERE m.id IN (SELECT value FROM json_each(?))`,
       JSON.stringify([...candidates])
     )) {
-      const haystack = foldText(`${row.text ?? ""}\n${row.transcript ?? ""}`);
+      const haystack = foldText(`${row.text ?? ""}\n${row.transcript ?? ""}\n${row.ocr_text ?? ""}\n${row.doc_text ?? ""}`);
+      const haystackWords = new Set(nameWords(haystack));
+      const names = [
+        row.chat_name,
+        row.c_name,
+        row.c_notify,
+        row.c_push,
+        row.c_verified,
+        row.s_name,
+        row.s_notify,
+        row.s_push,
+        row.s_verified,
+      ].filter(isRealName);
+      const nameSet = new Set(names.flatMap(nameWords));
       let score = 0;
       let matched = 0;
+      let textMatched = 0;
       for (const token of tokens) {
-        if (!haystack.includes(token)) continue;
-        score += weights.get(token)!;
-        if (!QUERY_STOPWORDS.has(token)) matched++;
+        const forms = tokenForms.get(token)!;
+        const inText = haystack.includes(token) || forms.slice(1).some((form) => haystackWords.has(form));
+        const inName =
+          !inText &&
+          nameSet.size > 0 &&
+          forms.some((form) => {
+            if (nameSet.has(form)) return true;
+            for (const related of diminutivesOf(form)) if (nameSet.has(related)) return true;
+            return false;
+          });
+        if (!inText && !inName) continue;
+        score += weights.get(token)! * (inText ? 1 : 0.9);
+        if (!QUERY_STOPWORDS.has(token)) {
+          matched++;
+          if (inText) textMatched++;
+        }
       }
+      // Chat/sender name tokens strengthen a message that already matched a content word in its own words,
+      // never a message matching only stopwords.
+      const effectiveMatched = textMatched > 0 ? matched : 0;
       const verbatim = tokens.length > 1 && haystack.replace(/\s+/g, " ").includes(phrase);
       if (verbatim) score += 1;
       scores.set(row.id, score);
-      if (matched < required && !verbatim) weak.add(row.id);
-      else if (content > 1 && content < LEXICAL_PAIR_FROM && matched < content && !verbatim) loose.add(row.id);
+      if (effectiveMatched < required && !verbatim) weak.add(row.id);
+      else if (content > 1 && content < LEXICAL_PAIR_FROM && effectiveMatched < content && !verbatim) loose.add(row.id);
     }
     const ids = [...candidates].sort((a, b) => (scores.get(b) ?? 0) - (scores.get(a) ?? 0) || b - a).slice(0, want);
-    return { ids, weak: ids.filter((id) => weak.has(id)), loose: ids.filter((id) => loose.has(id)), capped };
+    return {
+      ids,
+      weak: ids.filter((id) => weak.has(id)),
+      loose: ids.filter((id) => loose.has(id)),
+      capped,
+      excluded: excludedIds.size,
+      excludedChatIds: [...excludedChatIds],
+    };
   }
 
   /** Raw cosine of each message's stored vector from `model` against the unit query; a message without one is left out. */

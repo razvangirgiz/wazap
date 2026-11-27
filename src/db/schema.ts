@@ -955,6 +955,147 @@ CREATE INDEX embeddings_model ON embeddings(model);
 `;
 // ---- end v8 ----------------------------------------------------------------
 
+// ---- v9: opt-in local image OCR text in search and embeddings -------------
+/**
+ * - messages.ocr_text: text read from an image when WAZAP_OCR=local is enabled.
+ *   NULL means not scanned yet; "" means scanned with no readable text (or
+ *   unreadable); non-empty is indexed in messages_fts and included in
+ *   embeddings. Storing "" never invalidates an existing caption embedding or
+ *   queues a re-embed. Tombstones clear ocr_text so deleted images keep none.
+ */
+const V9 = `
+ALTER TABLE messages ADD COLUMN ocr_text TEXT;
+
+DROP TRIGGER messages_fts_insert;
+DROP TRIGGER messages_fts_delete;
+DROP TRIGGER messages_content_update;
+DROP TRIGGER messages_embed_insert;
+DROP TABLE messages_fts;
+
+CREATE VIRTUAL TABLE messages_fts USING fts5(
+  text,
+  transcript,
+  ocr_text,
+  content = 'messages',
+  content_rowid = 'id',
+  tokenize = 'trigram remove_diacritics 1'
+);
+INSERT INTO messages_fts(messages_fts, rank) VALUES ('secure-delete', 1);
+INSERT INTO messages_fts(messages_fts) VALUES ('rebuild');
+
+CREATE TRIGGER messages_fts_insert AFTER INSERT ON messages
+BEGIN
+  INSERT INTO messages_fts(rowid, text, transcript, ocr_text) VALUES (new.id, new.text, new.transcript, new.ocr_text);
+END;
+
+CREATE TRIGGER messages_fts_delete AFTER DELETE ON messages
+BEGIN
+  INSERT INTO messages_fts(messages_fts, rowid, text, transcript, ocr_text) VALUES ('delete', old.id, old.text, old.transcript, old.ocr_text);
+END;
+
+CREATE TRIGGER messages_content_update AFTER UPDATE OF text, transcript, ocr_text ON messages
+WHEN old.text IS NOT new.text OR old.transcript IS NOT new.transcript OR old.ocr_text IS NOT new.ocr_text
+BEGIN
+  INSERT INTO messages_fts(messages_fts, rowid, text, transcript, ocr_text) VALUES ('delete', old.id, old.text, old.transcript, old.ocr_text);
+  INSERT INTO messages_fts(rowid, text, transcript, ocr_text) VALUES (new.id, new.text, new.transcript, new.ocr_text);
+  DELETE FROM embeddings WHERE message_id = new.id
+    AND (old.text IS NOT new.text OR old.transcript IS NOT new.transcript OR coalesce(old.ocr_text, '') IS NOT coalesce(new.ocr_text, ''));
+  INSERT INTO embed_queue(message_id)
+    SELECT new.id WHERE (new.text IS NOT NULL OR new.transcript IS NOT NULL OR (new.ocr_text IS NOT NULL AND new.ocr_text <> ''))
+      AND (old.text IS NOT new.text OR old.transcript IS NOT new.transcript OR coalesce(old.ocr_text, '') IS NOT coalesce(new.ocr_text, ''))
+      AND EXISTS (SELECT 1 FROM meta WHERE key = 'embed_model')
+      AND NOT EXISTS (SELECT 1 FROM embed_queue WHERE message_id = new.id);
+END;
+
+CREATE TRIGGER messages_embed_insert AFTER INSERT ON messages
+WHEN (new.text IS NOT NULL OR new.transcript IS NOT NULL OR (new.ocr_text IS NOT NULL AND new.ocr_text <> ''))
+  AND EXISTS (SELECT 1 FROM meta WHERE key = 'embed_model')
+BEGIN
+  INSERT INTO embed_queue(message_id) SELECT new.id WHERE NOT EXISTS (SELECT 1 FROM embed_queue WHERE message_id = new.id);
+END;
+
+CREATE TRIGGER messages_tombstone_ocr AFTER UPDATE OF deleted_at ON messages
+WHEN old.deleted_at IS NULL AND new.deleted_at IS NOT NULL AND new.ocr_text IS NOT NULL
+BEGIN
+  UPDATE messages SET ocr_text = NULL WHERE id = new.id;
+END;
+`;
+// ---- end v9 ----------------------------------------------------------------
+
+// ---- v10: opt-in local document text indexing (WAZAP_INDEX_DOCUMENTS) ------
+// Additive column on messages plus rebuilt 4-column FTS5 and updated triggers:
+// - messages.doc_text: text extracted from a document when WAZAP_INDEX_DOCUMENTS=local.
+//   NULL = not extracted yet, '' = scanned/unsupported/no text, non-empty = indexed.
+// - Marking NULL -> '' neither invalidates existing embeddings nor re-queues them.
+// - Tombstones clear doc_text so deleted documents keep none.
+const V10 = `
+ALTER TABLE messages ADD COLUMN doc_text TEXT;
+
+DROP TRIGGER messages_fts_insert;
+DROP TRIGGER messages_fts_delete;
+DROP TRIGGER messages_content_update;
+DROP TRIGGER messages_embed_insert;
+DROP TABLE messages_fts;
+
+CREATE VIRTUAL TABLE messages_fts USING fts5(
+  text,
+  transcript,
+  ocr_text,
+  doc_text,
+  content = 'messages',
+  content_rowid = 'id',
+  tokenize = 'trigram remove_diacritics 1'
+);
+INSERT INTO messages_fts(messages_fts, rank) VALUES ('secure-delete', 1);
+INSERT INTO messages_fts(messages_fts) VALUES ('rebuild');
+
+CREATE TRIGGER messages_fts_insert AFTER INSERT ON messages
+BEGIN
+  INSERT INTO messages_fts(rowid, text, transcript, ocr_text, doc_text) VALUES (new.id, new.text, new.transcript, new.ocr_text, new.doc_text);
+END;
+
+CREATE TRIGGER messages_fts_delete AFTER DELETE ON messages
+BEGIN
+  INSERT INTO messages_fts(messages_fts, rowid, text, transcript, ocr_text, doc_text) VALUES ('delete', old.id, old.text, old.transcript, old.ocr_text, old.doc_text);
+END;
+
+CREATE TRIGGER messages_content_update AFTER UPDATE OF text, transcript, ocr_text, doc_text ON messages
+WHEN old.text IS NOT new.text OR old.transcript IS NOT new.transcript OR old.ocr_text IS NOT new.ocr_text OR old.doc_text IS NOT new.doc_text
+BEGIN
+  INSERT INTO messages_fts(messages_fts, rowid, text, transcript, ocr_text, doc_text) VALUES ('delete', old.id, old.text, old.transcript, old.ocr_text, old.doc_text);
+  INSERT INTO messages_fts(rowid, text, transcript, ocr_text, doc_text) VALUES (new.id, new.text, new.transcript, new.ocr_text, new.doc_text);
+  DELETE FROM embeddings WHERE message_id = new.id
+    AND (old.text IS NOT new.text OR old.transcript IS NOT new.transcript
+      OR coalesce(old.ocr_text, '') IS NOT coalesce(new.ocr_text, '')
+      OR coalesce(old.doc_text, '') IS NOT coalesce(new.doc_text, ''));
+  INSERT INTO embed_queue(message_id)
+    SELECT new.id WHERE (new.text IS NOT NULL OR new.transcript IS NOT NULL
+        OR (new.ocr_text IS NOT NULL AND new.ocr_text <> '')
+        OR (new.doc_text IS NOT NULL AND new.doc_text <> ''))
+      AND (old.text IS NOT new.text OR old.transcript IS NOT new.transcript
+        OR coalesce(old.ocr_text, '') IS NOT coalesce(new.ocr_text, '')
+        OR coalesce(old.doc_text, '') IS NOT coalesce(new.doc_text, ''))
+      AND EXISTS (SELECT 1 FROM meta WHERE key = 'embed_model')
+      AND NOT EXISTS (SELECT 1 FROM embed_queue WHERE message_id = new.id);
+END;
+
+CREATE TRIGGER messages_embed_insert AFTER INSERT ON messages
+WHEN (new.text IS NOT NULL OR new.transcript IS NOT NULL
+    OR (new.ocr_text IS NOT NULL AND new.ocr_text <> '')
+    OR (new.doc_text IS NOT NULL AND new.doc_text <> ''))
+  AND EXISTS (SELECT 1 FROM meta WHERE key = 'embed_model')
+BEGIN
+  INSERT INTO embed_queue(message_id) SELECT new.id WHERE NOT EXISTS (SELECT 1 FROM embed_queue WHERE message_id = new.id);
+END;
+
+CREATE TRIGGER messages_tombstone_doc AFTER UPDATE OF deleted_at ON messages
+WHEN old.deleted_at IS NULL AND new.deleted_at IS NOT NULL AND new.doc_text IS NOT NULL
+BEGIN
+  UPDATE messages SET doc_text = NULL WHERE id = new.id;
+END;
+`;
+// ---- end v10 ---------------------------------------------------------------
+
 /** Every migration, in order. The schema version a build knows is the last one's. */
 export const MIGRATIONS: readonly Migration[] = [
   { version: 1, sql: V1 },
@@ -965,6 +1106,8 @@ export const MIGRATIONS: readonly Migration[] = [
   { version: 6, sql: V6 },
   { version: 7, sql: V7 },
   { version: 8, sql: V8 },
+  { version: 9, sql: V9 },
+  { version: 10, sql: V10 },
 ];
 
 export const SCHEMA_VERSION = MIGRATIONS[MIGRATIONS.length - 1]!.version;

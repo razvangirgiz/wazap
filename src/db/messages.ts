@@ -453,7 +453,7 @@ export class Messages {
     const paths = this.c.all<{ path: string }>("SELECT path FROM media WHERE message_id = ?", messageId).map((r) => r.path);
     this.c.run("DELETE FROM media WHERE message_id = ?", messageId);
     this.c.run(
-      "UPDATE messages SET deleted_at = ?, text = NULL, transcript = NULL, transcript_info = NULL, raw = NULL WHERE id = ? AND deleted_at IS NULL",
+      "UPDATE messages SET deleted_at = ?, text = NULL, transcript = NULL, transcript_info = NULL, ocr_text = NULL, doc_text = NULL, raw = NULL WHERE id = ? AND deleted_at IS NULL",
       at,
       messageId
     );
@@ -547,6 +547,58 @@ export class Messages {
         ) > 0
       );
     });
+  }
+
+  /** Local OCR text for a live image message: "" records no readable text without re-embedding; non-empty joins search and embeddings. */
+  setOcrText(sid: string, ocrText: string): boolean {
+    return this.c.write(() => {
+      const key = this.visibleKey(sid);
+      if (key === null) return false;
+      return this.c.run("UPDATE messages SET ocr_text = ? WHERE id = ? AND deleted_at IS NULL", ocrText, key.id) > 0;
+    });
+  }
+
+  /** Visible kept image originals whose OCR has not run yet (`ocr_text IS NULL`), newest first. */
+  keptImagesWithoutOcr(limit: number, before?: number): Array<{ id: number; sid: string; path: string }> {
+    return this.c.all<{ id: number; sid: string; path: string }>(
+      `SELECT m.id, ${SID_EXPR} AS sid, md.path
+       FROM media md
+       CROSS JOIN messages m ON m.id = md.message_id
+       CROSS JOIN chats c ON c.id = m.chat_id
+       LEFT JOIN chats ck ON ck.id = c.merged_into
+       WHERE md.kind = 'original' AND m.type = 'image' AND ${VISIBLE}
+         AND m.ocr_text IS NULL AND m.id < ?
+       ORDER BY m.id DESC LIMIT ?`,
+      this.c.now(),
+      before ?? NO_UPPER_BOUND,
+      clampLimit(limit)
+    );
+  }
+
+  /** Extracted document text for a live document message: "" records no readable text without re-embedding; non-empty joins search and embeddings. */
+  setDocText(sid: string, docText: string): boolean {
+    return this.c.write(() => {
+      const key = this.visibleKey(sid);
+      if (key === null) return false;
+      return this.c.run("UPDATE messages SET doc_text = ? WHERE id = ? AND deleted_at IS NULL", docText, key.id) > 0;
+    });
+  }
+
+  /** Visible kept document originals whose text has not been extracted yet (`doc_text IS NULL`), newest first. */
+  keptDocumentsWithoutDocText(limit: number, before?: number): Array<{ id: number; sid: string; path: string }> {
+    return this.c.all<{ id: number; sid: string; path: string }>(
+      `SELECT m.id, ${SID_EXPR} AS sid, md.path
+       FROM media md
+       CROSS JOIN messages m ON m.id = md.message_id
+       CROSS JOIN chats c ON c.id = m.chat_id
+       LEFT JOIN chats ck ON ck.id = c.merged_into
+       WHERE md.kind = 'original' AND m.type = 'document' AND ${VISIBLE}
+         AND m.doc_text IS NULL AND m.id < ?
+       ORDER BY m.id DESC LIMIT ?`,
+      this.c.now(),
+      before ?? NO_UPPER_BOUND,
+      clampLimit(limit)
+    );
   }
 
   /**
@@ -1294,6 +1346,39 @@ export class Messages {
       limit + 1
     );
     return pageOf(rows.map(messageFromRow), limit);
+  }
+
+  /** One page of a chat, oldest first; `after` is the exclusive lower id bound from the previous page. */
+  chatPageForward(
+    chatJid: string,
+    options: { after?: number; before?: number; limit: number; since?: number; until?: number }
+  ): { items: StoredMessage[]; hasMore: boolean; nextAfter: number | null } {
+    const limit = clampLimit(options.limit);
+    const chat = this.identity.chat(chatJid);
+    if (chat === null) return { items: [], hasMore: false, nextAfter: null };
+    const family = this.identity.chatIdsOf(chat);
+    const inChat = chatCondition(family);
+    const once = foldTwinCondition(family, chat.id);
+    const since = options.since === undefined ? null : checkTimestamp(options.since, "since");
+    const until = options.until === undefined ? null : checkTimestamp(options.until, "until");
+    const lower = since === null ? 0 : idLowerBound(since);
+    const upper = Math.min(options.before ?? NO_UPPER_BOUND, until === null ? NO_UPPER_BOUND : idUpperBound(until));
+    const rows = this.c.all<MessageRow>(
+      `SELECT ${MESSAGE_COLUMNS} FROM ${MESSAGE_FROM}
+       WHERE ${inChat.sql} AND m.id > ? AND m.id >= ? AND m.id < ? AND m.ts >= ? AND m.ts <= ? AND ${VISIBLE} ${once.sql} ORDER BY m.id ASC LIMIT ?`,
+      ...inChat.params,
+      options.after ?? -1,
+      lower,
+      upper,
+      since ?? 0,
+      until ?? NO_UPPER_BOUND,
+      this.c.now(),
+      ...once.params,
+      limit + 1
+    );
+    const hasMore = rows.length > limit;
+    const items = (hasMore ? rows.slice(0, limit) : rows).map(messageFromRow);
+    return { items, hasMore, nextAfter: hasMore ? items[items.length - 1]!.id : null };
   }
 
   /**

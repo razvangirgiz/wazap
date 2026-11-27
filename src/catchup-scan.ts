@@ -30,17 +30,16 @@ import { closesAsk, readsAsAsk } from "./asks.js";
 import { isForwarded } from "./messages.js";
 import type { AccountDb, ChatRecord, DigestMedia, DigestSpan, InboundAggregate, TailMessage, WindowMessage } from "./db/index.js";
 import { idLowerBound, OPENED_MEDIA, secondOfId } from "./db/index.js";
-import { PRIVATE_TAG, privatePeople } from "./private-contacts.js";
+import { NO_CATCHUP_TAG, PRIVATE_TAG, privatePeople } from "./private-contacts.js";
 import { signalsOf, type Signal } from "./signals.js";
+
+export { NO_CATCHUP_TAG };
 
 export const CATCHUP_SECTIONS = ["waiting", "addressed", "calls", "direct", "groups", "stories"] as const;
 export type CatchupSection = (typeof CATCHUP_SECTIONS)[number];
 
 /** Why the window starts where it does. */
 export type WindowBasis = "last" | "first_run" | "mark_expired" | "previous" | "hours" | "since";
-
-/** The tag that keeps a chat out of every catch-up (a bot, an agent). */
-export const NO_CATCHUP_TAG = "no-catchup";
 
 const HOUR = 3_600_000;
 const DAY = 24 * HOUR;

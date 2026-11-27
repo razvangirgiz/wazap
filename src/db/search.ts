@@ -44,6 +44,15 @@ export function ftsPhrase(text: string): string {
   return `"${text.replace(/"/g, '""')}"`;
 }
 
+/** Chat row ids a lexical scan skips without spending its candidate budget on them. */
+export interface ExcludeChats {
+  chatIds: ReadonlySet<number>;
+  /** Populated with matching message ids that were skipped, when supplied. */
+  excludedIds?: Set<number>;
+  /** Populated with chat row ids of skipped matches, when supplied. */
+  excludedChatIds?: Set<number>;
+}
+
 export class Search {
   constructor(
     private readonly c: Connection,
@@ -56,10 +65,16 @@ export class Search {
     const params: SQLInputValue[] = [this.c.now()];
     let narrowsRows = false;
     let chatSize: number | undefined;
-    if (filter.chat !== undefined) {
-      const chat = this.identity.chat(filter.chat);
-      if (chat === null) return null;
-      const chatIds = this.identity.chatIdsOf(chat);
+    if (filter.chat !== undefined || (filter.chats !== undefined && filter.chats.length > 0)) {
+      const requested = filter.chats !== undefined && filter.chats.length > 0 ? filter.chats : [filter.chat!];
+      const idSet = new Set<number>();
+      for (const jid of requested) {
+        const chat = this.identity.chat(jid);
+        if (chat === null) continue;
+        for (const id of this.identity.chatIdsOf(chat)) idSet.add(id);
+      }
+      if (idSet.size === 0) return null;
+      const chatIds = [...idSet];
       const inChat = chatCondition(chatIds);
       if (filter.from === undefined) {
         chatSize = this.c.get<{ n: number }>(
@@ -127,7 +142,7 @@ export class Search {
    * is one pass over the filtered rows. `exact` forces that pass, for checks.
    */
   coverage(filter: MessageFilter & { excludeKinds?: readonly ChatKind[]; exact?: boolean }): SearchCoverage {
-    if (filter.exact !== true && filter.since === undefined && filter.until === undefined && filter.from === undefined && filter.tag === undefined) {
+    if (filter.exact !== true && filter.chats === undefined && filter.since === undefined && filter.until === undefined && filter.from === undefined && filter.tag === undefined) {
       return this.keptCoverage(filter.chat, filter.excludeKinds ?? []);
     }
     const resolved = this.resolveFilter(filter);
@@ -232,15 +247,17 @@ export class Search {
     upper: number,
     want: number,
     cap: number,
-    matchExpression = ftsPhrase(match)
+    matchExpression = ftsPhrase(match),
+    exclude?: ExcludeChats
   ): { ids: number[]; cappedAt: number | null } {
     if (filter.chatSize !== undefined && filter.chatSize <= SCOPED_SCAN_MAX && matchExpression === ftsPhrase(match)
       && [...foldSearchText(match)].length >= MIN_TRIGRAM_CHARS) {
-      return this.scanIds(match, filter, upper, want, cap);
+      return this.scanIds(match, filter, upper, want, cap, exclude);
     }
     const ids: number[] = [];
     let cursor = upper;
     let examined = 0;
+    const omit = exclude !== undefined && exclude.chatIds.size > 0 ? exclude : undefined;
     for (;;) {
       const batch = this.c
         .all<{ id: number }>(
@@ -254,15 +271,34 @@ export class Search {
         .map((row) => row.id);
       if (batch.length === 0) return { ids, cappedAt: null };
       examined += batch.length;
-      const passing = this.c.all<{ id: number }>(
-        `SELECT m.id FROM messages m CROSS JOIN chats c ON c.id = m.chat_id
-         WHERE m.id IN (SELECT value FROM json_each(?)) AND ${filter.where}
-         ORDER BY m.id DESC LIMIT ?`,
-        JSON.stringify(batch),
-        ...filter.params,
-        want - ids.length
-      );
-      for (const row of passing) ids.push(row.id);
+      if (omit === undefined) {
+        const passing = this.c.all<{ id: number }>(
+          `SELECT m.id FROM messages m CROSS JOIN chats c ON c.id = m.chat_id
+           WHERE m.id IN (SELECT value FROM json_each(?)) AND ${filter.where}
+           ORDER BY m.id DESC LIMIT ?`,
+          JSON.stringify(batch),
+          ...filter.params,
+          want - ids.length
+        );
+        for (const row of passing) ids.push(row.id);
+      } else {
+        const passing = this.c.all<{ id: number; chat_id: number }>(
+          `SELECT m.id, m.chat_id FROM messages m CROSS JOIN chats c ON c.id = m.chat_id
+           WHERE m.id IN (SELECT value FROM json_each(?)) AND ${filter.where}
+           ORDER BY m.id DESC`,
+          JSON.stringify(batch),
+          ...filter.params
+        );
+        for (const row of passing) {
+          if (omit.chatIds.has(row.chat_id)) {
+            omit.excludedIds?.add(row.id);
+            omit.excludedChatIds?.add(row.chat_id);
+            continue;
+          }
+          ids.push(row.id);
+          if (ids.length >= want) return { ids, cappedAt: null };
+        }
+      }
       if (ids.length >= want) return { ids, cappedAt: null };
       cursor = batch[batch.length - 1]!;
       if (batch.length < FTS_BATCH) return { ids, cappedAt: null };
@@ -271,26 +307,51 @@ export class Search {
   }
 
   /** The short-query path: recent messages newest first, matched in JavaScript, at most `cap` of them. */
-  scanIds(query: string, filter: ResolvedFilter, upper: number, want: number, cap: number): { ids: number[]; cappedAt: number | null } {
-    const folded = foldSearchText(query);
-    if (folded.length === 0) return { ids: [], cappedAt: null };
-    const matches = foldedMatcher(folded);
+  scanIds(
+    query: string | readonly string[],
+    filter: ResolvedFilter,
+    upper: number,
+    want: number,
+    cap: number,
+    exclude?: ExcludeChats
+  ): { ids: number[]; cappedAt: number | null } {
+    const terms = (typeof query === "string" ? [query] : query)
+      .map((term) => foldSearchText(term))
+      .filter((folded) => folded.length > 0);
+    if (terms.length === 0) return { ids: [], cappedAt: null };
+    const matchers = terms.map((folded) => foldedMatcher(folded));
+    const matches = (value: string): boolean => matchers.some((match) => match(value));
     const ids: number[] = [];
     let examined = 0;
+    const omit = exclude !== undefined && exclude.chatIds.size > 0 ? exclude : undefined;
     const rows = this.c
       .stmt(
-        `SELECT m.id, m.text, m.transcript FROM messages m CROSS JOIN chats c ON c.id = m.chat_id
+        `SELECT m.id, m.chat_id, m.text, m.transcript, m.ocr_text, m.doc_text FROM messages m CROSS JOIN chats c ON c.id = m.chat_id
          WHERE m.id < ? AND m.id >= ? AND ${filter.where} ORDER BY m.id DESC`
       )
-      .iterate(upper, filter.lower, ...filter.params) as Iterable<{ id: number; text: string | null; transcript: string | null }>;
+      .iterate(upper, filter.lower, ...filter.params) as Iterable<{
+      id: number;
+      chat_id: number;
+      text: string | null;
+      transcript: string | null;
+      ocr_text: string | null;
+      doc_text: string | null;
+    }>;
     for (const row of rows) {
       examined++;
       if (
         (row.text !== null && matches(row.text)) ||
-        (row.transcript !== null && matches(row.transcript))
+        (row.transcript !== null && matches(row.transcript)) ||
+        (row.ocr_text !== null && row.ocr_text !== "" && matches(row.ocr_text)) ||
+        (row.doc_text !== null && row.doc_text !== "" && matches(row.doc_text))
       ) {
-        ids.push(row.id);
-        if (ids.length >= want) return { ids, cappedAt: null };
+        if (omit?.chatIds.has(row.chat_id)) {
+          omit.excludedIds?.add(row.id);
+          omit.excludedChatIds?.add(row.chat_id);
+        } else {
+          ids.push(row.id);
+          if (ids.length >= want) return { ids, cappedAt: null };
+        }
       }
       if (examined >= cap) return { ids, cappedAt: row.id };
     }

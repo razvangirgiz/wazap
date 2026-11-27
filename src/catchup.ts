@@ -893,6 +893,14 @@ export async function privateRule(hub: AccountSource, accountId: string): Promis
   return { others: others.length === 0 ? [] : (await taggedAcross(others)).private };
 }
 
+/** Both #private and #no-catchup cross-account rules for a broad search, in one pass. */
+export async function searchRules(hub: AccountSource, accountId: string): Promise<{ private: PrivateRule; noCatchup: PrivateRule }> {
+  const others = hub.bindings().filter((binding) => binding.id !== accountId);
+  if (others.length === 0) return { private: { others: [] }, noCatchup: { others: [] } };
+  const tags = await taggedAcross(others);
+  return { private: { others: tags.private }, noCatchup: { others: tags.noCatchup } };
+}
+
 function missingSupport(id: string): WazapError {
   return new WazapError("SERVICE_ERROR", `Account "${id}" cannot give a catch-up.`, "Restart the wazap server so every account runs this version");
 }

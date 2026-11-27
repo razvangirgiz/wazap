@@ -32,7 +32,7 @@ export interface SearchCoverage {
 export function searchCoverage(
   wa: WhatsAppApi,
   chatId: string | undefined,
-  opts: { sinceMs?: number; untilMs?: number; tag?: string } = {}
+  opts: { sinceMs?: number; untilMs?: number; tag?: string; chatIds?: readonly string[] } = {}
 ): SearchCoverage | null {
   try {
     return typeof wa.searchCoverage === "function" ? wa.searchCoverage(chatId, opts) : null;

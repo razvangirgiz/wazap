@@ -88,6 +88,8 @@ export interface KeepHost {
   scheduleFileCleanup(): Promise<void>;
   /** Free and total bytes of the disk under `dir`; a test replaces it. */
   diskSpace?(dir: string): Promise<{ free: number; total: number }>;
+  /** Called once a kept original is recorded on disk (e.g. to kick opt-in OCR on images). */
+  onKept?(sid: string, path: string, type: string): void;
 }
 
 function isMissing(err: unknown): boolean {
@@ -453,6 +455,7 @@ export class AccountKeep {
       this.sizes.set(final, buffer.length);
       this.diskWarned = false;
       if (recorded.replaced !== null) void this.host.scheduleFileCleanup().catch(() => {});
+      this.host.onKept?.(sid, final, message.type);
       return true;
     });
   }

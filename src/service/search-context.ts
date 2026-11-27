@@ -4,22 +4,24 @@
  * edit or new #private tag therefore takes effect on the next search.
  */
 import {
+  diminutivesOf,
   foldText,
   inflectionForms,
+  isRealName,
   nameWords,
   type AccountDb,
   type StoredMessage,
   type HybridHit,
 } from "../db/index.js";
 import { QUERY_STOPWORDS } from "../db/vectors.js";
-import { withoutPrivateQuote, type PrivatePeople } from "../private-contacts.js";
+import { withoutPrivateQuote, type NoCatchupChats, type PrivatePeople } from "../private-contacts.js";
 import { contentTokens } from "../search-query.js";
 import type { SearchContext, SearchOptions } from "../wa-types.js";
 import type { MessageViews } from "./views.js";
 import type { AccountIdentity } from "./identity.js";
 import { isFirstName } from "../db/names.js";
 
-export const CONTEXT_CANDIDATES = 30;
+export const CONTEXT_CANDIDATES = 50;
 export const CONTEXT_SHOWN = 5;
 /** How far back from the newest message a hit's chat is read for what it said later, and how much of that is shown. */
 export const LATER_SCAN = 200;
@@ -78,7 +80,7 @@ export function contextRows(
 /** A message's subject words, each cut to five letters: Romanian and English endings move, the start of a word seldom does. */
 function subjectStems(message: StoredMessage): Set<string> {
   const stems = new Set<string>();
-  for (const word of `${message.text ?? ""}\n${message.transcript ?? ""}`.match(/[\p{L}\p{N}]+/gu) ?? []) {
+  for (const word of `${message.text ?? ""}\n${message.transcript ?? ""}\n${message.ocrText ?? ""}\n${message.docText ?? ""}`.match(/[\p{L}\p{N}]+/gu) ?? []) {
     const folded = foldText(word);
     if ([...folded].length < 4 || QUERY_STOPWORDS.has(folded) || CHAT_FILLER.has(folded)) continue;
     stems.add([...folded].slice(0, 5).join(""));
@@ -126,11 +128,11 @@ export function laterOf(
   people: PrivatePeople | null,
   author?: string
 ): Map<number, StoredMessage[]> {
-  const stems = new Map<number, { text: string | null; transcript: string | null; words: Set<string> }>();
+  const stems = new Map<number, { text: string | null; transcript: string | null; ocrText: string | null; docText: string | null; words: Set<string> }>();
   const stemsFor = (message: StoredMessage): Set<string> => {
     let cached = stems.get(message.id);
-    if (cached === undefined || cached.text !== message.text || cached.transcript !== message.transcript) {
-      cached = { text: message.text, transcript: message.transcript, words: subjectStems(message) };
+    if (cached === undefined || cached.text !== message.text || cached.transcript !== message.transcript || cached.ocrText !== message.ocrText || cached.docText !== message.docText) {
+      cached = { text: message.text, transcript: message.transcript, ocrText: message.ocrText, docText: message.docText, words: subjectStems(message) };
       stems.set(message.id, cached);
     }
     return cached.words;
@@ -176,21 +178,99 @@ export function laterOf(
 export function rankWithContext(
   hits: readonly HybridHit[],
   query: string,
-  rows: ReadonlyMap<number, StoredMessage[]>
+  rows: ReadonlyMap<number, StoredMessage[]>,
+  identity?: AccountIdentity
 ): HybridHit[] {
   const tokens = contentTokens(query);
   if (tokens.length < 2) return [...hits];
   const score = (hit: HybridHit): number => {
-    const text = foldText(
-      (rows.get(hit.message.id) ?? [hit.message]).map((m) => `${m.text ?? ""}\n${m.transcript ?? ""}`).join("\n")
-    );
-    const coverage = tokens.filter((token) => text.includes(token)).length / tokens.length;
+    const context = rows.get(hit.message.id) ?? [hit.message];
+    const body = context.map((m) => `${m.text ?? ""}\n${m.transcript ?? ""}\n${m.ocrText ?? ""}\n${m.docText ?? ""}`).join("\n");
+    const text = foldText(body);
+    const labelText =
+      identity === undefined
+        ? ""
+        : [...new Set(context.flatMap((m) => [m.chatJid, ...(m.senderJid === null ? [] : [m.senderJid])]))]
+            .map((jid) => identity.displayName(jid))
+            .filter(isRealName)
+            .join("\n");
+    const words = new Set(nameWords(`${body}\n${labelText}`).flatMap(inflectionForms));
+    const coverage =
+      tokens.filter((token) => text.includes(token) || inflectionForms(token).some((form) => words.has(form))).length /
+      tokens.length;
     return hit.score + 0.008 * coverage;
   };
   return hits
     .map((hit, index) => ({ hit, index, rank: score(hit) }))
     .sort((a, b) => b.rank - a.rank || a.index - b.index)
     .map(({ hit, rank }) => ({ ...hit, contextScore: rank }));
+}
+
+const MAX_PERSON_BOOST_CHATS = 5;
+
+/**
+ * If a broad query names a person who has 1..MAX_PERSON_BOOST_CHATS direct
+ * chats in this account, returns those chats and the query with the person
+ * name stripped, so semantic search can also match messages inside their chat
+ * that do not repeat their name.
+ */
+export function extractPersonBoost(
+  db: AccountDb,
+  identity: AccountIdentity,
+  query: string,
+  noCatchup: NoCatchupChats | null
+): { chats: string[]; strippedQuery: string; names: ReadonlySet<string> } | null {
+  const words = [...query.matchAll(/[\p{L}\p{N}]+/gu)];
+  if (words.length < 2) return null;
+  // Title Case formatting (excluding ALL-CAPS acronyms like UK, DSV) is not a person signal.
+  if (words.filter((word) => /^\p{Lu}\p{Ll}/u.test(word[0])).length > words.length / 2) return null;
+  const candidates = words
+    .map((match, index) => ({ match, index, folded: foldText(match[0]) }))
+    .filter(
+      ({ match, folded }) =>
+        /^\p{Lu}\p{Ll}{2,}$/u.test(match[0]) && !TEMPORAL_NAMES.has(folded) && !QUERY_STOPWORDS.has(folded)
+    );
+  if (candidates.length === 0) return null;
+
+  const directChats = db.identity
+    .directChatNames()
+    .filter((chat) => noCatchup === null || !noCatchup.chatIds.has(chat.id));
+  if (directChats.length === 0) return null;
+
+  const chatWordSets = directChats.map((chat) => {
+    const labels = [...chat.names, identity.displayName(chat.jid)].filter(isRealName);
+    return { jid: chat.jid, words: new Set(labels.flatMap(nameWords)) };
+  });
+
+  const matchedChatJids = new Set<string>();
+  const matchedIndices = new Set<number>();
+  const matchedNames = new Set<string>();
+
+  for (const cand of candidates) {
+    const forms = inflectionForms(cand.folded);
+    const wanted = new Set<string>(forms);
+    for (const form of forms) for (const related of diminutivesOf(form)) wanted.add(related);
+    const chatsForWord = chatWordSets.filter(({ words: chatWords }) => [...wanted].some((w) => chatWords.has(w)));
+    if (chatsForWord.length >= 1 && chatsForWord.length <= MAX_PERSON_BOOST_CHATS) {
+      for (const chat of chatsForWord) matchedChatJids.add(chat.jid);
+      matchedIndices.add(cand.index);
+      matchedNames.add(cand.folded);
+    }
+  }
+
+  if (matchedChatJids.size === 0 || matchedChatJids.size > MAX_PERSON_BOOST_CHATS) return null;
+
+  const drop = new Set<number>(matchedIndices);
+  for (const idx of matchedIndices) {
+    if (idx > 0 && foldText(words[idx - 1]![0]) === "lui") drop.add(idx - 1);
+  }
+  const strippedQuery = words
+    .filter((_, idx) => !drop.has(idx))
+    .map((word) => word[0])
+    .join(" ")
+    .trim();
+  if (contentTokens(strippedQuery).length < 1) return null;
+  return { chats: [...matchedChatJids], strippedQuery, names: matchedNames };
 }
 
 /**
@@ -203,22 +283,25 @@ export function namedEvidence(
   hits: readonly HybridHit[],
   query: string,
   rows: ReadonlyMap<number, StoredMessage[]>,
-  identity: AccountIdentity
+  identity: AccountIdentity,
+  knownPersonNames?: ReadonlySet<string>
 ): HybridHit[] {
   const words = [...query.matchAll(/[\p{L}\p{N}]+/gu)];
-  // Title Case is formatting, not evidence that every noun is a proper name.
-  if (words.filter((word) => /^\p{Lu}/u.test(word[0])).length > words.length / 2) return [...hits];
+  // Title Case is formatting (excluding ALL-CAPS acronyms), not evidence that every noun is a proper name.
+  if (words.filter((word) => /^\p{Lu}\p{Ll}/u.test(word[0])).length > words.length / 2) return [...hits];
   const names = words.filter(
     (word, i) =>
       i > 0 &&
       /^\p{Lu}\p{Ll}{2,}$/u.test(word[0]) &&
       !TEMPORAL_NAMES.has(foldText(word[0])) &&
-      (inflectionForms(foldText(word[0])).some(isFirstName) || NAME_PREPOSITIONS.has(foldText(words[i - 1]![0])))
+      (inflectionForms(foldText(word[0])).some(isFirstName) ||
+        knownPersonNames?.has(foldText(word[0])) === true ||
+        NAME_PREPOSITIONS.has(foldText(words[i - 1]![0])))
   );
   if (names.length === 0) return [...hits];
   return hits.filter((hit) => {
     const context = rows.get(hit.message.id) ?? [hit.message];
-    const text = context.map((m) => `${m.text ?? ""}\n${m.transcript ?? ""}`).join("\n");
+    const text = context.map((m) => `${m.text ?? ""}\n${m.transcript ?? ""}\n${m.ocrText ?? ""}\n${m.docText ?? ""}`).join("\n");
     const labels = new Set(context.flatMap((m) => [m.chatJid, ...(m.senderJid === null ? [] : [m.senderJid])]));
     const tokens = new Set(
       nameWords(text + "\n" + [...labels].map((jid) => identity.displayName(jid)).join("\n")).flatMap(inflectionForms)
@@ -240,7 +323,11 @@ export function renderContexts(
   const render = (stored: readonly StoredMessage[]): SearchContext["messages"] =>
     views.viewsOfStored(stored).map((view) => {
       const safe = people === null ? view : withoutPrivateQuote(view, people, author);
-      const text = safe.transcript ?? safe.text;
+      const base = safe.transcript ?? safe.text;
+      const ocrInline = safe.ocr_text === undefined || safe.ocr_text === "" ? "" : safe.ocr_text.replace(/\s*\r?\n\s*/g, " · ").replace(/[ \t]{2,}/g, " ").trim();
+      const docInline = safe.doc_text === undefined || safe.doc_text === "" ? "" : safe.doc_text.replace(/\s*\r?\n\s*/g, " · ").replace(/[ \t]{2,}/g, " ").trim();
+      const extras = [ocrInline !== "" ? `[ocr: ${ocrInline}]` : "", docInline !== "" ? `[doc: ${docInline}]` : ""].filter(Boolean);
+      const text = extras.length > 0 ? `${base} ${extras.join(" ")}` : base;
       const excerpt = contextExcerpt(text, query);
       return {
         message_id: safe.message_id,

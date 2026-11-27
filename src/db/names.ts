@@ -200,7 +200,7 @@ export const DIMINUTIVES: Readonly<Record<string, readonly string[]>> = {
  */
 const MORE_FIRST_NAMES = (
   // Romanian, women
-  "ana andra anca alina adina aurelia bianca camelia carmen catalina corina cosmina codruta dana daria delia denisa diana " +
+  "ana andra anca angela angelica alina adina aurelia bianca camelia carmen catalina corina cosmina codruta dana daria delia denisa diana " +
   "doina ecaterina elisabeta emilia florentina florina georgiana ileana ina irina iulia larisa laura lavinia liliana loredana " +
   "lucia luminita madalina magdalena mara marcela marina maria medeea mirela miruna monica natalia nicoleta oana otilia paula " +
   "petra raluca ramona rebeca roberta rodica roxana sabina sanda silvia simona sofia sorina stefania tatiana teodora valentina " +
