@@ -855,7 +855,7 @@ export class Messages {
     return row?.expires_at ?? null;
   }
 
-  /** Content-free deletion records outlive a message for 90 days, even when no more expiries are due. */
+  /** Content-free deletion records outlive a message for 90 days. The expiry sweep and the storage boot run this, never a read. */
   pruneExpiredRemovals(): Promise<void> {
     return this.c.chunked(() => {
       const rows = this.c.all<{ change_seq: number }>(

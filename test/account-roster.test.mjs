@@ -130,6 +130,18 @@ test("a removed account's #private tags stop counting for the others when the ro
   assert.doesNotMatch(home.db.getMeta("change_private_others") ?? "", /40700000004/);
 });
 
+test("a service that starts on its own database reconciles the others' #private tags, with no tag write", async (t) => {
+  const { config, home, work } = twoAccountHub(t, { persistHistory: true });
+  seedCreds(config.dataDir, "default", HOME);
+  await work.bootStorage();
+  work.db.identity.updateFields(DAN, { addTags: ["private"] });
+  const phoneSide = fakeSocket();
+  const sockets = stubSockets(socketFactory, [phoneSide]);
+  t.after(() => sockets.restore());
+  await home.start();
+  assert.match(home.db.getMeta("change_private_others") ?? "", /40700000004/, "a start, a relink or a swapped database picks up the tag");
+});
+
 test("an id that is on disk nowhere is still ACCOUNT_NOT_FOUND after the re-read", async (t) => {
   const { hub } = twoAccountHub(t);
   const result = await toolsOf(hub).get("get_status")({ account_id: "ghost" });

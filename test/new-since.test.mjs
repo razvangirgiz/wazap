@@ -689,6 +689,22 @@ test("new_since refuses a cursor older than pruned expiry removals and allows a 
   assert.equal(restarted.isError, undefined);
 });
 
+test("a removal record past its 90 days is pruned when storage boots, with retention off and no expiry pending", async (t) => {
+  const { svc, arrive } = account();
+  const id = arrive(ANA, "temporary");
+  svc.db.messages.setExpiry(id, Date.now() + MINUTE);
+  await svc.db.messages.clearChat(ANA, Date.now() + MINUTE);
+  const removedAt = svc.db.connection.get("SELECT max(at) AS at FROM expired_removals").at;
+  const records = () => svc.db.connection.get("SELECT count(*) AS n FROM expired_removals").n;
+  assert.equal(records(), 1);
+  assert.equal(svc.db.messages.nextExpiry(), null, "no sweep would run");
+  t.mock.method(svc.db.connection, "now", () => removedAt + 91 * 86400000);
+  svc.storage.storageBoot = null;
+  await svc.bootStorage();
+  assert.equal(records(), 0);
+  assert.ok(Number(svc.db.getMeta("expired_removals_pruned_through")) > 0);
+});
+
 test("new_since refuses if removal records are pruned while it learns identities", async (t) => {
   const { svc, call, arrive } = account();
   const id = arrive(ANA, "temporary");

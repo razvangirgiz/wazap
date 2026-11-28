@@ -350,6 +350,10 @@ export class AccountHub implements AccountSource {
     wa.onLinked = (linked) => {
       if (this.services.get(account.id) === wa) this.noteOwner(account.id, linked.id);
     };
+    // A relink, a logout or a database swapped for another number changes this account's tags: the others' numbers follow.
+    wa.onStorageReady = () => {
+      if (this.services.get(account.id) === wa) void this.reconcilePrivateTags();
+    };
     // Scheduled messages go from the server's own services only, each checked against the record on disk then.
     wa.enableSchedule(() => {
       try {

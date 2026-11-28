@@ -309,6 +309,8 @@ export class AccountStorage {
       this.legacyTimer = setInterval(() => this.retireLegacy(), LEGACY_SWEEP_MS);
       this.legacyTimer.unref();
     }
+    // A sweep runs only while an expiry is pending: old removal records are pruned here too.
+    await db.messages.pruneExpiredRemovals().catch((err: unknown) => logError("expired removals", err));
     this.armExpiry();
     this.host.startOutbox();
     this.host.scheduleFlagsBackfill(db);

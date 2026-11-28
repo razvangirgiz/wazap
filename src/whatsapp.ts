@@ -221,6 +221,8 @@ export class WhatsAppService implements WhatsAppApi {
   onRecovered: (() => void) | null = null;
   /** Fires when a `link` lands, so the hub can persist the owner on the record. */
   onLinked: ((account: LinkedAccount) => void) | null = null;
+  /** The account's database is in its final place for this start (a relink may have swapped it). */
+  onStorageReady: (() => void) | null = null;
   private account: StatusInfo["account"] = null;
   /** The pairing in flight, from the first `link` call until it settles either way. */
   private linking: Promise<PairingInfo> | null = null;
@@ -690,6 +692,7 @@ export class WhatsAppService implements WhatsAppApi {
         await this.storage.bootStorage();
         if (this.stopped) return;
       }
+      this.onStorageReady?.();
 
       let state;
       try {
