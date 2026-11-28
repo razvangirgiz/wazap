@@ -150,6 +150,40 @@ test("a message takes a number when stored and a new one when what a reader sees
   db.close();
 });
 
+test("text read from an image or a document later takes a new number, and the same text again, or a scan that found nothing, takes none", () => {
+  const { db, path } = openTemp();
+  const image = db.messages.upsert(textMessage(PEER, "IMG", T0 + 1000, null, { type: "image" }));
+  const doc = db.messages.upsert(textMessage(PEER, "DOC", T0 + 2000, null, { type: "document" }));
+  assert.deepEqual(listed(db), [["IMG", 1], ["DOC", 2]]);
+
+  assert.equal(db.messages.setOcrText(image.sid, "total 45 lei"), true);
+  assert.equal(seqs(path).IMG, 3);
+  assert.equal(db.messages.setDocText(doc.sid, "contract de închiriere"), true);
+  assert.equal(seqs(path).DOC, 4);
+  const arrived = db.messages.changedSince(2, db.messages.changeTop(), 10);
+  assert.deepEqual(arrived.map((row) => [row.seq, row.message.keyId, row.message.ocrText, row.message.docText]), [
+    [3, "IMG", "total 45 lei", null],
+    [4, "DOC", null, "contract de închiriere"],
+  ]);
+
+  db.messages.setOcrText(image.sid, "total 45 lei");
+  db.messages.setDocText(doc.sid, "contract de închiriere");
+  assert.equal(db.messages.changeTop(), 4, "the same text again moves nothing");
+
+  // A scan that found nothing shows a reader nothing, so it is not a change.
+  const blank = db.messages.upsert(textMessage(PEER, "BLANK", T0 + 3000, null, { type: "image" }));
+  assert.equal(db.messages.setOcrText(blank.sid, ""), true);
+  assert.equal(seqs(path).BLANK, 5);
+  assert.equal(db.messages.changeTop(), 5);
+
+  // A tombstone clears both texts and takes one number for the whole change.
+  db.messages.delete(image.sid);
+  assert.equal(seqs(path).IMG, 6);
+  const gone = db.messages.changedSince(5, 6, 10);
+  assert.deepEqual(gone.map((row) => [row.message.keyId, row.message.deletedAt !== null, row.message.ocrText]), [["IMG", true, null]]);
+  db.close();
+});
+
 test("the top is fixed by the caller: what changes after it is not in that read and comes with the next", () => {
   const { db } = openTemp();
   db.messages.upsert(textMessage(PEER, "A", T0, "unu"));
