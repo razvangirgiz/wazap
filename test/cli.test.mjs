@@ -11,7 +11,7 @@ import { promisify } from "node:util";
 
 import { greetNext, leftoverFix, leftoverRefusal, parseLinkChoice, tunnelRefusal, writesQuestion } from "../dist/cli.js";
 import { SUPERVISORS } from "../dist/service.js";
-import { TOOL_NAMES } from "../dist/tools.js";
+import { DEFAULT_TOOL_NAMES } from "../dist/tools.js";
 import { childEnv, spawnWazap, waitFor } from "./helpers.mjs";
 import { runSmoke } from "./smoke-stdio.mjs";
 
@@ -177,7 +177,7 @@ test("an unknown command fails with a pointer to --help", async () => {
 
 test("the built server answers MCP over stdio with no WhatsApp session", async () => {
   const { toolNames, status } = await runSmoke();
-  assert.deepEqual([...toolNames].sort(), [...TOOL_NAMES].sort());
+  assert.deepEqual([...toolNames].sort(), [...DEFAULT_TOOL_NAMES].sort());
   assert.equal(status.status, "not_linked");
 });
 

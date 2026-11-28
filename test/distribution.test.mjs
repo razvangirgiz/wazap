@@ -8,7 +8,7 @@ import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 
 import { launcher } from "../dist/connect.js";
-import { TOOL_NAMES } from "../dist/tools.js";
+import { DEFAULT_TOOL_NAMES } from "../dist/tools.js";
 import { RETIRED_TOOLS } from "./helpers.mjs";
 
 const run = promisify(execFile);
@@ -142,7 +142,7 @@ test("the README's tool table is the registry, and no shipped document names a r
     // The table ends where its rows do: the first blank line after the header.
     const table = text.slice(start, text.indexOf("\n\n", start));
     const listed = [...table.matchAll(/^\| `([a-z_]+)` \|/gm)].map((match) => match[1]);
-    assert.deepEqual([...listed].sort(), [...TOOL_NAMES].sort(), `${page}'s table is not the registry`);
+    assert.deepEqual([...listed].sort(), [...DEFAULT_TOOL_NAMES].sort(), `${page}'s table is not the registry`);
   }
   const docs = readdirSync(join(root, "docs")).map((name) => `docs/${name}`);
   for (const file of ["README.md", "AGENT.md", "CONTRIBUTING.md", ...docs, "manifest.json", "server.json", ".claude-plugin/plugin.json"]) {
@@ -155,7 +155,7 @@ test("the README's tool table is the registry, and no shipped document names a r
     }
     // Any count of twenty or more is the registry's own: the 40 of 0.23 and the 20 of 1.0 are both gone.
     for (const [, count] of text.matchAll(/\b(\d+) (?:read |write )?tools\b/g)) {
-      assert.ok(Number(count) < 20 || Number(count) === TOOL_NAMES.length, `${file} counts ${count} tools, not the registry's ${TOOL_NAMES.length}`);
+      assert.ok(Number(count) < 20 || Number(count) === DEFAULT_TOOL_NAMES.length, `${file} counts ${count} tools, not the registry's ${DEFAULT_TOOL_NAMES.length}`);
     }
   }
   // The settings file names tools too, and there `recall` alone is the retired tool: the setting is WAZAP_RECALL.

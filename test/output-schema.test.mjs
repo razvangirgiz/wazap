@@ -41,7 +41,7 @@ before(async () => {
   home.db.messages.upsert({ chatJid: "40722002222@s.whatsapp.net", keyId: "K3", fromMe: true, ts: Date.now() - 20_000, type: "text", text: "vă trimit factura" });
 
   const server = new McpServer({ name: "wazap-test", version: "1" });
-  registerTools(server, asToolSource(hub), { allowWrite: true });
+  registerTools(server, asToolSource(hub), { allowWrite: true, changeFeed: true });
   const [serverSide, clientSide] = InMemoryTransport.createLinkedPair();
   await server.connect(serverSide);
   client = new Client({ name: "sdk-client", version: "1" });

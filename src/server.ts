@@ -97,6 +97,7 @@ function buildMcpServer(hub: AccountSource, config: Config, allowWrite: boolean,
     allowLocalFiles,
     legacyReads: shape.legacyReads,
     format: shape.format,
+    changeFeed: shape.changeFeed,
     ...(links === null ? {} : { mediaLinks: links }),
     client: opts.client ?? LOCAL_CLIENT,
     ...(opts.draftIdentity === undefined ? {} : { draftIdentity: opts.draftIdentity }),
@@ -119,6 +120,8 @@ interface SessionShape {
   legacyReads: boolean;
   /** Text alone, or text and structured content (client-name.ts): part of the fingerprint, so a revival restores it. */
   format: AnswerFormat;
+  /** WAZAP_CHANGE_FEED: whether new_since is listed (never in a text-answer session). */
+  changeFeed: boolean;
   instructions: string;
   /**
    * A digest of all of that: a session id is signed with it (session-id.ts),
@@ -131,7 +134,7 @@ interface SessionShape {
 
 function sessionShape(hub: AccountSource, config: Config, allowWrite: boolean, allowLocalFiles: boolean, format: AnswerFormat): SessionShape {
   const writes = allowWrite && !config.readOnly && anyAccountAllowsWrites(hub);
-  return shapeFor(writes, !allowLocalFiles, namedAccounts(hub), format);
+  return shapeFor(writes, !allowLocalFiles, namedAccounts(hub), format, config.changeFeed === "on");
 }
 
 /**
@@ -141,8 +144,8 @@ function sessionShape(hub: AccountSource, config: Config, allowWrite: boolean, a
  */
 const shapeCache = new Map<string, SessionShape>();
 
-function shapeFor(writes: boolean, legacyReads: boolean, accounts: ReturnType<typeof namedAccounts>, format: AnswerFormat): SessionShape {
-  const key = JSON.stringify([writes, legacyReads, accounts, format]);
+function shapeFor(writes: boolean, legacyReads: boolean, accounts: ReturnType<typeof namedAccounts>, format: AnswerFormat, changeFeed: boolean): SessionShape {
+  const key = JSON.stringify([writes, legacyReads, accounts, format, changeFeed]);
   let shape = shapeCache.get(key);
   if (shape === undefined) {
     if (shapeCache.size >= 32) shapeCache.clear();
@@ -155,11 +158,11 @@ function shapeFor(writes: boolean, legacyReads: boolean, accounts: ReturnType<ty
     // rewritten within one version still gets the 404 and a fresh initialize.
     // The answer format too: a revival, which never sees the client's name,
     // finds the format the id was minted with by which fingerprint it carries.
-    const catalogue = registerTools.catalogue({ allowWrite: writes, legacyReads, allowLocalFiles: !legacyReads, format });
+    const catalogue = registerTools.catalogue({ allowWrite: writes, legacyReads, allowLocalFiles: !legacyReads, format, changeFeed });
     const fingerprint = createHash("sha256")
-      .update(JSON.stringify([WAZAP_VERSION, writes, legacyReads, format, instructions, skills, catalogue]))
+      .update(JSON.stringify([WAZAP_VERSION, writes, legacyReads, format, changeFeed, instructions, skills, catalogue]))
       .digest("base64url");
-    shape = { writes, legacyReads, format, instructions, fingerprint };
+    shape = { writes, legacyReads, format, changeFeed, instructions, fingerprint };
     shapeCache.set(key, shape);
   }
   return shape;

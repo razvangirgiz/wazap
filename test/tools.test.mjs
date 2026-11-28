@@ -31,7 +31,6 @@ const READ_TOOLS = [
   "get_media",
   "catch_up",
   "wait_for_messages",
-  "new_since",
   "remember",
   "reminder",
 ];
@@ -47,12 +46,38 @@ const WRITE_TOOLS = [
   "scheduled_messages",
 ];
 
-test("the registry is exactly the 24 documented tools, 16 of them in a session without writes", () => {
-  assert.deepEqual([...TOOL_NAMES].sort(), [...READ_TOOLS, ...WRITE_TOOLS].sort());
+// Listed only when WAZAP_CHANGE_FEED=on (src/config.ts): a program that syncs an account asks for it.
+const OPT_IN_TOOLS = ["new_since"];
+
+test("the registry is the 23 documented tools and the opt-in change feed, 15 of them in a session without writes", () => {
+  assert.deepEqual([...TOOL_NAMES].sort(), [...READ_TOOLS, ...WRITE_TOOLS, ...OPT_IN_TOOLS].sort());
   assert.equal(TOOL_NAMES.length, 24);
-  assert.equal(TOOL_COUNT, 24);
-  assert.equal(READ_TOOLS.length, 16);
-  assert.equal(READ_TOOL_COUNT, 16);
+  assert.equal(TOOL_COUNT, 23);
+  assert.equal(READ_TOOLS.length, 15);
+  assert.equal(READ_TOOL_COUNT, 15);
+});
+
+test("new_since is registered only when the change feed is on, and never in a session that answers in text", () => {
+  const names = (opts) => {
+    const server = fakeServer();
+    registerTools(server, asToolSource({}), { allowWrite: true, ...opts });
+    return [...server.tools.keys()];
+  };
+  assert.ok(!names({}).includes("new_since"), "off by default");
+  assert.ok(!names({ changeFeed: false }).includes("new_since"));
+  assert.ok(names({ changeFeed: true }).includes("new_since"));
+  assert.equal(names({ changeFeed: true }).length, TOOL_COUNT + 1);
+  assert.ok(!names({ changeFeed: true, format: "text" }).includes("new_since"), "a text-answer session has no structured sync to offer");
+  assert.ok(names({ changeFeed: true, format: "full" }).includes("new_since"));
+  const readOnly = (opts) => {
+    const server = fakeServer();
+    registerTools(server, asToolSource({}), { allowWrite: false, ...opts });
+    return [...server.tools.keys()];
+  };
+  assert.equal(readOnly({ changeFeed: true }).length, READ_TOOL_COUNT + 1, "a read session lists it too");
+  assert.ok(!registerTools.catalogue({ allowWrite: true }).some((tool) => tool.name === "new_since"));
+  assert.ok(registerTools.catalogue({ allowWrite: true, changeFeed: true }).some((tool) => tool.name === "new_since"));
+  assert.ok(!registerTools.catalogue({ allowWrite: true, changeFeed: true, format: "text" }).some((tool) => tool.name === "new_since"));
 });
 
 test("read-only registration exposes no write tool at all", () => {
@@ -555,7 +580,7 @@ test("remember and learn state the #private rule the reads keep: no words unless
 
 test("each tool's annotations are true of its most far-reaching action: get_media reads, remember does not", () => {
   const server = fakeServer();
-  registerTools(server, asToolSource({}), { allowWrite: true });
+  registerTools(server, asToolSource({}), { allowWrite: true, changeFeed: true });
   const hints = Object.fromEntries(
     [...server.tools].map(([name, { meta }]) => {
       const a = meta.annotations;

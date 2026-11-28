@@ -1,9 +1,9 @@
 # The tools
 
-What each of the 24 tools answers, the workflows behind them, and every error
-code. The [README](../README.md#the-24-tools) has the one-line table.
+What each of the 23 tools answers, the workflows behind them, and every error
+code. The [README](../README.md#the-23-tools) has the one-line table.
 
-## The 24 tools
+## The 23 tools
 
 | Tool | Kind | What it does |
 | --- | --- | --- |
@@ -20,7 +20,6 @@ code. The [README](../README.md#the-24-tools) has the one-line table.
 | `get_group_info` | read | Participants, admins, announcement mode, who may edit the info or add members, join approval, disappearing messages, community, invite link (when you are admin). |
 | `get_media` | read | A message's media as an agent can take it in: a voice note or audio as its transcript, a photo or sticker as a JPEG view (`detail`), a video as a contact sheet, a document as its text (`pages`) and a picture of its page; see [Media for remote agents](#media-for-remote-agents). `message_ids` (up to 8) opens several messages in one call, each answered in order. A local session also saves the file (`save_to` picks the directory). Transcription runs on the local or the API provider; with `save_to` a recording comes as its file, with a transcript only if one was already made, and when no transcript can be made the file comes instead, with `transcript_unavailable` saying why. A copy [kept when the media arrived](data.md#kept-media) answers first, even with the link down, and `source` says which: `kept` or `whatsapp`. |
 | `wait_for_messages` | read | Block up to 55 s until a message arrives, then return it with a cursor for the next call. `addressed_to_me` wakes only for direct messages, @-mentions and replies. |
-| `new_since` | read | Every message, in every chat but stories, that arrived or changed (edited, deleted, a transcript added, expiry or `#private` changed) after a cursor, in the order it changed, each in its current state: `after` (default 0, all history) in, `through` out for the next call, with `epoch`, `top` and `more`. Upsert by `key`, not `message_id`, which changes when a chat's lid pairs with a phone. A deleted message comes with `deleted: true` and `[deleted]` for words. `limit` 1-200 (default 100). Expired messages carry only `key`, `chat_id` and `expired: true`; physical removals are retained for 90 days. Clearing messages without an expiry is not reported. For a consumer that syncs instead of paging every chat. See [Syncing with new_since](#syncing-with-new_since). |
 | `remember` | local | Keep what the user says about a person, on this machine only: a note, tags, details (`relatie`, `nickname`, "role": "contabil") that `find_contact` matches, and `handled: true` to take an ask off `catch_up`'s waiting list until they write again. A list of `chat_id`s files the same tags and details on all of them at once, or on none. `#private` keeps their words out of what the assistant did not ask about them by name ([Keeping someone private](#keeping-someone-private)); `#no-catchup` keeps their chat out of `catch_up` and broad `search`. Nothing changes on WhatsApp. |
 | `send_message` | write | Draft a message: text (a reply, @-mentions), media from a path, a URL or the call itself (`data_base64` with `filename`, up to 5 MB), fetched and kept when drafted so the preview names the real file ([Media from a URL](#media-from-a-url)) (`as`: document, voice note or GIF), a poll (`options`), a location (`latitude`, `longitude`) or a forward (`forward`). Does not send. A text draft to someone you write to often carries `style_check`: where it does not read like you. `send_at` (with `time_zone`) drafts it for later; see [Scheduling a message](#scheduling-a-message). |
 | `confirm_send` | write | Send a draft after the user has seen the preview and said yes. A draft is sent at most once; see [Sending once](#sending-once). A draft with `send_at` is scheduled instead. |
@@ -33,6 +32,18 @@ code. The [README](../README.md#the-24-tools) has the one-line table.
 | `reminder` | local | A reminder about a chat, kept on this machine and posted to the user's webhook when due: `create` (`chat_id`, `note`, `after_hours` or `due_at`, `condition` `always` or `no_reply`), `list`, `cancel`. Nothing is sent on WhatsApp. See [Reminders](#reminders). |
 
 ### What an answer carries
+
+**`new_since`** (read, off by default): every message, in every chat but stories,
+that arrived or changed (edited, deleted, a transcript, OCR text or document text
+added, expiry or `#private` changed) after a cursor, in the order it changed, each
+in its current state. It is not one of the 23: set `WAZAP_CHANGE_FEED=on` to list
+it, as the 24th (see [Syncing with new_since](#syncing-with-new_since)). `after`
+(default 0, all history) in, `through` out for the next call, with `epoch`, `top`
+and `more`. Upsert by `key`, not `message_id`, which changes when a chat's lid
+pairs with a phone. A deleted message comes with `deleted: true` and `[deleted]`
+for words. `limit` 1-200 (default 100). Expired messages carry only `key`,
+`chat_id` and `expired: true`; physical removals are retained for 90 days.
+Clearing messages without an expiry is not reported.
 
 Each session gets one rendering of every answer, fixed at its `initialize`
 (`WAZAP_ANSWER_FORMAT`, [settings](settings.md)). A client that names itself
@@ -533,12 +544,22 @@ text and a local session's file.
 
 ### Syncing with new_since
 
+**Turn it on.** `new_since` is not listed by default: an assistant would read
+its definition on every conversation and never use it. Set `WAZAP_CHANGE_FEED=on`
+(in `.env` or the environment, then restart the server; see [settings](settings.md))
+and every session lists it, in a session without writes too. A session that
+answers in text (`WAZAP_ANSWER_FORMAT`, an assistant's client by default) never
+lists it, because its answer is structured; give a program's token a full-format
+session, or set `WAZAP_ANSWER_FORMAT=full`. Turning it off again changes no data:
+the change numbers are kept either way.
+
 `new_since` is for a program that keeps its own copy of the messages. Every
 message has a change number (schema 11); the tool lists messages whose number is past
 `after`, oldest change first, across every chat but stories, up to `limit`
 (100 by default, at most 200). A message gets a new number when it is stored and
 whenever what a reader sees of it changes: an edit, a deletion (for everyone or
-only here), a transcript added, the message a decryption stub stood for, a quote
+only here), a transcript, the text read from an image (`WAZAP_OCR`) or a document
+(`WAZAP_INDEX_DOCUMENTS`) added, the message a decryption stub stood for, a quote
 scrubbed after the quoted message was deleted. Storing the same message again
 changes nothing, and neither do a status, receipts, reactions, votes or a push
 name that arrive with it. When a chat is renamed to a number or folded into

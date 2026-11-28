@@ -25,7 +25,7 @@ function account({ allowWrite = false, config = {} } = {}) {
     { id: DAN, name: "Dan" },
   ]);
   sock.ev.emit("chats.upsert", [{ id: GROUP, name: "Echipa" }]);
-  const { call, tools } = schemaCheckedTools(svc, { allowWrite });
+  const { call, tools } = schemaCheckedTools(svc, { allowWrite, changeFeed: true });
   let seq = 0;
   const event = (chat, content, { fromMe = false, participant, at, key = `M${++seq}` } = {}) => ({
     key: { remoteJid: chat, fromMe, id: key, ...(participant ? { participant } : {}) },
@@ -413,7 +413,7 @@ function linkedTools(personal, work) {
     findByMessage: (id) => bindings.filter((b) => b.wa.hasMessage(id)),
     findByDraft: () => [], reload: () => {}, noteOwner: () => {},
   };
-  return { ...schemaCheckedTools(hub, { allowWrite: false }), bindings, records };
+  return { ...schemaCheckedTools(hub, { allowWrite: false, changeFeed: true }), bindings, records };
 }
 
 test("test_transient_account_outage_never_unprivates", async () => {

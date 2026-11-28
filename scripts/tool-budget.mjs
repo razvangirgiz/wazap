@@ -14,9 +14,10 @@
  *   cloud agent over HTTP, which is not shown file_path or save_to).
  * - metric 2 (reported): outputSchema.
  *
- *   npm run build && node scripts/tool-budget.mjs [--read] [--local] [--json] [--check]
+ *   npm run build && node scripts/tool-budget.mjs [--read] [--local] [--json] [--check] [--change-feed]
  *
- * `--check` fails when metric 1 is over MAX_LIST_TOKENS or a description is
+ * `--check` fails when metric 1 is over MAX_LIST_TOKENS (MAX_CHANGE_FEED_LIST_TOKENS
+ * with `--change-feed`, the list WAZAP_CHANGE_FEED=on gives) or a description is
  * over MAX_DESCRIPTION_CHARS; test/tool-budget.test.mjs holds the same lines.
  */
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
@@ -29,12 +30,16 @@ import { registerTools } from "../dist/tools.js";
 /** Bytes of tool-list JSON per Claude token, as measured (see above). */
 export const BYTES_PER_TOKEN = 2.45;
 /**
- * Metric 1 in measured tokens: about 24,010 bytes. A session that can write lists 24 tools in 23,915 bytes
- * (9,761 tokens) with new_since; the 23 without it fit in 9,550. It includes the four argument names an agent
- * brings from mezzenger (cursor, after, sender_id, query): a client that checks arguments against the
- * advertised schema refuses any it does not list.
+ * Metric 1 in measured tokens: 23,397 bytes, tighter than the 24,000 the old 6,000 at 4 bytes allowed.
+ * Raised from 9,500 for the four argument names an agent brings from mezzenger (cursor, after,
+ * sender_id, query): a client that checks arguments against the advertised schema refuses any it does not list.
  */
-export const MAX_LIST_TOKENS = 9800;
+export const MAX_LIST_TOKENS = 9550;
+/**
+ * The same, with WAZAP_CHANGE_FEED=on: new_since adds about 235 tokens (24 tools, 23,959 bytes, 9,779 tokens).
+ * Only a program that syncs an account turns it on, so the default list keeps MAX_LIST_TOKENS.
+ */
+export const MAX_CHANGE_FEED_LIST_TOKENS = 9800;
 export const MAX_OUTPUT_SCHEMA_TOKENS = 13000;
 export const MAX_DESCRIPTION_CHARS = 300;
 
@@ -46,10 +51,10 @@ const oldTokens = (n) => Math.round(n / 4);
  * The tools/list an SDK client receives, and each tool's share of it.
  * `remote`: a session over HTTP that cannot use this machine's files.
  */
-export async function measureToolBudget({ allowWrite = true, remote = false, format } = {}) {
+export async function measureToolBudget({ allowWrite = true, remote = false, format, changeFeed = false } = {}) {
   const server = new McpServer({ name: "wazap-budget", version: "1" });
   // Listing never reaches the accounts; a handler would.
-  registerTools(server, {}, { allowWrite, allowLocalFiles: !remote, legacyReads: remote, ...(format === undefined ? {} : { format }) });
+  registerTools(server, {}, { allowWrite, allowLocalFiles: !remote, legacyReads: remote, changeFeed, ...(format === undefined ? {} : { format }) });
   const [serverSide, clientSide] = InMemoryTransport.createLinkedPair();
   await server.connect(serverSide);
   const client = new Client({ name: "budget", version: "1" });
@@ -73,7 +78,8 @@ export async function measureToolBudget({ allowWrite = true, remote = false, for
     });
     const sum = (key) => rows.reduce((n, row) => n + row[key], 0);
     return {
-      session: `${remote ? "remote" : "local"} ${allowWrite ? "write" : "read"}`,
+      budget: changeFeed ? MAX_CHANGE_FEED_LIST_TOKENS : MAX_LIST_TOKENS,
+      session: `${remote ? "remote" : "local"} ${allowWrite ? "write" : "read"}${changeFeed ? " with the change feed" : ""}`,
       tools: rows.length,
       rows,
       list_bytes: sum("list_bytes"),
@@ -103,7 +109,7 @@ function table(report) {
     );
   }
   lines.push(
-    `metric 1 (name + description + inputSchema + annotations): ${report.list_bytes} bytes ≈ ${report.list_tokens} tokens (budget ${MAX_LIST_TOKENS}; ${report.list_tokens_at_4} at the old 4 bytes a token)`,
+    `metric 1 (name + description + inputSchema + annotations): ${report.list_bytes} bytes ≈ ${report.list_tokens} tokens (budget ${report.budget}; ${report.list_tokens_at_4} at the old 4 bytes a token)`,
     `metric 2 (outputSchema): ${report.output_bytes} bytes ≈ ${report.output_tokens} tokens (guide ${MAX_OUTPUT_SCHEMA_TOKENS})`,
     `titles, not counted: ${report.title_bytes} bytes ≈ ${tokens(report.title_bytes)} tokens`,
     `tools/list's result, as JSON: ${report.wire_bytes} bytes (the SSE answer that carries it adds its envelope)`
@@ -114,9 +120,11 @@ function table(report) {
 if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href) {
   const args = process.argv.slice(2);
   const allowWrite = !args.includes("--read");
+  const changeFeed = args.includes("--change-feed");
+  const budget = changeFeed ? MAX_CHANGE_FEED_LIST_TOKENS : MAX_LIST_TOKENS;
   const reports = [];
-  if (!args.includes("--remote")) reports.push(await measureToolBudget({ allowWrite }));
-  if (!args.includes("--local")) reports.push(await measureToolBudget({ allowWrite, remote: true }));
+  if (!args.includes("--remote")) reports.push(await measureToolBudget({ allowWrite, changeFeed }));
+  if (!args.includes("--local")) reports.push(await measureToolBudget({ allowWrite, remote: true, changeFeed }));
   if (args.includes("--json")) {
     console.log(JSON.stringify(reports.map(({ raw: _raw, ...rest }) => rest), null, 2));
   } else {
@@ -125,7 +133,7 @@ if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href) {
   if (args.includes("--check")) {
     for (const report of reports) {
       const long = report.rows.filter((row) => row.description_chars > MAX_DESCRIPTION_CHARS).map((row) => row.name);
-      if (report.list_tokens > MAX_LIST_TOKENS || long.length > 0) {
+      if (report.list_tokens > budget || long.length > 0) {
         console.error(`${report.session} over budget: ${report.list_tokens} tokens${long.length ? `; descriptions over ${MAX_DESCRIPTION_CHARS} characters: ${long.join(", ")}` : ""}`);
         process.exitCode = 1;
       }

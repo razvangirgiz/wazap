@@ -473,6 +473,7 @@ function tool<S extends z.ZodRawShape>(def: {
   schema: S;
   outputSchema?: z.ZodRawShape | z.ZodObject;
   write: boolean;
+  changeFeed?: boolean;
   rate?: number;
   handler: (args: z.infer<z.ZodObject<S>>, ctx: ToolCtx) => Promise<ToolResult>;
 }): ToolDef {
@@ -991,6 +992,7 @@ const TOOLS: readonly ToolDef[] = [
     },
     outputSchema: NEW_SINCE_OUTPUT,
     write: false,
+    changeFeed: true,
     handler: async ({ after, limit }, ctx) => {
       const result = await ctx.wa.newSince(after, limit, { private: await privateRule(ctx.hub, ctx.accountId) });
       const { data } = result;
@@ -1749,6 +1751,8 @@ const TOOLS: readonly ToolDef[] = [
 ];
 
 export const TOOL_NAMES: readonly string[] = TOOLS.map((t) => t.name);
+/** What a session lists unless the user turned an opt-in tool on (WAZAP_CHANGE_FEED). */
+export const DEFAULT_TOOL_NAMES: readonly string[] = TOOLS.filter((t) => !t.changeFeed).map((t) => t.name);
 
 /** A wait ends early on a cancelled call, and on a server shutting down, which still gets its answer. */
 function waitSignal(ctx: ToolCtx): { signal?: AbortSignal } {

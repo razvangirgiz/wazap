@@ -9,22 +9,22 @@ breaking.
 
 | Area | Stable | Additive-only | Not promised |
 | --- | --- | --- | --- |
-| MCP tools | the 24 names, their required arguments, their error codes | new optional arguments, new enum values, new answer fields | description wording, field order, rendered text |
+| MCP tools | the 23 names, their required arguments, their error codes; `new_since`, listed only with `WAZAP_CHANGE_FEED=on`, once it is listed | new optional arguments, new enum values, new answer fields | description wording, field order, rendered text |
 | Safety | draft-then-confirm, send rules, read-only mode, session isolation | new codes for new refusals | the exact error sentences |
 | CLI | command and flag names, exit code 0 vs non-zero, `status --json`, `--version --json`, `account add --json` | new commands, flags and JSON keys | the human text on stderr |
 | Webhook | event names, signature scheme, the payload fields below | new events (opt-in), new payload fields | delivery latency, retry timing |
 | Storage | forward-only migrations, released migrations frozen, the pre-migration copy | new schema versions | the SQLite schema as a format for other tools |
-| Settings | the 37 `WAZAP_*` in `.env.example` and `docs/settings.md` | new settings | anything not listed there |
+| Settings | the 38 `WAZAP_*` in `.env.example` and `docs/settings.md` | new settings | anything not listed there |
 
 ## 1. The MCP surface
 
-wazap registers exactly 24 tools — the 20 of 1.0, `list_contacts`, added in
-1.2, `scheduled_messages` and `reminder`, added in 1.4, and `new_since` — a session
-without writes sees 16 of them, and every tool also takes an optional `account_id`. Guarded by: `test/tools.test.mjs`,
+wazap registers exactly 23 tools — the 20 of 1.0, `list_contacts`, added in
+1.2, and `scheduled_messages` and `reminder`, added in 1.4 — a session
+without writes sees 15 of them, and every tool also takes an optional `account_id`. Guarded by: `test/tools.test.mjs`,
 `test/tool-names.test.mjs`.
 
-The 24, each with what it requires: `learn` (), `get_status` (),
-`list_chats` (), `catch_up` (), `wait_for_messages` (), `new_since` (), `find_contact` (),
+The 23, each with what it requires: `learn` (), `get_status` (),
+`list_chats` (), `catch_up` (), `wait_for_messages` (), `find_contact` (),
 `list_contacts` (), `link_account` (), `search` (`query`), `get_group_info` (`group_id`),
 `confirm_send` (`draft_id`), `manage_group` (`action`),
 `read_messages` (`chat_id`), `remember` (`chat_id`), `get_message`
@@ -34,11 +34,17 @@ The 24, each with what it requires: `learn` (), `get_status` (),
 (`chat_id`, `action`), `scheduled_messages` (), `reminder` ().
 An empty argument list means the tool requires nothing.
 
+`new_since` is the one tool a setting adds: `WAZAP_CHANGE_FEED=on` lists it as a 24th
+(a session without writes then sees 16), and it requires nothing. It is off by
+default, so an assistant's tool list does not carry a tool only a syncing program
+uses, and a session that answers in text never lists it. Guarded by:
+`test/tools.test.mjs`, `test/tool-budget.test.mjs`.
+
 `get_media` is the one exception the list cannot show: it takes exactly one of
 `message_id` and `message_ids`, which its schema cannot say, so neither is
 required there; a call with neither or both is refused with `INVALID_ID`.
 
-17 declare an output schema and answer in that shape, as an SDK client's
+16 declare an output schema and answer in that shape, as an SDK client's
 own validator checks it; the seven without one are the six of the integration
 contract and `learn` (`test/output-schema.test.mjs`). A refusal is an error result carrying
 `{ error, message, fix }`, with `account_id` added when the tool declares an
@@ -264,12 +270,12 @@ code or the tests supports a third-party reader.
 
 ## 6. Settings
 
-Stable: the 37 `WAZAP_*` listed in `.env.example` and in the settings table of
+Stable: the 38 `WAZAP_*` listed in `.env.example` and in the settings table of
 `docs/settings.md` — `WAZAP_DATA_DIR`, `WAZAP_READ_ONLY`, `WAZAP_PERSIST_HISTORY`,
 `WAZAP_HOST`, `WAZAP_PORT`, `WAZAP_READ_TOKEN`, `WAZAP_WRITE_TOKEN`, `WAZAP_ANSWER_FORMAT`,
 `WAZAP_PUBLIC_URL`, `WAZAP_OAUTH_PASSWORD`, `WAZAP_TRUST_PROXY`,
 `WAZAP_TRANSCRIBE`, `WAZAP_TRANSCRIBE_API_KEY`, `WAZAP_TRANSCRIBE_AUTH`, `WAZAP_TRANSCRIBE_ALLOW_API`,
-`WAZAP_TRANSCRIBE_AUTO`, `WAZAP_RECALL`, `WAZAP_RECALL_CACHE_MAX_MB`, `WAZAP_OCR`, `WAZAP_INDEX_DOCUMENTS`,
+`WAZAP_TRANSCRIBE_AUTO`, `WAZAP_RECALL`, `WAZAP_RECALL_CACHE_MAX_MB`, `WAZAP_OCR`, `WAZAP_INDEX_DOCUMENTS`, `WAZAP_CHANGE_FEED`,
 `WAZAP_WEBHOOK`, `WAZAP_WEBHOOK_URL`, `WAZAP_WEBHOOK_SECRET`,
 `WAZAP_WEBHOOK_EVENTS`, `WAZAP_WEBHOOK_AUTH`, `WAZAP_WEBHOOK_CHATS`,
 `WAZAP_WEBHOOK_TAG`, `WAZAP_WEBHOOK_COALESCE`, `WAZAP_WEBHOOK_RETRY_401`,

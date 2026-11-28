@@ -15,7 +15,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { answerFormatFor, isAssistantName, possibleFormats } from "../dist/client-name.js";
-import { answerFormatSetting } from "../dist/config.js";
+import { answerFormatSetting, changeFeedSetting } from "../dist/config.js";
 import { readDaemon } from "../dist/daemon.js";
 import { startHttpEndpoint } from "../dist/server.js";
 import { mcpClient, offlineConfig, spawnWazap, stubAccountSource, waitFor } from "./helpers.mjs";
@@ -85,10 +85,10 @@ function dataDir(t) {
   return dir;
 }
 
-async function start(t, dir, answerFormat) {
+async function start(t, dir, answerFormat, changeFeed) {
   const stop = new AbortController();
   t.after(() => stop.abort());
-  const config = offlineConfig("wazap-answers-cfg-", { dataDir: dir, readOnly: false, ...(answerFormat === undefined ? {} : { answerFormat }) });
+  const config = offlineConfig("wazap-answers-cfg-", { dataDir: dir, readOnly: false, ...(answerFormat === undefined ? {} : { answerFormat }), ...(changeFeed === undefined ? {} : { changeFeed }) });
   const port = await startHttpEndpoint(stubAccountSource(wa), config, {
     host: "127.0.0.1",
     port: 0,
@@ -127,7 +127,7 @@ async function answers(server, sid) {
 test("an assistant's session lists no outputSchema and answers in text alone; a program's keeps both", async (t) => {
   const server = await start(t, dataDir(t));
   const assistant = await answers(server, await server.open("claude-code"));
-  assert.equal(assistant.tools.length, 24);
+  assert.equal(assistant.tools.length, 23);
   assert.deepEqual(assistant.tools.filter((tool) => tool.outputSchema !== undefined).map((tool) => tool.name), []);
   assert.equal(assistant.reminders.structuredContent, undefined);
   assert.match(assistant.reminders.content[0].text, /r_1/);
@@ -136,7 +136,7 @@ test("an assistant's session lists no outputSchema and answers in text alone; a 
   assert.deepEqual(Object.keys(JSON.parse(assistant.refused.content[0].text)).sort(), ["account_id", "error", "fix", "message"]);
 
   const program = await answers(server, await server.open("acme-crm"));
-  assert.equal(program.tools.filter((tool) => tool.outputSchema !== undefined).length, 17);
+  assert.equal(program.tools.filter((tool) => tool.outputSchema !== undefined).length, 16);
   assert.equal(program.reminders.structuredContent.reminders[0].reminder_id, "r_1");
   assert.match(program.reminders.content[0].text, /r_1/, "the same text block rides beside it");
   assert.equal(program.refused.isError, true);
@@ -146,7 +146,7 @@ test("WAZAP_ANSWER_FORMAT holds every session to one format", async (t) => {
   const full = await start(t, dataDir(t), "full");
   const assistant = await answers(full, await full.open("claude-code"));
   assert.equal(assistant.reminders.structuredContent.reminders.length, 1);
-  assert.equal(assistant.tools.filter((tool) => tool.outputSchema !== undefined).length, 17);
+  assert.equal(assistant.tools.filter((tool) => tool.outputSchema !== undefined).length, 16);
   const text = await start(t, dataDir(t), "text");
   const program = await answers(text, await text.open("acme-crm"));
   assert.equal(program.reminders.structuredContent, undefined);
@@ -214,6 +214,32 @@ test("over stdio and through the bridge, the format is the client's own", async 
   const third = spawnWazap({ dataDir: dir });
   children.push(third.child);
   const program = await stdioSession(third.child, "acme-crm");
-  assert.equal(program.tools.filter((tool) => tool.outputSchema !== undefined).length, 17);
+  assert.equal(program.tools.filter((tool) => tool.outputSchema !== undefined).length, 16);
   assert.equal(program.status.structuredContent.status, "not_linked");
+});
+
+// ------------------------------------------------------------ the change feed
+
+test("WAZAP_CHANGE_FEED reads on and off, and refuses anything else", () => {
+  for (const off of [undefined, "", "off", " OFF ", "0", "false"]) assert.equal(changeFeedSetting(off), "off", String(off));
+  for (const on of ["on", " On ", "1", "true"]) assert.equal(changeFeedSetting(on), "on", on);
+  assert.throws(() => changeFeedSetting("local"), /WAZAP_CHANGE_FEED must be on or off/);
+});
+
+test("new_since is listed only with WAZAP_CHANGE_FEED=on, and never to a session that answers in text", async (t) => {
+  const names = async (server, client) => (await answers(server, await server.open(client))).tools.map((tool) => tool.name);
+  const off = await start(t, dataDir(t));
+  assert.equal((await names(off, "acme-crm")).includes("new_since"), false, "off by default, for a program");
+  assert.equal((await names(off, "claude-code")).includes("new_since"), false, "and for an assistant");
+
+  const on = await start(t, dataDir(t), undefined, "on");
+  const program = await names(on, "acme-crm");
+  assert.equal(program.includes("new_since"), true, "a program's full-format session lists it");
+  assert.equal(program.length, 24);
+  assert.equal((await names(on, "claude-code")).includes("new_since"), false, "an assistant's text-format session does not");
+
+  const text = await start(t, dataDir(t), "text", "on");
+  assert.equal((await names(text, "acme-crm")).includes("new_since"), false, "WAZAP_ANSWER_FORMAT=text holds a program to text too");
+  const full = await start(t, dataDir(t), "full", "on");
+  assert.equal((await names(full, "claude-code")).includes("new_since"), true, "WAZAP_ANSWER_FORMAT=full gives an assistant the feed");
 });
