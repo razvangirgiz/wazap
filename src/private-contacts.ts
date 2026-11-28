@@ -18,7 +18,7 @@
  * - new_since keeps what arrived or changed from them without its words
  *   (withoutWords), marked `private`, a deleted one too. Changing the tag
  *   re-lists their sender rows and direct chat; other accounts' private JIDs
- *   are reconciled before the next window;
+ *   are reconciled when a tag is written, never by the read;
  * - list_chats keeps the last message of their chat, or theirs in a group,
  *   without its words, marked `private`;
  * - read_messages on "status" keeps their stories without text, caption or

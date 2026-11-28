@@ -1452,11 +1452,29 @@ export class Messages {
     return { items, hasMore, nextAfter: hasMore ? items[items.length - 1]!.id : null };
   }
 
-  /** Separate account files cannot trigger each other: reconcile privateRule's external JIDs before fixing the top. */
-  syncPrivateChanges(others: readonly string[], complete = true): readonly string[] {
-    const snapshot = JSON.parse(this.c.get<{ value: string }>("SELECT value FROM meta WHERE key = 'change_private_others'")?.value ?? "[]") as string[];
-    const current = [...new Set(complete ? others : [...snapshot, ...others])].sort();
-    if (!complete) return current;
+  /** The other accounts' #private JIDs as the last reconcile (syncPrivateChanges) left them. */
+  private storedPrivateOthers(): string[] {
+    return JSON.parse(this.c.get<{ value: string }>("SELECT value FROM meta WHERE key = 'change_private_others'")?.value ?? "[]") as string[];
+  }
+
+  /**
+   * The other accounts' #private JIDs as a read applies them. When every account
+   * answered, those; when one could not, those with the last reconciled set, so
+   * an outage never lists private history with its words. Writes nothing.
+   */
+  privateOthers(others: readonly string[], complete = true): readonly string[] {
+    return [...new Set(complete ? others : [...this.storedPrivateOthers(), ...others])].sort();
+  }
+
+  /**
+   * Separate account files cannot trigger each other: when another account's
+   * #private tag is added or removed, the people it names get new change numbers
+   * here, and the set is kept so the next call sees only what moved. The caller
+   * (reconcilePrivate in src/catchup.ts) runs it when a tag is written, when the
+   * accounts start and when the roster changes, never on a read.
+   */
+  syncPrivateChanges(others: readonly string[]): void {
+    const current = [...new Set(others)].sort();
     const value = JSON.stringify(current);
     this.c.write(() => {
       const previous = this.c.get<{ value: string }>("SELECT value FROM meta WHERE key = 'change_private_others'")?.value ?? "[]";
@@ -1478,7 +1496,6 @@ export class Messages {
       );
       this.c.run("INSERT OR REPLACE INTO meta(key, value) VALUES ('change_private_others', ?)", value);
     });
-    return current;
   }
 
   /** The newest change_seq handed out; a new_since call fixes it first and reads no further. */

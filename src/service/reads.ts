@@ -474,10 +474,11 @@ export class AccountReads {
     return this.host.guarded(async () => {
       this.host.ensureConnected();
       await this.host.waitForSync();
+      // A read: expired removals are pruned by the expiry sweep, and other accounts' #private tags are
+      // reconciled when they are written (reconcilePrivate), so nothing is stored here.
       const db = this.storage.db;
-      await db.messages.pruneExpiredRemovals();
       const privateRule = opts.private === undefined ? undefined : {
-        ...opts.private, others: db.messages.syncPrivateChanges(opts.private.others, opts.private.complete),
+        ...opts.private, others: db.messages.privateOthers(opts.private.others, opts.private.complete),
       };
       const top = db.messages.changeTop();
       // The page, then the names it needs learned, then the page again: a pairing folds a lid chat into its number's.
@@ -927,6 +928,11 @@ export class AccountReads {
       if (this.host.status() === "not_linked" || this.host.status() === "linking") this.host.ensureConnected();
       return scanCatchup(this.storage.db, this.catchupHost(), request, { id: this.accountRecord.id, name: this.accountRecord.name });
     });
+  }
+
+  /** Renumbers what another account's #private tags moved, here (see AccountDb messages.syncPrivateChanges); skipped while the database is not ready. */
+  reconcilePrivate(others: readonly string[]): Promise<void> {
+    return this.host.guarded(async () => this.storage.readyDb()?.messages.syncPrivateChanges(others));
   }
 
   catchUpTags(): Promise<CatchupTagJids> {

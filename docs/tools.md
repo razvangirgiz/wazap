@@ -582,7 +582,7 @@ Physical deletion of any message with an expiry leaves a durable, content-free
 These records use the same change counter and page in order alongside messages.
 A duplicate removed during chat folding is omitted while the same key still
 exists in the canonical chat family; the surviving message remains authoritative.
-Expiry sweeps and `new_since` prune records older than 90 days after physical deletion. Poll
+Expiry sweeps prune records older than 90 days after physical deletion. Poll
 within that window and remove any cached words when `expired: true` arrives.
 If `after` is nonzero and below `meta.expired_removals_pruned_through`, the call
 refuses with tool error `CURSOR_EXPIRED`: "The cursor predates pruned removal records."
@@ -618,10 +618,13 @@ number.
   replies quoting them; resync cached quotes after changing tags. The current cross-account rule still
   applies: a tag on any linked account keeps them private on all. Local tag
   changes are numbered by SQL triggers; changes to the other accounts' private
-  JIDs are reconciled before the next `new_since` window starts and remembered
-  on disk. While any live account cannot report tags, the stored snapshot is
-  retained and unioned with successful answers for listing; an outage never
-  re-lists private history as untagged. A sender that becomes known or merges with another contact alone
+  JIDs are numbered when the tag is written (`remember`, the account roster
+  changing, or the server starting), never by a `new_since` call, and remembered
+  on disk. While any live account cannot report tags, nothing is renumbered, the
+  stored snapshot is retained and unioned with successful answers for listing; an
+  outage never re-lists private history as untagged. A tag written in a way the
+  server does not see (editing the database directly) is picked up at the next
+  restart. A sender that becomes known or merges with another contact alone
   still requires syncing from 0 to refresh privacy.
 - A message under two spellings of a chat that is being folded into another is
   listed once, under the chat it reads as.

@@ -7,6 +7,7 @@
  */
 
 import { AccountRegistry, type AccountRecord } from "./accounts.js";
+import { reconcilePrivate } from "./catchup.js";
 import { accountPaths, type Config } from "./config.js";
 import { WazapError } from "./errors.js";
 import { log, logError } from "./logger.js";
@@ -135,6 +136,13 @@ export class AccountHub implements AccountSource {
   async start(): Promise<void> {
     this.started = true;
     await Promise.all([...this.services].map(([id, wa]) => this.startService(id, wa)));
+    // A #private tag changed while the server was off reaches the other accounts' change numbers now.
+    await this.reconcilePrivateTags();
+  }
+
+  /** Each account's change numbers follow the other accounts' #private tags, set when the roster is, never on a read. */
+  private reconcilePrivateTags(): Promise<void> {
+    return reconcilePrivate(this).catch((err: unknown) => logError("private tags", err));
   }
 
   async stop(): Promise<void> {
@@ -218,7 +226,7 @@ export class AccountHub implements AccountSource {
     for (const account of arriving) {
       const wa = this.spawn(account);
       change.added.push(account.id);
-      if (this.started) void this.startService(account.id, wa);
+      if (this.started) void this.startService(account.id, wa).then(() => this.reconcilePrivateTags());
     }
     if (this.services.size === leaving.length) {
       change.kept.push(...leaving);
@@ -228,6 +236,8 @@ export class AccountHub implements AccountSource {
         this.retire(id);
         change.removed.push(id);
       }
+      // What a removed account tagged no longer counts for the others.
+      if (this.started && leaving.length > 0) void this.reconcilePrivateTags();
     }
     if (change.added.length > 0 || change.removed.length > 0) {
       log(

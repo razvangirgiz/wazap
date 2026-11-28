@@ -1187,6 +1187,10 @@ export class WhatsAppService implements WhatsAppApi {
     return this.reads.catchUpTags();
   }
 
+  reconcilePrivate(others: readonly string[]): Promise<void> {
+    return this.reads.reconcilePrivate(others);
+  }
+
   catchUpQuotes(ids: number[]): Promise<CatchupQuote[]> {
     return this.reads.catchUpQuotes(ids);
   }

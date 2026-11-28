@@ -50,6 +50,7 @@ import {
   type WindowBasis,
 } from "./catchup-scan.js";
 import { asWazapError, WazapError } from "./errors.js";
+import { logError } from "./logger.js";
 import { isoWithOffset } from "./messages.js";
 import { signalsOf, type Signal } from "./signals.js";
 import type { AnswerFormat } from "./client-name.js";
@@ -895,6 +896,36 @@ export async function privateRule(hub: AccountSource, accountId: string): Promis
   const others = hub.bindings().filter((binding) => binding.id !== accountId);
   const tags = await taggedAcross(others);
   return { others: tags.private, complete: tags.complete };
+}
+
+/**
+ * Gives each account's change numbers (new_since) the #private tags of the other
+ * accounts: the messages of anyone another live account tagged or untagged since
+ * the last time get new numbers. It is a write, so it runs where the tags move,
+ * never on a read: when `remember` files or removes #private, when the accounts
+ * start (a tag changed while the server was off) and when the roster changes.
+ * An account that cannot say what it tagged leaves every other account as it was.
+ */
+export async function reconcilePrivate(hub: AccountSource): Promise<void> {
+  const bindings = hub.bindings();
+  const tagged = new Map<string, readonly string[] | null>();
+  for (const binding of bindings) {
+    try {
+      tagged.set(binding.id, (await binding.wa.catchUpTags?.())?.private ?? null);
+    } catch {
+      tagged.set(binding.id, null);
+    }
+  }
+  for (const binding of bindings) {
+    if (typeof binding.wa.reconcilePrivate !== "function") continue;
+    const others = bindings.filter((other) => other.id !== binding.id).map((other) => tagged.get(other.id) ?? null);
+    if (others.includes(null)) continue;
+    try {
+      await binding.wa.reconcilePrivate(others.flat() as readonly string[]);
+    } catch (err) {
+      logError(`private tags for ${binding.id}`, err);
+    }
+  }
 }
 
 /** Both #private and #no-catchup cross-account rules for a broad search, in one pass. */

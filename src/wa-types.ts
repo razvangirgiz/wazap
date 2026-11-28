@@ -1131,6 +1131,8 @@ export interface WhatsAppApi {
   catchUpScan?(request: CatchupScanRequest): Promise<CatchupScan>;
   /** Who this account tagged #private or #no-catchup, by jid, for the other accounts of a catch-up. */
   catchUpTags?(): Promise<CatchupTagJids>;
+  /** Gives the messages of people another account tagged or untagged #private new change numbers (reconcilePrivate in src/catchup.ts). */
+  reconcilePrivate?(others: readonly string[]): Promise<void>;
   /** The messages a catch-up page quotes, read in full by id. */
   catchUpQuotes?(ids: number[]): Promise<CatchupQuote[]>;
   /** Moves `client`'s catch-up mark to the top of `window`, while it still is the window's `expected` (compare-and-set). */

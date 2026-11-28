@@ -17,11 +17,13 @@ import {
   type ToolResult,
 } from "./tool-runtime.js";
 export { toolError, type ToolCtx, type RegisterOpts } from "./tool-runtime.js";
-import { CATCHUP_INPUT, CATCHUP_OUTPUT, privateRule, runCatchUp, searchRules } from "./catchup.js";
+import { CATCHUP_INPUT, CATCHUP_OUTPUT, privateRule, reconcilePrivate, runCatchUp, searchRules } from "./catchup.js";
 import { coverageNote, indexCoverageNote, searchCoverage } from "./coverage.js";
 import { looksUnnamed, renderDraft, type DraftPayload, type DraftView } from "./drafts.js";
 import { ERROR_GUIDE, WazapError, asWazapError } from "./errors.js";
 import { callCancelled, throwIfCancelled } from "./cancel.js";
+import { logError } from "./logger.js";
+import { normalizeTag, PRIVATE_TAG } from "./private-contacts.js";
 import { FIND_CONTACT_OUTPUT, runFindContact } from "./find-contact.js";
 import { chatByName, type NamedChat } from "./chat-name.js";
 import { LIST_CONTACTS_INPUT, runListContacts } from "./list-contacts.js";
@@ -900,7 +902,7 @@ const TOOLS: readonly ToolDef[] = [
     },
     outputSchema: REMEMBER_OUTPUT,
     write: false,
-    handler: async ({ chat_id, note, add_tags, remove_tags, fields, remove_fields, handled }, { wa, allowLocalEdits }) => {
+    handler: async ({ chat_id, note, add_tags, remove_tags, fields, remove_fields, handled }, { wa, hub, allowLocalEdits }) => {
       // Notes are local, but shared: a tag like #private reshapes what every
       // session sees and what webhooks deliver, so a read credential may not file them.
       if (!allowLocalEdits) {
@@ -911,6 +913,11 @@ const TOOLS: readonly ToolDef[] = [
         );
       }
       const details = add_tags !== undefined || remove_tags !== undefined || fields !== undefined || remove_fields !== undefined;
+      // Every account's change numbers (new_since) follow the others' #private tags, and no read settles them: this write does.
+      const settlePrivate = async (): Promise<void> => {
+        if (![...(add_tags ?? []), ...(remove_tags ?? [])].some((tag) => normalizeTag(tag) === PRIVATE_TAG)) return;
+        await reconcilePrivate(hub).catch((err: unknown) => logError("private tags", err));
+      };
       if (!details && note === undefined && handled === undefined) {
         throw new WazapError("INVALID_ID", "Nothing to remember.", "Pass note, add_tags, remove_tags, fields, remove_fields or handled: true");
       }
@@ -923,6 +930,7 @@ const TOOLS: readonly ToolDef[] = [
         const cards = wa.updateManyContactDetails
           ? await wa.updateManyContactDetails(chat_id, edit)
           : await chat_id.reduce<Promise<ContactSummary[]>>(async (done, id) => [...(await done), await wa.updateContactDetails(id, edit)], Promise.resolve([]));
+        await settlePrivate();
         const people = cards.map(({ contact_id, ...card }) => ({ chat_id: contact_id, ...card }));
         return ok(`Filed ${cards.length} ${cards.length === 1 ? "person" : "people"}:\n${cards.map((card) => `- ${personRef(card.name, card.contact_id, card.number)}${filedLabel(card)}`).join("\n")}`, { people });
       }
@@ -931,6 +939,7 @@ const TOOLS: readonly ToolDef[] = [
       // Details first: they are the edit most likely to be refused, and a refusal must leave nothing half-filed.
       if (details) {
         card = await wa.updateContactDetails(chat_id, { addTags: add_tags, removeTags: remove_tags, fields, removeFields: remove_fields });
+        await settlePrivate();
       }
       if (note !== undefined) {
         card = await wa.setContactNote(chat_id, note);

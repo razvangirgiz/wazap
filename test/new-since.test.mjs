@@ -8,6 +8,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { proto } from "baileys";
 
+import { reconcilePrivate } from "../dist/catchup.js";
 import { WhatsAppService } from "../dist/whatsapp.js";
 import { connectedService, offlineConfig, schemaCheckedTools } from "./helpers.mjs";
 
@@ -413,56 +414,87 @@ function linkedTools(personal, work) {
     findByMessage: (id) => bindings.filter((b) => b.wa.hasMessage(id)),
     findByDraft: () => [], reload: () => {}, noteOwner: () => {},
   };
-  return { ...schemaCheckedTools(hub, { allowWrite: false, changeFeed: true }), bindings, records };
+  return { ...schemaCheckedTools(hub, { allowWrite: false, allowLocalEdits: true, changeFeed: true }), bindings, records, hub };
 }
+
+const tag = (call, accountId, edit) => call("remember", { account_id: accountId, chat_id: ANA, ...edit });
 
 test("test_transient_account_outage_never_unprivates", async () => {
   const personal = account();
   const work = account();
-  const { call, records } = linkedTools(personal, work);
-  personal.svc.db.identity.updateFields(ANA, { addTags: ["private"] });
+  const { call, records, hub } = linkedTools(personal, work);
+  await tag(call, "personal", { add_tags: ["private"] });
   work.arrive(ANA, "secret words one");
   work.arrive(ANA, "secret words two");
   const read = async (after = 0) => (await call("new_since", { account_id: "work", after })).structuredContent;
   const first = await read();
   assert.ok(first.messages.every((m) => m.private));
   const snapshot = work.svc.db.getMeta("change_private_others");
+  assert.notEqual(snapshot, null, "the tag write stored what the other account tagged");
   const real = personal.svc.catchUpTags.bind(personal.svc);
   personal.svc.catchUpTags = async () => { throw new Error("preparing"); };
   const during = await read(first.through);
   assert.deepEqual(during.messages, [], "an outage must not re-list private history with words");
   assert.equal(during.top, first.top, "an outage cannot renumber history as untagged");
-  assert.equal(work.svc.db.getMeta("change_private_others"), snapshot);
+  await reconcilePrivate(hub);
+  assert.equal(work.svc.db.getMeta("change_private_others"), snapshot, "a reconcile that cannot hear every account stores nothing");
+  assert.equal(work.svc.db.messages.changeTop(), first.top);
   work.arrive(ANA, "secret during outage");
   const added = await read(during.through);
   assert.deepEqual(added.messages.map((m) => [m.text, m.private]), [["[private]", true]]);
   assert.ok((await read()).messages.every((m) => m.private), "listing uses the stored union too");
   personal.svc.catchUpTags = real;
+  await reconcilePrivate(hub);
   assert.deepEqual((await read(added.through)).messages, [], "recovery does not renumber unchanged tags");
-  // Disabling the account retires its tags even if it cannot answer.
+  // Disabling the account retires its tags even if it cannot answer: the roster change reconciles, a read does not.
   records[0].enabled = false;
+  assert.deepEqual((await read(added.through)).messages, [], "a read renumbers nothing");
+  await reconcilePrivate(hub);
   const retired = await read(added.through);
   assert.deepEqual(retired.messages.map((m) => m.text), ["secret words one", "secret words two", "secret during outage"]);
 });
 
-test("a healthy linked account's real untag re-lists with words", async () => {
+test("a healthy linked account's real untag re-lists with words, as soon as the tag is removed", async () => {
   const personal = account();
   const work = account();
   const { call } = linkedTools(personal, work);
-  personal.svc.db.identity.updateFields(ANA, { addTags: ["private"] });
+  await tag(call, "personal", { add_tags: ["private"] });
   const id = work.arrive(ANA, "restored words");
   const first = (await call("new_since", { account_id: "work" })).structuredContent;
   assert.equal(first.messages[0].private, true);
-  personal.svc.db.identity.updateFields(ANA, { removeTags: ["private"] });
+  await tag(call, "personal", { remove_tags: ["private"] });
+  assert.ok(work.svc.db.messages.changeTop() > first.top, "the tag write numbered the rows, before any read");
   const untagged = (await call("new_since", { account_id: "work", after: first.through })).structuredContent;
   assert.deepEqual(untagged.messages.map((m) => [m.message_id, m.text, m.private]), [[id, "restored words", undefined]]);
 });
 
-test("linked-account private tag transitions re-list rows using the existing cross-account rule", async () => {
+test("tagging #private on another account re-lists that person on this one, without a new_since call doing it", async () => {
+  const personal = account();
+  const work = account();
+  const { call } = linkedTools(personal, work);
+  const id = work.arrive(ANA, "said before the tag");
+  work.arrive(DAN, "someone else");
+  const first = (await call("new_since", { account_id: "work" })).structuredContent;
+  assert.deepEqual(first.messages.map((m) => m.private), [undefined, undefined]);
+  const top = work.svc.db.messages.changeTop();
+  // The same tag filed with another note, or a tag that is not #private, moves nothing.
+  await tag(call, "personal", { add_tags: ["friend"] });
+  assert.equal(work.svc.db.messages.changeTop(), top);
+  await tag(call, "personal", { add_tags: ["Private"] });
+  const listed = work.svc.db.messages.changedSince(first.through, work.svc.db.messages.changeTop(), 10);
+  assert.deepEqual(listed.map((row) => row.message.keyId), [id.split("_").at(-1)], "only the tagged person's messages are numbered again");
+  const relisted = (await call("new_since", { account_id: "work", after: first.through })).structuredContent;
+  assert.deepEqual(relisted.messages.map((m) => [m.message_id, m.text, m.private]), [[id, "[private]", true]]);
+  // Filing it again takes no number.
+  await tag(call, "personal", { add_tags: ["private"] });
+  assert.equal(work.svc.db.messages.changeTop(), relisted.top);
+});
+
+test("linked-account private tag transitions re-list rows when they are reconciled, not when a read finds them", async () => {
   const personal = account();
   const workConfig = offlineConfig("wazap-newsince-work-", { persistHistory: true });
   let work = account({ config: workConfig });
-  const { call, bindings } = linkedTools(personal, work);
+  const { call, bindings, hub } = linkedTools(personal, work);
   await work.svc.db.learnLidPhone(LID, ANA);
   const expected = [work.arrive(ANA, "incoming"), work.arrive(ANA, "outgoing", { fromMe: true }), work.arrive(GROUP, "group", { participant: ANA })];
   work.arrive(DAN, "public");
@@ -470,6 +502,10 @@ test("linked-account private tag transitions re-list rows using the existing cro
   let mark = (await read()).structuredContent.through;
   for (const privateNow of [true, false]) {
     personal.svc.db.identity.updateFields(LID, privateNow ? { addTags: ["private"] } : { removeTags: ["private"] });
+    const unseen = await read(mark);
+    assert.deepEqual(ids(unseen), [], "a read does not find a tag nobody reconciled");
+    assert.equal(unseen.structuredContent.top, mark);
+    await reconcilePrivate(hub);
     const changed = await read(mark);
     assert.deepEqual(ids(changed).sort(), [...expected].sort());
     for (const row of changed.structuredContent.messages) {
@@ -478,6 +514,8 @@ test("linked-account private tag transitions re-list rows using the existing cro
     }
     mark = changed.structuredContent.through;
     assert.deepEqual(ids(await read(mark)), []);
+    await reconcilePrivate(hub);
+    assert.equal((await read(mark)).structuredContent.top, mark, "reconciling an unchanged set renumbers nothing");
     if (privateNow) {
       await work.svc.stop();
       work = connectedService(WhatsAppService, { prefix: "wazap-newsince-reopen-", id: ME, name: "Răzvan", config: workConfig });
@@ -491,6 +529,58 @@ test("linked-account private tag transitions re-list rows using the existing cro
   await work.svc.stop();
 });
 
+test("a tag changed while an account was not running is reconciled when the accounts start", async () => {
+  const personal = account();
+  const workConfig = offlineConfig("wazap-newsince-offline-", { persistHistory: true });
+  let work = account({ config: workConfig });
+  const { call, bindings, hub } = linkedTools(personal, work);
+  personal.svc.db.identity.updateFields(ANA, { addTags: ["private"] });
+  await reconcilePrivate(hub);
+  const id = work.arrive(ANA, "kept words");
+  const mark = (await call("new_since", { account_id: "work" })).structuredContent.through;
+  await work.svc.stop();
+  personal.svc.db.identity.updateFields(ANA, { removeTags: ["private"] });
+  work = connectedService(WhatsAppService, { prefix: "wazap-newsince-offline2-", id: ME, name: "Răzvan", config: workConfig });
+  bindings[1].wa = work.svc;
+  await work.svc.bootStorage();
+  assert.deepEqual(ids(await call("new_since", { account_id: "work", after: mark })), [], "booting does not read the other accounts");
+  await reconcilePrivate(hub);
+  const relisted = await call("new_since", { account_id: "work", after: mark });
+  assert.deepEqual(relisted.structuredContent.messages.map((m) => [m.message_id, m.text]), [[id, "kept words"]]);
+  await work.svc.stop();
+});
+
+test("a new_since call writes nothing: it prunes no removal and reconciles no tag", async (t) => {
+  const personal = account();
+  const work = account();
+  const { call, hub } = linkedTools(personal, work);
+  const doomed = work.arrive(ANA, "temporary");
+  work.svc.db.messages.setExpiry(doomed, Date.now() + MINUTE);
+  await work.svc.db.messages.clearChat(ANA, Date.now() + MINUTE);
+  const removedAt = work.svc.db.connection.get("SELECT max(at) AS at FROM expired_removals").at;
+  work.arrive(DAN, "public");
+  // A removal past its 90 days and a tag nobody reconciled: the two things a read used to settle.
+  t.mock.method(work.svc.db.connection, "now", () => removedAt + 91 * 86400000);
+  personal.svc.db.identity.updateFields(DAN, { addTags: ["private"] });
+  const changes = () => work.svc.db.connection.get("SELECT total_changes() AS n").n;
+  const removals = () => work.svc.db.connection.get("SELECT count(*) AS n FROM expired_removals").n;
+  const before = { changes: changes(), removals: removals(), top: work.svc.db.messages.changeTop(), snapshot: work.svc.db.getMeta("change_private_others") };
+  assert.equal(before.removals, 1);
+  for (const after of [0, 0, before.top]) {
+    const result = await call("new_since", { account_id: "work", after });
+    assert.equal(result.isError, undefined);
+  }
+  assert.equal(changes(), before.changes, "no row changed on this connection");
+  assert.deepEqual(
+    { removals: removals(), top: work.svc.db.messages.changeTop(), snapshot: work.svc.db.getMeta("change_private_others") },
+    { removals: before.removals, top: before.top, snapshot: before.snapshot }
+  );
+  // The expiry sweep and the tag write do them.
+  await work.svc.db.messages.expireDue();
+  assert.equal(removals(), 0);
+  await reconcilePrivate(hub);
+  assert.ok(work.svc.db.messages.changeTop() > before.top);
+});
 
 test("an expiry physically removed before polling is listed once, with mixed pages bounded by top", async () => {
   const { svc, call, arrive } = account();
@@ -584,6 +674,8 @@ test("new_since refuses a cursor older than pruned expiry removals and allows a 
   const removal = (await call("new_since", { after: first.through })).structuredContent;
   const removedAt = svc.db.connection.get("SELECT max(at) AS at FROM expired_removals").at;
   t.mock.method(svc.db.connection, "now", () => removedAt + 91 * 86400000);
+  assert.equal((await call("new_since", { after: first.through })).isError, undefined, "a read does not prune: the record is still there");
+  await svc.db.messages.expireDue();
   const refused = await call("new_since", { after: first.through });
   assert.equal(refused.isError, true);
   const error = JSON.parse(refused.content[0].text);
