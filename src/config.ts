@@ -76,6 +76,8 @@ export interface Config {
   ocr?: OcrMode;
   /** WAZAP_INDEX_DOCUMENTS: opt-in local text indexing of kept and opened documents (`off` by default, `local` extracts PDF/Office/text). */
   indexDocuments?: IndexDocumentsMode;
+  /** WAZAP_CHANGE_FEED: lists the `new_since` tool (`off` by default); a session in text answers never lists it. */
+  changeFeed?: ChangeFeedMode;
   sources: Record<"dataDir" | "readOnly" | "transport" | "transcribe" | "webhook" | "recall" | "port", Source>;
   command: Command;
   /** The command was named on the command line rather than defaulted to serve. */
@@ -278,6 +280,7 @@ export function readOnlySetting(value: string | undefined): boolean {
  */
 export type OcrMode = "off" | "local";
 export type IndexDocumentsMode = "off" | "local";
+export type ChangeFeedMode = "off" | "on";
 
 /**
  * WAZAP_OCR: opt-in local OCR for kept and opened images (`off` by default;
@@ -291,6 +294,22 @@ export function ocrSetting(value: string | undefined): OcrMode {
     "INVALID_ID",
     "WAZAP_OCR must be off or local.",
     "Set WAZAP_OCR=local to index text inside kept images locally, or leave it unset"
+  );
+}
+
+/**
+ * WAZAP_CHANGE_FEED: `on` lists the `new_since` tool, for a program that syncs
+ * an account into its own store; `off` (the default) leaves it out of every
+ * tool list, so an assistant does not pay for it. Anything else is refused at start.
+ */
+export function changeFeedSetting(value: string | undefined): ChangeFeedMode {
+  const normalized = (value ?? "").trim().toLowerCase();
+  if (normalized === "" || normalized === "off" || normalized === "0" || normalized === "false") return "off";
+  if (normalized === "on" || normalized === "1" || normalized === "true") return "on";
+  throw new WazapError(
+    "INVALID_ID",
+    "WAZAP_CHANGE_FEED must be on or off.",
+    "Set WAZAP_CHANGE_FEED=on to list the new_since tool, or leave it unset"
   );
 }
 
@@ -514,6 +533,7 @@ export function parseCli(argv: string[] = process.argv.slice(2)): CliInvocation 
       answerFormat: answerFormatSetting(process.env.WAZAP_ANSWER_FORMAT),
       ocr: ocrSetting(process.env.WAZAP_OCR),
       indexDocuments: indexDocumentsSetting(process.env.WAZAP_INDEX_DOCUMENTS),
+      changeFeed: changeFeedSetting(process.env.WAZAP_CHANGE_FEED),
       sources: {
         // Resolved before dotenv runs, so the data dir's own .env cannot name it.
         dataDir: values["data-dir"] !== undefined ? "flag" : shell.has("WAZAP_DATA_DIR") ? "env" : "default",

@@ -130,6 +130,12 @@ What every argument means, and every error code, is in
 | `scheduled_messages` | write | List the scheduled messages (sent, missed, failed too) or cancel one before it goes. |
 | `reminder` | local | "Remind me if Ana has not answered in 2 days": set, list or cancel; posted to your webhook when due. |
 
+**A change feed, off by default.** `new_since` lists everything that arrived or
+changed after a cursor, across every chat, for a program that syncs an account
+into its own store instead of paging each chat. It stays out of the tool list an
+assistant reads on every conversation until `WAZAP_CHANGE_FEED=on`
+([settings](docs/settings.md), [Syncing with new_since](docs/tools.md#syncing-with-new_since)).
+
 **Scheduled messages and reminders.** `send_message` with `send_at` ("tomorrow
 at 9" as `2026-10-12T09:00` in `Europe/Bucharest`) drafts a message for later;
 the user's yes to that preview, time included, schedules it, and every send

@@ -85,16 +85,18 @@ function contractTools() {
 }
 
 /** The registered tools, as a client sees them. */
-function registered() {
+function registered(opts = {}) {
   const tools = new Map();
-  registerTools({ registerTool: (name, meta) => tools.set(name, meta) }, asToolSource({}), { allowWrite: true });
+  registerTools({ registerTool: (name, meta) => tools.set(name, meta) }, asToolSource({}), { allowWrite: true, ...opts });
   return tools;
 }
 
 const tools = registered();
+/** The same, with WAZAP_CHANGE_FEED=on: the one opt-in tool is listed too. */
+const withChangeFeed = registered({ changeFeed: true });
 /** Every argument name and every enum value the tools accept. */
 const vocabulary = new Set(TOOL_NAMES);
-for (const meta of tools.values()) {
+for (const meta of withChangeFeed.values()) {
   for (const [arg, shape] of Object.entries(meta.inputSchema ?? {})) {
     vocabulary.add(arg);
     // An enum, bare or under one optional/default wrapper: `options` is its public list of values.
@@ -119,7 +121,7 @@ test("the tool list the document prints is the registry, argument for argument",
   const rows = [...listing.matchAll(/`([a-z_]+)`\s*\(([^)]*)\)/g)].map(([, name, args]) => [name, identifiers(args)]);
   assert.deepEqual(
     rows.map(([name]) => name).sort(),
-    [...TOOL_NAMES].sort(),
+    [...tools.keys()].sort(),
     "the document lists different tools than the registry holds"
   );
   for (const [name, args] of rows) {
@@ -128,6 +130,17 @@ test("the tool list the document prints is the registry, argument for argument",
     const required = Object.keys(shape).filter((arg) => shape[arg].isOptional() === false);
     assert.deepEqual(args, required, `${DOC} states the wrong required arguments for ${name}`);
   }
+});
+
+test("the document names the one tool WAZAP_CHANGE_FEED=on adds, with the arguments it takes", () => {
+  const added = [...withChangeFeed.keys()].filter((name) => !tools.has(name));
+  assert.deepEqual(added, ["new_since"]);
+  assert.deepEqual([...TOOL_NAMES].sort(), [...withChangeFeed.keys()].sort());
+  const opening = paragraph("`new_since` is the one tool a setting adds");
+  assert.match(opening, /WAZAP_CHANGE_FEED=on/);
+  assert.match(opening, /answers? in text|text answers/i);
+  const required = Object.keys(withChangeFeed.get("new_since").inputSchema).filter((arg) => withChangeFeed.get("new_since").inputSchema[arg].isOptional() === false);
+  assert.deepEqual(required, [], "it requires nothing, as the document says");
 });
 
 test("every identifier the document quotes is one the build actually has", () => {
@@ -144,8 +157,8 @@ test("every identifier the document quotes is one the build actually has", () =>
 });
 
 test("the counts the document states are the registry's own", () => {
-  assert.equal(Number(claim(/registers exactly (\d+) tools/, "how many tools there are")), TOOL_NAMES.length);
-  assert.equal(TOOL_COUNT, TOOL_NAMES.length, "helpers and the registry disagree before the document is even read");
+  assert.equal(Number(claim(/registers exactly (\d+) tools/, "how many tools there are")), tools.size);
+  assert.equal(TOOL_COUNT, tools.size, "helpers and the registry disagree before the document is even read");
   assert.equal(
     Number(claim(/without writes sees (\d+) of them/, "how many tools a read session sees")),
     READ_TOOL_COUNT

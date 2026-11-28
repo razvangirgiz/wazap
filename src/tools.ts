@@ -17,11 +17,13 @@ import {
   type ToolResult,
 } from "./tool-runtime.js";
 export { toolError, type ToolCtx, type RegisterOpts } from "./tool-runtime.js";
-import { CATCHUP_INPUT, CATCHUP_OUTPUT, privateRule, runCatchUp, searchRules } from "./catchup.js";
+import { CATCHUP_INPUT, CATCHUP_OUTPUT, privateRule, reconcilePrivate, runCatchUp, searchRules } from "./catchup.js";
 import { coverageNote, indexCoverageNote, searchCoverage } from "./coverage.js";
 import { looksUnnamed, renderDraft, type DraftPayload, type DraftView } from "./drafts.js";
 import { ERROR_GUIDE, WazapError, asWazapError } from "./errors.js";
 import { callCancelled, throwIfCancelled } from "./cancel.js";
+import { logError } from "./logger.js";
+import { normalizeTag, PRIVATE_TAG } from "./private-contacts.js";
 import { FIND_CONTACT_OUTPUT, runFindContact } from "./find-contact.js";
 import { chatByName, type NamedChat } from "./chat-name.js";
 import { LIST_CONTACTS_INPUT, runListContacts } from "./list-contacts.js";
@@ -63,6 +65,7 @@ import { MESSAGE_TYPES } from "./wa-types.js";
 import type {
   ChatRead,
   ChatSummary,
+  ExpiredMessageView,
   ContactSummary,
   HandledResult,
   JoinGroupResult,
@@ -154,6 +157,25 @@ const READ_OUTPUT = {
     .optional()
     .describe("before ran past the local history: the phone was asked, and sent this many"),
   notes: NOTES,
+  sync: z.string(),
+  account_id: z.string(),
+};
+
+const NEW_SINCE_OUTPUT = {
+  epoch: z.string().describe("A cursor stored with another epoch is void: start again from after 0"),
+  after: z.number(),
+  through: z.number().describe("Pass as after next"),
+  top: z.number(),
+  more: z.boolean(),
+  count: z.number(),
+  messages: z.array(
+    BROAD_MESSAGE_OUT.extend({
+      key: z.string().describe("Upsert by this: message_id changes when a chat's lid pairs with a phone"),
+      deleted: z.literal(true).optional().describe("Deleted; no words are left"),
+      expires_at: z.string().datetime({ offset: true }).optional().describe("Disappearing message deadline"),
+      view_once: z.literal(true).optional(),
+    }).passthrough().or(z.object({ key: z.string(), chat_id: z.string(), expired: z.literal(true) }))
+  ),
   sync: z.string(),
   account_id: z.string(),
 };
@@ -396,6 +418,7 @@ const HINTS: Record<string, ToolHints> = {
   // The user's notes, kept locally: not read-only, never WhatsApp, and filing the same thing twice changes nothing.
   remember: hint(false, false, true, false),
   wait_for_messages: hint(true, false, true, true),
+  new_since: hint(true, false, true, true),
   search: hint(true, false, true, true),
   get_message: hint(true, false, true, true),
   find_contact: hint(true, false, true, true),
@@ -452,6 +475,7 @@ function tool<S extends z.ZodRawShape>(def: {
   schema: S;
   outputSchema?: z.ZodRawShape | z.ZodObject;
   write: boolean;
+  changeFeed?: boolean;
   rate?: number;
   handler: (args: z.infer<z.ZodObject<S>>, ctx: ToolCtx) => Promise<ToolResult>;
 }): ToolDef {
@@ -878,7 +902,7 @@ const TOOLS: readonly ToolDef[] = [
     },
     outputSchema: REMEMBER_OUTPUT,
     write: false,
-    handler: async ({ chat_id, note, add_tags, remove_tags, fields, remove_fields, handled }, { wa, allowLocalEdits }) => {
+    handler: async ({ chat_id, note, add_tags, remove_tags, fields, remove_fields, handled }, { wa, hub, allowLocalEdits }) => {
       // Notes are local, but shared: a tag like #private reshapes what every
       // session sees and what webhooks deliver, so a read credential may not file them.
       if (!allowLocalEdits) {
@@ -889,6 +913,11 @@ const TOOLS: readonly ToolDef[] = [
         );
       }
       const details = add_tags !== undefined || remove_tags !== undefined || fields !== undefined || remove_fields !== undefined;
+      // Every account's change numbers (new_since) follow the others' #private tags, and no read settles them: this write does.
+      const settlePrivate = async (): Promise<void> => {
+        if (![...(add_tags ?? []), ...(remove_tags ?? [])].some((tag) => normalizeTag(tag) === PRIVATE_TAG)) return;
+        await reconcilePrivate(hub).catch((err: unknown) => logError("private tags", err));
+      };
       if (!details && note === undefined && handled === undefined) {
         throw new WazapError("INVALID_ID", "Nothing to remember.", "Pass note, add_tags, remove_tags, fields, remove_fields or handled: true");
       }
@@ -901,6 +930,7 @@ const TOOLS: readonly ToolDef[] = [
         const cards = wa.updateManyContactDetails
           ? await wa.updateManyContactDetails(chat_id, edit)
           : await chat_id.reduce<Promise<ContactSummary[]>>(async (done, id) => [...(await done), await wa.updateContactDetails(id, edit)], Promise.resolve([]));
+        await settlePrivate();
         const people = cards.map(({ contact_id, ...card }) => ({ chat_id: contact_id, ...card }));
         return ok(`Filed ${cards.length} ${cards.length === 1 ? "person" : "people"}:\n${cards.map((card) => `- ${personRef(card.name, card.contact_id, card.number)}${filedLabel(card)}`).join("\n")}`, { people });
       }
@@ -909,6 +939,7 @@ const TOOLS: readonly ToolDef[] = [
       // Details first: they are the edit most likely to be refused, and a refusal must leave nothing half-filed.
       if (details) {
         card = await wa.updateContactDetails(chat_id, { addTags: add_tags, removeTags: remove_tags, fields, removeFields: remove_fields });
+        await settlePrivate();
       }
       if (note !== undefined) {
         card = await wa.setContactNote(chat_id, note);
@@ -957,6 +988,28 @@ const TOOLS: readonly ToolDef[] = [
       });
       const named = { ...result, messages: withChatNames(ctx.wa, result.messages) };
       return ok(renderWait(named), { ...named, count: named.messages.length });
+    },
+  }),
+
+  tool({
+    name: "new_since",
+    title: "List WhatsApp messages that arrived or changed",
+    description: `Messages that arrived or changed after a cursor, in every chat but stories, as they are now. Upsert by key; deleted: true marks deletions, expired: true (key, chat_id only) expiries.`,
+    schema: {
+      after: z.number().int().min(0).default(0).describe("Previous through; 0 = all"),
+      limit: z.number().int().min(1).max(200).default(100),
+    },
+    outputSchema: NEW_SINCE_OUTPUT,
+    write: false,
+    changeFeed: true,
+    handler: async ({ after, limit }, ctx) => {
+      const result = await ctx.wa.newSince(after, limit, { private: await privateRule(ctx.hub, ctx.accountId) });
+      const { data } = result;
+      const note = `Changes ${data.after} to ${data.through} of ${data.top}${data.more ? "; more remain: call again with after " + data.through : ""}.`;
+      return ok(
+        renderMessages("Messages that arrived or changed", data.messages, new Map(), note, listTextCap(undefined)),
+        synced(result, { ...data, count: data.messages.length })
+      );
     },
   }),
 
@@ -1707,6 +1760,8 @@ const TOOLS: readonly ToolDef[] = [
 ];
 
 export const TOOL_NAMES: readonly string[] = TOOLS.map((t) => t.name);
+/** What a session lists unless the user turned an opt-in tool on (WAZAP_CHANGE_FEED). */
+export const DEFAULT_TOOL_NAMES: readonly string[] = TOOLS.filter((t) => !t.changeFeed).map((t) => t.name);
 
 /** A wait ends early on a cancelled call, and on a server shutting down, which still gets its answer. */
 function waitSignal(ctx: ToolCtx): { signal?: AbortSignal } {
@@ -2237,7 +2292,7 @@ function listTextCap(fullText: boolean | undefined): number | null {
  */
 function renderMessages(
   title: string,
-  messages: ReadonlyArray<AnyMessage>,
+  messages: ReadonlyArray<AnyMessage | ExpiredMessageView>,
   labels: Map<string, string> = new Map(),
   notes: string | ReadonlyArray<string | null> | null = null,
   textCap: number | null = LIST_TEXT_CHARS,
@@ -2247,12 +2302,16 @@ function renderMessages(
   const noteText = noteLines(notes);
   if (messages.length === 0) return [`${title}: no messages found.`, ...noteText].join("\n");
   const lines = [`# ${title} (${messages.length})`, ...noteText];
-  const shown = new Set(messages.map((m) => m.message_id));
+  const shown = new Set(messages.flatMap((m) => ("expired" in m ? [] : [m.message_id])));
   const chats = new Set(messages.map((m) => m.chat_id));
   const today = localDay(Date.now());
   let day = "";
   let chat = "";
   for (const m of messages) {
+    if ("expired" in m) {
+      lines.push(`- [expired] key: \`${m.key}\` · chat: \`${m.chat_id}\``);
+      continue;
+    }
     if (m.timestamp.slice(0, 10) !== day) {
       day = m.timestamp.slice(0, 10);
       lines.push(`## ${dayHeading(day, today)}`);
@@ -2265,6 +2324,7 @@ function renderMessages(
       typeTag(m),
       m.forwarded ? "forwarded" : null,
       m.edited ? "edited" : null,
+      m.deleted ? "deleted" : null,
       m.reactions?.length ? reactionTag(m.reactions) : null,
       mentioned.length ? `mentions ${mentioned.map((person) => person.name).join(", ")}` : null,
       voteTag(m),

@@ -7,6 +7,7 @@
  * state through ReadsHost.
  */
 
+import type { ChangedRow } from "../db/messages.js";
 import { WazapError } from "../errors.js";
 import type { WAMessage, WASocket } from "baileys";
 import { closesAsk, wordsAsk } from "../asks.js";
@@ -27,7 +28,7 @@ import { idLowerBound, idUpperBound, secondOfId, type AccountDb, type ActivityKe
 import { draftContextFor, styleCheckFor, type DraftContext, type StyleCheck } from "../draft-style.js";
 import { isGroupId, isNoiseJid, STATUS_JID } from "../ids.js";
 import { decodeChatBytes } from "../store.js";
-import { formatAge, fullMessageDetails, isoWithOffset, mentionedJids, quotedSenderJid, viewText } from "../messages.js";
+import { formatAge, fullMessageDetails, isoWithOffset, mediaViewOnce, mentionedJids, quotedSenderJid, viewText } from "../messages.js";
 import { normalizeTag, withoutPrivateQuote, withoutWords } from "../private-contacts.js";
 import { frozenReceiptText } from "../drafts.js";
 import { STORY_TTL_MS } from "./ingest.js";
@@ -41,6 +42,7 @@ import type {
   ConnectionStatus,
   MessageType,
   MessageView,
+  NewSinceResult,
   PrivateRule,
   RecentConversation,
   RecentMessagePage,
@@ -463,6 +465,74 @@ export class AccountReads {
     });
   }
 
+  /**
+   * Messages that arrived or changed after the change_seq `after`, oldest change
+   * first, across every chat but the stories. The top is fixed before anything
+   * else is read, so a change that lands during the call waits for the next one.
+   */
+  newSince(after: number, limit: number, opts: { private?: PrivateRule } = {}): Promise<Synced<NewSinceResult>> {
+    return this.host.guarded(async () => {
+      this.host.ensureConnected();
+      await this.host.waitForSync();
+      // A read: expired removals are pruned by the expiry sweep, and other accounts' #private tags are
+      // reconciled when they are written (reconcilePrivate), so nothing is stored here.
+      const db = this.storage.db;
+      const privateRule = opts.private === undefined ? undefined : {
+        ...opts.private, others: db.messages.privateOthers(opts.private.others, opts.private.complete),
+      };
+      const top = db.messages.changeTop();
+      // The page, then the names it needs learned, then the page again: a pairing folds a lid chat into its number's.
+      const page = (): ChangedRow[] => {
+        const prunedThrough = Number(db.getMeta("expired_removals_pruned_through") ?? 0);
+        if (after > 0 && after < prunedThrough) {
+          throw new WazapError("CURSOR_EXPIRED", "The cursor predates pruned removal records.", "Restart from after 0");
+        }
+        const listed: ChangedRow[] = [];
+        for (let cursor = after; cursor < top; ) {
+          const rows = db.messages.changedSince(cursor, top, limit + 1);
+          for (const row of rows) {
+            cursor = row.seq;
+            if (isNoiseJid("message" in row ? row.message.chatJid : row.chatJid)) continue;
+            listed.push(row);
+            if (listed.length > limit) return listed;
+          }
+          if (rows.length < limit + 1) break;
+        }
+        return listed;
+      };
+      const chats = [...new Set(page().map((row) => "message" in row ? row.message.chatJid : row.chatJid))];
+      await this.identity.learnLidPhones(chats);
+      await Promise.all(
+        chats
+          .filter((jid) => isGroupId(jid) && !this.groups.groupCache.has(jid) && !this.groups.unreadableGroups.has(jid))
+          .slice(0, RECENT_GROUP_META_MAX)
+          .map((jid) => this.groups.learnParticipants(jid))
+      );
+      const found = page();
+      const more = found.length > limit;
+      const rows = found.slice(0, limit);
+      const stored = rows.flatMap((row) => "message" in row ? [row.message] : []);
+      const lookups = this.views.viewLookups(stored);
+      const people = this.identity.privateScope(privateRule);
+      const messages = rows.map((row) => {
+        if (!("message" in row)) return { key: row.key, chat_id: row.chatJid, expired: true as const };
+        const message = row.message;
+        const view = this.views.viewOfStored(message, lookups);
+        const hidden = people !== null && people.message(message);
+        const shown = people === null ? view : hidden ? withoutWords(view) : withoutPrivateQuote(view, people);
+        // A tombstone keeps its type and has no words; the answer says it was deleted.
+        const raw = this.views.rawOf(message);
+        const key = `${message.fromMe}_${message.keyId}`;
+        const metadata = {
+          ...(message.expiresAt === null ? {} : { expires_at: isoWithOffset(message.expiresAt) }),
+          ...(message.type === "view_once" || (raw !== null && mediaViewOnce(raw)) ? { view_once: true as const } : {}),
+        };
+        return message.deletedAt === null ? { ...shown, key, ...metadata } : { ...shown, key, ...metadata, ...(hidden ? {} : { text: "[deleted]" }), deleted: true as const };
+      });
+      return this.host.synced({ epoch: db.getMeta("change_epoch") ?? "", after, through: more ? rows[rows.length - 1]!.seq : top, top, more, messages });
+    });
+  }
+
   /** Select the cursor's identities without constructing every message view. */
   recentMessageRefs(options: RecentReadOptions): Promise<Synced<RecentMessageRefs[]>> {
     return this.host.guarded(async () => {
@@ -858,6 +928,11 @@ export class AccountReads {
       if (this.host.status() === "not_linked" || this.host.status() === "linking") this.host.ensureConnected();
       return scanCatchup(this.storage.db, this.catchupHost(), request, { id: this.accountRecord.id, name: this.accountRecord.name });
     });
+  }
+
+  /** Renumbers what another account's #private tags moved, here (see AccountDb messages.syncPrivateChanges); skipped while the database is not ready. */
+  reconcilePrivate(others: readonly string[]): Promise<void> {
+    return this.host.guarded(async () => this.storage.readyDb()?.messages.syncPrivateChanges(others));
   }
 
   catchUpTags(): Promise<CatchupTagJids> {

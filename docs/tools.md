@@ -33,6 +33,18 @@ code. The [README](../README.md#the-23-tools) has the one-line table.
 
 ### What an answer carries
 
+**`new_since`** (read, off by default): every message, in every chat but stories,
+that arrived or changed (edited, deleted, a transcript, OCR text or document text
+added, expiry or `#private` changed) after a cursor, in the order it changed, each
+in its current state. It is not one of the 23: set `WAZAP_CHANGE_FEED=on` to list
+it, as the 24th (see [Syncing with new_since](#syncing-with-new_since)). `after`
+(default 0, all history) in, `through` out for the next call, with `epoch`, `top`
+and `more`. Upsert by `key`, not `message_id`, which changes when a chat's lid
+pairs with a phone. A deleted message comes with `deleted: true` and `[deleted]`
+for words. `limit` 1-200 (default 100). Expired messages carry only `key`,
+`chat_id` and `expired: true`; physical removals are retained for 90 days.
+Clearing messages without an expiry is not reported.
+
 Each session gets one rendering of every answer, fixed at its `initialize`
 (`WAZAP_ANSWER_FORMAT`, [settings](settings.md)). A client that names itself
 as an assistant (Claude Code, claude.ai and Claude Desktop, Codex, Cursor,
@@ -530,6 +542,93 @@ it refused or stopped, by one renderer at a time, itself stopped past 512 MB.
 A file over 50 MB is not read. One download serves the view, the sheet, the
 text and a local session's file.
 
+### Syncing with new_since
+
+**Turn it on.** `new_since` is not listed by default: an assistant would read
+its definition on every conversation and never use it. Set `WAZAP_CHANGE_FEED=on`
+(in `.env` or the environment, then restart the server; see [settings](settings.md))
+and every session lists it, in a session without writes too. A session that
+answers in text (`WAZAP_ANSWER_FORMAT`, an assistant's client by default) never
+lists it, because its answer is structured; give a program's token a full-format
+session, or set `WAZAP_ANSWER_FORMAT=full`. Turning it off again changes no data:
+the change numbers are kept either way.
+
+`new_since` is for a program that keeps its own copy of the messages. Every
+message has a change number (schema 11); the tool lists messages whose number is past
+`after`, oldest change first, across every chat but stories, up to `limit`
+(100 by default, at most 200). A message gets a new number when it is stored and
+whenever what a reader sees of it changes: an edit, a deletion (for everyone or
+only here), a transcript, the text read from an image (`WAZAP_OCR`) or a document
+(`WAZAP_INDEX_DOCUMENTS`) added, the message a decryption stub stood for, a quote
+scrubbed after the quoted message was deleted. Storing the same message again
+changes nothing, and neither do a status, receipts, reactions, votes or a push
+name that arrive with it. When a chat is renamed to a number or folded into
+another because its lid was paired with a phone, every message in it comes
+again, since its `message_id` is spelled with the chat. Setting or changing
+`expires_at` also lists the message again; storing the same deadline does not.
+
+The answer carries `epoch`, `after`, `through`, `top`, `more` and the messages,
+each in the shape `read_messages` gives, in its current state, plus `key`,
+`expires_at` (an observed disappearing deadline as an ISO timestamp with offset,
+even with retention off) and
+`view_once: true` for view-once messages. Consumers can exclude disappearing
+and view-once messages using these fields; both fields are omitted when inapplicable.
+A message past a deadline that retention enforces (`WAZAP_RETENTION=1`) instead
+carries only `{key, chat_id, expired: true}`. With retention off, nothing is
+removed at the deadline: the message keeps its words, as in `read_messages`, and
+`expires_at` is only information.
+Physical deletion of any message with an expiry leaves a durable, content-free
+`expired_removals` record, so a sweep before the next poll cannot hide the removal.
+These records use the same change counter and page in order alongside messages.
+A duplicate removed during chat folding is omitted while the same key still
+exists in the canonical chat family; the surviving message remains authoritative.
+Expiry sweeps prune records older than 90 days after physical deletion. Poll
+within that window and remove any cached words when `expired: true` arrives.
+If `after` is nonzero and below `meta.expired_removals_pruned_through`, the call
+refuses with tool error `CURSOR_EXPIRED`: "The cursor predates pruned removal records."
+Restart from `after: 0` and rebuild the cached copy. A cursor equal to that
+watermark remains valid; `after: 0` always allows a restart.
+Pass `through` as `after` next time. `top` is the newest number when the call
+started, so a change that lands during the call waits for the next one. With
+`more` true `through` is the number of the last message listed; otherwise it is
+`top`, so messages hidden at the end of the window (a cleared chat or a story)
+are skipped. A cursor past `top` (a restored older file) comes back as
+`top`. A number can be skipped: a message that changed again moves to its newer
+number.
+
+- **Upsert by `key`**, `<true|false>_<id>`, the message's direction and
+  WhatsApp id. A `key` is unique in practice: WhatsApp message ids are random and do not repeat across chats. `message_id` can change when a chat's lid pairs with a phone, so
+  a consumer keyed by it would keep two records for one message. A message comes
+  again when it changes; a deleted one comes with `deleted: true`, `[deleted]`
+  for words and none of its old words.
+- **Keep the `epoch` with your cursor.** It is random and written once, when the
+  numbering is created. When the epoch differs from the one stored with your
+  cursor, start again from `after: 0`. A restored copy of a data directory keeps
+  its epoch, so restoring one is for the consumer to notice, and to restart from 0.
+- `after: 0` lists everything the account still holds, history from before this
+  version included.
+- **Local removals without an expiry are not reported:** clearing or deleting
+  a chat or purging history leaves no cursor record for those messages; compare
+  with `read_messages` if you need to notice that. Messages with an expiry leave
+  the content-free removal records described above.
+- **`#private`:** messages of someone tagged `#private` are listed without their
+  words ([Keeping someone private](#keeping-someone-private)). Tagging or untagging
+  someone lists their messages again: everything they sent, including in groups,
+  and both directions of their direct chat. This does not re-list other people's
+  replies quoting them; resync cached quotes after changing tags. The current cross-account rule still
+  applies: a tag on any linked account keeps them private on all. Local tag
+  changes are numbered by SQL triggers; changes to the other accounts' private
+  JIDs are numbered when the tag is written (`remember`, the account roster
+  changing, or the server starting), never by a `new_since` call, and remembered
+  on disk. While any live account cannot report tags, nothing is renumbered, the
+  stored snapshot is retained and unioned with successful answers for listing; an
+  outage never re-lists private history as untagged. A tag written in a way the
+  server does not see (editing the database directly) is picked up at the next
+  restart. A sender that becomes known or merges with another contact alone
+  still requires syncing from 0 to refresh privacy.
+- A message under two spellings of a chat that is being folded into another is
+  listed once, under the chat it reads as.
+
 ### Finding people
 
 `find_contact` answers "who is mama?", "Ana de la contabilitate" or "Mișu"
@@ -716,6 +815,8 @@ and what kind, and loses the words:
   groups before it counts to `limit`, by meaning and by words, and says how
   many in `private_omitted`. A quote of theirs in someone else's message keeps
   who wrote it, not what.
+- `new_since` lists what arrived or changed from them, in their chat or in a
+  group, with `text: "[private]"` and `private: true`, a deletion too.
 - `wait_for_messages` without `chat_id` still returns what arrived from them,
   in their chat or in a group, with `text: "[private]"` and `private: true`;
   waiting on one chat, theirs or a group's, reads it whole.
@@ -726,7 +827,7 @@ and what kind, and loses the words:
   is no way to read one of theirs through the assistant.
 
 The tag goes with the person: filed on one account, it holds in `search`,
-`wait_for_messages`, `list_chats`, the stories and `find_contact`'s draft
+`new_since`, `wait_for_messages`, `list_chats`, the stories and `find_contact`'s draft
 context of every other account, by number or lid, and in every catch-up. The
 [outbound webhook](api-and-webhooks.md#which-chats-are-posted) never posts their
 direct chat or a message they wrote in a group, with or without a chat filter.

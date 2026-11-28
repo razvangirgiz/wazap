@@ -8,7 +8,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
-import { BYTES_PER_TOKEN, MAX_DESCRIPTION_CHARS, MAX_LIST_TOKENS, measureToolBudget } from "../scripts/tool-budget.mjs";
+import { BYTES_PER_TOKEN, MAX_CHANGE_FEED_LIST_TOKENS, MAX_DESCRIPTION_CHARS, MAX_LIST_TOKENS, measureToolBudget } from "../scripts/tool-budget.mjs";
 import { HOST_FILE_ARGS } from "../dist/tool-catalogue.js";
 
 test("a session that can write lists its tools within the token budget, locally and remotely", async () => {
@@ -20,6 +20,22 @@ test("a session that can write lists its tools within the token budget, locally 
     assert.equal(report.list_tokens, Math.round(report.list_bytes / BYTES_PER_TOKEN));
     assert.ok(report.list_tokens_at_4 < report.list_tokens);
   }
+});
+
+test("the change feed adds only new_since to the list, within its own ceiling; the default list is 9,550 at most", async () => {
+  assert.equal(MAX_LIST_TOKENS, 9550, "the default list keeps the ceiling it had before new_since");
+  for (const remote of [false, true]) {
+    const without = await measureToolBudget({ allowWrite: true, remote });
+    const feed = await measureToolBudget({ allowWrite: true, remote, changeFeed: true });
+    assert.equal(feed.tools, without.tools + 1);
+    assert.deepEqual(feed.rows.map((row) => row.name).filter((name) => !without.rows.some((row) => row.name === name)), ["new_since"]);
+    assert.ok(!without.rows.some((row) => row.name === "new_since"));
+    assert.equal(feed.list_bytes - without.list_bytes, feed.rows.find((row) => row.name === "new_since").list_bytes);
+    assert.ok(feed.list_tokens <= MAX_CHANGE_FEED_LIST_TOKENS, `${feed.session}: ${feed.list_tokens} tokens, over ${MAX_CHANGE_FEED_LIST_TOKENS}`);
+    assert.ok(feed.rows.every((row) => row.description_chars <= MAX_DESCRIPTION_CHARS));
+  }
+  const text = await measureToolBudget({ allowWrite: true, changeFeed: true, format: "text" });
+  assert.ok(!text.rows.some((row) => row.name === "new_since"), "a text-answer session lists no new_since");
 });
 
 test("every description fits in 300 characters", async () => {

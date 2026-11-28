@@ -15,6 +15,7 @@ import { AccountHub } from "../dist/account-hub.js";
 import { resolveToolAccount } from "../dist/account-resolve.js";
 import { AccountRegistry } from "../dist/accounts.js";
 import { accountPaths, paths } from "../dist/config.js";
+import { reconcilePrivate } from "../dist/catchup.js";
 import { AccountDb } from "../dist/db/index.js";
 import { logoutAccount } from "../dist/logout.js";
 import { socketFactory } from "../dist/pairing.js";
@@ -113,6 +114,32 @@ test("a hot-added account resolves for link_account without any reload call", as
   assert.notEqual(result.structuredContent.error, "ACCOUNT_NOT_FOUND", result.structuredContent.message);
   assert.equal(result.structuredContent.account_id, "late");
   assert.ok(hub.get("late"));
+});
+
+test("a removed account's #private tags stop counting for the others when the roster changes, with no read", async (t) => {
+  const { config, hub, home, work } = twoAccountHub(t, { persistHistory: true });
+  await home.bootStorage();
+  await work.bootStorage();
+  work.db.identity.updateFields(DAN, { addTags: ["private"] });
+  await reconcilePrivate(hub);
+  const tagged = home.db.getMeta("change_private_others");
+  assert.match(tagged ?? "", /4070000000?4/, "the other account's tag is stored");
+  AccountRegistry.load(config.dataDir).disable("work");
+  hub.reload();
+  await waitFor(() => home.db.getMeta("change_private_others") !== tagged, 5_000, "the roster change to renumber");
+  assert.doesNotMatch(home.db.getMeta("change_private_others") ?? "", /40700000004/);
+});
+
+test("a service that starts on its own database reconciles the others' #private tags, with no tag write", async (t) => {
+  const { config, home, work } = twoAccountHub(t, { persistHistory: true });
+  seedCreds(config.dataDir, "default", HOME);
+  await work.bootStorage();
+  work.db.identity.updateFields(DAN, { addTags: ["private"] });
+  const phoneSide = fakeSocket();
+  const sockets = stubSockets(socketFactory, [phoneSide]);
+  t.after(() => sockets.restore());
+  await home.start();
+  assert.match(home.db.getMeta("change_private_others") ?? "", /40700000004/, "a start, a relink or a swapped database picks up the tag");
 });
 
 test("an id that is on disk nowhere is still ACCOUNT_NOT_FOUND after the re-read", async (t) => {

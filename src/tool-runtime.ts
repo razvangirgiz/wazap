@@ -94,6 +94,8 @@ export interface ToolHints {
 export interface ToolDef {
   /** Callable for cached remote connectors, never advertised by tools/list. */
   legacyRead?: boolean;
+  /** Registered only when the server turns the change feed on (WAZAP_CHANGE_FEED), and never in a text-answer session. */
+  changeFeed?: boolean;
   name: string;
   title: string;
   description: string;
@@ -118,6 +120,8 @@ export interface RegisterOpts {
    */
   format?: AnswerFormat;
   allowWrite: boolean;
+  /** WAZAP_CHANGE_FEED is on: the tools marked `changeFeed` are registered (unless the format is `text`). */
+  changeFeed?: boolean;
   /**
    * The credential's right to change local state (see ToolCtx.allowLocalEdits).
    * Falls back to `allowWrite`, which is what every session built before this
@@ -217,11 +221,11 @@ export function createToolRegistrar(defs: readonly ToolDef[]) {
   // it: converting every zod schema to JSON Schema is most of what an
   // initialize costs, and the answer is the same for every such session.
   const catalogues = new Map<string, readonly Tool[]>();
-  const catalogueFor = (registered: readonly ToolDef[], opts: Pick<RegisterOpts, "allowWrite" | "legacyReads" | "allowLocalFiles" | "format">): readonly Tool[] => {
-    // Which definitions register depends on allowWrite and legacyReads alone; allowLocalFiles hides the
-    // host-file arguments, and a text-format session is listed no outputSchema.
+  const catalogueFor = (registered: readonly ToolDef[], opts: Pick<RegisterOpts, "allowWrite" | "legacyReads" | "allowLocalFiles" | "format" | "changeFeed">): readonly Tool[] => {
+    // Which definitions register depends on allowWrite, legacyReads, changeFeed and the format; allowLocalFiles
+    // hides the host-file arguments, and a text-format session is listed no outputSchema.
     const format = opts.format ?? "full";
-    const key = `${opts.allowWrite}:${opts.legacyReads === true}:${opts.allowLocalFiles !== false}:${format}`;
+    const key = `${opts.allowWrite}:${opts.legacyReads === true}:${opts.allowLocalFiles !== false}:${format}:${opts.changeFeed === true}`;
     let tools = catalogues.get(key);
     if (tools === undefined) {
       tools = buildToolCatalogue(registered, opts.allowLocalFiles !== false, format);
@@ -230,14 +234,19 @@ export function createToolRegistrar(defs: readonly ToolDef[]) {
     return tools;
   };
   /** The definitions a session with these permissions registers. */
-  const selected = (opts: Pick<RegisterOpts, "allowWrite" | "legacyReads">): ToolDef[] =>
-    defs.filter((def) => (opts.allowWrite || !def.write) && (opts.legacyReads === true || !def.legacyRead));
+  const selected = (opts: Pick<RegisterOpts, "allowWrite" | "legacyReads" | "format" | "changeFeed">): ToolDef[] =>
+    defs.filter(
+      (def) =>
+        (opts.allowWrite || !def.write) &&
+        (opts.legacyReads === true || !def.legacyRead) &&
+        (def.changeFeed !== true || (opts.changeFeed === true && opts.format !== "text"))
+    );
   /**
    * What tools/list hands a session with these permissions: the very array
    * registerTools publishes, so a fingerprint of it (server.ts's session
    * shape) changes whenever any tool's description or schema does.
    */
-  const catalogue = (opts: Pick<RegisterOpts, "allowWrite" | "legacyReads" | "allowLocalFiles" | "format">): readonly Tool[] => catalogueFor(selected(opts), opts);
+  const catalogue = (opts: Pick<RegisterOpts, "allowWrite" | "legacyReads" | "allowLocalFiles" | "format" | "changeFeed">): readonly Tool[] => catalogueFor(selected(opts), opts);
   function registerTools(server: McpServer, hub: AccountSource, opts: RegisterOpts): void {
     // A session's drafts answer to its draft identity: a remote credential's
     // stable one where the server names it, so an async confirm over a fresh
